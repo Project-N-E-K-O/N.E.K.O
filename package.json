@@ -1,0 +1,30 @@
+{
+  "name": "xiao8-monorepo",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "devDependencies": {
+    "turbo": "^1.13.4"
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "dev:web": "turbo run dev --filter=web",
+    "dev:mobile": "cd apps/mobile && npx expo start",
+    "mobile": "cd apps/mobile && npx expo start"
+  },
+  "resolutions": {
+    "react": "19.0.0",
+    "react-dom": "19.0.0",
+    "@types/react": "^19.0.10",
+    "@types/react-dom": "^19.0.0",
+    "**/react": "19.0.0",
+    "**/react-dom": "19.0.0",
+    "**/@types/react": "^19.0.10",
+    "**/@types/react-dom": "^19.0.0"
+  }
+}
+
