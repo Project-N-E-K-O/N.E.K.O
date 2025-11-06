@@ -26,29 +26,46 @@ function addNewMessage(messageHTML) {
 // 用于跟踪是否刚刚发生了拖动
 let justDragged = false;
 
-toggleBtn.addEventListener('click', (event) => {
-    event.stopPropagation();
+// 确保DOM加载后再绑定事件
+if (toggleBtn) {
+    toggleBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
 
-    // 如果刚刚发生了拖动，阻止切换
-    if (justDragged) {
-        justDragged = false;
-        return;
-    }
+        // 如果刚刚发生了拖动，阻止切换
+        if (justDragged) {
+            justDragged = false;
+            return;
+        }
 
-    const isMinimized = chatContainer.classList.toggle('minimized');
+        const isMinimized = chatContainer.classList.toggle('minimized');
+        
+        // 获取图标元素（HTML中应该已经有img标签）
+        let iconImg = toggleBtn.querySelector('img');
+        if (!iconImg) {
+            // 如果没有图标，创建一个
+            iconImg = document.createElement('img');
+            iconImg.style.width = '16px';
+            iconImg.style.height = '16px';
+            iconImg.style.objectFit = 'contain';
+            toggleBtn.innerHTML = '';
+            toggleBtn.appendChild(iconImg);
+        }
 
-    if (isMinimized) {
-        // 刚刚最小化
-        toggleBtn.textContent = '+';
-        toggleBtn.title = 'Restore';
-    } else {
-        // 刚刚还原展开
-        toggleBtn.textContent = '-';
-        toggleBtn.title = 'Minimize';
-        // 还原后滚动到底部
-        setTimeout(scrollToBottom, 300); // 给CSS过渡留出时间
-    }
-});
+        if (isMinimized) {
+            // 刚刚最小化，显示展开图标（加号）
+            iconImg.src = '/static/icons/expand_icon.png';
+            iconImg.alt = '展开';
+            toggleBtn.title = '展开';
+        } else {
+            // 刚刚还原展开，显示最小化图标（减号）
+            iconImg.src = '/static/icons/minimize_icon.png';
+            iconImg.alt = '最小化';
+            toggleBtn.title = '最小化';
+            // 还原后滚动到底部
+            setTimeout(scrollToBottom, 300); // 给CSS过渡留出时间
+        }
+    });
+}
 
 // --- 对话区拖动功能 ---
 (function() {
@@ -250,29 +267,61 @@ toggleBtn.addEventListener('click', (event) => {
 const sidebar = document.getElementById('sidebar');
 const toggleSidebarBtn = document.getElementById('toggle-sidebar-btn');
 
-toggleSidebarBtn.addEventListener('click', (event) => {
-    event.stopPropagation();
-    const wasMinimized = sidebar.classList.contains('minimized');
-    const isMinimized = sidebar.classList.toggle('minimized');
-    if (isMinimized) {
-        toggleSidebarBtn.textContent = '+';
-        toggleSidebarBtn.title = '展开侧边栏';
-        sidebar.style.width = sidebar.style.height = '48px';
-        // 从展开变为折叠，标记菜单关闭
-        if (!wasMinimized && typeof window.markMenuClosed === 'function') {
-            window.markMenuClosed();
-        }
-    } else {
-        toggleSidebarBtn.textContent = '-';
-        toggleSidebarBtn.title = '折叠侧边栏';
-        sidebar.style.width = maxsidebarboxWidth + 'px';
-        sidebar.style.height = maxsidebarboxHeight + 'px';
-        // 从折叠变为展开，标记菜单打开
-        if (wasMinimized && typeof window.markMenuOpen === 'function') {
-            window.markMenuOpen();
-        }
+// 更新侧边栏按钮图标的函数
+function updateSidebarButtonIcon() {
+    if (!toggleSidebarBtn || !sidebar) return;
+    
+    // 获取或创建图标元素
+    let iconImg = toggleSidebarBtn.querySelector('img');
+    if (!iconImg) {
+        // 如果没有图标，创建一个
+        iconImg = document.createElement('img');
+        iconImg.style.width = '16px';
+        iconImg.style.height = '16px';
+        iconImg.style.objectFit = 'contain';
+        toggleSidebarBtn.innerHTML = '';
+        toggleSidebarBtn.appendChild(iconImg);
     }
-});
+    
+    const isMinimized = sidebar.classList.contains('minimized');
+    if (isMinimized) {
+        // 折叠状态，显示展开图标（加号）
+        iconImg.src = '/static/icons/expand_icon.png';
+        iconImg.alt = '展开';
+        toggleSidebarBtn.title = '展开侧边栏';
+    } else {
+        // 展开状态，显示折叠图标（减号）
+        iconImg.src = '/static/icons/minimize_icon.png';
+        iconImg.alt = '折叠';
+        toggleSidebarBtn.title = '折叠侧边栏';
+    }
+}
+
+if (toggleSidebarBtn) {
+    toggleSidebarBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const wasMinimized = sidebar.classList.contains('minimized');
+        const isMinimized = sidebar.classList.toggle('minimized');
+        
+        // 更新图标
+        updateSidebarButtonIcon();
+        
+        if (isMinimized) {
+            sidebar.style.width = sidebar.style.height = '48px';
+            // 从展开变为折叠，标记菜单关闭
+            if (!wasMinimized && typeof window.markMenuClosed === 'function') {
+                window.markMenuClosed();
+            }
+        } else {
+            sidebar.style.width = maxsidebarboxWidth + 'px';
+            sidebar.style.height = maxsidebarboxHeight + 'px';
+            // 从折叠变为展开，标记菜单打开
+            if (wasMinimized && typeof window.markMenuOpen === 'function') {
+                window.markMenuOpen();
+            }
+        }
+    });
+}
 
 // 允许点击整个 sidebar 区域还原
 sidebar.addEventListener('click', (event) => {
@@ -285,25 +334,36 @@ sidebar.addEventListener('click', (event) => {
 document.addEventListener('DOMContentLoaded', () => {
     // 设置初始按钮状态 - 聊天框
     if (chatContainer && toggleBtn) {
+        // 获取图标元素（HTML中应该已经有img标签）
+        let iconImg = toggleBtn.querySelector('img');
+        if (!iconImg) {
+            // 如果没有图标，创建一个
+            iconImg = document.createElement('img');
+            iconImg.style.width = '16px';
+            iconImg.style.height = '16px';
+            iconImg.style.objectFit = 'contain';
+            toggleBtn.innerHTML = '';
+            toggleBtn.appendChild(iconImg);
+        }
+        
         if (chatContainer.classList.contains('minimized')) {
-            toggleBtn.textContent = '+';
-            toggleBtn.title = 'Restore';
+            // 最小化状态，显示展开图标（加号）
+            iconImg.src = '/static/icons/expand_icon.png';
+            iconImg.alt = '展开';
+            toggleBtn.title = '展开';
         } else {
-            toggleBtn.textContent = '-';
-            toggleBtn.title = 'Minimize';
+            // 展开状态，显示最小化图标（减号）
+            iconImg.src = '/static/icons/minimize_icon.png';
+            iconImg.alt = '最小化';
+            toggleBtn.title = '最小化';
             scrollToBottom(); // 初始加载时滚动一次
         }
     }
 
     // 设置初始按钮状态 - 侧边栏
     if (sidebar && toggleSidebarBtn) {
-        if (sidebar.classList.contains('minimized')) {
-            toggleSidebarBtn.textContent = '+';
-            toggleSidebarBtn.title = '展开侧边栏';
-        } else {
-            toggleSidebarBtn.textContent = '-';
-            toggleSidebarBtn.title = '折叠侧边栏';
-        }
+        // 使用统一的函数更新图标
+        updateSidebarButtonIcon();
     }
 
     // 确保自动滚动在页面加载后生效

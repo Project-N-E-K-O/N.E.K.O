@@ -615,6 +615,9 @@ function init_app(){
             resetSessionButton.disabled = false;
             statusElement.textContent = '正在语音...';
             
+            // 添加active类以保持激活状态的颜色
+            micButton.classList.add('active');
+            
             // 开始录音时，停止主动搭话定时器
             stopProactiveChatSchedule();
         } catch (err) {
@@ -626,6 +629,8 @@ function init_app(){
             if (toggleButton) {
                 toggleButton.classList.remove('recording');
             }
+            // 移除active类
+            micButton.classList.remove('active');
         }
     }
 
@@ -638,6 +643,10 @@ function init_app(){
         if (toggleButton) {
             toggleButton.classList.remove('recording');
         }
+        
+        // 移除active类
+        micButton.classList.remove('active');
+        screenButton.classList.remove('active');
         
         stopRecording();
         micButton.disabled = false;
@@ -738,9 +747,15 @@ function init_app(){
             screenButton.disabled = true;
             stopButton.disabled = false;
             resetSessionButton.disabled = false;
+            
+            // 添加active类以保持激活状态的颜色
+            screenButton.classList.add('active');
 
             // 当用户停止共享屏幕时
-            screenCaptureStream.getVideoTracks()[0].onended = stopScreening;
+            screenCaptureStream.getVideoTracks()[0].onended = () => {
+                stopScreening();
+                screenButton.classList.remove('active');
+            };
 
             // 获取麦克风流
             if (!isRecording) statusElement.textContent = '没开麦啊喂！';
@@ -773,6 +788,9 @@ function init_app(){
         resetSessionButton.disabled = false;
         screenCaptureStream = null;
         statusElement.textContent = '正在语音...';
+        
+        // 移除active类
+        screenButton.classList.remove('active');
     }
 
     window.switchMicCapture = async () => {
@@ -1024,6 +1042,10 @@ function init_app(){
             textInputArea.classList.remove('hidden');
             statusElement.textContent = `启动失败: ${error.message}`;
             isSwitchingMode = false; // 切换失败，重置标志
+            
+            // 移除active类
+            micButton.classList.remove('active');
+            screenButton.classList.remove('active');
         }
     });
 
@@ -1053,6 +1075,10 @@ function init_app(){
         
         // 重置所有状态
         isTextSessionActive = false;
+        
+        // 移除所有按钮的active类
+        micButton.classList.remove('active');
+        screenButton.classList.remove('active');
         
         // 清除所有截图
         screenshotsList.innerHTML = '';

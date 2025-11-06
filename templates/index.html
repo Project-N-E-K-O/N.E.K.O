@@ -139,37 +139,27 @@
             right: 8px;
             width: 24px;
             height: 24px;
-            background: linear-gradient(135deg, #4f8cff 0%, #667eea 100%);
-            opacity: 1;
-            border: 2px solid rgba(255, 255, 255, 0.8);
-            border-radius: 6px;
-            cursor: grab; /* 拖拽手势 */
-            font-weight: bold;
-            font-size: 1.2rem;
-            line-height: 20px; /* 垂直居中调整 */
-            text-align: center;
-            color: #fff;
+            background: transparent; /* 透明背景 */
+            border: none; /* 无边框 */
+            cursor: pointer;
             z-index: 21; /* 确保在内容之上 */
             padding: 0;
             user-select: none;
-            box-shadow: 0 2px 8px rgba(79, 140, 255, 0.4);
-            transition: all 0.3s ease;
-            animation: buttonPulse 2s ease-in-out infinite;
+            box-shadow: none; /* 无阴影 */
+            transition: transform 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
         
-        @keyframes buttonPulse {
-            0%, 100% {
-                box-shadow: 0 2px 8px rgba(79, 140, 255, 0.4);
-            }
-            50% {
-                box-shadow: 0 2px 16px rgba(79, 140, 255, 0.8);
-            }
+        #toggle-chat-btn img {
+            width: 24px;
+            height: 24px;
+            object-fit: contain;
         }
         
         #toggle-chat-btn:hover {
             transform: scale(1.1);
-            box-shadow: 0 4px 16px rgba(79, 140, 255, 0.6);
-            animation: none;
         }
         
         /* 聊天框标题 */
@@ -194,6 +184,15 @@
             font-size: 1rem;
             font-weight: 600;
             color: #333;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        #chat-title img {
+            width: 20px;
+            height: 20px;
+            object-fit: contain;
         }
 
         /* 对话区提示框 */
@@ -266,7 +265,7 @@
         
         .message.user {
             align-self: flex-end;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: #44b7fe;  /* 蓝色 */
             color: #fff;
             margin-left: auto;
             border-bottom-right-radius: 4px;
@@ -274,7 +273,7 @@
         
         .message.gemini {
             align-self: flex-start;
-            background: #f0f0f0;
+            background: #CCEEFF;  /* 浅蓝色 */
             color: #333;
             margin-right: auto;
             border-bottom-left-radius: 4px;
@@ -601,7 +600,7 @@
             padding: 8px 16px;
             border-radius: 8px;
             border: none;
-            background: #4f8cff;
+            background: #44b7fe;  /* 发送按钮使用蓝色背景 */
             color: #fff;
             cursor: pointer;
             transition: background 0.2s;
@@ -609,24 +608,37 @@
             font-weight: 500;
             white-space: nowrap;
             min-width: 80px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
         }
         
-        #textSendButton:hover:not(:disabled), #screenshotButton:hover:not(:disabled) {
+        .button-icon {
+            width: 18px;
+            height: 18px;
+            object-fit: contain;
+            flex-shrink: 0;
+        }
+        
+        #textSendButton:hover:not(:disabled) {
             background: #2662c8;
+        }
+        
+        #screenshotButton {
+            background: #fff;  /* 白色背景 */
+            border: 2px solid #44b7fe;  /* 蓝色边框 */
+            color: #44b7fe;  /* 蓝色文字 */
+        }
+        
+        #screenshotButton:hover:not(:disabled) {
+            background: #f0f8ff;  /* 浅蓝色背景（悬停） */
         }
         
         #textSendButton:disabled, #screenshotButton:disabled {
             background: #b0c4de;
             cursor: not-allowed;
             opacity: 0.6;
-        }
-        
-        #screenshotButton {
-            background: #6c757d;
-        }
-        
-        #screenshotButton:hover:not(:disabled) {
-            background: #5a6268;
         }
         
         .toggle-mic-selector {
@@ -871,6 +883,15 @@
             opacity: 0.8;
             transition: background 0.2s, color 0.2s, box-shadow 0.2s, top 0.2s, right 0.2s;
             user-select: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        #toggle-sidebar-btn img {
+            width: 16px;
+            height: 16px;
+            object-fit: contain;
         }
 
         #sidebar.minimized #toggle-sidebar-btn {
@@ -919,6 +940,24 @@
         .side-btn:hover:not(:disabled) {
             background: #4f8cff;
             color: #fff;
+        }
+        
+        .side-btn.active {
+            background: #4f8cff;
+            color: #fff;
+        }
+        
+        .side-btn.active:hover:not(:disabled) {
+            background: #2662c8;
+        }
+        
+        #micButton.active {
+            background: #4f8cff;
+            color: #fff;
+        }
+        
+        #micButton.active:hover:not(:disabled) {
+            background: #2662c8;
         }
 
         .mobile-text {
@@ -1202,7 +1241,15 @@
             border: none;
             cursor: pointer;
             opacity: 0.8;
-            transition: background 0.2s, color 0.2s, box-shadow 0.2s, top 0.2s, right 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        #agent-collapse-btn img {
+            width: 16px;
+            height: 16px;
+            object-fit: contain;
         }
         
         #agent-collapse-btn:hover {
@@ -1439,7 +1486,9 @@
 </head>
 <body>
 <div id="agent-panel" class="collapsed">
-    <button id="agent-collapse-btn" title="展开">+</button>
+    <button id="agent-collapse-btn" title="展开">
+        <img src="/static/icons/expand_icon.png" alt="展开" id="expand-icon">
+    </button>
     <div id="agent-controls">
         <div class="master-control-row">
             <div class="control-item">
@@ -1484,7 +1533,9 @@
 </div>
 <div id="sidebar">
     <div id="sidebarbox">
-        <button id="toggle-sidebar-btn" title="折叠侧边栏">—</button>
+        <button id="toggle-sidebar-btn" title="折叠侧边栏">
+            <img src="/static/icons/minimize_icon.png" alt="折叠">
+        </button>
         <div id="mic-container">
             <button id="micButton" class="side-btn">🎤 开始语音</button>
             <div id="mic-selector" class="mic-selector">
@@ -1503,9 +1554,14 @@
 </div>
 <div id="chat-container">
     <div id="chat-header">
-        <span id="chat-title">💬 对话</span>
+        <span id="chat-title">
+            <img src="/static/icons/chat_icon.gif" alt="对话">
+            <span>对话</span>
+        </span>
     </div>
-    <button id="toggle-chat-btn" title="最小化">—</button>
+    <button id="toggle-chat-btn" title="最小化">
+        <img src="/static/icons/minimize_icon.png" alt="最小化">
+    </button>
     <div id="chat-tooltip">✨ 对话区</div>
     <div id="chat-content-wrapper">
         <div id="chatContainer"></div>
@@ -1523,8 +1579,16 @@
         <div id="text-input-row">
             <textarea id="textInputBox" placeholder="文字聊天模式...回车发送，Shift+回车换行" tabindex="0"></textarea>
             <div id="button-group">
-                <button id="textSendButton">📤 发送</button>
-                <button id="screenshotButton"><span class="desktop-text">📸 截图</span><span class="mobile-text">📷 拍照</span></button>
+                <button id="textSendButton">
+                    <img src="/static/icons/send_icon.png" alt="发送" class="button-icon">
+                    <span>发送</span>
+                </button>
+                <button id="screenshotButton">
+                    <img src="/static/icons/screenshot_icon.png" alt="截图" class="button-icon desktop-text">
+                    <img src="/static/icons/screenshot_icon.png" alt="拍照" class="button-icon mobile-text">
+                    <span class="desktop-text">截图</span>
+                    <span class="mobile-text">拍照</span>
+                </button>
             </div>
         </div>
     </div>
@@ -1910,7 +1974,10 @@
     const wasCollapsed = agentPanel.classList.contains('collapsed');
     agentPanel.classList.toggle('collapsed');
     const isCollapsed = agentPanel.classList.contains('collapsed');
-    agentCollapseBtn.textContent = isCollapsed ? '+' : '−';
+    const expandIcon = document.getElementById('expand-icon');
+    if (expandIcon) {
+      expandIcon.src = isCollapsed ? '/static/icons/expand_icon.png' : '/static/icons/collapse_icon.png';
+    }
     agentCollapseBtn.title = isCollapsed ? '展开' : '收起';
     
     // 标记菜单打开/关闭状态，影响自动折叠

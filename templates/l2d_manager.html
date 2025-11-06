@@ -34,10 +34,9 @@
             z-index: 20;
             min-width: 280px;
             padding: 20px;
-            background: rgba(255, 255, 255, 0.85);
+            background: #fff;
             border-radius: 12px;
             box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-            backdrop-filter: blur(10px);
         }
         .control-group {
             display: flex;
@@ -49,17 +48,30 @@
             color: #333;
             font-size: 14px;
         }
-        .control-select, .btn {
+        .control-select {
             padding: 10px 15px;
             border-radius: 8px;
-            border: 1px solid #ccc;
+            border: 1px solid #ddd;
             font-size: 14px;
             cursor: pointer;
             background: #fff;
+            color: #333;
+            appearance: none;
+            -webkit-appearance: none;
+            -moz-appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23d5f1ff' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 12px center;
+            padding-right: 35px;
         }
+        
         .btn {
-            color: white;
+            padding: 10px 15px;
+            border-radius: 8px;
             border: none;
+            font-size: 14px;
+            cursor: pointer;
+            color: white;
             transition: background 0.2s, transform 0.2s, box-shadow 0.2s;
             text-align: center;
         }
@@ -72,14 +84,42 @@
             cursor: not-allowed;
             opacity: 0.7;
         }
-        .btn-primary { background: #667eea; }
-        .btn-primary:hover:not(:disabled) { background: #5a6fd8; }
+        .btn-primary { background: #44b7fe; }
+        .btn-primary:hover:not(:disabled) { background: #2662c8; }
         
-        .btn-secondary { background: #6c757d; }
-        .btn-secondary:hover:not(:disabled) { background: #5a6268; }
+        .btn-secondary { 
+            background: #d5f1ff; 
+            color: #333;
+        }
+        .btn-secondary:hover:not(:disabled) { 
+            background: #b8e5ff; 
+            color: #333;
+        }
 
-        .btn-success { background: #28a745; }
-        .btn-success:hover:not(:disabled) { background: #218838; }
+        .btn-success { background: #44b7fe; }
+        .btn-success:hover:not(:disabled) { background: #2662c8; }
+        
+        #save-position-btn {
+            background: #d5f1ff !important;
+            color: #333 !important;
+        }
+        #save-position-btn:hover:not(:disabled) {
+            background: #b8e5ff !important;
+            color: #333 !important;
+        }
+        
+        .btn-icon {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+        
+        .btn-icon img {
+            width: 16px;
+            height: 16px;
+            object-fit: contain;
+        }
 
         .action-group {
             display: flex;
@@ -88,6 +128,16 @@
         .action-group .control-select {
             flex-grow: 1;
         }
+        #persistent-list {
+            margin-top: 6px;
+            max-height: 120px;
+            overflow: auto;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 6px;
+            background: #fff;
+        }
+        
         #status {
             margin-top: 10px;
             color: #4f8cff;
@@ -106,8 +156,14 @@
     </div>
     
     <div class="control-group">
-        <button id="fullscreenBtn" class="btn btn-secondary">🖥️ 全屏</button>
-        <button id="exitFullscreenBtn" class="btn btn-secondary" style="display:none;">❌ 退出全屏</button>
+        <button id="fullscreenBtn" class="btn btn-secondary btn-icon">
+            <img src="/static/icons/fullscreen_icon.png" alt="全屏">
+            <span>全屏</span>
+        </button>
+        <button id="exitFullscreenBtn" class="btn btn-secondary btn-icon" style="display:none;">
+            <img src="/static/icons/exit_fullscreen_icon.png" alt="退出全屏">
+            <span>退出全屏</span>
+        </button>
     </div>
     
     <div class="control-group">
@@ -130,7 +186,10 @@
             <select id="motion-select" class="control-select" disabled>
                 <option>请先加载模型</option>
             </select>
-            <button id="play-motion-btn" class="btn btn-primary" disabled>播放</button>
+            <button id="play-motion-btn" class="btn btn-primary btn-icon" disabled>
+                <img src="/static/icons/play_icon.png" alt="播放">
+                <span>播放</span>
+            </button>
         </div>
     </div>
     
@@ -140,14 +199,23 @@
             <select id="expression-select" class="control-select" disabled>
                 <option>请先加载模型</option>
             </select>
-            <button id="play-expression-btn" class="btn btn-primary" disabled>播放</button>
+            <button id="play-expression-btn" class="btn btn-primary btn-icon" disabled>
+                <img src="/static/icons/play_icon.png" alt="播放">
+                <span>播放</span>
+            </button>
         </div>
     </div>
 
     <div class="control-group">
         <div style="display:flex; gap: 10px;">
-            <button id="emotion-manager-btn" class="btn btn-secondary" disabled style="flex:1;">⚙️ 情感配置</button>
-            <button id="save-position-btn" class="btn btn-success" disabled style="flex:1;">💾 保存设置</button>
+            <button id="emotion-manager-btn" class="btn btn-primary btn-icon" disabled style="flex:1;">
+                <img src="/static/icons/emotion_config_icon.png" alt="情感配置">
+                <span>情感配置</span>
+            </button>
+            <button id="save-position-btn" class="btn btn-success btn-icon" disabled style="flex:1;">
+                <img src="/static/icons/save_settings.png" alt="保存设置">
+                <span>保存设置</span>
+            </button>
         </div>
     </div>
 
@@ -159,7 +227,7 @@
             </select>
             <button id="add-persistent-btn" class="btn btn-primary" disabled>添加</button>
         </div>
-        <div id="persistent-list" style="margin-top:6px; max-height:120px; overflow:auto; border:1px solid #ddd; border-radius:8px; padding:6px; background:#fff;"></div>
+        <div id="persistent-list"></div>
         <button id="save-persistent-btn" class="btn btn-success" disabled style="margin-top:6px;">保存常驻表情</button>
         <div style="font-size:12px; color:#666;">常驻表情会一直生效，不会被清除或覆盖；此处仅能选择 .exp3.json。</div>
     </div>
