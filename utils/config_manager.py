@@ -17,7 +17,8 @@ class ConfigManager:
     CONFIG_FILES = [
         'characters.json',
         'core_config.json',
-        'user_preferences.json'
+        'user_preferences.json',
+        'voice_storage.json'  # 添加这一行
     ]
     
     def __init__(self, app_name="Xiao8"):

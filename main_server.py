@@ -30,40 +30,32 @@ from openai import AsyncOpenAI
 from config import get_character_data, get_core_config, MAIN_SERVER_PORT, MONITOR_SERVER_PORT, MEMORY_SERVER_PORT, MODELS_WITH_EXTRA_BODY, load_characters, save_characters, TOOL_SERVER_PORT, CORE_CONFIG_PATH
 from config.prompts_sys import emotion_analysis_prompt, proactive_chat_prompt
 import glob
+from utils.config_manager import get_config_path, load_json_config, save_json_config
 
 
 
-
-# 在import语句之后添加
-VOICE_STORAGE_PATH = "config/voice_storage.json"
-
-def load_voice_storage():
-    """加载已保存的声音数据"""
-    if os.path.exists(VOICE_STORAGE_PATH):
-        with open(VOICE_STORAGE_PATH, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {}
-
-def save_voice_storage(data):
-    """保存声音数据到文件"""
-    os.makedirs(os.path.dirname(VOICE_STORAGE_PATH), exist_ok=True)
-    with open(VOICE_STORAGE_PATH, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-# 确定 templates 目录位置（支持 PyInstaller 打包）
-if getattr(sys, 'frozen', False):
-    # 打包后运行：从 _MEIPASS 读取
-    template_dir = sys._MEIPASS
-else:
-    # 正常运行：当前目录
-    template_dir = "./"
-
-templates = Jinja2Templates(directory=template_dir)
 
 # Configure logging
 from utils.logger_config import setup_logging
 
 logger, log_config = setup_logging(app_name="Xiao8_Main", log_level=logging.INFO)
+
+# 添加这两个函数定义（必须在调用之前定义）
+def load_voice_storage():
+    """加载已保存的声音数据"""
+    try:
+        return load_json_config('voice_storage.json', default_value={})
+    except Exception as e:
+        logger.error(f"加载音色配置失败: {e}")
+        return {}
+
+def save_voice_storage(data):
+    """保存声音数据到文件"""
+    try:
+        save_json_config('voice_storage.json', data)
+    except Exception as e:
+        logger.error(f"保存音色配置失败: {e}")
+        raise
 
 def cleanup():
     logger.info("Starting cleanup process")
@@ -114,6 +106,16 @@ else:
     static_dir = 'static'
 
 app.mount("/static", CustomStaticFiles(directory=static_dir), name="static")
+
+# 确定 templates 目录位置（支持 PyInstaller 打包）
+if getattr(sys, 'frozen', False):
+    # 打包后运行：从 _MEIPASS 读取
+    template_dir = sys._MEIPASS
+else:
+    # 正常运行：当前目录
+    template_dir = "./"
+
+templates = Jinja2Templates(directory=template_dir)
 
 # 挂载用户文档下的live2d目录
 from utils.config_manager import get_config_manager
@@ -342,13 +344,9 @@ async def update_core_config(request: Request):
 @app.on_event("startup")
 async def startup_event():
     global sync_process, registered_voices  # 添加registered_voices
-    # 确保配置目录存在
-    os.makedirs(os.path.dirname(VOICE_STORAGE_PATH), exist_ok=True)
     # 加载已保存的声音数据
     registered_voices = load_voice_storage()
     logger.info("Starting sync connector processes")
-    # 加载已保存的声音数据
-    registered_voices = load_voice_storage()
     # 启动同步连接器进程
     for k in sync_process:
         if sync_process[k] is None:
@@ -945,16 +943,14 @@ async def set_microphone(request: Request):
         data = await request.json()
         microphone_id = data.get('microphone_id')
         
-        # 读取现有的characters.json文件
-        with open('config/characters.json', 'r', encoding='utf-8') as f:
-            characters_data = json.load(f)
+        # 使用配置管理器加载角色配置
+        characters_data = load_characters()
         
         # 添加或更新麦克风选择
         characters_data['当前麦克风'] = microphone_id
         
-        # 保存回文件
-        with open('config/characters.json', 'w', encoding='utf-8') as f:
-            json.dump(characters_data, f, ensure_ascii=False, indent=2)
+        # 使用配置管理器保存
+        save_characters(characters_data)
         
         return {"success": True}
     except Exception as e:
@@ -964,9 +960,8 @@ async def set_microphone(request: Request):
 @app.get('/api/characters/get_microphone')
 async def get_microphone():
     try:
-        # 读取characters.json文件
-        with open('config/characters.json', 'r', encoding='utf-8') as f:
-            characters_data = json.load(f)
+        # 使用配置管理器加载角色配置
+        characters_data = load_characters()
         
         # 获取保存的麦克风选择
         microphone_id = characters_data.get('当前麦克风')
@@ -1273,8 +1268,7 @@ async def register_voice(request: Request):
             'created_at': datetime.now().isoformat()
         }
         try:
-            with open('config/voices.json', 'w', encoding='utf-8') as f:
-                json.dump(registered_voices, f, ensure_ascii=False, indent=2)
+            save_voice_storage(registered_voices)  # 使用配置管理器的方法
         except Exception as e:
             logger.warning(f"保存音色配置失败: {e}")
         return {"success": True, "message": "音色注册成功"}
@@ -1770,7 +1764,7 @@ async def update_emotion_mapping(model_name: str, request: Request):
         motions_input = (data.get('motions') if isinstance(data, dict) else None) or {}
         motions_output = {}
         for group_name, files in motions_input.items():
-            # 禁止在“常驻”组配置任何motion
+            # 禁止在"常驻"组配置任何motion
             if group_name == '常驻':
                 logger.info("忽略常驻组中的motion配置（只允许expression）")
                 continue
