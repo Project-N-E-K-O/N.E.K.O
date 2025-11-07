@@ -27,10 +27,28 @@ import requests
 import httpx
 import pathlib, wave
 from openai import AsyncOpenAI
-from config import get_character_data, get_core_config, MAIN_SERVER_PORT, MONITOR_SERVER_PORT, MEMORY_SERVER_PORT, MODELS_WITH_EXTRA_BODY, load_characters, save_characters, save_voice_storage, load_voice_storage, TOOL_SERVER_PORT, CORE_CONFIG_PATH
+from config import get_character_data, get_core_config, MAIN_SERVER_PORT, MONITOR_SERVER_PORT, MEMORY_SERVER_PORT, MODELS_WITH_EXTRA_BODY, load_characters, save_characters, TOOL_SERVER_PORT, CORE_CONFIG_PATH
 from config.prompts_sys import emotion_analysis_prompt, proactive_chat_prompt
 import glob
-from utils.config_manager import get_config_path, load_json_config, save_json_config
+
+
+
+
+# 在import语句之后添加
+VOICE_STORAGE_PATH = "config/voice_storage.json"
+
+def load_voice_storage():
+    """加载已保存的声音数据"""
+    if os.path.exists(VOICE_STORAGE_PATH):
+        with open(VOICE_STORAGE_PATH, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {}
+
+def save_voice_storage(data):
+    """保存声音数据到文件"""
+    os.makedirs(os.path.dirname(VOICE_STORAGE_PATH), exist_ok=True)
+    with open(VOICE_STORAGE_PATH, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 # 确定 templates 目录位置（支持 PyInstaller 打包）
 if getattr(sys, 'frozen', False):
@@ -47,23 +65,6 @@ from utils.logger_config import setup_logging
 
 logger, log_config = setup_logging(app_name="Xiao8_Main", log_level=logging.INFO)
 
-# 添加这两个函数定义（必须在调用之前定义）
-def load_voice_storage():
-    """加载已保存的声音数据"""
-    try:
-        return load_json_config('voice_storage.json', default_value={})
-    except Exception as e:
-        logger.error(f"加载音色配置失败: {e}")
-        return {}
-
-def save_voice_storage(data):
-    """保存声音数据到文件"""
-    try:
-        save_json_config('voice_storage.json', data)
-    except Exception as e:
-        logger.error(f"保存音色配置失败: {e}")
-        raise
-
 def cleanup():
     logger.info("Starting cleanup process")
     for k in sync_message_queue:
@@ -78,76 +79,20 @@ sync_shutdown_event = {}
 session_manager = {}
 session_id = {}
 sync_process = {}
-# Global variables for character data (will be updated on reload)
-master_name = None
-her_name = None
-master_basic_config = None
-lanlan_basic_config = None
-name_mapping = None
-lanlan_prompt = None
-semantic_store = None
-time_store = None
-setting_store = None
-recent_log = None
-catgirl_names = []
-
-def initialize_character_data():
-    """初始化或重新加载角色配置数据"""
-    global master_name, her_name, master_basic_config, lanlan_basic_config
-    global name_mapping, lanlan_prompt, semantic_store, time_store, setting_store, recent_log
-    global catgirl_names, sync_message_queue, sync_shutdown_event, session_manager, session_id, sync_process
-    
-    logger.info("正在加载角色配置...")
-    
-    # 加载最新的角色数据
-    master_name, her_name, master_basic_config, lanlan_basic_config, name_mapping, lanlan_prompt, semantic_store, time_store, setting_store, recent_log = get_character_data()
-    catgirl_names = list(lanlan_prompt.keys())
-    
-    # 为新增的角色初始化资源
-    for k in catgirl_names:
-        if k not in sync_message_queue:
-            sync_message_queue[k] = Queue()
-            sync_shutdown_event[k] = Event()
-            session_id[k] = None
-            sync_process[k] = None
-            logger.info(f"为角色 {k} 初始化新资源")
-        
-        # 更新或创建session manager（使用最新的prompt）
-        session_manager[k] = core.LLMSessionManager(
-            sync_message_queue[k],
-            k,
-            lanlan_prompt[k].replace('{LANLAN_NAME}', k).replace('{MASTER_NAME}', master_name)
-        )
-    
-    # 清理已删除角色的资源
-    removed_names = [k for k in session_manager.keys() if k not in catgirl_names]
-    for k in removed_names:
-        logger.info(f"清理已删除角色 {k} 的资源")
-        # 清理队列
-        if k in sync_message_queue:
-            try:
-                while not sync_message_queue[k].empty():
-                    sync_message_queue[k].get_nowait()
-                sync_message_queue[k].close()
-                sync_message_queue[k].join_thread()
-            except:
-                pass
-            del sync_message_queue[k]
-        
-        # 清理其他资源
-        if k in sync_shutdown_event:
-            del sync_shutdown_event[k]
-        if k in session_manager:
-            del session_manager[k]
-        if k in session_id:
-            del session_id[k]
-        if k in sync_process:
-            del sync_process[k]
-    
-    logger.info(f"角色配置加载完成，当前角色: {catgirl_names}，主人: {master_name}")
-
-# 初始化角色数据
-initialize_character_data()
+registered_voices = load_voice_storage()  # 直接加载初始化
+# Unpack character data once for initialization
+master_name, her_name, master_basic_config, lanlan_basic_config, name_mapping, lanlan_prompt, semantic_store, time_store, setting_store, recent_log = get_character_data()
+catgirl_names = list(lanlan_prompt.keys())
+for k in catgirl_names:
+    sync_message_queue[k] = Queue()
+    sync_shutdown_event[k] = Event()
+    session_manager[k] = core.LLMSessionManager(
+        sync_message_queue[k],
+        k,
+        lanlan_prompt[k].replace('{LANLAN_NAME}', k).replace('{MASTER_NAME}', master_name)
+    )
+    session_id[k] = None
+    sync_process[k] = None
 lock = asyncio.Lock()
 
 # --- FastAPI App Setup ---
@@ -169,16 +114,6 @@ else:
     static_dir = 'static'
 
 app.mount("/static", CustomStaticFiles(directory=static_dir), name="static")
-
-# 确定 templates 目录位置（支持 PyInstaller 打包）
-if getattr(sys, 'frozen', False):
-    # 打包后运行：从 _MEIPASS 读取
-    template_dir = sys._MEIPASS
-else:
-    # 正常运行：当前目录
-    template_dir = "./"
-
-templates = Jinja2Templates(directory=template_dir)
 
 # 挂载用户文档下的live2d目录
 from utils.config_manager import get_config_manager
@@ -407,9 +342,13 @@ async def update_core_config(request: Request):
 @app.on_event("startup")
 async def startup_event():
     global sync_process, registered_voices  # 添加registered_voices
+    # 确保配置目录存在
+    os.makedirs(os.path.dirname(VOICE_STORAGE_PATH), exist_ok=True)
     # 加载已保存的声音数据
     registered_voices = load_voice_storage()
     logger.info("Starting sync connector processes")
+    # 加载已保存的声音数据
+    registered_voices = load_voice_storage()
     # 启动同步连接器进程
     for k in sync_process:
         if sync_process[k] is None:
@@ -861,22 +800,7 @@ async def set_current_catgirl(request: Request):
     
     characters['当前猫娘'] = catgirl_name
     save_characters(characters)
-    # 自动重新加载配置
-    initialize_character_data()
     return {"success": True}
-
-@app.post('/api/characters/reload')
-async def reload_character_config():
-    """重新加载角色配置（热重载）"""
-    try:
-        initialize_character_data()
-        return {"success": True, "message": "角色配置已重新加载"}
-    except Exception as e:
-        logger.error(f"重新加载角色配置失败: {e}")
-        return JSONResponse(
-            {'success': False, 'error': f'重新加载失败: {str(e)}'}, 
-            status_code=500
-        )
 
 @app.post('/api/characters/master')
 async def update_master(request: Request):
@@ -886,8 +810,6 @@ async def update_master(request: Request):
     characters = load_characters()
     characters['主人'] = {k: v for k, v in data.items() if v}
     save_characters(characters)
-    # 自动重新加载配置
-    initialize_character_data()
     return {"success": True}
 
 @app.post('/api/characters/catgirl')
@@ -912,8 +834,6 @@ async def add_catgirl(request: Request):
     
     characters['猫娘'][key] = catgirl_data
     save_characters(characters)
-    # 自动重新加载配置
-    initialize_character_data()
     return {"success": True}
 
 @app.put('/api/characters/catgirl/{name}')
@@ -935,8 +855,6 @@ async def update_catgirl(name: str, request: Request):
         if k not in ('档案名') and v:
             characters['猫娘'][name][k] = v
     save_characters(characters)
-    # 自动重新加载配置
-    initialize_character_data()
     return {"success": True}
 
 @app.put('/api/characters/catgirl/l2d/{name}')
@@ -968,8 +886,6 @@ async def update_catgirl_l2d(name: str, request: Request):
         
         # 保存配置
         save_characters(characters)
-        # 自动重新加载配置
-        initialize_character_data()
         
         return JSONResponse(content={
             'success': True,
@@ -994,8 +910,6 @@ async def update_catgirl_voice_id(name: str, request: Request):
     if 'voice_id' in data:
         characters['猫娘'][name]['voice_id'] = data['voice_id']
     save_characters(characters)
-    # 自动重新加载配置
-    initialize_character_data()
     return {"success": True}
 
 @app.post('/api/characters/clear_voice_ids')
@@ -1013,8 +927,6 @@ async def clear_voice_ids():
                     cleared_count += 1
         
         save_characters(characters)
-        # 自动重新加载配置
-        initialize_character_data()
         
         return JSONResponse({
             'success': True, 
@@ -1033,16 +945,16 @@ async def set_microphone(request: Request):
         data = await request.json()
         microphone_id = data.get('microphone_id')
         
-        # 使用标准的load/save函数
-        characters_data = load_characters()
+        # 读取现有的characters.json文件
+        with open('config/characters.json', 'r', encoding='utf-8') as f:
+            characters_data = json.load(f)
         
         # 添加或更新麦克风选择
         characters_data['当前麦克风'] = microphone_id
         
-        # 保存配置
-        save_characters(characters_data)
-        # 自动重新加载配置
-        initialize_character_data()
+        # 保存回文件
+        with open('config/characters.json', 'w', encoding='utf-8') as f:
+            json.dump(characters_data, f, ensure_ascii=False, indent=2)
         
         return {"success": True}
     except Exception as e:
@@ -1052,8 +964,9 @@ async def set_microphone(request: Request):
 @app.get('/api/characters/get_microphone')
 async def get_microphone():
     try:
-        # 使用配置管理器加载角色配置
-        characters_data = load_characters()
+        # 读取characters.json文件
+        with open('config/characters.json', 'r', encoding='utf-8') as f:
+            characters_data = json.load(f)
         
         # 获取保存的麦克风选择
         microphone_id = characters_data.get('当前麦克风')
@@ -1280,14 +1193,14 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...)):
                     }, status_code=408)
                     
                 logger.info(f"音色注册成功，voice_id: {voice_id}")
-                registered_voices = load_voice_storage()
                 registered_voices[voice_id] = {
                     'voice_id': voice_id,
                     'prefix': prefix,
                     'file_url': tmp_url,
                     'created_at': datetime.now().isoformat()
                 }
-                save_voice_storage(registered_voices)
+                # 添加保存到文件
+                save_voice_storage(registered_voices)   
                 return JSONResponse({
                     'voice_id': voice_id,
                     'request_id': service.get_last_request_id(),
@@ -1334,10 +1247,11 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...)):
         logger.error(f"注册音色时发生未预期的错误: {str(e)}")
         return JSONResponse({'error': f'注册音色时发生错误: {str(e)}', 'file_url': tmp_url}, status_code=500)
 
+# 在 @app.post('/api/voice_clone') 后添加
 @app.get('/api/voices')
 async def get_voices():
     """获取所有已注册的音色"""
-    return {"voices": load_voice_storage()}
+    return {"voices": registered_voices}
 
 @app.post('/api/voices')
 async def register_voice(request: Request):
@@ -1352,15 +1266,15 @@ async def register_voice(request: Request):
                 'success': False,
                 'error': '缺少必要参数'
             }, status_code=400)
-        
-        registered_voices = load_voice_storage()
+            
         registered_voices[voice_id] = {
             **voice_data,
             'voice_id': voice_id,
             'created_at': datetime.now().isoformat()
         }
         try:
-            save_voice_storage(registered_voices)  # 使用配置管理器的方法
+            with open('config/voices.json', 'w', encoding='utf-8') as f:
+                json.dump(registered_voices, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.warning(f"保存音色配置失败: {e}")
         return {"success": True, "message": "音色注册成功"}
@@ -1377,8 +1291,6 @@ async def delete_catgirl(name: str):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
     del characters['猫娘'][name]
     save_characters(characters)
-    # 自动重新加载配置
-    initialize_character_data()
     return {"success": True}
 
 @app.post('/api/beacon/shutdown')
@@ -1437,12 +1349,7 @@ async def rename_catgirl(old_name: str, request: Request):
         return JSONResponse({'success': False, 'error': '新档案名已存在'}, status_code=400)
     # 重命名
     characters['猫娘'][new_name] = characters['猫娘'].pop(old_name)
-    # 如果当前猫娘是被重命名的猫娘，也需要更新
-    if characters.get('当前猫娘') == old_name:
-        characters['当前猫娘'] = new_name
     save_characters(characters)
-    # 自动重新加载配置
-    initialize_character_data()
     return {"success": True}
 
 @app.post('/api/characters/catgirl/{name}/unregister_voice')
@@ -1461,8 +1368,6 @@ async def unregister_voice(name: str):
         if 'voice_id' in characters['猫娘'][name]:
             characters['猫娘'][name].pop('voice_id')
         save_characters(characters)
-        # 自动重新加载配置
-        initialize_character_data()
         
         logger.info(f"已解除猫娘 '{name}' 的声音注册")
         return {"success": True, "message": "声音注册已解除"}
@@ -1865,7 +1770,7 @@ async def update_emotion_mapping(model_name: str, request: Request):
         motions_input = (data.get('motions') if isinstance(data, dict) else None) or {}
         motions_output = {}
         for group_name, files in motions_input.items():
-            # 禁止在"常驻"组配置任何motion
+            # 禁止在“常驻”组配置任何motion
             if group_name == '常驻':
                 logger.info("忽略常驻组中的motion配置（只允许expression）")
                 continue
