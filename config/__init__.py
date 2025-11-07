@@ -108,8 +108,7 @@ def get_core_config():
         OPENROUTER_URL as DEFAULT_OPENROUTER_URL,
         SUMMARY_MODEL as DEFAULT_SUMMARY_MODEL,
         CORRECTION_MODEL as DEFAULT_CORRECTION_MODEL,
-        EMOTION_MODEL as DEFAULT_EMOTION_MODEL,
-        VISION_MODEL as DEFAULT_VISION_MODEL,
+        EMOTION_MODEL as DEFAULT_EMOTION_MODEL
     )
     
     # 初始化配置
@@ -137,7 +136,6 @@ def get_core_config():
         'COMPUTER_USE_MODEL_API_KEY': '',
         'COMPUTER_USE_GROUND_API_KEY': '',
         'IS_FREE_VERSION': False,  # 标识是否为免费版
-        'VISION_MODEL': DEFAULT_VISION_MODEL,
     }
     
     try:
