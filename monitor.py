@@ -6,7 +6,8 @@ mimetypes.add_type("application/javascript", ".js")
 import asyncio
 import json
 import os
-from config import MONITOR_SERVER_PORT, get_character_data
+from config import MONITOR_SERVER_PORT
+from utils.config_manager import get_config_manager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -19,6 +20,7 @@ app = FastAPI()
 
 # 挂载静态文件
 app.mount("/static", StaticFiles(directory="static"), name="static")
+_config_manager = get_config_manager()
 
 @app.get("/streamer")
 async def get_stream():
@@ -97,7 +99,7 @@ async def get_emotion_mapping(model_name: str):
 @app.get("/{lanlan_name}", response_class=HTMLResponse)
 async def get_index(request: Request, lanlan_name: str):
     # 获取角色配置
-    _, _, _, lanlan_basic_config, _, _, _, _, _, _ = get_character_data()
+    _, _, _, lanlan_basic_config, _, _, _, _, _, _ = _config_manager.get_character_data()
     # 获取live2d字段
     live2d = lanlan_basic_config.get(lanlan_name, {}).get('live2d', 'mao_pro')
     # 查找所有模型

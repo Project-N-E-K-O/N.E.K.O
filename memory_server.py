@@ -7,7 +7,8 @@ import json
 import uvicorn
 from langchain_core.messages import convert_to_messages
 from uuid import uuid4
-from config import get_character_data, MEMORY_SERVER_PORT
+from config import MEMORY_SERVER_PORT
+from utils.config_manager import get_config_manager
 from pydantic import BaseModel
 import re
 import asyncio
@@ -24,6 +25,7 @@ class HistoryRequest(BaseModel):
 app = FastAPI()
 
 # 初始化组件
+_config_manager = get_config_manager()
 recent_history_manager = CompressedRecentHistoryManager()
 semantic_manager = SemanticMemory(recent_history_manager)
 settings_manager = ImportantSettingsManager()
@@ -151,7 +153,7 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
 @app.get("/get_recent_history/{lanlan_name}")
 def get_recent_history(lanlan_name: str):
     history = recent_history_manager.get_recent_history(lanlan_name)
-    _, _, _, _, name_mapping, _, _, _, _, _ = get_character_data()
+    _, _, _, _, name_mapping, _, _, _, _, _ = _config_manager.get_character_data()
     name_mapping['ai'] = lanlan_name
     result = f"开始聊天前，{lanlan_name}又在脑海内整理了近期发生的事情。\n"
     for i in history:
@@ -195,7 +197,7 @@ async def new_dialog(lanlan_name: str):
     
     # 正则表达式：删除所有类型括号及其内容（包括[]、()、{}、<>、【】、（）等）
     brackets_pattern = re.compile(r'(\[.*?\]|\(.*?\)|（.*?）|【.*?】|\{.*?\}|<.*?>)')
-    master_name, _, _, _, name_mapping, _, _, _, _, _ = get_character_data()
+    master_name, _, _, _, name_mapping, _, _, _, _, _ = _config_manager.get_character_data()
     name_mapping['ai'] = lanlan_name
     result = f"\n========{lanlan_name}的内心活动========\n{lanlan_name}的脑海里经常想着自己和{master_name}的事情，她记得{json.dumps(settings_manager.get_settings(lanlan_name), ensure_ascii=False)}\n\n"
     result += f"开始聊天前，{lanlan_name}又在脑海内整理了近期发生的事情。\n"

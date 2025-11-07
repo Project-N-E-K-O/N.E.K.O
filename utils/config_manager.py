@@ -7,18 +7,28 @@ import sys
 import os
 import json
 import shutil
+import logging
+from copy import deepcopy
 from pathlib import Path
+
+from config import (
+    CONFIG_FILES,
+    DEFAULT_MASTER_TEMPLATE,
+    DEFAULT_LANLAN_TEMPLATE,
+    DEFAULT_CHARACTERS_CONFIG,
+    DEFAULT_CONFIG_DATA,
+    CORE_API_PROFILES,
+    ASSIST_API_PROFILES,
+    ASSIST_API_KEY_FIELDS,
+)
+from config.prompts_chara import lanlan_prompt
+
+
+logger = logging.getLogger(__name__)
 
 
 class ConfigManager:
     """配置文件管理器"""
-    
-    # 配置文件名
-    CONFIG_FILES = [
-        'characters.json',
-        'core_config.json',
-        'user_preferences.json'
-    ]
     
     def __init__(self, app_name="Xiao8"):
         """
@@ -203,7 +213,7 @@ class ConfigManager:
         print(f"[ConfigManager] User config directory: {self.config_dir}")
         
         # 迁移每个配置文件
-        for filename in self.CONFIG_FILES:
+        for filename in CONFIG_FILES:
             docs_config_path = self.config_dir / filename
             project_config_path = self.project_config_dir / filename
             
@@ -220,7 +230,10 @@ class ConfigManager:
                 except Exception as e:
                     print(f"Warning: Failed to migrate {filename}: {e}", file=sys.stderr)
             else:
-                print(f"[ConfigManager] ✗ Source config not found: {project_config_path}")
+                if filename in DEFAULT_CONFIG_DATA:
+                    print(f"[ConfigManager] ~ Using in-memory default for {filename}")
+                else:
+                    print(f"[ConfigManager] ✗ Source config not found: {project_config_path}")
     
     def migrate_memory_files(self):
         """
@@ -258,6 +271,288 @@ class ConfigManager:
         except Exception as e:
             print(f"Warning: Failed to migrate memory files: {e}", file=sys.stderr)
     
+    # --- Character configuration helpers ---
+
+    def get_default_characters(self):
+        """获取默认角色配置数据"""
+        return deepcopy(DEFAULT_CHARACTERS_CONFIG)
+
+    def load_characters(self, character_json_path=None):
+        """加载角色配置"""
+        if character_json_path is None:
+            character_json_path = str(self.get_config_path('characters.json'))
+
+        try:
+            with open(character_json_path, 'r', encoding='utf-8') as f:
+                character_data = json.load(f)
+        except FileNotFoundError:
+            logger.info("未找到猫娘配置文件 %s，使用默认配置。", character_json_path)
+            character_data = self.get_default_characters()
+        except Exception as e:
+            logger.error("读取猫娘配置文件出错: %s，使用默认人设。", e)
+            character_data = self.get_default_characters()
+        return character_data
+
+    def save_characters(self, data, character_json_path=None):
+        """保存角色配置"""
+        if character_json_path is None:
+            character_json_path = str(self.get_config_path('characters.json'))
+
+        Path(character_json_path).parent.mkdir(parents=True, exist_ok=True)
+
+        with open(character_json_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    # --- Voice storage helpers ---
+
+    def load_voice_storage(self):
+        """加载音色配置存储"""
+        try:
+            return self.load_json_config('voice_storage.json', default_value=deepcopy(DEFAULT_CONFIG_DATA['voice_storage.json']))
+        except Exception as e:
+            logger.error("加载音色配置失败: %s", e)
+            return {}
+
+    def save_voice_storage(self, data):
+        """保存音色配置存储"""
+        try:
+            self.save_json_config('voice_storage.json', data)
+        except Exception as e:
+            logger.error("保存音色配置失败: %s", e)
+            raise
+
+    def get_voices_for_current_api(self):
+        """获取当前 AUDIO_API_KEY 对应的所有音色"""
+        core_config = self.get_core_config()
+        audio_api_key = core_config.get('AUDIO_API_KEY', '')
+
+        if not audio_api_key:
+            logger.warning("未配置 AUDIO_API_KEY")
+            return {}
+
+        voice_storage = self.load_voice_storage()
+        return voice_storage.get(audio_api_key, {})
+
+    def save_voice_for_current_api(self, voice_id, voice_data):
+        """为当前 AUDIO_API_KEY 保存音色"""
+        core_config = self.get_core_config()
+        audio_api_key = core_config.get('AUDIO_API_KEY', '')
+
+        if not audio_api_key:
+            raise ValueError("未配置 AUDIO_API_KEY")
+
+        voice_storage = self.load_voice_storage()
+        if audio_api_key not in voice_storage:
+            voice_storage[audio_api_key] = {}
+
+        voice_storage[audio_api_key][voice_id] = voice_data
+        self.save_voice_storage(voice_storage)
+
+    def validate_voice_id(self, voice_id):
+        """校验 voice_id 是否在当前 AUDIO_API_KEY 下有效"""
+        if not voice_id:
+            return True
+
+        voices = self.get_voices_for_current_api()
+        return voice_id in voices
+
+    def cleanup_invalid_voice_ids(self):
+        """清理 characters.json 中无效的 voice_id"""
+        character_data = self.load_characters()
+        voices = self.get_voices_for_current_api()
+        cleaned_count = 0
+
+        catgirls = character_data.get('猫娘', {})
+        for name, config in catgirls.items():
+            voice_id = config.get('voice_id', '')
+            if voice_id and voice_id not in voices:
+                logger.warning(
+                    "猫娘 '%s' 的 voice_id '%s' 在当前 API 的 voice_storage 中不存在，已清除",
+                    name,
+                    voice_id,
+                )
+                config['voice_id'] = ''
+                cleaned_count += 1
+
+        if cleaned_count > 0:
+            self.save_characters(character_data)
+            logger.info("已清理 %d 个无效的 voice_id 引用", cleaned_count)
+
+        return cleaned_count
+
+    # --- Character metadata helpers ---
+
+    def get_character_data(self):
+        """获取角色基础数据及相关路径"""
+        character_data = self.load_characters()
+        defaults = self.get_default_characters()
+
+        character_data.setdefault('主人', deepcopy(defaults['主人']))
+        character_data.setdefault('猫娘', deepcopy(defaults['猫娘']))
+
+        master_basic_config = character_data.get('主人', {})
+        master_name = master_basic_config.get('档案名', defaults['主人']['档案名'])
+
+        catgirl_data = character_data.get('猫娘') or deepcopy(defaults['猫娘'])
+        catgirl_names = list(catgirl_data.keys())
+
+        current_catgirl = character_data.get('当前猫娘', '')
+        if current_catgirl and current_catgirl in catgirl_names:
+            her_name = current_catgirl
+        else:
+            her_name = catgirl_names[0] if catgirl_names else ''
+            if her_name and current_catgirl != her_name:
+                logger.info(
+                    "当前猫娘配置无效 ('%s')，已自动切换到 '%s'",
+                    current_catgirl,
+                    her_name,
+                )
+                character_data['当前猫娘'] = her_name
+                self.save_characters(character_data)
+
+        name_mapping = {'human': master_name, 'system': "SYSTEM_MESSAGE"}
+        lanlan_prompt_map = {}
+        for name in catgirl_names:
+            prompt_value = catgirl_data.get(name, {}).get('system_prompt', lanlan_prompt)
+            lanlan_prompt_map[name] = prompt_value
+
+        memory_base = str(self.memory_dir)
+        semantic_store = {name: f'{memory_base}/semantic_memory_{name}' for name in catgirl_names}
+        time_store = {name: f'{memory_base}/time_indexed_{name}' for name in catgirl_names}
+        setting_store = {name: f'{memory_base}/settings_{name}.json' for name in catgirl_names}
+        recent_log = {name: f'{memory_base}/recent_{name}.json' for name in catgirl_names}
+
+        return (
+            master_name,
+            her_name,
+            master_basic_config,
+            catgirl_data,
+            name_mapping,
+            lanlan_prompt_map,
+            semantic_store,
+            time_store,
+            setting_store,
+            recent_log,
+        )
+
+    # --- Core config helpers ---
+
+    def get_core_config(self):
+        """动态读取核心配置"""
+        from config.api import (
+            CORE_API_KEY as DEFAULT_CORE_API_KEY,
+            AUDIO_API_KEY as DEFAULT_AUDIO_API_KEY,
+            OPENROUTER_API_KEY as DEFAULT_OPENROUTER_API_KEY,
+            MCP_ROUTER_API_KEY as DEFAULT_MCP_ROUTER_API_KEY,
+            CORE_URL as DEFAULT_CORE_URL,
+            CORE_MODEL as DEFAULT_CORE_MODEL,
+            OPENROUTER_URL as DEFAULT_OPENROUTER_URL,
+            SUMMARY_MODEL as DEFAULT_SUMMARY_MODEL,
+            CORRECTION_MODEL as DEFAULT_CORRECTION_MODEL,
+            EMOTION_MODEL as DEFAULT_EMOTION_MODEL,
+            VISION_MODEL as DEFAULT_VISION_MODEL,
+        )
+
+        config = {
+            'CORE_API_KEY': DEFAULT_CORE_API_KEY,
+            'AUDIO_API_KEY': DEFAULT_AUDIO_API_KEY,
+            'OPENROUTER_API_KEY': DEFAULT_OPENROUTER_API_KEY,
+            'MCP_ROUTER_API_KEY': DEFAULT_MCP_ROUTER_API_KEY,
+            'CORE_URL': DEFAULT_CORE_URL,
+            'CORE_MODEL': DEFAULT_CORE_MODEL,
+            'CORE_API_TYPE': 'qwen',
+            'OPENROUTER_URL': DEFAULT_OPENROUTER_URL,
+            'SUMMARY_MODEL': DEFAULT_SUMMARY_MODEL,
+            'CORRECTION_MODEL': DEFAULT_CORRECTION_MODEL,
+            'EMOTION_MODEL': DEFAULT_EMOTION_MODEL,
+            'ASSIST_API_KEY_QWEN': DEFAULT_CORE_API_KEY,
+            'ASSIST_API_KEY_OPENAI': DEFAULT_CORE_API_KEY,
+            'ASSIST_API_KEY_GLM': DEFAULT_CORE_API_KEY,
+            'ASSIST_API_KEY_STEP': DEFAULT_CORE_API_KEY,
+            'ASSIST_API_KEY_SILICON': DEFAULT_CORE_API_KEY,
+            'COMPUTER_USE_MODEL': 'glm-4.5v',
+            'COMPUTER_USE_GROUND_MODEL': 'glm-4.5v',
+            'COMPUTER_USE_MODEL_URL': 'https://open.bigmodel.cn/api/paas/v4',
+            'COMPUTER_USE_GROUND_URL': 'https://open.bigmodel.cn/api/paas/v4',
+            'COMPUTER_USE_MODEL_API_KEY': '',
+            'COMPUTER_USE_GROUND_API_KEY': '',
+            'IS_FREE_VERSION': False,
+            'VISION_MODEL': DEFAULT_VISION_MODEL,
+        }
+
+        core_cfg = deepcopy(DEFAULT_CONFIG_DATA['core_config.json'])
+
+        try:
+            with open(str(self.get_config_path('core_config.json')), 'r', encoding='utf-8') as f:
+                file_data = json.load(f)
+            if isinstance(file_data, dict):
+                core_cfg.update(file_data)
+            else:
+                logger.warning("core_config.json 格式异常，使用默认配置。")
+
+        except FileNotFoundError:
+            logger.info("未找到 core_config.json，使用默认配置。")
+        except Exception as e:
+            logger.error("Error parsing Core API Key: %s", e)
+        finally:
+            if not isinstance(core_cfg, dict):
+                core_cfg = deepcopy(DEFAULT_CONFIG_DATA['core_config.json'])
+
+        # API Keys
+        if core_cfg.get('coreApiKey'):
+            config['CORE_API_KEY'] = core_cfg['coreApiKey']
+
+        config['ASSIST_API_KEY_QWEN'] = core_cfg.get('assistApiKeyQwen', '') or config['CORE_API_KEY']
+        config['ASSIST_API_KEY_OPENAI'] = core_cfg.get('assistApiKeyOpenai', '') or config['CORE_API_KEY']
+        config['ASSIST_API_KEY_GLM'] = core_cfg.get('assistApiKeyGlm', '') or config['CORE_API_KEY']
+        config['ASSIST_API_KEY_STEP'] = core_cfg.get('assistApiKeyStep', '') or config['CORE_API_KEY']
+        config['ASSIST_API_KEY_SILICON'] = core_cfg.get('assistApiKeySilicon', '') or config['CORE_API_KEY']
+
+        if core_cfg.get('mcpToken'):
+            config['MCP_ROUTER_API_KEY'] = core_cfg['mcpToken']
+
+        config['COMPUTER_USE_MODEL_API_KEY'] = config['COMPUTER_USE_GROUND_API_KEY'] = config['ASSIST_API_KEY_GLM']
+
+        # Core API profile
+        core_api_value = core_cfg.get('coreApi') or config['CORE_API_TYPE']
+        config['CORE_API_TYPE'] = core_api_value
+        core_profile = CORE_API_PROFILES.get(core_api_value)
+        if core_profile:
+            config.update(core_profile)
+
+        # Assist API profile
+        assist_api_value = core_cfg.get('assistApi')
+        if core_api_value == 'free':
+            assist_api_value = 'free'
+        if not assist_api_value:
+            assist_api_value = 'qwen'
+
+        config['assistApi'] = assist_api_value
+
+        assist_profile = ASSIST_API_PROFILES.get(assist_api_value)
+        if not assist_profile and assist_api_value != 'qwen':
+            logger.warning("未知的 assistApi '%s'，回退到 qwen。", assist_api_value)
+            assist_api_value = 'qwen'
+            config['assistApi'] = assist_api_value
+            assist_profile = ASSIST_API_PROFILES.get(assist_api_value)
+
+        if assist_profile:
+            config.update(assist_profile)
+
+        key_field = ASSIST_API_KEY_FIELDS.get(assist_api_value)
+        if key_field:
+            derived_key = config.get(key_field, '')
+            if derived_key:
+                config['AUDIO_API_KEY'] = derived_key
+                config['OPENROUTER_API_KEY'] = derived_key
+
+        if not config['AUDIO_API_KEY']:
+            config['AUDIO_API_KEY'] = config['CORE_API_KEY']
+        if not config['OPENROUTER_API_KEY']:
+            config['OPENROUTER_API_KEY'] = config['CORE_API_KEY']
+
+        return config
+
     def load_json_config(self, filename, default_value=None):
         """
         加载JSON配置文件
@@ -276,14 +571,12 @@ class ConfigManager:
                 return json.load(f)
         except FileNotFoundError:
             if default_value is not None:
-                # 创建默认配置文件
-                self.save_json_config(filename, default_value)
-                return default_value
+                return deepcopy(default_value)
             raise
         except Exception as e:
             print(f"Error loading {filename}: {e}", file=sys.stderr)
             if default_value is not None:
-                return default_value
+                return deepcopy(default_value)
             raise
     
     def save_json_config(self, filename, data):
@@ -345,7 +638,7 @@ class ConfigManager:
             "project_memory_dir": str(self.project_memory_dir),
             "config_files": {
                 filename: str(self.get_config_path(filename))
-                for filename in self.CONFIG_FILES
+                for filename in CONFIG_FILES
             }
         }
 

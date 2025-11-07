@@ -1,6 +1,7 @@
 from typing import List, Dict, Any, Optional, Tuple
 from langchain_openai import ChatOpenAI
-from config import get_core_config, MODELS_WITH_EXTRA_BODY
+from config import MODELS_WITH_EXTRA_BODY
+from utils.config_manager import get_config_manager
 
 
 class TaskDeduper:
@@ -11,7 +12,8 @@ class TaskDeduper:
     """
 
     def __init__(self):
-        core_config = get_core_config()
+        config_manager = get_config_manager()
+        core_config = config_manager.get_core_config()
         self.llm = ChatOpenAI(
             model=core_config['SUMMARY_MODEL'],
             base_url=core_config['OPENROUTER_URL'],

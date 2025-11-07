@@ -2,7 +2,8 @@ import json
 import asyncio
 from langchain_openai import ChatOpenAI
 from openai import RateLimitError
-from config import get_core_config, SETTING_PROPOSER_MODEL, SETTING_VERIFIER_MODEL, get_character_data
+from config import SETTING_PROPOSER_MODEL, SETTING_VERIFIER_MODEL
+from utils.config_manager import get_config_manager
 from config.prompts_sys import settings_extractor_prompt, settings_verifier_prompt
 
 
@@ -10,20 +11,21 @@ class ImportantSettingsManager:
     def __init__(self):
         self.settings = {}
         self.settings_file = None
+        self._config_manager = get_config_manager()
     
     def _get_proposer(self):
         """动态获取Proposer LLM实例以支持配置热重载"""
-        core_config = get_core_config()
+        core_config = self._config_manager.get_core_config()
         return ChatOpenAI(model=SETTING_PROPOSER_MODEL, base_url=core_config['OPENROUTER_URL'], api_key=core_config['OPENROUTER_API_KEY'], temperature=0.5)
     
     def _get_verifier(self):
         """动态获取Verifier LLM实例以支持配置热重载"""
-        core_config = get_core_config()
+        core_config = self._config_manager.get_core_config()
         return ChatOpenAI(model=SETTING_VERIFIER_MODEL, base_url=core_config['OPENROUTER_URL'], api_key=core_config['OPENROUTER_API_KEY'], temperature=0.5)
 
     def load_settings(self):
         # It is important to update the settings with the latest character on-disk files
-        _, _, master_basic_config, lanlan_basic_config, name_mapping, _, _, _, setting_store, _ = get_character_data()
+        _, _, master_basic_config, lanlan_basic_config, name_mapping, _, _, _, setting_store, _ = self._config_manager.get_character_data()
         self.settings_file = setting_store
         self.master_basic_config = master_basic_config
         self.lanlan_basic_config = lanlan_basic_config

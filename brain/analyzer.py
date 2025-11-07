@@ -1,6 +1,7 @@
 from typing import Dict, Any, List
 from langchain_openai import ChatOpenAI
-from config import get_core_config, MODELS_WITH_EXTRA_BODY
+from config import MODELS_WITH_EXTRA_BODY
+from utils.config_manager import get_config_manager
 
 
 class ConversationAnalyzer:
@@ -9,11 +10,11 @@ class ConversationAnalyzer:
     Input is textual transcript snippets from cross-server; output is zero or more normalized task queries.
     """
     def __init__(self):
-        pass
+        self._config_manager = get_config_manager()
     
     def _get_llm(self):
         """动态获取LLM实例以支持配置热重载"""
-        core_config = get_core_config()
+        core_config = self._config_manager.get_core_config()
         return ChatOpenAI(model=core_config['SUMMARY_MODEL'], base_url=core_config['OPENROUTER_URL'], api_key=core_config['OPENROUTER_API_KEY'], temperature=0, extra_body={"enable_thinking": False} if core_config['SUMMARY_MODEL'] in MODELS_WITH_EXTRA_BODY else None)
 
     def _build_prompt(self, messages: List[Dict[str, str]]) -> str:

@@ -11,7 +11,7 @@ import logging
 from typing import Optional, Callable, Dict, Any, Awaitable
 from enum import Enum
 from langchain_openai import ChatOpenAI
-from config import get_core_config
+from utils.config_manager import get_config_manager
 
 # Setup logger for this module
 logger = logging.getLogger(__name__)
@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 class TurnDetectionMode(Enum):
     SERVER_VAD = "server_vad"
     MANUAL = "manual"
+
+_config_manager = get_config_manager()
+
 
 class OmniRealtimeClient:
     """
@@ -298,7 +301,7 @@ class OmniRealtimeClient:
         """Use VISION_MODEL to analyze image and return description."""
         try:
             self._image_being_analyzed = True
-            core_config = get_core_config()
+            core_config = _config_manager.get_core_config()
             vision_model = core_config.get('VISION_MODEL', '')
             openrouter_url = core_config.get('OPENROUTER_URL', '')
             openrouter_api_key = core_config.get('OPENROUTER_API_KEY', '')

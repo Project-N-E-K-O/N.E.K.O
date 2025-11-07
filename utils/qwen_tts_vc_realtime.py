@@ -17,6 +17,8 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...)):
     # 默认配置
     DEFAULT_TARGET_MODEL = "qwen-tts-vc-realtime-2025-08-20"
     DEFAULT_PREFERRED_NAME = "user_customized"
+    core_config = _config_manager.get_core_config()
+    fallback_audio_api_key = core_config.get('AUDIO_API_KEY', '')
     
     def validate_audio_file(file_path: str) -> tuple[str, str]:
         """
@@ -76,7 +78,7 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...)):
         创建音色，并返回 voice 参数
         """
         # 若没有将API Key配置到环境变量中，需将下一行替换为：api_key = "your-api-key"。your-api-key为实际的API Key，格式为"sk-xxxx"。
-        api_key = os.getenv("DASHSCOPE_API_KEY") or AUDIO_API_KEY
+        api_key = os.getenv("DASHSCOPE_API_KEY") or fallback_audio_api_key
         
         if not api_key:
             raise RuntimeError("未配置DASHSCOPE_API_KEY环境变量或AUDIO_API_KEY")
@@ -170,7 +172,8 @@ import inflect
 import base64
 from io import BytesIO
 from PIL import Image
-from config import get_character_data, get_core_config, MEMORY_SERVER_PORT
+from config import MEMORY_SERVER_PORT
+from utils.config_manager import get_config_manager
 from multiprocessing import Process, Queue as MPQueue
 from uuid import uuid4
 import numpy as np
@@ -181,6 +184,7 @@ from enum import Enum
 
 # Setup logger for this module
 logger = logging.getLogger(__name__)
+_config_manager = get_config_manager()
 
 class SessionMode(Enum):
     SERVER_COMMIT = "server_commit"
@@ -587,13 +591,14 @@ class LLMSessionManager:
             self.time_store,
             self.setting_store,
             self.recent_log
-        ) = get_character_data()
+        ) = _config_manager.get_character_data()
         # 获取API相关配置
-        self.model = CORE_MODEL
-        self.core_url = CORE_URL
-        self.core_api_key = CORE_API_KEY
+        core_config = _config_manager.get_core_config()
+        self.model = core_config['CORE_MODEL']
+        self.core_url = core_config['CORE_URL']
+        self.core_api_key = core_config['CORE_API_KEY']
         self.memory_server_port = MEMORY_SERVER_PORT
-        self.audio_api_key = AUDIO_API_KEY
+        self.audio_api_key = core_config['AUDIO_API_KEY']
         self.voice_id = self.lanlan_basic_config[self.lanlan_name].get('voice_id', '')
         self.use_tts = False if not self.voice_id else True
         self.generation_config = {}  # Qwen暂时不用

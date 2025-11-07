@@ -27,9 +27,10 @@ import requests
 import httpx
 import pathlib, wave
 from openai import AsyncOpenAI
-from config import get_character_data, get_core_config, MAIN_SERVER_PORT, MONITOR_SERVER_PORT, MEMORY_SERVER_PORT, MODELS_WITH_EXTRA_BODY, load_characters, save_characters, save_voice_storage, load_voice_storage, TOOL_SERVER_PORT, CORE_CONFIG_PATH
+from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT, MEMORY_SERVER_PORT, MODELS_WITH_EXTRA_BODY, TOOL_SERVER_PORT
 from config.prompts_sys import emotion_analysis_prompt, proactive_chat_prompt
 import glob
+from utils.config_manager import get_config_manager
 
 # 确定 templates 目录位置（支持 PyInstaller 打包）
 if getattr(sys, 'frozen', False):
@@ -45,6 +46,8 @@ templates = Jinja2Templates(directory=template_dir)
 from utils.logger_config import setup_logging
 
 logger, log_config = setup_logging(app_name="Xiao8_Main", log_level=logging.INFO)
+
+_config_manager = get_config_manager()
 
 def cleanup():
     logger.info("Starting cleanup process")
@@ -81,8 +84,11 @@ def initialize_character_data():
     
     logger.info("正在加载角色配置...")
     
+    # 清理无效的voice_id引用
+    _config_manager.cleanup_invalid_voice_ids()
+    
     # 加载最新的角色数据
-    master_name, her_name, master_basic_config, lanlan_basic_config, name_mapping, lanlan_prompt, semantic_store, time_store, setting_store, recent_log = get_character_data()
+    master_name, her_name, master_basic_config, lanlan_basic_config, name_mapping, lanlan_prompt, semantic_store, time_store, setting_store, recent_log = _config_manager.get_character_data()
     catgirl_names = list(lanlan_prompt.keys())
     
     # 为新增的角色初始化资源
@@ -153,8 +159,6 @@ else:
 app.mount("/static", CustomStaticFiles(directory=static_dir), name="static")
 
 # 挂载用户文档下的live2d目录
-from utils.config_manager import get_config_manager
-_config_manager = get_config_manager()
 _config_manager.ensure_live2d_directory()
 user_live2d_path = str(_config_manager.live2d_dir)
 if os.path.exists(user_live2d_path):
@@ -179,7 +183,7 @@ def set_start_config(config):
 @app.get("/", response_class=HTMLResponse)
 async def get_default_index(request: Request):
     # 每次动态获取角色数据
-    _, her_name, _, lanlan_basic_config, _, _, _, _, _, _ = get_character_data()
+    _, her_name, _, lanlan_basic_config, _, _, _, _, _, _ = _config_manager.get_character_data()
     # 获取live2d字段
     live2d = lanlan_basic_config.get(her_name, {}).get('live2d', 'mao_pro')
     # 查找所有模型
@@ -196,7 +200,7 @@ async def get_default_index(request: Request):
 @app.get("/focus", response_class=HTMLResponse)
 async def get_default_focus_index(request: Request):
     # 每次动态获取角色数据
-    _, her_name, _, lanlan_basic_config, _, _, _, _, _, _ = get_character_data()
+    _, her_name, _, lanlan_basic_config, _, _, _, _, _, _ = _config_manager.get_character_data()
     # 获取live2d字段
     live2d = lanlan_basic_config.get(her_name, {}).get('live2d', 'mao_pro')
     # 查找所有模型
@@ -291,13 +295,15 @@ async def get_core_config_api():
     try:
         # 尝试从core_config.json读取
         try:
-            with open(CORE_CONFIG_PATH, 'r', encoding='utf-8') as f:
+            from utils.config_manager import get_config_manager
+            config_manager = get_config_manager()
+            core_config_path = str(config_manager.get_config_path('core_config.json'))
+            with open(core_config_path, 'r', encoding='utf-8') as f:
                 core_cfg = json.load(f)
                 api_key = core_cfg.get('coreApiKey', '')
         except FileNotFoundError:
             # 如果文件不存在，返回当前配置中的CORE_API_KEY
-            from config import get_core_config as get_core_config_sync
-            core_config = get_core_config_sync()
+            core_config = _config_manager.get_core_config()
             api_key = core_config['CORE_API_KEY']
         
         return {
@@ -348,8 +354,11 @@ async def update_core_config(request: Request):
         
         # 保存到core_config.json
         from pathlib import Path
+        from utils.config_manager import get_config_manager
+        config_manager = get_config_manager()
+        core_config_path = str(config_manager.get_config_path('core_config.json'))
         # 确保配置目录存在
-        Path(CORE_CONFIG_PATH).parent.mkdir(parents=True, exist_ok=True)
+        Path(core_config_path).parent.mkdir(parents=True, exist_ok=True)
         
         core_cfg = {"coreApiKey": api_key}
         if 'coreApi' in data:
@@ -368,7 +377,7 @@ async def update_core_config(request: Request):
             core_cfg['assistApiKeySilicon'] = data['assistApiKeySilicon']
         if 'mcpToken' in data:
             core_cfg['mcpToken'] = data['mcpToken']
-        with open(CORE_CONFIG_PATH, 'w', encoding='utf-8') as f:
+        with open(core_config_path, 'w', encoding='utf-8') as f:
             json.dump(core_cfg, f, indent=2, ensure_ascii=False)
         
         return {"success": True, "message": "API Key已保存"}
@@ -517,7 +526,7 @@ async def notify_task_result(request: Request):
     try:
         data = await request.json()
         # 如果未显式提供，则使用当前默认角色
-        _, her_name_current, _, _, _, _, _, _, _, _ = get_character_data()
+        _, her_name_current, _, _, _, _, _, _, _, _ = _config_manager.get_character_data()
         lanlan = data.get('lanlan_name') or her_name_current
         text = (data.get('text') or '').strip()
         if not text:
@@ -538,7 +547,7 @@ async def proactive_chat(request: Request):
         from utils.web_scraper import fetch_trending_content, format_trending_content
         
         # 获取当前角色数据
-        master_name_current, her_name_current, _, _, _, _, _, _, _, _ = get_character_data()
+        master_name_current, her_name_current, _, _, _, _, _, _, _, _ = _config_manager.get_character_data()
         
         data = await request.json()
         lanlan_name = data.get('lanlan_name') or her_name_current
@@ -599,7 +608,7 @@ async def proactive_chat(request: Request):
 
         # 4. 直接使用langchain ChatOpenAI获取AI回复（不创建临时session）
         try:
-            core_config = get_core_config()
+            core_config = _config_manager.get_core_config()
             
             # 直接使用langchain ChatOpenAI发送请求
             from langchain_openai import ChatOpenAI
@@ -732,7 +741,7 @@ async def proactive_chat(request: Request):
 @app.get("/l2d", response_class=HTMLResponse)
 async def get_l2d_manager(request: Request, lanlan_name: str = ""):
     """渲染Live2D模型管理器页面"""
-    _, her_name_current, _, _, _, _, _, _, _, _ = get_character_data()
+    _, her_name_current, _, _, _, _, _, _, _, _ = _config_manager.get_character_data()
     return templates.TemplateResponse("templates/l2d_manager.html", {
         "request": request,
         "lanlan_name": lanlan_name if lanlan_name else her_name_current
@@ -742,7 +751,7 @@ async def get_l2d_manager(request: Request, lanlan_name: str = ""):
 async def get_current_live2d_model(catgirl_name: str = ""):
     """获取指定角色或当前角色的Live2D模型信息"""
     try:
-        characters = load_characters()
+        characters = _config_manager.load_characters()
         
         # 如果没有指定角色名称，使用当前猫娘
         if not catgirl_name:
@@ -807,12 +816,12 @@ async def api_key_settings(request: Request):
 
 @app.get('/api/characters')
 async def get_characters():
-    return JSONResponse(content=load_characters())
+    return JSONResponse(content=_config_manager.load_characters())
 
 @app.get('/api/characters/current_catgirl')
 async def get_current_catgirl():
     """获取当前使用的猫娘名称"""
-    characters = load_characters()
+    characters = _config_manager.load_characters()
     current_catgirl = characters.get('当前猫娘', '')
     return JSONResponse(content={'current_catgirl': current_catgirl})
 
@@ -825,12 +834,12 @@ async def set_current_catgirl(request: Request):
     if not catgirl_name:
         return JSONResponse({'success': False, 'error': '猫娘名称不能为空'}, status_code=400)
     
-    characters = load_characters()
+    characters = _config_manager.load_characters()
     if catgirl_name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '指定的猫娘不存在'}, status_code=404)
     
     characters['当前猫娘'] = catgirl_name
-    save_characters(characters)
+    _config_manager.save_characters(characters)
     # 自动重新加载配置
     initialize_character_data()
     return {"success": True}
@@ -853,9 +862,9 @@ async def update_master(request: Request):
     data = await request.json()
     if not data or not data.get('档案名'):
         return JSONResponse({'success': False, 'error': '档案名为必填项'}, status_code=400)
-    characters = load_characters()
+    characters = _config_manager.load_characters()
     characters['主人'] = {k: v for k, v in data.items() if v}
-    save_characters(characters)
+    _config_manager.save_characters(characters)
     # 自动重新加载配置
     initialize_character_data()
     return {"success": True}
@@ -866,7 +875,7 @@ async def add_catgirl(request: Request):
     if not data or not data.get('档案名'):
         return JSONResponse({'success': False, 'error': '档案名为必填项'}, status_code=400)
     
-    characters = load_characters()
+    characters = _config_manager.load_characters()
     key = data['档案名']
     if key in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '该猫娘已存在'}, status_code=400)
@@ -881,7 +890,7 @@ async def add_catgirl(request: Request):
             catgirl_data[k] = v
     
     characters['猫娘'][key] = catgirl_data
-    save_characters(characters)
+    _config_manager.save_characters(characters)
     # 自动重新加载配置
     initialize_character_data()
     return {"success": True}
@@ -891,9 +900,23 @@ async def update_catgirl(name: str, request: Request):
     data = await request.json()
     if not data:
         return JSONResponse({'success': False, 'error': '无数据'}, status_code=400)
-    characters = load_characters()
+    characters = _config_manager.load_characters()
     if name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
+    
+    # 如果包含voice_id，验证其有效性
+    if 'voice_id' in data:
+        from config import validate_voice_id
+        voice_id = data['voice_id']
+        if not validate_voice_id(voice_id):
+            voices = _config_manager.get_voices_for_current_api()
+            available_voices = list(voices.keys())
+            return JSONResponse({
+                'success': False, 
+                'error': f'voice_id "{voice_id}" 在当前API的音色库中不存在',
+                'available_voices': available_voices
+            }, status_code=400)
+    
     # 只更新前端传来的字段，未传字段保留原值，且不允许通过此接口修改 system_prompt
     removed_fields = []
     for k, v in characters['猫娘'][name].items():
@@ -904,7 +927,7 @@ async def update_catgirl(name: str, request: Request):
     for k, v in data.items():
         if k not in ('档案名') and v:
             characters['猫娘'][name][k] = v
-    save_characters(characters)
+    _config_manager.save_characters(characters)
     # 自动重新加载配置
     initialize_character_data()
     return {"success": True}
@@ -923,7 +946,7 @@ async def update_catgirl_l2d(name: str, request: Request):
             })
         
         # 加载当前角色配置
-        characters = load_characters()
+        characters = _config_manager.load_characters()
         
         # 确保猫娘配置存在
         if '猫娘' not in characters:
@@ -937,7 +960,7 @@ async def update_catgirl_l2d(name: str, request: Request):
         characters['猫娘'][name]['live2d'] = live2d_model
         
         # 保存配置
-        save_characters(characters)
+        _config_manager.save_characters(characters)
         # 自动重新加载配置
         initialize_character_data()
         
@@ -958,12 +981,23 @@ async def update_catgirl_voice_id(name: str, request: Request):
     data = await request.json()
     if not data:
         return JSONResponse({'success': False, 'error': '无数据'}, status_code=400)
-    characters = load_characters()
+    characters = _config_manager.load_characters()
     if name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
     if 'voice_id' in data:
-        characters['猫娘'][name]['voice_id'] = data['voice_id']
-    save_characters(characters)
+        voice_id = data['voice_id']
+        # 验证voice_id是否在voice_storage中
+        from config import validate_voice_id
+        if not validate_voice_id(voice_id):
+            voices = _config_manager.get_voices_for_current_api()
+            available_voices = list(voices.keys())
+            return JSONResponse({
+                'success': False, 
+                'error': f'voice_id "{voice_id}" 在当前API的音色库中不存在',
+                'available_voices': available_voices
+            }, status_code=400)
+        characters['猫娘'][name]['voice_id'] = voice_id
+    _config_manager.save_characters(characters)
     # 自动重新加载配置
     initialize_character_data()
     return {"success": True}
@@ -972,7 +1006,7 @@ async def update_catgirl_voice_id(name: str, request: Request):
 async def clear_voice_ids():
     """清除所有角色的本地Voice ID记录"""
     try:
-        characters = load_characters()
+        characters = _config_manager.load_characters()
         cleared_count = 0
         
         # 清除所有猫娘的voice_id
@@ -982,7 +1016,7 @@ async def clear_voice_ids():
                     characters['猫娘'][name]['voice_id'] = ''
                     cleared_count += 1
         
-        save_characters(characters)
+        _config_manager.save_characters(characters)
         # 自动重新加载配置
         initialize_character_data()
         
@@ -1004,13 +1038,13 @@ async def set_microphone(request: Request):
         microphone_id = data.get('microphone_id')
         
         # 使用标准的load/save函数
-        characters_data = load_characters()
+        characters_data = _config_manager.load_characters()
         
         # 添加或更新麦克风选择
         characters_data['当前麦克风'] = microphone_id
         
         # 保存配置
-        save_characters(characters_data)
+        _config_manager.save_characters(characters_data)
         # 自动重新加载配置
         initialize_character_data()
         
@@ -1023,7 +1057,7 @@ async def set_microphone(request: Request):
 async def get_microphone():
     try:
         # 使用配置管理器加载角色配置
-        characters_data = load_characters()
+        characters_data = _config_manager.load_characters()
         
         # 获取保存的麦克风选择
         microphone_id = characters_data.get('当前麦克风')
@@ -1207,7 +1241,7 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...)):
             return JSONResponse({'error': f'上传成功但响应格式无法解析: {raw_text[:200]}'}, status_code=500)
         
         # 3. 用直链注册音色
-        core_config = get_core_config()
+        core_config = _config_manager.get_core_config()
         dashscope.api_key = core_config['AUDIO_API_KEY']
         service = VoiceEnrollmentService()
         target_model = "cosyvoice-v2"
@@ -1250,14 +1284,13 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...)):
                     }, status_code=408)
                     
                 logger.info(f"音色注册成功，voice_id: {voice_id}")
-                registered_voices = load_voice_storage()
-                registered_voices[voice_id] = {
+                voice_data = {
                     'voice_id': voice_id,
                     'prefix': prefix,
                     'file_url': tmp_url,
                     'created_at': datetime.now().isoformat()
                 }
-                save_voice_storage(registered_voices)
+                _config_manager.save_voice_for_current_api(voice_id, voice_data)
                 return JSONResponse({
                     'voice_id': voice_id,
                     'request_id': service.get_last_request_id(),
@@ -1306,8 +1339,8 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...)):
 
 @app.get('/api/voices')
 async def get_voices():
-    """获取所有已注册的音色"""
-    return {"voices": load_voice_storage()}
+    """获取当前API key对应的所有已注册音色"""
+    return {"voices": _config_manager.get_voices_for_current_api()}
 
 @app.post('/api/voices')
 async def register_voice(request: Request):
@@ -1323,16 +1356,22 @@ async def register_voice(request: Request):
                 'error': '缺少必要参数'
             }, status_code=400)
         
-        registered_voices = load_voice_storage()
-        registered_voices[voice_id] = {
+        # 准备音色数据
+        complete_voice_data = {
             **voice_data,
             'voice_id': voice_id,
             'created_at': datetime.now().isoformat()
         }
+        
         try:
-            save_voice_storage(registered_voices)  # 使用配置管理器的方法
+            _config_manager.save_voice_for_current_api(voice_id, complete_voice_data)
         except Exception as e:
             logger.warning(f"保存音色配置失败: {e}")
+            return JSONResponse({
+                'success': False,
+                'error': f'保存音色配置失败: {str(e)}'
+            }, status_code=500)
+            
         return {"success": True, "message": "音色注册成功"}
     except Exception as e:
         return JSONResponse({
@@ -1342,11 +1381,11 @@ async def register_voice(request: Request):
 
 @app.delete('/api/characters/catgirl/{name}')
 async def delete_catgirl(name: str):
-    characters = load_characters()
+    characters = _config_manager.load_characters()
     if name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
     del characters['猫娘'][name]
-    save_characters(characters)
+    _config_manager.save_characters(characters)
     # 自动重新加载配置
     initialize_character_data()
     return {"success": True}
@@ -1400,7 +1439,7 @@ async def rename_catgirl(old_name: str, request: Request):
     new_name = data.get('new_name') if data else None
     if not new_name:
         return JSONResponse({'success': False, 'error': '新档案名不能为空'}, status_code=400)
-    characters = load_characters()
+    characters = _config_manager.load_characters()
     if old_name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '原猫娘不存在'}, status_code=404)
     if new_name in characters['猫娘']:
@@ -1410,7 +1449,7 @@ async def rename_catgirl(old_name: str, request: Request):
     # 如果当前猫娘是被重命名的猫娘，也需要更新
     if characters.get('当前猫娘') == old_name:
         characters['当前猫娘'] = new_name
-    save_characters(characters)
+    _config_manager.save_characters(characters)
     # 自动重新加载配置
     initialize_character_data()
     return {"success": True}
@@ -1419,7 +1458,7 @@ async def rename_catgirl(old_name: str, request: Request):
 async def unregister_voice(name: str):
     """解除猫娘的声音注册"""
     try:
-        characters = load_characters()
+        characters = _config_manager.load_characters()
         if name not in characters.get('猫娘', {}):
             return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
         
@@ -1430,7 +1469,7 @@ async def unregister_voice(name: str):
         # 删除voice_id字段
         if 'voice_id' in characters['猫娘'][name]:
             characters['猫娘'][name].pop('voice_id')
-        save_characters(characters)
+        _config_manager.save_characters(characters)
         # 自动重新加载配置
         initialize_character_data()
         
@@ -1454,7 +1493,9 @@ async def get_recent_files():
 async def get_review_config():
     """获取记忆审阅配置"""
     try:
-        config_path = CORE_CONFIG_PATH
+        from utils.config_manager import get_config_manager
+        config_manager = get_config_manager()
+        config_path = str(config_manager.get_config_path('core_config.json'))
         if os.path.exists(config_path):
             with open(config_path, 'r', encoding='utf-8') as f:
                 config_data = json.load(f)
@@ -1474,7 +1515,9 @@ async def update_review_config(request: Request):
         data = await request.json()
         enabled = data.get('enabled', True)
         
-        config_path = CORE_CONFIG_PATH
+        from utils.config_manager import get_config_manager
+        config_manager = get_config_manager()
+        config_path = str(config_manager.get_config_path('core_config.json'))
         config_data = {}
         
         # 读取现有配置
@@ -1937,7 +1980,7 @@ async def emotion_analysis(request: Request):
         model = data.get('model')
         
         # 使用参数或默认配置
-        core_config = get_core_config()
+        core_config = _config_manager.get_core_config()
         api_key = api_key or core_config['OPENROUTER_API_KEY']
         model = model or core_config['EMOTION_MODEL']
         
@@ -2031,7 +2074,7 @@ async def memory_browser(request: Request):
 @app.get("/focus/{lanlan_name}", response_class=HTMLResponse)
 async def get_focus_index(request: Request, lanlan_name: str):
     # 每次动态获取角色数据
-    _, _, _, lanlan_basic_config, _, _, _, _, _, _ = get_character_data()
+    _, _, _, lanlan_basic_config, _, _, _, _, _, _ = _config_manager.get_character_data()
     # 获取live2d字段
     live2d = lanlan_basic_config.get(lanlan_name, {}).get('live2d', 'mao_pro')
     # 查找所有模型
@@ -2048,7 +2091,7 @@ async def get_focus_index(request: Request, lanlan_name: str):
 @app.get("/{lanlan_name}", response_class=HTMLResponse)
 async def get_index(request: Request, lanlan_name: str):
     # 每次动态获取角色数据
-    _, _, _, lanlan_basic_config, _, _, _, _, _, _ = get_character_data()
+    _, _, _, lanlan_basic_config, _, _, _, _, _, _ = _config_manager.get_character_data()
     # 获取live2d字段
     live2d = lanlan_basic_config.get(lanlan_name, {}).get('live2d', 'mao_pro')
     # 查找所有模型
@@ -2067,7 +2110,7 @@ async def update_agent_flags(request: Request):
     """来自前端的Agent开关更新，级联到各自的session manager。"""
     try:
         data = await request.json()
-        _, her_name_current, _, _, _, _, _, _, _, _ = get_character_data()
+        _, her_name_current, _, _, _, _, _, _, _, _ = _config_manager.get_character_data()
         lanlan = data.get('lanlan_name') or her_name_current
         flags = data.get('flags') or {}
         mgr = session_manager.get(lanlan)

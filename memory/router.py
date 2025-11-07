@@ -9,7 +9,8 @@ from typing import TypedDict, List, Dict, Any
 from langchain_core.messages import BaseMessage
 import json
 from langchain_openai import ChatOpenAI
-from config import get_core_config, ROUTER_MODEL
+from config import ROUTER_MODEL
+from utils.config_manager import get_config_manager
 
 class RouterState(TypedDict):
     messages: List[BaseMessage]
@@ -22,11 +23,12 @@ class MemoryQueryRouter:
         self.semantic_memory = semantic_memory
         self.recent_history = recent_history
         self.settings_manager = settings_manager
+        self._config_manager = get_config_manager()
         self.graph = self._build_graph()
     
     def _get_llm(self):
         """动态获取LLM实例以支持配置热重载"""
-        core_config = get_core_config()
+        core_config = self._config_manager.get_core_config()
         return ChatOpenAI(model=ROUTER_MODEL, base_url=core_config['OPENROUTER_URL'], api_key=core_config['OPENROUTER_API_KEY'])
 
     def _build_graph(self):

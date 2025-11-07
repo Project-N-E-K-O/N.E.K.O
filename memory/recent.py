@@ -1,5 +1,6 @@
 from datetime import datetime
-from config import get_character_data, get_core_config, MODELS_WITH_EXTRA_BODY
+from config import MODELS_WITH_EXTRA_BODY
+from utils.config_manager import get_config_manager
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, messages_to_dict, messages_from_dict, HumanMessage, AIMessage
 import json
@@ -11,8 +12,9 @@ from config.prompts_sys import recent_history_manager_prompt, detailed_recent_hi
 
 class CompressedRecentHistoryManager:
     def __init__(self, max_history_length=10):
+        self._config_manager = get_config_manager()
         # 通过get_character_data获取相关变量
-        _, _, _, _, name_mapping, _, _, _, _, recent_log = get_character_data()
+        _, _, _, _, name_mapping, _, _, _, _, recent_log = self._config_manager.get_character_data()
         self.max_history_length = max_history_length
         self.log_file_path = recent_log
         self.name_mapping = name_mapping
@@ -26,13 +28,13 @@ class CompressedRecentHistoryManager:
     
     def _get_llm(self):
         """动态获取LLM实例以支持配置热重载"""
-        core_config = get_core_config()
+        core_config = self._config_manager.get_core_config()
         api_key = core_config['OPENROUTER_API_KEY'] if core_config['OPENROUTER_API_KEY'] else None
         return ChatOpenAI(model=core_config['SUMMARY_MODEL'], base_url=core_config['OPENROUTER_URL'], api_key=api_key, temperature=0.3, extra_body={"enable_thinking": False} if core_config['SUMMARY_MODEL'] in MODELS_WITH_EXTRA_BODY else None)
     
     def _get_review_llm(self):
         """动态获取审核LLM实例以支持配置热重载"""
-        core_config = get_core_config()
+        core_config = self._config_manager.get_core_config()
         api_key = core_config['OPENROUTER_API_KEY'] if core_config['OPENROUTER_API_KEY'] else None
         return ChatOpenAI(model=core_config['CORRECTION_MODEL'], base_url=core_config['OPENROUTER_URL'], api_key=api_key, temperature=0.1, extra_body={"enable_thinking": False} if core_config['CORRECTION_MODEL'] in MODELS_WITH_EXTRA_BODY else None)
 
@@ -185,8 +187,9 @@ class CompressedRecentHistoryManager:
             
         # 检查配置文件中是否禁用自动审阅
         try:
-            from config import CORE_CONFIG_PATH
-            config_path = CORE_CONFIG_PATH
+            from utils.config_manager import get_config_manager
+            config_manager = get_config_manager()
+            config_path = str(config_manager.get_config_path('core_config.json'))
             if os.path.exists(config_path):
                 with open(config_path, 'r', encoding='utf-8') as f:
                     config_data = json.load(f)

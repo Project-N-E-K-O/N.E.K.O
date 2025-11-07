@@ -25,7 +25,8 @@ import inflect
 import base64
 from io import BytesIO
 from PIL import Image
-from config import get_character_data, get_core_config, MEMORY_SERVER_PORT
+from config import MEMORY_SERVER_PORT
+from utils.config_manager import get_config_manager
 from multiprocessing import Process, Queue as MPQueue
 from uuid import uuid4
 import numpy as np
@@ -65,6 +66,8 @@ class LLMSessionManager:
         self.lanlan_prompt = lanlan_prompt
         self.lanlan_name = lanlan_name
         # 获取角色相关配置
+        self._config_manager = get_config_manager()
+
         (
             self.master_name,
             self.her_name,
@@ -76,9 +79,9 @@ class LLMSessionManager:
             self.time_store,
             self.setting_store,
             self.recent_log
-        ) = get_character_data()
+        ) = self._config_manager.get_character_data()
         # 获取API相关配置（动态读取以支持热重载）
-        core_config = get_core_config()
+        core_config = self._config_manager.get_core_config()
         self.model = core_config['CORE_MODEL']  # For realtime voice
         self.text_model = core_config['CORRECTION_MODEL']  # For text-only mode
         self.vision_model = core_config['VISION_MODEL']  # For vision tasks
@@ -493,7 +496,7 @@ class LLMSessionManager:
         self.input_mode = input_mode
         
         # 重新读取核心配置以支持热重载
-        core_config = get_core_config()
+        core_config = self._config_manager.get_core_config()
         self.model = core_config['CORE_MODEL']
         self.text_model = core_config['CORRECTION_MODEL']
         self.vision_model = core_config['VISION_MODEL']
@@ -801,7 +804,7 @@ class LLMSessionManager:
         # 2. Create PENDING session components (as before, store in self.pending_connector, self.pending_session)
         try:
             # 重新读取核心配置以支持热重载
-            core_config = get_core_config()
+            core_config = self._config_manager.get_core_config()
             self.model = core_config['CORE_MODEL']
             self.text_model = core_config['CORRECTION_MODEL']
             self.vision_model = core_config['VISION_MODEL']

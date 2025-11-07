@@ -34,7 +34,7 @@ try:
 except Exception:
     pyautogui = None
 
-from config import get_core_config
+from utils.config_manager import get_config_manager
 
 def scale_screen_dimensions(width: int, height: int, max_dim_size: int):
     scale_factor = min(max_dim_size / width, max_dim_size / height)
@@ -106,7 +106,8 @@ class ComputerUseAdapter:
         self.grounding_agent = None
         self.init_ok = False
         # 获取配置
-        self.core_config = get_core_config()
+        self._config_manager = get_config_manager()
+        self.core_config = self._config_manager.get_core_config()
         try:
             from gui_agents.s2_5.agents.grounding import OSWorldACI
             # Monkey patch: adjust Windows docstring without modifying site-packages

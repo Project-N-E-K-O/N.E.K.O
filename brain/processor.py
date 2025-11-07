@@ -2,7 +2,8 @@ from typing import Dict, Any, Optional
 import asyncio
 import logging
 from langchain_openai import ChatOpenAI
-from config import get_core_config, MODELS_WITH_EXTRA_BODY
+from config import MODELS_WITH_EXTRA_BODY
+from utils.config_manager import get_config_manager
 from .mcp_client import McpRouterClient, McpToolCatalog
 
 # Configure logging
@@ -17,10 +18,11 @@ class Processor:
     def __init__(self):
         self.router = McpRouterClient()
         self.catalog = McpToolCatalog(self.router)
+        self._config_manager = get_config_manager()
     
     def _get_llm(self):
         """动态获取LLM实例以支持配置热重载"""
-        core_config = get_core_config()
+        core_config = self._config_manager.get_core_config()
         return ChatOpenAI(model=core_config['SUMMARY_MODEL'], base_url=core_config['OPENROUTER_URL'], api_key=core_config['OPENROUTER_API_KEY'], temperature=0, extra_body={"enable_thinking": False} if core_config['SUMMARY_MODEL'] in MODELS_WITH_EXTRA_BODY else None)
 
     async def process(self, query: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
