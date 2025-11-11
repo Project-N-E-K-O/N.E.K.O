@@ -1,11 +1,11 @@
 ﻿<!DOCTYPE html>
 <html lang="en">
 <head>
-    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <link rel="icon" type="image/png" href="/static/icons/my_character_icon.png">
     <link rel="manifest" href="/static/manifest.json">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black">
-    <link rel="apple-touch-icon" href="/static/xiaoba_192.png">
+    <link rel="apple-touch-icon" href="/static/icons/my_character_icon.png">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta charset="UTF-8">
     <title>{{lanlan_name}} Terminal - Project Lanlan</title>
@@ -58,12 +58,12 @@
             /* 如果图片加载失败，使用备用背景色 */
             background-color: transparent;  /* 移除备用背景色，避免白色边框 */
             color: #fff;  /* 纯白色文字 */
-            text-shadow: 0 2px 8px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.3);  /* 柔和的文字阴影 */
+            text-shadow: none;  /* 移除文字阴影 */
             border-radius: 12px;
-            font-size: 18px;  /* 增大字体 */
+            font-size: 18px;  /* 字体大小 */
             font-weight: 500;
             line-height: 1.6;
-            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3), 0 4px 12px rgba(0, 0, 0, 0.2);
+            box-shadow: none;  /* 移除阴影 */
             border: none;  /* 移除边框，避免白色边框问题 */
             overflow: hidden;  /* 确保背景图片不会超出圆角 */
             opacity: 0;
@@ -102,7 +102,7 @@
             font-size: 50px;  /* 增大猫爪图标 */
             line-height: 1;
             opacity: 1;
-            filter: brightness(0) invert(1) drop-shadow(0 2px 6px rgba(0, 0, 0, 0.5));  /* 将emoji变成纯白色并添加阴影 */
+            filter: brightness(0) invert(1);  /* 将emoji变成纯白色，移除阴影 */
             animation: pawBounce 1.5s ease-in-out infinite;
             z-index: 1;  /* 确保猫爪在遮罩层之上 */
         }
@@ -119,20 +119,11 @@
             }
         }
         
-        @keyframes pulse {
-            0%, 100% {
-                box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3), 0 4px 12px rgba(0, 0, 0, 0.2);
-            }
-            50% {
-                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 4px 16px rgba(0, 0, 0, 0.25);
-            }
-        }
-        
         #status-toast.show {
             opacity: 1;
             transform: translateY(0) scale(1);
             pointer-events: auto;
-            animation: slideIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) forwards, pulse 2s ease-in-out infinite 0.4s;
+            animation: slideIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
         }
         
         @keyframes slideIn {
@@ -158,7 +149,7 @@
                 right: 10px;
                 left: 10px;
                 max-width: none;
-                font-size: 17px;  /* 增大移动端字体 */
+                font-size: 17px;  /* 移动端字体大小 */
                 padding: 16px 20px;
                 padding-left: 45px;  /* 为左上角的猫爪留出空间 */
             }

@@ -1332,12 +1332,15 @@ class Live2DManager {
         this._floatingButtonsContainer = buttonsContainer;
 
         // 定义按钮配置（从上到下：麦克风、显示屏、锤子、设置、睡觉）
+        // 添加版本号防止缓存（更新图标时修改这个版本号）
+        const iconVersion = '?v=' + Date.now();
+        
         const buttonConfigs = [
-            { id: 'mic', emoji: '🎤', title: '语音控制', hasPopup: true, toggle: true, separatePopupTrigger: true, iconOff: '/static/icons/mic_icon_off.png', iconOn: '/static/icons/mic_icon_on.png' },
-            { id: 'screen', emoji: '🖥️', title: '屏幕分享', hasPopup: false, toggle: true, iconOff: '/static/icons/screen_icon_off.png', iconOn: '/static/icons/screen_icon_on.png' },
-            { id: 'agent', emoji: '🔨', title: 'Agent工具', hasPopup: true, popupToggle: true, exclusive: 'settings', iconOff: '/static/icons/Agent_off.png', iconOn: '/static/icons/Agent_on.png' },
-            { id: 'settings', emoji: '⚙️', title: '设置', hasPopup: true, popupToggle: true, exclusive: 'agent', iconOff: '/static/icons/set_off.png', iconOn: '/static/icons/set_on.png' },
-            { id: 'goodbye', emoji: '💤', title: '请她离开', hasPopup: false, iconOff: '/static/icons/rest_off.png', iconOn: '/static/icons/rest_on.png' }
+            { id: 'mic', emoji: '🎤', title: '语音控制', hasPopup: true, toggle: true, separatePopupTrigger: true, iconOff: '/static/icons/mic_icon_off.png' + iconVersion, iconOn: '/static/icons/mic_icon_on.png' + iconVersion },
+            { id: 'screen', emoji: '🖥️', title: '屏幕分享', hasPopup: false, toggle: true, iconOff: '/static/icons/screen_icon_off.png' + iconVersion, iconOn: '/static/icons/screen_icon_on.png' + iconVersion },
+            { id: 'agent', emoji: '🔨', title: 'Agent工具', hasPopup: true, popupToggle: true, exclusive: 'settings', iconOff: '/static/icons/Agent_off.png' + iconVersion, iconOn: '/static/icons/Agent_on.png' + iconVersion },
+            { id: 'settings', emoji: '⚙️', title: '设置', hasPopup: true, popupToggle: true, exclusive: 'agent', iconOff: '/static/icons/set_off.png' + iconVersion, iconOn: '/static/icons/set_on.png' + iconVersion },
+            { id: 'goodbye', emoji: '💤', title: '请她离开', hasPopup: false, iconOff: '/static/icons/rest_off.png' + iconVersion, iconOn: '/static/icons/rest_on.png' + iconVersion }
         ];
 
         // 创建主按钮

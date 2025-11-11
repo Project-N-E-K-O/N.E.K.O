@@ -731,28 +731,40 @@ function init_app(){
         if (!toast) {
             toast = document.createElement('div');
             toast.id = 'voice-preparing-toast';
-            toast.style.cssText = `
-                position: fixed;
-                top: 50%;
-                left: 50%;
-                transform: translate(-50%, -50%);
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: white;
-                padding: 20px 32px;
-                border-radius: 16px;
-                font-size: 16px;
-                font-weight: 600;
-                box-shadow: 0 8px 24px rgba(102, 126, 234, 0.5);
-                z-index: 10000;
-                display: flex;
-                align-items: center;
-                gap: 12px;
-                animation: voiceToastFadeIn 0.3s ease;
-                pointer-events: none;
-            `;
-            
-            // 添加动画样式
+            document.body.appendChild(toast);
+        }
+        
+        // 确保样式始终一致（每次更新时都重新设置）
+        toast.style.cssText = `
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-image: url('/static/icons/reminder_blue.png');
+            background-size: 100% 100%;
+            background-position: center;
+            background-repeat: no-repeat;
+            background-color: transparent;
+            color: white;
+            padding: 20px 32px;
+            border-radius: 16px;
+            font-size: 16px;
+            font-weight: 600;
+            z-index: 10000;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            animation: voiceToastFadeIn 0.3s ease;
+            pointer-events: none;
+            width: 320px;
+            box-sizing: border-box;
+            justify-content: center;
+        `;
+        
+        // 添加动画样式（只添加一次）
+        if (!document.querySelector('style[data-voice-toast-animation]')) {
             const style = document.createElement('style');
+            style.setAttribute('data-voice-toast-animation', 'true');
             style.textContent = `
                 @keyframes voiceToastFadeIn {
                     from {
@@ -774,8 +786,6 @@ function init_app(){
                 }
             `;
             document.head.appendChild(style);
-            
-            document.body.appendChild(toast);
         }
         
         // 更新消息内容
@@ -823,34 +833,41 @@ function init_app(){
         if (!toast) {
             toast = document.createElement('div');
             toast.id = 'voice-ready-toast';
-            toast.style.cssText = `
-                position: fixed;
-                top: 50%;
-                left: 50%;
-                transform: translate(-50%, -50%);
-                background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
-                color: white;
-                padding: 20px 32px;
-                border-radius: 16px;
-                font-size: 18px;
-                font-weight: 600;
-                box-shadow: 0 8px 24px rgba(40, 167, 69, 0.5);
-                z-index: 10000;
-                display: none;
-                align-items: center;
-                gap: 12px;
-                animation: voiceToastFadeIn 0.3s ease;
-                pointer-events: none;
-            `;
             document.body.appendChild(toast);
         }
         
-        toast.innerHTML = `
-            <span style="font-size: 24px; animation: voiceToastPulse 0.6s ease;">🎤</span>
-            <span>可以开始说话了！</span>
+        // 确保样式始终一致（和前两个弹窗一样的大小）
+        toast.style.cssText = `
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-image: url('/static/icons/reminder_midori.png');
+            background-size: 100% 100%;
+            background-position: center;
+            background-repeat: no-repeat;
+            background-color: transparent;
+            color: white;
+            padding: 20px 32px;
+            border-radius: 16px;
+            font-size: 16px;
+            font-weight: 600;
+            box-shadow: none;
+            z-index: 10000;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            animation: voiceToastFadeIn 0.3s ease;
+            pointer-events: none;
+            width: 320px;
+            box-sizing: border-box;
+            justify-content: center;
         `;
         
-        toast.style.display = 'flex';
+        toast.innerHTML = `
+            <img src="/static/icons/ready_to_talk.png" style="width: 36px; height: 36px; object-fit: contain; display: block; flex-shrink: 0;" alt="ready">
+            <span style="display: flex; align-items: center;">可以开始说话了！</span>
+        `;
         
         // 2秒后自动消失
         setTimeout(() => {
@@ -864,7 +881,7 @@ function init_app(){
     // 开始麦克风录音
     micButton.addEventListener('click', async () => {
         // 立即显示准备提示
-        showVoicePreparingToast('🎙️ 语音系统准备中...');
+        showVoicePreparingToast('语音系统准备中...');
         
         // 如果有活跃的文本会话，先结束它
         if (isTextSessionActive) {
@@ -876,7 +893,7 @@ function init_app(){
             }
             isTextSessionActive = false;
             showStatusToast('正在切换到语音模式...', 3000);
-            showVoicePreparingToast('🔄 正在切换到语音模式...');
+            showVoicePreparingToast('正在切换到语音模式...');
             // 增加等待时间，确保后端完全清理资源
             await new Promise(resolve => setTimeout(resolve, 1500)); // 从500ms增加到1500ms
         }
@@ -893,7 +910,7 @@ function init_app(){
         resetSessionButton.disabled = true;
         
         showStatusToast('正在初始化语音对话...', 3000);
-        showVoicePreparingToast('⚙️ 正在连接服务器...');
+        showVoicePreparingToast('正在连接服务器...');
         
         try {
             // 创建一个 Promise 来等待 session_started 消息
@@ -923,7 +940,7 @@ function init_app(){
             await sessionStartPromise;
             
             showStatusToast('正在初始化麦克风...', 3000);
-            showVoicePreparingToast('🎤 正在初始化麦克风...');
+            showVoicePreparingToast('正在初始化麦克风...');
             
             // 显示Live2D
             showLive2d();
