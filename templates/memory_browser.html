@@ -61,8 +61,7 @@
     <style>
 .cat-btn {
     display: block;
-    width: 80%;
-    /* margin: 0 auto 6px auto; */
+    flex: 1;
     padding: 6px 0;
     background: #e6f0ff;
     border: 1px solid #4f8cff;
@@ -77,6 +76,33 @@
     color: #fff;
     box-shadow: none;
     outline: none;
+}
+
+.cat-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 6px;
+}
+
+.delete-cat-btn {
+    padding: 4px 8px;
+    background: #e74c3c;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    font-size: 0.85em;
+    cursor: pointer;
+    transition: background 0.2s;
+    flex-shrink: 0;
+}
+
+.delete-cat-btn:hover {
+    background: #c0392b;
+}
+
+.delete-cat-btn:active {
+    background: #a93226;
 }
 
 .review-toggle {
@@ -213,9 +239,33 @@ async function loadMemoryFileList() {
                 let match = f.match(/^recent_(.+)\.json$/);
                 let catName = match ? match[1] : f;
                 const li = document.createElement('li');
+                // 创建容器
+                const itemDiv = document.createElement('div');
+                itemDiv.className = 'cat-item';
                 // 按钮样式
-                li.innerHTML = `<button class="cat-btn" data-filename="${f}" data-catname="${catName}">${catName}</button>`;
-                li.onclick = () => selectMemoryFile(f, li, catName);
+                const btn = document.createElement('button');
+                btn.className = 'cat-btn';
+                btn.setAttribute('data-filename', f);
+                btn.setAttribute('data-catname', catName);
+                btn.textContent = catName;
+                btn.onclick = (e) => {
+                    e.stopPropagation();
+                    selectMemoryFile(f, li, catName);
+                };
+                // 删除按钮
+                const deleteBtn = document.createElement('button');
+                deleteBtn.className = 'delete-cat-btn';
+                deleteBtn.textContent = '删除';
+                deleteBtn.title = `删除 ${catName} 的聊天记录`;
+                deleteBtn.onclick = async (e) => {
+                    e.stopPropagation();
+                    if (confirm(`确定要删除 "${catName}" 的所有聊天记录吗？此操作不可恢复！`)) {
+                        await deleteCatgirlMemory(f, catName);
+                    }
+                };
+                itemDiv.appendChild(btn);
+                itemDiv.appendChild(deleteBtn);
+                li.appendChild(itemDiv);
                 ul.appendChild(li);
                 
                 // 如果是当前猫娘，自动选择
@@ -305,7 +355,7 @@ function updateSystemContent(idx, value) {
 }
 async function selectMemoryFile(filename, li, catName) {
     currentMemoryFile = filename;
-    currentCatName = catName || (li ? li.getAttribute('data-catname') : '');
+    currentCatName = catName || (li ? li.querySelector('.cat-btn')?.getAttribute('data-catname') : '');
     Array.from(document.getElementById('memory-file-list').children).forEach(x => x.classList.remove('selected'));
     if (li) li.classList.add('selected');
     const editDiv = document.getElementById('memory-chat-edit');
@@ -447,6 +497,35 @@ async function toggleReview(enabled) {
         const toggle = document.getElementById('review-toggle');
         toggle.checked = !enabled;
         document.getElementById('review-status').textContent = '保存失败';
+    }
+}
+
+// 删除猫娘的聊天记录
+async function deleteCatgirlMemory(filename, catName) {
+    try {
+        const resp = await fetch(`/api/memory/recent_file/${encodeURIComponent(filename)}`, {
+            method: 'DELETE'
+        });
+        const data = await resp.json();
+        
+        if (data.success) {
+            // 如果删除的是当前选中的文件，清空编辑区
+            if (currentMemoryFile === filename) {
+                currentMemoryFile = null;
+                currentCatName = '';
+                chatData = [];
+                document.getElementById('memory-chat-edit').innerHTML = '';
+                document.getElementById('save-row').style.display = 'none';
+            }
+            // 重新加载文件列表
+            await loadMemoryFileList();
+            alert(`已成功删除 "${catName}" 的聊天记录`);
+        } else {
+            alert(`删除失败：${data.error || '未知错误'}`);
+        }
+    } catch (e) {
+        console.error('删除记忆文件失败:', e);
+        alert('删除失败，请稍后重试');
     }
 }
 </script>

@@ -1997,6 +1997,28 @@ async def update_emotion_mapping(model_name: str, request: Request):
         logger.error(f"更新情绪映射配置失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
+@app.delete('/api/memory/recent_file/{filename}')
+async def delete_recent_file(filename: str):
+    """删除指定猫娘的记忆文件"""
+    import os
+    from utils.config_manager import get_config_manager
+    cm = get_config_manager()
+    
+    if not (filename and filename.startswith('recent') and filename.endswith('.json')):
+        return JSONResponse({"success": False, "error": "文件名不合法"}, status_code=400)
+    
+    file_path = cm.memory_dir / filename
+    if not file_path.exists():
+        return JSONResponse({"success": False, "error": "文件不存在"}, status_code=404)
+    
+    try:
+        file_path.unlink()
+        logger.info(f"已删除记忆文件: {file_path}")
+        return {"success": True, "message": "记忆文件已删除"}
+    except Exception as e:
+        logger.error(f"删除记忆文件时出错: {e}")
+        return JSONResponse({"success": False, "error": f"删除失败: {str(e)}"}, status_code=500)
+
 @app.post('/api/memory/recent_file/save')
 async def save_recent_file(request: Request):
     import os, json
