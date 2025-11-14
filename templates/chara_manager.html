@@ -550,7 +550,12 @@ function showCatgirlForm(key, container) {
         const fd = new FormData(form);
         const data = {};
         for (const [k, v] of fd.entries()) {
-            if (k && v) data[k] = v;
+            // 特殊处理voice_id字段，即使为空也要包含
+            if (k === 'voice_id') {
+                data[k] = v;
+            } else if (k && v) {
+                data[k] = v;
+            }
         }
         if (!data['档案名']) { await showAlert('档案名为必填项'); return; }
         
