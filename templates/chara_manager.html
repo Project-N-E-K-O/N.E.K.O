@@ -4,7 +4,7 @@
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>角色管理 - Project N.E.K.O.</title>
+    <title>角色管理 - Project Lanlan</title>
     <script src="/static/common_dialogs.js"></script>
     <style>
         *:focus {
@@ -187,6 +187,29 @@ if (!window._charaManagerFoldHandler) {
                 // 动态切换箭头
                 let arrow = toggle.querySelector('.arrow');
                 if (arrow) arrow.textContent = fold.classList.contains('open') ? '▲' : '▼';
+                
+                // 立即保存高级设置下拉栏状态
+                // 检查是否是最外层的fold（进阶设定）
+                if (!fold.parentElement.closest('.fold') && toggle.textContent.includes('进阶设定')) {
+                    // 获取当前表单
+                    const form = fold.closest('form');
+                    if (form) {
+                        // 尝试从表单的_catgirlName属性或档案名字段获取猫娘名称
+                        let catgirlName = form._catgirlName;
+                        if (!catgirlName) {
+                            const nameField = form.querySelector('[name="档案名"]');
+                            if (nameField) {
+                                catgirlName = nameField.value.trim();
+                            }
+                        }
+                        
+                        // 如果有猫娘名称，保存展开状态
+                        if (catgirlName) {
+                            const isOpen = fold.classList.contains('open');
+                            localStorage.setItem(`catgirl_advanced_${catgirlName}`, isOpen.toString());
+                        }
+                    }
+                }
             }
         }
     });
@@ -250,34 +273,108 @@ function renderMaster() {
         if (["档案名", "性别", "昵称"].includes(k)) return;
         const row = document.createElement('div');
         row.className = 'field-row custom-row';
-        row.innerHTML = `<label>${k}</label><input type="text" name="${k}" value="${master[k]}"><button type="button" class="btn sm delete" style="margin-left:8px" onclick="deleteMasterField(this)">删除设定</button>`;
+        row.innerHTML = `<label>${k}</label><input type="text" name="${k}" value="${master[k]}"><button type="button" class="btn sm delete" style="margin-left:8px">删除设定</button>`;
         form.insertBefore(row, form.querySelector('div[style]'));
     });
+    
+    // 为新渲染的元素重新设置事件监听
+    setupMasterFormListeners();
 }
 
 // 新增主人自定义设定
-if (!window._addMasterFieldHandler) {
-    var masterFormEl = document.getElementById('master-form');
-    if (masterFormEl) {
-        masterFormEl.insertAdjacentHTML('beforeend', '<div style="text-align:right;margin-top:8px"><button type="button" class="btn sm add" id="add-master-field-btn">新增设定</button><button type="submit" class="btn sm">保存主人设定</button></div>');
+// 主人表单按钮显示/隐藏逻辑
+    function setupMasterFormListeners() {
+        const masterFormEl = document.getElementById('master-form');
+        if (!masterFormEl) return;
+        
+        // 获取保存和取消按钮
+        const saveBtn = masterFormEl.querySelector('#save-master-btn');
+        const cancelBtn = masterFormEl.querySelector('#cancel-master-btn');
+        
+        // 显示操作按钮的函数
+        function showMasterActionButtons() {
+            if (saveBtn) saveBtn.style.display = '';
+            if (cancelBtn) cancelBtn.style.display = '';
+        }
+        
+        // 为所有输入元素添加事件监听
+        const inputs = masterFormEl.querySelectorAll('input');
+        inputs.forEach(input => {
+            input.addEventListener('change', showMasterActionButtons);
+            input.addEventListener('input', showMasterActionButtons);
+        });
+        
+        // 为删除按钮添加点击事件监听
+        const deleteButtons = masterFormEl.querySelectorAll('.btn.delete');
+        deleteButtons.forEach(btn => {
+            btn.addEventListener('click', showMasterActionButtons);
+        });
+        
+        // 为新增设定按钮添加点击事件监听
+        const addBtn = masterFormEl.querySelector('#add-master-field-btn');
+        if (addBtn) {
+            addBtn.onclick = async function() {
+                const key = await showPrompt('请输入新设定的名称（键名）', '', '新增主人设定');
+                if (!key || ["档案名"].includes(key)) return;
+                if (masterFormEl.querySelector(`[name='${key}']`)) { 
+                    await showAlert('该设定已存在'); 
+                    return;
+                }
+                const row = document.createElement('div');
+                row.className = 'field-row custom-row';
+                row.innerHTML = `<label>${key}</label><input type="text" name="${key}"><button type="button" class="btn sm delete" style="margin-left:8px">删除设定</button>`;
+                masterFormEl.insertBefore(row, masterFormEl.querySelector('div[style]'));
+                
+                // 显示操作按钮
+                showMasterActionButtons();
+                
+                // 为新添加的元素添加事件监听
+                const newInput = row.querySelector('input');
+                newInput.addEventListener('change', showMasterActionButtons);
+                newInput.addEventListener('input', showMasterActionButtons);
+                
+                // 为删除按钮添加事件监听和点击处理
+                const newDeleteBtn = row.querySelector('button');
+                newDeleteBtn.addEventListener('click', showMasterActionButtons);
+                newDeleteBtn.addEventListener('click', function() {
+                    deleteMasterField(this);
+                });
+            };
+        }
+        
+        // 删除主人字段函数
+        window.deleteMasterField = function(btn) {
+            const row = btn.parentNode;
+            // 档案名不能删
+            if (row.querySelector('label') && row.querySelector('label').textContent === '档案名') return;
+            row.remove();
+            showMasterActionButtons(); // 删除字段后显示操作按钮
+        };
+        
+        // 取消按钮功能
+        if (cancelBtn) {
+            cancelBtn.onclick = function() {
+                // 重新加载主人数据以取消修改
+                renderMaster();
+                // 隐藏操作按钮
+                if (saveBtn) saveBtn.style.display = 'none';
+                if (cancelBtn) cancelBtn.style.display = 'none';
+            };
+        }
     }
-    document.getElementById('add-master-field-btn') && (document.getElementById('add-master-field-btn').onclick = async function() {
-        const key = await showPrompt('请输入新设定的名称（键名）', '', '新增主人设定');
-        if (!key || ["档案名"].includes(key)) return;
-        if (masterFormEl.querySelector(`[name='${key}']`)) { await showAlert('该设定已存在'); return; }
-        const row = document.createElement('div');
-        row.className = 'field-row custom-row';
-        row.innerHTML = `<label>${key}</label><input type="text" name="${key}"><button type="button" class="btn sm delete" style="margin-left:8px" onclick="deleteMasterField(this)">删除设定</button>`;
-        masterFormEl.insertBefore(row, masterFormEl.querySelector('div[style]'));
-    });
-    window._addMasterFieldHandler = true;
-}
-window.deleteMasterField = function(btn) {
-    const row = btn.parentNode;
-    // 档案名不能删
-    if (row.querySelector('label') && row.querySelector('label').textContent === '档案名') return;
-    row.remove();
-};
+    
+    if (!window._addMasterFieldHandler) {
+        var masterFormEl = document.getElementById('master-form');
+        if (masterFormEl) {
+            // 添加按钮区域，初始隐藏保存和取消按钮
+            masterFormEl.insertAdjacentHTML('beforeend', '<div style="text-align:right;margin-top:8px"><button type="button" class="btn sm add" id="add-master-field-btn">新增设定</button><button type="submit" class="btn sm" id="save-master-btn" style="display:none">保存主人设定</button><button type="button" class="btn sm" id="cancel-master-btn" style="display:none">取消</button></div>');
+        }
+        
+        // 设置事件监听
+        setupMasterFormListeners();
+        
+        window._addMasterFieldHandler = true;
+    }
 
 // 保存主人
 const masterForm = document.getElementById('master-form');
@@ -297,6 +394,12 @@ masterForm.onsubmit = async function(e) {
         body: JSON.stringify(data)
     });
     await loadCharacterData();
+    
+    // 隐藏保存和取消按钮
+    const saveBtn = masterForm.querySelector('#save-master-btn');
+    const cancelBtn = masterForm.querySelector('#cancel-master-btn');
+    if (saveBtn) saveBtn.style.display = 'none';
+    if (cancelBtn) cancelBtn.style.display = 'none';
 };
 
 // 渲染猫娘列表
@@ -413,8 +516,20 @@ window.deleteCatgirl = async function(key) {
     await fetch('/api/characters/catgirl/' + encodeURIComponent(key), {method: 'DELETE'});
     // 清除 localStorage 中的展开状态记录
     localStorage.removeItem(`catgirl_expand_${key}`);
+    // 清除进阶设定折叠状态记录
+    localStorage.removeItem(`catgirl_advanced_${key}`);
     await loadCharacterData();
 };
+
+// 显示保存和取消按钮的全局函数
+function showActionButtons(form) {
+    if (!form) return;
+    // 使用表单内的查询选择器找到对应的按钮
+    const saveBtn = form.querySelector('#save-button');
+    const cancelBtn = form.querySelector('#cancel-button');
+    if (saveBtn) saveBtn.style.display = '';
+    if (cancelBtn) cancelBtn.style.display = '';
+}
 
 // 显示猫娘编辑/新增表单
 function showCatgirlForm(key, container) {
@@ -422,6 +537,9 @@ function showCatgirlForm(key, container) {
     let isNew = !key;
     let form = document.createElement('form');
     form.id = key ? 'catgirl-form-' + key : 'catgirl-form-new';
+    
+    // 保存猫娘名称，用于后续恢复进阶设定的展开状态
+    form._catgirlName = key;
     // 先渲染基础项
     form.innerHTML = `
         <div class="field-row">
@@ -466,8 +584,8 @@ function showCatgirlForm(key, container) {
         </div>
         <div style="text-align:right;margin-top:10px;">
             <button type="button" class="btn sm add" id="add-catgirl-field-btn">新增设定</button>
-            <button type="submit" class="btn sm">${isNew ? '确认新猫娘' : '保存修改'}</button>
-            <button type="button" class="btn sm" onclick="loadCharacterData()">取消</button>
+            <button type="submit" class="btn sm" id="save-button" style="display:none">${isNew ? '确认新猫娘' : '保存修改'}</button>
+            <button type="button" class="btn sm" id="cancel-button" style="display:none" onclick="this.form.querySelector('#save-button').style.display = 'none'; this.form.querySelector('#cancel-button').style.display = 'none'; loadCharacterData()">取消</button>
         </div>
     `;
     // live2d弹窗逻辑
@@ -526,6 +644,40 @@ function showCatgirlForm(key, container) {
             }, 500);
         };
     }
+    // 表单特定的showActionButtons封装
+    const formShowActionButtons = function() {
+        showActionButtons(form);
+    };
+    
+    // 新猫娘始终显示确认按钮
+    if (isNew) {
+        setTimeout(() => {
+            formShowActionButtons();
+        }, 0);
+    }
+
+    // 监听表单元素变化
+    function setupChangeListeners() {
+        // 为所有输入元素添加change事件监听
+        const inputs = form.querySelectorAll('input, select, textarea');
+        inputs.forEach(input => {
+            input.addEventListener('change', formShowActionButtons);
+            // 对于textarea和文本输入，也监听input事件以获得实时响应
+            if (input.type === 'text' || input.tagName === 'TEXTAREA') {
+                input.addEventListener('input', formShowActionButtons);
+            }
+        });
+        
+        // 为删除按钮添加点击事件监听
+        const deleteButtons = form.querySelectorAll('.btn.delete');
+        deleteButtons.forEach(btn => {
+            btn.addEventListener('click', formShowActionButtons);
+        });
+    }
+    
+    // 调用函数绑定事件监听器
+    setupChangeListeners();
+
     // 新增自定义项按钮
     form.querySelector('#add-catgirl-field-btn').onclick = async function() {
         const key = await showPrompt('请输入新设定的名称（键名）', '', '新增猫娘设定');
@@ -535,6 +687,25 @@ function showCatgirlForm(key, container) {
         row.className = 'field-row custom-row';
         row.innerHTML = `<label>${key}</label><input type="text" name="${key}"><button type="button" class="btn sm delete" style="margin-left:8px" onclick="deleteCatgirlField(this)">删除设定</button>`;
         form.insertBefore(row, form.querySelector('.fold'));
+        
+        // 新增字段后显示操作按钮
+        formShowActionButtons();
+        
+        // 为新添加的输入元素添加事件监听
+        const newInput = row.querySelector('input');
+        newInput.addEventListener('change', formShowActionButtons);
+        newInput.addEventListener('input', formShowActionButtons);
+        
+        const newDeleteBtn = row.querySelector('button');
+        newDeleteBtn.addEventListener('click', formShowActionButtons);
+    };
+    
+    // 设置删除字段的全局函数
+    window.deleteCatgirlField = function(btn) {
+        const fieldRow = btn.parentNode;
+        const form = fieldRow.closest('form');
+        fieldRow.remove();
+        showActionButtons(form); // 删除字段后显示操作按钮
     };
 
     // 在 form.onsubmit 之前添加
@@ -644,10 +815,18 @@ function showCatgirlForm(key, container) {
             }
             
             // 保存当前展开的猫娘名称，以便重新加载后自动展开
-            const formCatgirlName = data['档案名'];
+            let formCatgirlName = data['档案名'];
             if (formCatgirlName) {
-                expandedCatgirlName = formCatgirlName;
+                // 验证并清理猫娘名称，避免特殊字符
+                formCatgirlName = formCatgirlName.trim();
+                if (formCatgirlName) {
+                    expandedCatgirlName = formCatgirlName;
+                }
             }
+            
+            // 在重新加载数据前，隐藏当前表单的按钮
+            form.querySelector('#save-button').style.display = 'none';
+            form.querySelector('#cancel-button').style.display = 'none';
             
             await loadCharacterData();
         } catch (error) {
@@ -668,6 +847,22 @@ function showCatgirlForm(key, container) {
     if (container) {
         container.innerHTML = '';
         container.appendChild(form);
+        
+        // 如果是编辑现有猫娘，尝试恢复进阶设定的展开状态
+        if (key) {
+            setTimeout(() => {
+                const savedState = localStorage.getItem(`catgirl_advanced_${key}`);
+                if (savedState === 'true') {
+                    const advancedSettingsFold = form.querySelector('.fold');
+                    const toggle = advancedSettingsFold.querySelector('.fold-toggle');
+                    if (advancedSettingsFold && toggle) {
+                        advancedSettingsFold.classList.add('open');
+                        const arrow = toggle.querySelector('.arrow');
+                        if (arrow) arrow.textContent = '▼';
+                    }
+                }
+            }, 0);
+        }
     } else {
         // 兼容原有逻辑
         const list = document.getElementById('catgirl-list');
@@ -686,9 +881,7 @@ function showCatgirlForm(key, container) {
         }
     }
 }
-window.deleteCatgirlField = function(btn) {
-    btn.parentNode.remove();
-};
+// deleteCatgirlField函数已在showCatgirlForm内部定义为全局函数
 
 // 猫娘档案名重命名
 window.renameCatgirl = async function(oldName) {
