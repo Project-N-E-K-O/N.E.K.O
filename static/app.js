@@ -4,6 +4,7 @@ function init_app(){
     const screenButton = document.getElementById('screenButton');
     const stopButton = document.getElementById('stopButton');
     const resetSessionButton = document.getElementById('resetSessionButton');
+    const returnSessionButton = document.getElementById('returnSessionButton');
     const statusElement = document.getElementById('status');
     const statusToast = document.getElementById('status-toast');
     
@@ -250,6 +251,7 @@ function init_app(){
                             screenButton.disabled = true;
                             stopButton.disabled = true;
                             resetSessionButton.disabled = true;
+                            returnSessionButton.disabled = true;
 
                             setTimeout(async () => {
                                 try {
@@ -928,6 +930,7 @@ function init_app(){
         screenButton.disabled = true;
         stopButton.disabled = true;
         resetSessionButton.disabled = true;
+        returnSessionButton.disabled = true;
         
         showStatusToast('正在初始化语音对话...', 3000);
         showVoicePreparingToast('正在连接服务器...');
@@ -1007,12 +1010,31 @@ function init_app(){
     muteButton.addEventListener('click', stopMicCapture);
 
     resetSessionButton.addEventListener('click', () => {
+        console.log('[App] resetSessionButton 被点击！当前 isGoodbyeMode 检查');
         isSwitchingMode = true; // 开始重置会话（也是一种模式切换）
         
         // 检查是否是"请她离开"触发的
-        const isGoodbyeMode = window.live2d && window.live2d._goodbyeClicked;
+        const isGoodbyeMode = window.live2dManager && window.live2dManager._goodbyeClicked;
+        console.log('[App] 检测 isGoodbyeMode =', isGoodbyeMode, 'goodbyeClicked =', window.live2dManager ? window.live2dManager._goodbyeClicked : 'undefined');
+        
+        // 检查 hideLive2d 前的容器状态
+        const live2dContainer = document.getElementById('live2d-container');
+        console.log('[App] hideLive2d 前容器状态:', {
+            存在: !!live2dContainer,
+            当前类: live2dContainer ? live2dContainer.className : 'undefined',
+            classList: live2dContainer ? live2dContainer.classList.toString() : 'undefined',
+            display: live2dContainer ? getComputedStyle(live2dContainer).display : 'undefined'
+        });
         
         hideLive2d()
+        
+        // 检查 hideLive2d 后的容器状态
+        console.log('[App] hideLive2d 后容器状态:', {
+            存在: !!live2dContainer,
+            当前类: live2dContainer ? live2dContainer.className : 'undefined',
+            classList: live2dContainer ? live2dContainer.classList.toString() : 'undefined',
+            display: live2dContainer ? getComputedStyle(live2dContainer).display : 'undefined'
+        });
         if (socket.readyState === WebSocket.OPEN) {
             socket.send(JSON.stringify({
                 action: 'end_session'
@@ -1034,8 +1056,12 @@ function init_app(){
         updateScreenshotCount();
         screenshotCounter = 0;
         
-        // 如果不是"请她离开"模式，才显示文本输入区并启用按钮
+        // 根据模式执行不同逻辑
+        console.log('[App] 执行分支判断，isGoodbyeMode =', isGoodbyeMode);
         if (!isGoodbyeMode) {
+            // 非"请她离开"模式：显示文本输入区并启用按钮
+            console.log('[App] 执行普通结束会话逻辑');
+            
             // 结束会话后，重置主动搭话计时器（如果已开启）
             if (proactiveChatEnabled) {
                 resetProactiveChatBackoff();
@@ -1055,9 +1081,19 @@ function init_app(){
             screenButton.disabled = true;
             stopButton.disabled = true;
             resetSessionButton.disabled = true;
+            returnSessionButton.disabled = true;  // 禁用"请她回来"按钮
             
             showStatusToast('会话已结束', 3000);
         } else {
+            // "请她离开"模式：隐藏所有内容
+            console.log('[App] 执行"请她离开"模式逻辑');
+            
+            // 重置 goodbyeClicked 标志（在处理完成后）
+            if (window.live2dManager) {
+                window.live2dManager._goodbyeClicked = false;
+            }
+            console.log('[App] 已重置 goodbyeClicked 标志为 false');
+            
             // "请她离开"模式：隐藏所有内容
             const textInputArea = document.getElementById('text-input-area');
             textInputArea.classList.add('hidden');
@@ -1071,6 +1107,7 @@ function init_app(){
             screenButton.disabled = true;
             stopButton.disabled = true;
             resetSessionButton.disabled = true;
+            returnSessionButton.disabled = false;  // 启用"请她回来"按钮
             
             // "请她离开"时，停止主动搭话定时器
             stopProactiveChatSchedule();
@@ -1079,6 +1116,51 @@ function init_app(){
         }
         
         // 延迟重置模式切换标志，确保"已离开"消息已经被忽略
+        setTimeout(() => {
+            isSwitchingMode = false;
+        }, 500);
+    });
+
+    // "请她回来"按钮事件
+    returnSessionButton.addEventListener('click', () => {
+        isSwitchingMode = true; // 开始模式切换
+        
+        // 显示Live2D模型
+        showLive2d();
+        
+        // 启用所有基本输入按钮
+        micButton.disabled = false;
+        textSendButton.disabled = false;
+        textInputBox.disabled = false;
+        screenshotButton.disabled = false;
+        resetSessionButton.disabled = false;
+        
+        // 显示文本输入区
+        const textInputArea = document.getElementById('text-input-area');
+        textInputArea.classList.remove('hidden');
+        
+        // 如果是"请她离开"后返回，需要重新建立会话
+        if (socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({
+                action: 'start_session',
+                input_type: 'text',
+                new_session: true  // 开始新会话
+            }));
+            
+            // 标记文本会话为活跃状态
+            isTextSessionActive = true;
+            
+            showStatusToast('🫴 她回来了！正在重新连接...', 3000);
+            
+            // 重置主动搭话定时器（如果已开启）
+            if (proactiveChatEnabled) {
+                resetProactiveChatBackoff();
+            }
+        } else {
+            showStatusToast('WebSocket未连接！', 4000);
+        }
+        
+        // 延迟重置模式切换标志
         setTimeout(() => {
             isSwitchingMode = false;
         }, 500);
@@ -1801,24 +1883,34 @@ function init_app(){
 
     // 隐藏live2d函数
     function hideLive2d() {
+        console.log('[App] hideLive2d函数被调用');
         const container = document.getElementById('live2d-container');
+        console.log('[App] hideLive2d调用前，容器类列表:', container.classList.toString());
+        
+        // 首先清除任何可能干扰动画的强制显示样式
+        container.style.removeProperty('visibility');
+        container.style.removeProperty('display');
+        container.style.removeProperty('opacity');
+        
+        // 添加minimized类，触发CSS过渡动画
         container.classList.add('minimized');
+        console.log('[App] hideLive2d调用后，容器类列表:', container.classList.toString());
+        
+        // 添加一个延迟检查，确保类被正确添加
+        setTimeout(() => {
+            console.log('[App] 延迟检查容器类列表:', container.classList.toString());
+        }, 100);
     }
 
     // 显示live2d函数
     function showLive2d() {
+        console.log('[App] showLive2d函数被调用');
         const container = document.getElementById('live2d-container');
-
-        // 判断是否已经最小化（通过检查是否有hidden类或检查样式）
-        if (!container.classList.contains('minimized') &&
-            container.style.visibility !== 'minimized') {
-            // 如果已经显示，则不执行任何操作
-            return;
-        }
+        console.log('[App] showLive2d调用前，容器类列表:', container.classList.toString());
 
         // 重置"请她离开"状态
-        if (window.live2d) {
-            window.live2d._goodbyeClicked = false;
+        if (window.live2dManager) {
+            window.live2dManager._goodbyeClicked = false;
         }
         
         // 清除强制隐藏的样式
@@ -1866,16 +1958,23 @@ function init_app(){
             statusElement.style.setProperty('opacity', '0', 'important');
         }
 
-        // 先恢复容器尺寸和可见性，但保持透明度为0和位置在屏幕外
-        // container.style.height = '1080px';
-        // container.style.width = '720px';
+        // 强制显示live2d容器
         container.style.visibility = 'visible';
+        container.style.display = 'block';
+        container.style.opacity = '1';
 
         // 强制浏览器重新计算样式，确保过渡效果正常
         void container.offsetWidth;
 
-        // 移除hidden类，触发过渡动画
+        // 移除minimized类，触发过渡动画
         container.classList.remove('minimized');
+        
+        // 如果容器没有其他类，完全移除class属性以避免显示为class=""
+        if (container.classList.length === 0) {
+            container.removeAttribute('class');
+        }
+        
+        console.log('[App] showLive2d调用后，容器类列表:', container.classList.toString());
     }
     window.startScreenSharing = startScreenSharing;
     window.stopScreenSharing  = stopScreenSharing;
@@ -2044,11 +2143,13 @@ function init_app(){
     // 睡觉按钮（请她离开）
     window.addEventListener('live2d-goodbye-click', () => {
         console.log('[App] 请她离开按钮被点击，开始隐藏所有按钮');
+        console.log('[App] 当前 goodbyeClicked 状态:', window.live2dManager ? window.live2dManager._goodbyeClicked : 'undefined');
         
         // 第一步：立即设置标志位，防止任何后续逻辑显示按钮
-        if (window.live2d) {
-            window.live2d._goodbyeClicked = true;
+        if (window.live2dManager) {
+            window.live2dManager._goodbyeClicked = true;
         }
+        console.log('[App] 设置 goodbyeClicked 为 true，当前状态:', window.live2dManager ? window.live2dManager._goodbyeClicked : 'undefined');
         
         // 第二步：立即隐藏所有浮动按钮和锁按钮（设置为 !important 防止其他代码覆盖）
         const floatingButtons = document.getElementById('live2d-floating-buttons');
@@ -2065,7 +2166,14 @@ function init_app(){
             lockIcon.style.setProperty('opacity', '0', 'important');
         }
         
-        // 第三步：立即隐藏所有 side-btn 按钮和侧边栏
+        // 第三步：显示独立的"请她回来"按钮（居中显示）
+        const returnButtonContainer = document.getElementById('live2d-return-button-container');
+        if (returnButtonContainer) {
+            returnButtonContainer.style.display = 'flex';
+            returnButtonContainer.style.pointerEvents = 'auto';
+        }
+        
+        // 第四步：立即隐藏所有 side-btn 按钮和侧边栏
         const sidebar = document.getElementById('sidebar');
         const sidebarbox = document.getElementById('sidebarbox');
         
@@ -2088,7 +2196,7 @@ function init_app(){
             btn.style.setProperty('opacity', '0', 'important');
         });
         
-        // 第四步：自动折叠对话区
+        // 第五步：自动折叠对话区
         const chatContainerEl = document.getElementById('chat-container');
         const toggleChatBtn = document.getElementById('toggle-chat-btn');
         if (chatContainerEl && !chatContainerEl.classList.contains('minimized')) {
@@ -2098,14 +2206,85 @@ function init_app(){
             }
         }
         
-        // 第五步：触发原有的离开逻辑（关闭会话并让live2d消失）
+        // 第六步：触发原有的离开逻辑（关闭会话并让live2d消失）
         if (resetSessionButton) {
             // 延迟一点点执行，确保隐藏操作已经生效
             setTimeout(() => {
+                console.log('[App] 触发 resetSessionButton.click()，当前 goodbyeClicked 状态:', window.live2dManager ? window.live2dManager._goodbyeClicked : 'undefined');
                 resetSessionButton.click();
             }, 10);
         } else {
             console.error('[App] ❌ resetSessionButton 未找到！');
+        }
+    });
+    
+    // 请她回来按钮
+    window.addEventListener('live2d-return-click', () => {
+        console.log('[App] 请她回来按钮被点击，开始恢复所有界面');
+        
+        // 第一步：清除"请她离开"标志
+        if (window.live2d) {
+            window.live2d._goodbyeClicked = false;
+        }
+        
+        // 第二步：隐藏独立的"请她回来"按钮
+        const returnButtonContainer = document.getElementById('live2d-return-button-container');
+        if (returnButtonContainer) {
+            returnButtonContainer.style.display = 'none';
+            returnButtonContainer.style.pointerEvents = 'none';
+        }
+        
+        // 第三步：恢复live2d容器（移除minimized类）
+        const live2dContainer = document.getElementById('live2d-container');
+        if (live2dContainer) {
+            console.log('[App] 移除minimized类前，容器类列表:', live2dContainer.classList.toString());
+            live2dContainer.classList.remove('minimized');
+            
+            // 如果容器没有其他类，完全移除class属性以避免显示为class=""
+            if (live2dContainer.classList.length === 0) {
+                live2dContainer.removeAttribute('class');
+            }
+            
+            console.log('[App] 移除minimized类后，容器类列表:', live2dContainer.classList.toString());
+            live2dContainer.style.removeProperty('display');
+            live2dContainer.style.removeProperty('visibility');
+            live2dContainer.style.removeProperty('opacity');
+        }
+        
+        // 第四步：恢复锁按钮
+        const lockIcon = document.getElementById('live2d-lock-icon');
+        if (lockIcon) {
+            lockIcon.style.display = 'block';
+            lockIcon.style.removeProperty('visibility');
+            lockIcon.style.removeProperty('opacity');
+        }
+        
+        // 第五步：恢复浮动按钮系统
+        const floatingButtons = document.getElementById('live2d-floating-buttons');
+        if (floatingButtons) {
+            floatingButtons.style.display = 'flex';
+            floatingButtons.style.removeProperty('visibility');
+            floatingButtons.style.removeProperty('opacity');
+        }
+        
+        // 第六步：恢复对话区
+        const chatContainerEl = document.getElementById('chat-container');
+        const toggleChatBtn = document.getElementById('toggle-chat-btn');
+        if (chatContainerEl && chatContainerEl.classList.contains('minimized')) {
+            // 如果对话区当前是折叠的，模拟点击展开按钮
+            if (toggleChatBtn) {
+                toggleChatBtn.click();
+            }
+        }
+        
+        // 第七步：触发原有的返回逻辑
+        if (returnSessionButton) {
+            setTimeout(() => {
+                console.log('[App] 触发returnSessionButton点击');
+                returnSessionButton.click();
+            }, 10);
+        } else {
+            console.error('[App] ❌ returnSessionButton 未找到！');
         }
     });
     

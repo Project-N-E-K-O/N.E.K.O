@@ -1649,6 +1649,94 @@ class Live2DManager {
 
         console.log('[Live2D] 所有浮动按钮已创建完成');
 
+        // 创建独立的"请她回来"按钮（固定在页面中间）
+        const returnButtonContainer = document.createElement('div');
+        returnButtonContainer.id = 'live2d-return-button-container';
+        Object.assign(returnButtonContainer.style, {
+            position: 'fixed',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            zIndex: '30',
+            pointerEvents: 'none',
+            display: 'none' // 初始隐藏，只在点击"请她离开"后显示
+        });
+
+        const returnBtn = document.createElement('div');
+        returnBtn.id = 'live2d-btn-return';
+        returnBtn.className = 'live2d-return-btn';
+        returnBtn.title = '请她回来';
+        
+        // 使用与"请她离开"相同的图标
+        const imgOff = document.createElement('img');
+        imgOff.src = '/static/icons/rest_off.png' + iconVersion;
+        imgOff.alt = '请她回来';
+        Object.assign(imgOff.style, {
+            width: '64px',
+            height: '64px',
+            objectFit: 'contain',
+            pointerEvents: 'none',
+            opacity: '1',
+            transition: 'opacity 0.3s ease'
+        });
+        
+        const imgOn = document.createElement('img');
+        imgOn.src = '/static/icons/rest_on.png' + iconVersion;
+        imgOn.alt = '请她回来';
+        Object.assign(imgOn.style, {
+            position: 'absolute',
+            width: '64px',
+            height: '64px',
+            objectFit: 'contain',
+            pointerEvents: 'none',
+            opacity: '0',
+            transition: 'opacity 0.3s ease'
+        });
+        
+        Object.assign(returnBtn.style, {
+            width: '64px',
+            height: '64px',
+            borderRadius: '50%',
+            background: 'rgba(255, 255, 255, 0.8)',
+            backdropFilter: 'blur(10px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: 'pointer',
+            userSelect: 'none',
+            boxShadow: '0 4px 16px rgba(0, 0, 0, 0.3)',
+            transition: 'all 0.3s ease',
+            pointerEvents: 'auto',
+            position: 'relative'
+        });
+
+        // 悬停效果
+        returnBtn.addEventListener('mouseenter', () => {
+            returnBtn.style.transform = 'scale(1.1)';
+            returnBtn.style.boxShadow = '0 6px 20px rgba(0, 0, 0, 0.4)';
+            imgOff.style.opacity = '0';
+            imgOn.style.opacity = '1';
+        });
+
+        returnBtn.addEventListener('mouseleave', () => {
+            returnBtn.style.transform = 'scale(1)';
+            returnBtn.style.boxShadow = '0 4px 16px rgba(0, 0, 0, 0.3)';
+            imgOff.style.opacity = '1';
+            imgOn.style.opacity = '0';
+        });
+
+        returnBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const event = new CustomEvent('live2d-return-click');
+            window.dispatchEvent(event);
+        });
+
+        returnBtn.appendChild(imgOff);
+        returnBtn.appendChild(imgOn);
+        returnButtonContainer.appendChild(returnBtn);
+        document.body.appendChild(returnButtonContainer);
+        this._returnButtonContainer = returnButtonContainer;
+
         // 初始状态
         container.style.pointerEvents = this.isLocked ? 'none' : 'auto';
 
@@ -1685,16 +1773,15 @@ class Live2DManager {
         
         // 页面加载时先显示5秒
         setTimeout(() => {
-            // 只有在未点击"请她离开"时才显示
-            if (!this._goodbyeClicked) {
-                buttonsContainer.style.display = 'flex';
-                setTimeout(() => {
-                    // 5秒后如果鼠标不在附近且未点击"请她离开"就隐藏
-                    if (!this.isFocusing && !this._goodbyeClicked) {
-                        buttonsContainer.style.display = 'none';
-                    }
-                }, 5000);
-            }
+            // 显示浮动按钮容器
+            buttonsContainer.style.display = 'flex';
+            
+            setTimeout(() => {
+                // 5秒后的隐藏逻辑：如果鼠标不在附近就隐藏
+                if (!this.isFocusing) {
+                    buttonsContainer.style.display = 'none';
+                }
+            }, 5000);
         }, 100); // 延迟100ms确保位置已计算
     }
 
@@ -2355,13 +2442,26 @@ class Live2DManager {
                 return;
             }
             
-            // 如果已经点击了"请她离开"，永远不显示浮动按钮和锁按钮
+            // 如果已经点击了"请她离开"，不显示锁按钮，但保持显示"请她回来"按钮
             if (this._goodbyeClicked) {
-                if (floatingButtons) {
-                    floatingButtons.style.setProperty('display', 'none', 'important');
-                }
                 if (lockIcon) {
                     lockIcon.style.setProperty('display', 'none', 'important');
+                }
+                // 保持浮动按钮容器显示，但只显示"请她回来"按钮
+                if (floatingButtons) {
+                    floatingButtons.style.display = 'flex';
+                    // 隐藏所有其他按钮，只显示"请她回来"按钮
+                    Object.keys(this._floatingButtons).forEach(btnId => {
+                        if (btnId !== 'return') {
+                            const btn = this._floatingButtons[btnId].button;
+                            if (btn) btn.style.display = 'none';
+                        }
+                    });
+                    // 确保"请她回来"按钮显示
+                    const returnBtn = this._floatingButtons['return'];
+                    if (returnBtn && returnBtn.button) {
+                        returnBtn.button.style.display = 'flex';
+                    }
                 }
                 return;
             }

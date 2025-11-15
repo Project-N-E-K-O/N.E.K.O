@@ -39,6 +39,11 @@ if (toggleBtn) {
 
         const isMinimized = chatContainer.classList.toggle('minimized');
         
+        // 如果容器没有其他类，完全移除class属性以避免显示为class=""
+        if (!isMinimized && chatContainer.classList.length === 0) {
+            chatContainer.removeAttribute('class');
+        }
+        
         // 获取图标元素（HTML中应该已经有img标签）
         let iconImg = toggleBtn.querySelector('img');
         if (!iconImg) {
