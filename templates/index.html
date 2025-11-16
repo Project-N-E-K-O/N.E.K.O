@@ -299,8 +299,8 @@
             border-radius: 0; /* 去掉圆角 */
             cursor: grab; /* 拖拽手势 */
             font-weight: bold;
-            font-size: 1.2rem;
-            line-height: 20px; /* 垂直居中调整 */
+            font-size: 14px; /* 改为固定像素值，确保一致性 */
+            line-height: 24px; /* 与按钮高度一致，确保垂直居中 */
             text-align: center;
             color: #fff;
             z-index: 21; /* 确保在内容之上 */   
@@ -784,6 +784,14 @@
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
+            /* 保持相同的字体大小设置 */
+            font-size: 14px;
+            line-height: 24px;
+            /* 防止hover效果在最小化状态下放大按钮 */
+        }
+        
+        #chat-container.minimized #toggle-chat-btn:hover {
+            transform: translate(-50%, -50%) scale(1.1);
         }
 
         #input-row {
@@ -937,7 +945,7 @@
     <div id="chat-header">
         <span id="chat-title">💬 对话</span>
     </div>
-    <button id="toggle-chat-btn" title="最小化">—</button>
+    <button id="toggle-chat-btn" title="最小化"><img src="/static/icons/minimize_icon.png" alt="最小化" style="width: 24px; height: 24px; object-fit: contain; pointer-events: none;"></button>
     <div id="chat-tooltip">✨ 对话区</div>
     <div id="chat-content-wrapper">
         <div id="chatContainer"></div>
@@ -1144,8 +1152,7 @@
             console.log('检查模型配置是否有更新...');
             
             // 1. 获取当前角色名称
-            let currentLanlanName = lanlan_config.lanlan_name;
-            console.log('BEFORE currentLanlanName: ', currentLanlanName);
+            const currentLanlanName = lanlan_config.lanlan_name;
             
             // 2. 获取最新的角色配置（包含所有猫娘的完整配置）
             const charResponse = await fetch('/api/characters');
@@ -1154,10 +1161,6 @@
                 return;
             }
             const charactersData = await charResponse.json();
-
-            // 确保 lanlan_config.lanlan_name 更新到 chara_manager.html 当前选中的猫娘
-            currentLanlanName = lanlan_config.lanlan_name = charactersData['当前猫娘'];
-            console.log('AFTER currentLanlanName: ', currentLanlanName);
             
             // 从猫娘配置中获取当前角色的 live2d 模型名称
             const catgirlConfig = charactersData['猫娘']?.[currentLanlanName];
@@ -1166,7 +1169,6 @@
                 return;
             }
             const newModelName = catgirlConfig.live2d || 'mao_pro';
-            console.log('AFTER newModelName: ', newModelName);
             
             // 3. 获取所有可用模型列表
             const modelsResponse = await fetch('/api/live2d/models');
@@ -1183,7 +1185,6 @@
                 return;
             }
             const newModelPath = modelInfo.path;
-            console.log('AFTER newModelPath: ', newModelPath);
             
             // 5. 检查当前加载的模型路径
             const currentModel = window.live2dManager?.getCurrentModel();
