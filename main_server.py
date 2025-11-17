@@ -990,6 +990,10 @@ async def api_key_settings(request: Request):
 async def get_characters():
     return JSONResponse(content=_config_manager.load_characters())
 
+@app.get('/steam_workshop_manager', response_class=HTMLResponse)
+async def steam_workshop_manager_page(request: Request, lanlan_name: str = ""):
+    return templates.TemplateResponse("templates/steam_workshop_manager.html", {"request": request, "lanlan_name": lanlan_name})
+
 @app.get('/api/characters/current_catgirl')
 async def get_current_catgirl():
     """获取当前使用的猫娘名称"""

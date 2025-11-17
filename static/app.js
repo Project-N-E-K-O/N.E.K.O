@@ -1949,7 +1949,8 @@ function init_app(){
                     { href: `/memory_browser`, text: '📝 记忆管理' },
                     { href: `/chara_manager`, text: '👤 角色设置' },
                     { href: `/l2d?lanlan_name=${lanlan_config.lanlan_name}`, text: '🎨 Live2D管理' },
-                    { href: `/api_key`, text: '🔑 API设置' }
+                    { href: `/api_key`, text: '🔑 API设置' },
+                    { href: `/steam_workshop_manager`, text: 'steam创意工坊' }
                 ];
                 
                 // 已打开的设置窗口引用映射（URL -> Window对象）

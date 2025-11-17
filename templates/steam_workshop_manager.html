@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Steam创意工坊管理</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f5f5f5;
+            margin: 0;
+            padding: 20px;
+            color: #333;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: #fff;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            padding: 20px;
+        }
+        h1 {
+            color: #1b2838;
+            margin-bottom: 30px;
+            border-bottom: 2px solid #2a475e;
+            padding-bottom: 10px;
+        }
+        .tabs {
+            display: flex;
+            margin-bottom: 20px;
+            border-bottom: 1px solid #ddd;
+        }
+        .tab {
+            padding: 10px 20px;
+            cursor: pointer;
+            background-color: #f0f0f0;
+            border: 1px solid #ddd;
+            border-bottom: none;
+            margin-right: 5px;
+            border-top-left-radius: 5px;
+            border-top-right-radius: 5px;
+            transition: background-color 0.3s;
+        }
+        .tab.active {
+            background-color: #fff;
+            font-weight: bold;
+            border-bottom: 2px solid #fff;
+            margin-bottom: -1px;
+        }
+        .tab-content {
+            display: none;
+            padding: 20px;
+        }
+        .tab-content.active {
+            display: block;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input[type="text"],
+        input[type="number"],
+        textarea,
+        select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        textarea {
+            resize: vertical;
+            min-height: 100px;
+        }
+        .button {
+            background-color: #2a475e;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 4px 2px;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: background-color 0.3s;
+        }
+        .button:hover {
+            background-color: #1b2838;
+        }
+        .button-danger {
+            background-color: #e74c3c;
+        }
+        .button-danger:hover {
+            background-color: #c0392b;
+        }
+        .upload-section {
+            margin-bottom: 30px;
+        }
+        .file-upload {
+            border: 2px dashed #ddd;
+            padding: 20px;
+            text-align: center;
+            border-radius: 4px;
+            margin-bottom: 15px;
+        }
+        .file-upload.dragover {
+            border-color: #2a475e;
+            background-color: #f0f4f8;
+        }
+        .tags-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .tag {
+            background-color: #e1e8ed;
+            padding: 5px 10px;
+            border-radius: 15px;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+        }
+        .tag-remove {
+            margin-left: 5px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .items-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        .items-table th,
+        .items-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        .items-table th {
+            background-color: #f5f5f5;
+            font-weight: bold;
+        }
+        .items-table tr:hover {
+            background-color: #f9f9f9;
+        }
+        .item-preview {
+            max-width: 100px;
+            max-height: 100px;
+            border-radius: 4px;
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 5px;
+        }
+        .status-published {
+            background-color: #2ecc71;
+        }
+        .status-pending {
+            background-color: #f39c12;
+        }
+        .status-failed {
+            background-color: #e74c3c;
+        }
+        .filter-controls {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+        .filter-group {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        .pagination {
+            display: flex;
+            justify-content: center;
+            margin-top: 20px;
+        }
+        .pagination button {
+            margin: 0 5px;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #7f8c8d;
+        }
+        .success-message,
+        .error-message {
+            padding: 10px;
+            margin-bottom: 15px;
+            border-radius: 4px;
+        }
+        .success-message {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .error-message {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Steam创意工坊管理</h1>
+        
+        <!-- 标签切换 -->
+        <div class="tabs">
+            <div class="tab active" onclick="switchTab('upload')">上传内容</div>
+            <div class="tab" onclick="switchTab('subscriptions')">我的订阅</div>
+        </div>
+        
+        <!-- 上传内容标签页 -->
+        <div id="upload" class="tab-content active">
+            <div class="upload-section">
+                <h2>上传到创意工坊</h2>
+                
+                <div id="message-area"></div>
+                
+                <div class="form-group">
+                    <label for="item-title">标题 *</label>
+                    <input type="text" id="item-title" placeholder="输入您的创作标题">
+                </div>
+                
+                <div class="form-group">
+                    <label for="item-description">描述</label>
+                    <textarea id="item-description" placeholder="详细描述您的创作内容..."></textarea>
+                </div>
+                
+                <div class="form-group">
+                    <label>内容上传 *</label>
+                    <div id="file-upload-area" class="file-upload">
+                        <p>拖放文件到此处，或</p>
+                        <input type="file" id="file-upload" multiple>
+                    </div>
+                    <small>支持的文件格式：.zip, .rar, .7z, .png, .jpg, .mp3, .mp4</small>
+                </div>
+                
+                <div class="form-group">
+                    <label for="item-preview">预览图片</label>
+                    <input type="file" id="item-preview" accept="image/*">
+                </div>
+                
+                <div class="form-group">
+                    <label for="item-tags">标签</label>
+                    <input type="text" id="item-tags" placeholder="输入标签，按回车添加">
+                    <div id="tags-container" class="tags-container"></div>
+                </div>
+                
+                <div class="form-group">
+                    <label for="visibility">可见性</label>
+                    <select id="visibility">
+                        <option value="public">公开</option>
+                        <option value="friends">仅好友可见</option>
+                        <option value="private">私有</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label for="allow-comments">
+                        <input type="checkbox" id="allow-comments" checked>
+                        允许评论
+                    </label>
+                </div>
+                
+                <button class="button" onclick="uploadItem()">上传到创意工坊</button>
+            </div>
+        </div>
+        
+        <!-- 我的订阅标签页 -->
+        <div id="subscriptions" class="tab-content">
+            <h2>我的订阅物品</h2>
+            
+            <div class="filter-controls">
+                <div class="filter-group">
+                    <label for="search-subscription">搜索：</label>
+                    <input type="text" id="search-subscription" placeholder="搜索订阅内容...">
+                </div>
+                <div class="filter-group">
+                    <label for="sort-subscription">排序：</label>
+                    <select id="sort-subscription">
+                        <option value="name_asc">名称（升序）</option>
+                        <option value="name_desc">名称（降序）</option>
+                        <option value="date_asc">订阅日期（升序）</option>
+                        <option value="date_desc">订阅日期（降序）</option>
+                    </select>
+                </div>
+            </div>
+            
+            <div id="subscriptions-result">
+                <table class="items-table">
+                    <thead>
+                        <tr>
+                            <th>预览</th>
+                            <th>名称</th>
+                            <th>作者</th>
+                            <th>订阅日期</th>
+                            <th>上次更新</th>
+                            <th>大小</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="subscriptions-list">
+                        <!-- 这里会动态填充订阅物品列表 -->
+                        <tr class="empty-state">
+                            <td colspan="7">
+                                <p>正在加载您的订阅物品...</p>
+                                <button class="button" onclick="loadSubscriptions()">重新加载</button>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+                
+                <div class="pagination">
+                    <button class="button" disabled>上一页</button>
+                    <span>第 1 页，共 0 页</span>
+                    <button class="button" disabled>下一页</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 标签切换功能
+        function switchTab(tabId) {
+            // 隐藏所有内容
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.remove('active');
+            });
+            
+            // 移除所有标签的活动状态
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // 显示选中的内容和标签
+            document.getElementById(tabId).classList.add('active');
+            event.currentTarget.classList.add('active');
+            
+            // 如果切换到订阅标签，尝试加载数据
+            if (tabId === 'subscriptions') {
+                loadSubscriptions();
+            }
+        }
+        
+        // 文件拖放功能
+        const fileUploadArea = document.getElementById('file-upload-area');
+        
+        fileUploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            fileUploadArea.classList.add('dragover');
+        });
+        
+        fileUploadArea.addEventListener('dragleave', () => {
+            fileUploadArea.classList.remove('dragover');
+        });
+        
+        fileUploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            fileUploadArea.classList.remove('dragover');
+            // 处理拖放的文件（这里仅做演示）
+            if (e.dataTransfer.files.length > 0) {
+                showMessage('已检测到 ' + e.dataTransfer.files.length + ' 个文件', 'success');
+            }
+        });
+        
+        // 标签管理功能
+        const tagInput = document.getElementById('item-tags');
+        const tagsContainer = document.getElementById('tags-container');
+        
+        tagInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && tagInput.value.trim() !== '') {
+                e.preventDefault();
+                addTag(tagInput.value.trim());
+                tagInput.value = '';
+            }
+        });
+        
+        function addTag(tagText) {
+            // 检查是否已存在相同标签
+            const existingTags = Array.from(tagsContainer.querySelectorAll('.tag')).map(tag => 
+                tag.textContent.replace('×', '').trim()
+            );
+            
+            if (existingTags.includes(tagText)) {
+                showMessage('标签已存在', 'error');
+                return;
+            }
+            
+            const tagElement = document.createElement('div');
+            tagElement.className = 'tag';
+            tagElement.innerHTML = `${tagText}<span class="tag-remove" onclick="removeTag(this)">×</span>`;
+            tagsContainer.appendChild(tagElement);
+        }
+        
+        function removeTag(tagElement) {
+            tagElement.parentElement.remove();
+        }
+        
+        // 消息显示功能
+        function showMessage(message, type = 'info') {
+            const messageArea = document.getElementById('message-area');
+            const messageElement = document.createElement('div');
+            messageElement.className = type === 'error' ? 'error-message' : 'success-message';
+            messageElement.textContent = message;
+            
+            // 清除现有消息
+            messageArea.innerHTML = '';
+            messageArea.appendChild(messageElement);
+            
+            // 3秒后自动清除消息
+            setTimeout(() => {
+                messageElement.remove();
+            }, 3000);
+        }
+        
+        // 上传物品功能（仅模拟）
+        function uploadItem() {
+            const title = document.getElementById('item-title').value.trim();
+            
+            if (!title) {
+                showMessage('请输入标题', 'error');
+                return;
+            }
+            
+            // 这里仅做演示，实际应用中需要实现真正的上传功能
+            showMessage('开始上传到创意工坊...', 'success');
+            
+            // 模拟上传进度
+            setTimeout(() => {
+                showMessage('上传成功！内容已提交到创意工坊', 'success');
+            }, 1500);
+        }
+        
+        // 加载订阅物品（仅模拟）
+        function loadSubscriptions() {
+            const subscriptionsList = document.getElementById('subscriptions-list');
+            subscriptionsList.innerHTML = '<tr class="empty-state"><td colspan="7"><p>正在加载您的订阅物品...</p></td></tr>';
+            
+            // 模拟加载数据
+            setTimeout(() => {
+                // 这里仅做演示，实际应用中需要从服务器获取真实数据
+                const sampleData = [
+                    {
+                        id: '1',
+                        name: '精美角色模型包',
+                        author: 'Creator1',
+                        subscribedDate: '2024-01-15',
+                        lastUpdated: '2024-02-10',
+                        size: '15.2 MB',
+                        previewUrl: '../static/icons/character_icon.png'
+                    },
+                    {
+                        id: '2',
+                        name: '环境材质包',
+                        author: 'TextureMaster',
+                        subscribedDate: '2024-01-20',
+                        lastUpdated: '2024-02-05',
+                        size: '24.8 MB',
+                        previewUrl: '../static/icons/memory_icon.png'
+                    },
+                    {
+                        id: '3',
+                        name: '声音效果合集',
+                        author: 'AudioPro',
+                        subscribedDate: '2024-02-01',
+                        lastUpdated: '2024-02-15',
+                        size: '32.1 MB',
+                        previewUrl: '../static/icons/voice_clone_icon.png'
+                    }
+                ];
+                
+                if (sampleData.length === 0) {
+                    subscriptionsList.innerHTML = '<tr class="empty-state"><td colspan="7"><p>您还没有订阅任何创意工坊物品</p></td></tr>';
+                } else {
+                    subscriptionsList.innerHTML = sampleData.map(item => `
+                        <tr>
+                            <td><img src="${item.previewUrl}" class="item-preview" alt="${item.name}"></td>
+                            <td>${item.name}</td>
+                            <td>${item.author}</td>
+                            <td>${item.subscribedDate}</td>
+                            <td>${item.lastUpdated}</td>
+                            <td>${item.size}</td>
+                            <td>
+                                <button class="button">详情</button>
+                                <button class="button button-danger" onclick="unsubscribeItem('${item.id}', '${item.name}')">取消订阅</button>
+                            </td>
+                        </tr>
+                    `).join('');
+                }
+            }, 1000);
+        }
+        
+        // 取消订阅功能（仅模拟）
+        function unsubscribeItem(itemId, itemName) {
+            if (confirm(`确定要取消订阅 "${itemName}" 吗？`)) {
+                // 这里仅做演示，实际应用中需要实现真正的取消订阅功能
+                showMessage(`正在取消订阅 "${itemName}"...`, 'success');
+                
+                // 模拟取消订阅
+                setTimeout(() => {
+                    showMessage(`已成功取消订阅 "${itemName}"`, 'success');
+                    loadSubscriptions(); // 重新加载订阅列表
+                }, 1000);
+            }
+        }
+        
+        // 初始化页面
+        window.onload = function() {
+            // 初始化时添加一些示例标签
+            addTag('模组');
+            addTag('角色');
+        };
+    </script>
+</body>
+</html>

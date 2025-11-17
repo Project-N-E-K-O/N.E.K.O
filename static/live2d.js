@@ -2038,7 +2038,8 @@ class Live2DManager {
                 { id: 'api-keys', label: 'API密钥', icon: '/static/icons/api_key_icon.png', action: 'navigate', url: '/api_key' },
                 { id: 'character', label: '角色管理', icon: '/static/icons/character_icon.png', action: 'navigate', url: '/chara_manager' },
                 { id: 'voice-clone', label: '声音克隆', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_clone' },
-                { id: 'memory', label: '记忆浏览', icon: '/static/icons/memory_icon.png', action: 'navigate', url: '/memory_browser' }
+                { id: 'memory', label: '记忆浏览', icon: '/static/icons/memory_icon.png', action: 'navigate', url: '/memory_browser' },
+                { id: 'steam-workshop', label: '创意工坊', icon: '/static/icons/Steam_icon_logo.png', action: 'navigate', url: '/steam_workshop_manager' },
             ];
             
             settingsItems.forEach(item => {
