@@ -25,14 +25,14 @@
     },
     "glm": {
       "key": "glm",
-      "name": "GLM-realtime（智谱）",
+      "name": "GLM-realtime（智谱/GLM）",
       "description": "有免费额度，但需充值1元，内置联网搜索功能",
       "core_url": "wss://open.bigmodel.cn/api/paas/v4/realtime",
       "core_model": "glm-realtime-air"
     },
     "step": {
       "key": "step",
-      "name": "Step-2（阶跃星辰）",
+      "name": "Step-2（阶跃星辰/StepFun）",
       "description": "完全免费，但不支持视频",
       "core_url": "wss://api.stepfun.com/v1/realtime",
       "core_model": "step-audio-2"
@@ -74,7 +74,7 @@
     },
     "glm": {
       "key": "glm",
-      "name": "智谱",
+      "name": "智谱 (GLM)",
       "description": "支持Agent模式",
       "openrouter_url": "https://open.bigmodel.cn/api/paas/v4",
       "summary_model": "glm-4.5-flash",
@@ -84,7 +84,7 @@
     },
     "step": {
       "key": "step",
-      "name": "阶跃星辰",
+      "name": "阶跃星辰 (StepFun)",
       "description": "价格相对便宜",
       "openrouter_url": "https://api.stepfun.com/v1",
       "summary_model": "step-2-mini",
@@ -94,7 +94,7 @@
     },
     "silicon": {
       "key": "silicon",
-      "name": "硅基流动",
+      "name": "硅基流动 (SiliconFlow)",
       "description": "性价比高，功能少，只作为辅助API使用",
       "openrouter_url": "https://api.siliconflow.cn/v1",
       "summary_model": "Qwen/Qwen3-Next-80B-A3B-Instruct",

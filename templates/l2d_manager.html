@@ -8,8 +8,6 @@
     <!-- i18next 核心库 -->
     <script src="https://cdn.jsdelivr.net/npm/i18next@23.7.6/dist/umd/i18next.min.js" 
             onerror="console.error('[i18n] 加载 i18next 失败');"></script>
-    <script src="https://cdn.jsdelivr.net/npm/i18next-browser-languagedetector@7.2.0/dist/umd/i18nextBrowserLanguageDetector.min.js"
-            onerror="console.error('[i18n] 加载 i18nextBrowserLanguageDetector 失败');"></script>
     <script src="https://cdn.jsdelivr.net/npm/i18next-http-backend@2.4.2/dist/umd/i18nextHttpBackend.min.js"
             onerror="console.error('[i18n] 加载 i18nextHttpBackend 失败');"></script>
     <!-- i18next 初始化脚本（包含诊断工具和 CDN 容错） -->
@@ -23,10 +21,9 @@
                 checkCount++;
                 
                 const i18nextLoaded = typeof i18next !== 'undefined';
-                const detectorLoaded = typeof i18nextBrowserLanguageDetector !== 'undefined';
                 const backendLoaded = typeof i18nextHttpBackend !== 'undefined';
                 
-                if (i18nextLoaded && detectorLoaded && backendLoaded) {
+                if (i18nextLoaded && backendLoaded) {
                     console.log('[i18n] ✅ 所有依赖库已加载');
                     // 加载初始化脚本
                     const script = document.createElement('script');
@@ -40,7 +37,6 @@
                     console.error('[i18n] ⚠️ 依赖库加载超时，尝试使用备用 CDN...');
                     console.log('[i18n] 加载状态:', {
                         i18next: i18nextLoaded,
-                        detector: detectorLoaded,
                         backend: backendLoaded
                     });
                     
@@ -87,7 +83,7 @@
             
             // 安全网：10秒后强制加载初始化脚本（即使依赖未加载）
             setTimeout(function() {
-                if (typeof window.setLocale === 'undefined') {
+                if (typeof window.t === 'undefined') {
                     console.warn('[i18n] ⚠️ 10秒后仍未初始化，强制加载初始化脚本');
                     const script = document.createElement('script');
                     script.src = '/static/i18n-i18next.js';
@@ -268,7 +264,7 @@
                 <option data-i18n="live2d.pleaseLoadModel">请先加载模型</option>
             </select>
             <button id="play-motion-btn" class="btn btn-primary btn-icon" disabled>
-                <img src="/static/icons/play_icon.png" alt="播放">
+                <img src="/static/icons/play_icon.png" alt="播放" data-i18n-alt="live2d.play">
                 <span data-i18n="live2d.play">播放</span>
             </button>
         </div>
@@ -281,7 +277,7 @@
                 <option data-i18n="live2d.pleaseLoadModel">请先加载模型</option>
             </select>
             <button id="play-expression-btn" class="btn btn-primary btn-icon" disabled>
-                <img src="/static/icons/play_icon.png" alt="播放">
+                <img src="/static/icons/play_icon.png" alt="播放" data-i18n-alt="live2d.play">
                 <span data-i18n="live2d.play">播放</span>
             </button>
         </div>
@@ -290,11 +286,11 @@
     <div class="control-group">
         <div style="display:flex; gap: 10px;">
             <button id="emotion-manager-btn" class="btn btn-primary btn-icon" disabled style="flex:1;">
-                <img src="/static/icons/emotion_config_icon.png" alt="情感配置">
+                <img src="/static/icons/emotion_config_icon.png" alt="情感配置" data-i18n-alt="live2d.emotionConfig">
                 <span data-i18n="live2d.emotionConfig">情感配置</span>
             </button>
             <button id="save-position-btn" class="btn btn-success btn-icon" disabled style="flex:1;">
-                <img src="/static/icons/save_settings.png" alt="保存设置">
+                <img src="/static/icons/save_settings.png" alt="保存设置" data-i18n-alt="live2d.saveSettings">
                 <span data-i18n="live2d.saveSettings">保存设置</span>
             </button>
         </div>
@@ -739,7 +735,7 @@
                 } catch (e) {
                     console.error('翻译函数调用失败:', e);
                     message = '您有未保存的设置，确定要离开吗？';
-                    title = '确认离开';
+                    title = window.t ? window.t('dialogs.confirmLeave') : '确认离开';
                 }
                 
                 const confirmLeave = await showConfirm(message, title, { danger: true });

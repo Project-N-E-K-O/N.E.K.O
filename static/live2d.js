@@ -2109,6 +2109,10 @@ class Live2DManager {
                 const label = document.createElement('label');
                 label.innerText = toggle.label;
                 label.htmlFor = `live2d-${toggle.id}`;
+                // 添加 data-i18n 属性，以便语言切换时自动更新
+                if (toggle.labelKey) {
+                    label.setAttribute('data-i18n', toggle.labelKey);
+                }
                 label.style.cursor = 'pointer';
                 label.style.userSelect = 'none';
                 label.style.fontSize = '13px';
@@ -2273,6 +2277,20 @@ class Live2DManager {
 						height: '24px'  // 与图标高度一致，确保垂直居中
 					});
 					menuItem.appendChild(labelText);
+					
+					// 存储更新函数以便语言切换时调用
+					if (item.labelKey) {
+						const updateLabelText = () => {
+							if (window.t) {
+								labelText.textContent = window.t(item.labelKey);
+								// 同时更新图标 alt 属性
+								if (item.icon && menuItem.querySelector('img')) {
+									menuItem.querySelector('img').alt = window.t(item.labelKey);
+								}
+							}
+						};
+						menuItem._updateLabelText = updateLabelText;
+					}
 					
 					menuItem.addEventListener('mouseenter', () => {
 						menuItem.style.background = 'rgba(79, 140, 255, 0.1)';
@@ -2713,6 +2731,30 @@ Live2DManager.prototype.applyPersistentExpressionsNative = async function() {
 // 创建全局 Live2D 管理器实例
 window.Live2DManager = Live2DManager;
 window.live2dManager = new Live2DManager();
+
+// 监听语言切换事件，更新所有动态创建的菜单项
+window.addEventListener('localechange', () => {
+    console.log('[live2d] 语言切换事件触发，更新所有弹出框文本');
+    // 更新所有弹出框中的文本
+    document.querySelectorAll('[id^="live2d-popup-"]').forEach(popup => {
+        // 更新所有带有 data-i18n 属性的元素
+        popup.querySelectorAll('[data-i18n]').forEach(element => {
+            const key = element.getAttribute('data-i18n');
+            if (key && window.t) {
+                const newText = window.t(key);
+                if (newText && newText !== key) {
+                    element.textContent = newText;
+                }
+            }
+        });
+        // 更新存储了更新函数的元素
+        popup.querySelectorAll('*').forEach(element => {
+            if (element._updateLabelText && typeof element._updateLabelText === 'function') {
+                element._updateLabelText();
+            }
+        });
+    });
+});
 
 // 兼容性：保持原有的全局变量和函数
 window.LanLan1 = window.LanLan1 || {};

@@ -1,6 +1,7 @@
 {
   "common": {
     "minimize": "Minimize",
+    "expand": "Expand",
     "close": "Close",
     "save": "Save",
     "cancel": "Cancel",
@@ -15,7 +16,8 @@
     "success": "Success",
     "warning": "Warning",
     "alert": "Alert",
-    "input": "Input"
+    "input": "Input",
+    "unavailable": "Unavailable"
   },
   "dialogs": {
     "confirmLeave": "Confirm Leave",
@@ -25,13 +27,17 @@
   },
   "chat": {
     "title": "💬 Chat",
+    "viewerTitle": "💬 Chat (Viewer Mode)",
     "tooltip": "✨ Chat Area",
     "textInputPlaceholder": "Text chat mode...Press Enter to send, Shift+Enter for new line",
     "send": "📤 Send",
     "screenshot": "📸 Screenshot",
     "takePhoto": "📷 Take Photo",
     "screenshotsTitle": "📸 Pending Screenshots",
-    "clearAll": "Clear All"
+    "clearAll": "Clear All",
+    "screenshotAlt": "Screenshot {index}",
+    "screenshotTitle": "Click to view screenshot {index}",
+    "removeScreenshot": "Remove this screenshot"
   },
     "voiceControl": {
     "startVoice": "🎤 Start Voice",
@@ -55,7 +61,10 @@
     "connected": "Connected",
     "disconnected": "Disconnected",
     "error": "Connection Error",
-    "reconnecting": "Reconnecting..."
+    "reconnecting": "Reconnecting...",
+    "notConnected": "Not Connected",
+    "connectionClosed": "Connection Closed",
+    "connectionError": "Connection Error"
   },
   "api": {
     "settings": "API Key Settings",
@@ -496,7 +505,14 @@
       "agentMaster": "Agent Master Switch",
       "keyboardControl": "Keyboard & Mouse Control",
       "mcpTools": "MCP Tools",
-      "focusMode": "🎯 Focus Mode"
+      "focusMode": "🎯 Focus Mode",
+      "unavailable": "Unavailable"
     }
+  },
+  "subtitle": {
+    "title": "Live Subtitle"
+  },
+  "viewer": {
+    "title": "Viewer - Project N.E.K.O."
   }
 }

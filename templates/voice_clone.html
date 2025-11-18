@@ -7,8 +7,6 @@
     <!-- i18next 核心库 -->
     <script src="https://cdn.jsdelivr.net/npm/i18next@23.7.6/dist/umd/i18next.min.js" 
             onerror="console.error('[i18n] 加载 i18next 失败');"></script>
-    <script src="https://cdn.jsdelivr.net/npm/i18next-browser-languagedetector@7.2.0/dist/umd/i18nextBrowserLanguageDetector.min.js"
-            onerror="console.error('[i18n] 加载 i18nextBrowserLanguageDetector 失败');"></script>
     <script src="https://cdn.jsdelivr.net/npm/i18next-http-backend@2.4.2/dist/umd/i18nextHttpBackend.min.js"
             onerror="console.error('[i18n] 加载 i18nextHttpBackend 失败');"></script>
     <!-- i18next 初始化脚本（包含诊断工具） -->
@@ -22,10 +20,9 @@
                 checkCount++;
                 
                 const i18nextLoaded = typeof i18next !== 'undefined';
-                const detectorLoaded = typeof i18nextBrowserLanguageDetector !== 'undefined';
                 const backendLoaded = typeof i18nextHttpBackend !== 'undefined';
                 
-                if (i18nextLoaded && detectorLoaded && backendLoaded) {
+                if (i18nextLoaded && backendLoaded) {
                     console.log('[i18n] ✅ 所有依赖库已加载');
                     // 加载初始化脚本
                     const script = document.createElement('script');
@@ -39,7 +36,6 @@
                     console.error('[i18n] ⚠️ 依赖库加载超时，尝试使用备用 CDN...');
                     console.log('[i18n] 加载状态:', {
                         i18next: i18nextLoaded,
-                        detector: detectorLoaded,
                         backend: backendLoaded
                     });
                     
@@ -86,7 +82,7 @@
             
             // 安全网：10秒后强制加载初始化脚本（即使依赖未加载）
             setTimeout(function() {
-                if (typeof window.setLocale === 'undefined') {
+                if (typeof window.t === 'undefined') {
                     console.warn('[i18n] ⚠️ 10秒后仍未初始化，强制加载初始化脚本');
                     const script = document.createElement('script');
                     script.src = '/static/i18n-i18next.js';

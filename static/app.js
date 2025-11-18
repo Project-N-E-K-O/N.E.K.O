@@ -740,7 +740,7 @@ function init_app(){
         if (stopButton.disabled) {
             // 检查是否在录音状态
             if (!isRecording) {
-                showStatusToast(window.t ? window.t('app.micRequired') : '请先开启麦克风！', 3000);
+                showStatusToast(window.t ? window.t('app.micRequired') : '请先开启麦克风录音！', 3000);
                 return;
             }
             await startScreenSharing();
@@ -1389,8 +1389,8 @@ function init_app(){
         const img = document.createElement('img');
         img.className = 'screenshot-thumbnail';
         img.src = dataUrl;
-        img.alt = `截图 ${screenshotCounter}`;
-        img.title = `点击查看截图 ${screenshotCounter}`;
+        img.alt = window.t ? window.t('chat.screenshotAlt', {index: screenshotCounter}) : `截图 ${screenshotCounter}`;
+        img.title = window.t ? window.t('chat.screenshotTitle', {index: screenshotCounter}) : `点击查看截图 ${screenshotCounter}`;
         
         // 点击缩略图可以在新标签页查看大图
         img.addEventListener('click', () => {
@@ -1401,7 +1401,7 @@ function init_app(){
         const removeBtn = document.createElement('button');
         removeBtn.className = 'screenshot-remove';
         removeBtn.innerHTML = '×';
-        removeBtn.title = '移除此截图';
+        removeBtn.title = window.t ? window.t('chat.removeScreenshot') : '移除此截图';
         removeBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             removeScreenshotFromList(item);
@@ -2068,10 +2068,10 @@ function init_app(){
                 
                 // 页面链接
                 const links = [
-                    { href: `/memory_browser`, text: '📝 记忆管理' },
-                    { href: `/chara_manager`, text: '👤 角色设置' },
-                    { href: `/l2d?lanlan_name=${lanlan_config.lanlan_name}`, text: '🎨 Live2D管理' },
-                    { href: `/api_key`, text: '🔑 API设置' }
+                    { href: `/memory_browser`, textKey: 'settings.menu.memoryManage', text: window.t ? window.t('settings.menu.memoryManage') : '📝 记忆管理' },
+                    { href: `/chara_manager`, textKey: 'settings.menu.characterSettings', text: window.t ? window.t('settings.menu.characterSettings') : '👤 角色设置' },
+                    { href: `/l2d?lanlan_name=${lanlan_config.lanlan_name}`, textKey: 'settings.menu.live2dManage', text: window.t ? window.t('settings.menu.live2dManage') : '🎨 Live2D管理' },
+                    { href: `/api_key`, textKey: 'settings.menu.apiSettings', text: window.t ? window.t('settings.menu.apiSettings') : '🔑 API设置' }
                 ];
                 
                 // 已打开的设置窗口引用映射（URL -> Window对象）
@@ -2161,6 +2161,24 @@ function init_app(){
                 
                 settingsPopupInitialized = true;
                 console.log('设置弹出框已初始化');
+                
+                // 监听语言切换事件，更新设置弹出框中的文本
+                const updateSettingsPopupTexts = () => {
+                    if (popup) {
+                        popup.querySelectorAll('[data-i18n]').forEach(element => {
+                            const key = element.getAttribute('data-i18n');
+                            if (key && window.t) {
+                                element.textContent = window.t(key);
+                            }
+                        });
+                    }
+                };
+                
+                // 立即更新一次（如果语言已切换）
+                updateSettingsPopupTexts();
+                
+                // 监听语言切换事件
+                window.addEventListener('localechange', updateSettingsPopupTexts);
             }
         }
     });
@@ -2336,7 +2354,7 @@ function init_app(){
                 if (!cb) continue;
                 const available = await checkCapability(capability, false);
                 cb.disabled = !available;
-                cb.title = available ? name : `${name}不可用`;
+                cb.title = available ? name : (window.t ? window.t('settings.toggles.unavailable', {name: name}) : `${name}不可用`);
             }
         };
         
@@ -2439,13 +2457,13 @@ function init_app(){
                         if (!agentKeyboardCheckbox) return;
                         const available = await checkCapability('computer_use', false);
                         agentKeyboardCheckbox.disabled = !available;
-                        agentKeyboardCheckbox.title = available ? '键鼠控制' : '键鼠控制不可用';
+                        agentKeyboardCheckbox.title = available ? (window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制') : (window.t ? window.t('settings.toggles.unavailable', {name: window.t('settings.toggles.keyboardControl')}) : '键鼠控制不可用');
                     })(),
                     (async () => {
                         if (!agentMcpCheckbox) return;
                         const available = await checkCapability('mcp', false);
                         agentMcpCheckbox.disabled = !available;
-                        agentMcpCheckbox.title = available ? 'MCP工具' : 'MCP工具不可用';
+                        agentMcpCheckbox.title = available ? (window.t ? window.t('settings.toggles.mcpTools') : 'MCP工具') : (window.t ? window.t('settings.toggles.unavailable', {name: window.t('settings.toggles.mcpTools')}) : 'MCP工具不可用');
                     })()
                 ]);
                 

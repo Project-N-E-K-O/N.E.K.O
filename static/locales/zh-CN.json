@@ -1,6 +1,7 @@
 {
   "common": {
     "minimize": "最小化",
+    "expand": "展开",
     "close": "关闭",
     "save": "保存",
     "cancel": "取消",
@@ -15,7 +16,8 @@
     "success": "成功",
     "warning": "警告",
     "alert": "提示",
-    "input": "输入"
+    "input": "输入",
+    "unavailable": "不可用"
   },
   "dialogs": {
     "confirmLeave": "确认离开",
@@ -25,13 +27,17 @@
   },
   "chat": {
     "title": "💬 对话",
+    "viewerTitle": "💬 对话 (观看模式)",
     "tooltip": "✨ 对话区",
     "textInputPlaceholder": "文字聊天模式...回车发送，Shift+回车换行",
     "send": "📤 发送",
     "screenshot": "📸 截图",
     "takePhoto": "📷 拍照",
     "screenshotsTitle": "📸 待发送截图",
-    "clearAll": "清空全部"
+    "clearAll": "清空全部",
+    "screenshotAlt": "截图 {index}",
+    "screenshotTitle": "点击查看截图 {index}",
+    "removeScreenshot": "移除此截图"
   },
     "voiceControl": {
     "startVoice": "🎤 开始语音",
@@ -55,7 +61,10 @@
     "connected": "已连接",
     "disconnected": "已断开连接",
     "error": "连接错误",
-    "reconnecting": "正在重连..."
+    "reconnecting": "正在重连...",
+    "notConnected": "未连接",
+    "connectionClosed": "连接断开",
+    "connectionError": "连接错误"
   },
   "api": {
     "settings": "API Key 设置",
@@ -479,7 +488,14 @@
       "agentMaster": "Agent总开关",
       "keyboardControl": "键鼠控制",
       "mcpTools": "MCP工具",
-      "focusMode": "🎯 允许打断"
+      "focusMode": "🎯 允许打断",
+      "unavailable": "不可用"
     }
+  },
+  "subtitle": {
+    "title": "实时字幕"
+  },
+  "viewer": {
+    "title": "Viewer - Project N.E.K.O."
   }
 }
