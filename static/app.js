@@ -2970,7 +2970,7 @@ function init_app(){
         connectWebSocket();
         
         // 更新页面标题
-        document.title = `${newCatgirl} Terminal - Project Lanlan`;
+        document.title = `${newCatgirl} Terminal - Project N.E.K.O.`;
         
         // 重新加载 Live2D 模型（强制重新加载，因为猫娘已切换）
         try {
