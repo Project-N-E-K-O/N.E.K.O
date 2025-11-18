@@ -10,8 +10,8 @@
             onerror="console.error('[i18n] 加载 i18next 失败');"></script>
     <script src="https://cdn.jsdelivr.net/npm/i18next-http-backend@2.4.2/dist/umd/i18nextHttpBackend.min.js"
             onerror="console.error('[i18n] 加载 i18nextHttpBackend 失败');"></script>
-    <!-- i18next 加载器和容错机制 -->
-    <script src="/static/i18next-loader.js"></script>
+    <!-- i18next 初始化脚本（包含 CDN 容错机制） -->
+    <script src="/static/i18n-i18next.js"></script>
     <style>
         body { background: transparent; margin:0; font-family: 'Segoe UI', Arial, sans-serif; pointer-events: none; }
         .container { max-width: 900px; margin: 30px auto; background: #fff; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: 24px 24px 18px 24px; pointer-events: auto; }

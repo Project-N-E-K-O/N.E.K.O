@@ -2,11 +2,14 @@
  * i18next 初始化文件
  * 使用成熟的 i18next 库管理本地化文本
  * 固定使用中文 (zh-CN)
+ * 包含 CDN 加载检查和容错机制
  * 
  * 使用方式：
  * 1. 在 HTML 中引入 i18next CDN：
- *    <script src="https://cdn.jsdelivr.net/npm/i18next@23.7.6/dist/umd/i18next.min.js"></script>
- *    <script src="https://cdn.jsdelivr.net/npm/i18next-http-backend@2.4.2/dist/umd/i18nextHttpBackend.min.js"></script>
+ *    <script src="https://cdn.jsdelivr.net/npm/i18next@23.7.6/dist/umd/i18next.min.js" 
+ *            onerror="console.error('[i18n] 加载 i18next 失败');"></script>
+ *    <script src="https://cdn.jsdelivr.net/npm/i18next-http-backend@2.4.2/dist/umd/i18nextHttpBackend.min.js"
+ *            onerror="console.error('[i18n] 加载 i18nextHttpBackend 失败');"></script>
  * 2. 然后引入此文件：
  *    <script src="/static/i18n-i18next.js"></script>
  */
@@ -16,6 +19,108 @@
     
     // 固定语言为中文
     const TARGET_LANGUAGE = 'zh-CN';
+    
+    // ==================== CDN 加载检查和容错机制 ====================
+    
+    /**
+     * 检查 CDN 依赖并初始化 i18next
+     */
+    function checkDependenciesAndInit() {
+        const i18nextLoaded = typeof i18next !== 'undefined';
+        const backendLoaded = typeof i18nextHttpBackend !== 'undefined';
+        
+        if (i18nextLoaded && backendLoaded) {
+            console.log('[i18n] ✅ 所有依赖库已加载');
+            // 依赖已加载，直接初始化
+            initI18next();
+        } else {
+            // 依赖未加载，尝试备用 CDN 或使用降级方案
+            console.error('[i18n] ⚠️ 依赖库未完全加载，尝试使用备用 CDN...');
+            console.log('[i18n] 加载状态:', {
+                i18next: i18nextLoaded,
+                backend: backendLoaded
+            });
+            
+            // 如果 i18nextHttpBackend 未加载，尝试备用 CDN
+            if (!backendLoaded) {
+                console.log('[i18n] 尝试从 unpkg CDN 加载 i18nextHttpBackend...');
+                const backupScript = document.createElement('script');
+                backupScript.src = 'https://unpkg.com/i18next-http-backend@2.4.2/dist/umd/i18nextHttpBackend.min.js';
+                backupScript.onload = function() {
+                    console.log('[i18n] ✅ 备用 CDN 加载成功');
+                    // 再次检查并初始化
+                    setTimeout(() => {
+                        if (typeof i18nextHttpBackend !== 'undefined') {
+                            initI18next();
+                        } else {
+                            initI18nextWithoutBackend();
+                        }
+                    }, 100);
+                };
+                backupScript.onerror = function() {
+                    console.error('[i18n] ❌ 备用 CDN 也加载失败，使用降级方案');
+                    initI18nextWithoutBackend();
+                };
+                document.head.appendChild(backupScript);
+            } else if (!i18nextLoaded) {
+                // i18next 未加载，无法继续
+                console.error('[i18n] ❌ i18next 核心库未加载，无法初始化');
+                exportFallbackFunctions();
+            } else {
+                // 其他情况，使用降级方案
+                initI18nextWithoutBackend();
+            }
+        }
+    }
+    
+    /**
+     * 等待依赖加载并初始化
+     */
+    function waitForDependenciesAndInit() {
+        let checkCount = 0;
+        const maxChecks = 50; // 最多检查 5 秒
+        
+        function checkDependencies() {
+            checkCount++;
+            
+            const i18nextLoaded = typeof i18next !== 'undefined';
+            const backendLoaded = typeof i18nextHttpBackend !== 'undefined';
+            
+            if (i18nextLoaded && backendLoaded) {
+                console.log('[i18n] ✅ 所有依赖库已加载');
+                initI18next();
+            } else if (checkCount < maxChecks) {
+                // 继续等待
+                setTimeout(checkDependencies, 100);
+            } else {
+                // 超时，使用容错机制
+                checkDependenciesAndInit();
+            }
+        }
+        
+        // 开始检查
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', checkDependencies);
+        } else {
+            checkDependencies();
+        }
+        
+        // 安全网：10秒后强制初始化（即使依赖未加载）
+        setTimeout(function() {
+            if (typeof window.t === 'undefined') {
+                console.warn('[i18n] ⚠️ 10秒后仍未初始化，强制初始化');
+                if (typeof i18next !== 'undefined') {
+                    if (typeof i18nextHttpBackend !== 'undefined') {
+                        initI18next();
+                    } else {
+                        initI18nextWithoutBackend();
+                    }
+                } else {
+                    exportFallbackFunctions();
+                }
+            }
+        }, 10000);
+    }
     
     // 诊断函数
     window.diagnoseI18n = function() {
@@ -61,27 +166,17 @@
         }
     };
     
-    // 检查 i18next 是否已加载
-    if (typeof i18next === 'undefined') {
-        console.error('[i18n] ❌ i18next is not loaded. Please include i18next CDN before this script.');
-        console.log('✅ 诊断工具已加载，可以使用 window.diagnoseI18n() 来诊断问题');
-        exportFallbackFunctions();
-        return;
-    }
-    
-    // 检查依赖库是否已加载
-    if (typeof i18nextHttpBackend === 'undefined') {
-        console.warn('[i18n] ⚠️ i18nextHttpBackend is not loaded.');
-        console.log('[i18n] 💡 使用手动加载翻译文件的方式');
-        initWithoutHttpBackend();
-        return;
-    }
-    
     /**
      * 不使用 HTTP Backend，手动加载翻译文件
      */
-    async function initWithoutHttpBackend() {
+    async function initI18nextWithoutBackend() {
         console.log('[i18n] 开始手动加载翻译文件...');
+        
+        if (typeof i18next === 'undefined') {
+            console.error('[i18n] ❌ i18next 核心库未加载，无法初始化');
+            exportFallbackFunctions();
+            return;
+        }
         
         try {
             // 只加载中文翻译文件
@@ -159,52 +254,74 @@
         };
     }
     
-    // 初始化 i18next
-    console.log('[i18n] 开始初始化 i18next...');
-    console.log('[i18n] 固定语言: 中文 (zh-CN)');
-    
-    try {
-        i18next
-            .use(i18nextHttpBackend)
-            .init({
-                lng: TARGET_LANGUAGE,
-                fallbackLng: TARGET_LANGUAGE,
-                supportedLngs: [TARGET_LANGUAGE],
-                ns: ['translation'],
-                defaultNS: 'translation',
-                backend: {
-                    loadPath: '/static/locales/{{lng}}.json',
-                    parse: function(data) {
-                        const parsed = JSON.parse(data);
-                        return { translation: parsed };
+    /**
+     * 初始化 i18next（使用 HTTP Backend）
+     */
+    function initI18next() {
+        if (typeof i18next === 'undefined') {
+            console.error('[i18n] ❌ i18next 核心库未加载，无法初始化');
+            exportFallbackFunctions();
+            return;
+        }
+        
+        if (typeof i18nextHttpBackend === 'undefined') {
+            console.warn('[i18n] ⚠️ i18nextHttpBackend 未加载，使用手动加载方式');
+            initI18nextWithoutBackend();
+            return;
+        }
+        
+        // 初始化 i18next
+        console.log('[i18n] 开始初始化 i18next...');
+        console.log('[i18n] 固定语言: 中文 (zh-CN)');
+        
+        try {
+            i18next
+                .use(i18nextHttpBackend)
+                .init({
+                    lng: TARGET_LANGUAGE,
+                    fallbackLng: TARGET_LANGUAGE,
+                    supportedLngs: [TARGET_LANGUAGE],
+                    ns: ['translation'],
+                    defaultNS: 'translation',
+                    backend: {
+                        loadPath: '/static/locales/{{lng}}.json',
+                        parse: function(data) {
+                            const parsed = JSON.parse(data);
+                            return { translation: parsed };
+                        }
+                    },
+                    detection: {
+                        order: [],
+                        caches: []
+                    },
+                    interpolation: {
+                        escapeValue: false
+                    },
+                    debug: false
+                }, function(err, t) {
+                    if (err) {
+                        console.error('[i18n] Initialization failed:', err);
+                        exportFallbackFunctions();
+                        return;
                     }
-                },
-                detection: {
-                    order: [],
-                    caches: []
-                },
-                interpolation: {
-                    escapeValue: false
-                },
-                debug: false
-            }, function(err, t) {
-                if (err) {
-                    console.error('[i18n] Initialization failed:', err);
-                    exportFallbackFunctions();
-                    return;
-                }
-                
-                console.log('[i18n] ✅ 初始化成功！');
-                console.log('[i18n] 当前语言:', i18next.language);
-                
-                updatePageTexts();
-                window.dispatchEvent(new CustomEvent('localechange'));
-                exportNormalFunctions();
-            });
-    } catch (error) {
-        console.error('[i18n] Fatal error during initialization:', error);
-        exportFallbackFunctions();
+                    
+                    console.log('[i18n] ✅ 初始化成功！');
+                    console.log('[i18n] 当前语言:', i18next.language);
+                    
+                    updatePageTexts();
+                    window.dispatchEvent(new CustomEvent('localechange'));
+                    exportNormalFunctions();
+                });
+        } catch (error) {
+            console.error('[i18n] Fatal error during initialization:', error);
+            exportFallbackFunctions();
+        }
     }
+    
+    // ==================== 启动初始化流程 ====================
+    
+    // 等待依赖加载并初始化
+    waitForDependenciesAndInit();
     
     /**
      * 导出正常函数（初始化成功后使用）
