@@ -12,6 +12,36 @@
             padding: 20px;
             color: #333;
         }
+        
+        /* 浏览器通知样式 */
+        .browser-notice {
+            display: flex;
+            align-items: flex-start;
+            background-color: #e8f4fd;
+            border: 1px solid #b8e2ff;
+            border-radius: 8px;
+            padding: 16px;
+            margin: 20px auto;
+            max-width: 600px;
+        }
+        
+        .notice-icon {
+            font-size: 24px;
+            margin-right: 12px;
+            margin-top: 2px;
+        }
+        
+        .notice-content h3 {
+            margin: 0 0 8px 0;
+            color: #0056b3;
+            font-size: 18px;
+        }
+        
+        .notice-content p {
+            margin: 6px 0;
+            color: #495057;
+            line-height: 1.5;
+        }
         .container {
             max-width: 1200px;
             margin: 0 auto;
@@ -313,6 +343,21 @@
             font-size: 12px;
             color: #888;
             margin-bottom: 8px;
+        }
+        /* 安装路径样式 */
+        .card-path {
+            max-height: 3em;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .path-text {
+            font-size: 11px;
+            color: #666;
+            word-break: break-all;
+            display: inline-block;
+            max-width: 100%;
+            vertical-align: middle;
         }
         
         /* 物品状态样式 */
@@ -647,20 +692,35 @@
             <div class="local-items-section">
                 <h2>管理本地物品</h2>
                 
-                <div class="form-group">
-                    <label for="scan-folder">扫描文件夹路径</label>
-                    <input type="text" id="scan-folder" placeholder="请选择创意工坊物品文件夹" aria-describedby="scan-folder-help" readonly>
-                    <input type="file" id="folder-selector" style="display: none;" webkitdirectory directory multiple>
-                    <small id="scan-folder-help">选择包含创意工坊物品的文件夹，例如: D:\Steam\steamapps\workshop\content\游戏ID</small>
+                <div style="display: flex; justify-content: flex-start; margin-bottom: 20px;">
+                    <button class="button" onclick="scanLocalItems()">扫描本地物品（使用默认路径）</button>
+                </div>
+                
+                <!-- 默认路径配置区域 -->
+                <div style="margin-top: 20px; padding: 15px; background-color: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6;">
+                    <h3 style="margin-top: 0; margin-bottom: 15px;">创意工坊默认路径配置</h3>
+                    
+                    <div style="margin-bottom: 10px;">
+                        <label style="display: block; margin-bottom: 5px;">默认创意工坊文件夹路径</label>
+                        <input type="text" id="default-workshop-folder" placeholder="默认创意工坊文件夹路径" style="width: 100%; padding: 8px;">
+                        <small style="color: #6c757d; font-size: 0.85rem; display: block; margin-top: 3px;">未指定扫描路径时将使用此默认路径</small>
+                    </div>
+                    
+                    <div style="margin-bottom: 15px;">
+                        <input type="checkbox" id="auto-create-folder" style="margin-right: 8px;">
+                        <label for="auto-create-folder">自动创建默认文件夹</label>
+                        <small style="color: #6c757d; font-size: 0.85rem; display: block; margin-top: 3px; margin-left: 24px;">当默认文件夹不存在时自动创建</small>
+                    </div>
+                    
                     <div style="display: flex; gap: 10px;">
-                        <button class="button button-sm" onclick="document.getElementById('folder-selector').click()">浏览...</button>
-                        <button class="button button-sm" onclick="scanLocalItems()">扫描物品</button>
+                        <button class="button button-sm" onclick="loadDefaultConfig()">加载当前配置</button>
+                        <button class="button button-sm" style="background-color: #28a745; color: white;" onclick="saveDefaultConfig()">保存配置</button>
                     </div>
                 </div>
                 
                 <div id="local-items-list" class="cards-container">
                     <div class="empty-state">
-                        <p>请选择并扫描一个包含创意工坊物品的文件夹</p>
+                        <p>请输入并扫描一个包含本地文件的文件夹</p>
                     </div>
                 </div>
             </div>
@@ -758,7 +818,7 @@
             // 查找预览图片
             async function findPreviewImage(folderPath) {
                 try {
-                    // 尝试查找常见的预览图片文件
+                    // 只使用指定的预览图片文件列表
                     const commonImageNames = ['preview.jpg', 'preview.png', 'thumbnail.jpg', 'thumbnail.png', 'icon.jpg', 'icon.png', 'header.jpg', 'header.png'];
                     
                     for (const imageName of commonImageNames) {
@@ -766,14 +826,6 @@
                         if (await doesFileExist(imagePath)) {
                             return imagePath;
                         }
-                    }
-                    
-                    // 如果找不到常见预览图，尝试使用API获取文件夹中的第一个图片文件
-                    const response = await fetch(`/api/find-first-image?folder=${encodeURIComponent(folderPath)}`);
-                    const result = await response.json();
-                    
-                    if (result.success && result.imagePath) {
-                        return result.imagePath;
                     }
                 } catch (error) {
                     console.error('查找预览图片失败:', error);
@@ -864,58 +916,117 @@
             }
         }
         
-        // 文件夹选择事件处理
-        document.getElementById('folder-selector').addEventListener('change', function(e) {
-            if (e.target.files && e.target.files.length > 0) {
-                // 获取选择的第一个文件夹的路径
-                const folderPath = e.target.files[0].webkitRelativePath ? 
-                    e.target.files[0].webkitRelativePath.split('/')[0] : 
-                    e.target.files[0].path;
-                
-                // 有些浏览器可能只返回文件名，需要提取完整路径
-                if (!folderPath.includes('\\') && !folderPath.includes('/')) {
-                    const fullPath = e.target.files[0].path;
-                    const pathParts = fullPath.split(/[\\/]/);
-                    // 移除最后一部分（文件名）
-                    pathParts.pop();
-                    document.getElementById('scan-folder').value = pathParts.join('\\');
-                } else {
-                    document.getElementById('scan-folder').value = folderPath;
-                }
-            }
-        });
+        // 提示：由于浏览器安全限制，浏览按钮仅提供路径输入提示
 
-        // 扫描本地物品
-        function scanLocalItems() {
-            const folderPath = document.getElementById('scan-folder').value.trim();
+        // 加载默认配置
+        function loadDefaultConfig() {
+            showMessage('正在加载当前配置...', 'info');
             
-            if (!folderPath) {
-                showMessage('请输入要扫描的文件夹路径', 'error');
+            fetch('/api/steam/workshop/config', {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                if (data.success) {
+                    // 填充表单
+                    const defaultFolder = data.config.default_workshop_folder || '';
+                    const autoCreate = data.config.auto_create_folder !== false; // 默认true
+                    
+                    document.getElementById('default-workshop-folder').value = defaultFolder;
+                    document.getElementById('auto-create-folder').checked = autoCreate;
+                    
+                    showMessage('配置加载成功', 'success');
+                } else {
+                    showMessage(`加载配置失败: ${data.error || '未知错误'}`, 'error');
+                }
+            })
+            .catch(error => {
+                console.error('加载配置时出错:', error);
+                showMessage(`加载配置时出错: ${error.message}`, 'error');
+            });
+        }
+        
+        // 保存默认配置
+        function saveDefaultConfig() {
+            const defaultFolder = document.getElementById('default-workshop-folder').value.trim();
+            const autoCreate = document.getElementById('auto-create-folder').checked;
+            
+            // 验证默认文件夹路径格式（如果提供了）
+            if (defaultFolder && defaultFolder.length < 3) {
+                showMessage('请输入有效的完整文件夹路径', 'error');
                 return;
             }
             
-            // 简化路径验证，只检查是否为空
-            // 文件管理器选择的路径通常已经是有效的
-            // 可以移除严格的格式验证，让后端API处理实际的路径验证
+            showMessage('正在保存配置...', 'info');
             
-            // 显示加载中消息
-            showMessage('正在扫描本地物品...', 'info');
+            fetch('/api/steam/workshop/config', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    default_workshop_folder: defaultFolder,
+                    auto_create_folder: autoCreate
+                })
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                if (data.success) {
+                    showMessage('配置保存成功', 'success');
+                } else {
+                    showMessage(`保存配置失败: ${data.error || '未知错误'}`, 'error');
+                }
+            })
+            .catch(error => {
+                console.error('保存配置时出错:', error);
+                showMessage(`保存配置时出错: ${error.message}`, 'error');
+            });
+        }
+        
+        // 扫描本地物品 - 现在仅使用默认路径
+        function scanLocalItems() {
+            // 直接使用默认路径，不再接受用户输入的路径
+            showMessage('正在扫描默认创意工坊路径...', 'info');
             
             // 调用API扫描本地文件夹中的物品
+            console.log('正在调用API扫描本地物品，使用默认路径');
+            
+            // 准备请求数据 - 空对象表示使用默认路径
+            const requestData = {};
+            console.log('请求数据:', requestData);
+            
             fetch('/api/steam/workshop/local-items/scan', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({ folder_path: folderPath })
+                body: JSON.stringify(requestData)
             })
             .then(response => {
+                console.log('API响应状态码:', response.status);
                 if (!response.ok) {
+                    console.error('API请求失败，状态码:', response.status);
                     throw new Error(`HTTP错误，状态码: ${response.status}`);
                 }
                 return response.json();
             })
             .then(data => {
+                // 检查是否使用了默认路径
+                const defaultPathUsed = data.default_path_used || usingDefaultPath;
+                
                 if (data.success) {
                     // 获取本地物品列表和创意工坊已发布物品信息
                     const localItems = data.local_items || [];
@@ -924,9 +1035,19 @@
                     // 更新UI显示本地物品
                     displayLocalItems(localItems, publishedItems);
                     
-                    showMessage(`成功扫描到 ${localItems.length} 个本地物品`, 'success');
+                    // 构建成功消息
+                    let successMessage = `成功扫描到 ${localItems.length} 个本地物品`;
+                    if (defaultPathUsed && data.folder_path) {
+                        successMessage += ` (使用默认路径: ${data.folder_path})`;
+                    }
+                    showMessage(successMessage, 'success');
                 } else {
-                    showMessage(`扫描失败: ${data.error || '未知错误'}`, 'error');
+                    // 构建错误消息
+                    let errorMessage = `扫描失败: ${data.error || '未知错误'}`;
+                    if (defaultPathUsed) {
+                        errorMessage += ' (尝试使用默认路径)';
+                    }
+                    showMessage(errorMessage, 'error');
                 }
             })
             .catch(error => {
@@ -1062,7 +1183,9 @@
                 }
                 
                 // 生成预览图片URL或使用默认图片
-                const previewUrl = item.previewImage ? item.previewImage : '../static/icons/Steam_icon_logo.png';
+                // 使用图片代理API访问本地图片，避免浏览器安全限制
+                // 确保Windows路径中的反斜杠正确编码
+                const previewUrl = item.previewImage ? `/api/proxy-image?image_path=${encodeURIComponent(item.previewImage.replace(/\\/g, '/'))}` : '../static/icons/Steam_icon_logo.png';
                 
                 // 生成卡片HTML
                 return `
@@ -1077,9 +1200,9 @@
                             
                             ${!isPublished ? `
                                 <div class="card-actions">
-                                    <button class="button" onclick="prepareItemForUpload('${item.id}')">准备上传</button>
-                                    <button class="button button-primary" onclick="quickUploadItem('${item.id}')">快速上传</button>
-                                </div>
+                                <button class="button" onclick="prepareItemForUpload('${item.id}', '${encodeURIComponent(item.path.replace(/\\/g, '/'))}')">准备上传</button>
+                                <button class="button button-primary" onclick="quickUploadItem('${item.id}', '${encodeURIComponent(item.path.replace(/\\/g, '/'))}')">快速上传</button>
+                            </div>
                             ` : `
                                 <div class="card-actions">
                                     <button class="button button-disabled" disabled>已发布</button>
@@ -1092,9 +1215,11 @@
         }
         
         // 准备物品上传
-        function prepareItemForUpload(itemId) {
+        function prepareItemForUpload(itemId, folderPath) {
+            // 确保路径格式一致（将Windows反斜杠转换为正斜杠以便正确编码）
+            const normalizedPath = folderPath.replace(/\\/g, '/');
             // 调用API获取物品详情
-            fetch(`/api/steam/workshop/local-items/${itemId}`)
+            fetch(`/api/steam/workshop/local-items/${itemId}?folder_path=${encodeURIComponent(normalizedPath)}`)
                 .then(response => {
                     if (!response.ok) {
                         throw new Error(`HTTP错误，状态码: ${response.status}`);
@@ -1129,7 +1254,7 @@
         }
         
         // 快速上传物品
-        async function quickUploadItem(itemId) {
+        async function quickUploadItem(itemId, folderPath) {
             try {
                 // 显示上传中状态
                 const button = event.target;
@@ -1138,8 +1263,14 @@
                     button.innerHTML = '<i class="fa fa-spinner fa-spin"></i> 上传中...';
                 }
                 
-                // 调用API获取物品详情
-                const itemResponse = await fetch(`/api/steam/workshop/local-items/${itemId}`);
+                // 显示路径验证通知
+                showMessage(`正在验证文件夹: ${folderPath}`, 'info');
+                
+                // 增强的路径规范化，支持Windows和其他系统
+                const normalizedPath = folderPath.replace(/\\/g, '/');
+                
+                // 调用API获取物品详情，这里会进行服务器端路径验证
+                const itemResponse = await fetch(`/api/steam/workshop/local-items/${itemId}?folder_path=${encodeURIComponent(normalizedPath)}`);
                 if (!itemResponse.ok) {
                     throw new Error(`HTTP错误，状态码: ${itemResponse.status}`);
                 }
@@ -1158,6 +1289,11 @@
                     if (!previewImage) {
                         showMessage('未找到预览图片，将尝试使用创意工坊默认图片机制', 'warning');
                     }
+                }
+                
+                // 确保预览图片路径格式一致
+                if (previewImage) {
+                    previewImage = previewImage.replace(/\\/g, '/');
                 }
                 
                 // 构建快速上传数据
@@ -1535,17 +1671,26 @@
         // 上传物品功能
         function uploadItem() {
             // 检查是否已从本地物品中选择内容
-            const contentFolder = document.getElementById('content-folder').value.trim();
-            const previewImage = document.getElementById('preview-image').value.trim();
+            let contentFolder = document.getElementById('content-folder').value.trim();
+            let previewImage = document.getElementById('preview-image').value.trim();
             
             if (!contentFolder) {
                 showMessage('请先在"管理本地物品"中选择要上传的物品', 'error');
                 return;
             }
             
+            // 增强的路径规范化处理
+            contentFolder = contentFolder.replace(/\\/g, '/');
+            if (previewImage) {
+                previewImage = previewImage.replace(/\\/g, '/');
+            }
+            
+            // 显示路径验证通知
+            showMessage(`正在验证文件夹路径: ${contentFolder}`, 'info');
+            
+            // 如果没有预览图片，仍然允许继续上传，后端会尝试自动查找或使用默认机制
             if (!previewImage) {
-                showMessage('预览图片路径不能为空，请确保您选择的本地物品包含预览图片', 'error');
-                return;
+                showMessage('未提供预览图片，后端将尝试自动查找或使用默认机制', 'warning');
             }
             
             // 验证表单
@@ -1729,16 +1874,20 @@
                         // 生成卡片HTML
                         subscriptionsList.innerHTML = data.items.map(item => {
                             // 格式化物品数据为前端所需格式
-                            const formattedItem = {
-                                id: item.publishedFileId.toString(),
-                                name: item.title,
-                                author: item.steamIDOwner.toString(), // 暂时使用SteamID作为作者名
-                                subscribedDate: new Date(item.timeAdded * 1000).toLocaleDateString(),
-                                lastUpdated: new Date(item.timeUpdated * 1000).toLocaleDateString(),
-                                size: formatFileSize(item.fileSize),
-                                previewUrl: item.previewImageUrl || '../static/icons/Steam_icon_logo.png',
-                                state: item.state
-                            };
+                        // 确保publishedFileId转换为字符串，避免类型错误
+                        const formattedItem = {
+                            id: String(item.publishedFileId),
+                            name: item.title || `未知物品_${String(item.publishedFileId)}`,
+                            author: item.steamIDOwner ? String(item.steamIDOwner) : '未知作者', // 暂时使用SteamID作为作者名
+                            subscribedDate: item.timeAdded ? new Date(item.timeAdded * 1000).toLocaleDateString() : '未知日期',
+                            lastUpdated: item.timeUpdated ? new Date(item.timeUpdated * 1000).toLocaleDateString() : '未知日期',
+                            size: formatFileSize(item.fileSizeOnDisk || item.fileSize || 0),
+                            previewUrl: item.previewImageUrl || '../static/icons/Steam_icon_logo.png',
+                            state: item.state || {},
+                            // 添加安装路径信息
+                            installedFolder: item.installedFolder || '',
+                            description: item.description || '暂无描述'
+                        };
                             
                             // 确定状态类和文本
                             let statusClass = 'status-subscribed';
@@ -1757,7 +1906,7 @@
                              
                             return `
                                 <div class="workshop-card">
-                                    <img src="${formattedItem.previewUrl}" alt="${formattedItem.name}" class="card-image">
+                                    <img src="${formattedItem.installedFolder ? `/api/proxy-image?image_path=${encodeURIComponent(formattedItem.installedFolder + '/preview.png')}` : `/api/proxy-image?image_path=${encodeURIComponent(formattedItem.previewUrl)}`}" alt="${formattedItem.name}" class="card-image">
                                     <div class="card-content">
                                         <h3 class="card-title">${formattedItem.name}</h3>
                                         <div class="status-badge ${statusClass}">${statusText}</div>
@@ -1768,6 +1917,9 @@
                                         <div class="card-info">订阅日期: ${formattedItem.subscribedDate}</div>
                                         <div class="card-info">上次更新: ${formattedItem.lastUpdated}</div>
                                         <div class="card-info">大小: ${formattedItem.size}</div>
+                                        ${formattedItem.installedFolder ? 
+                                            `<div class="card-info card-path">安装路径: <span class="path-text" title="${formattedItem.installedFolder}">${formattedItem.installedFolder}</span></div>` : ''
+                                        }
                                         ${formattedItem.state.downloading && item.downloadProgress ? 
                                             `<div class="download-progress">
                                                 <div class="progress-bar">
@@ -1991,7 +2143,7 @@ function viewItemDetails(itemId) {
             
             const detailContent = document.getElementById('itemDetailContent');
             detailContent.innerHTML = `
-                <img src="${formattedItem.previewUrl}" alt="${formattedItem.name}" class="item-preview-large">
+                <img src="${formattedItem.installedFolder ? `/api/proxy-image?image_path=${encodeURIComponent(formattedItem.installedFolder + '/preview.png')}` : `/api/proxy-image?image_path=${encodeURIComponent(formattedItem.previewUrl)}`}" alt="${formattedItem.name}" class="item-preview-large">
                 
                 <div class="item-info-grid">
                     <p class="item-info-item">

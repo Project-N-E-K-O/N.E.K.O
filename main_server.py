@@ -11,12 +11,121 @@ from datetime import datetime
 import webbrowser
 import io
 import threading
+import time
+from urllib.parse import quote, unquote
+
+# 默认的创意工坊物品文件夹路径
+DEFAULT_WORKSHOP_FOLDER = os.path.join(os.path.expanduser('~'), 'Documents', 'Xiao8', 'live2d')
+
+# 配置文件名
+WORKSHOP_CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config', 'workshop_config.json')
+
+# 配置数据
+workshop_config = {}
+
+def load_workshop_config():
+    """
+    加载创意工坊配置
+    """
+    global workshop_config
+    try:
+        if os.path.exists(WORKSHOP_CONFIG_FILE):
+            with open(WORKSHOP_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                workshop_config = json.load(f)
+                print(f"成功加载创意工坊配置: {workshop_config}")
+        else:
+            # 如果配置文件不存在，创建默认配置
+            workshop_config = {
+                "default_workshop_folder": DEFAULT_WORKSHOP_FOLDER,
+                "auto_create_folder": True
+            }
+            save_workshop_config()
+            print(f"创建默认创意工坊配置: {workshop_config}")
+    except Exception as e:
+        error_msg = f"加载创意工坊配置失败: {e}"
+        print(error_msg)
+        if 'logger' in globals():
+            logger.error(error_msg)
+        # 使用默认配置
+        workshop_config = {
+            "default_workshop_folder": DEFAULT_WORKSHOP_FOLDER,
+            "auto_create_folder": True
+        }
+
+def save_workshop_config():
+    """
+    保存创意工坊配置
+    """
+    try:
+        # 确保配置文件目录存在
+        os.makedirs(os.path.dirname(WORKSHOP_CONFIG_FILE), exist_ok=True)
+        with open(WORKSHOP_CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(workshop_config, f, indent=4, ensure_ascii=False)
+        print(f"成功保存创意工坊配置: {workshop_config}")
+        if 'logger' in globals():
+            logger.info(f"成功保存创意工坊配置: {workshop_config}")
+    except Exception as e:
+        error_msg = f"保存创意工坊配置失败: {e}"
+        print(error_msg)
+        if 'logger' in globals():
+            logger.error(error_msg)
+
+def ensure_workshop_folder_exists(folder_path=None):
+    """
+    确保创意工坊文件夹存在，如果不存在则自动创建
+    总是确保使用绝对路径
+    """
+    # 确定目标文件夹路径
+    raw_folder = folder_path or workshop_config.get("default_workshop_folder", DEFAULT_WORKSHOP_FOLDER)
+    
+    # 确保路径是绝对路径，如果不是则转换
+    if not os.path.isabs(raw_folder):
+        # 如果是相对路径，尝试以用户主目录为基础
+        base_dir = os.path.expanduser('~')
+        target_folder = os.path.join(base_dir, raw_folder)
+        logger.info(f'检测到相对路径: {raw_folder}，已转换为基于用户主目录的绝对路径: {target_folder}')
+    else:
+        target_folder = raw_folder
+    
+    # 标准化路径
+    target_folder = os.path.normpath(target_folder)
+    logger.info(f'ensure_workshop_folder_exists - 最终处理的目标文件夹: {target_folder}')
+    logger.info(f'目标路径是否为绝对路径: {os.path.isabs(target_folder)}')
+    
+    if not os.path.exists(target_folder):
+        if workshop_config.get("auto_create_folder", True):
+            try:
+                # 使用exist_ok=True确保即使中间目录不存在也能创建
+                os.makedirs(target_folder, exist_ok=True)
+                print(f"自动创建创意工坊文件夹: {target_folder}")
+                if 'logger' in globals():
+                    logger.info(f"自动创建创意工坊文件夹: {target_folder}")
+                # 再次检查文件夹是否存在，确认创建成功
+                if os.path.exists(target_folder):
+                    logger.info(f"文件夹创建成功并确认存在: {target_folder}")
+                else:
+                    logger.warning(f"文件夹创建后检查失败，可能存在权限问题: {target_folder}")
+                return True
+            except Exception as e:
+                error_msg = f"创建创意工坊文件夹失败: {e}"
+                print(error_msg)
+                if 'logger' in globals():
+                    logger.error(error_msg)
+                return False
+        else:
+            warning_msg = f"创意工坊文件夹不存在，且自动创建功能未启用: {target_folder}"
+            print(warning_msg)
+            if 'logger' in globals():
+                logger.warning(warning_msg)
+            return False
+    return True
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, File, UploadFile, Form, Body
 from fastapi.staticfiles import StaticFiles
 from main_helper import core as core, cross_server as cross_server
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
+from urllib.parse import unquote
 from utils.preferences import load_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top
 from utils.frontend_utils import find_models, find_model_config_file, find_model_directory
 from multiprocessing import Process, Queue, Event
@@ -34,6 +143,7 @@ from utils.config_manager import get_config_manager
 os.add_dll_directory(os.getcwd())
 from steamworks import STEAMWORKS
 from steamworks.exceptions import SteamNotLoadedException
+from steamworks.enums import EWorkshopFileType, EItemUpdateStatus
 # 确定 templates 目录位置（支持 PyInstaller 打包）
 if getattr(sys, 'frozen', False):
     # 打包后运行：从 _MEIPASS 读取
@@ -46,18 +156,37 @@ templates = Jinja2Templates(directory=template_dir)
 
 def initialize_steamworks():
     try:
+        # 明确读取steam_appid.txt文件以获取应用ID
+        app_id = None
+        if os.path.exists('steam_appid.txt'):
+            with open('steam_appid.txt', 'r') as f:
+                app_id = f.read().strip()
+            print(f"从steam_appid.txt读取到应用ID: {app_id}")
+        
+        # 创建并初始化Steamworks实例
         steamworks = STEAMWORKS()
+        # 显示Steamworks初始化过程的详细日志
+        print("正在初始化Steamworks...")
         steamworks.initialize()
+        
+        # 初始化后再次获取应用ID以确认
+        actual_app_id = steamworks.app_id
+        print(f"Steamworks初始化完成，实际使用的应用ID: {actual_app_id}")
+        
         # 检查全局logger是否已初始化，如果已初始化则记录成功信息
         if 'logger' in globals():
-            logger.info("Steamworks initialized successfully")
+            logger.info(f"Steamworks初始化成功，应用ID: {actual_app_id}")
+            logger.info(f"Steam客户端运行状态: {steamworks.IsSteamRunning()}")
+            logger.info(f"Steam覆盖层启用状态: {steamworks.IsOverlayEnabled()}")
+        
         return steamworks
     except Exception as e:
         # 检查全局logger是否已初始化，如果已初始化则记录错误，否则使用print
+        error_msg = f"初始化Steamworks失败: {e}"
         if 'logger' in globals():
-            logger.error(f"Failed to initialize Steamworks: {e}")
+            logger.error(error_msg)
         else:
-            print(f"Failed to initialize Steamworks: {e}")
+            print(error_msg)
         return None
 
 def get_default_steam_info():
@@ -1054,7 +1183,7 @@ async def steam_workshop_manager_page(request: Request, lanlan_name: str = ""):
 async def get_subscribed_workshop_items():
     """
     获取用户订阅的Steam创意工坊物品列表
-    返回包含物品ID、标题、描述、作者信息等的JSON数据
+    返回包含物品ID、基本信息和状态的JSON数据
     """
     global steamworks
     
@@ -1081,73 +1210,350 @@ async def get_subscribed_workshop_items():
         
         # 获取订阅物品ID列表
         subscribed_items = steamworks.Workshop.GetSubscribedItems()
+        logger.info(f'获取到 {len(subscribed_items)} 个订阅的创意工坊物品')
         
         # 存储处理后的物品信息
         items_info = []
         
-        # 为每个物品获取详细信息
+        # 为每个物品获取基本信息和状态
         for item_id in subscribed_items:
             try:
+                # 确保item_id是整数类型
+                if isinstance(item_id, str):
+                    try:
+                        item_id = int(item_id)
+                    except ValueError:
+                        logger.error(f"无效的物品ID: {item_id}")
+                        continue
+                
+                logger.info(f'正在处理物品ID: {item_id}')
+                
                 # 获取物品状态
                 item_state = steamworks.Workshop.GetItemState(item_id)
+                logger.debug(f'物品 {item_id} 状态: {item_state}')
                 
-                # 创建查询请求
-                handle = steamworks.Workshop.CreateQueryUGCDetailsRequest()
-                steamworks.Workshop.AddPublishedFileIDToQuery(handle, item_id)
+                # 初始化基本物品信息（确保所有字段都有默认值）
+                # 确保publishedFileId始终为字符串类型，避免前端toString()错误
+                item_info = {
+                    "publishedFileId": str(item_id),
+                    "title": f"未知物品_{item_id}",
+                    "description": "无法获取详细描述",
+                    "tags": [],
+                    "state": {
+                        "subscribed": bool(item_state & 1),  # EItemState.SUBSCRIBED
+                        "legacyItem": bool(item_state & 2),
+                        "installed": False,
+                        "needsUpdate": bool(item_state & 8),  # EItemState.NEEDS_UPDATE
+                        "downloading": False,
+                        "downloadPending": bool(item_state & 32),  # EItemState.DOWNLOAD_PENDING
+                        "isWorkshopItem": bool(item_state & 128)  # EItemState.IS_WORKSHOP_ITEM
+                    },
+                    "installedFolder": None,
+                    "fileSizeOnDisk": 0,
+                    "downloadProgress": {
+                        "bytesDownloaded": 0,
+                        "bytesTotal": 0,
+                        "percentage": 0
+                    },
+                    # 添加额外的时间戳信息 - 使用datetime替代time模块避免命名冲突
+                    "timeAdded": int(datetime.now().timestamp()),
+                    "timeUpdated": int(datetime.now().timestamp())
+                }
                 
-                # 发送查询请求
-                success = steamworks.Workshop.SendQueryUGCRequest(handle)
-                if success:
-                    # 获取查询结果
-                    result = steamworks.Workshop.GetQueryUGCResult(handle)
+                # 尝试获取物品安装信息（如果已安装）
+                try:
+                    logger.debug(f'获取物品 {item_id} 的安装信息')
+                    result = steamworks.Workshop.GetItemInstallInfo(item_id)
                     
-                    if result:
-                        # 获取物品安装信息（如果已安装）
-                        installed, folder, size = steamworks.Workshop.GetItemInstallInfo(item_id)
+                    # 检查返回值的结构 - 支持字典格式（根据日志显示）
+                    if isinstance(result, dict):
+                        logger.debug(f'物品 {item_id} 安装信息字典: {result}')
                         
-                        # 获取物品下载信息（如果正在下载）
-                        downloading, bytes_downloaded, bytes_total = steamworks.Workshop.GetItemDownloadInfo(item_id)
+                        # 从字典中提取信息
+                        item_info["state"]["installed"] = True  # 如果返回字典，假设已安装
+                        # 获取安装路径 - workshop.py中已经将folder解码为字符串
+                        folder_path = result.get('folder', '')
+                        item_info["installedFolder"] = str(folder_path) if folder_path else None
+                        logger.debug(f'物品 {item_id} 的安装路径: {item_info["installedFolder"]}')
                         
-                        # 构建物品信息字典
-                        item_info = {
-                            "publishedFileId": item_id,
-                            "title": result.title,
-                            "description": result.description,
-                            "steamIDOwner": result.steamIDOwner,
-                            "timeCreated": result.timeCreated,
-                            "timeUpdated": result.timeUpdated,
-                            "previewImageUrl": result.previewImageUrl,
-                            "fileUrl": result.fileUrl,
-                            "fileSize": result.fileSize,
-                            "fileId": result.fileId,
-                            "previewFileId": result.previewFileId,
-                            "appID": result.appID,
-                            "tags": [],  # SteamWorkshop类没有直接提供标签获取方法
-                            "state": {
-                                "subscribed": bool(item_state & 1),  # EItemState.SUBSCRIBED
-                                "legacyItem": bool(item_state & 2),
-                                "installed": installed,
-                                "needsUpdate": bool(item_state & 8),  # EItemState.NEEDS_UPDATE
-                                "downloading": downloading,
-                                "downloadPending": bool(item_state & 32),  # EItemState.DOWNLOAD_PENDING
-                                "isWorkshopItem": bool(item_state & 128)  # EItemState.IS_WORKSHOP_ITEM
-                            },
-                            "installedFolder": folder if installed else None,
-                            "fileSizeOnDisk": size if installed else 0,
-                            "downloadProgress": {
-                                "bytesDownloaded": bytes_downloaded if downloading else 0,
-                                "bytesTotal": bytes_total if downloading else 0,
-                                "percentage": (bytes_downloaded / bytes_total * 100) if bytes_total > 0 and downloading else 0
-                            }
-                        }
+                        # 处理磁盘大小 - 根据workshop.py的实现，disk_size是ctypes指针对象
+                        disk_size = result.get('disk_size')
+                        try:
+                            # 从ctypes指针对象中获取整数值
+                            if hasattr(disk_size, 'value'):
+                                item_info["fileSizeOnDisk"] = int(disk_size.value)
+                            else:
+                                item_info["fileSizeOnDisk"] = 0
+                        except:
+                            logger.warning(f'无法获取物品 {item_id} 的磁盘大小值')
+                            item_info["fileSizeOnDisk"] = 0
+                    # 也支持元组格式作为备选
+                    elif isinstance(result, tuple) and len(result) >= 3:
+                        installed, folder, size = result
+                        logger.debug(f'物品 {item_id} 安装状态: 已安装={installed}, 路径={folder}, 大小={size}')
                         
-                        items_info.append(item_info)
+                        # 安全的类型转换
+                        item_info["state"]["installed"] = bool(installed)
+                        item_info["installedFolder"] = str(folder) if folder and isinstance(folder, (str, bytes)) else None
+                        
+                        # 处理大小值
+                        if isinstance(size, (int, float)):
+                            item_info["fileSizeOnDisk"] = int(size)
+                        else:
+                            item_info["fileSizeOnDisk"] = 0
+                    else:
+                        logger.warning(f'物品 {item_id} 的安装信息返回格式未知: {type(result)} - {result}')
+                        item_info["state"]["installed"] = False
+                except Exception as e:
+                    logger.warning(f'获取物品 {item_id} 安装信息失败: {e}')
+                    item_info["state"]["installed"] = False
+                
+                # 尝试获取物品下载信息（如果正在下载）
+                try:
+                    logger.debug(f'获取物品 {item_id} 的下载信息')
+                    result = steamworks.Workshop.GetItemDownloadInfo(item_id)
                     
-                    # 释放查询句柄
-                    steamworks.Workshop.ReleaseQueryUGCRequest(handle)
+                    # 检查返回值的结构 - 支持字典格式（与安装信息保持一致）
+                    if isinstance(result, dict):
+                        logger.debug(f'物品 {item_id} 下载信息字典: {result}')
+                        
+                        # 假设字典格式中可能包含的键
+                        downloading = result.get('downloading', False)
+                        item_info["state"]["downloading"] = bool(downloading)
+                        
+                        # 如果正在下载，尝试获取下载进度信息
+                        if downloading:
+                            # 获取已下载和总字节数
+                            bytes_downloaded = result.get('bytes_downloaded', 0)
+                            bytes_total = result.get('bytes_total', 0)
+                            
+                            # 处理ctypes对象和其他类型
+                            try:
+                                # 处理已下载字节数
+                                if hasattr(bytes_downloaded, 'value'):
+                                    bd_value = int(bytes_downloaded.value)
+                                elif isinstance(bytes_downloaded, (int, float)):
+                                    bd_value = int(bytes_downloaded)
+                                else:
+                                    bd_value = 0
+                                
+                                # 处理总字节数
+                                if hasattr(bytes_total, 'value'):
+                                    bt_value = int(bytes_total.value)
+                                elif isinstance(bytes_total, (int, float)):
+                                    bt_value = int(bytes_total)
+                                else:
+                                    bt_value = 0
+                                
+                                item_info["downloadProgress"] = {
+                                    "bytesDownloaded": bd_value,
+                                    "bytesTotal": bt_value,
+                                    "percentage": (bd_value / bt_value * 100) if bt_value > 0 else 0
+                                }
+                            except:
+                                item_info["downloadProgress"] = {
+                                    "bytesDownloaded": 0,
+                                    "bytesTotal": 0,
+                                    "percentage": 0
+                                }
+                    # 也支持元组格式作为备选
+                    elif isinstance(result, tuple) and len(result) >= 3:
+                        downloading, bytes_downloaded, bytes_total = result
+                        logger.debug(f'物品 {item_id} 下载状态: 下载中={downloading}, 已下载={bytes_downloaded}, 总计={bytes_total}')
+                        
+                        # 确保下载状态是布尔值
+                        downloading = bool(downloading)
+                        item_info["state"]["downloading"] = downloading
+                        
+                        # 处理字节数值
+                        if downloading:
+                            # 处理ctypes对象和其他类型
+                            try:
+                                # 处理已下载字节数
+                                if hasattr(bytes_downloaded, 'value'):
+                                    bd_value = int(bytes_downloaded.value)
+                                elif isinstance(bytes_downloaded, (int, float)):
+                                    bd_value = int(bytes_downloaded)
+                                else:
+                                    bd_value = 0
+                                
+                                # 处理总字节数
+                                if hasattr(bytes_total, 'value'):
+                                    bt_value = int(bytes_total.value)
+                                elif isinstance(bytes_total, (int, float)):
+                                    bt_value = int(bytes_total)
+                                else:
+                                    bt_value = 0
+                                
+                                item_info["downloadProgress"] = {
+                                    "bytesDownloaded": bd_value,
+                                    "bytesTotal": bt_value,
+                                    "percentage": (bd_value / bt_value * 100) if bt_value > 0 else 0
+                                }
+                            except:
+                                item_info["downloadProgress"] = {
+                                    "bytesDownloaded": 0,
+                                    "bytesTotal": 0,
+                                    "percentage": 0
+                                }
+                    else:
+                        logger.warning(f'物品 {item_id} 的下载信息返回格式未知: {type(result)} - {result}')
+                        item_info["state"]["downloading"] = False
+                except Exception as e:
+                    logger.warning(f'获取物品 {item_id} 下载信息失败: {e}')
+                    item_info["state"]["downloading"] = False
+                
+                # 尝试获取物品详细信息（标题、描述等）- 使用官方推荐的方式
+                try:
+                    # 使用官方推荐的CreateQueryUGCDetailsRequest和SendQueryUGCRequest方法
+                    logger.debug(f'使用官方推荐方法获取物品 {item_id} 的详细信息')
+                    
+                    # 创建UGC详情查询请求
+                    query_handle = steamworks.Workshop.CreateQueryUGCDetailsRequest([item_id])
+                    
+                    if query_handle:
+                        # 设置回调函数
+                        details_received = False
+                        
+                        def query_completed_callback(result):
+                            nonlocal details_received
+                            details_received = True
+                            # 回调结果会在主线程中通过GetQueryUGCResult获取
+                            pass
+                        
+                        # 设置回调
+                        steamworks.Workshop.SetQueryUGCRequestCallback(query_completed_callback)
+                        
+                        # 发送查询请求
+                        steamworks.Workshop.SendQueryUGCRequest(query_handle)
+                        
+                        # 等待查询完成（简单的轮询方式）
+                        import time
+                        timeout = 2  # 2秒超时
+                        start_time = time.time()
+                        
+                        # 由于这是异步回调，我们简单地等待一小段时间让查询有机会完成
+                        time.sleep(0.5)  # 等待0.5秒
+                        
+                        try:
+                            # 尝试获取查询结果
+                            result = steamworks.Workshop.GetQueryUGCResult(query_handle, 0)
+                            if result:
+                                # 从结果中提取信息
+                                if hasattr(result, 'title') and result.title:
+                                    item_info['title'] = result.title.decode('utf-8', errors='replace')
+                                if hasattr(result, 'description') and result.description:
+                                    item_info['description'] = result.description.decode('utf-8', errors='replace')
+                                # 获取创建和更新时间
+                                if hasattr(result, 'timeCreated'):
+                                    item_info['timeAdded'] = int(result.timeCreated)
+                                if hasattr(result, 'timeUpdated'):
+                                    item_info['timeUpdated'] = int(result.timeUpdated)
+                                # 获取作者信息
+                                if hasattr(result, 'steamIDOwner'):
+                                    item_info['steamIDOwner'] = str(result.steamIDOwner)
+                                # 获取文件大小信息
+                                if hasattr(result, 'fileSize'):
+                                    item_info['fileSizeOnDisk'] = int(result.fileSize)
+                                
+                                logger.info(f"成功获取物品 {item_id} 的详情信息")
+                        except Exception as query_error:
+                            logger.warning(f"获取查询结果时出错: {query_error}")
+                except Exception as api_error:
+                    logger.warning(f"使用官方API获取物品 {item_id} 详情时出错: {api_error}")
+                
+                # 作为备选方案，如果本地有安装路径，尝试从本地文件获取信息
+                if item_info['title'].startswith('未知物品_') or not item_info['description']:
+                    install_folder = item_info.get('installedFolder')
+                    if install_folder and os.path.exists(install_folder):
+                        logger.debug(f'尝试从安装文件夹获取物品信息: {install_folder}')
+                        # 查找可能的配置文件来获取更多信息
+                        config_files = [
+                            os.path.join(install_folder, "config.json"),
+                            os.path.join(install_folder, "package.json"),
+                            os.path.join(install_folder, "info.json"),
+                            os.path.join(install_folder, "manifest.json"),
+                            os.path.join(install_folder, "README.md"),
+                            os.path.join(install_folder, "README.txt")
+                        ]
+                        
+                        for config_path in config_files:
+                            if os.path.exists(config_path):
+                                try:
+                                    with open(config_path, 'r', encoding='utf-8') as f:
+                                        if config_path.endswith('.json'):
+                                            config_data = json.load(f)
+                                            # 尝试从配置文件中提取标题和描述
+                                            if "title" in config_data and config_data["title"]:
+                                                item_info["title"] = config_data["title"]
+                                            elif "name" in config_data and config_data["name"]:
+                                                item_info["title"] = config_data["name"]
+                                            
+                                            if "description" in config_data and config_data["description"]:
+                                                item_info["description"] = config_data["description"]
+                                        else:
+                                            # 对于文本文件，将第一行作为标题
+                                            first_line = f.readline().strip()
+                                            if first_line and item_info['title'].startswith('未知物品_'):
+                                                item_info['title'] = first_line[:100]  # 限制长度
+                                    logger.info(f"从本地文件 {os.path.basename(config_path)} 成功获取物品 {item_id} 的信息")
+                                    break
+                                except Exception as file_error:
+                                    logger.warning(f"读取配置文件 {config_path} 时出错: {file_error}")
+                # 移除了没有对应try块的except语句
+                
+                # 确保publishedFileId是字符串类型
+                item_info['publishedFileId'] = str(item_info['publishedFileId'])
+                
+                # 尝试获取预览图信息 - 优先从本地文件夹查找
+                preview_url = None
+                install_folder = item_info.get('installedFolder')
+                if install_folder and os.path.exists(install_folder):
+                    try:
+                        # 使用辅助函数查找预览图
+                        preview_image_path = find_preview_image_in_folder(install_folder)
+                        if preview_image_path:
+                            # 为前端提供代理访问的路径格式
+                            # 需要将路径标准化，确保可以通过proxy-image API访问
+                            if os.name == 'nt':
+                                # Windows路径处理
+                                proxy_path = preview_image_path.replace('\\', '/')
+                            else:
+                                proxy_path = preview_image_path
+                            preview_url = f"/api/proxy-image?image_path={quote(proxy_path)}"
+                            logger.debug(f'为物品 {item_id} 找到本地预览图: {preview_url}')
+                    except Exception as preview_error:
+                        logger.warning(f'查找物品 {item_id} 预览图时出错: {preview_error}')
+                
+                # 添加预览图URL到物品信息
+                if preview_url:
+                    item_info['previewUrl'] = preview_url
+                
+                # 添加物品信息到结果列表
+                items_info.append(item_info)
+                logger.debug(f'物品 {item_id} 信息已添加到结果列表: {item_info["title"]}')
                 
             except Exception as item_error:
-                logger.error(f"获取物品 {item_id} 详细信息时出错: {item_error}")
+                logger.error(f"获取物品 {item_id} 信息时出错: {item_error}")
+                # 即使出错，也添加一个最基本的物品信息到列表中
+                try:
+                    basic_item_info = {
+                        "publishedFileId": str(item_id),  # 确保是字符串类型
+                        "title": f"未知物品_{item_id}",
+                        "description": "无法获取详细信息",
+                        "state": {
+                            "subscribed": True,
+                            "installed": False,
+                            "downloading": False,
+                            "needsUpdate": False,
+                            "error": True
+                        },
+                        "error_message": str(item_error)
+                    }
+                    items_info.append(basic_item_info)
+                    logger.info(f'已添加物品 {item_id} 的基本信息到结果列表')
+                except Exception as basic_error:
+                    logger.error(f"添加基本物品信息也失败了: {basic_error}")
                 # 继续处理下一个物品
                 continue
         
@@ -1162,6 +1568,73 @@ async def get_subscribed_workshop_items():
         return JSONResponse({
             "success": False,
             "error": f"获取订阅物品失败: {str(e)}"
+        }, status_code=500)
+
+@app.get('/api/steam/workshop/item/{item_id}/path')
+async def get_workshop_item_path(item_id: str):
+    """
+    获取单个Steam创意工坊物品的下载路径
+    此API端点专门用于在管理页面中获取物品的安装路径
+    """
+    global steamworks
+    
+    # 检查Steamworks是否初始化成功
+    if steamworks is None:
+        return JSONResponse({
+            "success": False,
+            "error": "Steamworks未初始化",
+            "message": "请确保Steam客户端已运行且已登录"
+        }, status_code=503)
+    
+    try:
+        # 转换item_id为整数
+        item_id_int = int(item_id)
+        
+        # 获取物品安装信息
+        install_info = steamworks.Workshop.GetItemInstallInfo(item_id_int)
+        
+        if not install_info:
+            return JSONResponse({
+                "success": False,
+                "error": "物品未安装",
+                "message": f"物品 {item_id} 尚未安装或安装信息不可用"
+            }, status_code=404)
+        
+        # 提取安装路径
+        folder_path = install_info.get('folder', '')
+        
+        # 构建响应
+        response = {
+            "success": True,
+            "item_id": item_id,
+            "installed": True,
+            "path": folder_path,
+            "full_path": folder_path  # 完整路径，与path保持一致
+        }
+        
+        # 如果有磁盘大小信息，也一并返回
+        if 'disk_size' in install_info:
+            try:
+                disk_size = install_info['disk_size']
+                if hasattr(disk_size, 'value'):
+                    response['size_on_disk'] = int(disk_size.value)
+            except:
+                pass
+        
+        return response
+        
+    except ValueError:
+        return JSONResponse({
+            "success": False,
+            "error": "无效的物品ID",
+            "message": "物品ID必须是有效的数字"
+        }, status_code=400)
+    except Exception as e:
+        logger.error(f"获取物品 {item_id} 路径时出错: {e}")
+        return JSONResponse({
+            "success": False,
+            "error": "获取路径失败",
+            "message": str(e)
         }, status_code=500)
 
 @app.get('/api/steam/workshop/item/{item_id}')
@@ -1198,11 +1671,42 @@ async def get_workshop_item_details(item_id: str):
             result = steamworks.Workshop.GetQueryUGCResult(handle)
             
             if result:
-                # 获取物品安装信息
-                installed, folder, size = steamworks.Workshop.GetItemInstallInfo(item_id_int)
+                # 获取物品安装信息 - 支持字典格式（根据workshop.py的实现）
+                install_info = steamworks.Workshop.GetItemInstallInfo(item_id_int)
+                installed = bool(install_info)
+                folder = install_info.get('folder', '') if installed else ''
+                size = 0
+                if installed and 'disk_size' in install_info:
+                    try:
+                        if hasattr(install_info['disk_size'], 'value'):
+                            size = int(install_info['disk_size'].value)
+                    except:
+                        size = 0
                 
                 # 获取物品下载信息
-                downloading, bytes_downloaded, bytes_total = steamworks.Workshop.GetItemDownloadInfo(item_id_int)
+                download_info = steamworks.Workshop.GetItemDownloadInfo(item_id_int)
+                downloading = False
+                bytes_downloaded = 0
+                bytes_total = 0
+                
+                # 处理下载信息（假设可能返回字典或其他格式）
+                if download_info:
+                    if isinstance(download_info, dict):
+                        downloading = bool(download_info.get('downloading', False))
+                        if downloading:
+                            # 尝试从字典中获取下载进度信息
+                            try:
+                                if 'bytes_downloaded' in download_info:
+                                    bd = download_info['bytes_downloaded']
+                                    bytes_downloaded = int(bd.value if hasattr(bd, 'value') else bd)
+                                if 'bytes_total' in download_info:
+                                    bt = download_info['bytes_total']
+                                    bytes_total = int(bt.value if hasattr(bt, 'value') else bt)
+                            except:
+                                pass
+                    elif isinstance(download_info, tuple) and len(download_info) >= 3:
+                        # 兼容元组格式
+                        downloading, bytes_downloaded, bytes_total = download_info
                 
                 # 构建详细的物品信息
                 item_info = {
@@ -1309,8 +1813,18 @@ async def unsubscribe_workshop_item(request: Request):
                 "message": "提供的物品ID不是有效的数字"
             }, status_code=400)
         
-        # 调用Steamworks的UnsubscribeItem方法
-        result = steamworks.Workshop.UnsubscribeItem(item_id_int)
+        # 定义一个简单的回调函数来处理取消订阅的结果
+        def unsubscribe_callback(result):
+            # 记录取消订阅的结果
+            if result.result == 1:  # k_EResultOK
+                logger.info(f"取消订阅成功回调: {item_id_int}")
+            else:
+                logger.warning(f"取消订阅失败回调: {item_id_int}, 错误代码: {result.result}")
+        
+        # 调用Steamworks的UnsubscribeItem方法，并提供回调函数
+        steamworks.Workshop.UnsubscribeItem(item_id_int, callback=unsubscribe_callback)
+        # 由于回调是异步的，这里我们假设操作已开始，稍后通过回调获取实际结果
+        result = True
         
         # 检查操作结果
         if result:
@@ -1351,6 +1865,39 @@ async def publish_to_workshop(request: Request):
             "message": "请确保Steam客户端已运行且已登录"
         }, status_code=503)
     
+    # 添加额外的Steam客户端连接状态检查
+    try:
+        # 检查Steam客户端是否正在运行
+        if not steamworks.IsSteamRunning():
+            return JSONResponse({
+                "success": False,
+                "error": "Steam客户端未运行",
+                "message": "请确保Steam客户端已启动并正在运行"
+            }, status_code=503)
+        
+        # 检查用户是否已登录Steam
+        if not steamworks.Utils.IsOverlayEnabled():
+            logger.warning("Steam覆盖层未启用，可能会影响创意工坊功能")
+            
+        # 尝试获取SteamID以验证连接是否正常
+        steam_id = steamworks.Users.GetSteamID()
+        if not steam_id:
+            return JSONResponse({
+                "success": False,
+                "error": "无法获取Steam用户信息",
+                "message": "请确保您已在Steam客户端中登录"
+            }, status_code=503)
+            
+        logger.info(f"Steam连接检查通过，用户ID: {steam_id}")
+        
+    except Exception as connection_error:
+        logger.error(f"Steam连接状态检查失败: {connection_error}")
+        return JSONResponse({
+            "success": False,
+            "error": "Steam连接检查失败",
+            "message": f"无法确认Steam客户端连接状态: {str(connection_error)}"
+        }, status_code=503)
+    
     try:
         # 获取请求体中的数据
         data = await request.json()
@@ -1373,8 +1920,14 @@ async def publish_to_workshop(request: Request):
         visibility = data.get('visibility', 0)  # 默认设置为公开
         tags = data.get('tags', [])
         
-        # 验证文件路径是否存在
+        # 验证文件路径是否存在并规范化路径
         import os
+        
+        # 规范化路径，处理不同格式的输入
+        content_folder = os.path.normpath(content_folder)
+        preview_image = os.path.normpath(preview_image)
+        
+        # 检查内容文件夹
         if not os.path.isdir(content_folder):
             return JSONResponse({
                 "success": False,
@@ -1382,6 +1935,15 @@ async def publish_to_workshop(request: Request):
                 "message": f"指定的内容文件夹不存在: {content_folder}"
             }, status_code=400)
         
+        # 检查是否有读取内容文件夹的权限
+        if not os.access(content_folder, os.R_OK):
+            return JSONResponse({
+                "success": False,
+                "error": "权限不足",
+                "message": f"没有权限读取内容文件夹: {content_folder}"
+            }, status_code=403)
+        
+        # 检查预览图片
         if not os.path.isfile(preview_image):
             return JSONResponse({
                 "success": False,
@@ -1389,48 +1951,48 @@ async def publish_to_workshop(request: Request):
                 "message": f"指定的预览图片不存在: {preview_image}"
             }, status_code=400)
         
+        # 检查是否有读取预览图片的权限
+        if not os.access(preview_image, os.R_OK):
+            return JSONResponse({
+                "success": False,
+                "error": "权限不足",
+                "message": f"没有权限读取预览图片: {preview_image}"
+            }, status_code=403)
+        
+        # 确保内容文件夹中有文件（可选，但有助于避免上传空文件夹）
+        if not os.listdir(content_folder):
+            logger.warning(f"内容文件夹为空: {content_folder}")
+        
         # 创建新的创意工坊物品
         logger.info(f"开始上传创意工坊物品: {title}")
         
-        # 创建发布文件
+        # 使用辅助函数发布到创意工坊
         try:
-            # 创建新的创意工坊物品
-            update_handle = steamworks.Workshop.CreateItem(steamworks.Apps.GetAppID(), 0)  # 0 = k_EWorkshopFileTypeFirst
+            # 导入可见性枚举类型
+            from steamworks.enums import ERemoteStoragePublishedFileVisibility
             
-            # 设置物品标题和描述
-            steamworks.Workshop.SetItemTitle(update_handle, title)
-            steamworks.Workshop.SetItemDescription(update_handle, description)
+            # 将整数值转换为对应的枚举对象
+            visibility_enum = ERemoteStoragePublishedFileVisibility(visibility)
             
-            # 设置物品内容和预览图片
-            steamworks.Workshop.SetItemContent(update_handle, content_folder)
-            steamworks.Workshop.SetItemPreview(update_handle, preview_image)
+            # 调用_publish_workshop_item函数，它已经正确实现了异步回调机制
+            published_file_id = _publish_workshop_item(
+                steamworks,
+                title,
+                description,
+                content_folder,
+                preview_image,
+                visibility_enum,
+                tags,
+                "初始发布"
+            )
             
-            # 设置可见性
-            steamworks.Workshop.SetItemVisibility(update_handle, visibility)
-            
-            # 添加标签（如果有）
-            for tag in tags:
-                steamworks.Workshop.AddItemKeyValueTag(update_handle, "tag", tag)
-            
-            # 提交更新
-            result, needs_to_accept_agreement = steamworks.Workshop.SubmitItemUpdate(update_handle, "初始发布")
-            
-            if result:
-                # 获取发布的物品ID
-                published_file_id = steamworks.Workshop.GetItemPublishedFileID(update_handle)
-                logger.info(f"成功上传创意工坊物品: {title}, ID: {published_file_id}")
-                return {
-                    "success": True,
-                    "message": "物品已成功上传到Steam创意工坊",
-                    "published_file_id": published_file_id,
-                    "needs_to_accept_agreement": needs_to_accept_agreement
-                }
-            else:
-                return JSONResponse({
-                    "success": False,
-                    "error": "提交更新失败",
-                    "message": "无法提交物品更新到Steam创意工坊"
-                }, status_code=500)
+            # _publish_workshop_item函数已经返回了发布的物品ID
+            logger.info(f"成功上传创意工坊物品: {title}, ID: {published_file_id}")
+            return JSONResponse({
+                "success": True,
+                "message": "物品已成功上传到Steam创意工坊",
+                "published_file_id": published_file_id
+            })
                 
         except Exception as publish_error:
             logger.error(f"上传创意工坊物品时出错: {publish_error}")
@@ -2490,51 +3052,192 @@ async def get_model_files(model_name: str):
         return {"success": False, "error": str(e)}
 
 # Steam 创意工坊管理相关API路由
+# 确保这个路由被正确注册
+logger.info('注册Steam创意工坊扫描API路由')
 @app.post('/api/steam/workshop/local-items/scan')
 async def scan_local_workshop_items(request: Request):
     try:
+        logger.info('接收到扫描本地创意工坊物品的API请求')
+        
+        # 确保配置已加载
+        if not workshop_config:
+            load_workshop_config()
+            logger.info(f'创意工坊配置已加载: {workshop_config}')
+        
         data = await request.json()
+        logger.info(f'请求数据: {data}')
         folder_path = data.get('folder_path')
         
+        # 如果没有提供路径，使用默认路径
+        default_path_used = False
         if not folder_path:
-            return JSONResponse(content={"success": False, "error": "未提供文件夹路径"}, status_code=400)
+            # 优先使用常量DEFAULT_WORKSHOP_FOLDER，确保使用用户指定的路径
+            folder_path = DEFAULT_WORKSHOP_FOLDER
+            default_path_used = True
+            logger.info(f'未提供文件夹路径，强制使用默认路径: {folder_path}')
+            logger.info(f'DEFAULT_WORKSHOP_FOLDER原始值: {DEFAULT_WORKSHOP_FOLDER}')
+            logger.info(f'workshop_config中的default_workshop_folder值: {workshop_config.get("default_workshop_folder")}')
+            logger.info(f'路径解析前 - 使用os.path.expanduser("~")的结果: {os.path.expanduser("~")}')
+            # 确保默认文件夹存在
+            ensure_workshop_folder_exists(folder_path)
         
-        if not os.path.exists(folder_path) or not os.path.isdir(folder_path):
-            return JSONResponse(content={"success": False, "error": "指定的文件夹不存在"}, status_code=404)
+        # 标准化路径，处理不同格式的输入
+        original_path = folder_path
+        folder_path = os.path.normpath(folder_path)
+        logger.info(f'路径标准化前: {original_path}')
+        logger.info(f'路径标准化后: {folder_path}')
+        logger.info(f'最终使用的文件夹路径: {folder_path}, 默认路径使用状态: {default_path_used}')
+        logger.info(f'路径是否为绝对路径: {os.path.isabs(folder_path)}')
+        
+        if not os.path.exists(folder_path):
+            logger.warning(f'文件夹不存在: {folder_path}')
+            return JSONResponse(content={"success": False, "error": f"指定的文件夹不存在: {folder_path}", "default_path_used": default_path_used}, status_code=404)
+        
+        if not os.path.isdir(folder_path):
+            logger.warning(f'指定的路径不是文件夹: {folder_path}')
+            return JSONResponse(content={"success": False, "error": f"指定的路径不是文件夹: {folder_path}", "default_path_used": default_path_used}, status_code=400)
         
         # 扫描本地创意工坊物品
         local_items = []
         published_items = []
         item_id = 1
         
-        # 遍历文件夹，查找可能的创意工坊物品
+        # 遍历文件夹，扫描所有子文件夹（不再检查特定文件格式）
         for item_folder in os.listdir(folder_path):
             item_path = os.path.join(folder_path, item_folder)
             if os.path.isdir(item_path):
-                # 检查是否包含必要的文件结构
-                if os.path.exists(os.path.join(item_path, 'mod.txt')) or os.path.exists(os.path.join(item_path, 'meta.json')):
-                    stat_info = os.stat(item_path)
-                    local_items.append({
-                        "id": f"local_{item_id}",
-                        "name": item_folder,
-                        "path": item_path,
-                        "lastModified": stat_info.st_mtime,
-                        "size": get_folder_size(item_path),
-                        "tags": ["模组"],
-                        "previewImage": find_preview_image_in_folder(item_path)
-                    })
-                    item_id += 1
+                # 直接添加所有子文件夹，不检查内部文件结构
+                stat_info = os.stat(item_path)
+                local_items.append({
+                    "id": f"local_{item_id}",
+                    "name": item_folder,
+                    "path": item_path,
+                    "lastModified": stat_info.st_mtime,
+                    "size": get_folder_size(item_path),
+                    "tags": ["本地文件"],
+                    "previewImage": find_preview_image_in_folder(item_path)
+                })
+                item_id += 1
         
         logger.info(f"扫描完成，找到 {len(local_items)} 个本地创意工坊物品")
         return JSONResponse(content={
             "success": True,
             "local_items": local_items,
-            "published_items": published_items
+            "published_items": published_items,
+            "folder_path": folder_path,
+            "default_path_used": default_path_used
         })
         
     except Exception as e:
         logger.error(f"扫描本地创意工坊物品失败: {e}")
         return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
+
+# 获取创意工坊配置
+@app.get('/api/steam/workshop/config')
+async def get_workshop_config():
+    try:
+        if not workshop_config:
+            load_workshop_config()
+        return {"success": True, "config": workshop_config}
+    except Exception as e:
+        logger.error(f"获取创意工坊配置失败: {str(e)}")
+        return {"success": False, "error": str(e)}
+
+# 保存创意工坊配置
+@app.post('/api/steam/workshop/config')
+async def save_workshop_config_api(config_data: dict):
+    try:
+        global workshop_config
+        
+        # 更新配置
+        if 'default_workshop_folder' in config_data:
+            workshop_config['default_workshop_folder'] = config_data['default_workshop_folder']
+        if 'auto_create_folder' in config_data:
+            workshop_config['auto_create_folder'] = config_data['auto_create_folder']
+        
+        # 保存配置到文件
+        save_workshop_config()
+        
+        # 如果启用了自动创建文件夹且提供了默认路径，则确保文件夹存在
+        if workshop_config.get('auto_create_folder', True) and workshop_config.get('default_workshop_folder'):
+            ensure_workshop_folder_exists(workshop_config['default_workshop_folder'])
+        
+        return {"success": True, "config": workshop_config}
+    except Exception as e:
+        logger.error(f"保存创意工坊配置失败: {str(e)}")
+        return {"success": False, "error": str(e)}
+
+@app.get('/api/proxy-image')
+async def proxy_image(image_path: str):
+    """代理访问本地图片文件，支持绝对路径和相对路径"""
+    try:
+        # 解码URL编码的路径
+        decoded_path = unquote(image_path)
+        
+        # 检查是否是远程URL，如果是则直接返回错误（目前只支持本地文件）
+        if decoded_path.startswith(('http://', 'https://')):
+            return JSONResponse(content={"success": False, "error": "暂不支持远程图片URL"}, status_code=400)
+        
+        # Windows路径处理：确保路径分隔符正确
+        if os.name == 'nt':  # Windows系统
+            # 替换可能的斜杠为反斜杠，确保Windows路径格式正确
+            decoded_path = decoded_path.replace('/', '\\')
+            # 处理可能的双重编码问题
+            if decoded_path.startswith('\\\\'):
+                decoded_path = decoded_path[2:]  # 移除多余的反斜杠前缀
+        
+        # 安全检查：确保文件存在且是图片文件
+        if not os.path.exists(decoded_path) or not os.path.isfile(decoded_path):
+            # 尝试备选路径格式
+            alt_path = decoded_path.replace('\\', '/')
+            if os.path.exists(alt_path) and os.path.isfile(alt_path):
+                decoded_path = alt_path
+            else:
+                # 尝试相对路径处理 - 假设是相对于static目录
+                base_dir = os.path.dirname(os.path.abspath(__file__))
+                static_dir = os.path.join(base_dir, 'static')
+                
+                # 对于以../static开头的相对路径，尝试直接从static目录解析
+                if decoded_path.startswith('..\\static') or decoded_path.startswith('../static'):
+                    # 提取static后面的部分
+                    relative_part = decoded_path.split('static')[1]
+                    if relative_part.startswith(('\\', '/')):
+                        relative_part = relative_part[1:]
+                    # 构建完整路径
+                    relative_path = os.path.join(static_dir, relative_part)
+                    if os.path.exists(relative_path) and os.path.isfile(relative_path):
+                        decoded_path = relative_path
+                    else:
+                        return JSONResponse(content={"success": False, "error": f"文件不存在: {decoded_path}"}, status_code=404)
+                else:
+                    return JSONResponse(content={"success": False, "error": f"文件不存在: {decoded_path}"}, status_code=404)
+        
+        # 检查文件扩展名是否为图片
+        image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']
+        if os.path.splitext(decoded_path)[1].lower() not in image_extensions:
+            return JSONResponse(content={"success": False, "error": "不是有效的图片文件"}, status_code=400)
+        
+        # 读取图片文件
+        with open(decoded_path, 'rb') as f:
+            image_data = f.read()
+        
+        # 根据文件扩展名设置MIME类型
+        ext = os.path.splitext(decoded_path)[1].lower()
+        mime_type = {
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.png': 'image/png',
+            '.gif': 'image/gif',
+            '.bmp': 'image/bmp',
+            '.webp': 'image/webp'
+        }.get(ext, 'application/octet-stream')
+        
+        # 返回图片数据
+        return Response(content=image_data, media_type=mime_type)
+    except Exception as e:
+        logger.error(f"代理图片访问失败: {str(e)}")
+        return JSONResponse(content={"success": False, "error": f"访问图片失败: {str(e)}"}, status_code=500)
+
 
 @app.get('/api/steam/workshop/local-items/{item_id}')
 async def get_local_workshop_item(item_id: str, folder_path: str = None):
@@ -2546,31 +3249,64 @@ async def get_local_workshop_item(item_id: str, folder_path: str = None):
         if not folder_path:
             return JSONResponse(content={"success": False, "error": "未提供文件夹路径"}, status_code=400)
         
+        # Windows路径处理：确保路径分隔符正确
+        if os.name == 'nt':  # Windows系统
+            # 解码并处理Windows路径
+            decoded_folder_path = unquote(folder_path)
+            # 替换斜杠为反斜杠，确保Windows路径格式正确
+            decoded_folder_path = decoded_folder_path.replace('/', '\\')
+            # 处理可能的双重编码问题
+            if decoded_folder_path.startswith('\\\\'):
+                decoded_folder_path = decoded_folder_path[2:]  # 移除多余的反斜杠前缀
+            folder_path = decoded_folder_path
+        
         # 解析本地ID
         if item_id.startswith('local_'):
             index = int(item_id.split('_')[1])
             
-            # 重新扫描获取物品列表
-            items = []
-            for i, item_folder in enumerate(os.listdir(folder_path)):
-                item_path = os.path.join(folder_path, item_folder)
-                if os.path.isdir(item_path) and i + 1 == index:
-                    stat_info = os.stat(item_path)
-                    items.append({
-                        "id": f"local_{i + 1}",
-                        "name": item_folder,
-                        "path": item_path,
+            try:
+                # 检查folder_path是否已经是项目文件夹路径
+                if os.path.isdir(folder_path):
+                    # 情况1：folder_path直接指向项目文件夹
+                    stat_info = os.stat(folder_path)
+                    item_name = os.path.basename(folder_path)
+                    
+                    item = {
+                        "id": item_id,
+                        "name": item_name,
+                        "path": folder_path,
                         "lastModified": stat_info.st_mtime,
-                        "size": get_folder_size(item_path),
+                        "size": get_folder_size(folder_path),
                         "tags": ["模组"],
-                        "previewImage": find_preview_image_in_folder(item_path)
-                    })
-                    break
-            
-            if items:
-                return JSONResponse(content={"success": True, "item": items[0]})
-            else:
-                return JSONResponse(content={"success": False, "error": "物品不存在"}, status_code=404)
+                        "previewImage": find_preview_image_in_folder(folder_path)
+                    }
+                    
+                    return JSONResponse(content={"success": True, "item": item})
+                else:
+                    # 情况2：尝试原始逻辑，从folder_path中查找第index个子文件夹
+                    items = []
+                    for i, item_folder in enumerate(os.listdir(folder_path)):
+                        item_path = os.path.join(folder_path, item_folder)
+                        if os.path.isdir(item_path) and i + 1 == index:
+                            stat_info = os.stat(item_path)
+                            items.append({
+                                "id": f"local_{i + 1}",
+                                "name": item_folder,
+                                "path": item_path,
+                                "lastModified": stat_info.st_mtime,
+                                "size": get_folder_size(item_path),
+                                "tags": ["模组"],
+                                "previewImage": find_preview_image_in_folder(item_path)
+                            })
+                            break
+                    
+                    if items:
+                        return JSONResponse(content={"success": True, "item": items[0]})
+                    else:
+                        return JSONResponse(content={"success": False, "error": "物品不存在"}, status_code=404)
+            except Exception as e:
+                logger.error(f"处理本地物品路径时出错: {e}")
+                return JSONResponse(content={"success": False, "error": f"路径处理错误: {str(e)}"}, status_code=500)
         
         return JSONResponse(content={"success": False, "error": "无效的物品ID格式"}, status_code=400)
         
@@ -2608,26 +3344,93 @@ async def publish_to_workshop(request: Request):
         tags = data.get('tags', [])
         change_note = data.get('change_note', '初始发布')
         
-        # 验证文件路径
-        if not os.path.exists(content_folder) or not os.path.isdir(content_folder):
+        # 规范化路径处理 - 改进版，确保在所有情况下都能正确处理路径
+        content_folder = unquote(content_folder)
+        # 处理Windows路径，确保使用正确的路径分隔符
+        if os.name == 'nt':
+            # 将所有路径分隔符统一为反斜杠
+            content_folder = content_folder.replace('/', '\\')
+            # 清理可能的错误前缀
+            if content_folder.startswith('\\\\'):
+                content_folder = content_folder[2:]
+        else:
+            # 非Windows系统使用正斜杠
+            content_folder = content_folder.replace('\\', '/')
+        
+        # 验证内容文件夹存在并是一个目录
+        if not os.path.exists(content_folder):
             return JSONResponse(content={
                 "success": False,
                 "error": "内容文件夹不存在",
                 "message": f"指定的内容文件夹不存在: {content_folder}"
-            }, status_code=400)
+            }, status_code=404)
         
-        if preview_image and (not os.path.exists(preview_image) or not os.path.isfile(preview_image)):
+        if not os.path.isdir(content_folder):
             return JSONResponse(content={
                 "success": False,
-                "error": "预览图片不存在",
-                "message": f"指定的预览图片不存在: {preview_image}"
+                "error": "不是有效的文件夹",
+                "message": f"指定的路径不是有效的文件夹: {content_folder}"
             }, status_code=400)
         
+        # 增加内容文件夹检查：确保文件夹中至少有文件，验证文件夹是否包含内容
+        if not any(os.scandir(content_folder)):
+            return JSONResponse(content={
+                "success": False,
+                "error": "内容文件夹为空",
+                "message": f"内容文件夹为空，请确保包含要上传的文件: {content_folder}"
+            }, status_code=400)
+        
+        # 检查文件夹权限
+        if not os.access(content_folder, os.R_OK):
+            return JSONResponse(content={
+                "success": False,
+                "error": "没有文件夹访问权限",
+                "message": f"没有读取内容文件夹的权限: {content_folder}"
+            }, status_code=403)
+        
+        # 处理预览图片路径
+        if preview_image:
+            preview_image = unquote(preview_image)
+            if os.name == 'nt':
+                preview_image = preview_image.replace('/', '\\')
+                if preview_image.startswith('\\\\'):
+                    preview_image = preview_image[2:]
+            else:
+                preview_image = preview_image.replace('\\', '/')
+            
+            # 验证预览图片存在
+            if not os.path.exists(preview_image):
+                # 如果指定的预览图不存在，尝试在内容文件夹中查找默认预览图
+                logger.warning(f'指定的预览图片不存在，尝试在内容文件夹中查找: {preview_image}')
+                auto_preview = find_preview_image_in_folder(content_folder)
+                if auto_preview:
+                    logger.info(f'找到自动预览图片: {auto_preview}')
+                    preview_image = auto_preview
+                else:
+                    logger.warning(f'无法找到预览图片')
+                    preview_image = ''
+            
+            if preview_image and not os.path.isfile(preview_image):
+                return JSONResponse(content={
+                    "success": False,
+                    "error": "预览图片无效",
+                    "message": f"预览图片路径不是有效的文件: {preview_image}"
+                }, status_code=400)
+        else:
+            # 如果未指定预览图片，尝试自动查找
+            auto_preview = find_preview_image_in_folder(content_folder)
+            if auto_preview:
+                logger.info(f'自动找到预览图片: {auto_preview}')
+                preview_image = auto_preview
+        
+        # 记录将要上传的内容信息
         logger.info(f"准备发布创意工坊物品: {title}")
         logger.info(f"内容文件夹: {content_folder}")
         logger.info(f"预览图片: {preview_image or '无'}")
         logger.info(f"可见性: {visibility}")
         logger.info(f"标签: {tags}")
+        logger.info(f"内容文件夹包含文件数量: {len([f for f in os.listdir(content_folder) if os.path.isfile(os.path.join(content_folder, f))])}")
+        logger.info(f"内容文件夹包含子文件夹数量: {len([f for f in os.listdir(content_folder) if os.path.isdir(os.path.join(content_folder, f))])}")
         
         # 使用线程池执行Steamworks API调用（因为这些是阻塞操作）
         loop = asyncio.get_event_loop()
@@ -2660,85 +3463,424 @@ async def publish_to_workshop(request: Request):
         logger.error(f"发布到创意工坊失败: {e}")
         return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
 
+@app.post('/api/steam/workshop/test-file-handling')
+async def test_file_handling(request: Request):
+    """
+    测试文件处理功能的端点，用于验证路径规范化、文件夹检查等功能是否正常工作
+    不实际上传任何内容到创意工坊，仅执行本地文件验证
+    """
+    try:
+        data = await request.json()
+        content_folder = data.get('content_folder', '')
+        preview_image = data.get('preview_image', '')
+        
+        if not content_folder:
+            return JSONResponse(content={
+                "success": False,
+                "error": "缺少必要字段",
+                "message": "请提供content_folder参数"
+            }, status_code=400)
+        
+        # 记录测试请求
+        logger.info(f"测试文件处理请求，内容文件夹: {content_folder}")
+        
+        # 规范化路径处理
+        content_folder = unquote(content_folder)
+        if os.name == 'nt':
+            content_folder = content_folder.replace('/', '\\')
+            if content_folder.startswith('\\\\'):
+                content_folder = content_folder[2:]
+        else:
+            content_folder = content_folder.replace('\\', '/')
+        
+        # 构建验证结果
+        result = {
+            "success": True,
+            "normalized_path": content_folder,
+            "path_validation": {},
+            "file_stats": {},
+            "preview_image_info": {}
+        }
+        
+        # 路径验证
+        if os.path.exists(content_folder):
+            result["path_validation"]["exists"] = True
+            if os.path.isdir(content_folder):
+                result["path_validation"]["is_directory"] = True
+                
+                # 检查权限
+                result["path_validation"]["readable"] = os.access(content_folder, os.R_OK)
+                result["path_validation"]["writable"] = os.access(content_folder, os.W_OK)
+                
+                # 统计文件数量
+                file_count = 0
+                folder_count = 0
+                total_size = 0
+                file_list = []
+                
+                for root, dirs, files in os.walk(content_folder):
+                    folder_count += len(dirs)
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        try:
+                            file_size = os.path.getsize(file_path)
+                            total_size += file_size
+                            file_count += 1
+                            # 只添加前20个文件到列表，避免响应过大
+                            if len(file_list) < 20:
+                                rel_path = os.path.relpath(file_path, content_folder)
+                                file_list.append({
+                                    "name": file,
+                                    "path": rel_path,
+                                    "size": file_size,
+                                    "size_human": _format_size(file_size)
+                                })
+                        except Exception as e:
+                            logger.warning(f"无法获取文件信息 {file_path}: {e}")
+                
+                result["file_stats"]["file_count"] = file_count
+                result["file_stats"]["folder_count"] = folder_count
+                result["file_stats"]["total_size"] = total_size
+                result["file_stats"]["total_size_human"] = _format_size(total_size)
+                result["file_stats"]["sample_files"] = file_list
+                
+                # 检查是否为空
+                if file_count == 0:
+                    result["path_validation"]["empty"] = True
+                    result["success"] = False
+                    result["warning"] = "内容文件夹存在但不包含任何文件"
+                else:
+                    result["path_validation"]["empty"] = False
+            else:
+                result["path_validation"]["is_directory"] = False
+                result["success"] = False
+                result["error"] = "不是有效的文件夹"
+                result["message"] = "指定的路径不是有效的文件夹"
+        else:
+            result["path_validation"]["exists"] = False
+            result["success"] = False
+            result["error"] = "内容文件夹不存在"
+            result["message"] = "指定的内容文件夹不存在"
+        
+        # 处理预览图片
+        if preview_image:
+            preview_image = unquote(preview_image)
+            if os.name == 'nt':
+                preview_image = preview_image.replace('/', '\\')
+                if preview_image.startswith('\\\\'):
+                    preview_image = preview_image[2:]
+            else:
+                preview_image = preview_image.replace('\\', '/')
+            
+            result["preview_image_info"]["original_path"] = preview_image
+            
+            if os.path.exists(preview_image):
+                result["preview_image_info"]["exists"] = True
+                if os.path.isfile(preview_image):
+                    result["preview_image_info"]["is_file"] = True
+                    try:
+                        file_size = os.path.getsize(preview_image)
+                        result["preview_image_info"]["size"] = file_size
+                        result["preview_image_info"]["size_human"] = _format_size(file_size)
+                    except Exception as e:
+                        logger.warning(f"无法获取预览图片大小: {e}")
+                else:
+                    result["preview_image_info"]["is_file"] = False
+                    result["preview_image_info"]["warning"] = "预览图片路径不是有效的文件"
+            else:
+                result["preview_image_info"]["exists"] = False
+                result["preview_image_info"]["warning"] = "指定的预览图片不存在"
+                
+                # 尝试自动查找预览图片
+                if result["path_validation"].get("is_directory"):
+                    auto_preview = find_preview_image_in_folder(content_folder)
+                    if auto_preview:
+                        result["preview_image_info"]["auto_found"] = auto_preview
+                        result["preview_image_info"]["message"] = "已自动找到预览图片"
+        else:
+            # 尝试自动查找预览图片
+            if result["path_validation"].get("is_directory"):
+                auto_preview = find_preview_image_in_folder(content_folder)
+                if auto_preview:
+                    result["preview_image_info"]["auto_found"] = auto_preview
+                    result["preview_image_info"]["message"] = "已自动找到预览图片"
+                else:
+                    result["preview_image_info"]["warning"] = "未指定预览图片且未找到默认预览图片"
+        
+        logger.info(f"测试文件处理完成，结果: {result['success']}")
+        return JSONResponse(content=result)
+        
+    except Exception as e:
+        logger.error(f"测试文件处理失败: {e}")
+        return JSONResponse(content={
+            "success": False,
+            "error": "测试失败",
+            "message": str(e)
+        }, status_code=500)
+
+def _format_size(size_bytes):
+    """
+    将字节大小格式化为人类可读的格式
+    """
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size_bytes < 1024.0:
+            return f"{size_bytes:.2f} {unit}"
+        size_bytes /= 1024.0
+    return f"{size_bytes:.2f} TB"
+
 def _publish_workshop_item(steamworks, title, description, content_folder, preview_image, visibility, tags, change_note):
     """
     在单独的线程中执行Steam创意工坊发布操作
     """
     try:
+        # 再次验证内容文件夹，确保在多线程环境中仍然有效
+        if not os.path.exists(content_folder) or not os.path.isdir(content_folder):
+            raise Exception(f"内容文件夹不存在或无效: {content_folder}")
+        
+        # 统计文件夹内容，确保有文件可上传
+        file_count = 0
+        for root, dirs, files in os.walk(content_folder):
+            file_count += len(files)
+        
+        if file_count == 0:
+            raise Exception(f"内容文件夹中没有找到可上传的文件: {content_folder}")
+        
+        logger.info(f"内容文件夹验证通过，包含 {file_count} 个文件")
+        
         # 获取当前应用ID
-        app_id = steamworks.Apps.GetAppID()
+        app_id = steamworks.app_id
+        logger.info(f"使用应用ID: {app_id} 进行创意工坊上传")
+        
+        # 增强的Steam连接状态验证
+        try:
+            # 基础连接状态检查
+            is_steam_running = steamworks.IsSteamRunning()
+            is_overlay_enabled = steamworks.IsOverlayEnabled()
+            is_logged_on = steamworks.Users.LoggedOn()
+            steam_id = steamworks.Users.GetSteamID()
+            
+            # 应用相关权限检查
+            app_owned = steamworks.Apps.IsAppInstalled(app_id)
+            app_owned_license = steamworks.Apps.IsSubscribedApp(app_id)
+            app_subscribed = steamworks.Apps.IsSubscribed()
+            
+            # 记录详细的连接状态
+            logger.info(f"Steam客户端运行状态: {is_steam_running}")
+            logger.info(f"Steam覆盖层启用状态: {is_overlay_enabled}")
+            logger.info(f"用户登录状态: {is_logged_on}")
+            logger.info(f"用户SteamID: {steam_id}")
+            logger.info(f"应用ID {app_id} 安装状态: {app_owned}")
+            logger.info(f"应用ID {app_id} 订阅许可状态: {app_owned_license}")
+            logger.info(f"当前应用订阅状态: {app_subscribed}")
+            
+            # 预检查连接状态，如果存在问题则提前报错
+            if not is_steam_running:
+                raise Exception("Steam客户端未运行，请先启动Steam客户端")
+            if not is_logged_on:
+                raise Exception("用户未登录Steam，请确保已登录Steam客户端")
+            
+        except Exception as e:
+            logger.error(f"Steam连接状态验证失败: {e}")
+            # 即使验证失败也继续执行，但提供警告
+            logger.warning(f"继续尝试创意工坊上传，但可能会因为Steam连接问题而失败")
+        
+        # 错误映射表，根据错误码提供更具体的错误信息
+        error_codes = {
+            1: "成功",
+            10: "权限不足 - 可能需要登录Steam客户端或缺少创意工坊上传权限",
+            111: "网络连接错误 - 无法连接到Steam网络",
+            100: "服务不可用 - Steam创意工坊服务暂时不可用",
+            8: "文件已存在 - 相同内容的物品已存在",
+            34: "服务器忙 - Steam服务器暂时无法处理请求",
+            116: "请求超时 - 与Steam服务器通信超时"
+        }
         
         # 对于新物品，先创建一个空物品
         # 使用回调来处理创建结果
         created_item_id = [None]
         created_event = threading.Event()
+        create_result = [None]  # 用于存储创建结果
         
         def onCreateItem(result):
-            nonlocal created_item_id
-            if result['result'] == 1:  # k_EResultOK
-                created_item_id[0] = result['published_file_id']
+            nonlocal created_item_id, create_result
+            create_result[0] = result.result
+            # 直接从结构体读取字段而不是字典
+            if result.result == 1:  # k_EResultOK
+                created_item_id[0] = result.publishedFileId
+                logger.info(f"成功创建创意工坊物品，ID: {created_item_id[0]}")
                 created_event.set()
             else:
+                error_msg = error_codes.get(result.result, f"未知错误码: {result.result}")
+                logger.error(f"创建创意工坊物品失败，错误码: {result.result} ({error_msg})")
                 created_event.set()
         
         # 设置创建物品回调
         steamworks.Workshop.SetItemCreatedCallback(onCreateItem)
         
-        # 创建新的创意工坊物品（使用文件类型1表示UGC）
-        steamworks.Workshop.CreateItem(app_id, 1)  # 1 = k_EWorkshopFileTypeCommunity
+        # 创建新的创意工坊物品（使用文件类型枚举表示UGC）
+        logger.info(f"开始创建创意工坊物品: {title}")
+        logger.info(f"调用SteamWorkshop.CreateItem({app_id}, {EWorkshopFileType.COMMUNITY})")
+        steamworks.Workshop.CreateItem(app_id, EWorkshopFileType.COMMUNITY)
         
-        # 等待创建完成或超时
-        if not created_event.wait(timeout=30):
+        # 等待创建完成或超时，增加超时时间并添加调试信息
+        logger.info("等待创意工坊物品创建完成...")
+        # 使用循环等待，定期调用run_callbacks处理回调
+        start_time = time.time()
+        timeout = 60  # 超时时间60秒
+        while time.time() - start_time < timeout:
+            if created_event.is_set():
+                break
+            # 定期调用run_callbacks处理Steam API回调
+            try:
+                steamworks.run_callbacks()
+            except Exception as e:
+                logger.error(f"执行Steam回调时出错: {str(e)}")
+            time.sleep(0.1)  # 每100毫秒检查一次
+        
+        if not created_event.is_set():
+            logger.error("创建创意工坊物品超时，可能是网络问题或Steam服务暂时不可用")
             raise TimeoutError("创建创意工坊物品超时")
         
         if created_item_id[0] is None:
-            raise Exception("创建创意工坊物品失败")
+            # 提供更具体的错误信息
+            error_msg = error_codes.get(create_result[0], f"未知错误码: {create_result[0]}")
+            logger.error(f"创建创意工坊物品失败: {error_msg}")
+            
+            # 针对错误码10（权限不足）提供更详细的错误信息和解决方案
+            if create_result[0] == 10:
+                detailed_error = f"""权限不足 - 请确保:
+1. Steam客户端已启动并登录
+2. 您的Steam账号拥有应用ID {app_id} 的访问权限
+3. Steam创意工坊功能未被禁用
+4. 尝试以管理员权限运行应用程序
+5. 检查防火墙设置是否阻止了应用程序访问Steam网络
+6. 确保steam_appid.txt文件中的应用ID正确
+7. 您的Steam账号有权限上传到该应用的创意工坊"""
+                logger.error(f"创意工坊上传失败 - 详细诊断信息:")
+                logger.error(f"- 应用ID: {app_id}")
+                logger.error(f"- Steam运行状态: {steamworks.IsSteamRunning()}")
+                logger.error(f"- 用户登录状态: {steamworks.Users.LoggedOn()}")
+                logger.error(f"- 应用订阅状态: {steamworks.Apps.IsSubscribedApp(app_id)}")
+                raise Exception(f"创建创意工坊物品失败: {detailed_error} (错误码: {create_result[0]})")
+            else:
+                raise Exception(f"创建创意工坊物品失败: {error_msg} (错误码: {create_result[0]})")
         
         # 开始更新物品
+        logger.info(f"开始更新物品内容: {title}")
         update_handle = steamworks.Workshop.StartItemUpdate(app_id, created_item_id[0])
         
         # 设置物品属性
+        logger.info("设置物品基本属性...")
         steamworks.Workshop.SetItemTitle(update_handle, title)
         if description:
             steamworks.Workshop.SetItemDescription(update_handle, description)
         
-        # 设置物品内容
-        steamworks.Workshop.SetItemContent(update_handle, content_folder)
+        # 设置物品内容 - 这是文件上传的核心步骤
+        logger.info(f"设置物品内容文件夹: {content_folder}")
+        content_set_result = steamworks.Workshop.SetItemContent(update_handle, content_folder)
+        logger.info(f"内容设置结果: {content_set_result}")
         
         # 设置预览图片（如果提供）
         if preview_image:
-            steamworks.Workshop.SetItemPreview(update_handle, preview_image)
+            logger.info(f"设置预览图片: {preview_image}")
+            preview_set_result = steamworks.Workshop.SetItemPreview(update_handle, preview_image)
+            logger.info(f"预览图片设置结果: {preview_set_result}")
         
-        # 设置可见性
-        steamworks.Workshop.SetItemVisibility(update_handle, visibility)
+        # 导入枚举类型并将整数值转换为枚举对象
+        from steamworks.enums import ERemoteStoragePublishedFileVisibility
+        if visibility == 0:
+            visibility_enum = ERemoteStoragePublishedFileVisibility.PUBLIC
+        elif visibility == 1:
+            visibility_enum = ERemoteStoragePublishedFileVisibility.FRIENDS_ONLY
+        elif visibility == 2:
+            visibility_enum = ERemoteStoragePublishedFileVisibility.PRIVATE
+        else:
+            # 默认设为公开
+            visibility_enum = ERemoteStoragePublishedFileVisibility.PUBLIC
+            
+        # 设置物品可见性
+        logger.info(f"设置物品可见性: {visibility_enum}")
+        steamworks.Workshop.SetItemVisibility(update_handle, visibility_enum)
         
         # 设置标签（如果有）
         if tags:
+            logger.info(f"设置物品标签: {tags}")
             steamworks.Workshop.SetItemTags(update_handle, tags)
         
         # 提交更新，使用回调来处理结果
         updated = [False]
+        error_code = [0]
         update_event = threading.Event()
         
         def onSubmitItemUpdate(result):
-            nonlocal updated
-            if result['result'] == 1:  # k_EResultOK
+            nonlocal updated, error_code
+            # 直接从结构体读取字段而不是字典
+            error_code[0] = result.result
+            if result.result == 1:  # k_EResultOK
                 updated[0] = True
+                logger.info(f"物品更新提交成功，结果代码: {result.result}")
+            else:
+                logger.error(f"提交创意工坊物品更新失败，错误码: {result.result}")
             update_event.set()
         
         # 设置更新物品回调
         steamworks.Workshop.SetItemUpdatedCallback(onSubmitItemUpdate)
         
         # 提交更新
+        logger.info(f"开始提交物品更新，更新说明: {change_note}")
         steamworks.Workshop.SubmitItemUpdate(update_handle, change_note)
         
-        # 等待更新完成或超时
-        if not update_event.wait(timeout=120):
+        # 等待更新完成或超时，增加超时时间并添加调试信息
+        logger.info("等待创意工坊物品更新完成...")
+        # 使用循环等待，定期调用run_callbacks处理回调
+        start_time = time.time()
+        timeout = 180  # 超时时间180秒
+        last_progress = -1
+        
+        while time.time() - start_time < timeout:
+            if update_event.is_set():
+                break
+            # 定期调用run_callbacks处理Steam API回调
+            try:
+                steamworks.run_callbacks()
+                # 记录上传进度（更详细的进度报告）
+                if update_handle:
+                    progress = steamworks.Workshop.GetItemUpdateProgress(update_handle)
+                    if 'status' in progress:
+                        status_text = "未知"
+                        if progress['status'] == EItemUpdateStatus.UPLOADING_CONTENT:
+                            status_text = "上传内容"
+                        elif progress['status'] == EItemUpdateStatus.UPLOADING_PREVIEW:
+                            status_text = "上传预览图"
+                        elif progress['status'] == EItemUpdateStatus.COMMITTING_CHANGES:
+                            status_text = "提交更改"
+                        elif progress['status'] == EItemUpdateStatus.PENDING_UPDATE:
+                            status_text = "等待更新"
+                        
+                        if 'progress' in progress:
+                            current_progress = int(progress['progress'] * 100)
+                            # 只有进度有明显变化时才记录日志
+                            if current_progress != last_progress:
+                                logger.info(f"上传状态: {status_text}, 进度: {current_progress}%")
+                                last_progress = current_progress
+            except Exception as e:
+                logger.error(f"执行Steam回调时出错: {str(e)}")
+            time.sleep(0.5)  # 每500毫秒检查一次，减少日志量
+        
+        if not update_event.is_set():
+            logger.error("提交创意工坊物品更新超时，可能是网络问题或Steam服务暂时不可用")
             raise TimeoutError("提交创意工坊物品更新超时")
         
         if not updated[0]:
-            raise Exception("提交创意工坊物品更新失败")
+            # 根据错误码提供更详细的错误信息
+            if error_code[0] == 25:  # LIMIT_EXCEEDED
+                error_msg = "提交创意工坊物品更新失败：内容超过Steam限制（错误码25）。请检查内容大小、文件数量或其他限制。"
+            else:
+                error_msg = f"提交创意工坊物品更新失败，错误码: {error_code[0]}"
+            logger.error(error_msg)
+            raise Exception(error_msg)
         
+        logger.info(f"创意工坊物品上传成功完成！物品ID: {created_item_id[0]}")
         return created_item_id[0]
         
     except Exception as e:
@@ -2792,20 +3934,23 @@ async def find_first_image(folder: str = None):
         if not folder or not os.path.exists(folder) or not os.path.isdir(folder):
             return JSONResponse(content={"success": False, "error": "无效的文件夹路径"}, status_code=400)
         
-        # 查找文件夹中的第一个图片文件
-        image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp']
+        # 只查找指定的8个预览图片名称，按优先级顺序
+        preview_image_names = [
+            'preview.jpg', 'preview.png',
+            'thumbnail.jpg', 'thumbnail.png',
+            'icon.jpg', 'icon.png',
+            'header.jpg', 'header.png'
+        ]
         
-        for file in os.listdir(folder):
-            file_path = os.path.join(folder, file)
-            if os.path.isfile(file_path):
-                ext = os.path.splitext(file)[1].lower()
-                if ext in image_extensions:
-                    return JSONResponse(content={"success": True, "imagePath": file_path})
+        for image_name in preview_image_names:
+            image_path = os.path.join(folder, image_name)
+            if os.path.exists(image_path) and os.path.isfile(image_path):
+                return JSONResponse(content={"success": True, "imagePath": image_path})
         
-        return JSONResponse(content={"success": False, "error": "未找到图片文件"})
+        return JSONResponse(content={"success": False, "error": "未找到指定的预览图片文件"})
         
     except Exception as e:
-        logger.error(f"查找图片文件失败: {e}")
+        logger.error(f"查找预览图片文件失败: {e}")
         return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
 
 # 辅助函数
@@ -2822,25 +3967,17 @@ def get_folder_size(folder_path):
     return total_size
 
 def find_preview_image_in_folder(folder_path):
-    """在文件夹中查找预览图片"""
-    common_image_names = ['preview.jpg', 'preview.png', 'thumbnail.jpg', 'thumbnail.png', 
+    """在文件夹中查找预览图片，只查找指定的8个图片名称"""
+    # 按优先级顺序查找指定的图片文件列表
+    preview_image_names = ['preview.jpg', 'preview.png', 'thumbnail.jpg', 'thumbnail.png', 
                          'icon.jpg', 'icon.png', 'header.jpg', 'header.png']
     
-    # 先查找常见的预览图片名称
-    for image_name in common_image_names:
+    for image_name in preview_image_names:
         image_path = os.path.join(folder_path, image_name)
         if os.path.exists(image_path) and os.path.isfile(image_path):
             return image_path
     
-    # 如果找不到，查找第一个图片文件
-    image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp']
-    for file in os.listdir(folder_path):
-        file_path = os.path.join(folder_path, file)
-        if os.path.isfile(file_path):
-            ext = os.path.splitext(file)[1].lower()
-            if ext in image_extensions:
-                return file_path
-    
+    # 如果找不到指定的图片名称，返回None
     return None
 
 @app.get('/live2d_emotion_manager', response_class=HTMLResponse)
