@@ -21,6 +21,7 @@ memory/store/*
 !memory/store/.gitkeep
 config/api.py
 config/*.json
+!config/api_providers.json
 env/*
 lanlan_frd.exe
 static/kara

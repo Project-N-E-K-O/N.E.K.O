@@ -8,7 +8,7 @@
     <link rel="apple-touch-icon" href="/static/xiaoba_192.png">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta charset="UTF-8">
-    <title>{{lanlan_name}} - Viewer</title>
+    <title>Viewer - Project N.E.K.O.</title>
     <style>
         *:focus {
             outline: none !important;
@@ -122,7 +122,8 @@
             border-radius: 4px;
             cursor: pointer;
             font-weight: bold;
-            line-height: 18px;
+            font-size: 14px; /* 统一字体大小 */
+            line-height: 24px; /* 与按钮高度一致 */
             text-align: center;
             z-index: 21;
             padding: 0;
@@ -272,7 +273,7 @@
     <div id="chat-header">
         <span id="chat-title">💬 对话 (观看模式)</span>
     </div>
-    <button id="toggle-chat-btn" title="最小化">—</button>
+    <button id="toggle-chat-btn" title="最小化"><img src="/static/icons/minimize_icon.png" alt="最小化" style="width: 24px; height: 24px; object-fit: contain; pointer-events: none;"></button>
     <div id="chat-content-wrapper">
         <div id="chatContainer"></div>
     </div>
@@ -282,16 +283,84 @@
 </div>
 
 <script>
-    const lanlan_config = {
-        lanlan_name: "{{lanlan_name}}"
+    // 页面配置 - 从 URL 或 API 获取
+    let lanlan_config = {
+        lanlan_name: ""
     };
-    const cubism4Model = "{{model_path}}";
+    let cubism4Model = "";
+    
+    // 异步获取页面配置
+    async function loadPageConfig() {
+        try {
+            // 优先从 URL 获取 lanlan_name
+            const urlParams = new URLSearchParams(window.location.search);
+            let lanlanNameFromUrl = urlParams.get('lanlan_name') || "";
+            
+            // 从路径中提取 lanlan_name (例如 /{lanlan_name})
+            if (!lanlanNameFromUrl) {
+                const pathParts = window.location.pathname.split('/').filter(Boolean);
+                if (pathParts.length > 0 && !['api', 'static', 'subtitle', 'sync', 'sync_binary', 'subtitle_ws', 'ws'].includes(pathParts[0])) {
+                    lanlanNameFromUrl = decodeURIComponent(pathParts[0]);
+                }
+            }
+            
+            // 从 API 获取配置
+            const apiUrl = lanlanNameFromUrl 
+                ? `/api/config/page_config?lanlan_name=${encodeURIComponent(lanlanNameFromUrl)}`
+                : '/api/config/page_config';
+            
+            const response = await fetch(apiUrl);
+            const data = await response.json();
+            
+            if (data.success) {
+                // 使用 URL 中的 lanlan_name（如果有），否则使用 API 返回的
+                lanlan_config.lanlan_name = lanlanNameFromUrl || data.lanlan_name || "";
+                cubism4Model = data.model_path || "";
+                
+                // 动态设置页面标题
+                document.title = `${lanlan_config.lanlan_name} - Viewer`;
+                
+                console.log('页面配置加载成功:', { lanlan_name: lanlan_config.lanlan_name, model_path: cubism4Model });
+                return true;
+            } else {
+                console.error('获取页面配置失败:', data.error);
+                // 使用默认值
+                lanlan_config.lanlan_name = "";
+                cubism4Model = "";
+                return false;
+            }
+        } catch (error) {
+            console.error('加载页面配置时出错:', error);
+            // 使用默认值
+            lanlan_config.lanlan_name = "";
+            cubism4Model = "";
+            return false;
+        }
+    }
+    
+    // 标记配置是否已加载
+    window.pageConfigReady = loadPageConfig();
 </script>
 <script src="/static/libs/live2dcubismcore.min.js"></script>
 <script src="/static/libs/live2d.min.js"></script>
 <script src="/static/libs/pixi.min.js"></script>
 <script src="/static/libs/index.min.js"></script>
-<script src="/static/live2d.js"></script>
+<script>
+    // 等待配置加载完成后再加载 Live2D
+    (async function() {
+        try {
+            // 等待配置加载完成
+            await window.pageConfigReady;
+            
+            // 动态加载 live2d.js
+            const live2dScript = document.createElement('script');
+            live2dScript.src = '/static/live2d.js';
+            document.body.appendChild(live2dScript);
+        } catch (error) {
+            console.error('加载 live2d.js 时出错:', error);
+        }
+    })();
+</script>
 
 <script>
     // ===== Chat Container Toggle =====
@@ -305,11 +374,21 @@
         chatMinimized = !chatMinimized;
         if (chatMinimized) {
             chatContainer.classList.add('minimized');
-            toggleChatBtn.textContent = '+';
+            // 更新图标为展开图标
+            let iconImg = toggleChatBtn.querySelector('img');
+            if (iconImg) {
+                iconImg.src = '/static/icons/expand_icon.png';
+                iconImg.alt = '展开';
+            }
             toggleChatBtn.title = '展开';
         } else {
             chatContainer.classList.remove('minimized');
-            toggleChatBtn.textContent = '—';
+            // 更新图标为最小化图标
+            let iconImg = toggleChatBtn.querySelector('img');
+            if (iconImg) {
+                iconImg.src = '/static/icons/minimize_icon.png';
+                iconImg.alt = '最小化';
+            }
             toggleChatBtn.title = '最小化';
             scrollToBottom();
         }
@@ -573,7 +652,15 @@
     }
 
     // ===== Initialize =====
-    connectWebSocket();
+    // 等待配置加载完成后再连接 WebSocket
+    (async function() {
+        try {
+            await window.pageConfigReady;
+            connectWebSocket();
+        } catch (error) {
+            console.error('初始化 WebSocket 时出错:', error);
+        }
+    })();
 </script>
 </body>
 </html>

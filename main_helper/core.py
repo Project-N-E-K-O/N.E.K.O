@@ -739,9 +739,7 @@ class LLMSessionManager:
                         
                         self.session.on_response_done = warmup_callback
                         
-                        # 发送预热请求
-                        warmup_text = f"[系统预热] 请{self.lanlan_name}准备，即将开始与{self.master_name}对话。"
-                        await self.session.create_response(warmup_text, skipped=True)
+                        await self.session.create_response("", skipped=True)
                         
                         # 等待预热完成（最多5秒）
                         try:
@@ -926,17 +924,13 @@ class LLMSessionManager:
             return
 
         try:
-            # 构建系统提示词前缀（与初始化session时保持一致）
-            system_prefix = (f"""你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{self.lanlan_name}），在对方请求时、回答"我试试"并尝试操纵电脑。"""\
-                 if self._is_agent_enabled() else f"""你是一个角色扮演大师。请按要求扮演以下角色（{self.lanlan_name}）。""") + self.lanlan_prompt
-            
             incremental_cache = self.message_cache_for_new_session[self.initial_cache_snapshot_len:]
             # 1. Send incremental cache (or a heartbeat) to PENDING session for its *second* ignored response
             if incremental_cache:
-                final_prime_text = system_prefix + "\n[近期对话]\n" + self._convert_cache_to_str(incremental_cache)
+                final_prime_text = f"SYSTEM_MESSAGE | " + self._convert_cache_to_str(incremental_cache)
             else:  # Ensure session cycles a turn even if no incremental cache
                 logger.error(f"💥 Unexpected: No incremental cache found. {len(self.message_cache_for_new_session)}, {self.initial_cache_snapshot_len}")
-                final_prime_text = system_prefix + "\n系统自动报时，当前时间： " + str(datetime.now().strftime("%Y-%m-%d %H:%M"))
+                final_prime_text = f"SYSTEM_MESSAGE | 系统自动报时，当前时间： " + str(datetime.now().strftime("%Y-%m-%d %H:%M"))
 
             # 若存在需要植入的额外提示，则指示模型忽略上一条消息，并在下一次响应中统一向用户补充这些提示
             if self.pending_extra_replies and len(self.pending_extra_replies) > 0:
@@ -1033,25 +1027,6 @@ class LLMSessionManager:
             if self.final_swap_task and self.final_swap_task.done():
                 self.final_swap_task = None
             logger.info("Final Swap Sequence: Routine finished.")
-
-    async def system_timer(self):  #定期向Lanlan发送心跳，允许Lanlan主动向用户搭话。
-        '''这个模块在开源版中没有实际用途，因为开源版不支持主动搭话。原因是在实际测试中，搭话效果不佳。'''
-        while True:
-            if self.session and self.active_session_is_idle:
-                if self.last_time != str(datetime.now().strftime("%Y-%m-%d %H:%M")):
-                    self.last_time = str(datetime.now().strftime("%Y-%m-%d %H:%M"))
-                    try:
-                        await self.session.create_response("SYSTEM_MESSAGE | 当前时间：" + self.last_time + "。")
-                    except web_exceptions.ConnectionClosedOK:
-                        break
-                    except web_exceptions.ConnectionClosedError as e:
-                        logger.error(f"💥 System timer: Error sending data to session: {e}")
-                        await self.disconnected_by_server()
-                    except Exception as e:
-                        error_message = f"System timer: Error sending data to session: {e}"
-                        logger.error(f"💥 {error_message}")
-                        await self.send_status(error_message)
-            await asyncio.sleep(5)
 
     async def disconnected_by_server(self):
         await self.send_status(f"{self.lanlan_name}失联了，即将重启！")

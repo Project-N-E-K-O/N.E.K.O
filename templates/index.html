@@ -8,7 +8,7 @@
     <link rel="apple-touch-icon" href="/static/xiaoba_192.png">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta charset="UTF-8">
-    <title>{{lanlan_name}} Terminal - Project Lanlan</title>
+    <title>Project N.E.K.O.</title>
     <script src="/static/common_dialogs.js"></script>
     <style>
         *:focus {
@@ -299,8 +299,8 @@
             border-radius: 0; /* 去掉圆角 */
             cursor: grab; /* 拖拽手势 */
             font-weight: bold;
-            font-size: 1.2rem;
-            line-height: 20px; /* 垂直居中调整 */
+            font-size: 14px; /* 改为固定像素值，确保一致性 */
+            line-height: 24px; /* 与按钮高度一致，确保垂直居中 */
             text-align: center;
             color: #fff;
             z-index: 21; /* 确保在内容之上 */   
@@ -447,9 +447,6 @@
                 transform: translateY(0);
             }
         }
-
-
-        
         
         /* 文本输入区域样式 - 在聊天框底部 */
         #text-input-area {
@@ -460,6 +457,7 @@
             padding: 12px;
             background: #fff;
             border-top: 1px solid #e0e0e0;
+            background: transparent;
             box-sizing: border-box;
             transition: all 0.3s ease;
             position: relative;
@@ -784,6 +782,14 @@
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
+            /* 保持相同的字体大小设置 */
+            font-size: 14px;
+            line-height: 24px;
+            /* 防止hover效果在最小化状态下放大按钮 */
+        }
+        
+        #chat-container.minimized #toggle-chat-btn:hover {
+            transform: translate(-50%, -50%) scale(1.1);
         }
 
         #input-row {
@@ -847,6 +853,10 @@
                 height: 60vh;
                 padding: 0;
                 margin-bottom: 5px;
+                /* 禁用容器尺寸过渡，避免影响输入区 */
+                transition: none !important;
+                background: transparent;
+                box-shadow: none;
             }
             
             #chat-header {
@@ -857,10 +867,23 @@
             #chat-content-wrapper {
                 padding: 12px;
                 padding-top: 44px;
+                /* 禁用内容区过渡，避免折叠时对子元素产生影响 */
+                transition: none !important;
+                background: transparent;
             }
             
             #text-input-area {
                 padding: 8px;
+                /* 输入区不参与任何过渡动画 */
+                transition: none !important;
+                background: transparent;
+                border-top: none;
+            }
+            /* 输入区内部元素也不参与过渡，避免细微跳动 */
+            #text-input-row,
+            #textInputBox,
+            #button-group {
+                transition: none !important;
             }
             
             #textInputBox {
@@ -915,6 +938,43 @@
             }
         }
 
+        @media only screen and (max-width: 768px) {
+            /* 移动端：折叠（mobile-collapsed）时，聊天框高度为12vh */
+            #chat-container.mobile-collapsed {
+                height: 12vh;
+            }
+            /* 移动端：折叠（mobile-collapsed）时，切换按钮固定到左上角 */
+            #chat-container.mobile-collapsed #toggle-chat-btn {
+                left: 8px;
+                right: auto;
+                top: 8px;
+                transform: none;
+                position: relative;
+            }
+            /* 避免按钮覆盖输入区顶边，给输入区微小顶距 */
+            #chat-container.mobile-collapsed #text-input-area {
+                margin-top: 6px;
+            }
+        }
+        
+        @media only screen and (max-width: 768px) {
+            /* 移动端：最小化仅折叠内容区，输入区常驻显示 */
+            #chat-container.minimized #text-input-area {
+                display: block;
+            }
+            
+            /* 移动端：最小化时保持容器尺寸，让输入区可见可用 */
+            #chat-container.minimized {
+                width: 90vw;
+                left: 5vw;
+                bottom: 5px;
+                height: auto;
+                max-height: none;
+                padding: 0;
+                cursor: default;
+            }
+        }
+        
     </style>
 </head>
 <body>
@@ -927,6 +987,7 @@
         <button id="screenButton" class="side-btn" disabled>🖥️ 屏幕共享</button>
         <button id="stopButton" class="side-btn" disabled>🛑 停止共享</button>
         <button id="resetSessionButton" class="side-btn">👋 请她离开</button>
+        <button id="returnSessionButton" class="side-btn">🫴 请她回来</button>
         <div id="status"></div>
     </div>
 </div>
@@ -937,7 +998,7 @@
     <div id="chat-header">
         <span id="chat-title">💬 对话</span>
     </div>
-    <button id="toggle-chat-btn" title="最小化">—</button>
+    <button id="toggle-chat-btn" title="最小化"><img src="/static/icons/minimize_icon.png" alt="最小化" style="width: 24px; height: 24px; object-fit: contain; pointer-events: none;"></button>
     <div id="chat-tooltip">✨ 对话区</div>
     <div id="chat-content-wrapper">
         <div id="chatContainer"></div>
@@ -966,13 +1027,65 @@
 </div>
 
 <script>
-    // 从模板变量中注入值
-    const lanlan_config = {
-        lanlan_name: "{{lanlan_name}}"
+    // 页面配置 - 从 URL 或 API 获取
+    let lanlan_config = {
+        lanlan_name: ""
     };
     window.lanlan_config = lanlan_config;
-    const cubism4Model = "{{model_path}}";
-    const focus_mode = {{ focus_mode | tojson }};
+    let cubism4Model = "";
+    
+    // 异步获取页面配置
+    async function loadPageConfig() {
+        try {
+            // 优先从 URL 获取 lanlan_name
+            const urlParams = new URLSearchParams(window.location.search);
+            let lanlanNameFromUrl = urlParams.get('lanlan_name') || "";
+            
+            // 从路径中提取 lanlan_name (例如 /{lanlan_name})
+            if (!lanlanNameFromUrl) {
+                const pathParts = window.location.pathname.split('/').filter(Boolean);
+                if (pathParts.length > 0 && !['focus', 'api', 'static', 'templates'].includes(pathParts[0])) {
+                    lanlanNameFromUrl = decodeURIComponent(pathParts[0]);
+                }
+            }
+            
+            // 从 API 获取配置
+            const apiUrl = lanlanNameFromUrl 
+                ? `/api/config/page_config?lanlan_name=${encodeURIComponent(lanlanNameFromUrl)}`
+                : '/api/config/page_config';
+            
+            const response = await fetch(apiUrl);
+            const data = await response.json();
+            
+            if (data.success) {
+                // 使用 URL 中的 lanlan_name（如果有），否则使用 API 返回的
+                lanlan_config.lanlan_name = lanlanNameFromUrl || data.lanlan_name || "";
+                window.lanlan_config = lanlan_config;
+                cubism4Model = data.model_path || "";
+                
+                // 动态设置页面标题
+                document.title = `${lanlan_config.lanlan_name} Terminal - Project N.E.K.O.`;
+                
+                console.log('页面配置加载成功:', { lanlan_name: lanlan_config.lanlan_name, model_path: cubism4Model });
+                return true;
+            } else {
+                console.error('获取页面配置失败:', data.error);
+                // 使用默认值
+                lanlan_config.lanlan_name = "";
+                cubism4Model = "";
+                return false;
+            }
+        } catch (error) {
+            console.error('加载页面配置时出错:', error);
+            // 使用默认值
+            lanlan_config.lanlan_name = "";
+            cubism4Model = "";
+            return false;
+        }
+    }
+    
+    // 标记配置是否已加载
+    window.pageConfigReady = loadPageConfig();
 </script>
 <script>
     // Beacon功能 - 页面关闭时发送信号给服务器
@@ -1206,8 +1319,29 @@
 <script src="/static/libs/pixi.min.js"></script>  <!-- PixiJS v7 CDN -->
 <script src="/static/libs/index.min.js"></script>  <!-- pixi-live2d-display v0.5.0-ls-6（RaSan147 fork，支持v7） -->
 <script src="/static/common_ui.js"></script>
-<script src="/static/live2d.js"></script>
-<script src="/static/app.js"></script>
+<script>
+    // 等待配置加载完成后再加载 Live2D 和 app.js
+    (async function() {
+        try {
+            // 等待配置加载完成
+            await window.pageConfigReady;
+            
+            // 动态加载 live2d.js
+            const live2dScript = document.createElement('script');
+            live2dScript.src = '/static/live2d.js';
+            document.body.appendChild(live2dScript);
+            
+            // 等待 live2d.js 加载完成后再加载 app.js
+            live2dScript.onload = function() {
+                const appScript = document.createElement('script');
+                appScript.src = '/static/app.js';
+                document.body.appendChild(appScript);
+            };
+        } catch (error) {
+            console.error('加载脚本时出错:', error);
+        }
+    })();
+</script>
 <script>
   // 对话区提示框逻辑 - 仅在第一次访问时显示
   (function() {

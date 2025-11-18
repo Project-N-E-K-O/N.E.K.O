@@ -4,7 +4,7 @@
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Live2D 模型管理器</title>
+    <title>Live2D 模型管理器 - Project N.E.K.O.</title>
     <script src="/static/common_dialogs.js"></script>
     <style>
         *:focus {
@@ -392,12 +392,33 @@
             }
         }
 
+        // 获取 lanlan_name 的辅助函数
+        async function getLanlanName() {
+            // 优先从 URL 获取
+            const urlParams = new URLSearchParams(window.location.search);
+            let lanlanName = urlParams.get('lanlan_name') || '';
+            
+            // 如果 URL 中没有，从 API 获取
+            if (!lanlanName) {
+                try {
+                    const response = await fetch('/api/config/page_config');
+                    const data = await response.json();
+                    if (data.success) {
+                        lanlanName = data.lanlan_name || '';
+                    }
+                } catch (error) {
+                    console.error('获取 lanlan_name 失败:', error);
+                }
+            }
+            
+            return lanlanName;
+        }
+        
         // 保存模型设置到角色的函数
         async function saveModelToCharacter(modelName) {
             try {
-                // 从URL参数中获取角色名称，如果没有则使用后端传入的默认值
-                const urlParams = new URLSearchParams(window.location.search);
-                const lanlanName = urlParams.get('lanlan_name') || '{{ lanlan_name }}' || '';
+                // 获取角色名称
+                const lanlanName = await getLanlanName();
                 
                 if (!lanlanName) {
                     showStatus('无法保存：未指定角色名称');
@@ -926,9 +947,8 @@
         // 加载当前角色模型的函数
         async function loadCurrentCharacterModel() {
             try {
-                // 从URL参数中获取角色名称，如果没有则使用后端传入的默认值
-                const urlParams = new URLSearchParams(window.location.search);
-                const lanlanName = urlParams.get('lanlan_name') || '{{ lanlan_name }}' || '';
+                // 获取角色名称
+                const lanlanName = await getLanlanName();
                 
                 let apiUrl = '/api/characters/current_live2d_model';
                 if (lanlanName) {

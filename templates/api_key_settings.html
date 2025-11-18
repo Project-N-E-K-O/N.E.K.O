@@ -4,7 +4,7 @@
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>API Key 设置 - Project Lanlan</title>
+    <title>API Key 设置 - Project N.E.K.O.</title>
     <style>
         *:focus {
             outline: none !important;
@@ -434,11 +434,7 @@
                     </div>
                 </label>
                 <select id="coreApiSelect" style="width: 100%; padding: 10px 12px; border-radius: 6px; border: 1px solid #ccc; font-size: 1rem;">
-                    <option value="free">免费版（猫娘专属福利）</option>
-                    <option value="qwen">Qwen-Omni（阿里）</option>
-                    <option value="openai">GPT-Realtime（OpenAI）</option>
-                    <option value="glm">GLM-realtime（智谱）</option>
-                    <option value="step">Step-2（阶跃星辰）</option>
+                    <!-- 选项将通过 JavaScript 动态加载 -->
                 </select>
             </div>
             <div class="field-row">
@@ -459,12 +455,7 @@
                     </div>
                 </label>
                 <select id="assistApiSelect" style="width: 100%; padding: 10px 12px; border-radius: 6px; border: 1px solid #ccc; font-size: 1rem;">
-                    <option value="free">免费版（猫娘专属福利）</option>
-                    <option value="qwen">阿里（推荐）</option>
-                    <option value="openai">OpenAI</option>
-                    <option value="glm">智谱</option>
-                    <option value="step">阶跃星辰</option>
-                    <option value="silicon">硅基流动</option>
+                    <!-- 选项将通过 JavaScript 动态加载 -->
                 </select>
             </div>
             <div class="field-row">
@@ -724,6 +715,53 @@ async function clearVoiceIds() {
     }
 }
 
+// 加载API服务商选项
+async function loadApiProviders() {
+    try {
+        const response = await fetch('/api/config/api_providers');
+        if (response.ok) {
+            const data = await response.json();
+            if (data.success) {
+                // 填充核心API下拉框
+                const coreSelect = document.getElementById('coreApiSelect');
+                if (coreSelect) {
+                    coreSelect.innerHTML = ''; // 清空现有选项
+                    data.core_api_providers.forEach(provider => {
+                        const option = document.createElement('option');
+                        option.value = provider.key;
+                        option.textContent = provider.name;
+                        coreSelect.appendChild(option);
+                    });
+                }
+                
+                // 填充辅助API下拉框
+                const assistSelect = document.getElementById('assistApiSelect');
+                if (assistSelect) {
+                    assistSelect.innerHTML = ''; // 清空现有选项
+                    data.assist_api_providers.forEach(provider => {
+                        const option = document.createElement('option');
+                        option.value = provider.key;
+                        option.textContent = provider.name;
+                        assistSelect.appendChild(option);
+                    });
+                }
+                
+                console.log('API服务商选项加载成功');
+                return true;
+            } else {
+                console.error('加载API服务商配置失败:', data.error);
+                return false;
+            }
+        } else {
+            console.error('获取API服务商配置失败，HTTP状态:', response.status);
+            return false;
+        }
+    } catch (error) {
+        console.error('加载API服务商配置时出错:', error);
+        return false;
+    }
+}
+
 async function loadCurrentApiKey() {
     try {
         const response = await fetch('/api/config/core_api');
@@ -741,12 +779,34 @@ async function loadCurrentApiKey() {
             } else {
                 showCurrentApiKey('📋 当前暂未设置API Key');
             }
-            // 设置高级设定的值
+            // 设置高级设定的值（确保下拉框已加载选项）
             if (data.coreApi && document.getElementById('coreApiSelect')) {
-                document.getElementById('coreApiSelect').value = data.coreApi;
+                const coreSelect = document.getElementById('coreApiSelect');
+                // 检查选项是否已加载
+                if (coreSelect.options.length > 0) {
+                    coreSelect.value = data.coreApi;
+                } else {
+                    // 如果选项未加载，等待一下再设置
+                    setTimeout(() => {
+                        if (coreSelect.options.length > 0) {
+                            coreSelect.value = data.coreApi;
+                        }
+                    }, 100);
+                }
             }
             if (data.assistApi && document.getElementById('assistApiSelect')) {
-                document.getElementById('assistApiSelect').value = data.assistApi;
+                const assistSelect = document.getElementById('assistApiSelect');
+                // 检查选项是否已加载
+                if (assistSelect.options.length > 0) {
+                    assistSelect.value = data.assistApi;
+                } else {
+                    // 如果选项未加载，等待一下再设置
+                    setTimeout(() => {
+                        if (assistSelect.options.length > 0) {
+                            assistSelect.value = data.assistApi;
+                        }
+                    }, 100);
+                }
             }
             if (typeof data.assistApiKeyQwen === 'string' && document.getElementById('assistApiKeyInputQwen')) {
                 document.getElementById('assistApiKeyInputQwen').value = data.assistApiKeyQwen;
@@ -1488,9 +1548,12 @@ function initTooltips() {
 }
 
 // 页面加载时尝试获取当前API Key
-window.addEventListener('load', function() {
+window.addEventListener('load', async function() {
     // 初始化tooltips
     initTooltips();
+    
+    // 先加载API服务商选项，然后再加载当前配置
+    await loadApiProviders();
     
     loadCurrentApiKey().then(() => {
         // 添加额外的配置检测，确保API输入框状态正确

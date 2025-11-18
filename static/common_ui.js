@@ -3,9 +3,18 @@ const chatContainer = document.getElementById('chat-container');
 const chatContentWrapper = document.getElementById('chat-content-wrapper');
 const toggleBtn = document.getElementById('toggle-chat-btn');
 
+// 移动端检测（与 live2d.js 的 isMobileWidth 一致：基于窗口宽度）
+function uiIsMobileWidth() {
+    return window.innerWidth <= 768;
+}
+
+function isCollapsed() {
+    return chatContainer.classList.contains('minimized') || chatContainer.classList.contains('mobile-collapsed');
+}
+
 // 定义一个滚动到底部的函数
 function scrollToBottom() {
-    if (chatContentWrapper && !chatContainer.classList.contains('minimized')) {
+    if (chatContentWrapper && !isCollapsed()) {
         chatContentWrapper.scrollTop = chatContentWrapper.scrollHeight;
     }
 }
@@ -37,7 +46,68 @@ if (toggleBtn) {
             return;
         }
 
+        // 移动端：仅折叠内容区与标题，不最小化整个容器，保持输入区常驻
+        if (uiIsMobileWidth()) {
+            const becomingCollapsed = !chatContainer.classList.contains('mobile-collapsed');
+            if (becomingCollapsed) {
+                chatContainer.classList.add('mobile-collapsed');
+                // 隐藏内容区与标题
+                if (chatContentWrapper) chatContentWrapper.style.display = 'none';
+                const chatHeader = document.getElementById('chat-header');
+                if (chatHeader) chatHeader.style.display = 'none';
+                // 确保切换按钮始终可见
+                if (toggleBtn) {
+                    toggleBtn.style.display = 'block';
+                    toggleBtn.style.visibility = 'visible';
+                    toggleBtn.style.opacity = '1';
+                }
+            } else {
+                chatContainer.classList.remove('mobile-collapsed');
+                // 显示内容区与标题
+                if (chatContentWrapper) chatContentWrapper.style.removeProperty('display');
+                const chatHeader = document.getElementById('chat-header');
+                if (chatHeader) chatHeader.style.removeProperty('display');
+                if (toggleBtn) {
+                    toggleBtn.style.removeProperty('display');
+                    toggleBtn.style.removeProperty('visibility');
+                    toggleBtn.style.removeProperty('opacity');
+                }
+            }
+            
+            // 获取或创建图标
+            let iconImg = toggleBtn.querySelector('img');
+            if (!iconImg) {
+                iconImg = document.createElement('img');
+                iconImg.style.width = '24px';
+                iconImg.style.height = '24px';
+                iconImg.style.objectFit = 'contain';
+                iconImg.style.pointerEvents = 'none';
+                toggleBtn.innerHTML = '';
+                toggleBtn.appendChild(iconImg);
+            } else {
+                iconImg.style.width = '24px';
+                iconImg.style.height = '24px';
+            }
+            
+            if (becomingCollapsed) {
+                iconImg.src = '/static/icons/expand_icon.png';
+                iconImg.alt = '展开';
+                toggleBtn.title = '展开';
+            } else {
+                iconImg.src = '/static/icons/minimize_icon.png';
+                iconImg.alt = '最小化';
+                toggleBtn.title = '最小化';
+                setTimeout(scrollToBottom, 300);
+            }
+            return; // 移动端已处理，直接返回
+        }
+
         const isMinimized = chatContainer.classList.toggle('minimized');
+        
+        // 如果容器没有其他类，完全移除class属性以避免显示为class=""
+        if (!isMinimized && chatContainer.classList.length === 0) {
+            chatContainer.removeAttribute('class');
+        }
         
         // 获取图标元素（HTML中应该已经有img标签）
         let iconImg = toggleBtn.querySelector('img');
@@ -47,6 +117,7 @@ if (toggleBtn) {
             iconImg.style.width = '24px';  /* 图标尺寸 */
             iconImg.style.height = '24px';  /* 图标尺寸 */
             iconImg.style.objectFit = 'contain';
+            iconImg.style.pointerEvents = 'none'; /* 确保图标不干扰点击事件 */
             toggleBtn.innerHTML = '';
             toggleBtn.appendChild(iconImg);
         } else {
@@ -173,7 +244,7 @@ if (toggleBtn) {
             
             // 如果在折叠状态下，没有发生移动，则触发展开
             // 但如果是从 toggleBtn 开始的，让自然的 click 事件处理
-            if (wasDragging && !didMove && chatContainer.classList.contains('minimized') && !fromToggleBtn) {
+            if (wasDragging && !didMove && isCollapsed() && !fromToggleBtn) {
                 // 使用 setTimeout 确保 click 事件之前执行
                 setTimeout(() => {
                     toggleBtn.click();
@@ -186,14 +257,14 @@ if (toggleBtn) {
     if (chatHeader) {
         // 鼠标事件
         chatHeader.addEventListener('mousedown', (e) => {
-            if (!chatContainer.classList.contains('minimized')) {
+            if (!isCollapsed()) {
                 startDrag(e);
             }
         });
         
         // 触摸事件
         chatHeader.addEventListener('touchstart', (e) => {
-            if (!chatContainer.classList.contains('minimized')) {
+            if (!isCollapsed()) {
                 startDrag(e);
             }
         }, { passive: false });
@@ -218,7 +289,7 @@ if (toggleBtn) {
     // 输入区域：点击空白处（不是输入框、按钮等）可以拖动
     if (textInputArea) {
         textInputArea.addEventListener('mousedown', (e) => {
-            if (!chatContainer.classList.contains('minimized')) {
+            if (!isCollapsed()) {
                 // 只有点击空白区域才拖动，不包括输入框、按钮等交互元素
                 if (e.target === textInputArea) {
                     startDrag(e);
@@ -227,7 +298,7 @@ if (toggleBtn) {
         });
         
         textInputArea.addEventListener('touchstart', (e) => {
-            if (!chatContainer.classList.contains('minimized')) {
+            if (!isCollapsed()) {
                 if (e.target === textInputArea) {
                     startDrag(e);
                 }
@@ -237,7 +308,7 @@ if (toggleBtn) {
 
     // 折叠状态：点击容器（除了按钮）可以拖动或展开
     chatContainer.addEventListener('mousedown', (e) => {
-        if (chatContainer.classList.contains('minimized')) {
+        if (isCollapsed()) {
             // 如果点击的是切换按钮，不启动拖动
             if (e.target === toggleBtn || toggleBtn.contains(e.target)) {
                 return;
@@ -249,7 +320,7 @@ if (toggleBtn) {
     });
 
     chatContainer.addEventListener('touchstart', (e) => {
-        if (chatContainer.classList.contains('minimized')) {
+        if (isCollapsed()) {
             // 如果点击的是切换按钮，不启动拖动
             if (e.target === toggleBtn || toggleBtn.contains(e.target)) {
                 return;
@@ -280,14 +351,15 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!iconImg) {
             // 如果没有图标，创建一个
             iconImg = document.createElement('img');
-            iconImg.style.width = '16px';
-            iconImg.style.height = '16px';
+            iconImg.style.width = '24px';  /* 图标尺寸 */
+            iconImg.style.height = '24px';  /* 图标尺寸 */
             iconImg.style.objectFit = 'contain';
+            iconImg.style.pointerEvents = 'none'; /* 确保图标不干扰点击事件 */
             toggleBtn.innerHTML = '';
             toggleBtn.appendChild(iconImg);
         }
         
-        if (chatContainer.classList.contains('minimized')) {
+        if (isCollapsed()) {
             // 最小化状态，显示展开图标（加号）
             iconImg.src = '/static/icons/expand_icon.png';
             iconImg.alt = '展开';

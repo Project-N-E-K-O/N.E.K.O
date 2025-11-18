@@ -81,6 +81,7 @@ class OmniRealtimeClient:
         self.model = model
         self.voice = voice
         self.ws = None
+        self.instructions = None
         self.on_text_delta = on_text_delta
         self.on_audio_delta = on_audio_delta
         self.on_new_message = on_new_message
@@ -279,6 +280,7 @@ class OmniRealtimeClient:
                 })
             else:
                 raise ValueError(f"Invalid model: {self.model}")
+            self.instructions = instructions
         else:
             raise ValueError(f"Invalid turn detection mode: {self.turn_detection_mode}")
 
@@ -438,18 +440,36 @@ class OmniRealtimeClient:
             raise e
 
     async def create_response(self, instructions: str, skipped: bool = False) -> None:
-        """Request a response from the API. Needed when using manual mode."""
+        """Request a response from the API. First adds message to conversation, then creates response."""
         if skipped == True:
             self._skip_until_next_response = True
-        event = {
-            "type": "response.create",
-            "response": {
-                "instructions": instructions,
-                "modalities": self._modalities
+
+        if "qwen" in self.model:
+            await self.update_session({"instructions": self.instructions + '\n' + instructions})
+
+            logger.info(f"Creating response with instructions override")
+            await self.send_event({"type": "response.create"})
+        else:
+            # 先通过 conversation.item.create 添加系统消息（增量）
+            item_event = {
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": instructions
+                        }
+                    ]
+                }
             }
-        }
-        logger.info(f"Creating response: {event}")
-        await self.send_event(event)
+            logger.info(f"Adding conversation item: {item_event}")
+            await self.send_event(item_event)
+            
+            # 然后调用 response.create，不带 instructions（避免替换 session instructions）
+            logger.info(f"Creating response without instructions override")
+            await self.send_event({"type": "response.create"})
 
     async def cancel_response(self) -> None:
         """Cancel the current response."""

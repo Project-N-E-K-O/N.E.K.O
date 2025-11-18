@@ -254,37 +254,10 @@ def set_start_config(config):
 
 @app.get("/", response_class=HTMLResponse)
 async def get_default_index(request: Request):
-    # 每次动态获取角色数据
-    _, her_name, _, lanlan_basic_config, _, _, _, _, _, _ = _config_manager.get_character_data()
-    # 获取live2d字段
-    live2d = lanlan_basic_config.get(her_name, {}).get('live2d', 'mao_pro')
-    # 查找所有模型
-    models = find_models()
-    # 根据live2d字段查找对应的model path
-    model_path = next((m["path"] for m in models if m["name"] == live2d), find_model_config_file(live2d))
     return templates.TemplateResponse("templates/index.html", {
-        "request": request,
-        "lanlan_name": her_name,
-        "model_path": model_path,
-        "focus_mode": False
+        "request": request
     })
 
-@app.get("/focus", response_class=HTMLResponse)
-async def get_default_focus_index(request: Request):
-    # 每次动态获取角色数据
-    _, her_name, _, lanlan_basic_config, _, _, _, _, _, _ = _config_manager.get_character_data()
-    # 获取live2d字段
-    live2d = lanlan_basic_config.get(her_name, {}).get('live2d', 'mao_pro')
-    # 查找所有模型
-    models = find_models()
-    # 根据live2d字段查找对应的model path
-    model_path = next((m["path"] for m in models if m["name"] == live2d), find_model_config_file(live2d))
-    return templates.TemplateResponse("templates/index.html", {
-        "request": request,
-        "lanlan_name": her_name,
-        "model_path": model_path,
-        "focus_mode": True
-    })
 
 @app.get("/api/preferences")
 async def get_preferences():
@@ -361,6 +334,39 @@ async def set_preferred_model(request: Request):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+@app.get("/api/config/page_config")
+async def get_page_config(lanlan_name: str = ""):
+    """获取页面配置（lanlan_name 和 model_path）"""
+    try:
+        # 获取角色数据
+        _, her_name, _, lanlan_basic_config, _, _, _, _, _, _ = _config_manager.get_character_data()
+        
+        # 如果提供了 lanlan_name 参数，使用它；否则使用当前角色
+        target_name = lanlan_name if lanlan_name else her_name
+        
+        # 获取 live2d 字段
+        live2d = lanlan_basic_config.get(target_name, {}).get('live2d', 'mao_pro')
+        
+        # 查找所有模型
+        models = find_models()
+        
+        # 根据 live2d 字段查找对应的 model path
+        model_path = next((m["path"] for m in models if m["name"] == live2d), find_model_config_file(live2d))
+        
+        return {
+            "success": True,
+            "lanlan_name": target_name,
+            "model_path": model_path
+        }
+    except Exception as e:
+        logger.error(f"获取页面配置失败: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "lanlan_name": "",
+            "model_path": ""
+        }
+
 @app.get("/api/config/core_api")
 async def get_core_config_api():
     """获取核心配置（API Key）"""
@@ -395,6 +401,34 @@ async def get_core_config_api():
         return {
             "success": False,
             "error": str(e)
+        }
+
+
+@app.get("/api/config/api_providers")
+async def get_api_providers_config():
+    """获取API服务商配置（供前端使用）"""
+    try:
+        from utils.api_config_loader import (
+            get_core_api_providers_for_frontend,
+            get_assist_api_providers_for_frontend,
+        )
+        
+        # 使用缓存加载配置（性能更好，配置更新后需要重启服务）
+        core_providers = get_core_api_providers_for_frontend()
+        assist_providers = get_assist_api_providers_for_frontend()
+        
+        return {
+            "success": True,
+            "core_api_providers": core_providers,
+            "assist_api_providers": assist_providers,
+        }
+    except Exception as e:
+        logger.error(f"获取API服务商配置失败: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "core_api_providers": [],
+            "assist_api_providers": [],
         }
 
 
@@ -915,12 +949,10 @@ async def proactive_chat(request: Request):
         }, status_code=500)
 
 @app.get("/l2d", response_class=HTMLResponse)
-async def get_l2d_manager(request: Request, lanlan_name: str = ""):
+async def get_l2d_manager(request: Request):
     """渲染Live2D模型管理器页面"""
-    _, her_name_current, _, _, _, _, _, _, _, _ = _config_manager.get_character_data()
     return templates.TemplateResponse("templates/l2d_manager.html", {
-        "request": request,
-        "lanlan_name": lanlan_name if lanlan_name else her_name_current
+        "request": request
     })
 
 @app.get('/api/characters/current_live2d_model')
@@ -1000,8 +1032,8 @@ async def chara_manager(request: Request):
     return templates.TemplateResponse('templates/chara_manager.html', {"request": request})
 
 @app.get('/voice_clone', response_class=HTMLResponse)
-async def voice_clone_page(request: Request, lanlan_name: str = ""):
-    return templates.TemplateResponse("templates/voice_clone.html", {"request": request, "lanlan_name": lanlan_name})
+async def voice_clone_page(request: Request):
+    return templates.TemplateResponse("templates/voice_clone.html", {"request": request})
 
 @app.get("/api_key", response_class=HTMLResponse)
 async def api_key_settings(request: Request):
@@ -1519,8 +1551,12 @@ async def add_catgirl(request: Request):
     # 创建猫娘数据，只保存非空字段
     catgirl_data = {}
     for k, v in data.items():
-        if k != '档案名' and v:  # 只保存非空字段
-            catgirl_data[k] = v
+        if k != '档案名':
+            # voice_id 特殊处理：空字符串表示删除该字段
+            if k == 'voice_id' and v == '':
+                continue  # 不添加该字段，相当于删除
+            elif v:  # 只保存非空字段
+                catgirl_data[k] = v
     
     characters['猫娘'][key] = catgirl_data
     _config_manager.save_characters(characters)
@@ -1543,7 +1579,8 @@ async def update_catgirl(name: str, request: Request):
     # 如果包含voice_id，验证其有效性
     if 'voice_id' in data:
         voice_id = data['voice_id']
-        if not _config_manager.validate_voice_id(voice_id):
+        # 空字符串表示删除voice_id，跳过验证
+        if voice_id != '' and not _config_manager.validate_voice_id(voice_id):
             voices = _config_manager.get_voices_for_current_api()
             available_voices = list(voices.keys())
             return JSONResponse({
@@ -1559,8 +1596,16 @@ async def update_catgirl(name: str, request: Request):
             removed_fields.append(k)
     for k in removed_fields:
         characters['猫娘'][name].pop(k)
+    
+    # 处理voice_id的特殊逻辑：如果传入空字符串，则删除该字段
+    if 'voice_id' in data and data['voice_id'] == '':
+        characters['猫娘'][name].pop('voice_id', None)
+    
+    # 更新其他字段
     for k, v in data.items():
-        if k not in ('档案名') and v:
+        if k not in ('档案名', 'voice_id') and v:
+            characters['猫娘'][name][k] = v
+        elif k == 'voice_id' and v:  # voice_id非空时才更新
             characters['猫娘'][name][k] = v
     _config_manager.save_characters(characters)
     
@@ -1994,6 +2039,17 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...)):
                 try:
                     _config_manager.save_voice_for_current_api(voice_id, voice_data)
                     logger.info(f"voice_id已保存到音色库: {voice_id}")
+                    
+                    # 验证voice_id是否能够被正确读取
+                    if not _config_manager.validate_voice_id(voice_id):
+                        logger.error(f"voice_id保存后验证失败: {voice_id}")
+                        return JSONResponse({
+                            'error': f'音色注册成功但保存验证失败，请重试',
+                            'voice_id': voice_id,
+                            'file_url': tmp_url
+                        }, status_code=500)
+                    logger.info(f"voice_id保存验证成功: {voice_id}")
+                    
                 except Exception as save_error:
                     logger.error(f"保存voice_id到音色库失败: {save_error}")
                     return JSONResponse({
@@ -2091,6 +2147,8 @@ async def register_voice(request: Request):
 
 @app.delete('/api/characters/catgirl/{name}')
 async def delete_catgirl(name: str):
+    import shutil
+    
     characters = _config_manager.load_characters()
     if name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
@@ -2100,9 +2158,34 @@ async def delete_catgirl(name: str):
     if name == current_catgirl:
         return JSONResponse({'success': False, 'error': '不能删除当前正在使用的猫娘！请先切换到其他猫娘后再删除。'}, status_code=400)
     
+    # 删除对应的记忆文件
+    try:
+        memory_paths = [_config_manager.memory_dir, _config_manager.project_memory_dir]
+        files_to_delete = [
+            f'semantic_memory_{name}',  # 语义记忆目录
+            f'time_indexed_{name}',     # 时间索引数据库文件
+            f'settings_{name}.json',    # 设置文件
+            f'recent_{name}.json',      # 最近聊天记录文件
+        ]
+        
+        for base_dir in memory_paths:
+            for file_name in files_to_delete:
+                file_path = base_dir / file_name
+                if file_path.exists():
+                    try:
+                        if file_path.is_dir():
+                            shutil.rmtree(file_path)
+                        else:
+                            file_path.unlink()
+                        logger.info(f"已删除: {file_path}")
+                    except Exception as e:
+                        logger.warning(f"删除失败 {file_path}: {e}")
+    except Exception as e:
+        logger.error(f"删除记忆文件时出错: {e}")
+    
+    # 删除角色配置
     del characters['猫娘'][name]
     _config_manager.save_characters(characters)
-    # 自动重新加载配置
     await initialize_character_data()
     return {"success": True}
 
@@ -2207,7 +2290,7 @@ async def get_recent_files():
 
 @app.get('/api/memory/review_config')
 async def get_review_config():
-    """获取记忆审阅配置"""
+    """获取记忆整理配置"""
     try:
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
@@ -2221,12 +2304,12 @@ async def get_review_config():
             # 如果配置文件不存在，默认返回True（开启）
             return {"enabled": True}
     except Exception as e:
-        logger.error(f"读取记忆审阅配置失败: {e}")
+        logger.error(f"读取记忆整理配置失败: {e}")
         return {"enabled": True}
 
 @app.post('/api/memory/review_config')
 async def update_review_config(request: Request):
-    """更新记忆审阅配置"""
+    """更新记忆整理配置"""
     try:
         data = await request.json()
         enabled = data.get('enabled', True)
@@ -2248,10 +2331,10 @@ async def update_review_config(request: Request):
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config_data, f, ensure_ascii=False, indent=2)
         
-        logger.info(f"记忆审阅配置已更新: enabled={enabled}")
+        logger.info(f"记忆整理配置已更新: enabled={enabled}")
         return {"success": True, "enabled": enabled}
     except Exception as e:
-        logger.error(f"更新记忆审阅配置失败: {e}")
+        logger.error(f"更新记忆整理配置失败: {e}")
         return {"success": False, "error": str(e)}
 
 @app.get('/api/memory/recent_file')
@@ -3138,38 +3221,12 @@ async def emotion_analysis(request: Request):
 async def memory_browser(request: Request):
     return templates.TemplateResponse('templates/memory_browser.html', {"request": request})
 
-@app.get("/focus/{lanlan_name}", response_class=HTMLResponse)
-async def get_focus_index(request: Request, lanlan_name: str):
-    # 每次动态获取角色数据
-    _, _, _, lanlan_basic_config, _, _, _, _, _, _ = _config_manager.get_character_data()
-    # 获取live2d字段
-    live2d = lanlan_basic_config.get(lanlan_name, {}).get('live2d', 'mao_pro')
-    # 查找所有模型
-    models = find_models()
-    # 根据live2d字段查找对应的model path
-    model_path = next((m["path"] for m in models if m["name"] == live2d), find_model_config_file(live2d))
-    return templates.TemplateResponse("templates/index.html", {
-        "request": request,
-        "lanlan_name": lanlan_name,
-        "model_path": model_path,
-        "focus_mode": True
-    })
 
 @app.get("/{lanlan_name}", response_class=HTMLResponse)
 async def get_index(request: Request, lanlan_name: str):
-    # 每次动态获取角色数据
-    _, _, _, lanlan_basic_config, _, _, _, _, _, _ = _config_manager.get_character_data()
-    # 获取live2d字段
-    live2d = lanlan_basic_config.get(lanlan_name, {}).get('live2d', 'mao_pro')
-    # 查找所有模型
-    models = find_models()
-    # 根据live2d字段查找对应的model path
-    model_path = next((m["path"] for m in models if m["name"] == live2d), find_model_config_file(live2d))
+    # lanlan_name 将从 URL 中提取，前端会通过 API 获取配置
     return templates.TemplateResponse("templates/index.html", {
-        "request": request,
-        "lanlan_name": lanlan_name,
-        "model_path": model_path,
-        "focus_mode": False
+        "request": request
     })
 
 @app.post('/api/agent/flags')

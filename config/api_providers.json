@@ -1,0 +1,128 @@
+{
+  "core_api_providers": {
+    "free": {
+      "key": "free",
+      "name": "免费版（猫娘专属福利）",
+      "description": "完全免费，无需API Key，但不支持自定义语音、Agent模式和视频对话",
+      "core_url": "ws://47.100.209.206:9805",
+      "core_model": "free-model",
+      "core_api_key": "free-access",
+      "is_free_version": true
+    },
+    "qwen": {
+      "key": "qwen",
+      "name": "Qwen-Omni（阿里）",
+      "description": "有免费额度，功能全面",
+      "core_url": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
+      "core_model": "qwen3-omni-flash-realtime"
+    },
+    "openai": {
+      "key": "openai",
+      "name": "GPT-Realtime（OpenAI）",
+      "description": "智能水平最高，但需要翻墙且价格昂贵",
+      "core_url": "wss://api.openai.com/v1/realtime",
+      "core_model": "gpt-realtime"
+    },
+    "glm": {
+      "key": "glm",
+      "name": "GLM-realtime（智谱）",
+      "description": "有免费额度，但需充值1元，内置联网搜索功能",
+      "core_url": "wss://open.bigmodel.cn/api/paas/v4/realtime",
+      "core_model": "glm-realtime-air"
+    },
+    "step": {
+      "key": "step",
+      "name": "Step-2（阶跃星辰）",
+      "description": "完全免费，但不支持视频",
+      "core_url": "wss://api.stepfun.com/v1/realtime",
+      "core_model": "step-audio-2"
+    }
+  },
+  "assist_api_providers": {
+    "free": {
+      "key": "free",
+      "name": "免费版（猫娘专属福利）",
+      "description": "完全免费，无需API Key，但不支持自定义语音",
+      "openrouter_url": "http://47.100.209.206:9807/v1",
+      "summary_model": "free-model",
+      "correction_model": "free-model",
+      "emotion_model": "free-model",
+      "vision_model": "free-vision-model",
+      "audio_api_key": "free-access",
+      "openrouter_api_key": "free-access",
+      "is_free_version": true
+    },
+    "qwen": {
+      "key": "qwen",
+      "name": "阿里（推荐）",
+      "description": "推荐选择，支持自定义语音",
+      "openrouter_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "summary_model": "qwen3-next-80b-a3b-instruct",
+      "correction_model": "qwen3-235b-a22b-instruct-2507",
+      "emotion_model": "qwen-flash-2025-07-28",
+      "vision_model": "qwen3-vl-plus-2025-09-23"
+    },
+    "openai": {
+      "key": "openai",
+      "name": "OpenAI",
+      "description": "记忆管理能力强",
+      "openrouter_url": "https://api.openai.com/v1",
+      "summary_model": "gpt-4.1-mini",
+      "correction_model": "gpt-5-chat-latest",
+      "emotion_model": "gpt-4.1-nano",
+      "vision_model": "gpt-5-chat-latest"
+    },
+    "glm": {
+      "key": "glm",
+      "name": "智谱",
+      "description": "支持Agent模式",
+      "openrouter_url": "https://open.bigmodel.cn/api/paas/v4",
+      "summary_model": "glm-4.5-flash",
+      "correction_model": "glm-4.5-air",
+      "emotion_model": "glm-4.5-flash",
+      "vision_model": "glm-4v-plus-0111"
+    },
+    "step": {
+      "key": "step",
+      "name": "阶跃星辰",
+      "description": "价格相对便宜",
+      "openrouter_url": "https://api.stepfun.com/v1",
+      "summary_model": "step-2-mini",
+      "correction_model": "step-2-mini",
+      "emotion_model": "step-2-mini",
+      "vision_model": "step-1o-turbo-vision"
+    },
+    "silicon": {
+      "key": "silicon",
+      "name": "硅基流动",
+      "description": "性价比高，功能少，只作为辅助API使用",
+      "openrouter_url": "https://api.siliconflow.cn/v1",
+      "summary_model": "Qwen/Qwen3-Next-80B-A3B-Instruct",
+      "correction_model": "deepseek-ai/DeepSeek-V3.2-Exp",
+      "emotion_model": "inclusionAI/Ling-mini-2.0",
+      "vision_model": "Qwen/Qwen3-VL-235B-A22B-Instruct"
+    }
+  },
+  "default_models": {
+    "router_model": "openai/gpt-4.1",
+    "summary_model": "qwen-plus",
+    "setting_proposer_model": "qwen-max",
+    "setting_verifier_model": "qwen-max",
+    "semantic_model": "text-embedding-v4",
+    "reranker_model": "qwen-plus",
+    "correction_model": "qwen-max",
+    "emotion_model": "qwen-turbo",
+    "vision_model": "qwen3-vl-plus-2025-09-23",
+    "core_model": "qwen3-omni-flash-realtime",
+    "core_url": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
+    "openrouter_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  },
+  "assist_api_key_fields": {
+    "qwen": "ASSIST_API_KEY_QWEN",
+    "openai": "ASSIST_API_KEY_OPENAI",
+    "glm": "ASSIST_API_KEY_GLM",
+    "step": "ASSIST_API_KEY_STEP",
+    "silicon": "ASSIST_API_KEY_SILICON"
+  }
+}
+

@@ -21,9 +21,11 @@ from config.api import (
     TTS_MODEL,
 )
 from copy import deepcopy
+import logging
 
 from config.prompts_chara import lanlan_prompt
 
+logger = logging.getLogger(__name__)
 
 # 应用程序名称配置
 APP_NAME = "Xiao8"
@@ -75,7 +77,8 @@ DEFAULT_USER_PREFERENCES = []
 
 DEFAULT_VOICE_STORAGE = {}
 
-CORE_API_PROFILES = {
+# 默认API配置（供 utils.api_config_loader 作为回退选项使用）
+DEFAULT_CORE_API_PROFILES = {
     'free': {
         'CORE_URL': "ws://47.100.209.206:9805",
         'CORE_MODEL': "free-model",
@@ -100,7 +103,7 @@ CORE_API_PROFILES = {
     },
 }
 
-ASSIST_API_PROFILES = {
+DEFAULT_ASSIST_API_PROFILES = {
     'free': {
         'OPENROUTER_URL': "http://47.100.209.206:9807/v1",
         'SUMMARY_MODEL': "free-model",
@@ -148,7 +151,7 @@ ASSIST_API_PROFILES = {
     },
 }
 
-ASSIST_API_KEY_FIELDS = {
+DEFAULT_ASSIST_API_KEY_FIELDS = {
     'qwen': 'ASSIST_API_KEY_QWEN',
     'openai': 'ASSIST_API_KEY_OPENAI',
     'glm': 'ASSIST_API_KEY_GLM',
@@ -180,9 +183,9 @@ __all__ = [
     'DEFAULT_USER_PREFERENCES',
     'DEFAULT_VOICE_STORAGE',
     'DEFAULT_CONFIG_DATA',
-    'CORE_API_PROFILES',
-    'ASSIST_API_PROFILES',
-    'ASSIST_API_KEY_FIELDS',
+    'DEFAULT_CORE_API_PROFILES',
+    'DEFAULT_ASSIST_API_PROFILES',
+    'DEFAULT_ASSIST_API_KEY_FIELDS',
     'TIME_ORIGINAL_TABLE_NAME',
     'TIME_COMPRESSED_TABLE_NAME',
     'MODELS_WITH_EXTRA_BODY',

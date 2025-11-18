@@ -3,7 +3,7 @@
 <head>
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <meta charset="UTF-8">
-    <title>音色注册网页</title>
+    <title>音色注册网页 - Project N.E.K.O.</title>
     <style>
         body { font-family: Arial, sans-serif; margin: 40px; }
         .container { max-width: 500px; margin: auto; }
@@ -23,93 +23,118 @@
     <label>自定义前缀（阿里云需要）</label>
     <input type="text" id="prefix" placeholder="不超过10个字符，只支持数字和英文字母">
 
-    <input type="hidden" id="lanlan_name" value="{{ lanlan_name }}">
+    <input type="hidden" id="lanlan_name" value="">
 
     <button onclick="registerVoice()">注册音色</button>
 
     <div class="result" id="result"></div>
 </div>
 <script>
-function setFormDisabled(disabled) {
-    document.getElementById('audioFile').disabled = disabled;
-    document.getElementById('prefix').disabled = disabled;
-    // 禁用所有按钮
-    const buttons = document.querySelectorAll('button');
-    buttons.forEach(btn => btn.disabled = disabled);
-}
-
-function registerVoice() {
-    const fileInput = document.getElementById('audioFile');
-    const prefix = document.getElementById('prefix').value.trim();
-    const resultDiv = document.getElementById('result');
-    resultDiv.innerHTML = '';
-    resultDiv.className = 'result';
-    if (!fileInput.files.length || !prefix) {
-        resultDiv.innerHTML = '请上传音频文件并填写前缀';
-        resultDiv.className = 'result error';
-        return;
-    }
-    setFormDisabled(true);
-    resultDiv.innerHTML = '正在注册声音，请稍后！';
-    resultDiv.className = 'result';
-    const formData = new FormData();
-    formData.append('file', fileInput.files[0]);
-    formData.append('prefix', prefix);
-    fetch('/api/voice_clone', {
-        method: 'POST',
-        body: formData
-    })
-    .then(res => res.json())
-    .then(data => {
-        if (data.voice_id) {
-            resultDiv.innerHTML = '注册成功！voice_id: ' + data.voice_id;
-            // 自动更新voice_id到后端
-            const lanlanName = document.getElementById('lanlan_name').value;
-            if (lanlanName) {
-                fetch(`/api/characters/catgirl/voice_id/${encodeURIComponent(lanlanName)}`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ voice_id: data.voice_id })
-                }).then(resp => resp.json()).then(res => {
-                    if (!res.success) {
-                        resultDiv.innerHTML += '<br><span class="error">voice_id自动保存失败: ' + (res.error || '未知错误') + '</span>';
-                    } else {
-                        resultDiv.innerHTML += '<br>voice_id已自动保存到角色';
-                        // 如果session被结束，页面会自动刷新
-                        if (res.session_restarted) {
-                            resultDiv.innerHTML += '<br><span style="color: blue;">当前页面即将自动刷新以应用新语音</span>';
-                        } else {
-                            resultDiv.innerHTML += '<br><span style="color: blue;">新语音将在下次对话时生效</span>';
-                        }
-                        // 通知父页面voice_id已更新
-                        if (window.parent !== window) {
-                            window.parent.postMessage({type: 'voice_id_updated', voice_id: data.voice_id, session_restarted: res.session_restarted}, '*');
-                        }
-                    }
-                }).catch(e => {
-                    resultDiv.innerHTML += '<br><span class="error">voice_id自动保存请求出错</span>';
-                });
+    // 页面加载时获取 lanlan_name
+    (async function initLanlanName() {
+        try {
+            // 优先从 URL 获取 lanlan_name
+            const urlParams = new URLSearchParams(window.location.search);
+            let lanlanName = urlParams.get('lanlan_name') || "";
+            
+            // 如果 URL 中没有，从 API 获取
+            if (!lanlanName) {
+                const response = await fetch('/api/config/page_config');
+                const data = await response.json();
+                if (data.success) {
+                    lanlanName = data.lanlan_name || "";
+                }
             }
-        } else {
-            resultDiv.innerHTML = '注册失败：' + (data.error || '未知错误');
-            resultDiv.className = 'result error';
+            
+            // 设置到隐藏字段
+            document.getElementById('lanlan_name').value = lanlanName;
+            console.log('lanlan_name 已设置:', lanlanName);
+        } catch (error) {
+            console.error('获取 lanlan_name 失败:', error);
+            document.getElementById('lanlan_name').value = "";
         }
-        setFormDisabled(false);
-    })
-    .catch(err => {
-        resultDiv.textContent = '请求出错：' + err;
-        resultDiv.className = 'result error';
-        setFormDisabled(false);
-    });
-}
+    })();
 
-// 监听API Key变更事件
-window.addEventListener('message', function(event) {
-    if (event.data.type === 'api_key_changed') {
-        // API Key已更改，可以在这里添加其他需要的处理逻辑
-        console.log('API Key已更改，音色注册页面已收到通知');
+    function setFormDisabled(disabled) {
+        document.getElementById('audioFile').disabled = disabled;
+        document.getElementById('prefix').disabled = disabled;
+        // 禁用所有按钮
+        const buttons = document.querySelectorAll('button');
+        buttons.forEach(btn => btn.disabled = disabled);
     }
-});
+
+    function registerVoice() {
+        const fileInput = document.getElementById('audioFile');
+        const prefix = document.getElementById('prefix').value.trim();
+        const resultDiv = document.getElementById('result');
+        resultDiv.innerHTML = '';
+        resultDiv.className = 'result';
+        if (!fileInput.files.length || !prefix) {
+            resultDiv.innerHTML = '请上传音频文件并填写前缀';
+            resultDiv.className = 'result error';
+            return;
+        }
+        setFormDisabled(true);
+        resultDiv.innerHTML = '正在注册声音，请稍后！';
+        resultDiv.className = 'result';
+        const formData = new FormData();
+        formData.append('file', fileInput.files[0]);
+        formData.append('prefix', prefix);
+        fetch('/api/voice_clone', {
+            method: 'POST',
+            body: formData
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.voice_id) {
+                resultDiv.innerHTML = '注册成功！voice_id: ' + data.voice_id;
+                // 自动更新voice_id到后端
+                const lanlanName = document.getElementById('lanlan_name').value;
+                if (lanlanName) {
+                    fetch(`/api/characters/catgirl/voice_id/${encodeURIComponent(lanlanName)}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ voice_id: data.voice_id })
+                    }).then(resp => resp.json()).then(res => {
+                        if (!res.success) {
+                            resultDiv.innerHTML += '<br><span class="error">voice_id自动保存失败: ' + (res.error || '未知错误') + '</span>';
+                        } else {
+                            resultDiv.innerHTML += '<br>voice_id已自动保存到角色';
+                            // 如果session被结束，页面会自动刷新
+                            if (res.session_restarted) {
+                                resultDiv.innerHTML += '<br><span style="color: blue;">当前页面即将自动刷新以应用新语音</span>';
+                            } else {
+                                resultDiv.innerHTML += '<br><span style="color: blue;">新语音将在下次对话时生效</span>';
+                            }
+                            // 通知父页面voice_id已更新
+                            if (window.parent !== window) {
+                                window.parent.postMessage({type: 'voice_id_updated', voice_id: data.voice_id, session_restarted: res.session_restarted}, '*');
+                            }
+                        }
+                    }).catch(e => {
+                        resultDiv.innerHTML += '<br><span class="error">voice_id自动保存请求出错</span>';
+                    });
+                }
+            } else {
+                resultDiv.innerHTML = '注册失败：' + (data.error || '未知错误');
+                resultDiv.className = 'result error';
+            }
+            setFormDisabled(false);
+        })
+        .catch(err => {
+            resultDiv.textContent = '请求出错：' + err;
+            resultDiv.className = 'result error';
+            setFormDisabled(false);
+        });
+    }
+
+    // 监听API Key变更事件
+    window.addEventListener('message', function(event) {
+        if (event.data.type === 'api_key_changed') {
+            // API Key已更改，可以在这里添加其他需要的处理逻辑
+            console.log('API Key已更改，音色注册页面已收到通知');
+        }
+    });
 </script>
 </body>
 </html> 

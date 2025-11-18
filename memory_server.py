@@ -76,11 +76,11 @@ async def _run_review_in_background(lanlan_name: str):
     try:
         # 直接异步调用review_history方法
         await recent_history_manager.review_history(lanlan_name, cancel_event)
-        logger.info(f"✅ {lanlan_name} 的记忆审阅任务完成")
+        logger.info(f"✅ {lanlan_name} 的记忆整理任务完成")
     except asyncio.CancelledError:
-        logger.info(f"⚠️ {lanlan_name} 的记忆审阅任务被取消")
+        logger.info(f"⚠️ {lanlan_name} 的记忆整理任务被取消")
     except Exception as e:
-        logger.error(f"❌ {lanlan_name} 的记忆审阅任务出错: {e}")
+        logger.error(f"❌ {lanlan_name} 的记忆整理任务出错: {e}")
     finally:
         # 清理任务记录
         if lanlan_name in correction_tasks:

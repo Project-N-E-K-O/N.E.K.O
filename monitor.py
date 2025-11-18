@@ -43,6 +43,34 @@ _config_manager = get_config_manager()
 async def get_subtitle():
     return FileResponse(get_resource_path('templates/subtitle.html'))
 
+@app.get("/api/config/page_config")
+async def get_page_config(lanlan_name: str = ""):
+    """获取页面配置（lanlan_name 和 model_path）"""
+    try:
+        # 获取角色数据
+        _, her_name, _, lanlan_basic_config, _, _, _, _, _, _ = _config_manager.get_character_data()
+        
+        # 如果提供了 lanlan_name 参数，使用它；否则使用当前角色
+        target_name = lanlan_name if lanlan_name else her_name
+        
+        # 获取 live2d 字段
+        live2d = lanlan_basic_config.get(target_name, {}).get('live2d', 'mao_pro')
+        
+        # 查找所有模型
+        models = find_models()
+        
+        # 根据 live2d 字段查找对应的 model path
+        model_path = next((m["path"] for m in models if m["name"] == live2d), find_model_config_file(live2d))
+        
+        return {
+            "success": True,
+            "lanlan_name": target_name,
+            "model_path": model_path
+        }
+    except Exception as e:
+        logger.error(f"获取页面配置失败: {e}")
+        return {"success": False, "error": str(e)}
+
 @app.get('/api/live2d/emotion_mapping/{model_name}')
 async def get_emotion_mapping(model_name: str):
     """获取情绪映射配置"""
@@ -111,18 +139,9 @@ async def get_emotion_mapping(model_name: str):
 
 @app.get("/{lanlan_name}", response_class=HTMLResponse)
 async def get_index(request: Request, lanlan_name: str):
-    # 获取角色配置
-    _, _, _, lanlan_basic_config, _, _, _, _, _, _ = _config_manager.get_character_data()
-    # 获取live2d字段
-    live2d = lanlan_basic_config.get(lanlan_name, {}).get('live2d', 'mao_pro')
-    # 查找所有模型
-    models = find_models()
-    # 根据live2d字段查找对应的model path
-    model_path = next((m["path"] for m in models if m["name"] == live2d), find_model_config_file(live2d))
+    # lanlan_name 将从 URL 中提取，前端会通过 API 获取配置
     return templates.TemplateResponse("templates/viewer.html", {
-        "request": request,
-        "lanlan_name": lanlan_name,
-        "model_path": model_path
+        "request": request
     })
 
 

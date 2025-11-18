@@ -100,6 +100,7 @@ class ImportantSettingsManager:
             lines.append(f"{name_mapping[msg.type]} | {joined}")
         prompt = settings_extractor_prompt % ("\n".join(lines))
         prompt = prompt.replace('{LANLAN_NAME}', lanlan_name)
+        prompt = prompt.replace('{MASTER_NAME}', self.name_mapping.get('human', '主人'))
         retries = 0
         max_retries = 3
         new_settings = ""

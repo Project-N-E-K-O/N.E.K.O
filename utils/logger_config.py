@@ -216,7 +216,19 @@ class RobustLoggerConfig:
             bool: 是否可写
         """
         try:
-            directory.mkdir(parents=True, exist_ok=True)
+            # 分步创建目录，避免parents=True在打包后可能出现的问题
+            # 收集所有需要创建的父目录
+            dirs_to_create = []
+            current = directory
+            while current and not current.exists():
+                dirs_to_create.append(current)
+                current = current.parent
+            
+            # 从最顶层开始创建目录
+            for dir_path in reversed(dirs_to_create):
+                if not dir_path.exists():
+                    dir_path.mkdir(exist_ok=True)
+            
             # 尝试创建一个测试文件
             test_file = directory / ".write_test"
             test_file.write_text("test")
@@ -228,7 +240,17 @@ class RobustLoggerConfig:
     def _ensure_log_directory(self):
         """确保日志目录存在"""
         try:
-            self.log_dir.mkdir(parents=True, exist_ok=True)
+            # 分步创建目录，避免parents=True在打包后可能出现的问题
+            dirs_to_create = []
+            current = self.log_dir
+            while current and not current.exists():
+                dirs_to_create.append(current)
+                current = current.parent
+            
+            # 从最顶层开始创建目录
+            for dir_path in reversed(dirs_to_create):
+                if not dir_path.exists():
+                    dir_path.mkdir(exist_ok=True)
         except Exception as e:
             print(f"Error: Failed to create log directory: {e}", file=sys.stderr)
             raise
