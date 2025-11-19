@@ -1205,7 +1205,8 @@
             console.log('检查模型配置是否有更新...');
             
             // 1. 获取当前角色名称
-            const currentLanlanName = lanlan_config.lanlan_name;
+            let currentLanlanName = lanlan_config.lanlan_name;
+            console.log('BEFORE currentLanlanName: ', currentLanlanName);
             
             // 2. 获取最新的角色配置（包含所有猫娘的完整配置）
             const charResponse = await fetch('/api/characters');
@@ -1214,6 +1215,10 @@
                 return;
             }
             const charactersData = await charResponse.json();
+
+            // 确保 lanlan_config.lanlan_name 更新到 chara_manager.html 当前选中的猫娘
+            currentLanlanName = lanlan_config.lanlan_name = charactersData['当前猫娘'];
+            console.log('AFTER currentLanlanName: ', currentLanlanName);
             
             // 从猫娘配置中获取当前角色的 live2d 模型名称
             const catgirlConfig = charactersData['猫娘']?.[currentLanlanName];
@@ -1222,6 +1227,7 @@
                 return;
             }
             const newModelName = catgirlConfig.live2d || 'mao_pro';
+            console.log('AFTER newModelName: ', newModelName);
             
             // 3. 获取所有可用模型列表
             const modelsResponse = await fetch('/api/live2d/models');
@@ -1238,6 +1244,7 @@
                 return;
             }
             const newModelPath = modelInfo.path;
+            console.log('AFTER newModelPath: ', newModelPath);
             
             // 5. 检查当前加载的模型路径
             const currentModel = window.live2dManager?.getCurrentModel();
