@@ -1614,16 +1614,16 @@ async def get_workshop_item_details(item_id: str):
         item_state = steamworks.Workshop.GetItemState(item_id_int)
         
         # 创建查询请求，传入必要的published_file_ids参数
-        handle = steamworks.Workshop.CreateQueryUGCDetailsRequest([item_id_int])
+        query_handle = steamworks.Workshop.CreateQueryUGCDetailsRequest([item_id_int])
         
         # 发送查询请求
         # 注意：SendQueryUGCRequest返回None而不是布尔值
-        handle = steamworks.Workshop.SendQueryUGCRequest(handle)
+        steamworks.Workshop.SendQueryUGCRequest(query_handle)
         
-        # 检查handle是否有效而不是检查success
-        if handle is not None:
-            # 获取查询结果 - 添加index参数
-            result = steamworks.Workshop.GetQueryUGCResult(handle, 0)
+        # 直接获取查询结果，不检查handle
+        result = steamworks.Workshop.GetQueryUGCResult(query_handle, 0)
+        
+        if result:
             
             if result:
                 # 获取物品安装信息 - 支持字典格式（根据workshop.py的实现）
@@ -1641,30 +1641,27 @@ async def get_workshop_item_details(item_id: str):
                 bytes_downloaded = 0
                 bytes_total = 0
                 
-                # 处理下载信息（假设可能返回字典或其他格式）
+                # 处理下载信息（使用正确的键名：downloaded和total）
                 if download_info:
                     if isinstance(download_info, dict):
-                        downloading = bool(download_info.get('downloading', False))
-                        if downloading:
-                            # 尝试从字典中获取下载进度信息
-                            try:
-                                if 'bytes_downloaded' in download_info:
-                                    bd = download_info['bytes_downloaded']
-                                    bytes_downloaded = int(bd.value if hasattr(bd, 'value') else bd)
-                                if 'bytes_total' in download_info:
-                                    bt = download_info['bytes_total']
-                                    bytes_total = int(bt.value if hasattr(bt, 'value') else bt)
-                            except:
-                                pass
+                        downloaded = int(download_info.get("downloaded", 0) or 0)
+                        total = int(download_info.get("total", 0) or 0)
+                        downloading = downloaded > 0 and downloaded < total
+                        bytes_downloaded = downloaded
+                        bytes_total = total
                     elif isinstance(download_info, tuple) and len(download_info) >= 3:
                         # 兼容元组格式
                         downloading, bytes_downloaded, bytes_total = download_info
                 
+                # 解码bytes类型的字段为字符串，避免JSON序列化错误
+                title = result.title.decode('utf-8', errors='replace') if hasattr(result, 'title') and isinstance(result.title, bytes) else getattr(result, 'title', '')
+                description = result.description.decode('utf-8', errors='replace') if hasattr(result, 'description') and isinstance(result.description, bytes) else getattr(result, 'description', '')
+                
                 # 构建详细的物品信息
                 item_info = {
                     "publishedFileId": item_id_int,
-                    "title": result.title,
-                    "description": result.description,
+                    "title": title,
+                    "description": description,
                     "steamIDOwner": result.steamIDOwner,
                     "timeCreated": result.timeCreated,
                     "timeUpdated": result.timeUpdated,
@@ -1705,12 +1702,6 @@ async def get_workshop_item_details(item_id: str):
                     "success": False,
                     "error": "获取物品详情失败，未找到物品"
                 }, status_code=404)
-        else:
-            # 注意：SteamWorkshop类中不存在ReleaseQueryUGCRequest方法
-            return JSONResponse({
-                "success": False,
-                "error": "发送查询请求失败"
-            }, status_code=500)
             
     except ValueError:
         return JSONResponse({
@@ -3396,160 +3387,6 @@ async def publish_to_workshop(request: Request):
         logger.error(f"发布到创意工坊失败: {e}")
         return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
 
-@app.post('/api/steam/workshop/test-file-handling')
-async def test_file_handling(request: Request):
-    """
-    测试文件处理功能的端点，用于验证路径规范化、文件夹检查等功能是否正常工作
-    不实际上传任何内容到创意工坊，仅执行本地文件验证
-    """
-    try:
-        data = await request.json()
-        content_folder = data.get('content_folder', '')
-        preview_image = data.get('preview_image', '')
-        
-        if not content_folder:
-            return JSONResponse(content={
-                "success": False,
-                "error": "缺少必要字段",
-                "message": "请提供content_folder参数"
-            }, status_code=400)
-        
-        # 记录测试请求
-        logger.info(f"测试文件处理请求，内容文件夹: {content_folder}")
-        
-        # 规范化路径处理
-        content_folder = unquote(content_folder)
-        if os.name == 'nt':
-            content_folder = content_folder.replace('/', '\\')
-            if content_folder.startswith('\\\\'):
-                content_folder = content_folder[2:]
-        else:
-            content_folder = content_folder.replace('\\', '/')
-        
-        # 构建验证结果
-        result = {
-            "success": True,
-            "normalized_path": content_folder,
-            "path_validation": {},
-            "file_stats": {},
-            "preview_image_info": {}
-        }
-        
-        # 路径验证
-        if os.path.exists(content_folder):
-            result["path_validation"]["exists"] = True
-            if os.path.isdir(content_folder):
-                result["path_validation"]["is_directory"] = True
-                
-                # 检查权限
-                result["path_validation"]["readable"] = os.access(content_folder, os.R_OK)
-                result["path_validation"]["writable"] = os.access(content_folder, os.W_OK)
-                
-                # 统计文件数量
-                file_count = 0
-                folder_count = 0
-                total_size = 0
-                file_list = []
-                
-                for root, dirs, files in os.walk(content_folder):
-                    folder_count += len(dirs)
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        try:
-                            file_size = os.path.getsize(file_path)
-                            total_size += file_size
-                            file_count += 1
-                            # 只添加前20个文件到列表，避免响应过大
-                            if len(file_list) < 20:
-                                rel_path = os.path.relpath(file_path, content_folder)
-                                file_list.append({
-                                    "name": file,
-                                    "path": rel_path,
-                                    "size": file_size,
-                                    "size_human": _format_size(file_size)
-                                })
-                        except Exception as e:
-                            logger.warning(f"无法获取文件信息 {file_path}: {e}")
-                
-                result["file_stats"]["file_count"] = file_count
-                result["file_stats"]["folder_count"] = folder_count
-                result["file_stats"]["total_size"] = total_size
-                result["file_stats"]["total_size_human"] = _format_size(total_size)
-                result["file_stats"]["sample_files"] = file_list
-                
-                # 检查是否为空
-                if file_count == 0:
-                    result["path_validation"]["empty"] = True
-                    result["success"] = False
-                    result["warning"] = "内容文件夹存在但不包含任何文件"
-                else:
-                    result["path_validation"]["empty"] = False
-            else:
-                result["path_validation"]["is_directory"] = False
-                result["success"] = False
-                result["error"] = "不是有效的文件夹"
-                result["message"] = "指定的路径不是有效的文件夹"
-        else:
-            result["path_validation"]["exists"] = False
-            result["success"] = False
-            result["error"] = "内容文件夹不存在"
-            result["message"] = "指定的内容文件夹不存在"
-        
-        # 处理预览图片
-        if preview_image:
-            preview_image = unquote(preview_image)
-            if os.name == 'nt':
-                preview_image = preview_image.replace('/', '\\')
-                if preview_image.startswith('\\\\'):
-                    preview_image = preview_image[2:]
-            else:
-                preview_image = preview_image.replace('\\', '/')
-            
-            result["preview_image_info"]["original_path"] = preview_image
-            
-            if os.path.exists(preview_image):
-                result["preview_image_info"]["exists"] = True
-                if os.path.isfile(preview_image):
-                    result["preview_image_info"]["is_file"] = True
-                    try:
-                        file_size = os.path.getsize(preview_image)
-                        result["preview_image_info"]["size"] = file_size
-                        result["preview_image_info"]["size_human"] = _format_size(file_size)
-                    except Exception as e:
-                        logger.warning(f"无法获取预览图片大小: {e}")
-                else:
-                    result["preview_image_info"]["is_file"] = False
-                    result["preview_image_info"]["warning"] = "预览图片路径不是有效的文件"
-            else:
-                result["preview_image_info"]["exists"] = False
-                result["preview_image_info"]["warning"] = "指定的预览图片不存在"
-                
-                # 尝试自动查找预览图片
-                if result["path_validation"].get("is_directory"):
-                    auto_preview = find_preview_image_in_folder(content_folder)
-                    if auto_preview:
-                        result["preview_image_info"]["auto_found"] = auto_preview
-                        result["preview_image_info"]["message"] = "已自动找到预览图片"
-        else:
-            # 尝试自动查找预览图片
-            if result["path_validation"].get("is_directory"):
-                auto_preview = find_preview_image_in_folder(content_folder)
-                if auto_preview:
-                    result["preview_image_info"]["auto_found"] = auto_preview
-                    result["preview_image_info"]["message"] = "已自动找到预览图片"
-                else:
-                    result["preview_image_info"]["warning"] = "未指定预览图片且未找到默认预览图片"
-        
-        logger.info(f"测试文件处理完成，结果: {result['success']}")
-        return JSONResponse(content=result)
-        
-    except Exception as e:
-        logger.error(f"测试文件处理失败: {e}")
-        return JSONResponse(content={
-            "success": False,
-            "error": "测试失败",
-            "message": str(e)
-        }, status_code=500)
 
 def _format_size(size_bytes):
     """

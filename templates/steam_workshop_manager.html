@@ -1675,6 +1675,12 @@
                 uploadButton.textContent = originalText;
                 setButtonState(uploadButton, false);
                 
+                // 清除所有现有消息
+                const messageArea = document.getElementById('message-area');
+                if (messageArea) {
+                    messageArea.innerHTML = '';
+                }
+                
                 if (data.success) {
                     showMessage('🎉 上传成功！内容已提交到创意工坊', 'success', 5000);
                     
@@ -1745,6 +1751,12 @@
                 // 恢复按钮状态
                 uploadButton.textContent = originalText;
                 setButtonState(uploadButton, false);
+                
+                // 清除所有现有消息
+                const messageArea = document.getElementById('message-area');
+                if (messageArea) {
+                    messageArea.innerHTML = '';
+                }
                 
                 let errorMessage = '上传过程中发生错误';
                 
