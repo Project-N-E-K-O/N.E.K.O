@@ -311,27 +311,55 @@
         if (isPopupWindow) {
             backToMainBtn.textContent = '✖ 关闭';
             
-            // 如果是 popup 窗口，尝试自动全屏
+            // 尝试最大化窗口
             try {
-                // 在 Electron 中，可以直接尝试
-                setTimeout(async () => {
-                    try {
-                        await requestFullscreen();
-                    } catch (e) {
-                        console.log('自动全屏失败，用户可以手动点击全屏按钮:', e);
-                    }
-                }, 100);
-                
-                // 方法2: 如果 Fullscreen API 不可用，尝试最大化窗口
-                if (!document.fullscreenEnabled && !document.webkitFullscreenEnabled) {
-                    window.resizeTo(screen.availWidth, screen.availHeight);
-                    window.moveTo(0, 0);
-                }
+                window.resizeTo(screen.availWidth, screen.availHeight);
+                window.moveTo(0, 0);
             } catch (e) {
-                console.log('自动全屏失败:', e);
+                console.log('最大化窗口失败:', e);
             }
+            
+            // 为popup窗口添加全屏按钮
+            const fullscreenBtn = document.createElement('button');
+            fullscreenBtn.id = 'fullscreen-btn';
+            fullscreenBtn.className = 'btn btn-primary';
+            fullscreenBtn.textContent = '切换全屏';
+            fullscreenBtn.onclick = async () => {
+                try {
+                    if (isFullscreen()) {
+                        await exitFullscreen();
+                        fullscreenBtn.textContent = '切换全屏';
+                    } else {
+                        await requestFullscreen();
+                        fullscreenBtn.textContent = '退出全屏';
+                    }
+                } catch (e) {
+                    console.log('切换全屏失败:', e);
+                }
+            };
+            
+            // 将全屏按钮添加到返回按钮旁边
+            const backToMainBtnParent = backToMainBtn.parentElement;
+            backToMainBtnParent.appendChild(fullscreenBtn);
         } else {
             backToMainBtn.textContent = '← 返回主页';
+        }
+        
+        // 监听全屏状态变化，更新按钮文本
+        document.addEventListener('fullscreenchange', updateFullscreenButton);
+        document.addEventListener('webkitfullscreenchange', updateFullscreenButton);
+        document.addEventListener('mozfullscreenchange', updateFullscreenButton);
+        document.addEventListener('MSFullscreenChange', updateFullscreenButton);
+        
+        function updateFullscreenButton() {
+            const fullscreenBtn = document.getElementById('fullscreen-btn');
+            if (fullscreenBtn) {
+                if (isFullscreen()) {
+                    fullscreenBtn.textContent = '退出全屏';
+                } else {
+                    fullscreenBtn.textContent = '切换全屏';
+                }
+            }
         }
         
         // 页面加载时发送消息隐藏主界面
