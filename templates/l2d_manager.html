@@ -367,6 +367,18 @@
         // 页面加载时发送消息隐藏主界面
         sendMessageToMainPage('hide_main_ui');
 
+        // 翻译辅助函数：简化翻译调用并处理错误
+        function t(key, fallback, params = {}) {
+            try {
+                if (window.t && typeof window.t === 'function') {
+                    return window.t(key, params);
+                }
+            } catch (e) {
+                console.error(`[i18n] Translation failed for key "${key}":`, e);
+            }
+            return fallback;
+        }
+
         let currentModelInfo = null;
         let availableModels = [];
         let currentModelFiles = { motion_files: [], expression_files: [] };
@@ -671,16 +683,8 @@
             console.log('返回按钮被点击，hasUnsavedChanges =', window.hasUnsavedChanges);
             if (window.hasUnsavedChanges) {
                 console.log('检测到未保存的更改，显示确认对话框');
-                let message, title;
-                try {
-                    message = (window.t && typeof window.t === 'function') ? window.t('dialogs.unsavedChanges') : '您有未保存的设置，确定要离开吗？';
-                    title = (window.t && typeof window.t === 'function') ? window.t('dialogs.confirmLeave') : '确认离开';
-                } catch (e) {
-                    console.error('翻译函数调用失败:', e);
-                    message = '您有未保存的设置，确定要离开吗？';
-                    title = '确认离开';
-                }
-                
+                const message = t('dialogs.unsavedChanges', '您有未保存的设置，确定要离开吗？');
+                const title = t('dialogs.confirmLeave', '确认离开');
                 const confirmLeave = await showConfirm(message, title, { danger: true });
                 console.log('用户选择:', confirmLeave ? '确定离开' : '取消');
                 if (!confirmLeave) {
