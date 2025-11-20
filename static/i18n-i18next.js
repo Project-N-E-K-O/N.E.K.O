@@ -600,10 +600,49 @@
     
     /**
      * 翻译状态消息
+     * 
+     * TODO: Replace with error code-based translation when backend supports it
+     * This pattern-matching approach is fragile and should be considered temporary.
+     * 
+     * Current limitations:
+     * - If backend error messages change wording, translations fail silently
+     * - Cannot handle errors that don't match the patterns
+     * - Mixes presentation (translation) with error detection logic
+     * - Maintenance burden: every new error requires updating regex patterns
+     * 
+     * Preferred future approach (when backend supports structured errors):
+     * ```javascript
+     * // Backend sends: { code: 'SESSION_TIMEOUT', details: {...} }
+     * // Frontend translates by code:
+     * if (error.code) {
+     *     return i18next.t(`errors.${error.code}`, error.details);
+     * }
+     * ```
+     * 
+     * @param {string|object} message - Error message string or structured error object
+     * @returns {string} Translated message
      */
     function translateStatusMessage(message) {
+        // Support structured error objects (future-proofing)
+        if (message && typeof message === 'object') {
+            if (message.code && typeof message.code === 'string') {
+                // Use error code for translation (preferred method)
+                const translationKey = `errors.${message.code}`;
+                const details = message.details || {};
+                return i18next.t(translationKey, details) || message.message || String(message);
+            }
+            // If object has message property, use it
+            if (message.message) {
+                message = message.message;
+            } else {
+                return String(message);
+            }
+        }
+        
         if (!message || typeof message !== 'string') return message;
         
+        // Pattern-matching fallback (temporary compatibility layer)
+        // WARNING: This is fragile and will break if backend messages change
         const messageMap = [
             {
                 pattern: /启动超时/i,
