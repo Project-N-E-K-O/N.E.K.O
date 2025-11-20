@@ -189,9 +189,14 @@
         // 安全网：10秒后强制初始化（即使依赖未加载）
         setTimeout(function() {
             if (typeof window.t === 'undefined') {
-                console.warn('[i18n] ⚠️ 10秒后仍未初始化，强制初始化');
-                if (typeof i18next !== 'undefined') {
-                    if (typeof i18nextHttpBackend !== 'undefined') {
+                const i18nextAvailable = typeof i18next !== 'undefined';
+                const backendAvailable = typeof i18nextHttpBackend !== 'undefined';
+                console.warn('[i18n] ⚠️ 10秒后仍未初始化，强制初始化', {
+                    i18next: i18nextAvailable,
+                    backend: backendAvailable
+                });
+                if (i18nextAvailable) {
+                    if (backendAvailable) {
                         initI18next();
                     } else {
                         initI18nextWithoutBackend();
@@ -417,6 +422,26 @@
     waitForDependenciesAndInit();
     
     /**
+     * 解析 providerKey 并设置 provider 参数
+     * @param {object} params - 翻译参数对象
+     * @returns {object} 修改后的参数对象
+     */
+    function resolveProviderName(params) {
+        if (!params || !params.providerKey) return params;
+        
+        try {
+            const resources = i18next.getResourceBundle(i18next.language, 'translation');
+            const providerNames = resources?.api?.providerNames || {};
+            params.provider = providerNames[params.providerKey] || params.providerKey;
+        } catch (error) {
+            console.warn('[i18n] Failed to resolve providerKey:', error);
+            params.provider = params.providerKey;
+        }
+        
+        return params;
+    }
+    
+    /**
      * 导出正常函数（初始化成功后使用）
      */
     function exportNormalFunctions() {
@@ -425,13 +450,7 @@
             if (!key) return '';
             
             // 处理 providerKey 参数（与现有代码兼容）
-            if (params && params.providerKey) {
-                const providerKey = params.providerKey;
-                const resources = i18next.getResourceBundle(i18next.language, 'translation');
-                const providerNames = resources?.api?.providerNames || {};
-                const providerName = providerNames[providerKey];
-                params.provider = providerName || providerKey;
-            }
+            resolveProviderName(params);
             
             return i18next.t(key, params);
         };
@@ -500,13 +519,7 @@
             }
             
             // 处理 providerKey 参数
-            if (params.providerKey) {
-                const providerKey = params.providerKey;
-                const resources = i18next.getResourceBundle(i18next.language, 'translation');
-                const providerNames = resources?.api?.providerNames || {};
-                const providerName = providerNames[providerKey];
-                params.provider = providerName || providerKey;
-            }
+            resolveProviderName(params);
             
             const text = i18next.t(key, params);
             
