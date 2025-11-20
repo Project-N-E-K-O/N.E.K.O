@@ -14,114 +14,29 @@ import threading
 import time
 from urllib.parse import quote, unquote
 
+# 导入创意工坊工具模块
+from utils.workshop_utils import (
+    DEFAULT_WORKSHOP_FOLDER,
+    WORKSHOP_CONFIG_FILE,
+    workshop_config,
+    load_workshop_config,
+    save_workshop_config,
+    ensure_workshop_folder_exists,
+    get_workshop_root
+)
+
 # 开发模式标志 - 在生产环境中设置为False
 DEVELOPMENT_MODE = True
 
-# 默认的创意工坊物品文件夹路径
-DEFAULT_WORKSHOP_FOLDER = os.path.join(os.path.expanduser('~'), 'Documents', 'Xiao8', 'live2d')
+# 初始化时加载创意工坊配置
+# 注意：workshop_utils模块中已经自动加载了配置
+# save_workshop_config函数已经从workshop_utils导入
 
-# 配置文件名
-WORKSHOP_CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config', 'workshop_config.json')
+# ensure_workshop_folder_exists函数已经从workshop_utils导入
 
-# 配置数据
-workshop_config = {}
+# 实际使用时直接调用workshop_utils中的函数即可
 
-def load_workshop_config():
-    """
-    加载创意工坊配置
-    """
-    global workshop_config
-    try:
-        if os.path.exists(WORKSHOP_CONFIG_FILE):
-            with open(WORKSHOP_CONFIG_FILE, 'r', encoding='utf-8') as f:
-                workshop_config = json.load(f)
-                print(f"成功加载创意工坊配置: {workshop_config}")
-        else:
-            # 如果配置文件不存在，创建默认配置
-            workshop_config = {
-                "default_workshop_folder": DEFAULT_WORKSHOP_FOLDER,
-                "auto_create_folder": True
-            }
-            save_workshop_config()
-            print(f"创建默认创意工坊配置: {workshop_config}")
-    except Exception as e:
-        error_msg = f"加载创意工坊配置失败: {e}"
-        print(error_msg)
-        if 'logger' in globals():
-            logger.error(error_msg)
-        # 使用默认配置
-        workshop_config = {
-            "default_workshop_folder": DEFAULT_WORKSHOP_FOLDER,
-            "auto_create_folder": True
-        }
-
-def save_workshop_config():
-    """
-    保存创意工坊配置
-    """
-    try:
-        # 确保配置文件目录存在
-        os.makedirs(os.path.dirname(WORKSHOP_CONFIG_FILE), exist_ok=True)
-        with open(WORKSHOP_CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(workshop_config, f, indent=4, ensure_ascii=False)
-        print(f"成功保存创意工坊配置: {workshop_config}")
-        if 'logger' in globals():
-            logger.info(f"成功保存创意工坊配置: {workshop_config}")
-    except Exception as e:
-        error_msg = f"保存创意工坊配置失败: {e}"
-        print(error_msg)
-        if 'logger' in globals():
-            logger.error(error_msg)
-
-def ensure_workshop_folder_exists(folder_path=None):
-    """
-    确保创意工坊文件夹存在，如果不存在则自动创建
-    总是确保使用绝对路径
-    """
-    # 确定目标文件夹路径
-    raw_folder = folder_path or workshop_config.get("default_workshop_folder", DEFAULT_WORKSHOP_FOLDER)
-    
-    # 确保路径是绝对路径，如果不是则转换
-    if not os.path.isabs(raw_folder):
-        # 如果是相对路径，尝试以用户主目录为基础
-        base_dir = os.path.expanduser('~')
-        target_folder = os.path.join(base_dir, raw_folder)
-        logger.info(f'检测到相对路径: {raw_folder}，已转换为基于用户主目录的绝对路径: {target_folder}')
-    else:
-        target_folder = raw_folder
-    
-    # 标准化路径
-    target_folder = os.path.normpath(target_folder)
-    logger.info(f'ensure_workshop_folder_exists - 最终处理的目标文件夹: {target_folder}')
-    logger.info(f'目标路径是否为绝对路径: {os.path.isabs(target_folder)}')
-    
-    if not os.path.exists(target_folder):
-        if workshop_config.get("auto_create_folder", True):
-            try:
-                # 使用exist_ok=True确保即使中间目录不存在也能创建
-                os.makedirs(target_folder, exist_ok=True)
-                print(f"自动创建创意工坊文件夹: {target_folder}")
-                if 'logger' in globals():
-                    logger.info(f"自动创建创意工坊文件夹: {target_folder}")
-                # 再次检查文件夹是否存在，确认创建成功
-                if os.path.exists(target_folder):
-                    logger.info(f"文件夹创建成功并确认存在: {target_folder}")
-                else:
-                    logger.warning(f"文件夹创建后检查失败，可能存在权限问题: {target_folder}")
-                return True
-            except Exception as e:
-                error_msg = f"创建创意工坊文件夹失败: {e}"
-                print(error_msg)
-                if 'logger' in globals():
-                    logger.error(error_msg)
-                return False
-        else:
-            warning_msg = f"创意工坊文件夹不存在，且自动创建功能未启用: {target_folder}"
-            print(warning_msg)
-            if 'logger' in globals():
-                logger.warning(warning_msg)
-            return False
-    return True
+# 所有创意工坊相关的功能已经从workshop_utils模块导入
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, File, UploadFile, Form, Body
 from fastapi.staticfiles import StaticFiles
@@ -130,7 +45,7 @@ from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from urllib.parse import unquote
 from utils.preferences import load_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top
-from utils.frontend_utils import find_models, find_model_config_file, find_model_directory
+from utils.frontend_utils import find_models, find_model_config_file, find_model_directory, find_model_by_workshop_item_id, find_workshop_item_by_id
 from multiprocessing import Process, Queue, Event
 import atexit
 import dashscope
@@ -464,7 +379,8 @@ async def get_live2d_models(simple: bool = False):
                                     models.append({
                                         'name': model_name,
                                         'path': path_value,
-                                        'source': 'steam_workshop'
+                                        'source': 'steam_workshop',
+                                        'item_id': item_id
                                     })
                             
                         # 检查安装目录下的子目录
@@ -484,7 +400,8 @@ async def get_live2d_models(simple: bool = False):
                                         models.append({
                                             'name': model_name,
                                             'path': path_value,
-                                            'source': 'steam_workshop'
+                                            'source': 'steam_workshop',
+                                            'item_id': item_id
                                         })
         except Exception as e:
             logger.error(f"获取创意工坊模型时出错: {e}")
@@ -1149,8 +1066,13 @@ async def get_l2d_manager(request: Request):
     })
 
 @app.get('/api/characters/current_live2d_model')
-async def get_current_live2d_model(catgirl_name: str = ""):
-    """获取指定角色或当前角色的Live2D模型信息"""
+async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
+    """获取指定角色或当前角色的Live2D模型信息
+    
+    Args:
+        catgirl_name: 角色名称
+        item_id: 可选的物品ID，用于直接指定模型
+    """
     try:
         characters = _config_manager.load_characters()
         
@@ -1162,26 +1084,49 @@ async def get_current_live2d_model(catgirl_name: str = ""):
         live2d_model_name = None
         model_info = None
         
-        # 在猫娘列表中查找
-        if '猫娘' in characters and catgirl_name in characters['猫娘']:
-            catgirl_data = characters['猫娘'][catgirl_name]
-            live2d_model_name = catgirl_data.get('live2d')
+        # 如果没有通过item_id找到模型，再通过角色名称查找
+        if not model_info and catgirl_name:
+            # 在猫娘列表中查找
+            if '猫娘' in characters and catgirl_name in characters['猫娘']:
+                catgirl_data = characters['猫娘'][catgirl_name]
+                live2d_model_name = catgirl_data.get('live2d')
         
         # 如果找到了模型名称，获取模型信息
         if live2d_model_name:
             try:
-                # 使用 find_model_directory 查找模型目录（支持 static 和用户文档目录）
-                model_dir, url_prefix = find_model_directory(live2d_model_name)
-                if os.path.exists(model_dir):
-                    # 查找模型配置文件
-                    model_files = [f for f in os.listdir(model_dir) if f.endswith('.model3.json')]
-                    if model_files:
-                        model_file = model_files[0]
-                        model_path = f'{url_prefix}/{live2d_model_name}/{model_file}'
-                        model_info = {
-                            'name': live2d_model_name,
-                            'path': model_path
-                        }
+                # 先从完整的模型列表中查找，这样可以获取到item_id等完整信息
+                all_models = find_models()
+                # 查找匹配的模型
+                matching_model = next((m for m in all_models if m['name'] == live2d_model_name), None)
+                
+                if matching_model:
+                    # 使用完整的模型信息，包含item_id
+                    model_info = matching_model.copy()
+                    logger.debug(f"从完整模型列表获取模型信息: {model_info}")
+                else:
+                    # 如果在完整列表中找不到，回退到原来的逻辑
+                    model_dir, url_prefix = find_model_directory(live2d_model_name)
+                    if os.path.exists(model_dir):
+                        # 查找模型配置文件
+                        model_files = [f for f in os.listdir(model_dir) if f.endswith('.model3.json')]
+                        if model_files:
+                            model_file = model_files[0]
+                            
+                            # 添加使用item_id构建model_path的情况
+                            item_id = None  # 此处item_id可能从其他地方获取
+                            
+                            # 使用item_id构建路径的情况
+                            if item_id:
+                                model_path = f'{url_prefix}/{item_id}/{model_file}'
+                            else:
+                                # 原始路径构建逻辑
+                                model_path = f'{url_prefix}/{live2d_model_name}/{model_file}'
+                            
+                            model_info = {
+                                'name': live2d_model_name,
+                                'item_id': item_id,
+                                'path': model_path
+                            }
             except Exception as e:
                 logger.warning(f"获取模型信息失败: {e}")
         
@@ -1190,18 +1135,26 @@ async def get_current_live2d_model(catgirl_name: str = ""):
             logger.info(f"猫娘 {catgirl_name} 未设置Live2D模型，回退到默认模型 mao_pro")
             live2d_model_name = 'mao_pro'
             try:
-                # 查找mao_pro模型
-                model_dir, url_prefix = find_model_directory('mao_pro')
-                if os.path.exists(model_dir):
-                    model_files = [f for f in os.listdir(model_dir) if f.endswith('.model3.json')]
-                    if model_files:
-                        model_file = model_files[0]
-                        model_path = f'{url_prefix}/mao_pro/{model_file}'
-                        model_info = {
-                            'name': 'mao_pro',
-                            'path': model_path,
-                            'is_fallback': True  # 标记这是回退模型
-                        }
+                # 先从完整的模型列表中查找mao_pro
+                all_models = find_models()
+                matching_model = next((m for m in all_models if m['name'] == 'mao_pro'), None)
+                
+                if matching_model:
+                    model_info = matching_model.copy()
+                    model_info['is_fallback'] = True
+                else:
+                    # 如果找不到，回退到原来的逻辑
+                    model_dir, url_prefix = find_model_directory('mao_pro')
+                    if os.path.exists(model_dir):
+                        model_files = [f for f in os.listdir(model_dir) if f.endswith('.model3.json')]
+                        if model_files:
+                            model_file = model_files[0]
+                            model_path = f'{url_prefix}/mao_pro/{model_file}'
+                            model_info = {
+                                'name': 'mao_pro',
+                                'path': model_path,
+                                'is_fallback': True  # 标记这是回退模型
+                            }
             except Exception as e:
                 logger.error(f"获取默认模型mao_pro失败: {e}")
         
@@ -1587,45 +1540,9 @@ async def get_subscribed_workshop_items():
         }, status_code=500)
 
 # 使用get_subscribed_workshop_items获取第一个物品的installedFolder
-def get_workshop_root() -> str:
-    try:
-        # 尝试获取get_subscribed_workshop_items函数引用
-        subscribed_items_func = globals().get('get_subscribed_workshop_items')
-        if subscribed_items_func:
-            # 使用asyncio.run()来运行异步函数
-            workshop_items_result = asyncio.run(subscribed_items_func())
-            if isinstance(workshop_items_result, dict) and workshop_items_result.get('success', False):
-                items = workshop_items_result.get('items', [])
-                if items:
-                    first_item = items[0]
-                    WORKSHOP_PATH_FIRST = first_item.get('installedFolder')
-                    if WORKSHOP_PATH_FIRST:
-                        logger.info(f"成功获取第一个创意工坊物品的安装目录: {WORKSHOP_PATH_FIRST}")
-                        p = pathlib.Path(WORKSHOP_PATH_FIRST)
-                        # 确保目录存在
-                        if p.parent.exists():
-                            return str(p.parent)
-                        else:
-                            logger.warning(f"计算得到的创意工坊根目录不存在: {p.parent}")
-                    else:
-                        logger.warning("第一个创意工坊物品没有安装目录")
-                else:
-                    logger.warning("未找到任何订阅的创意工坊物品")
-            else:
-                logger.error("获取订阅的创意工坊物品失败")
-        else:
-            logger.warning("get_subscribed_workshop_items函数尚未定义，使用默认路径")
-    except Exception as e:
-        logger.error(f"获取创意工坊物品列表时出错: {e}")
-    
-    # 返回默认的创意工坊文件夹路径作为后备
-    default_path = workshop_config.get("default_workshop_folder", DEFAULT_WORKSHOP_FOLDER)
-    logger.info(f"使用默认创意工坊路径: {default_path}")
-    # 确保默认路径存在
-    ensure_workshop_folder_exists(default_path)
-    return default_path
-
-WORKSHOP_PATH = get_workshop_root()
+# 使用从文件开头导入的get_workshop_root函数
+# 调用时传入当前模块的globals()，以便在workshop_utils中访问get_subscribed_workshop_items函数
+WORKSHOP_PATH = get_workshop_root(globals())
 
 # 确保WORKSHOP_PATH是有效路径后再挂载
 if os.path.exists(WORKSHOP_PATH) and os.path.isdir(WORKSHOP_PATH):
@@ -1633,6 +1550,13 @@ if os.path.exists(WORKSHOP_PATH) and os.path.isdir(WORKSHOP_PATH):
         # 直接挂载，不使用嵌套函数装饰器
         workshop_mount = app.mount("/workshop", StaticFiles(directory=WORKSHOP_PATH), name="workshop")
         logger.info(f"成功挂载创意工坊目录: {WORKSHOP_PATH}")
+        
+        # 保存WORKSHOP_PATH到配置文件
+        from utils.workshop_utils import workshop_config, save_workshop_config
+        workshop_config["WORKSHOP_PATH"] = WORKSHOP_PATH
+        save_workshop_config()
+        logger.info(f"已保存WORKSHOP_PATH到配置文件: {WORKSHOP_PATH}")
+        
     except Exception as e:
         logger.error(f"挂载创意工坊目录失败: {e}")
 else:
@@ -2934,6 +2858,152 @@ async def get_model_files(model_name: str):
     except Exception as e:
         logger.error(f"获取模型文件列表失败: {e}")
         return {"success": False, "error": str(e)}
+
+@app.get("/api/live2d/model_config_by_id/{model_id}")
+async def get_model_config(model_id: str):
+    """获取指定Live2D模型的model3.json配置"""
+    try:
+        # 查找模型目录（可能在static或用户文档目录）
+        model_dir, url_prefix = find_model_by_workshop_item_id(model_id)
+        if not os.path.exists(model_dir):
+            return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
+        
+        # 查找.model3.json文件
+        model_json_path = None
+        for file in os.listdir(model_dir):
+            if file.endswith('.model3.json'):
+                model_json_path = os.path.join(model_dir, file)
+                break
+        
+        if not model_json_path or not os.path.exists(model_json_path):
+            return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
+        
+        with open(model_json_path, 'r', encoding='utf-8') as f:
+            config_data = json.load(f)
+        
+        # 检查并自动添加缺失的配置
+        config_updated = False
+        
+        # 确保FileReferences存在
+        if 'FileReferences' not in config_data:
+            config_data['FileReferences'] = {}
+            config_updated = True
+        
+        # 确保Motions存在
+        if 'Motions' not in config_data['FileReferences']:
+            config_data['FileReferences']['Motions'] = {}
+            config_updated = True
+        
+        # 确保Expressions存在
+        if 'Expressions' not in config_data['FileReferences']:
+            config_data['FileReferences']['Expressions'] = []
+            config_updated = True
+        
+        # 如果配置有更新，保存到文件
+        if config_updated:
+            with open(model_json_path, 'w', encoding='utf-8') as f:
+                json.dump(config_data, f, ensure_ascii=False, indent=4)
+            logger.info(f"已为模型 {model_name} 自动添加缺失的配置项")
+            
+        return {"success": True, "config": config_data}
+    except Exception as e:
+        logger.error(f"获取模型配置失败: {e}")
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+@app.post("/api/live2d/model_config_by_id/{model_id}")
+async def update_model_config(model_id: str, request: Request):
+    """更新指定Live2D模型的model3.json配置"""
+    try:
+        data = await request.json()
+        
+        # 查找模型目录（可能在static或用户文档目录）
+        model_dir, url_prefix = find_model_by_workshop_item_id(model_id)
+        if not os.path.exists(model_dir):
+            return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
+        
+        # 查找.model3.json文件
+        model_json_path = None
+        for file in os.listdir(model_dir):
+            if file.endswith('.model3.json'):
+                model_json_path = os.path.join(model_dir, file)
+                break
+        
+        if not model_json_path or not os.path.exists(model_json_path):
+            return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
+        
+        # 为了安全，只允许修改 Motions 和 Expressions
+        with open(model_json_path, 'r', encoding='utf-8') as f:
+            current_config = json.load(f)
+            
+        if 'FileReferences' in data and 'Motions' in data['FileReferences']:
+            current_config['FileReferences']['Motions'] = data['FileReferences']['Motions']
+            
+        if 'FileReferences' in data and 'Expressions' in data['FileReferences']:
+            current_config['FileReferences']['Expressions'] = data['FileReferences']['Expressions']
+
+        with open(model_json_path, 'w', encoding='utf-8') as f:
+            json.dump(current_config, f, ensure_ascii=False, indent=4) # 使用 indent=4 保持格式
+            
+        return {"success": True, "message": "模型配置已更新"}
+    except Exception as e:
+        logger.error(f"更新模型配置失败: {e}")
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+@app.get('/api/live2d/model_files_by_id/{model_id}')
+async def get_model_files(model_id: str):
+    """获取指定Live2D模型的动作和表情文件列表"""
+    try:
+        # 查找模型目录（可能在static或用户文档目录）
+        # find_workshop_item_by_id现在总是返回有效的元组
+        model_dir, url_prefix = find_workshop_item_by_id(model_id)
+        
+        # 添加额外的错误检查
+        if not model_dir:
+            logger.error(f"获取模型目录失败: 目录路径为空，模型ID: {model_id}")
+            return {"success": False, "error": f"获取模型目录失败: 无效的路径"}
+            
+        if not os.path.exists(model_dir):
+            logger.warning(f"模型目录不存在: {model_dir}, 模型ID: {model_id}")
+            return {"success": False, "error": f"模型 {model_id} 不存在"}
+        
+        motion_files = []
+        expression_files = []
+        
+        # 递归搜索所有子文件夹
+        def search_files_recursive(directory, target_ext, result_list):
+            """递归搜索指定扩展名的文件"""
+            try:
+                for item in os.listdir(directory):
+                    item_path = os.path.join(directory, item)
+                    if os.path.isfile(item_path):
+                        if item.endswith(target_ext):
+                            # 计算相对于模型根目录的路径
+                            relative_path = os.path.relpath(item_path, model_dir)
+                            # 转换为正斜杠格式（跨平台兼容）
+                            relative_path = relative_path.replace('\\', '/')
+                            result_list.append(relative_path)
+                    elif os.path.isdir(item_path):
+                        # 递归搜索子目录
+                        search_files_recursive(item_path, target_ext, result_list)
+            except Exception as e:
+                logger.warning(f"搜索目录 {directory} 时出错: {e}")
+        
+        # 搜索动作文件
+        search_files_recursive(model_dir, '.motion3.json', motion_files)
+        
+        # 搜索表情文件
+        search_files_recursive(model_dir, '.exp3.json', expression_files)
+        
+        logger.info(f"文件统计: {len(motion_files)} 个动作文件, {len(expression_files)} 个表情文件")
+        return {
+            "success": True, 
+            "motion_files": motion_files,
+            "expression_files": expression_files
+        }
+    except Exception as e:
+        logger.error(f"获取模型文件列表失败: {e}")
+        return {"success": False, "error": str(e)}
+
 
 # Steam 创意工坊管理相关API路由
 # 确保这个路由被正确注册
