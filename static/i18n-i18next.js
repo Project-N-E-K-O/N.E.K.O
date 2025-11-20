@@ -438,20 +438,28 @@
                     console.log('[i18n] ✅ 初始化成功！');
                     console.log('[i18n] 当前语言:', i18next.language);
                     
+                    // 防止重复初始化的标志
+                    let initialized = false;
+                    
+                    // 统一的初始化完成函数，确保只执行一次
+                    const finalizeInit = () => {
+                        if (initialized) return;
+                        initialized = true;
+                        updatePageTexts();
+                        window.dispatchEvent(new CustomEvent('localechange'));
+                        exportNormalFunctions();
+                    };
+                    
                     // 确保资源已经加载
                     const checkResources = () => {
                         const lang = i18next.language;
                         if (i18next.hasResourceBundle(lang, 'translation')) {
-                            updatePageTexts();
-                            window.dispatchEvent(new CustomEvent('localechange'));
-                            exportNormalFunctions();
+                            finalizeInit();
                         } else {
                             // 如果资源还没加载，等待一下再试
                             setTimeout(() => {
                                 if (i18next.hasResourceBundle(lang, 'translation')) {
-                                    updatePageTexts();
-                                    window.dispatchEvent(new CustomEvent('localechange'));
-                                    exportNormalFunctions();
+                                    finalizeInit();
                                 } else {
                                     console.error('[i18n] 翻译资源加载失败，使用回退函数');
                                     exportFallbackFunctions();
@@ -461,12 +469,14 @@
                     };
                     
                     // 监听资源加载完成事件
-                    i18next.on('loaded', function(loaded) {
+                    const loadedHandler = function(loaded) {
                         if (loaded && i18next.hasResourceBundle(i18next.language, 'translation')) {
-                            updatePageTexts();
-                            window.dispatchEvent(new CustomEvent('localechange'));
+                            finalizeInit();
+                            // 移除事件监听器，防止内存泄漏
+                            i18next.off('loaded', loadedHandler);
                         }
-                    });
+                    };
+                    i18next.on('loaded', loadedHandler);
                     
                     checkResources();
                 });
