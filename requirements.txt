@@ -166,27 +166,27 @@ jsonpatch==1.33
     # via langchain-core
 jsonpointer==3.0.0
     # via jsonpatch
-langchain==0.3.27
+langchain>=1.0.0
     # via
     #   langchain-community
     #   paddlex
     #   xiao8
-langchain-community==0.3.27
+langchain-community>=0.4.0
     # via
     #   paddlex
     #   xiao8
-langchain-core==0.3.74
+langchain-core>=1.0.0
     # via
     #   langchain
     #   langchain-community
     #   langchain-openai
     #   langchain-text-splitters
     #   paddlex
-langchain-openai==0.3.30
+langchain-openai>=1.0.0
     # via
     #   paddlex
     #   xiao8
-langchain-text-splitters==0.3.9
+langchain-text-splitters>=0.3.9
     # via langchain
 langsmith==0.4.13
     # via
