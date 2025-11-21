@@ -878,6 +878,9 @@ async function loadCurrentApiKey() {
             if (typeof data.summaryModelUrl === 'string' && document.getElementById('summaryModelUrl')) {
                 document.getElementById('summaryModelUrl').value = data.summaryModelUrl;
             }
+            if (typeof data.summaryModelId === 'string' && document.getElementById('summaryModelId')) {
+                document.getElementById('summaryModelId').value = data.summaryModelId;
+            }
             if (typeof data.summaryModelApiKey === 'string' && document.getElementById('summaryModelApiKey')) {
                 document.getElementById('summaryModelApiKey').value = data.summaryModelApiKey;
             }
@@ -887,6 +890,9 @@ async function loadCurrentApiKey() {
             }
             if (typeof data.correctionModelUrl === 'string' && document.getElementById('correctionModelUrl')) {
                 document.getElementById('correctionModelUrl').value = data.correctionModelUrl;
+            }
+            if (typeof data.correctionModelId === 'string' && document.getElementById('correctionModelId')) {
+                document.getElementById('correctionModelId').value = data.correctionModelId;
             }
             if (typeof data.correctionModelApiKey === 'string' && document.getElementById('correctionModelApiKey')) {
                 document.getElementById('correctionModelApiKey').value = data.correctionModelApiKey;
@@ -898,6 +904,9 @@ async function loadCurrentApiKey() {
             if (typeof data.emotionModelUrl === 'string' && document.getElementById('emotionModelUrl')) {
                 document.getElementById('emotionModelUrl').value = data.emotionModelUrl;
             }
+            if (typeof data.emotionModelId === 'string' && document.getElementById('emotionModelId')) {
+                document.getElementById('emotionModelId').value = data.emotionModelId;
+            }
             if (typeof data.emotionModelApiKey === 'string' && document.getElementById('emotionModelApiKey')) {
                 document.getElementById('emotionModelApiKey').value = data.emotionModelApiKey;
             }
@@ -907,6 +916,9 @@ async function loadCurrentApiKey() {
             }
             if (typeof data.visionModelUrl === 'string' && document.getElementById('visionModelUrl')) {
                 document.getElementById('visionModelUrl').value = data.visionModelUrl;
+            }
+            if (typeof data.visionModelId === 'string' && document.getElementById('visionModelId')) {
+                document.getElementById('visionModelId').value = data.visionModelId;
             }
             if (typeof data.visionModelApiKey === 'string' && document.getElementById('visionModelApiKey')) {
                 document.getElementById('visionModelApiKey').value = data.visionModelApiKey;
@@ -918,6 +930,9 @@ async function loadCurrentApiKey() {
             if (typeof data.omniModelUrl === 'string' && document.getElementById('omniModelUrl')) {
                 document.getElementById('omniModelUrl').value = data.omniModelUrl;
             }
+            if (typeof data.omniModelId === 'string' && document.getElementById('omniModelId')) {
+                document.getElementById('omniModelId').value = data.omniModelId;
+            }
             if (typeof data.omniModelApiKey === 'string' && document.getElementById('omniModelApiKey')) {
                 document.getElementById('omniModelApiKey').value = data.omniModelApiKey;
             }
@@ -927,6 +942,9 @@ async function loadCurrentApiKey() {
             }
             if (typeof data.ttsModelUrl === 'string' && document.getElementById('ttsModelUrl')) {
                 document.getElementById('ttsModelUrl').value = data.ttsModelUrl;
+            }
+            if (typeof data.ttsModelId === 'string' && document.getElementById('ttsModelId')) {
+                document.getElementById('ttsModelId').value = data.ttsModelId;
             }
             if (typeof data.ttsModelApiKey === 'string' && document.getElementById('ttsModelApiKey')) {
                 document.getElementById('ttsModelApiKey').value = data.ttsModelApiKey;
@@ -1071,26 +1089,32 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
     // 获取用户自定义API配置
     const summaryModelProvider = document.getElementById('summaryModelProvider') ? document.getElementById('summaryModelProvider').value.trim() : '';
     const summaryModelUrl = document.getElementById('summaryModelUrl') ? document.getElementById('summaryModelUrl').value.trim() : '';
+    const summaryModelId = document.getElementById('summaryModelId') ? document.getElementById('summaryModelId').value.trim() : '';
     const summaryModelApiKey = document.getElementById('summaryModelApiKey') ? document.getElementById('summaryModelApiKey').value.trim() : '';
     
     const correctionModelProvider = document.getElementById('correctionModelProvider') ? document.getElementById('correctionModelProvider').value.trim() : '';
     const correctionModelUrl = document.getElementById('correctionModelUrl') ? document.getElementById('correctionModelUrl').value.trim() : '';
+    const correctionModelId = document.getElementById('correctionModelId') ? document.getElementById('correctionModelId').value.trim() : '';
     const correctionModelApiKey = document.getElementById('correctionModelApiKey') ? document.getElementById('correctionModelApiKey').value.trim() : '';
     
     const emotionModelProvider = document.getElementById('emotionModelProvider') ? document.getElementById('emotionModelProvider').value.trim() : '';
     const emotionModelUrl = document.getElementById('emotionModelUrl') ? document.getElementById('emotionModelUrl').value.trim() : '';
+    const emotionModelId = document.getElementById('emotionModelId') ? document.getElementById('emotionModelId').value.trim() : '';
     const emotionModelApiKey = document.getElementById('emotionModelApiKey') ? document.getElementById('emotionModelApiKey').value.trim() : '';
     
     const visionModelProvider = document.getElementById('visionModelProvider') ? document.getElementById('visionModelProvider').value.trim() : '';
     const visionModelUrl = document.getElementById('visionModelUrl') ? document.getElementById('visionModelUrl').value.trim() : '';
+    const visionModelId = document.getElementById('visionModelId') ? document.getElementById('visionModelId').value.trim() : '';
     const visionModelApiKey = document.getElementById('visionModelApiKey') ? document.getElementById('visionModelApiKey').value.trim() : '';
     
     const omniModelProvider = document.getElementById('omniModelProvider') ? document.getElementById('omniModelProvider').value.trim() : '';
     const omniModelUrl = document.getElementById('omniModelUrl') ? document.getElementById('omniModelUrl').value.trim() : '';
+    const omniModelId = document.getElementById('omniModelId') ? document.getElementById('omniModelId').value.trim() : '';
     const omniModelApiKey = document.getElementById('omniModelApiKey') ? document.getElementById('omniModelApiKey').value.trim() : '';
     
     const ttsModelProvider = document.getElementById('ttsModelProvider') ? document.getElementById('ttsModelProvider').value.trim() : '';
     const ttsModelUrl = document.getElementById('ttsModelUrl') ? document.getElementById('ttsModelUrl').value.trim() : '';
+    const ttsModelId = document.getElementById('ttsModelId') ? document.getElementById('ttsModelId').value.trim() : '';
     const ttsModelApiKey = document.getElementById('ttsModelApiKey') ? document.getElementById('ttsModelApiKey').value.trim() : '';
     
     const mcpToken = document.getElementById('mcpTokenInput') ? document.getElementById('mcpTokenInput').value.trim() : '';
@@ -1108,12 +1132,12 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
         pendingApiKey = { 
             apiKey, coreApi, assistApi, 
             assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon,
-            summaryModelProvider, summaryModelUrl, summaryModelApiKey,
-            correctionModelProvider, correctionModelUrl, correctionModelApiKey,
-            emotionModelProvider, emotionModelUrl, emotionModelApiKey,
-            visionModelProvider, visionModelUrl, visionModelApiKey,
-            omniModelProvider, omniModelUrl, omniModelApiKey,
-            ttsModelProvider, ttsModelUrl, ttsModelApiKey,
+            summaryModelProvider, summaryModelUrl, summaryModelId, summaryModelApiKey,
+            correctionModelProvider, correctionModelUrl, correctionModelId, correctionModelApiKey,
+            emotionModelProvider, emotionModelUrl, emotionModelId, emotionModelApiKey,
+            visionModelProvider, visionModelUrl, visionModelId, visionModelApiKey,
+            omniModelProvider, omniModelUrl, omniModelId, omniModelApiKey,
+            ttsModelProvider, ttsModelUrl, ttsModelId, ttsModelApiKey,
             mcpToken, enableCustomApi
         };
         showWarningModal();
@@ -1122,18 +1146,18 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
         await saveApiKey({ 
             apiKey, coreApi, assistApi, 
             assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon,
-            summaryModelProvider, summaryModelUrl, summaryModelApiKey,
-            correctionModelProvider, correctionModelUrl, correctionModelApiKey,
-            emotionModelProvider, emotionModelUrl, emotionModelApiKey,
-            visionModelProvider, visionModelUrl, visionModelApiKey,
-            omniModelProvider, omniModelUrl, omniModelApiKey,
-            ttsModelProvider, ttsModelUrl, ttsModelApiKey,
+            summaryModelProvider, summaryModelUrl, summaryModelId, summaryModelApiKey,
+            correctionModelProvider, correctionModelUrl, correctionModelId, correctionModelApiKey,
+            emotionModelProvider, emotionModelUrl, emotionModelId, emotionModelApiKey,
+            visionModelProvider, visionModelUrl, visionModelId, visionModelApiKey,
+            omniModelProvider, omniModelUrl, omniModelId, omniModelApiKey,
+            ttsModelProvider, ttsModelUrl, ttsModelId, ttsModelApiKey,
             mcpToken, enableCustomApi
         });
     }
 });
 
-async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, summaryModelProvider, summaryModelUrl, summaryModelApiKey, correctionModelProvider, correctionModelUrl, correctionModelApiKey, emotionModelProvider, emotionModelUrl, emotionModelApiKey, visionModelProvider, visionModelUrl, visionModelApiKey, omniModelProvider, omniModelUrl, omniModelApiKey, ttsModelProvider, ttsModelUrl, ttsModelApiKey, mcpToken, enableCustomApi }) {
+async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, summaryModelProvider, summaryModelUrl, summaryModelId, summaryModelApiKey, correctionModelProvider, correctionModelUrl, correctionModelId, correctionModelApiKey, emotionModelProvider, emotionModelUrl, emotionModelId, emotionModelApiKey, visionModelProvider, visionModelUrl, visionModelId, visionModelApiKey, omniModelProvider, omniModelUrl, omniModelId, omniModelApiKey, ttsModelProvider, ttsModelUrl, ttsModelId, ttsModelApiKey, mcpToken, enableCustomApi }) {
     // 确保apiKey是有效的字符串（启用自定义API或免费版时不需要API Key）
     if (!enableCustomApi && coreApi !== 'free' && assistApi !== 'free' && (!apiKey || typeof apiKey !== 'string')) {
         showStatus('API Key无效', 'error');
@@ -1157,21 +1181,27 @@ async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assist
             assistApiKeySilicon: assistApiKeySilicon || undefined,
             summaryModelProvider: summaryModelProvider || undefined,
             summaryModelUrl: summaryModelUrl || undefined,
+            summaryModelId: summaryModelId || undefined,
             summaryModelApiKey: summaryModelApiKey || undefined,
             correctionModelProvider: correctionModelProvider || undefined,
             correctionModelUrl: correctionModelUrl || undefined,
+            correctionModelId: correctionModelId || undefined,
             correctionModelApiKey: correctionModelApiKey || undefined,
             emotionModelProvider: emotionModelProvider || undefined,
             emotionModelUrl: emotionModelUrl || undefined,
+            emotionModelId: emotionModelId || undefined,
             emotionModelApiKey: emotionModelApiKey || undefined,
             visionModelProvider: visionModelProvider || undefined,
             visionModelUrl: visionModelUrl || undefined,
+            visionModelId: visionModelId || undefined,
             visionModelApiKey: visionModelApiKey || undefined,
             omniModelProvider: omniModelProvider || undefined,
             omniModelUrl: omniModelUrl || undefined,
+            omniModelId: omniModelId || undefined,
             omniModelApiKey: omniModelApiKey || undefined,
             ttsModelProvider: ttsModelProvider || undefined,
             ttsModelUrl: ttsModelUrl || undefined,
+            ttsModelId: ttsModelId || undefined,
             ttsModelApiKey: ttsModelApiKey || undefined,
             mcpToken: mcpToken || undefined,
             enableCustomApi: enableCustomApi || false
