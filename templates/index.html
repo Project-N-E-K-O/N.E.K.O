@@ -656,7 +656,7 @@
         #text-input-row {
             display: flex;
             gap: 8px;
-            align-items: flex-start;
+            align-items: flex-start; /* 顶部对齐，确保上沿对齐 */
             position: relative;
             z-index: 1;
         }
@@ -671,7 +671,13 @@
             background: #fff;
             color: #222;
             resize: none;
-            height: 78px;
+            /* 高度精确等于按钮组总高度，确保上沿和下沿对齐 */
+            /* 发送按钮: padding 8px上下 + border 2px上下(透明) + 内容高度(图标22px) = 8+2+22+2+8 = 42px */
+            /* gap: 6px */
+            /* 截图按钮: padding 8px上下 + border 2px上下(蓝色) + 内容高度(图标22px) = 8+2+22+2+8 = 42px */
+            /* 总高度: 42px + 6px + 42px = 90px */
+            /* 由于box-sizing: border-box，边框包含在高度内 */
+            height: 90px;
             box-sizing: border-box;
             cursor: text;
             caret-color: #222;
@@ -709,33 +715,69 @@
             pointer-events: auto;
             padding: 8px 16px;
             border-radius: 8px;
-            border: none;
-            background: #4f8cff;
-            color: #fff;
             cursor: pointer;
-            transition: background 0.2s;
+            transition: background 0.2s, border-color 0.2s;
             font-size: 0.85rem;
             font-weight: 500;
             white-space: nowrap;
             min-width: 80px;
+            display: flex;
+            align-items: center; /* 图标和文字垂直居中对齐 */
+            justify-content: flex-start; /* 内容左对齐，图标在左边 */
+            gap: 6px;
+            box-sizing: border-box;
         }
         
-        #textSendButton:hover:not(:disabled), #screenshotButton:hover:not(:disabled) {
-            background: #2662c8;
+        /* 确保两个按钮的图标和文字对齐 */
+        #textSendButton img, #screenshotButton img {
+            flex-shrink: 0; /* 图标不收缩 */
+            width: 22px; /* 统一图标宽度，确保对齐 */
+            height: 22px;
+            object-fit: contain;
+            pointer-events: none;
         }
         
-        #textSendButton:disabled, #screenshotButton:disabled {
+        #textSendButton span, #screenshotButton span {
+            flex-shrink: 0; /* 文字不收缩 */
+            text-align: left; /* 文字左对齐 */
+        }
+        
+        /* 发送按钮：蓝色背景 */
+        #textSendButton {
+            border: 2px solid transparent;
+            background: #44b7fe;
+            color: #fff;
+        }
+        
+        #textSendButton:hover:not(:disabled) {
+            background: #2ea0e0;
+        }
+        
+        #textSendButton:disabled {
             background: #b0c4de;
             cursor: not-allowed;
             opacity: 0.6;
         }
         
+        /* 截图按钮：白色背景 + 蓝色边框 */
         #screenshotButton {
-            background: #6c757d;
+            border: 2px solid #44b7fe;
+            background: #fff;
+            color: #44b7fe;
         }
         
         #screenshotButton:hover:not(:disabled) {
-            background: #5a6268;
+            background: #f0f9ff;
+            border-color: #2ea0e0;
+            border-width: 2px;
+        }
+        
+        #screenshotButton:disabled {
+            border-color: #b0c4de;
+            border-width: 2px;
+            color: #b0c4de;
+            cursor: not-allowed;
+            opacity: 0.6;
         }
         
         /* 桌面端和移动端文本显示控制 */
@@ -890,7 +932,8 @@
             
             #textInputBox {
                 font-size: 0.9rem;
-                height: 62px;
+                /* 移动端：按钮组高度 = 两个按钮(6px*2+内容) + gap(4px) */
+                height: 62px; /* 保持移动端原有高度 */
             }
             
             #button-group {
@@ -1018,8 +1061,8 @@
         <div id="text-input-row">
             <textarea id="textInputBox" data-i18n-placeholder="chat.textInputPlaceholder" placeholder="文字聊天模式...回车发送，Shift+回车换行" tabindex="0"></textarea>
             <div id="button-group">
-                <button id="textSendButton" data-i18n="chat.send">📤 发送</button>
-                <button id="screenshotButton"><span class="desktop-text" data-i18n="chat.screenshot">📸 截图</span><span class="mobile-text" data-i18n="chat.takePhoto">📷 拍照</span></button>
+                <button id="textSendButton"><img src="/static/icons/send_icon.png" alt=""><span data-i18n="chat.send">发送</span></button>
+                <button id="screenshotButton"><img src="/static/icons/screenshot_icon.png" alt=""><span class="desktop-text" data-i18n="chat.screenshot">截图</span><span class="mobile-text" data-i18n="chat.takePhoto">拍照</span></button>
             </div>
         </div>
     </div>
