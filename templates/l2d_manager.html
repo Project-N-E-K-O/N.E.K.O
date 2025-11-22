@@ -410,6 +410,9 @@
                     const option = document.createElement('option');
                     option.value = model.name;
                     option.textContent = model.name;
+                    // 使用data属性存储item_id，这样更容易在change事件中获取
+                    option.dataset.itemId = model.item_id;
+                    console.log('添加模型选项:', model.name, 'item_id:', model.item_id);
                     modelSelect.appendChild(option);
                 });
 
@@ -457,7 +460,7 @@
         }
         
         // 保存模型设置到角色的函数
-        async function saveModelToCharacter(modelName) {
+        async function saveModelToCharacter(modelName, itemId = null) {
             try {
                 // 获取角色名称
                 const lanlanName = await getLanlanName();
@@ -467,12 +470,23 @@
                     return false;
                 }
                 
+                // 构建保存数据，包含模型名称和可选的item_id
+                const saveData = { 
+                    live2d: modelName 
+                };
+                
+                // 如果有item_id，也保存它
+                if (itemId && itemId !== 'undefined') {
+                    saveData.item_id = itemId;
+                    console.log('保存模型设置时同时保存item_id:', itemId);
+                }
+                
                 const response = await fetch(`/api/characters/catgirl/l2d/${encodeURIComponent(lanlanName)}`, {
                     method: 'PUT',
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ live2d: modelName })
+                    body: JSON.stringify(saveData)
                 });
                 
                 const result = await response.json();
@@ -494,15 +508,25 @@
         // 修改模型选择事件，自动保存模型设置
         modelSelect.addEventListener('change', async (e) => {
             const modelName = e.target.value;
+            const modelId = e.target.dataset.itemId
+            console.log("id:", modelId)
             if (!modelName) return;
 
             currentModelInfo = availableModels.find(m => m.name === modelName);
+            if (currentModelInfo) {
+                // 设置item_id，确保从dataset中获取
+                currentModelInfo.item_id = modelId || currentModelInfo.item_id;
+            }
             if (!currentModelInfo) return;
 
-            await loadModel(modelName, currentModelInfo);
+            // 获取选中的option元素，从中获取item_id
+            const selectedOption = e.target[e.target.selectedIndex];
+            const modelSteamId = selectedOption ? selectedOption.dataset.itemId : currentModelInfo.item_id;
             
-            // 自动保存模型设置到角色
-            const saveSuccess = await saveModelToCharacter(modelName);
+            await loadModel(modelName, currentModelInfo, modelSteamId);
+            
+            // 自动保存模型设置到角色，同时传入item_id
+            const saveSuccess = await saveModelToCharacter(modelName, modelSteamId);
             if (!saveSuccess) {
                 // 如果自动保存失败，标记为有未保存的更改
                 window.hasUnsavedChanges = true;
@@ -510,21 +534,46 @@
         });
 
         // 加载模型的函数
-        async function loadModel(modelName, modelInfo) {
+        async function loadModel(modelName, modelInfo, steam_id) {
             if (!modelName || !modelInfo) return;
             
+            // 确保获取正确的steam_id，优先使用传入的，然后从modelInfo中获取
+            let finalSteamId = steam_id || modelInfo.item_id;
+            console.log('modelInfo:', modelInfo);
+            console.log('finalSteamId:', finalSteamId);
             showStatus(t('live2d.loadingModel', `正在加载模型: ${modelName}...`, {model: modelName}));
             setControlsDisabled(true);
 
             try {
                 // 1. Fetch files list
-                const filesRes = await fetch(`/api/live2d/model_files/${modelName}`);
+                let filesRes;
+                // 只有当finalSteamId是有效的非undefined值时才使用它
+                if (finalSteamId && finalSteamId !== 'undefined') {
+                    // 如果提供了finalSteamId，调用专门的API端点
+                    filesRes = await fetch(`/api/live2d/model_files_by_id/${finalSteamId}`);
+                } else {
+                    // 否则使用原来的API端点
+                    filesRes = await fetch(`/api/live2d/model_files/${modelName}`);
+                }
                 const filesData = await filesRes.json();
                 if (!filesData.success) throw new Error(t('live2d.modelFilesFetchFailed', '无法获取模型文件列表'));
                 currentModelFiles = filesData;
 
                 // 2. Fetch model config
-                const modelJsonUrl = modelInfo.path;
+                let modelJsonUrl;
+                // 优先使用后端返回的model_config_url（如果有）
+                if (filesData.model_config_url) {
+                    modelJsonUrl = filesData.model_config_url;
+                    console.log('使用后端返回的模型配置URL:', modelJsonUrl);
+                } else if (finalSteamId && finalSteamId !== 'undefined') {
+                    // 如果提供了finalSteamId但没有model_config_url，使用原来的方式构建URL（兼容模式）
+                    modelJsonUrl = `/workshop/${finalSteamId}/${modelName}.model3.json`;
+                    console.log('兼容模式 - 构建的模型URL(带steam_id):', modelJsonUrl);
+                } else {
+                    // 否则使用原来的路径
+                    modelJsonUrl = modelInfo.path;
+                    console.log('构建的模型URL(本地):', modelJsonUrl);
+                }
                 const modelConfigRes = await fetch(modelJsonUrl);
                 if (!modelConfigRes.ok) throw new Error(t('live2d.modelConfigFetchFailed', `无法获取模型配置: ${modelConfigRes.statusText}`, {status: modelConfigRes.statusText}));
                 const modelConfig = await modelConfigRes.json();
@@ -662,8 +711,8 @@
                 { x: live2dModel.scale.x, y: live2dModel.scale.y }
             );
             
-            // 保存模型设置到角色
-            const modelSuccess = await saveModelToCharacter(currentModelInfo.name);
+            // 保存模型设置到角色，同时传入item_id
+            const modelSuccess = await saveModelToCharacter(currentModelInfo.name, currentModelInfo.item_id);
             
             if (positionSuccess && modelSuccess) {
                 showStatus(t('live2d.settingsSaved', '位置和模型设置保存成功!'), 2000);
@@ -998,9 +1047,27 @@
                 // 获取角色名称
                 const lanlanName = await getLanlanName();
                 
+                // 构建API URL，支持可选的item_id参数
                 let apiUrl = '/api/characters/current_live2d_model';
+                const params = new URLSearchParams();
+                
                 if (lanlanName) {
-                    apiUrl += `?catgirl_name=${encodeURIComponent(lanlanName)}`;
+                    params.append('catgirl_name', lanlanName);
+                }
+                
+                // 如果有item_id，添加到参数中
+                // 注意：这里的item_id需要从适当的地方获取
+                // 例如从全局变量、DOM元素或其他逻辑中获取
+                // 这里只是示例，实际实现可能需要根据具体情况调整
+                const itemId = currentModelInfo ? currentModelInfo.item_id : null;
+                if (itemId) {
+                    params.append('item_id', itemId);
+                }
+                
+                // 添加参数到URL
+                const paramsString = params.toString();
+                if (paramsString) {
+                    apiUrl += `?${paramsString}`;
                 }
                 
                 const currentModelResponse = await fetch(apiUrl);
@@ -1023,7 +1090,7 @@
                     modelSelect.value = model_name;
                     
                     // 加载模型
-                    await loadModel(model_name, model_info);
+                    await loadModel(model_name, model_info, model_info.item_id);
                     
                     showStatus(t('live2d.modelLoaded', `已加载角色 ${catgirl_name} 的模型: ${model_name}`, {name: catgirl_name, model: model_name}));
                 } else {
