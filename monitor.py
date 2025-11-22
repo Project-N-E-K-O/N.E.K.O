@@ -7,7 +7,7 @@ import asyncio
 import json
 import os
 import logging
-from config import MONITOR_SERVER_PORT
+from config import MONITOR_SERVER_PORT, APP_NAME
 from utils.config_manager import get_config_manager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.staticfiles import StaticFiles
@@ -74,7 +74,7 @@ async def get_page_config(lanlan_name: str = ""):
 
 @app.post('/api/save_screenshot')
 async def save_screenshot(request: Request):
-    """保存前端发送的截图到指定目录（优先保存到 C:\\Users\\xiao8\\Pictures）。
+    """保存前端发送的截图到指定目录（优先基于live2d目录推导 Pictures 文件夹，失败则回退到用户目录下的 APP_NAME/Pictures）。
     接收一个 JSON: {"data": "data:image/jpeg;base64,..."}
     """
     try:
@@ -91,7 +91,7 @@ async def save_screenshot(request: Request):
         import base64, datetime
 
         # 首先尝试根据配置的 live2d 目录推导保存位置：
-        # 如果 live2d 目录为 D:\\...\\Xiao8\\live2d，则保存到 D:\\...\\Xiao8\\Pictures
+        # 如果 live2d 目录为 D:\\...\\APP_NAME\\live2d，则保存到 D:\\...\\APP_NAME\\Pictures
         target_dir = None
         try:
             live2d_dir = getattr(_config_manager, 'live2d_dir', None)
@@ -114,21 +114,8 @@ async def save_screenshot(request: Request):
 
         # 如果未成功确定目标目录，使用平台回退策略
         if not target_dir:
-            try:
-                if os.name == 'nt':
-                    candidate = os.path.join('C:\\Users', 'xiao8', 'Pictures')
-                    os.makedirs(candidate, exist_ok=True)
-                    testfile = os.path.join(candidate, '.nkatest')
-                    with open(testfile, 'w') as f:
-                        f.write('ok')
-                    os.remove(testfile)
-                    target_dir = candidate
-            except Exception:
-                target_dir = None
-
-        if not target_dir:
             home = os.path.expanduser('~')
-            target_dir = os.path.join(home, 'xiao8', 'Pictures')
+            target_dir = os.path.join(home, APP_NAME, 'Pictures')
             os.makedirs(target_dir, exist_ok=True)
 
         # 生成文件名
@@ -146,10 +133,13 @@ async def save_screenshot(request: Request):
 
         logger.info(f"Saved screenshot to {file_path}")
 
-        # 安排后台任务：在 delay 秒后永久删除该文件（默认 60 秒）
+        # 安排后台任务：在 delay 秒后永久删除该文件（默认 7 天）
         try:
             import asyncio
-            async def _delayed_remove(path, delay=60):
+            # 改为 7 天后删除（秒）
+            SEVEN_DAYS_SECONDS = 7 * 24 * 3600
+            
+            async def _delayed_remove(path, delay=SEVEN_DAYS_SECONDS):
                 try:
                     await asyncio.sleep(delay)
                     if os.path.exists(path):
@@ -158,8 +148,6 @@ async def save_screenshot(request: Request):
                 except Exception as _e:
                     logger.error(f"Failed to auto-delete screenshot {path}: {_e}")
 
-            # 改为 7 天后删除（秒）
-            SEVEN_DAYS_SECONDS = 7 * 24 * 3600
             asyncio.create_task(_delayed_remove(file_path, SEVEN_DAYS_SECONDS))
         except Exception as e:
             logger.warning(f"无法安排截图自动删除任务: {e}")

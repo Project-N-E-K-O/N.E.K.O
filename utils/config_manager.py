@@ -219,7 +219,7 @@ class ConfigManager:
         return app_dir / "memory" / "store"
     
     def _ensure_app_docs_directory(self):
-        """确保应用文档目录存在（Xiao8目录本身）"""
+        """确保应用文档目录存在（APP_NAME目录本身）"""
         try:
             # 先确保父目录（docs_dir）存在
             if not self.docs_dir.exists():

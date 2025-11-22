@@ -1380,7 +1380,7 @@ function init_app(){
             // 添加截图到待发送列表（不立即发送）
             addScreenshotToList(dataUrl);
 
-            // 自动将截图发送到后端保存到本地（xiao8\Pictures）
+            // 自动将截图发送到后端保存到本地（APP_NAME\Pictures）
             try {
                 (async () => {
                     try {
