@@ -1092,8 +1092,8 @@ class Live2DManager {
                     (window.innerWidth * 0.6) / 7000
                 );
                 model.scale.set(scale);
-                model.x = this.pixi_app.renderer.width;
-                model.y = this.pixi_app.renderer.height;
+                model.x = this.pixi_app.renderer.width * 0.5;
+                model.y = this.pixi_app.renderer.height * 0.5;
             }
             model.anchor.set(0.65, 0.75);
         }
