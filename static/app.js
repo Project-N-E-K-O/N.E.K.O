@@ -3241,8 +3241,16 @@ const ready = () => {
     init_app();
 };
 
-document.addEventListener("DOMContentLoaded", ready);
-window.addEventListener("load", ready);
+// 如果在脚本加载时 DOM 已经 ready，立即调用初始化
+// 这解决了动态加载脚本时事件已经触发过的问题
+if (document.readyState === 'complete' || document.readyState === 'interactive') {
+    // DOM 已经 ready，立即调用初始化
+    ready();
+} else {
+    // DOM 还没 ready，等待事件触发
+    document.addEventListener("DOMContentLoaded", ready);
+    window.addEventListener("load", ready);
+}
 
 // 页面加载后显示启动提示
 window.addEventListener("load", () => {

@@ -11,6 +11,13 @@
     <title data-i18n="app.title">Project N.E.K.O.</title>
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
     <script src="/static/i18n-i18next.js"></script>
+    <!-- 设置 API_BASE_URL 并加载 fetch 拦截器 - 必须在其他脚本之前加载 -->
+    <script>
+        // 设置 API_BASE_URL 供 api 拦截器使用
+        // 默认使用当前服务器（端口 48911），可以通过环境变量或配置覆盖
+        window.API_BASE_URL = window.API_BASE_URL || 'http://localhost:48911';
+    </script>
+    <script src="/static/api_interceptor.js"></script>
     <script src="/static/common_dialogs.js"></script>
     <style>
         *:focus {
@@ -996,6 +1003,8 @@
 
 <!-- Status 气泡框 -->
 <div id="status-toast"></div>
+<!-- ExampleButton 容器 -->
+<div id="example-button-container" style="position: fixed; top: 20px; left: 20px; z-index: 99998; pointer-events: auto;"></div>
 <div id="chat-container">
     <div id="chat-header">
         <span id="chat-title" data-i18n="chat.title">💬 对话</span>
@@ -1352,6 +1361,37 @@
         }
     })();
 </script>
+
+<script type="module">
+  import { ExampleButton } from "/static/ExampleButton.js";
+  import React from "https://esm.sh/react@19";
+  import { createRoot } from "https://esm.sh/react-dom@19/client";
+
+  // 等待 DOM 加载完成
+  function mountExampleButton() {
+    const container = document.getElementById("example-button-container");
+    if (container) {
+      const root = createRoot(container);
+      root.render(
+        React.createElement(ExampleButton, {
+          buttonText: "打开 Modal",
+          onSave: (text1, text2) => {
+            console.log("保存的内容:", text1, text2);
+            // 可以在这里添加保存逻辑
+          }
+        })
+      );
+      console.log("ExampleButton 组件已挂载");
+    }
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", mountExampleButton);
+  } else {
+    mountExampleButton();
+  }
+</script>
+
 <script>
   // 对话区提示框逻辑 - 仅在第一次访问时显示
   (function() {
