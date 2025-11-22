@@ -1,0 +1,13 @@
+{
+  "coreApiKey": "your-core-api-key-here",
+  "coreApi": "qwen",
+  "assistApi": "qwen",
+  "assistApiKeyQwen": "",
+  "assistApiKeyOpenai": "",
+  "assistApiKeyGlm": "",
+  "assistApiKeyStep": "",
+  "assistApiKeySilicon": "",
+  "mcpToken": "",
+  "enableCustomApi": false
+}
+

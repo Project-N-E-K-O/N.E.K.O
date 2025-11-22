@@ -94,11 +94,11 @@ QQグループ：1022939659
 
 #### API Keyの設定
 
-追加機能を得るために独自のAPIを設定したい場合、サードパーティのAIサービスを設定できます。本プロジェクトは現在 *StepFun* または *Alibaba Cloud* の使用を推奨しています。*開発者*は`config/api.py`の内容を直接修正できます（初回設定は`config/api_template.py`を参照してください）。 **We will adapt to more international service provider in 2026 Spring.**
+追加機能を得るために独自のAPIを設定したい場合、サードパーティのAIサービスを設定できます。本プロジェクトは現在 *StepFun* または *Alibaba Cloud* の使用を推奨しています。`http://localhost:48911/api_key`にアクセスして、Web画面から直接設定できます。 **We will adapt to more international service provider in 2026 Spring.**
 
 > *Alibaba Cloud API*の取得：Alibaba CloudのBailian Platform[公式サイト](https://bailian.console.aliyun.com/)でアカウント登録します。新規ユーザーは実名認証後に大量の無料クレジットを取得できます。登録完了後、[コンソール](https://bailian.console.aliyun.com/api-key?tab=model#/api-key)にアクセスしてAPI Keyを取得してください。
 
-> *開発者の場合：本プロジェクトをクローン後、(1)新しい`python3.11`環境を作成。(2)`pip install -r requirements.txt`を実行して依存関係をインストール。(3)`config/api_template.py`を`config/api.py`にコピーして必要な設定を行う。(4)`python memory_server.py`と`python main_server.py`を実行。(5)main serverで指定されたポート（デフォルトは`http://localhost:48911`）からウェブ版にアクセス。*
+> *開発者の場合：本プロジェクトをクローン後、(1)新しい`python3.11`環境を作成。(2)`pip install -r requirements.txt`を実行して依存関係をインストール。(3)`python memory_server.py`と`python main_server.py`を実行。(4)main serverで指定されたポート（デフォルトは`http://localhost:48911`）からウェブ版にアクセスしてAPI Keyを設定。*
 
 #### キャラクター設定の変更
 
@@ -124,7 +124,8 @@ QQグループ：1022939659
 Lanlan/
 ├── 📁 brain/                    # 🧠 バックグラウンドAgentモジュール、フロントエンド対話内容に基づいてキーボード/マウスとMCPを制御
 ├── 📁 config/                   # ⚙️ 設定管理モジュール
-│   ├── api.py                   # APIキー設定
+│   ├── api_providers.json       # APIプロバイダー設定
+│   ├── core_config.json         # コア設定（API Keyなど）
 │   ├── prompts_chara.py         # キャラクタープロンプト
 │   └── prompts_sys.py           # システムプロンプト
 ├── 📁 main_helper/              # 🔧 コアモジュール
@@ -150,9 +151,9 @@ Lanlan/
 
 ### 開発への参加
 
-本プロジェクトの環境依存は非常にシンプルです。`python3.11`環境で`pip install -r requirements.txt`または`uv sync`を実行してください。`config/api_template.py`を`config/api.py`にコピーすることを忘れないでください。開発者はQQグループ1022939659への参加をお勧めします。猫娘の名前はプロジェクトタイトルにあります。
+本プロジェクトの環境依存は非常にシンプルです。`python3.11`環境で`pip install -r requirements.txt`または`uv sync`を実行してください。開発者はQQグループ1022939659への参加をお勧めします。猫娘の名前はプロジェクトタイトルにあります。
 
-開発者向け詳細起動手順：(1)新しい`python3.11`環境を作成。(2)`pip install -r requirements.txt`または`uv sync`を実行して依存関係をインストール。(3)`config/api_template.py`を`config/api.py`にコピーして必要な設定を行う。(4)`python memory_server.py`、`python main_server.py`（オプション：`python agent_server.py`）を実行。(5)main serverで指定されたポート（デフォルトは`http://localhost:48911`）からウェブ版にアクセス。
+開発者向け詳細起動手順：(1)新しい`python3.11`環境を作成。(2)`pip install -r requirements.txt`または`uv sync`を実行して依存関係をインストール。(3)`python memory_server.py`、`python main_server.py`（オプション：`python agent_server.py`）を実行。(4)main serverで指定されたポート（デフォルトは`http://localhost:48911`）からウェブ版にアクセスしてAPI Keyを設定。
 
 
 ### TODO リスト（開発計画）

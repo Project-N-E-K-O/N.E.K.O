@@ -4,7 +4,9 @@
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>角色管理 - Project N.E.K.O.</title>
+    <title data-i18n="character.manager">角色管理 - Project N.E.K.O.</title>
+    <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
+    <script src="/static/i18n-i18next.js"></script>
     <script src="/static/common_dialogs.js"></script>
     <style>
         *:focus {
@@ -138,34 +140,34 @@
 <body>
 <div class="container">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-        <h2 style="margin: 0;">角色管理</h2>
-        <button class="btn sm" onclick="openApiKeySettings()" style="background: #6c757d;">🔑 API Key 设置</button>
+        <h2 style="margin: 0;" data-i18n="character.manager">角色管理</h2>
+        <button class="btn sm" onclick="openApiKeySettings()" style="background: #6c757d;" data-i18n="character.apiKeySettings">🔑 API Key 设置</button>
     </div>
     <div class="section" id="master-section">
-        <div class="tips">🐷主人档案（唯一）：档案名为必填项，其他均为可选项，可自行删减。</div>
+        <div class="tips" data-i18n="character.masterProfile">🐷主人档案（唯一）：档案名为必填项，其他均为可选项，可自行删减。</div>
         <div class="catgirl-block">
             <form id="master-form">
                 <div class="field-row">
-                    <label>档案名<span style="color:red">*</span></label>
+                    <label><span data-i18n="character.profileName">档案名</span><span style="color:red" data-i18n="character.required">*</span></label>
                     <input type="text" name="档案名" required>
                 </div>
                 <div class="field-row">
-                    <label>性别</label>
+                    <label data-i18n="character.gender">性别</label>
                     <input type="text" name="性别">
-                    <button type="button" class="btn sm delete" onclick="deleteMasterField(this)">删除设定</button>
+                    <button type="button" class="btn sm delete" onclick="deleteMasterField(this)" data-i18n="character.deleteField">删除设定</button>
                 </div>
                 <div class="field-row">
-                    <label>昵称</label>
+                    <label data-i18n="character.nickname">昵称</label>
                     <input type="text" name="昵称">
-                    <button type="button" class="btn sm delete" onclick="deleteMasterField(this)">删除设定</button>
+                    <button type="button" class="btn sm delete" onclick="deleteMasterField(this)" data-i18n="character.deleteField">删除设定</button>
                 </div>
             </form>
         </div>
     </div>
     <div class="section" id="catgirl-section">
-        <div class="tips">🩷猫娘档案：进阶设定包含Live2D形象、语音ID等。</div>
+        <div class="tips" data-i18n="character.catgirlProfile">🩷猫娘档案：进阶设定包含Live2D形象、语音ID等。</div>
         <div id="catgirl-list"></div>
-        <button class="btn add sm" id="add-catgirl-btn">➕ 新增猫娘</button>
+        <button class="btn add sm" id="add-catgirl-btn" data-i18n="character.addCatgirl">➕ 新增猫娘</button>
     </div>
 </div>
 
@@ -190,7 +192,8 @@ if (!window._charaManagerFoldHandler) {
                 
                 // 立即保存高级设置下拉栏状态
                 // 检查是否是最外层的fold（进阶设定）
-                if (!fold.parentElement.closest('.fold') && toggle.textContent.includes('进阶设定')) {
+                const advancedSettingsText = window.t ? window.t('character.advancedSettings') : '进阶设定';
+                if (!fold.parentElement.closest('.fold') && toggle.textContent.includes(advancedSettingsText)) {
                     // 获取当前表单
                     const form = fold.closest('form');
                     if (form) {
@@ -291,7 +294,7 @@ function renderMaster() {
         deleteBtn.type = 'button';
         deleteBtn.className = 'btn sm delete';
         deleteBtn.style.marginLeft = '8px';
-        deleteBtn.textContent = '删除设定';
+        deleteBtn.textContent = window.t ? window.t('character.deleteField') : '删除设定';
         row.appendChild(deleteBtn);
         
         form.insertBefore(row, form.querySelector('div[style]'));
@@ -337,15 +340,19 @@ function renderMaster() {
         const addBtn = masterFormEl.querySelector('#add-master-field-btn');
         if (addBtn) {
             addBtn.onclick = async function() {
-                const key = await showPrompt('请输入新设定的名称（键名）', '', '新增主人设定');
+                const key = await showPrompt(
+                    window.t ? window.t('character.addMasterFieldPrompt') : '请输入新设定的名称（键名）', 
+                    '', 
+                    window.t ? window.t('character.addMasterFieldTitle') : '新增主人设定'
+                );
                 if (!key || ["档案名"].includes(key)) return;
                 if (masterFormEl.querySelector(`[name='${key}']`)) { 
-                    await showAlert('该设定已存在'); 
+                    await showAlert(window.t ? window.t('character.fieldExists') : '该设定已存在'); 
                     return;
                 }
                 const row = document.createElement('div');
                 row.className = 'field-row custom-row';
-                row.innerHTML = `<label>${key}</label><input type="text" name="${key}"><button type="button" class="btn sm delete" style="margin-left:8px">删除设定</button>`;
+                row.innerHTML = `<label>${key}</label><input type="text" name="${key}"><button type="button" class="btn sm delete" style="margin-left:8px">${window.t ? window.t('character.deleteField') : '删除设定'}</button>`;
                 masterFormEl.insertBefore(row, masterFormEl.querySelector('div[style]'));
                 
                 // 显示操作按钮
@@ -369,7 +376,8 @@ function renderMaster() {
         window.deleteMasterField = function(btn) {
             const row = btn.parentNode;
             // 档案名不能删
-            if (row.querySelector('label') && row.querySelector('label').textContent === '档案名') return;
+            const profileNameText = window.t ? window.t('character.profileName') : '档案名';
+            if (row.querySelector('label') && row.querySelector('label').textContent === profileNameText) return;
             row.remove();
             showMasterActionButtons(); // 删除字段后显示操作按钮
         };
@@ -390,7 +398,10 @@ function renderMaster() {
         var masterFormEl = document.getElementById('master-form');
         if (masterFormEl) {
             // 添加按钮区域，初始隐藏保存和取消按钮
-            masterFormEl.insertAdjacentHTML('beforeend', '<div style="text-align:right;margin-top:8px"><button type="button" class="btn sm add" id="add-master-field-btn">新增设定</button><button type="submit" class="btn sm" id="save-master-btn" style="display:none">保存主人设定</button><button type="button" class="btn sm" id="cancel-master-btn" style="display:none">取消</button></div>');
+            const addFieldText = window.t ? window.t('character.addMasterField') : '新增设定';
+            const saveMasterText = window.t ? window.t('character.saveMaster') : '保存主人设定';
+            const cancelText = window.t ? window.t('character.cancel') : '取消';
+            masterFormEl.insertAdjacentHTML('beforeend', `<div style="text-align:right;margin-top:8px"><button type="button" class="btn sm add" id="add-master-field-btn">${addFieldText}</button><button type="submit" class="btn sm" id="save-master-btn" style="display:none">${saveMasterText}</button><button type="button" class="btn sm" id="cancel-master-btn" style="display:none">${cancelText}</button></div>`);
         }
         
         // 设置事件监听
@@ -408,7 +419,7 @@ masterForm.onsubmit = async function(e) {
         if (k && v) data[k] = v;
     }
     if (!data['档案名']) {
-        await showAlert('档案名为必填项');
+        await showAlert(window.t ? window.t('character.profileNameRequired') : '档案名为必填项');
         return;
     }
     await fetch('/api/characters/master', {
@@ -441,8 +452,8 @@ function renderCatgirls() {
                 <span class="catgirl-expand" style="cursor:pointer;font-size:1.2em;margin-right:6px;user-select:none">▶</span>
                 <span class="catgirl-title" style="color:${color};">${key}</span>
                 <div class="catgirl-actions">
-                    <button class="btn sm" id="switch-btn-${key}" onclick="switchCatgirl('${key}')" style="background: #28a745;">切换猫娘</button>
-                    <button class="btn sm delete" onclick="deleteCatgirl('${key}')">删除猫娘</button>
+                    <button class="btn sm" id="switch-btn-${key}" onclick="switchCatgirl('${key}')" style="background: #28a745;">${window.t ? window.t('character.switchCatgirl') : '切换猫娘'}</button>
+                    <button class="btn sm delete" onclick="deleteCatgirl('${key}')">${window.t ? window.t('character.deleteCatgirl') : '删除猫娘'}</button>
                 </div>
             </div>
             <div class="catgirl-details" style="display:none;"></div>
@@ -516,7 +527,7 @@ window.editCatgirl = function(key) {
 window.deleteCatgirl = async function(key) {
     const catgirls = characterData['猫娘'] || {};
     if (Object.keys(catgirls).length <= 1) {
-        await showAlert('只剩一只猫娘，无法删除！');
+        await showAlert(window.t ? window.t('character.onlyOneCatgirlLeft') : '只剩一只猫娘，无法删除！');
         return;
     }
     // 检查是否是当前猫娘
@@ -526,16 +537,18 @@ window.deleteCatgirl = async function(key) {
         const currentCatgirl = currentData.current_catgirl || '';
         
         if (key === currentCatgirl) {
-            await showAlert('不能删除当前正在使用的猫娘！\n\n请先切换到其他猫娘后再删除。');
+            await showAlert(window.t ? window.t('character.cannotDeleteCurrentCatgirl') : '不能删除当前正在使用的猫娘！\n\n请先切换到其他猫娘后再删除。');
             return;
         }
     } catch (error) {
         console.error('获取当前猫娘失败:', error);
-        await showAlert('无法确认当前猫娘状态，删除操作已取消');
+        await showAlert(window.t ? window.t('character.cannotConfirmCatgirlStatus') : '无法确认当前猫娘状态，删除操作已取消');
         return;
     }
     
-    if (!await showConfirm('确定要删除猫娘"' + key + '"？', '删除猫娘', {danger: true})) return;
+    const confirmMsg = window.t ? window.t('character.confirmDeleteCatgirl', {name: key}) : `确定要删除猫娘"${key}"？`;
+    const confirmTitle = window.t ? window.t('character.deleteCatgirlTitle') : '删除猫娘';
+    if (!await showConfirm(confirmMsg, confirmTitle, {danger: true})) return;
     await fetch('/api/characters/catgirl/' + encodeURIComponent(key), {method: 'DELETE'});
     // 清除 localStorage 中的展开状态记录
     localStorage.removeItem(`catgirl_expand_${key}`);
@@ -566,9 +579,9 @@ function showCatgirlForm(key, container) {
     // 先渲染基础项
     form.innerHTML = `
         <div class="field-row">
-            <label>档案名<span style="color:red">*</span></label>
+            <label>${window.t ? window.t('character.profileName') : '档案名'}<span style="color:red">*</span></label>
             <input type="text" name="档案名" value="${key || ''}" ${isNew ? '' : 'readonly'} required>
-            ${!isNew ? '<button type="button" class="btn sm" id="rename-catgirl-btn">修改名称</button>' : ''}
+            ${!isNew ? `<button type="button" class="btn sm" id="rename-catgirl-btn">${window.t ? window.t('character.rename') : '修改名称'}</button>` : ''}
         </div>
     `;
     // 渲染自定义项
@@ -576,39 +589,40 @@ function showCatgirlForm(key, container) {
         if (!["live2d", "voice_id", "system_prompt", "档案名"].includes(k)) {
             const row = document.createElement('div');
             row.className = 'field-row custom-row';
-            row.innerHTML = `<label>${k}</label><input type="text" name="${k}" value="${cat[k]}"><button type="button" class="btn sm delete" style="margin-left:8px" onclick="deleteCatgirlField(this)">删除设定</button>`;
+            const deleteFieldText = window.t ? window.t('character.deleteField') : '删除设定';
+            row.innerHTML = `<label>${k}</label><input type="text" name="${k}" value="${cat[k]}"><button type="button" class="btn sm delete" style="margin-left:8px" onclick="deleteCatgirlField(this)">${deleteFieldText}</button>`;
             form.appendChild(row);
         }
     });
     // 渲染进阶设定
     form.innerHTML += `
         <div class="fold">
-            <div class="fold-toggle">进阶设定 <span class="arrow">▼</span></div>
+            <div class="fold-toggle">${window.t ? window.t('character.advancedSettings') : '进阶设定'} <span class="arrow">▼</span></div>
             <div class="fold-content">
                 <div class="field-row">
                     <label>live2d</label>
-                    <span class="live2d-link" style="flex:1;cursor:pointer;color:#4f8cff;text-decoration:underline;display:inline-block;padding:6px 0" title="点击管理Live2D模型">${cat['live2d'] ? cat['live2d'] : '未设置'}</span>
+                    <span class="live2d-link" style="flex:1;cursor:pointer;color:#4f8cff;text-decoration:underline;display:inline-block;padding:6px 0" title="${window.t ? window.t('character.manageLive2D') : '点击管理Live2D模型'}">${cat['live2d'] ? cat['live2d'] : (window.t ? window.t('character.live2dNotSet') : '未设置')}</span>
                 </div>
                 <div class="field-row">
                     <label>voice_id</label>
                     <select name="voice_id" class="form-control" style="flex:1">
-                        <option value="">未指定音色</option>
+                        <option value="">${window.t ? window.t('character.voiceNotSet') : '未指定音色'}</option>
                     </select>
-                    <button type="button" class="btn sm" onclick="openVoiceClone('${key || ''}')">注册新声音</button>
+                    <button type="button" class="btn sm" onclick="openVoiceClone('${key || ''}')">${window.t ? window.t('character.registerNewVoice') : '注册新声音'}</button>
                 </div>
                 <div class="fold">
                     <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 8px 0;">
                     <div class="fold-toggle" style="color: #888; font-style: italic">system_prompt <span class="arrow">▼</span></div>
                     <div class="fold-content">
-                        <textarea name="system_prompt" rows="5" style="width:100%" placeholder="系统指令（谨慎修改）">${cat['system_prompt'] || ''}</textarea>
+                        <textarea name="system_prompt" rows="5" style="width:100%" placeholder="${window.t ? window.t('character.systemPrompt') : '系统指令（谨慎修改）'}">${cat['system_prompt'] || ''}</textarea>
                     </div>
                 </div>
             </div>
         </div>
         <div style="text-align:right;margin-top:10px;">
-            <button type="button" class="btn sm add" id="add-catgirl-field-btn">新增设定</button>
-            <button type="submit" class="btn sm" id="save-button" style="display:none">${isNew ? '确认新猫娘' : '保存修改'}</button>
-            <button type="button" class="btn sm" id="cancel-button" style="display:none" onclick="this.form.querySelector('#save-button').style.display = 'none'; this.form.querySelector('#cancel-button').style.display = 'none'; loadCharacterData()">取消</button>
+            <button type="button" class="btn sm add" id="add-catgirl-field-btn">${window.t ? window.t('character.addField') : '新增设定'}</button>
+            <button type="submit" class="btn sm" id="save-button" style="display:none">${isNew ? (window.t ? window.t('character.confirmNewCatgirl') : '确认新猫娘') : (window.t ? window.t('character.saveChanges') : '保存修改')}</button>
+            <button type="button" class="btn sm" id="cancel-button" style="display:none" onclick="this.form.querySelector('#save-button').style.display = 'none'; this.form.querySelector('#cancel-button').style.display = 'none'; loadCharacterData()">${window.t ? window.t('character.cancel') : '取消'}</button>
         </div>
     `;
     // live2d弹窗逻辑
@@ -617,7 +631,7 @@ function showCatgirlForm(key, container) {
         live2dLink.onclick = async function() {
             const catgirlName = form.querySelector('[name="档案名"]').value;
             if (!catgirlName) {
-                await showAlert('请先填写猫娘档案名，然后再设置Live2D模型');
+                await showAlert(window.t ? window.t('character.fillProfileNameFirst') : '请先填写猫娘档案名，然后再设置Live2D模型');
                 return;
             }
             const url = `/l2d?lanlan_name=${encodeURIComponent(catgirlName)}`;
@@ -646,7 +660,7 @@ function showCatgirlForm(key, container) {
                 'toolbar=no,location=no,status=no,menubar=no,scrollbars=yes,resizable=yes,width=' + screen.availWidth + ',height=' + screen.availHeight + ',top=0,left=0'
             );
             if (!popup) {
-                await showAlert('请允许弹窗！');
+                await showAlert(window.t ? window.t('character.allowPopups') : '请允许弹窗！');
                 return;
             }
             
@@ -703,12 +717,20 @@ function showCatgirlForm(key, container) {
 
     // 新增自定义项按钮
     form.querySelector('#add-catgirl-field-btn').onclick = async function() {
-        const key = await showPrompt('请输入新设定的名称（键名）', '', '新增猫娘设定');
+        const key = await showPrompt(
+            window.t ? window.t('character.addCatgirlFieldPrompt') : '请输入新设定的名称（键名）', 
+            '', 
+            window.t ? window.t('character.addCatgirlFieldTitle') : '新增猫娘设定'
+        );
         if (!key || ["档案名", "live2d", "voice_id", "system_prompt"].includes(key)) return;
-        if (form.querySelector(`[name='${key}']`)) { await showAlert('该设定已存在'); return; }
+        if (form.querySelector(`[name='${key}']`)) { 
+            await showAlert(window.t ? window.t('character.fieldExists') : '该设定已存在'); 
+            return; 
+        }
         const row = document.createElement('div');
         row.className = 'field-row custom-row';
-        row.innerHTML = `<label>${key}</label><input type="text" name="${key}"><button type="button" class="btn sm delete" style="margin-left:8px" onclick="deleteCatgirlField(this)">删除设定</button>`;
+        const deleteFieldText = window.t ? window.t('character.deleteField') : '删除设定';
+        row.innerHTML = `<label>${key}</label><input type="text" name="${key}"><button type="button" class="btn sm delete" style="margin-left:8px" onclick="deleteCatgirlField(this)">${deleteFieldText}</button>`;
         form.insertBefore(row, form.querySelector('.fold'));
         
         // 新增字段后显示操作按钮
@@ -739,7 +761,8 @@ function showCatgirlForm(key, container) {
             const select = form.querySelector('select[name="voice_id"]');
             if (select) {
                 // 清空现有选项
-                select.innerHTML = '<option value="">未指定音色</option>';
+                const voiceNotSetText = window.t ? window.t('character.voiceNotSet') : '未指定音色';
+                select.innerHTML = `<option value="">${voiceNotSetText}</option>`;
                 // 添加音色选项
                 Object.entries(data.voices).forEach(([voiceId, voiceData]) => {
                     const option = document.createElement('option');
@@ -773,7 +796,10 @@ function showCatgirlForm(key, container) {
                 data[k] = v;
             }
         }
-        if (!data['档案名']) { await showAlert('档案名为必填项'); return; }
+        if (!data['档案名']) { 
+            await showAlert(window.t ? window.t('character.profileNameRequired') : '档案名为必填项'); 
+            return; 
+        }
         
         // 验证Live2D模型文件存在性
         if (data['live2d'] && data['live2d'].trim() !== '') {
@@ -782,7 +808,10 @@ function showCatgirlForm(key, container) {
                 const modelInfo = await response.json();
                 
                 if (!modelInfo.valid) {
-                    const confirmFallback = await showConfirm(`猫娘"${data['档案名']}"的Live2D模型文件不存在或已损坏。\n\n当前模型路径: ${data['live2d']}\n\n是否回退到默认模型(mao_pro)？\n\n点击"确定"使用默认模型，点击"取消"保持当前设置。`, 'Live2D模型异常');
+                    const confirmFallback = await showConfirm(
+                        window.t ? window.t('character.live2dModelError', {name: data['档案名'], path: data['live2d']}) : `猫娘"${data['档案名']}"的Live2D模型文件不存在或已损坏。\n\n当前模型路径: ${data['live2d']}\n\n是否回退到默认模型(mao_pro)？\n\n点击"确定"使用默认模型，点击"取消"保持当前设置。`, 
+                        window.t ? window.t('character.live2dModelErrorTitle') : 'Live2D模型异常'
+                    );
                     
                     if (confirmFallback) {
                         // 回退到默认模型
@@ -794,11 +823,11 @@ function showCatgirlForm(key, container) {
                         const fallbackResult = await fallbackResponse.json();
                         
                         if (fallbackResult.success) {
-                            await showAlert(`已回退到默认模型: ${fallbackResult.model_path}`);
+                            await showAlert(window.t ? window.t('character.fallbackToDefaultModel', {path: fallbackResult.model_path}) : `已回退到默认模型: ${fallbackResult.model_path}`);
                             // 更新表单中的live2d字段
                             data['live2d'] = fallbackResult.model_path;
                         } else {
-                            await showAlert('回退到默认模型失败，请检查模型设置');
+                            await showAlert(window.t ? window.t('character.fallbackFailed') : '回退到默认模型失败，请检查模型设置');
                         }
                     } else {
                         // 用户选择保持当前设置，继续保存
@@ -807,7 +836,10 @@ function showCatgirlForm(key, container) {
                 }
             } catch (error) {
                 console.error('验证Live2D模型失败:', error);
-                const continueSave = await showConfirm(`无法验证Live2D模型文件存在性。\n\n是否继续保存？\n\n点击"确定"继续保存，点击"取消"中止保存。`, '验证失败');
+                const continueSave = await showConfirm(
+                    window.t ? window.t('character.cannotVerifyLive2d') : `无法验证Live2D模型文件存在性。\n\n是否继续保存？\n\n点击"确定"继续保存，点击"取消"中止保存。`, 
+                    window.t ? window.t('character.verificationFailed') : '验证失败'
+                );
                 if (!continueSave) {
                     return;
                 }
@@ -825,7 +857,7 @@ function showCatgirlForm(key, container) {
             if (!response.ok) {
                 const errorText = await response.text();
                 console.error('API请求失败:', response.status, errorText);
-                await showAlert('保存失败: ' + errorText);
+                await showAlert(window.t ? window.t('character.saveFailedWithError', {error: errorText}) : '保存失败: ' + errorText);
                 return;
             }
             
@@ -833,7 +865,7 @@ function showCatgirlForm(key, container) {
             console.log('保存结果:', result);
             
             if (result.success === false) {
-                await showAlert(result.error || '保存失败');
+                await showAlert(result.error || (window.t ? window.t('character.saveFailed') : '保存失败'));
                 return;
             }
             
@@ -854,7 +886,7 @@ function showCatgirlForm(key, container) {
             await loadCharacterData();
         } catch (error) {
             console.error('保存出错:', error);
-            await showAlert('保存时发生错误: ' + error.message);
+            await showAlert(window.t ? window.t('character.saveError', {error: error.message}) : '保存时发生错误: ' + error.message);
         }
     };
     // 绑定"修改名称"按钮事件
@@ -908,9 +940,16 @@ function showCatgirlForm(key, container) {
 
 // 猫娘档案名重命名
 window.renameCatgirl = async function(oldName) {
-    const newName = await showPrompt('请输入新的猫娘档案名', oldName, '重命名猫娘');
+    const newName = await showPrompt(
+        window.t ? window.t('character.enterNewProfileName') : '请输入新的猫娘档案名', 
+        oldName, 
+        window.t ? window.t('character.renameCatgirlTitle') : '重命名猫娘'
+    );
     if (!newName || newName === oldName) return;
-    if (characterData['猫娘'][newName]) { await showAlert('该档案名已存在'); return; }
+    if (characterData['猫娘'][newName]) { 
+        await showAlert(window.t ? window.t('character.profileNameExists') : '该档案名已存在'); 
+        return; 
+    }
     // 调用API重命名
     const res = await fetch('/api/characters/catgirl/' + encodeURIComponent(oldName) + '/rename', {
         method: 'POST',
@@ -933,7 +972,7 @@ window.renameCatgirl = async function(oldName) {
         }
         await loadCharacterData();
     } else {
-        await showAlert(result.error || '重命名失败');
+        await showAlert(result.error || (window.t ? window.t('character.renameFailed') : '重命名失败'));
     }
 }
 
@@ -1037,7 +1076,9 @@ function openVoiceClone(lanlanName) {
 
 // 解除声音注册
 window.unregisterVoice = async function(catgirlName) {
-    if (!await showConfirm(`确定要解除猫娘"${catgirlName}"的声音注册吗？`, '解除声音注册', {danger: true})) {
+    const confirmMsg = window.t ? window.t('character.confirmUnregisterVoice', {name: catgirlName}) : `确定要解除猫娘"${catgirlName}"的声音注册吗？`;
+    const confirmTitle = window.t ? window.t('character.unregisterVoiceTitle') : '解除声音注册';
+    if (!await showConfirm(confirmMsg, confirmTitle, {danger: true})) {
         return;
     }
     
@@ -1050,14 +1091,14 @@ window.unregisterVoice = async function(catgirlName) {
         const result = await response.json();
         
         if (result.success) {
-            await showAlert('声音注册已解除');
+            await showAlert(window.t ? window.t('character.voiceUnregistered') : '声音注册已解除');
             await loadCharacterData(); // 刷新数据
         } else {
-            await showAlert(result.error || '解除注册失败');
+            await showAlert(result.error || (window.t ? window.t('character.unregisterFailed') : '解除注册失败'));
         }
     } catch (error) {
         console.error('解除注册出错:', error);
-        await showAlert('解除注册时发生错误');
+        await showAlert(window.t ? window.t('character.unregisterError') : '解除注册时发生错误');
     }
 }
 
@@ -1122,11 +1163,11 @@ function updateSwitchButtons() {
                 const switchBtn = document.getElementById(`switch-btn-${name}`);
                 if (switchBtn) {
                     if (name === currentCatgirl) {
-                        switchBtn.textContent = '当前猫娘';
+                        switchBtn.textContent = window.t ? window.t('character.currentCatgirl') : '当前猫娘';
                         switchBtn.style.background = '#4f8cff';
                         switchBtn.disabled = true;
                     } else {
-                        switchBtn.textContent = '切换猫娘';
+                        switchBtn.textContent = window.t ? window.t('character.switchCatgirl') : '切换猫娘';
                         switchBtn.style.background = '#28a745';
                         switchBtn.disabled = false;
                     }
@@ -1151,11 +1192,11 @@ async function switchCatgirl(catgirlName) {
         if (result.success) {
             await loadCharacterData(); // 重新加载数据以更新按钮状态
         } else {
-            await showAlert(result.error || '切换失败');
+            await showAlert(result.error || (window.t ? window.t('character.switchFailed') : '切换失败'));
         }
     } catch (error) {
         console.error('切换猫娘失败:', error);
-        await showAlert('切换猫娘时发生错误');
+        await showAlert(window.t ? window.t('character.switchError') : '切换猫娘时发生错误');
     }
 }
 
@@ -1163,6 +1204,12 @@ async function switchCatgirl(catgirlName) {
 
 // 页面加载时拉取数据
 loadCharacterData();
+
+// 监听语言切换事件，更新动态创建的文本
+window.addEventListener('localechange', () => {
+    // 重新加载角色数据以更新所有动态文本
+    loadCharacterData();
+});
 
 // 主人保存按钮也用.btn.sm
 const masterSaveBtn = document.querySelector('#master-form button[type="submit"]');

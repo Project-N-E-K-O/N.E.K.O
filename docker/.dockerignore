@@ -1,0 +1,70 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info
+dist
+build
+*.egg
+
+# Virtual environments
+venv
+env
+ENV
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Logs
+logs/
+*.log
+
+# Memory and user data
+memory/store/*
+config/core_config.json
+config/characters.json
+config/user_preferences.json
+config/voice_storage.json
+
+# Build artifacts
+build/
+dist/
+*.spec
+
+# Docker
+docker/config/*
+docker/memory/*
+docker/logs/*
+!docker/config/*.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backup
+backup/
+*.bak
+*.tmp
+
+# Large files
+*.mp4
+*.avi
+*.mov
+static/*/models/*
+
+# Documentation (optional, comment out if you want to include)
+docs/
+README*.md
+LICENSE
+

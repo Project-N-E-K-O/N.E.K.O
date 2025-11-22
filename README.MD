@@ -19,7 +19,7 @@
 
 **:older_woman: 零配置开箱即用，我奶奶都能玩转的赛博猫娘！**
 
-:newspaper: **[![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)版已发布！UI完全改版、并添加开箱即用的专属免费模型（感谢阶跃星辰赞助本项目）。快点加入愿望单吧~**
+:newspaper: **[![Steam](https://img.shields.io/badge/Steam-%23000000.svg?logo=steam&logoColor=white)](https://store.steampowered.com/app/4099310/__NEKO/)已上架！UI完全改版、并添加开箱即用的专属免费模型（感谢阶跃星辰赞助）。快点加入愿望单吧~**
 
 *Project N.E.K.O.，喵宇宙！*
 
@@ -91,11 +91,11 @@ QQ群：1022939659
 
 #### 配置API Key
 
-当你想要通过配置自己的API来获得额外功能时，您可以配置一个第三方AI服务。本项目目前推荐使用 *阶跃星辰* 或 *阿里云*。*开发者*可以直接修改`config/api.py`里的内容（首次配置请参考`config/api_template.py`）。
+当你想要通过配置自己的API来获得额外功能时，您可以配置一个第三方AI服务。本项目目前推荐使用 *阶跃星辰* 或 *阿里云*。通过访问`http://localhost:48911/api_key`可以在Web界面中直接配置。
 
 > 获取 *阿里云API*。在阿里云的百炼平台[官网](https://bailian.console.aliyun.com/)注册账号。新用户实名认证后可以获取大量免费额度。注册完成后，请访问[控制台](https://bailian.console.aliyun.com/api-key?tab=model#/api-key)获取API Key。
 
->  *对于**开发者**，请在克隆本项目后，(1)新建`pyhon3.11`环境。(2)执行`pip install -r requirements.txt`安装依赖。(3)复制`config/api_template.py`到`config/api.py`并进行必要配置。(4)执行`python memory_server.py`和`python main_server.py`。(5)通过main server中指定的端口（默认为`http://localhost:48911`）访问网页版。*
+>  *对于**开发者**，请在克隆本项目后，(1)新建`pyhon3.11`环境。(2)执行`pip install -r requirements.txt`安装依赖。(3)执行`python memory_server.py`和`python main_server.py`。(4)通过main server中指定的端口（默认为`http://localhost:48911`）访问网页版并配置API Key。*
 
 #### 修改人设
 
@@ -121,7 +121,8 @@ QQ群：1022939659
 Lanlan/
 ├── 📁 brain/                    # 🧠 背景Agent模块，根据前端对话内容，控制键鼠和MCP
 ├── 📁 config/                   # ⚙️ 配置管理模块
-│   ├── api.py                   # API密钥配置
+│   ├── api_providers.json       # API服务商配置
+│   ├── core_config.json         # 核心配置（API Key等）
 │   ├── prompts_chara.py         # 角色提示词
 │   └── prompts_sys.py           # 系统提示词
 ├── 📁 main_helper/              # 🔧 核心模块
@@ -147,9 +148,9 @@ Lanlan/
 
 ### 参与开发
 
-本项目环境依赖非常简单，请在`python3.11`环境中执行`pip install -r requirements.txt`或`uv sync`即可。请注意将`config/api_template.py`复制为`config/api.py`.开发者建议加入企鹅群1022939659，猫娘名称见项目标题。
+本项目环境依赖非常简单，请在`python3.11`环境中执行`pip install -r requirements.txt`或`uv sync`即可。开发者建议加入企鹅群1022939659，猫娘名称见项目标题。
 
-开发者详细启动步骤如下：(1)新建`pyhon3.11`环境。(2)执行`pip install -r requirements.txt`或`uv sync`安装依赖。(3)复制`config/api_template.py`到`config/api.py`并进行必要配置。(4)执行`python memory_server.py`, `python main_server.py`(可选`python agent_server.py`)。(5)通过main server中指定的端口（默认为`http://localhost:48911`）访问网页版。
+开发者详细启动步骤如下：(1)新建`pyhon3.11`环境。(2)执行`pip install -r requirements.txt`或`uv sync`安装依赖。(3)执行`python memory_server.py`, `python main_server.py`(可选`python agent_server.py`)。(4)通过main server中指定的端口（默认为`http://localhost:48911`）访问网页版并配置API Key。
 
 
 ### TODO List（开发计划）
@@ -170,3 +171,6 @@ Lanlan/
 
 - 完善原生工具调用。
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=wehos/N.E.K.O.&type=Date)](https://www.star-history.com/#wehos/N.E.K.O.&Date)

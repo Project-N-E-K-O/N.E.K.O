@@ -94,11 +94,11 @@ QQ Group: 1022939659
 
 #### Configuring API Key
 
-When you want to obtain additional features by configuring your own API, you can configure a third-party AI service. This project currently recommends using *StepFun* or *Alibaba Cloud*. *Developers* can directly modify the content in `config/api.py` (refer to `config/api_template.py` for initial configuration). **We will adapt to more international service provider in 2026 Spring.**
+When you want to obtain additional features by configuring your own API, you can configure a third-party AI service. This project currently recommends using *StepFun* or *Alibaba Cloud*. Visit `http://localhost:48911/api_key` to configure directly through the Web interface. **We will adapt to more international service provider in 2026 Spring.**
 
 > Obtaining *Alibaba Cloud API*: Register an account on Alibaba Cloud's Bailian platform [official website](https://bailian.console.aliyun.com/). New users can receive substantial free credits after real-name verification. After registration, visit the [console](https://bailian.console.aliyun.com/api-key?tab=model#/api-key) to get your API Key.
 
-> *For **developers**: After cloning this project, (1) create a new `python3.11` environment. (2) Run `pip install -r requirements.txt` to install dependencies. (3) Copy `config/api_template.py` to `config/api.py` and configure as necessary. (4) Run `python memory_server.py` and `python main_server.py`. (5) Access the web version through the port specified in main server (defaults to `http://localhost:48911`).*
+> *For **developers**: After cloning this project, (1) create a new `python3.11` environment. (2) Run `pip install -r requirements.txt` to install dependencies. (3) Run `python memory_server.py` and `python main_server.py`. (4) Access the web version through the port specified in main server (defaults to `http://localhost:48911`) and configure the API Key.*
 
 #### Modifying Character Persona
 
@@ -124,7 +124,8 @@ When you want to obtain additional features by configuring your own API, you can
 Lanlan/
 ├── 📁 brain/                    # 🧠 Background Agent modules for controlling keyboard/mouse and MCP based on frontend dialogue
 ├── 📁 config/                   # ⚙️ Configuration management
-│   ├── api.py                   # API key configuration
+│   ├── api_providers.json       # API provider configuration
+│   ├── core_config.json         # Core configuration (API Keys, etc.)
 │   ├── prompts_chara.py         # Character prompts
 │   └── prompts_sys.py           # System prompts
 ├── 📁 main_helper/              # 🔧 Core modules
@@ -150,9 +151,9 @@ Lanlan/
 
 ### Contributing to Development
 
-This project has very simple environment dependencies. Just run `pip install -r requirements.txt` or `uv sync` in a `python3.11` environment. Remember to copy `config/api_template.py` to `config/api.py`. Developers are encouraged to join QQ group 1022939659; the catgirl's name is in the project title.
+This project has very simple environment dependencies. Just run `pip install -r requirements.txt` or `uv sync` in a `python3.11` environment. Developers are encouraged to join QQ group 1022939659; the catgirl's name is in the project title.
 
-Detailed startup steps for developers: (1) Create a new `python3.11` environment. (2) Run `pip install -r requirements.txt` or `uv sync` to install dependencies. (3) Copy `config/api_template.py` to `config/api.py` and configure as necessary. (4) Run `python memory_server.py`, `python main_server.py` (optional `python agent_server.py`). (5) Access the web version through the port specified in main server (defaults to `http://localhost:48911`).
+Detailed startup steps for developers: (1) Create a new `python3.11` environment. (2) Run `pip install -r requirements.txt` or `uv sync` to install dependencies. (3) Run `python memory_server.py`, `python main_server.py` (optional `python agent_server.py`). (4) Access the web version through the port specified in main server (defaults to `http://localhost:48911`) and configure the API Key.
 
 
 ### TODO List (Development Plan)

@@ -91,12 +91,12 @@ if (toggleBtn) {
             
             if (becomingCollapsed) {
                 iconImg.src = '/static/icons/expand_icon.png';
-                iconImg.alt = '展开';
-                toggleBtn.title = '展开';
+                iconImg.alt = window.t ? window.t('common.expand') : '展开';
+                toggleBtn.title = window.t ? window.t('common.expand') : '展开';
             } else {
                 iconImg.src = '/static/icons/minimize_icon.png';
-                iconImg.alt = '最小化';
-                toggleBtn.title = '最小化';
+                iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
+                toggleBtn.title = window.t ? window.t('common.minimize') : '最小化';
                 setTimeout(scrollToBottom, 300);
             }
             return; // 移动端已处理，直接返回
@@ -129,13 +129,13 @@ if (toggleBtn) {
         if (isMinimized) {
             // 刚刚最小化，显示展开图标（加号）
             iconImg.src = '/static/icons/expand_icon.png';
-            iconImg.alt = '展开';
-            toggleBtn.title = '展开';
+            iconImg.alt = window.t ? window.t('common.expand') : '展开';
+            toggleBtn.title = window.t ? window.t('common.expand') : '展开';
         } else {
             // 刚刚还原展开，显示最小化图标（减号）
             iconImg.src = '/static/icons/minimize_icon.png';
-            iconImg.alt = '最小化';
-            toggleBtn.title = '最小化';
+            iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
+            toggleBtn.title = window.t ? window.t('common.minimize') : '最小化';
             // 还原后滚动到底部
             setTimeout(scrollToBottom, 300); // 给CSS过渡留出时间
         }
@@ -362,13 +362,13 @@ document.addEventListener('DOMContentLoaded', () => {
         if (isCollapsed()) {
             // 最小化状态，显示展开图标（加号）
             iconImg.src = '/static/icons/expand_icon.png';
-            iconImg.alt = '展开';
-            toggleBtn.title = '展开';
+            iconImg.alt = window.t ? window.t('common.expand') : '展开';
+            toggleBtn.title = window.t ? window.t('common.expand') : '展开';
         } else {
             // 展开状态，显示最小化图标（减号）
             iconImg.src = '/static/icons/minimize_icon.png';
-            iconImg.alt = '最小化';
-            toggleBtn.title = '最小化';
+            iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
+            toggleBtn.title = window.t ? window.t('common.minimize') : '最小化';
             scrollToBottom(); // 初始加载时滚动一次
         }
     }

@@ -3,33 +3,131 @@
 <head>
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <meta charset="UTF-8">
-    <title>音色注册网页 - Project N.E.K.O.</title>
+    <title data-i18n="voice.title">音色注册网页 - Project N.E.K.O.</title>
+    <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
+    <script src="/static/i18n-i18next.js"></script>
     <style>
         body { font-family: Arial, sans-serif; margin: 40px; }
         .container { max-width: 500px; margin: auto; }
         label { display: block; margin-top: 20px; }
-        input[type="text"], input[type="file"] { width: 100%; padding: 8px; margin-top: 5px; }
+        input[type="text"] { width: 100%; padding: 8px; margin-top: 5px; }
         button { margin-top: 20px; padding: 10px 20px; font-size: 16px; }
         .result { margin-top: 30px; font-size: 18px; color: green; }
         .error { color: red; }
+        .file-input-wrapper { position: relative; margin-top: 5px; }
+        .file-input-wrapper input[type="file"] { position: absolute; opacity: 0; width: 0; height: 0; }
+        .file-input-label { display: inline-block; padding: 8px 16px; background: #4f8cff; color: white; border-radius: 4px; cursor: pointer; font-size: 14px; }
+        .file-input-label:hover { background: #2662c8; }
+        .file-name-display { margin-left: 10px; color: #666; font-size: 14px; }
+        .field-row {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            margin-bottom: 16px;
+        }
+        .field-row label {
+            min-width: auto;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 8px;
+        }
+        .field-row label em {
+            font-weight: normal;
+        }
+        .field-row input {
+            width: 100%;
+            padding: 10px 12px;
+            border-radius: 6px;
+            border: 1px solid #ccc;
+            font-size: 1rem;
+            font-family: 'Courier New', monospace;
+        }
+        .field-row input:disabled {
+            background-color: #f0f0f0;
+            color: #666;
+            cursor: not-allowed;
+            border-color: #d0d0d0;
+        }
+        .field-row select:disabled {
+            background-color: #f0f0f0;
+            color: #666;
+            cursor: not-allowed;
+            border-color: #d0d0d0;
+        }
+        .field-row select option:disabled {
+            color: #999;
+        }
+        .field-row input::placeholder {
+            font-size: 0.9rem;
+            color: #999;
+        }
+        .field-row input:focus {
+            outline: none;
+            border-color: #4f8cff;
+            box-shadow: 0 0 0 2px rgba(79, 140, 255, 0.2);
+        }
+        .btn {
+            padding: 10px 20px;
+            border-radius: 6px;
+            border: none;
+            background: #4f8cff;
+            color: #fff;
+            font-size: 1rem;
+            cursor: pointer;
+            margin-right: 12px;
+            transition: background 0.2s;
+        }
+        .btn:hover { background: #2662c8; }
+        .btn:active { background: #1e4a9e; }
+        .btn.secondary { background: #6c757d; }
+        .btn.secondary:hover { background: #545b62; }
     </style>
 </head>
 <body>
 <div class="container">
-    <h2>音色注册</h2>
-    <label>选择本地音频文件（15~20秒最佳，请勿超过45秒，wav/mp3格式）</label>
-    <input type="file" id="audioFile" accept="audio/*">
+    <h2 data-i18n="voice.title">音色注册</h2>
+    <label data-i18n="voice.selectFile">选择本地音频文件（15~20秒最佳，请勿超过45秒，wav/mp3格式）</label>
+    <div class="file-input-wrapper">
+        <input type="file" id="audioFile" accept="audio/*">
+        <label for="audioFile" class="file-input-label" id="fileInputLabel" data-i18n="voice.chooseFile">选择文件</label>
+        <span class="file-name-display" id="fileNameDisplay" data-i18n="voice.noFileSelected">未选择文件</span>
+    </div>
 
-    <label>自定义前缀（阿里云需要）</label>
-    <input type="text" id="prefix" placeholder="不超过10个字符，只支持数字和英文字母">
+    <div class="field-row">
+        <label data-i18n="voice.customPrefix">自定义前缀（阿里云需要）</label>
+        <input type="text" id="prefix" data-i18n-placeholder="voice.prefixPlaceholder" placeholder="不超过10个字符，只支持数字和英文字母" required style="max-width: 600px;">
+    </div>
 
     <input type="hidden" id="lanlan_name" value="">
 
-    <button onclick="registerVoice()">注册音色</button>
+    <button class="btn" onclick="registerVoice()" data-i18n="voice.register">注册音色</button>
 
     <div class="result" id="result"></div>
 </div>
 <script>
+    // 更新文件选择显示
+    function updateFileDisplay() {
+        const fileInput = document.getElementById('audioFile');
+        const fileNameDisplay = document.getElementById('fileNameDisplay');
+        if (fileInput.files.length > 0) {
+            fileNameDisplay.textContent = fileInput.files[0].name;
+        } else {
+            fileNameDisplay.textContent = window.t ? window.t('voice.noFileSelected') : '未选择文件';
+        }
+    }
+    
+    // 监听文件选择变化
+    document.getElementById('audioFile').addEventListener('change', updateFileDisplay);
+    
+    // 页面加载时更新文件选择显示
+    // 如果 i18next 已经初始化完成，立即更新
+    if (window.i18n && window.i18n.isInitialized) {
+        updateFileDisplay();
+    } else {
+        // 延迟更新，等待 i18next 初始化
+        setTimeout(updateFileDisplay, 500);
+    }
+    
     // 页面加载时获取 lanlan_name
     (async function initLanlanName() {
         try {
@@ -70,12 +168,12 @@
         resultDiv.innerHTML = '';
         resultDiv.className = 'result';
         if (!fileInput.files.length || !prefix) {
-            resultDiv.innerHTML = '请上传音频文件并填写前缀';
+            resultDiv.innerHTML = window.t ? window.t('voice.pleaseUploadFile') : '请上传音频文件并填写前缀';
             resultDiv.className = 'result error';
             return;
         }
         setFormDisabled(true);
-        resultDiv.innerHTML = '正在注册声音，请稍后！';
+        resultDiv.innerHTML = window.t ? window.t('voice.registering') : '正在注册声音，请稍后！';
         resultDiv.className = 'result';
         const formData = new FormData();
         formData.append('file', fileInput.files[0]);
@@ -87,7 +185,7 @@
         .then(res => res.json())
         .then(data => {
             if (data.voice_id) {
-                resultDiv.innerHTML = '注册成功！voice_id: ' + data.voice_id;
+                resultDiv.innerHTML = window.t ? window.t('voice.registerSuccess', {voiceId: data.voice_id}) : '注册成功！voice_id: ' + data.voice_id;
                 // 自动更新voice_id到后端
                 const lanlanName = document.getElementById('lanlan_name').value;
                 if (lanlanName) {
@@ -97,14 +195,15 @@
                         body: JSON.stringify({ voice_id: data.voice_id })
                     }).then(resp => resp.json()).then(res => {
                         if (!res.success) {
-                            resultDiv.innerHTML += '<br><span class="error">voice_id自动保存失败: ' + (res.error || '未知错误') + '</span>';
+                            const errorMsg = res.error || (window.t ? window.t('common.unknownError') : '未知错误');
+                            resultDiv.innerHTML += '<br><span class="error">' + (window.t ? window.t('voice.voiceIdSaveFailed', {error: errorMsg}) : 'voice_id自动保存失败: ' + errorMsg) + '</span>';
                         } else {
-                            resultDiv.innerHTML += '<br>voice_id已自动保存到角色';
+                            resultDiv.innerHTML += '<br>' + (window.t ? window.t('voice.voiceIdSaved') : 'voice_id已自动保存到角色');
                             // 如果session被结束，页面会自动刷新
                             if (res.session_restarted) {
-                                resultDiv.innerHTML += '<br><span style="color: blue;">当前页面即将自动刷新以应用新语音</span>';
+                                resultDiv.innerHTML += '<br><span style="color: blue;">' + (window.t ? window.t('voice.pageWillRefresh') : '当前页面即将自动刷新以应用新语音') + '</span>';
                             } else {
-                                resultDiv.innerHTML += '<br><span style="color: blue;">新语音将在下次对话时生效</span>';
+                                resultDiv.innerHTML += '<br><span style="color: blue;">' + (window.t ? window.t('voice.voiceWillTakeEffect') : '新语音将在下次对话时生效') + '</span>';
                             }
                             // 通知父页面voice_id已更新
                             if (window.parent !== window) {
@@ -112,17 +211,19 @@
                             }
                         }
                     }).catch(e => {
-                        resultDiv.innerHTML += '<br><span class="error">voice_id自动保存请求出错</span>';
+                        resultDiv.innerHTML += '<br><span class="error">' + (window.t ? window.t('voice.voiceIdSaveRequestError') : 'voice_id自动保存请求出错') + '</span>';
                     });
                 }
             } else {
-                resultDiv.innerHTML = '注册失败：' + (data.error || '未知错误');
+                const errorMsg = data.error || (window.t ? window.t('common.unknownError') : '未知错误');
+                resultDiv.innerHTML = window.t ? window.t('voice.registerFailed', {error: errorMsg}) : '注册失败：' + errorMsg;
                 resultDiv.className = 'result error';
             }
             setFormDisabled(false);
         })
         .catch(err => {
-            resultDiv.textContent = '请求出错：' + err;
+            const errorMsg = err?.message || err?.toString() || (window.t ? window.t('common.unknownError') : '未知错误');
+            resultDiv.textContent = window.t ? window.t('voice.requestError', {error: errorMsg}) : '请求出错：' + errorMsg;
             resultDiv.className = 'result error';
             setFormDisabled(false);
         });
@@ -135,6 +236,7 @@
             console.log('API Key已更改，音色注册页面已收到通知');
         }
     });
+    
 </script>
 </body>
 </html> 

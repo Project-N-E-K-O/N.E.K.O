@@ -4,7 +4,9 @@
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>实时字幕</title>
+    <title data-i18n="subtitle.title">实时字幕</title>
+    <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
+    <script src="/static/i18n-i18next.js"></script>
     <style>
         body {
             margin: 0;
@@ -71,7 +73,7 @@
     <div class="subtitle-container">
         <div class="subtitle-text" id="subtitleText"></div>
     </div>
-    <div class="connection-status disconnected" id="status">未连接</div>
+    <div class="connection-status disconnected" id="status" data-i18n="status.notConnected">未连接</div>
 
     <script>
         class SubtitleClient {
@@ -91,7 +93,7 @@
 
                 this.ws.onopen = () => {
                     console.log('字幕WebSocket连接已建立');
-                    this.updateStatus('已连接', true);
+                    this.updateStatus(window.t ? window.t('status.connected') : '已连接', true);
                 };
 
                 this.ws.onmessage = (event) => {
@@ -106,14 +108,14 @@
 
                 this.ws.onclose = () => {
                     console.log('字幕WebSocket连接已关闭');
-                    this.updateStatus('连接断开', false);
+                    this.updateStatus(window.t ? window.t('status.connectionClosed') : '连接断开', false);
                     // 3秒后重连
                     setTimeout(() => this.connect(), 3000);
                 };
 
                 this.ws.onerror = (error) => {
                     console.error('字幕WebSocket错误:', error);
-                    this.updateStatus('连接错误', false);
+                    this.updateStatus(window.t ? window.t('status.connectionError') : '连接错误', false);
                 };
             }
 

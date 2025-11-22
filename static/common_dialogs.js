@@ -206,7 +206,15 @@
             if (config.type === 'alert') {
                 const okBtn = document.createElement('button');
                 okBtn.className = 'modal-btn modal-btn-primary';
-                okBtn.textContent = config.okText || '确定';
+                let okText = config.okText;
+                if (!okText) {
+                    try {
+                        okText = (window.t && typeof window.t === 'function') ? window.t('common.ok') : '确定';
+                    } catch (e) {
+                        okText = '确定';
+                    }
+                }
+                okBtn.textContent = okText;
                 okBtn.onclick = () => {
                     closeModal();
                     resolve(true);
@@ -215,7 +223,15 @@
             } else if (config.type === 'confirm') {
                 const cancelBtn = document.createElement('button');
                 cancelBtn.className = 'modal-btn modal-btn-secondary';
-                cancelBtn.textContent = config.cancelText || '取消';
+                let cancelText = config.cancelText;
+                if (!cancelText) {
+                    try {
+                        cancelText = (window.t && typeof window.t === 'function') ? window.t('common.cancel') : '取消';
+                    } catch (e) {
+                        cancelText = '取消';
+                    }
+                }
+                cancelBtn.textContent = cancelText;
                 cancelBtn.onclick = () => {
                     closeModal();
                     resolve(false);
@@ -224,7 +240,15 @@
 
                 const okBtn = document.createElement('button');
                 okBtn.className = config.danger ? 'modal-btn modal-btn-danger' : 'modal-btn modal-btn-primary';
-                okBtn.textContent = config.okText || '确定';
+                let okText = config.okText;
+                if (!okText) {
+                    try {
+                        okText = (window.t && typeof window.t === 'function') ? window.t('common.ok') : '确定';
+                    } catch (e) {
+                        okText = '确定';
+                    }
+                }
+                okBtn.textContent = okText;
                 okBtn.onclick = () => {
                     closeModal();
                     resolve(true);
@@ -233,7 +257,7 @@
             } else if (config.type === 'prompt') {
                 const cancelBtn = document.createElement('button');
                 cancelBtn.className = 'modal-btn modal-btn-secondary';
-                cancelBtn.textContent = config.cancelText || '取消';
+                cancelBtn.textContent = config.cancelText || (window.t ? window.t('common.cancel') : '取消');
                 cancelBtn.onclick = () => {
                     closeModal();
                     resolve(null);
@@ -242,7 +266,7 @@
 
                 const okBtn = document.createElement('button');
                 okBtn.className = 'modal-btn modal-btn-primary';
-                okBtn.textContent = config.okText || '确定';
+                okBtn.textContent = config.okText || (window.t ? window.t('common.ok') : '确定');
                 okBtn.onclick = () => {
                     closeModal();
                     resolve(input.value);
@@ -313,7 +337,10 @@
      * @param {string} title - 标题（可选）
      * @returns {Promise<boolean>}
      */
-    window.showAlert = function(message, title = '提示') {
+    window.showAlert = function(message, title = null) {
+        if (title === null) {
+            title = window.t ? window.t('common.alert') : '提示';
+        }
         return createModal({
             type: 'alert',
             title: title,
@@ -328,8 +355,18 @@
      * @param {Object} options - 额外选项
      * @returns {Promise<boolean>}
      */
-    window.showConfirm = function(message, title = '确认', options = {}) {
-        return createModal({
+    window.showConfirm = function(message, title = null, options = {}) {
+        console.log('[showConfirm] 被调用，参数:', { message, title, options });
+        if (title === null) {
+            try {
+                title = (window.t && typeof window.t === 'function') ? window.t('common.confirm') : '确认';
+            } catch (e) {
+                console.error('翻译函数调用失败:', e);
+                title = '确认';
+            }
+        }
+        console.log('[showConfirm] 创建对话框，title:', title, 'message:', message);
+        const promise = createModal({
             type: 'confirm',
             title: title,
             message: message,
@@ -337,6 +374,8 @@
             cancelText: options.cancelText,
             danger: options.danger || false,
         });
+        console.log('[showConfirm] 返回 Promise:', promise);
+        return promise;
     };
 
     /**
@@ -346,7 +385,10 @@
      * @param {string} title - 标题（可选）
      * @returns {Promise<string|null>}
      */
-    window.showPrompt = function(message, defaultValue = '', title = '输入') {
+    window.showPrompt = function(message, defaultValue = '', title = null) {
+        if (title === null) {
+            title = window.t ? window.t('common.input') : '输入';
+        }
         return createModal({
             type: 'prompt',
             title: title,

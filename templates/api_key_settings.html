@@ -4,7 +4,9 @@
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>API Key 设置 - Project N.E.K.O.</title>
+    <title data-i18n="api.settingsTitle">API Key 设置 - Project N.E.K.O.</title>
+    <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
+    <script src="/static/i18n-i18next.js"></script>
     <style>
         *:focus {
             outline: none !important;
@@ -281,7 +283,7 @@
         }
         
         .model-content.expanded {
-            max-height: 300px;
+            max-height: 1000px;
         }
         
         .model-content .field-row {
@@ -351,17 +353,17 @@
 </head>
 <body>
 <div class="container">
-    <h2>API Key 设置</h2>
+    <h2 data-i18n="api.settings">API Key 设置</h2>
     
     <div class="api-key-info">
-        <h3>📋 快速开始</h3>
+        <h3 data-i18n="api.quickStart">📋 快速开始</h3>
         <ul>
-            <li><strong>免费版（推荐新手）：</strong>无需注册，在下方高级选项中选择"免费版"即可使用</li>
-            <li><strong>完整版（获取API Key）：</strong></li>
-            <li style="margin-left: 20px;">1. 在阿里云注册账号并 <a href="https://myaccount.console.aliyun.com/overview" target="_blank">完成实名认证</a></li>
-            <li style="margin-left: 20px;">2. 访问阿里云百炼平台 <a href="https://bailian.console.aliyun.com/api-key?tab=model#/api-key" target="_blank">API Key管理页面</a></li>
-            <li style="margin-left: 20px;">3. 创建新的API Key并点击复制按钮</li>
-            <li style="margin-left: 20px;">4. 将API Key粘贴到下方输入框中</li>
+            <li><strong data-i18n="api.freeVersion">免费版（推荐新手）：</strong><span data-i18n="api.freeVersionDesc">无需注册，在下方高级选项中选择"免费版"即可使用</span></li>
+            <li><strong data-i18n="api.fullVersion">完整版（获取API Key）：</strong></li>
+            <li style="margin-left: 20px;">1. <span data-i18n="api.step1">在阿里云注册账号并</span> <a href="https://myaccount.console.aliyun.com/overview" target="_blank" data-i18n="api.step1Link">完成实名认证</a></li>
+            <li style="margin-left: 20px;">2. <span data-i18n="api.step2">访问阿里云百炼平台</span> <a href="https://bailian.console.aliyun.com/api-key?tab=model#/api-key" target="_blank" data-i18n="api.step2Link">API Key管理页面</a></li>
+            <li style="margin-left: 20px;" data-i18n="api.step3">3. 创建新的API Key并点击复制按钮</li>
+            <li style="margin-left: 20px;" data-i18n="api.step4">4. 将API Key粘贴到下方输入框中</li>
         </ul>
     </div>
 
@@ -369,22 +371,22 @@
 
     <div class="section">
         <div style="background: #d4edda; border: 1px solid #c3e6cb; border-radius: 8px; padding: 16px; margin-bottom: 16px; font-size: 0.95em; color: #155724; line-height: 1.5;">
-            <strong>🎉 新手推荐：</strong>如果您还没有API Key，可以直接在下方<strong>高级选项</strong>中选择<strong>"免费版"</strong>开始使用，无需注册任何账号！
+            <strong data-i18n="api.newbieRecommend">🎉 新手推荐：如果您还没有API Key，可以直接在下方高级选项中选择"免费版"开始使用，无需注册任何账号！</strong>
         </div>
         <div class="tips">
-            💡 请确保API Key格式正确。保存后需要重启服务才能生效。<br>
-            📝 个人使用环境，API Key将完整显示以便复制使用。
+            <span data-i18n="api.tip">💡 请确保API Key格式正确。保存后需要重启服务才能生效。</span><br>
+            <span data-i18n="api.tip2">📝 个人使用环境，API Key将完整显示以便复制使用。</span>
         </div>
         
         <form id="api-key-form">
             <div class="field-row">
-                <label>核心API Key<span id="freeVersionHint" style="color: #28a745; font-weight: normal; display: none;">（免费版无需填写）</span></label>
-                <input type="text" id="apiKeyInput" placeholder="请输入您的API Key" required style="max-width: 600px;">
+                <label><span data-i18n="api.coreApiKey">核心API Key</span><span id="freeVersionHint" style="color: #28a745; font-weight: normal; display: none;" data-i18n="api.freeVersionHint">（免费版无需填写）</span></label>
+                <input type="text" id="apiKeyInput" data-i18n-placeholder="api.coreApiPlaceholder" placeholder="请输入您的API Key" required style="max-width: 600px;">
             </div>
             
             <div style="margin-top: 20px;">
-                <button type="submit" class="btn">💾 保存设置</button>
-                <button type="button" class="btn secondary" onclick="closeApiKeySettings()">❌ 关闭</button>
+                <button type="submit" class="btn" data-i18n="api.saveSettings">💾 保存设置</button>
+                <button type="button" class="btn secondary" onclick="closeApiKeySettings()" data-i18n="api.closeSettings">❌ 关闭</button>
             </div>
         </form>
         
@@ -395,41 +397,41 @@
             <div id="advanced-section" class="section" style="margin-top: 0;">
         <div style="margin-bottom: 8px; cursor: pointer; user-select: none; display: flex; align-items: center;" onclick="toggleAdvancedOptions()">
             <span id="advanced-arrow" style="font-size: 1.2em; margin-right: 6px; transition: transform 0.2s;">▶</span>
-            <span style="font-weight: bold; color: #333;">高级选项（可选）</span>
+            <span style="font-weight: bold; color: #333;" data-i18n="api.advancedOptions">高级选项（可选）</span>
             <div class="tooltip-container">
                 <span class="tooltip-icon">?</span>
                 <div class="tooltip-content">
-                    <strong>API服务商说明：</strong><br>
-                    • <strong>核心API</strong>：负责对话功能<br>
-                    • <strong>辅助API</strong>：负责记忆管理和自定义语音<br><br>
-                    <strong>各服务商特点：</strong><br>
-                    • <strong>阿里</strong>：有免费额度，支持自定义语音<br>
-                    • <strong>智谱</strong>：免费额度多，内置联网搜索功能<br>
-                    • <strong>阶跃星辰</strong>：有免费额度，不支持视频<br>
-                    • <strong>OpenAI</strong>：需要翻墙，价格贵，智能水平高<br>
-                    • <strong>硅基流动</strong>：性价比高，功能少，只作为辅助API使用
+                    <strong data-i18n="api.providerDescription">API服务商说明：</strong><br>
+                    • <strong data-i18n="api.coreApiDesc">核心API：负责对话功能</strong><br>
+                    • <strong data-i18n="api.assistApiDesc">辅助API：负责记忆管理和自定义语音</strong><br><br>
+                    <strong data-i18n="api.providerFeatures">各服务商特点：</strong><br>
+                    • <span data-i18n="api.aliFeature">阿里：有免费额度，支持自定义语音</span><br>
+                    • <span data-i18n="api.glmFeature">智谱：免费额度多，内置联网搜索功能</span><br>
+                    • <span data-i18n="api.stepFeature">阶跃星辰：有免费额度，不支持视频</span><br>
+                    • <span data-i18n="api.openaiFeature">OpenAI：需要翻墙，价格贵，智能水平高</span><br>
+                    • <span data-i18n="api.siliconFeature">硅基流动：性价比高，功能少，只作为辅助API使用</span>
                 </div>
             </div>
         </div>
         <div id="advanced-options" style="display: none; padding: 12px 0 0 0; border-top: 1px solid #eee;">
             <div style="background: #e7f3ff; border: 1px solid #b3d9ff; border-radius: 6px; padding: 16px; margin-bottom: 16px; font-size: 0.9em; color: #0d6efd; line-height: 1.5;">
-                <strong>💡 配置建议：</strong><br>
-                • <strong>免费版</strong>：完全免费，无需API Key，适合新手体验（不支持自定义语音、Agent模式和视频对话）<br>
-                • <strong>核心API</strong>：负责对话功能，建议根据预算和需求选择<br>
-                • <strong>辅助API</strong>：负责记忆管理和自定义语音，<strong>只有阿里支持自定义语音</strong><br>
+                <strong data-i18n="api.configSuggestion">💡 配置建议：</strong><br>
+                • <span data-i18n="api.freeVersionSuggestion">免费版：完全免费，无需API Key，适合新手体验（不支持自定义语音、Agent模式和视频对话）</span><br>
+                • <span data-i18n="api.coreApiSuggestion">核心API：负责对话功能，建议根据预算和需求选择</span><br>
+                • <span data-i18n="api.assistApiSuggestion">辅助API：负责记忆管理和自定义语音，只有阿里支持自定义语音</span><br>
             </div>
             <div class="field-row">
                 <label for="coreApiSelect">
-                    核心API
+                    <span data-i18n="api.coreApiProvider">核心API服务商</span>
                     <div class="tooltip-container">
                         <span class="tooltip-icon">?</span>
                         <div class="tooltip-content">
-                            <strong>核心API负责对话功能：</strong><br>
-                            • <strong>免费版</strong>：完全免费，无需API Key，但不支持自定义语音、Agent模式和视频对话<br>
-                            • <strong>阿里</strong>：有免费额度，功能全面<br>
-                            • <strong>智谱</strong>：有免费额度，但需充值1元，内置联网搜索功能<br>
-                            • <strong>阶跃星辰</strong>：完全免费，但不支持视频<br>
-                            • <strong>OpenAI</strong>：智能水平最高，但需要翻墙且价格昂贵
+                            <strong data-i18n="api.coreApiTitle">核心API负责对话功能：</strong><br>
+                            • <span data-i18n="api.freeVersionCore">免费版：完全免费，无需API Key，但不支持自定义语音、Agent模式和视频对话</span><br>
+                            • <span data-i18n="api.aliCore">阿里：有免费额度，功能全面</span><br>
+                            • <span data-i18n="api.glmCore">智谱：有免费额度，但需充值1元，内置联网搜索功能</span><br>
+                            • <span data-i18n="api.stepCore">阶跃星辰：完全免费，但不支持视频</span><br>
+                            • <span data-i18n="api.openaiCore">OpenAI：智能水平最高，但需要翻墙且价格昂贵</span>
                         </div>
                     </div>
                 </label>
@@ -439,18 +441,18 @@
             </div>
             <div class="field-row">
                 <label for="assistApiSelect">
-                    辅助API（记忆管理/自定义语音/文本聊天）
+                    <span data-i18n="api.assistApiProvider">辅助API（记忆管理/自定义语音/文本聊天）</span>
                     <div class="tooltip-container">
                         <span class="tooltip-icon">?</span>
                         <div class="tooltip-content">
-                            <strong>辅助API负责记忆管理和自定义语音：</strong><br>
-                            • <strong>免费版</strong>：完全免费，无需API Key，但不支持自定义语音<br>
-                            • <strong>阿里</strong>：推荐选择，支持自定义语音<br>
-                            • <strong>智谱</strong>：支持Agent模式<br>
-                            • <strong>阶跃星辰</strong>：价格相对便宜<br>
-                            • <strong>硅基流动</strong>：性价比高<br>
-                            • <strong>OpenAI</strong>：记忆管理能力强<br>
-                            <strong>注意：</strong>只有阿里支持自定义语音功能
+                            <strong data-i18n="api.assistApiTitle">辅助API负责记忆管理和自定义语音：</strong><br>
+                            • <span data-i18n="api.freeVersionAssist">免费版：完全免费，无需API Key，但不支持自定义语音</span><br>
+                            • <span data-i18n="api.aliAssist">阿里：推荐选择，支持自定义语音</span><br>
+                            • <span data-i18n="api.glmAssist">智谱：支持Agent模式</span><br>
+                            • <span data-i18n="api.stepAssist">阶跃星辰：价格相对便宜</span><br>
+                            • <span data-i18n="api.siliconAssist">硅基流动：性价比高</span><br>
+                            • <span data-i18n="api.openaiAssist">OpenAI：记忆管理能力强</span><br>
+                            <strong data-i18n="api.assistApiNote">注意：只有阿里支持自定义语音功能</strong>
                         </div>
                     </div>
                 </label>
@@ -459,61 +461,61 @@
                 </select>
             </div>
             <div class="field-row">
-                <label for="assistApiKeyInputQwen">辅助API Key - 阿里<em>（仅当辅助API为阿里时需要填写）</em></label>
-                <input type="text" id="assistApiKeyInputQwen" placeholder="可选，默认为核心API Key" value="" style="max-width: 600px;">
+                <label for="assistApiKeyInputQwen"><span data-i18n="api.assistApiKeyQwen">辅助API Key - 阿里</span><em data-i18n="api.assistApiKeyHint" data-i18n-params='{"providerKey":"ali"}'>（仅当辅助API为阿里时需要填写）</em></label>
+                <input type="text" id="assistApiKeyInputQwen" data-i18n-placeholder="api.assistApiKeyPlaceholder" placeholder="可选，默认为核心API Key" value="" style="max-width: 600px;">
             </div>
             <div class="field-row">
-                <label for="assistApiKeyInputOpenai">辅助API Key - OpenAI<em>（仅当辅助API为OpenAI时需要填写）</em></label>
-                <input type="text" id="assistApiKeyInputOpenai" placeholder="可选，默认为核心API Key" value="" style="max-width: 600px;">
+                <label for="assistApiKeyInputOpenai"><span data-i18n="api.assistApiKeyOpenai">辅助API Key - OpenAI</span><em data-i18n="api.assistApiKeyHint" data-i18n-params='{"providerKey":"openai"}'>（仅当辅助API为OpenAI时需要填写）</em></label>
+                <input type="text" id="assistApiKeyInputOpenai" data-i18n-placeholder="api.assistApiKeyPlaceholder" placeholder="可选，默认为核心API Key" value="" style="max-width: 600px;">
             </div>
             <div class="field-row">
-                <label for="assistApiKeyInputGlm">辅助API Key - 智谱<em>（仅当辅助API为智谱时需要填写）</em></label>
-                <input type="text" id="assistApiKeyInputGlm" placeholder="可选，默认为核心API Key" value="" style="max-width: 600px;">
+                <label for="assistApiKeyInputGlm"><span data-i18n="api.assistApiKeyGlm">辅助API Key - 智谱</span><em data-i18n="api.assistApiKeyHint" data-i18n-params='{"providerKey":"glm"}'>（仅当辅助API为智谱时需要填写）</em></label>
+                <input type="text" id="assistApiKeyInputGlm" data-i18n-placeholder="api.assistApiKeyPlaceholder" placeholder="可选，默认为核心API Key" value="" style="max-width: 600px;">
             </div>
             <div class="field-row">
-                <label for="assistApiKeyInputStep">辅助API Key - 阶跃星辰<em>（仅当辅助API为阶跃星辰时需要填写）</em></label>
-                <input type="text" id="assistApiKeyInputStep" placeholder="可选，默认为核心API Key" value="" style="max-width: 600px;">
+                <label for="assistApiKeyInputStep"><span data-i18n="api.assistApiKeyStep">辅助API Key - 阶跃星辰</span><em data-i18n="api.assistApiKeyHint" data-i18n-params='{"providerKey":"step"}'>（仅当辅助API为阶跃星辰时需要填写）</em></label>
+                <input type="text" id="assistApiKeyInputStep" data-i18n-placeholder="api.assistApiKeyPlaceholder" placeholder="可选，默认为核心API Key" value="" style="max-width: 600px;">
             </div>
             <div class="field-row">
-                <label for="assistApiKeyInputSilicon">辅助API Key - 硅基流动<em>（仅当辅助API为硅基流动时需要填写）</em></label>
-                <input type="text" id="assistApiKeyInputSilicon" placeholder="可选，默认为核心API Key" value="" style="max-width: 600px;">
+                <label for="assistApiKeyInputSilicon"><span data-i18n="api.assistApiKeySilicon">辅助API Key - 硅基流动</span><em data-i18n="api.assistApiKeyHint" data-i18n-params='{"providerKey":"silicon"}'>（仅当辅助API为硅基流动时需要填写）</em></label>
+                <input type="text" id="assistApiKeyInputSilicon" data-i18n-placeholder="api.assistApiKeyPlaceholder" placeholder="可选，默认为核心API Key" value="" style="max-width: 600px;">
             </div>
             
             <!-- MCP Router Token设置（仅保留输入框） -->
             <div class="field-row" style="margin-top: 30px; padding-top: 20px; border-top: 2px solid #6c757d;">
                 <label for="mcpTokenInput">
-                    MCP Router Token
+                    <span data-i18n="api.mcpRouterToken">MCP Router Token</span>
                     <div class="tooltip-container">
                         <span class="tooltip-icon">?</span>
                         <div class="tooltip-content">
-                            <strong>MCP Router Token说明：</strong><br>
-                            用于访问MCP Router服务的认证令牌，启用MCP功能时需要填写。如果您的MCP Router不需要认证，可以留空。
+                            <strong data-i18n="api.mcpRouterTokenDesc">MCP Router Token说明：</strong><br>
+                            <span data-i18n="api.mcpRouterTokenDescText">用于访问MCP Router服务的认证令牌，启用MCP功能时需要填写。如果您的MCP Router不需要认证，可以留空。</span>
                         </div>
                     </div>
                 </label>
-                <input type="text" id="mcpTokenInput" placeholder="请输入MCP Router Token（可选）" value="" style="width: 100%; max-width: 600px; padding: 10px 12px; border-radius: 6px; border: 1px solid #ccc; font-size: 1rem; font-family: 'Courier New', monospace;">
+                <input type="text" id="mcpTokenInput" data-i18n-placeholder="api.mcpRouterTokenPlaceholder" placeholder="请输入MCP Router Token（可选）" value="" style="width: 100%; max-width: 600px; padding: 10px 12px; border-radius: 6px; border: 1px solid #ccc; font-size: 1rem; font-family: 'Courier New', monospace;">
             </div>
             
             <!-- 用户自定义API配置（位于高级选项内部最下方） -->
             <div id="custom-api-section" style="margin-top: 30px; padding-top: 20px; border-top: 2px solid #6c757d;">
                 <div style="margin-bottom: 8px; cursor: pointer; user-select: none; display: flex; align-items: center;" onclick="toggleCustomApiSection()">
                     <span id="custom-api-arrow" style="font-size: 1.2em; margin-right: 6px; transition: transform 0.2s;">▶</span>
-                    <span style="font-weight: bold; color: #6c757d;">自定义API配置</span>
+                    <span style="font-weight: bold; color: #6c757d;" data-i18n="api.customApiConfig">自定义API配置</span>
                 </div>
                 <div id="custom-api-options" style="display: none; padding: 12px 0 0 0; border-top: 1px solid #eee;">
                     <div style="background: #f0f8ff; border: 1px solid #b3d9ff; border-radius: 6px; padding: 16px; margin-bottom: 16px; font-size: 0.9em; color: #0d6efd; line-height: 1.5;">
-                        <strong>💡 自定义API说明：</strong><br>
-                        这些API用于特定的功能模块，如摘要生成、文本纠错、情感分析、视觉识别、全模态对话和语音合成。每个API都需要单独配置供应商、URL和API Key。<br>
-                        <strong>⚠️ 注意：启用自定义API后，核心API和辅助API将被禁用且无法修改。</strong>
+                        <strong data-i18n="api.customApiDescription">💡 自定义API说明：</strong><br>
+                        <span data-i18n="api.customApiDescriptionText">这些API用于特定的功能模块，如摘要生成、文本纠错、情感分析、视觉识别、全模态对话和语音合成。每个API都需要单独配置供应商、URL、模型ID和API Key。</span><br>
+                        <strong data-i18n="api.customApiWarning">⚠️ 注意：启用自定义API后，核心API和辅助API将被禁用且无法修改。</strong>
                     </div>
                     
                     <!-- 启用自定义API开关 -->
                     <div class="field-row" style="margin-bottom: 20px;">
                         <label for="enableCustomApi" style="display: flex; align-items: center; cursor: pointer;">
                             <input type="checkbox" id="enableCustomApi" style="margin-right: 8px; width: 18px; height: 18px;">
-                            <span style="font-weight: bold;">启用自定义API配置</span>
+                            <span style="font-weight: bold;" data-i18n="api.enableCustomApi">启用自定义API配置</span>
                         </label>
-                        <div style="color: #666; font-size: 0.9em; margin-top: 4px;">
+                        <div style="color: #666; font-size: 0.9em; margin-top: 4px;" data-i18n="api.enableCustomApiNote">
                             启用后将使用自定义API配置，禁用核心API和辅助API的修改
                         </div>
                     </div>
@@ -524,21 +526,25 @@
                         <!-- 摘要模型配置 -->
                         <div class="model-config-container">
                             <div class="model-header" onclick="toggleModelConfig('summary')">
-                                <span class="model-title">📝 摘要模型配置</span>
+                                <span class="model-title" data-i18n="api.summaryModelConfig">📝 摘要模型配置</span>
                                 <span class="toggle-icon">▼</span>
                             </div>
                             <div id="summary-model-content" class="model-content">
                                 <div class="field-row">
-                                    <label for="summaryModelProvider">供应商</label>
-                                    <input type="text" id="summaryModelProvider" placeholder="如：openai、azure、custom" value="" style="max-width: 600px;">
+                                    <label for="summaryModelProvider" data-i18n="api.provider">供应商</label>
+                                    <input type="text" id="summaryModelProvider" data-i18n-placeholder="api.providerPlaceholder" placeholder="如：openai、azure、custom" value="" style="max-width: 600px;">
                                 </div>
                                 <div class="field-row">
-                                    <label for="summaryModelUrl">API URL</label>
-                                    <input type="text" id="summaryModelUrl" placeholder="如：https://api.openai.com/v1/chat/completions" value="" style="max-width: 600px;">
+                                    <label for="summaryModelUrl" data-i18n="api.apiUrl">API URL</label>
+                                    <input type="text" id="summaryModelUrl" data-i18n-placeholder="api.apiUrlPlaceholder" placeholder="如：https://api.openai.com/v1/chat/completions" value="" style="max-width: 600px;">
                                 </div>
                                 <div class="field-row">
-                                    <label for="summaryModelApiKey">API Key</label>
-                                    <input type="text" id="summaryModelApiKey" placeholder="请输入摘要模型的API Key" value="" style="max-width: 600px;">
+                                    <label for="summaryModelId" data-i18n="api.modelId">模型ID</label>
+                                    <input type="text" id="summaryModelId" data-i18n-placeholder="api.modelIdPlaceholder" placeholder="如：gpt-3.5-turbo、qwen-turbo、glm-4-flash" value="" style="max-width: 600px;">
+                                </div>
+                                <div class="field-row">
+                                    <label for="summaryModelApiKey" data-i18n="api.apiKey">API Key</label>
+                                    <input type="text" id="summaryModelApiKey" data-i18n-placeholder="api.summaryModelApiKeyPlaceholder" placeholder="请输入摘要模型的API Key" value="" style="max-width: 600px;">
                                 </div>
                             </div>
                         </div>
@@ -546,21 +552,25 @@
                         <!-- 纠错模型配置 -->
                         <div class="model-config-container">
                             <div class="model-header" onclick="toggleModelConfig('correction')">
-                                <span class="model-title">✏️ 纠错模型配置</span>
+                                <span class="model-title" data-i18n="api.correctionModelConfig">✏️ 纠错模型配置</span>
                                 <span class="toggle-icon">▼</span>
                             </div>
                             <div id="correction-model-content" class="model-content">
                                 <div class="field-row">
-                                    <label for="correctionModelProvider">供应商</label>
-                                    <input type="text" id="correctionModelProvider" placeholder="如：openai、azure、custom" value="" style="max-width: 600px;">
+                                    <label for="correctionModelProvider" data-i18n="api.provider">供应商</label>
+                                    <input type="text" id="correctionModelProvider" data-i18n-placeholder="api.providerPlaceholder" placeholder="如：openai、azure、custom" value="" style="max-width: 600px;">
                                 </div>
                                 <div class="field-row">
-                                    <label for="correctionModelUrl">API URL</label>
-                                    <input type="text" id="correctionModelUrl" placeholder="如：https://api.openai.com/v1/chat/completions" value="" style="max-width: 600px;">
+                                    <label for="correctionModelUrl" data-i18n="api.apiUrl">API URL</label>
+                                    <input type="text" id="correctionModelUrl" data-i18n-placeholder="api.apiUrlPlaceholder" placeholder="如：https://api.openai.com/v1/chat/completions" value="" style="max-width: 600px;">
                                 </div>
                                 <div class="field-row">
-                                    <label for="correctionModelApiKey">API Key</label>
-                                    <input type="text" id="correctionModelApiKey" placeholder="请输入纠错模型的API Key" value="" style="max-width: 600px;">
+                                    <label for="correctionModelId" data-i18n="api.modelId">模型ID</label>
+                                    <input type="text" id="correctionModelId" data-i18n-placeholder="api.modelIdPlaceholder" placeholder="如：gpt-3.5-turbo、qwen-turbo、glm-4-flash" value="" style="max-width: 600px;">
+                                </div>
+                                <div class="field-row">
+                                    <label for="correctionModelApiKey" data-i18n="api.apiKey">API Key</label>
+                                    <input type="text" id="correctionModelApiKey" data-i18n-placeholder="api.correctionModelApiKeyPlaceholder" placeholder="请输入纠错模型的API Key" value="" style="max-width: 600px;">
                                 </div>
                             </div>
                         </div>
@@ -568,21 +578,25 @@
                         <!-- 情感模型配置 -->
                         <div class="model-config-container">
                             <div class="model-header" onclick="toggleModelConfig('emotion')">
-                                <span class="model-title">😊 情感模型配置</span>
+                                <span class="model-title" data-i18n="api.emotionModelConfig">😊 情感模型配置</span>
                                 <span class="toggle-icon">▼</span>
                             </div>
                             <div id="emotion-model-content" class="model-content">
                                 <div class="field-row">
-                                    <label for="emotionModelProvider">供应商</label>
-                                    <input type="text" id="emotionModelProvider" placeholder="如：openai、azure、custom" value="" style="max-width: 600px;">
+                                    <label for="emotionModelProvider" data-i18n="api.provider">供应商</label>
+                                    <input type="text" id="emotionModelProvider" data-i18n-placeholder="api.providerPlaceholder" placeholder="如：openai、azure、custom" value="" style="max-width: 600px;">
                                 </div>
                                 <div class="field-row">
-                                    <label for="emotionModelUrl">API URL</label>
-                                    <input type="text" id="emotionModelUrl" placeholder="如：https://api.openai.com/v1/chat/completions" value="" style="max-width: 600px;">
+                                    <label for="emotionModelUrl" data-i18n="api.apiUrl">API URL</label>
+                                    <input type="text" id="emotionModelUrl" data-i18n-placeholder="api.apiUrlPlaceholder" placeholder="如：https://api.openai.com/v1/chat/completions" value="" style="max-width: 600px;">
                                 </div>
                                 <div class="field-row">
-                                    <label for="emotionModelApiKey">API Key</label>
-                                    <input type="text" id="emotionModelApiKey" placeholder="请输入情感模型的API Key" value="" style="max-width: 600px;">
+                                    <label for="emotionModelId" data-i18n="api.modelId">模型ID</label>
+                                    <input type="text" id="emotionModelId" data-i18n-placeholder="api.modelIdPlaceholder" placeholder="如：gpt-3.5-turbo、qwen-turbo、glm-4-flash" value="" style="max-width: 600px;">
+                                </div>
+                                <div class="field-row">
+                                    <label for="emotionModelApiKey" data-i18n="api.apiKey">API Key</label>
+                                    <input type="text" id="emotionModelApiKey" data-i18n-placeholder="api.emotionModelApiKeyPlaceholder" placeholder="请输入情感模型的API Key" value="" style="max-width: 600px;">
                                 </div>
                             </div>
                         </div>
@@ -590,21 +604,25 @@
                         <!-- 视觉模型配置 -->
                         <div class="model-config-container">
                             <div class="model-header" onclick="toggleModelConfig('vision')">
-                                <span class="model-title">👁️ 视觉模型配置</span>
+                                <span class="model-title" data-i18n="api.visionModelConfig">👁️ 视觉模型配置</span>
                                 <span class="toggle-icon">▼</span>
                             </div>
                             <div id="vision-model-content" class="model-content">
                                 <div class="field-row">
-                                    <label for="visionModelProvider">供应商</label>
-                                    <input type="text" id="visionModelProvider" placeholder="如：openai、azure、custom" value="" style="max-width: 600px;">
+                                    <label for="visionModelProvider" data-i18n="api.provider">供应商</label>
+                                    <input type="text" id="visionModelProvider" data-i18n-placeholder="api.providerPlaceholder" placeholder="如：openai、azure、custom" value="" style="max-width: 600px;">
                                 </div>
                                 <div class="field-row">
-                                    <label for="visionModelUrl">API URL</label>
-                                    <input type="text" id="visionModelUrl" placeholder="如：https://api.openai.com/v1/chat/completions" value="" style="max-width: 600px;">
+                                    <label for="visionModelUrl" data-i18n="api.apiUrl">API URL</label>
+                                    <input type="text" id="visionModelUrl" data-i18n-placeholder="api.apiUrlPlaceholder" placeholder="如：https://api.openai.com/v1/chat/completions" value="" style="max-width: 600px;">
                                 </div>
                                 <div class="field-row">
-                                    <label for="visionModelApiKey">API Key</label>
-                                    <input type="text" id="visionModelApiKey" placeholder="请输入视觉模型的API Key" value="" style="max-width: 600px;">
+                                    <label for="visionModelId" data-i18n="api.modelId">模型ID</label>
+                                    <input type="text" id="visionModelId" data-i18n-placeholder="api.modelIdPlaceholder" placeholder="如：gpt-4-vision-preview、qwen-vl-plus" value="" style="max-width: 600px;">
+                                </div>
+                                <div class="field-row">
+                                    <label for="visionModelApiKey" data-i18n="api.apiKey">API Key</label>
+                                    <input type="text" id="visionModelApiKey" data-i18n-placeholder="api.visionModelApiKeyPlaceholder" placeholder="请输入视觉模型的API Key" value="" style="max-width: 600px;">
                                 </div>
                             </div>
                         </div>
@@ -612,21 +630,25 @@
                         <!-- 全模态模型配置 -->
                         <div class="model-config-container">
                             <div class="model-header" onclick="toggleModelConfig('omni')">
-                                <span class="model-title">🌐 全模态模型配置</span>
+                                <span class="model-title" data-i18n="api.omniModelConfig">🌐 全模态模型配置</span>
                                 <span class="toggle-icon">▼</span>
                             </div>
                             <div id="omni-model-content" class="model-content">
                                 <div class="field-row">
-                                    <label for="omniModelProvider">供应商</label>
-                                    <input type="text" id="omniModelProvider" placeholder="如：aliyun、custom" value="" style="max-width: 600px;">
+                                    <label for="omniModelProvider" data-i18n="api.provider">供应商</label>
+                                    <input type="text" id="omniModelProvider" data-i18n-placeholder="api.providerPlaceholder" placeholder="如：aliyun、custom" value="" style="max-width: 600px;">
                                 </div>
                                 <div class="field-row">
-                                    <label for="omniModelUrl">API URL<em>（必须是WebSocket地址，以ws://或wss://开头）</em></label>
-                                    <input type="text" id="omniModelUrl" placeholder="如：wss://dashscope.aliyuncs.com/api-ws/v1/realtime" value="" style="max-width: 600px;">
+                                    <label for="omniModelUrl">API URL<em data-i18n="api.omniApiUrlNote">（必须是WebSocket地址，以ws://或wss://开头）</em></label>
+                                    <input type="text" id="omniModelUrl" data-i18n-placeholder="api.omniApiUrlPlaceholder" placeholder="如：wss://dashscope.aliyuncs.com/api-ws/v1/realtime" value="" style="max-width: 600px;">
                                 </div>
                                 <div class="field-row">
-                                    <label for="omniModelApiKey">API Key</label>
-                                    <input type="text" id="omniModelApiKey" placeholder="请输入全模态模型的API Key" value="" style="max-width: 600px;">
+                                    <label for="omniModelId" data-i18n="api.modelId">模型ID</label>
+                                    <input type="text" id="omniModelId" data-i18n-placeholder="api.modelIdPlaceholder" placeholder="如：qwen-realtime-plus" value="" style="max-width: 600px;">
+                                </div>
+                                <div class="field-row">
+                                    <label for="omniModelApiKey" data-i18n="api.apiKey">API Key</label>
+                                    <input type="text" id="omniModelApiKey" data-i18n-placeholder="api.omniModelApiKeyPlaceholder" placeholder="请输入全模态模型的API Key" value="" style="max-width: 600px;">
                                 </div>
                             </div>
                         </div>
@@ -634,21 +656,25 @@
                         <!-- TTS模型配置 -->
                         <div class="model-config-container">
                             <div class="model-header" onclick="toggleModelConfig('tts')">
-                                <span class="model-title">🔊 TTS模型配置</span>
+                                <span class="model-title" data-i18n="api.ttsModelConfig">🔊 TTS模型配置</span>
                                 <span class="toggle-icon">▼</span>
                             </div>
                             <div id="tts-model-content" class="model-content">
                                 <div class="field-row">
-                                    <label for="ttsModelProvider">供应商</label>
-                                    <input type="text" id="ttsModelProvider" placeholder="如：aliyun、azure、custom" value="" style="max-width: 600px;">
+                                    <label for="ttsModelProvider" data-i18n="api.provider">供应商</label>
+                                    <input type="text" id="ttsModelProvider" data-i18n-placeholder="api.providerPlaceholder" placeholder="如：aliyun、azure、custom" value="" style="max-width: 600px;">
                                 </div>
                                 <div class="field-row">
-                                    <label for="ttsModelUrl">API URL</label>
-                                    <input type="text" id="ttsModelUrl" placeholder="如：https://dashscope.aliyuncs.com/api/v1/services/aigc/tts/chat" value="" style="max-width: 600px;">
+                                    <label for="ttsModelUrl" data-i18n="api.apiUrl">API URL</label>
+                                    <input type="text" id="ttsModelUrl" data-i18n-placeholder="api.apiUrlPlaceholder" placeholder="如：https://dashscope.aliyuncs.com/api/v1/services/aigc/tts/chat" value="" style="max-width: 600px;">
                                 </div>
                                 <div class="field-row">
-                                    <label for="ttsModelApiKey">API Key</label>
-                                    <input type="text" id="ttsModelApiKey" placeholder="请输入TTS模型的API Key" value="" style="max-width: 600px;">
+                                    <label for="ttsModelId" data-i18n="api.modelId">模型ID</label>
+                                    <input type="text" id="ttsModelId" data-i18n-placeholder="api.modelIdPlaceholder" placeholder="如：tts-1、speech-01-turbo" value="" style="max-width: 600px;">
+                                </div>
+                                <div class="field-row">
+                                    <label for="ttsModelApiKey" data-i18n="api.apiKey">API Key</label>
+                                    <input type="text" id="ttsModelApiKey" data-i18n-placeholder="api.ttsModelApiKeyPlaceholder" placeholder="请输入TTS模型的API Key" value="" style="max-width: 600px;">
                                 </div>
                             </div>
                         </div>
@@ -661,16 +687,16 @@
 <!-- 弹出式警告 -->
 <div id="warning-modal" class="modal-overlay" onclick="closeWarningModal()">
     <div class="modal-warning" onclick="event.stopPropagation()">
-        <h3>⚠️ 重要提醒</h3>
-        <p>检测到您正在更换 API Key，请注意以下事项：</p>
+        <h3 data-i18n="api.apiKeyChangeWarning.title">⚠️ 重要提醒</h3>
+        <p data-i18n="api.apiKeyChangeWarning.message">检测到您正在更换 API Key，请注意以下事项：</p>
         <ul>
-            <li>Voice ID 与您的 API Key 绑定，更换 API Key 后所有已注册的 Voice ID 将失效</li>
-            <li>系统会在您保存新的 API Key 后自动清除本地保存的 Voice ID 记录</li>
-            <li>建议在更换 API Key 后重新注册所需的音色</li>
+            <li data-i18n="api.apiKeyChangeWarning.voiceIdBinding">Voice ID 与您的 API Key 绑定，更换 API Key 后所有已注册的 Voice ID 将失效</li>
+            <li data-i18n="api.apiKeyChangeWarning.voiceIdCleared">系统会在您保存新的 API Key 后自动清除本地保存的 Voice ID 记录</li>
+            <li data-i18n="api.apiKeyChangeWarning.reRegisterVoice">建议在更换 API Key 后重新注册所需的音色</li>
         </ul>
         <div class="modal-buttons">
-            <button type="button" class="btn secondary" onclick="closeWarningModal()">取消</button>
-            <button type="button" class="btn" onclick="confirmApiKeyChange()">继续保存</button>
+            <button type="button" class="btn secondary" onclick="closeWarningModal()" data-i18n="api.apiKeyChangeWarning.cancel">取消</button>
+            <button type="button" class="btn" onclick="confirmApiKeyChange()" data-i18n="api.apiKeyChangeWarning.continue">继续保存</button>
         </div>
     </div>
 </div>
@@ -729,7 +755,15 @@ async function loadApiProviders() {
                     data.core_api_providers.forEach(provider => {
                         const option = document.createElement('option');
                         option.value = provider.key;
-                        option.textContent = provider.name;
+                        // 使用翻译键获取显示名称
+                        const translationKey = `api.coreProviderNames.${provider.key}`;
+                        if (window.t && typeof window.t === 'function') {
+                            const translatedName = window.t(translationKey);
+                            // 如果翻译键存在且不是键本身，使用翻译；否则使用原始名称
+                            option.textContent = (translatedName !== translationKey) ? translatedName : provider.name;
+                        } else {
+                            option.textContent = provider.name;
+                        }
                         coreSelect.appendChild(option);
                     });
                 }
@@ -741,7 +775,15 @@ async function loadApiProviders() {
                     data.assist_api_providers.forEach(provider => {
                         const option = document.createElement('option');
                         option.value = provider.key;
-                        option.textContent = provider.name;
+                        // 使用翻译键获取显示名称
+                        const translationKey = `api.assistProviderNames.${provider.key}`;
+                        if (window.t && typeof window.t === 'function') {
+                            const translatedName = window.t(translationKey);
+                            // 如果翻译键存在且不是键本身，使用翻译；否则使用原始名称
+                            option.textContent = (translatedName !== translationKey) ? translatedName : provider.name;
+                        } else {
+                            option.textContent = provider.name;
+                        }
                         assistSelect.appendChild(option);
                     });
                 }
@@ -769,15 +811,15 @@ async function loadCurrentApiKey() {
             const data = await response.json();
             // 设置API Key显示
             if (data.enableCustomApi) {
-                showCurrentApiKey('🔧 当前使用：自定义API模式');
+                showCurrentApiKey(window.t ? window.t('api.currentUsingCustomApi') : '🔧 当前使用：自定义API模式');
             } else if (data.api_key) {
                 if (data.api_key === 'free-access' || data.coreApi === 'free' || data.assistApi === 'free') {
-                    showCurrentApiKey('📋 当前使用：免费版（无需API Key）');
+                    showCurrentApiKey(window.t ? window.t('api.currentUsingFreeVersion') : '📋 当前使用：免费版（无需API Key）');
                 } else {
-                    showCurrentApiKey(`📋 当前API Key: ${data.api_key}`);
+                    showCurrentApiKey(window.t ? window.t('api.currentApiKey', {key: data.api_key}) : `📋 当前API Key: ${data.api_key}`);
                 }
             } else {
-                showCurrentApiKey('📋 当前暂未设置API Key');
+                showCurrentApiKey(window.t ? window.t('api.currentNoApiKey') : '📋 当前暂未设置API Key');
             }
             // 设置高级设定的值（确保下拉框已加载选项）
             if (data.coreApi && document.getElementById('coreApiSelect')) {
@@ -810,23 +852,23 @@ async function loadCurrentApiKey() {
             }
             if (typeof data.assistApiKeyQwen === 'string' && document.getElementById('assistApiKeyInputQwen')) {
                 document.getElementById('assistApiKeyInputQwen').value = data.assistApiKeyQwen;
-                document.getElementById('assistApiKeyInputQwen').placeholder = data.assistApiKeyQwen || '可选，默认为核心API Key';
+                document.getElementById('assistApiKeyInputQwen').placeholder = data.assistApiKeyQwen || (window.t ? window.t('api.assistApiKeyPlaceholder') : '可选，默认为核心API Key');
             }
             if (typeof data.assistApiKeyOpenai === 'string' && document.getElementById('assistApiKeyInputOpenai')) {
                 document.getElementById('assistApiKeyInputOpenai').value = data.assistApiKeyOpenai;
-                document.getElementById('assistApiKeyInputOpenai').placeholder = data.assistApiKeyOpenai || '可选，默认为核心API Key';
+                document.getElementById('assistApiKeyInputOpenai').placeholder = data.assistApiKeyOpenai || (window.t ? window.t('api.assistApiKeyPlaceholder') : '可选，默认为核心API Key');
             }
             if (typeof data.assistApiKeyGlm === 'string' && document.getElementById('assistApiKeyInputGlm')) {
                 document.getElementById('assistApiKeyInputGlm').value = data.assistApiKeyGlm;
-                document.getElementById('assistApiKeyInputGlm').placeholder = data.assistApiKeyGlm || '可选，默认为核心API Key';
+                document.getElementById('assistApiKeyInputGlm').placeholder = data.assistApiKeyGlm || (window.t ? window.t('api.assistApiKeyPlaceholder') : '可选，默认为核心API Key');
             }
             if (typeof data.assistApiKeyStep === 'string' && document.getElementById('assistApiKeyInputStep')) {
                 document.getElementById('assistApiKeyInputStep').value = data.assistApiKeyStep;
-                document.getElementById('assistApiKeyInputStep').placeholder = data.assistApiKeyStep || '可选，默认为核心API Key';
+                document.getElementById('assistApiKeyInputStep').placeholder = data.assistApiKeyStep || (window.t ? window.t('api.assistApiKeyPlaceholder') : '可选，默认为核心API Key');
             }
             if (typeof data.assistApiKeySilicon === 'string' && document.getElementById('assistApiKeyInputSilicon')) {
                 document.getElementById('assistApiKeyInputSilicon').value = data.assistApiKeySilicon;
-                document.getElementById('assistApiKeyInputSilicon').placeholder = data.assistApiKeySilicon || '可选，默认为核心API Key';
+                document.getElementById('assistApiKeyInputSilicon').placeholder = data.assistApiKeySilicon || (window.t ? window.t('api.assistApiKeyPlaceholder') : '可选，默认为核心API Key');
             }
             
             // 加载用户自定义API配置
@@ -835,6 +877,9 @@ async function loadCurrentApiKey() {
             }
             if (typeof data.summaryModelUrl === 'string' && document.getElementById('summaryModelUrl')) {
                 document.getElementById('summaryModelUrl').value = data.summaryModelUrl;
+            }
+            if (typeof data.summaryModelId === 'string' && document.getElementById('summaryModelId')) {
+                document.getElementById('summaryModelId').value = data.summaryModelId;
             }
             if (typeof data.summaryModelApiKey === 'string' && document.getElementById('summaryModelApiKey')) {
                 document.getElementById('summaryModelApiKey').value = data.summaryModelApiKey;
@@ -846,6 +891,9 @@ async function loadCurrentApiKey() {
             if (typeof data.correctionModelUrl === 'string' && document.getElementById('correctionModelUrl')) {
                 document.getElementById('correctionModelUrl').value = data.correctionModelUrl;
             }
+            if (typeof data.correctionModelId === 'string' && document.getElementById('correctionModelId')) {
+                document.getElementById('correctionModelId').value = data.correctionModelId;
+            }
             if (typeof data.correctionModelApiKey === 'string' && document.getElementById('correctionModelApiKey')) {
                 document.getElementById('correctionModelApiKey').value = data.correctionModelApiKey;
             }
@@ -855,6 +903,9 @@ async function loadCurrentApiKey() {
             }
             if (typeof data.emotionModelUrl === 'string' && document.getElementById('emotionModelUrl')) {
                 document.getElementById('emotionModelUrl').value = data.emotionModelUrl;
+            }
+            if (typeof data.emotionModelId === 'string' && document.getElementById('emotionModelId')) {
+                document.getElementById('emotionModelId').value = data.emotionModelId;
             }
             if (typeof data.emotionModelApiKey === 'string' && document.getElementById('emotionModelApiKey')) {
                 document.getElementById('emotionModelApiKey').value = data.emotionModelApiKey;
@@ -866,6 +917,9 @@ async function loadCurrentApiKey() {
             if (typeof data.visionModelUrl === 'string' && document.getElementById('visionModelUrl')) {
                 document.getElementById('visionModelUrl').value = data.visionModelUrl;
             }
+            if (typeof data.visionModelId === 'string' && document.getElementById('visionModelId')) {
+                document.getElementById('visionModelId').value = data.visionModelId;
+            }
             if (typeof data.visionModelApiKey === 'string' && document.getElementById('visionModelApiKey')) {
                 document.getElementById('visionModelApiKey').value = data.visionModelApiKey;
             }
@@ -876,6 +930,9 @@ async function loadCurrentApiKey() {
             if (typeof data.omniModelUrl === 'string' && document.getElementById('omniModelUrl')) {
                 document.getElementById('omniModelUrl').value = data.omniModelUrl;
             }
+            if (typeof data.omniModelId === 'string' && document.getElementById('omniModelId')) {
+                document.getElementById('omniModelId').value = data.omniModelId;
+            }
             if (typeof data.omniModelApiKey === 'string' && document.getElementById('omniModelApiKey')) {
                 document.getElementById('omniModelApiKey').value = data.omniModelApiKey;
             }
@@ -885,6 +942,9 @@ async function loadCurrentApiKey() {
             }
             if (typeof data.ttsModelUrl === 'string' && document.getElementById('ttsModelUrl')) {
                 document.getElementById('ttsModelUrl').value = data.ttsModelUrl;
+            }
+            if (typeof data.ttsModelId === 'string' && document.getElementById('ttsModelId')) {
+                document.getElementById('ttsModelId').value = data.ttsModelId;
             }
             if (typeof data.ttsModelApiKey === 'string' && document.getElementById('ttsModelApiKey')) {
                 document.getElementById('ttsModelApiKey').value = data.ttsModelApiKey;
@@ -963,10 +1023,10 @@ function toggleCustomApi() {
     const freeVersionHint = document.getElementById('freeVersionHint');
     if (freeVersionHint) {
         if (isEnabled) {
-            freeVersionHint.textContent = '（自定义API已启用）';
+            freeVersionHint.textContent = window.t ? window.t('api.customApiEnabledHint') : '（自定义API已启用）';
             freeVersionHint.style.color = '#ff6b35';
         } else {
-            freeVersionHint.textContent = '（免费版无需填写）';
+            freeVersionHint.textContent = window.t ? window.t('api.freeVersionHint') : '（免费版无需填写）';
             freeVersionHint.style.color = '#28a745';
         }
     }
@@ -975,12 +1035,12 @@ function toggleCustomApi() {
     const advancedTips = document.querySelector('#advanced-options > div:first-child');
     if (advancedTips) {
         if (isEnabled) {
-            advancedTips.innerHTML = '<strong>💡 配置状态：</strong><br>• <strong>自定义API已启用</strong>：核心API和辅助API已被禁用<br>• 请在下方的自定义API配置中设置各功能模块的API';
+            advancedTips.innerHTML = `<strong>${window.t ? window.t('api.customApiEnabled') : '💡 配置状态：'}</strong><br>• <strong>${window.t ? window.t('api.customApiEnabledDesc') : '自定义API已启用：核心API和辅助API已被禁用'}</strong><br>• ${window.t ? window.t('api.customApiEnabledNote') : '请在下方的自定义API配置中设置各功能模块的API'}`;
             advancedTips.style.background = '#fff3cd';
             advancedTips.style.borderColor = '#ffeaa7';
             advancedTips.style.color = '#856404';
         } else {
-            advancedTips.innerHTML = '<strong>💡 配置建议：</strong><br>• <strong>免费版</strong>：完全免费，无需API Key，适合新手体验（不支持自定义语音、Agent模式和视频对话）<br>• <strong>核心API</strong>：负责对话功能，建议根据预算和需求选择<br>• <strong>辅助API</strong>：负责记忆管理和自定义语音，<strong>只有阿里支持自定义语音</strong>';
+            advancedTips.innerHTML = `<strong>${window.t ? window.t('api.configSuggestionFull') : '💡 配置建议：'}</strong><br>• <strong>${window.t ? window.t('api.freeVersion') : '免费版'}</strong>：${window.t ? window.t('api.freeVersionSuggestionFull') : '完全免费，无需API Key，适合新手体验（不支持自定义语音、Agent模式和视频对话）'}<br>• <strong>${window.t ? window.t('api.coreApiProvider') : '核心API'}</strong>：${window.t ? window.t('api.coreApiSuggestionFull') : '负责对话功能，建议根据预算和需求选择'}<br>• <strong>${window.t ? window.t('api.assistApiProvider') : '辅助API'}</strong>：${window.t ? window.t('api.assistApiSuggestionFull') : '负责记忆管理和自定义语音，只有阿里支持自定义语音'}`;
             advancedTips.style.background = '#e7f3ff';
             advancedTips.style.borderColor = '#b3d9ff';
             advancedTips.style.color = '#0d6efd';
@@ -1029,33 +1089,39 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
     // 获取用户自定义API配置
     const summaryModelProvider = document.getElementById('summaryModelProvider') ? document.getElementById('summaryModelProvider').value.trim() : '';
     const summaryModelUrl = document.getElementById('summaryModelUrl') ? document.getElementById('summaryModelUrl').value.trim() : '';
+    const summaryModelId = document.getElementById('summaryModelId') ? document.getElementById('summaryModelId').value.trim() : '';
     const summaryModelApiKey = document.getElementById('summaryModelApiKey') ? document.getElementById('summaryModelApiKey').value.trim() : '';
     
     const correctionModelProvider = document.getElementById('correctionModelProvider') ? document.getElementById('correctionModelProvider').value.trim() : '';
     const correctionModelUrl = document.getElementById('correctionModelUrl') ? document.getElementById('correctionModelUrl').value.trim() : '';
+    const correctionModelId = document.getElementById('correctionModelId') ? document.getElementById('correctionModelId').value.trim() : '';
     const correctionModelApiKey = document.getElementById('correctionModelApiKey') ? document.getElementById('correctionModelApiKey').value.trim() : '';
     
     const emotionModelProvider = document.getElementById('emotionModelProvider') ? document.getElementById('emotionModelProvider').value.trim() : '';
     const emotionModelUrl = document.getElementById('emotionModelUrl') ? document.getElementById('emotionModelUrl').value.trim() : '';
+    const emotionModelId = document.getElementById('emotionModelId') ? document.getElementById('emotionModelId').value.trim() : '';
     const emotionModelApiKey = document.getElementById('emotionModelApiKey') ? document.getElementById('emotionModelApiKey').value.trim() : '';
     
     const visionModelProvider = document.getElementById('visionModelProvider') ? document.getElementById('visionModelProvider').value.trim() : '';
     const visionModelUrl = document.getElementById('visionModelUrl') ? document.getElementById('visionModelUrl').value.trim() : '';
+    const visionModelId = document.getElementById('visionModelId') ? document.getElementById('visionModelId').value.trim() : '';
     const visionModelApiKey = document.getElementById('visionModelApiKey') ? document.getElementById('visionModelApiKey').value.trim() : '';
     
     const omniModelProvider = document.getElementById('omniModelProvider') ? document.getElementById('omniModelProvider').value.trim() : '';
     const omniModelUrl = document.getElementById('omniModelUrl') ? document.getElementById('omniModelUrl').value.trim() : '';
+    const omniModelId = document.getElementById('omniModelId') ? document.getElementById('omniModelId').value.trim() : '';
     const omniModelApiKey = document.getElementById('omniModelApiKey') ? document.getElementById('omniModelApiKey').value.trim() : '';
     
     const ttsModelProvider = document.getElementById('ttsModelProvider') ? document.getElementById('ttsModelProvider').value.trim() : '';
     const ttsModelUrl = document.getElementById('ttsModelUrl') ? document.getElementById('ttsModelUrl').value.trim() : '';
+    const ttsModelId = document.getElementById('ttsModelId') ? document.getElementById('ttsModelId').value.trim() : '';
     const ttsModelApiKey = document.getElementById('ttsModelApiKey') ? document.getElementById('ttsModelApiKey').value.trim() : '';
     
     const mcpToken = document.getElementById('mcpTokenInput') ? document.getElementById('mcpTokenInput').value.trim() : '';
 
     // 免费版和启用自定义API时不需要API Key检查
     if (!enableCustomApi && coreApi !== 'free' && assistApi !== 'free' && !apiKey) {
-        showStatus('请输入API Key', 'error');
+        showStatus(window.t ? window.t('api.pleaseEnterApiKeyError') : '请输入API Key', 'error');
         return;
     }
     
@@ -1066,12 +1132,12 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
         pendingApiKey = { 
             apiKey, coreApi, assistApi, 
             assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon,
-            summaryModelProvider, summaryModelUrl, summaryModelApiKey,
-            correctionModelProvider, correctionModelUrl, correctionModelApiKey,
-            emotionModelProvider, emotionModelUrl, emotionModelApiKey,
-            visionModelProvider, visionModelUrl, visionModelApiKey,
-            omniModelProvider, omniModelUrl, omniModelApiKey,
-            ttsModelProvider, ttsModelUrl, ttsModelApiKey,
+            summaryModelProvider, summaryModelUrl, summaryModelId, summaryModelApiKey,
+            correctionModelProvider, correctionModelUrl, correctionModelId, correctionModelApiKey,
+            emotionModelProvider, emotionModelUrl, emotionModelId, emotionModelApiKey,
+            visionModelProvider, visionModelUrl, visionModelId, visionModelApiKey,
+            omniModelProvider, omniModelUrl, omniModelId, omniModelApiKey,
+            ttsModelProvider, ttsModelUrl, ttsModelId, ttsModelApiKey,
             mcpToken, enableCustomApi
         };
         showWarningModal();
@@ -1080,18 +1146,18 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
         await saveApiKey({ 
             apiKey, coreApi, assistApi, 
             assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon,
-            summaryModelProvider, summaryModelUrl, summaryModelApiKey,
-            correctionModelProvider, correctionModelUrl, correctionModelApiKey,
-            emotionModelProvider, emotionModelUrl, emotionModelApiKey,
-            visionModelProvider, visionModelUrl, visionModelApiKey,
-            omniModelProvider, omniModelUrl, omniModelApiKey,
-            ttsModelProvider, ttsModelUrl, ttsModelApiKey,
+            summaryModelProvider, summaryModelUrl, summaryModelId, summaryModelApiKey,
+            correctionModelProvider, correctionModelUrl, correctionModelId, correctionModelApiKey,
+            emotionModelProvider, emotionModelUrl, emotionModelId, emotionModelApiKey,
+            visionModelProvider, visionModelUrl, visionModelId, visionModelApiKey,
+            omniModelProvider, omniModelUrl, omniModelId, omniModelApiKey,
+            ttsModelProvider, ttsModelUrl, ttsModelId, ttsModelApiKey,
             mcpToken, enableCustomApi
         });
     }
 });
 
-async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, summaryModelProvider, summaryModelUrl, summaryModelApiKey, correctionModelProvider, correctionModelUrl, correctionModelApiKey, emotionModelProvider, emotionModelUrl, emotionModelApiKey, visionModelProvider, visionModelUrl, visionModelApiKey, omniModelProvider, omniModelUrl, omniModelApiKey, ttsModelProvider, ttsModelUrl, ttsModelApiKey, mcpToken, enableCustomApi }) {
+async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, summaryModelProvider, summaryModelUrl, summaryModelId, summaryModelApiKey, correctionModelProvider, correctionModelUrl, correctionModelId, correctionModelApiKey, emotionModelProvider, emotionModelUrl, emotionModelId, emotionModelApiKey, visionModelProvider, visionModelUrl, visionModelId, visionModelApiKey, omniModelProvider, omniModelUrl, omniModelId, omniModelApiKey, ttsModelProvider, ttsModelUrl, ttsModelId, ttsModelApiKey, mcpToken, enableCustomApi }) {
     // 确保apiKey是有效的字符串（启用自定义API或免费版时不需要API Key）
     if (!enableCustomApi && coreApi !== 'free' && assistApi !== 'free' && (!apiKey || typeof apiKey !== 'string')) {
         showStatus('API Key无效', 'error');
@@ -1115,21 +1181,27 @@ async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assist
             assistApiKeySilicon: assistApiKeySilicon || undefined,
             summaryModelProvider: summaryModelProvider || undefined,
             summaryModelUrl: summaryModelUrl || undefined,
+            summaryModelId: summaryModelId || undefined,
             summaryModelApiKey: summaryModelApiKey || undefined,
             correctionModelProvider: correctionModelProvider || undefined,
             correctionModelUrl: correctionModelUrl || undefined,
+            correctionModelId: correctionModelId || undefined,
             correctionModelApiKey: correctionModelApiKey || undefined,
             emotionModelProvider: emotionModelProvider || undefined,
             emotionModelUrl: emotionModelUrl || undefined,
+            emotionModelId: emotionModelId || undefined,
             emotionModelApiKey: emotionModelApiKey || undefined,
             visionModelProvider: visionModelProvider || undefined,
             visionModelUrl: visionModelUrl || undefined,
+            visionModelId: visionModelId || undefined,
             visionModelApiKey: visionModelApiKey || undefined,
             omniModelProvider: omniModelProvider || undefined,
             omniModelUrl: omniModelUrl || undefined,
+            omniModelId: omniModelId || undefined,
             omniModelApiKey: omniModelApiKey || undefined,
             ttsModelProvider: ttsModelProvider || undefined,
             ttsModelUrl: ttsModelUrl || undefined,
+            ttsModelId: ttsModelId || undefined,
             ttsModelApiKey: ttsModelApiKey || undefined,
             mcpToken: mcpToken || undefined,
             enableCustomApi: enableCustomApi || false
@@ -1171,7 +1243,8 @@ async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assist
                     });
                 }
             } else {
-                showStatus('保存失败: ' + (result.error || '未知错误'), 'error');
+                const errorMsg = result.error || (window.t ? window.t('common.unknownError') : '未知错误');
+                showStatus(window.t ? window.t('api.saveFailed', {error: errorMsg}) : '保存失败: ' + errorMsg, 'error');
             }
         } else {
             showStatus('保存失败，请检查网络连接', 'error');
@@ -1239,7 +1312,7 @@ function updateAssistApiRecommendation() {
         // 核心API选择免费版时，自动屏蔽辅助API选择，强制使用免费版
         if (apiKeyInput) {
             apiKeyInput.disabled = true;
-            apiKeyInput.placeholder = '免费版无需API Key';
+            apiKeyInput.placeholder = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
             apiKeyInput.required = false;
             apiKeyInput.value = 'free-access';
         }
@@ -1250,12 +1323,12 @@ function updateAssistApiRecommendation() {
         // 禁用辅助API选择框，强制为免费版
         assistApiSelect.disabled = true;
         assistApiSelect.value = 'free';
-        recommendation = '免费版配置：支持语音对话、文本对话和记忆管理，不支持自定义语音、Agent模式和视频对话';
+        recommendation = window.t ? window.t('api.freeVersionConfig') : '免费版配置：支持语音对话、文本对话和记忆管理，不支持自定义语音、Agent模式和视频对话';
     } else {
         // 核心API不是免费版
         if (apiKeyInput) {
             apiKeyInput.disabled = false;
-            apiKeyInput.placeholder = '请输入您的API Key';
+            apiKeyInput.placeholder = window.t ? window.t('api.pleaseEnterApiKey') : '请输入您的API Key';
             apiKeyInput.required = true;
             if (apiKeyInput.value === 'free-access') {
                 apiKeyInput.value = '';
@@ -1270,7 +1343,7 @@ function updateAssistApiRecommendation() {
         const freeOption = assistApiSelect.querySelector('option[value="free"]');
         if (freeOption) {
             freeOption.disabled = true;
-            freeOption.textContent = '免费版（仅核心API为免费版时可用）';
+            freeOption.textContent = window.t ? window.t('api.freeVersionOnlyWhenCoreFree') : '免费版（仅核心API为免费版时可用）';
         }
         
         // 如果当前选择的是免费版，自动切换到推荐的API
@@ -1280,16 +1353,16 @@ function updateAssistApiRecommendation() {
         
         switch (selectedCoreApi) {
             case 'qwen':
-                recommendation = '阿里作为核心API时，建议辅助API也选择阿里以获得最佳的自定义语音体验';
+                recommendation = window.t ? window.t('api.qwenRecommendation') : '阿里作为核心API时，建议辅助API也选择阿里以获得最佳的自定义语音体验';
                 break;
             case 'glm':
-                recommendation = '智谱作为核心API时，建议辅助API选择阿里以支持自定义语音功能';
+                recommendation = window.t ? window.t('api.glmRecommendation') : '智谱作为核心API时，建议辅助API选择阿里以支持自定义语音功能';
                 break;
             case 'openai':
-                recommendation = 'OpenAI作为核心API时，建议辅助API选择阿里以支持自定义语音功能';
+                recommendation = window.t ? window.t('api.openaiRecommendation') : 'OpenAI作为核心API时，建议辅助API选择阿里以支持自定义语音功能';
                 break;
             case 'step':
-                recommendation = '阶跃星辰作为核心API时，建议辅助API选择阿里以支持自定义语音功能';
+                recommendation = window.t ? window.t('api.stepRecommendation') : '阶跃星辰作为核心API时，建议辅助API选择阿里以支持自定义语音功能';
                 break;
         }
     }
@@ -1298,14 +1371,14 @@ function updateAssistApiRecommendation() {
     const assistApiTooltip = assistApiSelect.parentElement.querySelector('label .tooltip-content');
     if (assistApiTooltip) {
         assistApiTooltip.innerHTML = `
-            <strong>辅助API负责记忆管理和自定义语音：</strong><br>
-            • <strong>阿里</strong>：推荐选择，支持自定义语音<br>
-            • <strong>智谱</strong>：记忆管理永久免费，支持Agent模式<br>
-            • <strong>阶跃星辰</strong>：相对便宜<br>
-            • <strong>硅基流动</strong>：性价比高<br>
-            • <strong>OpenAI</strong>：记忆管理能力强<br>
-            <strong>⚠️注意：</strong>只有阿里支持自定义语音功能<br>
-            <strong>💡当前建议：</strong>${recommendation}
+            <strong>${window.t ? window.t('api.assistApiTooltipTitle') : '辅助API负责记忆管理和自定义语音：'}</strong><br>
+            • <strong>${window.t ? window.t('api.aliAssist') : '阿里'}</strong>：${window.t ? window.t('api.aliRecommended') : '推荐选择，支持自定义语音'}<br>
+            • <strong>${window.t ? window.t('api.glmAssist') : '智谱'}</strong>：${window.t ? window.t('api.glmMemoryFree') : '记忆管理永久免费，支持Agent模式'}<br>
+            • <strong>${window.t ? window.t('api.stepAssist') : '阶跃星辰'}</strong>：${window.t ? window.t('api.stepCheap') : '相对便宜'}<br>
+            • <strong>${window.t ? window.t('api.siliconAssist') : '硅基流动'}</strong>：${window.t ? window.t('api.siliconValue') : '性价比高'}<br>
+            • <strong>${window.t ? window.t('api.openaiAssist') : 'OpenAI'}</strong>：${window.t ? window.t('api.openaiMemoryStrong') : '记忆管理能力强'}<br>
+            <strong>${window.t ? window.t('api.onlyAliCustomVoice') : '⚠️注意：只有阿里支持自定义语音功能'}</strong><br>
+            <strong>${window.t ? window.t('api.currentSuggestion') : '💡当前建议：'}</strong>${recommendation}
         `;
     }
     
@@ -1569,14 +1642,14 @@ window.addEventListener('load', async function() {
                 if (selectedCoreApi === 'free') {
                     // 如果是免费版，确保输入框被禁用
                     apiKeyInput.disabled = true;
-                    apiKeyInput.placeholder = '免费版无需API Key';
+                    apiKeyInput.placeholder = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
                     apiKeyInput.required = false;
                     apiKeyInput.value = 'free-access';
                     freeVersionHint.style.display = 'inline';
                 } else {
                     // 如果不是免费版，确保输入框可用
                     apiKeyInput.disabled = false;
-                    apiKeyInput.placeholder = '请输入您的API Key';
+                    apiKeyInput.placeholder = window.t ? window.t('api.pleaseEnterApiKey') : '请输入您的API Key';
                     apiKeyInput.required = true;
                     if (apiKeyInput.value === 'free-access') {
                         apiKeyInput.value = '';
@@ -1612,6 +1685,24 @@ window.addEventListener('load', async function() {
     
     // 初始化时也更新一次建议
     updateAssistApiRecommendation();
+    
+    // 监听语言切换事件，更新下拉选项
+    window.addEventListener('localechange', async () => {
+        // 保存当前选中的值
+        const selectedCoreApi = coreApiSelect ? coreApiSelect.value : '';
+        const selectedAssistApi = assistApiSelect ? assistApiSelect.value : '';
+        
+        // 重新加载下拉选项（会使用新的语言）
+        await loadApiProviders();
+        
+        // 恢复之前选中的值
+        if (coreApiSelect && selectedCoreApi) {
+            coreApiSelect.value = selectedCoreApi;
+        }
+        if (assistApiSelect && selectedAssistApi) {
+            assistApiSelect.value = selectedAssistApi;
+        }
+    });
 });
 
 // 关闭API Key设置页面

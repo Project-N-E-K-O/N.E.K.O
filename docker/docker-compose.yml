@@ -1,0 +1,111 @@
+version: '3.8'
+
+services:
+  neko-main:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: neko-main
+    restart: unless-stopped
+    ports:
+      - "${NEKO_MAIN_SERVER_PORT:-48911}:48911"
+    environment:
+      # API Keys
+      - NEKO_CORE_API_KEY=${NEKO_CORE_API_KEY}
+      - NEKO_ASSIST_API_KEY_QWEN=${NEKO_ASSIST_API_KEY_QWEN:-}
+      - NEKO_ASSIST_API_KEY_OPENAI=${NEKO_ASSIST_API_KEY_OPENAI:-}
+      - NEKO_ASSIST_API_KEY_GLM=${NEKO_ASSIST_API_KEY_GLM:-}
+      - NEKO_ASSIST_API_KEY_STEP=${NEKO_ASSIST_API_KEY_STEP:-}
+      - NEKO_ASSIST_API_KEY_SILICON=${NEKO_ASSIST_API_KEY_SILICON:-}
+      - NEKO_MCP_TOKEN=${NEKO_MCP_TOKEN:-}
+      
+      # API Providers
+      - NEKO_CORE_API=${NEKO_CORE_API:-qwen}
+      - NEKO_ASSIST_API=${NEKO_ASSIST_API:-qwen}
+      
+      # Server Ports
+      - NEKO_MAIN_SERVER_PORT=48911
+      - NEKO_MEMORY_SERVER_PORT=48912
+      - NEKO_MONITOR_SERVER_PORT=48913
+      - NEKO_TOOL_SERVER_PORT=48915
+      
+      # Models (Optional)
+      - NEKO_SUMMARY_MODEL=${NEKO_SUMMARY_MODEL:-qwen-plus}
+      - NEKO_CORRECTION_MODEL=${NEKO_CORRECTION_MODEL:-qwen-max}
+      - NEKO_EMOTION_MODEL=${NEKO_EMOTION_MODEL:-qwen-turbo}
+      - NEKO_VISION_MODEL=${NEKO_VISION_MODEL:-qwen3-vl-plus-2025-09-23}
+      
+      # MCP
+      - NEKO_MCP_ROUTER_URL=${NEKO_MCP_ROUTER_URL:-http://localhost:3283}
+    
+    volumes:
+      # 持久化配置
+      - ./config:/app/config
+      # 持久化记忆数据
+      - ./memory:/app/memory
+      # 持久化静态资源（Live2D 模型等）
+      - ./static:/app/static
+      # 日志
+      - ./logs:/app/logs
+    
+    networks:
+      - neko-network
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:48911/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  neko-memory:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: neko-memory
+    restart: unless-stopped
+    command: ["python", "memory_server.py"]
+    ports:
+      - "${NEKO_MEMORY_SERVER_PORT:-48912}:48912"
+    environment:
+      - NEKO_CORE_API_KEY=${NEKO_CORE_API_KEY}
+      - NEKO_MEMORY_SERVER_PORT=48912
+    volumes:
+      - ./config:/app/config
+      - ./memory:/app/memory
+      - ./logs:/app/logs
+    networks:
+      - neko-network
+    depends_on:
+      - neko-main
+
+  neko-agent:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: neko-agent
+    restart: unless-stopped
+    command: ["python", "agent_server.py"]
+    ports:
+      - "${NEKO_TOOL_SERVER_PORT:-48915}:48915"
+    environment:
+      - NEKO_CORE_API_KEY=${NEKO_CORE_API_KEY}
+      - NEKO_TOOL_SERVER_PORT=48915
+    volumes:
+      - ./config:/app/config
+      - ./logs:/app/logs
+    networks:
+      - neko-network
+    depends_on:
+      - neko-main
+
+networks:
+  neko-network:
+    driver: bridge
+
+volumes:
+  config:
+  memory:
+  static:
+  logs:
+

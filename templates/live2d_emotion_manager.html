@@ -4,7 +4,9 @@
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Live2D 情感映射管理器 - Project N.E.K.O.</title>
+    <title data-i18n="emotion.manager">Live2D 情感映射管理器</title>
+    <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
+    <script src="/static/i18n-i18next.js"></script>
     <script src="/static/common_dialogs.js"></script>
     <style>
         * {
@@ -424,27 +426,27 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>🎭 Live2D 情感映射管理器</h1>
-            <p>管理和配置Live2D角色的动作与表情映射</p>
+            <h1 data-i18n="emotion.manager">🎭 Live2D 情感映射管理器</h1>
+            <p data-i18n="emotion.description">管理和配置Live2D角色的动作与表情映射</p>
         </div>
 
                  <div class="content">
                           <div class="model-selector">
-                 <label for="model-select">选择Live2D模型：</label>
+                 <label for="model-select" data-i18n="emotion.selectModel">选择Live2D模型：</label>
                  <select id="model-select" onchange="loadModelMapping()">
-                     <option value="">请选择模型</option>
+                     <option value="" data-i18n="emotion.pleaseSelect">请选择模型</option>
                  </select>
-                 <button class="btn btn-success" onclick="saveMapping()">保存配置</button>
-                 <button class="btn btn-secondary" onclick="resetMapping()">重置</button>
+                 <button class="btn btn-success" onclick="saveMapping()" data-i18n="emotion.saveConfig">保存配置</button>
+                 <button class="btn btn-secondary" onclick="resetMapping()" data-i18n="emotion.reset">重置</button>
              </div>
              
              <div id="model-status-indicator" class="status-indicator hidden">
                  <span class="status-dot info"></span>
-                 <span id="model-status-text">加载中...</span>
+                 <span id="model-status-text" data-i18n="emotion.loading">加载中...</span>
              </div>
 
             <div id="model-info" class="model-info hidden">
-                <h4>模型信息</h4>
+                <h4 data-i18n="emotion.modelInfo">模型信息</h4>
                 <p id="model-path"></p>
                 <p id="model-status"></p>
             </div>
@@ -502,7 +504,7 @@
         // 更新模型选择器
         function updateModelSelector() {
             const select = document.getElementById('model-select');
-            select.innerHTML = '<option value="">请选择模型</option>';
+            select.innerHTML = `<option value="">${window.t ? window.t('live2d.pleaseSelectModel') : '请选择模型'}</option>`;
             
             availableModels.forEach(model => {
                 const option = document.createElement('option');
@@ -517,7 +519,7 @@
              const selectedModel = modelSelect.value;
              
              if (!selectedModel) {
-                 showStatus('请先选择一个模型', 'error');
+                 showStatus(window.t ? window.t('emotion.pleaseSelectModel') : '请先选择一个模型', 'error');
                  return;
              }
 
@@ -527,7 +529,7 @@
                  const statusDot = statusIndicator.querySelector('.status-dot');
                  
                  statusIndicator.classList.remove('hidden');
-                 statusText.textContent = '正在加载配置和模型文件...';
+                 statusText.textContent = window.t ? window.t('emotion.loadingConfig') : '正在加载配置和模型文件...';
                  statusDot.className = 'status-dot info';
                  
                  const [configResponse, filesResponse, emotionMappingResponse] = await Promise.all([
@@ -550,7 +552,7 @@
                              expression_files: filesData.expression_files
                          };
                          
-                         statusText.textContent = `已加载，发现 ${filesData.motion_files.length} 个动作文件和 ${filesData.expression_files.length} 个表情文件`;
+                         statusText.textContent = window.t ? window.t('emotion.loaded', {motionCount: filesData.motion_files.length, expressionCount: filesData.expression_files.length}) : `已加载，发现 ${filesData.motion_files.length} 个动作文件和 ${filesData.expression_files.length} 个表情文件`;
                          statusDot.className = 'status-dot success';
                          
                          setTimeout(() => {
@@ -559,7 +561,7 @@
                          
                      } else {
                          currentModelFiles = { motion_files: [], expression_files: [] };
-                         statusText.textContent = '配置加载成功，但无法获取模型文件';
+                         statusText.textContent = window.t ? window.t('emotion.configLoaded') : '配置加载成功，但无法获取模型文件';
                          statusDot.className = 'status-dot warning';
                          
                          setTimeout(() => {
@@ -571,7 +573,7 @@
                         emotionMappingConfig[currentModel] = emotionMappingData.config || { motions: {}, expressions: {} };
                     } else {
                         emotionMappingConfig[currentModel] = { motions: {}, expressions: {} };
-                        showStatus('加载情绪映射配置失败: ' + emotionMappingData.error, 'error');
+                        showStatus(window.t ? window.t('emotion.loadEmotionFailed', {error: emotionMappingData.error}) : '加载情绪映射配置失败: ' + emotionMappingData.error, 'error');
                     }
                      
                      // 自动为没有映射的模型添加映射
@@ -580,7 +582,7 @@
                      renderEmotionGrid();
                      showModelInfo();
                  } else {
-                     statusText.textContent = '加载配置失败: ' + (configData.error || '未知错误');
+                     statusText.textContent = window.t ? window.t('emotion.loadConfigFailed', {error: configData.error || window.t('common.unknownError')}) : '加载配置失败: ' + (configData.error || '未知错误');
                      statusDot.className = 'status-dot error';
                      
                      setTimeout(() => {
@@ -593,7 +595,7 @@
                  const statusDot = statusIndicator.querySelector('.status-dot');
                  
                  statusIndicator.classList.remove('hidden');
-                 statusText.textContent = '加载配置时出错: ' + error.message;
+                 statusText.textContent = window.t ? window.t('emotion.loadConfigError', {error: error.message}) : '加载配置时出错: ' + error.message;
                  statusDot.className = 'status-dot error';
                  
                  setTimeout(() => {
@@ -631,7 +633,7 @@
                     motions: {},
                     expressions: {}
                 };
-                showStatus(`已为模型 ${modelName} 自动创建情绪映射配置`, 'success');
+                showStatus(window.t ? window.t('emotion.autoCreatedMapping', {model: modelName}) : `已为模型 ${modelName} 自动创建情绪映射配置`, 'success');
             }
         }
 
@@ -661,33 +663,33 @@
                 </h3>
                 
                 <div class="file-list">
-                    <h4>动作文件 (${motions.length})</h4>
+                    <h4>${window.t ? window.t('emotion.motionFiles', {count: motions.length}) : `动作文件 (${motions.length})`}</h4>
                     <div id="motions-${emotion}">
                         ${motions.map(file => createFileItem(file, emotion, 'motions')).join('')}
                     </div>
                     <div class="add-file-section">
                         <div class="file-input-group">
                             <select id="motions-select-${emotion}" class="file-select">
-                                <option value="">选择动作文件</option>
+                                <option value="">${window.t ? window.t('emotion.selectMotionFile') : '选择动作文件'}</option>
                                 ${unusedMotions.map(file => `<option value="${file}">${file}</option>`).join('')}
                             </select>
-                            <button class="btn btn-small btn-primary" onclick="addFileFromSelect('${emotion}', 'motions')" ${unusedMotions.length === 0 ? 'disabled' : ''} type="button">添加</button>
+                            <button class="btn btn-small btn-primary" onclick="addFileFromSelect('${emotion}', 'motions')" ${unusedMotions.length === 0 ? 'disabled' : ''} type="button">${window.t ? window.t('emotion.add') : '添加'}</button>
                         </div>
                     </div>
                 </div>
 
                 <div class="file-list">
-                    <h4>表情文件 (${expressions.length})</h4>
+                    <h4>${window.t ? window.t('emotion.expressionFiles', {count: expressions.length}) : `表情文件 (${expressions.length})`}</h4>
                     <div id="expressions-${emotion}">
                         ${expressions.map(file => createFileItem(file, emotion, 'expressions')).join('')}
                     </div>
                     <div class="add-file-section">
                         <div class="file-input-group">
                             <select id="expressions-select-${emotion}" class="file-select">
-                                <option value="">选择表情文件</option>
+                                <option value="">${window.t ? window.t('emotion.selectExpressionFile') : '选择表情文件'}</option>
                                 ${unusedExpressions.map(file => `<option value="${file}">${file}</option>`).join('')}
                             </select>
-                            <button class="btn btn-small btn-primary" onclick="addFileFromSelect('${emotion}', 'expressions')" ${unusedExpressions.length === 0 ? 'disabled' : ''} type="button">添加</button>
+                            <button class="btn btn-small btn-primary" onclick="addFileFromSelect('${emotion}', 'expressions')" ${unusedExpressions.length === 0 ? 'disabled' : ''} type="button">${window.t ? window.t('emotion.add') : '添加'}</button>
                         </div>
                     </div>
                 </div>
@@ -702,7 +704,7 @@
                 <div class="file-item">
                     <span class="file-name">${fileName}</span>
                     <div class="file-actions">
-                        <button class="btn btn-small btn-danger" onclick="removeFile('${emotion}', '${type}', '${fileName}')">删除</button>
+                        <button class="btn btn-small btn-danger" onclick="removeFile('${emotion}', '${type}', '${fileName}')">${window.t ? window.t('emotion.delete') : '删除'}</button>
                     </div>
                 </div>
             `;
@@ -714,7 +716,7 @@
             const fileName = select.value;
             
             if (!fileName) {
-                showStatus('请选择一个文件', 'error');
+                showStatus(window.t ? window.t('emotion.pleaseSelectFile') : '请选择一个文件', 'error');
                 return;
             }
 
@@ -737,7 +739,10 @@
 
             select.value = '';
             renderEmotionGrid();
-            showStatus(`已添加${type === 'motions' ? '动作' : '表情'}文件: ${fileName}`, 'success');
+            const addedMsg = type === 'motions' 
+                ? (window.t ? window.t('emotion.addedMotionFile', {file: fileName}) : `已添加动作文件: ${fileName}`)
+                : (window.t ? window.t('emotion.addedExpressionFile', {file: fileName}) : `已添加表情文件: ${fileName}`);
+            showStatus(addedMsg, 'success');
         }
 
         // 删除文件
@@ -763,18 +768,21 @@
                 }
             }
             renderEmotionGrid();
-            showStatus(`已删除${type === 'motions' ? '动作' : '表情'}文件: ${fileName}`, 'success');
+            const removedMsg = type === 'motions'
+                ? (window.t ? window.t('emotion.removedMotionFile', {file: fileName}) : `已删除动作文件: ${fileName}`)
+                : (window.t ? window.t('emotion.removedExpressionFile', {file: fileName}) : `已删除表情文件: ${fileName}`);
+            showStatus(removedMsg, 'success');
         }
 
         // 保存映射配置
         async function saveMapping() {
             if (!currentModel) {
-                showStatus('请先选择一个模型', 'error');
+                showStatus(window.t ? window.t('emotion.pleaseSelectModel') : '请先选择一个模型', 'error');
                 return;
             }
 
             try {
-                showStatus('正在保存配置...', 'info');
+                showStatus(window.t ? window.t('emotion.savingConfig') : '正在保存配置...', 'info');
                 
                 // 保存情绪映射配置
                 const emotionResponse = await fetch(`/api/live2d/emotion_mapping/${currentModel}`, {
@@ -788,25 +796,27 @@
                 const emotionData = await emotionResponse.json();
                 
                 if (emotionData.success) {
-                    showStatus('配置保存成功', 'success');
+                    showStatus(window.t ? window.t('emotion.configSaved') : '配置保存成功', 'success');
                 } else {
-                    showStatus('保存配置失败: ' + emotionData.error, 'error');
+                    showStatus(window.t ? window.t('emotion.saveConfigFailed', {error: emotionData.error}) : '保存配置失败: ' + emotionData.error, 'error');
                 }
             } catch (error) {
-                showStatus('保存配置时出错: ' + error.message, 'error');
+                showStatus(window.t ? window.t('emotion.saveConfigError', {error: error.message}) : '保存配置时出错: ' + error.message, 'error');
             }
         }
 
         // 重置映射
         async function resetMapping() {
-            if (await showConfirm('确定要重置当前配置吗？这将清空所有动作和表情文件。', '重置配置', {danger: true})) {
+            const confirmMsg = window.t ? window.t('emotion.confirmReset') : '确定要重置当前配置吗？这将清空所有动作和表情文件。';
+            const confirmTitle = window.t ? window.t('emotion.resetConfig') : '重置配置';
+            if (await showConfirm(confirmMsg, confirmTitle, {danger: true})) {
                 if (!emotionMappingConfig[currentModel]) {
                     emotionMappingConfig[currentModel] = { motions: {}, expressions: {} };
                 }
                 emotionMappingConfig[currentModel].motions = { "Idle": [] };
                 emotionMappingConfig[currentModel].expressions = {};
                 renderEmotionGrid();
-                showStatus('配置已重置', 'success');
+                showStatus(window.t ? window.t('emotion.configReset') : '配置已重置', 'success');
             }
         }
 
@@ -817,12 +827,12 @@
              const status = document.getElementById('model-status');
              
              info.classList.remove('hidden');
-             path.textContent = `模型: ${currentModel}`;
+             path.textContent = window.t ? window.t('emotion.model', {model: currentModel}) : `模型: ${currentModel}`;
              
              // 显示模型文件的总数量，而不是已配置的数量
              const totalMotionFiles = currentModelFiles.motion_files.length;
              const totalExpressionFiles = currentModelFiles.expression_files.length;
-             status.textContent = `动作文件: ${totalMotionFiles} | 表情文件: ${totalExpressionFiles}`;
+             status.textContent = window.t ? window.t('emotion.motionExpressionCount', {motionCount: totalMotionFiles, expressionCount: totalExpressionFiles}) : `动作文件: ${totalMotionFiles} | 表情文件: ${totalExpressionFiles}`;
          }
          
                  // 显示toast通知
@@ -888,7 +898,7 @@
               
               // 创建提示信息
               const tipElement = document.createElement('div');
-              tipElement.innerHTML = '💡 点击空白处关闭预览';
+              tipElement.innerHTML = window.t ? window.t('emotion.clickToClosePreview') : '💡 点击空白处关闭预览';
               tipElement.style.cssText = `
                   position: absolute;
                   top: 15px;
