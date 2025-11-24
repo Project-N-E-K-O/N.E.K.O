@@ -2255,9 +2255,28 @@ function init_app(){
             lockIcon.style.setProperty('opacity', '0', 'important');
         }
         
-        // 第三步：显示独立的"请她回来"按钮（居中显示）
+        // 第三步：显示独立的"请她回来"按钮（显示在原来"请她离开"按钮的位置）
         const returnButtonContainer = document.getElementById('live2d-return-button-container');
         if (returnButtonContainer) {
+            // 获取"请她离开"按钮的位置
+            const goodbyeButton = document.getElementById('live2d-btn-goodbye');
+            if (goodbyeButton) {
+                const goodbyeRect = goodbyeButton.getBoundingClientRect();
+                const floatingButtons = document.getElementById('live2d-floating-buttons');
+                if (floatingButtons) {
+                    const floatingRect = floatingButtons.getBoundingClientRect();
+                    
+                    // 计算"请她离开"按钮相对于浮动按钮容器的位置
+                    const relativeLeft = goodbyeRect.left - floatingRect.left;
+                    const relativeTop = goodbyeRect.top - floatingRect.top;
+                    
+                    // 设置"请她回来"按钮在原来"请她离开"按钮的位置
+                    returnButtonContainer.style.left = `${goodbyeRect.left}px`;
+                    returnButtonContainer.style.top = `${goodbyeRect.top}px`;
+                    returnButtonContainer.style.transform = 'none'; // 移除居中transform
+                }
+            }
+            
             returnButtonContainer.style.display = 'flex';
             returnButtonContainer.style.pointerEvents = 'auto';
         }
