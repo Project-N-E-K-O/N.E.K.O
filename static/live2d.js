@@ -1576,8 +1576,34 @@ class Live2DManager {
                 
                 btn.addEventListener('click', (e) => {
                     e.stopPropagation();
+                    
+                    // 对于麦克风按钮，在计算状态之前就检查 micButton 的状态
+                    if (config.id === 'mic') {
+                        const micButton = document.getElementById('micButton');
+                        if (micButton && micButton.classList.contains('active')) {
+                            // 检查是否正在录音：如果 isRecording 为 true，说明已经启动成功，允许点击退出
+                            // 如果 isRecording 为 false，说明正在启动过程中，阻止点击
+                            const isRecording = window.isRecording || false; // 从全局获取 isRecording 状态
+                            
+                            if (!isRecording) {
+                                // 正在启动过程中，强制保持激活状态，不切换
+                                // 确保浮动按钮状态与 micButton 同步
+                                if (btn.dataset.active !== 'true') {
+                                    btn.dataset.active = 'true';
+                                    if (imgOff && imgOn) {
+                                        imgOff.style.opacity = '0';
+                                        imgOn.style.opacity = '1';
+                                    }
+                                }
+                                return; // 直接返回，不执行任何状态切换或事件触发
+                            }
+                            // 如果 isRecording 为 true，说明已经启动成功，允许继续执行（可以退出）
+                        }
+                    }
+                    
                     const isActive = btn.dataset.active === 'true';
                     const newActive = !isActive;
+                    
                     btn.dataset.active = newActive.toString();
                     
                     // 更新图标状态
