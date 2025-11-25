@@ -72,7 +72,7 @@
             opacity: 0;
             transform: translateY(-20px) scale(0.95);
             transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
-            pointer-events: auto !important;  /* 确保可以显示，不受 body 的 pointer-events 影响 */
+            pointer-events: none;  /* 默认不响应事件 */
             word-wrap: break-word;
             white-space: pre-wrap;
             display: flex;  /* 使用flex布局 */
@@ -1380,17 +1380,36 @@
             // 等待配置加载完成
             await window.pageConfigReady;
             
-            // 动态加载 live2d.js
-            const live2dScript = document.createElement('script');
-            live2dScript.src = '/static/live2d.js';
-            document.body.appendChild(live2dScript);
+            // 动态加载 live2d 模块（按顺序加载拆分后的文件）
+            const live2dModules = [
+                '/static/live2d-core.js',
+                '/static/live2d-emotion.js',
+                '/static/live2d-model.js',
+                '/static/live2d-interaction.js',
+                '/static/live2d-ui.js',
+                '/static/live2d-init.js'
+            ];
             
-            // 等待 live2d.js 加载完成后再加载 app.js
-            live2dScript.onload = function() {
-                const appScript = document.createElement('script');
-                appScript.src = '/static/app.js';
-                document.body.appendChild(appScript);
-            };
+            // 按顺序加载脚本的辅助函数
+            async function loadScriptsSequentially(scripts) {
+                for (const src of scripts) {
+                    await new Promise((resolve, reject) => {
+                        const script = document.createElement('script');
+                        script.src = src;
+                        script.onload = resolve;
+                        script.onerror = reject;
+                        document.body.appendChild(script);
+                    });
+                }
+            }
+            
+            // 加载所有 live2d 模块
+            await loadScriptsSequentially(live2dModules);
+            
+            // 等待 live2d 模块加载完成后再加载 app.js
+            const appScript = document.createElement('script');
+            appScript.src = '/static/app.js';
+            document.body.appendChild(appScript);
         } catch (error) {
             console.error('加载脚本时出错:', error);
         }

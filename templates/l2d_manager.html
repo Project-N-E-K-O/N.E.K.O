@@ -233,7 +233,12 @@
 <script src="/static/libs/live2d.min.js"></script>
 <script src="/static/libs/pixi.min.js"></script>
 <script src="/static/libs/index.min.js"></script>
-<script src="/static/live2d.js"></script>
+<script src="/static/live2d-core.js"></script>
+<script src="/static/live2d-emotion.js"></script>
+<script src="/static/live2d-model.js"></script>
+<script src="/static/live2d-interaction.js"></script>
+<script src="/static/live2d-ui.js"></script>
+<script src="/static/live2d-init.js"></script>
 
 <script>
     // 用于页面间通信的事件处理
@@ -1054,7 +1059,8 @@
             }
         }
     });
-// 监听页面卸载事件，确保返回时主界面可见
+    
+    // 监听页面卸载事件，确保返回时主界面可见
         window.addEventListener('beforeunload', (e) => {
             // 尝试退出全屏
             if (isFullscreen()) {
@@ -1083,9 +1089,7 @@
         
         // 确保在页面关闭时也恢复主界面
         window.addEventListener('unload', () => {
-            if (window.opener) {
-                sendMessageToMainPage('show_main_ui');
-            }
+            // 页面卸载时不需要再次发送消息
         });
         </script>
 

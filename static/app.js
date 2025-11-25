@@ -3101,11 +3101,23 @@ function init_app(){
     
     // 保存设置到localStorage
     function saveSettings() {
+        // 从全局变量读取最新值（确保同步 live2d.js 中的更改）
+        const currentProactive = typeof window.proactiveChatEnabled !== 'undefined' 
+            ? window.proactiveChatEnabled 
+            : proactiveChatEnabled;
+        const currentFocus = typeof window.focusModeEnabled !== 'undefined' 
+            ? window.focusModeEnabled 
+            : focusModeEnabled;
+        
         const settings = {
-            proactiveChatEnabled: proactiveChatEnabled,
-            focusModeEnabled: focusModeEnabled
+            proactiveChatEnabled: currentProactive,
+            focusModeEnabled: currentFocus
         };
         localStorage.setItem('xiao8_settings', JSON.stringify(settings));
+        
+        // 同步回局部变量，保持一致性
+        proactiveChatEnabled = currentProactive;
+        focusModeEnabled = currentFocus;
     }
     
     // 暴露到全局作用域，供 live2d.js 等其他模块调用
@@ -3117,10 +3129,11 @@ function init_app(){
             const saved = localStorage.getItem('xiao8_settings');
             if (saved) {
                 const settings = JSON.parse(saved);
-                proactiveChatEnabled = settings.proactiveChatEnabled || false;
+                // 使用 ?? 运算符提供更好的默认值处理（避免将 false 误判为需要使用默认值）
+                proactiveChatEnabled = settings.proactiveChatEnabled ?? false;
                 window.proactiveChatEnabled = proactiveChatEnabled; // 同步到全局
                 // Focus模式：从localStorage加载设置
-                focusModeEnabled = settings.focusModeEnabled || false;
+                focusModeEnabled = settings.focusModeEnabled ?? false;
                 window.focusModeEnabled = focusModeEnabled; // 同步到全局
                 
                 console.log('已加载设置:', {
@@ -3128,9 +3141,17 @@ function init_app(){
                     focusModeEnabled: focusModeEnabled,
                     focusModeDesc: focusModeEnabled ? 'AI说话时自动静音麦克风（不允许打断）' : '允许打断AI说话'
                 });
+            } else {
+                // 如果没有保存的设置，也要确保全局变量被初始化
+                console.log('未找到保存的设置，使用默认值');
+                window.proactiveChatEnabled = proactiveChatEnabled;
+                window.focusModeEnabled = focusModeEnabled;
             }
         } catch (error) {
             console.error('加载设置失败:', error);
+            // 出错时也要确保全局变量被初始化
+            window.proactiveChatEnabled = proactiveChatEnabled;
+            window.focusModeEnabled = focusModeEnabled;
         }
     }
     
