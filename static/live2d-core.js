@@ -50,6 +50,7 @@ class Live2DManager {
         this._floatingButtons = {}; // 存储所有按钮元素
         this._popupTimers = {}; // 存储弹出框的定时器
         this._goodbyeClicked = false; // 标记是否点击了"请她离开"
+        this._returnButtonContainer = null; // "请她回来"按钮容器
         
         // 已打开的设置窗口引用映射（URL -> Window对象）
         this._openSettingsWindows = {};

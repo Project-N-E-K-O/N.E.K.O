@@ -65,24 +65,6 @@ def remove_bracket(text):
     return text
 
 
-# spell Arabic numerals
-def spell_out_number(text: str, inflect_parser):
-    new_text = []
-    st = None
-    for i, c in enumerate(text):
-        if not c.isdigit():
-            if st is not None:
-                num_str = inflect_parser.number_to_words(text[st: i])
-                new_text.append(num_str)
-                st = None
-            new_text.append(c)
-        else:
-            if st is None:
-                st = i
-    if st is not None and st < len(text):
-        num_str = inflect_parser.number_to_words(text[st:])
-        new_text.append(num_str)
-    return ''.join(new_text)
 
 
 # split paragrah logic：

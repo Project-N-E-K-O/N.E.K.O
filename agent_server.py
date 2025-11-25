@@ -21,7 +21,7 @@ from brain.computer_use import ComputerUseAdapter
 from brain.deduper import TaskDeduper
 
 
-app = FastAPI(title="Lanlan Tool Server", version="0.1.0")
+app = FastAPI(title="N.E.K.O Tool Server")
 
 # Configure logging
 from utils.logger_config import setup_logging

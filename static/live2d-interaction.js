@@ -252,22 +252,17 @@ Live2DManager.prototype.enableMouseTracking = function(model, options = {}) {
         if (this._goodbyeClicked) {
             const lockIcon = document.getElementById('live2d-lock-icon');
             const floatingButtons = document.getElementById('live2d-floating-buttons');
+            const returnButtonContainer = document.getElementById('live2d-return-button-container');
+            
             if (lockIcon) {
                 lockIcon.style.setProperty('display', 'none', 'important');
             }
-            // 保持浮动按钮容器显示，但只显示"请她回来"按钮
+            // 隐藏浮动按钮容器，显示"请她回来"按钮
             if (floatingButtons) {
-                floatingButtons.style.display = 'flex';
-                Object.keys(this._floatingButtons).forEach(btnId => {
-                    if (btnId !== 'return') {
-                        const btn = this._floatingButtons[btnId].button;
-                        if (btn) btn.style.display = 'none';
-                    }
-                });
-                const returnBtn = this._floatingButtons['return'];
-                if (returnBtn && returnBtn.button) {
-                    returnBtn.button.style.display = 'flex';
-                }
+                floatingButtons.style.display = 'none';
+            }
+            if (returnButtonContainer) {
+                returnButtonContainer.style.display = 'block';
             }
             return;
         }

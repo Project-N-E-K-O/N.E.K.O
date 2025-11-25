@@ -57,6 +57,11 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
             }
             this._floatingButtonsContainer = null;
             this._floatingButtons = {};
+            // 清理"请她回来"按钮容器
+            if (this._returnButtonContainer && this._returnButtonContainer.parentNode) {
+                this._returnButtonContainer.parentNode.removeChild(this._returnButtonContainer);
+            }
+            this._returnButtonContainer = null;
             // 清理所有弹出框定时器
             Object.values(this._popupTimers).forEach(timer => clearTimeout(timer));
             this._popupTimers = {};

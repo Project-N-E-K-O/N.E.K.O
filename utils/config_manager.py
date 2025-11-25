@@ -141,7 +141,7 @@ class ConfigManager:
                 # 检查路径是否存在且可访问
                 if docs_dir.exists() and os.access(str(docs_dir), os.R_OK | os.W_OK):
                     # 尝试在该目录创建测试文件，确保真的可写
-                    test_path = docs_dir / ".test_xiao8_write"
+                    test_path = docs_dir / ".test_neko_write"
                     try:
                         test_path.touch()
                         test_path.unlink()
@@ -168,7 +168,7 @@ class ConfigManager:
                             dir_path.mkdir(exist_ok=True)
                     
                     # 测试可写性
-                    test_path = docs_dir / ".test_xiao8_write"
+                    test_path = docs_dir / ".test_neko_write"
                     test_path.touch()
                     test_path.unlink()
                     print(f"[ConfigManager] ✓ Using documents directory (created): {docs_dir}", file=sys.stderr)
@@ -219,7 +219,7 @@ class ConfigManager:
         return app_dir / "memory" / "store"
     
     def _ensure_app_docs_directory(self):
-        """确保应用文档目录存在（Xiao8目录本身）"""
+        """确保应用文档目录存在（N.E.K.O目录本身）"""
         try:
             # 先确保父目录（docs_dir）存在
             if not self.docs_dir.exists():
@@ -460,7 +460,9 @@ class ConfigManager:
             return {}
 
         voice_storage = self.load_voice_storage()
-        return voice_storage.get(audio_api_key, {})
+        all_voices = voice_storage.get(audio_api_key, {})
+        # 过滤掉以 "cosyvoice-v2" 开头的旧版音色ID
+        return {k: v for k, v in all_voices.items() if not k.startswith("cosyvoice-v2")}
 
     def save_voice_for_current_api(self, voice_id, voice_data):
         """为当前 AUDIO_API_KEY 保存音色"""
@@ -481,6 +483,10 @@ class ConfigManager:
         """校验 voice_id 是否在当前 AUDIO_API_KEY 下有效"""
         if not voice_id:
             return True
+
+        # 自动忽略以 "cosyvoice-v2" 开头的旧版音色ID
+        if voice_id.startswith("cosyvoice-v2"):
+            return False
 
         voices = self.get_voices_for_current_api()
         return voice_id in voices

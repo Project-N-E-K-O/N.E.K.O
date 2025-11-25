@@ -25,7 +25,12 @@ def get_resource_path(relative_path):
     """获取资源的绝对路径，支持开发环境和打包后的环境"""
     if getattr(sys, 'frozen', False):
         # 打包后的环境
-        base_path = sys._MEIPASS
+        if hasattr(sys, '_MEIPASS'):
+            # PyInstaller
+            base_path = sys._MEIPASS
+        else:
+            # Nuitka
+            base_path = os.path.dirname(os.path.abspath(__file__))
     else:
         # 开发环境
         base_path = os.path.dirname(os.path.abspath(__file__))

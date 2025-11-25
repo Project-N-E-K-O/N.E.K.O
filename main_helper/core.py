@@ -14,13 +14,12 @@ import time
 from datetime import datetime
 from websockets import exceptions as web_exceptions
 from fastapi import WebSocket, WebSocketDisconnect
-from utils.frontend_utils import contains_chinese, replace_blank, replace_corner_mark, remove_bracket, spell_out_number, \
+from utils.frontend_utils import contains_chinese, replace_blank, replace_corner_mark, remove_bracket, \
     is_only_punctuation, split_paragraph
 from utils.audio import make_wav_header
 from main_helper.omni_realtime_client import OmniRealtimeClient
 from main_helper.omni_offline_client import OmniOfflineClient
 from main_helper.tts_helper import get_tts_worker
-import inflect
 import base64
 from io import BytesIO
 from PIL import Image
@@ -29,7 +28,7 @@ from utils.config_manager import get_config_manager
 from multiprocessing import Process, Queue as MPQueue
 from uuid import uuid4
 import numpy as np
-from librosa import resample
+import soxr
 import httpx 
 
 # Setup logger for this module
@@ -53,7 +52,6 @@ class LLMSessionManager:
         self.lock = asyncio.Lock()  # 使用异步锁替代同步锁
         self.websocket_lock = None  # websocket操作的共享锁，由main_server设置
         self.current_speech_id = None
-        self.inflect_parser = inflect.engine()
         self.emoji_pattern = re.compile(r'[^\w\u4e00-\u9fff\s>][^\w\u4e00-\u9fff\s]{2,}[^\w\u4e00-\u9fff\s<]', flags=re.UNICODE)
         self.emoji_pattern2 = re.compile("["
         u"\U0001F600-\U0001F64F"  # emoticons
@@ -278,7 +276,7 @@ class LLMSessionManager:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 # 这里假设audio_data为PCM16字节流，直接推送
                 audio = np.frombuffer(audio_data, dtype=np.int16)
-                audio = (resample(audio.astype(np.float32) / 32768.0, orig_sr=24000, target_sr=48000)*32767.).clip(-32768, 32767).astype(np.int16)
+                audio = (soxr.resample(audio.astype(np.float32) / 32768.0, 24000, 48000, quality='HQ')*32767.).clip(-32768, 32767).astype(np.int16)
 
                 await self.send_speech(audio.tobytes())
                 # 你可以根据需要加上格式、isNewMessage等标记
@@ -474,7 +472,6 @@ class LLMSessionManager:
             text = re.sub(r'[，、]+$', '。', text)
         else:
             text = remove_bracket(text)
-            text = spell_out_number(text, self.inflect_parser)
         text = self.emoji_pattern2.sub('', text)
         text = self.emoji_pattern.sub('', text)
         if is_only_punctuation(text) and text not in ['<', '>']:

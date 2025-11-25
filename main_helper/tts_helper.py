@@ -3,7 +3,7 @@ TTS Helper模块
 负责处理TTS语音合成，支持自定义音色（阿里云CosyVoice）和默认音色（各core_api的原生TTS）
 """
 import numpy as np
-from librosa import resample
+import soxr
 import time
 import asyncio
 import json
@@ -604,7 +604,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             
         def on_complete(self): 
             if len(self.cache) > 0:
-                data = (resample(self.cache, orig_sr=24000, target_sr=48000) * 32768.).clip(-32768, 32767).astype(np.int16).tobytes()
+                data = (soxr.resample(self.cache, 24000, 48000, quality='HQ') * 32768.).clip(-32768, 32767).astype(np.int16).tobytes()
                 self.response_queue.put(data)
                 self.cache = np.zeros(0).astype(np.float32)
                 
@@ -622,7 +622,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             self.cache = np.concatenate([self.cache, audio])
             if len(self.cache) >= 8000:
                 data = self.cache[:8000]
-                data = (resample(data, orig_sr=24000, target_sr=48000) * 32768.).clip(-32768, 32767).astype(np.int16).tobytes()
+                data = (soxr.resample(data, 24000, 48000, quality='HQ') * 32768.).clip(-32768, 32767).astype(np.int16).tobytes()
                 self.response_queue.put(data)
                 self.cache = self.cache[8000:]
             
@@ -656,7 +656,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                     except Exception:
                         pass
                 synthesizer = SpeechSynthesizer(
-                    model="cosyvoice-v2",
+                    model="cosyvoice-v3-plus",
                     voice=voice_id,
                     speech_rate=1.1,
                     format=AudioFormat.PCM_24000HZ_MONO_16BIT,
@@ -812,8 +812,8 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
                                                                             fade_curve = np.linspace(0.0, 1.0, fade_samples)
                                                                             audio_array[:fade_samples] *= fade_curve
                                                                     
-                                                                    # 使用 librosa 进行高质量重采样
-                                                                    resampled = resample(audio_array, orig_sr=sample_rate, target_sr=48000)
+                                                                    # 使用 soxr 进行高质量重采样
+                                                                    resampled = soxr.resample(audio_array, sample_rate, 48000, quality='HQ')
                                                                     # 转回 int16 格式
                                                                     resampled_int16 = (resampled * 32768.0).clip(-32768, 32767).astype(np.int16)
                                                                     response_queue.put(resampled_int16.tobytes())

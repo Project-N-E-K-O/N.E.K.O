@@ -3,16 +3,15 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "Xiao8"
-version = "0.5.2"
-description = "Xiao8 Desktop"
+name = "N.E.K.O."
+version = "1.0.0"
+description = "N.E.K.O. Desktop"
 readme = "README.MD"
 requires-python = ">=3.11,<3.13"
 dependencies = [
   "fastapi~=0.115.9",
   "websockets~=15.0.1",
-  "inflect~=7.3.1",
-  "librosa~=0.10.2",
+  "soxr~=0.5.0",
   "numpy~=1.26.4",
   "pyaudio~=0.2.14",
   "websocket-client~=1.8.0",

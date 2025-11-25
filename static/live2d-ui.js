@@ -452,16 +452,16 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
 
     console.log('[Live2D] 所有浮动按钮已创建完成');
 
-    // 创建独立的"请她回来"按钮（固定在页面中间）
+    // 创建独立的"请她回来"按钮（准备显示在"请她离开"按钮的位置）
     const returnButtonContainer = document.createElement('div');
     returnButtonContainer.id = 'live2d-return-button-container';
     Object.assign(returnButtonContainer.style, {
         position: 'fixed',
-        top: '50%',
-        left: '50%',
-        transform: 'translate(-50%, -50%)',
+        top: '0',
+        left: '0',
+        transform: 'none',
         zIndex: '30',
-        pointerEvents: 'none',
+        pointerEvents: 'auto', // 允许交互，包括拖动
         display: 'none' // 初始隐藏，只在点击"请她离开"后显示
     });
 
@@ -530,6 +530,13 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
     });
 
     returnBtn.addEventListener('click', (e) => {
+        // 检查是否处于拖拽状态，如果是拖拽操作则阻止点击
+        if (returnButtonContainer.getAttribute('data-dragging') === 'true') {
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+        }
+        
         e.stopPropagation();
         const event = new CustomEvent('live2d-return-click');
         window.dispatchEvent(event);
@@ -579,6 +586,9 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
     this._floatingButtonsTicker = tick;
     this.pixi_app.ticker.add(tick);
     
+    // 为按钮容器添加拖动功能
+    this.setupButtonsContainerDrag(buttonsContainer);
+    
     // 页面加载时先显示5秒
     setTimeout(() => {
         // 显示浮动按钮容器
@@ -591,6 +601,9 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
             }
         }, 5000);
     }, 100); // 延迟100ms确保位置已计算
+    
+    // 为"请她回来"按钮容器添加拖动功能
+    this.setupReturnButtonContainerDrag(returnButtonContainer);
 };
 
 // 创建弹出框
@@ -979,15 +992,15 @@ Live2DManager.prototype._createSettingsToggleItem = function(toggle, popup) {
             window.focusModeEnabled = actualValue;
             
             // 保存到localStorage
-            if (typeof window.saveXiao8Settings === 'function') {
-                window.saveXiao8Settings();
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
             }
         } else if (toggle.id === 'proactive-chat') {
             window.proactiveChatEnabled = isChecked;
             
             // 保存到localStorage
-            if (typeof window.saveXiao8Settings === 'function') {
-                window.saveXiao8Settings();
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
             }
             
             if (isChecked && typeof window.resetProactiveChatBackoff === 'function') {
@@ -1230,6 +1243,281 @@ Live2DManager.prototype.closeAllSettingsWindows = function(exceptUrl = null) {
             // 忽略跨域导致的 close 异常
         }
         delete this._openSettingsWindows[url];
+    });
+};
+
+// 为按钮容器设置拖动功能
+Live2DManager.prototype.setupButtonsContainerDrag = function(buttonsContainer) {
+    let isDragging = false;
+    let dragStartX = 0;
+    let dragStartY = 0;
+    let containerStartX = 0;
+    let containerStartY = 0;
+    let isClick = false; // 标记是否为点击操作（与返回按钮拖动一致的语义）
+    
+    // 鼠标按下事件
+    buttonsContainer.addEventListener('mousedown', (e) => {
+        // 只在按钮容器本身被点击时开始拖动（不是按钮）
+        if (e.target === buttonsContainer) {
+            isDragging = true;
+            isClick = true; // 初始标记为点击
+            dragStartX = e.clientX;
+            dragStartY = e.clientY;
+
+            // 获取当前容器位置
+            const currentLeft = parseInt(buttonsContainer.style.left) || 0;
+            const currentTop = parseInt(buttonsContainer.style.top) || 0;
+            containerStartX = currentLeft;
+            containerStartY = currentTop;
+
+            // 设置拖拽标记（初始为false）
+            buttonsContainer.setAttribute('data-dragging', 'false');
+
+            // 改变鼠标样式
+            buttonsContainer.style.cursor = 'grabbing';
+            e.preventDefault();
+        }
+    });
+    
+    // 鼠标移动事件
+    document.addEventListener('mousemove', (e) => {
+        if (isDragging) {
+            const deltaX = e.clientX - dragStartX;
+            const deltaY = e.clientY - dragStartY;
+            
+            // 如果移动距离超过阈值，则认为是拖拽而不是点击
+            const dragThreshold = 5; // 5像素阈值
+            if (Math.abs(deltaX) > dragThreshold || Math.abs(deltaY) > dragThreshold) {
+                isClick = false;
+                buttonsContainer.setAttribute('data-dragging', 'true');
+            }
+            
+            const newX = containerStartX + deltaX;
+            const newY = containerStartY + deltaY;
+            
+            // 限制在屏幕范围内
+            const screenWidth = window.innerWidth;
+            const screenHeight = window.innerHeight;
+            const containerWidth = buttonsContainer.offsetWidth || 80;
+            const containerHeight = buttonsContainer.offsetHeight || 200;
+            
+            const boundedX = Math.max(0, Math.min(newX, screenWidth - containerWidth));
+            const boundedY = Math.max(0, Math.min(newY, screenHeight - containerHeight));
+            
+            buttonsContainer.style.left = `${boundedX}px`;
+            buttonsContainer.style.top = `${boundedY}px`;
+        }
+    });
+    
+    // 鼠标释放事件
+    document.addEventListener('mouseup', (e) => {
+        if (isDragging) {
+            // 稍后重置拖拽标记，给事件处理时间
+            setTimeout(() => {
+                buttonsContainer.setAttribute('data-dragging', 'false');
+            }, 10);
+            
+            isDragging = false;
+            isClick = false;
+            buttonsContainer.style.cursor = 'grab';
+        }
+    });
+    
+    // 设置初始鼠标样式
+    buttonsContainer.style.cursor = 'grab';
+    
+    // 触摸事件支持
+    buttonsContainer.addEventListener('touchstart', (e) => {
+        if (e.target === buttonsContainer) {
+            isDragging = true;
+            isClick = true;
+            const touch = e.touches[0];
+            dragStartX = touch.clientX;
+            dragStartY = touch.clientY;
+
+            const currentLeft = parseInt(buttonsContainer.style.left) || 0;
+            const currentTop = parseInt(buttonsContainer.style.top) || 0;
+            containerStartX = currentLeft;
+            containerStartY = currentTop;
+
+            buttonsContainer.setAttribute('data-dragging', 'false');
+            e.preventDefault();
+        }
+    });
+    
+    document.addEventListener('touchmove', (e) => {
+        if (isDragging) {
+            const touch = e.touches[0];
+            const deltaX = touch.clientX - dragStartX;
+            const deltaY = touch.clientY - dragStartY;
+            
+            const dragThreshold = 5;
+            if (Math.abs(deltaX) > dragThreshold || Math.abs(deltaY) > dragThreshold) {
+                isClick = false;
+                buttonsContainer.setAttribute('data-dragging', 'true');
+            }
+            
+            const newX = containerStartX + deltaX;
+            const newY = containerStartY + deltaY;
+            
+            const screenWidth = window.innerWidth;
+            const screenHeight = window.innerHeight;
+            const containerWidth = buttonsContainer.offsetWidth || 80;
+            const containerHeight = buttonsContainer.offsetHeight || 200;
+            
+            const boundedX = Math.max(0, Math.min(newX, screenWidth - containerWidth));
+            const boundedY = Math.max(0, Math.min(newY, screenHeight - containerHeight));
+            
+            buttonsContainer.style.left = `${boundedX}px`;
+            buttonsContainer.style.top = `${boundedY}px`;
+            e.preventDefault();
+        }
+    });
+    
+    document.addEventListener('touchend', (e) => {
+        if (isDragging) {
+            setTimeout(() => {
+                buttonsContainer.setAttribute('data-dragging', 'false');
+            }, 10);
+            
+            isDragging = false;
+            isClick = false;
+        }
+    });
+};
+
+// 为"请她回来"按钮容器设置拖动功能
+Live2DManager.prototype.setupReturnButtonContainerDrag = function(returnButtonContainer) {
+    let isDragging = false;
+    let dragStartX = 0;
+    let dragStartY = 0;
+    let containerStartX = 0;
+    let containerStartY = 0;
+    let isClick = false; // 标记是否为点击操作
+    
+    // 鼠标按下事件
+    returnButtonContainer.addEventListener('mousedown', (e) => {
+        // 允许在按钮容器本身和按钮元素上都能开始拖动
+        // 这样就能在按钮正中心位置进行拖拽操作
+        if (e.target === returnButtonContainer || e.target.classList.contains('live2d-return-btn')) {
+            isDragging = true;
+            isClick = true;
+            dragStartX = e.clientX;
+            dragStartY = e.clientY;
+
+            const currentLeft = parseInt(returnButtonContainer.style.left) || 0;
+            const currentTop = parseInt(returnButtonContainer.style.top) || 0;
+            containerStartX = currentLeft;
+            containerStartY = currentTop;
+
+            returnButtonContainer.setAttribute('data-dragging', 'false');
+            returnButtonContainer.style.cursor = 'grabbing';
+            e.preventDefault();
+        }
+    });
+    
+    // 鼠标移动事件
+    document.addEventListener('mousemove', (e) => {
+        if (isDragging) {
+            const deltaX = e.clientX - dragStartX;
+            const deltaY = e.clientY - dragStartY;
+            
+            const dragThreshold = 5;
+            if (Math.abs(deltaX) > dragThreshold || Math.abs(deltaY) > dragThreshold) {
+                isClick = false;
+                returnButtonContainer.setAttribute('data-dragging', 'true');
+            }
+            
+            const newX = containerStartX + deltaX;
+            const newY = containerStartY + deltaY;
+            
+            const screenWidth = window.innerWidth;
+            const screenHeight = window.innerHeight;
+            const containerWidth = returnButtonContainer.offsetWidth || 64;
+            const containerHeight = returnButtonContainer.offsetHeight || 64;
+            
+            const boundedX = Math.max(0, Math.min(newX, screenWidth - containerWidth));
+            const boundedY = Math.max(0, Math.min(newY, screenHeight - containerHeight));
+            
+            returnButtonContainer.style.left = `${boundedX}px`;
+            returnButtonContainer.style.top = `${boundedY}px`;
+        }
+    });
+    
+    // 鼠标释放事件
+    document.addEventListener('mouseup', (e) => {
+        if (isDragging) {
+            setTimeout(() => {
+                returnButtonContainer.setAttribute('data-dragging', 'false');
+            }, 10);
+            
+            isDragging = false;
+            isClick = false;
+            returnButtonContainer.style.cursor = 'grab';
+        }
+    });
+    
+    // 设置初始鼠标样式
+    returnButtonContainer.style.cursor = 'grab';
+    
+    // 触摸事件支持
+    returnButtonContainer.addEventListener('touchstart', (e) => {
+        // 允许在按钮容器本身和按钮元素上都能开始拖动
+        if (e.target === returnButtonContainer || e.target.classList.contains('live2d-return-btn')) {
+            isDragging = true;
+            isClick = true;
+            const touch = e.touches[0];
+            dragStartX = touch.clientX;
+            dragStartY = touch.clientY;
+
+            const currentLeft = parseInt(returnButtonContainer.style.left) || 0;
+            const currentTop = parseInt(returnButtonContainer.style.top) || 0;
+            containerStartX = currentLeft;
+            containerStartY = currentTop;
+
+            returnButtonContainer.setAttribute('data-dragging', 'false');
+            e.preventDefault();
+        }
+    });
+    
+    document.addEventListener('touchmove', (e) => {
+        if (isDragging) {
+            const touch = e.touches[0];
+            const deltaX = touch.clientX - dragStartX;
+            const deltaY = touch.clientY - dragStartY;
+            
+            const dragThreshold = 5;
+            if (Math.abs(deltaX) > dragThreshold || Math.abs(deltaY) > dragThreshold) {
+                isClick = false;
+                returnButtonContainer.setAttribute('data-dragging', 'true');
+            }
+            
+            const newX = containerStartX + deltaX;
+            const newY = containerStartY + deltaY;
+            
+            const screenWidth = window.innerWidth;
+            const screenHeight = window.innerHeight;
+            const containerWidth = returnButtonContainer.offsetWidth || 64;
+            const containerHeight = returnButtonContainer.offsetHeight || 64;
+            
+            const boundedX = Math.max(0, Math.min(newX, screenWidth - containerWidth));
+            const boundedY = Math.max(0, Math.min(newY, screenHeight - containerHeight));
+            
+            returnButtonContainer.style.left = `${boundedX}px`;
+            returnButtonContainer.style.top = `${boundedY}px`;
+            e.preventDefault();
+        }
+    });
+    
+    document.addEventListener('touchend', (e) => {
+        if (isDragging) {
+            setTimeout(() => {
+                returnButtonContainer.setAttribute('data-dragging', 'false');
+            }, 10);
+            
+            isDragging = false;
+            isClick = false;
+        }
     });
 };
 

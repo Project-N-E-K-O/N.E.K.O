@@ -2384,6 +2384,17 @@ function init_app(){
         }
         console.log('[App] 设置 goodbyeClicked 为 true，当前状态:', window.live2dManager ? window.live2dManager._goodbyeClicked : 'undefined');
         
+        // 在隐藏 DOM 之前先读取 "请她离开" 按钮的位置（避免隐藏后 getBoundingClientRect 返回异常）
+        const goodbyeButton = document.getElementById('live2d-btn-goodbye');
+        let savedGoodbyeRect = null;
+        if (goodbyeButton) {
+            try {
+                savedGoodbyeRect = goodbyeButton.getBoundingClientRect();
+            } catch (e) {
+                savedGoodbyeRect = null;
+            }
+        }
+
         // 第二步：立即隐藏所有浮动按钮和锁按钮（设置为 !important 防止其他代码覆盖）
         const floatingButtons = document.getElementById('live2d-floating-buttons');
         if (floatingButtons) {
@@ -2391,17 +2402,42 @@ function init_app(){
             floatingButtons.style.setProperty('visibility', 'hidden', 'important');
             floatingButtons.style.setProperty('opacity', '0', 'important');
         }
-        
+
         const lockIcon = document.getElementById('live2d-lock-icon');
         if (lockIcon) {
             lockIcon.style.setProperty('display', 'none', 'important');
             lockIcon.style.setProperty('visibility', 'hidden', 'important');
             lockIcon.style.setProperty('opacity', '0', 'important');
         }
-        
-        // 第三步：显示独立的"请她回来"按钮（居中显示）
+
+        // 第三步：显示独立的"请她回来"按钮（显示在原来"请她离开"按钮的位置）
         const returnButtonContainer = document.getElementById('live2d-return-button-container');
         if (returnButtonContainer) {
+            // 如果我们之前成功读取到原按钮的位置，就基于该矩形进行居中定位
+            if (savedGoodbyeRect) {
+                // 获取返回容器尺寸，兼容尚未加入DOM或display:none的情况
+                const containerWidth = returnButtonContainer.offsetWidth || 64;
+                const containerHeight = returnButtonContainer.offsetHeight || 64;
+
+                // 将返回按钮居中放在原按钮位置
+                const left = Math.round(savedGoodbyeRect.left + (savedGoodbyeRect.width - containerWidth) / 2 + window.scrollX);
+                const top = Math.round(savedGoodbyeRect.top + (savedGoodbyeRect.height - containerHeight) / 2 + window.scrollY);
+
+                returnButtonContainer.style.left = `${Math.max(0, Math.min(left, window.innerWidth - containerWidth))}px`;
+                returnButtonContainer.style.top = `${Math.max(0, Math.min(top, window.innerHeight - containerHeight))}px`;
+                returnButtonContainer.style.transform = 'none'; // 移除居中transform
+            } else {
+                // 回退：如果无法读取原按钮位置，则将返回按钮放在右下角上方的预设位置
+                const fallbackRight = 16;
+                const fallbackBottom = 116;
+                returnButtonContainer.style.right = `${fallbackRight}px`;
+                returnButtonContainer.style.bottom = `${fallbackBottom}px`;
+                // 清除 left/top/transform 以避免冲突
+                returnButtonContainer.style.left = '';
+                returnButtonContainer.style.top = '';
+                returnButtonContainer.style.transform = 'none';
+            }
+
             returnButtonContainer.style.display = 'flex';
             returnButtonContainer.style.pointerEvents = 'auto';
         }
@@ -3112,7 +3148,7 @@ function init_app(){
             proactiveChatEnabled: currentProactive,
             focusModeEnabled: currentFocus
         };
-        localStorage.setItem('xiao8_settings', JSON.stringify(settings));
+        localStorage.setItem('n.e.k.o._settings', JSON.stringify(settings));
         
         // 同步回局部变量，保持一致性
         proactiveChatEnabled = currentProactive;
@@ -3120,12 +3156,12 @@ function init_app(){
     }
     
     // 暴露到全局作用域，供 live2d.js 等其他模块调用
-    window.saveXiao8Settings = saveSettings;
+    window.saveNEKOSettings = saveSettings;
     
     // 从localStorage加载设置
     function loadSettings() {
         try {
-            const saved = localStorage.getItem('xiao8_settings');
+            const saved = localStorage.getItem('n.e.k.o._settings');
             if (saved) {
                 const settings = JSON.parse(saved);
                 // 使用 ?? 运算符提供更好的默认值处理（避免将 false 误判为需要使用默认值）
