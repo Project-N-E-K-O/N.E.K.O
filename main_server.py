@@ -2330,6 +2330,62 @@ async def save_recent_file(request: Request):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+@app.post('/api/memory/update_catgirl_name')
+async def update_catgirl_name(request: Request):
+    """
+    更新记忆文件中的猫娘名称
+    1. 重命名记忆文件
+    2. 更新文件内容中的猫娘名称引用
+    """
+    import os, json
+    data = await request.json()
+    old_name = data.get('old_name')
+    new_name = data.get('new_name')
+    
+    if not old_name or not new_name:
+        return JSONResponse({"success": False, "error": "缺少必要参数"}, status_code=400)
+    
+    try:
+        from utils.config_manager import get_config_manager
+        cm = get_config_manager()
+        
+        # 1. 重命名记忆文件
+        old_filename = f'recent_{old_name}.json'
+        new_filename = f'recent_{new_name}.json'
+        old_file_path = str(cm.memory_dir / old_filename)
+        new_file_path = str(cm.memory_dir / new_filename)
+        
+        # 如果旧文件存在，则重命名
+        if os.path.exists(old_file_path):
+            # 如果新文件已存在，先删除
+            if os.path.exists(new_file_path):
+                os.remove(new_file_path)
+            # 重命名文件
+            os.rename(old_file_path, new_file_path)
+            
+            # 2. 更新文件内容中的猫娘名称引用
+            with open(new_file_path, 'r', encoding='utf-8') as f:
+                file_content = json.load(f)
+            
+            # 遍历所有消息，更新内容中的猫娘名称
+            for item in file_content:
+                if isinstance(item, dict) and 'data' in item and isinstance(item['data'], dict):
+                    content = item['data'].get('content', '')
+                    if isinstance(content, str):
+                        # 替换内容中的猫娘名称（简单处理，实际可能需要更复杂的匹配逻辑）
+                        # 注意：这里只做简单替换，避免影响其他内容
+                        item['data']['content'] = content.replace(old_name, new_name)
+            
+            # 保存更新后的内容
+            with open(new_file_path, 'w', encoding='utf-8') as f:
+                json.dump(file_content, f, ensure_ascii=False, indent=2)
+        
+        logger.info(f"已更新猫娘名称从 '{old_name}' 到 '{new_name}' 的记忆文件")
+        return {"success": True}
+    except Exception as e:
+        logger.error(f"更新猫娘名称失败: {e}")
+        return {"success": False, "error": str(e)}
+
 @app.post('/api/emotion/analysis')
 async def emotion_analysis(request: Request):
     try:
