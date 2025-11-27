@@ -1179,27 +1179,61 @@ Live2DManager.prototype._createToggleItem = function(toggle, popup) {
     toggleItem.addEventListener('mouseleave', () => {
         toggleItem.style.background = 'transparent';
     });
-    
-    // 点击切换（点击整个项目都可以切换）
-    // 使用 _processing 标志防止快速重复点击导致的竞态条件
-    toggleItem.addEventListener('click', (e) => {
+
+    // 点击切换（点击除复选框本身外的任何区域）
+    const handleToggle = (event) => {
         if (checkbox.disabled) return;
-        // 如果正在处理中，忽略点击
+        
+        // 防止重复点击
         if (checkbox._processing) {
-            console.log('[Live2D] Agent开关正在处理中，忽略重复点击');
+            console.log('[Live2D] Agent开关正在处理中，忽略重复点击:', toggle.id);
+            event?.preventDefault();
+            event?.stopPropagation();
             return;
         }
-        // 立即设置处理中标志，防止在 dispatchEvent 之前的快速重复点击
+        
+        // 立即设置处理中标志
         checkbox._processing = true;
+        checkbox._processingEvent = event;
+        checkbox._processingTime = Date.now();
+        
         const newChecked = !checkbox.checked;
         checkbox.checked = newChecked;
         checkbox.dispatchEvent(new Event('change', { bubbles: true }));
         updateStyle();
-        // 注意：_processing 标志会在 app.js 的 change 处理完成后被清除
-        // 如果 app.js 没有处理这个 checkbox（比如不是 agent 开关），这里设置一个备用清除
-        if (!checkbox._hasExternalHandler) {
-            checkbox._processing = false;
+        
+        // 备用清除机制（如果外部没有处理）
+        setTimeout(() => {
+            if (checkbox._processing && Date.now() - checkbox._processingTime > 50) {
+                checkbox._processing = false;
+                checkbox._processingEvent = null;
+                checkbox._processingTime = null;
+            }
+        }, 100);
+        
+        // 防止默认行为和事件冒泡
+        event?.preventDefault();
+        event?.stopPropagation();
+    };
+
+    // 点击整个项目区域（除了复选框和指示器）
+    toggleItem.addEventListener('click', (e) => {
+        if (e.target !== checkbox && e.target !== indicator && e.target !== label) {
+            handleToggle(e);
         }
+    });
+
+    // 点击指示器也可以切换
+    indicator.addEventListener('click', (e) => {
+        e.stopPropagation();
+        handleToggle(e);
+    });
+
+    // 防止标签点击的默认行为
+    label.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        handleToggle(e);
     });
 
     return toggleItem;
@@ -1322,11 +1356,8 @@ Live2DManager.prototype._createSettingsToggleItem = function(toggle, popup) {
         updateStyle();
     });
     
-    // 点击切换（直接更新全局状态并保存）
-    checkbox.addEventListener('change', (e) => {
-        e.stopPropagation();
-        const isChecked = checkbox.checked;
-        
+    // 统一的切换处理函数
+    const handleToggleChange = (isChecked) => {
         // 更新样式
         updateStyle();
         
@@ -1357,23 +1388,40 @@ Live2DManager.prototype._createSettingsToggleItem = function(toggle, popup) {
             }
             console.log(`主动搭话已${isChecked ? '开启' : '关闭'}`);
         }
+    };
+
+    // 点击切换（直接更新全局状态并保存）
+    checkbox.addEventListener('change', (e) => {
+        e.stopPropagation();
+        handleToggleChange(checkbox.checked);
     });
     
-    // 点击整行也能切换
+    // 点击整行也能切换（除了复选框本身）
     toggleItem.addEventListener('click', (e) => {
-        if (e.target !== checkbox) {
-            checkbox.checked = !checkbox.checked;
-            checkbox.dispatchEvent(new Event('change', { bubbles: true }));
-            updateStyle();  // 更新样式
+        if (e.target !== checkbox && e.target !== indicator) {
+            e.preventDefault();
+            e.stopPropagation();
+            const newChecked = !checkbox.checked;
+            checkbox.checked = newChecked;
+            handleToggleChange(newChecked);
         }
     });
     
     // 点击指示器也可以切换
     indicator.addEventListener('click', (e) => {
         e.stopPropagation();
-        checkbox.checked = !checkbox.checked;
-        checkbox.dispatchEvent(new Event('change', { bubbles: true }));
-        updateStyle();
+        const newChecked = !checkbox.checked;
+        checkbox.checked = newChecked;
+        handleToggleChange(newChecked);
+    });
+    
+    // 防止标签点击的默认行为
+    label.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const newChecked = !checkbox.checked;
+        checkbox.checked = newChecked;
+        handleToggleChange(newChecked);
     });
 
     return toggleItem;
