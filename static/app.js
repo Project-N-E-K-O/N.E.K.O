@@ -2725,30 +2725,11 @@ function init_app(){
         
         // 辅助函数：重置子开关状态和 UI
         const resetSubCheckboxes = () => {
-            console.log('[App] 重置所有子开关状态');
             [agentKeyboardCheckbox, agentMcpCheckbox].forEach(cb => {
                 if (cb) {
-                    // 立即清除所有处理状态标志
-                    cb._processing = false;
-                    cb._processingChangeId = null;
-                    
-                    // 原子性地设置禁用状态和样式
-                    cb._autoDisabled = true; // 标记为自动禁用，避免触发change事件
                     cb.disabled = true;
                     cb.checked = false;
-                    
-                    // 同步UI样式
-                    if (typeof cb._updateStyle === 'function') {
-                        cb._updateStyle();
-                    }
-                    
-                    console.log(`[App] 子开关 ${cb.id} 已重置为禁用状态`);
-                    
-                    // 延迟更长时间确保不会干扰其他操作
-                    setTimeout(() => {
-                        cb._autoDisabled = false;
-                        console.log(`[App] 子开关 ${cb.id} 自动禁用标记已清除`);
-                    }, 200);
+                    syncCheckboxUI(cb);
                 }
             });
         };
@@ -2756,16 +2737,6 @@ function init_app(){
         // 初始化时，确保键鼠控制和MCP工具默认禁用（除非Agent总开关已开启）
         if (!agentMasterCheckbox.checked) {
             resetSubCheckboxes();
-        } else {
-            // 如果Agent总开关已开启，也要检查子开关的可用性
-            [agentKeyboardCheckbox, agentMcpCheckbox].forEach(cb => {
-                if (cb) {
-                    cb.disabled = false;
-                    if (typeof cb._updateStyle === 'function') {
-                        cb._updateStyle();
-                    }
-                }
-            });
         }
         
         // Agent总开关逻辑
@@ -2820,30 +2791,27 @@ function init_app(){
                         // 启动定时检查器
                         window.startAgentAvailabilityCheck();
                     } catch(e) {
-                        console.log('[App] Agent开启失败，重置状态');
                         agentMasterCheckbox.checked = false;
-                        agentMasterCheckbox.disabled = false; // 确保可以再次点击
                         syncCheckboxUI(agentMasterCheckbox);
+                        resetSubCheckboxes();
                         // 确保任务轮询已停止
                         window.stopAgentTaskPolling();
                         setFloatingAgentStatus('开启失败');
-                        // 注意：不在这里调用resetSubCheckboxes，避免与主关闭逻辑冲突
                     }
                 } else {
-                    console.log('[App] Agent总开关关闭，开始清理状态');
                     setFloatingAgentStatus('Agent模式已关闭');
                     
                     // 同步总开关自身的 UI
                     syncCheckboxUI(agentMasterCheckbox);
-                    
-                    // 立即重置子开关状态（优先处理UI状态）
-                    resetSubCheckboxes();
                     
                     // 停止可用性定时检查器（但不影响弹窗打开时的连通性检查）
                     window.stopAgentAvailabilityCheck();
                     
                     // 停止任务轮询并隐藏 HUD
                     window.stopAgentTaskPolling();
+                    
+                    // 重置子开关
+                    resetSubCheckboxes();
                     
                     // 停止所有任务并重置状态
                     try {
@@ -2861,9 +2829,7 @@ function init_app(){
                                 flags: {agent_enabled: false, computer_use_enabled: false, mcp_enabled: false}
                             })
                         });
-                        console.log('[App] Agent状态重置完成');
                     } catch(e) {
-                        console.warn('[App] Agent状态重置部分失败:', e);
                         setFloatingAgentStatus('Agent模式已关闭（部分清理失败）');
                     }
                 }
@@ -2892,12 +2858,9 @@ function init_app(){
                 
                 console.log(`[App] ${name}开关状态变化:`, checkbox.checked);
                 if (!agentMasterCheckbox?.checked) {
-                    console.log(`[App] Agent总开关未开启，强制重置${name}开关状态`);
                     checkbox.checked = false;
-                    checkbox.disabled = true; // 确保禁用状态
                     syncCheckboxUI(checkbox);
                     checkbox._processing = false;
-                    checkbox._processingChangeId = null;
                     return;
                 }
                 
@@ -3075,47 +3038,28 @@ function init_app(){
         });
     }
     
-    // 检查是否需要显示任务 HUD（键鼠或 MCP 任一开启且未禁用）
+    // 检查是否需要显示任务 HUD（键鼠或 MCP 任一开启）
     function checkAndToggleTaskHUD() {
         const keyboardCheckbox = document.getElementById('live2d-agent-keyboard');
         const mcpCheckbox = document.getElementById('live2d-agent-mcp');
-        const agentMasterCheckbox = document.getElementById('live2d-agent-master');
         
-        // 检查子开关是否启用且处于开启状态
-        const keyboardEnabled = keyboardCheckbox && keyboardCheckbox.checked && !keyboardCheckbox.disabled;
-        const mcpEnabled = mcpCheckbox && mcpCheckbox.checked && !mcpCheckbox.disabled;
-        // 额外检查Agent总开关状态
-        const agentMasterEnabled = agentMasterCheckbox && agentMasterCheckbox.checked && !agentMasterCheckbox.disabled;
+        const keyboardEnabled = keyboardCheckbox && keyboardCheckbox.checked;
+        const mcpEnabled = mcpCheckbox && mcpCheckbox.checked;
         
-        console.log('[App] 检查HUD显示状态:', {
-            keyboardEnabled,
-            mcpEnabled,
-            agentMasterEnabled,
-            keyboardChecked: keyboardCheckbox?.checked,
-            keyboardDisabled: keyboardCheckbox?.disabled,
-            mcpChecked: mcpCheckbox?.checked,
-            mcpDisabled: mcpCheckbox?.disabled
-        });
-        
-        // 只有在Agent总开关开启且至少一个子开关启用时才启动轮询
-        if (agentMasterEnabled && (keyboardEnabled || mcpEnabled)) {
-            console.log('[App] 启动任务轮询 - Agent总开关开启且子开关可用');
+        if (keyboardEnabled || mcpEnabled) {
             window.startAgentTaskPolling();
         } else {
-            console.log('[App] 停止任务轮询 - Agent总开关关闭或无可用子开关');
             window.stopAgentTaskPolling();
         }
     }
     
-    // 监听 Agent 开关变化来控制 HUD 显示
+    // 监听 Agent 子开关变化来控制 HUD 显示
     window.addEventListener('live2d-floating-buttons-ready', () => {
         // 延迟确保元素已创建
         setTimeout(() => {
             const keyboardCheckbox = document.getElementById('live2d-agent-keyboard');
             const mcpCheckbox = document.getElementById('live2d-agent-mcp');
-            const agentMasterCheckbox = document.getElementById('live2d-agent-master');
             
-            // 绑定子开关变化监听
             if (keyboardCheckbox) {
                 keyboardCheckbox.addEventListener('change', checkAndToggleTaskHUD);
             }
@@ -3123,15 +3067,7 @@ function init_app(){
                 mcpCheckbox.addEventListener('change', checkAndToggleTaskHUD);
             }
             
-            // 绑定Agent总开关变化监听
-            if (agentMasterCheckbox) {
-                agentMasterCheckbox.addEventListener('change', checkAndToggleTaskHUD);
-                console.log('[App] Agent总开关HUD控制已绑定');
-            }
-            
-            console.log('[App] Agent 任务 HUD 控制已全部绑定');
-            // 立即检查一次初始状态
-            checkAndToggleTaskHUD();
+            console.log('[App] Agent 任务 HUD 控制已绑定');
         }, 100);
     });
     // ========== Agent 任务 HUD 轮询逻辑结束 ==========
