@@ -522,7 +522,7 @@
       "keyboardControl": "Keyboard & Mouse Control",
       "mcpTools": "MCP Tools",
       "focusMode": "🎯 Focus Mode",
-      "unavailable": "Unavailable"
+      "unavailable": "{{name}} Unavailable"
     }
   },
   "subtitle": {
@@ -530,5 +530,17 @@
   },
   "viewer": {
     "title": "Viewer - Project N.E.K.O."
+  },
+  "agent": {
+    "taskHud": {
+      "title": "Agent Tasks",
+      "running": "Running",
+      "queued": "Queued",
+      "noTasks": "No active tasks",
+      "statusRunning": "Running",
+      "statusQueued": "Queued",
+      "statusCompleted": "Completed",
+      "statusFailed": "Failed"
+    }
   }
 }

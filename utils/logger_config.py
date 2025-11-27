@@ -415,8 +415,241 @@ def setup_logging(app_name=None, service_name=None, log_level=None):
     return logger, config
 
 
+# =============================================================================
+# 统一的速率限制日志过滤器
+# =============================================================================
+
+class RateLimitedEndpointFilter(logging.Filter):
+    """
+    统一的速率限制日志过滤器
+    
+    支持两种模式：
+    1. 完全抑制：某些端点的日志完全不显示
+    2. 速率限制：某些端点的日志每 N 秒只显示一次
+    
+    使用示例：
+        filter = RateLimitedEndpointFilter(
+            suppressed_endpoints=["/health", "/ping"],
+            rate_limited_endpoints=["/api/tasks", "/status"],
+            rate_limit_interval=15.0
+        )
+        logging.getLogger("uvicorn.access").addFilter(filter)
+    """
+    
+    DEFAULT_RATE_LIMIT_INTERVAL = 15.0  # 默认15秒
+    
+    def __init__(self, 
+                 suppressed_endpoints: list = None,
+                 rate_limited_endpoints: list = None,
+                 rate_limit_interval: float = None,
+                 rate_limit_message: str = None):
+        """
+        初始化过滤器
+        
+        Args:
+            suppressed_endpoints: 完全抑制的端点列表（日志完全不显示）
+            rate_limited_endpoints: 速率限制的端点列表（每 N 秒显示一次）
+            rate_limit_interval: 速率限制间隔（秒），默认15秒
+            rate_limit_message: 速率限制提示消息，默认 "(此日志每{N}秒显示一次)"
+        """
+        super().__init__()
+        self.suppressed_endpoints = suppressed_endpoints or []
+        self.rate_limited_endpoints = rate_limited_endpoints or []
+        self.rate_limit_interval = rate_limit_interval or self.DEFAULT_RATE_LIMIT_INTERVAL
+        self.rate_limit_message = rate_limit_message or f"(此日志每{int(self.rate_limit_interval)}秒显示一次)"
+        
+        # 记录每个端点的上次日志时间
+        self._last_log_times = {}
+    
+    def filter(self, record: logging.LogRecord) -> bool:
+        """
+        过滤日志记录
+        
+        Returns:
+            bool: True 表示显示日志，False 表示抑制日志
+        """
+        import time
+        
+        # WARNING 和 ERROR 级别的日志始终显示
+        if record.levelno > logging.INFO:
+            return True
+        
+        msg = record.getMessage()
+        
+        # 检查完全抑制的端点
+        for endpoint in self.suppressed_endpoints:
+            if endpoint in msg:
+                return False
+        
+        # 检查速率限制的端点
+        current_time = time.time()
+        for endpoint in self.rate_limited_endpoints:
+            if endpoint in msg:
+                last_time = self._last_log_times.get(endpoint, 0)
+                if current_time - last_time >= self.rate_limit_interval:
+                    self._last_log_times[endpoint] = current_time
+                    # 添加速率限制提示
+                    record.msg = f"{record.msg} {self.rate_limit_message}"
+                    return True
+                else:
+                    return False
+        
+        return True
+    
+    def reset_timer(self, endpoint: str = None):
+        """
+        重置计时器
+        
+        Args:
+            endpoint: 要重置的端点，如果为 None 则重置所有
+        """
+        if endpoint:
+            self._last_log_times.pop(endpoint, None)
+        else:
+            self._last_log_times.clear()
+
+
+class ThrottledLogger:
+    """
+    带速率限制的日志记录器包装器
+    
+    用于业务逻辑中需要速率限制日志的场景
+    
+    使用示例:
+        throttled = ThrottledLogger(logger, interval=15.0)
+        throttled.info("mcp_check", "MCP availability check result: ready")  # 每15秒只记录一次
+    """
+    
+    def __init__(self, logger, interval: float = 15.0):
+        """
+        初始化速率限制日志记录器
+        
+        Args:
+            logger: 原始 logger 实例
+            interval: 速率限制间隔（秒）
+        """
+        self._logger = logger
+        self._interval = interval
+        self._last_log_times = {}
+    
+    def _should_log(self, key: str) -> bool:
+        """检查是否应该记录日志"""
+        import time
+        current_time = time.time()
+        last_time = self._last_log_times.get(key, 0)
+        if current_time - last_time >= self._interval:
+            self._last_log_times[key] = current_time
+            return True
+        return False
+    
+    def _format_message(self, msg: str) -> str:
+        """格式化消息，添加速率限制提示"""
+        return f"{msg} (此日志每{int(self._interval)}秒显示一次)"
+    
+    def debug(self, key: str, msg: str, *args, **kwargs):
+        """速率限制的 debug 日志"""
+        if self._should_log(key):
+            self._logger.debug(self._format_message(msg), *args, **kwargs)
+    
+    def info(self, key: str, msg: str, *args, **kwargs):
+        """速率限制的 info 日志"""
+        if self._should_log(key):
+            self._logger.info(self._format_message(msg), *args, **kwargs)
+    
+    def warning(self, key: str, msg: str, *args, **kwargs):
+        """速率限制的 warning 日志（始终记录）"""
+        self._logger.warning(msg, *args, **kwargs)
+    
+    def error(self, key: str, msg: str, *args, **kwargs):
+        """速率限制的 error 日志（始终记录）"""
+        self._logger.error(msg, *args, **kwargs)
+    
+    def reset(self, key: str = None):
+        """重置计时器"""
+        if key:
+            self._last_log_times.pop(key, None)
+        else:
+            self._last_log_times.clear()
+
+
+# =============================================================================
+# 预定义的过滤器配置
+# =============================================================================
+
+# Main Server 的端点配置
+MAIN_SERVER_SUPPRESSED_ENDPOINTS = [
+    "/api/characters/current_catgirl",
+    "/api/agent/computer_use/availability",
+    "/api/agent/mcp/availability",
+]
+
+MAIN_SERVER_RATE_LIMITED_ENDPOINTS = [
+    "/api/agent/task_status",
+]
+
+# Agent Server 的端点配置
+AGENT_SERVER_SUPPRESSED_ENDPOINTS = [
+    "/computer_use/availability",
+    "/mcp/availability",
+]
+
+AGENT_SERVER_RATE_LIMITED_ENDPOINTS = [
+    "/tasks",
+]
+
+# HTTPX 客户端的抑制配置
+HTTPX_SUPPRESSED_PATTERNS = [
+    "/computer_use/availability",
+    "/mcp/availability",
+]
+
+
+def create_main_server_filter() -> RateLimitedEndpointFilter:
+    """创建 Main Server 的日志过滤器"""
+    return RateLimitedEndpointFilter(
+        suppressed_endpoints=MAIN_SERVER_SUPPRESSED_ENDPOINTS,
+        rate_limited_endpoints=MAIN_SERVER_RATE_LIMITED_ENDPOINTS,
+        rate_limit_interval=15.0
+    )
+
+
+def create_agent_server_filter() -> RateLimitedEndpointFilter:
+    """创建 Agent Server 的日志过滤器"""
+    return RateLimitedEndpointFilter(
+        suppressed_endpoints=AGENT_SERVER_SUPPRESSED_ENDPOINTS,
+        rate_limited_endpoints=AGENT_SERVER_RATE_LIMITED_ENDPOINTS,
+        rate_limit_interval=15.0
+    )
+
+
+def create_httpx_filter() -> RateLimitedEndpointFilter:
+    """创建 HTTPX 客户端的日志过滤器"""
+    return RateLimitedEndpointFilter(
+        suppressed_endpoints=HTTPX_SUPPRESSED_PATTERNS,
+        rate_limited_endpoints=[],
+        rate_limit_interval=15.0
+    )
+
+
 # 导出主要接口
-__all__ = ['RobustLoggerConfig', 'EnhancedLogger', 'setup_logging']
+__all__ = [
+    'RobustLoggerConfig', 
+    'EnhancedLogger', 
+    'setup_logging',
+    # 速率限制相关
+    'RateLimitedEndpointFilter',
+    'ThrottledLogger',
+    # 预定义配置
+    'MAIN_SERVER_SUPPRESSED_ENDPOINTS',
+    'MAIN_SERVER_RATE_LIMITED_ENDPOINTS',
+    'AGENT_SERVER_SUPPRESSED_ENDPOINTS',
+    'AGENT_SERVER_RATE_LIMITED_ENDPOINTS',
+    'HTTPX_SUPPRESSED_PATTERNS',
+    # 工厂函数
+    'create_main_server_filter',
+    'create_agent_server_filter',
+    'create_httpx_filter',
+]
 
 
 if __name__ == "__main__":

@@ -107,9 +107,8 @@ class ComputerUseAdapter:
         self.init_ok = False
         # 获取配置
         self._config_manager = get_config_manager()
-        self.core_config = self._config_manager.get_core_config()
         try:
-            from gui_agents.s2_5.agents.grounding import OSWorldACI
+            from brain.s2_5.agents.grounding import OSWorldACI
             # Monkey patch: adjust Windows docstring without modifying site-packages
             OSWorldACI.open.__doc__ = (
                 "Open any application or file with name app_or_filename. "
@@ -117,7 +116,7 @@ class ComputerUseAdapter:
             )
             # Monkey patch: click center of bbox if grounding model outputs a box
             try:
-                from gui_agents.s2_5.utils.common_utils import call_llm_safe
+                from brain.s2_5.utils.common_utils import call_llm_safe
 
                 def _patched_generate_coords(self, ref_expr: str, obs: Dict) -> list[int]:
                     self.grounding_model.reset()
@@ -181,7 +180,7 @@ class ComputerUseAdapter:
                 pass
             # Monkey patch: make assign_coordinates tolerant to non-coordinate actions
             try:
-                from gui_agents.s2_5.utils.common_utils import parse_single_code_from_string
+                from brain.s2_5.utils.common_utils import parse_single_code_from_string
 
                 def _patched_assign_coordinates(self, plan: str, obs: Dict):
                     # Reset previous coords
@@ -247,7 +246,7 @@ class ComputerUseAdapter:
             except Exception:
                 # If monkey patching fails, continue with the original behavior
                 pass
-            from gui_agents.s2_5.agents.agent_s import AgentS2_5
+            from brain.s2_5.agents.agent_s import AgentS2_5
             if pyautogui is not None:
                 self.screen_width, self.screen_height = pyautogui.size()
                 print("screen_width, screen_height:", self.screen_width, self.screen_height)
@@ -273,10 +272,10 @@ class ComputerUseAdapter:
             )
             # Connectivity check for grounding model via ChatOpenAI
             try:
-                api_key = self.core_config['COMPUTER_USE_GROUND_API_KEY'] if self.core_config['COMPUTER_USE_GROUND_API_KEY'] else None
+                api_key = self._config_manager.get_core_config()['COMPUTER_USE_GROUND_API_KEY'] if self._config_manager.get_core_config()['COMPUTER_USE_GROUND_API_KEY'] else None
                 test_llm = ChatOpenAI(
-                    model=self.core_config['COMPUTER_USE_GROUND_MODEL'],
-                    base_url=self.core_config['COMPUTER_USE_GROUND_URL'],
+                    model=self._config_manager.get_core_config()['COMPUTER_USE_GROUND_MODEL'],
+                    base_url=self._config_manager.get_core_config()['COMPUTER_USE_GROUND_URL'],
                     api_key=api_key,
                     temperature=0
                 ).bind(max_tokens=5)
@@ -298,7 +297,7 @@ class ComputerUseAdapter:
     def is_available(self) -> Dict[str, Any]:
         ok = True
         reasons = []
-        if not self.core_config.get('COMPUTER_USE_GROUND_URL') or not self.core_config.get('COMPUTER_USE_GROUND_MODEL'):
+        if not self._config_manager.get_core_config().get('COMPUTER_USE_GROUND_URL') or not self._config_manager.get_core_config().get('COMPUTER_USE_GROUND_MODEL'):
             ok = False
             reasons.append("Grounding endpoint not configured")
         if pyautogui is None:
@@ -315,25 +314,25 @@ class ComputerUseAdapter:
             "ready": ok,
             "reasons": reasons,
             "provider": "openai",
-            "model": self.core_config.get('COMPUTER_USE_MODEL', 'glm-4.5v'),
+            "model": self._config_manager.get_core_config().get('COMPUTER_USE_MODEL', 'glm-4.5v'),
             "ground_provider": "openai",
-            "ground_model": self.core_config.get('COMPUTER_USE_GROUND_MODEL', 'glm-4.5v'),
+            "ground_model": self._config_manager.get_core_config().get('COMPUTER_USE_GROUND_MODEL', 'glm-4.5v'),
         }
 
     def _build_params(self) -> Dict[str, Any]:
         engine_params = {
             "engine_type": "openai",
-            "model": self.core_config.get('COMPUTER_USE_MODEL', 'glm-4.5v'),
-            "base_url": self.core_config.get('COMPUTER_USE_MODEL_URL', '') or "",
-            "api_key": self.core_config.get('COMPUTER_USE_MODEL_API_KEY', '') or "",
+            "model": self._config_manager.get_core_config().get('COMPUTER_USE_MODEL', 'glm-4.5v'),
+            "base_url": self._config_manager.get_core_config().get('COMPUTER_USE_MODEL_URL', '') or "",
+            "api_key": self._config_manager.get_core_config().get('COMPUTER_USE_MODEL_API_KEY', '') or "",
             "thinking": False,
             "extra_body": {"thinking": { "type": "disabled"}}
         }
         engine_params_for_grounding = {
             "engine_type": "openai",
-            "model": self.core_config.get('COMPUTER_USE_GROUND_MODEL', 'glm-4.5v'),
-            "base_url": self.core_config.get('COMPUTER_USE_GROUND_URL', ''),
-            "api_key": self.core_config.get('COMPUTER_USE_GROUND_API_KEY', '') or "",
+            "model": self._config_manager.get_core_config().get('COMPUTER_USE_GROUND_MODEL', 'glm-4.5v'),
+            "base_url": self._config_manager.get_core_config().get('COMPUTER_USE_GROUND_URL', ''),
+            "api_key": self._config_manager.get_core_config().get('COMPUTER_USE_GROUND_API_KEY', '') or "",
             "grounding_width": self.scaled_width,
             "grounding_height": self.scaled_height,
             "thinking": False,

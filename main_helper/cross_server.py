@@ -17,7 +17,7 @@ from config import MONITOR_SERVER_PORT, MEMORY_SERVER_PORT, COMMENTER_SERVER_POR
 from datetime import datetime
 import json
 import re
-from utils.frontend_utils import contains_chinese, replace_blank, replace_corner_mark, remove_bracket, spell_out_number, \
+from utils.frontend_utils import contains_chinese, replace_blank, replace_corner_mark, remove_bracket, \
     is_only_punctuation, split_paragraph
 
 # Setup logger for this module
@@ -214,15 +214,17 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                             recent.append({'role': item.get('role'), 'text': txt})
                                     if recent:
                                         async with aiohttp.ClientSession() as session:
-                                            await asyncio.wait_for(
-                                                session.post(
-                                                    f"http://localhost:{TOOL_SERVER_PORT}/analyze_and_plan",
-                                                    json={'messages': recent, 'lanlan_name': lanlan_name}
-                                                ),
-                                                timeout=0.2
-                                            )
-                                except Exception:
-                                    pass
+                                            async with session.post(
+                                                f"http://localhost:{TOOL_SERVER_PORT}/analyze_and_plan",
+                                                json={'messages': recent, 'lanlan_name': lanlan_name},
+                                                timeout=aiohttp.ClientTimeout(total=5.0)
+                                            ) as resp:
+                                                await resp.read()  # 确保响应被完全读取
+                                        logger.debug(f"[{lanlan_name}] 已发送对话到analyzer进行分析")
+                                except asyncio.TimeoutError:
+                                    logger.warning(f"[{lanlan_name}] 发送到analyzer超时")
+                                except Exception as e:
+                                    logger.warning(f"[{lanlan_name}] 发送到analyzer失败: {e}")
 
                             elif message["data"] == 'session end': # 当前session结束了
                                 # 先处理未完成的用户输入缓存（如果有）
@@ -253,15 +255,17 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                             recent.append({'role': item.get('role'), 'text': txt})
                                     if recent:
                                         async with aiohttp.ClientSession() as session:
-                                            await asyncio.wait_for(
-                                                session.post(
-                                                    f"http://localhost:{TOOL_SERVER_PORT}/analyze_and_plan",
-                                                    json={'messages': recent, 'lanlan_name': lanlan_name}
-                                                ),
-                                                timeout=0.2
-                                            )
-                                except Exception:
-                                    pass
+                                            async with session.post(
+                                                f"http://localhost:{TOOL_SERVER_PORT}/analyze_and_plan",
+                                                json={'messages': recent, 'lanlan_name': lanlan_name},
+                                                timeout=aiohttp.ClientTimeout(total=5.0)
+                                            ) as resp:
+                                                await resp.read()  # 确保响应被完全读取
+                                        logger.debug(f"[{lanlan_name}] 已发送对话到analyzer进行分析 (session end)")
+                                except asyncio.TimeoutError:
+                                    logger.warning(f"[{lanlan_name}] 发送到analyzer超时 (session end)")
+                                except Exception as e:
+                                    logger.warning(f"[{lanlan_name}] 发送到analyzer失败: {e} (session end)")
                                 
                                 # 处理聊天历史
                                 logger.info(f"[{lanlan_name}] 会话结束：开始处理聊天历史，共 {len(chat_history)} 条消息")

@@ -62,6 +62,56 @@ class Live2DManager {
         this._origUpdateParameters = null;
         this._origExpressionUpdateParameters = null;
         this._mouthTicker = null;
+        
+        // 记录最后一次加载模型的原始路径（用于关闭时保存偏好）
+        this._lastLoadedModelPath = null;
+
+        // 在窗口关闭/刷新时尝试保存当前模型位置（使用 sendBeacon 以增加成功率）
+        try {
+            window.addEventListener('beforeunload', (e) => {
+                try {
+                    if (!this._lastLoadedModelPath || !this.currentModel) return;
+                    
+                    // 验证位置和缩放值是否为有效的有限数值
+                    const posX = this.currentModel.x;
+                    const posY = this.currentModel.y;
+                    const scaleX = this.currentModel.scale ? this.currentModel.scale.x : 1;
+                    const scaleY = this.currentModel.scale ? this.currentModel.scale.y : 1;
+                    
+                    // 检查所有值是否为有限数值（排除 NaN、Infinity、-Infinity）
+                    if (!Number.isFinite(posX) || !Number.isFinite(posY) || 
+                        !Number.isFinite(scaleX) || !Number.isFinite(scaleY)) {
+                        console.warn('模型位置或缩放值无效，跳过保存:', { posX, posY, scaleX, scaleY });
+                        return;
+                    }
+                    
+                    // 额外验证：缩放值应该为正数（避免保存0或负数缩放）
+                    if (scaleX <= 0 || scaleY <= 0) {
+                        console.warn('模型缩放值必须为正数，跳过保存:', { scaleX, scaleY });
+                        return;
+                    }
+                    
+                    const payload = {
+                        model_path: this._lastLoadedModelPath,
+                        position: { x: posX, y: posY },
+                        scale: { x: scaleX, y: scaleY }
+                    };
+                    const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+                    // 使用 navigator.sendBeacon 保证在页面卸载时尽可能发送数据
+                    if (navigator && navigator.sendBeacon) {
+                        navigator.sendBeacon('/api/preferences', blob);
+                    } else {
+                        // 作为回退，发起同步 XMLHttpRequest（尽量少用）
+                        try {
+                            const xhr = new XMLHttpRequest();
+                            xhr.open('POST', '/api/preferences', false); // false -> 同步
+                            xhr.setRequestHeader('Content-Type', 'application/json');
+                            xhr.send(JSON.stringify(payload));
+                        } catch (_) {}
+                    }
+                } catch (_) {}
+            });
+        } catch (_) {}
     }
 
     // 从 FileReferences 推导 EmotionMapping（用于兼容历史数据）
@@ -137,6 +187,25 @@ class Live2DManager {
     // 保存用户偏好
     async saveUserPreferences(modelPath, position, scale) {
         try {
+            // 验证位置和缩放值是否为有效的有限数值
+            if (!position || typeof position !== 'object' || 
+                !Number.isFinite(position.x) || !Number.isFinite(position.y)) {
+                console.error('位置值无效:', position);
+                return false;
+            }
+            
+            if (!scale || typeof scale !== 'object' || 
+                !Number.isFinite(scale.x) || !Number.isFinite(scale.y)) {
+                console.error('缩放值无效:', scale);
+                return false;
+            }
+            
+            // 验证缩放值必须为正数
+            if (scale.x <= 0 || scale.y <= 0) {
+                console.error('缩放值必须为正数:', scale);
+                return false;
+            }
+            
             const preferences = {
                 model_path: modelPath,
                 position: position,
@@ -189,6 +258,53 @@ class Live2DManager {
     // 获取 PIXI 应用
     getPIXIApp() {
         return this.pixi_app;
+    }
+
+    // 复位模型位置和缩放到初始状态
+    resetModelPosition() {
+        if (!this.currentModel || !this.pixi_app) {
+            console.warn('无法复位：模型或PIXI应用未初始化');
+            return;
+        }
+
+        try {
+            model.anchor.set(0.65, 0.75);
+            // 根据移动端/桌面端重置到默认位置和缩放
+            if (isMobileWidth()) {
+                // 移动端默认设置
+                const scale = Math.min(
+                    0.5,
+                    window.innerHeight * 1.3 / 4000,
+                    window.innerWidth * 1.2 / 2000
+                );
+                this.currentModel.scale.set(scale);
+                this.currentModel.x = this.pixi_app.renderer.width * 0.5;
+                this.currentModel.y = this.pixi_app.renderer.height * 0.28;
+            } else {
+                // 桌面端默认设置（靠右下）
+                const scale = Math.min(
+                    0.5,
+                    (window.innerHeight * 0.75) / 7000,
+                    (window.innerWidth * 0.6) / 7000
+                );
+                this.currentModel.scale.set(scale);
+                this.currentModel.x = this.pixi_app.renderer.width;
+                this.currentModel.y = this.pixi_app.renderer.height;
+            }
+
+            console.log('模型位置已复位到初始状态');
+
+            // 保存复位后的位置（如果有模型路径）
+            if (this._lastLoadedModelPath) {
+                this.saveUserPreferences(
+                    this._lastLoadedModelPath,
+                    { x: this.currentModel.x, y: this.currentModel.y },
+                    { x: this.currentModel.scale.x, y: this.currentModel.scale.y }
+                );
+            }
+        } catch (error) {
+            console.error('复位模型位置时出错:', error);
+        }
     }
 }
 

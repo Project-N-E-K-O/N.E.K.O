@@ -94,6 +94,7 @@ class TaskPlanner:
 
         cu_decision = None
         cu = self.computer_use.is_available()
+        logger.info(f"[ComputerUse] Availability check: {cu}")
 
         # Phase 2: Only if MCP cannot execute, evaluate ComputerUse
         if not mcp.get('can_execute'):
@@ -116,11 +117,15 @@ class TaskPlanner:
                     cu_decision = json.loads(text2)
                 except Exception:
                     cu_decision = {"use_computer": False, "reason": "LLM parse error"}
-
-                # Do not execute here to avoid blocking; scheduling is handled by server
-                # if cu_decision.get('use_computer'): execution will be scheduled by the caller
+                
+                # Log Computer Use decision
+                if cu_decision.get('use_computer'):
+                    logger.info(f"[ComputerUse] ✅ Task {task_id} can be executed by ComputerUse: {cu_decision.get('reason', '')}")
+                else:
+                    logger.info(f"[ComputerUse] ❌ Task {task_id} rejected by ComputerUse: {cu_decision.get('reason', '')}")
             else:
-                cu_decision = {"use_computer": False, "reason": "ComputerUse not ready"}
+                cu_decision = {"use_computer": False, "reason": f"ComputerUse not ready: {cu.get('reasons', [])}"}
+                logger.warning(f"[ComputerUse] ⚠️ ComputerUse not available: {cu.get('reasons', [])}")
 
         # Determine status without executing blocking GUI operations here
         status = "queued"

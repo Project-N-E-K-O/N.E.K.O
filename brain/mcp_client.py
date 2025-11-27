@@ -1,13 +1,18 @@
 import asyncio
 import logging
+import time
 from typing import Dict, Any, List, Optional
 import httpx
 from cachetools import TTLCache
 from config import MCP_ROUTER_URL
 from utils.config_manager import get_config_manager
+from utils.logger_config import ThrottledLogger
 import uuid
 
 logger = logging.getLogger(__name__)
+
+# 使用统一的速率限制日志记录器
+_throttled_logger = ThrottledLogger(logger, interval=10.0)
 
 
 class McpRouterClient:
@@ -123,7 +128,8 @@ class McpRouterClient:
             logger.error(f"[MCP] HTTP error {e.response.status_code}: {e.response.text}")
             return None
         except Exception as e:
-            logger.error(f"[MCP] Request failed for {method}: {e}")
+            # 使用统一的速率限制日志记录器
+            _throttled_logger.debug(f"mcp_request_{method}", f"[MCP] Request failed for {method}: {e}")
             return None
     
     async def initialize(self) -> bool:
@@ -145,7 +151,7 @@ class McpRouterClient:
             logger.info(f"[MCP] Initialized successfully: {result.get('serverInfo', {}).get('name', 'Unknown')}")
             return True
         else:
-            logger.warning("[MCP] Initialization failed")
+            # Throttled in _mcp_request, no need to log again here
             return False
 
     async def list_tools(self, force_refresh: bool = False) -> List[Dict[str, Any]]:
@@ -176,7 +182,7 @@ class McpRouterClient:
             logger.info(f"[MCP] Discovered {len(tools)} tools")
             return tools
         else:
-            logger.warning("[MCP] Failed to list tools - not caching empty result")
+            # Throttled in _mcp_request, no need to log again here
             # ⚠️ 失败时不缓存，下次会重试
             return []
     

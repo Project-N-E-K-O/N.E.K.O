@@ -1,7 +1,10 @@
 from typing import Dict, Any, List
-from langchain_openai import ChatOpenAI
+import logging
+from openai import AsyncOpenAI
 from config import MODELS_WITH_EXTRA_BODY
 from utils.config_manager import get_config_manager
+
+logger = logging.getLogger(__name__)
 
 
 class ConversationAnalyzer:
@@ -11,11 +14,6 @@ class ConversationAnalyzer:
     """
     def __init__(self):
         self._config_manager = get_config_manager()
-    
-    def _get_llm(self):
-        """动态获取LLM实例以支持配置热重载"""
-        core_config = self._config_manager.get_core_config()
-        return ChatOpenAI(model=core_config['SUMMARY_MODEL'], base_url=core_config['OPENROUTER_URL'], api_key=core_config['OPENROUTER_API_KEY'], temperature=0, extra_body={"enable_thinking": False} if core_config['SUMMARY_MODEL'] in MODELS_WITH_EXTRA_BODY else None)
 
     def _build_prompt(self, messages: List[Dict[str, str]]) -> str:
         lines = []
@@ -32,21 +30,51 @@ class ConversationAnalyzer:
         )
 
     async def analyze(self, messages: List[Dict[str, str]]):
-        prompt = self._build_prompt(messages)
-        llm = self._get_llm()
-        resp = await llm.ainvoke([
-            {"role": "system", "content": "You are a precise task intent extractor."},
-            {"role": "user", "content": prompt},
-        ])
-        text = resp.content.strip()
         import json
+        
+        core_config = self._config_manager.get_core_config()
+        model = core_config['SUMMARY_MODEL']
+        api_key = core_config['OPENROUTER_API_KEY']
+        base_url = core_config['OPENROUTER_URL']
+        
+        prompt = self._build_prompt(messages)
+        
+        try:
+            # 使用与 emotion_analysis 相同的调用方式
+            client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+            
+            request_params = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": "You are a precise task intent extractor."},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0,
+                "max_tokens": 500
+            }
+            
+            # 只有在需要时才添加 extra_body
+            if model in MODELS_WITH_EXTRA_BODY:
+                request_params["extra_body"] = {"enable_thinking": False}
+            
+            response = await client.chat.completions.create(**request_params)
+            text = response.choices[0].message.content.strip()
+            
+            logger.debug(f"[Analyzer] Raw response: {text[:200]}...")
+            
+        except Exception as e:
+            logger.error(f"[Analyzer] LLM调用失败: {e}")
+            return {"tasks": [], "reason": f"LLM error: {e}"}
+        
         try:
             if text.startswith("```"):
                 text = text.replace("```json", "").replace("```", "").strip()
             data = json.loads(text)
+            logger.info(f"[Analyzer] 分析结果: {len(data.get('tasks', []))} 个任务")
         except Exception as e:
-            print(f"Analyzer parse error: {e}")
+            logger.warning(f"[Analyzer] JSON解析失败: {e}, raw: {text[:100]}")
             data = {"tasks": [], "reason": "parse error", "raw": text}
+        
         return data
 
 

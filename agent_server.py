@@ -8,6 +8,7 @@ import uuid
 import logging
 from typing import Dict, Any, Optional
 from datetime import datetime
+import time
 import multiprocessing as mp
 
 from fastapi import FastAPI, HTTPException
@@ -24,7 +25,7 @@ from brain.deduper import TaskDeduper
 app = FastAPI(title="N.E.K.O Tool Server")
 
 # Configure logging
-from utils.logger_config import setup_logging
+from utils.logger_config import setup_logging, ThrottledLogger
 logger, log_config = setup_logging(service_name="Agent", log_level=logging.INFO)
 
 
@@ -47,6 +48,8 @@ class Modules:
     active_computer_use_task_id: Optional[str] = None
     # Agent feature flags (controlled by UI)
     agent_flags: Dict[str, Any] = {"mcp_enabled": False, "computer_use_enabled": False}
+    # 使用统一的速率限制日志记录器（业务逻辑层面）
+    throttled_logger: "ThrottledLogger" = None  # 延迟初始化
 def _collect_existing_task_descriptions(lanlan_name: Optional[str] = None) -> list[tuple[str, str]]:
     """Return list of (task_id, description) for queued/running tasks, optionally filtered by lanlan_name."""
     items: list[tuple[str, str]] = []
@@ -339,6 +342,8 @@ async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_na
                             continue
                         ti = _spawn_task("processor", {"query": step})
                         ti["lanlan_name"] = lanlan_name
+                elif t.meta.get("mcp", {}).get("can_execute") and not Modules.agent_flags.get("mcp_enabled", False):
+                    logger.info(f"[MCP] ⚠️ Task {t.id} can be executed by MCP but mcp_enabled=False, skipping")
                 else:
                     cu_dec = t.meta.get("computer_use_decision") or {}
                     if cu_dec.get("use_computer") and Modules.agent_flags.get("computer_use_enabled", False):
@@ -346,6 +351,11 @@ async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_na
                         if not dup:
                             ti = _spawn_task("computer_use", {"instruction": t.original_query, "screenshot": None})
                             ti["lanlan_name"] = lanlan_name
+                            logger.info(f"[ComputerUse] 🚀 Scheduled task {ti['id']} for execution: {t.original_query[:50]}...")
+                    elif cu_dec.get("use_computer") and not Modules.agent_flags.get("computer_use_enabled", False):
+                        logger.warning(f"[ComputerUse] ⚠️ Task {t.id} can be executed by ComputerUse but computer_use_enabled=False, skipping. Please enable '键鼠控制' in the UI.")
+                    elif not cu_dec.get("use_computer"):
+                        logger.info(f"[ComputerUse] ❌ Task {t.id} was not scheduled - ComputerUse decision: {cu_dec.get('reason', 'no reason')}")
             except Exception:
                 continue
     except Exception:
@@ -551,10 +561,15 @@ async def mcp_availability():
         ready = count > 0
         reasons = [] if ready else ["MCP router unreachable or no servers discovered"]
         
-        # Log MCP availability check
-        logger.info(f"[MCP] Availability check - Found {count} capabilities, ready: {ready}")
-        for cap_id, cap_info in caps.items():
-            logger.info(f"[MCP]   - {cap_id}: {cap_info.get('title', 'No title')} (status: {cap_info.get('status', 'unknown')})")
+        # 使用统一的速率限制日志记录器
+        if Modules.throttled_logger is None:
+            Modules.throttled_logger = ThrottledLogger(logger, interval=15.0)
+        
+        # Log MCP availability check (throttled)
+        Modules.throttled_logger.info(
+            "mcp_availability", 
+            f"[MCP] Availability check - Found {count} capabilities, ready: {ready}"
+        )
         
         return {"ready": ready, "capabilities_count": count, "reasons": reasons}
     except Exception as e:
@@ -671,6 +686,13 @@ async def admin_control(payload: Dict[str, Any]):
 
 if __name__ == "__main__":
     import uvicorn
+    
+    # 使用统一的速率限制日志过滤器
+    from utils.logger_config import create_agent_server_filter
+    
+    # Add filter to uvicorn access logger
+    logging.getLogger("uvicorn.access").addFilter(create_agent_server_filter())
+    
     uvicorn.run(app, host="0.0.0.0", port=TOOL_SERVER_PORT)
 
 
