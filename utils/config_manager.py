@@ -912,8 +912,8 @@ class ConfigManager:
             str: workshop根目录路径
         """
         config = self.load_workshop_config()
-        # 优先使用WORKSHOP_PATH，然后使用default_workshop_folder，最后使用self.workshop_dir
-        return config.get("WORKSHOP_PATH", config.get("default_workshop_folder", str(self.workshop_dir)))
+        # 优先使用user_mod_folder，然后是WORKSHOP_PATH，然后是default_workshop_folder，最后使用self.workshop_dir
+        return config.get("user_mod_folder", config.get("WORKSHOP_PATH", config.get("default_workshop_folder", str(self.workshop_dir))))
 
 
 # 全局配置管理器实例

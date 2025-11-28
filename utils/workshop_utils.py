@@ -20,7 +20,7 @@ from utils.config_manager import (
 
 def ensure_workshop_folder_exists(folder_path: Optional[str] = None) -> bool:
     """
-    确保创意工坊文件夹存在，如果不存在则自动创建
+    确保本地mod文件夹（原创意工坊文件夹）存在，如果不存在则自动创建
     
     Args:
         folder_path: 指定的文件夹路径，如果为None则使用配置中的默认路径
@@ -30,7 +30,7 @@ def ensure_workshop_folder_exists(folder_path: Optional[str] = None) -> bool:
     """
     # 确定目标文件夹路径
     config = load_workshop_config()
-    # 使用get_workshop_path()函数获取路径，而不是直接访问配置和默认常量
+    # 使用get_workshop_path()函数获取路径，该函数已更新为优先使用user_mod_folder
     raw_folder = folder_path or get_workshop_path()
     
     # 确保路径是绝对路径，如果不是则转换
@@ -181,16 +181,9 @@ def get_workshop_root(globals_dict: Optional[Dict[str, Any]] = None) -> str:
         except Exception:
             print(f"使用配置中的创意工坊路径: {workshop_path}")
     
-    # 将获取到的路径保存到config_manager提供的workshop_config.json配置文件中
+    # 将获取到的路径保存到配置文件中（使用config_manager的函数）
     try:
         save_workshop_path(workshop_path)
-        # 尝试使用logger记录
-        try:
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.info(f"创意工坊路径已保存到workshop_config.json: {workshop_path}")
-        except Exception:
-            print(f"创意工坊路径已保存到workshop_config.json: {workshop_path}")
     except Exception as e:
         error_msg = f"保存创意工坊路径到配置文件失败: {e}"
         # 尝试使用logger记录

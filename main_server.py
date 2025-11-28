@@ -23,6 +23,10 @@ from utils.workshop_utils import (
     get_workshop_path
 )
 
+# 导入Steamworks异常类
+from steamworks.exceptions import SteamNotLoadedException
+from steamworks.enums import EWorkshopFileType, EItemUpdateStatus
+
 # 开发模式标志 - 在生产环境中设置为False
 DEVELOPMENT_MODE = True
 
@@ -83,6 +87,7 @@ def initialize_steamworks():
         
         # 创建并初始化Steamworks实例
         from steamworks import STEAMWORKS
+        from steamworks.exceptions import SteamNotLoadedException
         steamworks = STEAMWORKS()
         # 显示Steamworks初始化过程的详细日志
         print("正在初始化Steamworks...")
@@ -3229,22 +3234,32 @@ async def get_workshop_config():
 @app.post('/api/steam/workshop/config')
 async def save_workshop_config_api(config_data: dict):
     try:
-        global workshop_config
+        # 导入与get_workshop_config相同路径的函数，保持一致性
+        from utils.workshop_utils import load_workshop_config, save_workshop_config, ensure_workshop_folder_exists
+        
+        # 先加载现有配置，避免使用全局变量导致的不一致问题
+        workshop_config_data = load_workshop_config() or {}
         
         # 更新配置
         if 'default_workshop_folder' in config_data:
-            workshop_config['default_workshop_folder'] = config_data['default_workshop_folder']
+            workshop_config_data['default_workshop_folder'] = config_data['default_workshop_folder']
         if 'auto_create_folder' in config_data:
-            workshop_config['auto_create_folder'] = config_data['auto_create_folder']
+            workshop_config_data['auto_create_folder'] = config_data['auto_create_folder']
+        # 支持用户mod路径配置
+        if 'user_mod_folder' in config_data:
+            workshop_config_data['user_mod_folder'] = config_data['user_mod_folder']
         
-        # 保存配置到文件
-        save_workshop_config()
+        # 保存配置到文件，传递完整的配置数据作为参数
+        save_workshop_config(workshop_config_data)
         
-        # 如果启用了自动创建文件夹且提供了默认路径，则确保文件夹存在
-        if workshop_config.get('auto_create_folder', True) and workshop_config.get('default_workshop_folder'):
-            ensure_workshop_folder_exists(workshop_config['default_workshop_folder'])
+        # 如果启用了自动创建文件夹且提供了路径，则确保文件夹存在
+        if workshop_config_data.get('auto_create_folder', True):
+            # 优先使用user_mod_folder，如果没有则使用default_workshop_folder
+            folder_path = workshop_config_data.get('user_mod_folder') or workshop_config_data.get('default_workshop_folder')
+            if folder_path:
+                ensure_workshop_folder_exists(folder_path)
         
-        return {"success": True, "config": workshop_config}
+        return {"success": True, "config": workshop_config_data}
     except Exception as e:
         logger.error(f"保存创意工坊配置失败: {str(e)}")
         return {"success": False, "error": str(e)}
@@ -3285,6 +3300,43 @@ async def proxy_image(image_path: str):
                     logger.info(f"添加允许的默认创意工坊目录: {real_workshop_dir}")
         except Exception as e:
             logger.warning(f"无法添加默认创意工坊目录: {str(e)}")
+        
+        # 动态添加路径到允许列表：如果请求的路径包含创意工坊相关标识，则允许访问
+        try:
+            # 检查解码后的路径是否包含创意工坊相关路径标识
+            if ('steamapps\\workshop' in decoded_path.lower() or 
+                'steamapps/workshop' in decoded_path.lower()):
+                
+                # 获取创意工坊父目录
+                workshop_related_dir = None
+                
+                # 方法1：如果路径存在，获取文件所在目录或直接使用目录路径
+                if os.path.exists(decoded_path):
+                    if os.path.isfile(decoded_path):
+                        workshop_related_dir = os.path.dirname(decoded_path)
+                    else:
+                        workshop_related_dir = decoded_path
+                else:
+                    # 方法2：尝试从路径中提取创意工坊相关部分
+                    import re
+                    match = re.search(r'(.*?steamapps[/\\]workshop)', decoded_path, re.IGNORECASE)
+                    if match:
+                        workshop_related_dir = match.group(1)
+                
+                # 方法3：如果是Steam创意工坊内容路径，获取content目录
+                if not workshop_related_dir:
+                    content_match = re.search(r'(.*?steamapps[/\\]workshop[/\\]content)', decoded_path, re.IGNORECASE)
+                    if content_match:
+                        workshop_related_dir = content_match.group(1)
+                
+                # 如果找到了相关目录，添加到允许列表
+                if workshop_related_dir and os.path.exists(workshop_related_dir):
+                    real_workshop_dir = os.path.realpath(workshop_related_dir)
+                    if real_workshop_dir not in allowed_dirs:
+                        allowed_dirs.append(real_workshop_dir)
+                        logger.info(f"动态添加允许的创意工坊相关目录: {real_workshop_dir}")
+        except Exception as e:
+            logger.warning(f"动态添加创意工坊路径失败: {str(e)}")
         
         logger.info(f"当前允许的目录列表: {allowed_dirs}")
 
@@ -3644,6 +3696,8 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
     """
     在单独的线程中执行Steam创意工坊发布操作
     """
+    # 在函数内部添加导入语句，确保枚举在函数作用域内可用
+    from steamworks.enums import EItemUpdateStatus
     try:
         # 再次验证内容文件夹，确保在多线程环境中仍然有效
         if not os.path.exists(content_folder) or not os.path.isdir(content_folder):

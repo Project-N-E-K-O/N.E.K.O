@@ -93,6 +93,24 @@
             font-family: inherit;
         }
         
+        .checkbox-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .control-checkbox {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+        }
+        
+        .checkbox-label {
+            cursor: pointer;
+            font-size: 14px;
+            user-select: none;
+        }
+        
         .btn {
             padding: 10px 15px;
             border-radius: 8px;
@@ -1461,6 +1479,7 @@
                     <div class="control-group">
                         <div class="control-label">预览图片路径 *</div>
                         <input type="text" id="preview-image" class="control-input" placeholder="从本地物品中获取的预览图片路径" readonly>
+                        <div class="control-hint" style="color: red; font-size: 14px;">提示：预览图片大小需要小于1MB</div>
                     </div>
                     
                     <div class="control-group">
@@ -1470,7 +1489,23 @@
                     </div>
                     
                     <div class="control-group">
-                        <button class="btn btn-primary" onclick="uploadToWorkshop()">
+                        <div class="control-label">可见性</div>
+                        <select id="visibility" class="control-select">
+                            <option value="public">公开</option>
+                            <option value="friends">仅好友可见</option>
+                            <option value="private">私有</option>
+                        </select>
+                    </div>
+                    
+                    <div class="control-group">
+                        <div class="checkbox-container">
+                            <input type="checkbox" id="allow-comments" class="control-checkbox" checked>
+                            <label for="allow-comments" class="checkbox-label">允许评论</label>
+                        </div>
+                    </div>
+                    
+                    <div class="control-group">
+                        <button class="btn btn-primary" onclick="uploadItem()">
                             上传到创意工坊
                         </button>
                         <button class="btn btn-secondary" onclick="toggleUploadSection()">
@@ -1504,20 +1539,20 @@
                                 扫描本地物品
                             </button>
                             <button class="btn btn-primary" onclick="toggleSettingsPanel()" style="min-width: 180px;">
-                                <span id="settings-toggle-icon">⚙️</span> 配置默认路径
+                                <span id="settings-toggle-icon">⚙️</span> 配置路径
                             </button>
                         </div>
                     </div>
                     
-                    <!-- 默认路径配置区域 - 可折叠 -->
+                    <!-- 路径配置区域 - 可折叠 -->
                     <div class="settings-container">
                         
                         <div id="settings-panel" class="config-section" style="display: none;">
-                            <h3>创意工坊默认路径配置</h3>
+                            <h3>本地mod路径配置</h3>
                             
                             <div class="control-group">
-                                <div class="control-label">默认创意工坊文件夹路径</div>
-                                <input type="text" id="default-workshop-folder" class="control-input" placeholder="默认创意工坊文件夹路径">
+                                <div class="control-label">本地mod文件夹路径</div>
+                                <input type="text" id="default-workshop-folder" class="control-input" placeholder="本地mod文件夹路径">
                                 <div class="help-text">未指定扫描路径时将使用此默认路径</div>
                                 <div class="help-text success">提示：默认路径通常在 我的文档/N.E.K.O./live2d</div>
                             </div>
@@ -1570,6 +1605,7 @@
                 <div class="control-group">
                     <div class="control-label">预览图片路径 *</div>
                     <input type="text" id="preview-image" class="control-input" placeholder="从本地物品中获取的预览图片路径" readonly>
+                    <div class="control-hint" style="color: red; font-size: 14px;">提示：预览图片大小需要小于1MB</div>
                 </div>
                 
                 <div class="control-group">
@@ -1754,7 +1790,7 @@
             .then(data => {
                 if (data.success) {
                     // 填充表单
-                    const defaultFolder = data.config.default_workshop_folder || '';
+                    const defaultFolder = data.config.user_mod_folder || data.config.default_workshop_folder || '';
                     
                     document.getElementById('default-workshop-folder').value = defaultFolder;
                     
@@ -1787,7 +1823,7 @@
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
-                    default_workshop_folder: defaultFolder
+                    user_mod_folder: defaultFolder
                 })
             })
             .then(response => {
@@ -2038,7 +2074,6 @@
                 itemsList.innerHTML = `
                     <div class="empty-state">
                         <p>在指定文件夹中未找到任何创意工坊物品</p>
-                        <button class="button" onclick="scanLocalItems()">重新扫描</button>
                     </div>
                 `;
                 return;
@@ -2595,23 +2630,31 @@
             }
             
             // 收集表单数据
-            const title = document.getElementById('item-title').value.trim();
-            const description = document.getElementById('item-description').value.trim();
+            const title = document.getElementById('item-title')?.value.trim() || '';
+            const description = document.getElementById('item-description')?.value.trim() || '';
             // 内容文件夹和预览图片路径已经在上面定义过了，不再重复定义
             const visibilitySelect = document.getElementById('visibility');
-            const allowComments = document.getElementById('allow-comments').checked;
+            const allowComments = document.getElementById('allow-comments')?.checked || false;
             
             // 收集标签
-            const tags = Array.from(document.querySelectorAll('#tags-container .tag')).map(tag => 
-                tag.textContent.replace('×', '').trim()
-            );
+            let tags = [];
+            const tagElements = document.querySelectorAll('#tags-container .tag');
+            if (tagElements && tagElements.length > 0) {
+                tags = Array.from(tagElements)
+                    .filter(tag => tag && tag.textContent)
+                    .map(tag => tag.textContent.replace('×', '').trim())
+                    .filter(tag => tag); // 过滤空标签
+            }
             
             // 转换可见性选项为数值
             let visibility = 0; // 默认公开
-            if (visibilitySelect.value === 'friends') {
-                visibility = 1;
-            } else if (visibilitySelect.value === 'private') {
-                visibility = 2;
+            if (visibilitySelect) {
+                const value = visibilitySelect.value;
+                if (value === 'friends') {
+                    visibility = 1;
+                } else if (value === 'private') {
+                    visibility = 2;
+                }
             }
             
             // 准备上传数据
@@ -2627,9 +2670,12 @@
             
             // 获取上传按钮并禁用
             const uploadButton = document.querySelector('.upload-section button.button');
-            const originalText = uploadButton.textContent;
-            uploadButton.textContent = '上传中...';
-            setButtonState(uploadButton, true);
+            let originalText = '';
+            if (uploadButton) {
+                originalText = uploadButton.textContent || '';
+                uploadButton.textContent = '上传中...';
+                setButtonState(uploadButton, true);
+            }
             
             // 显示上传中消息
             showMessage('正在准备上传...', 'success', 0); // 0表示不自动关闭
@@ -2650,8 +2696,10 @@
             })
             .then(data => {
                 // 恢复按钮状态
-                uploadButton.textContent = originalText;
-                setButtonState(uploadButton, false);
+                    if (uploadButton) {
+                        uploadButton.textContent = originalText;
+                        setButtonState(uploadButton, false);
+                    }
                 
                 // 清除所有现有消息
                 const messageArea = document.getElementById('message-area');
@@ -2673,16 +2721,27 @@
                     }
                     
                     // 清空表单
-                    document.getElementById('item-title').value = '';
-                    document.getElementById('item-description').value = '';
-                    document.getElementById('content-folder').value = '';
-                    document.getElementById('preview-image').value = '';
-                    document.getElementById('visibility').value = 'public';
-                    document.getElementById('allow-comments').checked = true;
+                    const formElements = [
+                        { id: 'item-title', property: 'value', value: '' },
+                        { id: 'item-description', property: 'value', value: '' },
+                        { id: 'content-folder', property: 'value', value: '' },
+                        { id: 'preview-image', property: 'value', value: '' },
+                        { id: 'visibility', property: 'value', value: 'public' },
+                        { id: 'allow-comments', property: 'checked', value: true }
+                    ];
+                    
+                    formElements.forEach(element => {
+                        const el = document.getElementById(element.id);
+                        if (el) {
+                            el[element.property] = element.value;
+                        }
+                    });
                     
                     // 清空标签
                     const tagsContainer = document.getElementById('tags-container');
-                    tagsContainer.innerHTML = '';
+                    if (tagsContainer) {
+                        tagsContainer.innerHTML = '';
+                    }
                     
                     // 添加默认标签
                     addTag('模组');
@@ -2727,8 +2786,10 @@
                 console.error('上传失败:', error);
                 
                 // 恢复按钮状态
-                uploadButton.textContent = originalText;
-                setButtonState(uploadButton, false);
+                if (uploadButton) {
+                    uploadButton.textContent = originalText;
+                    setButtonState(uploadButton, false);
+                }
                 
                 // 清除所有现有消息
                 const messageArea = document.getElementById('message-area');
@@ -2903,101 +2964,7 @@
             }
         }
         
-        // 获取物品详细信息（模拟）
-        function getItemDetails(itemId) {
-            // 模拟从服务器获取数据
-            // 实际应用中，这里应该是一个API调用来获取真实数据
-            const sampleData = [
-                {
-                    id: '1',
-                    name: '精美角色模型包',
-                    author: 'Creator1',
-                    authorUrl: '#',
-                    subscribedDate: '2024-01-15',
-                    lastUpdated: '2024-02-10',
-                    size: '15.2 MB',
-                    previewUrl: '../static/icons/character_icon.png',
-                    description: '这是一个包含多个精美角色模型的包，适合各类游戏和动画项目使用。所有模型都经过优化，支持各种常见的3D引擎。每个角色都有完整的骨骼系统和基本动作集。',
-                    downloadCount: '1,245',
-                    rating: '4.8/5',
-                    tags: ['角色', '模型', '3D', '动画']
-                },
-                {
-                    id: '2',
-                    name: '环境材质包',
-                    author: 'TextureMaster',
-                    authorUrl: '#',
-                    subscribedDate: '2024-01-20',
-                    lastUpdated: '2024-02-05',
-                    size: '24.8 MB',
-                    previewUrl: '../static/icons/memory_icon.png',
-                    description: '高品质环境材质包，包含各种自然和城市环境的纹理。所有材质都具有4K分辨率，包含法线贴图、高光贴图和置换贴图，为您的项目带来极致的视觉效果。',
-                    downloadCount: '3,567',
-                    rating: '4.9/5',
-                    tags: ['材质', '环境', '纹理', '高清']
-                },
-                {
-                    id: '3',
-                    name: '声音效果合集',
-                    author: 'AudioPro',
-                    authorUrl: '#',
-                    subscribedDate: '2024-02-01',
-                    lastUpdated: '2024-02-15',
-                    size: '32.1 MB',
-                    previewUrl: '../static/icons/voice_clone_icon.png',
-                    description: '专业级声音效果合集，包含超过500个高品质音效。涵盖了自然环境、武器、UI反馈、角色语音等多种类型，全部采用无损音质录制，为您的游戏或应用增添沉浸式音频体验。',
-                    downloadCount: '2,134',
-                    rating: '4.7/5',
-                    tags: ['音效', '音频', '声音', '游戏']
-                },
-                {
-                    id: '4',
-                    name: '动态背景特效',
-                    author: 'VisualArtist',
-                    authorUrl: '#',
-                    subscribedDate: '2024-02-20',
-                    lastUpdated: '2024-03-01',
-                    size: '45.6 MB',
-                    previewUrl: '../static/icons/live2d_settings_icon.png',
-                    description: '炫酷的动态背景特效集合，包含粒子效果、流体动画、光效等多种类型。所有特效都针对性能进行了优化，可以轻松集成到各类应用和游戏中，为用户界面增添视觉吸引力。',
-                    downloadCount: '1,876',
-                    rating: '4.6/5',
-                    tags: ['特效', '动画', '背景', '视觉']
-                },
-                {
-                    id: '5',
-                    name: 'AI语音包',
-                    author: 'VoiceCreator',
-                    authorUrl: '#',
-                    subscribedDate: '2024-03-05',
-                    lastUpdated: '2024-03-15',
-                    size: '28.3 MB',
-                    previewUrl: '../static/icons/voice_clone_icon.png',
-                    description: '由先进AI技术生成的语音包，包含多种角色声音和情感表达。所有语音都经过自然化处理，支持多种语言和方言，可以用于游戏角色配音、虚拟助手、有声读物等多种场景。',
-                    downloadCount: '2,789',
-                    rating: '4.5/5',
-                    tags: ['AI', '语音', '配音', '声音']
-                },
-                {
-                    id: '6',
-                    name: 'Steam主题皮肤',
-                    author: 'Themer',
-                    authorUrl: '#',
-                    subscribedDate: '2024-03-10',
-                    lastUpdated: '2024-03-20',
-                    size: '12.7 MB',
-                    previewUrl: '../static/icons/Steam_icon_logo.png',
-                    description: '精美的Steam客户端主题皮肤，改变您的Steam界面外观。包含多种颜色方案和视觉风格，所有元素都经过精心设计，保持Steam原有功能的同时提供全新的视觉体验。',
-                    downloadCount: '4,321',
-                    rating: '4.9/5',
-                    tags: ['Steam', '主题', '皮肤', '界面']
-                }
-            ];
-            
-            // 查找对应ID的物品
-            return sampleData.find(item => item.id === itemId) || null;
-        }
-        
+
         // 查看物品详情
 function viewItemDetails(itemId) {
     // 显示加载消息
