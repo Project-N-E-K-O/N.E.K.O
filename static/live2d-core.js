@@ -63,55 +63,12 @@ class Live2DManager {
         this._origExpressionUpdateParameters = null;
         this._mouthTicker = null;
         
-        // 记录最后一次加载模型的原始路径（用于关闭时保存偏好）
+        // 记录最后一次加载模型的原始路径（用于保存偏好时使用）
         this._lastLoadedModelPath = null;
 
-        // 在窗口关闭/刷新时尝试保存当前模型位置（使用 sendBeacon 以增加成功率）
-        try {
-            window.addEventListener('beforeunload', (e) => {
-                try {
-                    if (!this._lastLoadedModelPath || !this.currentModel) return;
-                    
-                    // 验证位置和缩放值是否为有效的有限数值
-                    const posX = this.currentModel.x;
-                    const posY = this.currentModel.y;
-                    const scaleX = this.currentModel.scale ? this.currentModel.scale.x : 1;
-                    const scaleY = this.currentModel.scale ? this.currentModel.scale.y : 1;
-                    
-                    // 检查所有值是否为有限数值（排除 NaN、Infinity、-Infinity）
-                    if (!Number.isFinite(posX) || !Number.isFinite(posY) || 
-                        !Number.isFinite(scaleX) || !Number.isFinite(scaleY)) {
-                        console.warn('模型位置或缩放值无效，跳过保存:', { posX, posY, scaleX, scaleY });
-                        return;
-                    }
-                    
-                    // 额外验证：缩放值应该为正数（避免保存0或负数缩放）
-                    if (scaleX <= 0 || scaleY <= 0) {
-                        console.warn('模型缩放值必须为正数，跳过保存:', { scaleX, scaleY });
-                        return;
-                    }
-                    
-                    const payload = {
-                        model_path: this._lastLoadedModelPath,
-                        position: { x: posX, y: posY },
-                        scale: { x: scaleX, y: scaleY }
-                    };
-                    const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
-                    // 使用 navigator.sendBeacon 保证在页面卸载时尽可能发送数据
-                    if (navigator && navigator.sendBeacon) {
-                        navigator.sendBeacon('/api/preferences', blob);
-                    } else {
-                        // 作为回退，发起同步 XMLHttpRequest（尽量少用）
-                        try {
-                            const xhr = new XMLHttpRequest();
-                            xhr.open('POST', '/api/preferences', false); // false -> 同步
-                            xhr.setRequestHeader('Content-Type', 'application/json');
-                            xhr.send(JSON.stringify(payload));
-                        } catch (_) {}
-                    }
-                } catch (_) {}
-            });
-        } catch (_) {}
+        // ⚠️ 已禁用自动保存功能：
+        // 不再在窗口关闭/刷新时自动保存模型位置
+        // 只有在模型设置页面手动点击"保存设置"按钮时才会保存位置和缩放
     }
 
     // 从 FileReferences 推导 EmotionMapping（用于兼容历史数据）
@@ -261,14 +218,14 @@ class Live2DManager {
     }
 
     // 复位模型位置和缩放到初始状态
-    resetModelPosition() {
+    async resetModelPosition() {
         if (!this.currentModel || !this.pixi_app) {
             console.warn('无法复位：模型或PIXI应用未初始化');
             return;
         }
 
         try {
-            model.anchor.set(0.65, 0.75);
+            this.currentModel.anchor.set(0.65, 0.75);
             // 根据移动端/桌面端重置到默认位置和缩放
             if (isMobileWidth()) {
                 // 移动端默认设置
@@ -294,14 +251,20 @@ class Live2DManager {
 
             console.log('模型位置已复位到初始状态');
 
-            // 保存复位后的位置（如果有模型路径）
+            // 复位后自动保存位置
             if (this._lastLoadedModelPath) {
-                this.saveUserPreferences(
+                const saveSuccess = await this.saveUserPreferences(
                     this._lastLoadedModelPath,
                     { x: this.currentModel.x, y: this.currentModel.y },
                     { x: this.currentModel.scale.x, y: this.currentModel.scale.y }
                 );
+                if (saveSuccess) {
+                    console.log('模型位置已保存');
+                } else {
+                    console.warn('模型位置保存失败');
+                }
             }
+        
         } catch (error) {
             console.error('复位模型位置时出错:', error);
         }
