@@ -2594,6 +2594,14 @@ function init_app(){
     
     // 检查 Agent 能力（供轮询使用）
     const checkAgentCapabilities = async () => {
+        // 【改进1】轮询时检测总开关状态，如果关闭则停止轮询并返回
+        const agentMasterCheckbox = document.getElementById('live2d-agent-master');
+        if (!agentMasterCheckbox || !agentMasterCheckbox.checked) {
+            console.log('[App] Agent总开关未开启，停止可用性轮询');
+            window.stopAgentAvailabilityCheck();
+            return;
+        }
+        
         const checks = [
             { id: 'live2d-agent-keyboard', capability: 'computer_use', flagKey: 'computer_use_enabled', name: '键鼠控制' },
             { id: 'live2d-agent-mcp', capability: 'mcp', flagKey: 'mcp_enabled', name: 'MCP工具' }
@@ -2601,9 +2609,26 @@ function init_app(){
         for (const {id, capability, flagKey, name} of checks) {
             const cb = document.getElementById(id);
             if (!cb) continue;
+            
+            // 【改进3】再次检查总开关，防止在轮询中途被关闭
+            if (!agentMasterCheckbox.checked) {
+                cb.disabled = true;
+                if (typeof cb._updateStyle === 'function') cb._updateStyle();
+                continue;
+            }
+            
             const available = await checkCapability(capability, false);
+            
+            // 【防竞态】检查完成后再次确认总开关仍然开启
+            if (!agentMasterCheckbox.checked) {
+                cb.disabled = true;
+                if (typeof cb._updateStyle === 'function') cb._updateStyle();
+                continue;
+            }
+            
             cb.disabled = !available;
             cb.title = available ? name : (window.t ? window.t('settings.toggles.unavailable', {name: name}) : `${name}不可用`);
+            if (typeof cb._updateStyle === 'function') cb._updateStyle();
             
             // 如果不可用但开关是开的，需要关闭它并通知后端
             if (!available && cb.checked) {
@@ -2724,11 +2749,19 @@ function init_app(){
         };
         
         // 辅助函数：重置子开关状态和 UI
+        // 【改进3】关闭时保持灰色，并设置明确的title提示
         const resetSubCheckboxes = () => {
+            const names = {
+                'live2d-agent-keyboard': window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制',
+                'live2d-agent-mcp': window.t ? window.t('settings.toggles.mcpTools') : 'MCP工具'
+            };
             [agentKeyboardCheckbox, agentMcpCheckbox].forEach(cb => {
                 if (cb) {
                     cb.disabled = true;
                     cb.checked = false;
+                    // 设置title提示需要先开启总开关
+                    const name = names[cb.id] || '';
+                    cb.title = window.t ? window.t('settings.toggles.masterRequired', {name: name}) : `请先开启Agent总开关`;
                     syncCheckboxUI(cb);
                 }
             });
@@ -2751,30 +2784,70 @@ function init_app(){
             
             try {
                 if (agentMasterCheckbox.checked) {
+                    // 【兜底】查询期间禁用总开关，防止重复点击
+                    agentMasterCheckbox.disabled = true;
+                    agentMasterCheckbox.title = window.t ? window.t('settings.toggles.checking') : '查询中...';
+                    setFloatingAgentStatus('Agent服务器连接中...');
+                    syncCheckboxUI(agentMasterCheckbox);
+                    
+                    let healthOk = false;
                     try {
-                        const ok = await checkToolServerHealth();
-                        if (!ok) throw new Error('tool server down');
+                        healthOk = await checkToolServerHealth();
+                        if (!healthOk) throw new Error('tool server down');
                     } catch (e) {
                         setFloatingAgentStatus('Agent服务器未启动');
                         agentMasterCheckbox.checked = false;
+                        agentMasterCheckbox.disabled = false;
+                        agentMasterCheckbox.title = window.t ? window.t('settings.toggles.agentMaster') : 'Agent总开关';
                         syncCheckboxUI(agentMasterCheckbox);
                         return;
                     }
+                    
+                    // 查询成功，恢复总开关可交互状态
+                    agentMasterCheckbox.disabled = false;
+                    agentMasterCheckbox.title = window.t ? window.t('settings.toggles.agentMaster') : 'Agent总开关';
+                    syncCheckboxUI(agentMasterCheckbox);
                     setFloatingAgentStatus('Agent模式已开启');
+                    
+                    // 【改进2】检查可用性期间，先将键鼠和MCP按钮保持灰色
+                    if (agentKeyboardCheckbox) {
+                        agentKeyboardCheckbox.disabled = true;
+                        agentKeyboardCheckbox.title = window.t ? window.t('settings.toggles.checking') : '检查中...';
+                        syncCheckboxUI(agentKeyboardCheckbox);
+                    }
+                    if (agentMcpCheckbox) {
+                        agentMcpCheckbox.disabled = true;
+                        agentMcpCheckbox.title = window.t ? window.t('settings.toggles.checking') : '检查中...';
+                        syncCheckboxUI(agentMcpCheckbox);
+                    }
                     
                     // 检查键鼠控制和MCP工具的可用性
                     await Promise.all([
                         (async () => {
                             if (!agentKeyboardCheckbox) return;
                             const available = await checkCapability('computer_use', false);
+                            // 【防竞态】检查完成后再次确认总开关仍然开启
+                            if (!agentMasterCheckbox.checked) {
+                                agentKeyboardCheckbox.disabled = true;
+                                syncCheckboxUI(agentKeyboardCheckbox);
+                                return;
+                            }
                             agentKeyboardCheckbox.disabled = !available;
                             agentKeyboardCheckbox.title = available ? (window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制') : (window.t ? window.t('settings.toggles.unavailable', {name: window.t('settings.toggles.keyboardControl')}) : '键鼠控制不可用');
+                            syncCheckboxUI(agentKeyboardCheckbox);
                         })(),
                         (async () => {
                             if (!agentMcpCheckbox) return;
                             const available = await checkCapability('mcp', false);
+                            // 【防竞态】检查完成后再次确认总开关仍然开启
+                            if (!agentMasterCheckbox.checked) {
+                                agentMcpCheckbox.disabled = true;
+                                syncCheckboxUI(agentMcpCheckbox);
+                                return;
+                            }
                             agentMcpCheckbox.disabled = !available;
                             agentMcpCheckbox.title = available ? (window.t ? window.t('settings.toggles.mcpTools') : 'MCP工具') : (window.t ? window.t('settings.toggles.unavailable', {name: window.t('settings.toggles.mcpTools')}) : 'MCP工具不可用');
+                            syncCheckboxUI(agentMcpCheckbox);
                         })()
                     ]);
                     
@@ -2788,10 +2861,20 @@ function init_app(){
                             })
                         });
                         if (!r.ok) throw new Error('main_server rejected');
+                        
+                        // 【防竞态】API请求完成后确认总开关仍然开启
+                        if (!agentMasterCheckbox.checked) {
+                            console.log('[App] API请求完成后总开关已关闭，不启动轮询');
+                            resetSubCheckboxes();
+                            return;
+                        }
+                        
                         // 启动定时检查器
                         window.startAgentAvailabilityCheck();
                     } catch(e) {
                         agentMasterCheckbox.checked = false;
+                        agentMasterCheckbox.disabled = false;
+                        agentMasterCheckbox.title = window.t ? window.t('settings.toggles.agentMaster') : 'Agent总开关';
                         syncCheckboxUI(agentMasterCheckbox);
                         resetSubCheckboxes();
                         // 确保任务轮询已停止
@@ -2875,6 +2958,16 @@ function init_app(){
                     const enabled = checkbox.checked;
                     if (enabled) {
                         const ok = await checkCapability(capability);
+                        
+                        // 【防竞态】检查完成后再次确认总开关仍然开启
+                        if (!agentMasterCheckbox?.checked) {
+                            console.log(`[App] ${name}检查期间总开关已关闭，取消操作`);
+                            checkbox.checked = false;
+                            checkbox.disabled = true;
+                            syncCheckboxUI(checkbox);
+                            return;
+                        }
+                        
                         if (!ok) {
                             setFloatingAgentStatus(`${name}不可用`);
                             checkbox.checked = false;
@@ -2882,6 +2975,7 @@ function init_app(){
                             return;
                         }
                     }
+                    // 注：enabled=true时上面已检查；enabled=false时无await，入口检查已足够
                     
                     try {
                         const r = await fetch('/api/agent/flags', {
@@ -2893,6 +2987,16 @@ function init_app(){
                             })
                         });
                         if (!r.ok) throw new Error('main_server rejected');
+                        
+                        // 【防竞态】请求完成后再次确认总开关状态
+                        if (!agentMasterCheckbox?.checked) {
+                            console.log(`[App] ${name}请求完成后总开关已关闭，强制关闭`);
+                            checkbox.checked = false;
+                            checkbox.disabled = true;
+                            syncCheckboxUI(checkbox);
+                            return;
+                        }
+                        
                         setFloatingAgentStatus(enabled ? `${name}已开启` : `${name}已关闭`);
                         // 关闭成功时也需要同步 UI
                         if (!enabled) {
@@ -2926,24 +3030,32 @@ function init_app(){
                 return;
             }
             
-            // 禁用总开关，显示连接中状态
+            // 【兜底】禁用总开关，显示连接中状态，锁定title
             agentMasterCheckbox.disabled = true;
+            agentMasterCheckbox.title = window.t ? window.t('settings.toggles.checking') : '查询中...';
+            syncCheckboxUI(agentMasterCheckbox);
             setFloatingAgentStatus('Agent服务器连接中...');
             
             try {
                 const ok = await checkToolServerHealth();
                 if (ok) {
-                    // 服务器在线，启用总开关
+                    // 服务器在线，启用总开关，恢复title
                     agentMasterCheckbox.disabled = false;
+                    agentMasterCheckbox.title = window.t ? window.t('settings.toggles.agentMaster') : 'Agent总开关';
+                    syncCheckboxUI(agentMasterCheckbox);
                     setFloatingAgentStatus('Agent服务器就绪');
                 } else {
-                    // 服务器离线，保持禁用
+                    // 服务器离线，保持禁用，设置离线提示
                     agentMasterCheckbox.disabled = true;
+                    agentMasterCheckbox.title = window.t ? window.t('settings.toggles.serverOffline') : 'Agent服务器未启动';
+                    syncCheckboxUI(agentMasterCheckbox);
                     setFloatingAgentStatus('Agent服务器未启动');
                 }
             } catch (e) {
                 // 检查失败，保持禁用
                 agentMasterCheckbox.disabled = true;
+                agentMasterCheckbox.title = window.t ? window.t('settings.toggles.serverOffline') : 'Agent服务器未启动';
+                syncCheckboxUI(agentMasterCheckbox);
                 setFloatingAgentStatus('Agent服务器未启动');
             }
         });
