@@ -225,6 +225,26 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                     logger.warning(f"[{lanlan_name}] 发送到analyzer超时")
                                 except Exception as e:
                                     logger.warning(f"[{lanlan_name}] 发送到analyzer失败: {e}")
+                                
+                                # 在turn end时也处理聊天历史到记忆服务器（非阻塞）
+                                # 注意：只发送本次turn的对话，不清空chat_history，因为session可能还在继续
+                                # 记忆服务器会去重处理，所以重复发送不会造成问题
+                                if len(chat_history) > 0:
+                                    logger.info(f"[{lanlan_name}] Turn end: 准备保存 {len(chat_history)} 条聊天记录到 memory_server")
+                                    try:
+                                        async with aiohttp.ClientSession() as session:
+                                            async with session.post(
+                                                f"http://localhost:{MEMORY_SERVER_PORT}/process/{lanlan_name}",
+                                                json={'input_history': json.dumps(chat_history, indent=2, ensure_ascii=False)},
+                                                timeout=aiohttp.ClientTimeout(total=30.0)
+                                            ) as response:
+                                                result = await response.json()
+                                                if result.get('status') == 'error':
+                                                    logger.error(f"[{lanlan_name}] Turn end 时记忆处理失败: {result.get('message')}")
+                                                else:
+                                                    logger.info(f"[{lanlan_name}] ✅ Turn end 时聊天记录已成功保存到 memory_server")
+                                    except Exception as e:
+                                        logger.error(f"[{lanlan_name}] Turn end 时调用 /process API 失败: {e}", exc_info=True)
 
                             elif message["data"] == 'session end': # 当前session结束了
                                 # 先处理未完成的用户输入缓存（如果有）

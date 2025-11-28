@@ -99,12 +99,14 @@ async def initialize_character_data():
     
     # 为新增的角色初始化资源
     for k in catgirl_names:
+        is_new_character = False
         if k not in sync_message_queue:
             sync_message_queue[k] = Queue()
             sync_shutdown_event[k] = Event()
             session_id[k] = None
             sync_process[k] = None
             logger.info(f"为角色 {k} 初始化新资源")
+            is_new_character = True
         
         # 确保该角色有websocket锁
         if k not in websocket_locks:
@@ -132,11 +134,65 @@ async def initialize_character_data():
             if old_websocket:
                 session_manager[k].websocket = old_websocket
                 logger.info(f"已恢复 {k} 的WebSocket连接")
+        
+        # 检查并启动同步连接器进程
+        # 如果是新角色，或者进程不存在/已停止，需要启动进程
+        if k not in sync_process:
+            sync_process[k] = None
+        
+        need_start_process = False
+        if is_new_character:
+            # 新角色，需要启动进程
+            need_start_process = True
+        elif sync_process[k] is None:
+            # 进程为None，需要启动
+            need_start_process = True
+        elif hasattr(sync_process[k], 'is_alive') and not sync_process[k].is_alive():
+            # 进程已停止，需要重启
+            need_start_process = True
+            try:
+                sync_process[k].join(timeout=0.1)
+            except:
+                pass
+        
+        if need_start_process:
+            try:
+                sync_process[k] = Process(
+                    target=cross_server.sync_connector_process,
+                    args=(sync_message_queue[k], sync_shutdown_event[k], k, f"ws://localhost:{MONITOR_SERVER_PORT}", {'bullet': False, 'monitor': True})
+                )
+                sync_process[k].start()
+                logger.info(f"✅ 已为角色 {k} 启动同步连接器进程 (PID: {sync_process[k].pid})")
+                import time
+                time.sleep(0.2)
+                if not sync_process[k].is_alive():
+                    logger.error(f"❌ 同步连接器进程 {k} (PID: {sync_process[k].pid}) 启动后立即退出！退出码: {sync_process[k].exitcode}")
+                else:
+                    logger.info(f"✅ 同步连接器进程 {k} (PID: {sync_process[k].pid}) 正在运行")
+            except Exception as e:
+                logger.error(f"❌ 启动角色 {k} 的同步连接器进程失败: {e}", exc_info=True)
     
     # 清理已删除角色的资源
     removed_names = [k for k in session_manager.keys() if k not in catgirl_names]
     for k in removed_names:
         logger.info(f"清理已删除角色 {k} 的资源")
+        
+        # 先停止同步连接器进程
+        if k in sync_process and sync_process[k] is not None:
+            try:
+                logger.info(f"正在停止已删除角色 {k} 的同步连接器进程...")
+                if k in sync_shutdown_event:
+                    sync_shutdown_event[k].set()
+                sync_process[k].join(timeout=3)
+                if sync_process[k].is_alive():
+                    sync_process[k].terminate()
+                    sync_process[k].join(timeout=1)
+                    if sync_process[k].is_alive():
+                        sync_process[k].kill()
+                logger.info(f"✅ 已停止角色 {k} 的同步连接器进程")
+            except Exception as e:
+                logger.warning(f"停止角色 {k} 的同步连接器进程时出错: {e}")
+        
         # 清理队列
         if k in sync_message_queue:
             try:
@@ -560,15 +616,31 @@ async def update_core_config(request: Request):
 async def startup_event():
     global sync_process
     logger.info("Starting sync connector processes")
-    # 启动同步连接器进程
-    for k in sync_process:
-        if sync_process[k] is None:
-            sync_process[k] = Process(
-                target=cross_server.sync_connector_process,
-                args=(sync_message_queue[k], sync_shutdown_event[k], k, f"ws://localhost:{MONITOR_SERVER_PORT}", {'bullet': False, 'monitor': True})
-            )
-            sync_process[k].start()
-            logger.info(f"同步连接器进程已启动 (PID: {sync_process[k].pid})")
+    # 启动同步连接器进程（确保所有角色都有进程）
+    for k in list(sync_message_queue.keys()):
+        if k not in sync_process or sync_process[k] is None or (hasattr(sync_process.get(k), 'is_alive') and not sync_process[k].is_alive()):
+            if k in sync_process and sync_process[k] is not None:
+                # 清理已停止的进程
+                try:
+                    sync_process[k].join(timeout=0.1)
+                except:
+                    pass
+            try:
+                sync_process[k] = Process(
+                    target=cross_server.sync_connector_process,
+                    args=(sync_message_queue[k], sync_shutdown_event[k], k, f"ws://localhost:{MONITOR_SERVER_PORT}", {'bullet': False, 'monitor': True})
+                )
+                sync_process[k].start()
+                logger.info(f"✅ 同步连接器进程已启动 (PID: {sync_process[k].pid}) for {k}")
+                # 检查进程是否成功启动
+                import time
+                time.sleep(0.2)
+                if not sync_process[k].is_alive():
+                    logger.error(f"❌ 同步连接器进程 {k} (PID: {sync_process[k].pid}) 启动后立即退出！退出码: {sync_process[k].exitcode}")
+                else:
+                    logger.info(f"✅ 同步连接器进程 {k} (PID: {sync_process[k].pid}) 正在运行")
+            except Exception as e:
+                logger.error(f"❌ 启动角色 {k} 的同步连接器进程失败: {e}", exc_info=True)
     
     # 如果启用了浏览器模式，在服务器启动完成后打开浏览器
     current_config = get_start_config()
@@ -1124,6 +1196,23 @@ async def add_catgirl(request: Request):
     _config_manager.save_characters(characters)
     # 自动重新加载配置
     await initialize_character_data()
+    
+    # 通知记忆服务器重新加载配置
+    try:
+        import httpx
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(f"http://localhost:{MEMORY_SERVER_PORT}/reload", timeout=5.0)
+            if resp.status_code == 200:
+                result = resp.json()
+                if result.get('status') == 'success':
+                    logger.info(f"✅ 已通知记忆服务器重新加载配置（新角色: {key}）")
+                else:
+                    logger.warning(f"⚠️ 记忆服务器重新加载配置返回: {result.get('message')}")
+            else:
+                logger.warning(f"⚠️ 记忆服务器重新加载配置失败，状态码: {resp.status_code}")
+    except Exception as e:
+        logger.warning(f"⚠️ 通知记忆服务器重新加载配置时出错: {e}（不影响角色创建）")
+    
     return {"success": True}
 
 @app.put('/api/characters/catgirl/{name}')
