@@ -11,6 +11,9 @@ import pathlib
 import logging
 from typing import Optional, Dict, Any
 
+# 初始化日志记录器
+logger = logging.getLogger(__name__)
+
 # 从config_manager导入workshop配置相关功能
 from utils.config_manager import (
     load_workshop_config,
@@ -29,8 +32,6 @@ def ensure_workshop_folder_exists(folder_path: Optional[str] = None) -> bool:
     Returns:
         bool: 文件夹是否存在或创建成功
     """
-    config = get_workshop_config()
-    
     # 确定目标文件夹路径
     config = load_workshop_config()
     # 使用get_workshop_path()函数获取路径，该函数已更新为优先使用user_mod_folder
@@ -120,26 +121,14 @@ def get_workshop_root(globals_dict: Optional[Dict[str, Any]] = None) -> str:
     # 如果未能从创意工坊获取路径，使用get_workshop_path获取配置中的路径
     if not workshop_path:
         workshop_path = get_workshop_path()
-        # 尝试使用logger记录
-        try:
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.info(f"使用配置中的创意工坊路径: {workshop_path}")
-        except Exception:
-            print(f"使用配置中的创意工坊路径: {workshop_path}")
+        logger.info(f"使用配置中的创意工坊路径: {workshop_path}")
     
     # 将获取到的路径保存到配置文件中（使用config_manager的函数）
     try:
         save_workshop_path(workshop_path)
     except Exception as e:
         error_msg = f"保存创意工坊路径到配置文件失败: {e}"
-        # 尝试使用logger记录
-        try:
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.error(error_msg)
-        except Exception:
-            print(error_msg)
+        logger.error(error_msg)
     
     # 确保路径存在
     ensure_workshop_folder_exists(workshop_path)

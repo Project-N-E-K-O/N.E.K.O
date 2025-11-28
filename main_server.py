@@ -302,10 +302,11 @@ if os.path.exists(user_live2d_path):
 
 # 挂载用户mod路径
 user_mod_path = _config_manager.get_workshop_path()
-if os.path.exists(user_mod_path):
+if os.path.exists(user_mod_path) and os.path.isdir(user_mod_path):
     app.mount("/user_mods", CustomStaticFiles(directory=user_mod_path), name="user_mods")
     logger.info(f"已挂载用户mod路径: {user_mod_path}")
-
+else:
+    logger.warning(f"用户mod路径不存在或不是目录: {user_mod_path}")
 # 使用 FastAPI 的 app.state 来管理启动配置
 def get_start_config():
     """从 app.state 获取启动配置"""
@@ -3199,7 +3200,6 @@ async def scan_local_workshop_items(request: Request):
             
             # 如果是相对路径，基于默认路径解析
             if not os.path.isabs(folder_path):
-                folder_path = os.path.join(default_workshop_folder, folder_path)
                 folder_path = os.path.normpath(folder_path)
             
             logger.info(f'用户指定路径: {folder_path}')
