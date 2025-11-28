@@ -570,13 +570,17 @@
             try {
                 // 1. Fetch files list
                 let filesRes;
-                // 只有当finalSteamId是有效的非undefined值时才使用它
-                if (finalSteamId && finalSteamId !== 'undefined') {
+                // 根据modelInfo的source字段和finalSteamId决定使用哪个API端点
+                if (modelInfo.source === 'user_mods') {
+                    // 对于用户mod模型，使用modelName构建URL
+                    console.log('Fetching model files for user mod:', modelName);
+                    filesRes = await fetch(`/api/live2d/model_files/${encodeURIComponent(modelName)}`);
+                } else if (finalSteamId && finalSteamId !== 'undefined') {
                     // 如果提供了finalSteamId，调用专门的API端点
                     filesRes = await fetch(`/api/live2d/model_files_by_id/${finalSteamId}`);
                 } else {
                     // 否则使用原来的API端点
-                    filesRes = await fetch(`/api/live2d/model_files/${modelName}`);
+                    filesRes = await fetch(`/api/live2d/model_files/${encodeURIComponent(modelName)}`);
                 }
                 const filesData = await filesRes.json();
                 if (!filesData.success) throw new Error(t('live2d.modelFilesFetchFailed', '无法获取模型文件列表'));
@@ -588,6 +592,10 @@
                 if (filesData.model_config_url) {
                     modelJsonUrl = filesData.model_config_url;
                     console.log('使用后端返回的模型配置URL:', modelJsonUrl);
+                } else if (modelInfo.source === 'user_mods') {
+                    // 对于用户mod模型，直接使用modelInfo.path（已经包含/user_mods/路径）
+                    modelJsonUrl = modelInfo.path;
+                    console.log('使用用户mod模型路径:', modelJsonUrl);
                 } else if (finalSteamId && finalSteamId !== 'undefined') {
                     // 如果提供了finalSteamId但没有model_config_url，使用原来的方式构建URL（兼容模式）
                     modelJsonUrl = `/workshop/${finalSteamId}/${modelName}.model3.json`;

@@ -296,6 +296,12 @@ if os.path.exists(user_live2d_path):
     app.mount("/user_live2d", CustomStaticFiles(directory=user_live2d_path), name="user_live2d")
     logger.info(f"已挂载用户Live2D目录: {user_live2d_path}")
 
+# 挂载用户mod路径
+user_mod_path = _config_manager.get_workshop_path()
+if os.path.exists(user_mod_path):
+    app.mount("/user_mods", CustomStaticFiles(directory=user_mod_path), name="user_mods")
+    logger.info(f"已挂载用户mod路径: {user_mod_path}")
+
 # 使用 FastAPI 的 app.state 来管理启动配置
 def get_start_config():
     """从 app.state 获取启动配置"""
