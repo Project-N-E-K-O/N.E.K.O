@@ -9,8 +9,24 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta charset="UTF-8">
     <title data-i18n="app.title">Project N.E.K.O.</title>
+    
+    <!-- 加载统一的 request 模块 -->
+    <script type="module" src="/static/request.global.js"></script>
+    
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
     <script src="/static/i18n-i18next.js"></script>
+    <!-- 
+        统一的 request 模块初始化
+        - 加载 request.global.js（打包了 axios 和 axios-auth-refresh）
+        - 自动初始化 window.request、window.buildApiUrl 等工具函数
+        - 旧版 JS 代码应使用 window.request 或 window.buildApiUrl 等工具函数
+    -->
+    <script>
+        // 设置 API_BASE_URL（必须在加载 request.global.js 之前）
+        // 默认使用当前服务器（端口 48911），可以通过环境变量或配置覆盖
+        window.API_BASE_URL = window.API_BASE_URL || 'http://localhost:48911';
+        window.STATIC_SERVER_URL = window.STATIC_SERVER_URL || window.API_BASE_URL;
+    </script>
     <script src="/static/common_dialogs.js"></script>
     <style>
         *:focus {
@@ -1039,6 +1055,8 @@
 
 <!-- Status 气泡框 -->
 <div id="status-toast"></div>
+<!-- ExampleButton 容器 -->
+<div id="example-button-container" style="position: fixed; top: 20px; left: 20px; z-index: 99998; pointer-events: auto;"></div>
 <div id="chat-container">
     <div id="chat-header">
         <span id="chat-title" data-i18n="chat.title">💬 对话</span>
@@ -1079,9 +1097,34 @@
     window.lanlan_config = lanlan_config;
     let cubism4Model = "";
     
+    // 等待 request.global.js 初始化完成
+    async function waitForRequestInit(maxWait = 5000) {
+        // 如果已经初始化，直接返回
+        if (window.request || window.buildApiUrl) {
+            return;
+        }
+        
+        const startTime = Date.now();
+        // 轮询检查，直到 request 或 buildApiUrl 可用
+        while (!window.request && !window.buildApiUrl) {
+            if (Date.now() - startTime > maxWait) {
+                console.warn('等待 request.global.js 初始化超时（' + maxWait + 'ms），继续执行');
+                break;
+            }
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        
+        if (window.request || window.buildApiUrl) {
+            console.log('request.global.js 初始化完成');
+        }
+    }
+    
     // 异步获取页面配置
     async function loadPageConfig() {
         try {
+            // 等待 request.global.js 初始化完成
+            await waitForRequestInit();
+            
             // 优先从 URL 获取 lanlan_name
             const urlParams = new URLSearchParams(window.location.search);
             let lanlanNameFromUrl = urlParams.get('lanlan_name') || "";
@@ -1094,15 +1137,32 @@
                 }
             }
             
-            // 从 API 获取配置
-            const apiUrl = lanlanNameFromUrl 
+            // 从 API 获取配置（相对路径，request 会自动加上 baseURL）
+            const apiPath = lanlanNameFromUrl 
                 ? `/api/config/page_config?lanlan_name=${encodeURIComponent(lanlanNameFromUrl)}`
                 : '/api/config/page_config';
             
-            const response = await fetch(apiUrl);
-            const data = await response.json();
+            // 使用 window.request 如果可用，否则使用 fetch
+            let data;
+            if (window.request) {
+                try {
+                    // request 已配置 baseURL，直接使用相对路径
+                    data = await window.request.get(apiPath);
+                } catch (error) {
+                    console.error('使用 request 获取配置失败:', error);
+                    // 降级到 fetch，需要构建完整 URL
+                    const apiUrl = window.buildApiUrl ? window.buildApiUrl(apiPath) : apiPath;
+                    const response = await fetch(apiUrl);
+                    data = await response.json();
+                }
+            } else {
+                // 使用 fetch 时需要构建完整 URL
+                const apiUrl = window.buildApiUrl ? window.buildApiUrl(apiPath) : apiPath;
+                const response = await fetch(apiUrl);
+                data = await response.json();
+            }
             
-            if (data.success) {
+            if (data && data.success) {
                 // 使用 URL 中的 lanlan_name（如果有），否则使用 API 返回的
                 lanlan_config.lanlan_name = lanlanNameFromUrl || data.lanlan_name || "";
                 window.lanlan_config = lanlan_config;
@@ -1255,7 +1315,7 @@
             console.log('BEFORE currentLanlanName: ', currentLanlanName);
             
             // 2. 获取最新的角色配置（包含所有猫娘的完整配置）
-            const charResponse = await fetch('/api/characters');
+            const charResponse = await window.request.get('/api/characters');
             if (!charResponse.ok) {
                 console.warn('获取角色配置失败，跳过模型检查');
                 return;
@@ -1276,7 +1336,7 @@
             console.log('AFTER newModelName: ', newModelName);
             
             // 3. 获取所有可用模型列表
-            const modelsResponse = await fetch('/api/live2d/models');
+            const modelsResponse = await window.request.get('/api/live2d/models');
             if (!modelsResponse.ok) {
                 console.warn('获取模型列表失败，跳过模型检查');
                 return;
@@ -1415,6 +1475,37 @@
         }
     })();
 </script>
+
+<script type="module">
+  import { ExampleButton } from "/static/ExampleButton.js";
+  import React from "https://esm.sh/react@19";
+  import { createRoot } from "https://esm.sh/react-dom@19/client";
+
+  // 等待 DOM 加载完成
+  function mountExampleButton() {
+    const container = document.getElementById("example-button-container");
+    if (container) {
+      const root = createRoot(container);
+      root.render(
+        React.createElement(ExampleButton, {
+          buttonText: "打开 Modal",
+          onSave: (text1, text2) => {
+            console.log("保存的内容:", text1, text2);
+            // 可以在这里添加保存逻辑
+          }
+        })
+      );
+      console.log("ExampleButton 组件已挂载");
+    }
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", mountExampleButton);
+  } else {
+    mountExampleButton();
+  }
+</script>
+
 <script>
   // 对话区提示框逻辑 - 仅在第一次访问时显示
   (function() {

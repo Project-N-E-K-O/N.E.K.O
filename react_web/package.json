@@ -1,0 +1,36 @@
+{
+  "name": "react_web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "react-router build",
+    "build:component": "vite build --config vite.component.config.ts && npm run copy:component",
+    "build:request": "vite build --config vite.request.config.ts && npm run copy:request",
+    "copy:component": "node scripts/copy-component.js",
+    "copy:request": "node scripts/copy-request.js",
+    "dev": "react-router dev",
+    "preview": "vite preview --outDir build/client",
+    "typecheck": "react-router typegen && tsc"
+  },
+  "dependencies": {
+    "@react-router/node": "^7.9.6",
+    "axios": "^1.13.2",
+    "axios-auth-refresh": "^3.3.6",
+    "isbot": "^5",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "react-router": "^7.9.2"
+  },
+  "devDependencies": {
+    "@react-router/dev": "^7.9.2",
+    "@tailwindcss/vite": "^4.1.13",
+    "@types/node": "^22",
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^4.7.0",
+    "tailwindcss": "^4.1.13",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.7",
+    "vite-tsconfig-paths": "^5.1.4"
+  }
+}

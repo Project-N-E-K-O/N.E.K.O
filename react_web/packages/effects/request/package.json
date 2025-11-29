@@ -1,0 +1,37 @@
+{
+  "name": "@xiao8/request",
+  "version": "1.0.0",
+  "description": "统一请求库，支持 React Web + React Native，提供 Axios、Token 刷新、请求队列等功能",
+  "main": "index.ts",
+  "types": "index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "axios",
+    "request",
+    "react",
+    "react-native",
+    "token-refresh",
+    "request-queue",
+    "http-client"
+  ],
+  "author": "",
+  "license": "MIT",
+  "peerDependencies": {
+    "axios": "^1.0.0",
+    "axios-auth-refresh": "^3.0.0",
+    "react": "^18.0.0 || ^19.0.0",
+    "@react-native-async-storage/async-storage": "^1.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@react-native-async-storage/async-storage": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/react": "^18.0.0 || ^19.0.0",
+    "typescript": "^5.0.0"
+  }
+}
+
