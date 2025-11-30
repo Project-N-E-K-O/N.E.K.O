@@ -225,19 +225,48 @@ async def initialize_character_data():
                 old_websocket = session_manager[k].websocket
                 logger.info(f"保留 {k} 的现有WebSocket连接")
             
-            session_manager[k] = core.LLMSessionManager(
-                sync_message_queue[k],
-                k,
-                lanlan_prompt[k].replace('{LANLAN_NAME}', k).replace('{MASTER_NAME}', master_name)
-            )
-            
-            # 将websocket锁存储到session manager中，供cleanup()使用
-            session_manager[k].websocket_lock = websocket_locks[k]
-            
-            # 恢复websocket引用（如果存在）
-            if old_websocket:
-                session_manager[k].websocket = old_websocket
-                logger.info(f"已恢复 {k} 的WebSocket连接")
+            # 注意：不在这里清理旧session，因为：
+            # 1. 切换当前角色音色时，已在API层面关闭了session
+            # 2. 切换其他角色音色时，已跳过重新加载
+            # 3. 其他场景不应该影响正在使用的session
+            # 如果旧session_manager有活跃session，保留它，只更新配置相关的字段
+            if k in session_manager and session_manager[k].is_active:
+                # 有活跃session，不重新创建session_manager，只更新配置
+                # 这是为了防止重新创建session_manager时破坏正在运行的session
+                old_mgr = session_manager[k]
+                # 更新prompt（如果需要）
+                old_mgr.lanlan_prompt = lanlan_prompt[k].replace('{LANLAN_NAME}', k).replace('{MASTER_NAME}', master_name)
+                # 重新读取角色配置以更新voice_id
+                (
+                    _,
+                    _,
+                    _,
+                    lanlan_basic_config_updated,
+                    _,
+                    _,
+                    _,
+                    _,
+                    _,
+                    _
+                ) = _config_manager.get_character_data()
+                # 更新voice_id（这是切换音色时需要的）
+                old_mgr.voice_id = lanlan_basic_config_updated[k].get('voice_id', '')
+                logger.info(f"{k} 有活跃session，只更新配置，不重新创建session_manager")
+            else:
+                # 没有活跃session，可以安全地重新创建session_manager
+                session_manager[k] = core.LLMSessionManager(
+                    sync_message_queue[k],
+                    k,
+                    lanlan_prompt[k].replace('{LANLAN_NAME}', k).replace('{MASTER_NAME}', master_name)
+                )
+                
+                # 将websocket锁存储到session manager中，供cleanup()使用
+                session_manager[k].websocket_lock = websocket_locks[k]
+                
+                # 恢复websocket引用（如果存在）
+                if old_websocket:
+                    session_manager[k].websocket = old_websocket
+                    logger.info(f"已恢复 {k} 的WebSocket连接")
         
         # 检查并启动同步连接器进程
         # 如果是新角色，或者进程不存在/已停止，需要启动进程
@@ -2222,10 +2251,14 @@ async def update_catgirl(name: str, request: Request):
             except Exception as e:
                 logger.error(f"结束session时出错: {e}")
     
-    # 自动重新加载配置
-    await initialize_character_data()
-    if voice_id_changed:
+    # 方案3：条件性重新加载 - 只有当前猫娘或voice_id变更时才重新加载配置
+    if voice_id_changed and is_current_catgirl:
+        # 自动重新加载配置
+        await initialize_character_data()
         logger.info(f"配置已重新加载，新的voice_id已生效")
+    elif voice_id_changed and not is_current_catgirl:
+        # 不是当前猫娘，跳过重新加载，避免影响当前猫娘的session
+        logger.info(f"切换的是其他猫娘 {name} 的音色，跳过重新加载以避免影响当前猫娘的session")
     
     return {"success": True, "voice_id_changed": voice_id_changed, "session_restarted": session_ended}
 
@@ -2329,9 +2362,14 @@ async def update_catgirl_voice_id(name: str, request: Request):
             except Exception as e:
                 logger.error(f"结束session时出错: {e}")
     
-    # 3. 重新加载配置，让新的voice_id生效
-    await initialize_character_data()
-    logger.info(f"配置已重新加载，新的voice_id已生效")
+    # 方案3：条件性重新加载 - 只有当前猫娘才重新加载配置
+    if is_current_catgirl:
+        # 3. 重新加载配置，让新的voice_id生效
+        await initialize_character_data()
+        logger.info(f"配置已重新加载，新的voice_id已生效")
+    else:
+        # 不是当前猫娘，跳过重新加载，避免影响当前猫娘的session
+        logger.info(f"切换的是其他猫娘 {name} 的音色，跳过重新加载以避免影响当前猫娘的session")
     
     return {"success": True, "session_restarted": session_ended}
 
