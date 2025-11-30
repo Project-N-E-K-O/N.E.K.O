@@ -2595,6 +2595,7 @@ Live2DManager.prototype._setupCollapseFunctionality = function(emptyState, colla
     
     // 初始化状态
     let isCollapsed = getCollapsedState();
+    let touchProcessed = false; // 防止触摸设备双重切换的标志
     
     // 更新折叠状态
     const updateCollapseState = (collapsed) => {
@@ -2622,6 +2623,11 @@ Live2DManager.prototype._setupCollapseFunctionality = function(emptyState, colla
     // 点击事件处理
     collapseButton.addEventListener('click', (e) => {
         e.stopPropagation();
+        // 如果是触摸设备刚刚处理过，则忽略click事件
+        if (touchProcessed) {
+            touchProcessed = false; // 重置标志
+            return;
+        }
         updateCollapseState(!isCollapsed);
     });
     
@@ -2646,10 +2652,21 @@ Live2DManager.prototype._setupCollapseFunctionality = function(emptyState, colla
     
     collapseButton.addEventListener('touchend', (e) => {
         e.stopPropagation();
+        // 阻止click事件的触发
+        e.preventDefault();
+        
+        // 设置标志，阻止后续的click事件
+        touchProcessed = true;
+        
         updateCollapseState(!isCollapsed);
         collapseButton.style.background = isCollapsed ? 
             'rgba(100, 116, 139, 0.5)' : 'rgba(100, 116, 139, 0.3)';
         collapseButton.style.transform = 'scale(1)';
-    }, { passive: true });
+        
+        // 短时间后重置标志，允许后续的点击操作
+        setTimeout(() => {
+            touchProcessed = false;
+        }, 100);
+    }, { passive: false });
 };
 
