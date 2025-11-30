@@ -225,7 +225,7 @@
     "providerFeatures": "Provider Features:",
     "aliFeature": "Alibaba: Free quota available, supports custom voice",
     "glmFeature": "GLM: More free quota, built-in web search",
-    "stepFeature": "Step Star: Has free quota, does not support video",
+    "stepFeature": "StepFun: Free quota available, video not supported",
     "openaiFeature": "OpenAI: Requires VPN, expensive, high intelligence level",
     "siliconFeature": "SiliconFlow: Good value, limited features, only for Assist API",
     "configSuggestion": "💡 Configuration Suggestions:",

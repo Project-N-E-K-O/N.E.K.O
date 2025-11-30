@@ -28,16 +28,6 @@ from utils.workshop_utils import (
 from steamworks.exceptions import SteamNotLoadedException
 from steamworks.enums import EWorkshopFileType, EItemUpdateStatus
 
-# 开发模式标志 - 在生产环境中设置为False
-
-# 初始化时加载创意工坊配置
-# 注意：workshop_utils模块中已经自动加载了配置
-# save_workshop_config函数已经从workshop_utils导入
-
-# ensure_workshop_folder_exists函数已经从workshop_utils导入
-
-DEVELOPMENT_MODE = True
-
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, File, UploadFile, Form, Body
 from fastapi.staticfiles import StaticFiles
