@@ -43,6 +43,8 @@ import time
 from urllib.parse import quote, unquote
 from steamworks.exceptions import SteamNotLoadedException
 from steamworks.enums import EWorkshopFileType, EItemUpdateStatus
+
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, File, UploadFile, Form, Body
 from fastapi.staticfiles import StaticFiles
 from main_helper import core as core, cross_server as cross_server
@@ -3364,11 +3366,18 @@ async def scan_local_workshop_items(request: Request):
         published_items = []
         item_id = 1
         
+        # 获取Steam下载的workshop路径，这个路径需要被排除
+        steam_workshop_path = get_workshop_path()
+        
         # 遍历文件夹，扫描所有子文件夹
         for item_folder in os.listdir(folder_path):
             item_path = os.path.join(folder_path, item_folder)
             if os.path.isdir(item_path):
-                # 直接添加所有子文件夹
+                    
+                # 排除Steam下载的物品目录（WORKSHOP_PATH）
+                if os.path.normpath(item_path) == os.path.normpath(steam_workshop_path):
+                    logger.info(f"跳过Steam下载的workshop目录: {item_path}")
+                    continue
                 stat_info = os.stat(item_path)
                 
                 # 处理预览图路径（如果有）

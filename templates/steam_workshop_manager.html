@@ -1325,13 +1325,6 @@
                 
                 <script>
                   // JavaScript控制的tooltip实现
-                  function translateText(key, fallback, params = {}) {
-                    if (window.t && typeof window.t === 'function') {
-                      return window.t(key, params);
-                    }
-                    // 如果window.t不可用，使用fallback或key
-                    return fallback || key;
-                  }
                   document.addEventListener('DOMContentLoaded', function() {
                     const tabButtons = document.querySelectorAll('.tabs button');
                     
@@ -3005,14 +2998,14 @@ showMessage(errorMessage, 'error', 3000);
                     
                 // 确定状态类和文本
                 let statusClass = 'status-subscribed';
-                let statusText = window.t ? window.t('steam.status.subscribed') : '已订阅';
+                let statusText = window.t ? window.t('steam.status.installed') : '已订阅';
                 
                 if (formattedItem.state.downloading) {
                     statusClass = 'status-downloading';
-                    statusText = window.t ? window.t('steam.status.downloading') : '下载中';
+                    statusText = window.t ? window.t('steam.status.installed') : '下载中';
                 } else if (formattedItem.state.needsUpdate) {
                     statusClass = 'status-needs-update';
-                    statusText = window.t ? window.t('steam.status.needs_update') : '需要更新';
+                    statusText = window.t ? window.t('steam.status.installed') : '需要更新';
                 } else if (formattedItem.state.installed) {
                     statusClass = 'status-installed';
                     statusText = window.t ? window.t('steam.status.installed') : '已安装';

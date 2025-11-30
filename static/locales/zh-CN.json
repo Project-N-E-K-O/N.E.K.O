@@ -24,6 +24,7 @@
     },
   "steam": {
     "workshop": "Steam创意工坊",
+    "workshopManager": "Steam 创意工坊管理 - Project N.E.K.O.",
     "itemId": "物品ID",
     "preparingUpload": "正在准备上传...",
     "mySubscriptions": "我的订阅",
