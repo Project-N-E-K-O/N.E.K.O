@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   neko-main:
-    image: n.e.k.o:debian-v0.5.3
+    image: ghcr.io/project-n-e-k-o/n.e.k.o:amd64-v0.5.3
     container_name: neko
     restart: unless-stopped
     ports:
