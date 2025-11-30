@@ -28,7 +28,6 @@ from steamworks.exceptions import SteamNotLoadedException
 from steamworks.enums import EWorkshopFileType, EItemUpdateStatus
 
 # 开发模式标志 - 在生产环境中设置为False
-DEVELOPMENT_MODE = True
 
 # 初始化时加载创意工坊配置
 # 注意：workshop_utils模块中已经自动加载了配置
