@@ -715,11 +715,27 @@ Live2DManager.prototype.createAgentTaskHUD = function() {
     
     const hud = document.createElement('div');
     hud.id = 'agent-task-hud';
+    
+    // 获取保存的位置或使用默认位置
+    const savedPos = localStorage.getItem('agent-task-hud-position');
+    let position = { top: '50%', right: '20px', transform: 'translateY(-50%)' };
+    
+    if (savedPos) {
+        try {
+            const parsed = JSON.parse(savedPos);
+            position = {
+                top: parsed.top || '50%',
+                left: parsed.left || null,
+                right: parsed.right || '20px',
+                transform: parsed.transform || 'translateY(-50%)'
+            };
+        } catch (e) {
+            console.warn('Failed to parse saved position:', e);
+        }
+    }
+    
     Object.assign(hud.style, {
         position: 'fixed',
-        top: '50%',
-        right: '20px',
-        transform: 'translateY(-50%)',
         width: '320px',
         maxHeight: '60vh',
         background: 'rgba(15, 23, 42, 0.92)',
@@ -736,8 +752,18 @@ Live2DManager.prototype.createAgentTaskHUD = function() {
         gap: '12px',
         pointerEvents: 'auto',
         overflowY: 'auto',
-        transition: 'opacity 0.3s ease, transform 0.3s ease'
+        transition: 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease',
+        cursor: 'move',
+        userSelect: 'none',
+        willChange: 'transform', // 优化性能
+        touchAction: 'none' // 防止浏览器默认触摸行为
     });
+    
+    // 应用保存的位置
+    if (position.top) hud.style.top = position.top;
+    if (position.left) hud.style.left = position.left;
+    if (position.right) hud.style.right = position.right;
+    if (position.transform) hud.style.transform = position.transform;
     
     // HUD 标题栏
     const header = document.createElement('div');
@@ -789,18 +815,59 @@ Live2DManager.prototype.createAgentTaskHUD = function() {
     // 空状态提示
     const emptyState = document.createElement('div');
     emptyState.id = 'agent-task-empty';
-    emptyState.textContent = window.t ? window.t('agent.taskHud.noTasks') : '暂无活动任务';
-    Object.assign(emptyState.style, {
+    
+    // 空状态容器
+    const emptyContent = document.createElement('div');
+    emptyContent.textContent = window.t ? window.t('agent.taskHud.noTasks') : '暂无活动任务';
+    Object.assign(emptyContent.style, {
         textAlign: 'center',
         color: '#64748b',
         padding: '20px',
-        fontSize: '12px'
+        fontSize: '12px',
+        transition: 'all 0.3s ease'
     });
+    
+    // 折叠控制按钮
+    const collapseButton = document.createElement('div');
+    collapseButton.className = 'collapse-button';
+    collapseButton.innerHTML = '▼';
+    Object.assign(collapseButton.style, {
+        position: 'absolute',
+        top: '8px',
+        right: '8px',
+        width: '20px',
+        height: '20px',
+        borderRadius: '50%',
+        background: 'rgba(100, 116, 139, 0.3)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize: '10px',
+        color: '#64748b',
+        cursor: 'pointer',
+        transition: 'all 0.2s ease',
+        zIndex: '1'
+    });
+    
+    // 设置空状态容器样式
+    Object.assign(emptyState.style, {
+        position: 'relative',
+        transition: 'all 0.3s ease'
+    });
+    
+    emptyState.appendChild(emptyContent);
+    emptyState.appendChild(collapseButton);
     taskList.appendChild(emptyState);
+    
+    // 初始化折叠状态
+    this._setupCollapseFunctionality(emptyState, collapseButton, emptyContent);
     
     hud.appendChild(taskList);
     
     document.body.appendChild(hud);
+    
+    // 添加拖拽功能
+    this._setupDragging(hud);
     
     return hud;
 };
@@ -846,9 +913,17 @@ Live2DManager.prototype.updateAgentTaskHUD = function(tasksData) {
         t.status === 'running' || t.status === 'queued'
     );
     
-    // 显示/隐藏空状态
+    // 显示/隐藏空状态（保留折叠状态）
     if (emptyState) {
-        emptyState.style.display = activeTasks.length === 0 ? 'block' : 'none';
+        if (activeTasks.length === 0) {
+            // 没有任务时显示空状态
+            emptyState.style.display = 'block';
+            emptyState.style.visibility = 'visible';
+        } else {
+            // 有任务时隐藏空状态，但保留折叠状态
+            emptyState.style.display = 'none';
+            emptyState.style.visibility = 'hidden';
+        }
     }
     
     // 清除旧的任务卡片（保留空状态）
@@ -992,6 +1067,280 @@ Live2DManager.prototype._createTaskCard = function(task) {
     return card;
 };
 
+// 设置HUD全局拖拽功能
+Live2DManager.prototype._setupDragging = function(hud) {
+    let isDragging = false;
+    let dragOffsetX = 0;
+    let dragOffsetY = 0;
+    let originalPosition = null;
+    
+    // 高性能拖拽函数
+    const performDrag = (clientX, clientY) => {
+        if (!isDragging) return;
+        
+        // 使用requestAnimationFrame确保流畅动画
+        requestAnimationFrame(() => {
+            // 计算新位置
+            const newX = clientX - dragOffsetX;
+            const newY = clientY - dragOffsetY;
+            
+            // 获取窗口尺寸和HUD尺寸
+            const windowWidth = window.innerWidth;
+            const windowHeight = window.innerHeight;
+            const hudRect = hud.getBoundingClientRect();
+            
+            // 边界检查 - 确保HUD不会超出视口
+            const constrainedX = Math.max(0, Math.min(newX, windowWidth - hudRect.width));
+            const constrainedY = Math.max(0, Math.min(newY, windowHeight - hudRect.height));
+            
+            // 使用transform进行高性能定位
+            hud.style.left = constrainedX + 'px';
+            hud.style.top = constrainedY + 'px';
+            hud.style.right = 'auto';
+            hud.style.transform = 'none';
+        });
+    };
+    
+    // 鼠标按下事件 - 全局可拖动
+    const handleMouseDown = (e) => {
+        // 排除内部可交互元素
+        const interactiveSelectors = ['button', 'input', 'textarea', 'select', 'a', '.task-card'];
+        const isInteractive = e.target.closest(interactiveSelectors.join(','));
+        
+        if (isInteractive) return;
+        
+        isDragging = true;
+        
+        // 视觉反馈
+        hud.style.cursor = 'grabbing';
+        hud.style.boxShadow = '0 12px 48px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.2)';
+        hud.style.opacity = '0.95';
+        hud.style.transition = 'none'; // 拖拽时禁用过渡动画
+        
+        // 保存原始位置用于边界计算
+        const rect = hud.getBoundingClientRect();
+        originalPosition = {
+            left: rect.left,
+            top: rect.top,
+            width: rect.width,
+            height: rect.height
+        };
+        
+        // 计算鼠标相对于HUD的偏移
+        dragOffsetX = e.clientX - rect.left;
+        dragOffsetY = e.clientY - rect.top;
+        
+        e.preventDefault();
+        e.stopPropagation();
+    };
+    
+    // 鼠标移动事件 - 高性能处理
+    const handleMouseMove = (e) => {
+        if (!isDragging) return;
+        
+        // 使用节流优化性能
+        performDrag(e.clientX, e.clientY);
+        
+        e.preventDefault();
+        e.stopPropagation();
+    };
+    
+    // 鼠标释放事件
+    const handleMouseUp = (e) => {
+        if (!isDragging) return;
+        
+        isDragging = false;
+        
+        // 恢复视觉状态
+        hud.style.cursor = 'move';
+        hud.style.boxShadow = '0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1)';
+        hud.style.opacity = '1';
+        hud.style.transition = 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease';
+        
+        // 最终位置校准
+        requestAnimationFrame(() => {
+            const rect = hud.getBoundingClientRect();
+            const windowWidth = window.innerWidth;
+            const windowHeight = window.innerHeight;
+            
+            // 确保位置在视口内
+            let finalLeft = parseFloat(hud.style.left) || 0;
+            let finalTop = parseFloat(hud.style.top) || 0;
+            
+            finalLeft = Math.max(0, Math.min(finalLeft, windowWidth - rect.width));
+            finalTop = Math.max(0, Math.min(finalTop, windowHeight - rect.height));
+            
+            hud.style.left = finalLeft + 'px';
+            hud.style.top = finalTop + 'px';
+            
+            // 保存位置到localStorage
+            const position = {
+                left: hud.style.left,
+                top: hud.style.top,
+                right: hud.style.right,
+                transform: hud.style.transform
+            };
+            
+            try {
+                localStorage.setItem('agent-task-hud-position', JSON.stringify(position));
+            } catch (error) {
+                console.warn('Failed to save position to localStorage:', error);
+            }
+        });
+        
+        e.preventDefault();
+        e.stopPropagation();
+    };
+    
+    // 绑定事件监听器 - 全局拖拽
+    hud.addEventListener('mousedown', handleMouseDown);
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    
+    // 防止在拖拽时选中文本
+    hud.addEventListener('dragstart', (e) => e.preventDefault());
+    
+    // 触摸事件支持（移动设备）- 全局拖拽
+    let touchDragging = false;
+    let touchOffsetX = 0;
+    let touchOffsetY = 0;
+    
+    // 触摸开始
+    const handleTouchStart = (e) => {
+        // 排除内部可交互元素
+        const interactiveSelectors = ['button', 'input', 'textarea', 'select', 'a', '.task-card'];
+        const isInteractive = e.target.closest(interactiveSelectors.join(','));
+        
+        if (isInteractive) return;
+        
+        touchDragging = true;
+        
+        // 视觉反馈
+        hud.style.boxShadow = '0 12px 48px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.2)';
+        hud.style.opacity = '0.95';
+        hud.style.transition = 'none';
+        
+        const touch = e.touches[0];
+        const rect = hud.getBoundingClientRect();
+        touchOffsetX = touch.clientX - rect.left;
+        touchOffsetY = touch.clientY - rect.top;
+        
+        e.preventDefault();
+    };
+    
+    // 触摸移动
+    const handleTouchMove = (e) => {
+        if (!touchDragging) return;
+        
+        const touch = e.touches[0];
+        performDrag(touch.clientX, touch.clientY);
+        
+        e.preventDefault();
+    };
+    
+    // 触摸结束
+    const handleTouchEnd = (e) => {
+        if (!touchDragging) return;
+        
+        touchDragging = false;
+        
+        // 恢复视觉状态
+        hud.style.boxShadow = '0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1)';
+        hud.style.opacity = '1';
+        hud.style.transition = 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease';
+        
+        // 最终位置校准
+        requestAnimationFrame(() => {
+            const rect = hud.getBoundingClientRect();
+            const windowWidth = window.innerWidth;
+            const windowHeight = window.innerHeight;
+            
+            // 确保位置在视口内
+            let finalLeft = parseFloat(hud.style.left) || 0;
+            let finalTop = parseFloat(hud.style.top) || 0;
+            
+            finalLeft = Math.max(0, Math.min(finalLeft, windowWidth - rect.width));
+            finalTop = Math.max(0, Math.min(finalTop, windowHeight - rect.height));
+            
+            hud.style.left = finalLeft + 'px';
+            hud.style.top = finalTop + 'px';
+            
+            // 保存位置到localStorage
+            const position = {
+                left: hud.style.left,
+                top: hud.style.top,
+                right: hud.style.right,
+                transform: hud.style.transform
+            };
+            
+            try {
+                localStorage.setItem('agent-task-hud-position', JSON.stringify(position));
+            } catch (error) {
+                console.warn('Failed to save position to localStorage:', error);
+            }
+        });
+        
+        e.preventDefault();
+    };
+    
+    // 绑定触摸事件
+    hud.addEventListener('touchstart', handleTouchStart, { passive: false });
+    document.addEventListener('touchmove', handleTouchMove, { passive: false });
+    document.addEventListener('touchend', handleTouchEnd, { passive: false });
+    
+    // 窗口大小变化时重新校准位置
+    const handleResize = () => {
+        if (isDragging || touchDragging) return;
+        
+        requestAnimationFrame(() => {
+            const rect = hud.getBoundingClientRect();
+            const windowWidth = window.innerWidth;
+            const windowHeight = window.innerHeight;
+            
+            // 如果HUD超出视口，调整到可见位置
+            if (rect.left < 0 || rect.top < 0 || 
+                rect.right > windowWidth || rect.bottom > windowHeight) {
+                
+                let newLeft = parseFloat(hud.style.left) || 0;
+                let newTop = parseFloat(hud.style.top) || 0;
+                
+                newLeft = Math.max(0, Math.min(newLeft, windowWidth - rect.width));
+                newTop = Math.max(0, Math.min(newTop, windowHeight - rect.height));
+                
+                hud.style.left = newLeft + 'px';
+                hud.style.top = newTop + 'px';
+                
+                // 更新保存的位置
+                const position = {
+                    left: hud.style.left,
+                    top: hud.style.top,
+                    right: hud.style.right,
+                    transform: hud.style.transform
+                };
+                
+                try {
+                    localStorage.setItem('agent-task-hud-position', JSON.stringify(position));
+                } catch (error) {
+                    console.warn('Failed to save position to localStorage:', error);
+                }
+            }
+        });
+    };
+    
+    window.addEventListener('resize', handleResize);
+    
+    // 清理函数
+    this._cleanupDragging = () => {
+        hud.removeEventListener('mousedown', handleMouseDown);
+        document.removeEventListener('mousemove', handleMouseMove);
+        document.removeEventListener('mouseup', handleMouseUp);
+        hud.removeEventListener('touchstart', handleTouchStart);
+        document.removeEventListener('touchmove', handleTouchMove);
+        document.removeEventListener('touchend', handleTouchEnd);
+        window.removeEventListener('resize', handleResize);
+    };
+};
+
 // 添加任务进度动画样式
 (function() {
     if (document.getElementById('agent-task-hud-styles')) return;
@@ -1035,6 +1384,79 @@ Live2DManager.prototype._createTaskCard = function(task) {
         .task-card:hover {
             background: rgba(51, 65, 85, 0.8) !important;
             transform: translateX(-2px);
+        }
+        
+        /* 折叠功能样式 */
+        #agent-task-empty {
+            position: relative;
+            transition: all 0.3s ease;
+            overflow: hidden;
+        }
+        
+        #agent-task-empty > div:first-child {
+            transition: all 0.3s ease;
+            opacity: 1;
+            height: auto;
+            padding: 20px;
+            margin: 0;
+        }
+        
+        #agent-task-empty.collapsed > div:first-child {
+            opacity: 0;
+            height: 0;
+            padding: 0;
+            margin: 0;
+        }
+        
+        .collapse-button {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: rgba(100, 116, 139, 0.3);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            color: #64748b;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            z-index: 1;
+            user-select: none;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+        }
+        
+        .collapse-button:hover {
+            background: rgba(100, 116, 139, 0.6);
+            transform: scale(1.1);
+        }
+        
+        .collapse-button:active {
+            transform: scale(0.95);
+        }
+        
+        .collapse-button.collapsed {
+            background: rgba(100, 116, 139, 0.5);
+            color: #94a3b8;
+        }
+        
+        /* 移动设备优化 */
+        @media (max-width: 768px) {
+            .collapse-button {
+                width: 24px;
+                height: 24px;
+                font-size: 12px;
+                top: 6px;
+                right: 6px;
+            }
+            
+            .collapse-button:hover {
+                transform: scale(1.05);
+            }
         }
     `;
     document.head.appendChild(style);
@@ -2147,5 +2569,87 @@ Live2DManager.prototype.showPopup = function(buttonId, popup) {
             }, 1000);
         }
     }
+};
+
+// 设置折叠功能
+Live2DManager.prototype._setupCollapseFunctionality = function(emptyState, collapseButton, emptyContent) {
+    // 获取折叠状态
+    const getCollapsedState = () => {
+        try {
+            const saved = localStorage.getItem('agent-task-empty-collapsed');
+            return saved === 'true';
+        } catch (error) {
+            console.warn('Failed to read collapse state from localStorage:', error);
+            return false;
+        }
+    };
+    
+    // 保存折叠状态
+    const saveCollapsedState = (collapsed) => {
+        try {
+            localStorage.setItem('agent-task-empty-collapsed', collapsed.toString());
+        } catch (error) {
+            console.warn('Failed to save collapse state to localStorage:', error);
+        }
+    };
+    
+    // 初始化状态
+    let isCollapsed = getCollapsedState();
+    
+    // 更新折叠状态
+    const updateCollapseState = (collapsed) => {
+        isCollapsed = collapsed;
+        
+        if (collapsed) {
+            // 折叠状态
+            emptyState.classList.add('collapsed');
+            collapseButton.classList.add('collapsed');
+            collapseButton.innerHTML = '▶';
+        } else {
+            // 展开状态
+            emptyState.classList.remove('collapsed');
+            collapseButton.classList.remove('collapsed');
+            collapseButton.innerHTML = '▼';
+        }
+        
+        // 保存状态
+        saveCollapsedState(collapsed);
+    };
+    
+    // 应用初始状态
+    updateCollapseState(isCollapsed);
+    
+    // 点击事件处理
+    collapseButton.addEventListener('click', (e) => {
+        e.stopPropagation();
+        updateCollapseState(!isCollapsed);
+    });
+    
+    // 悬停效果
+    collapseButton.addEventListener('mouseenter', () => {
+        collapseButton.style.background = 'rgba(100, 116, 139, 0.6)';
+        collapseButton.style.transform = 'scale(1.1)';
+    });
+    
+    collapseButton.addEventListener('mouseleave', () => {
+        collapseButton.style.background = isCollapsed ? 
+            'rgba(100, 116, 139, 0.5)' : 'rgba(100, 116, 139, 0.3)';
+        collapseButton.style.transform = 'scale(1)';
+    });
+    
+    // 触摸设备优化
+    collapseButton.addEventListener('touchstart', (e) => {
+        e.stopPropagation();
+        collapseButton.style.background = 'rgba(100, 116, 139, 0.7)';
+        collapseButton.style.transform = 'scale(1.1)';
+    }, { passive: true });
+    
+    collapseButton.addEventListener('touchend', (e) => {
+        e.stopPropagation();
+        updateCollapseState(!isCollapsed);
+        collapseButton.style.background = isCollapsed ? 
+            'rgba(100, 116, 139, 0.5)' : 'rgba(100, 116, 139, 0.3)';
+        collapseButton.style.transform = 'scale(1)';
+    }, { passive: true });
 };
 
