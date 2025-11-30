@@ -2646,13 +2646,16 @@ Live2DManager.prototype._setupCollapseFunctionality = function(emptyState, colla
     // 触摸设备优化
     collapseButton.addEventListener('touchstart', (e) => {
         e.stopPropagation();
+        // 防止双重触发：在触摸开始时就阻止后续的click事件
+        e.preventDefault();
+        
         collapseButton.style.background = 'rgba(100, 116, 139, 0.7)';
         collapseButton.style.transform = 'scale(1.1)';
-    }, { passive: true });
+    }, { passive: false });
     
     collapseButton.addEventListener('touchend', (e) => {
         e.stopPropagation();
-        // 阻止click事件的触发
+        // 双重保险：再次阻止click事件的触发
         e.preventDefault();
         
         // 设置标志，阻止后续的click事件
