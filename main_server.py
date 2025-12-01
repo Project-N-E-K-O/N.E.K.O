@@ -4677,6 +4677,105 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
             
             # 复制模型根目录到用户文档的live2d目录
             shutil.copytree(model_root_dir, target_model_dir)
+
+            # 上传后：遍历模型目录中的所有动作文件（*.motion3.json），
+            # 将官方白名单参数及模型自身在 .model3.json 中声明为 LipSync 的参数的 Segments 清空为 []。
+            # 这样可以兼顾官方参数与模型声明的口型参数，同时忽略未声明的作者自定义命名（避免误伤）。
+            try:
+                import json as _json
+
+                # 官方口型参数白名单（尽量全面列出常见和官方命名的嘴部/口型相关参数）
+                # 仅包含与嘴巴形状、发音帧（A/I/U/E/O）、下颚/唇动作直接相关的参数，
+                # 明确排除头部/身体/表情等其它参数（例如 ParamAngleZ、ParamAngleX 等不应在此）。
+                official_mouth_params = {
+                    # 五个基本发音帧（A/I/U/E/O）
+                    'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO',
+                    # 常见嘴部上下/开合/形状参数
+                    'ParamMouthUp', 'ParamMouthDown', 'ParamMouthOpen', 'ParamMouthOpenY',
+                    'ParamMouthForm', 'ParamMouthX', 'ParamMouthY', 'ParamMouthSmile', 'ParamMouthPucker',
+                    'ParamMouthStretch', 'ParamMouthShrug', 'ParamMouthLeft', 'ParamMouthRight',
+                    'ParamMouthCornerUpLeft', 'ParamMouthCornerUpRight',
+                    'ParamMouthCornerDownLeft', 'ParamMouthCornerDownRight',
+                    # 唇相关（部分模型/官方扩展中可能出现）
+                    'ParamLipA', 'ParamLipI', 'ParamLipU', 'ParamLipE', 'ParamLipO', 'ParamLipThickness',
+                    # 下颚（部分模型以下颚控制口型）
+                    'ParamJawOpen', 'ParamJawForward', 'ParamJawLeft', 'ParamJawRight',
+                    # 其它口型相关（保守列入）
+                    'ParamMouthAngry', 'ParamMouthAngryLine'
+                }
+
+                # 尝试读取模型的 .model3.json，提取 Groups -> Name == "LipSync" && Target == "Parameter" 的 Ids
+                model_declared_mouth_params = set()
+                try:
+                    local_model_json = target_model_dir / model_json_file.name
+                    if local_model_json.exists():
+                        with open(local_model_json, 'r', encoding='utf-8') as mf:
+                            try:
+                                model_cfg = _json.load(mf)
+                                groups = model_cfg.get('Groups') if isinstance(model_cfg, dict) else None
+                                if isinstance(groups, list):
+                                    for grp in groups:
+                                        try:
+                                            if not isinstance(grp, dict):
+                                                continue
+                                            # 仅考虑官方 Group Name 为 LipSync 且 Target 为 Parameter 的条目
+                                            if grp.get('Name') == 'LipSync' and grp.get('Target') == 'Parameter':
+                                                ids = grp.get('Ids') or []
+                                                for pid in ids:
+                                                    if isinstance(pid, str) and pid:
+                                                        model_declared_mouth_params.add(pid)
+                                        except Exception:
+                                            continue
+                            except Exception:
+                                # 解析失败则视为未找到 groups，继续使用官方白名单
+                                pass
+                except Exception:
+                    pass
+
+                # 合并白名单（官方 + 模型声明）
+                mouth_param_whitelist = set(official_mouth_params)
+                mouth_param_whitelist.update(model_declared_mouth_params)
+
+                for motion_path in target_model_dir.rglob('*.motion3.json'):
+                    try:
+                        with open(motion_path, 'r', encoding='utf-8') as mf:
+                            try:
+                                motion_data = _json.load(mf)
+                            except Exception:
+                                # 非 JSON 或解析失败则跳过
+                                continue
+
+                        modified = False
+                        curves = motion_data.get('Curves') if isinstance(motion_data, dict) else None
+                        if isinstance(curves, list):
+                            for curve in curves:
+                                try:
+                                    if not isinstance(curve, dict):
+                                        continue
+                                    cid = curve.get('Id')
+                                    if not cid:
+                                        continue
+                                    # 严格按白名单匹配（避免模糊匹配误伤）
+                                    if cid in mouth_param_whitelist:
+                                        # 清空 Segments（若存在）
+                                        if 'Segments' in curve and curve['Segments']:
+                                            curve['Segments'] = []
+                                            modified = True
+                                except Exception:
+                                    continue
+
+                        if modified:
+                            try:
+                                with open(motion_path, 'w', encoding='utf-8') as mf:
+                                    _json.dump(motion_data, mf, ensure_ascii=False, indent=4)
+                                logger.info(f"已清除口型参数：{motion_path}")
+                            except Exception:
+                                # 写入失败则记录但不阻止上传
+                                logger.exception(f"写入 motion 文件失败: {motion_path}")
+                    except Exception:
+                        continue
+            except Exception:
+                logger.exception("处理 motion 文件时发生错误")
             
             logger.info(f"成功上传Live2D模型: {model_name} -> {target_model_dir}")
             
