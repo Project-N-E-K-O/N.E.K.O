@@ -273,6 +273,14 @@ function init_app(){
                         console.log('模式切换中，忽略"已离开"状态消息');
                         return;
                     }
+                    
+                    // 检测严重错误，自动隐藏准备提示（兜底机制）
+                    const criticalErrorKeywords = ['连续失败', '已停止', '自动重试', '崩溃', '欠费', 'API Key被'];
+                    if (criticalErrorKeywords.some(keyword => response.message.includes(keyword))) {
+                        console.log('检测到严重错误，隐藏准备提示');
+                        hideVoicePreparingToast();
+                    }
+                    
                     // 翻译后端发送的状态消息
                     const translatedMessage = window.translateStatusMessage ? window.translateStatusMessage(response.message) : response.message;
                     showStatusToast(translatedMessage, 4000);
@@ -328,6 +336,7 @@ function init_app(){
                                     showStatusToast(window.t ? window.t('app.restartComplete', {name: lanlan_config.lanlan_name}) : `重启完成，${lanlan_config.lanlan_name}回来了！`, 4000);
                                 } catch (error) {
                                     console.error("重启时出错:", error);
+                                    hideVoicePreparingToast(); // 确保重启失败时隐藏准备提示
                                     showStatusToast(window.t ? window.t('app.restartFailed', {error: error.message}) : `重启失败: ${error.message}`, 5000);
                                 }
                             }, 7500); // 7.5秒后执行
@@ -1412,6 +1421,7 @@ function init_app(){
                 showStatusToast(window.t ? window.t('app.textChattingShort') : '正在文本聊天中', 2000);
             } catch (error) {
                 console.error('启动文本session失败:', error);
+                hideVoicePreparingToast(); // 确保失败时隐藏准备提示
                 showStatusToast(window.t ? window.t('app.startFailed', {error: error.message}) : `启动失败: ${error.message}`, 5000);
                 
                 // 重新启用按钮，允许用户重试
