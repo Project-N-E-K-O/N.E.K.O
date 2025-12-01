@@ -1543,6 +1543,10 @@
                         <button class="btn btn-secondary" onclick="toggleUploadSection()">
                             <span data-i18n="steam.hideUploadSection">隐藏上传区</span>
                         </button>
+                        <div class="help-text" style="margin-top: 10px; font-size: 12px; color: #666;">
+                            点击"上传"即表示您同意 Steam 创意工坊服务条款，包括创意工坊法律协议：
+                            <a href="https://store.steampowered.com/workshopeula/4099310" target="_blank" style="color: #44b7fe;">https://store.steampowered.com/workshopeula/4099310</a>
+                        </div>
                     </div>
                 </div>
                 
@@ -1653,6 +1657,10 @@
                 
                 <div class="button-group">
                     <button class="btn btn-primary" onclick="uploadItem()">上传到创意工坊</button>
+                </div>
+                <div class="help-text" style="margin-top: 10px; font-size: 12px; color: #666;">
+                    点击"上传"即表示您同意 Steam 创意工坊服务条款，包括创意工坊法律协议：
+                    <a href="https://steamcommunity.com/sharedfiles/workshopopts" target="_blank" style="color: #44b7fe;">https://steamcommunity.com/sharedfiles/workshopopts</a>
                 </div>
             </div>
             </div>
@@ -2798,6 +2806,22 @@ showMessage(errorMessage, 'error', 3000);
                     // 显示物品ID
                     if (data.published_file_id) {
                         showMessage(window.t ? window.t('steam.itemId', {id: data.published_file_id}) : `物品ID: ${data.published_file_id}`, 'success', 5000);
+                        
+                        // 使用Steam overlay打开物品页面
+                        try {
+                            const published_id = data.published_file_id;
+                            const url = `steam://url/CommunityFilePage/${published_id}`;
+                            
+                            // 检查是否支持Steam overlay
+                            if (window.steam && typeof window.steam.ActivateGameOverlayToWebPage === 'function') {
+                                window.steam.ActivateGameOverlayToWebPage(url);
+                            } else {
+                                // 备选方案：尝试直接打开URL
+                                window.open(url);
+                            }
+                        } catch (e) {
+                            console.error('无法打开Steam overlay:', e);
+                        }
                     }
                     
                     // 如果需要接受协议
