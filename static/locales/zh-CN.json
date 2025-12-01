@@ -121,6 +121,7 @@
     "previewImagePath": "预览图片路径 *",
     "previewImagePlaceholder": "从本地物品中获取的预览图片路径",
     "previewImageSizeHint": "提示：预览图片大小需要小于1MB",
+    "uploadInstructions": "请先在\"管理本地物品\"区域选择一个未发布的物品，然后点击\"准备上传\"按钮。内容文件夹路径和预览图片路径将自动填充。",
     "unnamedItem": "未命名物品",
     "localItem": "本地物品",
     "unknownItem": "未知物品",
