@@ -503,18 +503,7 @@ class LLMSessionManager:
         self.audio_api_key = core_config['AUDIO_API_KEY']
         
         # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
-        (
-            _,
-            _,
-            _,
-            lanlan_basic_config_updated,
-            _,
-            _,
-            _,
-            _,
-            _,
-            _
-        ) = self._config_manager.get_character_data()
+        _,_,_,lanlan_basic_config_updated,_,_,_,_,_,_ = self._config_manager.get_character_data()
         old_voice_id = self.voice_id
         self.voice_id = lanlan_basic_config_updated.get(self.lanlan_name, {}).get('voice_id', '')
         if old_voice_id != self.voice_id:
@@ -865,18 +854,7 @@ class LLMSessionManager:
             self.audio_api_key = core_config['AUDIO_API_KEY']
             
             # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
-            (
-                _,
-                _,
-                _,
-                lanlan_basic_config_updated,
-                _,
-                _,
-                _,
-                _,
-                _,
-                _
-            ) = self._config_manager.get_character_data()
+            _,_,_,lanlan_basic_config_updated,_,_,_,_,_,_ = self._config_manager.get_character_data()
             old_voice_id = self.voice_id
             self.voice_id = lanlan_basic_config_updated.get(self.lanlan_name, {}).get('voice_id', '')
             if old_voice_id != self.voice_id:
