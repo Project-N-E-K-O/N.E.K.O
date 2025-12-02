@@ -3,6 +3,8 @@ from dataclasses import dataclass
 from typing import Optional, Dict, Any
 
 NEKO_PLUGIN_META_ATTR = "__neko_plugin_meta__"
+NEKO_PLUGIN_TAG = "__neko_plugin__"
+
 
 @dataclass
 class PluginMeta:
