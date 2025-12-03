@@ -10,7 +10,8 @@ import logging
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
 from openai import AsyncOpenAI, APIConnectionError, InternalServerError, RateLimitError
-from config import MODELS_WITH_EXTRA_BODY
+import httpx
+from config import MODELS_WITH_EXTRA_BODY, USER_PLUGIN_SERVER_PORT
 from utils.config_manager import get_config_manager
 from .mcp_client import McpRouterClient, McpToolCatalog
 from .computer_use import ComputerUseAdapter
@@ -55,13 +56,12 @@ class ComputerUseDecision:
 
 class DirectTaskExecutor:
     """
-    直接任务执行器：并行评估 MCP 和 ComputerUse 可行性
+    直接任务执行器：并行评估 MCP、UserPlugin 与 ComputerUse 可行性
     
     流程:
-    1. 并行调用两个 LLM：一个评估 MCP，一个评估 ComputerUse
-    2. 优先使用 MCP（如果可行）
-    3. 其次使用 ComputerUse（如果 MCP 不可行但 ComputerUse 可行）
-    4. 执行选中的方法
+    1. 并行调用多个评估器：_assess_mcp、_assess_user_plugin、_assess_computer_use
+    2. 优先使用 MCP（如果可行），其次 UserPlugin，再次 ComputerUse（优先级可调整）
+    3. 执行选中的方法
     """
     
     def __init__(self, computer_use: Optional[ComputerUseAdapter] = None):
@@ -69,7 +69,36 @@ class DirectTaskExecutor:
         self.catalog = McpToolCatalog(self.router)
         self.computer_use = computer_use or ComputerUseAdapter()
         self._config_manager = get_config_manager()
+        self.plugin_list = []
+        self.user_plugin_enabled_default = False
     
+    
+    async def plugin_list_provider(self, force_refresh: bool = True) -> List[Dict[str, Any]]:
+        if (self.plugin_list == []) or force_refresh:
+            try:
+                url = f"http://localhost:{USER_PLUGIN_SERVER_PORT}/plugins"
+                # increase timeout and avoid awaiting a non-awaitable .json()
+                timeout = httpx.Timeout(5.0, connect=2.0)
+                async with httpx.AsyncClient(timeout=timeout) as _client:
+                    resp = await _client.get(url)
+                    try:
+                        data = resp.json()
+                    except Exception:
+                        # fallback to text parse
+                        try:
+                            data = json.loads(await resp.aread())
+                        except Exception:
+                            data = {}
+                    plugin_list = data.get("plugins", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+                    # only update cache when we obtained a non-empty list
+                    if plugin_list:
+                        self.plugin_list = plugin_list  # 更新实例变量
+            except Exception as e:
+                logger.warning(f"[Agent] plugin_list_provider http fetch failed: {e}")
+        logger.info(self.plugin_list)
+        return self.plugin_list
+
+
     def _get_client(self):
         """动态获取 OpenAI 客户端"""
         core_config = self._config_manager.get_core_config()
@@ -280,7 +309,7 @@ OUTPUT FORMAT (strict JSON):
                 return ComputerUseDecision(
                     has_task=decision.get('has_task', False),
                     can_execute=decision.get('can_execute', False),
-                    task_description=decision.get('task_description', ''),
+                    task_description=decision.get('task_description', ''), 
                     reason=decision.get('reason', '')
                 )
                 
@@ -295,6 +324,177 @@ OUTPUT FORMAT (strict JSON):
             except Exception as e:
                 logger.error(f"[ComputerUse Assessment] Failed: {e}")
                 return ComputerUseDecision(has_task=False, can_execute=False, reason=f"Assessment error: {e}")
+    
+    async def _assess_user_plugin(self, conversation: str, plugins: Any) -> Any:
+        """
+        评估本地用户插件可行性（plugins 为外部传入的插件列表）
+        返回结构与 MCP 决策类似，但包含 plugin_id/plugin_args
+        """
+        # 如果没有插件，快速返回
+        try:
+            if not plugins:
+                return type("UP", (), {"has_task": False, "can_execute": False, "task_description":"", "plugin_id": None, "plugin_args": None, "reason":"No plugins"})
+        except Exception:
+            return type("UP", (), {"has_task": False, "can_execute": False, "task_description":"", "plugin_id": None, "plugin_args": None, "reason":"Invalid plugins"})
+    
+        # 构建插件描述供 LLM 参考（包含 id, description, input_schema 以及 entries 列表）
+        lines = []
+        try:
+            # plugins can be dict or list
+            iterable = plugins.items() if isinstance(plugins, dict) else enumerate(plugins)
+            for _, p in iterable:
+                pid = p.get("id") if isinstance(p, dict) else getattr(p, "id", None)
+                desc = p.get("description", "") if isinstance(p, dict) else getattr(p, "description", "")
+                schema = p.get("input_schema", {}) if isinstance(p, dict) else getattr(p, "input_schema", {})
+                entries = p.get("entries", []) if isinstance(p, dict) else getattr(p, "entries", []) or []
+                # Only include well-formed plugin entries
+                if not pid:
+                    continue
+                try:
+                    schema_str = json.dumps(schema)
+                except Exception:
+                    schema_str = "{}"
+                # Build entries description: show entry ids and short description to aid LLM in selecting entry_id
+                entry_lines = []
+                try:
+                    for e in entries:
+                        try:
+                            eid = e.get("id") if isinstance(e, dict) else getattr(e, "id", None)
+                            ename = e.get("name", "") if isinstance(e, dict) else getattr(e, "name", "")
+                            edesc = e.get("description", "") if isinstance(e, dict) else getattr(e, "description", "")
+                            if eid:
+                                entry_lines.append(f"{eid} ({ename}): {edesc}")
+                        except Exception:
+                            continue
+                except Exception:
+                    entry_lines = []
+                entry_desc = "; ".join(entry_lines) if entry_lines else "no entries"
+                lines.append(f"- {pid}: {desc} | schema: {schema_str} | entries: {entry_desc}")
+        except Exception:
+            pass
+        
+        plugins_desc = "\n".join(lines) if lines else "No plugins available."
+        # truncate to avoid overly large prompts
+        if len(plugins_desc) > 2000:
+            plugins_desc = plugins_desc[:2000] + "\n... (truncated)"
+        logger.debug(f"[UserPlugin] passing plugin descriptions (truncated): {plugins_desc[:1000]}")
+        
+        # Provide a concrete JSON example to guide model outputs and reduce parsing errors
+        example_json = json.dumps({
+            "has_task": True,
+            "can_execute": True,
+            "task_description": "example: call testPlugin with a message",
+            "plugin_id": "testPlugin",
+            "plugin_args": {"message": "hello"}
+        }, ensure_ascii=False)
+        
+        # Strongly enforce JSON-only output to reduce parsing errors
+        # NOTE: Require the model to return entry_id when has_task and can_execute are true.
+        system_prompt = f"""You are a User Plugin selection agent. AVAILABLE PLUGINS:
+{plugins_desc}
+
+INSTRUCTIONS:
+1. Analyze the conversation and determine if any available plugin can handle the user's request.
+2. If yes, you MUST return the plugin id, the entry_id (the specific entry inside that plugin to invoke), and plugin_args matching the entry's schema.
+3. If you cannot determine a specific plugin entry, return has_task=false or can_execute=false and explain why in the 'reason' field.
+4. OUTPUT MUST BE ONLY a single JSON object and NOTHING ELSE. Do NOT include any explanatory text, markdown, or code fences.
+
+EXAMPLE (must follow this structure exactly):
+{{
+    "has_task": true,
+    "can_execute": true,
+    "task_description": "example: call testPlugin open entry",
+    "plugin_id": "testPlugin",
+    "entry_id": "open",
+    "plugin_args": {{"message": "hello"}},
+    "reason": ""
+}}
+
+OUTPUT FORMAT (strict JSON):
+{{
+    "has_task": boolean,
+    "can_execute": boolean,
+    "task_description": "brief description",
+    "plugin_id": "plugin id or null",
+    "entry_id": "entry id inside the plugin or null",
+    "plugin_args": {{...}} or null,
+    "reason": "why"
+}}
+
+VERY IMPORTANT: If has_task and can_execute are true, entry_id is REQUIRED. If entry_id is missing or null when has_task/can_execute are true, the response will be treated as non-executable.
+Return only the JSON object, nothing else.
+"""
+        user_prompt = f"Conversation:\\n{conversation}\\n\\nUser intent (one-line): {conversation.splitlines()[-1] if conversation.splitlines() else ''}"
+        
+        max_retries = 3
+        retry_delays = [1, 2]
+        
+        for attempt in range(max_retries):
+            try:
+                client = self._get_client()
+                model = self._get_model()
+                
+                request_params = {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "temperature": 0,
+                    "max_tokens": 400
+                }
+                
+                if model in MODELS_WITH_EXTRA_BODY:
+                    request_params["extra_body"] = {"enable_thinking": False}
+                
+                response = await client.chat.completions.create(**request_params)
+                # Capture raw response and log prompts/response at INFO so it's visible in runtime logs
+                try:
+                    raw_text = response.choices[0].message.content
+                except Exception:
+                    raw_text = None
+                # Log the prompts we sent (truncated) and the raw response (truncated) at INFO level
+                try:
+                    prompt_dump = (system_prompt + "\n\n" + user_prompt)[:2000]
+                except Exception:
+                    prompt_dump = "(failed to build prompt dump)"
+                logger.info(f"[UserPlugin Assessment] prompt (truncated): {prompt_dump}")
+                logger.info(f"[UserPlugin Assessment] raw LLM response: {repr(raw_text)[:2000]}")
+                
+                text = raw_text.strip() if isinstance(raw_text, str) else ""
+                
+                if text.startswith("```"):
+                    text = text.replace("```json", "").replace("```", "").strip()
+                
+                # If the response is empty or not valid JSON, log and return a safe decision
+                if not text:
+                    logger.warning("[UserPlugin Assessment] Empty LLM response; cannot parse JSON")
+                    return type("UP", (), {"has_task": False, "can_execute": False, "task_description": "", "plugin_id": None, "plugin_args": None, "reason": "Empty LLM response"})
+                
+                try:
+                    decision = json.loads(text)
+                except Exception as e:
+                    logger.error(f"[UserPlugin Assessment] JSON parse error: {e}; raw_text (truncated): {repr(raw_text)[:2000]}")
+                    return type("UP", (), {"has_task": False, "can_execute": False, "task_description": "", "plugin_id": None, "plugin_args": None, "reason": f"JSON parse error: {e}"})
+                
+                # return a simple object-like struct, include entry_id if provided by the LLM
+                return type("UP", (), {
+                    "has_task": decision.get("has_task", False),
+                    "can_execute": decision.get("can_execute", False),
+                    "task_description": decision.get("task_description", ""),
+                    "plugin_id": decision.get("plugin_id"),
+                    "entry_id": decision.get("entry_id") or decision.get("plugin_entry_id") or decision.get("event_id"),
+                    "plugin_args": decision.get("plugin_args"),
+                    "reason": decision.get("reason", "")
+                })
+                
+            except (APIConnectionError, InternalServerError, RateLimitError) as e:
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delays[attempt])
+                else:
+                    return type("UP", (), {"has_task": False, "can_execute": False, "reason": f"Assessment error: {e}"})
+            except Exception as e:
+                return type("UP", (), {"has_task": False, "can_execute": False, "reason": f"Assessment error: {e}"})
     
     async def analyze_and_execute(
         self, 
@@ -315,9 +515,17 @@ OUTPUT FORMAT (strict JSON):
         
         mcp_enabled = agent_flags.get("mcp_enabled", False)
         computer_use_enabled = agent_flags.get("computer_use_enabled", False)
+        user_plugin_enabled = agent_flags.get("user_plugin_enabled", False)
+        
+        # testUserPlugin: log entry with flags and short message summary for debugging
+        try:
+            msgs_summary = self._format_messages(messages)[:400].replace("\n", " ")
+            logger.info(f"testUserPlugin: analyze_and_execute called task_id={task_id}, lanlan={lanlan_name}, agent_flags={agent_flags}, messages_summary='{msgs_summary}'")
+        except Exception:
+            logger.info(f"testUserPlugin: analyze_and_execute called task_id={task_id}, lanlan={lanlan_name}, agent_flags={agent_flags}")
         
         # 如果两个功能都没开启，直接返回
-        if not mcp_enabled and not computer_use_enabled:
+        if not mcp_enabled and not computer_use_enabled and not user_plugin_enabled:
             logger.debug("[TaskExecutor] Both MCP and ComputerUse disabled, skipping")
             return None
         
@@ -348,12 +556,21 @@ OUTPUT FORMAT (strict JSON):
             except Exception as e:
                 logger.warning(f"[TaskExecutor] Failed to check ComputerUse: {e}")
         
-        # 并行执行评估
+        # 并行执行评估（包含 user_plugin 分支）
         mcp_decision = None
         cu_decision = None
+        up_decision = None
         
         if mcp_enabled and capabilities:
             assessment_tasks.append(('mcp', self._assess_mcp(conversation, capabilities)))
+        
+        # user plugin 支路（由外部 provider 提供插件列表）
+        user_plugin_enabled = agent_flags.get("user_plugin_enabled", self.user_plugin_enabled_default)
+        await self.plugin_list_provider()
+        plugins = self.plugin_list
+        
+        if user_plugin_enabled and plugins:
+            assessment_tasks.append(('up', self._assess_user_plugin(conversation, plugins)))
         
         if computer_use_enabled and cu_available:
             assessment_tasks.append(('cu', self._assess_computer_use(conversation, cu_available)))
@@ -364,35 +581,51 @@ OUTPUT FORMAT (strict JSON):
         
         # 并行执行所有评估
         logger.info(f"[TaskExecutor] Running {len(assessment_tasks)} assessments in parallel...")
+        results = await asyncio.gather(*[task[1] for task in assessment_tasks], return_exceptions=True)
         
-        results = await asyncio.gather(
-            *[task[1] for task in assessment_tasks],
-            return_exceptions=True
-        )
-        
-        # 收集结果
+        # 收集结果（安全访问，先过滤异常）
         for i, (task_type, _) in enumerate(assessment_tasks):
             result = results[i]
             if isinstance(result, Exception):
                 logger.error(f"[TaskExecutor] {task_type} assessment failed: {result}")
                 continue
-            
+            # safe attribute access via getattr to avoid type issues
             if task_type == 'mcp':
                 mcp_decision = result
-                logger.info(f"[MCP] has_task={mcp_decision.has_task}, can_execute={mcp_decision.can_execute}, reason={mcp_decision.reason}")
+                logger.info(f"[MCP] has_task={getattr(mcp_decision,'has_task',None)}, can_execute={getattr(mcp_decision,'can_execute',None)}, reason={getattr(mcp_decision,'reason',None)}")
+            elif task_type == 'up':
+                up_decision = result
+                logger.info(f"[UserPlugin] has_task={getattr(up_decision,'has_task',None)}, can_execute={getattr(up_decision,'can_execute',None)}, reason={getattr(up_decision,'reason',None)}")
             elif task_type == 'cu':
                 cu_decision = result
-                logger.info(f"[ComputerUse] has_task={cu_decision.has_task}, can_execute={cu_decision.can_execute}, reason={cu_decision.reason}")
+                logger.info(f"[ComputerUse] has_task={getattr(cu_decision,'has_task',None)}, can_execute={getattr(cu_decision,'can_execute',None)}, reason={getattr(cu_decision,'reason',None)}")
         
         # 决策逻辑：MCP 优先
         # 1. 如果 MCP 可以执行，使用 MCP
         if mcp_decision and mcp_decision.has_task and mcp_decision.can_execute:
             logger.info(f"[TaskExecutor] ✅ Using MCP: {mcp_decision.task_description}")
-            return await self._execute_mcp(
+            result_obj = await self._execute_mcp(
                 task_id=task_id,
                 decision=mcp_decision
             )
-        
+            # Structured log of TaskResult (truncated)
+            try:
+                res_preview = str(result_obj.result) if result_obj.result is not None else ""
+                if len(res_preview) > 800:
+                    res_preview = res_preview[:800] + "...(truncated)"
+                logger.info("TaskExecutor-OUT: %s", json.dumps({
+                    "task_id": result_obj.task_id,
+                    "execution_method": result_obj.execution_method,
+                    "success": result_obj.success,
+                    "reason": result_obj.reason,
+                    "tool_name": result_obj.tool_name,
+                    "tool_args": result_obj.tool_args,
+                    "result_preview": res_preview
+                }, ensure_ascii=False))
+            except Exception:
+                logger.info("TaskExecutor-OUT: (failed to serialize TaskResult)")
+            return result_obj
+
         # 2. 如果 MCP 不行，但 ComputerUse 可以，返回 ComputerUse 任务
         if cu_decision and cu_decision.has_task and cu_decision.can_execute:
             logger.info(f"[TaskExecutor] ✅ Using ComputerUse: {cu_decision.task_description}")
@@ -405,6 +638,23 @@ OUTPUT FORMAT (strict JSON):
                 reason=cu_decision.reason
             )
         
+        # 3. 如果 MCP 不行，但 UserPlugin 可用且可执行，优先调用 UserPlugin
+        if up_decision and getattr(up_decision, "has_task", False) and getattr(up_decision, "can_execute", False):
+            logger.info(f"[TaskExecutor] ✅ Using UserPlugin: {up_decision.task_description}, plugin_id={getattr(up_decision, 'plugin_id', None)}")
+            try:
+                return await self._execute_user_plugin(task_id=task_id, up_decision=up_decision)
+            except Exception as e:
+                logger.error(f"[TaskExecutor] UserPlugin execution failed: {e}")
+                return TaskResult(
+                    task_id=task_id,
+                    has_task=True,
+                    task_description=getattr(up_decision, "task_description", ""),
+                    execution_method='user_plugin',
+                    success=False,
+                    error=str(e),
+                    reason=getattr(up_decision, "reason", "") or "UserPlugin execution error"
+                )
+                
         # 3. 两者都不行
         reason_parts = []
         if mcp_decision:
@@ -495,6 +745,144 @@ OUTPUT FORMAT (strict JSON):
                 tool_args=tool_args,
                 reason=decision.reason
             )
+    
+    async def _execute_user_plugin(self, task_id: str, up_decision: Any) -> TaskResult:
+        """
+        Execute a user plugin via HTTP endpoint or specific plugin_entry.
+        up_decision is expected to have attributes: plugin_id, plugin_args, task_description
+        """
+        plugin_id = getattr(up_decision, "plugin_id", None)
+        plugin_args = getattr(up_decision, "plugin_args", {}) or {}
+        task_description = getattr(up_decision, "task_description", "")
+        # Optional: allow up_decision to specify a specific entry id
+        # Prefer explicit 'entry_id' returned by the LLM (up_decision.entry_id), then fallback to older names
+        plugin_entry_id = getattr(up_decision, "entry_id", None) # or getattr(up_decision, "plugin_entry_id", None) or plugin_args.pop("_entry", None)
+        
+        if not plugin_id:
+            return TaskResult(
+                task_id=task_id,
+                has_task=True,
+                task_description=task_description,
+                execution_method='user_plugin',
+                success=False,
+                error="No plugin_id provided",
+                reason=getattr(up_decision, "reason", "")
+            )
+        
+        # Ensure we have a plugins list to search (use cached self.plugin_list as fallback)
+        try:
+            plugins_list = self.plugin_list or []
+        except Exception:
+            plugins_list = []
+        # If cache is empty, attempt to refresh once
+        if not plugins_list:
+            try:
+                await self.plugin_list_provider(force_refresh=True)
+                plugins_list = self.plugin_list or []
+            except Exception:
+                plugins_list = []
+        
+        # Find plugin metadata in the resolved plugins list
+        plugin_meta = None
+        for p in plugins_list:
+            try:
+                if isinstance(p, dict) and p.get("id") == plugin_id:
+                    plugin_meta = p
+                    break
+            except Exception:
+                continue
+        
+        if plugin_meta is None:
+            return TaskResult(
+                task_id=task_id,
+                has_task=True,
+                task_description=task_description,
+                execution_method='user_plugin',
+                success=False,
+                error=f"Plugin {plugin_id} not found",
+                tool_name=plugin_id,
+                tool_args=plugin_args,
+                reason=getattr(up_decision, "reason", "") or "Plugin not found"
+            )
+        # Route via /plugin/trigger; use separate top-level entry_id when provided
+        trigger_endpoint = f"http://localhost:{USER_PLUGIN_SERVER_PORT}/plugin/trigger"
+        trigger_body = {"task_id": task_id, "plugin_id": plugin_id, "args": plugin_args or {}}
+        if plugin_entry_id:
+            trigger_body["entry_id"] = plugin_entry_id
+            logger.info(f"[TaskExecutor] Using explicit plugin_entry_id for trigger: {plugin_entry_id}")
+        # send trigger
+        logger.info(f"[TaskExecutor] POST to plugin trigger {trigger_endpoint} with body: {trigger_body}")
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                r = await client.post(trigger_endpoint, json=trigger_body)
+                # Treat 2xx as accepted. plugin_server may synchronously execute and return executed_entry
+                if 200 <= r.status_code < 300:
+                    try:
+                        data = r.json()
+                    except Exception:
+                        data = {"raw_text": r.text}
+                    # Enhanced logging: include trigger_body and returned data for diagnosis
+                    try:
+                        logger.info(f"[TaskExecutor] ✅ Trigger accepted for plugin {plugin_id}. trigger_body={trigger_body} response={data}")
+                    except Exception:
+                        logger.info(f"[TaskExecutor] ✅ Trigger accepted for plugin {plugin_id}: {data}")
+                    plugin_name = data.get("plugin_id") or plugin_id
+                    # Determine executed entry id: prefer explicit returned executed_entry/entry_id, then trigger_body.entry_id
+                    entry_id = None
+                    if isinstance(data, dict):
+                        entry_id = data.get("executed_entry") or data.get("entry_id") or trigger_body.get("entry_id")
+                    # Log decision about entry_id for traceability
+                    logger.debug(f"[TaskExecutor] Resolved entry_id for plugin {plugin_id}: {entry_id} (from response or trigger_body)")
+                    # Return TaskResult with independent entry_id field in result
+                    result_obj = {"accepted": True, "trigger_response": data, "entry_id": entry_id}
+                    return TaskResult(
+                        task_id=task_id,
+                        has_task=True,
+                        task_description=task_description,
+                        execution_method='user_plugin',
+                        success=False,
+                        result=result_obj,
+                        tool_name=plugin_name,
+                        tool_args=plugin_args,
+                        reason=getattr(up_decision, "reason", "") or "trigger_accepted"
+                    )
+                else:
+                    text = r.text
+                    logger.error(f"[TaskExecutor] ❌ Trigger endpoint returned status {r.status_code}: {text}")
+                    return TaskResult(
+                        task_id=task_id,
+                        has_task=True,
+                        task_description=task_description,
+                        execution_method='user_plugin',
+                        success=False,
+                        error=f"Trigger endpoint returned status {r.status_code}",
+                        result={"status_code": r.status_code, "text": text},
+                        tool_name=plugin_id,
+                        tool_args=plugin_args,
+                        reason=getattr(up_decision, "reason", "") or "trigger_failed"
+                    )
+        except Exception as e:
+            logger.error(f"[TaskExecutor] Trigger call error: {e}")
+            return TaskResult(
+                task_id=task_id,
+                has_task=True,
+                task_description=task_description,
+                execution_method='user_plugin',
+                success=False,
+                error=str(e),
+                tool_name=plugin_id,
+                tool_args=plugin_args,
+                reason=getattr(up_decision, "reason", "")
+            )
+
+    async def execute_user_plugin_direct(self, task_id: str, plugin_id: str, plugin_args: Dict[str, Any], entry_id: Optional[str] = None) -> TaskResult:
+        """
+        Directly execute a plugin entry by calling /plugin/trigger with explicit plugin_id and optional entry_id.
+        This is intended for agent_server to call when it wants to trigger a plugin_entry immediately.
+        """
+        up_decision_stub = type("UP", (), {"plugin_id": plugin_id, "plugin_args": plugin_args, "task_description": f"Direct plugin call {plugin_id}", "plugin_entry_id": entry_id, "reason": "direct_call"})
+        return await self._execute_user_plugin(task_id=task_id, up_decision=up_decision_stub)
     
     async def refresh_capabilities(self) -> Dict[str, Dict[str, Any]]:
         """刷新并返回 MCP 工具能力列表"""

@@ -1,0 +1,6 @@
+[plugin]
+id = "testPlugin"
+name = "Test Plugin"
+description = "Minimal plugin used for local testing,no any required input"
+version = "0.1.0"
+entry = "plugins.testPlugin:HelloPlugin"

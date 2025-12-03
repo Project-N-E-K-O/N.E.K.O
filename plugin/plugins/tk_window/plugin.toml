@@ -1,0 +1,6 @@
+[plugin]
+id = "tkWindow"
+name = "Tk Window Plugin"
+description = "Opens a Tkinter window when triggered"
+version = "0.2.0"
+entry = "plugins.tk_window:TkWindowPlugin"

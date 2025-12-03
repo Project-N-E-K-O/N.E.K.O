@@ -649,6 +649,7 @@
       "proactiveChat": "Proactive Chat",
       "agentMaster": "Agent Master Switch",
       "keyboardControl": "Keyboard & Mouse Control",
+      "userPlugin": "User Plugin",
       "mcpTools": "MCP Tools",
       "focusMode": "🎯 Allow Interrupt",
       "unavailable": "{{name}} Unavailable"

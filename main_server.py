@@ -61,7 +61,7 @@ from dashscope.audio.tts_v2 import VoiceEnrollmentService
 import httpx
 import pathlib, wave
 from openai import AsyncOpenAI
-from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT, MEMORY_SERVER_PORT, MODELS_WITH_EXTRA_BODY, TOOL_SERVER_PORT
+from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT, MEMORY_SERVER_PORT, MODELS_WITH_EXTRA_BODY, TOOL_SERVER_PORT,USER_PLUGIN_SERVER_PORT
 from config.prompts_sys import emotion_analysis_prompt, proactive_chat_prompt
 import glob
 from utils.config_manager import get_config_manager
@@ -5204,14 +5204,17 @@ async def update_agent_flags(request: Request):
                 forward_payload['mcp_enabled'] = bool(flags['mcp_enabled'])
             if 'computer_use_enabled' in flags:
                 forward_payload['computer_use_enabled'] = bool(flags['computer_use_enabled'])
+            # Forward user_plugin_enabled as well so agent_server receives UI toggles
+            if 'user_plugin_enabled' in flags:
+                forward_payload['user_plugin_enabled'] = bool(flags['user_plugin_enabled'])
             if forward_payload:
                 async with httpx.AsyncClient(timeout=0.7) as client:
                     r = await client.post(f"http://localhost:{TOOL_SERVER_PORT}/agent/flags", json=forward_payload)
                     if not r.is_success:
                         raise Exception(f"tool_server responded {r.status_code}")
         except Exception as e:
-            # On failure, reset flags in core to safe state
-            mgr.update_agent_flags({'agent_enabled': False, 'computer_use_enabled': False, 'mcp_enabled': False})
+            # On failure, reset flags in core to safe state (include user_plugin flag)
+            mgr.update_agent_flags({'agent_enabled': False, 'computer_use_enabled': False, 'mcp_enabled': False, 'user_plugin_enabled': False})
             return JSONResponse({"success": False, "error": f"tool_server forward failed: {e}"}, status_code=502)
         return {"success": True}
     except Exception as e:
@@ -5269,6 +5272,18 @@ async def proxy_mcp_availability():
             if not r.is_success:
                 return JSONResponse({"ready": False, "reasons": [f"tool_server responded {r.status_code}"]}, status_code=502)
             return r.json()
+    except Exception as e:
+        return JSONResponse({"ready": False, "reasons": [f"proxy error: {e}"]}, status_code=502)
+
+@app.get('/api/agent/user_plugin/availability')
+async def proxy_up_availability():
+    try:
+        async with httpx.AsyncClient(timeout=1.5) as client:
+            r = await client.get(f"http://localhost:{USER_PLUGIN_SERVER_PORT}/available")
+            if r.is_success:
+                return JSONResponse({"ready":True, "reasons": ["test-233"]}, status_code=200)
+            else:
+                return JSONResponse({"ready": False, "reasons": [f"tool_server responded {r.status_code}"]}, status_code=502)
     except Exception as e:
         return JSONResponse({"ready": False, "reasons": [f"proxy error: {e}"]}, status_code=502)
 

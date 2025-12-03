@@ -649,6 +649,7 @@
       "proactiveChat": "主动搭话",
       "agentMaster": "Agent总开关",
       "keyboardControl": "键鼠控制",
+      "userPlugin": "用户插件",
       "mcpTools": "MCP工具",
       "focusMode": "🎯 允许打断",
       "unavailable": "{{name}}不可用"
