@@ -37,6 +37,9 @@ class Live2DManager {
         this.onStatusUpdate = null;
         this.modelName = null; // 记录当前模型目录名
         this.modelRootPath = null; // 记录当前模型根路径，如 /static/<modelName>
+        this.savedModelParameters = null; // 保存的模型参数（从parameters.json加载），供定时器定期应用
+        this._shouldApplySavedParams = false; // 是否应该应用保存的参数
+        this._savedParamsTimer = null; // 保存参数应用的定时器
         
         // 常驻表情：使用官方 expression 播放并在清理后自动重放
         this.persistentExpressionNames = [];
@@ -142,7 +145,7 @@ class Live2DManager {
     }
 
     // 保存用户偏好
-    async saveUserPreferences(modelPath, position, scale) {
+    async saveUserPreferences(modelPath, position, scale, parameters) {
         try {
             // 验证位置和缩放值是否为有效的有限数值
             if (!position || typeof position !== 'object' || 
@@ -168,6 +171,12 @@ class Live2DManager {
                 position: position,
                 scale: scale
             };
+            
+            // 如果有参数，添加到偏好中
+            if (parameters && typeof parameters === 'object') {
+                preferences.parameters = parameters;
+            }
+            
             const response = await fetch('/api/preferences', {
                 method: 'POST',
                 headers: {

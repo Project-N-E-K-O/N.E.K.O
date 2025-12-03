@@ -442,8 +442,11 @@ async def save_preferences(request: Request):
         if not validate_model_preferences(data):
             return {"success": False, "error": "偏好数据格式无效"}
         
+        # 获取参数（可选）
+        parameters = data.get('parameters')
+        
         # 更新偏好
-        if update_model_preferences(data['model_path'], data['position'], data['scale']):
+        if update_model_preferences(data['model_path'], data['position'], data['scale'], parameters):
             return {"success": True, "message": "偏好设置已保存"}
         else:
             return {"success": False, "error": "保存失败"}
@@ -1315,6 +1318,13 @@ async def proactive_chat(request: Request):
 async def get_l2d_manager(request: Request):
     """渲染Live2D模型管理器页面"""
     return templates.TemplateResponse("templates/l2d_manager.html", {
+        "request": request
+    })
+
+@app.get("/live2d_parameter_editor", response_class=HTMLResponse)
+async def live2d_parameter_editor(request: Request):
+    """Live2D参数编辑器页面"""
+    return templates.TemplateResponse("templates/live2d_parameter_editor.html", {
         "request": request
     })
 
@@ -3233,6 +3243,116 @@ async def get_model_files(model_name: str):
     except Exception as e:
         logger.error(f"获取模型文件列表失败: {e}")
         return {"success": False, "error": str(e)}
+
+@app.get('/api/live2d/model_parameters/{model_name}')
+async def get_model_parameters(model_name: str):
+    """获取指定Live2D模型的参数信息（从.cdi3.json文件）"""
+    try:
+        # 查找模型目录
+        model_dir, url_prefix = find_model_directory(model_name)
+        
+        if not os.path.exists(model_dir):
+            return {"success": False, "error": f"模型 {model_name} 不存在"}
+        
+        # 查找.cdi3.json文件
+        cdi3_file = None
+        for file in os.listdir(model_dir):
+            if file.endswith('.cdi3.json'):
+                cdi3_file = os.path.join(model_dir, file)
+                break
+        
+        if not cdi3_file or not os.path.exists(cdi3_file):
+            return {"success": False, "error": "未找到.cdi3.json文件"}
+        
+        # 读取.cdi3.json文件
+        with open(cdi3_file, 'r', encoding='utf-8') as f:
+            cdi3_data = json.load(f)
+        
+        # 提取参数信息
+        parameters = []
+        if 'Parameters' in cdi3_data and isinstance(cdi3_data['Parameters'], list):
+            for param in cdi3_data['Parameters']:
+                if isinstance(param, dict) and 'Id' in param:
+                    parameters.append({
+                        'id': param.get('Id'),
+                        'groupId': param.get('GroupId', ''),
+                        'name': param.get('Name', param.get('Id'))
+                    })
+        
+        # 提取参数组信息
+        parameter_groups = {}
+        if 'ParameterGroups' in cdi3_data and isinstance(cdi3_data['ParameterGroups'], list):
+            for group in cdi3_data['ParameterGroups']:
+                if isinstance(group, dict) and 'Id' in group:
+                    parameter_groups[group.get('Id')] = {
+                        'id': group.get('Id'),
+                        'name': group.get('Name', group.get('Id'))
+                    }
+        
+        return {
+            "success": True,
+            "parameters": parameters,
+            "parameter_groups": parameter_groups
+        }
+    except Exception as e:
+        logger.error(f"获取模型参数信息失败: {e}")
+        return {"success": False, "error": str(e)}
+
+@app.post('/api/live2d/save_model_parameters/{model_name}')
+async def save_model_parameters(model_name: str, request: Request):
+    """保存模型参数到模型目录的parameters.json文件"""
+    try:
+        # 查找模型目录
+        model_dir, url_prefix = find_model_directory(model_name)
+        
+        if not os.path.exists(model_dir):
+            return JSONResponse(status_code=404, content={"success": False, "error": f"模型 {model_name} 不存在"})
+        
+        # 获取请求体中的参数
+        body = await request.json()
+        parameters = body.get('parameters', {})
+        
+        if not isinstance(parameters, dict):
+            return JSONResponse(status_code=400, content={"success": False, "error": "参数格式错误"})
+        
+        # 保存到parameters.json文件
+        parameters_file = os.path.join(model_dir, 'parameters.json')
+        with open(parameters_file, 'w', encoding='utf-8') as f:
+            json.dump(parameters, f, indent=2, ensure_ascii=False)
+        
+        logger.info(f"已保存模型参数到: {parameters_file}, 参数数量: {len(parameters)}")
+        return {"success": True, "message": "参数保存成功"}
+    except Exception as e:
+        logger.error(f"保存模型参数失败: {e}")
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+@app.get('/api/live2d/load_model_parameters/{model_name}')
+async def load_model_parameters(model_name: str):
+    """从模型目录的parameters.json文件加载参数"""
+    try:
+        # 查找模型目录
+        model_dir, url_prefix = find_model_directory(model_name)
+        
+        if not os.path.exists(model_dir):
+            return {"success": False, "error": f"模型 {model_name} 不存在"}
+        
+        # 读取parameters.json文件
+        parameters_file = os.path.join(model_dir, 'parameters.json')
+        
+        if not os.path.exists(parameters_file):
+            return {"success": True, "parameters": {}}  # 文件不存在时返回空参数
+        
+        with open(parameters_file, 'r', encoding='utf-8') as f:
+            parameters = json.load(f)
+        
+        if not isinstance(parameters, dict):
+            return {"success": True, "parameters": {}}
+        
+        logger.info(f"已加载模型参数从: {parameters_file}, 参数数量: {len(parameters)}")
+        return {"success": True, "parameters": parameters}
+    except Exception as e:
+        logger.error(f"加载模型参数失败: {e}")
+        return {"success": False, "error": str(e), "parameters": {}}
 
 @app.get("/api/live2d/model_config_by_id/{model_id}")
 async def get_model_config(model_id: str):
