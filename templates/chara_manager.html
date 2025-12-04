@@ -178,7 +178,6 @@
                 <div class="field-row">
                     <label><span data-i18n="character.profileName">档案名</span><span style="color:red" data-i18n="character.required">*</span></label>
                     <input type="text" name="档案名" required>
-                    <button type="button" class="btn sm" id="rename-master-btn" data-i18n="character.rename">修改名称</button>
                 </div>
                 <div class="field-row">
                     <label data-i18n="character.gender">性别</label>
@@ -224,13 +223,29 @@ function autoResizeTextarea(textarea) {
     const newHeight = Math.max(minHeight, newContentHeight + paddingTop + paddingBottom);
     
     textarea.style.height = newHeight + 'px';
-    
+      
     // 根据内容是否超过三行来决定是否显示滚动条
     if (contentHeight > maxContentHeight) {
         textarea.style.overflowY = 'auto';
     } else {
         textarea.style.overflowY = 'hidden';
     }
+}
+
+// 辅助函数：为textarea附加自动调整高度的功能
+function attachTextareaAutoResize(textarea) {
+    if (!textarea) return;
+    
+    // 初始化高度
+    autoResizeTextarea(textarea);
+    
+    // 添加输入和焦点事件监听器
+    textarea.addEventListener('input', function() {
+        autoResizeTextarea(this);
+    });
+    textarea.addEventListener('focus', function() {
+        autoResizeTextarea(this);
+    });
 }
 
 // 初始化所有textarea的自动调整功能
@@ -392,13 +407,7 @@ function renderMaster() {
             
             // 为textarea添加自动调整高度功能
             if (field.type === 'textarea') {
-                autoResizeTextarea(fieldElement);
-                fieldElement.addEventListener('input', function() {
-                    autoResizeTextarea(this);
-                });
-                fieldElement.addEventListener('focus', function() {
-                    autoResizeTextarea(this);
-                });
+                attachTextareaAutoResize(fieldElement);
             }
             
             // 添加删除按钮（除了档案名）
@@ -458,13 +467,7 @@ function renderMaster() {
         row.appendChild(textarea);
         
         // 为重新创建的textarea添加自动调整高度功能
-        autoResizeTextarea(textarea);
-        textarea.addEventListener('input', function() {
-            autoResizeTextarea(this);
-        });
-        textarea.addEventListener('focus', function() {
-            autoResizeTextarea(this);
-        });
+        attachTextareaAutoResize(textarea);
         
         // 创建删除按钮
         const deleteBtn = document.createElement('button');
@@ -521,10 +524,10 @@ function renderMaster() {
         // 为主人档案重命名按钮添加点击事件监听
         const renameBtn = masterFormEl.querySelector('#rename-master-btn');
         if (renameBtn) {
-            renameBtn.onclick = async function() {
+            renameBtn.addEventListener('click', async function() {
                 const profileName = masterFormEl.querySelector('input[name="档案名"]').value;
                 await window.renameMaster(profileName);
-            };
+            });
         }
 
         // 为新增设定按钮添加点击事件监听
@@ -555,13 +558,7 @@ function renderMaster() {
                 newTextarea.addEventListener('input', showMasterActionButtons);
                 
                 // 为新增的textarea添加自动调整高度功能
-                autoResizeTextarea(newTextarea);
-                newTextarea.addEventListener('input', function() {
-                    autoResizeTextarea(this);
-                });
-                newTextarea.addEventListener('focus', function() {
-                    autoResizeTextarea(this);
-                });
+                attachTextareaAutoResize(newTextarea);
                 
                 // 为删除按钮添加事件监听和点击处理
                 const newDeleteBtn = row.querySelector('button');
@@ -808,13 +805,7 @@ function showCatgirlForm(key, container) {
             
             // 为渲染的textarea添加自动调整高度功能
             const textarea = row.querySelector('textarea');
-            autoResizeTextarea(textarea);
-            textarea.addEventListener('input', function() {
-                autoResizeTextarea(this);
-            });
-            textarea.addEventListener('focus', function() {
-                autoResizeTextarea(this);
-            });
+            attachTextareaAutoResize(textarea);
         }
     });
     // 渲染进阶设定
@@ -965,13 +956,8 @@ function showCatgirlForm(key, container) {
         newTextarea.addEventListener('input', formShowActionButtons);
         
         // 为新增的textarea添加自动调整高度功能
-        autoResizeTextarea(newTextarea);
-        newTextarea.addEventListener('input', function() {
-            autoResizeTextarea(this);
-        });
-        newTextarea.addEventListener('focus', function() {
-            autoResizeTextarea(this);
-        });
+        // 为新增的textarea添加自动调整高度功能
+        attachTextareaAutoResize(newTextarea);
         
         const newDeleteBtn = row.querySelector('button');
         newDeleteBtn.addEventListener('click', formShowActionButtons);
@@ -1125,9 +1111,9 @@ function showCatgirlForm(key, container) {
     if (!isNew) {
         const renameBtn = form.querySelector('#rename-catgirl-btn');
         if (renameBtn) {
-            renameBtn.onclick = async function() {
+            renameBtn.addEventListener('click', async function() {
                 await window.renameCatgirl(key);
-            };
+            });
         }
     }
     // 渲染到指定容器
