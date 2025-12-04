@@ -462,7 +462,44 @@ Live2DManager.prototype.installMouthOverride = function() {
         } catch (_) {}
     }
     
-    // 覆盖 coreModel.update 方法
+    // 覆盖 1: motionManager.update - 在动作更新后立即覆盖参数
+    if (internalModel.motionManager && typeof internalModel.motionManager.update === 'function') {
+        const origMotionManagerUpdate = internalModel.motionManager.update.bind(internalModel.motionManager);
+        this._origMotionManagerUpdate = origMotionManagerUpdate;
+        
+        internalModel.motionManager.update = () => {
+            // 先调用原始的 motionManager.update
+            if (origMotionManagerUpdate) {
+                origMotionManagerUpdate();
+            }
+            // 然后在动作更新后立即覆盖参数
+            try {
+                // 写入口型参数
+                for (const [id, idx] of Object.entries(mouthParamIndices)) {
+                    try {
+                        coreModel.setParameterValueByIndex(idx, this.mouthValue);
+                    } catch (_) {}
+                }
+                // 写入常驻表情参数
+                if (this.persistentExpressionParamsByName) {
+                    const lipSyncParams = ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
+                    for (const name in this.persistentExpressionParamsByName) {
+                        const params = this.persistentExpressionParamsByName[name];
+                        if (Array.isArray(params)) {
+                            for (const p of params) {
+                                if (lipSyncParams.includes(p.Id)) continue;
+                                try {
+                                    coreModel.setParameterValueById(p.Id, p.Value);
+                                } catch (_) {}
+                            }
+                        }
+                    }
+                }
+            } catch (_) {}
+        };
+    }
+    
+    // 覆盖 2: coreModel.update - 在调用原始 update 之前写入参数
     // 在调用原始 update 之前写入参数（因为 update 会将参数应用到模型）
     coreModel.update = () => {
         try {
@@ -505,7 +542,7 @@ Live2DManager.prototype.installMouthOverride = function() {
     };
 
     this._mouthOverrideInstalled = true;
-    console.log('已安装参数覆盖（口型同步），使用 coreModel.update 前置覆盖方式');
+    console.log('已安装双重参数覆盖(motionManager.update 后 + coreModel.update前)');
 };
 
 // 设置嘴巴开合值（0~1）
