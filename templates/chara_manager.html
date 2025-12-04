@@ -40,17 +40,45 @@
             display: flex;
             align-items: center;
             margin-bottom: 12px;
+            flex-wrap: wrap;
         }
         .field-row label {
             min-width: 80px;
             font-weight: bold;
         }
-        .field-row input, .field-row select {
+        .field-row input, .field-row select, .field-row textarea {
             flex: 1;
             padding: 6px 10px;
             border-radius: 6px;
             border: 1px solid #ccc;
             font-size: 1rem;
+            resize: none;
+            min-height: 34px;
+            max-height: none;
+            line-height: 1.4;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            box-sizing: border-box;
+            margin-right: 8px;
+        }
+        .field-row textarea {
+            overflow-y: hidden;
+            transition: height 0.2s ease;
+            /* 三行高度的估算：line-height*3 + padding上下 */
+            max-height: 80px;
+        }
+        /* 自定义滚动条样式，使其不明显 */
+        .field-row textarea::-webkit-scrollbar {
+            width: 6px;
+        }
+        .field-row textarea::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .field-row textarea::-webkit-scrollbar-thumb {
+            background-color: rgba(0, 0, 0, 0.1);
+            border-radius: 3px;
+        }
+        .field-row textarea::-webkit-scrollbar-thumb:hover {
+            background-color: rgba(0, 0, 0, 0.2);
         }
         .field-row .optional {
             color: #888;
@@ -150,15 +178,16 @@
                 <div class="field-row">
                     <label><span data-i18n="character.profileName">档案名</span><span style="color:red" data-i18n="character.required">*</span></label>
                     <input type="text" name="档案名" required>
+                    <button type="button" class="btn sm" id="rename-master-btn" data-i18n="character.rename">修改名称</button>
                 </div>
                 <div class="field-row">
                     <label data-i18n="character.gender">性别</label>
-                    <input type="text" name="性别">
+                    <textarea name="性别" rows="1" placeholder="可输入详细描述"></textarea>
                     <button type="button" class="btn sm delete" onclick="deleteMasterField(this)" data-i18n="character.deleteField">删除设定</button>
                 </div>
                 <div class="field-row">
                     <label data-i18n="character.nickname">昵称</label>
-                    <input type="text" name="昵称">
+                    <textarea name="昵称" rows="1" placeholder="可输入详细描述"></textarea>
                     <button type="button" class="btn sm delete" onclick="deleteMasterField(this)" data-i18n="character.deleteField">删除设定</button>
                 </div>
             </form>
@@ -173,6 +202,56 @@
 
 
 <script>
+// 自动调整textarea高度
+function autoResizeTextarea(textarea) {
+    // 重置高度为auto以计算正确的高度
+    textarea.style.height = 'auto';
+    const style = getComputedStyle(textarea);
+    const minHeight = parseInt(style.minHeight) || 34;
+    
+    // 计算内容高度，考虑padding
+    const paddingTop = parseInt(style.paddingTop) || 0;
+    const paddingBottom = parseInt(style.paddingBottom) || 0;
+    
+    // 设置高度为scrollHeight，但限制最大高度为三行
+    const scrollHeight = textarea.scrollHeight;
+    const contentHeight = scrollHeight - paddingTop - paddingBottom;
+    // 三行高度的估算：line-height*3
+    const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight);
+    const threeLinesHeight = lineHeight * 3;
+    const maxContentHeight = threeLinesHeight;
+    const newContentHeight = Math.min(maxContentHeight, contentHeight);
+    const newHeight = Math.max(minHeight, newContentHeight + paddingTop + paddingBottom);
+    
+    textarea.style.height = newHeight + 'px';
+    
+    // 根据内容是否超过三行来决定是否显示滚动条
+    if (contentHeight > maxContentHeight) {
+        textarea.style.overflowY = 'auto';
+    } else {
+        textarea.style.overflowY = 'hidden';
+    }
+}
+
+// 初始化所有textarea的自动调整功能
+function initAutoResizeTextareas() {
+    const textareas = document.querySelectorAll('textarea');
+    textareas.forEach(textarea => {
+        // 初始调整
+        autoResizeTextarea(textarea);
+        
+        // 监听输入事件
+        textarea.addEventListener('input', function() {
+            autoResizeTextarea(this);
+        });
+        
+        // 监听focus事件，确保获得焦点时也调整高度
+        textarea.addEventListener('focus', function() {
+            autoResizeTextarea(this);
+        });
+    });
+}
+
 // 折叠面板切换
 function toggleFold(fold) {
     fold.classList.toggle('open');
@@ -260,6 +339,11 @@ async function loadCharacterData() {
             expandedCatgirlName = null;
         }
     }
+    
+    // 初始化textarea自动调整高度功能
+    setTimeout(() => {
+        initAutoResizeTextareas();
+    }, 100);
 }
 
 // 渲染主人表单
@@ -268,9 +352,92 @@ function renderMaster() {
     const form = document.getElementById('master-form');
     // 清空原有自定义项
     Array.from(form.querySelectorAll('.custom-row')).forEach(e => e.remove());
-    form.档案名.value = master['档案名'] || '';
-    form.性别.value = master['性别'] || '';
-    form.昵称.value = master['昵称'] || '';
+    
+    // 确保默认属性的DOM元素存在
+    const defaultFields = [
+        { name: '档案名', type: 'input', labelText: window.t ? window.t('character.profileName') : '档案名', required: true },
+        { name: '性别', type: 'textarea', labelText: window.t ? window.t('character.gender') : '性别' },
+        { name: '昵称', type: 'textarea', labelText: window.t ? window.t('character.nickname') : '昵称' }
+    ];
+    
+    defaultFields.forEach(field => {
+        // 检查元素是否存在
+        let fieldElement = form.querySelector(`[name="${field.name}"]`);
+        let rowElement;
+        
+        if (!fieldElement) {
+            // 如果元素不存在，创建新的行和元素
+            rowElement = document.createElement('div');
+            rowElement.className = 'field-row';
+            
+            // 创建label元素
+            const label = document.createElement('label');
+            label.textContent = field.labelText;
+            if (field.required) {
+                label.innerHTML += '<span style="color:red" data-i18n="character.required">*</span>';
+            }
+            rowElement.appendChild(label);
+            
+            // 创建输入元素
+            if (field.type === 'input') {
+                fieldElement = document.createElement('input');
+                fieldElement.type = 'text';
+            } else {
+                fieldElement = document.createElement('textarea');
+                fieldElement.rows = 1;
+                fieldElement.placeholder = '可输入详细描述';
+            }
+            fieldElement.name = field.name;
+            rowElement.appendChild(fieldElement);
+            
+            // 为textarea添加自动调整高度功能
+            if (field.type === 'textarea') {
+                autoResizeTextarea(fieldElement);
+                fieldElement.addEventListener('input', function() {
+                    autoResizeTextarea(this);
+                });
+                fieldElement.addEventListener('focus', function() {
+                    autoResizeTextarea(this);
+                });
+            }
+            
+            // 添加删除按钮（除了档案名）
+            if (field.name !== '档案名') {
+                const deleteBtn = document.createElement('button');
+                deleteBtn.type = 'button';
+                deleteBtn.className = 'btn sm delete';
+                deleteBtn.textContent = window.t ? window.t('character.deleteField') : '删除设定';
+                deleteBtn.addEventListener('click', function() {
+                    deleteMasterField(this);
+                });
+                rowElement.appendChild(deleteBtn);
+            } else {
+                // 为档案名添加修改按钮
+                const renameBtn = document.createElement('button');
+                renameBtn.type = 'button';
+                renameBtn.className = 'btn sm';
+                renameBtn.id = 'rename-master-btn';
+                renameBtn.textContent = window.t ? window.t('character.rename') : '修改名称';
+                rowElement.appendChild(renameBtn);
+            }
+            
+            // 将行插入到表单中
+            const buttonArea = form.querySelector('div[style]');
+            if (buttonArea) {
+                form.insertBefore(rowElement, buttonArea);
+            } else {
+                form.appendChild(rowElement);
+            }
+        }
+        
+        // 设置元素的值
+        fieldElement.value = master[field.name] || '';
+        // 确保在设置值后重新调整textarea高度和滚动条
+        if (field.type === 'textarea') {
+            autoResizeTextarea(fieldElement);
+        }
+    });
+    
     // 渲染自定义项
     Object.keys(master).forEach(k => {
         if (["档案名", "性别", "昵称"].includes(k)) return;
@@ -282,12 +449,22 @@ function renderMaster() {
         label.textContent = k;
         row.appendChild(label);
         
-        // 创建input元素
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.name = k;
-        input.value = master[k];
-        row.appendChild(input);
+        // 创建textarea元素
+        const textarea = document.createElement('textarea');
+        textarea.name = k;
+        textarea.value = master[k];
+        textarea.rows = 1;
+        textarea.placeholder = '可输入详细描述';
+        row.appendChild(textarea);
+        
+        // 为重新创建的textarea添加自动调整高度功能
+        autoResizeTextarea(textarea);
+        textarea.addEventListener('input', function() {
+            autoResizeTextarea(this);
+        });
+        textarea.addEventListener('focus', function() {
+            autoResizeTextarea(this);
+        });
         
         // 创建删除按钮
         const deleteBtn = document.createElement('button');
@@ -302,6 +479,11 @@ function renderMaster() {
     
     // 为新渲染的元素重新设置事件监听
     setupMasterFormListeners();
+    
+    // 初始化主人表单中的textarea自动调整高度功能
+    setTimeout(() => {
+        initAutoResizeTextareas();
+    }, 100);
 }
 
 // 新增主人自定义设定
@@ -321,7 +503,7 @@ function renderMaster() {
         }
         
         // 为所有输入元素添加事件监听
-        const inputs = masterFormEl.querySelectorAll('input');
+        const inputs = masterFormEl.querySelectorAll('input, textarea');
         inputs.forEach(input => {
             input.addEventListener('change', showMasterActionButtons);
             input.addEventListener('input', showMasterActionButtons);
@@ -336,6 +518,15 @@ function renderMaster() {
             });
         });
         
+        // 为主人档案重命名按钮添加点击事件监听
+        const renameBtn = masterFormEl.querySelector('#rename-master-btn');
+        if (renameBtn) {
+            renameBtn.onclick = async function() {
+                const profileName = masterFormEl.querySelector('input[name="档案名"]').value;
+                await window.renameMaster(profileName);
+            };
+        }
+
         // 为新增设定按钮添加点击事件监听
         const addBtn = masterFormEl.querySelector('#add-master-field-btn');
         if (addBtn) {
@@ -352,16 +543,25 @@ function renderMaster() {
                 }
                 const row = document.createElement('div');
                 row.className = 'field-row custom-row';
-                row.innerHTML = `<label>${key}</label><input type="text" name="${key}"><button type="button" class="btn sm delete" style="margin-left:8px">${window.t ? window.t('character.deleteField') : '删除设定'}</button>`;
+                row.innerHTML = `<label>${key}</label><textarea name="${key}" rows="1" placeholder="可输入详细描述"></textarea><button type="button" class="btn sm delete" style="margin-left:8px">${window.t ? window.t('character.deleteField') : '删除设定'}</button>`;
                 masterFormEl.insertBefore(row, masterFormEl.querySelector('div[style]'));
                 
                 // 显示操作按钮
                 showMasterActionButtons();
                 
                 // 为新添加的元素添加事件监听
-                const newInput = row.querySelector('input');
-                newInput.addEventListener('change', showMasterActionButtons);
-                newInput.addEventListener('input', showMasterActionButtons);
+                const newTextarea = row.querySelector('textarea');
+                newTextarea.addEventListener('change', showMasterActionButtons);
+                newTextarea.addEventListener('input', showMasterActionButtons);
+                
+                // 为新增的textarea添加自动调整高度功能
+                autoResizeTextarea(newTextarea);
+                newTextarea.addEventListener('input', function() {
+                    autoResizeTextarea(this);
+                });
+                newTextarea.addEventListener('focus', function() {
+                    autoResizeTextarea(this);
+                });
                 
                 // 为删除按钮添加事件监听和点击处理
                 const newDeleteBtn = row.querySelector('button');
@@ -603,8 +803,18 @@ function showCatgirlForm(key, container) {
             const row = document.createElement('div');
             row.className = 'field-row custom-row';
             const deleteFieldText = window.t ? window.t('character.deleteField') : '删除设定';
-            row.innerHTML = `<label>${k}</label><input type="text" name="${k}" value="${cat[k]}"><button type="button" class="btn sm delete" style="margin-left:8px" onclick="deleteCatgirlField(this)">${deleteFieldText}</button>`;
+            row.innerHTML = `<label>${k}</label><textarea name="${k}" rows="1" placeholder="可输入详细描述">${cat[k]}</textarea><button type="button" class="btn sm delete" style="margin-left:8px" onclick="deleteCatgirlField(this)">${deleteFieldText}</button>`;
             form.appendChild(row);
+            
+            // 为渲染的textarea添加自动调整高度功能
+            const textarea = row.querySelector('textarea');
+            autoResizeTextarea(textarea);
+            textarea.addEventListener('input', function() {
+                autoResizeTextarea(this);
+            });
+            textarea.addEventListener('focus', function() {
+                autoResizeTextarea(this);
+            });
         }
     });
     // 渲染进阶设定
@@ -743,16 +953,25 @@ function showCatgirlForm(key, container) {
         const row = document.createElement('div');
         row.className = 'field-row custom-row';
         const deleteFieldText = window.t ? window.t('character.deleteField') : '删除设定';
-        row.innerHTML = `<label>${key}</label><input type="text" name="${key}"><button type="button" class="btn sm delete" style="margin-left:8px" onclick="deleteCatgirlField(this)">${deleteFieldText}</button>`;
+        row.innerHTML = `<label>${key}</label><textarea name="${key}" rows="1" placeholder="可输入详细描述"></textarea><button type="button" class="btn sm delete" style="margin-left:8px" onclick="deleteCatgirlField(this)">${deleteFieldText}</button>`;
         form.insertBefore(row, form.querySelector('.fold'));
         
         // 新增字段后显示操作按钮
         formShowActionButtons();
         
         // 为新添加的输入元素添加事件监听
-        const newInput = row.querySelector('input');
-        newInput.addEventListener('change', formShowActionButtons);
-        newInput.addEventListener('input', formShowActionButtons);
+        const newTextarea = row.querySelector('textarea');
+        newTextarea.addEventListener('change', formShowActionButtons);
+        newTextarea.addEventListener('input', formShowActionButtons);
+        
+        // 为新增的textarea添加自动调整高度功能
+        autoResizeTextarea(newTextarea);
+        newTextarea.addEventListener('input', function() {
+            autoResizeTextarea(this);
+        });
+        newTextarea.addEventListener('focus', function() {
+            autoResizeTextarea(this);
+        });
         
         const newDeleteBtn = row.querySelector('button');
         newDeleteBtn.addEventListener('click', formShowActionButtons);
@@ -948,8 +1167,40 @@ function showCatgirlForm(key, container) {
             list.prepend(block);
         }
     }
+    
+    // 初始化猫娘表单中的textarea自动调整高度功能
+    setTimeout(() => {
+        initAutoResizeTextareas();
+    }, 100);
 }
 // deleteCatgirlField函数已在showCatgirlForm内部定义为全局函数
+
+// 主人档案名重命名
+window.renameMaster = async function(oldName) {
+    const newName = await showPrompt(
+        window.t ? window.t('character.enterNewProfileName') : '请输入新的主人档案名', 
+        oldName, 
+        window.t ? window.t('character.renameMasterTitle') : '重命名主人'
+    );
+    if (!newName || newName === oldName) return;
+    if (characterData['主人'][newName]) { 
+        await showAlert(window.t ? window.t('character.profileNameExists') : '该档案名已存在'); 
+        return; 
+    }
+    // 调用API重命名
+    const res = await fetch('/api/characters/master/' + encodeURIComponent(oldName) + '/rename', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({new_name: newName})
+    });
+    const result = await res.json();
+    if (result.success) {
+        await loadCharacterData();
+        await showAlert(window.t ? window.t('character.renameSuccess') : '重命名成功');
+    } else {
+        await showAlert(window.t ? window.t('character.renameError', {error: result.message}) : '重命名失败: ' + (result.message || '未知错误'));
+    }
+}
 
 // 猫娘档案名重命名
 window.renameCatgirl = async function(oldName) {
