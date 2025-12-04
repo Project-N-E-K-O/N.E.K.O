@@ -590,65 +590,6 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
     asyncio.create_task(_run_plugin())
     return {"success": True, "task_id": task_id, "status": info["status"], "start_time": info["start_time"]}
 
-@app.post("/plugin/execute")
-async def plugin_execute_direct(payload: Dict[str, Any]):
-    """
-    新增接口：直接触发 plugin_entry。
-    请求 body 可包含:
-      - plugin_id: str (必需)
-      - entry_id: str (可选)
-      - args: dict (可选)
-      - lanlan_name: str (可选，用于日志/通知)
-    该接口将调用 Modules.task_executor.execute_user_plugin_direct 来执行插件触发。
-    """
-    if not Modules.task_executor:
-        raise HTTPException(503, "Task executor not ready")
-    plugin_id = (payload or {}).get("plugin_id")
-    entry_id = (payload or {}).get("entry_id")
-    args = (payload or {}).get("args", {}) or {}
-    lanlan_name = (payload or {}).get("lanlan_name")
-    if not plugin_id or not isinstance(plugin_id, str):
-        raise HTTPException(400, "plugin_id required")
-
-    # Dedup is not applied for direct plugin calls; client should dedupe if needed
-    task_id = str(uuid.uuid4())
-    # Log request
-    logger.info(f"[Plugin] Direct execute request: plugin_id={plugin_id}, entry_id={entry_id}, lanlan={lanlan_name}")
-
-    # Ensure task registry entry for tracking
-    info = {
-        "id": task_id,
-        "type": "plugin_direct",
-        "status": "running",
-        "start_time": _now_iso(),
-        "params": {"plugin_id": plugin_id, "entry_id": entry_id, "args": args},
-        "lanlan_name": lanlan_name,
-        "result": None,
-        "error": None,
-    }
-    Modules.task_registry[task_id] = info
-
-    # Execute via task_executor.execute_user_plugin_direct in background
-    async def _run_plugin():
-        try:
-            res = await Modules.task_executor.execute_user_plugin_direct(task_id=task_id, plugin_id=plugin_id, plugin_args=args, entry_id=entry_id)
-            info["status"] = "completed" if res.success else "failed"
-            info["result"] = res.result
-            # Notify main server if appropriate
-            try:
-                summary = f'插件任务 "{plugin_id}" 已接受'
-                async with httpx.AsyncClient(timeout=0.5) as _client:
-                    await _client.post(f"http://localhost:{MAIN_SERVER_PORT}/api/notify_task_result", json={"text": summary[:240], "lanlan_name": lanlan_name})
-            except Exception:
-                pass
-        except Exception as e:
-            info["status"] = "failed"
-            info["error"] = str(e)
-            logger.error(f"[Plugin] Direct execute failed: {e}", exc_info=True)
-
-    asyncio.create_task(_run_plugin())
-    return {"success": True, "task_id": task_id, "status": info["status"], "start_time": info["start_time"]}
-
 
 
 # 2) 规划器模块：预载server能力，评估可执行性，入池并分解步骤
