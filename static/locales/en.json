@@ -360,6 +360,7 @@
     "persistentExpression": "Persistent Expression (expression only):",
     "pleaseLoadModel": "Please load a model first",
     "add": "Add",
+    "delete": "Delete",
     "savePersistent": "Save Persistent Expression",
     "persistentHint": "Persistent expressions will always be active and cannot be cleared or overridden; only .exp3.json files can be selected here.",
     "backToMain": "← Back to Main",

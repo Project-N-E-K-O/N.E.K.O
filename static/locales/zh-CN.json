@@ -361,6 +361,7 @@
     "persistentExpression": "常驻表情（仅expression）:",
     "pleaseLoadModel": "请先加载模型",
     "add": "添加",
+    "delete": "删除",
     "savePersistent": "保存常驻表情",
     "persistentHint": "常驻表情会一直生效，不会被清除或覆盖；此处仅能选择 .exp3.json。",
     "backToMain": "← 返回主页",

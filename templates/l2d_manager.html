@@ -935,7 +935,7 @@
                             const nameSpan = document.createElement('span');
                             nameSpan.textContent = fileName;
                             const deleteBtn = document.createElement('button');
-                            deleteBtn.textContent = '删除';
+                            deleteBtn.textContent = t('live2d.delete', '删除');
                             deleteBtn.style.cssText = 'background: #dc3545; color: white; border: none; border-radius: 4px; padding: 2px 8px; cursor: pointer; font-size: 11px;';
                             deleteBtn.addEventListener('click', () => removePersistentExpression(file));
                             item.appendChild(nameSpan);
