@@ -74,7 +74,9 @@ desktop.ini
 
 # 忽略静态资源
 static/ziraitikuwa/*
-statcu/kara/*
+static/neko@pal156/*
+static/neko@umijin68/*
+static/kemomimi/*
 打包说明.txt
 runtime_hook_inflect.py
 backup/

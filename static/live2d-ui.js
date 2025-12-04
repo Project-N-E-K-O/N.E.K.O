@@ -694,10 +694,11 @@ Live2DManager.prototype._createAgentPopupContent = function(popup) {
     statusDiv.textContent = ''; // 初始为空
     popup.appendChild(statusDiv);
     
+    // 【修复】所有 agent 开关初始状态为禁用，等待查询结果后由 app.js 启用
     const agentToggles = [
-        { id: 'agent-master', label: window.t ? window.t('settings.toggles.agentMaster') : 'Agent总开关', labelKey: 'settings.toggles.agentMaster' },
-        { id: 'agent-keyboard', label: window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制', labelKey: 'settings.toggles.keyboardControl' },
-        { id: 'agent-mcp', label: window.t ? window.t('settings.toggles.mcpTools') : 'MCP工具', labelKey: 'settings.toggles.mcpTools' }
+        { id: 'agent-master', label: window.t ? window.t('settings.toggles.agentMaster') : 'Agent总开关', labelKey: 'settings.toggles.agentMaster', initialDisabled: true },
+        { id: 'agent-keyboard', label: window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制', labelKey: 'settings.toggles.keyboardControl', initialDisabled: true },
+        { id: 'agent-mcp', label: window.t ? window.t('settings.toggles.mcpTools') : 'MCP工具', labelKey: 'settings.toggles.mcpTools', initialDisabled: true }
     ];
     
     agentToggles.forEach(toggle => {
@@ -1507,6 +1508,12 @@ Live2DManager.prototype._createToggleItem = function(toggle, popup) {
     Object.assign(checkbox.style, {
         display: 'none'
     });
+    
+    // 【修复】如果配置了初始禁用状态，则禁用 checkbox
+    if (toggle.initialDisabled) {
+        checkbox.disabled = true;
+        checkbox.title = window.t ? window.t('settings.toggles.checking') : '查询中...';
+    }
     
     // 创建自定义圆形指示器
     const indicator = document.createElement('div');

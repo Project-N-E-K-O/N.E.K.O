@@ -84,7 +84,7 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     }
 
     try {
-        const model = await Live2DModel.from(modelPath, { autoInteract: false });
+        const model = await Live2DModel.from(modelPath, { autoFocus: false });
         this.currentModel = model;
 
         // 解析模型目录名与根路径，供资源解析使用
@@ -308,7 +308,7 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
             console.warn('模型加载失败，尝试回退到默认模型: mao_pro');
             try {
                 const defaultModelPath = '/static/mao_pro/mao_pro.model3.json';
-                const model = await Live2DModel.from(defaultModelPath, { autoInteract: false });
+                const model = await Live2DModel.from(defaultModelPath, { autoFocus: false });
                 this.currentModel = model;
 
                 // 解析模型目录名与根路径，供资源解析使用
@@ -426,8 +426,8 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
 // 不再需要预解析嘴巴参数ID，保留占位以兼容旧代码调用
 Live2DManager.prototype.resolveMouthParameterId = function() { return null; };
 
-// 安装覆盖：覆盖 coreModel.update 方法，在 SDK 程序化动画之后强制写入参数
-// 这是最可靠的方式，因为 coreModel.update 是在所有参数修改之后、渲染之前调用的
+// 安装覆盖：同时覆盖 motionManager.update 和 coreModel.update，双重保险
+// motionManager.update 会重置参数，所以在其后覆盖；coreModel.update 前再覆盖一次确保生效
 Live2DManager.prototype.installMouthOverride = function() {
     if (!this.currentModel || !this.currentModel.internalModel) {
         throw new Error('模型未就绪，无法安装口型覆盖');
@@ -435,23 +435,26 @@ Live2DManager.prototype.installMouthOverride = function() {
 
     const internalModel = this.currentModel.internalModel;
     const coreModel = internalModel.coreModel;
+    const motionManager = internalModel.motionManager;
     
     if (!coreModel) {
         throw new Error('coreModel 不可用');
     }
 
     // 如果之前装过，先还原
-    if (this._mouthOverrideInstalled && typeof this._origCoreModelUpdate === 'function') {
-        try { coreModel.update = this._origCoreModelUpdate; } catch (_) {}
+    if (this._mouthOverrideInstalled) {
+        if (typeof this._origMotionManagerUpdate === 'function' && motionManager) {
+            try { motionManager.update = this._origMotionManagerUpdate; } catch (_) {}
+        }
+        if (typeof this._origCoreModelUpdate === 'function') {
+            try { coreModel.update = this._origCoreModelUpdate; } catch (_) {}
+        }
+        this._origMotionManagerUpdate = null;
         this._origCoreModelUpdate = null;
     }
 
     // 口型参数列表（这些参数不会被常驻表情覆盖）
     const lipSyncParams = ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
-    
-    // 保存原始的 coreModel.update 方法
-    const origCoreModelUpdate = coreModel.update ? coreModel.update.bind(coreModel) : null;
-    this._origCoreModelUpdate = origCoreModelUpdate;
     
     // 缓存参数索引，避免每帧查询
     const mouthParamIndices = {};
@@ -503,7 +506,7 @@ Live2DManager.prototype.installMouthOverride = function() {
     // 在调用原始 update 之前写入参数（因为 update 会将参数应用到模型）
     coreModel.update = () => {
         try {
-            // 1. 强制写入口型参数（使用索引直接设置）
+            // 1. 强制写入口型参数
             for (const [id, idx] of Object.entries(mouthParamIndices)) {
                 try {
                     coreModel.setParameterValueByIndex(idx, this.mouthValue);
@@ -525,24 +528,37 @@ Live2DManager.prototype.installMouthOverride = function() {
                     }
                 }
             }
-            
-            // 3. 强制写入保存的模型参数（优先级最高，覆盖常驻表情参数，但跳过口型参数和动画参数）
-            // 注意：暂时禁用每帧应用，改用定时器定期应用，避免影响动画
-            // if (this.savedModelParameters && this._shouldApplySavedParams) {
-            //     ...
-            // }
-        } catch (e) {
-            // 静默处理错误
-        }
+        } catch (e) {}
+    };
+    
+    // 覆盖 1: motionManager.update - 在动作更新后立即覆盖参数
+    if (motionManager && typeof motionManager.update === 'function') {
+        const origMotionManagerUpdate = motionManager.update.bind(motionManager);
+        this._origMotionManagerUpdate = origMotionManagerUpdate;
         
-        // 调用原始的 update 方法（将参数应用到模型顶点）
+        motionManager.update = (model, now) => {
+            const result = origMotionManagerUpdate(model, now);
+            // 动作更新后立即覆盖参数
+            overwriteParams();
+            return result;
+        };
+    }
+    
+    // 覆盖 2: coreModel.update - 在渲染前再次确保参数正确
+    const origCoreModelUpdate = coreModel.update ? coreModel.update.bind(coreModel) : null;
+    this._origCoreModelUpdate = origCoreModelUpdate;
+    
+    coreModel.update = () => {
+        // 渲染前再次覆盖参数
+        overwriteParams();
+        // 调用原始的 update 方法
         if (origCoreModelUpdate) {
             origCoreModelUpdate();
         }
     };
 
     this._mouthOverrideInstalled = true;
-    console.log('已安装双重参数覆盖(motionManager.update 后 + coreModel.update前)');
+    console.log('已安装双重参数覆盖（motionManager.update 后 + coreModel.update 前）');
 };
 
 // 设置嘴巴开合值（0~1）

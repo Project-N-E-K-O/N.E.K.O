@@ -274,16 +274,16 @@ Live2DManager.prototype.enableMouseTracking = function(model, options = {}) {
 
         if (distance < threshold) {
             showButtons();
+            // 只有当鼠标在模型附近时才调用 focus，避免 Electron 透明窗口中的全局跟踪问题
+            if (this.isFocusing) {
+                model.focus(pointer.x, pointer.y);
+            }
         } else {
             // 鼠标离开模型区域，启动隐藏定时器
             this.isFocusing = false;
             const lockIcon = document.getElementById('live2d-lock-icon');
             if (lockIcon) lockIcon.style.display = 'none';
             startHideTimer();
-        }
-
-        if (this.isFocusing) {
-            model.focus(pointer.x, pointer.y);
         }
     };
 

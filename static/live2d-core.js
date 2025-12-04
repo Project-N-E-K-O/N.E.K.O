@@ -64,6 +64,7 @@ class Live2DManager {
         this.mouthValue = 0; // 0~1
         this.mouthParameterId = null; // 例如 'ParamMouthOpenY' 或 'ParamO'
         this._mouthOverrideInstalled = false;
+        this._origMotionManagerUpdate = null; // 保存原始的 motionManager.update 方法
         this._origCoreModelUpdate = null; // 保存原始的 coreModel.update 方法
         this._mouthTicker = null;
         

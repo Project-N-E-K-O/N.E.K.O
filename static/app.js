@@ -1811,21 +1811,24 @@ function init_app(){
 
         // 先清理旧的音频上下文，防止多个 worklet 同时发送数据导致 QPS 超限
         if (audioContext) {
-            try {
-                await audioContext.close();
-            } catch (e) {
-                console.warn('关闭旧音频上下文时出错:', e);
-                // 强制复位所有状态，防止状态不一致
-                isRecording = false;
-                window.isRecording = false;
-                micButton.classList.remove('recording', 'active');
-                syncFloatingMicButtonState(false);
-                micButton.disabled = false;
-                muteButton.disabled = true;
-                screenButton.disabled = true;
-                stopButton.disabled = true;
-                showStatusToast(window.t ? window.t('app.audioContextError') : '音频系统异常，请重试', 3000);
-                throw e; // 重新抛出错误，阻止后续执行
+            // 只有在未关闭状态下才尝试关闭
+            if (audioContext.state !== 'closed') {
+                try {
+                    await audioContext.close();
+                } catch (e) {
+                    console.warn('关闭旧音频上下文时出错:', e);
+                    // 强制复位所有状态，防止状态不一致
+                    isRecording = false;
+                    window.isRecording = false;
+                    micButton.classList.remove('recording', 'active');
+                    syncFloatingMicButtonState(false);
+                    micButton.disabled = false;
+                    muteButton.disabled = true;
+                    screenButton.disabled = true;
+                    stopButton.disabled = true;
+                    showStatusToast(window.t ? window.t('app.audioContextError') : '音频系统异常，请重试', 3000);
+                    throw e; // 重新抛出错误，阻止后续执行
+                }
             }
             audioContext = null;
             workletNode = null;
@@ -1923,7 +1926,12 @@ function init_app(){
 
         // 关闭AudioContext
         if (audioContext) {
-            audioContext.close();
+            // 只有在未关闭状态下才关闭，防止重复关闭导致错误
+            if (audioContext.state !== 'closed') {
+                audioContext.close();
+            }
+            audioContext = null;
+            workletNode = null;
         }
 
         // 通知服务器暂停会话
@@ -3352,10 +3360,24 @@ function init_app(){
             // 【新增】标记弹窗已打开
             isAgentPopupOpen = true;
             
-            // 【兜底】禁用总开关，显示连接中状态，锁定title
+            // 【修复】查询期间禁用所有开关，防止误操作
+            // 禁用总开关，显示连接中状态，锁定title
             agentMasterCheckbox.disabled = true;
             agentMasterCheckbox.title = window.t ? window.t('settings.toggles.checking') : '查询中...';
             syncCheckboxUI(agentMasterCheckbox);
+            
+            // 【修复】同时禁用子开关，显示查询中状态
+            if (agentKeyboardCheckbox) {
+                agentKeyboardCheckbox.disabled = true;
+                agentKeyboardCheckbox.title = window.t ? window.t('settings.toggles.checking') : '查询中...';
+                syncCheckboxUI(agentKeyboardCheckbox);
+            }
+            if (agentMcpCheckbox) {
+                agentMcpCheckbox.disabled = true;
+                agentMcpCheckbox.title = window.t ? window.t('settings.toggles.checking') : '查询中...';
+                syncCheckboxUI(agentMcpCheckbox);
+            }
+            
             setFloatingAgentStatus('Agent服务器连接中...');
             
             try {
