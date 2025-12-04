@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 DirectTaskExecutor: 合并 Analyzer + Planner 的功能
-并行评估 MCP 和 ComputerUse 可行性（两个独立 LLM 调用）
-优先使用 MCP，其次使用 ComputerUse
+并行评估 MCP 和 ComputerUse 和 UserPlugin 可行性（三个独立 LLM 调用）
+优先使用 MCP，其次使用 ComputerUse，最后使用 UserPlugin
 """
 import json
 import asyncio
@@ -60,7 +60,7 @@ class DirectTaskExecutor:
     
     流程:
     1. 并行调用多个评估器：_assess_mcp、_assess_user_plugin、_assess_computer_use
-    2. 优先使用 MCP（如果可行），其次 UserPlugin，再次 ComputerUse（优先级可调整）
+    2. 优先使用 MCP（如果可行），`其次 UserPlugin，`再次 ComputerUse,`其次 UserPlugin（优先级可调整）
     3. 执行选中的方法
     """
     
@@ -505,7 +505,7 @@ Return only the JSON object, nothing else.
         """
         并行评估 MCP 和 ComputerUse，然后执行任务
         
-        优先级: MCP > ComputerUse
+        优先级: MCP > ComputerUse > UserPlugin
         """
         import uuid
         task_id = str(uuid.uuid4())

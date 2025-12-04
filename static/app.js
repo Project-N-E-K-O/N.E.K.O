@@ -3088,7 +3088,18 @@ function init_app(){
                             agentMcpCheckbox.disabled = !available;
                             agentMcpCheckbox.title = available ? (window.t ? window.t('settings.toggles.mcpTools') : 'MCP工具') : (window.t ? window.t('settings.toggles.unavailable', {name: window.t('settings.toggles.mcpTools')}) : 'MCP工具不可用');
                             syncCheckboxUI(agentMcpCheckbox);
-
+                            
+                        })(),
+                        (async () => {
+                            if (!agentUserPluginCheckbox) return;
+                            const available = await checkCapability('mcp', false);
+                            // 【防竞态】检查操作序列号和总开关状态
+                            if (isExpired() || !agentMasterCheckbox.checked) {
+                                agentUserPluginCheckbox.disabled = true;
+                                agentUserPluginCheckbox.checked = false;
+                                syncCheckboxUI(agentUserPluginCheckbox);
+                                return;
+                            }
                             agentUserPluginCheckbox.disabled = !available;
                             agentUserPluginCheckbox.title = available ? (window.t ? window.t('settings.toggles.userPlugin') : '用户插件') : (window.t ? window.t('settings.toggles.unavailable', {name: window.t('settings.toggles.userPlugin')}) : '用户插件不可用');
                             syncCheckboxUI(agentUserPluginCheckbox);
@@ -3367,7 +3378,7 @@ function init_app(){
                 if (agentUserPluginCheckbox) {
                     if (analyzerEnabled) {
                         // Agent 已开启，根据后端状态设置
-                        agentUserPluginCheckbox.checked = mcpEnabled;
+                        agentUserPluginCheckbox.checked = userPluginEnabled;
                         agentUserPluginCheckbox.disabled = false; // 先设为可用，后续可用性检查会更新
                         agentUserPluginCheckbox.title = window.t ? window.t('settings.toggles.userPlugin') : '用户插件';
                     } else {
@@ -3402,7 +3413,7 @@ function init_app(){
         }
         
         // 暴露同步函数供外部调用（如定时轮询）
-        window.syncAgentFlagsFromBackend = syncFlagsFromBackend,
+        window.syncAgentFlagsFromBackend = syncFlagsFromBackend;
         
         // 监听 Agent 弹窗打开事件，在弹窗显示时检查服务器状态并同步 flags
         window.addEventListener('live2d-agent-popup-opening', async () => {

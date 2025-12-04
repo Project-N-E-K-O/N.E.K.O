@@ -1,10 +1,8 @@
-# neko_plugin_core/plugin_base.pyfrom plugin_server import upda
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
-from .event_base import EventHandler, EventMeta
+from .event_base import EventHandler, EventMeta, EVENT_META_ATTR
 from user_plugin_server import update_plugin_status
 NEKO_PLUGIN_META_ATTR = "__neko_plugin_meta__"
-EVENT_META_ATTR = "__neko_event_meta__"
 NEKO_PLUGIN_TAG = "__neko_plugin__"
 
 
