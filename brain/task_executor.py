@@ -466,7 +466,7 @@ Return only the JSON object, nothing else.
                 try:
                     decision = json.loads(text)
                 except Exception as e:
-                    logger.error(f"[UserPlugin Assessment] JSON parse error: {e}; raw_text (truncated): {repr(raw_text)[:2000]}")
+                    logger.exception(f"[UserPlugin Assessment] JSON parse error: {e}; raw_text (truncated): {repr(raw_text)[:2000]}")
                     return type("UP", (), {"has_task": False, "can_execute": False, "task_description": "", "plugin_id": None, "plugin_args": None, "reason": f"JSON parse error: {e}"})
                 
                 # return a simple object-like struct, include entry_id if provided by the LLM
@@ -635,7 +635,7 @@ Return only the JSON object, nothing else.
             try:
                 return await self._execute_user_plugin(task_id=task_id, up_decision=up_decision)
             except Exception as e:
-                logger.error(f"[TaskExecutor] UserPlugin execution failed: {e}")
+                logger.exception(f"[TaskExecutor] UserPlugin execution failed: {e}")
                 return TaskResult(
                     task_id=task_id,
                     has_task=True,
@@ -750,7 +750,7 @@ Return only the JSON object, nothing else.
         plugin_entry_id = (
             getattr(up_decision, "entry_id", None)
             or getattr(up_decision, "plugin_entry_id", None)
-            or (plugin_args.pop("_entry", None) if isinstance(plugin_args, dict) else None))# or getattr(up_decision, "plugin_entry_id", None) or plugin_args.pop("_entry", None)
+            or (plugin_args.pop("_entry", None) if isinstance(plugin_args, dict) else None))
         
         if not plugin_id:
             return TaskResult(
@@ -859,7 +859,7 @@ Return only the JSON object, nothing else.
                         reason=getattr(up_decision, "reason", "") or "trigger_failed"
                     )
         except Exception as e:
-            logger.error(f"[TaskExecutor] Trigger call error: {e}")
+            logger.exception(f"[TaskExecutor] Trigger call error: {e}")
             return TaskResult(
                 task_id=task_id,
                 has_task=True,

@@ -3437,6 +3437,12 @@ function init_app(){
                 agentMcpCheckbox.title = window.t ? window.t('settings.toggles.checking') : '查询中...';
                 syncCheckboxUI(agentMcpCheckbox);
             }
+           if (agentUserPluginCheckbox) {
+                agentUserPluginCheckbox.disabled = true;
+                agentUserPluginCheckbox.title = window.t ? window.t('settings.toggles.checking') : '查询中...';
+                syncCheckboxUI(agentUserPluginCheckbox);
+           }
+
             
             setFloatingAgentStatus('Agent服务器连接中...');
             
