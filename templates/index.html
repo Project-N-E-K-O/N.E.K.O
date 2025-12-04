@@ -1207,6 +1207,10 @@
                             console.log('接收到显示主界面命令');
                             await showMainUI();
                             break;
+                        case 'reload_model_parameters':
+                            console.log('接收到重新加载模型参数命令');
+                            await reloadModelParameters();
+                            break;
                     }
                 }
             } catch (e) {
@@ -1353,6 +1357,12 @@
                         );
                         console.log('已应用缩放设置:', modelPreferences.scale);
                     }
+                    
+                    // 应用保存的模型参数
+                    if (modelPreferences.parameters && currentModel.internalModel && currentModel.internalModel.coreModel) {
+                        window.live2dManager.applyModelParameters(currentModel, modelPreferences.parameters);
+                        console.log('已应用保存的模型参数');
+                    }
                 } else {
                     console.log('无需应用偏好设置（未找到或模型未加载）');
                 }
@@ -1364,12 +1374,223 @@
         }
     }
     
+    // 重新加载模型参数（用于参数编辑器保存后）
+    async function reloadModelParameters() {
+        try {
+            console.log('=== 开始重新加载模型参数 ===');
+            const currentModel = window.live2dManager?.getCurrentModel();
+            if (!currentModel) {
+                console.log('模型未加载，跳过参数重新加载');
+                return;
+            }
+            
+            // 获取当前模型路径（尝试多种方式）
+            let currentModelPath = '';
+            
+            // 方式1: 从live2dManager的_lastLoadedModelPath获取（最可靠）
+            if (window.live2dManager?._lastLoadedModelPath) {
+                currentModelPath = window.live2dManager._lastLoadedModelPath;
+                console.log('使用 _lastLoadedModelPath:', currentModelPath);
+            }
+            // 方式2: 从模型的url获取
+            else if (currentModel.url) {
+                currentModelPath = currentModel.url;
+                console.log('使用 currentModel.url:', currentModelPath);
+            }
+            // 方式3: 从modelRootPath和modelName构建
+            else if (window.live2dManager?.modelRootPath && window.live2dManager?.modelName) {
+                currentModelPath = `${window.live2dManager.modelRootPath}/${window.live2dManager.modelName}.model3.json`;
+                console.log('使用 modelRootPath + modelName:', currentModelPath);
+            }
+            // 方式4: 从cubism4Model获取
+            else if (typeof cubism4Model !== 'undefined' && cubism4Model) {
+                currentModelPath = cubism4Model;
+                console.log('使用 cubism4Model:', currentModelPath);
+            }
+            
+            if (!currentModelPath) {
+                console.warn('无法确定当前模型路径，跳过参数重新加载');
+                console.log('live2dManager状态:', {
+                    hasManager: !!window.live2dManager,
+                    _lastLoadedModelPath: window.live2dManager?._lastLoadedModelPath,
+                    modelRootPath: window.live2dManager?.modelRootPath,
+                    modelName: window.live2dManager?.modelName,
+                    currentModelUrl: currentModel?.url
+                });
+                return;
+            }
+            
+            console.log('当前模型路径:', currentModelPath);
+            
+            // 重新加载用户偏好
+            const preferences = await window.live2dManager.loadUserPreferences();
+            console.log('加载到的偏好设置数量:', preferences.length);
+            console.log('所有偏好设置的路径:', preferences.map(p => p?.model_path).filter(Boolean));
+            
+            // 尝试多种匹配方式
+            let modelPreferences = null;
+            
+            // 首先尝试精确匹配
+            modelPreferences = preferences.find(p => {
+                if (!p || !p.model_path) return false;
+                return p.model_path === currentModelPath;
+            });
+            
+            if (modelPreferences) {
+                console.log('找到精确匹配的偏好设置');
+            } else {
+                // 尝试文件名匹配
+                const currentFileName = currentModelPath.split('/').pop() || '';
+                console.log('尝试文件名匹配，当前文件名:', currentFileName);
+                
+                modelPreferences = preferences.find(p => {
+                    if (!p || !p.model_path) return false;
+                    const prefFileName = p.model_path.split('/').pop() || '';
+                    if (currentFileName && prefFileName && currentFileName === prefFileName) {
+                        console.log('文件名匹配成功:', p.model_path);
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            
+            // 如果还是没找到，尝试通过模型名称匹配
+            if (!modelPreferences && window.live2dManager?.modelName) {
+                const modelName = window.live2dManager.modelName;
+                console.log('尝试模型名称匹配:', modelName);
+                modelPreferences = preferences.find(p => {
+                    if (!p || !p.model_path) return false;
+                    if (p.model_path.includes(modelName)) {
+                        console.log('模型名称匹配成功:', p.model_path);
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            
+            // 如果还是没找到，尝试部分匹配
+            if (!modelPreferences) {
+                console.log('尝试部分匹配...');
+                const currentPathParts = currentModelPath.split('/').filter(p => p);
+                modelPreferences = preferences.find(p => {
+                    if (!p || !p.model_path) return false;
+                    const prefPathParts = p.model_path.split('/').filter(p => p);
+                    // 检查是否有共同的部分
+                    const commonParts = currentPathParts.filter(part => prefPathParts.includes(part));
+                    if (commonParts.length >= 2) { // 至少有两个共同部分
+                        console.log('部分匹配成功:', p.model_path, '共同部分:', commonParts);
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            
+            if (modelPreferences) {
+                console.log('找到匹配的偏好设置:', modelPreferences.model_path);
+                console.log('是否有参数:', !!modelPreferences.parameters);
+                
+                if (modelPreferences.parameters) {
+                    const paramCount = Object.keys(modelPreferences.parameters).length;
+                    console.log('参数数量:', paramCount);
+                    console.log('参数示例:', Object.keys(modelPreferences.parameters).slice(0, 5));
+                    
+                    // 应用保存的参数
+                    if (currentModel.internalModel && currentModel.internalModel.coreModel) {
+                        window.live2dManager.applyModelParameters(currentModel, modelPreferences.parameters);
+                        console.log('✓ 已重新应用保存的模型参数，参数数量:', paramCount);
+                    } else {
+                        console.warn('模型未完全加载，无法应用参数');
+                    }
+                } else {
+                    console.log('偏好设置中没有参数数据');
+                }
+            } else {
+                console.warn('未找到匹配的偏好设置');
+                console.log('当前模型路径:', currentModelPath);
+                console.log('所有可用偏好设置的路径:');
+                preferences.forEach((p, i) => {
+                    console.log(`  [${i}] ${p?.model_path || 'N/A'}`);
+                });
+            }
+            
+            console.log('=== 重新加载模型参数完成 ===');
+        } catch (error) {
+            console.error('重新加载模型参数失败:', error);
+            console.error('错误堆栈:', error.stack);
+        }
+    }
+    
     // 注册localStorage事件监听器
     window.addEventListener('storage', handlePageMessage);
+    
+    // 页面可见性变化时检查参数更新（用户从其他页面返回时）
+    let lastParameterCheckTime = 0;
+    document.addEventListener('visibilitychange', async () => {
+        if (document.visibilityState === 'visible') {
+            // 页面变为可见时，检查是否需要重新加载参数
+            const now = Date.now();
+            // 避免频繁检查，至少间隔1秒
+            if (now - lastParameterCheckTime > 1000) {
+                lastParameterCheckTime = now;
+                console.log('页面重新可见，检查参数更新...');
+                await reloadModelParameters();
+            }
+        }
+    });
+    
+    // 页面获得焦点时也检查（备用机制）
+    window.addEventListener('focus', async () => {
+        const now = Date.now();
+        if (now - lastParameterCheckTime > 1000) {
+            lastParameterCheckTime = now;
+            console.log('页面获得焦点，检查参数更新...');
+            await reloadModelParameters();
+        }
+    });
+    
+    // 页面加载完成后，等待模型加载完成后再检查参数
+    // 使用MutationObserver或定时器检查模型是否已加载
+    let modelLoadCheckInterval = null;
+    function startModelLoadCheck() {
+        if (modelLoadCheckInterval) return;
+        
+        modelLoadCheckInterval = setInterval(async () => {
+            const currentModel = window.live2dManager?.getCurrentModel();
+            if (currentModel && currentModel.internalModel && currentModel.internalModel.coreModel) {
+                // 模型已加载，停止检查
+                clearInterval(modelLoadCheckInterval);
+                modelLoadCheckInterval = null;
+                
+                // 等待一小段时间确保模型完全初始化
+                setTimeout(async () => {
+                    console.log('模型已加载，检查参数更新...');
+                    await reloadModelParameters();
+                }, 500);
+            }
+        }, 500);
+        
+        // 30秒后停止检查（避免无限检查）
+        setTimeout(() => {
+            if (modelLoadCheckInterval) {
+                clearInterval(modelLoadCheckInterval);
+                modelLoadCheckInterval = null;
+            }
+        }, 30000);
+    }
+    
+    // 页面加载时开始检查
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', startModelLoadCheck);
+    } else {
+        startModelLoadCheck();
+    }
     
     // 页面卸载时清理监听器
     window.addEventListener('beforeunload', () => {
         window.removeEventListener('storage', handlePageMessage);
+        if (modelLoadCheckInterval) {
+            clearInterval(modelLoadCheckInterval);
+        }
     });
 </script>
 <script src="/static/libs/live2d.min.js"></script>  <!-- Cubism 2.1核心库（支持旧模型） -->
