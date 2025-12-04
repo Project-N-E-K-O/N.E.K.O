@@ -298,19 +298,33 @@ def _load_plugins_from_toml() -> None:
                             eid = ent.get("id") if isinstance(ent, dict) else str(ent)
                             if not eid:
                                 continue
+                            handler_fn = None
                             # prefer instance method matching eid
                             if hasattr(instance, eid):
                                 handler_fn = getattr(instance, eid)
-                            # 创建一个简单的元数据对象
+                            if handler_fn is None:
+                                logger.debug(
+                                    "No handler found for entry %s on plugin %s, skipping auto-registration from toml",
+                                    eid,
+                                    pid,
+                                )
+                                continue
+
                             @dataclass
                             class SimpleEntryMeta:
-                                event_type: str = "plugin_entry"
-                                id: str = eid
-                                name: str = ent.get("name", "") if isinstance(ent, dict) else ""
-                                description: str = ent.get("description", "") if isinstance(ent, dict) else ""
-                                input_schema: dict = field(default_factory=lambda: ent.get("input_schema", {}) if isinstance(ent, dict) else {})
-                            
-                            entry_meta = SimpleEntryMeta()
+                                event_type: str
+                                id: str
+                                name: str
+                                description: str
+                                input_schema: dict
+
+                            entry_meta = SimpleEntryMeta(
+                                event_type="plugin_entry",
+                                id=eid,
+                                name=ent.get("name", "") if isinstance(ent, dict) else "",
+                                description=ent.get("description", "") if isinstance(ent, dict) else "",
+                                input_schema=ent.get("input_schema", {}) if isinstance(ent, dict) else {},
+                            )
                             _event_handlers[f"{pid}.{eid}"] = EventHandler(meta=entry_meta, handler=handler_fn)
                             _event_handlers[f"{pid}:plugin_entry:{eid}"] = EventHandler(meta=entry_meta, handler=handler_fn)
                         except Exception as e:
@@ -421,14 +435,19 @@ async def plugin_trigger(payload: Dict[str, Any], request: Request):
         except asyncio.QueueFull:
             # 丢掉最旧的一条，再塞新的
             try:
-                _ = _event_queue.get_nowait()
-            except Exception:
-                pass
+                _event_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                logger.warning(
+                    "plugin_trigger: event queue reported full but was empty when trimming; dropping new event for plugin_id=%s",
+                    plugin_id,
+                )
+                return
             try:
                 _event_queue.put_nowait(event)
-            except Exception:
+            except asyncio.QueueFull:
                 logger.warning(
-                    "plugin_trigger: failed to enqueue event for plugin_id=%s", plugin_id
+                    "plugin_trigger: failed to enqueue event for plugin_id=%s after dropping oldest",
+                    plugin_id,
                 )
 
         # 小工具：根据函数签名决定用 args 还是 **args 调用，兼容 sync / async
