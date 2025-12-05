@@ -668,6 +668,8 @@ async def get_core_config_api():
             # 如果文件不存在，返回当前配置中的CORE_API_KEY
             core_config = _config_manager.get_core_config()
             api_key = core_config['CORE_API_KEY']
+            # 创建空的配置对象用于返回默认值
+            core_cfg = {}
         
         return {
             "api_key": api_key,
@@ -680,6 +682,31 @@ async def get_core_config_api():
             "assistApiKeySilicon": core_cfg.get('assistApiKeySilicon', ''),
             "mcpToken": core_cfg.get('mcpToken', ''),  # 添加mcpToken字段
             "enableCustomApi": core_cfg.get('enableCustomApi', False),  # 添加enableCustomApi字段
+            # 自定义API相关字段
+            "summaryModelProvider": core_cfg.get('summaryModelProvider', ''),
+            "summaryModelUrl": core_cfg.get('summaryModelUrl', ''),
+            "summaryModelId": core_cfg.get('summaryModelId', ''),
+            "summaryModelApiKey": core_cfg.get('summaryModelApiKey', ''),
+            "correctionModelProvider": core_cfg.get('correctionModelProvider', ''),
+            "correctionModelUrl": core_cfg.get('correctionModelUrl', ''),
+            "correctionModelId": core_cfg.get('correctionModelId', ''),
+            "correctionModelApiKey": core_cfg.get('correctionModelApiKey', ''),
+            "emotionModelProvider": core_cfg.get('emotionModelProvider', ''),
+            "emotionModelUrl": core_cfg.get('emotionModelUrl', ''),
+            "emotionModelId": core_cfg.get('emotionModelId', ''),
+            "emotionModelApiKey": core_cfg.get('emotionModelApiKey', ''),
+            "visionModelProvider": core_cfg.get('visionModelProvider', ''),
+            "visionModelUrl": core_cfg.get('visionModelUrl', ''),
+            "visionModelId": core_cfg.get('visionModelId', ''),
+            "visionModelApiKey": core_cfg.get('visionModelApiKey', ''),
+            "omniModelProvider": core_cfg.get('omniModelProvider', ''),
+            "omniModelUrl": core_cfg.get('omniModelUrl', ''),
+            "omniModelId": core_cfg.get('omniModelId', ''),
+            "omniModelApiKey": core_cfg.get('omniModelApiKey', ''),
+            "ttsModelProvider": core_cfg.get('ttsModelProvider', ''),
+            "ttsModelUrl": core_cfg.get('ttsModelUrl', ''),
+            "ttsModelId": core_cfg.get('ttsModelId', ''),
+            "ttsModelApiKey": core_cfg.get('ttsModelApiKey', ''),
             "success": True
         }
     except Exception as e:
@@ -796,36 +823,48 @@ async def update_core_config(request: Request):
             core_cfg['summaryModelProvider'] = data['summaryModelProvider']
         if 'summaryModelUrl' in data:
             core_cfg['summaryModelUrl'] = data['summaryModelUrl']
+        if 'summaryModelId' in data:
+            core_cfg['summaryModelId'] = data['summaryModelId']
         if 'summaryModelApiKey' in data:
             core_cfg['summaryModelApiKey'] = data['summaryModelApiKey']
         if 'correctionModelProvider' in data:
             core_cfg['correctionModelProvider'] = data['correctionModelProvider']
         if 'correctionModelUrl' in data:
             core_cfg['correctionModelUrl'] = data['correctionModelUrl']
+        if 'correctionModelId' in data:
+            core_cfg['correctionModelId'] = data['correctionModelId']
         if 'correctionModelApiKey' in data:
             core_cfg['correctionModelApiKey'] = data['correctionModelApiKey']
         if 'emotionModelProvider' in data:
             core_cfg['emotionModelProvider'] = data['emotionModelProvider']
         if 'emotionModelUrl' in data:
             core_cfg['emotionModelUrl'] = data['emotionModelUrl']
+        if 'emotionModelId' in data:
+            core_cfg['emotionModelId'] = data['emotionModelId']
         if 'emotionModelApiKey' in data:
             core_cfg['emotionModelApiKey'] = data['emotionModelApiKey']
         if 'visionModelProvider' in data:
             core_cfg['visionModelProvider'] = data['visionModelProvider']
         if 'visionModelUrl' in data:
             core_cfg['visionModelUrl'] = data['visionModelUrl']
+        if 'visionModelId' in data:
+            core_cfg['visionModelId'] = data['visionModelId']
         if 'visionModelApiKey' in data:
             core_cfg['visionModelApiKey'] = data['visionModelApiKey']
         if 'omniModelProvider' in data:
             core_cfg['omniModelProvider'] = data['omniModelProvider']
         if 'omniModelUrl' in data:
             core_cfg['omniModelUrl'] = data['omniModelUrl']
+        if 'omniModelId' in data:
+            core_cfg['omniModelId'] = data['omniModelId']
         if 'omniModelApiKey' in data:
             core_cfg['omniModelApiKey'] = data['omniModelApiKey']
         if 'ttsModelProvider' in data:
             core_cfg['ttsModelProvider'] = data['ttsModelProvider']
         if 'ttsModelUrl' in data:
             core_cfg['ttsModelUrl'] = data['ttsModelUrl']
+        if 'ttsModelId' in data:
+            core_cfg['ttsModelId'] = data['ttsModelId']
         if 'ttsModelApiKey' in data:
             core_cfg['ttsModelApiKey'] = data['ttsModelApiKey']
         

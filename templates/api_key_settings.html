@@ -60,16 +60,20 @@
             font-family: 'Courier New', monospace;
         }
         .field-row input:disabled {
-            background-color: #f0f0f0;
-            color: #666;
+            background-color: #f8f9fa;
+            color: #6c757d;
             cursor: not-allowed;
-            border-color: #d0d0d0;
+            border-color: #ced4da;
+            opacity: 0.8;
+            font-style: italic;
         }
         .field-row select:disabled {
-            background-color: #f0f0f0;
-            color: #666;
+            background-color: #f8f9fa;
+            color: #6c757d;
             cursor: not-allowed;
-            border-color: #d0d0d0;
+            border-color: #ced4da;
+            opacity: 0.8;
+            font-style: italic;
         }
         .field-row select option:disabled {
             color: #999;
@@ -929,6 +933,11 @@ async function loadCurrentApiKey() {
             } else {
                 showCurrentApiKey(window.t ? window.t('api.currentNoApiKey') : '📋 当前暂未设置API Key');
             }
+            
+            // 设置核心API Key输入框的值（重要：必须在显示提示后设置）
+            if (apiKeyInput && data.api_key && data.api_key !== 'free-access') {
+                apiKeyInput.value = data.api_key;
+            }
             // 设置高级设定的值（确保下拉框已加载选项）
             if (data.coreApi && coreApiSelect) {
                 // 检查选项是否已加载
@@ -1078,8 +1087,10 @@ async function loadCurrentApiKey() {
             // 加载自定义API启用状态
             if (typeof data.enableCustomApi === 'boolean' && document.getElementById('enableCustomApi')) {
                 document.getElementById('enableCustomApi').checked = data.enableCustomApi;
-                // 立即应用状态
-                toggleCustomApi();
+                // 延迟应用状态，确保API Key已正确加载
+                setTimeout(() => {
+                    toggleCustomApi();
+                }, 100);
             }
         } else {
             showCurrentApiKey('📋 获取当前API Key失败');
@@ -1865,6 +1876,11 @@ async function initializePage() {
         
         // 标记页面已初始化完成，防止重复执行
         window.apiKeySettingsInitialized = true;
+        
+        // 页面初始化完成后立即应用自定义API状态，确保显示正确的禁用状态
+        setTimeout(() => {
+            toggleCustomApi();
+        }, 0);
         
     } catch (error) {
         console.error('页面初始化失败:', error);
