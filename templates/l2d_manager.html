@@ -688,7 +688,7 @@
                 if (currentModelFiles.motion_files.length === 0) {
                     motionSelect.disabled = true;
                     playMotionBtn.disabled = true;
-                    motionSelect.innerHTML = `<option value="">${t('live2d.noMotionFiles', '该模型没有动作文件')}</option>`;
+                    motionSelect.innerHTML = `<option value="">${t('live2d.noMotionFiles', '没有动作文件')}</option>`;
                 }
                 setControlsDisabled(false);
                 showStatus(t('live2d.modelLoadSuccess', `模型 ${modelName} 加载成功`, {model: modelName}));
@@ -705,7 +705,7 @@
             
             // 检查是否有动作文件
             if (currentModelFiles.motion_files.length === 0) {
-                showStatus(t('live2d.noMotionFilesStatus', '该模型没有动作文件'), 2000);
+                showStatus(t('live2d.noMotionFilesStatus', '没有动作文件'), 2000);
                 return;
             }
             
