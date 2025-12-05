@@ -1,0 +1,1124 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n="live2d.parameterEditor.title">Live2D 参数编辑器（捏脸系统）</title>
+    <script src="/static/i18n-i18next.js"></script>
+    <script src="/static/common_dialogs.js"></script>
+    <style>
+        *:focus {
+            outline: none !important;
+            box-shadow: none !important; 
+        }
+        html, body {
+            height: 100%; margin: 0; padding: 0; background: #eee; color: #222;
+            font-family: 'Segoe UI', Arial, sans-serif; overflow: hidden;
+        }
+        #live2d-container {
+            position: fixed; right: 0px; bottom: 0px; width: 100%; height: 100%;
+            z-index: 10; pointer-events: auto;
+        }
+        #live2d-canvas {
+            display: block; width: 100%; height: 100%; background: transparent;
+            cursor: grab; pointer-events: auto;
+        }
+        #live2d-canvas:active { cursor: grabbing; }
+
+        #sidebar {
+            position: fixed;
+            left: 20px;
+            top: 20px;
+            bottom: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            z-index: 20;
+            width: 300px;
+            max-width: calc(100vw - 40px);
+            padding: 20px;
+            background: #fff;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            overflow: hidden;
+            box-sizing: border-box;
+        }
+        
+        @media (max-width: 400px) {
+            #sidebar {
+                left: 10px;
+                right: 10px;
+                width: auto;
+                max-width: none;
+            }
+        }
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            flex-shrink: 0;
+            min-width: 0;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .control-label {
+            font-weight: 600;
+            color: #333;
+            font-size: 14px;
+        }
+        .control-select {
+            padding: 10px 15px;
+            border-radius: 8px;
+            border: 1px solid #ddd;
+            font-size: 14px;
+            cursor: pointer;
+            background: #fff;
+            color: #333;
+            appearance: none;
+            -webkit-appearance: none;
+            -moz-appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23d5f1ff' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 12px center;
+            padding-right: 35px;
+        }
+        
+        .btn {
+            padding: 10px 15px;
+            border-radius: 8px;
+            border: none;
+            font-size: 14px;
+            cursor: pointer;
+            color: white;
+            transition: background 0.2s, transform 0.2s, box-shadow 0.2s;
+            text-align: center;
+            width: 100%;
+            box-sizing: border-box;
+            max-width: 100%;
+        }
+        .btn:hover:not(:disabled) {
+            transform: translateY(-1px);
+            box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+        }
+        .btn:disabled {
+            background: #e0e0e0;
+            cursor: not-allowed;
+            opacity: 0.7;
+        }
+        .btn-primary { background: #44b7fe; }
+        .btn-primary:hover:not(:disabled) { background: #2662c8; }
+        
+        .btn-secondary { 
+            background: #d5f1ff; 
+            color: #333;
+        }
+        .btn-secondary:hover:not(:disabled) { 
+            background: #b8e5ff; 
+            color: #333;
+        }
+
+        .btn-success { background: #44b7fe; }
+        .btn-success:hover:not(:disabled) { background: #2662c8; }
+        
+        #status {
+            margin-top: 10px;
+            color: #4f8cff;
+            font-size: 14px;
+            font-weight: 500;
+            max-width: 280px;
+            word-break: break-all;
+        }
+
+        .search-box {
+            padding: 10px 15px;
+            border-radius: 8px;
+            border: 1px solid #ddd;
+            font-size: 14px;
+            background: #fff;
+        }
+
+        .parameters-list {
+            flex: 1;
+            min-height: 0;
+            overflow-y: auto;
+            overflow-x: hidden;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 10px;
+            background: #f8f9fa;
+        }
+
+        .parameter-group {
+            margin-bottom: 15px;
+        }
+
+        .group-header {
+            font-weight: 600;
+            font-size: 15px;
+            color: #44b7fe;
+            margin-bottom: 10px;
+            padding-bottom: 6px;
+            border-bottom: 2px solid #44b7fe;
+        }
+
+        .parameter-item {
+            background: white;
+            border-radius: 8px;
+            padding: 10px;
+            margin-bottom: 8px;
+            border: 1px solid #ddd;
+        }
+
+        .parameter-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .parameter-name {
+            font-weight: 500;
+            color: #333;
+            font-size: 13px;
+            flex: 1;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .parameter-value {
+            font-size: 12px;
+            color: #666;
+            min-width: 60px;
+            max-width: 80px;
+            text-align: right;
+            flex-shrink: 0;
+        }
+
+        .parameter-controls {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            min-width: 0;
+            flex-wrap: wrap;
+        }
+
+        .parameter-slider {
+            flex: 1;
+            height: 6px;
+            border-radius: 3px;
+            background: #ddd;
+            outline: none;
+            -webkit-appearance: none;
+            appearance: none;
+        }
+
+        .parameter-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #44b7fe;
+            cursor: pointer;
+        }
+
+        .parameter-slider::-moz-range-thumb {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #44b7fe;
+            cursor: pointer;
+            border: none;
+        }
+
+        .parameter-input {
+            width: 80px;
+            min-width: 60px;
+            max-width: 100px;
+            padding: 4px 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 12px;
+            box-sizing: border-box;
+        }
+
+        .btn-reset {
+            padding: 4px 8px;
+            font-size: 11px;
+            background: #dc3545;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+
+<div id="sidebar">
+    <div class="control-group">
+        <button id="backToMainBtn" class="btn btn-primary" data-i18n="live2d.parameterEditor.backToMain">← 返回主页</button>
+    </div>
+    
+    <div class="control-group">
+        <label for="model-select" class="control-label" data-i18n="live2d.parameterEditor.selectModel">选择模型:</label>
+        <select id="model-select" class="control-select">
+            <option data-i18n="live2d.parameterEditor.loading">加载中...</option>
+        </select>
+    </div>
+
+    <div class="control-group">
+        <div style="display:flex; gap: 10px;">
+            <button id="reset-all-btn" class="btn btn-secondary" disabled style="flex:1;" data-i18n="live2d.parameterEditor.resetAll">重置全部</button>
+            <button id="save-btn" class="btn btn-success" disabled style="flex:1;" data-i18n="live2d.parameterEditor.saveParameters">保存参数</button>
+        </div>
+    </div>
+
+    <div class="control-group" style="flex: 1; min-height: 0; display: flex; flex-direction: column;">
+        <label class="control-label" data-i18n="live2d.parameterEditor.parameterList">参数列表:</label>
+        <div id="parameters-list" class="parameters-list">
+            <div style="text-align: center; color: #999; padding: 20px;" data-i18n="live2d.parameterEditor.pleaseSelectAndLoadModel">
+                请先选择并加载模型
+            </div>
+        </div>
+    </div>
+    
+    <div id="status" data-i18n="live2d.parameterEditor.pleaseSelectModel">请先选择模型</div>
+</div>
+
+<div id="live2d-container"><canvas id="live2d-canvas"></canvas></div>
+
+<script src="/static/libs/live2dcubismcore.min.js"></script>
+<script src="/static/libs/live2d.min.js"></script>
+<script src="/static/libs/pixi.min.js"></script>
+<script src="/static/libs/index.min.js"></script>
+<script src="/static/live2d-core.js"></script>
+<script src="/static/live2d-emotion.js"></script>
+<script src="/static/live2d-model.js"></script>
+<script src="/static/live2d-interaction.js"></script>
+<script src="/static/live2d-ui.js"></script>
+<script src="/static/live2d-init.js"></script>
+
+<script>
+    // 等待i18next初始化完成并更新页面文本
+    function updatePageTranslations() {
+        // 更新所有带有data-i18n属性的元素
+        if (window.updatePageTexts && typeof window.updatePageTexts === 'function') {
+            window.updatePageTexts();
+        } else if (window.t && typeof window.t === 'function') {
+            // 手动更新所有data-i18n元素
+            document.querySelectorAll('[data-i18n]').forEach(el => {
+                const key = el.getAttribute('data-i18n');
+                if (key) {
+                    try {
+                        const translated = window.t(key);
+                        // 如果翻译失败（返回key本身），尝试使用元素内的原始文本作为fallback
+                        if (translated === key && el.textContent && el.textContent.trim()) {
+                            // 保持原始文本
+                        } else {
+                            el.textContent = translated;
+                        }
+                    } catch (e) {
+                        console.warn('翻译失败:', key, e);
+                    }
+                }
+            });
+        }
+    }
+    
+    // 监听i18next初始化完成事件
+    document.addEventListener('DOMContentLoaded', function() {
+        // 立即尝试更新一次
+        updatePageTranslations();
+        
+        // 监听语言变化事件
+        window.addEventListener('localechange', function() {
+            updatePageTranslations();
+        });
+        
+        // 延迟更新（等待i18next完全初始化）
+        setTimeout(updatePageTranslations, 500);
+        setTimeout(updatePageTranslations, 1000);
+    });
+
+    let live2dModel = null;
+    let currentModelInfo = null;
+    let parameterInfo = null;
+    let parameterGroups = {};
+    let initialParameters = {};
+    let currentParameters = {};
+
+    // 参数名称中文翻译映射
+    const parameterNameTranslations = {
+        // 面部
+        'Angle_X': '头部左右旋转',
+        'Angle_Y': '头部上下旋转',
+        'Angle_Z': '头部左右倾斜',
+        'Blush': '脸颊红晕',
+        'Face Ink_Display': '面部墨水显示',
+        
+        // 眼睛
+        'Eye L_Open': '左眼开合',
+        'Eye L_Smile': '左眼微笑',
+        'Eye L_Deformation': '左眼变形',
+        'Eye R_Open': '右眼开合',
+        'Eye R_Smile': '右眼微笑',
+        'Eye R_Deformation': '右眼变形',
+        'Eyeballs_X': '眼球左右',
+        'Eyeballs_Y': '眼球上下',
+        'Eyeballs_Shrink': '眼球缩放',
+        'Eyes_Effect': '眼睛特效',
+        
+        // 眉毛
+        'Eyebrow L_Y': '左眉上下',
+        'Eyebrow R_Y': '右眉上下',
+        'Eyebrow L_X': '左眉左右',
+        'Eyebrow R_X': '右眉左右',
+        'Eyebrow L_Angle': '左眉角度',
+        'Eyebrow R_Angle': '右眉角度',
+        'Eyebrow L_Form': '左眉形状',
+        'Eyebrow R_Form': '右眉形状',
+        
+        // 嘴巴
+        'Mouth_Open_Y': '嘴巴开合',
+        'Mouth_Form': '嘴巴形状',
+        'Mouth_X': '嘴巴左右',
+        'Mouth_Y': '嘴巴上下',
+        'Mouth_Smile': '嘴巴微笑',
+        'Mouth_Pucker': '嘴巴撅起',
+        'Mouth_Stretch': '嘴巴拉伸',
+        'Mouth_Shrug': '嘴巴耸肩',
+        'Mouth_Left': '嘴巴左移',
+        'Mouth_Right': '嘴巴右移',
+        
+        // 手臂
+        'Arm L A_Shoulder Rotation': '左臂A_肩膀旋转',
+        'Arm L A_Elbow Rotation': '左臂A_手肘旋转',
+        'Arm L A_Wrist Rotation': '左臂A_手腕旋转',
+        'Arm R A_Shoulder Rotation': '右臂A_肩膀旋转',
+        'Arm R A_Elbow Rotation': '右臂A_手肘旋转',
+        'Arm R A_Wrist Rotation': '右臂A_手腕旋转',
+        'Arm L B_Shoulder Rotation': '左臂B_肩膀旋转',
+        'Arm L B_Elbow Rotation': '左臂B_手肘旋转',
+        'Arm L B_Wrist Rotation': '左臂B_手腕旋转',
+        'Arm R B_Shoulder Rotation': '右臂B_肩膀旋转',
+        'Arm R B_Elbow Rotation': '右臂B_手肘旋转',
+        'Arm R B_Wrist Rotation': '右臂B_手腕旋转',
+        'Hand L A': '左手A',
+        'Hand R A': '右手A',
+        'Hand L B': '左手B',
+        'Hand R B': '右手B',
+        'Wand Rotation': '法杖旋转',
+        'Dropping Ink': '滴落墨水',
+        'Dropping Ink_Rotation': '滴落墨水旋转',
+        'Dropping Ink_Display': '滴落墨水显示',
+        'Hat Deformation': '帽子变形',
+        'Arm R B_Arm Y': '右臂B_手臂Y',
+        
+        // 身体
+        'Body_Angle_X': '身体左右旋转',
+        'Body_Angle_Y': '身体上下旋转',
+        'Body_Angle_Z': '身体左右倾斜',
+        'Body_Scale_X': '身体横向缩放',
+        'Body_Scale_Y': '身体纵向缩放',
+        
+        // 嘴巴（口型）
+        'A': '口型A',
+        'I': '口型I',
+        'U': '口型U',
+        'E': '口型E',
+        'O': '口型O',
+        'Mouth Corner Upward': '嘴角上扬',
+        'Mouth Corner Downward': '嘴角下扬',
+        
+        // 头发
+        'Hair': '头发',
+        'Hair_Front': '前发',
+        'Hair_Back': '后发',
+        'Hair_Side': '侧发',
+        
+        // 其他
+        'Overall': '整体',
+        'Sway': '摇摆',
+        'Heart': '心形',
+        'Ink': '墨水',
+        'Explosion': '爆炸',
+        'Rabbit': '兔子',
+        'Aura': '光环',
+        'Light': '光线',
+        'Overall Effect': '整体特效',
+        'Overall Color': '整体颜色',
+        'Overall Color 2': '整体颜色2'
+    };
+
+    // 判断参数是否重要（用于外观定制）
+    function isParameterImportant(paramId, paramName) {
+        const nameLower = (paramName || paramId || '').toLowerCase();
+        const idLower = (paramId || '').toLowerCase();
+        
+        // 不重要的参数（技术/动画参数，应该隐藏）
+        const unimportantPatterns = [
+            // 头部/身体角度（用于动画，不是外观）
+            'angle_x', 'angle_y', 'angle_z',
+            'body rotation', 'body_angle',
+            // 口型参数（用于语音同步）
+            '^a$', '^i$', '^u$', '^e$', '^o$',
+            // 呼吸等动画参数
+            'breath',
+            // 手臂旋转（用于动画姿态，不是外观定制）
+            'arm.*rotation', 'shoulder.*rotation', 'elbow.*rotation', 'wrist.*rotation',
+            // 特效参数（除非是外观相关的）
+            'ink.*rotation', 'dropping ink.*rotation', 'wand.*rotation',
+            'explosion', 'rabbit', 'aura', 'light',
+            // 技术参数
+            'paramall', 'paramallx', 'paramally',
+            // 位置参数
+            'position', 'scale'
+        ];
+        
+        // 检查是否匹配不重要模式
+        for (const pattern of unimportantPatterns) {
+            const regex = new RegExp(pattern, 'i');
+            if (regex.test(nameLower) || regex.test(idLower)) {
+                return false;
+            }
+        }
+        
+        // 重要参数（外观定制相关）
+        const importantPatterns = [
+            // 面部外观
+            'blush', 'cheek', 'face.*ink.*display',
+            // 眼睛外观
+            'eye.*open', 'eye.*smile', 'eye.*form', 'eye.*deformation',
+            'eyeball', 'eyeballs',
+            // 眉毛外观
+            'eyebrow', 'brow',
+            // 嘴巴外观
+            'mouth.*form', 'mouth.*smile', 'mouth.*corner', 'pouting',
+            // 头发相关
+            'hair',
+            // 颜色相关
+            'color',
+            // 外观特效
+            'hat.*deformation', 'overall.*effect', 'overall.*color',
+            // 手部外观（如果有）
+            'hand'
+        ];
+        
+        // 检查是否匹配重要模式
+        for (const pattern of importantPatterns) {
+            const regex = new RegExp(pattern, 'i');
+            if (regex.test(nameLower) || regex.test(idLower)) {
+                return true;
+            }
+        }
+        
+        // 默认：如果参数名包含常见外观关键词，认为是重要的
+        if (nameLower.includes('form') || nameLower.includes('deformation') || 
+            nameLower.includes('effect') || nameLower.includes('display')) {
+            return true;
+        }
+        
+        // 其他情况：如果参数名很短或看起来像技术参数，隐藏
+        if (paramId && paramId.startsWith('Param') && paramId.length < 15) {
+            // 检查是否是已知的重要参数ID
+            const importantIds = [
+                'ParamCheek', 'ParamEyeL', 'ParamEyeR', 'ParamEyeBall',
+                'ParamBrow', 'ParamMouth', 'ParamHair', 'ParamFaceInkOn',
+                'ParamHatForm', 'ParamOverall'
+            ];
+            for (const importantId of importantIds) {
+                if (paramId.includes(importantId)) {
+                    return true;
+                }
+            }
+        }
+        
+        // 默认隐藏未知参数（保守策略）
+        return false;
+    }
+
+    // 获取参数的中文名称
+    function getParameterChineseName(englishName) {
+        // 直接匹配
+        if (parameterNameTranslations[englishName]) {
+            return parameterNameTranslations[englishName];
+        }
+        
+        // 部分匹配（处理带前缀的情况）
+        for (const [key, value] of Object.entries(parameterNameTranslations)) {
+            if (englishName.includes(key) || key.includes(englishName)) {
+                return value;
+            }
+        }
+        
+        // 智能翻译常见单词
+        let translated = englishName;
+        translated = translated.replace(/Eye\s+L/gi, '左眼');
+        translated = translated.replace(/Eye\s+R/gi, '右眼');
+        translated = translated.replace(/Arm\s+L/gi, '左臂');
+        translated = translated.replace(/Arm\s+R/gi, '右臂');
+        translated = translated.replace(/Hand\s+L/gi, '左手');
+        translated = translated.replace(/Hand\s+R/gi, '右手');
+        translated = translated.replace(/Eyebrow\s+L/gi, '左眉');
+        translated = translated.replace(/Eyebrow\s+R/gi, '右眉');
+        translated = translated.replace(/Rotation/gi, '旋转');
+        translated = translated.replace(/Angle/gi, '角度');
+        translated = translated.replace(/Scale/gi, '缩放');
+        translated = translated.replace(/Open/gi, '开合');
+        translated = translated.replace(/Smile/gi, '微笑');
+        translated = translated.replace(/Form/gi, '形状');
+        translated = translated.replace(/Deformation/gi, '变形');
+        translated = translated.replace(/Shoulder/gi, '肩膀');
+        translated = translated.replace(/Elbow/gi, '手肘');
+        translated = translated.replace(/Wrist/gi, '手腕');
+        translated = translated.replace(/Body/gi, '身体');
+        translated = translated.replace(/Hair/gi, '头发');
+        translated = translated.replace(/Mouth/gi, '嘴巴');
+        translated = translated.replace(/Face/gi, '面部');
+        translated = translated.replace(/Effect/gi, '特效');
+        translated = translated.replace(/Color/gi, '颜色');
+        translated = translated.replace(/_/g, ' ');
+        
+        return translated || englishName;
+    }
+
+    const modelSelect = document.getElementById('model-select');
+    const parametersList = document.getElementById('parameters-list');
+    const resetAllBtn = document.getElementById('reset-all-btn');
+    const saveBtn = document.getElementById('save-btn');
+    const statusDiv = document.getElementById('status');
+    const backToMainBtn = document.getElementById('backToMainBtn');
+
+    // 发送消息给主页
+    function sendMessageToMainPage(action) {
+        try {
+            const message = {
+                action: action,
+                timestamp: Date.now()
+            };
+            localStorage.setItem('nekopage_message', JSON.stringify(message));
+            localStorage.removeItem('nekopage_message');
+            // 如果是同窗口，直接触发storage事件
+            window.dispatchEvent(new StorageEvent('storage', {
+                key: 'nekopage_message',
+                newValue: JSON.stringify(message)
+            }));
+        } catch (e) {
+            console.log('发送消息给主页面失败:', e);
+        }
+    }
+
+    // 翻译辅助函数（优先返回中文fallback，确保始终显示中文）
+    function t(key, fallback, params = {}) {
+        // 如果提供了fallback，优先使用fallback（确保显示中文）
+        if (fallback) {
+            try {
+                if (window.t && typeof window.t === 'function' && window.i18n && window.i18n.isInitialized) {
+                    const result = window.t(key, params);
+                    // 如果翻译成功且不是key本身，使用翻译结果
+                    if (result && result !== key) {
+                        return result;
+                    }
+                }
+            } catch (e) {
+                console.error(`[i18n] Translation failed for key "${key}":`, e);
+            }
+            // 始终返回中文fallback
+            return fallback;
+        }
+        
+        // 如果没有fallback，尝试翻译
+        try {
+            if (window.t && typeof window.t === 'function') {
+                const result = window.t(key, params);
+                if (result && result !== key) {
+                    return result;
+                }
+            }
+        } catch (e) {
+            console.error(`[i18n] Translation failed for key "${key}":`, e);
+        }
+        
+        return key;
+    }
+
+    function showStatus(message, duration = 0) {
+        statusDiv.textContent = message;
+        if (duration > 0) {
+            setTimeout(() => {
+                statusDiv.textContent = t('live2d.parameterEditor.ready', '就绪');
+            }, duration);
+        }
+    }
+
+    // 返回主页
+    backToMainBtn.addEventListener('click', () => {
+        // 在跳转前发送消息通知主页
+        sendMessageToMainPage('reload_model_parameters');
+        // 延迟一点确保消息发送
+        setTimeout(() => {
+            window.location.href = '/';
+        }, 100);
+    });
+
+    // 加载模型列表
+    async function loadModelList() {
+        try {
+            const response = await fetch('/api/live2d/models');
+            const data = await response.json();
+            
+            // API可能直接返回数组，也可能返回 {success: true, models: [...]}
+            let models = [];
+            if (Array.isArray(data)) {
+                models = data;
+            } else if (data.success && Array.isArray(data.models)) {
+                models = data.models;
+            } else if (data.models && Array.isArray(data.models)) {
+                models = data.models;
+            }
+            
+            if (models.length > 0) {
+                modelSelect.innerHTML = `<option value="">${t('live2d.parameterEditor.pleaseSelectModelOption', '请选择模型')}</option>`;
+                models.forEach(model => {
+                    const option = document.createElement('option');
+                    option.value = model.name;
+                    option.textContent = model.name;
+                    modelSelect.appendChild(option);
+                });
+                showStatus(t('live2d.parameterEditor.modelListLoaded', '模型列表加载成功'), 2000);
+            } else {
+                modelSelect.innerHTML = `<option value="">${t('live2d.parameterEditor.noModels', '暂无模型')}</option>`;
+                showStatus(t('live2d.parameterEditor.noModelsFound', '未找到模型'), 3000);
+            }
+        } catch (error) {
+            console.error('加载模型列表失败:', error);
+            modelSelect.innerHTML = `<option value="">${t('live2d.parameterEditor.loading', '加载中...')}</option>`;
+            showStatus(t('live2d.parameterEditor.modelListLoadFailed', '加载模型列表失败: {{error}}', {error: error.message}), 3000);
+        }
+    }
+
+    // 加载模型参数信息
+    async function loadParameterInfo(modelName) {
+        try {
+            const response = await fetch(`/api/live2d/model_parameters/${encodeURIComponent(modelName)}`);
+            const data = await response.json();
+            if (data.success) {
+                parameterInfo = data.parameters || [];
+                parameterGroups = data.parameter_groups || {};
+                return true;
+            } else {
+                console.warn('无法加载参数信息:', data.error);
+                return false;
+            }
+        } catch (error) {
+            console.error('加载参数信息失败:', error);
+            return false;
+        }
+    }
+
+    // 加载模型
+    async function loadModel(modelName) {
+        if (!modelName) return;
+        
+        showStatus(t('live2d.parameterEditor.loadingModel', '正在加载模型...'));
+        
+        try {
+            // 确保 PIXI 应用已初始化
+            if (!window.live2dManager.pixi_app) {
+                await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
+            }
+            
+            // 加载参数信息
+            await loadParameterInfo(modelName);
+            
+            // 获取模型信息
+            const modelsResponse = await fetch('/api/live2d/models');
+            const modelsData = await modelsResponse.json();
+            
+            // 处理API返回格式（可能是数组或对象）
+            let models = [];
+            if (Array.isArray(modelsData)) {
+                models = modelsData;
+            } else if (modelsData.success && Array.isArray(modelsData.models)) {
+                models = modelsData.models;
+            } else if (modelsData.models && Array.isArray(modelsData.models)) {
+                models = modelsData.models;
+            }
+            
+            const modelInfo = models.find(m => m.name === modelName);
+            if (!modelInfo) {
+                throw new Error(t('live2d.parameterEditor.modelNotFound', '模型不存在'));
+            }
+            
+            currentModelInfo = modelInfo;
+            
+            // 获取模型文件
+            const filesResponse = await fetch(`/api/live2d/model_files/${encodeURIComponent(modelName)}`);
+            const filesData = await filesResponse.json();
+            if (!filesData.success) {
+                throw new Error(t('live2d.parameterEditor.cannotGetModelFiles', '无法获取模型文件'));
+            }
+            
+            // 构建模型配置
+            let modelJsonUrl = modelInfo.path;
+            const modelConfigRes = await fetch(modelJsonUrl);
+            if (!modelConfigRes.ok) {
+                throw new Error(t('live2d.parameterEditor.cannotGetModelConfig', '无法获取模型配置'));
+            }
+            const modelConfig = await modelConfigRes.json();
+            modelConfig.url = modelJsonUrl;
+            
+            // 加载模型（会自动从模型目录加载parameters.json）
+            await window.live2dManager.loadModel(modelConfig, {
+                loadEmotionMapping: false,
+                dragEnabled: true,
+                wheelEnabled: true
+            });
+            
+            live2dModel = window.live2dManager.getCurrentModel();
+            
+            // 记录初始参数（在模型目录参数加载后）
+            recordInitialParameters();
+            
+            // 显示参数列表
+            displayParameters();
+            
+            resetAllBtn.disabled = false;
+            saveBtn.disabled = false;
+            
+            showStatus(t('live2d.parameterEditor.modelLoadSuccess', '模型加载成功'), 2000);
+        } catch (error) {
+            console.error('加载模型失败:', error);
+            showStatus(t('live2d.parameterEditor.modelLoadFailed', '加载模型失败: {{error}}', {error: error.message}), 3000);
+        }
+    }
+
+    // 记录初始参数
+    function recordInitialParameters() {
+        if (!live2dModel || !live2dModel.internalModel || !live2dModel.internalModel.coreModel) {
+            return;
+        }
+        
+        const coreModel = live2dModel.internalModel.coreModel;
+        initialParameters = {};
+        const paramCount = coreModel.getParameterCount();
+        
+        for (let i = 0; i < paramCount; i++) {
+            try {
+                let paramId = null;
+                try {
+                    paramId = coreModel.getParameterId(i);
+                } catch (e) {
+                    paramId = `param_${i}`;
+                }
+                const value = coreModel.getParameterValueByIndex(i);
+                initialParameters[paramId] = value;
+            } catch (e) {
+                console.warn(`记录参数 ${i} 失败:`, e);
+            }
+        }
+    }
+
+    // 显示参数列表（按分组，显示所有参数）
+    function displayParameters() {
+        if (!live2dModel || !live2dModel.internalModel || !live2dModel.internalModel.coreModel) {
+            return;
+        }
+        
+        const coreModel = live2dModel.internalModel.coreModel;
+        
+        // 按分组组织参数
+        const groupedParams = {};
+        
+        // 如果有参数信息，使用它；否则从模型读取
+        if (parameterInfo && parameterInfo.length > 0) {
+            for (const param of parameterInfo) {
+                // 只显示重要参数
+                if (!isParameterImportant(param.id, param.name)) {
+                    continue;
+                }
+                
+                const groupId = param.groupId || 'Other';
+                // 参数分组名称翻译映射
+                const groupNameMap = {
+                    'Face': '面部',
+                    'Eye': '眼睛',
+                    'Eyebrow': '眉毛',
+                    'Mouth': '嘴巴',
+                    'Arm': '手臂',
+                    'Body': '身体',
+                    'Hair': '头发',
+                    'Other': '其他'
+                };
+                let groupName = parameterGroups[groupId] ? parameterGroups[groupId].name : groupId;
+                // 如果分组名称是英文，尝试翻译
+                if (groupNameMap[groupName]) {
+                    groupName = groupNameMap[groupName];
+                } else if (groupNameMap[groupId]) {
+                    groupName = groupNameMap[groupId];
+                }
+                
+                if (!groupedParams[groupName]) {
+                    groupedParams[groupName] = [];
+                }
+                
+                try {
+                    const idx = coreModel.getParameterIndex(param.id);
+                    if (idx >= 0) {
+                        groupedParams[groupName].push({
+                            id: param.id,
+                            name: getParameterChineseName(param.name), // 使用中文名称
+                            index: idx
+                        });
+                    }
+                } catch (e) {
+                    // 参数不存在，跳过
+                }
+            }
+        } else {
+            // 如果没有参数信息，从模型读取所有参数
+            const paramCount = coreModel.getParameterCount();
+            for (let i = 0; i < paramCount; i++) {
+                try {
+                    let paramId = null;
+                    let paramName = null;
+                    try {
+                        paramId = coreModel.getParameterId(i);
+                        paramName = paramId; // 如果没有名称，使用ID
+                    } catch (e) {
+                        paramId = `param_${i}`;
+                        paramName = paramId;
+                    }
+                    
+                    // 只显示重要参数
+                    if (!isParameterImportant(paramId, paramName)) {
+                        continue;
+                    }
+                    
+                    const groupName = '其他'; // 固定使用中文
+                    if (!groupedParams[groupName]) {
+                        groupedParams[groupName] = [];
+                    }
+                    groupedParams[groupName].push({
+                        id: paramId,
+                        name: getParameterChineseName(paramName), // 转换为中文名称
+                        index: i
+                    });
+                } catch (e) {
+                    console.warn(`处理参数 ${i} 失败:`, e);
+                }
+            }
+        }
+        
+        // 渲染参数列表
+        parametersList.innerHTML = '';
+        
+        if (Object.keys(groupedParams).length === 0) {
+            parametersList.innerHTML = `<div style="text-align: center; color: #999; padding: 20px;">${t('live2d.parameterEditor.noParametersFound', '未找到匹配的参数')}</div>`;
+            return;
+        }
+        
+        // 按组名排序
+        const sortedGroups = Object.keys(groupedParams).sort();
+        
+        for (const groupName of sortedGroups) {
+            const groupDiv = document.createElement('div');
+            groupDiv.className = 'parameter-group';
+            
+            const groupHeader = document.createElement('div');
+            groupHeader.className = 'group-header';
+            groupHeader.textContent = groupName;
+            groupDiv.appendChild(groupHeader);
+            
+            for (const { id: paramId, name: paramName, index: i } of groupedParams[groupName]) {
+                try {
+                    const currentValue = coreModel.getParameterValueByIndex(i);
+                    const initialValue = initialParameters[paramId] || 0;
+                    
+                    const paramItem = document.createElement('div');
+                    paramItem.className = 'parameter-item';
+                    
+                    const header = document.createElement('div');
+                    header.className = 'parameter-header';
+                    
+                    const nameSpan = document.createElement('span');
+                    nameSpan.className = 'parameter-name';
+                    // paramName 已经是中文名称了
+                    nameSpan.textContent = paramName;
+                    
+                    const valueSpan = document.createElement('span');
+                    valueSpan.className = 'parameter-value';
+                    valueSpan.textContent = currentValue.toFixed(3);
+                    
+                    header.appendChild(nameSpan);
+                    header.appendChild(valueSpan);
+                    
+                    const controls = document.createElement('div');
+                    controls.className = 'parameter-controls';
+                    
+                    const slider = document.createElement('input');
+                    slider.type = 'range';
+                    slider.className = 'parameter-slider';
+                    slider.min = '-1';
+                    slider.max = '1';
+                    slider.step = '0.01';
+                    slider.value = currentValue;
+                    
+                    const input = document.createElement('input');
+                    input.type = 'number';
+                    input.className = 'parameter-input';
+                    input.min = '-1';
+                    input.max = '1';
+                    input.step = '0.01';
+                    input.value = currentValue;
+                    
+                    const resetBtn = document.createElement('button');
+                    resetBtn.className = 'btn-reset';
+                    resetBtn.textContent = t('live2d.parameterEditor.reset', '重置');
+                    
+                    const updateParameter = (value) => {
+                        const numValue = parseFloat(value);
+                        if (isNaN(numValue)) return;
+                        
+                        const clampedValue = Math.max(-1, Math.min(1, numValue));
+                        try {
+                            coreModel.setParameterValueByIndex(i, clampedValue);
+                            valueSpan.textContent = clampedValue.toFixed(3);
+                            slider.value = clampedValue;
+                            input.value = clampedValue;
+                            currentParameters[paramId] = clampedValue;
+                        } catch (e) {
+                            console.warn(`更新参数 ${paramId} 失败:`, e);
+                        }
+                    };
+                    
+                    slider.addEventListener('input', (e) => {
+                        updateParameter(e.target.value);
+                    });
+                    
+                    input.addEventListener('input', (e) => {
+                        updateParameter(e.target.value);
+                    });
+                    
+                    resetBtn.addEventListener('click', () => {
+                        updateParameter(initialValue);
+                    });
+                    
+                    controls.appendChild(slider);
+                    controls.appendChild(input);
+                    controls.appendChild(resetBtn);
+                    
+                    paramItem.appendChild(header);
+                    paramItem.appendChild(controls);
+                    
+                    groupDiv.appendChild(paramItem);
+                } catch (e) {
+                    console.warn(`显示参数 ${paramId} 失败:`, e);
+                }
+            }
+            
+            parametersList.appendChild(groupDiv);
+        }
+    }
+
+    // 事件监听
+    modelSelect.addEventListener('change', (e) => {
+        loadModel(e.target.value);
+    });
+
+    resetAllBtn.addEventListener('click', () => {
+        if (!live2dModel || !live2dModel.internalModel || !live2dModel.internalModel.coreModel) return;
+        
+        const coreModel = live2dModel.internalModel.coreModel;
+        for (const [paramId, initialValue] of Object.entries(initialParameters)) {
+            try {
+                const index = coreModel.getParameterIndex(paramId);
+                if (index >= 0) {
+                    coreModel.setParameterValueByIndex(index, initialValue);
+                }
+            } catch (e) {
+                console.warn(`重置参数 ${paramId} 失败:`, e);
+            }
+        }
+        
+        displayParameters();
+        showStatus(t('live2d.parameterEditor.resetAllParameters', '已重置所有参数'), 2000);
+    });
+
+    saveBtn.addEventListener('click', async () => {
+        if (!currentModelInfo || !live2dModel) return;
+        
+        showStatus(t('live2d.parameterEditor.savingParameters', '正在保存参数...'));
+        
+        const paramsToSave = {};
+        if (live2dModel.internalModel && live2dModel.internalModel.coreModel) {
+            const coreModel = live2dModel.internalModel.coreModel;
+            const paramCount = coreModel.getParameterCount();
+            for (let i = 0; i < paramCount; i++) {
+                try {
+                    let paramId = null;
+                    try {
+                        paramId = coreModel.getParameterId(i);
+                    } catch (e) {
+                        paramId = `param_${i}`;
+                    }
+                    const value = coreModel.getParameterValueByIndex(i);
+                    paramsToSave[paramId] = value;
+                } catch (e) {
+                    console.warn(`收集参数 ${i} 失败:`, e);
+                }
+            }
+        }
+        
+        try {
+            // 同时保存到模型目录的parameters.json文件和用户偏好设置
+            const position = { x: live2dModel.x, y: live2dModel.y };
+            const scale = { x: live2dModel.scale.x, y: live2dModel.scale.y };
+            
+            // 1. 保存到模型目录的parameters.json文件
+            const fileResponse = await fetch(`/api/live2d/save_model_parameters/${encodeURIComponent(currentModelInfo.name)}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    parameters: paramsToSave
+                })
+            });
+            
+            const fileResult = await fileResponse.json();
+            
+            // 2. 同时保存到用户偏好设置（这样主页加载时也能读取到）
+            const prefSuccess = await window.live2dManager.saveUserPreferences(
+                currentModelInfo.path,
+                position,
+                scale,
+                paramsToSave
+            );
+            
+            if (fileResult.success && prefSuccess) {
+                showStatus(t('live2d.parameterEditor.parametersSaved', '参数保存成功！'), 2000);
+                // 通知主页重新应用参数
+                sendMessageToMainPage('reload_model_parameters');
+            } else {
+                const errors = [];
+                if (!fileResult.success) errors.push(t('live2d.parameterEditor.modelDirectorySaveFailed', '模型目录文件保存失败'));
+                if (!prefSuccess) errors.push(t('live2d.parameterEditor.userPreferencesSaveFailed', '用户偏好设置保存失败'));
+                showStatus(t('live2d.parameterEditor.parametersSavePartialFailed', '参数保存部分失败: {{errors}}', {errors: errors.join(', ')}), 3000);
+                console.error('参数保存失败:', errors);
+            }
+        } catch (error) {
+            showStatus(t('live2d.parameterEditor.parametersSaveFailed', '参数保存失败: {{error}}', {error: error.message}), 3000);
+            console.error('参数保存失败:', error);
+        }
+    });
+
+    // 初始化
+    loadModelList();
+</script>
+</body>
+</html>

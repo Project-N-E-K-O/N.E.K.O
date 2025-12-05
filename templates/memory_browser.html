@@ -215,8 +215,14 @@ async function loadMemoryFileList() {
                 let match = f.match(/^recent_(.+)\.json$/);
                 let catName = match ? match[1] : f;
                 const li = document.createElement('li');
-                // 按钮样式
-                li.innerHTML = `<button class="cat-btn" data-filename="${f}" data-catname="${catName}">${catName}</button>`;
+                // 按钮样式（使用 DOM API，避免插入未转义内容）
+                const btn = document.createElement('button');
+                btn.className = 'cat-btn';
+                btn.setAttribute('data-filename', f);
+                btn.setAttribute('data-catname', catName);
+                btn.textContent = catName;
+                btn.addEventListener('click', () => selectMemoryFile(f, li, catName));
+                li.appendChild(btn);
                 li.onclick = () => selectMemoryFile(f, li, catName);
                 ul.appendChild(li);
                 
@@ -242,7 +248,12 @@ let currentCatName = '';
 
 function renderChatEdit() {
     const div = document.getElementById('memory-chat-edit');
-    div.innerHTML = chatData.map((msg, i) => {
+    // 清空并使用 DOM API 渲染每一条消息，避免将未转义的用户数据插入到 HTML 中
+    while (div.firstChild) div.removeChild(div.firstChild);
+    chatData.forEach((msg, i) => {
+        const container = document.createElement('div');
+        container.style.marginBottom = '12px';
+
         if (msg.role === 'system') {
             let text = msg.text || '';
             // 去掉前缀"先前对话的备忘录: "
@@ -250,42 +261,76 @@ function renderChatEdit() {
             if (text.startsWith(memoPrefix)) {
                 text = text.slice(memoPrefix.length);
             }
-            return `
-                <div style="margin-bottom:12px;">
-                    <span style="color:#888;">${memoPrefix}</span><br>
-                    <textarea style="width:90%;min-height:96px;max-width:98%;font-size:1em;padding:6px 8px;border-radius:6px;border:1px solid #ccc;resize:vertical;box-sizing:border-box;" onchange="updateSystemContent(${i}, this.value)">${text.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
-                </div>
-            `;
+
+            const prefixSpan = document.createElement('span');
+            prefixSpan.style.color = '#888';
+            prefixSpan.textContent = memoPrefix;
+            container.appendChild(prefixSpan);
+            container.appendChild(document.createElement('br'));
+
+            const ta = document.createElement('textarea');
+            ta.style.width = '90%';
+            ta.style.minHeight = '96px';
+            ta.style.maxWidth = '98%';
+            ta.style.fontSize = '1em';
+            ta.style.padding = '6px 8px';
+            ta.style.borderRadius = '6px';
+            ta.style.border = '1px solid #ccc';
+            ta.style.resize = 'vertical';
+            ta.style.boxSizing = 'border-box';
+            ta.value = text;
+            ta.addEventListener('change', function() { updateSystemContent(i, this.value); });
+            container.appendChild(ta);
         } else if (msg.role === 'ai') {
             // 提取时间戳和正文，健壮处理
             const m = msg.text.match(/^(\[[^\]]+\])([\s\S]*)$/);
-            let timeHtml = '', content = msg.text;
             if (m) {
-                timeHtml = `<div style="color:#888;font-size:0.95em;margin-bottom:2px;">${m[1]}</div>`;
-                content = (m[2] || '').trim();
-            } else {
-                content = msg.text;
+                const timeDiv = document.createElement('div');
+                timeDiv.style.color = '#888';
+                timeDiv.style.fontSize = '0.95em';
+                timeDiv.style.marginBottom = '2px';
+                timeDiv.textContent = m[1];
+                container.appendChild(timeDiv);
             }
-            // 用猫娘名替换AI:
             const catLabel = currentCatName ? currentCatName : 'AI';
-            return `
-                <div style="margin-bottom:12px;">
-                    ${timeHtml}
-                    <b>${catLabel}：</b>
-                    <input type="text" value="${content.replace(/"/g,'&quot;')}" style="width:60%;" onchange="updateAIContent(${i}, this.value)">
-                    <button onclick="deleteChat(${i})" style="margin-left:8px;">${window.t ? window.t('memory.delete') : '删除'}</button>
-                </div>
-            `;
+            const bold = document.createElement('b');
+            bold.textContent = catLabel + '：';
+            container.appendChild(bold);
+
+            const content = (m && m[2]) ? (m[2] || '').trim() : msg.text;
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.style.width = '60%';
+            input.value = content;
+            input.addEventListener('change', function() { updateAIContent(i, this.value); });
+            container.appendChild(input);
+
+            const delBtn = document.createElement('button');
+            delBtn.style.marginLeft = '8px';
+            delBtn.textContent = window.t ? window.t('memory.delete') : '删除';
+            delBtn.addEventListener('click', function() { deleteChat(i); });
+            container.appendChild(delBtn);
         } else {
-            return `
-                <div style="margin-bottom:12px;">
-                    <b>${window.t ? window.t('memory.me') : '我：'}</b>
-                    <input type="text" value="${msg.text.replace(/"/g,'&quot;')}" style="width:60%;" onchange="chatData[${i}].text=this.value">
-                    <button onclick="deleteChat(${i})" style="margin-left:8px;">${window.t ? window.t('memory.delete') : '删除'}</button>
-                </div>
-            `;
+            const bold = document.createElement('b');
+            bold.textContent = window.t ? window.t('memory.me') : '我：';
+            container.appendChild(bold);
+
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.style.width = '60%';
+            input.value = msg.text;
+            input.addEventListener('change', function() { chatData[i].text = this.value; });
+            container.appendChild(input);
+
+            const delBtn = document.createElement('button');
+            delBtn.style.marginLeft = '8px';
+            delBtn.textContent = window.t ? window.t('memory.delete') : '删除';
+            delBtn.addEventListener('click', function() { deleteChat(i); });
+            container.appendChild(delBtn);
         }
-    }).join('');
+
+        div.appendChild(container);
+    });
 }
 
 function deleteChat(idx) {

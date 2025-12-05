@@ -40,17 +40,45 @@
             display: flex;
             align-items: center;
             margin-bottom: 12px;
+            flex-wrap: wrap;
         }
         .field-row label {
             min-width: 80px;
             font-weight: bold;
         }
-        .field-row input, .field-row select {
+        .field-row input, .field-row select, .field-row textarea {
             flex: 1;
             padding: 6px 10px;
             border-radius: 6px;
             border: 1px solid #ccc;
             font-size: 1rem;
+            resize: none;
+            min-height: 34px;
+            max-height: none;
+            line-height: 1.4;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            box-sizing: border-box;
+            margin-right: 8px;
+        }
+        .field-row textarea {
+            overflow-y: hidden;
+            transition: height 0.2s ease;
+            /* 三行高度的估算：line-height*3 + padding上下 */
+            max-height: 80px;
+        }
+        /* 自定义滚动条样式，使其不明显 */
+        .field-row textarea::-webkit-scrollbar {
+            width: 6px;
+        }
+        .field-row textarea::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .field-row textarea::-webkit-scrollbar-thumb {
+            background-color: rgba(0, 0, 0, 0.1);
+            border-radius: 3px;
+        }
+        .field-row textarea::-webkit-scrollbar-thumb:hover {
+            background-color: rgba(0, 0, 0, 0.2);
         }
         .field-row .optional {
             color: #888;
@@ -153,12 +181,12 @@
                 </div>
                 <div class="field-row">
                     <label data-i18n="character.gender">性别</label>
-                    <input type="text" name="性别">
+                    <textarea name="性别" rows="1" placeholder="可输入详细描述"></textarea>
                     <button type="button" class="btn sm delete" onclick="deleteMasterField(this)" data-i18n="character.deleteField">删除设定</button>
                 </div>
                 <div class="field-row">
                     <label data-i18n="character.nickname">昵称</label>
-                    <input type="text" name="昵称">
+                    <textarea name="昵称" rows="1" placeholder="可输入详细描述"></textarea>
                     <button type="button" class="btn sm delete" onclick="deleteMasterField(this)" data-i18n="character.deleteField">删除设定</button>
                 </div>
             </form>
@@ -173,6 +201,72 @@
 
 
 <script>
+// 自动调整textarea高度
+function autoResizeTextarea(textarea) {
+    // 重置高度为auto以计算正确的高度
+    textarea.style.height = 'auto';
+    const style = getComputedStyle(textarea);
+    const minHeight = parseInt(style.minHeight) || 34;
+    
+    // 计算内容高度，考虑padding
+    const paddingTop = parseInt(style.paddingTop) || 0;
+    const paddingBottom = parseInt(style.paddingBottom) || 0;
+    
+    // 设置高度为scrollHeight，但限制最大高度为三行
+    const scrollHeight = textarea.scrollHeight;
+    const contentHeight = scrollHeight - paddingTop - paddingBottom;
+    // 三行高度的估算：line-height*3
+    const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight);
+    const threeLinesHeight = lineHeight * 3;
+    const maxContentHeight = threeLinesHeight;
+    const newContentHeight = Math.min(maxContentHeight, contentHeight);
+    const newHeight = Math.max(minHeight, newContentHeight + paddingTop + paddingBottom);
+    
+    textarea.style.height = newHeight + 'px';
+      
+    // 根据内容是否超过三行来决定是否显示滚动条
+    if (contentHeight > maxContentHeight) {
+        textarea.style.overflowY = 'auto';
+    } else {
+        textarea.style.overflowY = 'hidden';
+    }
+}
+
+// 辅助函数：为textarea附加自动调整高度的功能
+function attachTextareaAutoResize(textarea) {
+    if (!textarea) return;
+    
+    // 初始化高度
+    autoResizeTextarea(textarea);
+    
+    // 添加输入和焦点事件监听器
+    textarea.addEventListener('input', function() {
+        autoResizeTextarea(this);
+    });
+    textarea.addEventListener('focus', function() {
+        autoResizeTextarea(this);
+    });
+}
+
+// 初始化所有textarea的自动调整功能
+function initAutoResizeTextareas() {
+    const textareas = document.querySelectorAll('textarea');
+    textareas.forEach(textarea => {
+        // 初始调整
+        autoResizeTextarea(textarea);
+        
+        // 监听输入事件
+        textarea.addEventListener('input', function() {
+            autoResizeTextarea(this);
+        });
+        
+        // 监听focus事件，确保获得焦点时也调整高度
+        textarea.addEventListener('focus', function() {
+            autoResizeTextarea(this);
+        });
+    });
+}
+
 // 折叠面板切换
 function toggleFold(fold) {
     fold.classList.toggle('open');
@@ -260,6 +354,11 @@ async function loadCharacterData() {
             expandedCatgirlName = null;
         }
     }
+    
+    // 初始化textarea自动调整高度功能
+    setTimeout(() => {
+        initAutoResizeTextareas();
+    }, 100);
 }
 
 // 渲染主人表单
@@ -268,9 +367,90 @@ function renderMaster() {
     const form = document.getElementById('master-form');
     // 清空原有自定义项
     Array.from(form.querySelectorAll('.custom-row')).forEach(e => e.remove());
-    form.档案名.value = master['档案名'] || '';
-    form.性别.value = master['性别'] || '';
-    form.昵称.value = master['昵称'] || '';
+    
+    // 确保默认属性的DOM元素存在
+    const defaultFields = [
+        { name: '档案名', type: 'input', labelText: window.t ? window.t('character.profileName') : '档案名', required: true },
+        { name: '性别', type: 'textarea', labelText: window.t ? window.t('character.gender') : '性别' },
+        { name: '昵称', type: 'textarea', labelText: window.t ? window.t('character.nickname') : '昵称' }
+    ];
+    
+    defaultFields.forEach(field => {
+        // 检查元素是否存在
+        let fieldElement = form.querySelector(`[name="${field.name}"]`);
+        let rowElement;
+        
+        if (!fieldElement) {
+            // 如果元素不存在，创建新的行和元素
+            rowElement = document.createElement('div');
+            rowElement.className = 'field-row';
+            
+            // 创建label元素
+            const label = document.createElement('label');
+            label.textContent = field.labelText;
+            if (field.required) {
+                const requiredStar = document.createElement('span');
+                requiredStar.style.color = 'red';
+                requiredStar.setAttribute('data-i18n', 'character.required');
+                requiredStar.textContent = '*';
+                label.appendChild(requiredStar);
+            }
+            rowElement.appendChild(label);
+            
+            // 创建输入元素
+            if (field.type === 'input') {
+                fieldElement = document.createElement('input');
+                fieldElement.type = 'text';
+            } else {
+                fieldElement = document.createElement('textarea');
+                fieldElement.rows = 1;
+                fieldElement.placeholder = '可输入详细描述';
+            }
+            fieldElement.name = field.name;
+            rowElement.appendChild(fieldElement);
+            
+            // 为textarea添加自动调整高度功能
+            if (field.type === 'textarea') {
+                attachTextareaAutoResize(fieldElement);
+            }
+            
+            // 添加删除按钮（除了档案名）
+            if (field.name !== '档案名') {
+                const deleteBtn = document.createElement('button');
+                deleteBtn.type = 'button';
+                deleteBtn.className = 'btn sm delete';
+                deleteBtn.textContent = window.t ? window.t('character.deleteField') : '删除设定';
+                deleteBtn.addEventListener('click', function() {
+                    deleteMasterField(this);
+                });
+                rowElement.appendChild(deleteBtn);
+            } else {
+                // 为档案名添加修改按钮
+                const renameBtn = document.createElement('button');
+                renameBtn.type = 'button';
+                renameBtn.className = 'btn sm';
+                renameBtn.id = 'rename-master-btn';
+                renameBtn.textContent = window.t ? window.t('character.rename') : '修改名称';
+                rowElement.appendChild(renameBtn);
+            }
+            
+            // 将行插入到表单中
+            const buttonArea = form.querySelector('div[style]');
+            if (buttonArea) {
+                form.insertBefore(rowElement, buttonArea);
+            } else {
+                form.appendChild(rowElement);
+            }
+        }
+        
+        // 设置元素的值
+        fieldElement.value = master[field.name] || '';
+        // 确保在设置值后重新调整textarea高度和滚动条
+        if (field.type === 'textarea') {
+            autoResizeTextarea(fieldElement);
+        }
+    });
+    
     // 渲染自定义项
     Object.keys(master).forEach(k => {
         if (["档案名", "性别", "昵称"].includes(k)) return;
@@ -282,12 +462,16 @@ function renderMaster() {
         label.textContent = k;
         row.appendChild(label);
         
-        // 创建input元素
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.name = k;
-        input.value = master[k];
-        row.appendChild(input);
+        // 创建textarea元素
+        const textarea = document.createElement('textarea');
+        textarea.name = k;
+        textarea.value = master[k];
+        textarea.rows = 1;
+        textarea.placeholder = '可输入详细描述';
+        row.appendChild(textarea);
+        
+        // 为重新创建的textarea添加自动调整高度功能
+        attachTextareaAutoResize(textarea);
         
         // 创建删除按钮
         const deleteBtn = document.createElement('button');
@@ -302,6 +486,11 @@ function renderMaster() {
     
     // 为新渲染的元素重新设置事件监听
     setupMasterFormListeners();
+    
+    // 初始化主人表单中的textarea自动调整高度功能
+    setTimeout(() => {
+        initAutoResizeTextareas();
+    }, 100);
 }
 
 // 新增主人自定义设定
@@ -321,7 +510,7 @@ function renderMaster() {
         }
         
         // 为所有输入元素添加事件监听
-        const inputs = masterFormEl.querySelectorAll('input');
+        const inputs = masterFormEl.querySelectorAll('input, textarea');
         inputs.forEach(input => {
             input.addEventListener('change', showMasterActionButtons);
             input.addEventListener('input', showMasterActionButtons);
@@ -336,6 +525,15 @@ function renderMaster() {
             });
         });
         
+        // 为主人档案重命名按钮添加点击事件监听
+        const renameBtn = masterFormEl.querySelector('#rename-master-btn');
+        if (renameBtn) {
+            renameBtn.addEventListener('click', async function() {
+                const profileName = masterFormEl.querySelector('input[name="档案名"]').value;
+                await window.renameMaster(profileName);
+            });
+        }
+
         // 为新增设定按钮添加点击事件监听
         const addBtn = masterFormEl.querySelector('#add-master-field-btn');
         if (addBtn) {
@@ -352,16 +550,37 @@ function renderMaster() {
                 }
                 const row = document.createElement('div');
                 row.className = 'field-row custom-row';
-                row.innerHTML = `<label>${key}</label><input type="text" name="${key}"><button type="button" class="btn sm delete" style="margin-left:8px">${window.t ? window.t('character.deleteField') : '删除设定'}</button>`;
+
+                const labelEl = document.createElement('label');
+                labelEl.textContent = key;
+                row.appendChild(labelEl);
+
+                const textareaEl = document.createElement('textarea');
+                textareaEl.name = key;
+                textareaEl.rows = 1;
+                textareaEl.placeholder = '可输入详细描述';
+                row.appendChild(textareaEl);
+
+                const delBtn = document.createElement('button');
+                delBtn.type = 'button';
+                delBtn.className = 'btn sm delete';
+                delBtn.style.marginLeft = '8px';
+                delBtn.textContent = window.t ? window.t('character.deleteField') : '删除设定';
+                delBtn.addEventListener('click', function() { deleteMasterField(this); });
+                row.appendChild(delBtn);
+
                 masterFormEl.insertBefore(row, masterFormEl.querySelector('div[style]'));
                 
                 // 显示操作按钮
                 showMasterActionButtons();
                 
                 // 为新添加的元素添加事件监听
-                const newInput = row.querySelector('input');
-                newInput.addEventListener('change', showMasterActionButtons);
-                newInput.addEventListener('input', showMasterActionButtons);
+                const newTextarea = row.querySelector('textarea');
+                newTextarea.addEventListener('change', showMasterActionButtons);
+                newTextarea.addEventListener('input', showMasterActionButtons);
+                
+                // 为新增的textarea添加自动调整高度功能
+                attachTextareaAutoResize(newTextarea);
                 
                 // 为删除按钮添加事件监听和点击处理
                 const newDeleteBtn = row.querySelector('button');
@@ -447,20 +666,51 @@ function renderCatgirls() {
         const color = randomColor();
         const block = document.createElement('div');
         block.className = 'catgirl-block';
-        block.innerHTML = `
-            <div class="catgirl-header">
-                <span class="catgirl-expand" style="cursor:pointer;font-size:1.2em;margin-right:6px;user-select:none">▶</span>
-                <span class="catgirl-title" style="color:${color};">${key}</span>
-                <div class="catgirl-actions">
-                    <button class="btn sm" id="switch-btn-${key}" onclick="switchCatgirl('${key}')" style="background: #28a745;">${window.t ? window.t('character.switchCatgirl') : '切换猫娘'}</button>
-                    <button class="btn sm delete" onclick="deleteCatgirl('${key}')">${window.t ? window.t('character.deleteCatgirl') : '删除猫娘'}</button>
-                </div>
-            </div>
-            <div class="catgirl-details" style="display:none;"></div>
-        `;
-        // 展开按钮逻辑
-        const expandBtn = block.querySelector('.catgirl-expand');
-        const detailsDiv = block.querySelector('.catgirl-details');
+
+        // header
+        const header = document.createElement('div');
+        header.className = 'catgirl-header';
+
+        const expandBtn = document.createElement('span');
+        expandBtn.className = 'catgirl-expand';
+        expandBtn.style.cursor = 'pointer';
+        expandBtn.style.fontSize = '1.2em';
+        expandBtn.style.marginRight = '6px';
+        expandBtn.style.userSelect = 'none';
+        expandBtn.textContent = '▶';
+        header.appendChild(expandBtn);
+
+        const titleSpan = document.createElement('span');
+        titleSpan.className = 'catgirl-title';
+        titleSpan.style.color = color;
+        titleSpan.textContent = key;
+        header.appendChild(titleSpan);
+
+        const actionsDiv = document.createElement('div');
+        actionsDiv.className = 'catgirl-actions';
+
+        const switchBtn = document.createElement('button');
+        switchBtn.className = 'btn sm';
+        switchBtn.id = 'switch-btn-' + key;
+        switchBtn.style.background = '#28a745';
+        switchBtn.textContent = window.t ? window.t('character.switchCatgirl') : '切换猫娘';
+        switchBtn.addEventListener('click', function() { switchCatgirl(key); });
+        actionsDiv.appendChild(switchBtn);
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'btn sm delete';
+        deleteBtn.textContent = window.t ? window.t('character.deleteCatgirl') : '删除猫娘';
+        deleteBtn.addEventListener('click', function() { deleteCatgirl(key); });
+        actionsDiv.appendChild(deleteBtn);
+
+        header.appendChild(actionsDiv);
+
+        const detailsDiv = document.createElement('div');
+        detailsDiv.className = 'catgirl-details';
+        detailsDiv.style.display = 'none';
+
+        block.appendChild(header);
+        block.appendChild(detailsDiv);
         
         // 从 localStorage 读取展开状态
         const storageKey = `catgirl_expand_${key}`;
@@ -589,59 +839,192 @@ function showCatgirlForm(key, container) {
     
     // 保存猫娘名称，用于后续恢复进阶设定的展开状态
     form._catgirlName = key;
-    // 先渲染基础项
-    form.innerHTML = `
-        <div class="field-row">
-            <label>${window.t ? window.t('character.profileName') : '档案名'}<span style="color:red">*</span></label>
-            <input type="text" name="档案名" value="${key || ''}" ${isNew ? '' : 'readonly'} required>
-            ${!isNew ? `<button type="button" class="btn sm" id="rename-catgirl-btn">${window.t ? window.t('character.rename') : '修改名称'}</button>` : ''}
-        </div>
-    `;
+    // 先渲染基础项（使用 DOM API，避免插入未转义内容）
+    const baseRow = document.createElement('div');
+    baseRow.className = 'field-row';
+
+    const baseLabel = document.createElement('label');
+    baseLabel.textContent = window.t ? window.t('character.profileName') : '档案名';
+    const star = document.createElement('span');
+    star.style.color = 'red';
+    star.textContent = '*';
+    baseLabel.appendChild(star);
+    baseRow.appendChild(baseLabel);
+
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.name = '档案名';
+    nameInput.required = true;
+    nameInput.value = key || '';
+    if (!isNew) nameInput.readOnly = true;
+    baseRow.appendChild(nameInput);
+
+    if (!isNew) {
+        const renameBtn = document.createElement('button');
+        renameBtn.type = 'button';
+        renameBtn.className = 'btn sm';
+        renameBtn.id = 'rename-catgirl-btn';
+        renameBtn.textContent = window.t ? window.t('character.rename') : '修改名称';
+        baseRow.appendChild(renameBtn);
+    }
+    form.appendChild(baseRow);
     // 渲染自定义项
     Object.keys(cat).forEach(k => {
         if (!["live2d", "voice_id", "system_prompt", "档案名"].includes(k)) {
             const row = document.createElement('div');
             row.className = 'field-row custom-row';
             const deleteFieldText = window.t ? window.t('character.deleteField') : '删除设定';
-            row.innerHTML = `<label>${k}</label><input type="text" name="${k}" value="${cat[k]}"><button type="button" class="btn sm delete" style="margin-left:8px" onclick="deleteCatgirlField(this)">${deleteFieldText}</button>`;
+
+            const labelEl = document.createElement('label');
+            labelEl.textContent = k;
+            row.appendChild(labelEl);
+
+            const textareaEl = document.createElement('textarea');
+            textareaEl.name = k;
+            textareaEl.rows = 1;
+            textareaEl.placeholder = '可输入详细描述';
+            textareaEl.value = cat[k];
+            row.appendChild(textareaEl);
+
+            const delBtn = document.createElement('button');
+            delBtn.type = 'button';
+            delBtn.className = 'btn sm delete';
+            delBtn.style.marginLeft = '8px';
+            delBtn.textContent = deleteFieldText;
+            delBtn.addEventListener('click', function() { deleteCatgirlField(this); });
+            row.appendChild(delBtn);
+
             form.appendChild(row);
+
+            // 为渲染的textarea添加自动调整高度功能
+            attachTextareaAutoResize(textareaEl);
         }
     });
     // 渲染进阶设定
-    form.innerHTML += `
-        <div class="fold">
-            <div class="fold-toggle">${window.t ? window.t('character.advancedSettings') : '进阶设定'} <span class="arrow">▼</span></div>
-            <div class="fold-content">
-                <div class="field-row">
-                    <label>live2d</label>
-                    <span class="live2d-link" style="flex:1;cursor:pointer;color:#4f8cff;text-decoration:underline;display:inline-block;padding:6px 0" title="${window.t ? window.t('character.manageLive2D') : '点击管理Live2D模型'}">${cat['live2d'] ? cat['live2d'] : (window.t ? window.t('character.live2dNotSet') : '未设置')}</span>
-                </div>
-                <div class="field-row">
-                    <label>voice_id</label>
-                    <select name="voice_id" class="form-control" style="flex:1">
-                        <option value="">${window.t ? window.t('character.voiceNotSet') : '未指定音色'}</option>
-                    </select>
-                    <button type="button" class="btn sm" onclick="openVoiceClone('${key || ''}')">${window.t ? window.t('character.registerNewVoice') : '注册新声音'}</button>
-                </div>
-                <div class="fold">
-                    <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 8px 0;">
-                    <div class="fold-toggle" style="color: #888; font-style: italic">system_prompt <span class="arrow">▼</span></div>
-                    <div class="fold-content">
-                        <textarea name="system_prompt" rows="5" style="width:100%" placeholder="${window.t ? window.t('character.systemPrompt') : '系统指令（谨慎修改）'}">${cat['system_prompt'] || ''}</textarea>
-                    </div>
-                </div>
-            </div>
-        </div>
-        <div style="text-align:right;margin-top:10px;">
-            <button type="button" class="btn sm add" id="add-catgirl-field-btn">${window.t ? window.t('character.addField') : '新增设定'}</button>
-            <button type="submit" class="btn sm" id="save-button" style="display:none">${isNew ? (window.t ? window.t('character.confirmNewCatgirl') : '确认新猫娘') : (window.t ? window.t('character.saveChanges') : '保存修改')}</button>
-            <button type="button" class="btn sm" id="cancel-button" style="display:none" onclick="this.form.querySelector('#save-button').style.display = 'none'; this.form.querySelector('#cancel-button').style.display = 'none'; loadCharacterData()">${window.t ? window.t('character.cancel') : '取消'}</button>
-        </div>
-    `;
+    // 进阶设定（使用 DOM API）
+    const fold = document.createElement('div');
+    fold.className = 'fold';
+
+    const foldToggle = document.createElement('div');
+    foldToggle.className = 'fold-toggle';
+    foldToggle.textContent = window.t ? window.t('character.advancedSettings') : '进阶设定';
+    const arrowSpan = document.createElement('span');
+    arrowSpan.className = 'arrow';
+    arrowSpan.textContent = '▼';
+    foldToggle.appendChild(document.createTextNode(' '));
+    foldToggle.appendChild(arrowSpan);
+    fold.appendChild(foldToggle);
+
+    const foldContent = document.createElement('div');
+    foldContent.className = 'fold-content';
+
+    // live2d row
+    const live2dRow = document.createElement('div');
+    live2dRow.className = 'field-row';
+    const live2dLabel = document.createElement('label');
+    live2dLabel.textContent = 'live2d';
+    live2dRow.appendChild(live2dLabel);
+    const live2dLink = document.createElement('span');
+    live2dLink.className = 'live2d-link';
+    live2dLink.style.cssText = 'flex:1;cursor:pointer;color:#4f8cff;text-decoration:underline;display:inline-block;padding:6px 0';
+    live2dLink.title = window.t ? window.t('character.manageLive2D') : '点击管理Live2D模型';
+    live2dLink.textContent = cat['live2d'] ? cat['live2d'] : (window.t ? window.t('character.live2dNotSet') : '未设置');
+    live2dRow.appendChild(live2dLink);
+    foldContent.appendChild(live2dRow);
+
+    // voice_id row
+    const voiceRow = document.createElement('div');
+    voiceRow.className = 'field-row';
+    const voiceLabel = document.createElement('label');
+    voiceLabel.textContent = 'voice_id';
+    voiceRow.appendChild(voiceLabel);
+    const voiceSelect = document.createElement('select');
+    voiceSelect.name = 'voice_id';
+    voiceSelect.className = 'form-control';
+    voiceSelect.style.flex = '1';
+    const defaultOption = document.createElement('option');
+    defaultOption.value = '';
+    defaultOption.textContent = window.t ? window.t('character.voiceNotSet') : '未指定音色';
+    voiceSelect.appendChild(defaultOption);
+    voiceRow.appendChild(voiceSelect);
+    const registerVoiceBtn = document.createElement('button');
+    registerVoiceBtn.type = 'button';
+    registerVoiceBtn.className = 'btn sm';
+    registerVoiceBtn.textContent = window.t ? window.t('character.registerNewVoice') : '注册新声音';
+    registerVoiceBtn.addEventListener('click', function() { openVoiceClone(key || ''); });
+    voiceRow.appendChild(registerVoiceBtn);
+    foldContent.appendChild(voiceRow);
+
+    // system_prompt fold
+    const innerFold = document.createElement('div');
+    innerFold.className = 'fold';
+    const hr = document.createElement('hr');
+    hr.style.cssText = 'border: none; border-top: 1px solid #e0e0e0; margin: 8px 0;';
+    innerFold.appendChild(hr);
+    const sysToggle = document.createElement('div');
+    sysToggle.className = 'fold-toggle';
+    sysToggle.style.color = '#888';
+    sysToggle.style.fontStyle = 'italic';
+    sysToggle.textContent = 'system_prompt ';
+    const sysArrow = document.createElement('span');
+    sysArrow.className = 'arrow';
+    sysArrow.textContent = '▼';
+    sysToggle.appendChild(sysArrow);
+    innerFold.appendChild(sysToggle);
+    const sysContent = document.createElement('div');
+    sysContent.className = 'fold-content';
+    const sysTextarea = document.createElement('textarea');
+    sysTextarea.name = 'system_prompt';
+    sysTextarea.rows = 5;
+    sysTextarea.style.width = '100%';
+    sysTextarea.placeholder = window.t ? window.t('character.systemPrompt') : '系统指令（谨慎修改）';
+    sysTextarea.value = cat['system_prompt'] || '';
+    sysContent.appendChild(sysTextarea);
+    attachTextareaAutoResize(sysTextarea);
+    innerFold.appendChild(sysContent);
+    foldContent.appendChild(innerFold);
+
+    fold.appendChild(foldContent);
+    form.appendChild(fold);
+
+    // 操作按钮区
+    const btnArea = document.createElement('div');
+    btnArea.style.textAlign = 'right';
+    btnArea.style.marginTop = '10px';
+
+    const addFieldBtn = document.createElement('button');
+    addFieldBtn.type = 'button';
+    addFieldBtn.className = 'btn sm add';
+    addFieldBtn.id = 'add-catgirl-field-btn';
+    addFieldBtn.textContent = window.t ? window.t('character.addField') : '新增设定';
+    btnArea.appendChild(addFieldBtn);
+
+    const saveButton = document.createElement('button');
+    saveButton.type = 'submit';
+    saveButton.className = 'btn sm';
+    saveButton.id = 'save-button';
+    saveButton.style.display = 'none';
+    saveButton.textContent = isNew ? (window.t ? window.t('character.confirmNewCatgirl') : '确认新猫娘') : (window.t ? window.t('character.saveChanges') : '保存修改');
+    btnArea.appendChild(saveButton);
+
+    const cancelButton = document.createElement('button');
+    cancelButton.type = 'button';
+    cancelButton.className = 'btn sm';
+    cancelButton.id = 'cancel-button';
+    cancelButton.style.display = 'none';
+    cancelButton.textContent = window.t ? window.t('character.cancel') : '取消';
+    cancelButton.addEventListener('click', function() {
+        if (form.querySelector('#save-button')) form.querySelector('#save-button').style.display = 'none';
+        if (form.querySelector('#cancel-button')) form.querySelector('#cancel-button').style.display = 'none';
+        loadCharacterData();
+    });
+    btnArea.appendChild(cancelButton);
+
+    form.appendChild(btnArea);
     // live2d弹窗逻辑
-    const live2dLink = form.querySelector('.live2d-link');
-    if (live2dLink) {
-        live2dLink.onclick = async function() {
+    const live2dLinkEl = form.querySelector('.live2d-link');
+    if (live2dLinkEl) {
+        live2dLinkEl.onclick = async function() {
             const catgirlName = form.querySelector('[name="档案名"]').value;
             if (!catgirlName) {
                 await showAlert(window.t ? window.t('character.fillProfileNameFirst') : '请先填写猫娘档案名，然后再设置Live2D模型');
@@ -743,16 +1126,38 @@ function showCatgirlForm(key, container) {
         const row = document.createElement('div');
         row.className = 'field-row custom-row';
         const deleteFieldText = window.t ? window.t('character.deleteField') : '删除设定';
-        row.innerHTML = `<label>${key}</label><input type="text" name="${key}"><button type="button" class="btn sm delete" style="margin-left:8px" onclick="deleteCatgirlField(this)">${deleteFieldText}</button>`;
+
+        const labelEl = document.createElement('label');
+        labelEl.textContent = key;
+        row.appendChild(labelEl);
+
+        const textareaEl = document.createElement('textarea');
+        textareaEl.name = key;
+        textareaEl.rows = 1;
+        textareaEl.placeholder = '可输入详细描述';
+        row.appendChild(textareaEl);
+
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'btn sm delete';
+        delBtn.style.marginLeft = '8px';
+        delBtn.textContent = deleteFieldText;
+        delBtn.addEventListener('click', function() { deleteCatgirlField(this); });
+        row.appendChild(delBtn);
+
         form.insertBefore(row, form.querySelector('.fold'));
         
         // 新增字段后显示操作按钮
         formShowActionButtons();
         
         // 为新添加的输入元素添加事件监听
-        const newInput = row.querySelector('input');
-        newInput.addEventListener('change', formShowActionButtons);
-        newInput.addEventListener('input', formShowActionButtons);
+        const newTextarea = row.querySelector('textarea');
+        newTextarea.addEventListener('change', formShowActionButtons);
+        newTextarea.addEventListener('input', formShowActionButtons);
+        
+        // 为新增的textarea添加自动调整高度功能
+        // 为新增的textarea添加自动调整高度功能
+        attachTextareaAutoResize(newTextarea);
         
         const newDeleteBtn = row.querySelector('button');
         newDeleteBtn.addEventListener('click', formShowActionButtons);
@@ -772,16 +1177,20 @@ function showCatgirlForm(key, container) {
             const response = await fetch('/api/voices');
             const data = await response.json();
             const select = form.querySelector('select[name="voice_id"]');
-            if (select) {
-                // 清空现有选项
+                if (select) {
+                // 清空现有选项并使用 DOM API 创建
+                while (select.firstChild) select.removeChild(select.firstChild);
                 const voiceNotSetText = window.t ? window.t('character.voiceNotSet') : '未指定音色';
-                select.innerHTML = `<option value="">${voiceNotSetText}</option>`;
+                const defaultOption = document.createElement('option');
+                defaultOption.value = '';
+                defaultOption.textContent = voiceNotSetText;
+                select.appendChild(defaultOption);
                 // 添加音色选项
                 Object.entries(data.voices).forEach(([voiceId, voiceData]) => {
                     const option = document.createElement('option');
                     option.value = voiceId;
                     option.textContent = voiceData.prefix || voiceId;
-                    option.selected = voiceId === (cat['voice_id'] || '');
+                    if (voiceId === (cat['voice_id'] || '')) option.selected = true;
                     select.appendChild(option);
                 });
             }
@@ -906,9 +1315,9 @@ function showCatgirlForm(key, container) {
     if (!isNew) {
         const renameBtn = form.querySelector('#rename-catgirl-btn');
         if (renameBtn) {
-            renameBtn.onclick = async function() {
+            renameBtn.addEventListener('click', async function() {
                 await window.renameCatgirl(key);
-            };
+            });
         }
     }
     // 渲染到指定容器
@@ -948,8 +1357,40 @@ function showCatgirlForm(key, container) {
             list.prepend(block);
         }
     }
+    
+    // 初始化猫娘表单中的textarea自动调整高度功能
+    setTimeout(() => {
+        initAutoResizeTextareas();
+    }, 100);
 }
 // deleteCatgirlField函数已在showCatgirlForm内部定义为全局函数
+
+// 主人档案名重命名
+window.renameMaster = async function(oldName) {
+    const newName = await showPrompt(
+        window.t ? window.t('character.enterNewProfileName') : '请输入新的主人档案名', 
+        oldName, 
+        window.t ? window.t('character.renameMasterTitle') : '重命名主人'
+    );
+    if (!newName || newName === oldName) return;
+    if (characterData['主人'][newName]) { 
+        await showAlert(window.t ? window.t('character.profileNameExists') : '该档案名已存在'); 
+        return; 
+    }
+    // 调用API重命名
+    const res = await fetch('/api/characters/master/' + encodeURIComponent(oldName) + '/rename', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({new_name: newName})
+    });
+    const result = await res.json();
+    if (result.success) {
+        await loadCharacterData();
+        await showAlert(window.t ? window.t('character.renameSuccess') : '重命名成功');
+    } else {
+        await showAlert(window.t ? window.t('character.renameError', {error: result.message}) : '重命名失败: ' + (result.message || '未知错误'));
+    }
+}
 
 // 猫娘档案名重命名
 window.renameCatgirl = async function(oldName) {
