@@ -470,14 +470,38 @@ Live2DManager.prototype.installMouthOverride = function() {
     
     // 覆盖 1: motionManager.update - 在动作更新后立即覆盖参数
     if (internalModel.motionManager && typeof internalModel.motionManager.update === 'function') {
-        const origMotionManagerUpdate = internalModel.motionManager.update.bind(internalModel.motionManager);
-        this._origMotionManagerUpdate = origMotionManagerUpdate;
+        // 确保在绑定之前，motionManager 和 coreModel 都已准备好
+        if (!internalModel.motionManager || !coreModel) {
+            console.warn('motionManager 或 coreModel 未准备好，跳过 motionManager.update 覆盖');
+        } else {
+            const origMotionManagerUpdate = internalModel.motionManager.update.bind(internalModel.motionManager);
+            this._origMotionManagerUpdate = origMotionManagerUpdate;
         
         internalModel.motionManager.update = () => {
-            // 先调用原始的 motionManager.update
-            if (origMotionManagerUpdate) {
-                origMotionManagerUpdate();
+            // 检查 coreModel 是否仍然有效（在调用原始方法之前检查）
+            if (!coreModel || !this.currentModel || !this.currentModel.internalModel || !this.currentModel.internalModel.coreModel) {
+                return; // 如果模型已销毁，直接返回
             }
+            
+            // 先调用原始的 motionManager.update（添加错误处理）
+            if (origMotionManagerUpdate) {
+                try {
+                    origMotionManagerUpdate();
+                } catch (e) {
+                    console.error('调用原始 motionManager.update 方法时出错:', e);
+                    // 即使出错也继续执行，避免完全阻塞渲染
+                    // 但需要再次检查 coreModel 是否仍然有效
+                    if (!coreModel || !this.currentModel || !this.currentModel.internalModel || !this.currentModel.internalModel.coreModel) {
+                        return;
+                    }
+                }
+            }
+            
+            // 再次检查 coreModel 是否仍然有效（调用原始方法后）
+            if (!coreModel || !this.currentModel || !this.currentModel.internalModel || !this.currentModel.internalModel.coreModel) {
+                return; // 如果模型已销毁，直接返回
+            }
+            
             // 然后在动作更新后立即覆盖参数
             try {
                 // 写入口型参数
@@ -503,6 +527,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                 }
             } catch (_) {}
         };
+        } // 结束 else 块（确保 motionManager 和 coreModel 都已准备好）
     }
     
     // 覆盖 coreModel.update - 在调用原始 update 之前写入参数
@@ -541,7 +566,11 @@ Live2DManager.prototype.installMouthOverride = function() {
         
         // 调用原始的 update 方法（重要：必须调用，否则模型无法渲染）
         if (origCoreModelUpdate) {
-            origCoreModelUpdate();
+            try {
+                origCoreModelUpdate();
+            } catch (e) {
+                console.error('调用原始 coreModel.update 方法时出错:', e);
+            }
         } else {
             console.error('警告：原始 coreModel.update 方法不存在，模型可能无法正常渲染');
         }
