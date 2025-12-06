@@ -661,7 +661,14 @@
         sendMessageToMainPage('reload_model_parameters');
         // 延迟一点确保消息发送
         setTimeout(() => {
-            window.location.href = '/';
+            // 检查当前窗口是否是通过 window.open() 打开的
+            if (window.opener && !window.opener.closed) {
+                // 如果是通过 window.open() 打开的，关闭当前窗口
+                window.close();
+            } else {
+                // 否则，使用常规的页面跳转
+                window.location.href = '/';
+            }
         }, 100);
     });
 
