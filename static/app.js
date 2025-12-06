@@ -2492,11 +2492,14 @@ function init_app(){
         }
         console.log('[App] 已关闭所有弹窗，数量:', allPopups.length);
         
-        // 【修复】禁用 Live2D canvas 的鼠标事件，防止解锁状态下的 canvas 阻塞鼠标事件
+        // 【修复】隐藏 Live2D canvas，使 Electron 的 alpha 检测认为该区域完全透明
+        // 仅设置 pointer-events: none 不够，因为 Electron 根据像素 alpha 值来决定事件转发
+        // 必须设置 visibility: hidden 来确保 canvas 不渲染任何像素
         const live2dCanvas = document.getElementById('live2d-canvas');
         if (live2dCanvas) {
+            live2dCanvas.style.setProperty('visibility', 'hidden', 'important');
             live2dCanvas.style.setProperty('pointer-events', 'none', 'important');
-            console.log('[App] 已禁用 live2d-canvas 的鼠标事件');
+            console.log('[App] 已隐藏 live2d-canvas（visibility: hidden），Electron 将认为该区域透明');
         }
         
         // 在隐藏 DOM 之前先读取 "请她离开" 按钮的位置（避免隐藏后 getBoundingClientRect 返回异常）
@@ -2648,14 +2651,18 @@ function init_app(){
             live2dContainer.style.removeProperty('opacity');
         }
         
-        // 【修复】恢复 Live2D canvas 的鼠标事件（根据锁定状态决定）
+        // 【修复】恢复 Live2D canvas 的可见性和鼠标事件
         const live2dCanvas = document.getElementById('live2d-canvas');
         if (live2dCanvas) {
+            // 恢复 visibility，使 Electron 能够检测到 canvas 像素
+            live2dCanvas.style.removeProperty('visibility');
+            live2dCanvas.style.visibility = 'visible';
+            
             // 根据当前锁定状态恢复 pointerEvents
             const isLocked = window.live2dManager ? window.live2dManager.isLocked : true;
             live2dCanvas.style.removeProperty('pointer-events');
             live2dCanvas.style.pointerEvents = isLocked ? 'none' : 'auto';
-            console.log('[App] 已恢复 live2d-canvas 的鼠标事件，isLocked:', isLocked);
+            console.log('[App] 已恢复 live2d-canvas 的可见性和鼠标事件，isLocked:', isLocked);
         }
         
         // 第五步：恢复锁按钮

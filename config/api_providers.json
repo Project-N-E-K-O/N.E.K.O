@@ -14,7 +14,7 @@
       "name": "Qwen-Omni（阿里）",
       "description": "有免费额度，功能最全面",
       "core_url": "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
-      "core_model": "qwen3-omni-flash-realtime-2025-09-15"
+      "core_model": "qwen3-omni-flash-realtime-2025-12-01"
     },
     "openai": {
       "key": "openai",
