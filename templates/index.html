@@ -795,13 +795,15 @@
 
         /* --- 最小化状态 --- */
         #chat-container.minimized {
-            background: transparent;
+            background: rgba(68, 183, 254, 0.15);
             opacity: 1;
-            width: 60px; /* 最小化宽度 */
-            height: 40px; /* 最小化高度 */
-            max-height: 40px;
+            width: 50px; /* 最小化宽度（正方形） */
+            height: 50px; /* 最小化高度（正方形） */
+            max-height: 50px;
             padding: 0; /* 移除内边距 */
             cursor: pointer; /* 让整个小方块可点击（虽然按钮也在） */
+            border-radius: 50%; /* 圆形 */
+            animation: breathingGlow 2s ease-in-out infinite;
         }
 
         #chat-container.minimized #chat-header {
@@ -838,6 +840,16 @@
         
         #chat-container.minimized #toggle-chat-btn:hover {
             transform: translate(-50%, -50%) scale(1.1);
+        }
+        
+        /* 折叠状态下的呼吸特效动画 */
+        @keyframes breathingGlow {
+            0%, 100% {
+                box-shadow: 0 0 8px rgba(68, 183, 254, 0.6);
+            }
+            50% {
+                box-shadow: 0 0 16px rgba(68, 183, 254, 1);
+            }
         }
 
         #input-row {
@@ -1021,6 +1033,9 @@
                 max-height: none;
                 padding: 0;
                 cursor: default;
+                border-radius: 8px; /* 移动端保持矩形圆角 */
+                animation: none; /* 移动端不需要呼吸效果 */
+                background: transparent;
             }
         }
         
