@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <link rel="manifest" href="/static/manifest.json">
@@ -14,10 +15,11 @@
     <style>
         *:focus {
             outline: none !important;
-            box-shadow: none !important; 
+            box-shadow: none !important;
         }
 
-        html, body {
+        html,
+        body {
             height: 100%;
             margin: 0;
             padding: 0;
@@ -33,6 +35,7 @@
                 opacity: 0;
                 transform: translateY(10px);
             }
+
             to {
                 opacity: 0.85;
                 transform: translateY(0);
@@ -124,8 +127,10 @@
             border-radius: 4px;
             cursor: pointer;
             font-weight: bold;
-            font-size: 14px; /* 统一字体大小 */
-            line-height: 24px; /* 与按钮高度一致 */
+            font-size: 14px;
+            /* 统一字体大小 */
+            line-height: 24px;
+            /* 与按钮高度一致 */
             text-align: center;
             z-index: 21;
             padding: 0;
@@ -134,7 +139,7 @@
         #toggle-chat-btn:hover {
             background: #cacbcd;
         }
-        
+
         #chat-header {
             position: absolute;
             top: 0;
@@ -149,19 +154,19 @@
             box-sizing: border-box;
             z-index: 21;
         }
-        
+
         #chat-title {
             font-size: 1rem;
             font-weight: 600;
             color: #333;
         }
-        
+
         #chatContainer {
             display: flex;
             flex-direction: column;
             gap: 12px;
         }
-        
+
         .message {
             padding: 10px 14px;
             border-radius: 12px;
@@ -171,7 +176,7 @@
             font-size: 0.95rem;
             animation: fadeIn 0.3s ease;
         }
-        
+
         .message.user {
             align-self: flex-end;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -179,7 +184,7 @@
             margin-left: auto;
             border-bottom-right-radius: 4px;
         }
-        
+
         .message.gemini {
             align-self: flex-start;
             background: #f0f0f0;
@@ -187,12 +192,13 @@
             margin-right: auto;
             border-bottom-left-radius: 4px;
         }
-        
+
         @keyframes fadeIn {
             from {
                 opacity: 0;
                 transform: translateY(10px);
             }
+
             to {
                 opacity: 1;
                 transform: translateY(0);
@@ -229,11 +235,13 @@
         }
 
         @media only screen and (max-width: 768px) {
+
             /* 手机端背景设为黑色 */
-            html, body {
+            html,
+            body {
                 background: #000 !important;
             }
-            
+
             #live2d-container {
                 position: fixed;
                 right: 0;
@@ -252,17 +260,17 @@
                 padding: 0;
                 margin-bottom: 5px;
             }
-            
+
             #chat-header {
                 height: 40px;
                 font-size: 0.9rem;
             }
-            
+
             #chat-content-wrapper {
                 padding: 12px;
                 padding-top: 44px;
             }
-            
+
             .message {
                 font-size: 0.9rem;
                 max-width: 85%;
@@ -270,447 +278,454 @@
         }
     </style>
 </head>
-<body>
-<div id="chat-container">
-    <div id="chat-header">
-        <span id="chat-title" data-i18n="chat.viewerTitle">💬 对话 (观看模式)</span>
-    </div>
-    <button id="toggle-chat-btn" data-i18n-title="common.minimize" title="最小化"><img src="/static/icons/minimize_icon.png" alt="最小化" data-i18n-alt="common.minimize" style="width: 24px; height: 24px; object-fit: contain; pointer-events: none;"></button>
-    <div id="chat-content-wrapper">
-        <div id="chatContainer"></div>
-    </div>
-</div>
-<div id="live2d-container">
-    <canvas id="live2d-canvas"></canvas>
-</div>
 
-<script>
-    // 页面配置 - 从 URL 或 API 获取
-    let lanlan_config = {
-        lanlan_name: ""
-    };
-    window.lanlan_config = lanlan_config;
-    let cubism4Model = "";
-    
-    // 标记为观看模式，禁用所有交互按钮
-    window.isViewerMode = true;
-    
-    // 异步获取页面配置
-    async function loadPageConfig() {
-        try {
-            // 优先从 URL 获取 lanlan_name
-            const urlParams = new URLSearchParams(window.location.search);
-            let lanlanNameFromUrl = urlParams.get('lanlan_name') || "";
-            
-            // 从路径中提取 lanlan_name (例如 /{lanlan_name})
-            if (!lanlanNameFromUrl) {
-                const pathParts = window.location.pathname.split('/').filter(Boolean);
-                if (pathParts.length > 0 && !['api', 'static', 'subtitle', 'sync', 'sync_binary', 'subtitle_ws', 'ws'].includes(pathParts[0])) {
-                    lanlanNameFromUrl = decodeURIComponent(pathParts[0]);
+<body>
+    <div id="chat-container">
+        <div id="chat-header">
+            <span id="chat-title" data-i18n="chat.viewerTitle">💬 对话 (观看模式)</span>
+        </div>
+        <button id="toggle-chat-btn" data-i18n-title="common.minimize" title="最小化"><img
+                src="/static/icons/minimize_icon.png" alt="最小化" data-i18n-alt="common.minimize"
+                style="width: 24px; height: 24px; object-fit: contain; pointer-events: none;"></button>
+        <div id="chat-content-wrapper">
+            <div id="chatContainer"></div>
+        </div>
+    </div>
+    <div id="live2d-container">
+        <canvas id="live2d-canvas"></canvas>
+    </div>
+
+    <script>
+        // 页面配置 - 从 URL 或 API 获取
+        let lanlan_config = {
+            lanlan_name: ""
+        };
+        window.lanlan_config = lanlan_config;
+        let cubism4Model = "";
+
+        // 标记为观看模式，禁用所有交互按钮
+        window.isViewerMode = true;
+
+        // 异步获取页面配置
+        async function loadPageConfig() {
+            try {
+                // 优先从 URL 获取 lanlan_name
+                const urlParams = new URLSearchParams(window.location.search);
+                let lanlanNameFromUrl = urlParams.get('lanlan_name') || "";
+
+                // 从路径中提取 lanlan_name (例如 /{lanlan_name})
+                if (!lanlanNameFromUrl) {
+                    const pathParts = window.location.pathname.split('/').filter(Boolean);
+                    if (pathParts.length > 0 && !['api', 'static', 'subtitle', 'sync', 'sync_binary', 'subtitle_ws', 'ws'].includes(pathParts[0])) {
+                        lanlanNameFromUrl = decodeURIComponent(pathParts[0]);
+                    }
                 }
-            }
-            
-            // 从 API 获取配置
-            const apiUrl = lanlanNameFromUrl 
-                ? `/api/config/page_config?lanlan_name=${encodeURIComponent(lanlanNameFromUrl)}`
-                : '/api/config/page_config';
-            
-            const response = await fetch(apiUrl);
-            const data = await response.json();
-            
-            if (data.success) {
-                // 使用 URL 中的 lanlan_name（如果有），否则使用 API 返回的
-                lanlan_config.lanlan_name = lanlanNameFromUrl || data.lanlan_name || "";
-                window.lanlan_config = lanlan_config;
-                cubism4Model = data.model_path || "";
-                window.cubism4Model = cubism4Model;  // 设置全局变量供 live2d-init.js 使用
-                
-                // 动态设置页面标题
-                document.title = `${lanlan_config.lanlan_name} - Viewer`;
-                
-                console.log('页面配置加载成功:', { lanlan_name: lanlan_config.lanlan_name, model_path: cubism4Model });
-                return true;
-            } else {
-                console.error('获取页面配置失败:', data.error);
+
+                // 从 API 获取配置
+                const apiUrl = lanlanNameFromUrl
+                    ? `/api/config/page_config?lanlan_name=${encodeURIComponent(lanlanNameFromUrl)}`
+                    : '/api/config/page_config';
+
+                const response = await fetch(apiUrl);
+                const data = await response.json();
+
+                if (data.success) {
+                    // 使用 URL 中的 lanlan_name（如果有），否则使用 API 返回的
+                    lanlan_config.lanlan_name = lanlanNameFromUrl || data.lanlan_name || "";
+                    window.lanlan_config = lanlan_config;
+                    cubism4Model = data.model_path || "";
+                    window.cubism4Model = cubism4Model;  // 设置全局变量供 live2d-init.js 使用
+
+                    // 动态设置页面标题
+                    document.title = `${lanlan_config.lanlan_name} - Viewer`;
+
+                    console.log('页面配置加载成功:', { lanlan_name: lanlan_config.lanlan_name, model_path: cubism4Model });
+                    return true;
+                } else {
+                    console.error('获取页面配置失败:', data.error);
+                    // 使用默认值
+                    lanlan_config.lanlan_name = "";
+                    cubism4Model = "";
+                    return false;
+                }
+            } catch (error) {
+                console.error('加载页面配置时出错:', error);
                 // 使用默认值
                 lanlan_config.lanlan_name = "";
                 cubism4Model = "";
                 return false;
             }
-        } catch (error) {
-            console.error('加载页面配置时出错:', error);
-            // 使用默认值
-            lanlan_config.lanlan_name = "";
-            cubism4Model = "";
-            return false;
         }
-    }
-    
-    // 标记配置是否已加载
-    window.pageConfigReady = loadPageConfig();
 
-    // Electron白屏修复
-    (function() {
-        const fixWhiteScreen = () => {
-            if (document.body) {
-                void document.body.offsetHeight;
-                const currentOpacity = document.body.style.opacity || '1';
-                document.body.style.opacity = '0.99';
-                requestAnimationFrame(() => {
-                    document.body.style.opacity = currentOpacity;
-                });
-            }
-        };
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', fixWhiteScreen);
-        } else {
-            fixWhiteScreen();
-        }
-        window.addEventListener('load', fixWhiteScreen);
-    })();
-</script>
-<script src="/static/libs/live2dcubismcore.min.js"></script>
-<script src="/static/libs/live2d.min.js"></script>
-<script src="/static/libs/pixi.min.js"></script>
-<script src="/static/libs/index.min.js"></script>
-<script>
-    // 等待配置加载完成后再加载 Live2D
-    (async function() {
-        try {
-            // 等待配置加载完成
-            await window.pageConfigReady;
-            
-            // 动态加载 live2d 模块（按顺序加载拆分后的文件）
-            const live2dModules = [
-                '/static/live2d-core.js',
-                '/static/live2d-emotion.js',
-                '/static/live2d-model.js',
-                '/static/live2d-interaction.js',
-                '/static/live2d-ui.js',
-                '/static/live2d-init.js'
-            ];
-            
-            // 按顺序加载脚本的辅助函数
-            async function loadScriptsSequentially(scripts) {
-                for (const src of scripts) {
-                    await new Promise((resolve, reject) => {
-                        const script = document.createElement('script');
-                        script.src = src;
-                        script.onload = resolve;
-                        script.onerror = reject;
-                        document.body.appendChild(script);
+        // 标记配置是否已加载
+        window.pageConfigReady = loadPageConfig();
+
+        // Electron白屏修复
+        (function () {
+            const fixWhiteScreen = () => {
+                if (document.body) {
+                    void document.body.offsetHeight;
+                    const currentOpacity = document.body.style.opacity || '1';
+                    document.body.style.opacity = '0.99';
+                    requestAnimationFrame(() => {
+                        document.body.style.opacity = currentOpacity;
                     });
                 }
+            };
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', fixWhiteScreen);
+            } else {
+                fixWhiteScreen();
             }
-            
-            // 加载所有 live2d 模块
-            await loadScriptsSequentially(live2dModules);
-        } catch (error) {
-            console.error('加载 live2d 模块时出错:', error);
-        }
-    })();
-</script>
+            window.addEventListener('load', fixWhiteScreen);
+        })();
+    </script>
+    <script src="/static/libs/live2dcubismcore.min.js"></script>
+    <script src="/static/libs/live2d.min.js"></script>
+    <script src="/static/libs/pixi.min.js"></script>
+    <script src="/static/libs/index.min.js"></script>
+    <script>
+        // 等待配置加载完成后再加载 Live2D
+        (async function () {
+            try {
+                // 等待配置加载完成
+                await window.pageConfigReady;
 
-<script>
-    // ===== Chat Container Toggle =====
-    const chatContainer = document.getElementById('chat-container');
-    const toggleChatBtn = document.getElementById('toggle-chat-btn');
-    const chatContentWrapper = document.getElementById('chat-content-wrapper');
+                // 动态加载 live2d 模块（按顺序加载拆分后的文件）
+                const live2dModules = [
+                    '/static/live2d-core.js',
+                    '/static/live2d-emotion.js',
+                    '/static/live2d-model.js',
+                    '/static/live2d-interaction.js',
+                    '/static/live2d-ui-buttons.js',
+                    '/static/live2d-ui-popup.js',
+                    '/static/live2d-ui-hud.js',
+                    '/static/live2d-ui-drag.js',
+                    '/static/live2d-ui.js',
+                    '/static/live2d-init.js'
+                ];
 
-    let chatMinimized = false;
-
-    toggleChatBtn.addEventListener('click', () => {
-        chatMinimized = !chatMinimized;
-        if (chatMinimized) {
-            chatContainer.classList.add('minimized');
-            // 更新图标为展开图标
-            let iconImg = toggleChatBtn.querySelector('img');
-            if (iconImg) {
-                iconImg.src = '/static/icons/expand_icon.png';
-                iconImg.alt = window.t ? window.t('common.expand') : '展开';
-            }
-            toggleChatBtn.title = window.t ? window.t('common.expand') : '展开';
-        } else {
-            chatContainer.classList.remove('minimized');
-            // 更新图标为最小化图标
-            let iconImg = toggleChatBtn.querySelector('img');
-            if (iconImg) {
-                iconImg.src = '/static/icons/minimize_icon.png';
-                iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
-            }
-            toggleChatBtn.title = window.t ? window.t('common.minimize') : '最小化';
-            scrollToBottom();
-        }
-    });
-
-    // ===== WebSocket Connection to Monitor Server =====
-    let ws = null;
-    let reconnectAttempts = 0;
-    const maxReconnectAttempts = 10;
-    const reconnectDelay = 2000;
-
-    // Audio context for playing audio
-    let audioContext = null;
-    let audioQueue = [];
-    let isPlaying = false;
-    let lipSyncActive = false;
-    let animationFrameId = null;
-    let globalAnalyser = null;
-
-    function initAudioContext() {
-        if (!audioContext) {
-            audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        }
-        // 创建全局 analyser 用于口型同步
-        if (!globalAnalyser && audioContext) {
-            globalAnalyser = audioContext.createAnalyser();
-            globalAnalyser.fftSize = 2048;
-            globalAnalyser.connect(audioContext.destination);
-        }
-    }
-
-    // 将 PCM16 数据转换为 WAV 格式
-    // 音频格式: 16-bit PCM, 48kHz, Mono (经过重采样后的音频)
-    function pcm16ToWav(pcm16Data, sampleRate = 48000, numChannels = 1) {
-        const dataLength = pcm16Data.byteLength;
-        const buffer = new ArrayBuffer(44 + dataLength);
-        const view = new DataView(buffer);
-        
-        // WAV 文件头
-        const writeString = (offset, string) => {
-            for (let i = 0; i < string.length; i++) {
-                view.setUint8(offset + i, string.charCodeAt(i));
-            }
-        };
-        
-        writeString(0, 'RIFF');
-        view.setUint32(4, 36 + dataLength, true);
-        writeString(8, 'WAVE');
-        writeString(12, 'fmt ');
-        view.setUint32(16, 16, true); // fmt chunk size
-        view.setUint16(20, 1, true); // PCM format
-        view.setUint16(22, numChannels, true);
-        view.setUint32(24, sampleRate, true);
-        view.setUint32(28, sampleRate * numChannels * 2, true); // byte rate
-        view.setUint16(32, numChannels * 2, true); // block align
-        view.setUint16(34, 16, true); // bits per sample
-        writeString(36, 'data');
-        view.setUint32(40, dataLength, true);
-        
-        // 复制 PCM 数据
-        const pcmView = new Int16Array(pcm16Data);
-        const wavView = new Int16Array(buffer, 44);
-        wavView.set(pcmView);
-        
-        return buffer;
-    }
-
-    async function playAudioChunk(audioData) {
-        initAudioContext();
-        
-        try {
-            // 将原始 PCM16 数据转换为 WAV 格式
-            const wavData = pcm16ToWav(audioData);
-            const audioBuffer = await audioContext.decodeAudioData(wavData);
-            const source = audioContext.createBufferSource();
-            source.buffer = audioBuffer;
-            
-            // 连接到全局 analyser（所有音频源共享同一个 analyser）
-            source.connect(globalAnalyser);
-            
-            // 启动口型同步（只在第一次启动）
-            if (!lipSyncActive && window.LanLan1 && window.LanLan1.live2dModel) {
-                startLipSync(window.LanLan1.live2dModel, globalAnalyser);
-                lipSyncActive = true;
-            }
-            
-            return new Promise((resolve) => {
-                source.onended = () => {
-                    // 检查是否还有音频在播放
-                    if (audioQueue.length === 0) {
-                        stopLipSync();
-                        lipSyncActive = false;
+                // 按顺序加载脚本的辅助函数
+                async function loadScriptsSequentially(scripts) {
+                    for (const src of scripts) {
+                        await new Promise((resolve, reject) => {
+                            const script = document.createElement('script');
+                            script.src = src;
+                            script.onload = resolve;
+                            script.onerror = reject;
+                            document.body.appendChild(script);
+                        });
                     }
-                    resolve();
-                };
-                source.start(0);
-            });
-        } catch (error) {
-            console.error('音频播放错误:', error);
-        }
-    }
-
-    function startLipSync(model, analyser) {
-        const dataArray = new Uint8Array(analyser.fftSize);
-        
-        function animate() {
-            analyser.getByteTimeDomainData(dataArray);
-            // 简单求音量（RMS）
-            let sum = 0;
-            for (let i = 0; i < dataArray.length; i++) {
-                const val = (dataArray[i] - 128) / 128; // 归一化到 -1~1
-                sum += val * val;
-            }
-            const rms = Math.sqrt(sum / dataArray.length);
-            // 映射到嘴巴开合度 0~1
-            const mouthOpen = Math.min(1, rms * 8);
-            
-            if (window.LanLan1 && window.LanLan1.live2dModel) {
-                window.LanLan1.setMouth(mouthOpen);
-            }
-            
-            animationFrameId = requestAnimationFrame(animate);
-        }
-        
-        animate();
-    }
-
-    function stopLipSync() {
-        if (animationFrameId) {
-            cancelAnimationFrame(animationFrameId);
-            animationFrameId = null;
-        }
-        if (window.LanLan1 && window.LanLan1.live2dModel) {
-            window.LanLan1.setMouth(0);
-        }
-    }
-
-    async function processAudioQueue() {
-        if (isPlaying || audioQueue.length === 0) return;
-        
-        isPlaying = true;
-        while (audioQueue.length > 0) {
-            const chunk = audioQueue.shift();
-            await playAudioChunk(chunk);
-        }
-        isPlaying = false;
-    }
-
-    function clearAudioQueue() {
-        audioQueue = [];
-        if (audioContext) {
-            audioContext.close();
-            audioContext = null;
-            globalAnalyser = null; // 重置全局 analyser
-        }
-        isPlaying = false;
-        stopLipSync();
-        lipSyncActive = false;
-    }
-
-    function connectWebSocket() {
-        if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) {
-            return;
-        }
-
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/ws/${lanlan_config.lanlan_name}`;
-        
-        console.log('连接到 Monitor Server:', wsUrl);
-        
-        ws = new WebSocket(wsUrl);
-        ws.binaryType = 'arraybuffer'; // 支持接收二进制数据
-
-        ws.onopen = () => {
-            console.log('WebSocket 已连接');
-            reconnectAttempts = 0;
-        };
-
-        ws.onmessage = async (event) => {
-            // 处理二进制音频数据
-            if (event.data instanceof ArrayBuffer) {
-                if (event.data.byteLength > 4) { // 过滤心跳包
-                    audioQueue.push(event.data);
-                    processAudioQueue();
                 }
+
+                // 加载所有 live2d 模块
+                await loadScriptsSequentially(live2dModules);
+            } catch (error) {
+                console.error('加载 live2d 模块时出错:', error);
+            }
+        })();
+    </script>
+
+    <script>
+        // ===== Chat Container Toggle =====
+        const chatContainer = document.getElementById('chat-container');
+        const toggleChatBtn = document.getElementById('toggle-chat-btn');
+        const chatContentWrapper = document.getElementById('chat-content-wrapper');
+
+        let chatMinimized = false;
+
+        toggleChatBtn.addEventListener('click', () => {
+            chatMinimized = !chatMinimized;
+            if (chatMinimized) {
+                chatContainer.classList.add('minimized');
+                // 更新图标为展开图标
+                let iconImg = toggleChatBtn.querySelector('img');
+                if (iconImg) {
+                    iconImg.src = '/static/icons/expand_icon.png';
+                    iconImg.alt = window.t ? window.t('common.expand') : '展开';
+                }
+                toggleChatBtn.title = window.t ? window.t('common.expand') : '展开';
+            } else {
+                chatContainer.classList.remove('minimized');
+                // 更新图标为最小化图标
+                let iconImg = toggleChatBtn.querySelector('img');
+                if (iconImg) {
+                    iconImg.src = '/static/icons/minimize_icon.png';
+                    iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
+                }
+                toggleChatBtn.title = window.t ? window.t('common.minimize') : '最小化';
+                scrollToBottom();
+            }
+        });
+
+        // ===== WebSocket Connection to Monitor Server =====
+        let ws = null;
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 10;
+        const reconnectDelay = 2000;
+
+        // Audio context for playing audio
+        let audioContext = null;
+        let audioQueue = [];
+        let isPlaying = false;
+        let lipSyncActive = false;
+        let animationFrameId = null;
+        let globalAnalyser = null;
+
+        function initAudioContext() {
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            // 创建全局 analyser 用于口型同步
+            if (!globalAnalyser && audioContext) {
+                globalAnalyser = audioContext.createAnalyser();
+                globalAnalyser.fftSize = 2048;
+                globalAnalyser.connect(audioContext.destination);
+            }
+        }
+
+        // 将 PCM16 数据转换为 WAV 格式
+        // 音频格式: 16-bit PCM, 48kHz, Mono (经过重采样后的音频)
+        function pcm16ToWav(pcm16Data, sampleRate = 48000, numChannels = 1) {
+            const dataLength = pcm16Data.byteLength;
+            const buffer = new ArrayBuffer(44 + dataLength);
+            const view = new DataView(buffer);
+
+            // WAV 文件头
+            const writeString = (offset, string) => {
+                for (let i = 0; i < string.length; i++) {
+                    view.setUint8(offset + i, string.charCodeAt(i));
+                }
+            };
+
+            writeString(0, 'RIFF');
+            view.setUint32(4, 36 + dataLength, true);
+            writeString(8, 'WAVE');
+            writeString(12, 'fmt ');
+            view.setUint32(16, 16, true); // fmt chunk size
+            view.setUint16(20, 1, true); // PCM format
+            view.setUint16(22, numChannels, true);
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, sampleRate * numChannels * 2, true); // byte rate
+            view.setUint16(32, numChannels * 2, true); // block align
+            view.setUint16(34, 16, true); // bits per sample
+            writeString(36, 'data');
+            view.setUint32(40, dataLength, true);
+
+            // 复制 PCM 数据
+            const pcmView = new Int16Array(pcm16Data);
+            const wavView = new Int16Array(buffer, 44);
+            wavView.set(pcmView);
+
+            return buffer;
+        }
+
+        async function playAudioChunk(audioData) {
+            initAudioContext();
+
+            try {
+                // 将原始 PCM16 数据转换为 WAV 格式
+                const wavData = pcm16ToWav(audioData);
+                const audioBuffer = await audioContext.decodeAudioData(wavData);
+                const source = audioContext.createBufferSource();
+                source.buffer = audioBuffer;
+
+                // 连接到全局 analyser（所有音频源共享同一个 analyser）
+                source.connect(globalAnalyser);
+
+                // 启动口型同步（只在第一次启动）
+                if (!lipSyncActive && window.LanLan1 && window.LanLan1.live2dModel) {
+                    startLipSync(window.LanLan1.live2dModel, globalAnalyser);
+                    lipSyncActive = true;
+                }
+
+                return new Promise((resolve) => {
+                    source.onended = () => {
+                        // 检查是否还有音频在播放
+                        if (audioQueue.length === 0) {
+                            stopLipSync();
+                            lipSyncActive = false;
+                        }
+                        resolve();
+                    };
+                    source.start(0);
+                });
+            } catch (error) {
+                console.error('音频播放错误:', error);
+            }
+        }
+
+        function startLipSync(model, analyser) {
+            const dataArray = new Uint8Array(analyser.fftSize);
+
+            function animate() {
+                analyser.getByteTimeDomainData(dataArray);
+                // 简单求音量（RMS）
+                let sum = 0;
+                for (let i = 0; i < dataArray.length; i++) {
+                    const val = (dataArray[i] - 128) / 128; // 归一化到 -1~1
+                    sum += val * val;
+                }
+                const rms = Math.sqrt(sum / dataArray.length);
+                // 映射到嘴巴开合度 0~1
+                const mouthOpen = Math.min(1, rms * 8);
+
+                if (window.LanLan1 && window.LanLan1.live2dModel) {
+                    window.LanLan1.setMouth(mouthOpen);
+                }
+
+                animationFrameId = requestAnimationFrame(animate);
+            }
+
+            animate();
+        }
+
+        function stopLipSync() {
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+                animationFrameId = null;
+            }
+            if (window.LanLan1 && window.LanLan1.live2dModel) {
+                window.LanLan1.setMouth(0);
+            }
+        }
+
+        async function processAudioQueue() {
+            if (isPlaying || audioQueue.length === 0) return;
+
+            isPlaying = true;
+            while (audioQueue.length > 0) {
+                const chunk = audioQueue.shift();
+                await playAudioChunk(chunk);
+            }
+            isPlaying = false;
+        }
+
+        function clearAudioQueue() {
+            audioQueue = [];
+            if (audioContext) {
+                audioContext.close();
+                audioContext = null;
+                globalAnalyser = null; // 重置全局 analyser
+            }
+            isPlaying = false;
+            stopLipSync();
+            lipSyncActive = false;
+        }
+
+        function connectWebSocket() {
+            if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) {
                 return;
             }
-            
-            // 处理 JSON 消息
-            try {
-                const response = JSON.parse(event.data);
-                
-                if (response.type === 'gemini_response') {
-                    const isNewMessage = response.isNewMessage || false;
-                    appendMessage(response.text, 'gemini', isNewMessage);
-                } else if (response.type === 'user_transcript') {
-                    appendMessage(response.text, 'user', true);
-                } else if (response.type === 'user_activity') {
-                    clearAudioQueue();
-                } else if (response.type === 'emotion') {
-                    // 应用情感到 Live2D 模型
-                    if (window.LanLan1 && window.LanLan1.setEmotion) {
-                        window.LanLan1.setEmotion(response.emotion);
+
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws/${lanlan_config.lanlan_name}`;
+
+            console.log('连接到 Monitor Server:', wsUrl);
+
+            ws = new WebSocket(wsUrl);
+            ws.binaryType = 'arraybuffer'; // 支持接收二进制数据
+
+            ws.onopen = () => {
+                console.log('WebSocket 已连接');
+                reconnectAttempts = 0;
+            };
+
+            ws.onmessage = async (event) => {
+                // 处理二进制音频数据
+                if (event.data instanceof ArrayBuffer) {
+                    if (event.data.byteLength > 4) { // 过滤心跳包
+                        audioQueue.push(event.data);
+                        processAudioQueue();
                     }
-                } else if (response.type === 'expression') {
-                    // 应用表情到 Live2D 模型
-                    if (window.LanLan1 && window.LanLan1.registered_expressions) {
-                        window.LanLan1.registered_expressions[response.message]();
-                    }
-                } else if (response.type === 'turn end') {
-                    // Turn ended, could add separator if needed
-                } else if (response.type === 'heartbeat') {
-                    // Heartbeat, do nothing
+                    return;
                 }
-            } catch (error) {
-                console.error('消息处理错误:', error);
-            }
-        };
 
-        ws.onerror = (error) => {
-            console.error('WebSocket 错误:', error);
-        };
+                // 处理 JSON 消息
+                try {
+                    const response = JSON.parse(event.data);
 
-        ws.onclose = () => {
-            console.log('WebSocket 已断开');
-            ws = null;
-            
-            if (reconnectAttempts < maxReconnectAttempts) {
-                reconnectAttempts++;
-                console.log(`尝试重新连接 (${reconnectAttempts}/${maxReconnectAttempts})...`);
-                setTimeout(connectWebSocket, reconnectDelay);
+                    if (response.type === 'gemini_response') {
+                        const isNewMessage = response.isNewMessage || false;
+                        appendMessage(response.text, 'gemini', isNewMessage);
+                    } else if (response.type === 'user_transcript') {
+                        appendMessage(response.text, 'user', true);
+                    } else if (response.type === 'user_activity') {
+                        clearAudioQueue();
+                    } else if (response.type === 'emotion') {
+                        // 应用情感到 Live2D 模型
+                        if (window.LanLan1 && window.LanLan1.setEmotion) {
+                            window.LanLan1.setEmotion(response.emotion);
+                        }
+                    } else if (response.type === 'expression') {
+                        // 应用表情到 Live2D 模型
+                        if (window.LanLan1 && window.LanLan1.registered_expressions) {
+                            window.LanLan1.registered_expressions[response.message]();
+                        }
+                    } else if (response.type === 'turn end') {
+                        // Turn ended, could add separator if needed
+                    } else if (response.type === 'heartbeat') {
+                        // Heartbeat, do nothing
+                    }
+                } catch (error) {
+                    console.error('消息处理错误:', error);
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket 错误:', error);
+            };
+
+            ws.onclose = () => {
+                console.log('WebSocket 已断开');
+                ws = null;
+
+                if (reconnectAttempts < maxReconnectAttempts) {
+                    reconnectAttempts++;
+                    console.log(`尝试重新连接 (${reconnectAttempts}/${maxReconnectAttempts})...`);
+                    setTimeout(connectWebSocket, reconnectDelay);
+                } else {
+                    console.error('达到最大重连次数，停止重连');
+                }
+            };
+        }
+
+        // ===== Chat Message Display =====
+        let currentMessageElement = null;
+
+        function appendMessage(text, sender, isNewMessage) {
+            const chatContainer = document.getElementById('chatContainer');
+
+            if (isNewMessage || !currentMessageElement || currentMessageElement.classList.contains(sender === 'user' ? 'gemini' : 'user')) {
+                const messageDiv = document.createElement('div');
+                messageDiv.className = `message ${sender}`;
+                messageDiv.textContent = text;
+                chatContainer.appendChild(messageDiv);
+                currentMessageElement = messageDiv;
             } else {
-                console.error('达到最大重连次数，停止重连');
+                currentMessageElement.textContent += text;
             }
-        };
-    }
 
-    // ===== Chat Message Display =====
-    let currentMessageElement = null;
-
-    function appendMessage(text, sender, isNewMessage) {
-        const chatContainer = document.getElementById('chatContainer');
-        
-        if (isNewMessage || !currentMessageElement || currentMessageElement.classList.contains(sender === 'user' ? 'gemini' : 'user')) {
-            const messageDiv = document.createElement('div');
-            messageDiv.className = `message ${sender}`;
-            messageDiv.textContent = text;
-            chatContainer.appendChild(messageDiv);
-            currentMessageElement = messageDiv;
-        } else {
-            currentMessageElement.textContent += text;
+            scrollToBottom();
         }
-        
-        scrollToBottom();
-    }
 
-    function scrollToBottom() {
-        if (!chatMinimized) {
-            chatContentWrapper.scrollTop = chatContentWrapper.scrollHeight;
+        function scrollToBottom() {
+            if (!chatMinimized) {
+                chatContentWrapper.scrollTop = chatContentWrapper.scrollHeight;
+            }
         }
-    }
 
-    // ===== Initialize =====
-    // 等待配置加载完成后再连接 WebSocket
-    (async function() {
-        try {
-            await window.pageConfigReady;
-            connectWebSocket();
-        } catch (error) {
-            console.error('初始化 WebSocket 时出错:', error);
-        }
-    })();
-</script>
+        // ===== Initialize =====
+        // 等待配置加载完成后再连接 WebSocket
+        (async function () {
+            try {
+                await window.pageConfigReady;
+                connectWebSocket();
+            } catch (error) {
+                console.error('初始化 WebSocket 时出错:', error);
+            }
+        })();
+    </script>
 </body>
-</html>
 
+</html>

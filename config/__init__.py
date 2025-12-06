@@ -19,7 +19,7 @@ COMMENTER_SERVER_PORT = 48914
 TOOL_SERVER_PORT = 48915
 
 # MCP Router配置
-MCP_ROUTER_URL = 'http://localhost:3283'
+MCP_ROUTER_URL = 'http://localhost:3282'
 
 # API 和模型配置的默认值
 DEFAULT_CORE_API_KEY = ''
