@@ -820,14 +820,33 @@
                 const modelConfig = await modelConfigRes.json();
                 modelConfig.url = modelJsonUrl;
 
+                // 加载用户偏好设置
+                const preferences = await window.live2dManager.loadUserPreferences();
+                const modelPreferences = preferences.find(p => p && p.model_path === modelInfo.path) || null;
+
                 // 加载模型（会自动从模型目录加载parameters.json）
                 await window.live2dManager.loadModel(modelConfig, {
                     loadEmotionMapping: false,
                     dragEnabled: true,
-                    wheelEnabled: true
+                    wheelEnabled: true,
+                    preferences: null // 不应用参数覆盖，但我们会手动应用位置和缩放
                 });
 
                 live2dModel = window.live2dManager.getCurrentModel();
+
+                // 应用用户保存的位置和缩放（与 l2d 设置页面保持一致）
+                if (live2dModel && modelPreferences) {
+                    if (modelPreferences.position) {
+                        live2dModel.x = modelPreferences.position.x || live2dModel.x;
+                        live2dModel.y = modelPreferences.position.y || live2dModel.y;
+                    }
+                    if (modelPreferences.scale) {
+                        live2dModel.scale.set(
+                            modelPreferences.scale.x || live2dModel.scale.x,
+                            modelPreferences.scale.y || live2dModel.scale.y
+                        );
+                    }
+                }
 
                 // 记录初始参数（在模型目录参数加载后）
                 recordInitialParameters();
@@ -885,11 +904,6 @@
             // 如果有参数信息，使用它；否则从模型读取
             if (parameterInfo && parameterInfo.length > 0) {
                 for (const param of parameterInfo) {
-                    // 只显示重要参数
-                    if (!isParameterImportant(param.id, param.name)) {
-                        continue;
-                    }
-
                     const groupId = param.groupId || 'Other';
                     // 参数分组名称翻译映射
                     const groupNameMap = {
@@ -942,11 +956,6 @@
                             paramName = paramId;
                         }
 
-                        // 只显示重要参数
-                        if (!isParameterImportant(paramId, paramName)) {
-                            continue;
-                        }
-
                         const groupName = '其他'; // 固定使用中文
                         if (!groupedParams[groupName]) {
                             groupedParams[groupName] = [];
@@ -987,6 +996,18 @@
                         const currentValue = coreModel.getParameterValueByIndex(i);
                         const initialValue = initialParameters[paramId] || 0;
 
+                        // 检测参数是否为整数类型
+                        // 如果初始值和当前值都是整数，且参数名包含某些关键词，认为是整数参数
+                        const isIntegerParam = Number.isInteger(initialValue) && Number.isInteger(currentValue) &&
+                            (paramId.toLowerCase().includes('index') || 
+                             paramId.toLowerCase().includes('id') ||
+                             paramId.toLowerCase().includes('count') ||
+                             paramId.toLowerCase().includes('num') ||
+                             paramName.includes('索引') ||
+                             paramName.includes('编号') ||
+                             paramName.includes('数量') ||
+                             paramName.includes('计数'));
+
                         const paramItem = document.createElement('div');
                         paramItem.className = 'parameter-item';
 
@@ -995,12 +1016,11 @@
 
                         const nameSpan = document.createElement('span');
                         nameSpan.className = 'parameter-name';
-                        // paramName 已经是中文名称了
                         nameSpan.textContent = paramName;
 
                         const valueSpan = document.createElement('span');
                         valueSpan.className = 'parameter-value';
-                        valueSpan.textContent = currentValue.toFixed(3);
+                        valueSpan.textContent = isIntegerParam ? Math.round(currentValue).toString() : currentValue.toFixed(3);
 
                         header.appendChild(nameSpan);
                         header.appendChild(valueSpan);
@@ -1008,55 +1028,111 @@
                         const controls = document.createElement('div');
                         controls.className = 'parameter-controls';
 
-                        const slider = document.createElement('input');
-                        slider.type = 'range';
-                        slider.className = 'parameter-slider';
-                        slider.min = '-1';
-                        slider.max = '1';
-                        slider.step = '0.01';
-                        slider.value = currentValue;
+                        let slider, input;
+                        
+                        if (isIntegerParam) {
+                            // 整数参数：使用整数输入
+                            input = document.createElement('input');
+                            input.type = 'number';
+                            input.className = 'parameter-input';
+                            input.min = '-100';
+                            input.max = '100';
+                            input.step = '1';
+                            input.value = Math.round(currentValue);
+                            
+                            const updateParameter = (value) => {
+                                const numValue = parseInt(value);
+                                if (isNaN(numValue)) return;
+                                
+                                try {
+                                    coreModel.setParameterValueByIndex(i, numValue);
+                                    valueSpan.textContent = numValue.toString();
+                                    input.value = numValue;
+                                    currentParameters[paramId] = numValue;
+                                } catch (e) {
+                                    console.warn(`更新参数 ${paramId} 失败:`, e);
+                                }
+                            };
 
-                        const input = document.createElement('input');
-                        input.type = 'number';
-                        input.className = 'parameter-input';
-                        input.min = '-1';
-                        input.max = '1';
-                        input.step = '0.01';
-                        input.value = currentValue;
+                            input.addEventListener('input', (e) => {
+                                updateParameter(e.target.value);
+                            });
+                        } else {
+                            // 浮点数参数：使用滑块和数字输入
+                            slider = document.createElement('input');
+                            slider.type = 'range';
+                            slider.className = 'parameter-slider';
+                            slider.min = '-1';
+                            slider.max = '1';
+                            slider.step = '0.01';
+                            slider.value = currentValue;
+
+                            input = document.createElement('input');
+                            input.type = 'number';
+                            input.className = 'parameter-input';
+                            input.min = '-1';
+                            input.max = '1';
+                            input.step = '0.01';
+                            input.value = currentValue;
+
+                            const updateParameter = (value) => {
+                                const numValue = parseFloat(value);
+                                if (isNaN(numValue)) return;
+
+                                const clampedValue = Math.max(-1, Math.min(1, numValue));
+                                try {
+                                    coreModel.setParameterValueByIndex(i, clampedValue);
+                                    valueSpan.textContent = clampedValue.toFixed(3);
+                                    slider.value = clampedValue;
+                                    input.value = clampedValue;
+                                    currentParameters[paramId] = clampedValue;
+                                } catch (e) {
+                                    console.warn(`更新参数 ${paramId} 失败:`, e);
+                                }
+                            };
+
+                            slider.addEventListener('input', (e) => {
+                                updateParameter(e.target.value);
+                            });
+
+                            input.addEventListener('input', (e) => {
+                                updateParameter(e.target.value);
+                            });
+                        }
 
                         const resetBtn = document.createElement('button');
                         resetBtn.className = 'btn-reset';
                         resetBtn.textContent = t('live2d.parameterEditor.reset', '重置');
-
-                        const updateParameter = (value) => {
-                            const numValue = parseFloat(value);
-                            if (isNaN(numValue)) return;
-
-                            const clampedValue = Math.max(-1, Math.min(1, numValue));
-                            try {
-                                coreModel.setParameterValueByIndex(i, clampedValue);
-                                valueSpan.textContent = clampedValue.toFixed(3);
-                                slider.value = clampedValue;
-                                input.value = clampedValue;
-                                currentParameters[paramId] = clampedValue;
-                            } catch (e) {
-                                console.warn(`更新参数 ${paramId} 失败:`, e);
-                            }
-                        };
-
-                        slider.addEventListener('input', (e) => {
-                            updateParameter(e.target.value);
-                        });
-
-                        input.addEventListener('input', (e) => {
-                            updateParameter(e.target.value);
-                        });
-
+                        
                         resetBtn.addEventListener('click', () => {
-                            updateParameter(initialValue);
+                            if (isIntegerParam) {
+                                const resetValue = Math.round(initialValue);
+                                const numValue = parseInt(resetValue);
+                                if (!isNaN(numValue)) {
+                                    try {
+                                        coreModel.setParameterValueByIndex(i, numValue);
+                                        valueSpan.textContent = numValue.toString();
+                                        input.value = numValue;
+                                        currentParameters[paramId] = numValue;
+                                    } catch (e) {
+                                        console.warn(`重置参数 ${paramId} 失败:`, e);
+                                    }
+                                }
+                            } else {
+                                const clampedValue = Math.max(-1, Math.min(1, initialValue));
+                                try {
+                                    coreModel.setParameterValueByIndex(i, clampedValue);
+                                    valueSpan.textContent = clampedValue.toFixed(3);
+                                    slider.value = clampedValue;
+                                    input.value = clampedValue;
+                                    currentParameters[paramId] = clampedValue;
+                                } catch (e) {
+                                    console.warn(`重置参数 ${paramId} 失败:`, e);
+                                }
+                            }
                         });
 
-                        controls.appendChild(slider);
+                        if (slider) controls.appendChild(slider);
                         controls.appendChild(input);
                         controls.appendChild(resetBtn);
 

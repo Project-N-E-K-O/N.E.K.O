@@ -222,11 +222,16 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
             this._shouldApplySavedParams = false;
         }
         
-        // 重新安装口型覆盖
-        try {
-            this.installMouthOverride();
-        } catch (e) {
-            console.error('安装口型覆盖失败:', e);
+        // 重新安装口型覆盖（如果不在预览页面）
+        // 在 l2d 设置页面，我们不安装口型覆盖，避免影响动作预览
+        if (!options.disableMouthOverride) {
+            try {
+                this.installMouthOverride();
+            } catch (e) {
+                console.error('安装口型覆盖失败:', e);
+            }
+        } else {
+            console.log('预览页面：已禁用口型覆盖');
         }
         
         // 如果有保存的参数，使用定时器定期应用，确保不被常驻表情覆盖
@@ -249,6 +254,11 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
             // 每100ms应用一次保存的参数（但跳过常驻表情已设置的参数，保护去水印等功能）
             this._savedParamsTimer = setInterval(() => {
                 if (!this.currentModel || !this.currentModel.internalModel || !this.currentModel.internalModel.coreModel) {
+                    return;
+                }
+                
+                // 如果正在预览动作，跳过参数覆盖，让动作能够正常显示
+                if (this._isPreviewingMotion) {
                     return;
                 }
                 
@@ -504,14 +514,16 @@ Live2DManager.prototype.installMouthOverride = function() {
             
             // 然后在动作更新后立即覆盖参数
             try {
-                // 写入口型参数
-                for (const [id, idx] of Object.entries(mouthParamIndices)) {
-                    try {
-                        coreModel.setParameterValueByIndex(idx, this.mouthValue);
-                    } catch (_) {}
+                // 写入口型参数（如果在预览模式下，跳过口型参数写入，让 motion 完全控制）
+                if (!this._isPreviewingMotion) {
+                    for (const [id, idx] of Object.entries(mouthParamIndices)) {
+                        try {
+                            coreModel.setParameterValueByIndex(idx, this.mouthValue);
+                        } catch (_) {}
+                    }
                 }
-                // 写入常驻表情参数
-                if (this.persistentExpressionParamsByName) {
+                // 写入常驻表情参数（如果在预览模式下，跳过覆盖以让动作正常显示）
+                if (!this._isPreviewingMotion && this.persistentExpressionParamsByName) {
                     const lipSyncParams = ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
                     for (const name in this.persistentExpressionParamsByName) {
                         const params = this.persistentExpressionParamsByName[name];
@@ -538,15 +550,18 @@ Live2DManager.prototype.installMouthOverride = function() {
     // 覆盖 coreModel.update，确保在调用原始方法前写入参数
     coreModel.update = () => {
         try {
-            // 1. 强制写入口型参数
-            for (const [id, idx] of Object.entries(mouthParamIndices)) {
-                try {
-                    coreModel.setParameterValueByIndex(idx, this.mouthValue);
-                } catch (_) {}
+            // 1. 强制写入口型参数（如果在预览模式下，跳过口型参数写入，让 motion 完全控制）
+            if (!this._isPreviewingMotion) {
+                for (const [id, idx] of Object.entries(mouthParamIndices)) {
+                    try {
+                        coreModel.setParameterValueByIndex(idx, this.mouthValue);
+                    } catch (_) {}
+                }
             }
             
             // 2. 写入常驻表情参数（跳过口型参数以避免覆盖lipsync）
-            if (this.persistentExpressionParamsByName) {
+            // 注意：如果正在预览动作，跳过常驻表情参数的覆盖
+            if (!this._isPreviewingMotion && this.persistentExpressionParamsByName) {
                 const lipSyncParams = ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
                 for (const name in this.persistentExpressionParamsByName) {
                     const params = this.persistentExpressionParamsByName[name];

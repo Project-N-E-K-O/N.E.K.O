@@ -73,6 +73,9 @@ class Live2DManager {
 
         // 防抖定时器（用于滚轮缩放等连续操作后保存位置）
         this._savePositionDebounceTimer = null;
+        
+        // 预览模式标志（用于动作预览时暂时禁用参数覆盖）
+        this._isPreviewingMotion = false;
 
         // ⚠️ 已启用自动保存功能：
         // 在拖动或缩放模型后自动保存位置和缩放

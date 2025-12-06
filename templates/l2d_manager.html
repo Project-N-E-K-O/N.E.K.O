@@ -293,6 +293,25 @@
     <script src="/static/libs/live2dcubismcore.min.js"></script>
     <script src="/static/libs/live2d.min.js"></script>
     <script src="/static/libs/pixi.min.js"></script>
+    <!-- 在加载 pixi-live2d-display 之前，抑制 console.assert 的声明失败错误 -->
+    <script>
+        // 保存原始的 console.assert
+        const originalAssert = console.assert;
+        // 覆盖 console.assert，静默处理来自 pixi-live2d-display SDK 的断言错误
+        // 这些错误通常发生在 motion 异步加载期间，是 SDK 的已知问题，不影响功能
+        console.assert = function(condition, ...args) {
+            if (!condition) {
+                // 检查是否是来自 SDK 的错误（通过堆栈跟踪判断）
+                const stack = new Error().stack;
+                if (stack && (stack.includes('index.min.js') || stack.includes('doUpdateMotion') || stack.includes('updateParameters'))) {
+                    // 这是 SDK 内部的断言错误，静默忽略
+                    return;
+                }
+            }
+            // 对于其他断言，使用原始行为
+            originalAssert.apply(console, [condition, ...args]);
+        };
+    </script>
     <script src="/static/libs/index.min.js"></script>
     <script src="/static/live2d-core.js"></script>
     <script src="/static/live2d-emotion.js"></script>
@@ -591,7 +610,6 @@
             modelSelect.addEventListener('change', async (e) => {
                 const modelName = e.target.value;
                 const modelId = e.target.dataset.itemId
-                console.log("id:", modelId)
                 if (!modelName) return;
 
                 currentModelInfo = availableModels.find(m => m.name === modelName);
@@ -607,9 +625,9 @@
 
                 await loadModel(modelName, currentModelInfo, modelSteamId);
 
-                // 不自动保存模型到角色，改为标记为有未保存更改，用户需手动点击“保存设置”
+                // 自动保存模型设置到角色配置
+                await saveModelToCharacter(currentModelInfo.name, currentModelInfo.item_id);
                 window.hasUnsavedChanges = true;
-                console.log('已标记为未保存更改（模型切换），请点击 保存设置 持久化到角色配置。');
             });
 
             // 加载模型的函数
@@ -686,21 +704,75 @@
                         File: file  // 直接使用API返回的完整路径
                     }));
 
-                    // 5. Load preferences
+                    // 5. Load preferences（仅用于位置和缩放，不应用参数覆盖）
                     const preferences = await window.live2dManager.loadUserPreferences();
-                    console.log('加载的偏好设置:', preferences);
-                    console.log('当前模型路径:', modelInfo.path);
                     const modelPreferences = preferences.find(p => p && p.model_path === modelInfo.path) || null;
-                    console.log('匹配的模型偏好:', modelPreferences);
 
                     // 6. Load model FROM THE MODIFIED OBJECT
                     await window.live2dManager.loadModel(modelConfig, {
-                        loadEmotionMapping: true,
+                        loadEmotionMapping: false,
                         dragEnabled: true,
                         wheelEnabled: true,
-                        preferences: modelPreferences
+                        preferences: null, // 不应用参数覆盖
+                        disableMouthOverride: true
                     });
                     live2dModel = window.live2dManager.getCurrentModel();
+                    
+                    // 应用用户主页中保存的位置和缩放
+                    if (live2dModel && modelPreferences) {
+                        if (modelPreferences.position) {
+                            live2dModel.x = modelPreferences.position.x || live2dModel.x;
+                            live2dModel.y = modelPreferences.position.y || live2dModel.y;
+                        }
+                        if (modelPreferences.scale) {
+                            live2dModel.scale.set(
+                                modelPreferences.scale.x || live2dModel.scale.x,
+                                modelPreferences.scale.y || live2dModel.scale.y
+                            );
+                        }
+                    }
+                    
+                    
+                    // 7. 在预览页面，清除常驻表情和停止保存参数定时器
+                    // 确保动作预览不受干扰
+                    if (window.live2dManager) {
+                        // 清除常驻表情
+                        window.live2dManager.teardownPersistentExpressions();
+                        
+                        // 停止保存参数定时器
+                        if (window.live2dManager._savedParamsTimer) {
+                            clearInterval(window.live2dManager._savedParamsTimer);
+                            window.live2dManager._savedParamsTimer = null;
+                            window.live2dManager._shouldApplySavedParams = false;
+                        }
+                        
+                        // 如果口型覆盖已安装，卸载它（在预览页面不需要口型同步）
+                        if (window.live2dManager._mouthOverrideInstalled && live2dModel && live2dModel.internalModel) {
+                            const coreModel = live2dModel.internalModel.coreModel;
+                            const motionManager = live2dModel.internalModel.motionManager;
+                            
+                            // 恢复原始的 update 方法
+                            if (window.live2dManager._origMotionManagerUpdate && motionManager) {
+                                try {
+                                    motionManager.update = window.live2dManager._origMotionManagerUpdate;
+                                } catch (e) {
+                                    console.warn('恢复 motionManager.update 失败:', e);
+                                }
+                            }
+                            
+                            if (window.live2dManager._origCoreModelUpdate && coreModel) {
+                                try {
+                                    coreModel.update = window.live2dManager._origCoreModelUpdate;
+                                } catch (e) {
+                                    console.warn('恢复 coreModel.update 失败:', e);
+                                }
+                            }
+                            
+                            window.live2dManager._mouthOverrideInstalled = false;
+                            window.live2dManager._origMotionManagerUpdate = null;
+                            window.live2dManager._origCoreModelUpdate = null;
+                        }
+                    }
 
                     // 添加模型交互监听器，跟踪位置和缩放变化
                     if (live2dModel && live2dModel.internalModel) {
@@ -723,11 +795,11 @@
                     // 更新常驻表情选择框（只显示 .exp3.json 文件）
                     await updatePersistentExpressionSelect();
 
-                    // 7. Load current emotion mapping for this model
+                    // 7. Load current emotion mapping for this model (仅用于显示，不应用)
                     await loadEmotionMappingForModel(modelName);
 
-                    // 加载并显示已配置的常驻表情
-                    await loadPersistentExpressions();
+                    // 注意：在预览页面不加载常驻表情，避免影响动作预览
+                    // await loadPersistentExpressions(); // 已禁用
 
                     // 如果没有动作文件，禁用动作相关控件
                     if (currentModelFiles.motion_files.length === 0) {
@@ -745,7 +817,7 @@
                 }
             }
 
-            playMotionBtn.addEventListener('click', () => {
+            playMotionBtn.addEventListener('click', async () => {
                 if (!live2dModel || !motionSelect.value) return;
 
                 // 检查是否有动作文件
@@ -757,9 +829,78 @@
                 const motionIndex = currentModelFiles.motion_files.indexOf(motionSelect.value);
                 if (motionIndex > -1) {
                     try {
-                        live2dModel.motion('PreviewAll', motionIndex, 3);
-                        showStatus(t('live2d.playingMotion', `播放动作: ${motionSelect.value}`, { motion: motionSelect.value }), 1000);
+                        // 先停止所有正在播放的动作
+                        if (live2dModel.internalModel && live2dModel.internalModel.motionManager) {
+                            if (live2dModel.internalModel.motionManager.stopAllMotions) {
+                                live2dModel.internalModel.motionManager.stopAllMotions();
+                            }
+                        }
+                        
+                        // 等待一小段时间，让 motionManager 准备好
+                        await new Promise(resolve => setTimeout(resolve, 200));
+                        
+                        if (window.live2dManager) {
+                            window.live2dManager._isPreviewingMotion = true;
+                        }
+                        
+                        const settings = live2dModel.internalModel && live2dModel.internalModel.settings && live2dModel.internalModel.settings.json;
+                        let motionResult = false;
+                        
+                        if (settings && settings.FileReferences && settings.FileReferences.Motions) {
+                            const previewAllMotions = settings.FileReferences.Motions.PreviewAll;
+                            if (!previewAllMotions || previewAllMotions.length === 0 || motionIndex >= previewAllMotions.length) {
+                                showStatus(t('live2d.playMotionFailed', `动作组不存在: ${motionSelect.value}`, { motion: motionSelect.value }), 2000);
+                                return;
+                            }
+                            
+                            try {
+                                motionResult = await live2dModel.motion('PreviewAll', motionIndex, 0);
+                            } catch (e) {}
+                            
+                            if (!motionResult) {
+                                try {
+                                    motionResult = await live2dModel.motion('PreviewAll', motionIndex, 2);
+                                } catch (e) {}
+                            }
+                            
+                            let motionDuration = 3000;
+                            try {
+                                const selectedMotion = previewAllMotions[motionIndex];
+                                if (selectedMotion && selectedMotion.File) {
+                                    const motionPath = window.live2dManager ? 
+                                        window.live2dManager.resolveAssetPath(selectedMotion.File) : 
+                                        selectedMotion.File;
+                                    const response = await fetch(motionPath);
+                                    if (response.ok) {
+                                        const motionData = await response.json();
+                                        if (motionData.Meta && motionData.Meta.Duration) {
+                                            motionDuration = motionData.Meta.Duration * 1000;
+                                        }
+                                    }
+                                }
+                            } catch (e) {}
+                            
+                            if (motionResult) {
+                                showStatus(t('live2d.playingMotion', `播放动作: ${motionSelect.value}`, { motion: motionSelect.value }), 1000);
+                                setTimeout(() => {
+                                    if (window.live2dManager) {
+                                        window.live2dManager._isPreviewingMotion = false;
+                                    }
+                                }, motionDuration);
+                            } else {
+                                if (window.live2dManager) {
+                                    window.live2dManager._isPreviewingMotion = false;
+                                }
+                                showStatus(t('live2d.playMotionFailed', `播放动作失败: ${motionSelect.value}`, { motion: motionSelect.value }), 2000);
+                            }
+                        } else {
+                            showStatus(t('live2d.playMotionFailed', `无法访问模型配置: ${motionSelect.value}`, { motion: motionSelect.value }), 2000);
+                        }
                     } catch (error) {
+                        // 如果出错，立即恢复参数覆盖
+                        if (window.live2dManager) {
+                            window.live2dManager._isPreviewingMotion = false;
+                        }
                         console.error('播放动作失败:', error);
                         showStatus(t('live2d.playMotionFailed', `播放动作失败: ${motionSelect.value}`, { motion: motionSelect.value }), 2000);
                     }
