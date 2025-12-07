@@ -301,7 +301,7 @@
     <div id="sidebar">
         <div class="control-group">
             <button id="backToMainBtn" class="btn btn-primary" data-i18n="live2d.parameterEditor.backToMain">←
-                返回主页</button>
+                返回L2D设置</button>
         </div>
 
         <div class="control-group">
@@ -654,7 +654,7 @@
             }
         }
 
-        // 返回主页
+        // 返回L2D设置界面
         backToMainBtn.addEventListener('click', () => {
             // 在跳转前发送消息通知主页
             sendMessageToMainPage('reload_model_parameters');
@@ -663,7 +663,14 @@
                 if (window.opener) {
                     window.close();
                 } else {
-                    window.location.href = '/';
+                    // 获取当前URL参数，保留lanlan_name等参数
+                    const urlParams = new URLSearchParams(window.location.search);
+                    const lanlanName = urlParams.get('lanlan_name');
+                    let targetUrl = '/l2d';
+                    if (lanlanName) {
+                        targetUrl += `?lanlan_name=${encodeURIComponent(lanlanName)}`;
+                    }
+                    window.location.href = targetUrl;
                 }
             }, 100);
         });

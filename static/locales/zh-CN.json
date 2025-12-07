@@ -417,7 +417,8 @@
     "persistentExpressionExists": "该表情已添加为常驻表情",
     "parameterEditor": {
       "title": "Live2D 参数编辑器（捏脸系统）",
-      "backToMain": "← 返回主页",
+      "backToMain": "← 返回L2D设置",
+      "backToL2DManager": "← 返回L2D管理器",
       "selectModel": "选择模型:",
       "loading": "加载中...",
       "resetAll": "重置全部",
@@ -553,6 +554,7 @@
     "renameCatgirlTitle": "重命名猫娘",
     "profileNameExists": "该档案名已存在",
     "renameFailed": "重命名失败",
+    "cannotRenameInVoiceMode": "语音状态下无法修改角色名称，请先停止语音对话后再修改",
     "confirmUnregisterVoice": "确定要解除猫娘\"{{name}}\"的声音注册吗？",
     "unregisterVoiceTitle": "解除声音注册",
     "voiceUnregistered": "声音注册已解除",

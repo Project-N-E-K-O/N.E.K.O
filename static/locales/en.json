@@ -417,7 +417,8 @@
     "persistentExpressionExists": "This expression is already added as persistent expression",
     "parameterEditor": {
       "title": "Live2D Parameter Editor",
-      "backToMain": "← Back",
+      "backToMain": "← Back to L2D Settings",
+      "backToL2DManager": "← Back to L2D Manager",
       "selectModel": "Select Model:",
       "loading": "Loading...",
       "resetAll": "Reset All",
@@ -553,6 +554,7 @@
     "renameCatgirlTitle": "Rename Catgirl",
     "profileNameExists": "This profile name already exists",
     "renameFailed": "Rename failed",
+    "cannotRenameInVoiceMode": "Cannot rename character in voice mode, please stop voice conversation first",
     "confirmUnregisterVoice": "Are you sure you want to unregister the voice for catgirl \"{{name}}\"?",
     "unregisterVoiceTitle": "Unregister Voice",
     "voiceUnregistered": "Voice registration unregistered",
