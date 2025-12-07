@@ -6,8 +6,8 @@ services:
     container_name: neko
     restart: unless-stopped
     ports:
-      #webui端口（默认48911）
-      - "${NEKO_MAIN_SERVER_PORT:-48911}:48911"
+      #webui端口
+      - "48911:80"
     environment:
       # API Keys
       - NEKO_CORE_API_KEY=${NEKO_CORE_API_KEY}
