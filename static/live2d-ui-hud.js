@@ -45,6 +45,12 @@ Live2DManager.prototype._createAgentPopupContent = function (popup) {
             labelKey: 'settings.toggles.mcpTools', 
             initialDisabled: true,
             initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
+        },{ 
+            id: 'agent-user-plugin', 
+            label: window.t ? window.t('settings.toggles.userPlugin') : '用户插件', 
+            labelKey: 'settings.toggles.userPlugin', 
+            initialDisabled: true,
+            initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
         }
     ];
 
