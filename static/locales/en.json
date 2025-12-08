@@ -417,7 +417,8 @@
     "persistentExpressionExists": "This expression is already added as persistent expression",
     "parameterEditor": {
       "title": "Live2D Parameter Editor",
-      "backToMain": "← Back",
+      "backToMain": "← Back to L2D Settings",
+      "backToL2DManager": "← Back to L2D Manager",
       "selectModel": "Select Model:",
       "loading": "Loading...",
       "resetAll": "Reset All",
@@ -553,6 +554,7 @@
     "renameCatgirlTitle": "Rename Catgirl",
     "profileNameExists": "This profile name already exists",
     "renameFailed": "Rename failed",
+    "cannotRenameInVoiceMode": "Cannot rename character in voice mode, please stop voice conversation first",
     "confirmUnregisterVoice": "Are you sure you want to unregister the voice for catgirl \"{{name}}\"?",
     "unregisterVoiceTitle": "Unregister Voice",
     "voiceUnregistered": "Voice registration unregistered",
@@ -604,6 +606,7 @@
     "clickToClosePreview": "💡 Click blank area to close preview"
   },
   "app": {
+    "welcomeBack": "{{name}} is back!",
     "title": "Project N.E.K.O.",
     "catgirlResting": "{{name}} is resting...",
     "textChatting": "Text chatting...",
@@ -656,7 +659,8 @@
     "voiceSystemPreparing": "Voice system preparing...",
     "textSystemPreparing": "Text system preparing, please wait...",
     "connectingToServer": "Connecting to server...",
-    "readyToSpeak": "Ready to speak!"
+    "readyToSpeak": "Ready to speak!",
+    "screenShareRequiresVoice": "Screen sharing is only available during voice calls"
   },
   "buttons": {
     "voiceControl": "Voice Control",
@@ -693,7 +697,13 @@
       "userPlugin": "User Plugin",
       "mcpTools": "MCP Tools",
       "focusMode": "🎯 Allow Interrupt",
-      "unavailable": "{{name}} Unavailable"
+      "unavailable": "{{name}} Unavailable",
+      "checking": "Checking...",
+      "serverOffline": "Agent server is offline",
+      "masterRequired": "Please enable Agent Master Switch first",
+      "enabled": "{{name}} Enabled",
+      "disabled": "{{name}} Disabled",
+      "enableFailed": "Failed to enable {{name}}"
     }
   },
   "subtitle": {
@@ -703,6 +713,16 @@
     "title": "Viewer - Project N.E.K.O."
   },
   "agent": {
+    "status": {
+      "connecting": "Connecting to Agent server...",
+      "ready": "Agent server is ready",
+      "enabled": "Agent mode enabled",
+      "disabled": "Agent mode disabled",
+      "disabledError": "Agent mode disabled (partial cleanup failed)",
+      "enableFailed": "Enable failed",
+      "disconnected": "Server connection disconnected",
+      "agentDisconnected": "Agent server connection disconnected"
+    },
     "taskHud": {
       "title": "Agent Tasks",
       "running": "Running",

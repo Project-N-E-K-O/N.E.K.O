@@ -2179,6 +2179,30 @@ async def get_current_catgirl():
     current_catgirl = characters.get('当前猫娘', '')
     return JSONResponse(content={'current_catgirl': current_catgirl})
 
+@app.get('/api/characters/catgirl/{name}/voice_mode_status')
+async def get_catgirl_voice_mode_status(name: str):
+    """检查指定角色是否在语音模式下"""
+    characters = _config_manager.load_characters()
+    is_current = characters.get('当前猫娘') == name
+    
+    if name not in session_manager:
+        return JSONResponse({'is_voice_mode': False, 'is_current': is_current, 'is_active': False})
+    
+    mgr = session_manager[name]
+    is_active = mgr.is_active if mgr else False
+    
+    is_voice_mode = False
+    if is_active and mgr:
+        # 检查是否是语音模式（通过session类型判断）
+        from main_helper.omni_realtime_client import OmniRealtimeClient
+        is_voice_mode = mgr.session and isinstance(mgr.session, OmniRealtimeClient)
+    
+    return JSONResponse({
+        'is_voice_mode': is_voice_mode,
+        'is_current': is_current,
+        'is_active': is_active
+    })
+
 @app.post('/api/characters/current_catgirl')
 async def set_current_catgirl(request: Request):
     """设置当前使用的猫娘"""
@@ -3019,6 +3043,20 @@ async def rename_catgirl(old_name: str, request: Request):
     # 如果当前猫娘是被重命名的猫娘，需要先保存WebSocket连接并发送通知
     # 必须在 initialize_character_data() 之前发送，因为那个函数会删除旧的 session_manager 条目
     is_current_catgirl = characters.get('当前猫娘') == old_name
+    
+    # 检查当前角色是否有活跃的语音session
+    if is_current_catgirl and old_name in session_manager:
+        mgr = session_manager[old_name]
+        if mgr.is_active:
+            # 检查是否是语音模式（通过session类型判断）
+            from main_helper.omni_realtime_client import OmniRealtimeClient
+            is_voice_mode = mgr.session and isinstance(mgr.session, OmniRealtimeClient)
+            
+            if is_voice_mode:
+                return JSONResponse({
+                    'success': False, 
+                    'error': '语音状态下无法修改角色名称，请先停止语音对话后再修改'
+                }, status_code=400)
     if is_current_catgirl:
         logger.info(f"开始通知WebSocket客户端：猫娘从 {old_name} 重命名为 {new_name}")
         message = json.dumps({

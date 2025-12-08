@@ -222,70 +222,21 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
             this._shouldApplySavedParams = false;
         }
         
-        // 重新安装口型覆盖
+        // 重新安装口型覆盖（这也包括了用户保存参数的应用逻辑）
         try {
             this.installMouthOverride();
         } catch (e) {
             console.error('安装口型覆盖失败:', e);
         }
         
-        // 如果有保存的参数，使用定时器定期应用，确保不被常驻表情覆盖
+        // 移除原本的 setInterval 定时器逻辑，改用 installMouthOverride 中的逐帧叠加逻辑
         if (this.savedModelParameters && this._shouldApplySavedParams) {
             // 清除之前的定时器（如果存在）
             if (this._savedParamsTimer) {
                 clearInterval(this._savedParamsTimer);
+                this._savedParamsTimer = null;
             }
-            
-            // 动画相关参数列表（这些参数不应该被覆盖，让模型保持动画）
-            const animationParams = ['ParamAngleX', 'ParamAngleY', 'ParamAngleZ', 'ParamBodyAngleX', 'ParamBodyAngleY', 'ParamBodyAngleZ', 
-                                    'ParamBreath', 'ParamEyeLOpen', 'ParamEyeROpen', 'ParamEyeBallX', 'ParamEyeBallY',
-                                    'ParamArm', 'ParamHand', 'ParamShoulder', 'ParamElbow', 'ParamWrist'];
-            const lipSyncParams = ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
-            const visibilityParams = ['ParamOpacity', 'ParamVisibility']; // 跳过可见性参数，防止模型被设置为不可见
-            
-            // 获取常驻表情的所有参数ID集合（用于保护去水印等常驻表情参数）
-            const persistentParamIds = this.getPersistentExpressionParamIds();
-            
-            // 每100ms应用一次保存的参数（但跳过常驻表情已设置的参数，保护去水印等功能）
-            this._savedParamsTimer = setInterval(() => {
-                if (!this.currentModel || !this.currentModel.internalModel || !this.currentModel.internalModel.coreModel) {
-                    return;
-                }
-                
-                const coreModel = this.currentModel.internalModel.coreModel;
-                let appliedCount = 0;
-                let skippedPersistentCount = 0;
-                
-                for (const [paramId, value] of Object.entries(this.savedModelParameters)) {
-                    // 跳过口型参数（口型参数由口型同步控制）
-                    if (lipSyncParams.includes(paramId)) continue;
-                    // 跳过动画参数（让模型保持动画效果）
-                    if (animationParams.includes(paramId)) continue;
-                    // 跳过 param_${i} 格式的参数（这些可能是动画参数，不确定）
-                    if (paramId.startsWith('param_')) continue;
-                    // 跳过可见性参数，防止模型被设置为不可见
-                    if (visibilityParams.includes(paramId)) continue;
-                    // 跳过常驻表情已设置的参数（保护去水印等功能，同时允许用户设置其他参数）
-                    if (persistentParamIds.has(paramId)) {
-                        skippedPersistentCount++;
-                        continue;
-                    }
-                    
-                    try {
-                        // 只对明确的外观参数ID进行覆盖
-                        const idx = coreModel.getParameterIndex(paramId);
-                        if (idx >= 0 && typeof value === 'number' && Number.isFinite(value)) {
-                            coreModel.setParameterValueByIndex(idx, value);
-                            appliedCount++;
-                        }
-                    } catch (_) {}
-                }
-                
-                // 调试信息（仅在开发时输出）
-                // if (appliedCount > 0 || skippedPersistentCount > 0) {
-                //     console.log(`应用用户参数: ${appliedCount}个, 跳过常驻表情参数: ${skippedPersistentCount}个`);
-                // }
-            }, 100); // 每100ms应用一次
+            console.log('已启用参数叠加模式');
         }
         
         // 如果之前应用了保存的参数（从用户偏好），在常驻表情设置后再次应用（防止被覆盖）
@@ -458,6 +409,7 @@ Live2DManager.prototype.installMouthOverride = function() {
 
     // 口型参数列表（这些参数不会被常驻表情覆盖）
     const lipSyncParams = ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
+    const visibilityParams = ['ParamOpacity', 'ParamVisibility'];
     
     // 缓存参数索引，避免每帧查询
     const mouthParamIndices = {};
@@ -477,16 +429,29 @@ Live2DManager.prototype.installMouthOverride = function() {
             const origMotionManagerUpdate = internalModel.motionManager.update.bind(internalModel.motionManager);
             this._origMotionManagerUpdate = origMotionManagerUpdate;
         
-        internalModel.motionManager.update = () => {
+        internalModel.motionManager.update = (...args) => {
             // 检查 coreModel 是否仍然有效（在调用原始方法之前检查）
             if (!coreModel || !this.currentModel || !this.currentModel.internalModel || !this.currentModel.internalModel.coreModel) {
                 return; // 如果模型已销毁，直接返回
+            }
+
+            // 1. 捕获更新前的参数值（用于检测 Motion 是否修改了参数）
+            const preUpdateParams = {};
+            if (this.savedModelParameters && this._shouldApplySavedParams) {
+                for (const paramId of Object.keys(this.savedModelParameters)) {
+                    try {
+                        const idx = coreModel.getParameterIndex(paramId);
+                        if (idx >= 0) {
+                            preUpdateParams[paramId] = coreModel.getParameterValueByIndex(idx);
+                        }
+                    } catch (_) {}
+                }
             }
             
             // 先调用原始的 motionManager.update（添加错误处理）
             if (origMotionManagerUpdate) {
                 try {
-                    origMotionManagerUpdate();
+                    origMotionManagerUpdate(...args);
                 } catch (e) {
                     // SDK 内部 motion 在异步加载期间可能会抛出 getParameterIndex 错误
                     // 这是 pixi-live2d-display 的已知问题，静默忽略即可
@@ -504,15 +469,53 @@ Live2DManager.prototype.installMouthOverride = function() {
             
             // 然后在动作更新后立即覆盖参数
             try {
-                // 写入口型参数
+                // 1. 应用保存的模型参数（智能叠加模式）
+                if (this.savedModelParameters && this._shouldApplySavedParams) {
+                    const persistentParamIds = this.getPersistentExpressionParamIds();
+                    
+                    for (const [paramId, value] of Object.entries(this.savedModelParameters)) {
+                        // 跳过口型参数
+                        if (lipSyncParams.includes(paramId)) continue;
+                        // 跳过可见性参数
+                        if (visibilityParams.includes(paramId)) continue;
+                        // 跳过常驻表情已设置的参数
+                        if (persistentParamIds.has(paramId)) continue;
+                        
+                        try {
+                            const idx = coreModel.getParameterIndex(paramId);
+                            if (idx >= 0 && typeof value === 'number' && Number.isFinite(value)) {
+                                const currentVal = coreModel.getParameterValueByIndex(idx);
+                                const preVal = preUpdateParams[paramId] !== undefined ? preUpdateParams[paramId] : currentVal;
+                                const defaultVal = coreModel.getParameterDefaultValueByIndex(idx);
+                                const offset = value - defaultVal;
+
+                                // 策略：比较当前值(Motion更新后)与上一帧的值(preVal)
+                                // 如果值变了(Math.abs > 0.001)，说明 Motion/Physics 正在控制它 -> 叠加 Offset
+                                // 如果值没变，说明 Motion 没动它 -> 强制设为 UserValue (静态覆盖)
+                                
+                                if (Math.abs(currentVal - preVal) > 0.001) {
+                                    // Motion 正在控制，使用叠加
+                                    // 注意：这里 currentVal 已经是 Motion 的新值了
+                                    coreModel.setParameterValueByIndex(idx, currentVal + offset);
+                                } else {
+                                    // Motion 没动它（或者静止），强制设为用户设定值
+                                    // 这样可以防止无限叠加（因为没有叠加在上一帧的 Offset 上）
+                                    // 同时也保证了静态参数也能生效
+                                    coreModel.setParameterValueByIndex(idx, value);
+                                }
+                            }
+                        } catch (_) {}
+                    }
+                }
+
+                // 2. 写入口型参数（覆盖模式，优先级高）
                 for (const [id, idx] of Object.entries(mouthParamIndices)) {
                     try {
                         coreModel.setParameterValueByIndex(idx, this.mouthValue);
                     } catch (_) {}
                 }
-                // 写入常驻表情参数
+                // 3. 写入常驻表情参数（覆盖模式，优先级最高）
                 if (this.persistentExpressionParamsByName) {
-                    const lipSyncParams = ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
                     for (const name in this.persistentExpressionParamsByName) {
                         const params = this.persistentExpressionParamsByName[name];
                         if (Array.isArray(params)) {
@@ -538,6 +541,12 @@ Live2DManager.prototype.installMouthOverride = function() {
     // 覆盖 coreModel.update，确保在调用原始方法前写入参数
     coreModel.update = () => {
         try {
+            // 这里的逻辑主要为了确保渲染前参数正确（防止 physics 等后续步骤重置了某些值）
+            // 注意：如果 physics 运行在 motionManager.update 之后但在 coreModel.update 之前，
+            // 那么这里的叠加可能已经被 physics 处理过或覆盖。
+            // 通常 motion -> physics -> update.
+            // 我们在 motionManager.update 里叠加，physics 应该能看到叠加后的值。
+            
             // 1. 强制写入口型参数
             for (const [id, idx] of Object.entries(mouthParamIndices)) {
                 try {

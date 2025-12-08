@@ -38,9 +38,16 @@ RUN export http_proxy=http://192.168.8.2:10809 && \
     g++ \
     make \
     portaudio19-dev \
+    nginx \
     && rm -rf /var/lib/apt/lists/* && \
     unset http_proxy && \
     unset https_proxy
+
+#创建nginx用户
+RUN groupadd -r nginx && \
+    useradd -r -g nginx nginx && \
+    mkdir -p /var/log/nginx /var/cache/nginx && \
+    chown -R nginx:nginx /var/log/nginx /var/cache/nginx
 
 # 3. 创建 Python 符号链接
 RUN ln -sf /usr/bin/python3.11 /usr/bin/python3 && \

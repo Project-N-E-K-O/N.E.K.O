@@ -51,6 +51,8 @@ class Modules:
     active_computer_use_task_id: Optional[str] = None
     # Agent feature flags (controlled by UI)
     agent_flags: Dict[str, Any] = {"mcp_enabled": False, "computer_use_enabled": False, "user_plugin_enabled": False}
+    # Notification queue for frontend (one-time messages)
+    notification: Optional[str] = None
     # 使用统一的速率限制日志记录器（业务逻辑层面）
     throttled_logger: "ThrottledLogger" = None  # 延迟初始化
 def _collect_existing_task_descriptions(lanlan_name: Optional[str] = None) -> list[tuple[str, str]]:
@@ -200,6 +202,45 @@ def _spawn_task(kind: str, args: Dict[str, Any]) -> Dict[str, Any]:
             "instruction": args.get("instruction", ""),
             "screenshot": args.get("screenshot"),
         })
+        return info
+    elif kind == "processor":
+        # Create a runtime entry and execute the processor coroutine in background.
+        query = args.get("query", "") if isinstance(args, dict) else ""
+        info["params"] = {"query": query}
+        info["lanlan_name"] = None
+        Modules.task_registry[task_id] = info
+
+        async def _run_processor_task():
+            try:
+                result = await Modules.processor.process(query)
+                info["status"] = "completed" if result.get("can_execute") else "failed"
+                info["result"] = result
+
+                # Notify main_server if executed
+                if result.get("can_execute"):
+                    summary = f'你的任务\"{query[:50]}\"已完成'
+                    try:
+                        async with httpx.AsyncClient(timeout=0.5) as _client:
+                            await _client.post(
+                                f"http://localhost:{MAIN_SERVER_PORT}/api/notify_task_result",
+                                json={"text": summary[:240], "lanlan_name": info.get("lanlan_name")},
+                            )
+                    except Exception:
+                        pass
+                logger.info(f"[MCP] ✅ Spawned processor task {task_id} completed")
+            except Exception as e:
+                info["status"] = "failed"
+                info["error"] = str(e)
+                logger.error(f"[MCP] ❌ Spawned processor task {task_id} failed: {e}")
+
+        # Fire-and-forget to preserve old behavior
+        try:
+            asyncio.create_task(_run_processor_task())
+        except Exception:
+            # In case event loop not running, mark as failed
+            info["status"] = "failed"
+            info["error"] = "failed to schedule processor coroutine"
+
         return info
     else:
         raise ValueError(f"Unknown task kind: {kind}. Note: 'processor' tasks now use coroutines directly.")
@@ -681,10 +722,16 @@ async def capabilities():
 @app.get("/agent/flags")
 async def get_agent_flags():
     """获取当前 agent flags 状态（供前端同步）"""
+    note = Modules.notification
+    # Read-once notification
+    if Modules.notification:
+        Modules.notification = None
+        
     return {
         "success": True, 
         "agent_flags": Modules.agent_flags,
-        "analyzer_enabled": Modules.analyzer_enabled
+        "analyzer_enabled": Modules.analyzer_enabled,
+        "notification": note
     }
 
 
@@ -694,10 +741,55 @@ async def set_agent_flags(payload: Dict[str, Any]):
     cf = (payload or {}).get("computer_use_enabled")
     uf = (payload or {}).get("user_plugin_enabled")
     prev_up = Modules.agent_flags.get("user_plugin_enabled", False)
+    
+    # 1. Handle MCP Flag with Capability Check
     if isinstance(mf, bool):
-        Modules.agent_flags["mcp_enabled"] = mf
+        if mf: # Attempting to enable
+            if not Modules.planner:
+                Modules.agent_flags["mcp_enabled"] = False
+                Modules.notification = "无法开启 MCP: Planner 未就绪"
+                logger.warning("[Agent] Cannot enable MCP: Planner not ready")
+            else:
+                try:
+                    # Check actual availability
+                    caps = await Modules.planner.refresh_capabilities(force_refresh=False)
+                    if caps:
+                        Modules.agent_flags["mcp_enabled"] = True
+                    else:
+                        Modules.agent_flags["mcp_enabled"] = False
+                        Modules.notification = "无法开启 MCP: 未发现可用工具或 Router 未连接"
+                        logger.warning("[Agent] Cannot enable MCP: No capabilities found")
+                except Exception as e:
+                    Modules.agent_flags["mcp_enabled"] = False
+                    Modules.notification = f"开启 MCP 失败: {str(e)}"
+                    logger.error(f"[Agent] Cannot enable MCP: Check failed {e}")
+        else: # Disabling
+            Modules.agent_flags["mcp_enabled"] = False
+
+    # 2. Handle Computer Use Flag with Capability Check
     if isinstance(cf, bool):
-        Modules.agent_flags["computer_use_enabled"] = cf
+        if cf: # Attempting to enable
+            if not Modules.computer_use:
+                Modules.agent_flags["computer_use_enabled"] = False
+                Modules.notification = "无法开启 Computer Use: 模块未加载"
+                logger.warning("[Agent] Cannot enable Computer Use: Module not loaded")
+            else:
+                try:
+                    avail = Modules.computer_use.is_available()
+                    if avail.get("ready"):
+                        Modules.agent_flags["computer_use_enabled"] = True
+                    else:
+                        Modules.agent_flags["computer_use_enabled"] = False
+                        reason = avail.get('reasons', [])[0] if avail.get('reasons') else '未知原因'
+                        Modules.notification = f"无法开启 Computer Use: {reason}"
+                        logger.warning(f"[Agent] Cannot enable Computer Use: {avail.get('reasons')}")
+                except Exception as e:
+                    Modules.agent_flags["computer_use_enabled"] = False
+                    Modules.notification = f"开启 Computer Use 失败: {str(e)}"
+                    logger.error(f"[Agent] Cannot enable Computer Use: Check failed {e}")
+        else: # Disabling
+            Modules.agent_flags["computer_use_enabled"] = False
+            
     if isinstance(uf, bool):
         Modules.agent_flags["user_plugin_enabled"] = uf
 
@@ -748,8 +840,21 @@ async def analyze_and_plan(payload: Dict[str, Any]):
 @app.get("/computer_use/availability")
 async def computer_use_availability():
     if not Modules.computer_use:
+        # Auto-update flag if module missing
+        if Modules.agent_flags.get("computer_use_enabled"):
+            Modules.agent_flags["computer_use_enabled"] = False
+            Modules.notification = "Computer Use 模块未加载，已自动关闭"
         raise HTTPException(503, "ComputerUse not ready")
-    return Modules.computer_use.is_available()
+    
+    status = Modules.computer_use.is_available()
+    
+    # Auto-update flag if capability lost
+    if not status.get("ready") and Modules.agent_flags.get("computer_use_enabled"):
+        logger.info("[Agent] Computer Use capability lost, disabling flag")
+        Modules.agent_flags["computer_use_enabled"] = False
+        Modules.notification = f"Computer Use 不可用: {status.get('reasons', [])[0] if status.get('reasons') else '未知原因'}"
+        
+    return status
 
 
 @app.post("/computer_use/run")
@@ -782,6 +887,10 @@ async def computer_use_run(payload: Dict[str, Any]):
 @app.get("/mcp/availability")
 async def mcp_availability():
     if not Modules.planner:
+        # Auto-update flag if planner missing
+        if Modules.agent_flags.get("mcp_enabled"):
+            Modules.agent_flags["mcp_enabled"] = False
+            Modules.notification = "Planner 模块未就绪，MCP 已自动关闭"
         raise HTTPException(503, "Planner not ready")
     try:
         # 使用缓存检查可用性，避免每次都请求 MCP Router（缓存 TTL 10秒）
@@ -789,6 +898,12 @@ async def mcp_availability():
         count = len(caps or {})
         ready = count > 0
         reasons = [] if ready else ["MCP router unreachable or no servers discovered"]
+        
+        # Auto-update flag if capability lost
+        if not ready and Modules.agent_flags.get("mcp_enabled"):
+            logger.info("[Agent] MCP capability lost, disabling flag")
+            Modules.agent_flags["mcp_enabled"] = False
+            Modules.notification = "MCP 服务连接断开，已自动关闭"
         
         # 使用统一的速率限制日志记录器
         if Modules.throttled_logger is None:

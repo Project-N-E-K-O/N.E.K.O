@@ -417,7 +417,8 @@
     "persistentExpressionExists": "该表情已添加为常驻表情",
     "parameterEditor": {
       "title": "Live2D 参数编辑器（捏脸系统）",
-      "backToMain": "← 返回主页",
+      "backToMain": "← 返回L2D设置",
+      "backToL2DManager": "← 返回L2D管理器",
       "selectModel": "选择模型:",
       "loading": "加载中...",
       "resetAll": "重置全部",
@@ -553,6 +554,7 @@
     "renameCatgirlTitle": "重命名猫娘",
     "profileNameExists": "该档案名已存在",
     "renameFailed": "重命名失败",
+    "cannotRenameInVoiceMode": "语音状态下无法修改角色名称，请先停止语音对话后再修改",
     "confirmUnregisterVoice": "确定要解除猫娘\"{{name}}\"的声音注册吗？",
     "unregisterVoiceTitle": "解除声音注册",
     "voiceUnregistered": "声音注册已解除",
@@ -604,6 +606,7 @@
     "clickToClosePreview": "💡 点击空白处关闭预览"
   },
   "app": {
+    "welcomeBack": "{{name}}回来了！",
     "title": "Project N.E.K.O.",
     "catgirlResting": "{{name}}正在打盹...",
     "textChatting": "正在文本聊天中...",
@@ -656,7 +659,8 @@
     "voiceSystemPreparing": "语音系统准备中...",
     "textSystemPreparing": "文本系统准备中，请稍候...",
     "connectingToServer": "正在连接服务器...",
-    "readyToSpeak": "可以说话了！"
+    "readyToSpeak": "可以说话了！",
+    "screenShareRequiresVoice": "屏幕分享仅用于音视频通话"
   },
   "buttons": {
     "voiceControl": "语音控制",
@@ -693,7 +697,13 @@
       "userPlugin": "用户插件",
       "mcpTools": "MCP工具",
       "focusMode": "🎯 允许打断",
-      "unavailable": "{{name}}不可用"
+      "unavailable": "{{name}}不可用",
+      "checking": "查询中...",
+      "serverOffline": "Agent服务器未启动",
+      "masterRequired": "请先开启Agent总开关",
+      "enabled": "{{name}}已开启",
+      "disabled": "{{name}}已关闭",
+      "enableFailed": "{{name}}开启失败"
     }
   },
   "subtitle": {
@@ -703,6 +713,16 @@
     "title": "Viewer - Project N.E.K.O."
   },
   "agent": {
+    "status": {
+      "connecting": "Agent服务器连接中...",
+      "ready": "Agent服务器就绪",
+      "enabled": "Agent模式已开启",
+      "disabled": "Agent模式已关闭",
+      "disabledError": "Agent模式已关闭（部分清理失败）",
+      "enableFailed": "开启失败",
+      "disconnected": "服务器连接已断开",
+      "agentDisconnected": "Agent 服务器连接已断开"
+    },
     "taskHud": {
       "title": "Agent 任务",
       "running": "运行中",
