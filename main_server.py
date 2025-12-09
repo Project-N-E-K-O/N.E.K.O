@@ -1214,28 +1214,20 @@ async def proactive_chat(request: Request):
             # 50%概率使用截图，50%概率使用热门内容
             if random.random() < 0.5:
                 logger.info(f"[{lanlan_name}] 随机选择使用截图进行主动搭话")
+                use_screenshot = True
                 
                 # 处理前端发送的截图数据
                 try:
                     # 将DataURL转换为base64数据并分析
                     screenshot_content = await analyze_screenshot_from_data_url(screenshot_data)
                     if not screenshot_content:
-                        logger.info(f"[{lanlan_name}] 截图分析失败，结束本次主动搭话")
-                        return JSONResponse({
-                            "success": True,
-                            "action": "pass",
-                            "message": "截图分析失败，AI选择不搭话"
-                        })
+                        logger.warning(f"[{lanlan_name}] 截图分析失败，回退到热门内容")
+                        use_screenshot = False
                     else:
                         logger.info(f"[{lanlan_name}] 成功分析截图内容")
-                        use_screenshot = True
                 except Exception as e:
                     logger.error(f"[{lanlan_name}] 处理截图数据失败: {e}")
-                    return JSONResponse({
-                        "success": False,
-                        "error": "截图处理失败",
-                        "detail": str(e)
-                    }, status_code=500)
+                    use_screenshot = False
             else:
                 logger.info(f"[{lanlan_name}] 随机选择使用热门内容进行主动搭话")
                 use_screenshot = False
@@ -1251,12 +1243,11 @@ async def proactive_chat(request: Request):
                 trending_content = await fetch_trending_content(bilibili_limit=10, weibo_limit=10)
                 
                 if not trending_content['success']:
-                    logger.info(f"[{lanlan_name}] 热门内容获取失败，结束本次主动搭话")
                     return JSONResponse({
-                        "success": True,
-                        "action": "pass",
-                        "message": "热门内容获取失败，AI选择不搭话"
-                    })
+                        "success": False,
+                        "error": "无法获取热门内容",
+                        "detail": trending_content.get('error', '未知错误')
+                    }, status_code=500)
                 
                 formatted_content = format_trending_content(trending_content)
                 logger.info(f"[{lanlan_name}] 成功获取热门内容")

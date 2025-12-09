@@ -57,7 +57,7 @@ class ScreenshotUtils:
             core_config = config_manager.get_core_config()
             
             # 获取核心API和辅助API配置
-            core_api = core_config.get('coreApi', 'qwen')
+            core_api = core_config.get('CORE_API_TYPE', 'qwen')
             assist_api = core_config.get('assistApi', 'qwen')
             enable_custom_api = core_config.get('enableCustomApi', False)
             
