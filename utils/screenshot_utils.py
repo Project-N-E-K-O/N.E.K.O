@@ -68,6 +68,8 @@ class ScreenshotUtils:
             # 2. 未开启自定义API：只使用辅助API和核心API的默认配置
             
             if enable_custom_api:
+                logger.info("检测到自定义API已启用，尝试使用自定义视觉模型配置")
+                
                 # 开启自定义API：只使用自定义配置
                 vision_api_key = core_config.get('visionModelApiKey')
                 vision_base_url = core_config.get('visionModelUrl')
@@ -185,8 +187,8 @@ class ScreenshotUtils:
                 logger.exception("AI API调用失败")
                 return None
                 
-        except ImportError:
-            logger.warning("OpenAI库不可用，无法进行AI分析")
+        except ImportError as e:
+            logger.warning(f"AI分析相关依赖导入失败: {e}")
             return None
         except Exception:
             logger.exception("AI截图分析失败")

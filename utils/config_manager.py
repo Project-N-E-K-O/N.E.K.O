@@ -768,6 +768,12 @@ class ConfigManager:
         if not config.get('COMPUTER_USE_GROUND_API_KEY'):
             config['COMPUTER_USE_GROUND_API_KEY'] = derived_key if derived_key else config['CORE_API_KEY']
 
+        # 自定义API配置映射
+        config['enableCustomApi'] = core_cfg.get('enableCustomApi', False)
+        config['visionModelApiKey'] = core_cfg.get('visionModelApiKey', '')
+        config['visionModelUrl'] = core_cfg.get('visionModelUrl', '')
+        config['visionModelId'] = core_cfg.get('visionModelId', '')
+
         return config
 
     def load_json_config(self, filename, default_value=None):
