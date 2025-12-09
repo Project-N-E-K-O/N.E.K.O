@@ -15,10 +15,7 @@ from plugin.registry import (
     load_plugins_from_toml,
     get_plugins as registry_get_plugins,
 )
-from plugin.status import (
-    _status_consumer,
-    get_plugin_status as status_get_plugin_status,
-)
+from plugin.status import status_manager
 from plugin.host import PluginProcessHost
 
 app = FastAPI(title="N.E.K.O User Plugin Server")
@@ -57,12 +54,12 @@ async def plugin_status(plugin_id: Optional[str] = Query(default=None)):
         if plugin_id:
             return {
                 "plugin_id": plugin_id,
-                "status": status_get_plugin_status(plugin_id),
+                "status": status_manager.get_plugin_status(plugin_id),
                 "time": _now_iso(),
             }
         else:
             return {
-                "plugins": status_get_plugin_status(),  # {pid: status}
+                "plugins": status_manager.get_plugin_status(),  # {pid: status}
                 "time": _now_iso(),
             }
     except Exception as e:
@@ -167,7 +164,7 @@ async def _startup_load_plugins():
         
 @app.on_event("startup")
 async def start_status_monitor():
-    asyncio.create_task(_status_consumer())
+    asyncio.create_task(status_manager.status_consumer())
     
 # New endpoint: /plugin/trigger
 # This endpoint is intended to be called by TaskExecutor (or other components) when a plugin should be triggered.
