@@ -447,7 +447,7 @@ async def analyze_screenshot_from_data_url(data_url: str) -> Optional[str]:
             # 清理临时文件
             try:
                 os.unlink(temp_file_path)
-            except Exception as e:
+            except OSError as e:
                 logger.warning(f"清理临时截图文件失败: {e}")
                 
     except Exception as e:
@@ -1212,7 +1212,8 @@ async def proactive_chat(request: Request):
         
         # 1. 检查前端是否发送了截图数据
         screenshot_data = data.get('screenshot_data')
-        has_screenshot = bool(screenshot_data)
+        # 防御性检查：确保screenshot_data是字符串类型
+        has_screenshot = bool(screenshot_data) and isinstance(screenshot_data, str)
         
         # 前端已经根据三种模式决定是否使用截图
         use_screenshot = has_screenshot
@@ -1228,16 +1229,16 @@ async def proactive_chat(request: Request):
                     logger.warning(f"[{lanlan_name}] 截图分析失败，跳过本次搭话")
                     return JSONResponse({
                         "success": False,
-                        "error": "截图分析失败",
+                        "error": "截图分析失败，请检查截图格式是否正确",
                         "action": "pass"
                     }, status_code=500)
                 else:
                     logger.info(f"[{lanlan_name}] 成功分析截图内容")
-            except Exception as e:
-                logger.exception(f"[{lanlan_name}] 处理截图数据失败: {e}")
+            except (ValueError, TypeError) as e:
+                logger.exception(f"[{lanlan_name}] 处理截图数据失败")
                 return JSONResponse({
                     "success": False,
-                    "error": "截图处理失败",
+                    "error": f"截图处理失败: {str(e)}",
                     "action": "pass"
                 }, status_code=500)
         else:
@@ -1258,12 +1259,12 @@ async def proactive_chat(request: Request):
                 formatted_content = format_trending_content(trending_content)
                 logger.info(f"[{lanlan_name}] 成功获取热门内容")
                 
-            except Exception as e:
-                logger.exception(f"[{lanlan_name}] 获取热门内容失败: {e}")
+            except Exception:
+                logger.exception(f"[{lanlan_name}] 获取热门内容失败")
                 return JSONResponse({
                     "success": False,
                     "error": "爬取热门内容时出错",
-                    "detail": str(e)
+                    "detail": "请检查网络连接或热门内容服务状态"
                 }, status_code=500)
         
         # 2. 获取new_dialogue prompt
@@ -1277,6 +1278,7 @@ async def proactive_chat(request: Request):
         
         # 3. 构造提示词（根据选择使用不同的模板）
         if use_screenshot:
+            # 截图模板：基于屏幕内容让AI决定是否主动发起对话
             system_prompt = proactive_chat_prompt_screenshot.format(
                 lanlan_name=lanlan_name,
                 master_name=master_name_current,
@@ -1285,6 +1287,7 @@ async def proactive_chat(request: Request):
             )
             logger.info(f"[{lanlan_name}] 使用图片主动对话提示词")
         else:
+            # 热门内容模板：基于网络热点让AI决定是否主动发起对话
             system_prompt = proactive_chat_prompt.format(
                 lanlan_name=lanlan_name,
                 master_name=master_name_current,
@@ -1311,7 +1314,8 @@ async def proactive_chat(request: Request):
             )
             
             # 发送请求获取AI决策 - Retry策略：重试2次，间隔1秒、2秒
-            print(system_prompt)
+            # 如需调试，可在此处使用 logger.debug 并适当截断 system_prompt
+            # logger.debug(f"[{lanlan_name}] proactive system_prompt: {system_prompt[:200]}...")
             max_retries = 3
             retry_delays = [1, 2]
             response_text = ""
