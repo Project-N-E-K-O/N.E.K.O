@@ -1,4 +1,4 @@
-from plugin.plugin_base import NekoPluginBase
+from plugin.sdk.base import NekoPluginBase
 
 
 class HelloPlugin(NekoPluginBase):

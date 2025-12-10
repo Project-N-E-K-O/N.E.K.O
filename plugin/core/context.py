@@ -1,22 +1,22 @@
+"""
+插件上下文模块
+
+提供插件运行时上下文，包括状态更新和消息推送功能。
+"""
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import asyncio
-import logging
-import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI
-from plugin.event_base import EventHandler
 
-EVENT_QUEUE_MAX = 1000
-MESSAGE_QUEUE_MAX = 1000
 
 @dataclass
 class PluginContext:
+    """插件运行时上下文"""
     plugin_id: str
     config_path: Path
-    logger: logging.Logger
+    logger: Any  # logging.Logger
     status_queue: Any
     message_queue: Any = None  # 消息推送队列
     app: Optional[FastAPI] = None
@@ -93,17 +93,3 @@ class PluginContext:
             # 其他未知异常
             self.logger.exception(f"Unexpected error pushing message for plugin {self.plugin_id}: {e}")
 
-
-class PluginRuntimeState:
-    def __init__(self):
-        self.plugins: Dict[str, Dict[str, Any]] = {}
-        self.plugin_instances: Dict[str, Any] = {}
-        self.event_handlers: Dict[str, EventHandler] = {}
-        self.plugin_status: Dict[str, Dict[str, Any]] = {}
-        self.plugin_hosts: Dict[str, Any] = {}
-        self.plugin_status_lock = threading.Lock()
-        self.event_queue: asyncio.Queue = asyncio.Queue(maxsize=EVENT_QUEUE_MAX)
-        self.message_queue: asyncio.Queue = asyncio.Queue(maxsize=MESSAGE_QUEUE_MAX)
-
-
-state = PluginRuntimeState()

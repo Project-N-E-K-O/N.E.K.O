@@ -12,10 +12,10 @@ try:
 except ImportError:  # pragma: no cover
     import tomli as tomllib  # type: ignore[no-redef]
 
-from plugin.event_base import EventHandler, EVENT_META_ATTR
-from plugin.server_base import state
-from plugin.models import PluginMeta
-from plugin.exceptions import (
+from plugin.sdk.events import EventHandler, EVENT_META_ATTR
+from plugin.core.state import state
+from plugin.api.models import PluginMeta
+from plugin.api.exceptions import (
     PluginImportError,
     PluginLoadError,
     PluginMetadataError,

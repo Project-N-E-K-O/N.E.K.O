@@ -1,3 +1,8 @@
+"""
+插件事件系统模块
+
+提供事件元数据和事件处理器定义。
+"""
 from dataclasses import dataclass
 from typing import Dict, Any, Callable, Literal, Optional
 
@@ -12,8 +17,9 @@ EventType = Literal[
 
 @dataclass
 class EventMeta:
+    """事件元数据"""
     event_type: EventType
-    id: str                     # 事件在“本插件内部”的 id，比如 "open" / "close" / "startup"
+    id: str                     # 事件在"本插件内部"的 id，比如 "open" / "close" / "startup"
     name: str                   # 展示名
     description: str = ""
     input_schema: Dict[str, Any] | None = None
@@ -27,5 +33,7 @@ class EventMeta:
 
 @dataclass
 class EventHandler:
+    """事件处理器"""
     meta: EventMeta
     handler: Callable  # 具体要调用的函数/方法
+

@@ -1,8 +1,8 @@
 import threading
 import tkinter as tk
 from typing import Any
-from plugin.decorators import neko_plugin, plugin_entry, on_event
-from plugin.plugin_base import NekoPluginBase
+from plugin.sdk.decorators import neko_plugin, plugin_entry, on_event
+from plugin.sdk.base import NekoPluginBase
 
 """
 Plugin for test use.

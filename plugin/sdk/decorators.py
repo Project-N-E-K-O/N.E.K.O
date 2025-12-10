@@ -1,7 +1,13 @@
-# neko_plugin_core/decorators.py
+"""
+插件装饰器模块
+
+提供插件开发所需的装饰器。
+"""
 from typing import Type, Callable, Literal
-from .plugin_base import PluginMeta, NEKO_PLUGIN_TAG
-from .event_base import EventMeta, EVENT_META_ATTR
+from .base import PluginMeta, NEKO_PLUGIN_TAG
+from .events import EventMeta, EVENT_META_ATTR
+
+
 def neko_plugin(cls):
     """
     简单版插件装饰器：
@@ -11,6 +17,7 @@ def neko_plugin(cls):
     """
     setattr(cls, NEKO_PLUGIN_TAG, True)
     return cls
+
 
 def on_event(
     *,
@@ -26,7 +33,7 @@ def on_event(
     """
     通用事件装饰器。
     - event_type: "plugin_entry" / "lifecycle" / "message" / "timer" ...
-    - id: 在“本插件内部”的事件 id（不带插件 id）
+    - id: 在"本插件内部"的事件 id（不带插件 id）
     """
     def decorator(fn: Callable):
         meta = EventMeta(
@@ -54,7 +61,7 @@ def plugin_entry(
     extra: dict | None = None,
 ) -> Callable:
     """
-    语法糖：专门用来声明“对外可调用入口”的装饰器。
+    语法糖：专门用来声明"对外可调用入口"的装饰器。
     本质上是 on_event(event_type="plugin_entry").
     """
     return on_event(
@@ -67,6 +74,8 @@ def plugin_entry(
         auto_start=auto_start,
         extra=extra,
     )
+
+
 def lifecycle(
     *,
     id: Literal["startup", "shutdown", "reload"],
@@ -74,7 +83,7 @@ def lifecycle(
     description: str = "",
     extra: dict | None = None,
 ) -> Callable:
-
+    """生命周期事件装饰器"""
     return on_event(
         event_type="lifecycle",
         id=id,
@@ -148,3 +157,4 @@ def timer_interval(
         auto_start=auto_start,
         extra=ex,
     )
+

@@ -11,11 +11,11 @@ from typing import Any, Dict
 from multiprocessing import Queue
 from queue import Empty
 
-from plugin.event_base import EVENT_META_ATTR
-from plugin.server_base import PluginContext
-from plugin.resource_manager import PluginCommunicationResourceManager
-from plugin.models import HealthCheckResponse
-from plugin.exceptions import (
+from plugin.sdk.events import EVENT_META_ATTR
+from plugin.core.context import PluginContext
+from plugin.runtime.communication import PluginCommunicationResourceManager
+from plugin.api.models import HealthCheckResponse
+from plugin.api.exceptions import (
     PluginLifecycleError,
     PluginTimerError,
     PluginEntryNotFoundError,
