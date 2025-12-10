@@ -403,6 +403,10 @@ function init_app(){
                     // 延迟2.5秒后刷新页面，让后端有足够时间完成session关闭和配置重新加载
                     setTimeout(() => {
                         console.log('开始刷新页面...');
+                        // 在刷新前关闭所有已打开的设置窗口，避免窗口引用丢失导致重复打开
+                        if (window.closeAllSettingsWindows) {
+                            window.closeAllSettingsWindows();
+                        }
                         window.location.reload();
                     }, 2500);
                 } else if (response.type === 'auto_close_mic') {
