@@ -133,15 +133,23 @@ class PluginStatusManager:
                                     status=msg.get("data", {}),
                                     source="child_process"
                                 )
+                    except (AttributeError, KeyError) as e:
+                        self.logger.warning(f"Invalid status message format for plugin {plugin_id}: {e}")
                     except Exception as e:
                         self.logger.exception(f"Error consuming status for plugin {plugin_id}: {e}")
                 
                 # 短暂休眠避免 CPU 占用过高
                 await asyncio.sleep(0.1)
                 
-            except Exception as e:
+            except (OSError, RuntimeError) as e:
+                # 系统级错误
                 if not self._shutdown_event.is_set():
-                    self.logger.exception(f"Error in status consumer: {e}")
+                    self.logger.error(f"System error in status consumer: {e}")
+                await asyncio.sleep(1)
+            except Exception as e:
+                # 其他未知异常
+                if not self._shutdown_event.is_set():
+                    self.logger.exception(f"Unexpected error in status consumer: {e}")
                 await asyncio.sleep(1)
 
 

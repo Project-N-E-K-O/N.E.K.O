@@ -22,22 +22,26 @@ class PluginCommunicationResourceManager:
     插件进程间通信资源管理器
     
     负责管理：
-    - 命令队列、结果队列、状态队列
+    - 命令队列、结果队列、状态队列、消息队列
     - 待处理请求的 Future 管理
     - 结果消费后台任务
+    - 消息消费后台任务
     - 通信超时和清理
     """
     plugin_id: str
     cmd_queue: Queue
     res_queue: Queue
     status_queue: Queue
+    message_queue: Queue
     logger: logging.Logger = field(default_factory=lambda: logging.getLogger("plugin.communication"))
     
     # 异步相关资源
     _pending_futures: Dict[str, asyncio.Future] = field(default_factory=dict)
     _result_consumer_task: Optional[asyncio.Task] = None
+    _message_consumer_task: Optional[asyncio.Task] = None
     _shutdown_event: Optional[asyncio.Event] = None
     _executor: Optional[ThreadPoolExecutor] = None
+    _message_target_queue: Optional[asyncio.Queue] = None  # 主进程的消息队列
     
     def __post_init__(self):
         """初始化异步资源"""
@@ -48,11 +52,20 @@ class PluginCommunicationResourceManager:
             thread_name_prefix=f"plugin-comm-{self.plugin_id}"
         )
     
-    async def start(self) -> None:
-        """启动结果消费后台任务"""
+    async def start(self, message_target_queue: Optional[asyncio.Queue] = None) -> None:
+        """
+        启动结果消费和消息消费后台任务
+        
+        Args:
+            message_target_queue: 主进程的消息队列，用于接收插件推送的消息
+        """
+        self._message_target_queue = message_target_queue
         if self._result_consumer_task is None or self._result_consumer_task.done():
             self._result_consumer_task = asyncio.create_task(self._consume_results())
             self.logger.debug(f"Started result consumer for plugin {self.plugin_id}")
+        if self._message_consumer_task is None or self._message_consumer_task.done():
+            self._message_consumer_task = asyncio.create_task(self._consume_messages())
+            self.logger.debug(f"Started message consumer for plugin {self.plugin_id}")
     
     async def shutdown(self, timeout: float = 5.0) -> None:
         """
@@ -63,9 +76,10 @@ class PluginCommunicationResourceManager:
         """
         self.logger.debug(f"Shutting down communication resources for plugin {self.plugin_id}")
         
-        # 停止结果消费任务
+        # 停止结果消费和消息消费任务
+        self._shutdown_event.set()
+        
         if self._result_consumer_task and not self._result_consumer_task.done():
-            self._shutdown_event.set()
             try:
                 await asyncio.wait_for(self._result_consumer_task, timeout=timeout)
             except asyncio.TimeoutError:
@@ -75,6 +89,19 @@ class PluginCommunicationResourceManager:
                 self._result_consumer_task.cancel()
                 try:
                     await self._result_consumer_task
+                except asyncio.CancelledError:
+                    pass
+        
+        if self._message_consumer_task and not self._message_consumer_task.done():
+            try:
+                await asyncio.wait_for(self._message_consumer_task, timeout=timeout)
+            except asyncio.TimeoutError:
+                self.logger.warning(
+                    f"Message consumer for plugin {self.plugin_id} didn't stop in time, cancelling"
+                )
+                self._message_consumer_task.cancel()
+                try:
+                    await self._message_consumer_task
                 except asyncio.CancelledError:
                     pass
         
@@ -187,9 +214,15 @@ class PluginCommunicationResourceManager:
             except Empty:
                 # 队列为空，继续等待
                 continue
-            except Exception as e:
+            except (OSError, RuntimeError) as e:
+                # 系统级错误，记录并继续
                 if not self._shutdown_event.is_set():
-                    self.logger.exception(f"Error consuming results for plugin {self.plugin_id}: {e}")
+                    self.logger.error(f"System error consuming results for plugin {self.plugin_id}: {e}")
+                await asyncio.sleep(0.1)
+            except Exception as e:
+                # 其他未知异常，记录详细信息
+                if not self._shutdown_event.is_set():
+                    self.logger.exception(f"Unexpected error consuming results for plugin {self.plugin_id}: {e}")
                 # 短暂休眠避免 CPU 占用过高
                 await asyncio.sleep(0.1)
     
@@ -213,4 +246,51 @@ class PluginCommunicationResourceManager:
             except Empty:
                 break
         return messages
+    
+    async def _consume_messages(self) -> None:
+        """
+        后台任务：持续消费消息队列
+        
+        将插件推送的消息转发到主进程的消息队列
+        """
+        if self._message_target_queue is None:
+            self.logger.warning(f"Message target queue not set for plugin {self.plugin_id}, message consumer will not work")
+            return
+        
+        loop = asyncio.get_event_loop()
+        
+        while not self._shutdown_event.is_set():
+            try:
+                # 使用 executor 在后台线程中阻塞读取队列
+                msg = await loop.run_in_executor(
+                    self._executor,
+                    lambda: self.message_queue.get(timeout=1.0)
+                )
+                
+                # 转发消息到主进程的消息队列
+                try:
+                    if self._message_target_queue:
+                        await self._message_target_queue.put(msg)
+                        self.logger.debug(f"Forwarded message from plugin {self.plugin_id} to main queue")
+                except asyncio.QueueFull:
+                    self.logger.warning(f"Main message queue is full, dropping message from plugin {self.plugin_id}")
+                except (AttributeError, RuntimeError) as e:
+                    self.logger.error(f"Queue error forwarding message from plugin {self.plugin_id}: {e}")
+                except Exception as e:
+                    self.logger.exception(f"Unexpected error forwarding message from plugin {self.plugin_id}: {e}")
+                    
+            except Empty:
+                # 队列为空，继续等待
+                continue
+            except (OSError, RuntimeError) as e:
+                # 系统级错误
+                if not self._shutdown_event.is_set():
+                    self.logger.error(f"System error consuming messages for plugin {self.plugin_id}: {e}")
+                await asyncio.sleep(0.1)
+            except Exception as e:
+                # 其他未知异常
+                if not self._shutdown_event.is_set():
+                    self.logger.exception(f"Unexpected error consuming messages for plugin {self.plugin_id}: {e}")
+                # 短暂休眠避免 CPU 占用过高
+                await asyncio.sleep(0.1)
 

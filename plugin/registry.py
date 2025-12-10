@@ -15,6 +15,11 @@ except ImportError:  # pragma: no cover
 from plugin.event_base import EventHandler, EVENT_META_ATTR
 from plugin.server_base import state
 from plugin.models import PluginMeta
+from plugin.exceptions import (
+    PluginImportError,
+    PluginLoadError,
+    PluginMetadataError,
+)
 
 
 @dataclass
@@ -76,8 +81,10 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
             eh = EventHandler(meta=entry_meta, handler=handler_fn)
             state.event_handlers[f"{pid}.{eid}"] = eh
             state.event_handlers[f"{pid}:plugin_entry:{eid}"] = eh
-        except Exception:
-            logging.getLogger(__name__).exception("Error parsing entry %s for %s", ent, pid)
+        except (AttributeError, KeyError, TypeError) as e:
+            logger = logging.getLogger(__name__)
+            logger.warning("Error parsing entry %s for plugin %s: %s", ent, pid, e, exc_info=True)
+            # 继续处理其他条目，不中断整个插件加载
 
 
 def load_plugins_from_toml(
@@ -111,15 +118,24 @@ def load_plugins_from_toml(
             try:
                 mod = importlib.import_module(module_path)
                 cls: Type[Any] = getattr(mod, class_name)
+            except (ImportError, ModuleNotFoundError) as e:
+                logger.error("Failed to import module '%s' for plugin %s: %s", module_path, pid, e)
+                continue
+            except AttributeError as e:
+                logger.error("Class '%s' not found in module '%s' for plugin %s: %s", class_name, module_path, pid, e)
+                continue
             except Exception as e:
-                logger.exception("Failed to import plugin class %s: %s", entry, e)
+                logger.exception("Unexpected error importing plugin class %s: %s", entry, e)
                 continue
 
             try:
                 host = process_host_factory(pid, entry, toml_path)
                 state.plugin_hosts[pid] = host
-            except Exception:
-                logger.exception("Failed to start process for plugin %s", pid)
+            except (OSError, RuntimeError) as e:
+                logger.error("Failed to start process for plugin %s: %s", pid, e)
+                continue
+            except Exception as e:
+                logger.exception("Unexpected error starting process for plugin %s: %s", pid, e)
                 continue
 
             scan_static_metadata(pid, cls, conf, pdata)
@@ -134,5 +150,9 @@ def load_plugins_from_toml(
             register_plugin(plugin_meta)
 
             logger.info("Loaded plugin %s (Process: %s)", pid, getattr(host, "process", None))
-        except Exception:
-            logger.exception("Failed to load plugin from %s", toml_path)
+        except (KeyError, ValueError, TypeError) as e:
+            # TOML 解析或配置错误
+            logger.error("Invalid plugin configuration in %s: %s", toml_path, e)
+        except Exception as e:
+            # 其他未知错误
+            logger.exception("Unexpected error loading plugin from %s: %s", toml_path, e)

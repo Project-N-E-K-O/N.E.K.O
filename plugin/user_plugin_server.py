@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from config import USER_PLUGIN_SERVER_PORT
@@ -11,17 +12,89 @@ from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.responses import JSONResponse
 
 from plugin.server_base import state
-from plugin.models import PluginTriggerRequest, PluginTriggerResponse
+from plugin.models import (
+    PluginTriggerRequest,
+    PluginTriggerResponse,
+    PluginPushMessageRequest,
+    PluginPushMessage,
+    PluginPushMessageResponse,
+)
 from plugin.registry import (
     load_plugins_from_toml,
     get_plugins as registry_get_plugins,
 )
 from plugin.status import status_manager
 from plugin.host import PluginProcessHost
+from plugin.exceptions import (
+    PluginError,
+    PluginNotFoundError,
+    PluginNotRunningError,
+    PluginTimeoutError,
+    PluginExecutionError,
+    PluginCommunicationError,
+    PluginQueueError,
+)
 
 app = FastAPI(title="N.E.K.O User Plugin Server")
 
 logger = logging.getLogger("user_plugin_server")
+
+
+# 异常处理中间件
+@app.exception_handler(PluginError)
+async def plugin_error_handler(request: Request, exc: PluginError):
+    """统一处理插件系统异常"""
+    logger.warning(f"Plugin error: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "Plugin error",
+            "detail": str(exc),
+            "type": exc.__class__.__name__
+        }
+    )
+
+
+@app.exception_handler(PluginNotFoundError)
+async def plugin_not_found_handler(request: Request, exc: PluginNotFoundError):
+    """处理插件未找到异常"""
+    return JSONResponse(
+        status_code=404,
+        content={
+            "error": "Plugin not found",
+            "detail": str(exc),
+            "plugin_id": exc.plugin_id
+        }
+    )
+
+
+@app.exception_handler(PluginNotRunningError)
+async def plugin_not_running_handler(request: Request, exc: PluginNotRunningError):
+    """处理插件未运行异常"""
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": "Plugin not running",
+            "detail": str(exc),
+            "plugin_id": exc.plugin_id,
+            "status": exc.status
+        }
+    )
+
+
+@app.exception_handler(PluginTimeoutError)
+async def plugin_timeout_handler(request: Request, exc: PluginTimeoutError):
+    """处理插件超时异常"""
+    return JSONResponse(
+        status_code=504,
+        content={
+            "error": "Plugin timeout",
+            "detail": str(exc),
+            "plugin_id": exc.plugin_id,
+            "entry_id": exc.entry_id,
+            "timeout": exc.timeout
+        }
+    )
 # In-memory plugin registry (initially empty). Plugins are dicts with keys:
 # { "id": str, "name": str, "description": str, "endpoint": str, "input_schema": dict }
 # Registration endpoints are intentionally not implemented now.
@@ -83,32 +156,42 @@ async def list_plugins():
             logger.info("加载插件列表成功")
             # 已加载的插件（来自 TOML），直接返回
             for plugin_id, plugin_meta in state.plugins.items():
-                plugin_info = plugin_meta.copy()  # Make a copy to modify
-                plugin_info["entries"] = []
-                # 处理每个 plugin 的 method，添加描述
-                seen = set()  # 用于去重 (event_type, id)
-                for key, eh in state.event_handlers.items():
-                    if not (key.startswith(f"{plugin_id}.") or key.startswith(f"{plugin_id}:plugin_entry:")):
-                        continue
-                    if getattr(eh.meta, "event_type", None) != "plugin_entry":
-                        continue
-                    # 去重判定键：优先使用 meta.id，再退回到 key
-                    eid = getattr(eh.meta, "id", None) or key
-                    dedup_key = (getattr(eh.meta, "event_type", "plugin_entry"), eid)
-                    if dedup_key in seen:
-                        continue
-                    seen.add(dedup_key)
-                    # 安全获取各字段，避免缺属性时报错
-                    returned_message = getattr(eh.meta, "return_message", "")
-                    plugin_info["entries"].append({
-                        "id": getattr(eh.meta, "id", eid),
-                        "name": getattr(eh.meta, "name", ""),
-                        "description": getattr(eh.meta, "description", ""),
-                        "event_key": key,
-                        "input_schema": getattr(eh.meta, "input_schema", {}),
-                        "return_message": returned_message,
+                try:
+                    plugin_info = plugin_meta.copy()  # Make a copy to modify
+                    plugin_info["entries"] = []
+                    # 处理每个 plugin 的 method，添加描述
+                    seen = set()  # 用于去重 (event_type, id)
+                    for key, eh in state.event_handlers.items():
+                        if not (key.startswith(f"{plugin_id}.") or key.startswith(f"{plugin_id}:plugin_entry:")):
+                            continue
+                        if getattr(eh.meta, "event_type", None) != "plugin_entry":
+                            continue
+                        # 去重判定键：优先使用 meta.id，再退回到 key
+                        eid = getattr(eh.meta, "id", None) or key
+                        dedup_key = (getattr(eh.meta, "event_type", "plugin_entry"), eid)
+                        if dedup_key in seen:
+                            continue
+                        seen.add(dedup_key)
+                        # 安全获取各字段，避免缺属性时报错
+                        returned_message = getattr(eh.meta, "return_message", "")
+                        plugin_info["entries"].append({
+                            "id": getattr(eh.meta, "id", eid),
+                            "name": getattr(eh.meta, "name", ""),
+                            "description": getattr(eh.meta, "description", ""),
+                            "event_key": key,
+                            "input_schema": getattr(eh.meta, "input_schema", {}),
+                            "return_message": returned_message,
+                        })
+                    result.append(plugin_info)
+                except (AttributeError, KeyError, TypeError) as e:
+                    logger.warning(f"Error processing plugin {plugin_id} metadata: {e}", exc_info=True)
+                    # 即使元数据有问题，也返回基本信息
+                    result.append({
+                        "id": plugin_id,
+                        "name": plugin_meta.get("name", plugin_id),
+                        "description": plugin_meta.get("description", ""),
+                        "entries": [],
                     })
-                result.append(plugin_info)
 
             logger.debug("Loaded plugins: %s", result)
 
@@ -155,18 +238,19 @@ async def _startup_load_plugins():
             for pid, pobj in list(state.plugin_instances.items()):
                 try:
                     methods = [m for m in dir(pobj) if callable(getattr(pobj, m)) and not m.startswith('_')]
-                except Exception:
+                except (AttributeError, TypeError) as e:
+                    logger.debug(f"startup-diagnostics: failed to enumerate methods for {pid}: {e}")
                     methods = []
                 logger.info(f"startup-diagnostics: instance '{pid}' methods: {methods}")
         else:
             logger.info("startup-diagnostics: no plugin instances loaded")
-    except Exception:
-        logger.exception("startup-diagnostics: failed to enumerate plugin instances")
+    except (AttributeError, KeyError) as e:
+        logger.warning(f"startup-diagnostics: failed to enumerate plugin instances: {e}", exc_info=True)
     
     # 启动所有插件的通信资源管理器
     for plugin_id, host in state.plugin_hosts.items():
         try:
-            await host.start()
+            await host.start(message_target_queue=state.message_queue)
             logger.debug(f"Started communication resources for plugin {plugin_id}")
         except Exception as e:
             logger.exception(f"Failed to start communication resources for plugin {plugin_id}: {e}")
@@ -246,24 +330,35 @@ async def plugin_trigger(payload: PluginTriggerRequest, request: Request):
             try:
                 state.event_queue.get_nowait()
                 state.event_queue.put_nowait(event)
-            except Exception:
-                logger.debug("Event queue operation failed, event dropped")
-        except Exception:
-            # 队列报错不应影响主流程
-            logger.debug("Event queue error, continuing without queueing")
+                logger.debug("Event queue was full, dropped oldest event")
+            except (asyncio.QueueEmpty, AttributeError) as e:
+                logger.warning(f"Event queue operation failed after queue full: {e}")
+        except (AttributeError, RuntimeError) as e:
+            # 队列报错不应影响主流程，但需要记录
+            logger.warning(f"Event queue error, continuing without queueing: {e}")
         # --- 3. [核心修改] 使用 ProcessHost 进行跨进程调用 ---
         
         # 不再查找 _plugin_instances，而是查找进程宿主 _plugin_hosts
         host = state.plugin_hosts.get(plugin_id)
         if not host:
-            raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' is not running/loaded")
+            raise HTTPException(
+                status_code=404,
+                detail=f"Plugin '{plugin_id}' is not running/loaded"
+            )
 
         # 检查进程健康状态
-        health = host.health_check()
-        if not health.alive:
+        try:
+            health = host.health_check()
+            if not health.alive:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Plugin '{plugin_id}' process is not alive (status: {health.status})"
+                )
+        except (AttributeError, RuntimeError) as e:
+            logger.error(f"Failed to check health for plugin {plugin_id}: {e}")
             raise HTTPException(
                 status_code=503,
-                detail=f"Plugin '{plugin_id}' process is not alive (status: {health.status})"
+                detail=f"Plugin '{plugin_id}' health check failed"
             )
 
         plugin_response: Any = None
@@ -274,16 +369,24 @@ async def plugin_trigger(payload: PluginTriggerRequest, request: Request):
             # 注意：参数校验、反射调用、sync/async 兼容处理都在子进程里完成了
             plugin_response = await host.trigger(entry_id, args, timeout=30.0) 
 
-        except TimeoutError:
-             plugin_error = {"error": "Plugin execution timed out"}
-             logger.error(f"Plugin {plugin_id} entry {entry_id} timed out")
+        except TimeoutError as e:
+            plugin_error = {"error": "Plugin execution timed out"}
+            logger.error(f"Plugin {plugin_id} entry {entry_id} timed out: {e}")
+        except PluginError as e:
+            # 插件系统已知异常，直接使用
+            logger.warning(f"Plugin {plugin_id} entry {entry_id} error: {e}")
+            plugin_error = {"error": str(e)}
+        except (ConnectionError, OSError) as e:
+            # 进程间通信错误
+            logger.error(f"Communication error with plugin {plugin_id}: {e}")
+            plugin_error = {"error": f"Communication error: {str(e)}"}
         except Exception as e:
-            # 这里的异常可能是 host.trigger 抛出的（子进程报错传回来的，或者通信错误）
+            # 未知异常，记录详细信息
             logger.exception(
-                "plugin_trigger: error invoking plugin %s via IPC",
+                "plugin_trigger: unexpected error invoking plugin %s via IPC",
                 plugin_id
             )
-            plugin_error = {"error": str(e)}
+            plugin_error = {"error": f"Unexpected error: {str(e)}"}
 
         # --- 4. 构造响应 ---
         resp = PluginTriggerResponse(
@@ -300,9 +403,156 @@ async def plugin_trigger(payload: PluginTriggerRequest, request: Request):
 
     except HTTPException:
         raise
+    except PluginError as e:
+        logger.error(f"plugin_trigger: plugin error: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    except (ValueError, KeyError, TypeError) as e:
+        logger.error(f"plugin_trigger: invalid request: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid request: {str(e)}") from e
     except Exception as e:
         logger.exception("plugin_trigger: unexpected error")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}") from e
+
+
+@app.get("/plugin/messages")
+async def get_plugin_messages(
+    plugin_id: Optional[str] = Query(default=None),
+    max_count: int = Query(default=100, ge=1, le=1000),
+    priority_min: Optional[int] = Query(default=None, description="最低优先级（包含）"),
+):
+    """
+    获取插件推送的消息队列
+    
+    - GET /plugin/messages                    -> 获取所有插件的消息
+    - GET /plugin/messages?plugin_id=xxx       -> 获取指定插件的消息
+    - GET /plugin/messages?max_count=50        -> 限制返回数量
+    - GET /plugin/messages?priority_min=5      -> 只返回优先级>=5的消息
+    """
+    try:
+        messages = []
+        count = 0
+        
+        # 从消息队列中获取消息（非阻塞）
+        while count < max_count:
+            try:
+                msg = state.message_queue.get_nowait()
+                
+                # 过滤插件ID
+                if plugin_id and msg.get("plugin_id") != plugin_id:
+                    continue
+                
+                # 过滤优先级
+                if priority_min is not None:
+                    msg_priority = msg.get("priority", 0)
+                    if msg_priority < priority_min:
+                        continue
+                
+                # 构造完整的消息对象
+                message_id = str(uuid.uuid4())
+                plugin_message = PluginPushMessage(
+                    plugin_id=msg.get("plugin_id", ""),
+                    source=msg.get("source", ""),
+                    description=msg.get("description", ""),
+                    priority=msg.get("priority", 0),
+                    message_type=msg.get("message_type", "text"),
+                    content=msg.get("content"),
+                    binary_data=msg.get("binary_data"),
+                    binary_url=msg.get("binary_url"),
+                    metadata=msg.get("metadata", {}),
+                    timestamp=msg.get("time", _now_iso()),
+                    message_id=message_id,
+                )
+                messages.append(plugin_message.model_dump())
+                count += 1
+            except asyncio.QueueEmpty:
+                break
+        
+        return {
+            "messages": messages,
+            "count": len(messages),
+            "time": _now_iso(),
+        }
+    except Exception as e:
+        logger.exception("Failed to get plugin messages")
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.post("/plugin/push", response_model=PluginPushMessageResponse)
+async def plugin_push_message(payload: PluginPushMessageRequest, request: Request):
+    """
+    接收插件推送的消息（HTTP端点，主要用于外部调用或测试）
+    
+    注意：插件通常通过进程间通信直接推送，此端点作为备用。
+    """
+    try:
+        client_host = request.client.host if request.client else None
+        
+        # 验证插件是否存在
+        if payload.plugin_id not in state.plugins:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Plugin '{payload.plugin_id}' is not registered"
+            )
+        
+        # 构造消息
+        message_id = str(uuid.uuid4())
+        message = {
+            "type": "MESSAGE_PUSH",
+            "plugin_id": payload.plugin_id,
+            "source": payload.source,
+            "description": payload.description,
+            "priority": payload.priority,
+            "message_type": payload.message_type,
+            "content": payload.content,
+            "binary_data": payload.binary_data,
+            "binary_url": payload.binary_url,
+            "metadata": payload.metadata,
+            "time": _now_iso(),
+            "client": client_host,
+        }
+        
+        # 将消息放入队列
+        try:
+            state.message_queue.put_nowait(message)
+            logger.info(
+                f"[plugin_push] plugin_id={payload.plugin_id} source={payload.source} "
+                f"type={payload.message_type} priority={payload.priority}"
+            )
+        except asyncio.QueueFull:
+            # 队列满时，尝试移除最旧的消息
+            try:
+                state.message_queue.get_nowait()
+                state.message_queue.put_nowait(message)
+                logger.warning(f"Message queue full, dropped oldest message")
+            except (asyncio.QueueEmpty, AttributeError, RuntimeError) as e:
+                logger.error(f"Failed to enqueue message, queue full and cleanup failed: {e}")
+                raise HTTPException(
+                    status_code=503,
+                    detail="Message queue is full, please try again later"
+                )
+        except (AttributeError, RuntimeError) as e:
+            logger.error(f"Message queue error: {e}")
+            raise HTTPException(
+                status_code=503,
+                detail="Message queue is not available"
+            )
+        
+        return PluginPushMessageResponse(
+            success=True,
+            message_id=message_id,
+            received_at=message["time"],
+        )
+        
+    except HTTPException:
+        raise
+    except (ValueError, KeyError, TypeError) as e:
+        logger.error(f"plugin_push: invalid request: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid request: {str(e)}") from e
+    except Exception as e:
+        logger.exception("plugin_push: unexpected error")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}") from e
+
+
 if __name__ == "__main__":
     import uvicorn
     logging.basicConfig(level=logging.DEBUG)

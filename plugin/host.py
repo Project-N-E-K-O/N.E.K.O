@@ -15,6 +15,13 @@ from plugin.event_base import EVENT_META_ATTR
 from plugin.server_base import PluginContext
 from plugin.resource_manager import PluginCommunicationResourceManager
 from plugin.models import HealthCheckResponse
+from plugin.exceptions import (
+    PluginLifecycleError,
+    PluginTimerError,
+    PluginEntryNotFoundError,
+    PluginExecutionError,
+    PluginError,
+)
 
 
 def _plugin_process_runner(
@@ -24,6 +31,7 @@ def _plugin_process_runner(
     cmd_queue: Queue,
     res_queue: Queue,
     status_queue: Queue,
+    message_queue: Queue,
 ) -> None:
     """
     独立进程中的运行函数，负责加载插件、映射入口、处理命令并返回结果。
@@ -41,6 +49,7 @@ def _plugin_process_runner(
             logger=logger,
             config_path=config_path,
             status_queue=status_queue,
+            message_queue=message_queue,
         )
         instance = cls(ctx)
 
@@ -75,8 +84,14 @@ def _plugin_process_runner(
                     asyncio.run(startup_fn())
                 else:
                     startup_fn()
-            except Exception:
-                logger.exception("Error in lifecycle.startup")
+            except (KeyboardInterrupt, SystemExit):
+                # 系统级中断，直接抛出
+                raise
+            except Exception as e:
+                error_msg = f"Error in lifecycle.startup: {str(e)}"
+                logger.exception(error_msg)
+                # 记录错误但不中断进程启动
+                # 如果启动失败是致命的，可以在这里 raise PluginLifecycleError
 
         # 定时任务：timer auto_start interval
         def _run_timer_interval(fn, interval_seconds: int, fn_name: str, stop_event: threading.Event):
@@ -86,8 +101,13 @@ def _plugin_process_runner(
                         asyncio.run(fn())
                     else:
                         fn()
-                except Exception:
-                    logger.exception("Timer '%s' failed", fn_name)
+                except (KeyboardInterrupt, SystemExit):
+                    # 系统级中断，停止定时任务
+                    logger.info("Timer '%s' interrupted, stopping", fn_name)
+                    break
+                except Exception as e:
+                    logger.exception("Timer '%s' failed: %s", fn_name, e)
+                    # 定时任务失败不应中断循环，继续执行
                 stop_event.wait(interval_seconds)
 
         timer_events = events_by_type.get("timer", {})
@@ -130,25 +150,60 @@ def _plugin_process_runner(
 
                 try:
                     if not method:
-                        raise AttributeError(f"Method {entry_id} not found in plugin")
+                        raise PluginEntryNotFoundError(plugin_id, entry_id)
+                    
                     logger.info("Executing entry '%s' using method '%s'", entry_id, getattr(method, "__name__", entry_id))
+                    
                     if asyncio.iscoroutinefunction(method):
                         res = asyncio.run(method(**args))
                     else:
                         try:
                             res = method(**args)
                         except TypeError:
+                            # 尝试将 args 作为单个参数传递（向后兼容）
                             res = method(args)
+                    
                     ret_payload["success"] = True
                     ret_payload["data"] = res
-                except Exception as e:
-                    logger.exception("Error executing %s", entry_id)
+                    
+                except PluginError as e:
+                    # 插件系统已知异常，直接使用
+                    logger.warning("Plugin error executing %s: %s", entry_id, e)
                     ret_payload["error"] = str(e)
+                except (TypeError, ValueError, AttributeError) as e:
+                    # 参数或方法调用错误
+                    logger.error("Invalid call to entry %s: %s", entry_id, e)
+                    ret_payload["error"] = f"Invalid call: {str(e)}"
+                except (KeyboardInterrupt, SystemExit):
+                    # 系统级中断，需要特殊处理
+                    logger.warning("Entry %s interrupted", entry_id)
+                    ret_payload["error"] = "Execution interrupted"
+                    raise  # 重新抛出系统级异常
+                except Exception as e:
+                    # 其他未知异常
+                    logger.exception("Unexpected error executing %s", entry_id)
+                    ret_payload["error"] = f"Unexpected error: {str(e)}"
 
                 res_queue.put(ret_payload)
 
-    except Exception:
-        logging.getLogger("user_plugin_server").exception("Process crashed")
+    except (KeyboardInterrupt, SystemExit):
+        # 系统级中断，正常退出
+        logger.info("Plugin process %s interrupted", plugin_id)
+        raise
+    except Exception as e:
+        # 进程崩溃，记录详细信息
+        logger.exception("Plugin process %s crashed: %s", plugin_id, e)
+        # 尝试发送错误信息到结果队列（如果可能）
+        try:
+            res_queue.put({
+                "req_id": "CRASH",
+                "success": False,
+                "data": None,
+                "error": f"Process crashed: {str(e)}"
+            })
+        except Exception:
+            pass  # 如果队列也坏了，只能放弃
+        raise  # 重新抛出，让进程退出
 
 
 class PluginProcessHost:
@@ -168,11 +223,12 @@ class PluginProcessHost:
         cmd_queue: Queue = multiprocessing.Queue()
         res_queue: Queue = multiprocessing.Queue()
         status_queue: Queue = multiprocessing.Queue()
+        message_queue: Queue = multiprocessing.Queue()
         
         # 创建并启动进程
         self.process = multiprocessing.Process(
             target=_plugin_process_runner,
-            args=(plugin_id, entry_point, config_path, cmd_queue, res_queue, status_queue),
+            args=(plugin_id, entry_point, config_path, cmd_queue, res_queue, status_queue, message_queue),
             daemon=False,
         )
         self.process.start()
@@ -187,16 +243,23 @@ class PluginProcessHost:
             cmd_queue=cmd_queue,
             res_queue=res_queue,
             status_queue=status_queue,
+            message_queue=message_queue,
         )
         
         # 为了向后兼容，保留这些属性
         self.cmd_queue = cmd_queue
         self.res_queue = res_queue
         self.status_queue = status_queue
+        self.message_queue = message_queue
     
-    async def start(self) -> None:
-        """启动后台任务（需要在异步上下文中调用）"""
-        await self.comm_manager.start()
+    async def start(self, message_target_queue=None) -> None:
+        """
+        启动后台任务（需要在异步上下文中调用）
+        
+        Args:
+            message_target_queue: 主进程的消息队列，用于接收插件推送的消息
+        """
+        await self.comm_manager.start(message_target_queue=message_target_queue)
     
     async def shutdown(self, timeout: float = 5.0) -> None:
         """
