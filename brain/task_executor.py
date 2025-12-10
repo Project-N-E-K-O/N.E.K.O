@@ -640,7 +640,6 @@ Return only the JSON object, nothing else.
                     "success": result_obj.success,
                     "reason": result_obj.reason,
                     "tool_name": result_obj.tool_name,
-                    "tool_args": result_obj.tool_args,
                     "result_preview": res_preview
                 }, ensure_ascii=False))
             except Exception:
@@ -676,18 +675,30 @@ Return only the JSON object, nothing else.
                     reason=getattr(up_decision, "reason", "") or "UserPlugin execution error"
                 )
                 
-        # 3. 两者都不行
+        # 3. 没有可执行的分支，汇总原因（包含 UserPlugin）
         reason_parts = []
         if mcp_decision:
             reason_parts.append(f"MCP: {mcp_decision.reason}")
         if cu_decision:
             reason_parts.append(f"ComputerUse: {cu_decision.reason}")
+        if up_decision:
+            reason_parts.append(f"UserPlugin: {getattr(up_decision, 'reason', '')}")
         
-        # 检查是否有任务但无法执行
-        has_any_task = (mcp_decision and mcp_decision.has_task) or (cu_decision and cu_decision.has_task)
+        # 检查是否有任务但无法执行（包含 UserPlugin）
+        has_any_task = (
+            (mcp_decision and mcp_decision.has_task)
+            or (cu_decision and cu_decision.has_task)
+            or (up_decision and getattr(up_decision, "has_task", False))
+        )
         if has_any_task:
-            task_desc = (mcp_decision.task_description if mcp_decision and mcp_decision.has_task 
-                        else cu_decision.task_description if cu_decision else "")
+            if mcp_decision and mcp_decision.has_task:
+                task_desc = mcp_decision.task_description
+            elif cu_decision and cu_decision.has_task:
+                task_desc = cu_decision.task_description
+            elif up_decision and getattr(up_decision, "has_task", False):
+                task_desc = getattr(up_decision, "task_description", "")
+            else:
+                task_desc = ""
             logger.info(f"[TaskExecutor] Task detected but cannot execute: {task_desc}")
             return TaskResult(
                 task_id=task_id,
@@ -722,7 +733,9 @@ Return only the JSON object, nothing else.
                 reason=decision.reason
             )
         
-        logger.info(f"[TaskExecutor] Executing MCP tool: {tool_name} with args: {tool_args}")
+        arg_keys = list(tool_args.keys()) if isinstance(tool_args, dict) else str(type(tool_args))
+        logger.info(f"[TaskExecutor] Executing MCP tool: {tool_name} (arg_keys={arg_keys})")
+        logger.debug(f"[TaskExecutor] MCP tool args payload: {tool_args}")
         
         try:
             result = await self.router.call_tool(tool_name, tool_args)
@@ -834,9 +847,15 @@ Return only the JSON object, nothing else.
         trigger_body = {"task_id": task_id, "plugin_id": plugin_id, "args": plugin_args or {}}
         if plugin_entry_id:
             trigger_body["entry_id"] = plugin_entry_id
-            logger.info(f"[TaskExecutor] Using explicit plugin_entry_id for trigger: {plugin_entry_id}")
-        # send trigger
-        logger.info(f"[TaskExecutor] POST to plugin trigger {trigger_endpoint} with body: {trigger_body}")
+            logger.info("[TaskExecutor] Using explicit plugin_entry_id for trigger: %s", plugin_entry_id)
+        # send trigger (avoid dumping full args at INFO)
+        logger.info(
+            "[TaskExecutor] POST to plugin trigger %s (plugin_id=%s, entry_id=%s, arg_keys=%s)",
+            trigger_endpoint,
+            plugin_id,
+            plugin_entry_id,
+            list(plugin_args.keys()) if isinstance(plugin_args, dict) else str(type(plugin_args)),
+        )
         try:
             import httpx
             async with httpx.AsyncClient(timeout=5.0) as client:
@@ -848,11 +867,16 @@ Return only the JSON object, nothing else.
                     except Exception:
                         logger.debug("[TaskExecutor] Failed to parse trigger response as JSON, using text fallback", exc_info=True)
                         data = {"raw_text": r.text}
-                    # Enhanced logging: include trigger_body and returned data for diagnosis
-                    try:
-                        logger.info(f"[TaskExecutor] ✅ Trigger accepted for plugin {plugin_id}. trigger_body={trigger_body} response={data}")
-                    except Exception:
-                        logger.info(f"[TaskExecutor] ✅ Trigger accepted for plugin {plugin_id}: {data}")
+                    logger.info(
+                        "[TaskExecutor] ✅ Trigger accepted for plugin %s (entry_id=%s)",
+                        plugin_id,
+                        entry_id or trigger_body.get("entry_id"),
+                    )
+                    logger.debug(
+                        "[TaskExecutor] Trigger payload=%r, response=%r",
+                        trigger_body,
+                        data,
+                    )
                     plugin_name = data.get("plugin_id") or plugin_id
                     # Determine executed entry id: prefer explicit returned executed_entry/entry_id, then trigger_body.entry_id
                     entry_id = None
@@ -908,7 +932,15 @@ Return only the JSON object, nothing else.
         Directly execute a plugin entry by calling /plugin/trigger with explicit plugin_id and optional entry_id.
         This is intended for agent_server to call when it wants to trigger a plugin_entry immediately.
         """
-        up_decision_stub = type("UP", (), {"plugin_id": plugin_id, "plugin_args": plugin_args, "task_description": f"Direct plugin call {plugin_id}", "plugin_entry_id": entry_id, "reason": "direct_call"})
+        up_decision_stub = UserPluginDecision(
+            has_task=True,
+            can_execute=True,
+            task_description=f"Direct plugin call {plugin_id}",
+            plugin_id=plugin_id,
+            entry_id=entry_id,
+            plugin_args=plugin_args,
+            reason="direct_call",
+        )
         return await self._execute_user_plugin(task_id=task_id, up_decision=up_decision_stub)
     
     async def refresh_capabilities(self) -> Dict[str, Dict[str, Any]]:

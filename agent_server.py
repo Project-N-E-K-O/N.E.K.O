@@ -387,11 +387,12 @@ async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_na
                 else:
                     # Attempt to surface if user_plugin was chosen or considered
                     try:
-                        exec_method = getattr(result, "execution_method", None)
-                        tool_name = getattr(result, "tool_name", None)
-                        plugin_name = getattr(result, "tool_name", None) or getattr(result, "tool_name", None)
-                        # Log basic decision info
-                        logger.info("testUserPlugin: execution_method=%s, success=%s, tool_name=%s", exec_method, getattr(result, "success", None), getattr(result, "tool_name", None))
+                        logger.info(
+                            "testUserPlugin: execution_method=%s, success=%s, tool_name=%s",
+                            getattr(result, "execution_method", None),
+                            getattr(result, "success", None),
+                            getattr(result, "tool_name", None),
+                        )
                     except Exception:
                         logger.info("testUserPlugin: analyze_and_execute returned result but failed to introspect details")
         except Exception:
