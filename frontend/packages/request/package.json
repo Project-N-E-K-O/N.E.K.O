@@ -1,0 +1,35 @@
+{
+  "name": "@project_neko/request",
+  "version": "0.1.0",
+  "private": true,
+  "description": "统一请求库，支持 Web / React Native，提供 Axios、Token 刷新、请求队列等功能",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "vite build --config vite.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "axios",
+    "request",
+    "token-refresh",
+    "request-queue",
+    "web",
+    "react-native"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.13.2",
+    "axios-auth-refresh": "^3.3.6"
+  },
+  "peerDependencies": {
+    "@react-native-async-storage/async-storage": "^1.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@react-native-async-storage/async-storage": {
+      "optional": true
+    }
+  }
+}
+

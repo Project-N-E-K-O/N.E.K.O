@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "baseUrl": ".",
+    "typeRoots": ["./src/types", "./node_modules/@types"],
+    "paths": {
+      "@project_neko/common": ["packages/common/index.ts"],
+      "@project_neko/common/*": ["packages/common/src/*"],
+      "@project_neko/components": ["packages/components/index.ts"],
+      "@project_neko/components/*": ["packages/components/src/*"],
+      "@project_neko/request": ["packages/request/index.ts"],
+      "@project_neko/request/*": ["packages/request/src/*"]
+    }
+  },
+  "include": ["src/**/*", "packages/**/*", "vite.common.config.ts", "vite.web.config.ts", "src/types/**/*"]
+}
+

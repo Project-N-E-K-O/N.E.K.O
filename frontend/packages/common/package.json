@@ -1,0 +1,21 @@
+{
+  "name": "@project_neko/common",
+  "version": "0.1.0",
+  "private": true,
+  "description": "跨端共享的工具和类型",
+  "main": "index.ts",
+  "types": "index.ts",
+  "scripts": {
+    "build": "vite build --config vite.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "utils",
+    "types",
+    "shared"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {}
+}
+

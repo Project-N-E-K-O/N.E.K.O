@@ -1,3 +1,5 @@
+# 构建产物
+static/bundles/
 # 忽略敏感配置
 core_config.txt
 test.py

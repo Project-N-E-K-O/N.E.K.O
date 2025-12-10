@@ -1,0 +1,35 @@
+{
+  "name": "frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:common": "vite dev --config packages/common/vite.config.ts",
+    "dev:web": "vite dev --config vite.web.config.ts",
+    "build": "npm run clean:bundles && npm run build:request && npm run build:common && npm run build:components && npm run build:web && npm run copy:react-umd",
+    "clean:bundles": "node scripts/clean-bundles.js",
+    "copy:react-umd": "node scripts/copy-react-umd.js",
+    "build:request": "vite build --config packages/request/vite.config.ts",
+    "build:common": "vite build --config packages/common/vite.config.ts",
+    "build:components": "vite build --config packages/components/vite.config.ts",
+    "build:web": "vite build --config vite.web.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "axios": "^1.13.2",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^4.7.0",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.7"
+  }
+}
+

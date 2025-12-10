@@ -1,0 +1,24 @@
+{
+  "name": "@project_neko/components",
+  "version": "0.1.0",
+  "private": true,
+  "description": "可复用的 Web 组件库",
+  "main": "index.ts",
+  "types": "index.ts",
+  "scripts": {
+    "build": "vite build --config vite.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "components",
+    "ui",
+    "react"
+  ],
+  "author": "",
+  "license": "MIT",
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}
+
