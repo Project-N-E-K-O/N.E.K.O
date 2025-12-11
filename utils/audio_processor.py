@@ -94,14 +94,22 @@ class AudioProcessor:
         """Initialize RNNoise denoiser if available."""
         if not self.noise_reduce_enabled:
             return
+        
+        # RNNoise requires input at exactly 48kHz
+        if self.input_sample_rate != self.RNNOISE_SAMPLE_RATE:
+            logger.warning(
+                f"⚠️ Skipping RNNoise initialization: input sample rate "
+                f"{self.input_sample_rate}Hz != required {self.RNNOISE_SAMPLE_RATE}Hz"
+            )
+            return
             
         RNNoise = _get_rnnoise()
         if RNNoise:
             try:
                 self._denoiser = RNNoise(sample_rate=self.RNNOISE_SAMPLE_RATE)
                 logger.info("🔊 RNNoise denoiser initialized")
-            except Exception as e:
-                logger.error(f"❌ Failed to initialize RNNoise: {e}")
+            except Exception:  # noqa: BLE001 - RNNoise can fail for various reasons (missing libs, bad state); must catch all to ensure graceful fallback
+                logger.exception("❌ Failed to initialize RNNoise")
                 self._denoiser = None
     
     def process_chunk(self, audio_bytes: bytes) -> bytes:
