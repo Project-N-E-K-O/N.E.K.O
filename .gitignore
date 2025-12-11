@@ -87,3 +87,5 @@ version_info.txt
 !steam_api64.dll
 !steam_api64.lib
 !SteamworksPy64.dll
+
+start_servers.bat
