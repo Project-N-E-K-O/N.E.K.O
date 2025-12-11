@@ -810,7 +810,7 @@ function init_app() {
         }
 
         if (lastError) {
-            showStatusToast(err.toString(), 4000);
+            showStatusToast(lastError.toString(), 4000);
             throw lastError;
         }
     }
