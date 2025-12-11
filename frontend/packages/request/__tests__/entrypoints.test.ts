@@ -1,5 +1,9 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import type { AxiosResponse, InternalAxiosRequestConfig } from "axios";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("请求库入口与存储实现", () => {
   it("index.web 导出默认实例与工具", async () => {
