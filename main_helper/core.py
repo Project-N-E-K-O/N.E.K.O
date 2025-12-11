@@ -1263,7 +1263,7 @@ class LLMSessionManager:
                     result = await self.screenshot_utils.process_screen_data(data)
                     
                     if result:
-                        resized_b64, _img_bytes = result
+                        resized_b64, img_bytes = result
                         
                         # 如果是文本模式（OmniOfflineClient），只存储图片，不立即发送
                         if isinstance(self.session, OmniOfflineClient):
@@ -1280,7 +1280,7 @@ class LLMSessionManager:
                             # 语音模式直接发送图片
                             await self.session.stream_image(resized_b64)
                     else:
-                        logger.error("💥 Stream: 屏幕数据处理失败")
+                        logger.error(f"💥 Stream: 屏幕数据处理失败")
                         return
                 except asyncio.CancelledError:
                     raise
