@@ -833,12 +833,16 @@ function init_app() {
 
             if (screenCaptureStream == null) {
                 if (isMobile()) {
-                    // On mobile we capture the *camera* instead of the screen.
-                    // `environment` is the rear camera (iOS + many Androids). If that's not
-                    // available the UA will fall back to any camera it has.
-                    screenCaptureStream = await getMobileCameraStream();
-
+                    // 移动端使用摄像头
+                    const tmp = await getMobileCameraStream();
+                    if (tmp instanceof MediaStream) {
+                        captureStream = tmp;
+                    } else {
+                        // 保持原有错误处理路径：让 catch 去接手
+                        throw (tmp instanceof Error ? tmp : new Error('无法获取摄像头流'));
+                    }
                 } else {
+
                     // Desktop/laptop: capture the user's chosen screen / window / tab.
                     screenCaptureStream = await navigator.mediaDevices.getDisplayMedia({
                         video: {

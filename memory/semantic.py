@@ -67,6 +67,7 @@ class SemanticMemory:
                 reranker = self._get_reranker()
                 response = await reranker.ainvoke(prompt)
             except (APIConnectionError, InternalServerError, RateLimitError) as e:
+                print(f"ℹ️ 捕获到 {type(e).__name__} 错误")
                 retries += 1
                 if retries >= max_retries:
                     print(f'❌ Rerank query失败，已达到最大重试次数: {e}')

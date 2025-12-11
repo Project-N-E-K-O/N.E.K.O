@@ -359,12 +359,8 @@ class OmniRealtimeClient:
             # 使用统一的视觉分析函数
             from utils.screenshot_utils import analyze_image_with_vision_model
             
-            # 实时对话场景使用更简洁的提示词
-            prompt = "你是一个图像描述助手, 请简洁地描述图片中的主要内容、关键细节和你觉得有趣的地方。你的回答不能超过250字。"
-            
             description = await analyze_image_with_vision_model(
                 image_b64=image_b64,
-                prompt=prompt,
                 max_tokens=500
             )
             

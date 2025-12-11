@@ -514,7 +514,11 @@ class LLMSessionManager:
         if old_voice_id != self.voice_id:
             logger.info(f"🔄 voice_id已更新: '{old_voice_id}' -> '{self.voice_id}'")
         
-        logger.info(f"📌 已重新加载配置: core_api={self.core_api_type}, model={self.model}, text_model={self.text_model}, vision_model={self.vision_model}, voice_id={self.voice_id}")
+        # 日志输出模型配置（直接从配置读取，避免创建不必要的实例变量）
+        _realtime_model = realtime_config.get('model', '')
+        _correction_model = self._config_manager.get_model_api_config('correction').get('model', '')
+        _vision_model = self._config_manager.get_model_api_config('vision').get('model', '')
+        logger.info(f"📌 已重新加载配置: core_api={self.core_api_type}, realtime_model={_realtime_model}, text_model={_correction_model}, vision_model={_vision_model}, voice_id={self.voice_id}")
         
         # 重置TTS缓存状态
         async with self.tts_cache_lock:
@@ -1289,7 +1293,7 @@ class LLMSessionManager:
                             # 语音模式直接发送图片
                             await self.session.stream_image(image_b64)
                     else:
-                        logger.error(f"💥 Stream: 屏幕数据验证失败")
+                        logger.error("💥 Stream: 屏幕数据验证失败")
                         return
                 except asyncio.CancelledError:
                     raise

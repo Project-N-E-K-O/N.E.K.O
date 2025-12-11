@@ -195,6 +195,7 @@ class CompressedRecentHistoryManager:
                     print('💥 摘要failed: ', response_content)
                     retries += 1
             except (APIConnectionError, InternalServerError, RateLimitError) as e:
+                logger.info(f"ℹ️ 捕获到 {type(e).__name__} 错误")
                 retries += 1
                 if retries >= max_retries:
                     print(f'❌ 摘要模型失败，已达到最大重试次数: {e}')
@@ -232,6 +233,7 @@ class CompressedRecentHistoryManager:
                     print('💥 第二轮摘要failed: ', response_content)
                     retries += 1
             except (APIConnectionError, InternalServerError, RateLimitError) as e:
+                logger.info(f"ℹ️ 捕获到 {type(e).__name__} 错误")
                 retries += 1
                 if retries >= max_retries:
                     print(f'❌ 第二轮摘要模型失败，已达到最大重试次数: {e}')
@@ -413,6 +415,7 @@ class CompressedRecentHistoryManager:
                     return False
                     
             except (APIConnectionError, InternalServerError, RateLimitError) as e:
+                logger.info(f"ℹ️ 捕获到 {type(e).__name__} 错误")
                 retries += 1
                 if retries >= max_retries:
                     print(f'❌ 记忆整理失败，已达到最大重试次数: {e}')

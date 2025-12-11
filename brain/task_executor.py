@@ -250,6 +250,7 @@ OUTPUT FORMAT (strict JSON):
                 )
                 
             except (APIConnectionError, InternalServerError, RateLimitError) as e:
+                logger.info(f"ℹ️ 捕获到 {type(e).__name__} 错误")
                 if attempt < max_retries - 1:
                     wait_time = retry_delays[attempt]
                     logger.warning(f"[MCP Assessment] 调用失败 (尝试 {attempt + 1}/{max_retries})，{wait_time}秒后重试: {e}")
@@ -341,6 +342,7 @@ OUTPUT FORMAT (strict JSON):
                 )
                 
             except (APIConnectionError, InternalServerError, RateLimitError) as e:
+                logger.info(f"ℹ️ 捕获到 {type(e).__name__} 错误")
                 if attempt < max_retries - 1:
                     wait_time = retry_delays[attempt]
                     logger.warning(f"[ComputerUse Assessment] 调用失败 (尝试 {attempt + 1}/{max_retries})，{wait_time}秒后重试: {e}")
@@ -508,6 +510,7 @@ Return only the JSON object, nothing else.
                 )
                 
             except (APIConnectionError, InternalServerError, RateLimitError) as e:
+                logger.info(f"ℹ️ 捕获到 {type(e).__name__} 错误")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(retry_delays[attempt])
                 else:
