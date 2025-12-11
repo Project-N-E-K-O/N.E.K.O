@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import base64
 from datetime import datetime
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, Literal, Optional, List
 
 from pydantic import BaseModel, Field, field_serializer
+from plugin.sdk.version import SDK_VERSION
 
 
 # API 请求/响应模型
@@ -37,6 +38,11 @@ class PluginMeta(BaseModel):
     name: str
     description: str = ""
     version: str = "0.1.0"
+    sdk_version: str = SDK_VERSION
+    sdk_recommended: Optional[str] = None
+    sdk_supported: Optional[str] = None
+    sdk_untested: Optional[str] = None
+    sdk_conflicts: List[str] = Field(default_factory=list)
     input_schema: Dict[str, Any] = Field(default_factory=lambda: {"type": "object", "properties": {}})
 
 

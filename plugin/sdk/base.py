@@ -4,10 +4,11 @@
 提供插件开发的基础类和接口。
 """
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from .events import EventHandler, EventMeta, EVENT_META_ATTR
+from .version import SDK_VERSION
 from plugin.settings import (
     NEKO_PLUGIN_META_ATTR, 
     NEKO_PLUGIN_TAG,
@@ -24,6 +25,11 @@ class PluginMeta:
     id: str
     name: str
     version: str = "0.1.0"
+    sdk_version: str = SDK_VERSION
+    sdk_recommended: Optional[str] = None
+    sdk_supported: Optional[str] = None
+    sdk_untested: Optional[str] = None
+    sdk_conflicts: List[str] = field(default_factory=list)
     description: str = ""
 
 

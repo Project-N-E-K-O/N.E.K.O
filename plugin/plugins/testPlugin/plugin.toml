@@ -4,3 +4,13 @@ name = "Test Plugin"
 description = "Minimal plugin used for local testing, no required input"
 version = "0.1.0"
 entry = "plugins.testPlugin:HelloPlugin"
+
+[plugin.sdk]
+# 推荐使用的 SDK 版本范围
+recommended = ">=0.1.0,<0.2.0"
+# 完全支持的 SDK 版本范围（必须满足或落在 untested）
+supported = ">=0.1.0,<0.3.0"
+# 未经过完整测试但允许加载的范围
+untested = ">=0.3.0,<0.4.0"
+# 明确冲突的版本范围，命中即拒绝加载
+conflicts = ["<0.1.0", ">=0.4.0"]

@@ -5,7 +5,7 @@ import importlib
 import inspect
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Callable, Type
+from typing import Any, Dict, List, Callable, Type, Optional
 
 try:
     import tomllib  # type: ignore[attr-defined]
@@ -13,6 +13,7 @@ except ImportError:  # pragma: no cover
     import tomli as tomllib  # type: ignore[no-redef]
 
 from plugin.sdk.events import EventHandler, EVENT_META_ATTR
+from plugin.sdk.version import SDK_VERSION
 from plugin.core.state import state
 from plugin.api.models import PluginMeta
 from plugin.api.exceptions import (
@@ -20,6 +21,14 @@ from plugin.api.exceptions import (
     PluginLoadError,
     PluginMetadataError,
 )
+try:
+    from packaging.version import Version, InvalidVersion
+    from packaging.specifiers import SpecifierSet, InvalidSpecifier
+except ImportError:  # pragma: no cover
+    Version = None  # type: ignore
+    InvalidVersion = Exception  # type: ignore
+    SpecifierSet = None  # type: ignore
+    InvalidSpecifier = Exception  # type: ignore
 
 
 @dataclass
@@ -37,6 +46,25 @@ class SimpleEntryMeta:
 
 # Mapping from (plugin_id, entry_id) -> actual python method name on the instance.
 plugin_entry_method_map: Dict[tuple, str] = {}
+
+
+def _parse_specifier(spec: Optional[str], logger: logging.Logger) -> Optional[SpecifierSet]:
+    if not spec or SpecifierSet is None:
+        return None
+    try:
+        return SpecifierSet(spec)
+    except InvalidSpecifier as e:
+        logger.error("Invalid sdk specifier '%s': %s", spec, e)
+        return None
+
+
+def _version_matches(spec: Optional[SpecifierSet], version: Version) -> bool:
+    if spec is None:
+        return False
+    try:
+        return version in spec
+    except Exception:
+        return False
 
 
 def get_plugins() -> List[Dict[str, Any]]:
@@ -118,6 +146,94 @@ def load_plugins_from_toml(
             if not entry or ":" not in entry:
                 continue
 
+            sdk_config = pdata.get("sdk")
+            sdk_supported_str = None
+            sdk_recommended_str = None
+            sdk_untested_str = None
+            sdk_conflicts_list: List[str] = []
+
+            # Backward compatibility: fall back to single sdk_version when no sdk block present
+            if isinstance(sdk_config, dict):
+                sdk_recommended_str = sdk_config.get("recommended")
+                sdk_supported_str = sdk_config.get("supported") or sdk_config.get("compatible")
+                sdk_untested_str = sdk_config.get("untested")
+                raw_conflicts = sdk_config.get("conflicts") or []
+                if isinstance(raw_conflicts, list):
+                    sdk_conflicts_list = [str(c) for c in raw_conflicts if c]
+                elif isinstance(raw_conflicts, str) and raw_conflicts.strip():
+                    sdk_conflicts_list = [raw_conflicts.strip()]
+            else:
+                sdk_supported_str = pdata.get("sdk_version") or sdk_config
+
+            host_version_obj: Optional[Version] = None
+            if Version and SpecifierSet:
+                try:
+                    host_version_obj = Version(SDK_VERSION)
+                except InvalidVersion as e:
+                    logger.error("Invalid host SDK_VERSION %s: %s", SDK_VERSION, e)
+                    host_version_obj = None
+
+            # Validate against ranges when possible
+            if host_version_obj:
+                supported_spec = _parse_specifier(sdk_supported_str, logger)
+                recommended_spec = _parse_specifier(sdk_recommended_str, logger)
+                untested_spec = _parse_specifier(sdk_untested_str, logger)
+                conflict_specs = [
+                    _parse_specifier(conf, logger) for conf in sdk_conflicts_list
+                ]
+
+                # Conflict check
+                if any(spec and _version_matches(spec, host_version_obj) for spec in conflict_specs):
+                    logger.error(
+                        "Plugin %s conflicts with host SDK %s (conflict ranges: %s); skipping load",
+                        pid,
+                        SDK_VERSION,
+                        sdk_conflicts_list,
+                    )
+                    continue
+
+                # Compatibility check (supported or untested range)
+                in_supported = _version_matches(supported_spec, host_version_obj)
+                in_untested = _version_matches(untested_spec, host_version_obj)
+
+                if supported_spec and not (in_supported or in_untested):
+                    logger.error(
+                        "Plugin %s requires SDK in %s (or untested %s) but host SDK is %s; skipping load",
+                        pid,
+                        sdk_supported_str,
+                        sdk_untested_str,
+                        SDK_VERSION,
+                    )
+                    continue
+
+                # Recommended range warning
+                if recommended_spec and not _version_matches(recommended_spec, host_version_obj):
+                    logger.warning(
+                        "Plugin %s: host SDK %s is outside recommended range %s",
+                        pid,
+                        SDK_VERSION,
+                        sdk_recommended_str,
+                    )
+
+                # Untested warning
+                if in_untested and not in_supported:
+                    logger.warning(
+                        "Plugin %s: host SDK %s is within untested range %s; proceed with caution",
+                        pid,
+                        SDK_VERSION,
+                        sdk_untested_str,
+                    )
+            else:
+                # If we cannot parse versions, require at least string equality for legacy sdk_version
+                if sdk_supported_str and sdk_supported_str != SDK_VERSION:
+                    logger.error(
+                        "Plugin %s requires sdk_version %s but host SDK is %s; skipping load",
+                        pid,
+                        sdk_supported_str,
+                        SDK_VERSION,
+                    )
+                    continue
+
             module_path, class_name = entry.split(":", 1)
             try:
                 mod = importlib.import_module(module_path)
@@ -149,6 +265,11 @@ def load_plugins_from_toml(
                 name=pdata.get("name", pid),
                 description=pdata.get("description", ""),
                 version=pdata.get("version", "0.1.0"),
+                sdk_version=sdk_supported_str or SDK_VERSION,
+                sdk_recommended=sdk_recommended_str,
+                sdk_supported=sdk_supported_str,
+                sdk_untested=sdk_untested_str,
+                sdk_conflicts=sdk_conflicts_list,
                 input_schema=getattr(cls, "input_schema", {}) or {"type": "object", "properties": {}},
             )
             register_plugin(plugin_meta)

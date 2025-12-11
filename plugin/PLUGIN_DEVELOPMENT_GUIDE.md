@@ -90,6 +90,16 @@ name = "Hello World Plugin"
 description = "一个简单的示例插件"
 version = "1.0.0"
 entry = "plugins.hello_world:HelloWorldPlugin"
+
+[plugin.sdk]
+# 推荐使用的 SDK 版本范围
+recommended = ">=0.1.0,<0.2.0"
+# 完全支持的 SDK 版本范围（必须满足或落在 untested 范围）
+supported = ">=0.1.0,<0.3.0"
+# 未经过完整测试但允许加载的范围（会告警）
+untested = ">=0.3.0,<0.4.0"
+# 明确冲突的范围（命中即拒绝加载）
+conflicts = ["<0.1.0", ">=0.4.0"]
 ```
 
 **配置说明：**
@@ -97,6 +107,11 @@ entry = "plugins.hello_world:HelloWorldPlugin"
 - `name`: 插件的显示名称
 - `description`: 插件描述
 - `version`: 插件版本号
+- `plugin.sdk`: SDK 版本要求专用区块
+  - `recommended`: 推荐使用的 SDK 范围，命中之外会提示警告
+  - `supported`: 完全支持的 SDK 范围，未命中将拒绝加载（除非命中 `untested`）
+  - `untested`: 未经完整测试但允许加载的范围，命中时会告警
+  - `conflicts`: 明确冲突的范围，命中即拒绝加载
 - `entry`: 插件入口点，格式为 `模块路径:类名`
 
 #### 步骤 3：创建插件代码 `__init__.py`
