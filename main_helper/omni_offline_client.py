@@ -56,6 +56,7 @@ class OmniOfflineClient:
         on_output_transcript: Optional[Callable[[str, bool], Awaitable[None]]] = None,
         on_connection_error: Optional[Callable[[str], Awaitable[None]]] = None,
         on_response_done: Optional[Callable[[], Awaitable[None]]] = None,
+        on_repetition_detected: Optional[Callable[[], Awaitable[None]]] = None,
         extra_event_handlers: Optional[Dict[str, Callable[[Dict[str, Any]], Awaitable[None]]]] = None
     ):
         # Use base_url directly without conversion
@@ -68,6 +69,7 @@ class OmniOfflineClient:
         self.on_output_transcript = on_output_transcript
         self.handle_connection_error = on_connection_error
         self.on_response_done = on_response_done
+        self.on_repetition_detected = on_repetition_detected
         
         # Initialize langchain ChatOpenAI client
         self.llm = ChatOpenAI(
@@ -84,6 +86,11 @@ class OmniOfflineClient:
         self._instructions = ""
         self._stream_task = None
         self._pending_images = []  # Store pending images to send with next text
+        
+        # 重复度检测
+        self._recent_responses = []  # 存储最近3轮助手回复
+        self._repetition_threshold = 0.8  # 相似度阈值
+        self._max_recent_responses = 3  # 最多存储的回复数
         
     async def connect(self, instructions: str, native_audio=False) -> None:
         """Initialize the client with system instructions."""
@@ -124,6 +131,71 @@ class OmniOfflineClient:
                 extra_body={"enable_thinking": False} if self.model in MODELS_WITH_EXTRA_BODY else None
             )
     
+    def _calculate_similarity(self, text1: str, text2: str) -> float:
+        """
+        计算两段文本的相似度（使用字符级 trigram 的 Jaccard 相似度）。
+        返回 0.0 到 1.0 之间的值。
+        """
+        if not text1 or not text2:
+            return 0.0
+        
+        # 生成字符级 trigrams
+        def get_trigrams(text: str) -> set:
+            text = text.lower().strip()
+            if len(text) < 3:
+                return {text}
+            return {text[i:i+3] for i in range(len(text) - 2)}
+        
+        trigrams1 = get_trigrams(text1)
+        trigrams2 = get_trigrams(text2)
+        
+        if not trigrams1 or not trigrams2:
+            return 0.0
+        
+        intersection = len(trigrams1 & trigrams2)
+        union = len(trigrams1 | trigrams2)
+        
+        return intersection / union if union > 0 else 0.0
+    
+    async def _check_repetition(self, response: str) -> bool:
+        """
+        检查回复是否与近期回复高度重复。
+        如果连续3轮都高度重复，返回 True 并触发回调。
+        """
+        
+        # 与最近的回复比较相似度
+        high_similarity_count = 0
+        for recent in self._recent_responses:
+            similarity = self._calculate_similarity(response, recent)
+            if similarity >= self._repetition_threshold:
+                high_similarity_count += 1
+        
+        # 添加到最近回复列表
+        self._recent_responses.append(response)
+        if len(self._recent_responses) > self._max_recent_responses:
+            self._recent_responses.pop(0)
+        
+        # 如果与最近2轮都高度重复（即第3轮重复），触发检测
+        if high_similarity_count >= 2:
+            logger.warning(f"OmniOfflineClient: 检测到连续{high_similarity_count + 1}轮高重复度对话")
+            
+            # 清空对话历史（保留系统指令）
+            if self._conversation_history and isinstance(self._conversation_history[0], SystemMessage):
+                self._conversation_history = [self._conversation_history[0]]
+            else:
+                self._conversation_history = []
+            
+            # 清空重复检测缓存
+            self._recent_responses.clear()
+            
+            # 触发回调
+            if self.on_repetition_detected:
+                await self.on_repetition_detected()
+            
+            return True
+        
+        return False
+
     async def stream_text(self, text: str) -> None:
         """
         Send a text message to the API and stream the response.
@@ -193,27 +265,47 @@ class OmniOfflineClient:
                 try:
                     assistant_message = ""
                     is_first_chunk = True
+                    pipe_count = 0  # 围栏：追踪 | 字符的出现次数
+                    fence_triggered = False  # 围栏是否已触发
                     
                     # Stream response using langchain
                     async for chunk in self.llm.astream(self._conversation_history):
                         if not self._is_responding:
                             # Interrupted
                             break
+                        
+                        # 检查围栏是否已触发
+                        if fence_triggered:
+                            break
                             
                         content = chunk.content if hasattr(chunk, 'content') else str(chunk)
                         
                         # 只处理非空内容，从源头过滤空文本
                         if content and content.strip():
-                            assistant_message += content
+                            # 围栏检测：检查 | 字符
+                            for char in content:
+                                if char == '|':
+                                    pipe_count += 1
+                                    if pipe_count >= 2:
+                                        # 触发围栏：找到第二个 | 的位置并截断
+                                        fence_index = content.find('|', content.find('|') + 1)
+                                        if fence_index != -1:
+                                            content = content[:fence_index]
+                                        fence_triggered = True
+                                        logger.info("OmniOfflineClient: 围栏触发 - 检测到第二个 | 字符，截断输出")
+                                        break
                             
-                            # 文本模式只调用 on_text_delta，不调用 on_output_transcript
-                            # 这与 OmniRealtimeClient 的行为一致：
-                            # - 文本响应使用 on_text_delta
-                            # - 语音转录使用 on_output_transcript
-                            if self.on_text_delta:
-                                await self.on_text_delta(content, is_first_chunk)
-                            
-                            is_first_chunk = False
+                            if content and content.strip():
+                                assistant_message += content
+                                
+                                # 文本模式只调用 on_text_delta，不调用 on_output_transcript
+                                # 这与 OmniRealtimeClient 的行为一致：
+                                # - 文本响应使用 on_text_delta
+                                # - 语音转录使用 on_output_transcript
+                                if self.on_text_delta:
+                                    await self.on_text_delta(content, is_first_chunk)
+                                
+                                is_first_chunk = False
                         elif content and not content.strip():
                             # 记录被过滤的空内容（仅包含空白字符）
                             logger.debug(f"OmniOfflineClient: 过滤空白内容 - content_repr: {repr(content)[:100]}")
@@ -221,6 +313,8 @@ class OmniOfflineClient:
                     # Add assistant response to history
                     if assistant_message:
                         self._conversation_history.append(AIMessage(content=assistant_message))
+                        # 检测重复度
+                        await self._check_repetition(assistant_message)
                     break
                             
                 except (APIConnectionError, InternalServerError, RateLimitError) as e:

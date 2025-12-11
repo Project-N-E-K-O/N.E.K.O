@@ -21,7 +21,7 @@
     "unavailable": "不可用",
     "prevPage": "上一页",
     "nextPage": "下一页"
-    },
+  },
   "steam": {
     "workshop": "Steam创意工坊",
     "workshopManager": "Steam 创意工坊管理 - Project N.E.K.O.",
@@ -151,7 +151,6 @@
     "reload": "重新加载",
     "searchPlaceholder": "搜索订阅内容..."
   },
-
   "dialogs": {
     "confirmLeave": "确认离开",
     "unsavedChanges": "您有未保存的设置，确定要离开吗？",
@@ -660,7 +659,8 @@
     "textSystemPreparing": "文本系统准备中，请稍候...",
     "connectingToServer": "正在连接服务器...",
     "readyToSpeak": "可以说话了！",
-    "screenShareRequiresVoice": "屏幕分享仅用于音视频通话"
+    "screenShareRequiresVoice": "屏幕分享仅用于音视频通话",
+    "repetitionDetected": "检测到高重复度对话。建议您终止对话，让{{name}}休息片刻。"
   },
   "buttons": {
     "voiceControl": "语音控制",

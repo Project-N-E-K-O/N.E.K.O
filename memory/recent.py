@@ -422,9 +422,3 @@ class CompressedRecentHistoryManager:
         # 如果所有重试都失败
         print(f"❌ {lanlan_name} 的记忆整理失败，已达到最大重试次数")
         return False
-
-    def clear_history(self, lanlan_name):
-        """
-        清除用户的聊天历史
-        """
-        self.user_histories[lanlan_name] = []

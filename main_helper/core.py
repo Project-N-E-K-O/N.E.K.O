@@ -390,6 +390,21 @@ class LLMSessionManager:
                 await self.send_status(message)
         logger.info("💥 Session closed by API Server.")
         await self.disconnected_by_server()
+    
+    async def handle_repetition_detected(self):
+        """处理重复度检测回调：通知前端"""
+        try:
+            logger.warning(f"[{self.lanlan_name}] 检测到高重复度对话")
+            
+            # 向前端发送重复警告消息（使用 i18n key）
+            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                await self.websocket.send_json({
+                    "type": "repetition_warning",
+                    "name": self.lanlan_name  # 前端会用这个名字填充 i18n 模板
+                })
+            
+        except Exception as e:
+            logger.error(f"处理重复度检测时出错: {e}")
 
     def _reset_preparation_state(self, clear_main_cache=False, from_final_swap=False):
         """[热切换相关] Helper to reset flags and pending components related to new session prep."""
@@ -675,7 +690,8 @@ class LLMSessionManager:
                     on_input_transcript=self.handle_input_transcript,
                     on_output_transcript=self.handle_output_transcript,
                     on_connection_error=self.handle_connection_error,
-                    on_response_done=self.handle_response_complete
+                    on_response_done=self.handle_response_complete,
+                    on_repetition_detected=self.handle_repetition_detected
                 )
             else:
                 # 语音模式：使用 OmniRealtimeClient
@@ -692,6 +708,7 @@ class LLMSessionManager:
                     on_response_done=self.handle_response_complete,
                     on_silence_timeout=self.handle_silence_timeout,
                     on_status_message=self.send_status,
+                    on_repetition_detected=self.handle_repetition_detected,
                     api_type=self.core_api_type  # 传入API类型，用于判断是否启用静默超时
                 )
 

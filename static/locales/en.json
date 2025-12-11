@@ -21,7 +21,7 @@
     "unavailable": "Unavailable",
     "prevPage": "Previous Page",
     "nextPage": "Next Page"
-    },
+  },
   "steam": {
     "workshop": "Steam Workshop",
     "workshopManager": "Steam Workshop Manager - Project N.E.K.O.",
@@ -660,7 +660,8 @@
     "textSystemPreparing": "Text system preparing, please wait...",
     "connectingToServer": "Connecting to server...",
     "readyToSpeak": "Ready to speak!",
-    "screenShareRequiresVoice": "Screen sharing is only available during voice calls"
+    "screenShareRequiresVoice": "Screen sharing is only available during voice calls",
+    "repetitionDetected": "High repetition detected in conversation. It is recommended to end the conversation and let {{name}} rest for a while."
   },
   "buttons": {
     "voiceControl": "Voice Control",

@@ -75,6 +75,7 @@ class OmniRealtimeClient:
         on_response_done: Optional[Callable[[], Awaitable[None]]] = None,
         on_silence_timeout: Optional[Callable[[], Awaitable[None]]] = None,
         on_status_message: Optional[Callable[[str], Awaitable[None]]] = None,
+        on_repetition_detected: Optional[Callable[[], Awaitable[None]]] = None,
         extra_event_handlers: Optional[Dict[str, Callable[[Dict[str, Any]], Awaitable[None]]]] = None,
         api_type: Optional[str] = None
     ):
@@ -94,6 +95,7 @@ class OmniRealtimeClient:
         self.on_response_done = on_response_done
         self.on_silence_timeout = on_silence_timeout
         self.on_status_message = on_status_message
+        self.on_repetition_detected = on_repetition_detected
         self.extra_event_handlers = extra_event_handlers or {}
 
         # Track current response state
@@ -132,6 +134,12 @@ class OmniRealtimeClient:
             output_sample_rate=16000,
             noise_reduce_enabled=True  # RNNoise with auto-reset enabled
         )
+        
+        # 重复度检测
+        self._recent_responses = []  # 存储最近3轮助手回复
+        self._repetition_threshold = 0.8  # 相似度阈值
+        self._max_recent_responses = 3  # 最多存储的回复数
+        self._current_response_transcript = ""  # 当前回复的转录文本
 
     async def _check_silence_timeout(self):
         """定期检查是否超过静默超时时间，如果是则触发超时回调"""
@@ -513,6 +521,65 @@ class OmniRealtimeClient:
             "type": "response.cancel"
         }
         await self.send_event(event)
+    
+    def _calculate_similarity(self, text1: str, text2: str) -> float:
+        """
+        计算两段文本的相似度（使用字符级 trigram 的 Jaccard 相似度）。
+        返回 0.0 到 1.0 之间的值。
+        """
+        if not text1 or not text2:
+            return 0.0
+        
+        # 生成字符级 trigrams
+        def get_trigrams(text: str) -> set:
+            text = text.lower().strip()
+            if len(text) < 3:
+                return {text}
+            return {text[i:i+3] for i in range(len(text) - 2)}
+        
+        trigrams1 = get_trigrams(text1)
+        trigrams2 = get_trigrams(text2)
+        
+        if not trigrams1 or not trigrams2:
+            return 0.0
+        
+        intersection = len(trigrams1 & trigrams2)
+        union = len(trigrams1 | trigrams2)
+        
+        return intersection / union if union > 0 else 0.0
+    
+    async def _check_repetition(self, response: str) -> bool:
+        """
+        检查回复是否与近期回复高度重复。
+        如果连续3轮都高度重复，返回 True 并触发回调。
+        """
+        
+        # 与最近的回复比较相似度
+        high_similarity_count = 0
+        for i, recent in enumerate(self._recent_responses):
+            similarity = self._calculate_similarity(response, recent)
+            if similarity >= self._repetition_threshold:
+                high_similarity_count += 1
+        
+        # 添加到最近回复列表
+        self._recent_responses.append(response)
+        if len(self._recent_responses) > self._max_recent_responses:
+            self._recent_responses.pop(0)
+        
+        # 如果与最近2轮都高度重复（即第3轮重复），触发检测
+        if high_similarity_count >= 2:
+            logger.warning(f"OmniRealtimeClient: 检测到连续{high_similarity_count + 1}轮高重复度对话")
+            
+            # 清空重复检测缓存
+            self._recent_responses.clear()
+            
+            # 触发回调
+            if self.on_repetition_detected:
+                await self.on_repetition_detected()
+            
+            return True
+        
+        return False
 
     async def handle_interruption(self):
         """Handle user interruption of the current response."""
@@ -559,7 +626,14 @@ class OmniRealtimeClient:
                     self._current_response_id = None
                     self._current_item_id = None
                     self._skip_until_next_response = False
-                    # 响应完成，确保buffer被清空
+                    # 响应完成，检测重复度
+                    if self._current_response_transcript:
+                        logger.info(f"OmniRealtimeClient: response.done - 当前转录: '{self._current_response_transcript[:50]}...'")
+                        await self._check_repetition(self._current_response_transcript)
+                        self._current_response_transcript = ""
+                    else:
+                        logger.info("OmniRealtimeClient: response.done - 没有转录文本")
+                    # 确保 buffer 被清空
                     self._output_transcript_buffer = ""
                     self._image_recognized_this_turn = False
                     if self.on_response_done:
@@ -568,8 +642,9 @@ class OmniRealtimeClient:
                     self._current_response_id = event.get("response", {}).get("id")
                     self._is_responding = True
                     self._is_first_text_chunk = self._is_first_transcript_chunk = True
-                    # 清空转录buffer，防止累积旧内容
+                    # 清空转录 buffer，防止累积旧内容
                     self._output_transcript_buffer = ""
+                    self._current_response_transcript = ""  # 重置当前回复转录
                 elif event_type == "response.output_item.added":
                     self._current_item_id = event.get("item", {}).get("id")
                 # Handle interruptions
@@ -615,6 +690,8 @@ class OmniRealtimeClient:
                     elif event_type in ["response.audio_transcript.delta", "response.output_audio_transcript.delta"]:
                         if self.on_output_transcript:
                             delta = event.get("delta", "")
+                            # 累积当前回复的转录文本用于重复度检测
+                            self._current_response_transcript += delta
                             if not self._print_input_transcript:
                                 self._output_transcript_buffer += delta
                             else:
