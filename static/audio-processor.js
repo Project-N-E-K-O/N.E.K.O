@@ -6,22 +6,23 @@ class AudioProcessor extends AudioWorkletProcessor {
         // 获取采样率信息
         const processorOptions = options.processorOptions || {};
         this.originalSampleRate = processorOptions.originalSampleRate || 48000;
-        this.targetSampleRate = processorOptions.targetSampleRate || 16000;
+        this.targetSampleRate = processorOptions.targetSampleRate || 48000; // 默认不降采样
 
         // 计算重采样比率
         this.resampleRatio = this.targetSampleRate / this.originalSampleRate;
+        this.needsResampling = this.resampleRatio !== 1.0;
 
-        // 创建缓冲区 - 使用较小的缓冲区以实现低延迟
-        // 128帧在16kHz下约为8ms，在48kHz下约为2.7ms
-        // 我们使用512帧的缓冲区，在16kHz下约为32ms
-        this.bufferSize = 512;
+        // 缓冲区大小根据目标采样率调整
+        // 48kHz: 480 samples (10ms, RNNoise frame size)
+        // 16kHz: 512 samples (~32ms)
+        this.bufferSize = this.targetSampleRate === 48000 ? 480 : 512;
         this.buffer = new Float32Array(this.bufferSize);
         this.bufferIndex = 0;
 
         // 用于重采样的临时缓冲区
         this.tempBuffer = [];
 
-        console.log(`AudioProcessor初始化: 原始采样率=${this.originalSampleRate}Hz, 目标采样率=${this.targetSampleRate}Hz`);
+        console.log(`AudioProcessor初始化: 原始采样率=${this.originalSampleRate}Hz, 目标采样率=${this.targetSampleRate}Hz, 需要重采样=${this.needsResampling}`);
     }
 
     process(inputs, outputs, parameters) {
@@ -32,31 +33,43 @@ class AudioProcessor extends AudioWorkletProcessor {
             return true;
         }
 
-        // 将输入数据添加到临时缓冲区
-        this.tempBuffer = this.tempBuffer.concat(Array.from(input));
+        if (this.needsResampling) {
+            // 需要重采样的情况（如16kHz目标）
+            this.tempBuffer = this.tempBuffer.concat(Array.from(input));
 
-        // 当临时缓冲区足够大时，执行重采样
-        const requiredSamples = Math.ceil(this.bufferSize / this.resampleRatio);
-        if (this.tempBuffer.length >= requiredSamples) {
-            // 执行重采样
-            const samplesNeeded = Math.min(requiredSamples, this.tempBuffer.length);
-            const samplesToProcess = this.tempBuffer.slice(0, samplesNeeded);
-            this.tempBuffer = this.tempBuffer.slice(samplesNeeded);
+            const requiredSamples = Math.ceil(this.bufferSize / this.resampleRatio);
+            if (this.tempBuffer.length >= requiredSamples) {
+                const samplesNeeded = Math.min(requiredSamples, this.tempBuffer.length);
+                const samplesToProcess = this.tempBuffer.slice(0, samplesNeeded);
+                this.tempBuffer = this.tempBuffer.slice(samplesNeeded);
 
-            // 执行重采样
-            const resampledData = this.resampleAudio(samplesToProcess);
-
-            // 将重采样后的数据转换为Int16Array
-            const pcmData = new Int16Array(resampledData.length);
-            for (let i = 0; i < resampledData.length; i++) {
-                pcmData[i] = Math.max(-1, Math.min(1, resampledData[i])) * 0x7FFF;
+                const resampledData = this.resampleAudio(samplesToProcess);
+                const pcmData = this.floatToPcm16(resampledData);
+                this.port.postMessage(pcmData);
             }
+        } else {
+            // 不需要重采样，直接处理（48kHz passthrough）
+            for (let i = 0; i < input.length; i++) {
+                this.buffer[this.bufferIndex++] = input[i];
 
-            // 发送到主线程
-            this.port.postMessage(pcmData);
+                if (this.bufferIndex >= this.bufferSize) {
+                    const pcmData = this.floatToPcm16(this.buffer);
+                    this.port.postMessage(pcmData);
+                    this.bufferIndex = 0;
+                }
+            }
         }
 
         return true;
+    }
+
+    // Float32 转 Int16 PCM
+    floatToPcm16(floatData) {
+        const pcmData = new Int16Array(floatData.length);
+        for (let i = 0; i < floatData.length; i++) {
+            pcmData[i] = Math.max(-1, Math.min(1, floatData[i])) * 0x7FFF;
+        }
+        return pcmData;
     }
 
     // 简单的线性插值重采样
@@ -83,3 +96,4 @@ class AudioProcessor extends AudioWorkletProcessor {
 }
 
 registerProcessor('audio-processor', AudioProcessor);
+

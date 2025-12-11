@@ -81,11 +81,11 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 
 QQ群：1022939659
 
-## 快速开始
+## 快速开始（Windows用户）
 
-对于*一键包用户*，直接运行`N.E.K.O.exe`即可启动。
+对于*一键包用户*，解压后，直接运行`N.E.K.O.exe`即可启动。
 
-## 🐳 Docker部署
+## Docker部署（Linux用户）
 
 ### 1. 使用 docker-compose 部署 (目前唯一docker部署方案)
 
@@ -240,14 +240,12 @@ Lanlan/
 
 ### 参与开发
 
-本项目环境依赖非常简单，请在`python3.11`环境中执行`pip install -r requirements.txt`或`uv sync`即可。开发者建议加入企鹅群1022939659，猫娘名称见项目标题。
+本项目环境依赖非常简单，请在`python3.11`环境中执行`uv sync`或`pip install -r requirements.txt`即可。开发者建议加入企鹅群1022939659，猫娘名称见项目标题。
 
-开发者详细启动步骤如下：(1)新建`pyhon3.11`环境。(2)执行`pip install -r requirements.txt`或`uv sync`安装依赖。(3)执行`python memory_server.py`, `python main_server.py`(可选`python agent_server.py`)。(4)通过main server中指定的端口（默认为`http://localhost:48911`）访问网页版并配置API Key。
+开发者详细启动步骤如下：(1)新建`pyhon3.11`环境。(2)执行`uv sync`或`pip install -r requirements.txt`安装依赖。(3)执行`python memory_server.py`, `python main_server.py`(可选`python agent_server.py`)。(4)通过main server中指定的端口（默认为`http://localhost:48911`）访问网页版并配置API Key。
 
 
 ### TODO List（开发计划）
-
-- 多语言支持
 
 - 完善memory server中已有的语义索引的部分；开放已有的settings update功能。
 
@@ -255,7 +253,7 @@ Lanlan/
 
 - 用React对前端进行重构，筹备手机端独立运行版本。
 
-- 引入MMD支持3D模型。
+- 引入VRM支持3D模型。
 
 - 猫娘网络，允许猫娘之间自行通信。
 

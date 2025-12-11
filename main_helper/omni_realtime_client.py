@@ -11,6 +11,7 @@ from typing import Optional, Callable, Dict, Any, Awaitable
 from enum import Enum
 from langchain_openai import ChatOpenAI
 from utils.config_manager import get_config_manager
+from utils.audio_processor import AudioProcessor
 
 # Setup logger for this module
 logger = logging.getLogger(__name__)
@@ -121,6 +122,16 @@ class OmniRealtimeClient:
         self._silence_timeout_seconds = 90  # 90秒无语音输入则自动关闭
         self._silence_check_task = None
         self._silence_timeout_triggered = False
+        
+        # Audio preprocessing with RNNoise for noise reduction
+        # Auto-resets after 2 seconds of no speech to prevent state drift
+        # Input: 48kHz from PC, 16kHz from mobile
+        # Output: 16kHz for API
+        self._audio_processor = AudioProcessor(
+            input_sample_rate=48000,
+            output_sample_rate=16000,
+            noise_reduce_enabled=True  # RNNoise with auto-reset enabled
+        )
 
     async def _check_silence_timeout(self):
         """定期检查是否超过静默超时时间，如果是则触发超时回调"""
@@ -201,7 +212,7 @@ class OmniRealtimeClient:
                         "chat_mode": "video_passive",
                         "auto_search": True,
                     },
-                    "temperature": 0.7
+                    "temperature": 1.0
                 })
             elif "qwen" in self.model:
                 await self.update_session({
@@ -216,7 +227,7 @@ class OmniRealtimeClient:
                     "turn_detection": {
                         "type": "server_vad",
                         "threshold": 0.5,
-                        "prefix_padding_ms":300,
+                        "prefix_padding_ms": 300,
                         "silence_duration_ms": 500
                     },
                     "temperature": 1.0
@@ -304,8 +315,26 @@ class OmniRealtimeClient:
         await self.send_event(event)
 
     async def stream_audio(self, audio_chunk: bytes) -> None:
-        """Stream raw audio data to the API."""
-        # only support 16bit 16kHz mono pcm
+        """Stream raw audio data to the API.
+        
+        Supports two input modes:
+        - 48kHz from PC: Apply RNNoise then downsample to 16kHz
+        - 16kHz from mobile: Pass through directly (no RNNoise)
+        """
+        # Detect input sample rate based on chunk size
+        # 48kHz: 480 samples (10ms) = 960 bytes
+        # 16kHz: 512 samples (~32ms) = 1024 bytes
+        num_samples = len(audio_chunk) // 2  # 16-bit = 2 bytes per sample
+        is_48khz = (num_samples == 480)  # RNNoise frame size
+        
+        
+        # Apply RNNoise noise reduction only for 48kHz input (PC)
+        if is_48khz and self._audio_processor is not None:
+            audio_chunk = self._audio_processor.process_chunk(audio_chunk)
+            # Skip if RNNoise is buffering (returns empty)
+            if len(audio_chunk) == 0:
+                return
+        
         audio_b64 = base64.b64encode(audio_chunk).decode()
 
         append_event = {

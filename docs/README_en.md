@@ -158,15 +158,13 @@ Detailed startup steps for developers: (1) Create a new `python3.11` environment
 
 ### TODO List (Development Plan)
 
-- Multi-language support.
-
 - Improve the semantic indexing part in memory server; open the existing settings update functionality.
 
 - Improve the existing proactive dialogue functionality.
 
 - Refactor frontend with React and prepare standalone mobile version.
 
-- Introduce MMD support for 3D models.
+- Introduce VRM support for 3D models.
 
 - N.E.K.O. Network, allowing N.E.K.O.s to communicate autonomously.
 
