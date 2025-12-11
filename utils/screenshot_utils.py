@@ -41,6 +41,8 @@ class ScreenshotUtils:
                 logger.info("AI截图分析失败，放弃本次主动搭话")
                 return None
                 
+        except asyncio.CancelledError:
+            raise
         except Exception:
             logger.exception("截图分析异常:")
             return None
@@ -177,13 +179,65 @@ class ScreenshotUtils:
                         logger.warning(f"响应结构: choices={len(response.choices) if response.choices else 0}")
                     return None
                     
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 logger.exception("AI API调用失败")
                 return None
                 
+        except asyncio.CancelledError:
+            raise
         except ImportError as e:
             logger.warning(f"AI分析相关依赖导入失败: {e}")
             return None
         except Exception:
             logger.exception("AI截图分析失败")
             return None
+
+
+async def analyze_screenshot_from_data_url(data_url: str) -> Optional[str]:
+    """分析前端发送的截图DataURL"""
+    try:
+        # DataURL格式: data:image/png;base64,<base64数据>
+        if not data_url.startswith('data:image/'):
+            logger.error(f"无效的DataURL格式: {data_url[:100]}...")
+            return None
+        
+        # 验证DataURL格式，确保包含base64分隔符
+        if ',' not in data_url:
+            logger.error(f"无效的DataURL格式: 缺少base64分隔符 - {data_url[:100]}...")
+            return None
+        
+        # 提取base64数据
+        parts = data_url.split(',')
+        if len(parts) < 2:
+            logger.error(f"无效的DataURL格式: 缺少base64数据部分 - {data_url[:100]}...")
+            return None
+        
+        base64_data = parts[1]
+        
+        # 解码base64数据
+        image_data = base64.b64decode(base64_data)
+        
+        # 创建临时文件保存截图
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
+            temp_file.write(image_data)
+            temp_file_path = temp_file.name
+        
+        try:
+            # 使用截图工具分析图片
+            screenshot_utils = ScreenshotUtils()
+            description = await screenshot_utils.get_screenshot_description(temp_file_path)
+            return description
+        finally:
+            # 清理临时文件
+            try:
+                os.unlink(temp_file_path)
+            except OSError as e:
+                logger.warning(f"清理临时截图文件失败: {e}")
+                
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.exception(f"分析截图DataURL失败: {e}")
+        return None

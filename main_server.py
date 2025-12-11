@@ -46,7 +46,7 @@ from steamworks.exceptions import SteamNotLoadedException
 from steamworks.enums import EWorkshopFileType, EItemUpdateStatus
 import base64
 import tempfile
-from utils.screenshot_utils import ScreenshotUtils
+from utils.screenshot_utils import ScreenshotUtils, analyze_screenshot_from_data_url
 
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, File, UploadFile, Form, Body
@@ -409,50 +409,6 @@ if _IS_MAIN_PROCESS:
     if os.path.exists(user_mod_path) and os.path.isdir(user_mod_path):
         app.mount("/user_mods", CustomStaticFiles(directory=user_mod_path), name="user_mods")
         logger.info(f"已挂载用户mod路径: {user_mod_path}")
-async def analyze_screenshot_from_data_url(data_url: str) -> Optional[str]:
-    """分析前端发送的截图DataURL"""
-    try:
-        # DataURL格式: data:image/png;base64,<base64数据>
-        if not data_url.startswith('data:image/'):
-            logger.error(f"无效的DataURL格式: {data_url[:100]}...")
-            return None
-        
-        # 验证DataURL格式，确保包含base64分隔符
-        if ',' not in data_url:
-            logger.error(f"无效的DataURL格式: 缺少base64分隔符 - {data_url[:100]}...")
-            return None
-        
-        # 提取base64数据
-        parts = data_url.split(',')
-        if len(parts) < 2:
-            logger.error(f"无效的DataURL格式: 缺少base64数据部分 - {data_url[:100]}...")
-            return None
-        
-        base64_data = parts[1]
-        
-        # 解码base64数据
-        image_data = base64.b64decode(base64_data)
-        
-        # 创建临时文件保存截图
-        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
-            temp_file.write(image_data)
-            temp_file_path = temp_file.name
-        
-        try:
-            # 使用截图工具分析图片
-            screenshot_utils = ScreenshotUtils()
-            description = await screenshot_utils.get_screenshot_description(temp_file_path)
-            return description
-        finally:
-            # 清理临时文件
-            try:
-                os.unlink(temp_file_path)
-            except OSError as e:
-                logger.warning(f"清理临时截图文件失败: {e}")
-                
-    except Exception as e:
-        logger.exception(f"分析截图DataURL失败: {e}")
-        return None
 
 # 使用 FastAPI 的 app.state 来管理启动配置
 def get_start_config():
