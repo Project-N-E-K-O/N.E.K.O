@@ -1182,20 +1182,19 @@ async def proactive_chat(request: Request):
                 # 将DataURL转换为base64数据并分析
                 screenshot_content = await analyze_screenshot_from_data_url(screenshot_data)
                 if not screenshot_content:
-                    logger.warning(f"[{lanlan_name}] 截图分析失败，跳过本次搭话")
+                    logger.warning(f"[{lanlan_name}] 截图分析未产生有效内容，跳过本次搭话")
                     return JSONResponse({
-                        "success": False,
-                        "error": "截图分析失败，请检查截图格式是否正确",
-                        "action": "pass"
-                    }, status_code=500)
+                        "success": True,  # 请求处理成功
+                        "action": "pass",
+                        "message": "截图分析未产生有效内容"
+                    }, status_code=200)
                 else:
                     logger.info(f"[{lanlan_name}] 成功分析截图内容")
             except (ValueError, TypeError) as e:
                 logger.exception(f"[{lanlan_name}] 处理截图数据失败")
                 return JSONResponse({
                     "success": False,
-                    "error": f"截图处理失败: {str(e)}",
-                    "action": "pass"
+                    "error": f"截图处理失败: {str(e)}"
                 }, status_code=500)
         else:
             logger.info(f"[{lanlan_name}] 前端选择使用热门内容进行主动搭话")
