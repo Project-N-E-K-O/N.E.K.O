@@ -255,7 +255,7 @@ def load_plugins_from_toml(
                 logger.error("Class '%s' not found in module '%s' for plugin %s: %s", class_name, module_path, pid, e)
                 continue
             except Exception as e:
-                logger.exception("Unexpected error importing plugin class %s: %s", entry, e)
+                logger.exception("Unexpected error importing plugin class %s", entry)
                 continue
 
             try:
@@ -265,7 +265,7 @@ def load_plugins_from_toml(
                 logger.error("Failed to start process for plugin %s: %s", pid, e)
                 continue
             except Exception as e:
-                logger.exception("Unexpected error starting process for plugin %s: %s", pid, e)
+                logger.exception("Unexpected error starting process for plugin %s", pid)
                 continue
 
             scan_static_metadata(pid, cls, conf, pdata)
@@ -290,4 +290,4 @@ def load_plugins_from_toml(
             logger.error("Invalid plugin configuration in %s: %s", toml_path, e)
         except Exception as e:
             # 其他未知错误
-            logger.exception("Unexpected error loading plugin from %s: %s", toml_path, e)
+            logger.exception("Unexpected error loading plugin from %s", toml_path)

@@ -22,7 +22,6 @@ class TkWindowPlugin(NekoPluginBase):
         self._thread: threading.Thread | None = None
         self._root: tk.Tk | None = None
         self._should_close: bool = False
-        self.ctx = ctx
         self.file_logger.info("TkWindowPlugin initialized with file logging enabled")
         
     def _run_tk(self, title: str, message: str):
@@ -233,4 +232,14 @@ class TkWindowPlugin(NekoPluginBase):
         with self._lock:
             if self._root is not None:
                 self._should_close = True  # 通知 Tk 线程自己关闭
+                thread = self._thread
+            else:
+                thread = None
+        
+        # 等待 Tk 线程结束（最多等待 2 秒）
+        if thread and thread.is_alive():
+            thread.join(timeout=2.0)
+            if thread.is_alive():
+                self.file_logger.warning("[tkWindow] Tk thread did not stop within timeout")
+        
         return {"status": "shutdown"}

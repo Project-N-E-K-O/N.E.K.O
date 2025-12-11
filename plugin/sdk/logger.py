@@ -7,6 +7,7 @@
 - 自动清理旧日志文件（按数量）
 - 可配置的日志级别和格式
 """
+import functools
 import logging
 import sys
 from pathlib import Path
@@ -52,6 +53,12 @@ class PluginFileLogger:
             max_files: 最多保留的日志文件总数（包括当前和备份），默认20个
             log_format: 日志格式字符串，如果为None则使用默认格式
         """
+        if max_files < 1:
+            raise ValueError("max_files must be at least 1")
+        if backup_count < 0:
+            raise ValueError("backup_count must be non-negative")
+        if max_bytes < 1:
+            raise ValueError("max_bytes must be at least 1")
         self.plugin_id = plugin_id
         self.plugin_dir = Path(plugin_dir)
         self.log_level = log_level
@@ -82,6 +89,7 @@ class PluginFileLogger:
         # Logger实例（延迟创建）
         self._logger: Optional[logging.Logger] = None
         self._file_handler: Optional[RotatingFileHandler] = None
+        self._console_handler: Optional[StreamHandler] = None
         
         # 清理旧日志
         self._cleanup_old_logs()
@@ -154,6 +162,7 @@ class PluginFileLogger:
                 file_handler_exists = True
             elif isinstance(handler, StreamHandler) and handler.stream == sys.stdout:
                 console_handler_exists = True
+                self._console_handler = handler
         
         # 如果两个handler都已存在，直接返回
         if file_handler_exists and console_handler_exists:
@@ -169,6 +178,7 @@ class PluginFileLogger:
                 console_handler.setLevel(self.log_level)
                 console_handler.setFormatter(formatter)
                 self._logger.addHandler(console_handler)
+                self._console_handler = console_handler
             except Exception as e:
                 print(f"Warning: Failed to add console handler for plugin {self.plugin_id}: {e}", file=sys.stderr)
         
@@ -251,6 +261,13 @@ class PluginFileLogger:
                 if self._logger:
                     self._logger.debug(f"Failed to cleanup file handler: {e}")
             self._file_handler = None
+        if self._console_handler and self._logger:
+            try:
+                self._logger.removeHandler(self._console_handler)
+            except Exception as e:
+                if self._logger:
+                    self._logger.debug(f"Failed to remove console handler: {e}")
+            self._console_handler = None
 
 
 def enable_plugin_file_logging(
@@ -346,13 +363,15 @@ def plugin_file_logger(
     def decorator(cls):
         original_init = cls.__init__
         
+        @functools.wraps(original_init)
         def new_init(self, ctx):
             # 调用原始初始化
             original_init(self, ctx)
             
             # 获取插件ID和目录
             plugin_id = getattr(self, '_plugin_id', getattr(ctx, 'plugin_id', 'unknown'))
-            plugin_dir = getattr(ctx, 'config_path', Path.cwd()).parent
+            config_path = getattr(ctx, 'config_path', None)
+            plugin_dir = config_path.parent if config_path else Path.cwd()
             
             # 启用文件日志
             file_logger = enable_plugin_file_logging(
