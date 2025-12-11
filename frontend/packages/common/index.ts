@@ -6,7 +6,7 @@ export type ApiResponse<T = unknown> = {
   data?: T;
 };
 
-export function noop(): void {
+export function noop(..._args: any[]): void {
   // intentionally empty
 }
 

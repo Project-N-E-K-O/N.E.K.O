@@ -29,20 +29,31 @@
     "build:web": "vite build --config vite.web.config.ts --mode production",
     "build:web:dev": "vite build --config vite.web.config.ts --mode development",
     "build:web:prod": "vite build --config vite.web.config.ts --mode production",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --pool=threads",
+    "test:watch": "vitest",
+    "test:ui": "vitest --ui",
+    "test:coverage": "vitest run --coverage --pool=threads"
   },
   "dependencies": {
     "axios": "^1.13.2",
+    "axios-auth-refresh": "^3.3.6",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@testing-library/user-event": "^14.5.2",
     "@types/node": "^22.10.5",
     "@types/react": "^19.1.13",
     "@types/react-dom": "^19.1.9",
     "@vitejs/plugin-react": "^4.7.0",
+    "@vitest/ui": "^2.1.8",
+    "jsdom": "^25.0.1",
     "typescript": "^5.9.2",
-    "vite": "^7.1.7"
+    "vite": "^7.1.7",
+    "vitest": "^2.1.8"
   }
 }
 

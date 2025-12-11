@@ -218,27 +218,21 @@ const name = await modalRef.current?.prompt("请输入昵称：", "Neko");
 
 ## 测试
 
-### 运行测试
+### 统一运行
 
-请求库包含完整的单元测试套件，使用 Vitest 编写：
+- `cd frontend && npm run test`  
+  - 使用 Vitest `--pool=threads` 跑全部工作区用例（目前有少量 Modal 长耗时用例被标记 skip，避免 CI 超时）。
 
-```bash
-# 运行请求库测试
-cd frontend/packages/request && npm test
+### 按包运行
 
-# 或在 frontend 目录下
-cd frontend && npm run test -w @project_neko/request
-```
+- 请求库：`cd frontend && npm run test -w @project_neko/request`
+- 组件库与通用工具：`cd frontend && npx vitest run --pool=threads packages/common/__tests__/index.test.ts packages/components/__tests__`
 
-### 测试覆盖率
+### 覆盖率
 
-生成测试覆盖率报告：
-
-```bash
-cd frontend/packages/request && npx vitest run --coverage
-```
-
-覆盖率报告将生成到 `packages/request/coverage/` 目录。
+- 全量覆盖率：`cd frontend && npm run test:coverage`（同样使用 threads 池）
+- 单包覆盖率（示例，请求库）：`cd frontend && npm run test -- -w @project_neko/request --coverage --pool=threads`
+- 覆盖率报告输出到对应包的 `coverage/` 目录（如 `packages/request/coverage/index.html` 可用浏览器打开）。
 
 ### 测试文件说明
 
