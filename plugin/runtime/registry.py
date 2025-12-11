@@ -63,8 +63,9 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
         if event_meta and getattr(event_meta, "event_type", None) == "plugin_entry":
             eid = getattr(event_meta, "id", name)
             handler_obj = EventHandler(meta=event_meta, handler=member)
-            state.event_handlers[f"{pid}.{eid}"] = handler_obj
-            state.event_handlers[f"{pid}:plugin_entry:{eid}"] = handler_obj
+            with state.event_handlers_lock:
+                state.event_handlers[f"{pid}.{eid}"] = handler_obj
+                state.event_handlers[f"{pid}:plugin_entry:{eid}"] = handler_obj
             plugin_entry_method_map[(pid, str(eid))] = name
 
     entries = conf.get("entries") or pdata.get("entries") or []
@@ -81,8 +82,9 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
                 input_schema=ent.get("input_schema", {}) if isinstance(ent, dict) else {},
             )
             eh = EventHandler(meta=entry_meta, handler=handler_fn)
-            state.event_handlers[f"{pid}.{eid}"] = eh
-            state.event_handlers[f"{pid}:plugin_entry:{eid}"] = eh
+            with state.event_handlers_lock:
+                state.event_handlers[f"{pid}.{eid}"] = eh
+                state.event_handlers[f"{pid}:plugin_entry:{eid}"] = eh
         except (AttributeError, KeyError, TypeError) as e:
             logger = logging.getLogger(__name__)
             logger.warning("Error parsing entry %s for plugin %s: %s", ent, pid, e, exc_info=True)

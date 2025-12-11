@@ -53,7 +53,10 @@ def build_plugin_list() -> List[Dict[str, Any]]:
             
             # 处理每个插件的入口点
             seen = set()  # 用于去重 (event_type, id)
-            for key, eh in state.event_handlers.items():
+            # 创建 event_handlers 的副本以避免长时间持有锁
+            with state.event_handlers_lock:
+                event_handlers_copy = dict(state.event_handlers)
+            for key, eh in event_handlers_copy.items():
                 if not (key.startswith(f"{plugin_id}.") or key.startswith(f"{plugin_id}:plugin_entry:")):
                     continue
                 if getattr(eh.meta, "event_type", None) != "plugin_entry":

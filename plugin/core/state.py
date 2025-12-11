@@ -23,6 +23,7 @@ class PluginRuntimeState:
         self.plugin_hosts: Dict[str, Any] = {}
         self.plugin_status_lock = threading.Lock()
         self.plugins_lock = threading.Lock()  # 保护 plugins 字典的线程安全
+        self.event_handlers_lock = threading.Lock()  # 保护 event_handlers 字典的线程安全
         self.event_queue: asyncio.Queue = asyncio.Queue(maxsize=EVENT_QUEUE_MAX)
         self.message_queue: asyncio.Queue = asyncio.Queue(maxsize=MESSAGE_QUEUE_MAX)
 

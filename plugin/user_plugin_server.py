@@ -6,6 +6,7 @@ HTTP 服务器主文件，定义所有路由端点。
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request, Query
@@ -31,7 +32,16 @@ from plugin.server.lifecycle import startup, shutdown
 from plugin.server.utils import now_iso
 from plugin.settings import MESSAGE_QUEUE_DEFAULT_MAX_COUNT
 
-app = FastAPI(title="N.E.K.O User Plugin Server")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期管理"""
+    await startup()
+    yield
+    await shutdown()
+
+
+app = FastAPI(title="N.E.K.O User Plugin Server", lifespan=lifespan)
 logger = logging.getLogger("user_plugin_server")
 
 # 注册异常处理中间件
@@ -207,20 +217,6 @@ async def plugin_push_message(payload: PluginPushMessageRequest):
     except Exception as e:
         logger.exception("plugin_push: unexpected error")
         raise HTTPException(status_code=500, detail="Internal server error") from e
-
-
-# ========== 生命周期事件 ==========
-
-@app.on_event("startup")
-async def startup_event():
-    """服务器启动时初始化"""
-    await startup()
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """服务器关闭时清理"""
-    await shutdown()
 
 
 # ========== 工具函数（向后兼容） ==========

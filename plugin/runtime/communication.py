@@ -54,12 +54,17 @@ class PluginCommunicationResourceManager:
     
     def __post_init__(self):
         """初始化异步资源"""
-        self._shutdown_event = asyncio.Event()
+        # 延迟到实际使用时再创建，避免在错误的事件循环中创建
         # 为每个插件创建独立的线程池，避免阻塞
         self._executor = ThreadPoolExecutor(
             max_workers=COMMUNICATION_THREAD_POOL_MAX_WORKERS,
             thread_name_prefix=f"plugin-comm-{self.plugin_id}"
         )
+    
+    def _ensure_shutdown_event(self) -> None:
+        """确保 shutdown_event 已创建（延迟初始化）"""
+        if self._shutdown_event is None:
+            self._shutdown_event = asyncio.Event()
     
     async def start(self, message_target_queue: Optional[asyncio.Queue] = None) -> None:
         """
@@ -86,6 +91,7 @@ class PluginCommunicationResourceManager:
         self.logger.debug(f"Shutting down communication resources for plugin {self.plugin_id}")
         
         # 停止结果消费和消息消费任务
+        self._ensure_shutdown_event()
         self._shutdown_event.set()
         
         if self._result_consumer_task and not self._result_consumer_task.done():
@@ -193,6 +199,7 @@ class PluginCommunicationResourceManager:
         
         这个任务会一直运行直到收到关闭信号
         """
+        self._ensure_shutdown_event()
         loop = asyncio.get_event_loop()
         
         while not self._shutdown_event.is_set():
@@ -269,6 +276,7 @@ class PluginCommunicationResourceManager:
             self.logger.warning(f"Message target queue not set for plugin {self.plugin_id}, message consumer will not work")
             return
         
+        self._ensure_shutdown_event()
         loop = asyncio.get_event_loop()
         
         while not self._shutdown_event.is_set():

@@ -120,7 +120,8 @@ class NekoPluginBase:
         from .logger import enable_plugin_file_logging
         
         # 获取插件目录（config_path的父目录）
-        plugin_dir = getattr(self.ctx, "config_path", Path.cwd()).parent
+        config_path = getattr(self.ctx, "config_path", None)
+        plugin_dir = config_path.parent if config_path else Path.cwd()
         
         # 使用配置中的默认值
         log_level = log_level if log_level is not None else PLUGIN_LOG_LEVEL
