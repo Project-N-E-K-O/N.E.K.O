@@ -136,24 +136,19 @@ class ScreenshotUtils:
                 from utils.api_config_loader import get_assist_api_key_fields, get_assist_api_profiles
                 from config import DEFAULT_VISION_MODEL
                 
+                # 获取辅助API配置文件
+                assist_api_profiles = get_assist_api_profiles()
+                assist_profile = assist_api_profiles.get(assist_api, assist_api_profiles.get('qwen'))
+                
                 # 获取辅助API对应的API密钥字段名
                 assist_api_key_fields = get_assist_api_key_fields()
                 key_field = assist_api_key_fields.get(assist_api, 'ASSIST_API_KEY_QWEN')
                 vision_api_key = core_config.get(key_field) or core_config.get('CORE_API_KEY')
                 
-                # 使用辅助API的默认视觉模型配置
-                vision_base_url = core_config.get('OPENROUTER_URL')
+                # 从辅助API配置中获取URL（而不是硬编码OPENROUTER_URL）
+                vision_base_url = assist_profile.get('OPENROUTER_URL')
                 
-                # 从全局配置中获取默认的视觉模型
-                vision_model = core_config.get('VISION_MODEL', DEFAULT_VISION_MODEL)
-                
-                # 如果全局配置中没有设置，则从辅助API配置中获取
-                if not vision_model or vision_model == DEFAULT_VISION_MODEL:
-                    assist_api_profiles = get_assist_api_profiles()
-                    assist_profile = assist_api_profiles.get(assist_api, assist_api_profiles.get('qwen'))
-                    vision_model = assist_profile.get('VISION_MODEL', DEFAULT_VISION_MODEL)
-                
-                logger.info(f"辅助API配置 - 密钥字段: {key_field}, 模型: {vision_model}")
+                logger.info(f"辅助API配置 - 密钥字段: {key_field}, 模型: {vision_model}, URL: {vision_base_url}")
             
             logger.info(f"最终配置 - 密钥配置: {bool(vision_api_key)}, 模型: {vision_model}")
             
