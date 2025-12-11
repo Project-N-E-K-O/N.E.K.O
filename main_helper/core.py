@@ -21,8 +21,6 @@ from main_helper.omni_realtime_client import OmniRealtimeClient
 from main_helper.omni_offline_client import OmniOfflineClient
 from main_helper.tts_helper import get_tts_worker
 import base64
-from io import BytesIO
-from PIL import Image
 from config import MEMORY_SERVER_PORT
 from utils.config_manager import get_config_manager
 from multiprocessing import Process, Queue as MPQueue

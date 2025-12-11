@@ -148,6 +148,11 @@ class ScreenshotUtils:
                 # 从辅助API配置中获取URL（而不是硬编码OPENROUTER_URL）
                 vision_base_url = assist_profile.get('OPENROUTER_URL')
                 
+                # 从全局配置或辅助API配置中获取默认的视觉模型
+                vision_model = core_config.get('VISION_MODEL', DEFAULT_VISION_MODEL)
+                if not vision_model or vision_model == DEFAULT_VISION_MODEL:
+                    vision_model = assist_profile.get('VISION_MODEL', DEFAULT_VISION_MODEL)
+                
                 logger.info(f"辅助API配置 - 密钥字段: {key_field}, 模型: {vision_model}, URL: {vision_base_url}")
             
             logger.info(f"最终配置 - 密钥配置: {bool(vision_api_key)}, 模型: {vision_model}")
