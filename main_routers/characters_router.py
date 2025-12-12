@@ -204,7 +204,10 @@ async def update_catgirl_l2d(name: str, request: Request):
         
         # 确保指定猫娘的配置存在
         if name not in characters['猫娘']:
-            characters['猫娘'][name] = {}
+            return JSONResponse(
+                {'success': False, 'error': '猫娘不存在'}, 
+                status_code=404
+            )
         
         # 更新Live2D模型设置，同时保存item_id（如果有）
         characters['猫娘'][name]['live2d'] = live2d_model
@@ -469,7 +472,7 @@ async def set_current_catgirl(request: Request):
     })
     
     # 遍历所有session_manager，尝试发送消息
-    for lanlan_name, mgr in session_manager.items():
+    for lanlan_name, mgr in list(session_manager.items()):
         ws = mgr.websocket
         logger.info(f"检查 {lanlan_name} 的WebSocket: websocket存在={ws is not None}")
         
@@ -905,7 +908,7 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...)):
                 # 如果既没有ID3标签也没有帧同步字，则认为文件可能无效
                 # 但这只是一个警告，不应该严格拒绝
                 if not has_id3_header and not has_frame_sync:
-                    return mime_type, "警告: MP3文件可能格式不标准，文件头: {header[:4].hex()}"
+                    return mime_type, f"警告: MP3文件可能格式不标准，文件头: {header[:4].hex()}"
                         
             except Exception as e:
                 return "", f"MP3文件读取错误: {str(e)}。请确认您的文件是合法的MP3文件。"

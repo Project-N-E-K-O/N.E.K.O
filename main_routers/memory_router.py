@@ -8,15 +8,149 @@ Handles memory-related endpoints including:
 """
 
 import os
+import re
 import json
 import glob
 import logging
+from pathlib import Path
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
+
+# Regex pattern for valid catgirl names:
+# - Allows letters (a-zA-Z), digits (0-9), underscores, hyphens
+# - Allows CJK characters (Chinese, Japanese, Korean)
+# - Must be 1-100 characters long
+VALID_NAME_PATTERN = re.compile(r'^[\w\-\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]{1,100}$')
+
+# Strict pattern for valid recent file names: must start with "recent", followed by
+# alphanumeric, dots, underscores, or hyphens, and end with .json
+VALID_RECENT_FILENAME_PATTERN = re.compile(r'^recent[0-9A-Za-z._-]+\.json$')
+
+
+def validate_catgirl_name(name: str) -> tuple[bool, str]:
+    """
+    Validate a catgirl name for safe use in filenames.
+    
+    Returns:
+        tuple: (is_valid, error_message)
+    """
+    if not name:
+        return False, "名称不能为空"
+    
+    if not isinstance(name, str):
+        return False, "名称必须是字符串"
+    
+    # Check against whitelist pattern
+    if not VALID_NAME_PATTERN.match(name):
+        return False, "名称只能包含字母、数字、下划线、连字符和中日韩文字符"
+    
+    # Explicitly reject path separators and parent directory references
+    if os.path.sep in name or '/' in name or '\\' in name or '..' in name:
+        return False, "名称不能包含路径分隔符或目录遍历字符"
+    
+    return True, ""
+
+
+def validate_chat_payload(chat: any) -> tuple[bool, str]:
+    """
+    Validate the chat payload structure.
+    
+    Args:
+        chat: The chat payload to validate
+        
+    Returns:
+        tuple: (is_valid, error_message)
+    """
+    if not isinstance(chat, list):
+        return False, "chat 必须是一个列表"
+    
+    for idx, item in enumerate(chat):
+        if not isinstance(item, dict):
+            return False, f"chat[{idx}] 必须是一个字典"
+        
+        # Validate required 'role' key
+        if 'role' not in item:
+            return False, f"chat[{idx}] 缺少必需的 'role' 字段"
+        
+        if not isinstance(item['role'], str):
+            return False, f"chat[{idx}]['role'] 必须是字符串"
+        
+        # Validate optional 'text' key if present
+        if 'text' in item and not isinstance(item['text'], str):
+            return False, f"chat[{idx}]['text'] 必须是字符串"
+    
+    return True, ""
+
+
+def validate_recent_filename(filename: str) -> tuple[bool, str]:
+    """
+    Validate a recent file filename for safe use.
+    
+    Args:
+        filename: The filename to validate
+        
+    Returns:
+        tuple: (is_valid, error_message)
+    """
+    if not filename:
+        return False, "文件名不能为空"
+    
+    if not isinstance(filename, str):
+        return False, "文件名必须是字符串"
+    
+    # Reject path separators and parent directory references
+    if os.path.sep in filename or '/' in filename or '\\' in filename or '..' in filename:
+        return False, "文件名不能包含路径分隔符或目录遍历字符"
+    
+    # Ensure filename matches strict pattern
+    if not VALID_RECENT_FILENAME_PATTERN.match(filename):
+        return False, "文件名格式不合法，必须匹配 recent[0-9A-Za-z._-]+.json"
+    
+    # Ensure Path(filename).name == filename (no directory components)
+    if Path(filename).name != filename:
+        return False, "文件名不能包含目录路径"
+    
+    return True, ""
+
+
+def safe_memory_path(memory_dir: Path, filename: str) -> tuple[Path | None, str]:
+    """
+    Safely construct and validate a path within the memory directory.
+    
+    Args:
+        memory_dir: The base memory directory
+        filename: The filename to add to the path
+        
+    Returns:
+        tuple: (resolved_path or None, error_message)
+    """
+    try:
+        # Construct path using pathlib
+        target_path = memory_dir / filename
+        
+        # Resolve to absolute path (resolves .., symlinks, etc.)
+        resolved_path = target_path.resolve()
+        resolved_memory_dir = memory_dir.resolve()
+        
+        # Verify the resolved path is inside memory_dir
+        # Use is_relative_to for Python 3.9+, otherwise check common path
+        try:
+            if not resolved_path.is_relative_to(resolved_memory_dir):
+                return None, "路径越界：目标路径不在允许的目录内"
+        except AttributeError:
+            # Fallback for Python < 3.9
+            try:
+                resolved_path.relative_to(resolved_memory_dir)
+            except ValueError:
+                return None, "路径越界：目标路径不在允许的目录内"
+        
+        return resolved_path, ""
+    except Exception as e:
+        return None, f"路径验证失败: {str(e)}"
 logger = logging.getLogger("Main")
 
 
@@ -33,14 +167,26 @@ async def get_recent_files():
 @router.get('/recent_file')
 async def get_recent_file(filename: str):
     """获取指定 recent*.json 文件内容"""
-    from utils.config_manager import get_config_manager
-    cm = get_config_manager()
-    file_path = str(cm.memory_dir / filename)
+    # Reject path traversal attempts
+    if '/' in filename or '\\' in filename or '..' in filename:
+        return JSONResponse({"success": False, "error": "文件名不能包含路径分隔符或目录遍历字符"}, status_code=400)
+    
     if not (filename.startswith('recent') and filename.endswith('.json')):
         return JSONResponse({"success": False, "error": "文件名不合法"}, status_code=400)
-    if not os.path.exists(file_path):
+    
+    from utils.config_manager import get_config_manager
+    cm = get_config_manager()
+    
+    # Use safe_memory_path to validate and construct the target path
+    memory_dir = Path(cm.memory_dir)
+    resolved_path, path_error = safe_memory_path(memory_dir, filename)
+    if resolved_path is None:
+        return JSONResponse({"success": False, "error": path_error}, status_code=400)
+    
+    if not resolved_path.exists():
         return JSONResponse({"success": False, "error": "文件不存在"}, status_code=404)
-    with open(file_path, 'r', encoding='utf-8') as f:
+    
+    with open(resolved_path, 'r', encoding='utf-8') as f:
         content = f.read()
     return {"content": content}
 
@@ -51,11 +197,29 @@ async def save_recent_file(request: Request):
     data = await request.json()
     filename = data.get('filename')
     chat = data.get('chat')
+    
+    # Validate filename
+    is_valid, error_msg = validate_recent_filename(filename)
+    if not is_valid:
+        logger.warning(f"Invalid filename rejected: {filename!r} - {error_msg}")
+        return JSONResponse({"success": False, "error": error_msg}, status_code=400)
+    
+    # Validate chat payload
+    is_valid, error_msg = validate_chat_payload(chat)
+    if not is_valid:
+        logger.warning(f"Invalid chat payload rejected: {error_msg}")
+        return JSONResponse({"success": False, "error": error_msg}, status_code=400)
+    
     from utils.config_manager import get_config_manager
     cm = get_config_manager()
-    file_path = str(cm.memory_dir / filename)
-    if not (filename and filename.startswith('recent') and filename.endswith('.json')):
-        return JSONResponse({"success": False, "error": "文件名不合法"}, status_code=400)
+    
+    # Use safe_memory_path to validate and construct the target path
+    memory_dir = Path(cm.memory_dir)
+    resolved_path, path_error = safe_memory_path(memory_dir, filename)
+    if resolved_path is None:
+        logger.warning(f"Path traversal attempt blocked for filename: {filename!r} - {path_error}")
+        return JSONResponse({"success": False, "error": path_error}, status_code=400)
+    
     arr = []
     for msg in chat:
         t = msg.get('role')
@@ -74,10 +238,11 @@ async def save_recent_file(request: Request):
             }
         })
     try:
-        with open(file_path, 'w', encoding='utf-8') as f:
+        with open(resolved_path, 'w', encoding='utf-8') as f:
             json.dump(arr, f, ensure_ascii=False, indent=2)
         return {"success": True}
     except Exception as e:
+        logger.error(f"Failed to save recent file: {e}")
         return {"success": False, "error": str(e)}
 
 
@@ -88,7 +253,6 @@ async def update_catgirl_name(request: Request):
     1. 重命名记忆文件
     2. 更新文件内容中的猫娘名称引用
     """
-    import os, json
     data = await request.json()
     old_name = data.get('old_name')
     new_name = data.get('new_name')
@@ -96,15 +260,36 @@ async def update_catgirl_name(request: Request):
     if not old_name or not new_name:
         return JSONResponse({"success": False, "error": "缺少必要参数"}, status_code=400)
     
+    # Validate old_name
+    is_valid, error_msg = validate_catgirl_name(old_name)
+    if not is_valid:
+        logger.warning(f"Invalid old_name rejected: {old_name!r} - {error_msg}")
+        return JSONResponse({"success": False, "error": f"旧名称无效: {error_msg}"}, status_code=400)
+    
+    # Validate new_name
+    is_valid, error_msg = validate_catgirl_name(new_name)
+    if not is_valid:
+        logger.warning(f"Invalid new_name rejected: {new_name!r} - {error_msg}")
+        return JSONResponse({"success": False, "error": f"新名称无效: {error_msg}"}, status_code=400)
+    
     try:
         from utils.config_manager import get_config_manager
         cm = get_config_manager()
+        memory_dir = Path(cm.memory_dir)
         
-        # 1. 重命名记忆文件
+        # Construct and validate file paths
         old_filename = f'recent_{old_name}.json'
         new_filename = f'recent_{new_name}.json'
-        old_file_path = str(cm.memory_dir / old_filename)
-        new_file_path = str(cm.memory_dir / new_filename)
+        
+        old_file_path, old_path_error = safe_memory_path(memory_dir, old_filename)
+        if old_file_path is None:
+            logger.warning(f"Path traversal attempt blocked for old_name: {old_name!r} - {old_path_error}")
+            return JSONResponse({"success": False, "error": old_path_error}, status_code=400)
+        
+        new_file_path, new_path_error = safe_memory_path(memory_dir, new_filename)
+        if new_file_path is None:
+            logger.warning(f"Path traversal attempt blocked for new_name: {new_name!r} - {new_path_error}")
+            return JSONResponse({"success": False, "error": new_path_error}, status_code=400)
         
         # 检查旧文件是否存在
         if not os.path.exists(old_file_path):

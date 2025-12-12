@@ -835,7 +835,8 @@ async def get_local_workshop_item(item_id: str, folder_path: str = None):
             full_path = os.path.normpath(full_path)
             
         # 安全检查：验证路径是否在基础目录内
-        if not full_path.startswith(base_workshop_folder):
+        full_path = os.path.realpath(os.path.normpath(full_path))
+        if os.path.commonpath([full_path, base_workshop_folder]) != base_workshop_folder:
             logger.warning(f'路径遍历尝试被拒绝: {folder_path}')
             return JSONResponse(content={"success": False, "error": "访问被拒绝: 路径不在允许的范围内"}, status_code=403)
         

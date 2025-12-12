@@ -18,7 +18,6 @@ from urllib.parse import unquote
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 from openai import AsyncOpenAI
-from fastapi.responses import JSONResponse
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage
@@ -186,6 +185,7 @@ async def set_achievement_status(name: str):
                     logger.info(f"成功设置成就: {name}")
                     steamworks.UserStats.StoreStats()
                     steamworks.run_callbacks()
+                    return JSONResponse(content={"success": True, "message": f"成就 {name} 处理完成"})
                 else:
                     # 第一次失败，等待后重试一次
                     logger.warning(f"设置成就首次尝试失败，正在重试: {name}")
@@ -196,12 +196,18 @@ async def set_achievement_status(name: str):
                         logger.info(f"成功设置成就（重试后）: {name}")
                         steamworks.UserStats.StoreStats()
                         steamworks.run_callbacks()
+                        return JSONResponse(content={"success": True, "message": f"成就 {name} 处理完成"})
                     else:
                         logger.error(f"设置成就失败: {name}，请确认成就ID在Steam后台已配置")
+                        return JSONResponse(content={"success": False, "error": f"设置成就失败: {name}，请确认成就ID在Steam后台已配置"}, status_code=500)
             else:
                 logger.info(f"成就已解锁，无需重复设置: {name}")
+                return JSONResponse(content={"success": True, "message": f"成就 {name} 处理完成"})
         except Exception as e:
             logger.error(f"设置成就失败: {e}")
+            return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
+    else:
+        return JSONResponse(content={"success": False, "error": "Steamworks未初始化"}, status_code=503)
 
 
 @router.get('/steam/list-achievements')

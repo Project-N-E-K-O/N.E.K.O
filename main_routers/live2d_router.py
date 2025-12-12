@@ -491,7 +491,7 @@ async def save_model_parameters(model_name: str, request: Request):
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 
-@router.get('/live2d/load_model_parameters/{model_name}')
+@router.get('/load_model_parameters/{model_name}')
 def load_model_parameters(model_name: str):
     """从模型目录的parameters.json文件加载参数"""
     try:
