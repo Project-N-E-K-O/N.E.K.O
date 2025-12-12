@@ -23,10 +23,59 @@ import dashscope
 from dashscope.audio.tts_v2 import VoiceEnrollmentService
 
 from .shared_state import get_config_manager, get_session_manager, get_initialize_character_data
-from config import MEMORY_SERVER_PORT
+from config import MEMORY_SERVER_PORT, TFLINK_UPLOAD_URL, TFLINK_ALLOWED_HOSTS
 
 router = APIRouter(tags=["characters"])
 logger = logging.getLogger("Main")
+
+
+def _is_safe_tflink_url(url: str) -> bool:
+    """验证 URL 是否指向 tfLink 白名单中的主机。
+    
+    防止 SSRF 攻击：只允许 tfLink 官方域名/IP，
+    拒绝私有 IP 段、loopback 等内部地址。
+    
+    Args:
+        url: 待验证的 URL
+        
+    Returns:
+        bool: URL 是否安全
+    """
+    from urllib.parse import urlparse
+    import ipaddress
+    
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname
+        
+        if not host:
+            return False
+        
+        # 检查是否在白名单中
+        if host in TFLINK_ALLOWED_HOSTS:
+            return True
+        
+        # 检查是否是 IP 地址
+        try:
+            ip = ipaddress.ip_address(host)
+            # 拒绝私有 IP、loopback、链路本地等
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+                logger.warning(f"拒绝不安全的 IP 地址: {host}")
+                return False
+            # IP 地址必须在白名单中
+            return host in TFLINK_ALLOWED_HOSTS
+        except ValueError:
+            # 不是 IP 地址，是域名
+            # 检查域名是否匹配白名单（支持子域名）
+            for allowed_host in TFLINK_ALLOWED_HOSTS:
+                if host == allowed_host or host.endswith('.' + allowed_host):
+                    return True
+            return False
+            
+    except Exception as e:
+        logger.error(f"验证 URL 安全性时出错: {e}")
+        return False
+
 
 
 @router.get('/api/characters')
@@ -559,7 +608,7 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...)):
         
         logger.info(f"正在上传文件到tfLink，文件名: {file.filename}, 大小: {file_size} bytes, MIME类型: {mime_type}")
         async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post('http://47.101.214.205:8000/api/upload', files=files, headers=headers)
+            resp = await client.post(TFLINK_UPLOAD_URL, files=files, headers=headers)
 
             if resp.status_code != 200:
                 logger.error(f"上传到tfLink失败，状态码: {resp.status_code}, 响应内容: {resp.text}")
@@ -584,6 +633,11 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...)):
                 if not tmp_url.startswith(('http://', 'https://')):
                     logger.error(f"无效的URL格式: {tmp_url}")
                     return JSONResponse({'error': f'无效的URL格式: {tmp_url}'}, status_code=500)
+                
+                # 验证 URL 主机名是否在白名单中（SSRF 防护）
+                if not _is_safe_tflink_url(tmp_url):
+                    logger.error(f"URL 主机名不在白名单中: {tmp_url}")
+                    return JSONResponse({'error': '返回的文件URL不在允许的主机列表中'}, status_code=403)
                     
                 # 测试URL是否可访问
                 test_resp = await client.head(tmp_url, timeout=10)

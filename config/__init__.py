@@ -22,6 +22,13 @@ USER_PLUGIN_SERVER_PORT = 48916
 # MCP Router配置
 MCP_ROUTER_URL = 'http://localhost:3282'
 
+# tfLink 文件上传服务配置
+TFLINK_UPLOAD_URL = 'http://47.101.214.205:8000/api/upload'
+# tfLink 允许的主机名白名单（用于 SSRF 防护）
+TFLINK_ALLOWED_HOSTS = [
+    '47.101.214.205',  # tfLink 官方 IP
+]
+
 # API 和模型配置的默认值
 DEFAULT_CORE_API_KEY = ''
 DEFAULT_AUDIO_API_KEY = ''
@@ -246,7 +253,41 @@ DEFAULT_CONFIG_DATA = {
 TIME_ORIGINAL_TABLE_NAME = "time_indexed_original"
 TIME_COMPRESSED_TABLE_NAME = "time_indexed_compressed"
 
-MODELS_WITH_EXTRA_BODY = ["qwen-flash-2025-07-28", "qwen3-vl-plus-2025-09-23", "glm-4.5-air", "zai-org/GLM-4.6V", "glm-4.6v-flash", "qwen3-vl-plus", "qwen3-vl-flash"]
+
+# 不同模型供应商需要的 extra_body 格式
+EXTRA_BODY_OPENAI = {"enable_thinking": False}
+EXTRA_BODY_CLAUDE = {"thinking": {"type": "disabled"}}
+
+# 模型到 extra_body 的映射
+MODELS_EXTRA_BODY_MAP = {
+    # Qwen 系列
+    "qwen-flash-2025-07-28": EXTRA_BODY_OPENAI,
+    "qwen3-vl-plus-2025-09-23": EXTRA_BODY_OPENAI,
+    "qwen3-vl-plus": EXTRA_BODY_OPENAI,
+    "qwen3-vl-flash": EXTRA_BODY_OPENAI,
+    # GLM 系列
+    "glm-4.5-air": EXTRA_BODY_CLAUDE,
+    "glm-4.6v-flash": EXTRA_BODY_CLAUDE,
+    "glm-4.6v": EXTRA_BODY_CLAUDE,
+    # Silicon (zai-org) - 使用 Qwen 格式
+    "zai-org/GLM-4.6V": EXTRA_BODY_OPENAI,
+}
+
+
+def get_extra_body(model: str) -> dict | None:
+    """根据模型名称返回对应的 extra_body 配置。
+
+    Args:
+        model: 模型名称
+
+    Returns:
+        对应的 extra_body dict，如果模型不需要特殊配置则返回 None
+    """
+    if not model:
+        return None
+    if model in MODELS_EXTRA_BODY_MAP:
+        return MODELS_EXTRA_BODY_MAP[model]
+    return {}
 
 
 __all__ = [
@@ -264,7 +305,10 @@ __all__ = [
     'DEFAULT_ASSIST_API_KEY_FIELDS',
     'TIME_ORIGINAL_TABLE_NAME',
     'TIME_COMPRESSED_TABLE_NAME',
-    'MODELS_WITH_EXTRA_BODY',
+    'MODELS_EXTRA_BODY_MAP',
+    'get_extra_body',
+    'EXTRA_BODY_OPENAI',
+    'EXTRA_BODY_CLAUDE',
     'MAIN_SERVER_PORT',
     'MEMORY_SERVER_PORT',
     'MONITOR_SERVER_PORT',
@@ -272,6 +316,8 @@ __all__ = [
     'TOOL_SERVER_PORT',
     'USER_PLUGIN_SERVER_PORT',
     'MCP_ROUTER_URL',
+    'TFLINK_UPLOAD_URL',
+    'TFLINK_ALLOWED_HOSTS',
     # API 和模型配置的默认值
     'DEFAULT_CORE_API_KEY',
     'DEFAULT_AUDIO_API_KEY',

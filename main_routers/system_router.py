@@ -21,7 +21,7 @@ import httpx
 from openai import AsyncOpenAI
 
 from .shared_state import get_steamworks, get_config_manager
-from config import MEMORY_SERVER_PORT, MODELS_WITH_EXTRA_BODY
+from config import MEMORY_SERVER_PORT, get_extra_body
 from config.prompts_sys import emotion_analysis_prompt
 from utils.workshop_utils import get_workshop_path
 
@@ -57,7 +57,9 @@ async def beacon_shutdown():
         current_config = get_start_config()
         if current_config['browser_mode_enabled']:
             logger.info("收到beacon信号，准备关闭服务器...")
-            asyncio.create_task(shutdown_server_async())
+            task = asyncio.create_task(shutdown_server_async())
+            _background_tasks.add(task)
+            task.add_done_callback(_background_tasks.discard)
             return {"success": True, "message": "服务器关闭信号已接收"}
         return {"success": False, "message": "服务器未在浏览器模式下运行"}
     except Exception as e:
@@ -114,9 +116,7 @@ async def emotion_analysis(request: Request):
         
         client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         
-        extra_body = {}
-        if model in MODELS_WITH_EXTRA_BODY:
-            extra_body = {"enable_thinking": False}
+        extra_body = get_extra_body(model)
         
         response = await client.chat.completions.create(
             model=model,
@@ -464,6 +464,11 @@ async def proxy_image(image_path: str):
         if os.path.splitext(final_path)[1].lower() not in image_extensions:
             return JSONResponse(content={"success": False, "error": "不是有效的图片文件"}, status_code=400)
         
+        file_size = os.path.getsize(final_path)
+        MAX_IMAGE_SIZE = 50 * 1024 * 1024  # 50MB
+        if file_size > MAX_IMAGE_SIZE:
+            return JSONResponse(content={"success": False, "error": "图片文件过大"}, status_code=400)
+
         with open(final_path, 'rb') as f:
             image_data = f.read()
         

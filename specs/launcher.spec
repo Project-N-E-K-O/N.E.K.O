@@ -185,7 +185,6 @@ hiddenimports += [
     'utils.frontend_utils',
     'utils.logger_config',
     'utils.preferences',
-    'utils.qwen_tts_vc_realtime',
     'utils.web_scraper',
     
     # Steam 相关模块

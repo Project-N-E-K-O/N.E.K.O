@@ -26,7 +26,7 @@ from .shared_state import (
     get_session_id, 
     get_config_manager,
 )
-from config import MODELS_WITH_EXTRA_BODY, TOOL_SERVER_PORT
+from config import get_extra_body, TOOL_SERVER_PORT
 from config.prompts_sys import proactive_chat_prompt, proactive_chat_prompt_screenshot
 from utils.screenshot_utils import analyze_screenshot_from_data_url
 
@@ -216,42 +216,23 @@ async def proactive_chat(request: Request):
         # 构建prompt和messages
         client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         
-        extra_body = {}
-        if model in MODELS_WITH_EXTRA_BODY:
-            extra_body = {"enable_thinking": False}
+        extra_body = get_extra_body(model)
         
         if use_screenshot and screenshot_data:
             # 使用截图模式
-            analysis_result = analyze_screenshot_from_data_url(screenshot_data)
-            
-            if analysis_result.get("success"):
+            description = await analyze_screenshot_from_data_url(screenshot_data)
+            if description:
                 prompt = proactive_chat_prompt_screenshot.format(
                     master_name=master_name_current,
                     lanlan_name=lanlan_name,
-                    screenshot_content=analysis_result.get("content", "无法分析截图内容")
+                    screenshot_content=description
                 )
-                
-                if analysis_result.get("image_type") == "screenshot":
-                    messages = [
-                        {"role": "system", "content": prompt},
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": f"请分析{master_name_current}的屏幕截图，决定是否主动搭话。"},
-                                {
-                                    "type": "image_url",
-                                    "image_url": {"url": screenshot_data}
-                                }
-                            ]
-                        }
-                    ]
-                else:
-                    messages = [
-                        {"role": "system", "content": prompt},
-                        {"role": "user", "content": f"屏幕内容分析：\n{analysis_result.get('content', '无内容')}\n\n请根据以上信息决定是否主动搭话。"}
-                    ]
+                messages = [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": "请根据以上信息决定是否主动搭话。"}
+                ]
             else:
-                logger.warning(f"截图分析失败: {analysis_result.get('error')}")
+                logger.warning("截图分析失败，回退到热门内容模式")
                 use_screenshot = False
         
         if not use_screenshot:

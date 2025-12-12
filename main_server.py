@@ -67,7 +67,7 @@ import pathlib, wave
 from openai import AsyncOpenAI, APIConnectionError, InternalServerError, RateLimitError
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage
-from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT, MEMORY_SERVER_PORT, MODELS_WITH_EXTRA_BODY, TOOL_SERVER_PORT, USER_PLUGIN_SERVER_PORT
+from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT, USER_PLUGIN_SERVER_PORT
 from config.prompts_sys import emotion_analysis_prompt, proactive_chat_prompt, proactive_chat_prompt_screenshot
 import glob
 from utils.config_manager import get_config_manager

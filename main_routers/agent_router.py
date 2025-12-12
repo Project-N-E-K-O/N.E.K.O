@@ -22,6 +22,26 @@ router = APIRouter(prefix="/api/agent", tags=["agent"])
 logger = logging.getLogger("Main")
 
 
+# Key mappings: frontend ↔ internal
+# Frontend uses: enable_cu, enable_mcp, enable_up
+# Internal uses: computer_use_enabled, mcp_enabled, agent_enabled
+FRONTEND_TO_INTERNAL = {
+    'enable_cu': 'computer_use_enabled',
+    'enable_mcp': 'mcp_enabled',
+    'enable_up': 'agent_enabled',
+    # Also accept internal keys directly for new clients
+    'computer_use_enabled': 'computer_use_enabled',
+    'mcp_enabled': 'mcp_enabled',
+    'agent_enabled': 'agent_enabled',
+}
+
+INTERNAL_TO_FRONTEND = {
+    'computer_use_enabled': 'enable_cu',
+    'mcp_enabled': 'enable_mcp',
+    'agent_enabled': 'enable_up',
+}
+
+
 @router.post('/flags')
 async def update_agent_flags(request: Request):
     """来自前端的Agent开关更新，级联到各自的session manager。"""
@@ -30,14 +50,22 @@ async def update_agent_flags(request: Request):
     try:
         data = await request.json()
         
+        # Map incoming keys to internal names
+        mapped_flags = {}
+        for key, value in data.items():
+            if key in FRONTEND_TO_INTERNAL:
+                internal_key = FRONTEND_TO_INTERNAL[key]
+                mapped_flags[internal_key] = value
+        
+        # Update each session manager using the proper method
         for lanlan_name, mgr in session_manager.items():
-            if hasattr(mgr, 'agent_flags'):
-                if 'enable_cu' in data:
-                    mgr.agent_flags['enable_cu'] = data['enable_cu']
-                if 'enable_mcp' in data:
-                    mgr.agent_flags['enable_mcp'] = data['enable_mcp']
-                if 'enable_up' in data:
-                    mgr.agent_flags['enable_up'] = data['enable_up']
+            if hasattr(mgr, 'update_agent_flags'):
+                mgr.update_agent_flags(mapped_flags)
+            elif hasattr(mgr, 'agent_flags'):
+                # Fallback for managers without update_agent_flags method
+                for k, v in mapped_flags.items():
+                    if isinstance(v, bool):
+                        mgr.agent_flags[k] = v
         
         return {"success": True, "message": "Agent flags已更新"}
     except Exception as e:
@@ -53,9 +81,15 @@ async def get_agent_flags():
     # 返回第一个session manager的flags作为参考
     for lanlan_name, mgr in session_manager.items():
         if hasattr(mgr, 'agent_flags'):
+            # Map internal keys to frontend-friendly names
+            internal_flags = mgr.agent_flags
+            frontend_flags = {}
+            for internal_key, frontend_key in INTERNAL_TO_FRONTEND.items():
+                if internal_key in internal_flags:
+                    frontend_flags[frontend_key] = internal_flags[internal_key]
             return {
                 "success": True,
-                "flags": mgr.agent_flags
+                "flags": frontend_flags
             }
     
     return {
