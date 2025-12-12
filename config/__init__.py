@@ -172,9 +172,9 @@ DEFAULT_ASSIST_API_PROFILES = {
         'EMOTION_MODEL': "qwen-flash-2025-07-28",
         'VISION_MODEL': "qwen3-vl-plus-2025-09-23",
         # Qwen VL 模型支持 Computer Use
-        'COMPUTER_USE_MODEL': "qwen3-vl-235b-a22b-instruct",
+        'COMPUTER_USE_MODEL': "qwen3-vl-plus",
         'COMPUTER_USE_MODEL_URL': "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        'COMPUTER_USE_GROUND_MODEL': "qwen3-vl-30b-a3b-instruct",
+        'COMPUTER_USE_GROUND_MODEL': "qwen3-vl-flash",
         'COMPUTER_USE_GROUND_URL': "https://dashscope.aliyuncs.com/compatible-mode/v1",
     },
     'openai': {
@@ -194,11 +194,11 @@ DEFAULT_ASSIST_API_PROFILES = {
         'SUMMARY_MODEL': "glm-4.5-flash",
         'CORRECTION_MODEL': "glm-4.5-air",
         'EMOTION_MODEL': "glm-4.5-flash",
-        'VISION_MODEL': "glm-4v-plus-0111",
+        'VISION_MODEL': "glm-4.6v-flash",
         # 智谱 GLM-4.5V 支持 Grounding
-        'COMPUTER_USE_MODEL': "glm-4.5v",
+        'COMPUTER_USE_MODEL': "glm-4.6v",
         'COMPUTER_USE_MODEL_URL': "https://open.bigmodel.cn/api/paas/v4",
-        'COMPUTER_USE_GROUND_MODEL': "glm-4.5v",
+        'COMPUTER_USE_GROUND_MODEL': "glm-4.6v-flash",
         'COMPUTER_USE_GROUND_URL': "https://open.bigmodel.cn/api/paas/v4",
     },
     'step': {
@@ -216,13 +216,13 @@ DEFAULT_ASSIST_API_PROFILES = {
     'silicon': {
         'OPENROUTER_URL': "https://api.siliconflow.cn/v1",
         'SUMMARY_MODEL': "Qwen/Qwen3-Next-80B-A3B-Instruct",
-        'CORRECTION_MODEL': "deepseek-ai/DeepSeek-V3.2-Exp",
+        'CORRECTION_MODEL': "deepseek-ai/DeepSeek-V3.2",
         'EMOTION_MODEL': "inclusionAI/Ling-mini-2.0",
-        'VISION_MODEL': "Qwen/Qwen3-VL-235B-A22B-Instruct",
+        'VISION_MODEL': "zai-org/GLM-4.6V",
         # 硅基流动使用 Qwen VL 模型
-        'COMPUTER_USE_MODEL': "Qwen/Qwen3-VL-235B-A22B-Instruct",
+        'COMPUTER_USE_MODEL': "zai-org/GLM-4.6V",
         'COMPUTER_USE_MODEL_URL': "https://api.siliconflow.cn/v1",
-        'COMPUTER_USE_GROUND_MODEL': "Qwen/Qwen3-VL-30B-A3B-Instruct",
+        'COMPUTER_USE_GROUND_MODEL': "zai-org/GLM-4.6V",
         'COMPUTER_USE_GROUND_URL': "https://api.siliconflow.cn/v1",
     },
 }
@@ -246,7 +246,7 @@ DEFAULT_CONFIG_DATA = {
 TIME_ORIGINAL_TABLE_NAME = "time_indexed_original"
 TIME_COMPRESSED_TABLE_NAME = "time_indexed_compressed"
 
-MODELS_WITH_EXTRA_BODY = ["qwen-flash-2025-07-28", "qwen3-vl-plus-2025-09-23"]
+MODELS_WITH_EXTRA_BODY = ["qwen-flash-2025-07-28", "qwen3-vl-plus-2025-09-23", "glm-4.5-air", "zai-org/GLM-4.6V", "glm-4.6v-flash", "qwen3-vl-plus", "qwen3-vl-flash"]
 
 
 __all__ = [

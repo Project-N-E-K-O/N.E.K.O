@@ -1,0 +1,195 @@
+======================================================================
+ENDPOINT MIGRATION COMPARISON REPORT
+======================================================================
+
+Old main_server.py endpoints: 88
+New routers endpoints: 71
+
+======================================================================
+⚠️  MISSING ENDPOINTS (in old, not in new routers):
+======================================================================
+  POST       /api/agent/admin/control
+  GET        /api/agent/computer_use/availability
+  POST       /api/agent/flags
+  GET        /api/agent/flags
+  GET        /api/agent/health
+  GET        /api/agent/mcp/availability
+  GET        /api/agent/task_status
+  GET        /api/agent/tasks
+  GET        /api/agent/tasks/{task_id}
+  GET        /api/agent/user_plugin/availability
+  GET        /api/config/api_providers
+  POST       /api/config/core_api
+  GET        /api/config/core_api
+  GET        /api/config/page_config
+  POST       /api/emotion/analysis
+  GET        /api/file-exists
+  GET        /api/find-first-image
+  POST       /api/live2d/emotion_mapping/{model_name}
+  GET        /api/live2d/emotion_mapping/{model_name}
+  GET        /api/live2d/load_model_parameters/{model_name}
+  POST       /api/live2d/model_config/{model_name}
+  GET        /api/live2d/model_config/{model_name}
+  GET        /api/live2d/model_config_by_id/{model_id}
+  POST       /api/live2d/model_config_by_id/{model_id}
+  GET        /api/live2d/model_files/{model_name}
+  GET        /api/live2d/model_files_by_id/{model_id}
+  GET        /api/live2d/model_parameters/{model_name}
+  POST       /api/live2d/save_model_parameters/{model_name}
+  POST       /api/live2d/upload_model
+  GET        /api/memory/recent_file
+  POST       /api/memory/recent_file/save
+  GET        /api/memory/recent_files
+  GET        /api/memory/review_config
+  POST       /api/memory/review_config
+  POST       /api/memory/update_catgirl_name
+  GET        /api/preferences
+  POST       /api/preferences
+  POST       /api/preferences/set-preferred
+  GET        /api/proxy-image
+  GET        /api/steam/list-achievements
+  POST       /api/steam/set-achievement-status/{name}
+  GET        /api/steam/workshop/check-upload-status
+  GET        /api/steam/workshop/config
+  POST       /api/steam/workshop/config
+  GET        /api/steam/workshop/item/{item_id}
+  POST       /api/steam/workshop/local-items/scan
+  GET        /api/steam/workshop/local-items/{item_id}
+  POST       /api/steam/workshop/publish
+  POST       /api/steam/workshop/unsubscribe
+  GET        /api/steam_language
+  POST       /api/voice_clone
+
+Total missing: 51
+
+======================================================================
+➕ EXTRA ENDPOINTS (in new routers, not in old):
+======================================================================
+  POST       /admin
+  POST       /api/emotion_analysis
+  GET        /api/live2d/{model_name}/config
+  PUT        /api/live2d/{model_name}/config
+  PUT        /api/live2d/{model_name}/emotion_mapping
+  GET        /api/live2d/{model_name}/emotion_mapping
+  GET        /api/steam/achievements
+  POST       /api/steam/achievements/{name}
+  POST       /api/steam/workshop/item/unsubscribe
+  GET        /api/workshop/config
+  POST       /api/workshop/config
+  GET        /config/api_providers
+  GET        /config/core_api
+  POST       /config/core_api
+  GET        /config/page_config
+  GET        /cu/availability
+  GET        /flags
+  POST       /flags
+  GET        /health
+  GET        /mcp/availability
+  POST       /preferences
+  GET        /preferences
+  POST       /preferences/set-preferred
+  POST       /recent
+  GET        /recent/{filename}
+  GET        /recent_files
+  GET        /review_config
+  POST       /review_config
+  GET        /steam_language
+  GET        /task-status
+  GET        /task/{task_id}
+  GET        /tasks
+  GET        /up/availability
+  POST       /update-catgirl-name
+
+Total extra: 34
+
+======================================================================
+ALL OLD ENDPOINTS:
+======================================================================
+  ✅ GET        /
+  ❌ POST       /api/agent/admin/control
+  ❌ GET        /api/agent/computer_use/availability
+  ❌ POST       /api/agent/flags
+  ❌ GET        /api/agent/flags
+  ❌ GET        /api/agent/health
+  ❌ GET        /api/agent/mcp/availability
+  ❌ GET        /api/agent/task_status
+  ❌ GET        /api/agent/tasks
+  ❌ GET        /api/agent/tasks/{task_id}
+  ❌ GET        /api/agent/user_plugin/availability
+  ✅ POST       /api/beacon/shutdown
+  ✅ GET        /api/characters
+  ✅ POST       /api/characters/catgirl
+  ✅ PUT        /api/characters/catgirl/l2d/{name}
+  ✅ PUT        /api/characters/catgirl/voice_id/{name}
+  ✅ DELETE     /api/characters/catgirl/{name}
+  ✅ PUT        /api/characters/catgirl/{name}
+  ✅ POST       /api/characters/catgirl/{name}/unregister_voice
+  ✅ GET        /api/characters/catgirl/{name}/voice_mode_status
+  ✅ POST       /api/characters/catgirl/{old_name}/rename
+  ✅ POST       /api/characters/clear_voice_ids
+  ✅ POST       /api/characters/current_catgirl
+  ✅ GET        /api/characters/current_catgirl
+  ✅ GET        /api/characters/current_live2d_model
+  ✅ GET        /api/characters/get_microphone
+  ✅ POST       /api/characters/master
+  ✅ POST       /api/characters/reload
+  ✅ POST       /api/characters/set_microphone
+  ❌ GET        /api/config/api_providers
+  ❌ POST       /api/config/core_api
+  ❌ GET        /api/config/core_api
+  ❌ GET        /api/config/page_config
+  ❌ POST       /api/emotion/analysis
+  ❌ GET        /api/file-exists
+  ❌ GET        /api/find-first-image
+  ❌ POST       /api/live2d/emotion_mapping/{model_name}
+  ❌ GET        /api/live2d/emotion_mapping/{model_name}
+  ❌ GET        /api/live2d/load_model_parameters/{model_name}
+  ❌ POST       /api/live2d/model_config/{model_name}
+  ❌ GET        /api/live2d/model_config/{model_name}
+  ❌ GET        /api/live2d/model_config_by_id/{model_id}
+  ❌ POST       /api/live2d/model_config_by_id/{model_id}
+  ❌ GET        /api/live2d/model_files/{model_name}
+  ❌ GET        /api/live2d/model_files_by_id/{model_id}
+  ❌ GET        /api/live2d/model_parameters/{model_name}
+  ✅ GET        /api/live2d/models
+  ❌ POST       /api/live2d/save_model_parameters/{model_name}
+  ❌ POST       /api/live2d/upload_model
+  ❌ GET        /api/memory/recent_file
+  ❌ POST       /api/memory/recent_file/save
+  ❌ GET        /api/memory/recent_files
+  ❌ POST       /api/memory/review_config
+  ❌ GET        /api/memory/review_config
+  ❌ POST       /api/memory/update_catgirl_name
+  ✅ GET        /api/models
+  ✅ POST       /api/notify_task_result
+  ❌ POST       /api/preferences
+  ❌ GET        /api/preferences
+  ❌ POST       /api/preferences/set-preferred
+  ✅ POST       /api/proactive_chat
+  ❌ GET        /api/proxy-image
+  ❌ GET        /api/steam/list-achievements
+  ❌ POST       /api/steam/set-achievement-status/{name}
+  ❌ GET        /api/steam/workshop/check-upload-status
+  ❌ POST       /api/steam/workshop/config
+  ❌ GET        /api/steam/workshop/config
+  ❌ GET        /api/steam/workshop/item/{item_id}
+  ✅ GET        /api/steam/workshop/item/{item_id}/path
+  ❌ POST       /api/steam/workshop/local-items/scan
+  ❌ GET        /api/steam/workshop/local-items/{item_id}
+  ❌ POST       /api/steam/workshop/publish
+  ✅ GET        /api/steam/workshop/subscribed-items
+  ❌ POST       /api/steam/workshop/unsubscribe
+  ❌ GET        /api/steam_language
+  ❌ POST       /api/voice_clone
+  ✅ POST       /api/voices
+  ✅ GET        /api/voices
+  ✅ GET        /api_key
+  ✅ GET        /chara_manager
+  ✅ GET        /l2d
+  ✅ GET        /live2d_emotion_manager
+  ✅ GET        /live2d_parameter_editor
+  ✅ GET        /memory_browser
+  ✅ GET        /steam_workshop_manager
+  ✅ GET        /voice_clone
+  ✅ WEBSOCKET  /ws/{lanlan_name}
+  ✅ GET        /{lanlan_name}

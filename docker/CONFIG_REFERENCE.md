@@ -290,7 +290,7 @@ print(config)
 - `config/__init__.py` (第 102-112 行) - core_config.json 结构
 - `utils/config_manager.py` (第 569-728 行) - 配置加载逻辑
 - `config/api_providers.json` - API 提供商详细配置
-- `main_server.py` (第 324-432 行) - 配置读写 API
+- `main_routers/config_router.py` - 配置读写 API
 
 ## ⚠️ 注意事项
 

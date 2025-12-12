@@ -1,0 +1,179 @@
+================================================================================
+ENDPOINT MIGRATION AUDIT REPORT
+================================================================================
+
+Old main_server.py endpoints: 88
+New routers endpoints: 74
+Successfully migrated: 71
+Missing from routers: 17
+Extra in routers (new): 3
+
+================================================================================
+❌ MISSING ENDPOINTS (need to be added to routers):
+================================================================================
+  GET        /api/file-exists
+  GET        /api/find-first-image
+  GET        /api/live2d/load_model_parameters/{model_name}
+  GET        /api/live2d/model_config_by_id/{model_id}
+  POST       /api/live2d/model_config_by_id/{model_id}
+  GET        /api/live2d/model_files/{model_name}
+  GET        /api/live2d/model_files_by_id/{model_id}
+  GET        /api/live2d/model_parameters/{model_name}
+  POST       /api/live2d/save_model_parameters/{model_name}
+  POST       /api/live2d/upload_model
+  GET        /api/proxy-image
+  GET        /api/steam/workshop/check-upload-status
+  GET        /api/steam/workshop/item/{item_id}
+  POST       /api/steam/workshop/local-items/scan
+  GET        /api/steam/workshop/local-items/{item_id}
+  POST       /api/steam/workshop/publish
+  POST       /api/voice_clone
+
+Total missing: 17
+
+================================================================================
+➕ EXTRA ENDPOINTS (new in routers, not in old):
+================================================================================
+  POST       /api/memory/recent [memory_router.py]
+  GET        /api/memory/recent/{filename} [memory_router.py]
+  POST       /api/steam/workshop/item/unsubscribe [workshop_router.py]
+
+Total extra: 3
+
+================================================================================
+DETAILED ANALYSIS BY CATEGORY:
+================================================================================
+
+/api/file-exists:
+  GET        /api/file-exists
+
+/api/find-first-image:
+  GET        /api/find-first-image
+
+/api/live2d:
+  GET        /api/live2d/load_model_parameters/{model_name}
+  GET        /api/live2d/model_config_by_id/{model_id}
+  GET        /api/live2d/model_files/{model_name}
+  GET        /api/live2d/model_files_by_id/{model_id}
+  GET        /api/live2d/model_parameters/{model_name}
+  POST       /api/live2d/model_config_by_id/{model_id}
+  POST       /api/live2d/save_model_parameters/{model_name}
+  POST       /api/live2d/upload_model
+
+/api/proxy-image:
+  GET        /api/proxy-image
+
+/api/steam:
+  GET        /api/steam/workshop/check-upload-status
+  GET        /api/steam/workshop/item/{item_id}
+  GET        /api/steam/workshop/local-items/{item_id}
+  POST       /api/steam/workshop/local-items/scan
+  POST       /api/steam/workshop/publish
+
+/api/voice_clone:
+  POST       /api/voice_clone
+
+================================================================================
+NEW ROUTER FULL PATHS:
+================================================================================
+
+agent_router.py (prefix: '/api/agent')
+----------------------------------------
+  POST       /api/agent/admin/control
+  GET        /api/agent/computer_use/availability
+  POST       /api/agent/flags
+  GET        /api/agent/flags
+  GET        /api/agent/health
+  GET        /api/agent/mcp/availability
+  GET        /api/agent/task_status
+  GET        /api/agent/tasks
+  GET        /api/agent/tasks/{task_id}
+  GET        /api/agent/user_plugin/availability
+
+characters_router.py (prefix: '')
+----------------------------------------
+  GET        /api/characters
+  POST       /api/characters/catgirl
+  PUT        /api/characters/catgirl/{name}
+  DELETE     /api/characters/catgirl/{name}
+  POST       /api/characters/catgirl/{name}/unregister_voice
+  GET        /api/characters/catgirl/{name}/voice_mode_status
+  POST       /api/characters/catgirl/{old_name}/rename
+  POST       /api/characters/clear_voice_ids
+  GET        /api/characters/current_catgirl
+  POST       /api/characters/current_catgirl
+  GET        /api/characters/get_microphone
+  POST       /api/characters/master
+  POST       /api/characters/reload
+  POST       /api/characters/set_microphone
+  GET        /api/voices
+  POST       /api/voices
+
+config_router.py (prefix: '/api')
+----------------------------------------
+  GET        /api/config/api_providers
+  GET        /api/config/core_api
+  POST       /api/config/core_api
+  GET        /api/config/page_config
+  GET        /api/preferences
+  POST       /api/preferences
+  POST       /api/preferences/set-preferred
+  GET        /api/steam_language
+
+live2d_router.py (prefix: '')
+----------------------------------------
+  PUT        /api/characters/catgirl/l2d/{name}
+  PUT        /api/characters/catgirl/voice_id/{name}
+  GET        /api/characters/current_live2d_model
+  GET        /api/live2d/emotion_mapping/{model_name}
+  POST       /api/live2d/emotion_mapping/{model_name}
+  GET        /api/live2d/model_config/{model_name}
+  POST       /api/live2d/model_config/{model_name}
+  GET        /api/live2d/models
+  GET        /api/models
+
+memory_router.py (prefix: '/api/memory')
+----------------------------------------
+  POST       /api/memory/recent
+  GET        /api/memory/recent/{filename}
+  GET        /api/memory/recent_file
+  POST       /api/memory/recent_file/save
+  GET        /api/memory/recent_files
+  GET        /api/memory/review_config
+  POST       /api/memory/review_config
+  POST       /api/memory/update_catgirl_name
+
+pages_router.py (prefix: '')
+----------------------------------------
+  GET        /
+  GET        /api_key
+  GET        /chara_manager
+  GET        /l2d
+  GET        /live2d_emotion_manager
+  GET        /live2d_parameter_editor
+  GET        /memory_browser
+  GET        /steam_workshop_manager
+  GET        /voice_clone
+  GET        /{lanlan_name}
+
+system_router.py (prefix: '')
+----------------------------------------
+  POST       /api/beacon/shutdown
+  POST       /api/emotion/analysis
+  GET        /api/steam/list-achievements
+  POST       /api/steam/set-achievement-status/{name}
+
+websocket_router.py (prefix: '')
+----------------------------------------
+  POST       /api/notify_task_result
+  POST       /api/proactive_chat
+  WEBSOCKET  /ws/{lanlan_name}
+
+workshop_router.py (prefix: '')
+----------------------------------------
+  GET        /api/steam/workshop/config
+  POST       /api/steam/workshop/config
+  POST       /api/steam/workshop/item/unsubscribe
+  GET        /api/steam/workshop/item/{item_id}/path
+  GET        /api/steam/workshop/subscribed-items
+  POST       /api/steam/workshop/unsubscribe
