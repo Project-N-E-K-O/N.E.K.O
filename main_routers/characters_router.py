@@ -23,7 +23,7 @@ import dashscope
 from dashscope.audio.tts_v2 import VoiceEnrollmentService
 
 from .shared_state import get_config_manager, get_session_manager, get_initialize_character_data
-from config import MEMORY_SERVER_PORT
+from config import MEMORY_SERVER_PORT, TFLINK_UPLOAD_URL
 
 router = APIRouter(tags=["characters"])
 logger = logging.getLogger("Main")
@@ -701,7 +701,7 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...)):
         
         logger.info(f"正在上传文件到tfLink，文件名: {file.filename}, 大小: {file_size} bytes, MIME类型: {mime_type}")
         async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post('http://47.101.214.205:8000/api/upload', files=files, headers=headers)
+            resp = await client.post(TFLINK_UPLOAD_URL, files=files, headers=headers)
 
             # 检查响应状态
             if resp.status_code != 200:

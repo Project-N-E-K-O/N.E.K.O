@@ -97,7 +97,7 @@ async def get_preferences():
     return preferences
 
 @app.get('/api/live2d/emotion_mapping/{model_name}')
-async def get_emotion_mapping(model_name: str):
+def get_emotion_mapping(model_name: str):
     """获取情绪映射配置"""
     try:
         # 使用 find_model_directory 在 static、用户文档目录、创意工坊目录中查找模型

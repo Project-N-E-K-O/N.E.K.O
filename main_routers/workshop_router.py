@@ -56,7 +56,7 @@ def find_preview_image_in_folder(folder_path):
     return None
 
 @router.get('/api/steam/workshop/subscribed-items')
-async def get_subscribed_workshop_items():
+def get_subscribed_workshop_items():
     """
     获取用户订阅的Steam创意工坊物品列表
     返回包含物品ID、基本信息和状态的JSON数据
@@ -400,7 +400,7 @@ async def get_subscribed_workshop_items():
 
 
 @router.get('/api/steam/workshop/item/{item_id}/path')
-async def get_workshop_item_path(item_id: str):
+def get_workshop_item_path(item_id: str):
     """
     获取单个Steam创意工坊物品的下载路径
     此API端点专门用于在管理页面中获取物品的安装路径
@@ -467,7 +467,7 @@ async def get_workshop_item_path(item_id: str):
 
 
 @router.get('/api/steam/workshop/item/{item_id}')
-async def get_workshop_item_details(item_id: str):
+def get_workshop_item_details(item_id: str):
     """
     获取单个Steam创意工坊物品的详细信息
     """
@@ -494,6 +494,7 @@ async def get_workshop_item_details(item_id: str):
         # 发送查询请求
         # 注意：SendQueryUGCRequest返回None而不是布尔值
         steamworks.Workshop.SendQueryUGCRequest(query_handle)
+        time.sleep(0.5)
         
         # 直接获取查询结果，不检查handle
         result = steamworks.Workshop.GetQueryUGCResult(query_handle, 0)
@@ -703,7 +704,7 @@ async def save_workshop_config_api(config_data: dict):
 
 
 @router.post('/api/steam/workshop/local-items/scan')
-async def scan_local_workshop_items(request: Request):
+def scan_local_workshop_items(request: Request):
     try:
         logger.info('接收到扫描本地创意工坊物品的API请求')
         
@@ -712,7 +713,7 @@ async def scan_local_workshop_items(request: Request):
         workshop_config_data = load_workshop_config()
         logger.info(f'创意工坊配置已加载: {workshop_config_data}')
         
-        data = await request.json()
+        data = asyncio.run(request.json())
         logger.info(f'请求数据: {data}')
         folder_path = data.get('folder_path')
         

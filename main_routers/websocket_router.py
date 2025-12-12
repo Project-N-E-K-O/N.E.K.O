@@ -47,7 +47,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         # 获取当前正确的角色名
         current_catgirl = None
         if session_manager:
-            current_catgirl = list(session_manager.keys())[0]
+            current_catgirl = next(iter(session_manager))
         # 通知前端切换到正确的角色
         if current_catgirl:
             try:
