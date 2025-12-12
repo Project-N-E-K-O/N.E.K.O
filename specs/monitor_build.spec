@@ -81,6 +81,8 @@ a = Analysis(
         'agent_server',
         'memory_server',
         'main_server',
+        'main_routers',
+        'plugin',
         # 排除大型科学计算库（如果不需要）
         'numpy',
         'scipy',

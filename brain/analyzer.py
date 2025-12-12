@@ -2,7 +2,7 @@ from typing import Dict, Any, List
 import logging
 import asyncio
 from openai import AsyncOpenAI, APIConnectionError, InternalServerError, RateLimitError
-from config import MODELS_WITH_EXTRA_BODY
+from config import get_extra_body
 from utils.config_manager import get_config_manager
 
 logger = logging.getLogger(__name__)
@@ -59,9 +59,9 @@ class ConversationAnalyzer:
                     "max_tokens": 500
                 }
                 
-                # 只有在需要时才添加 extra_body
-                if model in MODELS_WITH_EXTRA_BODY:
-                    request_params["extra_body"] = {"enable_thinking": False}
+                extra_body = get_extra_body(model)
+                if extra_body:
+                    request_params["extra_body"] = extra_body
                 
                 response = await client.chat.completions.create(**request_params)
                 text = response.choices[0].message.content.strip()
