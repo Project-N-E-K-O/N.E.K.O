@@ -29,14 +29,15 @@ def get_random_user_agent() -> str:
 
 async def fetch_bilibili_trending(limit: int = 10) -> Dict[str, Any]:
     """
-    获取B站热门视频
-    使用B站的综合热门API
+    获取B站首页推荐视频
+    使用B站的首页推荐API
     """
     try:
-        url = "https://api.bilibili.com/x/web-interface/popular"
+        # B站首页推荐API
+        url = "https://api.bilibili.com/x/web-interface/index/top/feed/rcmd"
         params = {
             "ps": limit,  # 每页数量
-            "pn": 1       # 页码
+            "fresh_type": 3,  # 刷新类型
         }
         
         # 添加完整的headers来模拟浏览器请求
@@ -67,7 +68,8 @@ async def fetch_bilibili_trending(limit: int = 10) -> Dict[str, Any]:
             
             if data.get('code') == 0:
                 videos = []
-                for item in data.get('data', {}).get('list', [])[:limit]:
+                items = data.get('data', {}).get('item', [])
+                for item in items[:limit]:
                     videos.append({
                         'title': item.get('title', ''),
                         'desc': item.get('desc', ''),
@@ -89,13 +91,13 @@ async def fetch_bilibili_trending(limit: int = 10) -> Dict[str, Any]:
                 }
                 
     except httpx.TimeoutException:
-        logger.error("获取B站热门视频超时")
+        logger.error("获取B站首页推荐超时")
         return {
             'success': False,
             'error': '请求超时'
         }
     except Exception as e:
-        logger.error(f"获取B站热门视频失败: {e}")
+        logger.error(f"获取B站首页推荐失败: {e}")
         return {
             'success': False,
             'error': str(e)
@@ -104,8 +106,8 @@ async def fetch_bilibili_trending(limit: int = 10) -> Dict[str, Any]:
 
 async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
     """
-    获取微博热搜
-    使用微博热搜榜API
+    获取微博热议话题
+    使用微博热搜榜API（作为首页热议内容的替代）
     """
     try:
         # 微博热搜榜API（公开接口）
@@ -159,13 +161,13 @@ async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
                 }
                 
     except httpx.TimeoutException:
-        logger.error("获取微博热搜超时")
+        logger.error("获取微博热议话题超时")
         return {
             'success': False,
             'error': '请求超时'
         }
     except Exception as e:
-        logger.error(f"获取微博热搜失败: {e}")
+        logger.error(f"获取微博热议话题失败: {e}")
         return {
             'success': False,
             'error': str(e)
@@ -174,14 +176,14 @@ async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
 
 async def fetch_trending_content(bilibili_limit: int = 10, weibo_limit: int = 10) -> Dict[str, Any]:
     """
-    并发获取B站和微博的热门内容
+    并发获取B站首页推荐和微博热议话题
     
     Args:
         bilibili_limit: B站视频数量限制
-        weibo_limit: 微博热搜数量限制
+        weibo_limit: 微博热议话题数量限制
     
     Returns:
-        包含成功状态、B站视频和微博热搜的字典
+        包含成功状态、B站首页视频和微博热议话题的字典
     """
     try:
         # 并发请求
@@ -228,7 +230,7 @@ async def fetch_trending_content(bilibili_limit: int = 10, weibo_limit: int = 10
 
 def format_trending_content(trending_content: Dict[str, Any]) -> str:
     """
-    格式化热门内容为可读的字符串
+    格式化首页推荐内容为可读的字符串
     
     Args:
         trending_content: fetch_trending_content返回的结果
@@ -241,7 +243,7 @@ def format_trending_content(trending_content: Dict[str, Any]) -> str:
     # 格式化B站内容
     bilibili_data = trending_content.get('bilibili', {})
     if bilibili_data.get('success'):
-        output_lines.append("【B站热门视频】")
+        output_lines.append("【B站首页推荐】")
         videos = bilibili_data.get('videos', [])
         
         for i, video in enumerate(videos[:5], 1):  # 只取前5个
@@ -262,7 +264,7 @@ def format_trending_content(trending_content: Dict[str, Any]) -> str:
     # 格式化微博内容
     weibo_data = trending_content.get('weibo', {})
     if weibo_data.get('success'):
-        output_lines.append("【微博热搜】")
+        output_lines.append("【微博热议话题】")
         trending_list = weibo_data.get('trending', [])
         
         for i, item in enumerate(trending_list[:5], 1):  # 只取前5个
@@ -279,7 +281,7 @@ def format_trending_content(trending_content: Dict[str, Any]) -> str:
             output_lines.append(line)
     
     if not output_lines:
-        return "暂时无法获取热门内容"
+        return "暂时无法获取推荐内容"
     
     return "\n".join(output_lines)
 

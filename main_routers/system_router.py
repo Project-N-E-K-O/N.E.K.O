@@ -581,7 +581,7 @@ async def proxy_image(image_path: str):
 
 @router.post('/proactive_chat')
 async def proactive_chat(request: Request):
-    """主动搭话：根据模式选择使用图片、热门内容或窗口搜索，让AI决定是否主动发起对话"""
+    """主动搭话：根据模式选择使用图片、首页推荐或窗口搜索，让AI决定是否主动发起对话"""
     try:
         _config_manager = get_config_manager()
         session_manager = get_session_manager()
@@ -644,7 +644,7 @@ async def proactive_chat(request: Request):
                     "action": "pass"
                 }, status_code=500)
         elif not use_window_search:
-            logger.info(f"[{lanlan_name}] 前端选择使用热门内容进行主动搭话")
+            logger.info(f"[{lanlan_name}] 前端选择使用首页推荐进行主动搭话")
         
         # 根据不同模式获取内容
         window_context_content = None
@@ -657,8 +657,8 @@ async def proactive_chat(request: Request):
                 
                 if not window_context_content['success']:
                     logger.warning(f"[{lanlan_name}] 获取窗口上下文失败: {window_context_content.get('error')}")
-                    # 窗口搜索失败时回退到热门内容
-                    logger.info(f"[{lanlan_name}] 回退到热门内容模式")
+                    # 窗口搜索失败时回退到首页推荐
+                    logger.info(f"[{lanlan_name}] 回退到首页推荐模式")
                     use_window_search = False
                 else:
                     formatted_window_content = format_window_context_content(window_context_content)
@@ -666,30 +666,30 @@ async def proactive_chat(request: Request):
                 
             except Exception as e:
                 logger.exception(f"[{lanlan_name}] 获取窗口上下文失败")
-                # 回退到热门内容
+                # 回退到首页推荐
                 use_window_search = False
         
         if not use_screenshot and not use_window_search:
-            # 热门内容主动对话
+            # 首页推荐主动对话
             try:
                 trending_content = await fetch_trending_content(bilibili_limit=10, weibo_limit=10)
                 
                 if not trending_content['success']:
                     return JSONResponse({
                         "success": False,
-                        "error": "无法获取热门内容",
+                        "error": "无法获取首页推荐",
                         "detail": trending_content.get('error', '未知错误')
                     }, status_code=500)
                 
                 formatted_content = format_trending_content(trending_content)
-                logger.info(f"[{lanlan_name}] 成功获取热门内容")
+                logger.info(f"[{lanlan_name}] 成功获取首页推荐")
                 
             except Exception:
-                logger.exception(f"[{lanlan_name}] 获取热门内容失败")
+                logger.exception(f"[{lanlan_name}] 获取首页推荐失败")
                 return JSONResponse({
                     "success": False,
-                    "error": "爬取热门内容时出错",
-                    "detail": "请检查网络连接或热门内容服务状态"
+                    "error": "爬取首页推荐时出错",
+                    "detail": "请检查网络连接或推荐服务状态"
                 }, status_code=500)
         
         # 2. 获取new_dialogue prompt
@@ -721,14 +721,14 @@ async def proactive_chat(request: Request):
             )
             logger.info(f"[{lanlan_name}] 使用窗口搜索主动对话提示词")
         else:
-            # 热门内容模板：基于网络热点让AI决定是否主动发起对话
+            # 首页推荐模板：基于首页信息流让AI决定是否主动发起对话
             system_prompt = proactive_chat_prompt.format(
                 lanlan_name=lanlan_name,
                 master_name=master_name_current,
                 trending_content=formatted_content,
                 memory_context=memory_context
             )
-            logger.info(f"[{lanlan_name}] 使用热门内容主动对话提示词")
+            logger.info(f"[{lanlan_name}] 使用首页推荐主动对话提示词")
 
         # 4. 直接使用langchain ChatOpenAI获取AI回复（不创建临时session）
         try:
