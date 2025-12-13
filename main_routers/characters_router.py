@@ -1126,5 +1126,76 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...)):
         tmp_url = locals().get('tmp_url', '未获取到URL')
         logger.error(f"注册音色时发生未预期的错误: {str(e)}")
         return JSONResponse({'error': f'注册音色时发生错误: {str(e)}', 'file_url': tmp_url}, status_code=500)
+    
+@router.get('/character-card/list')
+async def get_character_cards():
+    """获取character_cards文件夹中的所有角色卡"""
+    try:
+        # 获取config_manager实例
+        config_mgr = get_config_manager()
+        
+        # 确保character_cards目录存在
+        config_mgr.ensure_chara_directory()
+        
+        character_cards = []
+        
+        # 遍历character_cards目录下的所有.chara.json文件
+        for filename in os.listdir(config_mgr.chara_dir):
+            if filename.endswith('.chara.json'):
+                try:
+                    file_path = os.path.join(config_mgr.chara_dir, filename)
+                    
+                    # 读取文件内容
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    
+                    # 检查是否包含基本信息
+                    if data and data.get('name'):
+                        character_cards.append({
+                            'id': filename[:-11],  # 去掉.chara.json后缀
+                            'name': data['name'],
+                            'description': data.get('description', ''),
+                            'tags': data.get('tags', []),
+                            'rawData': data,
+                            'path': file_path
+                        })
+                except Exception as e:
+                    logger.error(f"读取角色卡文件 {filename} 时出错: {e}")
+        
+        logger.info(f"已加载 {len(character_cards)} 个角色卡")
+        return {"success": True, "character_cards": character_cards}
+    except Exception as e:
+        logger.error(f"获取角色卡列表失败: {e}")
+        return {"success": False, "error": str(e)}
 
-
+@router.post('/character-card/save')
+async def save_character_card(request: Request):
+    """保存角色卡数据到character_cards文件夹中"""
+    try:
+        data = await request.json()
+        
+        # 验证必要字段
+        if not data.get('name'):
+            return JSONResponse(status_code=400, content={"success": False, "error": "角色卡名称不能为空"})
+        
+        # 获取config_manager实例
+        config_mgr = get_config_manager()
+        
+        # 确保character_cards目录存在
+        config_mgr.ensure_chara_directory()
+        
+        # 创建角色卡文件名（使用[昵称].chara.json格式，移除特殊字符）
+        character_card_name = data['name']
+        safe_filename = character_card_name.replace('/', '_').replace('\\', '_').replace(':', '_') + '.chara.json'
+        character_card_path = os.path.join(config_mgr.chara_dir, safe_filename)
+        
+        # 保存角色卡数据到JSON文件
+        with open(character_card_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+        
+        logger.info(f"角色卡 '{character_card_name}' 已保存到character_cards目录: {character_card_path}")
+        
+        return {"success": True, "message": "角色卡已保存到character_cards文件夹中", "path": character_card_path}
+    except Exception as e:
+        logger.error(f"保存角色卡失败: {e}")
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})

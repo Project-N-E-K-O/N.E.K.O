@@ -55,6 +55,53 @@ def find_preview_image_in_folder(folder_path):
     
     return None
 
+@router.post('/upload-preview-image')
+async def upload_preview_image(request: Request):
+    """
+    上传预览图片，返回服务器上的临时文件路径
+    """
+    try:
+        import tempfile
+        from fastapi import UploadFile, File
+        
+        # 接收上传的文件
+        form = await request.form()
+        file = form.get('file')
+        
+        if not file:
+            return JSONResponse({
+                "success": False,
+                "error": "没有选择文件",
+                "message": "请选择要上传的图片文件"
+            }, status_code=400)
+        
+        # 验证文件类型
+        allowed_types = ['image/jpeg', 'image/png', 'image/jpg']
+        if file.content_type not in allowed_types:
+            return JSONResponse({
+                "success": False,
+                "error": "文件类型不允许",
+                "message": "只允许上传JPEG和PNG格式的图片"
+            }, status_code=400)
+        
+        # 创建临时文件
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as temp_file:
+            temp_file.write(await file.read())
+            temp_file_path = temp_file.name
+        
+        return JSONResponse({
+            "success": True,
+            "file_path": temp_file_path,
+            "message": "文件上传成功"
+        })
+    except Exception as e:
+        logger.error(f"上传预览图片时出错: {e}")
+        return JSONResponse({
+            "success": False,
+            "error": "内部错误",
+            "message": "文件上传失败"
+        }, status_code=500)
+
 @router.get('/subscribed-items')
 def get_subscribed_workshop_items():
     """
@@ -747,6 +794,7 @@ async def scan_local_workshop_items(request: Request):
         local_items = []
         published_items = []
         item_id = 1
+        item_source = "N.E.K.O./workshop"
         
         # 获取Steam下载的workshop路径，这个路径需要被排除
         steam_workshop_path = get_workshop_path()
@@ -767,6 +815,7 @@ async def scan_local_workshop_items(request: Request):
                 
                 local_items.append({
                     "id": f"local_{item_id}",
+                    "source": item_source,
                     "name": item_folder,
                     "path": item_path,  # 返回绝对路径
                     "lastModified": stat_info.st_mtime,

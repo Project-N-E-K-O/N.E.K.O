@@ -189,15 +189,6 @@ def find_models():
     except Exception as e:
         logging.warning(f"无法访问用户文档live2d目录: {e}")
     
-    # 添加用户mod路径
-    try:
-        config_mgr = get_config_manager()
-        user_mod_dir = config_mgr.get_workshop_path()
-        if os.path.exists(user_mod_dir):
-            search_dirs.append(('user_mods', user_mod_dir, '/user_mods'))
-            logging.info(f"已添加用户mod路径: {user_mod_dir}")
-    except Exception as e:
-        logging.warning(f"无法访问用户mod路径: {e}")
     
     # 遍历所有搜索目录
     for source, search_root_dir, url_prefix in search_dirs:
@@ -279,9 +270,9 @@ def find_model_directory(model_name: str):
     返回 (实际路径, URL前缀) 元组
     """
     from utils.config_manager import get_config_manager
-    # 从配置文件获取WORKSHOP_PATH
+    # 从配置文件获取WORKSHOP_PATH，如果不存在则使用steam_workshop_path
     workshop_config_data = load_workshop_config()
-    WORKSHOP_SEARCH_DIR = workshop_config_data.get("WORKSHOP_PATH")
+    WORKSHOP_SEARCH_DIR = workshop_config_data.get("WORKSHOP_PATH", workshop_config_data.get("steam_workshop_path"))
     # 首先尝试在用户文档目录
     try:
         config_mgr = get_config_manager()
@@ -366,9 +357,9 @@ def find_workshop_item_by_id(item_id: str) -> tuple:
         (物品路径, URL前缀) 元组，即使找不到也会返回默认值
     """
     try:
-        # 从配置文件获取WORKSHOP_PATH，如果不存在则使用默认路径
+        # 从配置文件获取WORKSHOP_PATH，如果不存在则使用steam_workshop_path或默认路径
         workshop_config = load_workshop_config()
-        workshop_dir = workshop_config.get("WORKSHOP_PATH", workshop_config.get("default_workshop_folder", "static"))
+        workshop_dir = workshop_config.get("WORKSHOP_PATH", workshop_config.get("steam_workshop_path", workshop_config.get("default_workshop_folder", "static")))
         
         # 如果路径不存在或为空，使用默认的static目录
         if not workshop_dir or not os.path.exists(workshop_dir):

@@ -51,6 +51,9 @@ from utils.workshop_utils import (
     get_workshop_path
 )
 
+# 导入创意工坊路由中的函数
+from main_routers.workshop_router import get_subscribed_workshop_items
+
 # 确定 templates 目录位置（使用 _get_app_root）
 template_dir = _get_app_root()
 
@@ -353,6 +356,11 @@ lock = asyncio.Lock()
 # --- FastAPI App Setup ---
 app = FastAPI()
 
+@app.on_event("startup")
+async def startup_event():
+    """FastAPI应用启动事件处理函数"""
+    await _init_and_mount_workshop()
+
 class CustomStaticFiles(StaticFiles):
     async def get_response(self, path, scope):
         response = await super().get_response(path, scope)
@@ -368,6 +376,7 @@ app.mount("/static", CustomStaticFiles(directory=static_dir), name="static")
 # 挂载用户文档下的live2d目录（只在主进程中执行，子进程不提供HTTP服务）
 if _IS_MAIN_PROCESS:
     _config_manager.ensure_live2d_directory()
+    _config_manager.ensure_chara_directory()
     user_live2d_path = str(_config_manager.live2d_dir)
     if os.path.exists(user_live2d_path):
         app.mount("/user_live2d", CustomStaticFiles(directory=user_live2d_path), name="user_live2d")
@@ -465,7 +474,7 @@ async def _init_and_mount_workshop():
     """
     try:
         # 1. 获取订阅的创意工坊物品列表
-        workshop_items_result = await workshop_router.get_subscribed_workshop_items()
+        workshop_items_result = get_subscribed_workshop_items()
         
         # 2. 提取物品列表传给 utils 层
         subscribed_items = []
