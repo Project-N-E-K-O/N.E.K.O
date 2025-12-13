@@ -241,23 +241,26 @@ def optimize_response(text: str,
                 out_parts.append(s)
                 total += separator_cost + s_len
             else:
-                remain = effective_maxw - total
-                if remain > 0:
-                    # 截断时也要考虑分隔符
-                    separator_cost = sep_len if out_parts else 0
-                    if separator_cost > 0 and remain > separator_cost:
-                        # 如果还有空间放分隔符和部分内容
-                        truncated = s[:remain - separator_cost].rstrip()
-                        if not truncated.endswith('…'):
-                            truncated = truncated + '…'
+                    remain = effective_maxw - total
+                    if remain > 0:
+                        # 截断时需要同时考虑"潜在分隔符 + 省略号"占用
+                        separator_cost = sep_len if out_parts else 0
+                        available = remain - separator_cost
+                        if available <= 0:
+                            break
+
+                        # 预留省略号空间（避免补 '…' 后超限）
+                        need_ellipsis = not s.rstrip().endswith('…')
+                        content_budget = available - (1 if need_ellipsis else 0)
+                        if content_budget <= 0:
+                            truncated = '…'
+                        else:
+                            truncated = s[:content_budget].rstrip()
+                            if need_ellipsis and not truncated.endswith('…'):
+                                truncated = truncated + '…'
+
                         out_parts.append(truncated)
-                    elif remain > 0:
-                        # 只能放部分内容，没有空间放分隔符
-                        truncated = s[:remain].rstrip()
-                        if not truncated.endswith('…'):
-                            truncated = truncated + '…'
-                        out_parts.append(truncated)
-                break
+                    break
         
         final = separator.join(out_parts).strip()
     else:
