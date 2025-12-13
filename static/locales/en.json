@@ -27,6 +27,8 @@
   "steam": {
     "characterCards": "Character Cards",
     "characterCardName": "Nickname",
+    "characterCardAge": "Age",
+    "characterCardGender": "Gender",
     "characterCardDescription": "Description",
     "characterCardSetting": "Prompt",
     "characterCardModel": "Card Model",
@@ -189,7 +191,8 @@
     "tagsPlaceholder": "Enter tags, press Enter to add",
     "loadingSubscriptions": "Loading your subscribed items...",
     "reload": "Reload",
-    "searchPlaceholder": "Search subscribed content..."
+    "searchPlaceholder": "Search subscribed content...",
+    "newCharacter": "New Character"
   },
   "dialogs": {
     "confirmLeave": "Confirm Leave",

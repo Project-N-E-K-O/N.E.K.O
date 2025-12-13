@@ -27,6 +27,8 @@
   "steam": {
     "characterCards": "角色卡",
     "characterCardName": "昵称",
+    "characterCardAge": "年龄",
+    "characterCardGender": "性别",
     "characterCardDescription": "描述",
     "characterCardSetting": "设定",
     "characterCardModel": "模型",
@@ -189,7 +191,8 @@
     "tagsPlaceholder": "输入标签，按回车添加",
     "loadingSubscriptions": "正在加载您的订阅物品...",
     "reload": "重新加载",
-    "searchPlaceholder": "搜索订阅内容..."
+    "searchPlaceholder": "搜索订阅内容...",
+    "newCharacter": "新增角色"
   },
   "dialogs": {
     "confirmLeave": "确认离开",

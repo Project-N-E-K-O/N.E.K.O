@@ -1189,9 +1189,27 @@ async def save_character_card(request: Request):
         safe_filename = character_card_name.replace('/', '_').replace('\\', '_').replace(':', '_') + '.chara.json'
         character_card_path = os.path.join(config_mgr.chara_dir, safe_filename)
         
+        # 转换数据结构，确保与前端显示时期望的结构一致
+        # 兼容前端保存的新结构和旧结构的显示需求
+        character_card_data = {
+            # 保留原始数据
+            **data,
+            # 添加与旧结构兼容的字段
+            '昵称': data['name'],  # 前端显示时使用rawData['昵称']
+            'live2d': data.get('model', {}).get('name') if isinstance(data.get('model'), dict) else '',  # 提取model中的name作为live2d字段
+            'voice_id': data.get('voice', {}).get('voice_id') if isinstance(data.get('voice'), dict) else '',  # 提取voice中的voice_id
+            'system_prompt': data.get('prompt_setting', '')  # 将prompt_setting映射到system_prompt
+        }
+        
+        # 如果缺少基本信息字段，添加默认值
+        if '性别' not in character_card_data:
+            character_card_data['性别'] = '未知'
+        if '年龄' not in character_card_data:
+            character_card_data['年龄'] = '未知'
+        
         # 保存角色卡数据到JSON文件
         with open(character_card_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
+            json.dump(character_card_data, f, ensure_ascii=False, indent=4)
         
         logger.info(f"角色卡 '{character_card_name}' 已保存到character_cards目录: {character_card_path}")
         

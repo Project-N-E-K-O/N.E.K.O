@@ -755,7 +755,7 @@
         /* Fluent Design 卡片悬停效果 */
         .card:hover, .workshop-card:hover {
             transform: translateY(-2px);
-            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.08);
+            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.15), 0 4px 16px rgba(0, 0, 0, 0.1);
             border-color: rgba(0, 0, 0, 0.12);
         }
         
@@ -904,7 +904,6 @@
         .fluent-card {
             position: relative;
             overflow: hidden;
-            box-shadow:none !important; 
         }
         
         .fluent-card::before {
@@ -2247,8 +2246,18 @@
                         <!-- 左侧输入区域 -->
                         <div class="character-card-inputs">
                             <div class="control-group">
-                                <div class="control-label" data-i18n="steam.characterCardName">角名称</div>
+                                <div class="control-label" data-i18n="steam.characterCardName">角色名称</div>
                                 <input type="text" id="character-card-name" class="control-input" data-i18n-placeholder="steam.placeholderCharacterName" placeholder="输入角色名称">
+                            </div>
+                            
+                            <div class="control-group">
+                                <div class="control-label" data-i18n="steam.characterCardGender">性别</div>
+                                <input type="text" id="character-card-gender" class="control-input" placeholder="输入性别">
+                            </div>
+                            
+                            <div class="control-group">
+                                <div class="control-label" data-i18n="steam.characterCardAge">年龄</div>
+                                <input type="text" id="character-card-age" class="control-input" placeholder="输入年龄">
                             </div>
                             
                             <div class="control-group">
@@ -2435,6 +2444,8 @@
                             <h3 data-i18n="steam.cardInfoPreview">角色卡信息</h3>
                             <div id="card-info-preview" style="padding: 12px; border: 1px solid #eaeaea; border-radius: 4px; background-color: #f8f8f8;">
                                 <div id="preview-card-name" style="color: #555; margin-bottom: 8px;"><strong data-i18n="steam.characterCardName">角色卡名称:</strong> <span style="font-weight: normal;">-</span></div>
+                                <div id="preview-card-gender" style="color: #555; margin-bottom: 8px;"><strong data-i18n="steam.characterCardGender">性别:</strong> <span style="font-weight: normal;">-</span></div>
+                                <div id="preview-card-age" style="color: #555; margin-bottom: 8px;"><strong data-i18n="steam.characterCardAge">年龄:</strong> <span style="font-weight: normal;">-</span></div>
                                 <div id="preview-card-description" style="color: #555; margin-bottom: 8px;"><strong data-i18n="steam.characterCardDescription">角色卡描述:</strong> <span style="font-weight: normal;">-</span></div>
                                 <div id="preview-card-setting" style="color: #555; margin-bottom: 8px; font-style: italic;"><strong data-i18n="steam.characterCardSetting">角色设定:</strong> <span style="font-weight: normal;">-</span></div>
                                 <div id="preview-card-voice" style="color: #555; margin-bottom: 8px;"><strong data-i18n="steam.characterCardVoice">角色音色:</strong> <span style="font-weight: normal;">-</span></div>
@@ -4523,7 +4534,6 @@ function viewItemDetails(itemId) {
                         cardElement.innerHTML = `
                             <div class="card-header">
                                 <h3 class="card-title">${card.name}</h3>
-                                <button class="btn btn-primary btn-sm" onclick="editCharacterCard(${card.id})" data-i18n="common.edit">编辑</button>
                             </div>
                             <div class="card-content">
                                 <p class="card-description">${card.description}</p>
@@ -4534,10 +4544,6 @@ function viewItemDetails(itemId) {
                         `;
                         // 添加点击事件查看详情
                         cardElement.addEventListener('click', () => showCharacterCardDetails(card));
-                        // 防止点击编辑按钮时触发卡片点击事件
-                        cardElement.querySelector('.btn-primary').addEventListener('click', (e) => {
-                            e.stopPropagation();
-                        });
                         characterCardsList.appendChild(cardElement);
                     });
                 } else {
@@ -4556,6 +4562,8 @@ function viewItemDetails(itemId) {
         function saveCharacterCard() {
             // 收集角色卡参数
             const name = document.getElementById('character-card-name').value;
+            const gender = document.getElementById('character-card-gender').value;
+            const age = document.getElementById('character-card-age').value;
             const description = document.getElementById('character-card-description').value;
             const setting = document.getElementById('character-card-setting').value;
             const selectedModelName = document.getElementById('model-select').value;
@@ -4610,6 +4618,8 @@ function viewItemDetails(itemId) {
             const characterCardData = {
                 type: 'character_settings',
                 name: name,
+                性别: gender,
+                年龄: age,
                 description: description,
                 prompt_setting: setting,
                 model: selectedModelInfo,
@@ -4683,8 +4693,16 @@ function viewItemDetails(itemId) {
             // 更新模态框标题
             document.getElementById('characterCardModalTitle').textContent = card.name;
             
-            // 获取原始数据，确保存在
-            const rawData = card.rawData || {};
+            // 获取原始数据，确保存在 - 兼容数据直接在card对象中的情况
+            const rawData = card.rawData || card || {};
+            
+            // 提取所需信息，同时兼容新结构和旧结构
+            const nickname = rawData['昵称'] || card.name || '暂无昵称';
+            const gender = rawData['性别'] || '未知';
+            const age = rawData['年龄'] || '未知';
+            const live2d = rawData['live2d'] || (rawData['model'] && rawData['model']['name']) || '未设置';
+            const voiceId = rawData['voice_id'] || (rawData['voice'] && rawData['voice']['voice_id']) || '';
+            const systemPrompt = rawData['system_prompt'] || rawData['prompt_setting'] || '';
             
             // 渲染角色卡详情 - 使用与角色卡列表一致的布局设计
             const detailContent = `<div style="display: flex; gap: 20px; flex-wrap: wrap; width: 100%;">
@@ -4699,23 +4717,23 @@ function viewItemDetails(itemId) {
                                 <div class="character-card-modal-info-grid">
                                     <div class="character-card-modal-info-item">
                                         <span class="character-card-modal-info-label">昵称</span>
-                                        <span>${rawData['昵称'] ? rawData['昵称'].replace(/，/g, '、') : '暂无昵称'}</span>
+                                        <span>${nickname.replace(/，/g, '、')}</span>
                                     </div>
                                     <div class="character-card-modal-info-item">
                                         <span class="character-card-modal-info-label">性别</span>
-                                        <span>${rawData['性别'] || '未知'}</span>
+                                        <span>${gender}</span>
                                     </div>
                                     <div class="character-card-modal-info-item">
                                         <span class="character-card-modal-info-label">年龄</span>
-                                        <span>${rawData['年龄'] || '未知'}</span>
+                                        <span>${age}</span>
                                     </div>
                                     <div class="character-card-modal-info-item">
                                         <span class="character-card-modal-info-label">Live2D模型</span>
-                                        <span>${rawData['live2d'] || '未设置'}</span>
+                                        <span>${live2d}</span>
                                     </div>
-                                    ${rawData['voice_id'] ? `<div class="character-card-modal-info-item">
+                                    ${voiceId ? `<div class="character-card-modal-info-item">
                                         <span class="character-card-modal-info-label">语音ID</span>
-                                        <span>${rawData['voice_id']}</span>
+                                        <span>${voiceId}</span>
                                     </div>` : ''}
                                 </div>
                             </div>
@@ -4743,13 +4761,13 @@ function viewItemDetails(itemId) {
                         </div>` : ''}
                         
                         <!-- 角色设定卡片 -->
-                        ${rawData['system_prompt'] ? `<div class="character-card-modal-section">
+                        ${systemPrompt ? `<div class="character-card-modal-section">
                             <div class="character-card-modal-section-header">
                                 <h2>角色设定</h2>
                             </div>
                             <div class="character-card-modal-content">
                                 <div class="character-card-modal-info" style="max-height: 150px; overflow-y: auto;">
-                                    <pre style="white-space: pre-wrap; word-wrap: break-word; margin: 0; font-family: inherit; font-size: 13px; line-height: 1.4;">${rawData['system_prompt']}</pre>
+                                    <pre style="white-space: pre-wrap; word-wrap: break-word; margin: 0; font-family: inherit; font-size: 13px; line-height: 1.4;">${systemPrompt}</pre>
                                 </div>
                             </div>
                         </div>` : ''}
@@ -5559,6 +5577,8 @@ function viewItemDetails(itemId) {
         function clearCharacterCardForm() {
             if (confirm('确定要清空表单吗？')) {
                 document.getElementById('character-card-name').value = '';
+                document.getElementById('character-card-gender').value = '未知';
+                document.getElementById('character-card-age').value = '';
                 document.getElementById('character-card-description').value = '';
                 document.getElementById('character-card-setting').value = '';
                 clearSelectedModel();
@@ -5572,22 +5592,30 @@ function viewItemDetails(itemId) {
         // 更新角色卡信息预览
         function updateCardPreview() {
             const name = document.getElementById('character-card-name').value;
+            const gender = document.getElementById('character-card-gender').value;
+            const age = document.getElementById('character-card-age').value;
             const description = document.getElementById('character-card-description').value;
             const setting = document.getElementById('character-card-setting').value;
             const voice = document.getElementById('voice-select').value;
             
             const previewName = document.getElementById('preview-card-name');
+            const previewGender = document.getElementById('preview-card-gender');
+            const previewAge = document.getElementById('preview-card-age');
             const previewDescription = document.getElementById('preview-card-description');
             const previewSetting = document.getElementById('preview-card-setting');
             const previewVoice = document.getElementById('preview-card-voice');
             
             // 找到每个预览项中的文本元素并更新内容
             const nameText = previewName.querySelector('span');
+            const genderText = previewGender.querySelector('span');
+            const ageText = previewAge.querySelector('span');
             const descriptionText = previewDescription.querySelector('span');
             const settingText = previewSetting.querySelector('span');
             const voiceText = previewVoice.querySelector('span');
             
             if (nameText) nameText.textContent = name || '-';
+            if (genderText) genderText.textContent = gender || '-';
+            if (ageText) ageText.textContent = age || '-';
             if (descriptionText) descriptionText.textContent = description || '-';
             if (settingText) settingText.textContent = setting || '-';
             if (voiceText) voiceText.textContent = voice || '-';
