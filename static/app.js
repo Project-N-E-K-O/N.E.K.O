@@ -4770,7 +4770,7 @@ function init_app() {
             // 非Windows系统下只支持截图和热门内容
             let useScreenshot = false;
             let useWindowTitle = false;
-            const isWindows = navigator.platform.toLowerCase().includes('win');
+            const isWindows = isWindowsOS();
 
             if (proactiveChatEnabled && proactiveVisionEnabled) {
                 // 两个都开启时：
@@ -4850,6 +4850,12 @@ function init_app() {
                 try {
                     const titleResponse = await fetch('/api/get_window_title');
                     const titleResult = await titleResponse.json();
+                    
+                    // await 期间用户可能关闭了功能，避免继续执行
+                    if (!proactiveChatEnabled && !proactiveVisionEnabled) {
+                        console.log('功能已关闭，取消本次搭话');
+                        return;
+                    }
 
                     if (titleResult.success && titleResult.window_title) {
                         requestBody.window_title = titleResult.window_title;
@@ -4919,6 +4925,39 @@ function init_app() {
         if (proactiveChatTimer) {
             clearTimeout(proactiveChatTimer);
             proactiveChatTimer = null;
+        }
+    }
+
+    /**
+     * 安全的Windows系统检测函数
+     * 优先使用 navigator.userAgentData，然后 fallback 到 navigator.userAgent，最后才用已弃用的 navigator.platform
+     * @returns {boolean} 是否为Windows系统
+     */
+    function isWindowsOS() {
+        try {
+            // 优先使用现代 API（如果支持）
+            if (navigator.userAgentData && navigator.userAgentData.platform) {
+                const platform = navigator.userAgentData.platform.toLowerCase();
+                return platform.includes('win');
+            }
+            
+            // Fallback 到 userAgent 字符串检测
+            if (navigator.userAgent) {
+                const ua = navigator.userAgent.toLowerCase();
+                return ua.includes('win');
+            }
+            
+            // 最后的兼容方案：使用已弃用的 platform API
+            if (navigator.platform) {
+                const platform = navigator.platform.toLowerCase();
+                return platform.includes('win');
+            }
+            
+            // 如果所有方法都不可用，默认返回false
+            return false;
+        } catch (error) {
+            console.error('Windows检测失败:', error);
+            return false;
         }
     }
 
