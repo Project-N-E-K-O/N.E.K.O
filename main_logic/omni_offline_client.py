@@ -287,7 +287,6 @@ class OmniOfflineClient:
                                     await self.handle_connection_error("生成被强制终止：超过硬性字符限制（100 字符），已丢弃本轮输出。")
                                 # stop responding and do not append assistant_message
                                 self._is_responding = False
-                                assistant_message = ""  # 清空累积内容以确保真正丢弃输出
                                 break
                             # Fence -> emit partial content then stop emitting further content
                             if gt.reason == 'fence':
