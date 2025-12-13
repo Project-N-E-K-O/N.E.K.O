@@ -12,7 +12,7 @@ from typing import Dict, Any, List, Optional, Tuple, Callable, Awaitable
 from dataclasses import dataclass
 from openai import AsyncOpenAI, APIConnectionError, InternalServerError, RateLimitError
 import httpx
-from config import MODELS_WITH_EXTRA_BODY, USER_PLUGIN_SERVER_PORT
+from config import get_extra_body, USER_PLUGIN_SERVER_PORT
 from utils.config_manager import get_config_manager
 from .mcp_client import McpRouterClient, McpToolCatalog
 from .computer_use import ComputerUseAdapter
@@ -228,8 +228,9 @@ OUTPUT FORMAT (strict JSON):
                     "max_tokens": 600
                 }
                 
-                if model in MODELS_WITH_EXTRA_BODY:
-                    request_params["extra_body"] = {"enable_thinking": False}
+                extra_body = get_extra_body(model)
+                if extra_body:
+                    request_params["extra_body"] = extra_body
                 
                 response = await client.chat.completions.create(**request_params)
                 text = response.choices[0].message.content.strip()
@@ -322,8 +323,9 @@ OUTPUT FORMAT (strict JSON):
                     "max_tokens": 800  # 增加 token 限制，避免 JSON 被截断
                 }
                 
-                if model in MODELS_WITH_EXTRA_BODY:
-                    request_params["extra_body"] = {"enable_thinking": False}
+                extra_body = get_extra_body(model)
+                if extra_body:
+                    request_params["extra_body"] = extra_body
                 
                 response = await client.chat.completions.create(**request_params)
                 text = response.choices[0].message.content.strip()
@@ -466,8 +468,9 @@ Return only the JSON object, nothing else.
                     "max_tokens": 800  # 增加 token 限制，避免 JSON 被截断
                 }
                 
-                if model in MODELS_WITH_EXTRA_BODY:
-                    request_params["extra_body"] = {"enable_thinking": False}
+                extra_body = get_extra_body(model)
+                if extra_body:
+                    request_params["extra_body"] = extra_body
                 
                 response = await client.chat.completions.create(**request_params)
                 # Capture raw response and log prompts/response at INFO so it's visible in runtime logs

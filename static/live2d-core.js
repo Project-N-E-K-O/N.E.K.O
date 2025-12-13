@@ -3,7 +3,7 @@
  */
 
 window.PIXI = PIXI;
-const {Live2DModel} = PIXI.live2d;
+const { Live2DModel } = PIXI.live2d;
 
 // 全局变量
 let currentModel = null;
@@ -40,7 +40,7 @@ class Live2DManager {
         this.savedModelParameters = null; // 保存的模型参数（从parameters.json加载），供定时器定期应用
         this._shouldApplySavedParams = false; // 是否应该应用保存的参数
         this._savedParamsTimer = null; // 保存参数应用的定时器
-        
+
         // 常驻表情：使用官方 expression 播放并在清理后自动重放
         this.persistentExpressionNames = [];
         this.persistentExpressionParamsByName = {};
@@ -48,7 +48,7 @@ class Live2DManager {
         // UI/Ticker 资源句柄（便于在切换模型时清理）
         this._lockIconTicker = null;
         this._lockIconElement = null;
-        
+
         // 浮动按钮系统
         this._floatingButtonsTicker = null;
         this._floatingButtonsContainer = null;
@@ -56,7 +56,7 @@ class Live2DManager {
         this._popupTimers = {}; // 存储弹出框的定时器
         this._goodbyeClicked = false; // 标记是否点击了"请她离开"
         this._returnButtonContainer = null; // "请她回来"按钮容器
-        
+
         // 已打开的设置窗口引用映射（URL -> Window对象）
         this._openSettingsWindows = {};
 
@@ -67,7 +67,7 @@ class Live2DManager {
         this._origMotionManagerUpdate = null; // 保存原始的 motionManager.update 方法
         this._origCoreModelUpdate = null; // 保存原始的 coreModel.update 方法
         this._mouthTicker = null;
-        
+
         // 记录最后一次加载模型的原始路径（用于保存偏好时使用）
         this._lastLoadedModelPath = null;
 
@@ -138,7 +138,7 @@ class Live2DManager {
     // 加载用户偏好
     async loadUserPreferences() {
         try {
-            const response = await fetch('/api/preferences');
+            const response = await fetch('/api/config/preferences');
             if (response.ok) {
                 return await response.json();
             }
@@ -152,36 +152,36 @@ class Live2DManager {
     async saveUserPreferences(modelPath, position, scale, parameters) {
         try {
             // 验证位置和缩放值是否为有效的有限数值
-            if (!position || typeof position !== 'object' || 
+            if (!position || typeof position !== 'object' ||
                 !Number.isFinite(position.x) || !Number.isFinite(position.y)) {
                 console.error('位置值无效:', position);
                 return false;
             }
-            
-            if (!scale || typeof scale !== 'object' || 
+
+            if (!scale || typeof scale !== 'object' ||
                 !Number.isFinite(scale.x) || !Number.isFinite(scale.y)) {
                 console.error('缩放值无效:', scale);
                 return false;
             }
-            
+
             // 验证缩放值必须为正数
             if (scale.x <= 0 || scale.y <= 0) {
                 console.error('缩放值必须为正数:', scale);
                 return false;
             }
-            
+
             const preferences = {
                 model_path: modelPath,
                 position: position,
                 scale: scale
             };
-            
+
             // 如果有参数，添加到偏好中
             if (parameters && typeof parameters === 'object') {
                 preferences.parameters = parameters;
             }
-            
-            const response = await fetch('/api/preferences', {
+
+            const response = await fetch('/api/config/preferences', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -277,7 +277,7 @@ class Live2DManager {
                     console.warn('模型位置保存失败');
                 }
             }
-        
+
         } catch (error) {
             console.error('复位模型位置时出错:', error);
         }
@@ -291,23 +291,23 @@ class Live2DManager {
      */
     setLocked(locked, options = {}) {
         const { updateFloatingButtons = true } = options;
-        
+
         // 1. 更新状态
         this.isLocked = locked;
-        
+
         // 2. 更新锁图标样式（使用存储的引用，避免每次 querySelector）
         if (this._lockIconImages) {
             const { locked: imgLocked, unlocked: imgUnlocked } = this._lockIconImages;
             if (imgLocked) imgLocked.style.opacity = locked ? '1' : '0';
             if (imgUnlocked) imgUnlocked.style.opacity = locked ? '0' : '1';
         }
-        
+
         // 3. 更新 canvas 的 pointerEvents
         const container = document.getElementById('live2d-canvas');
         if (container) {
             container.style.pointerEvents = locked ? 'none' : 'auto';
         }
-        
+
         // 4. 控制浮动按钮显示（可选）
         if (updateFloatingButtons) {
             const floatingButtons = document.getElementById('live2d-floating-buttons');
@@ -325,15 +325,15 @@ class Live2DManager {
     setButtonActive(buttonId, active) {
         const buttonData = this._floatingButtons && this._floatingButtons[buttonId];
         if (!buttonData || !buttonData.button) return;
-        
+
         // 更新 dataset
         buttonData.button.dataset.active = active ? 'true' : 'false';
-        
+
         // 更新背景色
-        buttonData.button.style.background = active 
-            ? 'rgba(68, 183, 254, 0.3)' 
+        buttonData.button.style.background = active
+            ? 'rgba(68, 183, 254, 0.3)'
             : 'rgba(255, 255, 255, 0.65)';
-        
+
         // 更新图标
         if (buttonData.imgOff) {
             buttonData.imgOff.style.opacity = active ? '0' : '1';
@@ -348,7 +348,7 @@ class Live2DManager {
      */
     resetAllButtons() {
         if (!this._floatingButtons) return;
-        
+
         Object.keys(this._floatingButtons).forEach(btnId => {
             this.setButtonActive(btnId, false);
         });

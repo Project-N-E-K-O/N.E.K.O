@@ -282,7 +282,7 @@
             const formData = new FormData();
             formData.append('file', fileInput.files[0]);
             formData.append('prefix', prefix);
-            fetch('/api/voice_clone', {
+            fetch('/api/characters/voice_clone', {
                 method: 'POST',
                 body: formData
             })

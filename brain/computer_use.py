@@ -14,6 +14,7 @@ import io
 import platform, os, time
 from PIL import Image
 from langchain_openai import ChatOpenAI
+from config import get_extra_body
 
 # Improve DPI accuracy on Windows to avoid coordinate offsets with pyautogui
 try:
@@ -282,11 +283,13 @@ class ComputerUseAdapter:
             # Connectivity check for grounding model via ChatOpenAI
             try:
                 api_key = self._config_manager.get_core_config()['COMPUTER_USE_GROUND_API_KEY'] if self._config_manager.get_core_config()['COMPUTER_USE_GROUND_API_KEY'] else None
+                ground_model = self._config_manager.get_core_config()['COMPUTER_USE_GROUND_MODEL']
                 test_llm = ChatOpenAI(
-                    model=self._config_manager.get_core_config()['COMPUTER_USE_GROUND_MODEL'],
+                    model=ground_model,
                     base_url=self._config_manager.get_core_config()['COMPUTER_USE_GROUND_URL'],
                     api_key=api_key,
-                    temperature=0
+                    temperature=0,
+                    extra_body=get_extra_body(ground_model) or None
                 ).bind(max_tokens=5)
                 _ = test_llm.invoke("ok").content
                 self.init_ok = True

@@ -8,7 +8,7 @@ from typing import Optional, Callable, Dict, Any, Awaitable
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from openai import APIConnectionError, InternalServerError, RateLimitError
-from config import MODELS_WITH_EXTRA_BODY
+from config import get_extra_body
 from utils.frontend_utils import calculate_text_similarity
 
 # Setup logger for this module
@@ -90,7 +90,7 @@ class OmniOfflineClient:
             api_key=self.api_key,
             temperature=1.0,
             streaming=True,
-            extra_body={"enable_thinking": False} if self.model in MODELS_WITH_EXTRA_BODY else None
+            extra_body=get_extra_body(self.model) or None
         )
         
         # State management
@@ -154,7 +154,7 @@ class OmniOfflineClient:
                 api_key=api_key,
                 temperature=1.0,
                 streaming=True,
-                extra_body={"enable_thinking": False} if self.model in MODELS_WITH_EXTRA_BODY else None
+                extra_body=get_extra_body(self.model) or None
             )
     
     async def _check_repetition(self, response: str) -> bool:

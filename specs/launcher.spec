@@ -11,7 +11,7 @@ hiddenimports = []
 
 # 收集关键包的所有内容（根据实际 import 检查）
 critical_packages = [
-    'dashscope',         # main_helper 使用
+    'dashscope',         # main_logic 使用
     'openai',            # langchain_openai 需要
     'langchain',         # brain 和 memory 使用
     'langchain_community',
@@ -149,13 +149,26 @@ hiddenimports += [
     'brain.deduper',
     'brain.mcp_client',
     
-    # main_helper 子模块
-    'main_helper',
-    'main_helper.core',
-    'main_helper.cross_server',
-    'main_helper.omni_offline_client',
-    'main_helper.omni_realtime_client',
-    'main_helper.tts_helper',
+    # main_logic 子模块
+    'main_logic',
+    'main_logic.core',
+    'main_logic.cross_server',
+    'main_logic.omni_offline_client',
+    'main_logic.omni_realtime_client',
+    'main_logic.tts_client',
+    
+    # main_routers 子模块
+    'main_routers',
+    'main_routers.config_router',
+    'main_routers.characters_router',
+    'main_routers.live2d_router',
+    'main_routers.workshop_router',
+    'main_routers.memory_router',
+    'main_routers.pages_router',
+    'main_routers.websocket_router',
+    'main_routers.agent_router',
+    'main_routers.system_router',
+    'main_routers.shared_state',
     
     # memory 子模块
     'memory',
@@ -172,7 +185,6 @@ hiddenimports += [
     'utils.frontend_utils',
     'utils.logger_config',
     'utils.preferences',
-    'utils.qwen_tts_vc_realtime',
     'utils.web_scraper',
     
     # Steam 相关模块
@@ -194,6 +206,33 @@ hiddenimports += [
     'steamworks.interfaces.workshop',
     'steamworks.interfaces.microtxn',
     'steamworks.interfaces.input',
+    
+    # plugin 子模块
+    'plugin',
+    'plugin.settings',
+    'plugin.user_plugin_server',
+    'plugin.api',
+    'plugin.api.exceptions',
+    'plugin.api.models',
+    'plugin.core',
+    'plugin.core.context',
+    'plugin.core.state',
+    'plugin.runtime',
+    'plugin.runtime.communication',
+    'plugin.runtime.host',
+    'plugin.runtime.registry',
+    'plugin.runtime.status',
+    'plugin.sdk',
+    'plugin.sdk.base',
+    'plugin.sdk.decorators',
+    'plugin.sdk.events',
+    'plugin.sdk.logger',
+    'plugin.sdk.version',
+    'plugin.server',
+    'plugin.server.exceptions',
+    'plugin.server.lifecycle',
+    'plugin.server.services',
+    'plugin.server.utils',
 ]
 
 a = Analysis(

@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
+
 <head>
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <meta charset="UTF-8">
@@ -11,18 +12,20 @@
     <style>
         *:focus {
             outline: none !important;
-            box-shadow: none !important; 
+            box-shadow: none !important;
         }
-        html, body {
-            height: 100%; 
-            margin: 0; 
-            padding: 0; 
-            background: #eee; 
+
+        html,
+        body {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            background: #eee;
             color: #222;
-            font-family: 'Segoe UI', Arial, sans-serif; 
+            font-family: 'Segoe UI', Arial, sans-serif;
             overflow-x: hidden;
         }
-        
+
         /* 布局容器 */
         .layout-container {
             display: flex;
@@ -31,7 +34,7 @@
             margin: 20px auto;
             padding: 0 20px;
         }
-        
+
         #sidebar {
             display: flex;
             flex-direction: column;
@@ -42,27 +45,28 @@
             background: #fff;
             border-radius: 12px;
         }
-        
+
         .main-content {
             flex: 1;
             background: #fff;
             border-radius: 12px;
             padding: 20px;
-            min-width: 0; /* 防止flex子项溢出 */
+            min-width: 0;
+            /* 防止flex子项溢出 */
         }
-        
+
         .control-group {
             display: flex;
             flex-direction: column;
             gap: 8px;
         }
-        
+
         .control-label {
             font-weight: 600;
             color: #333;
             font-size: 14px;
         }
-        
+
         .control-select,
         .control-input {
             padding: 10px 15px;
@@ -80,37 +84,37 @@
             background-position: right 12px center;
             padding-right: 35px;
         }
-        
+
         .control-input {
             cursor: text;
             padding-right: 15px;
             background-image: none;
         }
-        
+
         textarea.control-input {
             min-height: 100px;
             resize: vertical;
             font-family: inherit;
         }
-        
+
         .checkbox-container {
             display: flex;
             align-items: center;
             gap: 8px;
         }
-        
+
         .control-checkbox {
             width: 16px;
             height: 16px;
             cursor: pointer;
         }
-        
+
         .checkbox-label {
             cursor: pointer;
             font-size: 14px;
             user-select: none;
         }
-        
+
         .btn {
             padding: 10px 15px;
             border-radius: 8px;
@@ -121,81 +125,81 @@
             transition: background 0.2s, transform 0.2s, box-shadow 0.2s;
             text-align: center;
         }
-        
+
         .btn:hover:not(:disabled) {
             transform: translateY(-1px);
-            box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
         }
-        
+
         .btn:disabled {
             background: #e0e0e0;
             cursor: not-allowed;
             opacity: 0.7;
         }
-        
+
         .btn-primary {
             background: #44b7fe;
         }
-        
+
         .btn-primary:hover:not(:disabled) {
             background: #2662c8;
         }
-        
+
         .btn-secondary {
             background: #d5f1ff;
             color: #333;
         }
-        
+
         .btn-secondary:hover:not(:disabled) {
             background: #b8e5ff;
             color: #333;
         }
-        
+
         #sidebar .btn-secondary.active {
             background: #44b7fe;
             color: white;
         }
-        
+
         .btn-success {
             background: #44b7fe;
         }
-        
+
         .btn-success:hover:not(:disabled) {
             background: #2662c8;
         }
-        
+
         .btn-danger {
             background: #ff6b6b;
         }
-        
+
         .btn-danger:hover:not(:disabled) {
             background: #ff4757;
         }
-        
+
         .btn-icon {
             display: flex;
             align-items: center;
             justify-content: center;
             gap: 6px;
         }
-        
+
         .btn-icon img {
             width: 16px;
             height: 16px;
             object-fit: contain;
         }
-        
+
         .action-group {
             display: flex;
             gap: 10px;
             align-items: center;
         }
-        
+
         .action-group .control-select,
         .action-group .control-input {
             flex-grow: 1;
         }
-        
+
         h1 {
             color: #333;
             margin-bottom: 25px;
@@ -207,7 +211,7 @@
             padding-bottom: 15px;
             border-bottom: 2px solid #e0e0e0;
         }
-        
+
         /* 上传区域样式 - 去掉边框效果 */
         .upload-section {
             background: #fff;
@@ -215,7 +219,7 @@
             padding: 25px;
             margin-bottom: 25px;
         }
-        
+
         .upload-section h2 {
             color: #333;
             font-weight: 600;
@@ -223,7 +227,7 @@
             margin-bottom: 20px;
             font-size: 20px;
         }
-        
+
         /* 标签容器样式 */
         .tags-container {
             display: flex;
@@ -231,7 +235,7 @@
             gap: 8px;
             margin-bottom: 15px;
         }
-        
+
         .tag {
             background: #d5f1ff;
             color: #333;
@@ -243,18 +247,18 @@
             gap: 5px;
             transition: background 0.2s;
         }
-        
+
         .tag:hover {
             background: #b8e5ff;
         }
-        
+
         .tag-remove {
             cursor: pointer;
             font-weight: bold;
             font-size: 16px;
             line-height: 1;
         }
-        
+
         /* 信息框样式 */
         .info-box {
             background: #e1f5fe;
@@ -264,15 +268,15 @@
             border-radius: 8px;
             border-top-left-radius: 0;
             border-bottom-left-radius: 0;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
         }
-        
+
         .info-box p {
             margin: 0;
             color: #01579b;
             font-weight: 500;
         }
-        
+
         /* 状态指示器 */
         .status-indicator {
             display: inline-block;
@@ -281,22 +285,22 @@
             border-radius: 50%;
             margin-right: 5px;
         }
-        
+
         /* 标签页导航样式 */
         .navigation-tabs {
             background: #fff;
             border-radius: 12px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
             margin-bottom: 20px;
             overflow: hidden;
         }
-        
+
         .tab-buttons {
             display: flex;
             padding: 5px;
             background: #f5f5f5;
         }
-        
+
         .tab-button {
             flex: 1;
             padding: 12px 20px;
@@ -310,25 +314,26 @@
             transition: all 0.3s ease;
             margin: 0 2px;
         }
-        
+
         .tab-button:hover {
             background: #e0e0e0;
             color: #333;
         }
-        
+
         .tab-button.active {
             background: #44b7fe;
             color: white;
         }
-        
+
         .tab-content {
             padding: 20px;
             background: #fff;
             border-radius: 0 0 12px 12px;
         }
-        
+
         /* 菜单部分样式 */
-        .menu-section h3, .config-section h4 {
+        .menu-section h3,
+        .config-section h4 {
             margin-top: 20px;
             margin-bottom: 12px;
             font-size: 16px;
@@ -337,19 +342,19 @@
             border-bottom: 1px solid #e0e0e0;
             padding-bottom: 8px;
         }
-        
+
         .menu-section .button-group {
             margin-bottom: 5px;
         }
-        
+
         #sidebar .btn-secondary {
             margin-bottom: 2px;
         }
-        
+
         .menu-section {
             margin-bottom: 5px;
         }
-        
+
         .info-text {
             font-size: 12px;
             color: #666;
@@ -358,12 +363,12 @@
             background: #f8f9fa;
             border-radius: 6px;
         }
-        
+
         .info-text p {
             margin: 0;
             line-height: 1.4;
         }
-        
+
         /* 配置区域样式 - 去掉边框效果 */
         .section-card {
             background: #fff;
@@ -372,28 +377,28 @@
             margin-bottom: 20px;
             border: 1px solid #e0e0e0;
         }
-        
+
         /* 区域标题样式 */
         .section-header {
             margin-bottom: 20px;
             padding-bottom: 10px;
             border-bottom: 1px solid #f0f0f0;
         }
-        
+
         .section-header h2 {
             margin: 0;
             font-size: 20px;
             font-weight: 600;
             color: #333;
         }
-        
+
         .config-section {
             background: #f8f9fa;
             border-radius: 8px;
             padding: 20px;
             margin: 20px 0;
         }
-        
+
         .config-section h3 {
             margin-top: 0;
             margin-bottom: 15px;
@@ -401,21 +406,21 @@
             font-weight: 600;
             color: #333;
         }
-        
+
         .control-group {
             margin: 15px 0;
             display: flex;
             flex-direction: column;
             gap: 8px;
         }
-        
+
         .control-label {
             font-size: 14px;
             font-weight: 500;
             margin-bottom: 4px;
             color: #333;
         }
-        
+
         .control-input {
             padding: 10px 12px;
             border: 1px solid #ddd;
@@ -424,61 +429,61 @@
             width: 100%;
             box-sizing: border-box;
         }
-        
+
         .control-input:focus {
             outline: none;
             border-color: #44b7fe;
             box-shadow: 0 0 0 2px rgba(68, 183, 254, 0.2);
         }
-        
+
         .control-group.checkbox {
             flex-direction: row;
             align-items: flex-start;
             gap: 10px;
         }
-        
+
         .checkbox-label {
             font-size: 14px;
             font-weight: 500;
             color: #333;
             flex: 1;
         }
-        
+
         .help-text {
             font-size: 12px;
             color: #666;
             margin-top: 4px;
         }
-        
+
         .help-text.success {
             color: #2e7d32;
         }
-        
+
         .button-group {
             display: flex;
             gap: 10px;
             align-items: center;
             margin-top: 15px;
         }
-        
+
         /* 响应式调整 */
         @media (max-width: 768px) {
             .button-group {
                 flex-direction: column;
                 align-items: stretch;
             }
-            
+
             .control-group.checkbox {
                 flex-direction: column;
                 align-items: flex-start;
             }
         }
-        
+
         /* 设置面板相关样式 */
         .settings-container {
             margin-top: 15px;
         }
-        
+
         #settings-panel {
             border: 1px solid #ddd;
             border-radius: 10px;
@@ -489,7 +494,7 @@
             transition: all 0.4s ease;
             overflow: hidden;
         }
-        
+
         #settings-panel h3 {
             margin-top: 0;
             color: #333;
@@ -499,19 +504,19 @@
             border-bottom: 1px solid #eee;
             padding-bottom: 10px;
         }
-        
+
         .status-published {
             background-color: #2ecc71;
         }
-        
+
         .status-pending {
             background-color: #f39c12;
         }
-        
+
         .status-failed {
             background-color: #e74c3c;
         }
-        
+
         /* 过滤器控件 */
         .filter-controls {
             display: flex;
@@ -522,15 +527,15 @@
             background: #fff;
             border-radius: 12px;
             padding: 15px 20px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
         }
-        
+
         .filter-group {
             display: flex;
             gap: 10px;
             align-items: center;
         }
-        
+
         .filter-label {
             font-size: 14px;
             font-weight: 500;
@@ -543,7 +548,7 @@
             align-items: center;
             justify-content: flex-end;
         }
-        
+
         /* 卡片容器样式 - tile视图 */
         .cards-container {
             display: grid;
@@ -551,11 +556,11 @@
             gap: 24px;
             margin-top: 20px;
         }
-        
+
         .workshop-card {
             background: #fff;
             border-radius: 16px;
-            box-shadow: 0 6px 16px rgba(0,0,0,0.08);
+            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.08);
             border: 1px solid #e0e0e0;
             overflow: hidden;
             transition: all 0.3s ease;
@@ -563,12 +568,12 @@
             flex-direction: column;
             height: 380px;
         }
-        
+
         .workshop-card:hover {
             transform: translateY(-6px);
-            box-shadow: 0 12px 24px rgba(0,0,0,0.12);
+            box-shadow: 0 12px 24px rgba(0, 0, 0, 0.12);
         }
-        
+
         .card-image {
             width: 100%;
             height: 160px;
@@ -576,14 +581,14 @@
             display: block;
             background-color: #f5f5f5;
         }
-        
+
         .card-content {
             padding: 20px;
             flex: 1;
             display: flex;
             flex-direction: column;
         }
-        
+
         .card-title {
             font-size: 18px;
             font-weight: 600;
@@ -594,36 +599,36 @@
             -webkit-box-orient: vertical;
             overflow: hidden;
         }
-        
+
         /* 删除重复的status-badge定义，只保留下方的统一样式 */
-        
+
         .status-subscribed {
             background-color: #e6f3ff;
             color: #0066cc;
         }
-        
+
         .status-downloading {
             background-color: #fff2cc;
             color: #cc7700;
         }
-        
+
         .status-needs-update {
             background-color: #fff2cc;
             color: #cc7700;
         }
-        
+
         .status-installed {
             background-color: #e6ffe6;
             color: #008000;
         }
-        
+
         .author-info {
             display: flex;
             align-items: center;
             gap: 10px;
             margin-bottom: 12px;
         }
-        
+
         .author-avatar {
             width: 24px;
             height: 24px;
@@ -636,7 +641,7 @@
             font-size: 12px;
             font-weight: 600;
         }
-        
+
         .card-info {
             font-size: 13px;
             color: #888;
@@ -645,7 +650,7 @@
             flex-direction: column;
             gap: 4px;
         }
-        
+
         /* 统一的状态徽章样式 */
         .status-badge {
             display: inline-block;
@@ -660,7 +665,7 @@
             text-align: center;
             box-sizing: border-box;
         }
-        
+
         /* 为卡片头部的状态徽章添加定位样式 */
         .card-header .status-badge {
             position: absolute;
@@ -672,12 +677,12 @@
             font-size: 11px;
             border-radius: 12px;
         }
-        
+
         /* 调整卡片高度以适应新结构 */
         .workshop-card {
             background: #fff;
             border-radius: 16px;
-            box-shadow: 0 6px 16px rgba(0,0,0,0.08);
+            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.08);
             overflow: hidden;
             transition: all 0.3s ease;
             display: flex;
@@ -685,13 +690,13 @@
             height: auto;
             min-height: 380px;
         }
-        
+
         /* 卡片头部样式 */
         .card-header {
             position: relative;
             overflow: hidden;
         }
-        
+
         /* 卡片信息网格布局 */
         .card-info-grid {
             display: grid;
@@ -699,57 +704,65 @@
             gap: 8px;
             margin-bottom: 12px;
         }
-        
+
         .card-info-item {
             display: flex;
             flex-direction: column;
             gap: 4px;
         }
-        
+
         .info-label {
             font-size: 12px;
             color: #888;
             font-weight: 500;
         }
-        
+
         .info-value {
             font-size: 14px;
             color: #333;
             font-weight: 400;
         }
-        
+
         .status-subscribed {
             background: #e3f2fd;
             color: #1565c0;
         }
-        
+
         .status-installed {
             background: #e8f5e9;
             color: #2e7d32;
         }
-        
+
         .status-downloading {
             background: #fff3e0;
             color: #ef6c00;
             animation: pulse 2s infinite;
         }
-        
+
         .status-needs-update {
             background: #fff8e1;
             color: #ff8f00;
         }
-        
+
         .status-error {
             background: #ffebee;
             color: #c62828;
         }
-        
+
         @keyframes pulse {
-            0% { opacity: 0.7; }
-            50% { opacity: 1; }
-            100% { opacity: 0.7; }
+            0% {
+                opacity: 0.7;
+            }
+
+            50% {
+                opacity: 1;
+            }
+
+            100% {
+                opacity: 0.7;
+            }
         }
-        
+
         /* 安装路径样式 */
         .card-path {
             background: #f5f7fa;
@@ -758,7 +771,7 @@
             margin-bottom: 12px;
             overflow: hidden;
         }
-        
+
         .path-text {
             font-size: 12px;
             color: #666;
@@ -767,7 +780,7 @@
             max-width: 100%;
             line-height: 1.4;
         }
-        
+
         /* 卡片操作按钮 */
         .card-actions {
             margin-top: auto;
@@ -775,7 +788,7 @@
             display: flex;
             gap: 8px;
         }
-        
+
         .card-actions button,
         .card-actions .button {
             width: 100%;
@@ -789,13 +802,13 @@
             text-align: center;
             display: inline-block;
         }
-        
+
         .card-actions button:hover,
         .card-actions .button:hover {
             transform: translateY(-1px);
-            box-shadow: 0 4px 8px rgba(0,0,0,0.12);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.12);
         }
-        
+
         /* 默认按钮样式 */
         .card-actions button,
         .card-actions .button {
@@ -803,25 +816,25 @@
             color: #334155;
             border: 1px solid #e2e8f0;
         }
-        
+
         .card-actions button:hover,
         .card-actions .button:hover {
             background: #e2e8f0;
             border-color: #cbd5e1;
         }
-        
+
         /* 主要按钮样式 */
         .card-actions .button-primary {
             background: #44b7fe;
             color: white;
             border: 1px solid #44b7fe;
         }
-        
+
         .card-actions .button-primary:hover {
             background: #2662c8;
             border-color: #2662c8;
         }
-        
+
         /* 禁用按钮样式 */
         .card-actions .button-disabled {
             background: #f1f5f9;
@@ -830,32 +843,32 @@
             cursor: not-allowed;
             opacity: 0.6;
         }
-        
+
         .card-actions .button-disabled:hover {
             transform: none;
             box-shadow: none;
             background: #f1f5f9;
             border-color: #e2e8f0;
         }
-        
+
         /* 危险操作按钮样式 */
         .card-actions .button-danger {
             background: #e11d48;
             color: white;
             border: 1px solid #e11d48;
         }
-        
+
         .card-actions .button-danger:hover {
             background: #be123c;
             border-color: #be123c;
         }
-        
+
         /* 下载进度条样式 */
         .download-progress {
             margin: 12px 0 8px 0;
             width: 100%;
         }
-        
+
         .progress-bar {
             width: 100%;
             height: 10px;
@@ -864,7 +877,7 @@
             overflow: hidden;
             position: relative;
         }
-        
+
         .progress-fill {
             height: 100%;
             background: linear-gradient(90deg, #0078d4, #44b7fe);
@@ -876,21 +889,21 @@
             font-weight: bold;
             transition: width 0.3s ease;
             padding-right: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1) inset;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1) inset;
         }
-        
+
         /* 空状态样式 */
         .empty-state {
             text-align: center;
             padding: 60px 20px;
             color: #888;
         }
-        
+
         .empty-state p {
             font-size: 16px;
             margin-bottom: 20px;
         }
-        
+
         /* 分页控件样式 */
         .pagination {
             display: flex;
@@ -899,7 +912,7 @@
             margin-top: 30px;
             gap: 12px;
         }
-        
+
         .pagination .btn {
             min-width: 80px;
             height: 36px;
@@ -908,7 +921,7 @@
             justify-content: center;
             padding: 0 12px;
         }
-        
+
         .pagination span {
             display: flex;
             align-items: center;
@@ -917,7 +930,7 @@
             text-align: center;
             padding: 0 8px;
         }
-        
+
         /* 消息提示样式 */
         .success-message,
         .error-message,
@@ -926,30 +939,30 @@
             margin-bottom: 20px;
             border-radius: 8px;
             position: relative;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
             opacity: 0;
             transform: translateY(-10px);
             transition: opacity 0.3s ease, transform 0.3s ease;
         }
-        
+
         .success-message {
             background: #e8f5e9;
             color: #2e7d32;
             border-left: 4px solid #4caf50;
         }
-        
+
         .error-message {
             background: #ffebee;
             color: #c62828;
             border-left: 4px solid #f44336;
         }
-        
+
         .warning-message {
             background: #fff8e1;
             color: #ff8f00;
             border-left: 4px solid #ffb74d;
         }
-        
+
         .message-close {
             position: absolute;
             right: 15px;
@@ -962,11 +975,11 @@
             opacity: 0.7;
             transition: opacity 0.2s;
         }
-        
+
         .message-close:hover {
             opacity: 1;
         }
-        
+
         /* 模态框样式 */
         .modal {
             display: none;
@@ -981,7 +994,7 @@
             align-items: center;
             padding: 20px;
         }
-        
+
         .modal-content {
             background: #fff;
             border-radius: 12px;
@@ -994,18 +1007,19 @@
             flex-direction: column;
             animation: modalFadeIn 0.3s ease-out;
         }
-        
+
         @keyframes modalFadeIn {
             from {
                 opacity: 0;
                 transform: translateY(-20px);
             }
+
             to {
                 opacity: 1;
                 transform: translateY(0);
             }
         }
-        
+
         .modal-header {
             display: flex;
             justify-content: space-between;
@@ -1014,14 +1028,14 @@
             border-bottom: 1px solid #e0e0e0;
             background: #fafafa;
         }
-        
+
         .modal-title {
             font-size: 20px;
             font-weight: 600;
             color: #333;
             margin: 0;
         }
-        
+
         .modal-close {
             background: none;
             border: none;
@@ -1037,18 +1051,18 @@
             border-radius: 6px;
             transition: background 0.2s, color 0.2s;
         }
-        
+
         .modal-close:hover {
             background: #f0f0f0;
             color: #333;
         }
-        
+
         .modal-body {
             padding: 25px;
             overflow-y: auto;
             flex: 1;
         }
-        
+
         .modal-footer {
             display: flex;
             justify-content: flex-end;
@@ -1057,7 +1071,7 @@
             background: #fafafa;
             gap: 12px;
         }
-        
+
         .item-detail-container {
             display: flex;
             flex-direction: column;
@@ -1067,26 +1081,26 @@
             padding: 20px;
             background: #fff;
         }
-        
+
         .item-preview-large {
             width: 100%;
             max-height: 350px;
             object-fit: cover;
             border-radius: 8px;
-            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
         }
-        
+
         .item-info-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 16px;
             margin-bottom: 20px;
         }
-        
+
         .item-info-item {
             margin: 0;
         }
-        
+
         .item-info-label {
             font-weight: 600;
             color: #334155;
@@ -1095,7 +1109,7 @@
             letter-spacing: 0.05em;
             margin-bottom: 4px;
         }
-        
+
         .item-description {
             margin-top: 20px;
             line-height: 1.7;
@@ -1105,7 +1119,7 @@
             border-radius: 8px;
             border: 1px solid #f1f5f9;
         }
-        
+
         /* 浏览器通知样式 */
         .workshop-integration-info {
             background: #f8fafc;
@@ -1114,24 +1128,24 @@
             padding: 16px;
             margin-bottom: 16px;
         }
-        
+
         .workshop-integration-info h4 {
             color: #334155;
             margin: 0 0 12px 0;
             font-size: 16px;
             font-weight: 600;
         }
-        
+
         .workshop-integration-info .info-text {
             font-size: 14px;
             color: #64748b;
         }
-        
+
         .workshop-integration-info .info-text p {
             margin: 6px 0;
             line-height: 1.5;
         }
-        
+
         /* 响应式调整 */
         @media (max-width: 1024px) {
             .layout-container {
@@ -1139,42 +1153,42 @@
                 margin: 10px;
                 padding: 0;
             }
-            
+
             #sidebar {
                 width: auto;
                 min-width: auto;
             }
-            
+
             .cards-container {
                 grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
             }
         }
-        
+
         @media (max-width: 768px) {
             .filter-controls {
                 flex-direction: column;
                 align-items: stretch;
                 gap: 15px;
             }
-            
+
             .filter-group {
                 flex-direction: column;
                 align-items: stretch;
             }
-            
+
             .item-info-grid {
                 grid-template-columns: 1fr;
             }
-            
+
             .modal-footer {
                 flex-direction: column-reverse;
             }
-            
+
             .modal-footer .btn {
                 width: 100%;
             }
         }
-        
+
         /* 水平标签页样式 */
         .tabs {
             display: flex;
@@ -1185,7 +1199,7 @@
             margin-bottom: 15px;
             justify-content: space-between;
         }
-        
+
         .tab {
             padding: 10px 20px;
             border: none;
@@ -1204,7 +1218,7 @@
             overflow: hidden;
             text-overflow: ellipsis;
         }
-        
+
         /* 媒体查询 - 当窗口宽度小于特定尺寸时调整标签样式 */
         @media (max-width: 600px) {
             .tab {
@@ -1214,12 +1228,12 @@
                 padding: 10px 15px;
                 font-size: 13px;
             }
-            
+
             .tabs {
                 justify-content: flex-start;
             }
         }
-        
+
         /* 小窗口特定样式类 */
         .tabs.compact .tab {
             flex: 1;
@@ -1227,43 +1241,43 @@
             padding: 10px 15px;
             text-align: center;
         }
-        
+
         .tabs.compact {
             justify-content: flex-start;
             gap: 4px;
             /* 自适应左侧菜单宽度 */
             width: 100%;
         }
-        
+
         /* 恢复大窗口样式的类 */
         .tabs.normal .tab {
             flex: 1;
             min-width: 0;
             padding: 10px 20px;
         }
-        
+
         .tabs.normal {
             justify-content: space-between;
         }
-        
+
         .tab:hover {
             background: #e1e8ed;
             color: #333;
         }
-        
+
         .tab.active {
             background: #44b7fe;
             color: white;
             box-shadow: 0 2px 4px rgba(68, 183, 254, 0.3);
         }
-        
+
         /* 页面控制按钮 */
         .page-controls {
             display: flex;
             gap: 10px;
             margin-bottom: 25px;
         }
-        
+
         /* 状态文本样式 */
         #status {
             color: #4f8cff;
@@ -1273,6 +1287,7 @@
         }
     </style>
 </head>
+
 <body>
     <!-- 侧边栏 -->
     <!-- 布局容器 -->
@@ -1283,55 +1298,59 @@
             <div class="menu-section">
                 <!-- 标签切换按钮组 -->
                 <div class="tabs compact" id="workshop-tabs">
-                     <button class="tab active" onclick="switchTab('subscriptions-content')" data-i18n="steam.subscriptions">订阅内容</button>
-                     <button class="tab" onclick="switchTab('local-items-content')" data-i18n="steam.localItems">本地内容</button>
-                  </div>
-                
+                    <button class="tab active" onclick="switchTab('subscriptions-content')"
+                        data-i18n="steam.subscriptions">订阅内容</button>
+                    <button class="tab" onclick="switchTab('local-items-content')"
+                        data-i18n="steam.localItems">本地内容</button>
+                </div>
+
                 <!-- 修复的自定义tooltip实现 -->
                 <style>
-                /* 确保侧边栏作为定位容器 */
-                #sidebar {
-                    position: relative;
-                    overflow: visible;
-                }
-                
-                /* 标签按钮基础样式 */
-                .tabs button {
-                    position: relative;
-                    cursor: pointer;
-                    /* 禁用浏览器默认tooltip */
-                    overflow: hidden;
-                    text-overflow: ellipsis;
-                }
-                
-                /* 移除可能存在的title属性 */
-                .tabs button { title: ""; }
-                
-                /* 完全重写的tooltip实现 */
-                .tabs button:hover {
-                    /* 移除默认的title提示行为 */
-                    pointer-events: auto;
-                }
-                
-                /* 添加安全的工具提示实现 */
-                .tabs {
-                    position: relative;
-                    /* 确保tooltip在容器内 */
-                    contain: layout;
-                }
-                
-                /* 替代方案：通过JavaScript控制tooltip，完全避免CSS定位问题 */
+                    /* 确保侧边栏作为定位容器 */
+                    #sidebar {
+                        position: relative;
+                        overflow: visible;
+                    }
+
+                    /* 标签按钮基础样式 */
+                    .tabs button {
+                        position: relative;
+                        cursor: pointer;
+                        /* 禁用浏览器默认tooltip */
+                        overflow: hidden;
+                        text-overflow: ellipsis;
+                    }
+
+                    /* 移除可能存在的title属性 */
+                    .tabs button {
+                        title: "";
+                    }
+
+                    /* 完全重写的tooltip实现 */
+                    .tabs button:hover {
+                        /* 移除默认的title提示行为 */
+                        pointer-events: auto;
+                    }
+
+                    /* 添加安全的工具提示实现 */
+                    .tabs {
+                        position: relative;
+                        /* 确保tooltip在容器内 */
+                        contain: layout;
+                    }
+
+                    /* 替代方案：通过JavaScript控制tooltip，完全避免CSS定位问题 */
                 </style>
-                
+
                 <script>
-                  // JavaScript控制的tooltip实现
-                  document.addEventListener('DOMContentLoaded', function() {
-                    const tabButtons = document.querySelectorAll('.tabs button');
-                    
-                    // 创建tooltip元素
-                    let tooltip = document.createElement('div');
-                    tooltip.id = 'custom-tooltip';
-                    tooltip.style.cssText = `
+                    // JavaScript控制的tooltip实现
+                    document.addEventListener('DOMContentLoaded', function () {
+                        const tabButtons = document.querySelectorAll('.tabs button');
+
+                        // 创建tooltip元素
+                        let tooltip = document.createElement('div');
+                        tooltip.id = 'custom-tooltip';
+                        tooltip.style.cssText = `
                         position: absolute;
                         background: rgba(0, 0, 0, 0.8);
                         color: white;
@@ -1343,331 +1362,359 @@
                         z-index: 1000;
                         display: none;
                     `;
-                    document.body.appendChild(tooltip);
-                    
-                    // 为每个标签按钮添加事件监听
-                    tabButtons.forEach(button => {
-                        // 获取按钮文本作为tooltip内容
-                        const tooltipText = button.textContent.trim();
-                        
-                        button.addEventListener('mouseenter', function(e) {
-                            // 计算tooltip位置
-                            const buttonRect = button.getBoundingClientRect();
-                            const sidebarRect = document.getElementById('sidebar').getBoundingClientRect();
-                            
-                            // 计算tooltip尺寸
-                            tooltip.textContent = tooltipText;
-                            tooltip.style.display = 'block';
-                            const tooltipRect = tooltip.getBoundingClientRect();
-                            
-                            // 确保tooltip在侧边栏内显示
-                            let left = buttonRect.left + buttonRect.width / 2 - tooltipRect.width / 2;
-                            
-                            // 检查并修正左侧位置
-                            if (left < sidebarRect.left + 10) {
-                                left = sidebarRect.left + 10;
-                            }
-                            // 检查并修正右侧位置
-                            if (left + tooltipRect.width > sidebarRect.right - 10) {
-                                left = sidebarRect.right - tooltipRect.width - 10;
-                            }
-                            
-                            // 设置tooltip位置
-                            tooltip.style.left = left + 'px';
-                            tooltip.style.top = (buttonRect.top - tooltipRect.height - 5) + 'px';
-                        });
-                        
-                        button.addEventListener('mouseleave', function() {
-                            tooltip.style.display = 'none';
-                        });
-                        
-                        // 阻止默认的title提示
-                        button.addEventListener('mouseover', function(e) {
-                            e.preventDefault();
+                        document.body.appendChild(tooltip);
+
+                        // 为每个标签按钮添加事件监听
+                        tabButtons.forEach(button => {
+                            // 获取按钮文本作为tooltip内容
+                            const tooltipText = button.textContent.trim();
+
+                            button.addEventListener('mouseenter', function (e) {
+                                // 计算tooltip位置
+                                const buttonRect = button.getBoundingClientRect();
+                                const sidebarRect = document.getElementById('sidebar').getBoundingClientRect();
+
+                                // 计算tooltip尺寸
+                                tooltip.textContent = tooltipText;
+                                tooltip.style.display = 'block';
+                                const tooltipRect = tooltip.getBoundingClientRect();
+
+                                // 确保tooltip在侧边栏内显示
+                                let left = buttonRect.left + buttonRect.width / 2 - tooltipRect.width / 2;
+
+                                // 检查并修正左侧位置
+                                if (left < sidebarRect.left + 10) {
+                                    left = sidebarRect.left + 10;
+                                }
+                                // 检查并修正右侧位置
+                                if (left + tooltipRect.width > sidebarRect.right - 10) {
+                                    left = sidebarRect.right - tooltipRect.width - 10;
+                                }
+
+                                // 设置tooltip位置
+                                tooltip.style.left = left + 'px';
+                                tooltip.style.top = (buttonRect.top - tooltipRect.height - 5) + 'px';
+                            });
+
+                            button.addEventListener('mouseleave', function () {
+                                tooltip.style.display = 'none';
+                            });
+
+                            // 阻止默认的title提示
+                            button.addEventListener('mouseover', function (e) {
+                                e.preventDefault();
+                            });
                         });
                     });
-                });
                 </script>
                 <script>
-                // 响应式标签页处理
-                function updateTabsLayout() {
-                    const tabs = document.getElementById('workshop-tabs');
-                    const containerWidth = tabs.parentElement.clientWidth;
-                    
-                    // 定义切换阈值
-                    const thresholdWidth = 400;
-                    
-                    if (containerWidth < thresholdWidth) {
-                        tabs.classList.remove('normal');
-                        tabs.classList.add('compact');
-                    } else {
-                        tabs.classList.remove('compact');
-                        tabs.classList.add('normal');
+                    // 响应式标签页处理
+                    function updateTabsLayout() {
+                        const tabs = document.getElementById('workshop-tabs');
+                        const containerWidth = tabs.parentElement.clientWidth;
+
+                        // 定义切换阈值
+                        const thresholdWidth = 400;
+
+                        if (containerWidth < thresholdWidth) {
+                            tabs.classList.remove('normal');
+                            tabs.classList.add('compact');
+                        } else {
+                            tabs.classList.remove('compact');
+                            tabs.classList.add('normal');
+                        }
                     }
-                }
-                
-                // 初始化时调用一次
-                window.addEventListener('DOMContentLoaded', updateTabsLayout);
-                // 监听窗口大小变化
-                window.addEventListener('resize', updateTabsLayout);
+
+                    // 初始化时调用一次
+                    window.addEventListener('DOMContentLoaded', updateTabsLayout);
+                    // 监听窗口大小变化
+                    window.addEventListener('resize', updateTabsLayout);
                 </script>
             </div>
-            
 
-            
+
+
             <!-- 关于创意工坊集成说明 -->
             <div class="menu-section workshop-integration-info">
                 <div class="info-text">
                     <p data-i18n="steam.pageDescription">通过此页面，您可以浏览、订阅、下载和管理Steam创意工坊中的Live2D模型和声音。</p>
-        <p data-i18n="steam.voiceNote">如有语音音色请前往live2d设置页面手动注册</p>
+                    <p data-i18n="steam.voiceNote">如有语音音色请前往live2d设置页面手动注册</p>
                 </div>
             </div>
-            
+
 
         </div>
-        
+
         <!-- 主内容区域 -->
         <div class="main-content">
-        <!-- 标题已移除 -->
-        
-        <!-- 标签内容容器 -->
-        <div class="tab-contents">
-            <!-- 订阅内容标签页 -->
-            <div id="subscriptions-content" class="tab-content active">
-                <div class="section-card">
-                    <div class="section-header">
-                         <h2 data-i18n="steam.mySubscriptions">我的订阅物品</h2>
-                      </div>
-                    
-                    <div class="filter-controls">
-                    <div class="filter-group">
-                         <div class="filter-label" data-i18n="steam.search">搜索：</div>
-                         <input type="text" id="search-subscription" class="control-input" placeholder="" onkeyup="filterSubscriptions(this.value)" data-i18n-placeholder="steam.searchPlaceholder">
-                      </div>
-                    <div class="filter-group">
-                         <div class="filter-label" data-i18n="steam.sort.title">排序：</div>
-                        <select id="sort-subscription" class="control-select" onchange="applySort(this.value)">
-                            <option value="name_asc" data-i18n="steam.sort.nameAsc">名称（升序）</option>
-                            <option value="name_desc" data-i18n="steam.sort.nameDesc">名称（降序）</option>
-                            <option value="date_asc" data-i18n="steam.sort.dateAsc">订阅日期（升序）</option>
-                            <option value="date_desc" data-i18n="steam.sort.dateDesc">订阅日期（降序）</option>
-                            <option value="size_asc" data-i18n="steam.sort.sizeAsc">文件大小（升序）</option>
-                            <option value="size_desc" data-i18n="steam.sort.sizeDesc">文件大小（降序）</option>
-                            <option value="update_asc" data-i18n="steam.sort.updateAsc">更新时间（升序）</option>
-                            <option value="update_desc" data-i18n="steam.sort.updateDesc">更新时间（降序）</option>
-                        </select>
-                    </div>
-                    <div class="filter-group">
-                        <button class="btn btn-primary" onclick="loadSubscriptions()" data-i18n="steam.refresh">刷新订阅内容</button>
-                    </div>
-                </div>
-                
-                <div id="subscriptions-result">
-                    <!-- 卡片容器 -->
-                    <div id="subscriptions-list" class="cards-container">
-                        <!-- 空状态 -->
-                        <div class="empty-state">
-                            <p id="loading-text"></p>
-                            <button class="btn btn-secondary" onclick="loadSubscriptions()" id="reload-button"></button>
+            <!-- 标题已移除 -->
+
+            <!-- 标签内容容器 -->
+            <div class="tab-contents">
+                <!-- 订阅内容标签页 -->
+                <div id="subscriptions-content" class="tab-content active">
+                    <div class="section-card">
+                        <div class="section-header">
+                            <h2 data-i18n="steam.mySubscriptions">我的订阅物品</h2>
                         </div>
-                    </div>
-                    
-                    <div class="pagination">
-                        <button class="btn btn-secondary" onclick="goToPrevPage()" disabled data-i18n="common.prevPage">上一页</button>
-                        <span>第 1 页，共 1 页</span>
-                        <button class="btn btn-secondary" onclick="goToNextPage()" disabled data-i18n="common.nextPage">下一页</button>
-                    </div>
-                </div>
-                </div>
-            </div>
-            <!-- 本地内容标签页 -->
-            <div id="local-items-content" class="tab-content" style="display: none;">
-                <!-- 上传表单区域 - 默认隐藏 -->
-                <div class="section-card upload-section" style="display: none;">
-                    <div class="section-header">
-                        <h2 data-i18n="steam.uploadToWorkshop">上传到创意工坊</h2>
-                    </div>
-                    <div class="info-box">
-                        <p data-i18n="steam.uploadInstructions">请先在"管理本地物品"区域选择一个未发布的物品，然后点击"准备上传"按钮。内容文件夹路径和预览图片路径将自动填充。</p>
-                    </div>
-                    
-                    <div id="message-area"></div>
-                    
-                    <div class="control-group">
-                        <div class="control-label" data-i18n="steam.title">标题 *</div>
-                        <input type="text" id="item-title" class="control-input" placeholder="输入您的创作标题">
-                    </div>
-                    
-                    <div class="control-group">
-                        <div class="control-label" data-i18n="steam.description">描述</div>
-                        <textarea id="item-description" class="control-input" placeholder="详细描述您的创作内容..." data-i18n-placeholder="steam.descriptionPlaceholder"></textarea>
-                    </div>
-                    
-                    <div class="control-group">
-                        <div class="control-label" data-i18n="steam.contentFolderPath">内容文件夹路径 *</div>
-                        <input type="text" id="content-folder" class="control-input" placeholder="从本地物品中获取的内容文件夹路径" readonly>
-                    </div>
-                    
-                    <div class="control-group">
-                        <div class="control-label" data-i18n="steam.previewImagePath">预览图片路径 *</div>
-                        <input type="text" id="preview-image" class="control-input" placeholder="从本地物品中获取的预览图片路径" readonly>
-                        <div class="control-hint" style="color: red; font-size: 14px;" data-i18n="steam.previewImageSizeHint">提示：预览图片大小需要小于1MB</div>
-                    </div>
-                    
-                    <div class="control-group">
-                        <div class="control-label" data-i18n="steam.tags">标签</div>
-                        <input type="text" id="item-tags" class="control-input" placeholder="输入标签，按回车添加" data-i18n-placeholder="steam.tagsPlaceholder">
-                        <div id="tags-container" class="tags-container"></div>
-                    </div>
-                    
-                    <div class="control-group">
-                        <div class="control-label" data-i18n="steam.visibility">可见性</div>
-                        <select id="visibility" class="control-select">
-                            <option value="public" data-i18n="steam.visibilityPublic">公开</option>
-                              <option value="friends" data-i18n="steam.visibilityFriends">仅好友可见</option>
-                              <option value="private" data-i18n="steam.visibilityPrivate">私有</option>
-                        </select>
-                    </div>
-                    
-                    <div class="control-group">
-                        <div class="checkbox-container">
-                            <input type="checkbox" id="allow-comments" class="control-checkbox" checked>
-                            <label for="allow-comments" class="checkbox-label" data-i18n="steam.allowComments">允许评论</label>
+
+                        <div class="filter-controls">
+                            <div class="filter-group">
+                                <div class="filter-label" data-i18n="steam.search">搜索：</div>
+                                <input type="text" id="search-subscription" class="control-input" placeholder=""
+                                    onkeyup="filterSubscriptions(this.value)"
+                                    data-i18n-placeholder="steam.searchPlaceholder">
+                            </div>
+                            <div class="filter-group">
+                                <div class="filter-label" data-i18n="steam.sort.title">排序：</div>
+                                <select id="sort-subscription" class="control-select" onchange="applySort(this.value)">
+                                    <option value="name_asc" data-i18n="steam.sort.nameAsc">名称（升序）</option>
+                                    <option value="name_desc" data-i18n="steam.sort.nameDesc">名称（降序）</option>
+                                    <option value="date_asc" data-i18n="steam.sort.dateAsc">订阅日期（升序）</option>
+                                    <option value="date_desc" data-i18n="steam.sort.dateDesc">订阅日期（降序）</option>
+                                    <option value="size_asc" data-i18n="steam.sort.sizeAsc">文件大小（升序）</option>
+                                    <option value="size_desc" data-i18n="steam.sort.sizeDesc">文件大小（降序）</option>
+                                    <option value="update_asc" data-i18n="steam.sort.updateAsc">更新时间（升序）</option>
+                                    <option value="update_desc" data-i18n="steam.sort.updateDesc">更新时间（降序）</option>
+                                </select>
+                            </div>
+                            <div class="filter-group">
+                                <button class="btn btn-primary" onclick="loadSubscriptions()"
+                                    data-i18n="steam.refresh">刷新订阅内容</button>
+                            </div>
                         </div>
-                    </div>
-                    
-                    <div class="control-group">
-                        <button class="btn btn-primary" onclick="uploadItem()">
-                            <span data-i18n="steam.uploadToWorkshop">上传到创意工坊</span>
-                        </button>
-                        <button class="btn btn-secondary" onclick="toggleUploadSection()">
-                            <span data-i18n="steam.hideUploadSection">隐藏上传区</span>
-                        </button>
-                        <div class="help-text" style="margin-top: 10px; font-size: 12px; color: #666;">
-                            点击"上传"即表示您同意 Steam 创意工坊服务条款，包括创意工坊法律协议：
-                            <a href="https://steamcommunity.com/sharedfiles/workshoplegalagreement" target="_blank" style="color: #44b7fe;">https://steamcommunity.com/sharedfiles/workshoplegalagreement</a>
+
+                        <div id="subscriptions-result">
+                            <!-- 卡片容器 -->
+                            <div id="subscriptions-list" class="cards-container">
+                                <!-- 空状态 -->
+                                <div class="empty-state">
+                                    <p id="loading-text"></p>
+                                    <button class="btn btn-secondary" onclick="loadSubscriptions()"
+                                        id="reload-button"></button>
+                                </div>
+                            </div>
+
+                            <div class="pagination">
+                                <button class="btn btn-secondary" onclick="goToPrevPage()" disabled
+                                    data-i18n="common.prevPage">上一页</button>
+                                <span>第 1 页，共 1 页</span>
+                                <button class="btn btn-secondary" onclick="goToNextPage()" disabled
+                                    data-i18n="common.nextPage">下一页</button>
+                            </div>
                         </div>
                     </div>
                 </div>
-                
-                <div class="section-card">
-                    <div class="section-header">
-                        <h2 data-i18n="steam.localItems">管理本地物品</h2>
-                    </div>
-                    
-                    <!-- 搜索和排序功能区域 -->
-                    <div class="filter-controls">
-                        <div class="filter-group">
-                            <div class="filter-label" data-i18n="steam.search">搜索：</div>
-                            <input type="text" id="search-local-items" class="control-input" placeholder="搜索本地物品..." data-i18n-placeholder="steam.searchLocalItems">
+                <!-- 本地内容标签页 -->
+                <div id="local-items-content" class="tab-content" style="display: none;">
+                    <!-- 上传表单区域 - 默认隐藏 -->
+                    <div class="section-card upload-section" style="display: none;">
+                        <div class="section-header">
+                            <h2 data-i18n="steam.uploadToWorkshop">上传到创意工坊</h2>
                         </div>
-                        <div class="filter-group">
-                            <div class="filter-label" data-i18n="steam.sort.title">排序：</div>
-                            <select id="sort-local-items" class="control-select">
-                                <option value="name_asc" data-i18n="steam.sort.nameAsc">名称（升序）</option>
-                                <option value="name_desc" data-i18n="steam.sort.nameDesc">名称（降序）</option>
-                                <option value="date_asc" data-i18n="steam.sort.createDateAsc">创建日期（升序）</option>
-                                <option value="date_desc" data-i18n="steam.sort.createDateDesc">创建日期（降序）</option>
+                        <div class="info-box">
+                            <p data-i18n="steam.uploadInstructions">
+                                请先在"管理本地物品"区域选择一个未发布的物品，然后点击"准备上传"按钮。内容文件夹路径和预览图片路径将自动填充。</p>
+                        </div>
+
+                        <div id="message-area"></div>
+
+                        <div class="control-group">
+                            <div class="control-label" data-i18n="steam.title">标题 *</div>
+                            <input type="text" id="item-title" class="control-input" placeholder="输入您的创作标题">
+                        </div>
+
+                        <div class="control-group">
+                            <div class="control-label" data-i18n="steam.description">描述</div>
+                            <textarea id="item-description" class="control-input" placeholder="详细描述您的创作内容..."
+                                data-i18n-placeholder="steam.descriptionPlaceholder"></textarea>
+                        </div>
+
+                        <div class="control-group">
+                            <div class="control-label" data-i18n="steam.contentFolderPath">内容文件夹路径 *</div>
+                            <input type="text" id="content-folder" class="control-input" placeholder="从本地物品中获取的内容文件夹路径"
+                                readonly>
+                        </div>
+
+                        <div class="control-group">
+                            <div class="control-label" data-i18n="steam.previewImagePath">预览图片路径 *</div>
+                            <input type="text" id="preview-image" class="control-input" placeholder="从本地物品中获取的预览图片路径"
+                                readonly>
+                            <div class="control-hint" style="color: red; font-size: 14px;"
+                                data-i18n="steam.previewImageSizeHint">提示：预览图片大小需要小于1MB</div>
+                        </div>
+
+                        <div class="control-group">
+                            <div class="control-label" data-i18n="steam.tags">标签</div>
+                            <input type="text" id="item-tags" class="control-input" placeholder="输入标签，按回车添加"
+                                data-i18n-placeholder="steam.tagsPlaceholder">
+                            <div id="tags-container" class="tags-container"></div>
+                        </div>
+
+                        <div class="control-group">
+                            <div class="control-label" data-i18n="steam.visibility">可见性</div>
+                            <select id="visibility" class="control-select">
+                                <option value="public" data-i18n="steam.visibilityPublic">公开</option>
+                                <option value="friends" data-i18n="steam.visibilityFriends">仅好友可见</option>
+                                <option value="private" data-i18n="steam.visibilityPrivate">私有</option>
                             </select>
                         </div>
-                        <div class="filter-group">
-                            <button class="btn btn-primary" onclick="scanLocalItems()" style="min-width: 160px;">
-                                <span data-i18n="steam.scanLocalItems">扫描本地物品</span>
-                            </button>
-                            <button class="btn btn-primary" onclick="toggleSettingsPanel()" style="min-width: 180px;">
-                                <span id="settings-toggle-icon">⚙️</span> <span data-i18n="steam.configurePath">配置路径</span>
-                            </button>
-                        </div>
-                    </div>
-                    
-                    <!-- 路径配置区域 - 可折叠 -->
-                    <div class="settings-container">
-                        
-                        <div id="settings-panel" class="config-section" style="display: none;">
-                            <h3 data-i18n="steam.localModPathConfig">本地mod路径配置</h3>
-                            
-                            <div class="control-group">
-                                <div class="control-label" data-i18n="steam.localModFolder">本地mod文件夹路径</div>
-                                <input type="text" id="default-workshop-folder" class="control-input" data-i18n-placeholder="steam.localModFolder" placeholder="本地mod文件夹路径">
-                                <div class="help-text" data-i18n="steam.defaultPathHint">未指定扫描路径时将使用此默认路径</div>
-                                <div class="help-text success" data-i18n="steam.defaultPathExample">提示：默认路径通常在 我的文档/N.E.K.O/live2d</div>
-                            </div>
-                            
 
-                            
-                            <div class="button-group" style="gap: 10px;">
-                                <button class="btn btn-secondary" onclick="loadDefaultConfig()" data-i18n="steam.loadConfig">加载当前配置</button>
-                                <button class="btn btn-success" onclick="saveDefaultConfig()" data-i18n="steam.saveConfig">保存配置</button>
+                        <div class="control-group">
+                            <div class="checkbox-container">
+                                <input type="checkbox" id="allow-comments" class="control-checkbox" checked>
+                                <label for="allow-comments" class="checkbox-label"
+                                    data-i18n="steam.allowComments">允许评论</label>
+                            </div>
+                        </div>
+
+                        <div class="control-group">
+                            <button class="btn btn-primary" onclick="uploadItem()">
+                                <span data-i18n="steam.uploadToWorkshop">上传到创意工坊</span>
+                            </button>
+                            <button class="btn btn-secondary" onclick="toggleUploadSection()">
+                                <span data-i18n="steam.hideUploadSection">隐藏上传区</span>
+                            </button>
+                            <div class="help-text" style="margin-top: 10px; font-size: 12px; color: #666;">
+                                点击"上传"即表示您同意 Steam 创意工坊服务条款，包括创意工坊法律协议：
+                                <a href="https://steamcommunity.com/sharedfiles/workshoplegalagreement" target="_blank"
+                                    style="color: #44b7fe;">https://steamcommunity.com/sharedfiles/workshoplegalagreement</a>
                             </div>
                         </div>
                     </div>
-                    
-                    <div id="local-items-list" class="cards-container">
-                        <div class="empty-state">
-                            <p data-i18n="steam.emptyStateHint">请输入并扫描一个包含本地文件的文件夹</p>
+
+                    <div class="section-card">
+                        <div class="section-header">
+                            <h2 data-i18n="steam.localItems">管理本地物品</h2>
+                        </div>
+
+                        <!-- 搜索和排序功能区域 -->
+                        <div class="filter-controls">
+                            <div class="filter-group">
+                                <div class="filter-label" data-i18n="steam.search">搜索：</div>
+                                <input type="text" id="search-local-items" class="control-input" placeholder="搜索本地物品..."
+                                    data-i18n-placeholder="steam.searchLocalItems">
+                            </div>
+                            <div class="filter-group">
+                                <div class="filter-label" data-i18n="steam.sort.title">排序：</div>
+                                <select id="sort-local-items" class="control-select">
+                                    <option value="name_asc" data-i18n="steam.sort.nameAsc">名称（升序）</option>
+                                    <option value="name_desc" data-i18n="steam.sort.nameDesc">名称（降序）</option>
+                                    <option value="date_asc" data-i18n="steam.sort.createDateAsc">创建日期（升序）</option>
+                                    <option value="date_desc" data-i18n="steam.sort.createDateDesc">创建日期（降序）</option>
+                                </select>
+                            </div>
+                            <div class="filter-group">
+                                <button class="btn btn-primary" onclick="scanLocalItems()" style="min-width: 160px;">
+                                    <span data-i18n="steam.scanLocalItems">扫描本地物品</span>
+                                </button>
+                                <button class="btn btn-primary" onclick="toggleSettingsPanel()"
+                                    style="min-width: 180px;">
+                                    <span id="settings-toggle-icon">⚙️</span> <span
+                                        data-i18n="steam.configurePath">配置路径</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- 路径配置区域 - 可折叠 -->
+                        <div class="settings-container">
+
+                            <div id="settings-panel" class="config-section" style="display: none;">
+                                <h3 data-i18n="steam.localModPathConfig">本地mod路径配置</h3>
+
+                                <div class="control-group">
+                                    <div class="control-label" data-i18n="steam.localModFolder">本地mod文件夹路径</div>
+                                    <input type="text" id="default-workshop-folder" class="control-input"
+                                        data-i18n-placeholder="steam.localModFolder" placeholder="本地mod文件夹路径">
+                                    <div class="help-text" data-i18n="steam.defaultPathHint">未指定扫描路径时将使用此默认路径</div>
+                                    <div class="help-text success" data-i18n="steam.defaultPathExample">提示：默认路径通常在
+                                        我的文档/N.E.K.O/live2d</div>
+                                </div>
+
+
+
+                                <div class="button-group" style="gap: 10px;">
+                                    <button class="btn btn-secondary" onclick="loadDefaultConfig()"
+                                        data-i18n="steam.loadConfig">加载当前配置</button>
+                                    <button class="btn btn-success" onclick="saveDefaultConfig()"
+                                        data-i18n="steam.saveConfig">保存配置</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="local-items-list" class="cards-container">
+                            <div class="empty-state">
+                                <p data-i18n="steam.emptyStateHint">请输入并扫描一个包含本地文件的文件夹</p>
+                            </div>
                         </div>
                     </div>
                 </div>
             </div>
-        </div>
-        
+
             <!-- 上传内容标签页 -->
             <div id="upload-content" class="tab-content" style="display: none;">
                 <div class="section-card upload-section">
                     <div class="section-header">
                         <h2 data-i18n="steam.uploadToWorkshop">上传到创意工坊</h2>
                     </div>
-                <div class="info-box">
-                    <p data-i18n="steam.uploadTip">💡 您可以在"管理本地物品"中选择物品自动填充路径，也可以直接手动输入内容文件夹和预览图片的完整路径。</p>
+                    <div class="info-box">
+                        <p data-i18n="steam.uploadTip">💡 您可以在"管理本地物品"中选择物品自动填充路径，也可以直接手动输入内容文件夹和预览图片的完整路径。</p>
+                    </div>
+
+                    <div id="message-area"></div>
+
+                    <div class="control-group">
+                        <div class="control-label" data-i18n="steam.title">标题 *</div>
+                        <input type="text" id="item-title" class="control-input" placeholder="输入您的创作标题"
+                            data-i18n-placeholder="steam.titlePlaceholder">
+                    </div>
+
+                    <div class="control-group">
+                        <div class="control-label" data-i18n="steam.description">描述</div>
+                        <textarea id="item-description" class="control-input" placeholder="详细描述您的创作内容..."
+                            data-i18n-placeholder="steam.descriptionPlaceholder"></textarea>
+                    </div>
+
+                    <div class="control-group">
+                        <div class="control-label" data-i18n="steam.contentFolderPath">内容文件夹路径 *</div>
+                        <input type="text" id="content-folder" class="control-input" placeholder="从本地物品中获取的内容文件夹路径"
+                            readonly data-i18n-placeholder="steam.contentFolderPlaceholder">
+                    </div>
+
+                    <div class="control-group">
+                        <div class="control-label" data-i18n="steam.previewImagePath">预览图片路径 *</div>
+                        <input type="text" id="preview-image" class="control-input" placeholder="从本地物品中获取的预览图片路径"
+                            readonly data-i18n-placeholder="steam.previewImagePlaceholder">
+                        <div class="control-hint" style="color: red; font-size: 14px;"
+                            data-i18n="steam.previewImageSizeHint">提示：预览图片大小需要小于1MB</div>
+                    </div>
+
+                    <div class="control-group">
+                        <div class="control-label" data-i18n="steam.tags">标签</div>
+                        <input type="text" id="item-tags" class="control-input" placeholder="输入标签，按回车添加"
+                            data-i18n-placeholder="steam.tagsPlaceholder">
+                        <div id="tags-container" class="tags-container"></div>
+                    </div>
+
+                    <div class="control-group checkbox">
+                        <div class="checkbox-label">允许评论</div>
+                        <input type="checkbox" id="allow-comments" checked>
+                    </div>
+
+                    <div class="button-group">
+                        <button class="btn btn-primary" onclick="uploadItem()">上传到创意工坊</button>
+                    </div>
+                    <div class="help-text" style="margin-top: 10px; font-size: 12px; color: #666;">
+                        点击"上传"即表示您同意 Steam 创意工坊服务条款，包括创意工坊法律协议：
+                        <a href="https://steamcommunity.com/sharedfiles/workshoplegalagreement" target="_blank"
+                            style="color: #44b7fe;">https://steamcommunity.com/sharedfiles/workshoplegalagreement</a>
+                    </div>
                 </div>
-                
-                <div id="message-area"></div>
-                
-                <div class="control-group">
-                    <div class="control-label" data-i18n="steam.title">标题 *</div>
-                    <input type="text" id="item-title" class="control-input" placeholder="输入您的创作标题" data-i18n-placeholder="steam.titlePlaceholder">
-                </div>
-                
-                <div class="control-group">
-                    <div class="control-label" data-i18n="steam.description">描述</div>
-                    <textarea id="item-description" class="control-input" placeholder="详细描述您的创作内容..." data-i18n-placeholder="steam.descriptionPlaceholder"></textarea>
-                </div>
-                
-                <div class="control-group">
-                    <div class="control-label" data-i18n="steam.contentFolderPath">内容文件夹路径 *</div>
-                    <input type="text" id="content-folder" class="control-input" placeholder="从本地物品中获取的内容文件夹路径" readonly data-i18n-placeholder="steam.contentFolderPlaceholder">
-                </div>
-                
-                <div class="control-group">
-                    <div class="control-label" data-i18n="steam.previewImagePath">预览图片路径 *</div>
-                    <input type="text" id="preview-image" class="control-input" placeholder="从本地物品中获取的预览图片路径" readonly data-i18n-placeholder="steam.previewImagePlaceholder">
-                    <div class="control-hint" style="color: red; font-size: 14px;" data-i18n="steam.previewImageSizeHint">提示：预览图片大小需要小于1MB</div>
-                </div>
-                
-                <div class="control-group">
-                    <div class="control-label" data-i18n="steam.tags">标签</div>
-                    <input type="text" id="item-tags" class="control-input" placeholder="输入标签，按回车添加" data-i18n-placeholder="steam.tagsPlaceholder">
-                    <div id="tags-container" class="tags-container"></div>
-                </div>
-                
-                <div class="control-group checkbox">
-                    <div class="checkbox-label">允许评论</div>
-                    <input type="checkbox" id="allow-comments" checked>
-                </div>
-                
-                <div class="button-group">
-                    <button class="btn btn-primary" onclick="uploadItem()">上传到创意工坊</button>
-                </div>
-                <div class="help-text" style="margin-top: 10px; font-size: 12px; color: #666;">
-                    点击"上传"即表示您同意 Steam 创意工坊服务条款，包括创意工坊法律协议：
-                    <a href="https://steamcommunity.com/sharedfiles/workshoplegalagreement" target="_blank" style="color: #44b7fe;">https://steamcommunity.com/sharedfiles/workshoplegalagreement</a>
-                </div>
-            </div>
             </div>
         </div>
     </div>
     </div>
-    
+
     <!-- 物品详情模态框 -->
     <div id="itemDetailsModal" class="modal" onclick="closeModalOnOutsideClick(event)">
         <div class="modal-content" onclick="event.stopPropagation()">
@@ -1679,8 +1726,8 @@
                 <div id="itemDetailContent" class="item-detail-container">
                     <!-- 物品详情内容将通过JavaScript动态加载 -->
                     <div class="empty-state">
-                            <p data-i18n="steam.loadingItemDetails">正在加载物品详情...</p>
-                        </div>
+                        <p data-i18n="steam.loadingItemDetails">正在加载物品详情...</p>
+                    </div>
                 </div>
             </div>
             <div class="modal-footer">
@@ -1705,19 +1752,19 @@
                 }
             }
         }
-        
+
         // 本地物品区域切换功能
         function toggleLocalItemsSection() {
             const localItemsSection = document.getElementById('local-items');
             const toggleButton = document.getElementById('local-items-toggle-button');
-            
+
             // 确保本地物品内容标签页可见
             const localItemsContent = document.getElementById('local-items-content');
             if (localItemsContent && localItemsContent.style.display === 'none') {
                 switchTab('local-items-content');
                 return;
             }
-            
+
             // 切换本地物品区域的显示/隐藏
             if (localItemsSection && localItemsSection.style.display === 'none') {
                 // 先扫描本地物品
@@ -1735,49 +1782,49 @@
                 }
             }
         }
-        
+
         // 标签页切换功能
         function switchTab(tabId) {
-            
+
             // 隐藏所有标签内容
             const tabContents = document.querySelectorAll('.tab-content');
             tabContents.forEach(content => {
                 content.style.display = 'none';
             });
-            
+
             // 移除所有标签按钮的活动状态
             const tabButtons = document.querySelectorAll('.tab');
             tabButtons.forEach(button => {
                 button.classList.remove('active');
             });
-            
+
             // 为当前点击的标签按钮添加活动状态
             if (event && event.target) {
                 const clickedButton = event.target;
                 clickedButton.classList.add('active');
             } else {
                 // 非点击事件调用时，通过tabId找到对应的标签按钮
-                const matchingTab = Array.from(tabButtons).find(btn => 
+                const matchingTab = Array.from(tabButtons).find(btn =>
                     btn.getAttribute('onclick') && btn.getAttribute('onclick').includes(tabId)
                 );
                 if (matchingTab) {
                     matchingTab.classList.add('active');
                 }
             }
-            
+
             // 显示选中的标签内容
             const selectedTab = document.getElementById(tabId);
             if (selectedTab) {
                 selectedTab.style.display = 'block';
             }
-            
+
             // 设置选中的标签按钮为活动状态（兼容旧的标签按钮）
             tabButtons.forEach(button => {
                 if (button.getAttribute('onclick') && button.getAttribute('onclick').includes(tabId)) {
                     button.classList.add('active');
                 }
             });
-            
+
             // 设置侧边栏中对应的按钮为活动状态
             const sidebarButtons = document.querySelectorAll('.sidebar-tab-button');
             if (sidebarButtons.length > 0) {
@@ -1787,7 +1834,7 @@
                     }
                 });
             }
-            
+
             // 如果切换到本地内容，确保本地物品列表可见
             if (tabId === 'local-items-content') {
                 const localItemsSection = document.getElementById('local-items');
@@ -1800,7 +1847,7 @@
                         toggleButton.textContent = window.t ? window.t('steam.localItemsHide') : '隐藏本地物品';
                     }
                 }
-                
+
                 // 确保上传表单区域初始隐藏
                 const uploadFormSection = document.querySelector('.upload-section');
                 if (uploadFormSection) {
@@ -1808,55 +1855,55 @@
                 }
             }
         }
-        
+
         // 提示：由于浏览器安全限制，浏览按钮仅提供路径输入提示
 
         // 加载默认配置
         function loadDefaultConfig() {
             showMessage(window.t ? window.t('steam.loadingConfig') : '正在加载配置...', 'info');
-            
+
             fetch('/api/steam/workshop/config', {
                 method: 'GET',
                 headers: {
                     'Content-Type': 'application/json'
                 }
             })
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-                return response.json();
-            })
-            .then(data => {
-                if (data.success) {
-                    // 填充表单
-                    const defaultFolder = data.config.user_mod_folder || data.config.default_workshop_folder || '';
-                    
-                    document.getElementById('default-workshop-folder').value = defaultFolder;
-                    
-                    showMessage(window.t ? window.t('steam.configLoadSuccess') : '配置加载成功', 'success');
-                } else {
-                    showMessage(window.t ? window.t('steam.configLoadFailed', {error: data.error || (window.t ? window.t('common.unknownError') : '未知错误')}) : `配置加载失败: ${data.error || '未知错误'}`, 'error');
-                }
-            })
-            .catch(error => {
-                console.error('加载配置时出错:', error);
-                showMessage(window.t ? window.t('steam.configLoadError', {error: error.message}) : `配置加载错误: ${error.message}`, 'error');
-            });
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.success) {
+                        // 填充表单
+                        const defaultFolder = data.config.user_mod_folder || data.config.default_workshop_folder || '';
+
+                        document.getElementById('default-workshop-folder').value = defaultFolder;
+
+                        showMessage(window.t ? window.t('steam.configLoadSuccess') : '配置加载成功', 'success');
+                    } else {
+                        showMessage(window.t ? window.t('steam.configLoadFailed', { error: data.error || (window.t ? window.t('common.unknownError') : '未知错误') }) : `配置加载失败: ${data.error || '未知错误'}`, 'error');
+                    }
+                })
+                .catch(error => {
+                    console.error('加载配置时出错:', error);
+                    showMessage(window.t ? window.t('steam.configLoadError', { error: error.message }) : `配置加载错误: ${error.message}`, 'error');
+                });
         }
-        
+
         // 保存默认配置
         function saveDefaultConfig() {
             const defaultFolder = document.getElementById('default-workshop-folder').value.trim();
-            
+
             // 验证默认文件夹路径格式（如果提供了）
             if (defaultFolder && defaultFolder.length < 3) {
                 showMessage(window.t ? window.t('steam.invalidFolderPath') : '无效的文件夹路径', 'error');
                 return;
             }
-            
+
             showMessage(window.t ? window.t('steam.savingConfig') : '正在保存配置...', 'info');
-            
+
             fetch('/api/steam/workshop/config', {
                 method: 'POST',
                 headers: {
@@ -1866,44 +1913,44 @@
                     user_mod_folder: defaultFolder
                 })
             })
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-                return response.json();
-            })
-            .then(data => {
-                if (data.success) {
-                    showMessage(window.t ? window.t('steam.configSaveSuccess') : '配置保存成功', 'success');
-                } else {
-                    showMessage(window.t ? window.t('steam.configSaveFailed', {error: data.error || (window.t ? window.t('common.unknownError') : '未知错误')}) : `配置保存失败: ${data.error || '未知错误'}`, 'error');
-                }
-            })
-            .catch(error => {
-                console.error('保存配置时出错:', error);
-                showMessage(window.t ? window.t('steam.configSaveError', {error: error.message}) : `配置保存错误: ${error.message}`, 'error');
-            });
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.success) {
+                        showMessage(window.t ? window.t('steam.configSaveSuccess') : '配置保存成功', 'success');
+                    } else {
+                        showMessage(window.t ? window.t('steam.configSaveFailed', { error: data.error || (window.t ? window.t('common.unknownError') : '未知错误') }) : `配置保存失败: ${data.error || '未知错误'}`, 'error');
+                    }
+                })
+                .catch(error => {
+                    console.error('保存配置时出错:', error);
+                    showMessage(window.t ? window.t('steam.configSaveError', { error: error.message }) : `配置保存错误: ${error.message}`, 'error');
+                });
         }
-        
+
         // 切换设置面板的显示/隐藏
         function toggleSettingsPanel() {
             const panel = document.getElementById('settings-panel');
             const icon = document.getElementById('settings-toggle-icon');
             // 使用icon的父元素作为toggleButton，因为按钮的类已经更改
             const toggleButton = icon.parentElement;
-            
+
             if (panel.style.display === 'none') {
                 // 显示面板，添加简单动画效果
                 panel.style.display = 'block';
                 panel.style.opacity = '0';
                 panel.style.transition = 'opacity 0.3s ease-in-out';
-                
+
                 // 强制重绘
                 void panel.offsetWidth;
-                
+
                 // 设置透明度为1，触发过渡动画
                 panel.style.opacity = '1';
-                
+
                 // 更新按钮文字和图标
                 icon.textContent = '▼';
                 toggleButton.classList.remove('btn-secondary');
@@ -1912,12 +1959,12 @@
                 // 隐藏面板，添加简单动画效果
                 panel.style.opacity = '0';
                 panel.style.transition = 'opacity 0.3s ease-in-out';
-                
+
                 // 动画结束后隐藏
                 setTimeout(() => {
                     panel.style.display = 'none';
                 }, 300);
-                
+
                 // 更新按钮文字和图标
                 icon.textContent = '⚙️';
                 toggleButton.classList.remove('btn-primary');
@@ -1925,16 +1972,16 @@
             }
         }
 
-        
-        
+
+
         // 扫描本地物品 - 现在仅使用默认路径
         function scanLocalItems() {
             console.log('开始扫描本地物品...');
-            
+
             // 显示扫描开始提示
             const startMessage = showMessage(window.t ? window.t('steam.scanningWorkshop') : '正在扫描Workshop物品...', 'info');
             console.log('已显示扫描开始提示');
-            
+
             // 调用API扫描本地文件夹中的物品
             fetch('/api/steam/workshop/local-items/scan', {
                 method: 'POST',
@@ -1943,31 +1990,31 @@
                 },
                 body: JSON.stringify({})
             })
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error(`HTTP错误，状态码: ${response.status}`);
-                }
-                return response.json();
-            })
-            .then(data => {
-                console.log('扫描完成，数据返回:', data);
-                
-                if (data.success) {
-                    // 获取本地物品列表
-                    const localItems = data.local_items || [];
-                    const publishedItems = data.published_items || [];
-                    
-                    // 更新UI显示本地物品
-                    displayLocalItems(localItems, publishedItems);
-                    
-                    // 直接显示扫描完成提示，使用简单清晰的消息
-                    const successMessage = window.t ? window.t('steam.scanComplete', {count: localItems.length}) : `扫描完成，共找到 ${localItems.length} 个物品`;
-console.log('准备显示成功提示:', successMessage);
-                    
-                    // 使用独立的提示元素，确保与开始提示分开
-                    const messageElement = document.createElement('div');
-                    messageElement.innerHTML = successMessage;
-                    messageElement.style.cssText = `
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP错误，状态码: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    console.log('扫描完成，数据返回:', data);
+
+                    if (data.success) {
+                        // 获取本地物品列表
+                        const localItems = data.local_items || [];
+                        const publishedItems = data.published_items || [];
+
+                        // 更新UI显示本地物品
+                        displayLocalItems(localItems, publishedItems);
+
+                        // 直接显示扫描完成提示，使用简单清晰的消息
+                        const successMessage = window.t ? window.t('steam.scanComplete', { count: localItems.length }) : `扫描完成，共找到 ${localItems.length} 个物品`;
+                        console.log('准备显示成功提示:', successMessage);
+
+                        // 使用独立的提示元素，确保与开始提示分开
+                        const messageElement = document.createElement('div');
+                        messageElement.innerHTML = successMessage;
+                        messageElement.style.cssText = `
                         position: fixed;
                         top: 60px;
                         right: 20px;
@@ -1982,134 +2029,134 @@ console.log('准备显示成功提示:', successMessage);
                         transform: translateY(-10px);
                         transition: opacity 0.3s ease, transform 0.3s ease;
                     `;
-                    
-                    document.body.appendChild(messageElement);
-                    
-                    // 触发动画
-                    setTimeout(() => {
-                        messageElement.style.opacity = '1';
-                        messageElement.style.transform = 'translateY(0)';
-                    }, 10);
-                    
-                    // 5秒后自动消失
-                    setTimeout(() => {
-                        messageElement.style.opacity = '0';
-                        messageElement.style.transform = 'translateY(-10px)';
+
+                        document.body.appendChild(messageElement);
+
+                        // 触发动画
                         setTimeout(() => {
-                            messageElement.remove();
-                        }, 300);
-                    }, 3000);
-                    
-                    console.log('成功提示已显示');
-                } else {
-                    const errorMessage = window.t ? window.t('steam.scanFailed', {error: data.error || (window.t ? window.t('common.unknownError') : '未知错误')}) : `扫描失败: ${data.error || '未知错误'}`;
-showMessage(errorMessage, 'error', 3000);
-                }
-            })
-            .catch(error => {
-                console.error('扫描本地物品失败:', error);
-                showMessage(window.t ? window.t('steam.scanError', {error: error.message}) : `扫描时出错: ${error.message}`, 'error', 3000);
-            });
+                            messageElement.style.opacity = '1';
+                            messageElement.style.transform = 'translateY(0)';
+                        }, 10);
+
+                        // 5秒后自动消失
+                        setTimeout(() => {
+                            messageElement.style.opacity = '0';
+                            messageElement.style.transform = 'translateY(-10px)';
+                            setTimeout(() => {
+                                messageElement.remove();
+                            }, 300);
+                        }, 3000);
+
+                        console.log('成功提示已显示');
+                    } else {
+                        const errorMessage = window.t ? window.t('steam.scanFailed', { error: data.error || (window.t ? window.t('common.unknownError') : '未知错误') }) : `扫描失败: ${data.error || '未知错误'}`;
+                        showMessage(errorMessage, 'error', 3000);
+                    }
+                })
+                .catch(error => {
+                    console.error('扫描本地物品失败:', error);
+                    showMessage(window.t ? window.t('steam.scanError', { error: error.message }) : `扫描时出错: ${error.message}`, 'error', 3000);
+                });
         }
-        
+
         // 检查文件是否存在
-            async function doesFileExist(filePath) {
-                try {
-                    const response = await fetch(`/api/file-exists?path=${encodeURIComponent(filePath)}`);
-                    const result = await response.json();
-                    return result.exists;
-                } catch (error) {
-                    // 如果API不可用，返回false
-                    return false;
-                }
-            }
-            
-            // 查找预览图片
-            async function findPreviewImage(folderPath) {
-                try {
-                    // 尝试查找常见的预览图片文件
-                    const commonImageNames = ['preview.jpg', 'preview.png', 'thumbnail.jpg', 'thumbnail.png', 'icon.jpg', 'icon.png', 'header.jpg', 'header.png'];
-                    
-                    for (const imageName of commonImageNames) {
-                        const imagePath = `${folderPath}/${imageName}`;
-                        if (await doesFileExist(imagePath)) {
-                            return imagePath;
-                        }
-                    }
-                    
-                    // 如果找不到常见预览图，尝试使用API获取文件夹中的第一个图片文件
-                    const response = await fetch(`/api/find-first-image?folder=${encodeURIComponent(folderPath)}`);
-                    const result = await response.json();
-                    
-                    if (result.success && result.imagePath) {
-                        return result.imagePath;
-                    }
-                } catch (error) {
-                    console.error('查找预览图片失败:', error);
-                }
-                
-                return null;
-            }
-            
-            // 创意工坊物品对比
-            async function compareLocalWithWorkshop(localItem) {
-                try {
-                    // 获取已发布的创意工坊物品
-                    const workshopItems = await getWorkshopItems();
-                    
-                    // 比较名称
-                    for (const workshopItem of workshopItems) {
-                        if (areNamesSimilar(localItem.name, workshopItem.title)) {
-                            return {
-                                exists: true,
-                                item: workshopItem,
-                                reason: '名称相似'
-                            };
-                        }
-                    }
-                } catch (error) {
-                    console.error('创意工坊对比失败:', error);
-                }
-                
-                return { exists: false };
-            }
-            
-            // 检查名称是否相似
-            function areNamesSimilar(name1, name2) {
-                // 简单的相似度检查，可以根据需要改进
-                name1 = name1.toLowerCase().trim();
-                name2 = name2.toLowerCase().trim();
-                
-                // 如果完全相同，直接返回true
-                if (name1 === name2) return true;
-                
-                // 如果一个名称包含另一个名称
-                if (name1.includes(name2) || name2.includes(name1)) return true;
-                
-                // 计算编辑距离（简单版本）
-                if (Math.abs(name1.length - name2.length) > 3) return false;
-                
+        async function doesFileExist(filePath) {
+            try {
+                const response = await fetch(`/api/file-exists?path=${encodeURIComponent(filePath)}`);
+                const result = await response.json();
+                return result.exists;
+            } catch (error) {
+                // 如果API不可用，返回false
                 return false;
             }
-            
-            // 获取创意工坊物品列表
-            async function getWorkshopItems() {
-                try {
-                    const response = await fetch('/api/steam/workshop/subscribed-items');
-                    const data = await response.json();
-                    if (data.success) {
-                        return data.items;
+        }
+
+        // 查找预览图片
+        async function findPreviewImage(folderPath) {
+            try {
+                // 尝试查找常见的预览图片文件
+                const commonImageNames = ['preview.jpg', 'preview.png', 'thumbnail.jpg', 'thumbnail.png', 'icon.jpg', 'icon.png', 'header.jpg', 'header.png'];
+
+                for (const imageName of commonImageNames) {
+                    const imagePath = `${folderPath}/${imageName}`;
+                    if (await doesFileExist(imagePath)) {
+                        return imagePath;
                     }
-                } catch (error) {
-                    console.error('获取创意工坊物品失败:', error);
                 }
-                return [];
+
+                // 如果找不到常见预览图，尝试使用API获取文件夹中的第一个图片文件
+                const response = await fetch(`/api/find-first-image?folder=${encodeURIComponent(folderPath)}`);
+                const result = await response.json();
+
+                if (result.success && result.imagePath) {
+                    return result.imagePath;
+                }
+            } catch (error) {
+                console.error('查找预览图片失败:', error);
             }
-            
-            // 显示本地物品卡片
-            function displayLocalItems(localItems, publishedItems) {
+
+            return null;
+        }
+
+        // 创意工坊物品对比
+        async function compareLocalWithWorkshop(localItem) {
+            try {
+                // 获取已发布的创意工坊物品
+                const workshopItems = await getWorkshopItems();
+
+                // 比较名称
+                for (const workshopItem of workshopItems) {
+                    if (areNamesSimilar(localItem.name, workshopItem.title)) {
+                        return {
+                            exists: true,
+                            item: workshopItem,
+                            reason: '名称相似'
+                        };
+                    }
+                }
+            } catch (error) {
+                console.error('创意工坊对比失败:', error);
+            }
+
+            return { exists: false };
+        }
+
+        // 检查名称是否相似
+        function areNamesSimilar(name1, name2) {
+            // 简单的相似度检查，可以根据需要改进
+            name1 = name1.toLowerCase().trim();
+            name2 = name2.toLowerCase().trim();
+
+            // 如果完全相同，直接返回true
+            if (name1 === name2) return true;
+
+            // 如果一个名称包含另一个名称
+            if (name1.includes(name2) || name2.includes(name1)) return true;
+
+            // 计算编辑距离（简单版本）
+            if (Math.abs(name1.length - name2.length) > 3) return false;
+
+            return false;
+        }
+
+        // 获取创意工坊物品列表
+        async function getWorkshopItems() {
+            try {
+                const response = await fetch('/api/steam/workshop/subscribed-items');
+                const data = await response.json();
+                if (data.success) {
+                    return data.items;
+                }
+            } catch (error) {
+                console.error('获取创意工坊物品失败:', error);
+            }
+            return [];
+        }
+
+        // 显示本地物品卡片
+        function displayLocalItems(localItems, publishedItems) {
             const itemsList = document.getElementById('local-items-list');
-            
+
             if (localItems.length === 0) {
                 itemsList.innerHTML = `
                     <div class="empty-state">
@@ -2118,30 +2165,30 @@ showMessage(errorMessage, 'error', 3000);
                 `;
                 return;
             }
-            
+
             // 创建物品卡片HTML
             itemsList.innerHTML = localItems.map(item => {
                 // 检查该物品是否已发布到创意工坊
-                const isPublished = publishedItems.some(published => 
-                    published.localId === item.id || 
-                    (published.title && item.name && 
-                     published.title.toLowerCase() === item.name.toLowerCase())
+                const isPublished = publishedItems.some(published =>
+                    published.localId === item.id ||
+                    (published.title && item.name &&
+                        published.title.toLowerCase() === item.name.toLowerCase())
                 );
-                
+
                 // 确定状态类和文本
                 let statusClass = 'status-error';
                 let statusText = window.t ? window.t('steam.status.unpublished') : '未发布';
-                
+
                 if (isPublished) {
                     statusClass = 'status-published';
                     statusText = window.t ? window.t('steam.status.published') : '已发布';
                 }
-                
+
                 // 生成预览图片URL或使用默认图片
                 // 使用图片代理API访问本地图片，避免浏览器安全限制
                 // 确保Windows路径中的反斜杠正确编码
-                const previewUrl = item.previewImage ? `/api/proxy-image?image_path=${encodeURIComponent(item.previewImage.replace(/\\/g, '/'))}` : '../static/icons/Steam_icon_logo.png';
-                
+                const previewUrl = item.previewImage ? `/api/steam/proxy-image?image_path=${encodeURIComponent(item.previewImage.replace(/\\/g, '/'))}` : '../static/icons/Steam_icon_logo.png';
+
                 // 生成卡片HTML，对所有用户输入进行转义以防止XSS攻击
                 // 添加data-item-path属性用于后续检查上传标记文件
                 return `
@@ -2170,16 +2217,16 @@ showMessage(errorMessage, 'error', 3000);
                     </div>
                 `;
             }).join('');
-            
+
             // 生成卡片后，检查每个物品的上传标记文件状态
             checkUploadStatusForLocalItems();
         }
-        
+
         // 检查本地物品的上传标记文件状态
         function checkUploadStatusForLocalItems() {
             // 获取所有物品卡片
             const itemCards = document.querySelectorAll('.workshop-card');
-            
+
             itemCards.forEach(card => {
                 const itemPath = card.getAttribute('data-item-path');
                 if (itemPath) {
@@ -2199,7 +2246,7 @@ showMessage(errorMessage, 'error', 3000);
                                     statusBadge.className = 'status-badge status-published';
                                     statusBadge.textContent = window.t ? window.t('steam.status.published') : '已发布';
                                 }
-                                
+
                                 // 更新上传按钮状态为已发布
                                 const actionButton = card.querySelector('.card-actions button');
                                 if (actionButton) {
@@ -2215,7 +2262,7 @@ showMessage(errorMessage, 'error', 3000);
                 }
             });
         }
-        
+
         // 准备物品上传
         function prepareItemForUpload(itemId, folderPath) {
             // 确保路径格式一致（将Windows反斜杠转换为正斜杠以便正确编码）
@@ -2231,30 +2278,30 @@ showMessage(errorMessage, 'error', 3000);
                 .then(data => {
                     if (data.success) {
                         const item = data.item;
-                        
+
                         // 填充上传表单
                         document.getElementById('item-title').value = item.name || '';
                         document.getElementById('content-folder').value = item.path || '';
-                        
+
                         // 如果有预览图片，填充预览图片路径
                         if (item.previewImage) {
                             document.getElementById('preview-image').value = item.previewImage;
                         }
-                        
+
                         // 切换到上传区域
                         toggleUploadSection();
-                        
+
                         showMessage(window.t ? window.t('steam.itemDetailsLoaded') : '物品详情加载成功', 'success');
                     } else {
-                        showMessage(window.t ? window.t('steam.itemDetailsFailed', {error: data.error || (window.t ? window.t('common.unknownError') : '未知错误')}) : `物品详情加载失败: ${data.error || '未知错误'}`, 'error');
+                        showMessage(window.t ? window.t('steam.itemDetailsFailed', { error: data.error || (window.t ? window.t('common.unknownError') : '未知错误') }) : `物品详情加载失败: ${data.error || '未知错误'}`, 'error');
                     }
                 })
                 .catch(error => {
                     console.error('准备上传失败:', error);
-                    showMessage(window.t ? window.t('steam.prepareUploadError', {error: error.message}) : `准备上传出错: ${error.message}`, 'error');
+                    showMessage(window.t ? window.t('steam.prepareUploadError', { error: error.message }) : `准备上传出错: ${error.message}`, 'error');
                 });
         }
-        
+
         // 快速上传物品
         async function quickUploadItem(event, itemId, folderPath) {
             let button = null;
@@ -2265,26 +2312,26 @@ showMessage(errorMessage, 'error', 3000);
                     button.disabled = true;
                     button.innerHTML = '<i class="fa fa-spinner fa-spin"></i> 上传中...';
                 }
-                
+
                 // 显示路径验证通知
-                showMessage(window.t ? window.t('steam.validatingFolder', {path: folderPath}) : `正在验证文件夹: ${folderPath}`, 'info');
-                
+                showMessage(window.t ? window.t('steam.validatingFolder', { path: folderPath }) : `正在验证文件夹: ${folderPath}`, 'info');
+
                 // 增强的路径规范化，支持Windows和其他系统
                 const normalizedPath = folderPath.replace(/\\/g, '/');
-                
+
                 // 调用API获取物品详情，这里会进行服务器端路径验证
                 const itemResponse = await fetch(`/api/steam/workshop/local-items/${itemId}?folder_path=${encodeURIComponent(normalizedPath)}`);
                 if (!itemResponse.ok) {
                     throw new Error(`HTTP错误，状态码: ${itemResponse.status}`);
                 }
-                
+
                 const itemData = await itemResponse.json();
                 if (!itemData.success) {
                     throw new Error(`获取物品详情失败: ${itemData.error || '未知错误'}`);
                 }
-                
+
                 const item = itemData.item;
-                
+
                 // 检查预览图片是否存在，如果不存在则尝试查找
                 let previewImage = item.previewImage;
                 if (!previewImage || !await doesFileExist(previewImage)) {
@@ -2293,12 +2340,12 @@ showMessage(errorMessage, 'error', 3000);
                         showMessage(window.t ? window.t('steam.previewImageNotFound') : '未找到预览图片', 'warning');
                     }
                 }
-                
+
                 // 确保预览图片路径格式一致
                 if (previewImage) {
                     previewImage = previewImage.replace(/\\/g, '/');
                 }
-                
+
                 // 构建快速上传数据
                 const uploadData = {
                     title: item.name || '未命名物品',
@@ -2309,7 +2356,7 @@ showMessage(errorMessage, 'error', 3000);
                     tags: item.tags || ['模组'],
                     allow_comments: true
                 };
-                
+
                 // 发送API请求
                 const publishResponse = await fetch('/api/steam/workshop/publish', {
                     method: 'POST',
@@ -2318,21 +2365,21 @@ showMessage(errorMessage, 'error', 3000);
                     },
                     body: JSON.stringify(uploadData)
                 });
-                
+
                 if (!publishResponse.ok) {
                     throw new Error(`HTTP错误，状态码: ${publishResponse.status}`);
                 }
-                
+
                 const publishData = await publishResponse.json();
                 if (publishData.success) {
-                    showMessage(window.t ? window.t('steam.quickUploadSuccess', {id: publishData.published_file_id}) : `快速上传成功！ID: ${publishData.published_file_id}`, 'success');
-                    
+                    showMessage(window.t ? window.t('steam.quickUploadSuccess', { id: publishData.published_file_id }) : `快速上传成功！ID: ${publishData.published_file_id}`, 'success');
+
                     // 更新本地数据缓存
                     if (item.publishDate) {
                         item.publishDate = new Date();
                     }
                     item.publishedFileId = publishData.published_file_id;
-                    
+
                     // 重新扫描以更新状态
                     setTimeout(() => {
                         scanLocalItems();
@@ -2341,7 +2388,7 @@ showMessage(errorMessage, 'error', 3000);
                     throw new Error(`发布失败: ${publishData.error || '未知错误'}`);
                 }
             } catch (error) {
-                showMessage(window.t ? window.t('steam.uploadFailed', {error: error.message}) : `上传失败: ${error.message}`, 'error');
+                showMessage(window.t ? window.t('steam.uploadFailed', { error: error.message }) : `上传失败: ${error.message}`, 'error');
             } finally {
                 // 恢复按钮状态
                 if (button) {
@@ -2350,7 +2397,7 @@ showMessage(errorMessage, 'error', 3000);
                 }
             }
         }
-        
+
         // 格式化日期
         /* 注释掉不完整的formatDate版本 */
         /*
@@ -2361,20 +2408,20 @@ showMessage(errorMessage, 'error', 3000);
             return date.toLocaleDateString();
         }
         */
-        
+
         // 添加完整版本的formatDate函数（包含日期和时间）
         function formatDate(timestamp) {
             if (!timestamp) return '未知';
-            
+
             const date = new Date(timestamp);
             // 使用toLocaleString同时显示日期和时间
             return date.toLocaleString();
         }
-        
+
         // 文件路径选择辅助功能
         function validatePathInput(elementId) {
             const element = document.getElementById(elementId);
-            element.addEventListener('blur', function() {
+            element.addEventListener('blur', function () {
                 const path = this.value.trim();
                 if (path && path.includes('\\\\')) {
                     // 将双反斜杠替换为单反斜杠，Windows路径格式
@@ -2382,15 +2429,15 @@ showMessage(errorMessage, 'error', 3000);
                 }
             });
         }
-        
+
         // 为路径输入框添加验证
         validatePathInput('content-folder');
         validatePathInput('preview-image');
-        
+
         // 标签管理功能
         const tagInput = document.getElementById('item-tags');
         const tagsContainer = document.getElementById('tags-container');
-        
+
         tagInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter' && tagInput.value.trim() !== '') {
                 e.preventDefault();
@@ -2398,7 +2445,7 @@ showMessage(errorMessage, 'error', 3000);
                 tagInput.value = '';
             }
         });
-        
+
         function addTag(tagText) {
             // 获取标签容器元素
             const tagsContainer = document.getElementById('tags-container');
@@ -2406,32 +2453,32 @@ showMessage(errorMessage, 'error', 3000);
                 console.error('Tags container not found');
                 return;
             }
-            
+
             // 检查是否已存在相同标签
-            const existingTags = Array.from(tagsContainer.querySelectorAll('.tag')).map(tag => 
+            const existingTags = Array.from(tagsContainer.querySelectorAll('.tag')).map(tag =>
                 tag.textContent.replace('×', '').trim()
             );
-            
+
             if (existingTags.includes(tagText)) {
                 showMessage(window.t ? window.t('steam.tagExists') : '该标签已存在', 'error');
                 return;
             }
-            
+
             const tagElement = document.createElement('div');
             tagElement.className = 'tag';
             tagElement.innerHTML = `${tagText}<span class="tag-remove" onclick="removeTag(this)">×</span>`;
             tagsContainer.appendChild(tagElement);
         }
-        
+
         function removeTag(tagElement) {
             tagElement.parentElement.remove();
         }
-        
+
         // 消息显示功能 - 增强版
         function showMessage(message, type = 'info', duration = 3000) {
             const messageArea = document.getElementById('message-area') || createMessageArea();
             const messageElement = document.createElement('div');
-            
+
             // 创建消息容器（如果不存在）
             function createMessageArea() {
                 const container = document.createElement('div');
@@ -2440,7 +2487,7 @@ showMessage(errorMessage, 'error', 3000);
                 document.body.appendChild(container);
                 return container;
             }
-            
+
             // 消息类型和图标映射
             const typeConfig = {
                 error: { className: 'error-message', icon: 'fa-exclamation-circle' },
@@ -2448,34 +2495,34 @@ showMessage(errorMessage, 'error', 3000);
                 success: { className: 'success-message', icon: 'fa-check-circle' },
                 info: { className: 'info-message', icon: 'fa-info-circle' }
             };
-            
+
             // 获取当前消息类型的配置
             const config = typeConfig[type] || typeConfig.info;
-            
+
             // 设置样式类
             messageElement.className = config.className;
-            
+
             // 设置消息内容，添加图标和HTML转义
             messageElement.innerHTML = `
                 <i class="fa ${config.icon}" style="margin-right: 8px;"></i>
                 <span>${escapeHtml(message)}</span>
             `;
-            
+
             // 添加关闭按钮
             const closeButton = document.createElement('span');
             closeButton.className = 'message-close';
             closeButton.innerHTML = '<i class="fa fa-times"></i>';
             closeButton.onclick = () => messageElement.remove();
             messageElement.appendChild(closeButton);
-            
+
             // 为错误消息添加详细信息支持
             if (type === 'error' && typeof message === 'object') {
                 messageElement.title = JSON.stringify(message, null, 2);
             }
-            
+
             // 添加消息
             messageArea.appendChild(messageElement);
-            
+
             // 设置初始样式
             messageElement.style.opacity = '0';
             messageElement.style.transform = 'translateY(-10px)';
@@ -2487,7 +2534,7 @@ showMessage(errorMessage, 'error', 3000);
             messageElement.style.borderRadius = '4px';
             messageElement.style.position = 'relative';
             messageElement.style.zIndex = '1000';
-            
+
             // 为不同类型设置背景色
             const bgColors = {
                 error: '#ffebee',
@@ -2496,13 +2543,13 @@ showMessage(errorMessage, 'error', 3000);
                 info: '#e3f2fd'
             };
             messageElement.style.backgroundColor = bgColors[type] || '#f5f5f5';
-            
+
             // 设置消息显示动画
             setTimeout(() => {
                 messageElement.style.opacity = '1';
                 messageElement.style.transform = 'translateY(0)';
             }, 10);
-            
+
             // 确保消息区域在页面顶部且固定
             messageArea.style.position = 'fixed';
             messageArea.style.top = '20px';
@@ -2513,7 +2560,7 @@ showMessage(errorMessage, 'error', 3000);
             messageArea.style.flexDirection = 'column';
             messageArea.style.alignItems = 'flex-end';
             messageArea.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)'; // 添加阴影增强可见性
-            
+
             // 关闭按钮样式
             closeButton.style.position = 'absolute';
             closeButton.style.right = '10px';
@@ -2523,9 +2570,9 @@ showMessage(errorMessage, 'error', 3000);
             closeButton.style.background = 'none';
             closeButton.style.padding = '2px 5px';
             closeButton.style.borderRadius = '3px';
-            closeButton.onmouseover = function() { this.style.backgroundColor = 'rgba(0,0,0,0.1);' };
-            closeButton.onmouseout = function() { this.style.backgroundColor = 'transparent;' };
-            
+            closeButton.onmouseover = function () { this.style.backgroundColor = 'rgba(0,0,0,0.1);' };
+            closeButton.onmouseout = function () { this.style.backgroundColor = 'transparent;' };
+
             // 自动清除消息（如果指定了持续时间）
             if (duration > 0) {
                 setTimeout(() => {
@@ -2537,7 +2584,7 @@ showMessage(errorMessage, 'error', 3000);
                 }, duration);
             }
         }
-        
+
         // HTML转义函数
         function escapeHtml(text) {
             if (typeof text !== 'string') {
@@ -2547,13 +2594,13 @@ showMessage(errorMessage, 'error', 3000);
             div.textContent = text;
             return div.innerHTML;
         }
-        
+
         // 加载状态管理器
         function LoadingManager() {
             const loadingCount = { value: 0 };
-            
+
             return {
-                show: function(message = '加载中...') {
+                show: function (message = '加载中...') {
                     loadingCount.value++;
                     if (loadingCount.value === 1) {
                         const loadingOverlay = document.createElement('div');
@@ -2572,7 +2619,7 @@ showMessage(errorMessage, 'error', 3000);
                             z-index: 9999;
                             backdrop-filter: blur(2px);
                         `;
-                        
+
                         const loadingSpinner = document.createElement('div');
                         loadingSpinner.style.cssText = `
                             border: 4px solid #f3f3f3;
@@ -2583,12 +2630,12 @@ showMessage(errorMessage, 'error', 3000);
                             animation: spin 1s linear infinite;
                             margin-bottom: 15px;
                         `;
-                        
+
                         const loadingText = document.createElement('div');
                         loadingText.textContent = message;
                         loadingText.style.fontSize = '16px';
                         loadingText.style.color = '#333';
-                        
+
                         // 添加CSS动画
                         const style = document.createElement('style');
                         style.textContent = `
@@ -2597,15 +2644,15 @@ showMessage(errorMessage, 'error', 3000);
                                 100% { transform: rotate(360deg); }
                             }
                         `;
-                        
+
                         loadingOverlay.appendChild(loadingSpinner);
                         loadingOverlay.appendChild(loadingText);
                         document.body.appendChild(loadingOverlay);
                         document.body.appendChild(style);
                     }
                 },
-                
-                hide: function() {
+
+                hide: function () {
                     loadingCount.value--;
                     if (loadingCount.value <= 0) {
                         loadingCount.value = 0;
@@ -2617,15 +2664,15 @@ showMessage(errorMessage, 'error', 3000);
                 }
             };
         }
-        
+
         // 创建全局加载管理器实例
         const loading = new LoadingManager();
-        
+
         // 表单验证函数
         function validateForm() {
             let isValid = true;
             const errorMessages = [];
-            
+
             // 验证标题
             const title = document.getElementById('item-title').value.trim();
             if (!title) {
@@ -2635,7 +2682,7 @@ showMessage(errorMessage, 'error', 3000);
             } else {
                 document.getElementById('item-title').classList.remove('error');
             }
-            
+
             // 验证内容文件夹
             const contentFolder = document.getElementById('content-folder').value.trim();
             if (!contentFolder) {
@@ -2652,7 +2699,7 @@ showMessage(errorMessage, 'error', 3000);
                     isValid = false;
                 }
             }
-            
+
             // 验证预览图片
             const previewImage = document.getElementById('preview-image').value.trim();
             if (!previewImage) {
@@ -2670,15 +2717,15 @@ showMessage(errorMessage, 'error', 3000);
                     document.getElementById('preview-image').classList.remove('error');
                 }
             }
-            
+
             // 显示验证错误消息
             if (errorMessages.length > 0) {
                 showMessage(errorMessages.join('\n'), 'error', 5000);
             }
-            
+
             return isValid;
         }
-        
+
         // 禁用/启用按钮函数
         function setButtonState(buttonElement, isDisabled) {
             if (buttonElement) {
@@ -2690,45 +2737,45 @@ showMessage(errorMessage, 'error', 3000);
                 }
             }
         }
-        
+
         // 上传物品功能
         function uploadItem() {
             // 获取路径
             let contentFolder = document.getElementById('content-folder').value.trim();
             let previewImage = document.getElementById('preview-image').value.trim();
-            
+
             if (!contentFolder) {
                 showMessage(window.t ? window.t('steam.enterContentFolderPath') : '请输入内容文件夹路径', 'error');
                 document.getElementById('content-folder').focus();
                 return;
             }
-            
+
             // 增强的路径规范化处理
             contentFolder = contentFolder.replace(/\\/g, '/');
             if (previewImage) {
                 previewImage = previewImage.replace(/\\/g, '/');
             }
-            
+
             // 显示路径验证通知
-            showMessage(window.t ? window.t('steam.validatingFolderPath', {path: contentFolder}) : `正在验证文件夹路径: ${contentFolder}`, 'info');
-            
+            showMessage(window.t ? window.t('steam.validatingFolderPath', { path: contentFolder }) : `正在验证文件夹路径: ${contentFolder}`, 'info');
+
             // 如果没有预览图片，仍然允许继续上传，后端会尝试自动查找或使用默认机制
             if (!previewImage) {
                 showMessage(window.t ? window.t('steam.previewImageNotProvided') : '未提供预览图片，系统将尝试自动生成', 'warning');
             }
-            
+
             // 验证表单
             if (!validateForm()) {
                 return;
             }
-            
+
             // 收集表单数据
             const title = document.getElementById('item-title')?.value.trim() || '';
             const description = document.getElementById('item-description')?.value.trim() || '';
             // 内容文件夹和预览图片路径已经在上面定义过了，不再重复定义
             const visibilitySelect = document.getElementById('visibility');
             const allowComments = document.getElementById('allow-comments')?.checked || false;
-            
+
             // 收集标签
             let tags = [];
             const tagElements = document.querySelectorAll('#tags-container .tag');
@@ -2738,7 +2785,7 @@ showMessage(errorMessage, 'error', 3000);
                     .map(tag => tag.textContent.replace('×', '').trim())
                     .filter(tag => tag); // 过滤空标签
             }
-            
+
             // 转换可见性选项为数值
             let visibility = 0; // 默认公开
             if (visibilitySelect) {
@@ -2749,7 +2796,7 @@ showMessage(errorMessage, 'error', 3000);
                     visibility = 2;
                 }
             }
-            
+
             // 准备上传数据
             const uploadData = {
                 title: title,
@@ -2760,7 +2807,7 @@ showMessage(errorMessage, 'error', 3000);
                 tags: tags,
                 allow_comments: allowComments
             };
-            
+
             // 获取上传按钮并禁用
             const uploadButton = document.querySelector('.upload-section button.button');
             let originalText = '';
@@ -2769,10 +2816,10 @@ showMessage(errorMessage, 'error', 3000);
                 uploadButton.textContent = '上传中...';
                 setButtonState(uploadButton, true);
             }
-            
+
             // 显示上传中消息
             showMessage(window.t ? window.t('steam.preparingUpload') : '正在准备上传...', 'success', 0); // 0表示不自动关闭
-            
+
             // 发送API请求
             fetch('/api/steam/workshop/publish', {
                 method: 'POST',
@@ -2781,148 +2828,148 @@ showMessage(errorMessage, 'error', 3000);
                 },
                 body: JSON.stringify(uploadData)
             })
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error(`HTTP错误，状态码: ${response.status}`);
-                }
-                return response.json();
-            })
-            .then(data => {
-                // 恢复按钮状态
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP错误，状态码: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    // 恢复按钮状态
                     if (uploadButton) {
                         uploadButton.textContent = originalText;
                         setButtonState(uploadButton, false);
                     }
-                
-                // 清除所有现有消息
-                const messageArea = document.getElementById('message-area');
-                if (messageArea) {
-                    messageArea.innerHTML = '';
-                }
-                
-                if (data.success) {
-                    showMessage(window.t ? window.t('steam.uploadSuccess') : '上传成功！', 'success', 5000);
-                    
-                    // 显示物品ID
-                    if (data.published_file_id) {
-                        showMessage(window.t ? window.t('steam.itemId', {id: data.published_file_id}) : `物品ID: ${data.published_file_id}`, 'success', 5000);
-                        
-                        // 使用Steam overlay打开物品页面
-                        try {
-                            const published_id = data.published_file_id;
-                            const url = `steam://url/CommunityFilePage/${published_id}`;
-                            
-                            // 检查是否支持Steam overlay
-                            if (window.steam && typeof window.steam.ActivateGameOverlayToWebPage === 'function') {
-                                window.steam.ActivateGameOverlayToWebPage(url);
-                            } else {
-                                // 备选方案：尝试直接打开URL
-                                window.open(url);
+
+                    // 清除所有现有消息
+                    const messageArea = document.getElementById('message-area');
+                    if (messageArea) {
+                        messageArea.innerHTML = '';
+                    }
+
+                    if (data.success) {
+                        showMessage(window.t ? window.t('steam.uploadSuccess') : '上传成功！', 'success', 5000);
+
+                        // 显示物品ID
+                        if (data.published_file_id) {
+                            showMessage(window.t ? window.t('steam.itemId', { id: data.published_file_id }) : `物品ID: ${data.published_file_id}`, 'success', 5000);
+
+                            // 使用Steam overlay打开物品页面
+                            try {
+                                const published_id = data.published_file_id;
+                                const url = `steam://url/CommunityFilePage/${published_id}`;
+
+                                // 检查是否支持Steam overlay
+                                if (window.steam && typeof window.steam.ActivateGameOverlayToWebPage === 'function') {
+                                    window.steam.ActivateGameOverlayToWebPage(url);
+                                } else {
+                                    // 备选方案：尝试直接打开URL
+                                    window.open(url);
+                                }
+                            } catch (e) {
+                                console.error('无法打开Steam overlay:', e);
                             }
-                        } catch (e) {
-                            console.error('无法打开Steam overlay:', e);
                         }
-                    }
-                    
-                    // 如果需要接受协议
-                    if (data.needs_to_accept_agreement) {
-                        showMessage(window.t ? window.t('steam.workshopAgreementRequired') : '请先同意Steam Workshop使用协议', 'warning', 8000);
-                    }
-                    
-                    // 清空表单
-                    const formElements = [
-                        { id: 'item-title', property: 'value', value: '' },
-                        { id: 'item-description', property: 'value', value: '' },
-                        { id: 'content-folder', property: 'value', value: '' },
-                        { id: 'preview-image', property: 'value', value: '' },
-                        { id: 'visibility', property: 'value', value: 'public' },
-                        { id: 'allow-comments', property: 'checked', value: true }
-                    ];
-                    
-                    formElements.forEach(element => {
-                        const el = document.getElementById(element.id);
-                        if (el) {
-                            el[element.property] = element.value;
+
+                        // 如果需要接受协议
+                        if (data.needs_to_accept_agreement) {
+                            showMessage(window.t ? window.t('steam.workshopAgreementRequired') : '请先同意Steam Workshop使用协议', 'warning', 8000);
                         }
-                    });
-                    
-                    // 清空标签
-                    const tagsContainer = document.getElementById('tags-container');
-                    if (tagsContainer) {
-                        tagsContainer.innerHTML = '';
-                    }
-                    
-                    // 添加默认标签
-                    addTag('模组');
-                    
-                    // 显示成功提示和操作选项
-                    setTimeout(() => {
-                        const messageArea = document.getElementById('message-area');
-                        const actionMessage = document.createElement('div');
-                        actionMessage.className = 'success-message';
-                        actionMessage.innerHTML = `
+
+                        // 清空表单
+                        const formElements = [
+                            { id: 'item-title', property: 'value', value: '' },
+                            { id: 'item-description', property: 'value', value: '' },
+                            { id: 'content-folder', property: 'value', value: '' },
+                            { id: 'preview-image', property: 'value', value: '' },
+                            { id: 'visibility', property: 'value', value: 'public' },
+                            { id: 'allow-comments', property: 'checked', value: true }
+                        ];
+
+                        formElements.forEach(element => {
+                            const el = document.getElementById(element.id);
+                            if (el) {
+                                el[element.property] = element.value;
+                            }
+                        });
+
+                        // 清空标签
+                        const tagsContainer = document.getElementById('tags-container');
+                        if (tagsContainer) {
+                            tagsContainer.innerHTML = '';
+                        }
+
+                        // 添加默认标签
+                        addTag('模组');
+
+                        // 显示成功提示和操作选项
+                        setTimeout(() => {
+                            const messageArea = document.getElementById('message-area');
+                            const actionMessage = document.createElement('div');
+                            actionMessage.className = 'success-message';
+                            actionMessage.innerHTML = `
                             <span>操作已完成，您可以：</span>
                             <button class="button button-sm" onclick="document.getElementById('item-title').focus()">继续上传</button>
                             <button class="button button-sm" onclick="toggleUploadSection()">隐藏上传区</button>
                             <span class="message-close" onclick="this.parentElement.remove()">×</span>
                         `;
-                        messageArea.appendChild(actionMessage);
-                    }, 1000);
-                } else {
-                    showMessage(window.t ? window.t('steam.uploadError', {error: data.error || (window.t ? window.t('common.unknownError') : '未知错误')}) : `上传失败: ${data.error || '未知错误'}`, 'error', 8000);
-                    if (data.message) {
-                        showMessage(window.t ? window.t('steam.uploadWarning', {message: data.message}) : `警告: ${data.message}`, 'warning', 8000);
-                    }
-                    
-                    // 提供重试建议
-                    setTimeout(() => {
-                        const retryButton = document.createElement('button');
-                        retryButton.className = 'button button-sm';
-                        retryButton.textContent = '重试上传';
-                        retryButton.onclick = uploadItem;
-                        
-                        const messageArea = document.getElementById('message-area');
-                        const retryMessage = document.createElement('div');
-                        retryMessage.className = 'error-message';
-                        retryMessage.innerHTML = `<span>是否重试上传？</span>
+                            messageArea.appendChild(actionMessage);
+                        }, 1000);
+                    } else {
+                        showMessage(window.t ? window.t('steam.uploadError', { error: data.error || (window.t ? window.t('common.unknownError') : '未知错误') }) : `上传失败: ${data.error || '未知错误'}`, 'error', 8000);
+                        if (data.message) {
+                            showMessage(window.t ? window.t('steam.uploadWarning', { message: data.message }) : `警告: ${data.message}`, 'warning', 8000);
+                        }
+
+                        // 提供重试建议
+                        setTimeout(() => {
+                            const retryButton = document.createElement('button');
+                            retryButton.className = 'button button-sm';
+                            retryButton.textContent = '重试上传';
+                            retryButton.onclick = uploadItem;
+
+                            const messageArea = document.getElementById('message-area');
+                            const retryMessage = document.createElement('div');
+                            retryMessage.className = 'error-message';
+                            retryMessage.innerHTML = `<span>是否重试上传？</span>
                             <button class="button button-sm" onclick="uploadItem()">重试</button>
                             <span class="message-close" onclick="this.parentElement.remove()">×</span>`;
-                        messageArea.appendChild(retryMessage);
-                    }, 2000);
-                }
-            })
-            .catch(error => {
-                console.error('上传失败:', error);
-                
-                // 恢复按钮状态
-                if (uploadButton) {
-                    uploadButton.textContent = originalText;
-                    setButtonState(uploadButton, false);
-                }
-                
-                // 清除所有现有消息
-                const messageArea = document.getElementById('message-area');
-                if (messageArea) {
-                    messageArea.innerHTML = '';
-                }
-                
-                let errorMessage = window.t ? window.t('steam.uploadGeneralError') : '上传失败';
-                
-                // 根据错误类型提供更具体的提示
-                if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
-                    errorMessage = window.t ? window.t('steam.uploadNetworkError') : '网络错误，请检查您的连接';
-                    showMessage(window.t ? window.t('steam.uploadErrorFormat', {message: errorMessage}) : errorMessage, 'error', 8000);
-                    showMessage(window.t ? window.t('steam.checkNetworkConnection') : '请检查您的网络连接', 'warning', 8000);
-                } else if (error.message.includes('HTTP错误')) {
-                    errorMessage = window.t ? window.t('steam.uploadHttpError', {error: error.message}) : `HTTP错误: ${error.message}`;
-                    showMessage(window.t ? window.t('steam.uploadErrorFormat', {message: errorMessage}) : errorMessage, 'error', 8000);
-                    showMessage(window.t ? window.t('steam.serverProblem', {message: window.t ? window.t('common.tryAgainLater') : '请稍后重试'}) : '服务器问题，请稍后重试', 'warning', 8000);
-                } else {
-                    showMessage(window.t ? window.t('steam.uploadErrorFormat', {message: window.t ? window.t('steam.uploadErrorWithMessage', {error: error.message}) : `错误: ${error.message}`}) : `错误: ${error.message}`, 'error', 8000);
-                }
-            });
+                            messageArea.appendChild(retryMessage);
+                        }, 2000);
+                    }
+                })
+                .catch(error => {
+                    console.error('上传失败:', error);
+
+                    // 恢复按钮状态
+                    if (uploadButton) {
+                        uploadButton.textContent = originalText;
+                        setButtonState(uploadButton, false);
+                    }
+
+                    // 清除所有现有消息
+                    const messageArea = document.getElementById('message-area');
+                    if (messageArea) {
+                        messageArea.innerHTML = '';
+                    }
+
+                    let errorMessage = window.t ? window.t('steam.uploadGeneralError') : '上传失败';
+
+                    // 根据错误类型提供更具体的提示
+                    if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+                        errorMessage = window.t ? window.t('steam.uploadNetworkError') : '网络错误，请检查您的连接';
+                        showMessage(window.t ? window.t('steam.uploadErrorFormat', { message: errorMessage }) : errorMessage, 'error', 8000);
+                        showMessage(window.t ? window.t('steam.checkNetworkConnection') : '请检查您的网络连接', 'warning', 8000);
+                    } else if (error.message.includes('HTTP错误')) {
+                        errorMessage = window.t ? window.t('steam.uploadHttpError', { error: error.message }) : `HTTP错误: ${error.message}`;
+                        showMessage(window.t ? window.t('steam.uploadErrorFormat', { message: errorMessage }) : errorMessage, 'error', 8000);
+                        showMessage(window.t ? window.t('steam.serverProblem', { message: window.t ? window.t('common.tryAgainLater') : '请稍后重试' }) : '服务器问题，请稍后重试', 'warning', 8000);
+                    } else {
+                        showMessage(window.t ? window.t('steam.uploadErrorFormat', { message: window.t ? window.t('steam.uploadErrorWithMessage', { error: error.message }) : `错误: ${error.message}` }) : `错误: ${error.message}`, 'error', 8000);
+                    }
+                });
         }
-        
+
         // 分页相关变量
         let allSubscriptions = []; // 存储所有订阅物品
         let currentPage = 1;
@@ -2935,7 +2982,7 @@ showMessage(errorMessage, 'error', 3000);
         function loadSubscriptions() {
             const subscriptionsList = document.getElementById('subscriptions-list');
             subscriptionsList.innerHTML = `<div class="empty-state"><p>${window.t ? window.t('steam.loadingSubscriptions') : '正在加载您的订阅物品...'}</p></div>`;
-            
+
             // 调用后端API获取订阅物品列表
             fetch('/api/steam/workshop/subscribed-items')
                 .then(response => {
@@ -2954,10 +3001,10 @@ showMessage(errorMessage, 'error', 3000);
                         updatePagination(); // 更新分页状态
                         return;
                     }
-                    
+
                     // 保存所有订阅物品到全局变量
                     allSubscriptions = data.items || [];
-                    
+
                     // 应用排序（从下拉框获取排序方式）
                     const sortSelect = document.getElementById('sort-subscription');
                     if (sortSelect) {
@@ -2967,15 +3014,15 @@ showMessage(errorMessage, 'error', 3000);
                         // 默认按日期降序排序
                         sortSubscriptions('date', 'desc');
                     }
-                    
+
                     // 计算总页数
                     totalPages = Math.ceil(allSubscriptions.length / itemsPerPage);
                     if (totalPages < 1) totalPages = 1;
                     if (currentPage > totalPages) currentPage = totalPages;
-                    
+
                     // 显示当前页的数据
                     renderSubscriptionsPage();
-                    
+
                     // 更新分页UI
                     updatePagination();
                 })
@@ -2985,21 +3032,21 @@ showMessage(errorMessage, 'error', 3000);
                     showMessage(window.t ? window.t('steam.cannotConnectToServer') : '无法连接到服务器，请稍后重试', 'error');
                 });
         }
-        
+
         // 渲染当前页的订阅物品
         function renderSubscriptionsPage() {
             const subscriptionsList = document.getElementById('subscriptions-list');
-            
+
             if (allSubscriptions.length === 0) {
                 subscriptionsList.innerHTML = '<div class="empty-state"><p>您还没有订阅任何创意工坊物品</p></div>';
                 return;
             }
-            
+
             // 计算当前页的数据范围
             const startIndex = (currentPage - 1) * itemsPerPage;
             const endIndex = startIndex + itemsPerPage;
             const currentItems = allSubscriptions.slice(startIndex, endIndex);
-            
+
             // 生成卡片HTML
             subscriptionsList.innerHTML = currentItems.map(item => {
                 // 格式化物品数据为前端所需格式
@@ -3019,11 +3066,11 @@ showMessage(errorMessage, 'error', 3000);
                     timeAdded: item.timeAdded || 0,
                     fileSize: item.fileSizeOnDisk || item.fileSize || 0
                 };
-                    
+
                 // 确定状态类和文本
                 let statusClass = 'status-subscribed';
                 let statusText = window.t ? window.t('steam.status.subscribed') : '已订阅';
-                
+
                 if (formattedItem.state.downloading) {
                     statusClass = 'status-downloading';
                     statusText = window.t ? window.t('steam.status.downloading') : '下载中';
@@ -3034,11 +3081,11 @@ showMessage(errorMessage, 'error', 3000);
                     statusClass = 'status-installed';
                     statusText = window.t ? window.t('steam.status.installed') : '已安装';
                 }
-                  
+
                 return `
                     <div class="workshop-card">
                         <div class="card-header">
-                            <img src="${formattedItem.installedFolder ? `/api/proxy-image?image_path=${encodeURIComponent(formattedItem.installedFolder + '/preview.png')}` : `/api/proxy-image?image_path=${encodeURIComponent(formattedItem.previewUrl)}`}" alt="${formattedItem.name}" class="card-image">
+                            <img src="${formattedItem.installedFolder ? `/api/steam/proxy-image?image_path=${encodeURIComponent(formattedItem.installedFolder + '/preview.png')}` : `/api/steam/proxy-image?image_path=${encodeURIComponent(formattedItem.previewUrl)}`}" alt="${formattedItem.name}" class="card-image">
                             <div class="status-badge ${statusClass}">${statusText}</div>
                         </div>
                         <div class="card-content">
@@ -3052,15 +3099,15 @@ showMessage(errorMessage, 'error', 3000);
                                 <div class="card-info-item"><span class="info-label">${window.t ? window.t('steam.last_updated') : '最后更新'}:</span> <span class="info-value">${formattedItem.lastUpdated}</span></div>
                                 <div class="card-info-item"><span class="info-label">${window.t ? window.t('steam.size') : '大小'}:</span> <span class="info-value">${formattedItem.size}</span></div>
                             </div>
-                            ${formattedItem.state && formattedItem.state.downloading && item.downloadProgress ? 
-                                `<div class="download-progress">
+                            ${formattedItem.state && formattedItem.state.downloading && item.downloadProgress ?
+                        `<div class="download-progress">
                                     <div class="progress-bar">
                                         <div class="progress-fill" style="width: ${item.downloadProgress.percentage}%">
                                             ${item.downloadProgress.percentage.toFixed(1)}%
                                         </div>
                                     </div>
                                 </div>` : ''
-                            }
+                    }
                             <div class="card-actions">
                                      <!-- 查看详情下次再加，一时半会儿搞不定 -->
                                 <button class="button button-danger" onclick="unsubscribeItem('${formattedItem.id}', '${formattedItem.name}')">${window.t ? window.t('steam.unsubscribe') : '取消订阅'}</button>
@@ -3070,32 +3117,32 @@ showMessage(errorMessage, 'error', 3000);
                 `;
             }).join('');
         }
-        
+
         // 更新分页控件
         function updatePagination() {
             const pagination = document.querySelector('.pagination');
             if (!pagination) return;
-            
+
             const prevBtn = pagination.querySelector('button:first-child');
             const nextBtn = pagination.querySelector('button:last-child');
             const pageInfo = pagination.querySelector('span');
-            
+
             // 更新页码信息
             if (pageInfo) {
-                pageInfo.textContent = window.t ? window.t('steam.pagination', {currentPage: currentPage, totalPages: totalPages}) : `${currentPage} / ${totalPages}`;
+                pageInfo.textContent = window.t ? window.t('steam.pagination', { currentPage: currentPage, totalPages: totalPages }) : `${currentPage} / ${totalPages}`;
             }
-            
+
             // 更新上一页按钮状态
             if (prevBtn) {
                 prevBtn.disabled = currentPage <= 1;
             }
-            
+
             // 更新下一页按钮状态
             if (nextBtn) {
                 nextBtn.disabled = currentPage >= totalPages;
             }
         }
-        
+
         // 前往上一页
         function goToPrevPage() {
             if (currentPage > 1) {
@@ -3104,7 +3151,7 @@ showMessage(errorMessage, 'error', 3000);
                 updatePagination();
             }
         }
-        
+
         // 前往下一页
         function goToNextPage() {
             if (currentPage < totalPages) {
@@ -3113,16 +3160,16 @@ showMessage(errorMessage, 'error', 3000);
                 updatePagination();
             }
         }
-        
+
         // 排序订阅物品
         function sortSubscriptions(field, order) {
             if (allSubscriptions.length <= 1) return;
-            
+
             allSubscriptions.sort((a, b) => {
                 let aValue, bValue;
-                
+
                 // 根据不同字段获取对应的值
-                switch(field) {
+                switch (field) {
                     case 'name':
                         aValue = (a.title || String(a.publishedFileId || '')).toLowerCase();
                         bValue = (b.title || String(b.publishedFileId || '')).toLowerCase();
@@ -3144,52 +3191,52 @@ showMessage(errorMessage, 'error', 3000);
                         aValue = (a.title || String(a.publishedFileId || '')).toLowerCase();
                         bValue = (b.title || String(b.publishedFileId || '')).toLowerCase();
                 }
-                
+
                 // 处理空值
                 if (aValue === undefined || aValue === null) aValue = '';
                 if (bValue === undefined || bValue === null) bValue = '';
-                
+
                 // 字符串比较
                 if (typeof aValue === 'string') {
-                    return order === 'asc' ? 
-                        aValue.localeCompare(bValue) : 
+                    return order === 'asc' ?
+                        aValue.localeCompare(bValue) :
                         bValue.localeCompare(aValue);
                 }
                 // 数字比较
-                return order === 'asc' ? 
-                    (aValue - bValue) : 
+                return order === 'asc' ?
+                    (aValue - bValue) :
                     (bValue - aValue);
             });
         }
-        
+
         // 应用排序
         function applySort(sortValue) {
             // 解析排序值
             const [field, order] = sortValue.split('_');
-            
+
             // 重置到第一页
             currentPage = 1;
-            
+
             // 应用排序
             sortSubscriptions(field, order);
-            
+
             // 重新渲染页面
             renderSubscriptionsPage();
-            
+
             // 更新分页
             updatePagination();
         }
-        
+
         // 过滤订阅物品
         function filterSubscriptions(searchTerm) {
             // 简单实现过滤功能
             searchTerm = searchTerm.toLowerCase().trim();
-            
+
             // 保存原始数据
             if (window.originalSubscriptions === undefined) {
                 window.originalSubscriptions = [...allSubscriptions];
             }
-            
+
             // 如果搜索词为空，恢复原始数据
             if (!searchTerm) {
                 if (window.originalSubscriptions) {
@@ -3202,26 +3249,26 @@ showMessage(errorMessage, 'error', 3000);
                 }
                 return;
             }
-            
+
             // 过滤物品
             let itemsToFilter = window.originalSubscriptions || [...allSubscriptions];
             const filteredItems = itemsToFilter.filter(item => {
                 const title = (item.title || '').toLowerCase();
                 return title.includes(searchTerm);
             });
-            
+
             allSubscriptions = filteredItems;
-            
+
             // 重新计算分页
             totalPages = Math.ceil(allSubscriptions.length / itemsPerPage);
             if (totalPages < 1) totalPages = 1;
             if (currentPage > totalPages) currentPage = totalPages;
-            
+
             // 渲染过滤后的结果
             renderSubscriptionsPage();
             updatePagination();
         }
-        
+
         // 格式化文件大小
         function formatFileSize(bytes) {
             if (bytes === 0 || bytes === undefined) return '0 B';
@@ -3230,7 +3277,7 @@ showMessage(errorMessage, 'error', 3000);
             const i = Math.floor(Math.log(bytes) / Math.log(k));
             return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
         }
-        
+
         // 获取状态文本
         function getStatusText(state) {
             if (state.downloading) {
@@ -3245,7 +3292,7 @@ showMessage(errorMessage, 'error', 3000);
                 return window.t ? window.t('steam.status.unknown') : '未知';
             }
         }
-        
+
         // 打开模态框
         function openModal() {
             const modal = document.getElementById('itemDetailsModal');
@@ -3253,7 +3300,7 @@ showMessage(errorMessage, 'error', 3000);
             // 阻止页面滚动
             document.body.style.overflow = 'hidden';
         }
-        
+
         // 关闭模态框
         function closeModal() {
             const modal = document.getElementById('itemDetailsModal');
@@ -3261,7 +3308,7 @@ showMessage(errorMessage, 'error', 3000);
             // 恢复页面滚动
             document.body.style.overflow = 'auto';
         }
-        
+
         // 点击模态框外部关闭
         function closeModalOnOutsideClick(event) {
             const modal = document.getElementById('itemDetailsModal');
@@ -3269,64 +3316,64 @@ showMessage(errorMessage, 'error', 3000);
                 closeModal();
             }
         }
-        
+
 
         // 查看物品详情
-function viewItemDetails(itemId) {
-    // 显示加载消息
-    showMessage(`正在加载物品ID: ${itemId} 的详细信息...`, 'success');
-    
-    // 调用后端API获取物品详情
-    fetch(`/api/steam/workshop/item/${itemId}`)
-        .then(response => {
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-            return response.json();
-        })
-        .then(data => {
-            if (!data.success) {
-                showMessage(`获取物品详情失败: ${data.error || '未知错误'}`, 'error');
-                return;
-            }
-            
-            const item = data.item;
-            const formattedItem = {
-                id: item.publishedFileId.toString(),
-                name: item.title,
-                author: item.steamIDOwner.toString(),
-                subscribedDate: new Date(item.timeAdded * 1000).toLocaleDateString(),
-                lastUpdated: new Date(item.timeUpdated * 1000).toLocaleDateString(),
-                size: formatFileSize(item.fileSize),
-                previewUrl: item.previewImageUrl || '../static/icons/Steam_icon_logo.png',
-                description: item.description || '暂无描述',
-                downloadCount: 'N/A',
-                rating: 'N/A',
-                tags: ['模组'], // 默认标签，实际应用中应该从API获取
-                state: item.state || {} // 添加state属性，确保后续代码可以正常访问
-            };
-            
-            // 确定状态类和文本
-            let statusClass = 'status-subscribed';
-            let statusText = getStatusText(formattedItem.state || {});
-            
-            if (formattedItem.state && formattedItem.state.downloading) {
-                statusClass = 'status-downloading';
-            } else if (formattedItem.state && formattedItem.state.needsUpdate) {
-                statusClass = 'status-needs-update';
-            } else if (formattedItem.state && formattedItem.state.installed) {
-                statusClass = 'status-installed';
-            }
-            
-            // 获取作者头像（使用首字母作为占位符）
-            const authorInitial = formattedItem.author.substring(0, 2).toUpperCase();
-            
-            // 更新模态框内容
-            document.getElementById('modalTitle').textContent = formattedItem.name;
-            
-            const detailContent = document.getElementById('itemDetailContent');
-            detailContent.innerHTML = `
-                <img src="${formattedItem.installedFolder ? `/api/proxy-image?image_path=${encodeURIComponent(formattedItem.installedFolder + '/preview.png')}` : `/api/proxy-image?image_path=${encodeURIComponent(formattedItem.previewUrl)}`}" alt="${formattedItem.name}" class="item-preview-large">
+        function viewItemDetails(itemId) {
+            // 显示加载消息
+            showMessage(`正在加载物品ID: ${itemId} 的详细信息...`, 'success');
+
+            // 调用后端API获取物品详情
+            fetch(`/api/steam/workshop/item/${itemId}`)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (!data.success) {
+                        showMessage(`获取物品详情失败: ${data.error || '未知错误'}`, 'error');
+                        return;
+                    }
+
+                    const item = data.item;
+                    const formattedItem = {
+                        id: item.publishedFileId.toString(),
+                        name: item.title,
+                        author: item.steamIDOwner.toString(),
+                        subscribedDate: new Date(item.timeAdded * 1000).toLocaleDateString(),
+                        lastUpdated: new Date(item.timeUpdated * 1000).toLocaleDateString(),
+                        size: formatFileSize(item.fileSize),
+                        previewUrl: item.previewImageUrl || '../static/icons/Steam_icon_logo.png',
+                        description: item.description || '暂无描述',
+                        downloadCount: 'N/A',
+                        rating: 'N/A',
+                        tags: ['模组'], // 默认标签，实际应用中应该从API获取
+                        state: item.state || {} // 添加state属性，确保后续代码可以正常访问
+                    };
+
+                    // 确定状态类和文本
+                    let statusClass = 'status-subscribed';
+                    let statusText = getStatusText(formattedItem.state || {});
+
+                    if (formattedItem.state && formattedItem.state.downloading) {
+                        statusClass = 'status-downloading';
+                    } else if (formattedItem.state && formattedItem.state.needsUpdate) {
+                        statusClass = 'status-needs-update';
+                    } else if (formattedItem.state && formattedItem.state.installed) {
+                        statusClass = 'status-installed';
+                    }
+
+                    // 获取作者头像（使用首字母作为占位符）
+                    const authorInitial = formattedItem.author.substring(0, 2).toUpperCase();
+
+                    // 更新模态框内容
+                    document.getElementById('modalTitle').textContent = formattedItem.name;
+
+                    const detailContent = document.getElementById('itemDetailContent');
+                    detailContent.innerHTML = `
+                <img src="${formattedItem.installedFolder ? `/api/steam/proxy-image?image_path=${encodeURIComponent(formattedItem.installedFolder + '/preview.png')}` : `/api/steam/proxy-image?image_path=${encodeURIComponent(formattedItem.previewUrl)}`}" alt="${formattedItem.name}" class="item-preview-large">
                 
                 <div class="item-info-grid">
                     <p class="item-info-item">
@@ -3344,8 +3391,8 @@ function viewItemDetails(itemId) {
                         <span class="status-badge ${statusClass}">${statusText}</span>
                     </p>
                     <p class="item-info-item"><span class="item-info-label">${window.t ? window.t('steam.download_count') : '下载次数'}:</span> ${formattedItem.downloadCount}</p>
-                    ${formattedItem.state && formattedItem.state.downloading && item.downloadProgress ? 
-                        `<p class="item-info-item" style="grid-column: span 2;">
+                    ${formattedItem.state && formattedItem.state.downloading && item.downloadProgress ?
+                            `<p class="item-info-item" style="grid-column: span 2;">
                             <div class="download-progress">
                                 <div class="progress-bar">
                                     <div class="progress-fill" style="width: ${item.downloadProgress.percentage}%">
@@ -3354,7 +3401,7 @@ function viewItemDetails(itemId) {
                                 </div>
                             </div>
                         </p>` : ''
-                    }
+                        }
                 </div>
                 
                 <div>
@@ -3371,19 +3418,19 @@ function viewItemDetails(itemId) {
                     <p class="item-description">${formattedItem.description}</p>
                 </div>
             `;
-            
-            // 打开模态框
-            openModal();
-        })
-        .catch(error => {
-            console.error('获取物品详情失败:', error);
-            showMessage(window.t ? window.t('steam.cannotLoadItemDetails') : '无法加载物品详情', 'error');
-        });
-}
-        
-                // 取消订阅功能
+
+                    // 打开模态框
+                    openModal();
+                })
+                .catch(error => {
+                    console.error('获取物品详情失败:', error);
+                    showMessage(window.t ? window.t('steam.cannotLoadItemDetails') : '无法加载物品详情', 'error');
+                });
+        }
+
+        // 取消订阅功能
         function unsubscribeItem(itemId, itemName) {
-            if (confirm(window.t ? window.t('steam.unsubscribeConfirm', {name: itemName}) : `确定要取消订阅 "${itemName}" 吗？`)) {
+            if (confirm(window.t ? window.t('steam.unsubscribeConfirm', { name: itemName }) : `确定要取消订阅 "${itemName}" 吗？`)) {
                 // 查找当前卡片并添加移除动画效果
                 const cards = document.querySelectorAll('.workshop-card');
                 for (let card of cards) {
@@ -3395,10 +3442,10 @@ function viewItemDetails(itemId) {
                         break;
                     }
                 }
-                
+
                 // 调用后端API执行取消订阅操作
                 showMessage(`正在取消订阅 "${itemName}"...`, 'success');
-                
+
                 fetch('/api/steam/workshop/unsubscribe', {
                     method: 'POST',
                     headers: {
@@ -3406,52 +3453,52 @@ function viewItemDetails(itemId) {
                     },
                     body: JSON.stringify({ item_id: itemId })
                 })
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error(`HTTP error! status: ${response.status}`);
-                    }
-                    return response.json();
-                })
-                .then(data => {
-                    if (data.success) {
-                        // 显示异步操作状态
-                        let statusMessage = window.t ? window.t('steam.unsubscribeAccepted', {name: itemName}) : `已接受取消订阅: ${itemName}`;
-                        if (data.status === 'accepted') {
-                            statusMessage = window.t ? window.t('steam.unsubscribeProcessing', {name: itemName}) : `正在处理取消订阅: ${itemName}`;
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error(`HTTP error! status: ${response.status}`);
                         }
-                        showMessage(statusMessage, 'success');
-                        
-                        // 立即重新加载订阅列表
-                        loadSubscriptions();
-                        
-                        // 添加短暂延迟后再次刷新，确保获取最新状态
-                        setTimeout(() => {
+                        return response.json();
+                    })
+                    .then(data => {
+                        if (data.success) {
+                            // 显示异步操作状态
+                            let statusMessage = window.t ? window.t('steam.unsubscribeAccepted', { name: itemName }) : `已接受取消订阅: ${itemName}`;
+                            if (data.status === 'accepted') {
+                                statusMessage = window.t ? window.t('steam.unsubscribeProcessing', { name: itemName }) : `正在处理取消订阅: ${itemName}`;
+                            }
+                            showMessage(statusMessage, 'success');
+
+                            // 立即重新加载订阅列表
                             loadSubscriptions();
-                            showMessage(window.t ? window.t('steam.subscriptionsUpdated') : '订阅更新完成', 'success');
-                        }, 1000);
-                        
-                    } else {
-                        const errorMsg = data.error || (window.t ? window.t('common.unknownError') : '未知错误');
-                        showMessage(window.t ? window.t('steam.unsubscribeFailed') : `取消订阅失败: ${errorMsg}`, 'error');
-                        // 如果有消息提示，显示给用户
-                        if (data.message) {
-                            showMessage(data.message, 'warning');
+
+                            // 添加短暂延迟后再次刷新，确保获取最新状态
+                            setTimeout(() => {
+                                loadSubscriptions();
+                                showMessage(window.t ? window.t('steam.subscriptionsUpdated') : '订阅更新完成', 'success');
+                            }, 1000);
+
+                        } else {
+                            const errorMsg = data.error || (window.t ? window.t('common.unknownError') : '未知错误');
+                            showMessage(window.t ? window.t('steam.unsubscribeFailed') : `取消订阅失败: ${errorMsg}`, 'error');
+                            // 如果有消息提示，显示给用户
+                            if (data.message) {
+                                showMessage(data.message, 'warning');
+                            }
                         }
-                    }
-                })
-                .catch(error => {
-                    console.error('取消订阅失败:', error);
-                    showMessage(window.t ? window.t('steam.unsubscribeError') : '取消订阅失败', 'error');
-                });
+                    })
+                    .catch(error => {
+                        console.error('取消订阅失败:', error);
+                        showMessage(window.t ? window.t('steam.unsubscribeError') : '取消订阅失败', 'error');
+                    });
             }
         }
-        
+
         // 初始化页面
-        window.onload = function() {
+        window.onload = function () {
             // 初始化时添加一些示例标签
             addTag(window.t ? window.t('steam.defaultTagMod') : 'Mod');
             addTag(window.t ? window.t('steam.defaultTagCharacter') : 'Character');
-            
+
             // 初始化i18n文本
             if (document.getElementById('loading-text')) {
                 document.getElementById('loading-text').textContent = window.t ? window.t('steam.loadingSubscriptions') : '正在加载您的订阅物品...';
@@ -3462,13 +3509,14 @@ function viewItemDetails(itemId) {
             if (document.getElementById('search-subscription')) {
                 document.getElementById('search-subscription').placeholder = window.t ? window.t('steam.searchPlaceholder') : '搜索订阅内容...';
             }
-            
+
             // 页面加载时自动加载订阅内容
             loadSubscriptions();
-            
+
             // 页面加载时自动扫描本地物品
             scanLocalItems();
         };
     </script>
 </body>
+
 </html>

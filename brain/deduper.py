@@ -2,7 +2,7 @@ from typing import List, Dict, Any, Optional, Tuple
 import asyncio
 from langchain_openai import ChatOpenAI
 from openai import APIConnectionError, InternalServerError, RateLimitError
-from config import MODELS_WITH_EXTRA_BODY
+from config import get_extra_body
 from utils.config_manager import get_config_manager
 import logging
 import json
@@ -25,7 +25,7 @@ class TaskDeduper:
             base_url=api_config['base_url'],
             api_key=api_config['api_key'],
             temperature=0,
-            extra_body={"enable_thinking": False} if api_config['model'] in MODELS_WITH_EXTRA_BODY else None
+            extra_body=get_extra_body(api_config['model']) or None
         )
 
     def _build_prompt(self, new_task: str, candidates: List[Tuple[str, str]]) -> str:

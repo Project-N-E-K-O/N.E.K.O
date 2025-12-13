@@ -12,6 +12,49 @@ Live2DManager.prototype.setupDragAndDrop = function(model) {
     let isDragging = false;
     let dragStartPos = new PIXI.Point();
 
+    // 智能事件传播管理 - 在拖动过程中临时禁用按钮事件拦截
+    const enableButtonEventPropagation = () => {
+        // 收集所有按钮元素
+        const buttons = document.querySelectorAll('.live2d-floating-btn, [id^="live2d-btn-"]');
+        buttons.forEach(btn => {
+            if (btn) {
+                // 保存当前的pointerEvents值
+                const currentValue = btn.style.pointerEvents || '';
+                btn.setAttribute('data-prev-pointer-events', currentValue);
+                btn.style.pointerEvents = 'none';
+            }
+        });
+        
+        // 收集并处理所有按钮包装器元素
+        const wrappers = new Set();
+        buttons.forEach(btn => {
+            if (btn && btn.parentElement) {
+                wrappers.add(btn.parentElement);
+            }
+        });
+        
+        wrappers.forEach(wrapper => {
+            const currentValue = wrapper.style.pointerEvents || '';
+            wrapper.setAttribute('data-prev-pointer-events', currentValue);
+            wrapper.style.pointerEvents = 'none';
+        });
+    };
+
+    const disableButtonEventPropagation = () => {
+        const elementsToRestore = document.querySelectorAll('[data-prev-pointer-events]');
+        elementsToRestore.forEach(element => {
+            if (element) {
+                const prevValue = element.getAttribute('data-prev-pointer-events');
+                if (prevValue === '') {
+                    element.style.pointerEvents = '';
+                } else {
+                    element.style.pointerEvents = prevValue;
+                }
+                element.removeAttribute('data-prev-pointer-events');
+            }
+        });
+    };
+
     model.on('pointerdown', (event) => {
         if (this.isLocked) return;
         
@@ -28,12 +71,18 @@ Live2DManager.prototype.setupDragAndDrop = function(model) {
         dragStartPos.x = globalPos.x - model.x;
         dragStartPos.y = globalPos.y - model.y;
         document.getElementById('live2d-canvas').style.cursor = 'grabbing';
+        
+        // 开始拖动时，临时禁用按钮的事件拦截
+        enableButtonEventPropagation();
     });
 
     const onDragEnd = () => {
         if (isDragging) {
             isDragging = false;
             document.getElementById('live2d-canvas').style.cursor = 'grab';
+            
+            // 拖拽结束后恢复按钮的事件拦截
+            disableButtonEventPropagation();
             
             // 拖拽结束后自动保存位置
             this._savePositionAfterInteraction();

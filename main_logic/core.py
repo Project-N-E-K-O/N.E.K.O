@@ -17,9 +17,10 @@ from utils.frontend_utils import contains_chinese, replace_blank, replace_corner
     is_only_punctuation, split_paragraph
 from utils.audio import make_wav_header
 from utils.screenshot_utils import process_screen_data
-from main_helper.omni_realtime_client import OmniRealtimeClient
-from main_helper.omni_offline_client import OmniOfflineClient
-from main_helper.tts_helper import get_tts_worker
+from utils.response_optimizer import optimize_response
+from main_logic.omni_realtime_client import OmniRealtimeClient
+from main_logic.omni_offline_client import OmniOfflineClient
+from main_logic.tts_client import get_tts_worker
 import base64
 from config import MEMORY_SERVER_PORT
 from utils.config_manager import get_config_manager
@@ -331,7 +332,19 @@ class LLMSessionManager:
         """Qwen输出转录回调：可用于前端显示/缓存/同步。"""
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                # 去掉情绪标签
                 text = self.emotion_pattern.sub('', text)
+                # 通过优化器约束回复长度并去重：
+                # - 对于第一个 chunk（新消息）同时应用包裹符，便于前端识别完整回复结构；
+                # - 对于后续 chunk 仅做去重/长度控制，但不添加包裹符，避免重复包裹。
+                try:
+                    if is_first_chunk:
+                        text = optimize_response(text)
+                    else:
+                        text = optimize_response(text, enclosure=('', ''))
+                except Exception as _e:
+                    logger.warning(f"Response optimizer failed: {_e}")
+
                 message = {
                     "type": "gemini_response",
                     "text": text,

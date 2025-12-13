@@ -1,5 +1,5 @@
 from datetime import datetime
-from config import MODELS_WITH_EXTRA_BODY
+from config import get_extra_body
 from utils.config_manager import get_config_manager
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, messages_to_dict, messages_from_dict, HumanMessage, AIMessage
@@ -39,7 +39,7 @@ class CompressedRecentHistoryManager:
             base_url=api_config['base_url'],
             api_key=api_config['api_key'] if api_config['api_key'] else None,
             temperature=0.3,
-            extra_body={"enable_thinking": False} if api_config['model'] in MODELS_WITH_EXTRA_BODY else None
+            extra_body=get_extra_body(api_config['model']) or None
         )
     
     def _get_review_llm(self):
@@ -50,7 +50,7 @@ class CompressedRecentHistoryManager:
             base_url=api_config['base_url'],
             api_key=api_config['api_key'] if api_config['api_key'] else None,
             temperature=0.1,
-            extra_body={"enable_thinking": False} if api_config['model'] in MODELS_WITH_EXTRA_BODY else None
+            extra_body=get_extra_body(api_config['model']) or None
         )
 
     async def update_history(self, new_messages, lanlan_name, detailed=False):

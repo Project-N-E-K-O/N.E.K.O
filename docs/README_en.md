@@ -82,23 +82,113 @@ Our ultimate goal is to build a N.E.K.O. metaverse that seamlessly integrates in
 
 QQ Group: 1022939659
 
-# Quick Start
+# Quick Start (Windows Users)
 
-1. For *one-click package users*, simply run `新版启动器.exe` (New Launcher) to open the main control panel.
+For *one-click package users*, simply run `N.E.K.O.exe` after extracting to start.
 
-1. Click `启动对话服务器` (Start Dialogue Server) and `开始聊天` (Start Chat).
+## Docker Deployment (Linux Users)
 
-**Multi-language support is planned in 2026 Spring.**
+### 1. Deploy using docker-compose (Currently the only Docker deployment method)
+
+#### docker-compose.yml (Currently only amd64 architecture images available)
+```yaml
+version: '3.8'
+
+services:
+  neko-main:
+    image: ghcr.io/project-n-e-k-o/n.e.k.o:latest
+    container_name: neko
+    restart: unless-stopped
+    ports:
+      # WebUI port (default 48911)
+#      - "48911(external port):80(N.E.K.O container internal Nginx reverse proxy port)"
+      - "48911:80"
+    environment:
+      # API Keys
+      - NEKO_CORE_API_KEY=${NEKO_CORE_API_KEY}
+      - NEKO_ASSIST_API_KEY_QWEN=${NEKO_ASSIST_API_KEY_QWEN:-}
+      - NEKO_ASSIST_API_KEY_OPENAI=${NEKO_ASSIST_API_KEY_OPENAI:-}
+      - NEKO_ASSIST_API_KEY_GLM=${NEKO_ASSIST_API_KEY_GLM:-}
+      - NEKO_ASSIST_API_KEY_STEP=${NEKO_ASSIST_API_KEY_STEP:-}
+      - NEKO_ASSIST_API_KEY_SILICON=${NEKO_ASSIST_API_KEY_SILICON:-}
+      - NEKO_MCP_TOKEN=${NEKO_MCP_TOKEN:-}
+
+      # API Providers
+      - NEKO_CORE_API=${NEKO_CORE_API:-qwen}
+      - NEKO_ASSIST_API=${NEKO_ASSIST_API:-qwen}
+
+      # Server Ports
+      - NEKO_MAIN_SERVER_PORT=48911
+      - NEKO_MEMORY_SERVER_PORT=48912
+      - NEKO_MONITOR_SERVER_PORT=48913
+      - NEKO_TOOL_SERVER_PORT=48915
+
+      # Models (Optional)
+      - NEKO_SUMMARY_MODEL=${NEKO_SUMMARY_MODEL:-qwen-plus}
+      - NEKO_CORRECTION_MODEL=${NEKO_CORRECTION_MODEL:-qwen-max}
+      - NEKO_EMOTION_MODEL=${NEKO_EMOTION_MODEL:-qwen-turbo}
+      - NEKO_VISION_MODEL=${NEKO_VISION_MODEL:-qwen3-vl-plus-2025-09-23}
+
+      # MCP
+      - NEKO_MCP_ROUTER_URL=${NEKO_MCP_ROUTER_URL:-http://localhost:3283}
+
+    volumes:
+      # Persistent configuration
+      - ./N.E.K.O:/root/Documents/N.E.K.O
+      # Logs
+      - ./logs:/app/logs
+    
+    networks:
+      - neko-network
+
+networks:
+  neko-network:
+    driver: bridge
+```
+
+#### Core API Configuration
+
+| Environment Variable | Description | Default | Example |
+|---------------------|-------------|---------|---------|
+| `NEKO_CORE_API_KEY` | Core API Key (Required) | - | `sk-xxxxx` |
+| `NEKO_CORE_API` | Core API Provider | `qwen` | `qwen`, `openai`, `glm`, `step`, `free` |
+| `NEKO_ASSIST_API` | Assist API Provider | `qwen` | `qwen`, `openai`, `glm`, `step`, `silicon` |
+| `NEKO_ASSIST_API_KEY_QWEN` | Alibaba Cloud API Key | - | `sk-xxxxx` |
+| `NEKO_ASSIST_API_KEY_OPENAI` | OpenAI API Key | - | `sk-xxxxx` |
+| `NEKO_ASSIST_API_KEY_GLM` | Zhipu API Key | - | `xxxxx` |
+| `NEKO_ASSIST_API_KEY_STEP` | StepFun API Key | - | `xxxxx` |
+| `NEKO_ASSIST_API_KEY_SILICON` | SiliconFlow API Key | - | `xxxxx` |
+| `NEKO_MCP_TOKEN` | MCP Router Token | - | `xxxxx` |
+
+#### Server Port Configuration (DO NOT CHANGE!)
+
+| Environment Variable | Description | Default |
+|---------------------|-------------|---------|
+| `NEKO_MAIN_SERVER_PORT` | Main Server Port | `48911` |
+| `NEKO_MEMORY_SERVER_PORT` | Memory Server Port | `48912` |
+| `NEKO_MONITOR_SERVER_PORT` | Monitor Server Port | `48913` |
+| `NEKO_TOOL_SERVER_PORT` | Tool Server Port | `48915` |
+
+#### Model Configuration (Advanced)
+
+| Environment Variable | Description | Default |
+|---------------------|-------------|---------|
+| `NEKO_SUMMARY_MODEL` | Summary Model | `qwen-plus` |
+| `NEKO_CORRECTION_MODEL` | Correction Model | `qwen-max` |
+| `NEKO_EMOTION_MODEL` | Emotion Analysis Model | `qwen-turbo` |
+| `NEKO_VISION_MODEL` | Vision Model | `qwen3-vl-plus-2025-09-23` |
+
+**Note:** The current Docker deployment solution is provided by *HINS*
 
 # Advanced Usage
 
 #### Configuring API Key
 
-When you want to obtain additional features by configuring your own API, you can configure a third-party AI service. This project currently recommends using *StepFun* or *Alibaba Cloud*. Visit `http://localhost:48911/api_key` to configure directly through the Web interface. **We will adapt to more international service provider in 2026 Spring.**
+When you want to obtain additional features by configuring your own API, you can configure a third-party AI service (core API **must support Realtime API**). This project currently recommends using *StepFun* or *Alibaba Cloud*. Visit `http://localhost:48911/api_key` to configure directly through the Web interface. **We will adapt to more international service providers in 2026 Spring.**
 
 > Obtaining *Alibaba Cloud API*: Register an account on Alibaba Cloud's Bailian platform [official website](https://bailian.console.aliyun.com/). New users can receive substantial free credits after real-name verification. After registration, visit the [console](https://bailian.console.aliyun.com/api-key?tab=model#/api-key) to get your API Key.
 
-> *For **developers**: After cloning this project, (1) create a new `python3.11` environment. (2) Run `pip install -r requirements.txt` to install dependencies. (3) Run `python memory_server.py` and `python main_server.py`. (4) Access the web version through the port specified in main server (defaults to `http://localhost:48911`) and configure the API Key.*
+> *For **developers**: After cloning this project, (1) create a new `python3.11` environment. (2) Run `uv sync` to install dependencies. (3) Run `python memory_server.py` and `python main_server.py`. (4) Access the web version through the port specified in main server (defaults to `http://localhost:48911`) and configure the API Key.*
 
 #### Modifying Character Persona
 
@@ -121,25 +211,25 @@ When you want to obtain additional features by configuring your own API, you can
 **Project Architecture**
 
 ```
-Lanlan/
+N.E.K.O/
 ├── 📁 brain/                    # 🧠 Background Agent modules for controlling keyboard/mouse and MCP based on frontend dialogue
 ├── 📁 config/                   # ⚙️ Configuration management
 │   ├── api_providers.json       # API provider configuration
-│   ├── core_config.json         # Core configuration (API Keys, etc.)
 │   ├── prompts_chara.py         # Character prompts
 │   └── prompts_sys.py           # System prompts
-├── 📁 main_helper/              # 🔧 Core modules
+├── 📁 main_logic/              # 🔧 Core modules
 │   ├── core.py                  # Core dialogue module
 │   ├── cross_server.py         # Cross-server communication
-│   ├── omni_realtime_client.py  # Realtime API client
-│   ├── omni_offline_client.py  # Text API client
-│   └── tts_helper.py            # 🔊 TTS engine adapter
+│   ├── omni_realtime_client.py  # Realtime API client (Realtime API)
+│   ├── omni_offline_client.py  # Text API client (Response API)
+│   └── tts_client.py            # 🔊 TTS engine adapter
+├── 📁 main_routers/             # 🌐 API router modules
 ├── 📁 memory/                   # 🧠 Memory management system
 │   ├── store/                   # Memory data storage
+├── 📁 plugin/                   # 🔌 Plugin system
 ├── 📁 static/                   # 🌐 Frontend static resources
 ├── 📁 templates/                # 📄 Frontend HTML templates
 ├── 📁 utils/                    # 🛠️ Utility modules
-├── 📁 launcher/                 # 🚀 Rust launcher
 ├── main_server.py               # 🌐 Main server
 ├── agent_server.py              # 🤖 AI agent server
 └── memory_server.py             # 🧠 Memory server
@@ -171,3 +261,7 @@ Detailed startup steps for developers: (1) Create a new `python3.11` environment
 - Integrate with external software like Discord/Cursor.
 
 - Improve native tool calling.
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=wehos/N.E.K.O.&type=Date)](https://www.star-history.com/#wehos/N.E.K.O.&Date)

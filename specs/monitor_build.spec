@@ -77,10 +77,12 @@ a = Analysis(
         # 排除不需要的后端模块
         'brain',
         'memory',
-        'main_helper',
+        'main_logic',
         'agent_server',
         'memory_server',
         'main_server',
+        'main_routers',
+        'plugin',
         # 排除大型科学计算库（如果不需要）
         'numpy',
         'scipy',

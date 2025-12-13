@@ -1,0 +1,142 @@
+# -*- coding: utf-8 -*-
+"""
+WebSocket Router
+
+Handles WebSocket endpoints including:
+- Main WebSocket connection for chat
+- Proactive chat
+- Task notifications
+"""
+
+import json
+import uuid
+import asyncio
+import logging
+
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+
+from .shared_state import (
+    get_session_manager, 
+    get_config_manager,
+    get_session_id,
+)
+
+router = APIRouter(tags=["websocket"])
+logger = logging.getLogger("Main")
+
+# Lock for session management
+_lock = asyncio.Lock()
+
+
+@router.websocket("/ws/{lanlan_name}")
+async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
+    _config_manager = get_config_manager()
+    session_manager = get_session_manager()
+    await websocket.accept()
+    
+    # 检查角色是否存在，如果不存在则通知前端并关闭连接
+    if lanlan_name not in session_manager:
+        logger.warning(f"❌ 角色 {lanlan_name} 不存在，当前可用角色: {list(session_manager.keys())}")
+        # 获取当前正确的角色名
+        current_catgirl = None
+        if session_manager:
+            current_catgirl = next(iter(session_manager))
+        # 通知前端切换到正确的角色
+        if current_catgirl:
+            try:
+                await websocket.send_text(json.dumps({
+                    "type": "catgirl_switched",
+                    "new_catgirl": current_catgirl,
+                    "old_catgirl": lanlan_name
+                }))
+                logger.info(f"已通知前端切换到正确的角色: {current_catgirl}")
+                # 等待一下让客户端有时间处理消息，避免 onclose 在 onmessage 之前触发
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                logger.warning(f"通知前端失败: {e}")
+        await websocket.close()
+        return
+    
+    this_session_id = uuid.uuid4()
+    async with _lock:
+        session_id = get_session_id()
+        session_id[lanlan_name] = this_session_id
+    logger.info(f"⭐ WebSocket accepted: {websocket.client}, new session id: {session_id[lanlan_name]}, lanlan_name: {lanlan_name}")
+    
+    # 立即设置websocket到session manager，以支持主动搭话
+    # 注意：这里设置后，即使cleanup()被调用，websocket也会在start_session时重新设置
+    session_manager[lanlan_name].websocket = websocket
+    logger.info(f"✅ 已设置 {lanlan_name} 的WebSocket连接")
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            # 安全检查：如果角色已被重命名或删除，lanlan_name 可能不再存在
+            if lanlan_name not in session_id or lanlan_name not in session_manager:
+                logger.info(f"角色 {lanlan_name} 已被重命名或删除，关闭旧连接")
+                await websocket.close()
+                break
+            if session_id[lanlan_name] != this_session_id:
+                await session_manager[lanlan_name].send_status(f"切换至另一个终端...")
+                await websocket.close()
+                break
+            message = json.loads(data)
+            action = message.get("action")
+            # logger.debug(f"WebSocket received action: {action}") # Optional debug log
+
+            if action == "start_session":
+                session_manager[lanlan_name].active_session_is_idle = False
+                input_type = message.get("input_type", "audio")
+                if input_type in ['audio', 'screen', 'camera', 'text']:
+                    # 传递input_mode参数，告知session manager使用何种模式
+                    mode = 'text' if input_type == 'text' else 'audio'
+                    asyncio.create_task(session_manager[lanlan_name].start_session(websocket, message.get("new_session", False), mode))
+                else:
+                    await session_manager[lanlan_name].send_status(f"Invalid input type: {input_type}")
+
+            elif action == "stream_data":
+                asyncio.create_task(session_manager[lanlan_name].stream_data(message))
+
+            elif action == "end_session":
+                session_manager[lanlan_name].active_session_is_idle = False
+                asyncio.create_task(session_manager[lanlan_name].end_session())
+
+            elif action == "pause_session":
+                session_manager[lanlan_name].active_session_is_idle = True
+                asyncio.create_task(session_manager[lanlan_name].end_session())
+
+            elif action == "ping":
+                # 心跳保活消息，回复pong
+                await websocket.send_text(json.dumps({"type": "pong"}))
+                # logger.debug(f"收到心跳ping，已回复pong")
+
+            else:
+                logger.warning(f"Unknown action received: {action}")
+                await session_manager[lanlan_name].send_status(f"Unknown action: {action}")
+
+    except WebSocketDisconnect:
+        logger.info(f"WebSocket disconnected: {websocket.client}")
+    except Exception as e:
+        error_message = f"WebSocket handler error: {e}"
+        logger.error(f"💥 {error_message}")
+        try:
+            if lanlan_name in session_manager:
+                await session_manager[lanlan_name].send_status(f"Server error: {e}")
+        except:
+            pass
+    finally:
+        logger.info(f"Cleaning up WebSocket resources: {websocket.client}")
+        # 安全检查：如果角色已被重命名或删除，lanlan_name 可能不再存在
+        async with _lock:
+            session_id = get_session_id()
+            is_current = session_id.get(lanlan_name) == this_session_id
+            if is_current:
+                session_id.pop(lanlan_name, None)
+        
+        if is_current and lanlan_name in session_manager:
+            await session_manager[lanlan_name].cleanup()
+            # 注意：cleanup() 会清空 websocket，但只在连接真正断开时调用
+            # 如果连接还在，websocket应该保持设置
+            if session_manager[lanlan_name].websocket == websocket:
+                session_manager[lanlan_name].websocket = None
+

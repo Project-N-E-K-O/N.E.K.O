@@ -90,18 +90,18 @@ async def get_page_config(lanlan_name: str = ""):
         logger.error(f"获取页面配置失败: {e}")
         return {"success": False, "error": str(e)}
 
-@app.get("/api/preferences")
+@app.get("/api/config/preferences")
 async def get_preferences():
     """获取用户偏好设置（与main_server.py保持一致）"""
     preferences = load_user_preferences()
     return preferences
 
 @app.get('/api/live2d/emotion_mapping/{model_name}')
-async def get_emotion_mapping(model_name: str):
+def get_emotion_mapping(model_name: str):
     """获取情绪映射配置"""
     try:
         # 使用 find_model_directory 在 static、用户文档目录、创意工坊目录中查找模型
-        model_dir, url_prefix = find_model_directory(model_name)
+        model_dir, _ = find_model_directory(model_name)
         if not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         

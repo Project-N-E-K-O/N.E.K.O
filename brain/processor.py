@@ -3,7 +3,7 @@ import asyncio
 import logging
 from langchain_openai import ChatOpenAI
 from openai import APIConnectionError, InternalServerError, RateLimitError
-from config import MODELS_WITH_EXTRA_BODY
+from config import get_extra_body
 from utils.config_manager import get_config_manager
 from .mcp_client import McpRouterClient, McpToolCatalog
 
@@ -24,7 +24,7 @@ class Processor:
     def _get_llm(self):
         """动态获取LLM实例以支持配置热重载"""
         api_config = self._config_manager.get_model_api_config('summary')
-        return ChatOpenAI(model=api_config['model'], base_url=api_config['base_url'], api_key=api_config['api_key'], temperature=0, extra_body={"enable_thinking": False} if api_config['model'] in MODELS_WITH_EXTRA_BODY else None)
+        return ChatOpenAI(model=api_config['model'], base_url=api_config['base_url'], api_key=api_config['api_key'], temperature=0, extra_body=get_extra_body(api_config['model']) or None)
 
     async def process(self, query: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         capabilities = await self.catalog.get_capabilities()

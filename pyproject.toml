@@ -43,26 +43,39 @@ dependencies = [
 packages = [
   "brain",
   "config",
-  "main_helper",
+  "main_logic",
+  "main_routers",
   "memory",
+  "plugin",
+  "steamworks",
   "utils",
+]
+exclude = [
+  "plugin/plugins",
 ]
 
 [tool.hatch.build.targets.sdist]
 include = [
   "brain",
   "config",
-  "main_helper",
+  "main_logic",
+  "main_routers",
   "memory",
+  "plugin",
+  "steamworks",
   "utils",
   "static",
   "templates",
   "assets",
   "main_server.py",
   "memory_server.py",
-  "tool_server.py",
+  "agent_server.py",
+  "launcher.py",
   "monitor.py",
   "README.MD",
   "LICENSE",
+]
+exclude = [
+  "plugin/plugins",
 ]
 

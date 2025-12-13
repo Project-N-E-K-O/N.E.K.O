@@ -22,6 +22,13 @@ USER_PLUGIN_SERVER_PORT = 48916
 # MCP Router配置
 MCP_ROUTER_URL = 'http://localhost:3282'
 
+# tfLink 文件上传服务配置
+TFLINK_UPLOAD_URL = 'http://47.101.214.205:8000/api/upload'
+# tfLink 允许的主机名白名单（用于 SSRF 防护）
+TFLINK_ALLOWED_HOSTS = [
+    '47.101.214.205',  # tfLink 官方 IP
+]
+
 # API 和模型配置的默认值
 DEFAULT_CORE_API_KEY = ''
 DEFAULT_AUDIO_API_KEY = ''
@@ -172,9 +179,9 @@ DEFAULT_ASSIST_API_PROFILES = {
         'EMOTION_MODEL': "qwen-flash-2025-07-28",
         'VISION_MODEL': "qwen3-vl-plus-2025-09-23",
         # Qwen VL 模型支持 Computer Use
-        'COMPUTER_USE_MODEL': "qwen3-vl-235b-a22b-instruct",
+        'COMPUTER_USE_MODEL': "qwen3-vl-plus",
         'COMPUTER_USE_MODEL_URL': "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        'COMPUTER_USE_GROUND_MODEL': "qwen3-vl-30b-a3b-instruct",
+        'COMPUTER_USE_GROUND_MODEL': "qwen3-vl-flash",
         'COMPUTER_USE_GROUND_URL': "https://dashscope.aliyuncs.com/compatible-mode/v1",
     },
     'openai': {
@@ -194,11 +201,11 @@ DEFAULT_ASSIST_API_PROFILES = {
         'SUMMARY_MODEL': "glm-4.5-flash",
         'CORRECTION_MODEL': "glm-4.5-air",
         'EMOTION_MODEL': "glm-4.5-flash",
-        'VISION_MODEL': "glm-4v-plus-0111",
+        'VISION_MODEL': "glm-4.6v-flash",
         # 智谱 GLM-4.5V 支持 Grounding
-        'COMPUTER_USE_MODEL': "glm-4.5v",
+        'COMPUTER_USE_MODEL': "glm-4.6v",
         'COMPUTER_USE_MODEL_URL': "https://open.bigmodel.cn/api/paas/v4",
-        'COMPUTER_USE_GROUND_MODEL': "glm-4.5v",
+        'COMPUTER_USE_GROUND_MODEL': "glm-4.6v-flash",
         'COMPUTER_USE_GROUND_URL': "https://open.bigmodel.cn/api/paas/v4",
     },
     'step': {
@@ -216,13 +223,13 @@ DEFAULT_ASSIST_API_PROFILES = {
     'silicon': {
         'OPENROUTER_URL': "https://api.siliconflow.cn/v1",
         'SUMMARY_MODEL': "Qwen/Qwen3-Next-80B-A3B-Instruct",
-        'CORRECTION_MODEL': "deepseek-ai/DeepSeek-V3.2-Exp",
+        'CORRECTION_MODEL': "deepseek-ai/DeepSeek-V3.2",
         'EMOTION_MODEL': "inclusionAI/Ling-mini-2.0",
-        'VISION_MODEL': "Qwen/Qwen3-VL-235B-A22B-Instruct",
+        'VISION_MODEL': "zai-org/GLM-4.6V",
         # 硅基流动使用 Qwen VL 模型
-        'COMPUTER_USE_MODEL': "Qwen/Qwen3-VL-235B-A22B-Instruct",
+        'COMPUTER_USE_MODEL': "zai-org/GLM-4.6V",
         'COMPUTER_USE_MODEL_URL': "https://api.siliconflow.cn/v1",
-        'COMPUTER_USE_GROUND_MODEL': "Qwen/Qwen3-VL-30B-A3B-Instruct",
+        'COMPUTER_USE_GROUND_MODEL': "zai-org/GLM-4.6V",
         'COMPUTER_USE_GROUND_URL': "https://api.siliconflow.cn/v1",
     },
 }
@@ -246,7 +253,41 @@ DEFAULT_CONFIG_DATA = {
 TIME_ORIGINAL_TABLE_NAME = "time_indexed_original"
 TIME_COMPRESSED_TABLE_NAME = "time_indexed_compressed"
 
-MODELS_WITH_EXTRA_BODY = ["qwen-flash-2025-07-28", "qwen3-vl-plus-2025-09-23"]
+
+# 不同模型供应商需要的 extra_body 格式
+EXTRA_BODY_OPENAI = {"enable_thinking": False}
+EXTRA_BODY_CLAUDE = {"thinking": {"type": "disabled"}}
+
+# 模型到 extra_body 的映射
+MODELS_EXTRA_BODY_MAP = {
+    # Qwen 系列
+    "qwen-flash-2025-07-28": EXTRA_BODY_OPENAI,
+    "qwen3-vl-plus-2025-09-23": EXTRA_BODY_OPENAI,
+    "qwen3-vl-plus": EXTRA_BODY_OPENAI,
+    "qwen3-vl-flash": EXTRA_BODY_OPENAI,
+    # GLM 系列
+    "glm-4.5-air": EXTRA_BODY_CLAUDE,
+    "glm-4.6v-flash": EXTRA_BODY_CLAUDE,
+    "glm-4.6v": EXTRA_BODY_CLAUDE,
+    # Silicon (zai-org) - 使用 Qwen 格式
+    "zai-org/GLM-4.6V": EXTRA_BODY_OPENAI,
+}
+
+
+def get_extra_body(model: str) -> dict | None:
+    """根据模型名称返回对应的 extra_body 配置。
+
+    Args:
+        model: 模型名称
+
+    Returns:
+        对应的 extra_body dict，如果模型不需要特殊配置则返回 None
+    """
+    if not model:
+        return None
+    if model in MODELS_EXTRA_BODY_MAP:
+        return MODELS_EXTRA_BODY_MAP[model]
+    return {}
 
 
 __all__ = [
@@ -264,7 +305,10 @@ __all__ = [
     'DEFAULT_ASSIST_API_KEY_FIELDS',
     'TIME_ORIGINAL_TABLE_NAME',
     'TIME_COMPRESSED_TABLE_NAME',
-    'MODELS_WITH_EXTRA_BODY',
+    'MODELS_EXTRA_BODY_MAP',
+    'get_extra_body',
+    'EXTRA_BODY_OPENAI',
+    'EXTRA_BODY_CLAUDE',
     'MAIN_SERVER_PORT',
     'MEMORY_SERVER_PORT',
     'MONITOR_SERVER_PORT',
@@ -272,6 +316,8 @@ __all__ = [
     'TOOL_SERVER_PORT',
     'USER_PLUGIN_SERVER_PORT',
     'MCP_ROUTER_URL',
+    'TFLINK_UPLOAD_URL',
+    'TFLINK_ALLOWED_HOSTS',
     # API 和模型配置的默认值
     'DEFAULT_CORE_API_KEY',
     'DEFAULT_AUDIO_API_KEY',

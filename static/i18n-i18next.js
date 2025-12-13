@@ -16,18 +16,18 @@
  * 5. 初始化 i18next
  */
 
-(function() {
+(function () {
     'use strict';
-    
+
     // 如果已经初始化过，直接返回
     if (window.i18nInitialized) {
         return;
     }
     window.i18nInitialized = true;
-    
+
     // 支持的语言列表
     const SUPPORTED_LANGUAGES = ['zh-CN', 'en'];
-    
+
     // 获取浏览器语言（同步，作为 fallback）
     function getBrowserLanguage() {
         // 1. 检查 localStorage
@@ -35,7 +35,7 @@
         if (savedLanguage && SUPPORTED_LANGUAGES.includes(savedLanguage)) {
             return savedLanguage;
         }
-        
+
         // 2. 检查浏览器语言设置
         const browserLanguage = navigator.language || navigator.userLanguage;
         if (browserLanguage) {
@@ -52,33 +52,33 @@
                 return 'zh-CN';
             }
         }
-        
+
         // 3. 默认返回中文
         return 'zh-CN';
     }
-    
+
     // 从 Steam API 获取语言设置（异步）
     async function getSteamLanguage() {
         try {
-            const response = await fetch('/api/steam_language', {
+            const response = await fetch('/api/config/steam_language', {
                 method: 'GET',
                 headers: { 'Content-Type': 'application/json' },
                 // 设置超时，避免阻塞太久
                 signal: AbortSignal.timeout(2000)
             });
-            
+
             if (!response.ok) {
                 console.log('[i18n] Steam 语言 API 响应异常:', response.status);
                 return null;
             }
-            
+
             const data = await response.json();
             console.log('[i18n] Steam API 返回语言设置:', data);
-            
+
             if (data.success && data.i18n_language && SUPPORTED_LANGUAGES.includes(data.i18n_language)) {
                 return data.i18n_language;
             }
-            
+
             console.log('[i18n] Steam 语言 API 返回无效数据，回退到浏览器设置');
             return null;
         } catch (error) {
@@ -87,7 +87,7 @@
             return null;
         }
     }
-    
+
     // 获取初始语言：优先 Steam 设置，然后 localStorage，然后浏览器设置，最后默认中文
     async function getInitialLanguage() {
         // 1. 尝试从 Steam API 获取语言
@@ -97,16 +97,16 @@
             localStorage.setItem('i18nextLng', steamLanguage);
             return steamLanguage;
         }
-        
+
         // 2. 回退到浏览器语言
         return getBrowserLanguage();
     }
-    
+
     // 先使用同步方式获取初始语言（用于快速显示）
     let INITIAL_LANGUAGE = getBrowserLanguage();
-    
+
     // ==================== CDN 动态加载 ====================
-    
+
     /**
      * 动态加载脚本
      */
@@ -120,43 +120,43 @@
             console.log(`[i18n] Note: Actual availability will be checked by checkDependencies`);
             return;
         }
-        
+
         const script = document.createElement('script');
         script.src = src;
-        script.onload = onLoad || function() {};
-        script.onerror = onError || function() {
+        script.onload = onLoad || function () { };
+        script.onerror = onError || function () {
             console.error(`[i18n] 加载脚本失败: ${src}`);
         };
         document.head.appendChild(script);
     }
-    
+
     // 加载 i18next 核心库（使用本地文件）
     loadScript(
         '/static/libs/i18next.min.js',
         null,
-        function() {
+        function () {
             console.error('[i18n] 加载 i18next 失败');
         }
     );
-    
+
     // 加载 i18next HTTP Backend（使用本地文件）
     loadScript(
         '/static/libs/i18nextHttpBackend.min.js',
         null,
-        function() {
+        function () {
             console.error('[i18n] 加载 i18nextHttpBackend 失败');
         }
     );
-    
+
     // ==================== CDN 加载检查和容错机制 ====================
-    
+
     /**
      * 检查 CDN 依赖并初始化 i18next
      */
     function checkDependenciesAndInit() {
         const i18nextLoaded = typeof i18next !== 'undefined';
         const backendLoaded = typeof i18nextHttpBackend !== 'undefined';
-        
+
         if (i18nextLoaded && backendLoaded) {
             console.log('[i18n] ✅ 所有依赖库已加载');
             // 依赖已加载，直接初始化
@@ -164,12 +164,12 @@
         } else {
             // 依赖未加载，尝试重新加载本地文件或使用降级方案
             console.error('[i18n] ⚠️ 依赖库未完全加载，尝试重新加载本地文件...');
-            
+
             // 如果 i18nextHttpBackend 未加载，尝试重新加载本地文件
             if (!backendLoaded) {
                 loadScript(
                     '/static/libs/i18nextHttpBackend.min.js',
-                    function() {
+                    function () {
                         console.log('[i18n] ✅ 本地文件加载成功');
                         // 再次检查并初始化
                         setTimeout(() => {
@@ -180,7 +180,7 @@
                             }
                         }, 100);
                     },
-                    function() {
+                    function () {
                         console.error('[i18n] ❌ 本地文件加载失败，使用降级方案');
                         initI18nextWithoutBackend();
                     }
@@ -195,20 +195,20 @@
             }
         }
     }
-    
+
     /**
      * 等待依赖加载并初始化
      */
     function waitForDependenciesAndInit() {
         let checkCount = 0;
         const maxChecks = 50; // 最多检查 5 秒
-        
+
         function checkDependencies() {
             checkCount++;
-            
+
             const i18nextLoaded = typeof i18next !== 'undefined';
             const backendLoaded = typeof i18nextHttpBackend !== 'undefined';
-            
+
             if (i18nextLoaded && backendLoaded) {
                 console.log('[i18n] ✅ 所有依赖库已加载');
                 initI18next();
@@ -220,16 +220,16 @@
                 checkDependenciesAndInit();
             }
         }
-        
+
         // 开始检查
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', checkDependencies);
         } else {
             checkDependencies();
         }
-        
+
         // 安全网：10秒后强制初始化（即使依赖未加载）
-        setTimeout(function() {
+        setTimeout(function () {
             if (typeof window.t === 'undefined') {
                 const i18nextAvailable = typeof i18next !== 'undefined';
                 const backendAvailable = typeof i18nextHttpBackend !== 'undefined';
@@ -249,29 +249,29 @@
             }
         }, 10000);
     }
-    
+
     // 诊断函数
-    window.diagnoseI18n = function() {
+    window.diagnoseI18n = function () {
         console.log('=== i18next 诊断信息 ===');
         console.log('1. i18next 是否存在:', typeof i18next !== 'undefined');
         console.log('2. window.t 是否存在:', typeof window.t === 'function');
         console.log('3. window.i18n 是否存在:', typeof window.i18n !== 'undefined');
-        
+
         if (typeof i18next !== 'undefined') {
             console.log('4. i18next.isInitialized:', i18next.isInitialized);
             console.log('5. 当前语言:', i18next.language);
             console.log('6. 支持的语言:', i18next.options?.supportedLngs);
             console.log('7. 已加载的资源:', Object.keys(i18next.store?.data || {}));
-            
+
             // 检查资源内容
             const currentLang = i18next.language;
             const hasResource = i18next.hasResourceBundle(currentLang, 'translation');
             console.log('8. 资源是否存在:', hasResource);
-            
+
             if (hasResource) {
                 const resource = i18next.getResourceBundle(currentLang, 'translation');
                 console.log('9. 资源键数量:', Object.keys(resource || {}).length);
-                
+
                 // 测试几个常见的翻译键
                 const testKeys = ['app.title', 'voiceControl.startVoice', 'chat.title'];
                 console.log('10. 测试翻译键:');
@@ -299,7 +299,7 @@
         } else {
             console.error('4. i18next 未加载！请检查 CDN 是否成功加载。');
         }
-        
+
         // 检查页面上的 data-i18n 元素
         const elements = document.querySelectorAll('[data-i18n]');
         console.log(`11. 页面上的 data-i18n 元素数量: ${elements.length}`);
@@ -309,15 +309,15 @@
                 const key = el.getAttribute('data-i18n');
                 const text = el.textContent;
                 const translated = typeof window.t === 'function' ? window.t(key) : 'N/A';
-                console.log(`   元素 ${i+1}: key="${key}", text="${text}", 翻译="${translated}"`);
+                console.log(`   元素 ${i + 1}: key="${key}", text="${text}", 翻译="${translated}"`);
             });
         }
-        
+
         console.log('=== 诊断完成 ===');
     };
-    
+
     // 测试翻译函数
-    window.testTranslation = function(key) {
+    window.testTranslation = function (key) {
         console.log(`测试翻译键: ${key}`);
         if (typeof window.t === 'function') {
             const result = window.t(key);
@@ -328,19 +328,19 @@
             return null;
         }
     };
-    
+
     /**
      * 不使用 HTTP Backend，手动加载翻译文件
      */
     async function initI18nextWithoutBackend() {
         console.log('[i18n] 开始手动加载翻译文件...');
-        
+
         if (typeof i18next === 'undefined') {
             console.error('[i18n] ❌ i18next 核心库未加载，无法初始化');
             exportFallbackFunctions();
             return;
         }
-        
+
         try {
             // 并行执行：获取 Steam 语言设置 + 加载翻译文件
             const [steamLang, ...langResults] = await Promise.all([
@@ -362,11 +362,11 @@
                     }
                 })
             ]);
-            
+
             // 使用获取到的语言设置
             INITIAL_LANGUAGE = steamLang;
             console.log(`[i18n] 使用语言: ${INITIAL_LANGUAGE}`);
-            
+
             // 构建资源对象
             const resources = {};
             langResults.forEach(result => {
@@ -376,12 +376,12 @@
                     };
                 }
             });
-            
+
             // 确保至少有一个语言资源
             if (Object.keys(resources).length === 0) {
                 throw new Error('没有可用的翻译文件');
             }
-            
+
             // 初始化 i18next
             i18next.init({
                 lng: INITIAL_LANGUAGE,
@@ -398,13 +398,13 @@
                     escapeValue: false
                 },
                 debug: false
-            }, function(err, t) {
+            }, function (err, t) {
                 if (err) {
                     console.error('[i18n] 初始化失败:', err);
                     exportFallbackFunctions();
                     return;
                 }
-                
+
                 console.log('[i18n] ✅ 初始化成功（手动加载模式）');
                 updatePageTexts();
                 window.dispatchEvent(new CustomEvent('localechange'));
@@ -415,33 +415,33 @@
             exportFallbackFunctions();
         }
     }
-    
+
     /**
      * 导出降级函数（当初始化失败时使用）
      */
     function exportFallbackFunctions() {
         console.warn('[i18n] Using fallback functions due to initialization failure');
-        
-        window.t = function(key, params = {}) {
+
+        window.t = function (key, params = {}) {
             console.warn('[i18n] Fallback t() called with key:', key);
             return key;
         };
-        
+
         window.i18n = {
             isInitialized: false,
             language: INITIAL_LANGUAGE,
             store: { data: {} }
         };
-        
-        window.updatePageTexts = function() {
+
+        window.updatePageTexts = function () {
             console.warn('[i18n] Fallback updatePageTexts() called - no-op');
         };
-        
-        window.updateLive2DDynamicTexts = function() {
+
+        window.updateLive2DDynamicTexts = function () {
             console.warn('[i18n] Fallback updateLive2DDynamicTexts() called - no-op');
         };
     }
-    
+
     /**
      * 初始化 i18next（使用 HTTP Backend）
      */
@@ -451,20 +451,20 @@
             exportFallbackFunctions();
             return;
         }
-        
+
         if (typeof i18nextHttpBackend === 'undefined') {
             console.warn('[i18n] ⚠️ i18nextHttpBackend 未加载，使用手动加载方式');
             initI18nextWithoutBackend();
             return;
         }
-        
+
         // 获取语言设置（优先 Steam API）
         const language = await getInitialLanguage();
         INITIAL_LANGUAGE = language;
-        
+
         // 初始化 i18next
         console.log('[i18n] 开始初始化 i18next...');
-        
+
         try {
             i18next
                 .use(i18nextHttpBackend)
@@ -476,7 +476,7 @@
                     defaultNS: 'translation',
                     backend: {
                         loadPath: '/static/locales/{{lng}}.json',
-                        parse: function(data) {
+                        parse: function (data) {
                             try {
                                 return JSON.parse(data);
                             } catch (e) {
@@ -493,19 +493,19 @@
                         escapeValue: false
                     },
                     debug: false
-                }, function(err, t) {
+                }, function (err, t) {
                     if (err) {
                         console.error('[i18n] Initialization failed:', err);
                         exportFallbackFunctions();
                         return;
                     }
-                    
+
                     console.log('[i18n] ✅ 初始化成功！');
                     console.log('[i18n] 当前语言:', i18next.language);
-                    
+
                     // 防止重复初始化的标志
                     let initialized = false;
-                    
+
                     // 统一的初始化完成函数，确保只执行一次
                     const finalizeInit = () => {
                         if (initialized) return;
@@ -514,7 +514,7 @@
                         window.dispatchEvent(new CustomEvent('localechange'));
                         exportNormalFunctions();
                     };
-                    
+
                     // 确保资源已经加载
                     const checkResources = () => {
                         const lang = i18next.language;
@@ -532,9 +532,9 @@
                             }, 100);
                         }
                     };
-                    
+
                     // 监听资源加载完成事件
-                    const loadedHandler = function(loaded) {
+                    const loadedHandler = function (loaded) {
                         if (loaded && i18next.hasResourceBundle(i18next.language, 'translation')) {
                             finalizeInit();
                             // 移除事件监听器，防止内存泄漏
@@ -542,7 +542,7 @@
                         }
                     };
                     i18next.on('loaded', loadedHandler);
-                    
+
                     checkResources();
                 });
         } catch (error) {
@@ -550,12 +550,12 @@
             exportFallbackFunctions();
         }
     }
-    
+
     // ==================== 启动初始化流程 ====================
-    
+
     // 等待依赖加载并初始化
     waitForDependenciesAndInit();
-    
+
     /**
      * 解析 providerKey 并设置 provider 参数
      * @param {object} params - 翻译参数对象
@@ -563,7 +563,7 @@
      */
     function resolveProviderName(params) {
         if (!params || !params.providerKey) return params;
-        
+
         try {
             const resources = i18next.getResourceBundle(i18next.language, 'translation');
             const providerNames = resources?.api?.providerNames || {};
@@ -572,32 +572,32 @@
             console.warn('[i18n] Failed to resolve providerKey:', error);
             params.provider = params.providerKey;
         }
-        
+
         return params;
     }
-    
+
     /**
      * 导出正常函数（初始化成功后使用）
      */
     function exportNormalFunctions() {
         // 导出翻译函数
-        window.t = function(key, params = {}) {
+        window.t = function (key, params = {}) {
             if (!key) return '';
-            
+
             // 处理 providerKey 参数（与现有代码兼容）
             resolveProviderName(params);
-            
+
             return i18next.t(key, params);
         };
-        
+
         // 导出 i18next 实例
         window.i18n = i18next;
-        
+
         // 导出更新函数
         window.updatePageTexts = updatePageTexts;
         window.updateLive2DDynamicTexts = updateLive2DDynamicTexts;
         window.translateStatusMessage = translateStatusMessage;
-        
+
         // 监听语言变化（用于更新文本）
         i18next.on('languageChanged', (lng) => {
             // 保存语言选择到 localStorage
@@ -606,19 +606,19 @@
             updateLive2DDynamicTexts();
             window.dispatchEvent(new CustomEvent('localechange'));
         });
-        
+
         // 导出语言切换函数
-        window.changeLanguage = function(lng) {
+        window.changeLanguage = function (lng) {
             if (!SUPPORTED_LANGUAGES.includes(lng)) {
                 console.warn(`[i18n] 不支持的语言: ${lng}，支持的语言: ${SUPPORTED_LANGUAGES.join(', ')}`);
                 return Promise.reject(new Error(`不支持的语言: ${lng}`));
             }
             return i18next.changeLanguage(lng);
         };
-        
+
         // 确保在 DOM 加载完成后更新文本
         if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', function() {
+            document.addEventListener('DOMContentLoaded', function () {
                 updatePageTexts();
                 updateLive2DDynamicTexts();
             });
@@ -626,10 +626,10 @@
             updatePageTexts();
             updateLive2DDynamicTexts();
         }
-        
+
         console.log('[i18n] Normal functions exported successfully');
     }
-    
+
     /**
      * 更新页面文本的函数
      */
@@ -638,19 +638,19 @@
             console.warn('[i18n] i18next not initialized yet, skipping updatePageTexts');
             return;
         }
-        
+
         // 检查资源是否已加载
         if (!i18next.hasResourceBundle(i18next.language, 'translation')) {
             console.warn('[i18n] Translation resources not loaded yet, skipping updatePageTexts');
             return;
         }
-        
+
         // 更新所有带有 data-i18n 属性的元素
         const elements = document.querySelectorAll('[data-i18n]');
         elements.forEach(element => {
             const key = element.getAttribute('data-i18n');
             let params = {};
-            
+
             if (element.hasAttribute('data-i18n-params')) {
                 try {
                     params = JSON.parse(element.getAttribute('data-i18n-params'));
@@ -658,28 +658,28 @@
                     console.warn(`[i18n] Failed to parse params for ${key}:`, e);
                 }
             }
-            
+
             // 处理 providerKey 参数
             resolveProviderName(params);
-            
+
             const text = i18next.t(key, params);
-            
+
             if (text === key) {
                 // 只在开发模式下显示警告，避免控制台噪音
                 if (i18next.options.debug) {
                     console.warn(`[i18n] Translation key not found: ${key}`);
                 }
             }
-            
+
             // 特殊处理 title 标签
             if (element.tagName === 'TITLE') {
                 document.title = text;
                 return;
             }
-            
+
             element.textContent = text;
         });
-        
+
         // 更新所有带有 data-i18n-placeholder 属性的元素
         document.querySelectorAll('[data-i18n-placeholder]').forEach(element => {
             const key = element.getAttribute('data-i18n-placeholder');
@@ -688,7 +688,7 @@
                 element.placeholder = text;
             }
         });
-        
+
         // 更新所有带有 data-i18n-title 属性的元素
         document.querySelectorAll('[data-i18n-title]').forEach(element => {
             const key = element.getAttribute('data-i18n-title');
@@ -697,7 +697,7 @@
                 element.title = text;
             }
         });
-        
+
         // 更新所有带有 data-i18n-alt 属性的元素
         document.querySelectorAll('[data-i18n-alt]').forEach(element => {
             const key = element.getAttribute('data-i18n-alt');
@@ -707,7 +707,7 @@
             }
         });
     }
-    
+
     /**
      * 更新 Live2D 动态文本
      */
@@ -720,7 +720,7 @@
                 btn.title = i18next.t(titleKey);
             }
         });
-        
+
         // 更新设置菜单项
         const menuItems = document.querySelectorAll('[data-i18n-label]');
         menuItems.forEach(item => {
@@ -732,7 +732,7 @@
                 }
             }
         });
-        
+
         // 更新动态创建的标签
         // _updateLabelText 是附加在父容器（toggleItem 或 menuItem）上的，不是直接在 [data-i18n] 元素上
         // 查找所有可能包含 _updateLabelText 的容器元素
@@ -746,7 +746,7 @@
                 }
             });
         });
-        
+
         // 方法2：也检查是否有直接附加在元素上的 _updateLabelText（向后兼容）
         document.querySelectorAll('[data-i18n]').forEach(element => {
             if (element._updateLabelText && typeof element._updateLabelText === 'function') {
@@ -754,7 +754,7 @@
             }
         });
     }
-    
+
     /**
      * 翻译状态消息
      * 
@@ -795,9 +795,9 @@
                 return String(message);
             }
         }
-        
+
         if (!message || typeof message !== 'string') return message;
-        
+
         // Pattern-matching fallback (temporary compatibility layer)
         // WARNING: This is fragile and will break if backend messages change
         const messageMap = [
@@ -821,14 +821,14 @@
                 }
             }
         ];
-        
+
         for (const { pattern, translator } of messageMap) {
             if (pattern.test(message)) {
                 return translator(message);
             }
         }
-        
+
         return message;
     }
-    
+
 })();

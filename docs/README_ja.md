@@ -82,23 +82,113 @@ https://github.com/user-attachments/assets/9d9e01af-e2cc-46aa-add7-8eb1803f061c
 
 QQグループ：1022939659
 
-# クイックスタート
+# クイックスタート（Windowsユーザー）
 
-1. *ワンクリックパッケージユーザー*の場合、`新版启动器.exe`（新バージョンランチャー）を実行してメインコントロールパネルを開きます。
+*ワンクリックパッケージユーザー*の場合、解凍後に`N.E.K.O.exe`を実行するだけで起動できます。
 
-1. `启动对话服务器`（対話サーバー起動）と`开始聊天`（チャット開始）をクリックします。
+## Dockerデプロイ（Linuxユーザー）
 
-**Multi-language support is planned in 2026 Spring.**
+### 1. docker-composeを使用したデプロイ（現在唯一のDockerデプロイ方法）
+
+#### docker-compose.yml（現在amd64アーキテクチャイメージのみ利用可能）
+```yaml
+version: '3.8'
+
+services:
+  neko-main:
+    image: ghcr.io/project-n-e-k-o/n.e.k.o:latest
+    container_name: neko
+    restart: unless-stopped
+    ports:
+      # WebUIポート（デフォルト48911）
+#      - "48911(外部ポート):80(N.E.K.Oコンテナ内部Nginxリバースプロキシポート)"
+      - "48911:80"
+    environment:
+      # API Keys
+      - NEKO_CORE_API_KEY=${NEKO_CORE_API_KEY}
+      - NEKO_ASSIST_API_KEY_QWEN=${NEKO_ASSIST_API_KEY_QWEN:-}
+      - NEKO_ASSIST_API_KEY_OPENAI=${NEKO_ASSIST_API_KEY_OPENAI:-}
+      - NEKO_ASSIST_API_KEY_GLM=${NEKO_ASSIST_API_KEY_GLM:-}
+      - NEKO_ASSIST_API_KEY_STEP=${NEKO_ASSIST_API_KEY_STEP:-}
+      - NEKO_ASSIST_API_KEY_SILICON=${NEKO_ASSIST_API_KEY_SILICON:-}
+      - NEKO_MCP_TOKEN=${NEKO_MCP_TOKEN:-}
+
+      # API Providers
+      - NEKO_CORE_API=${NEKO_CORE_API:-qwen}
+      - NEKO_ASSIST_API=${NEKO_ASSIST_API:-qwen}
+
+      # Server Ports
+      - NEKO_MAIN_SERVER_PORT=48911
+      - NEKO_MEMORY_SERVER_PORT=48912
+      - NEKO_MONITOR_SERVER_PORT=48913
+      - NEKO_TOOL_SERVER_PORT=48915
+
+      # Models (Optional)
+      - NEKO_SUMMARY_MODEL=${NEKO_SUMMARY_MODEL:-qwen-plus}
+      - NEKO_CORRECTION_MODEL=${NEKO_CORRECTION_MODEL:-qwen-max}
+      - NEKO_EMOTION_MODEL=${NEKO_EMOTION_MODEL:-qwen-turbo}
+      - NEKO_VISION_MODEL=${NEKO_VISION_MODEL:-qwen3-vl-plus-2025-09-23}
+
+      # MCP
+      - NEKO_MCP_ROUTER_URL=${NEKO_MCP_ROUTER_URL:-http://localhost:3283}
+
+    volumes:
+      # 永続化設定
+      - ./N.E.K.O:/root/Documents/N.E.K.O
+      # ログ
+      - ./logs:/app/logs
+    
+    networks:
+      - neko-network
+
+networks:
+  neko-network:
+    driver: bridge
+```
+
+#### コアAPI設定
+
+| 環境変数 | 説明 | デフォルト | 例 |
+|---------|------|-----------|-----|
+| `NEKO_CORE_API_KEY` | コアAPI Key（必須） | - | `sk-xxxxx` |
+| `NEKO_CORE_API` | コアAPIプロバイダー | `qwen` | `qwen`, `openai`, `glm`, `step`, `free` |
+| `NEKO_ASSIST_API` | 補助APIプロバイダー | `qwen` | `qwen`, `openai`, `glm`, `step`, `silicon` |
+| `NEKO_ASSIST_API_KEY_QWEN` | Alibaba Cloud API Key | - | `sk-xxxxx` |
+| `NEKO_ASSIST_API_KEY_OPENAI` | OpenAI API Key | - | `sk-xxxxx` |
+| `NEKO_ASSIST_API_KEY_GLM` | Zhipu API Key | - | `xxxxx` |
+| `NEKO_ASSIST_API_KEY_STEP` | StepFun API Key | - | `xxxxx` |
+| `NEKO_ASSIST_API_KEY_SILICON` | SiliconFlow API Key | - | `xxxxx` |
+| `NEKO_MCP_TOKEN` | MCP Router Token | - | `xxxxx` |
+
+#### サーバーポート設定（変更しないでください！）
+
+| 環境変数 | 説明 | デフォルト |
+|---------|------|-----------|
+| `NEKO_MAIN_SERVER_PORT` | メインサーバーポート | `48911` |
+| `NEKO_MEMORY_SERVER_PORT` | メモリサーバーポート | `48912` |
+| `NEKO_MONITOR_SERVER_PORT` | モニターサーバーポート | `48913` |
+| `NEKO_TOOL_SERVER_PORT` | ツールサーバーポート | `48915` |
+
+#### モデル設定（上級）
+
+| 環境変数 | 説明 | デフォルト |
+|---------|------|-----------|
+| `NEKO_SUMMARY_MODEL` | 要約モデル | `qwen-plus` |
+| `NEKO_CORRECTION_MODEL` | 校正モデル | `qwen-max` |
+| `NEKO_EMOTION_MODEL` | 感情分析モデル | `qwen-turbo` |
+| `NEKO_VISION_MODEL` | 視覚モデル | `qwen3-vl-plus-2025-09-23` |
+
+**注：** 現在のDockerデプロイソリューションは *HINS* により提供されています
 
 # 上級使用
 
 #### API Keyの設定
 
-追加機能を得るために独自のAPIを設定したい場合、サードパーティのAIサービスを設定できます。本プロジェクトは現在 *StepFun* または *Alibaba Cloud* の使用を推奨しています。`http://localhost:48911/api_key`にアクセスして、Web画面から直接設定できます。 **We will adapt to more international service provider in 2026 Spring.**
+追加機能を得るために独自のAPIを設定したい場合、サードパーティのAIサービスを設定できます（コアAPIは**Realtime APIに対応している必要があります**）。本プロジェクトは現在 *StepFun* または *Alibaba Cloud* の使用を推奨しています。`http://localhost:48911/api_key`にアクセスして、Web画面から直接設定できます。**2026年春により多くの国際サービスプロバイダーに対応予定です。**
 
 > *Alibaba Cloud API*の取得：Alibaba CloudのBailian Platform[公式サイト](https://bailian.console.aliyun.com/)でアカウント登録します。新規ユーザーは実名認証後に大量の無料クレジットを取得できます。登録完了後、[コンソール](https://bailian.console.aliyun.com/api-key?tab=model#/api-key)にアクセスしてAPI Keyを取得してください。
 
-> *開発者の場合：本プロジェクトをクローン後、(1)新しい`python3.11`環境を作成。(2)`pip install -r requirements.txt`を実行して依存関係をインストール。(3)`python memory_server.py`と`python main_server.py`を実行。(4)main serverで指定されたポート（デフォルトは`http://localhost:48911`）からウェブ版にアクセスしてAPI Keyを設定。*
+> *開発者の場合：本プロジェクトをクローン後、(1)新しい`python3.11`環境を作成。(2)`uv sync`を実行して依存関係をインストール。(3)`python memory_server.py`と`python main_server.py`を実行。(4)main serverで指定されたポート（デフォルトは`http://localhost:48911`）からウェブ版にアクセスしてAPI Keyを設定。*
 
 #### キャラクター設定の変更
 
@@ -121,25 +211,25 @@ QQグループ：1022939659
 **プロジェクトアーキテクチャ**
 
 ```
-Lanlan/
+N.E.K.O/
 ├── 📁 brain/                    # 🧠 バックグラウンドAgentモジュール、フロントエンド対話内容に基づいてキーボード/マウスとMCPを制御
 ├── 📁 config/                   # ⚙️ 設定管理モジュール
 │   ├── api_providers.json       # APIプロバイダー設定
-│   ├── core_config.json         # コア設定（API Keyなど）
 │   ├── prompts_chara.py         # キャラクタープロンプト
 │   └── prompts_sys.py           # システムプロンプト
-├── 📁 main_helper/              # 🔧 コアモジュール
+├── 📁 main_logic/              # 🔧 コアモジュール
 │   ├── core.py                  # コア対話モジュール
 │   ├── cross_server.py         # クロスサーバー通信
-│   ├── omni_realtime_client.py  # リアルタイムAPIクライアント
-│   ├── omni_offline_client.py  # テキストAPIクライアント
-│   └── tts_helper.py            # 🔊 TTSエンジンアダプター
+│   ├── omni_realtime_client.py  # リアルタイムAPIクライアント（Realtime API）
+│   ├── omni_offline_client.py  # テキストAPIクライアント（Response API）
+│   └── tts_client.py            # 🔊 TTSエンジンアダプター
+├── 📁 main_routers/             # 🌐 APIルーターモジュール
 ├── 📁 memory/                   # 🧠 記憶管理システム
 │   ├── store/                   # 記憶データストレージ
+├── 📁 plugin/                   # 🔌 プラグインシステム
 ├── 📁 static/                   # 🌐 フロントエンド静的リソース
 ├── 📁 templates/                # 📄 フロントエンドHTMLテンプレート
 ├── 📁 utils/                    # 🛠️ ユーティリティモジュール
-├── 📁 launcher/                 # 🚀 Rustランチャー
 ├── main_server.py               # 🌐 メインサーバー
 ├── agent_server.py              # 🤖 AIエージェントサーバー
 └── memory_server.py             # 🧠 記憶サーバー
@@ -158,15 +248,13 @@ Lanlan/
 
 ### TODO リスト（開発計画）
 
-- Multi-language support.
-
 - memory serverの既存の意味インデックス部分を改善；既存のsettings update機能を公開。
 
 - 既存の能動的対話機能を改善。
 
 - フロントエンドをReactでリファクタリングし、スマートフォン独立実行版を準備。
 
-- MMDサポートにより3Dモデルを導入。
+- VRMサポートにより3Dモデルを導入。
 
 - 猫娘ネットワーク、猫娘同士の自律的通信を許可。
 
@@ -174,3 +262,6 @@ Lanlan/
 
 - ネイティブツール呼び出しを改善。
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=wehos/N.E.K.O.&type=Date)](https://www.star-history.com/#wehos/N.E.K.O.&Date)

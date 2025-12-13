@@ -1,0 +1,1130 @@
+# -*- coding: utf-8 -*-
+"""
+Characters Router
+
+Handles character (catgirl) management endpoints including:
+- Character CRUD operations
+- Voice settings
+- Microphone settings
+"""
+
+import json
+import io
+import os
+import logging
+import asyncio
+from datetime import datetime
+import pathlib
+import wave
+
+from fastapi import APIRouter, Request, File, UploadFile, Form
+from fastapi.responses import JSONResponse
+import httpx
+import dashscope
+from dashscope.audio.tts_v2 import VoiceEnrollmentService
+
+from .shared_state import get_config_manager, get_session_manager, get_initialize_character_data
+from utils.frontend_utils import find_models, find_model_directory
+from config import MEMORY_SERVER_PORT, TFLINK_UPLOAD_URL
+
+router = APIRouter(prefix="/api/characters", tags=["characters"])
+logger = logging.getLogger("Main")
+
+
+@router.get('/')
+async def get_characters():
+    _config_manager = get_config_manager()
+    return JSONResponse(content=_config_manager.load_characters())
+
+
+@router.get('/current_live2d_model')
+async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
+    """获取指定角色或当前角色的Live2D模型信息
+    
+    Args:
+        catgirl_name: 角色名称
+        item_id: 可选的物品ID，用于直接指定模型
+    """
+    try:
+        _config_manager = get_config_manager()
+        characters = _config_manager.load_characters()
+        
+        # 如果没有指定角色名称，使用当前猫娘
+        if not catgirl_name:
+            catgirl_name = characters.get('当前猫娘', '')
+        
+        # 查找指定角色的Live2D模型
+        live2d_model_name = None
+        model_info = None
+        
+        # 首先尝试通过item_id查找模型
+        if item_id:
+            try:
+                logger.debug(f"尝试通过item_id {item_id} 查找模型")
+                # 获取所有模型
+                all_models = find_models()
+                # 查找匹配item_id的模型
+                matching_model = next((m for m in all_models if m.get('item_id') == item_id), None)
+                
+                if matching_model:
+                    logger.debug(f"通过item_id找到模型: {matching_model['name']}")
+                    # 复制模型信息
+                    model_info = matching_model.copy()
+                    live2d_model_name = model_info['name']
+            except Exception as e:
+                logger.warning(f"通过item_id查找模型失败: {e}")
+        
+        # 如果没有通过item_id找到模型，再通过角色名称查找
+        if not model_info and catgirl_name:
+            # 在猫娘列表中查找
+            if '猫娘' in characters and catgirl_name in characters['猫娘']:
+                catgirl_data = characters['猫娘'][catgirl_name]
+                live2d_model_name = catgirl_data.get('live2d')
+                
+                # 检查是否有保存的item_id
+                saved_item_id = catgirl_data.get('live2d_item_id')
+                if saved_item_id:
+                    logger.debug(f"发现角色 {catgirl_name} 保存的item_id: {saved_item_id}")
+                    try:
+                        # 尝试通过保存的item_id查找模型
+                        all_models = find_models()
+                        matching_model = next((m for m in all_models if m.get('item_id') == saved_item_id), None)
+                        if matching_model:
+                            logger.debug(f"通过保存的item_id找到模型: {matching_model['name']}")
+                            model_info = matching_model.copy()
+                            live2d_model_name = model_info['name']
+                    except Exception as e:
+                        logger.warning(f"通过保存的item_id查找模型失败: {e}")
+        
+        # 如果找到了模型名称，获取模型信息
+        if live2d_model_name:
+            try:
+                # 先从完整的模型列表中查找，这样可以获取到item_id等完整信息
+                all_models = find_models()
+                # 查找匹配的模型
+                matching_model = next((m for m in all_models if m['name'] == live2d_model_name), None)
+                
+                if matching_model:
+                    # 使用完整的模型信息，包含item_id
+                    model_info = matching_model.copy()
+                    logger.debug(f"从完整模型列表获取模型信息: {model_info}")
+                else:
+                    # 如果在完整列表中找不到，回退到原来的逻辑
+                    model_dir, url_prefix = find_model_directory(live2d_model_name)
+                    if os.path.exists(model_dir):
+                        # 查找模型配置文件
+                        model_files = [f for f in os.listdir(model_dir) if f.endswith('.model3.json')]
+                        if model_files:
+                            model_file = model_files[0]
+                            
+                            # 使用保存的item_id构建model_path
+                            # 从之前的逻辑中获取saved_item_id
+                            saved_item_id = catgirl_data.get('live2d_item_id', '') if 'catgirl_data' in locals() else ''
+                            
+                            # 如果有保存的item_id，使用它构建路径
+                            if saved_item_id:
+                                model_path = f'{url_prefix}/{saved_item_id}/{model_file}'
+                                logger.debug(f"使用保存的item_id构建模型路径: {model_path}")
+                            else:
+                                # 原始路径构建逻辑
+                                model_path = f'{url_prefix}/{live2d_model_name}/{model_file}'
+                                logger.debug(f"使用模型名称构建路径: {model_path}")
+                            
+                            model_info = {
+                                'name': live2d_model_name,
+                                'item_id': saved_item_id,
+                                'path': model_path
+                            }
+            except Exception as e:
+                logger.warning(f"获取模型信息失败: {e}")
+        
+        # 回退机制：如果没有找到模型，使用默认的mao_pro
+        if not live2d_model_name or not model_info:
+            logger.info(f"猫娘 {catgirl_name} 未设置Live2D模型，回退到默认模型 mao_pro")
+            live2d_model_name = 'mao_pro'
+            try:
+                # 先从完整的模型列表中查找mao_pro
+                all_models = find_models()
+                matching_model = next((m for m in all_models if m['name'] == 'mao_pro'), None)
+                
+                if matching_model:
+                    model_info = matching_model.copy()
+                    model_info['is_fallback'] = True
+                else:
+                    # 如果找不到，回退到原来的逻辑
+                    model_dir, url_prefix = find_model_directory('mao_pro')
+                    if os.path.exists(model_dir):
+                        model_files = [f for f in os.listdir(model_dir) if f.endswith('.model3.json')]
+                        if model_files:
+                            model_file = model_files[0]
+                            model_path = f'{url_prefix}/mao_pro/{model_file}'
+                            model_info = {
+                                'name': 'mao_pro',
+                                'path': model_path,
+                                'is_fallback': True  # 标记这是回退模型
+                            }
+            except Exception as e:
+                logger.error(f"获取默认模型mao_pro失败: {e}")
+        
+        return JSONResponse(content={
+            'success': True,
+            'catgirl_name': catgirl_name,
+            'model_name': live2d_model_name,
+            'model_info': model_info
+        })
+        
+    except Exception as e:
+        logger.error(f"获取角色Live2D模型失败: {e}")
+        return JSONResponse(content={
+            'success': False,
+            'error': str(e)
+        })
+
+@router.put('/catgirl/l2d/{name}')
+async def update_catgirl_l2d(name: str, request: Request):
+    """更新指定猫娘的Live2D模型设置"""
+    try:
+        data = await request.json()
+        live2d_model = data.get('live2d')
+        item_id = data.get('item_id')  # 获取可选的item_id
+        
+        if not live2d_model:
+            return JSONResponse(content={
+                'success': False,
+                'error': '未提供Live2D模型名称'
+            })
+        
+        # 加载当前角色配置
+        _config_manager = get_config_manager()
+        characters = _config_manager.load_characters()
+        
+        # 确保猫娘配置存在
+        if '猫娘' not in characters:
+            characters['猫娘'] = {}
+        
+        # 确保指定猫娘的配置存在
+        if name not in characters['猫娘']:
+            return JSONResponse(
+                {'success': False, 'error': '猫娘不存在'}, 
+                status_code=404
+            )
+        
+        # 更新Live2D模型设置，同时保存item_id（如果有）
+        characters['猫娘'][name]['live2d'] = live2d_model
+        if item_id:
+            characters['猫娘'][name]['live2d_item_id'] = item_id
+            logger.debug(f"已保存角色 {name} 的模型 {live2d_model} 和item_id {item_id}")
+        else:
+            logger.debug(f"已保存角色 {name} 的模型 {live2d_model}")
+        
+        # 保存配置
+        _config_manager.save_characters(characters)
+        # 自动重新加载配置
+        initialize_character_data = get_initialize_character_data()
+        await initialize_character_data()
+        
+        return JSONResponse(content={
+            'success': True,
+            'message': f'已更新角色 {name} 的Live2D模型为 {live2d_model}'
+        })
+        
+    except Exception as e:
+        logger.error(f"更新角色Live2D模型失败: {e}")
+        return JSONResponse(content={
+            'success': False,
+            'error': str(e)
+        })
+
+
+@router.put('/catgirl/voice_id/{name}')
+async def update_catgirl_voice_id(name: str, request: Request):
+    data = await request.json()
+    if not data:
+        return JSONResponse({'success': False, 'error': '无数据'}, status_code=400)
+    _config_manager = get_config_manager()
+    session_manager = get_session_manager()
+    characters = _config_manager.load_characters()
+    if name not in characters.get('猫娘', {}):
+        return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
+    if 'voice_id' in data:
+        voice_id = data['voice_id']
+        # 验证voice_id是否在voice_storage中
+        if not _config_manager.validate_voice_id(voice_id):
+            voices = _config_manager.get_voices_for_current_api()
+            available_voices = list(voices.keys())
+            return JSONResponse({
+                'success': False, 
+                'error': f'voice_id "{voice_id}" 在当前API的音色库中不存在',
+                'available_voices': available_voices
+            }, status_code=400)
+        characters['猫娘'][name]['voice_id'] = voice_id
+    _config_manager.save_characters(characters)
+    
+    # 如果是当前活跃的猫娘，需要先通知前端，再关闭session
+    is_current_catgirl = (name == characters.get('当前猫娘', ''))
+    session_ended = False
+    
+    if is_current_catgirl and name in session_manager:
+        # 检查是否有活跃的session
+        if session_manager[name].is_active:
+            logger.info(f"检测到 {name} 的voice_id已更新，准备刷新...")
+            
+            # 1. 先发送刷新消息（WebSocket还连着）
+            if session_manager[name].websocket:
+                try:
+                    await session_manager[name].websocket.send_text(json.dumps({
+                        "type": "reload_page",
+                        "message": "语音已更新，页面即将刷新"
+                    }))
+                    logger.info(f"已通知 {name} 的前端刷新页面")
+                except Exception as e:
+                    logger.warning(f"通知前端刷新页面失败: {e}")
+            
+            # 2. 立刻关闭session（这会断开WebSocket）
+            try:
+                await session_manager[name].end_session(by_server=True)
+                session_ended = True
+                logger.info(f"{name} 的session已结束")
+            except Exception as e:
+                logger.error(f"结束session时出错: {e}")
+    
+    # 方案3：条件性重新加载 - 只有当前猫娘才重新加载配置
+    if is_current_catgirl:
+        # 3. 重新加载配置，让新的voice_id生效
+        initialize_character_data = get_initialize_character_data()
+        await initialize_character_data()
+        logger.info(f"配置已重新加载，新的voice_id已生效")
+    else:
+        # 不是当前猫娘，跳过重新加载，避免影响当前猫娘的session
+        logger.info(f"切换的是其他猫娘 {name} 的音色，跳过重新加载以避免影响当前猫娘的session")
+    
+    return {"success": True, "session_restarted": session_ended}
+
+@router.get('/catgirl/{name}/voice_mode_status')
+async def get_catgirl_voice_mode_status(name: str):
+    """检查指定角色是否在语音模式下"""
+    _config_manager = get_config_manager()
+    session_manager = get_session_manager()
+    characters = _config_manager.load_characters()
+    is_current = characters.get('当前猫娘') == name
+    
+    if name not in session_manager:
+        return JSONResponse({'is_voice_mode': False, 'is_current': is_current, 'is_active': False})
+    
+    mgr = session_manager[name]
+    is_active = mgr.is_active if mgr else False
+    
+    is_voice_mode = False
+    if is_active and mgr:
+        # 检查是否是语音模式（通过session类型判断）
+        from main_logic.omni_realtime_client import OmniRealtimeClient
+        is_voice_mode = mgr.session and isinstance(mgr.session, OmniRealtimeClient)
+    
+    return JSONResponse({
+        'is_voice_mode': is_voice_mode,
+        'is_current': is_current,
+        'is_active': is_active
+    })
+
+
+@router.post('/catgirl/{old_name}/rename')
+async def rename_catgirl(old_name: str, request: Request):
+    _config_manager = get_config_manager()
+    session_manager = get_session_manager()
+    data = await request.json()
+    new_name = data.get('new_name') if data else None
+    if not new_name:
+        return JSONResponse({'success': False, 'error': '新档案名不能为空'}, status_code=400)
+    characters = _config_manager.load_characters()
+    if old_name not in characters.get('猫娘', {}):
+        return JSONResponse({'success': False, 'error': '原猫娘不存在'}, status_code=404)
+    if new_name in characters['猫娘']:
+        return JSONResponse({'success': False, 'error': '新档案名已存在'}, status_code=400)
+    
+    # 如果当前猫娘是被重命名的猫娘，需要先保存WebSocket连接并发送通知
+    # 必须在 initialize_character_data() 之前发送，因为那个函数会删除旧的 session_manager 条目
+    is_current_catgirl = characters.get('当前猫娘') == old_name
+    
+    # 检查当前角色是否有活跃的语音session
+    if is_current_catgirl and old_name in session_manager:
+        mgr = session_manager[old_name]
+        if mgr.is_active:
+            # 检查是否是语音模式（通过session类型判断）
+            from main_logic.omni_realtime_client import OmniRealtimeClient
+            is_voice_mode = mgr.session and isinstance(mgr.session, OmniRealtimeClient)
+            
+            if is_voice_mode:
+                return JSONResponse({
+                    'success': False, 
+                    'error': '语音状态下无法修改角色名称，请先停止语音对话后再修改'
+                }, status_code=400)
+    if is_current_catgirl:
+        logger.info(f"开始通知WebSocket客户端：猫娘从 {old_name} 重命名为 {new_name}")
+        message = json.dumps({
+            "type": "catgirl_switched",
+            "new_catgirl": new_name,
+            "old_catgirl": old_name
+        })
+        # 在 initialize_character_data() 之前发送消息，因为之后旧的 session_manager 会被删除
+        if old_name in session_manager:
+            ws = session_manager[old_name].websocket
+            if ws:
+                try:
+                    await ws.send_text(message)
+                    logger.info(f"已向 {old_name} 发送重命名通知")
+                except Exception as e:
+                    logger.warning(f"发送重命名通知给 {old_name} 失败: {e}")
+    
+    # 重命名
+    characters['猫娘'][new_name] = characters['猫娘'].pop(old_name)
+    # 如果当前猫娘是被重命名的猫娘，也需要更新
+    if is_current_catgirl:
+        characters['当前猫娘'] = new_name
+    _config_manager.save_characters(characters)
+    # 自动重新加载配置
+    initialize_character_data = get_initialize_character_data()
+    await initialize_character_data()
+    
+    return {"success": True}
+
+
+@router.post('/catgirl/{name}/unregister_voice')
+async def unregister_voice(name: str):
+    """解除猫娘的声音注册"""
+    try:
+        _config_manager = get_config_manager()
+        characters = _config_manager.load_characters()
+        if name not in characters.get('猫娘', {}):
+            return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
+        
+        # 检查是否已有voice_id
+        if not characters['猫娘'][name].get('voice_id'):
+            return JSONResponse({'success': False, 'error': '该猫娘未注册声音'}, status_code=400)
+        
+        # 删除voice_id字段
+        if 'voice_id' in characters['猫娘'][name]:
+            characters['猫娘'][name].pop('voice_id')
+        _config_manager.save_characters(characters)
+        # 自动重新加载配置
+        initialize_character_data = get_initialize_character_data()
+        await initialize_character_data()
+        
+        logger.info(f"已解除猫娘 '{name}' 的声音注册")
+        return {"success": True, "message": "声音注册已解除"}
+        
+    except Exception as e:
+        logger.error(f"解除声音注册时出错: {e}")
+        return JSONResponse({'success': False, 'error': f'解除注册失败: {str(e)}'}, status_code=500)
+
+@router.get('/current_catgirl')
+async def get_current_catgirl():
+    """获取当前使用的猫娘名称"""
+    _config_manager = get_config_manager()
+    characters = _config_manager.load_characters()
+    current_catgirl = characters.get('当前猫娘', '')
+    return JSONResponse(content={'current_catgirl': current_catgirl})
+
+@router.post('/current_catgirl')
+async def set_current_catgirl(request: Request):
+    """设置当前使用的猫娘"""
+    data = await request.json()
+    catgirl_name = data.get('catgirl_name', '') if data else ''
+    
+    if not catgirl_name:
+        return JSONResponse({'success': False, 'error': '猫娘名称不能为空'}, status_code=400)
+    
+    _config_manager = get_config_manager()
+    session_manager = get_session_manager()
+    characters = _config_manager.load_characters()
+    if catgirl_name not in characters.get('猫娘', {}):
+        return JSONResponse({'success': False, 'error': '指定的猫娘不存在'}, status_code=404)
+    
+    old_catgirl = characters.get('当前猫娘', '')
+    
+    # 检查当前角色是否有活跃的语音session
+    if old_catgirl and old_catgirl in session_manager:
+        mgr = session_manager[old_catgirl]
+        if mgr.is_active:
+            # 检查是否是语音模式（通过session类型判断）
+            from main_logic.omni_realtime_client import OmniRealtimeClient
+            is_voice_mode = mgr.session and isinstance(mgr.session, OmniRealtimeClient)
+            
+            if is_voice_mode:
+                return JSONResponse({
+                    'success': False, 
+                    'error': '语音状态下无法切换角色，请先停止语音对话后再切换'
+                }, status_code=400)
+    characters['当前猫娘'] = catgirl_name
+    _config_manager.save_characters(characters)
+    initialize_character_data = get_initialize_character_data()
+    # 自动重新加载配置
+    await initialize_character_data()
+    
+    # 通过WebSocket通知所有连接的客户端
+    # 使用session_manager中的websocket，但需要确保websocket已设置
+    notification_count = 0
+    logger.info(f"开始通知WebSocket客户端：猫娘从 {old_catgirl} 切换到 {catgirl_name}")
+    
+    message = json.dumps({
+        "type": "catgirl_switched",
+        "new_catgirl": catgirl_name,
+        "old_catgirl": old_catgirl
+    })
+    
+    # 遍历所有session_manager，尝试发送消息
+    for lanlan_name, mgr in list(session_manager.items()):
+        ws = mgr.websocket
+        logger.info(f"检查 {lanlan_name} 的WebSocket: websocket存在={ws is not None}")
+        
+        if ws:
+            try:
+                await ws.send_text(message)
+                notification_count += 1
+                logger.info(f"✅ 已通过WebSocket通知 {lanlan_name} 的连接：猫娘已从 {old_catgirl} 切换到 {catgirl_name}")
+            except Exception as e:
+                logger.warning(f"❌ 通知 {lanlan_name} 的连接失败: {e}")
+                # 如果发送失败，可能是连接已断开，清空websocket引用
+                if mgr.websocket == ws:
+                    mgr.websocket = None
+    
+    if notification_count > 0:
+        logger.info(f"✅ 已通过WebSocket通知 {notification_count} 个连接的客户端：猫娘已从 {old_catgirl} 切换到 {catgirl_name}")
+    else:
+        logger.warning(f"⚠️ 没有找到任何活跃的WebSocket连接来通知猫娘切换")
+        logger.warning(f"提示：请确保前端页面已打开并建立了WebSocket连接，且已调用start_session")
+    
+    return {"success": True}
+
+
+@router.post('/reload')
+async def reload_character_config():
+    """重新加载角色配置（热重载）"""
+    try:
+        initialize_character_data = get_initialize_character_data()
+        await initialize_character_data()
+        return {"success": True, "message": "角色配置已重新加载"}
+    except Exception as e:
+        logger.error(f"重新加载角色配置失败: {e}")
+        return JSONResponse(
+            {'success': False, 'error': f'重新加载失败: {str(e)}'}, 
+            status_code=500
+        )
+
+
+@router.post('/master')
+async def update_master(request: Request):
+    data = await request.json()
+    if not data or not data.get('档案名'):
+        return JSONResponse({'success': False, 'error': '档案名为必填项'}, status_code=400)
+    _config_manager = get_config_manager()
+    initialize_character_data = get_initialize_character_data()
+    characters = _config_manager.load_characters()
+    characters['主人'] = {k: v for k, v in data.items() if v}
+    _config_manager.save_characters(characters)
+    # 自动重新加载配置
+    await initialize_character_data()
+    return {"success": True}
+
+
+@router.post('/catgirl')
+async def add_catgirl(request: Request):
+    data = await request.json()
+    if not data or not data.get('档案名'):
+        return JSONResponse({'success': False, 'error': '档案名为必填项'}, status_code=400)
+    
+    _config_manager = get_config_manager()
+    characters = _config_manager.load_characters()
+    key = data['档案名']
+    if key in characters.get('猫娘', {}):
+        return JSONResponse({'success': False, 'error': '该猫娘已存在'}, status_code=400)
+    
+    if '猫娘' not in characters:
+        characters['猫娘'] = {}
+    
+    # 创建猫娘数据，只保存非空字段
+    catgirl_data = {}
+    for k, v in data.items():
+        if k != '档案名':
+            # voice_id 特殊处理：空字符串表示删除该字段
+            if k == 'voice_id' and v == '':
+                continue  # 不添加该字段，相当于删除
+            elif v:  # 只保存非空字段
+                catgirl_data[k] = v
+    
+    characters['猫娘'][key] = catgirl_data
+    _config_manager.save_characters(characters)
+    initialize_character_data = get_initialize_character_data()
+    # 自动重新加载配置
+    await initialize_character_data()
+    
+    # 通知记忆服务器重新加载配置
+    try:
+        import httpx
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(f"http://localhost:{MEMORY_SERVER_PORT}/reload", timeout=5.0)
+            if resp.status_code == 200:
+                result = resp.json()
+                if result.get('status') == 'success':
+                    logger.info(f"✅ 已通知记忆服务器重新加载配置（新角色: {key}）")
+                else:
+                    logger.warning(f"⚠️ 记忆服务器重新加载配置返回: {result.get('message')}")
+            else:
+                logger.warning(f"⚠️ 记忆服务器重新加载配置失败，状态码: {resp.status_code}")
+    except Exception as e:
+        logger.warning(f"⚠️ 通知记忆服务器重新加载配置时出错: {e}（不影响角色创建）")
+    
+    return {"success": True}
+
+
+@router.put('/catgirl/{name}')
+async def update_catgirl(name: str, request: Request):
+    data = await request.json()
+    if not data:
+        return JSONResponse({'success': False, 'error': '无数据'}, status_code=400)
+    _config_manager = get_config_manager()
+    characters = _config_manager.load_characters()
+    if name not in characters.get('猫娘', {}):
+        return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
+    
+    # 记录更新前的voice_id，用于检测是否变更
+    old_voice_id = characters['猫娘'][name].get('voice_id', '')
+    
+    # 如果包含voice_id，验证其有效性
+    if 'voice_id' in data:
+        voice_id = data['voice_id']
+        # 空字符串表示删除voice_id，跳过验证
+        if voice_id != '' and not _config_manager.validate_voice_id(voice_id):
+            voices = _config_manager.get_voices_for_current_api()
+            available_voices = list(voices.keys())
+            return JSONResponse({
+                'success': False, 
+                'error': f'voice_id "{voice_id}" 在当前API的音色库中不存在',
+                'available_voices': available_voices
+            }, status_code=400)
+    
+    # 只更新前端传来的字段，未传字段保留原值，且不允许通过此接口修改 system_prompt
+    removed_fields = []
+    for k, v in characters['猫娘'][name].items():
+        if k not in data and k not in ('档案名', 'system_prompt', 'voice_id', 'live2d'):
+            removed_fields.append(k)
+    for k in removed_fields:
+        characters['猫娘'][name].pop(k)
+    
+    # 处理voice_id的特殊逻辑：如果传入空字符串，则删除该字段
+    if 'voice_id' in data and data['voice_id'] == '':
+        characters['猫娘'][name].pop('voice_id', None)
+    
+    # 更新其他字段
+    for k, v in data.items():
+        if k not in ('档案名', 'voice_id') and v:
+            characters['猫娘'][name][k] = v
+        elif k == 'voice_id' and v:  # voice_id非空时才更新
+            characters['猫娘'][name][k] = v
+    _config_manager.save_characters(characters)
+    
+    # 获取更新后的voice_id
+    new_voice_id = characters['猫娘'][name].get('voice_id', '')
+    voice_id_changed = (old_voice_id != new_voice_id)
+    
+    # 如果是当前活跃的猫娘且voice_id发生了变更，需要先通知前端，再关闭session
+    is_current_catgirl = (name == characters.get('当前猫娘', ''))
+    session_ended = False
+    
+    session_manager = get_session_manager()
+    if voice_id_changed and is_current_catgirl and name in session_manager:
+        # 检查是否有活跃的session
+        if session_manager[name].is_active:
+            logger.info(f"检测到 {name} 的voice_id已变更（{old_voice_id} -> {new_voice_id}），准备刷新...")
+            
+            # 1. 先发送刷新消息（WebSocket还连着）
+            if session_manager[name].websocket:
+                try:
+                    await session_manager[name].websocket.send_text(json.dumps({
+                        "type": "reload_page",
+                        "message": "语音已更新，页面即将刷新"
+                    }))
+                    logger.info(f"已通知 {name} 的前端刷新页面")
+                except Exception as e:
+                    logger.warning(f"通知前端刷新页面失败: {e}")
+            
+            # 2. 立刻关闭session（这会断开WebSocket）
+            try:
+                await session_manager[name].end_session(by_server=True)
+                session_ended = True
+                logger.info(f"{name} 的session已结束")
+            except Exception as e:
+                logger.error(f"结束session时出错: {e}")
+    
+    # 方案3：条件性重新加载 - 只有当前猫娘或voice_id变更时才重新加载配置
+    if voice_id_changed and is_current_catgirl:
+        # 自动重新加载配置
+        initialize_character_data = get_initialize_character_data()
+        await initialize_character_data()
+        logger.info(f"配置已重新加载，新的voice_id已生效")
+    elif voice_id_changed and not is_current_catgirl:
+        # 不是当前猫娘，跳过重新加载，避免影响当前猫娘的session
+        logger.info(f"切换的是其他猫娘 {name} 的音色，跳过重新加载以避免影响当前猫娘的session")
+    
+    return {"success": True, "voice_id_changed": voice_id_changed, "session_restarted": session_ended}
+
+
+@router.delete('/catgirl/{name}')
+async def delete_catgirl(name: str):
+    import shutil
+    _config_manager = get_config_manager()
+    characters = _config_manager.load_characters()
+    if name not in characters.get('猫娘', {}):
+        return JSONResponse({'success': False, 'error': '猫娘不存在'}, status_code=404)
+    
+    # 检查是否是当前正在使用的猫娘
+    current_catgirl = characters.get('当前猫娘', '')
+    if name == current_catgirl:
+        return JSONResponse({'success': False, 'error': '不能删除当前正在使用的猫娘！请先切换到其他猫娘后再删除。'}, status_code=400)
+    
+    # 删除对应的记忆文件
+    try:
+        memory_paths = [_config_manager.memory_dir, _config_manager.project_memory_dir]
+        files_to_delete = [
+            f'semantic_memory_{name}',  # 语义记忆目录
+            f'time_indexed_{name}',     # 时间索引数据库文件
+            f'settings_{name}.json',    # 设置文件
+            f'recent_{name}.json',      # 最近聊天记录文件
+        ]
+        
+        for base_dir in memory_paths:
+            for file_name in files_to_delete:
+                file_path = base_dir / file_name
+                if file_path.exists():
+                    try:
+                        if file_path.is_dir():
+                            shutil.rmtree(file_path)
+                        else:
+                            file_path.unlink()
+                        logger.info(f"已删除: {file_path}")
+                    except Exception as e:
+                        logger.warning(f"删除失败 {file_path}: {e}")
+    except Exception as e:
+        logger.error(f"删除记忆文件时出错: {e}")
+    
+    # 删除角色配置
+    del characters['猫娘'][name]
+    _config_manager.save_characters(characters)
+    initialize_character_data = get_initialize_character_data()
+    await initialize_character_data()
+    return {"success": True}
+
+@router.post('/clear_voice_ids')
+async def clear_voice_ids():
+    """清除所有角色的本地Voice ID记录"""
+    try:
+        _config_manager = get_config_manager()
+        characters = _config_manager.load_characters()
+        cleared_count = 0
+        
+        # 清除所有猫娘的voice_id
+        if '猫娘' in characters:
+            for name in characters['猫娘']:
+                if 'voice_id' in characters['猫娘'][name] and characters['猫娘'][name]['voice_id']:
+                    characters['猫娘'][name]['voice_id'] = ''
+                    cleared_count += 1
+        
+        _config_manager.save_characters(characters)
+        # 自动重新加载配置
+        initialize_character_data = get_initialize_character_data()
+        await initialize_character_data()
+        
+        return JSONResponse({
+            'success': True, 
+            'message': f'已清除 {cleared_count} 个角色的Voice ID记录',
+            'cleared_count': cleared_count
+        })
+    except Exception as e:
+        return JSONResponse({
+            'success': False, 
+            'error': f'清除Voice ID记录时出错: {str(e)}'
+        }, status_code=500)
+
+
+@router.post('/set_microphone')
+async def set_microphone(request: Request):
+    try:
+        data = await request.json()
+        microphone_id = data.get('microphone_id')
+        
+        # 使用标准的load/save函数
+        _config_manager = get_config_manager()
+        characters_data = _config_manager.load_characters()
+        
+        # 添加或更新麦克风选择
+        characters_data['当前麦克风'] = microphone_id
+        
+        # 保存配置
+        _config_manager.save_characters(characters_data)
+        # 自动重新加载配置
+        initialize_character_data = get_initialize_character_data()
+        await initialize_character_data()
+        
+        return {"success": True}
+    except Exception as e:
+        logger.error(f"保存麦克风选择失败: {e}")
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+
+@router.get('/get_microphone')
+async def get_microphone():
+    try:
+        _config_manager = get_config_manager()
+        # 使用配置管理器加载角色配置
+        characters_data = _config_manager.load_characters()
+        
+        # 获取保存的麦克风选择
+        microphone_id = characters_data.get('当前麦克风')
+        
+        return {"microphone_id": microphone_id}
+    except Exception as e:
+        logger.error(f"获取麦克风选择失败: {e}")
+        return {"microphone_id": None}
+
+
+@router.get('/voices')
+async def get_voices():
+    """获取当前API key对应的所有已注册音色"""
+    _config_manager = get_config_manager()
+    return {"voices": _config_manager.get_voices_for_current_api()}
+
+
+@router.post('/voices')
+async def register_voice(request: Request):
+    """注册新音色"""
+    try:
+        data = await request.json()
+        voice_id = data.get('voice_id')
+        voice_data = data.get('voice_data')
+        
+        if not voice_id or not voice_data:
+            return JSONResponse({
+                'success': False,
+                'error': '缺少必要参数'
+            }, status_code=400)
+        
+        # 准备音色数据
+        complete_voice_data = {
+            **voice_data,
+            'voice_id': voice_id,
+            'created_at': datetime.now().isoformat()
+        }
+        
+        try:
+            _config_manager = get_config_manager()
+            _config_manager.save_voice_for_current_api(voice_id, complete_voice_data)
+        except Exception as e:
+            logger.warning(f"保存音色配置失败: {e}")
+            return JSONResponse({
+                'success': False,
+                'error': f'保存音色配置失败: {str(e)}'
+            }, status_code=500)
+            
+        return {"success": True, "message": "音色注册成功"}
+    except Exception as e:
+        return JSONResponse({
+            'success': False,
+            'error': str(e)
+        }, status_code=500)
+
+
+@router.post('/voice_clone')
+async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...)):
+    # 直接读取到内存
+    try:
+        file_content = await file.read()
+        file_buffer = io.BytesIO(file_content)
+    except Exception as e:
+        logger.error(f"读取文件到内存失败: {e}")
+        return JSONResponse({'error': f'读取文件失败: {e}'}, status_code=500)
+
+
+    def validate_audio_file(file_buffer: io.BytesIO, filename: str) -> tuple[str, str]:
+        """
+        验证音频文件类型和格式
+        返回: (mime_type, error_message)
+        """
+        file_path_obj = pathlib.Path(filename)
+        file_extension = file_path_obj.suffix.lower()
+        
+        # 检查文件扩展名
+        if file_extension not in ['.wav', '.mp3', '.m4a']:
+            return "", f"不支持的文件格式: {file_extension}。仅支持 WAV、MP3 和 M4A 格式。"
+        
+        # 根据扩展名确定MIME类型
+        if file_extension == '.wav':
+            mime_type = "audio/wav"
+            # 检查WAV文件是否为16bit
+            try:
+                file_buffer.seek(0)
+                with wave.open(file_buffer, 'rb') as wav_file:
+                    # 检查采样宽度（bit depth）
+                    if wav_file.getsampwidth() != 2:  # 2 bytes = 16 bits
+                        return "", f"WAV文件必须是16bit格式，当前文件是{wav_file.getsampwidth() * 8}bit。"
+                    
+                    # 检查声道数（建议单声道）
+                    channels = wav_file.getnchannels()
+                    if channels > 1:
+                        return "", f"建议使用单声道WAV文件，当前文件有{channels}个声道。"
+                    
+                    # 检查采样率
+                    sample_rate = wav_file.getframerate()
+                    if sample_rate not in [8000, 16000, 22050, 44100, 48000]:
+                        return "", f"建议使用标准采样率(8000, 16000, 22050, 44100, 48000)，当前文件采样率: {sample_rate}Hz。"
+                file_buffer.seek(0)
+            except Exception as e:
+                return "", f"WAV文件格式错误: {str(e)}。请确认您的文件是合法的WAV文件。"
+                
+        elif file_extension == '.mp3':
+            mime_type = "audio/mpeg"
+            try:
+                file_buffer.seek(0)
+                # 读取更多字节以支持不同的MP3格式
+                header = file_buffer.read(32)
+                file_buffer.seek(0)
+
+                # 检查文件大小是否合理
+                file_size = len(file_buffer.getvalue())
+                if file_size < 1024:  # 至少1KB
+                    return "", "MP3文件太小，可能不是有效的音频文件。"
+                if file_size > 1024 * 1024 * 10:  # 10MB
+                    return "", "MP3文件太大，可能不是有效的音频文件。"
+                
+                # 更宽松的MP3文件头检查
+                # MP3文件通常以ID3标签或帧同步字开头
+                # 检查是否以ID3标签开头 (ID3v2)
+                has_id3_header = header.startswith(b'ID3')
+                # 检查是否有帧同步字 (FF FA, FF FB, FF F2, FF F3, FF E3等)
+                has_frame_sync = False
+                for i in range(len(header) - 1):
+                    if header[i] == 0xFF and (header[i+1] & 0xE0) == 0xE0:
+                        has_frame_sync = True
+                        break
+                
+                # 如果既没有ID3标签也没有帧同步字，则认为文件可能无效
+                # 但这只是一个警告，不应该严格拒绝
+                if not has_id3_header and not has_frame_sync:
+                    return mime_type, f"警告: MP3文件可能格式不标准，文件头: {header[:4].hex()}"
+                        
+            except Exception as e:
+                return "", f"MP3文件读取错误: {str(e)}。请确认您的文件是合法的MP3文件。"
+                
+        elif file_extension == '.m4a':
+            mime_type = "audio/mp4"
+            try:
+                file_buffer.seek(0)
+                # 读取文件头来验证M4A格式
+                header = file_buffer.read(32)
+                file_buffer.seek(0)
+                
+                # M4A文件应该以'ftyp'盒子开始，通常在偏移4字节处
+                # 检查是否包含'ftyp'标识
+                if b'ftyp' not in header:
+                    return "", "M4A文件格式无效或已损坏。请确认您的文件是合法的M4A文件。"
+                
+                # 进一步验证：检查是否包含常见的M4A类型标识
+                # M4A通常包含'mp4a', 'M4A ', 'M4V '等类型
+                valid_types = [b'mp4a', b'M4A ', b'M4V ', b'isom', b'iso2', b'avc1']
+                has_valid_type = any(t in header for t in valid_types)
+                
+                if not has_valid_type:
+                    return mime_type,  "警告: M4A文件格式无效或已损坏。请确认您的文件是合法的M4A文件。"
+                        
+            except Exception as e:
+                return "", f"M4A文件读取错误: {str(e)}。请确认您的文件是合法的M4A文件。"
+        
+        return mime_type, ""
+
+    try:
+        # 1. 验证音频文件
+        mime_type, error_msg = validate_audio_file(file_buffer, file.filename)
+        if not mime_type:
+            return JSONResponse({'error': error_msg}, status_code=400)
+        
+        # 检查文件大小（tfLink支持最大100MB）
+        file_size = len(file_content)
+        if file_size > 100 * 1024 * 1024:  # 100MB
+            return JSONResponse({'error': '文件大小超过100MB，超过tfLink的限制'}, status_code=400)
+        
+        # 2. 上传到 tfLink - 直接使用内存中的内容
+        file_buffer.seek(0)
+        # 根据tfLink API文档，使用multipart/form-data上传文件
+        # 参数名应为'file'
+        files = {'file': (file.filename, file_buffer, mime_type)}
+        
+        # 添加更多的请求头，确保兼容性
+        headers = {
+            'Accept': 'application/json'
+        }
+        
+        logger.info(f"正在上传文件到tfLink，文件名: {file.filename}, 大小: {file_size} bytes, MIME类型: {mime_type}")
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(TFLINK_UPLOAD_URL, files=files, headers=headers)
+
+            # 检查响应状态
+            if resp.status_code != 200:
+                logger.error(f"上传到tfLink失败，状态码: {resp.status_code}, 响应内容: {resp.text}")
+                return JSONResponse({'error': f'上传到tfLink失败，状态码: {resp.status_code}, 详情: {resp.text[:200]}'}, status_code=500)
+            
+            try:
+                # 解析JSON响应
+                data = resp.json()
+                logger.info(f"tfLink原始响应: {data}")
+                
+                # 获取下载链接
+                tmp_url = None
+                possible_keys = ['downloadLink', 'download_link', 'url', 'direct_link', 'link', 'download_url']
+                for key in possible_keys:
+                    if key in data:
+                        tmp_url = data[key]
+                        logger.info(f"找到下载链接键: {key}")
+                        break
+                
+                if not tmp_url:
+                    logger.error(f"无法从响应中提取URL: {data}")
+                    return JSONResponse({'error': f'上传成功但无法从响应中提取URL'}, status_code=500)
+                
+                # 确保URL有效
+                if not tmp_url.startswith(('http://', 'https://')):
+                    logger.error(f"无效的URL格式: {tmp_url}")
+                    return JSONResponse({'error': f'无效的URL格式: {tmp_url}'}, status_code=500)
+                    
+                # 测试URL是否可访问
+                test_resp = await client.head(tmp_url, timeout=10)
+                if test_resp.status_code >= 400:
+                    logger.error(f"生成的URL无法访问: {tmp_url}, 状态码: {test_resp.status_code}")
+                    return JSONResponse({'error': f'生成的临时URL无法访问，请重试'}, status_code=500)
+                    
+                logger.info(f"成功获取临时URL并验证可访问性: {tmp_url}")
+                
+            except ValueError:
+                raw_text = resp.text
+                logger.error(f"上传成功但响应格式无法解析: {raw_text}")
+                return JSONResponse({'error': f'上传成功但响应格式无法解析: {raw_text[:200]}'}, status_code=500)
+        
+        # 3. 用直链注册音色
+        # 使用 get_model_api_config('tts_custom') 获取正确的 API 配置
+        # tts_custom 会优先使用自定义 TTS API，其次是 Qwen Cosyvoice API（目前唯一支持 voice clone 的服务）
+        _config_manager = get_config_manager()
+        tts_config = _config_manager.get_model_api_config('tts_custom')
+        audio_api_key = tts_config.get('api_key', '')
+        
+        if not audio_api_key:
+            logger.error("未配置 AUDIO_API_KEY")
+            return JSONResponse({
+                'error': '未配置音频API密钥，请在设置中配置AUDIO_API_KEY',
+                'suggestion': '请前往设置页面配置音频API密钥'
+            }, status_code=400)
+        
+        dashscope.api_key = audio_api_key
+        service = VoiceEnrollmentService()
+        target_model = "cosyvoice-v3-plus"
+        
+        # 重试配置
+        max_retries = 3
+        retry_delay = 3  # 重试前等待的秒数
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"开始音色注册（尝试 {attempt + 1}/{max_retries}），使用URL: {tmp_url}")
+                
+                # 尝试执行音色注册
+                voice_id = service.create_voice(target_model=target_model, prefix=prefix, url=tmp_url)
+                    
+                logger.info(f"音色注册成功，voice_id: {voice_id}")
+                voice_data = {
+                    'voice_id': voice_id,
+                    'prefix': prefix,
+                    'file_url': tmp_url,
+                    'created_at': datetime.now().isoformat()
+                }
+                try:
+                    _config_manager.save_voice_for_current_api(voice_id, voice_data)
+                    logger.info(f"voice_id已保存到音色库: {voice_id}")
+                    
+                    # 验证voice_id是否能够被正确读取（添加短暂延迟，避免文件系统延迟）
+                    await asyncio.sleep(0.1)  # 等待100ms，确保文件写入完成
+                    
+                    # 最多验证3次，每次间隔100ms
+                    validation_success = False
+                    for validation_attempt in range(3):
+                        if _config_manager.validate_voice_id(voice_id):
+                            validation_success = True
+                            logger.info(f"voice_id保存验证成功: {voice_id} (尝试 {validation_attempt + 1})")
+                            break
+                        if validation_attempt < 2:
+                            await asyncio.sleep(0.1)
+                    
+                    if not validation_success:
+                        logger.warning(f"voice_id保存后验证失败，但可能已成功保存: {voice_id}")
+                        # 不返回错误，因为保存可能已成功，只是验证失败
+                        # 继续返回成功，让用户尝试使用
+                    
+                except Exception as save_error:
+                    logger.error(f"保存voice_id到音色库失败: {save_error}")
+                    return JSONResponse({
+                        'error': f'音色注册成功但保存到音色库失败: {str(save_error)}',
+                        'voice_id': voice_id,
+                        'file_url': tmp_url
+                    }, status_code=500)
+                    
+                return JSONResponse({
+                    'voice_id': voice_id,
+                    'request_id': service.get_last_request_id(),
+                    'file_url': tmp_url,
+                    'message': '音色注册成功并已保存到音色库'
+                })
+                
+            except Exception as e:
+                logger.error(f"音色注册失败（尝试 {attempt + 1}/{max_retries}）: {str(e)}")
+                error_detail = str(e)
+                
+                # 检查是否是超时错误
+                is_timeout = ("ResponseTimeout" in error_detail or 
+                             "response timeout" in error_detail.lower() or
+                             "timeout" in error_detail.lower())
+                
+                # 检查是否是文件下载失败错误
+                is_download_failed = ("download audio failed" in error_detail or 
+                                     "415" in error_detail)
+                
+                # 如果是超时或下载失败，且还有重试机会，则重试
+                if (is_timeout or is_download_failed) and attempt < max_retries - 1:
+                    logger.warning(f"检测到{'超时' if is_timeout else '文件下载失败'}错误，等待 {retry_delay} 秒后重试...")
+                    await asyncio.sleep(retry_delay)
+                    continue  # 重试
+                
+                # 如果是最后一次尝试或非可重试错误，返回错误
+                if is_timeout:
+                    return JSONResponse({
+                        'error': f'音色注册超时，已尝试{max_retries}次',
+                        'detail': error_detail,
+                        'file_url': tmp_url,
+                        'suggestion': '请检查您的网络连接，或稍后再试。如果问题持续，可能是服务器繁忙。'
+                    }, status_code=408)
+                elif is_download_failed:
+                    return JSONResponse({
+                        'error': f'音色注册失败: 无法下载音频文件，已尝试{max_retries}次',
+                        'detail': error_detail,
+                        'file_url': tmp_url,
+                        'suggestion': '请检查文件URL是否可访问，或稍后重试'
+                    }, status_code=415)
+                else:
+                    # 其他错误直接返回
+                    return JSONResponse({
+                        'error': f'音色注册失败: {error_detail}',
+                        'file_url': tmp_url,
+                        'attempt': attempt + 1,
+                        'max_retries': max_retries
+                    }, status_code=500)
+    except Exception as e:
+        # 确保tmp_url在出现异常时也有定义
+        tmp_url = locals().get('tmp_url', '未获取到URL')
+        logger.error(f"注册音色时发生未预期的错误: {str(e)}")
+        return JSONResponse({'error': f'注册音色时发生错误: {str(e)}', 'file_url': tmp_url}, status_code=500)
+
+

@@ -769,15 +769,18 @@ class ConfigManager:
             config['COMPUTER_USE_GROUND_API_KEY'] = derived_key if derived_key else config['CORE_API_KEY']
 
         # 自定义API配置映射（使用大写下划线形式的内部键，且在未提供时保留已有默认值）
-        config['ENABLE_CUSTOM_API'] = core_cfg.get('enableCustomApi', False)
-        # 允许用户在 core_cfg 中覆盖视觉模型相关字段；若未提供则保持现有默认值
-        if core_cfg.get('visionModelApiKey') is not None:
-            config['VISION_MODEL_API_KEY'] = core_cfg.get('visionModelApiKey', '') or config.get('VISION_MODEL_API_KEY', '')
-        if core_cfg.get('visionModelUrl') is not None:
-            config['VISION_MODEL_URL'] = core_cfg.get('visionModelUrl', '') or config.get('VISION_MODEL_URL', '')
-        if core_cfg.get('visionModelId') is not None:
-            # 将 core_cfg 中的 visionModelId 映射到内部的 VISION_MODEL（模型ID）
-            config['VISION_MODEL'] = core_cfg.get('visionModelId', '') or config.get('VISION_MODEL', '')
+        enable_custom_api = core_cfg.get('enableCustomApi', False)
+        config['ENABLE_CUSTOM_API'] = enable_custom_api
+        
+        # 只有在启用自定义API时才允许覆盖视觉模型相关字段
+        if enable_custom_api:
+            if core_cfg.get('visionModelApiKey') is not None:
+                config['VISION_MODEL_API_KEY'] = core_cfg.get('visionModelApiKey', '') or config.get('VISION_MODEL_API_KEY', '')
+            if core_cfg.get('visionModelUrl') is not None:
+                config['VISION_MODEL_URL'] = core_cfg.get('visionModelUrl', '') or config.get('VISION_MODEL_URL', '')
+            if core_cfg.get('visionModelId') is not None:
+                # 将 core_cfg 中的 visionModelId 映射到内部的 VISION_MODEL（模型ID）
+                config['VISION_MODEL'] = core_cfg.get('visionModelId', '') or config.get('VISION_MODEL', '')
 
         return config
 

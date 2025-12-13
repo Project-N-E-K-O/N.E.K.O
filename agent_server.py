@@ -222,7 +222,7 @@ def _spawn_task(kind: str, args: Dict[str, Any]) -> Dict[str, Any]:
                     try:
                         async with httpx.AsyncClient(timeout=0.5) as _client:
                             await _client.post(
-                                f"http://localhost:{MAIN_SERVER_PORT}/api/notify_task_result",
+                                f"http://localhost:{MAIN_SERVER_PORT}/api/agent/notify_task_result",
                                 json={"text": summary[:240], "lanlan_name": info.get("lanlan_name")},
                             )
                     except Exception:
@@ -315,7 +315,7 @@ async def _poll_results_loop():
                         pass
                     async with httpx.AsyncClient(timeout=0.5) as _client:
                         await _client.post(
-                            f"http://localhost:{MAIN_SERVER_PORT}/api/notify_task_result",
+                            f"http://localhost:{MAIN_SERVER_PORT}/api/agent/notify_task_result",
                             json={"text": summary, "lanlan_name": info.get("lanlan_name")},
                         )
                 except Exception:
@@ -432,7 +432,7 @@ async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_na
                 try:
                     async with httpx.AsyncClient(timeout=0.5) as _client:
                         await _client.post(
-                            f"http://localhost:{MAIN_SERVER_PORT}/api/notify_task_result",
+                            f"http://localhost:{MAIN_SERVER_PORT}/api/agent/notify_task_result",
                             json={"text": summary[:240], "lanlan_name": lanlan_name},
                         )
                     logger.info(f"[TaskExecutor] ✅ MCP task completed and notified: {result.task_description}")
@@ -569,7 +569,7 @@ async def process_query(payload: Dict[str, Any]):
                 try:
                     async with httpx.AsyncClient(timeout=0.5) as _client:
                         await _client.post(
-                            f"http://localhost:{MAIN_SERVER_PORT}/api/notify_task_result",
+                            f"http://localhost:{MAIN_SERVER_PORT}/api/agent/notify_task_result",
                             json={"text": summary[:240], "lanlan_name": lanlan_name},
                         )
                 except Exception:
@@ -648,7 +648,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                     summary = f'插件任务 "{plugin_id}" 已接受'
                     async with httpx.AsyncClient(timeout=0.5) as _client:
                         await _client.post(
-                            f"http://localhost:{MAIN_SERVER_PORT}/api/notify_task_result",
+                            f"http://localhost:{MAIN_SERVER_PORT}/api/agent/notify_task_result",
                             json={"text": summary[:240], "lanlan_name": lanlan_name},
                         )
                 except Exception:

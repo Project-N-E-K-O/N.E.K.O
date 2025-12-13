@@ -9,6 +9,7 @@ import asyncio
 from io import BytesIO
 from PIL import Image
 from openai import AsyncOpenAI
+from config import get_extra_body
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +136,8 @@ async def analyze_image_with_vision_model(
                     ]
                 }
             ],
-            max_tokens=max_tokens
+            max_tokens=max_tokens,
+            extra_body=get_extra_body(vision_model) or None
         )
         
         if response and response.choices and len(response.choices) > 0:

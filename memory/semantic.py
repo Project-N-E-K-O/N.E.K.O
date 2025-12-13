@@ -4,7 +4,7 @@ from typing import List
 from langchain_core.documents import Document
 from datetime import datetime
 from memory.recent import CompressedRecentHistoryManager
-from config import SEMANTIC_MODEL, RERANKER_MODEL, MODELS_WITH_EXTRA_BODY
+from config import SEMANTIC_MODEL, RERANKER_MODEL, get_extra_body
 from utils.config_manager import get_config_manager
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from config.prompts_sys import semantic_manager_prompt
@@ -28,7 +28,7 @@ class SemanticMemory:
     def _get_reranker(self):
         """动态获取Reranker LLM实例以支持配置热重载"""
         api_config = self._config_manager.get_model_api_config('summary')
-        return ChatOpenAI(model=RERANKER_MODEL, base_url=api_config['base_url'], api_key=api_config['api_key'], temperature=0.1, extra_body={"enable_thinking": False} if RERANKER_MODEL in MODELS_WITH_EXTRA_BODY else None)
+        return ChatOpenAI(model=RERANKER_MODEL, base_url=api_config['base_url'], api_key=api_config['api_key'], temperature=0.1, extra_body=get_extra_body(RERANKER_MODEL) or None)
 
     async def store_conversation(self, event_id, messages, lanlan_name):
         self.original_memory[lanlan_name].store_conversation(event_id, messages)
