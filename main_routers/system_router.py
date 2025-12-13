@@ -665,7 +665,20 @@ async def proactive_chat(request: Request):
                     # 截断窗口标题以避免记录敏感信息
                     raw_title = window_context_content.get('window_title', '')
                     sanitized_title = raw_title[:30] + '...' if len(raw_title) > 30 else raw_title
-                    logger.info(f"[{lanlan_name}] 成功获取窗口上下文: {sanitized_title}")
+                    
+                    # 显示具体获取的搜索结果标题，使用更清晰的分隔
+                    search_results = window_context_content.get('search_results', [])
+                    if search_results:
+                        result_titles = [result.get('title', '') for result in search_results]  # 显示全部搜索结果
+                        if result_titles:
+                            logger.info(f"[{lanlan_name}] 成功获取窗口上下文: {sanitized_title}")
+                            logger.info(f"搜索结果 (共{len(result_titles)}条):")
+                            for title in result_titles:
+                                logger.info(f"  - {title}")
+                        else:
+                            logger.info(f"[{lanlan_name}] 成功获取窗口上下文: {sanitized_title} - 但未获取到搜索结果")
+                    else:
+                        logger.info(f"[{lanlan_name}] 成功获取窗口上下文: {sanitized_title} - 但未获取到搜索结果")
                 
             except Exception:
                 logger.exception(f"[{lanlan_name}] 获取窗口上下文失败")
@@ -685,7 +698,34 @@ async def proactive_chat(request: Request):
                     }, status_code=500)
                 
                 formatted_content = format_trending_content(trending_content)
-                logger.info(f"[{lanlan_name}] 成功获取首页推荐")
+                
+                # 显示具体的首页推荐内容详情
+                content_details = []
+                
+                bilibili_data = trending_content.get('bilibili', {})
+                if bilibili_data.get('success'):
+                    videos = bilibili_data.get('videos', [])
+                    bilibili_titles = [video.get('title', '') for video in videos[:5]]  # 只显示前5个
+                    if bilibili_titles:
+                        content_details.append("B站视频:")
+                        for title in bilibili_titles:
+                            content_details.append(f"  - {title}")
+                
+                weibo_data = trending_content.get('weibo', {})
+                if weibo_data.get('success'):
+                    trending_list = weibo_data.get('trending', [])
+                    weibo_words = [item.get('word', '') for item in trending_list[:5]]  # 只显示前5个
+                    if weibo_words:
+                        content_details.append("微博话题:")
+                        for word in weibo_words:
+                            content_details.append(f"  - {word}")
+                
+                if content_details:
+                    logger.info(f"[{lanlan_name}] 成功获取首页推荐:")
+                    for detail in content_details:
+                        logger.info(detail)
+                else:
+                    logger.info(f"[{lanlan_name}] 成功获取首页推荐 - 但未获取到具体内容")
                 
             except Exception:
                 logger.exception(f"[{lanlan_name}] 获取首页推荐失败")
