@@ -64,13 +64,23 @@ DEFAULT_ENC_START = os.getenv('NEKO_RESPONSE_ENC_START', '【')
 DEFAULT_ENC_END = os.getenv('NEKO_RESPONSE_ENC_END', '】')
 
 
-def _split_sentences(text: str) -> list:
-    # 使用简单的中英文标点分割句子，保留标点
+def _split_sentences(text: str) -> list[str]:
+    """
+    将文本分割成句子。
+    
+    参数：
+    - text: 输入文本
+    
+    返回：句子列表
+    """
     if not text:
         return []
-    parts = re.split(r'(?<=[。！？!?。!？]|\.|\?|!)\s*', text)
-    parts = [p.strip() for p in parts if p and p.strip()]
-    return parts
+    
+    # 按句子结束符分割，保留结束符
+    parts = re.split(r'(?<=[。！？!?\.])\s*', text)
+    
+    # 过滤空字符串
+    return [p for p in parts if p.strip()]
 
 
 def _count_words_or_chars(text: str) -> int:
@@ -200,39 +210,31 @@ def optimize_response(text: str,
         seen.add(key)
         deduped.append(key)
 
-    # 3) 合并并按照 max_words 限制（中文退化为字符）
+    # 3) 合并并按照 max_words 限制（统一使用字符计数）
     if max_words and int(max_words) > 0:
         out_parts = []
         total = 0
         maxw = int(max_words)
         for s in deduped:
-            s_len = _count_words_or_chars(s)
+            s_len = len(s)
             if total + s_len <= maxw:
                 out_parts.append(s)
                 total += s_len
             else:
-                # 还可以塞一部分
                 remain = maxw - total
                 if remain > 0:
-                    # 根据文本类型进行智能截断
-                    if _is_english_text(s):
-                        # 英文文本：按单词截断
-                        truncated = _truncate_by_words(s, remain)
-                    else:
-                        # 中文文本：按字符截断
-                        truncated = s[:remain].rstrip()
-                    
+                    truncated = s[:remain].rstrip()
                     if not truncated.endswith('…'):
                         truncated = truncated + '…'
                     out_parts.append(truncated)
                 break
         
         # 智能连接：检测文本是否包含拉丁字母或空格，决定连接方式
-        separator = _get_separator(text)
+        separator = _get_separator(''.join(out_parts) if out_parts else text)
         final = separator.join(out_parts).strip()
     else:
         # 智能连接：检测文本是否包含拉丁字母或空格，决定连接方式
-        separator = _get_separator(text)
+        separator = _get_separator(''.join(deduped) if deduped else text)
         final = separator.join(deduped).strip()
 
     # 4) 小幅清理：去除重复的连续标点
