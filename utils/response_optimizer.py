@@ -21,7 +21,7 @@ import re
 from typing import Tuple
 
 # 默认配置
-DEFAULT_MAX_WORDS = int(os.getenv('NEKO_RESPONSE_MAX_WORDS', '150'))
+DEFAULT_MAX_WORDS = int(os.getenv('NEKO_RESPONSE_MAX_WORDS', '200'))
 DEFAULT_ENC_START = os.getenv('NEKO_RESPONSE_ENC_START', '【')
 DEFAULT_ENC_END = os.getenv('NEKO_RESPONSE_ENC_END', '】')
 
