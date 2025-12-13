@@ -894,13 +894,23 @@ Return only the JSON object, nothing else.
         if plugin_entry_id:
             trigger_body["entry_id"] = plugin_entry_id
             logger.info("[TaskExecutor] Using explicit plugin_entry_id for trigger: %s", plugin_entry_id)
-        # send trigger (avoid dumping full args at INFO)
+        
+        # 关键日志：记录准备触发插件
         logger.info(
-            "[TaskExecutor] POST to plugin trigger %s (plugin_id=%s, entry_id=%s, arg_keys=%s)",
-            trigger_endpoint,
+            "[TaskExecutor] Preparing plugin trigger: plugin_id=%s, entry_id=%s, endpoint=%s",
             plugin_id,
             plugin_entry_id,
+            trigger_endpoint,
+        )
+        # 详细参数信息使用 DEBUG
+        logger.debug(
+            "[TaskExecutor] Plugin args: arg_keys=%s, arg_values=%s",
             list(plugin_args.keys()) if isinstance(plugin_args, dict) else str(type(plugin_args)),
+            {k: str(v)[:100] for k, v in plugin_args.items()} if isinstance(plugin_args, dict) else plugin_args,
+        )
+        logger.debug(
+            "[TaskExecutor] Full trigger_body: %s",
+            trigger_body,
         )
         try:
             import httpx

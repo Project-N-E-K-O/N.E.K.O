@@ -542,6 +542,11 @@ class WebInterfacePlugin(NekoPluginBase):
                     "description": "要显示的消息内容",
                     "default": ""
                 },
+                "message": {
+                    "type": "string",
+                    "description": "要显示的消息内容（content 的别名，用于兼容性）",
+                    "default": ""
+                },
                 "priority": {
                     "type": "integer",
                     "description": "消息优先级，0-10，数字越大优先级越高",
@@ -553,11 +558,62 @@ class WebInterfacePlugin(NekoPluginBase):
             "required": []
         }
     )
-    def add_message(self, content: str = "", source: str = "external", priority: int = 5, **_):
+    def add_message(self, content: str = "", source: str = "external", priority: int = 5, **kwargs):
         """添加消息"""
+        # 关键日志：记录方法调用
+        self.logger.info(
+            "[WebInterface] add_message called: source=%s, priority=%s, has_content=%s, kwargs_keys=%s",
+            source,
+            priority,
+            bool(content),
+            list(kwargs.keys()) if kwargs else [],
+        )
+        # 详细参数信息使用 DEBUG
+        self.logger.debug(
+            "[WebInterface] Parameters: content=%s, source=%s, priority=%s, kwargs=%s",
+            content,
+            source,
+            priority,
+            kwargs,
+        )
+        self.logger.debug(
+            "[WebInterface] Parameter types: content_type=%s, source_type=%s",
+            type(content).__name__,
+            type(source).__name__,
+        )
+        
+        # 支持 message 参数作为 content 的别名（用于兼容性）
+        original_content = content
+        if not content and "message" in kwargs:
+            content = kwargs.pop("message")
+            self.logger.info(
+                "[WebInterface] Found 'message' in kwargs, using as content (length=%d)",
+                len(content) if content else 0,
+            )
+            self.logger.debug(
+                "[WebInterface] Converted message to content: %s",
+                content,
+            )
+        
         # 如果没有提供内容，使用默认消息
         if not content:
             content = f"消息来自 {source} (无内容)"
+            self.logger.warning(
+                "[WebInterface] Content was empty, using default message",
+            )
+        else:
+            self.logger.debug(
+                "[WebInterface] Using provided content: %s",
+                content,
+            )
+        
+        # 最终参数使用 DEBUG
+        self.logger.debug(
+            "[WebInterface] Final parameters: source=%s, content=%s, priority=%s",
+            source,
+            content,
+            priority,
+        )
         
         self._add_message(source, content, priority)
         

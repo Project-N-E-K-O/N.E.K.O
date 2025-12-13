@@ -130,6 +130,21 @@ async def plugin_trigger(payload: PluginTriggerRequest, request: Request):
     try:
         client_host = request.client.host if request.client else None
         
+        # 关键日志：记录接收到的请求
+        logger.info(
+            "[plugin_trigger] Received trigger request: plugin_id=%s, entry_id=%s, task_id=%s",
+            payload.plugin_id,
+            payload.entry_id,
+            payload.task_id,
+        )
+        # 详细参数信息使用 DEBUG
+        logger.debug(
+            "[plugin_trigger] Request args: type=%s, keys=%s, content=%s",
+            type(payload.args),
+            list(payload.args.keys()) if isinstance(payload.args, dict) else "N/A",
+            payload.args,
+        )
+        
         return await trigger_plugin(
             plugin_id=payload.plugin_id,
             entry_id=payload.entry_id,

@@ -149,6 +149,22 @@ def _plugin_process_runner(
                 entry_id = msg["entry_id"]
                 args = msg["args"]
                 req_id = msg["req_id"]
+                
+                # 关键日志：记录接收到的触发消息
+                logger.info(
+                    "[Plugin Process] Received TRIGGER: plugin_id=%s, entry_id=%s, req_id=%s",
+                    plugin_id,
+                    entry_id,
+                    req_id,
+                )
+                # 详细参数信息使用 DEBUG
+                logger.debug(
+                    "[Plugin Process] Args: type=%s, keys=%s, content=%s",
+                    type(args),
+                    list(args.keys()) if isinstance(args, dict) else "N/A",
+                    args,
+                )
+                
                 method = entry_map.get(entry_id) or getattr(instance, entry_id, None) or getattr(
                     instance, f"entry_{entry_id}", None
                 )
@@ -159,22 +175,63 @@ def _plugin_process_runner(
                     if not method:
                         raise PluginEntryNotFoundError(plugin_id, entry_id)
                     
-                    logger.info("Executing entry '%s' using method '%s'", entry_id, getattr(method, "__name__", entry_id))
+                    method_name = getattr(method, "__name__", entry_id)
+                    # 关键日志：记录开始执行
+                    logger.info(
+                        "[Plugin Process] Executing entry '%s' using method '%s'",
+                        entry_id,
+                        method_name,
+                    )
+                    
+                    # 详细方法签名和参数匹配信息使用 DEBUG
+                    try:
+                        sig = inspect.signature(method)
+                        params = list(sig.parameters.keys())
+                        logger.debug(
+                            "[Plugin Process] Method signature: params=%s, args_keys=%s",
+                            params,
+                            list(args.keys()) if isinstance(args, dict) else "N/A",
+                        )
+                    except Exception as e:
+                        logger.debug("[Plugin Process] Failed to inspect signature: %s", e)
                     
                     if asyncio.iscoroutinefunction(method):
+                        logger.debug("[Plugin Process] Method is async, calling with asyncio.run")
                         res = asyncio.run(method(**args))
                     else:
+                        logger.debug("[Plugin Process] Method is sync, calling directly")
                         try:
+                            logger.debug(
+                                "[Plugin Process] Calling method with args: %s",
+                                args,
+                            )
                             res = method(**args)
+                            logger.debug(
+                                "[Plugin Process] Method call succeeded, result type: %s",
+                                type(res),
+                            )
                         except TypeError as err:
+                            logger.warning(
+                                "[Plugin Process] TypeError occurred: %s, attempting compatibility mode",
+                                err,
+                            )
                             # 检查是否可能是旧式接口（只接收一个 dict 参数）
                             sig = inspect.signature(method)
                             params = list(sig.parameters.keys())
                             if len(params) == 1 and params[0] not in args:
+                                logger.debug(
+                                    "[Plugin Process] Using compatibility mode: passing args as single dict to param '%s'",
+                                    params[0],
+                                )
                                 # 旧式只接收一个 dict 的接口，尝试向后兼容
                                 res = method(args)
                             else:
                                 # 不是旧式接口，重新抛出原始 TypeError
+                                logger.error(
+                                    "[Plugin Process] TypeError not recoverable, params=%s, args_keys=%s",
+                                    params,
+                                    list(args.keys()) if isinstance(args, dict) else "N/A",
+                                )
                                 raise err
                     
                     ret_payload["success"] = True
@@ -326,6 +383,30 @@ class PluginProcessHost:
         self._shutdown_process(timeout=timeout)
     
     async def trigger(self, entry_id: str, args: dict, timeout: float = PLUGIN_TRIGGER_TIMEOUT) -> Any:
+        """
+        触发插件入口点执行
+        
+        Args:
+            entry_id: 入口点 ID
+            args: 参数字典
+            timeout: 超时时间
+        
+        Returns:
+            插件返回的结果
+        """
+        # 关键日志：记录触发请求
+        self.logger.info(
+            "[PluginHost] Trigger called: plugin_id=%s, entry_id=%s",
+            self.plugin_id,
+            entry_id,
+        )
+        # 详细参数信息使用 DEBUG
+        self.logger.debug(
+            "[PluginHost] Args: type=%s, keys=%s, content=%s",
+            type(args),
+            list(args.keys()) if isinstance(args, dict) else "N/A",
+            args,
+        )
         """
         发送 TRIGGER 命令到子进程并等待结果
         

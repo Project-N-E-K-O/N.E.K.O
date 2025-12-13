@@ -161,14 +161,34 @@ class PluginCommunicationResourceManager:
         future = asyncio.Future()
         self._pending_futures[req_id] = future
         
+        # 关键日志：记录发送触发命令
+        self.logger.info(
+            "[CommManager] Sending TRIGGER command: plugin_id=%s, entry_id=%s, req_id=%s",
+            self.plugin_id,
+            entry_id,
+            req_id,
+        )
+        # 详细参数信息使用 DEBUG
+        self.logger.debug(
+            "[CommManager] Args: type=%s, keys=%s, content=%s",
+            type(args),
+            list(args.keys()) if isinstance(args, dict) else "N/A",
+            args,
+        )
+        
         try:
             # 发送命令
-            self.cmd_queue.put({
+            trigger_msg = {
                 "type": "TRIGGER",
                 "req_id": req_id,
                 "entry_id": entry_id,
                 "args": args
-            })
+            }
+            self.logger.debug(
+                "[CommManager] TRIGGER message: %s",
+                trigger_msg,
+            )
+            self.cmd_queue.put(trigger_msg)
             
             # 等待结果（带超时）
             try:
