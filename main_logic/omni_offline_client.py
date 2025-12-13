@@ -268,7 +268,11 @@ class OmniOfflineClient:
                     is_first_chunk = True
                     
                     # Stream response using langchain with real-time constraints
-                    state = init_stream_state(max_words=None, hard_char_limit=100, fence_char='|')
+                    try:
+                        state = init_stream_state(max_words=None, hard_char_limit=100, fence_char='|')
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"OmniOfflineClient: 初始化流式状态失败喵: {e}")
+                        state = None
                     async for chunk in self.llm.astream(self._conversation_history):
                         if not self._is_responding:
                             break

@@ -111,6 +111,7 @@ class OmniRealtimeClient:
         self._modalities = ["text", "audio"]
         self._audio_in_buffer = False
         self._skip_until_next_response = False
+        self._response_done_called = False
         # Track image recognition per turn
         self._image_recognized_this_turn = False
         self._image_being_analyzed = False
@@ -578,8 +579,9 @@ class OmniRealtimeClient:
                     # 确保 buffer 被清空
                     self._output_transcript_buffer = ""
                     self._image_recognized_this_turn = False
-                    if self.on_response_done:
+                    if self.on_response_done and not self._response_done_called:
                         await self.on_response_done()
+                        self._response_done_called = True
                 elif event_type == "response.created":
                     self._current_response_id = event.get("response", {}).get("id")
                     self._is_responding = True
@@ -633,6 +635,8 @@ class OmniRealtimeClient:
                                             await self.on_connection_error("生成被强制终止：超过硬性字符限制（100 字符），已丢弃本轮输出。")
                                         # Stop responding and call on_response_done to keep flow
                                         self._is_responding = False
+                                        self._skip_until_next_response = True
+                                        self._response_done_called = True
                                         if self.on_response_done:
                                             await self.on_response_done()
                                         continue
@@ -643,6 +647,8 @@ class OmniRealtimeClient:
                                             self._is_first_text_chunk = False
                                         # Stop emitting further content for this response
                                         self._is_responding = False
+                                        self._skip_until_next_response = True
+                                        self._response_done_called = True
                                         if self.on_response_done:
                                             await self.on_response_done()
                                         continue
@@ -654,6 +660,8 @@ class OmniRealtimeClient:
                                 if getattr(self, '_stream_state', {}).get('terminated'):
                                     logger.info('OmniRealtimeClient: Generation ended due to word limit')
                                     self._is_responding = False
+                                    self._skip_until_next_response = True
+                                    self._response_done_called = True
                                     if self.on_response_done:
                                         await self.on_response_done()
                                     continue
