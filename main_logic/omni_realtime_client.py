@@ -658,7 +658,8 @@ class OmniRealtimeClient:
                                     await self.on_text_delta(allowed, self._is_first_text_chunk)
                                     self._is_first_text_chunk = False
                                 # If stream_state marks terminated (word limit), finish response
-                                if getattr(self, '_stream_state', {}).get('terminated'):
+                                stream_state = getattr(self, '_stream_state', None)
+                                if stream_state and stream_state.get('terminated'):
                                     logger.info('OmniRealtimeClient: Generation ended due to word limit')
                                     self._is_responding = False
                                     self._skip_until_next_response = True
