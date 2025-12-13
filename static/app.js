@@ -211,6 +211,9 @@ function init_app() {
     let proactiveChatTimer = null;
     let proactiveChatBackoffLevel = 0; // 退避级别：0=30s, 1=1min, 2=2min, 3=4min, etc.
     const PROACTIVE_CHAT_BASE_DELAY = 30000; // 30秒基础延迟
+    // 主动视觉在语音时的单帧推送（当同时开启主动视觉 && 语音对话时，每10秒推送一帧）
+    let proactiveVisionFrameTimer = null;
+    const PROACTIVE_VISION_FRAME_INTERVAL = 10000; // 10秒
 
     // 截图最大尺寸（720p，用于节流数据传输）
     const MAX_SCREENSHOT_WIDTH = 1280;
@@ -925,6 +928,13 @@ function init_app() {
             // 添加active类以保持激活状态的颜色
             screenButton.classList.add('active');
 
+            // 手动开始屏幕共享时，重置/停止语音期间的主动视觉定时，避免双重触发
+            try {
+                stopProactiveVisionDuringSpeech();
+            } catch (e) {
+                console.warn('停止语音期间主动视觉失败:', e);
+            }
+
             // 当用户停止共享屏幕时
             screenCaptureStream.getVideoTracks()[0].onended = () => {
                 stopScreening();
@@ -967,6 +977,15 @@ function init_app() {
         // 移除active类
         screenButton.classList.remove('active');
         syncFloatingScreenButtonState(false);
+
+        // 停止手动屏幕共享后，如果满足条件则恢复语音期间主动视觉定时
+        try {
+            if (proactiveVisionEnabled && isRecording) {
+                startProactiveVisionDuringSpeech();
+            }
+        } catch (e) {
+            console.warn('恢复语音期间主动视觉失败:', e);
+        }
     }
 
     window.switchMicCapture = async () => {
@@ -1306,6 +1325,15 @@ function init_app() {
             // 显示Live2D
             showLive2d();
             await startMicCapture();
+
+            // 启动语音期间的主动视觉定时（如果已开启主动视觉）
+            try {
+                if (proactiveVisionEnabled) {
+                    startProactiveVisionDuringSpeech();
+                }
+            } catch (e) {
+                console.warn('启动语音期间主动视觉失败:', e);
+            }
 
             // 录音启动成功后，隐藏准备提示，显示"可以说话了"提示
             hideVoicePreparingToast();
@@ -2077,6 +2105,8 @@ function init_app() {
 
     // 停止录音
     function stopRecording() {
+        // 停止语音期间主动视觉定时
+        stopProactiveVisionDuringSpeech();
 
         stopScreening();
         if (!isRecording) return;
@@ -2708,7 +2738,11 @@ function init_app() {
 
                         if (proactiveVisionEnabled) {
                             resetProactiveChatBackoff();
+                            // 如果当前处于语音模式，启动语音期间的主动视觉定时
+                            if (isRecording) startProactiveVisionDuringSpeech();
                         } else {
+                            // 关闭主动视觉时停止语音期间的定时
+                            stopProactiveVisionDuringSpeech();
                             // 只有当主动搭话也关闭时才停止调度
                             const currentProactiveChat = typeof window.proactiveChatEnabled !== 'undefined'
                                 ? window.proactiveChatEnabled
@@ -3053,6 +3087,23 @@ function init_app() {
 
         // 显示欢迎消息，提示用户可以开始对话
         showStatusToast(window.t ? window.t('app.welcomeBack', { name: lanlan_config.lanlan_name }) : `🫴 ${lanlan_config.lanlan_name}回来了！`, 3000);
+
+        // 恢复主动搭话与主动视觉调度（即使不自动开启会话）
+        try {
+            const currentProactiveChat = typeof window.proactiveChatEnabled !== 'undefined'
+                ? window.proactiveChatEnabled
+                : proactiveChatEnabled;
+            const currentProactiveVision = typeof window.proactiveVisionEnabled !== 'undefined'
+                ? window.proactiveVisionEnabled
+                : proactiveVisionEnabled;
+
+            if (currentProactiveChat || currentProactiveVision) {
+                // 重置退避并安排下一次（scheduleProactiveChat 会检查 isRecording）
+                resetProactiveChatBackoff();
+            }
+        } catch (e) {
+            console.warn('恢复主动搭话/主动视觉失败:', e);
+        }
 
         // 延迟重置模式切换标志
         setTimeout(() => {
@@ -4838,6 +4889,78 @@ function init_app() {
         proactiveChatBackoffLevel = 0;
         // 重新安排定时器
         scheduleProactiveChat();
+    }
+
+    // 发送单帧屏幕数据（优先使用已存在的 screenCaptureStream，否则临时调用 getDisplayMedia）
+    async function sendOneProactiveVisionFrame() {
+        try {
+            if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
+            let dataUrl = null;
+
+            if (screenCaptureStream) {
+                const video = document.createElement('video');
+                video.srcObject = screenCaptureStream;
+                video.autoplay = true;
+                video.muted = true;
+                try {
+                    await video.play();
+                } catch (e) {
+                    // 某些情况下不需要 play() 成功也能读取帧
+                }
+                const frame = captureCanvasFrame(video, 0.8);
+                dataUrl = frame && frame.dataUrl ? frame.dataUrl : null;
+            } else {
+                // 临时调用捕获函数（会弹出授权），函数内部会关闭流
+                dataUrl = await captureProactiveChatScreenshot();
+            }
+
+            if (dataUrl && socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({
+                    action: 'stream_data',
+                    data: dataUrl,
+                    input_type: isMobile() ? 'camera' : 'screen'
+                }));
+                console.log('[ProactiveVision] 发送单帧屏幕数据');
+            }
+        } catch (e) {
+            console.error('sendOneProactiveVisionFrame 失败:', e);
+        }
+    }
+
+    function startProactiveVisionDuringSpeech() {
+        // 如果已有定时器先清理
+        if (proactiveVisionFrameTimer) {
+            clearInterval(proactiveVisionFrameTimer);
+            proactiveVisionFrameTimer = null;
+        }
+
+        // 仅在条件满足时启动：已开启主动视觉 && 正在录音 && 未手动屏幕共享
+        if (!proactiveVisionEnabled || !isRecording) return;
+        if (screenButton && screenButton.classList.contains('active')) return; // 手动共享时不启动
+
+        proactiveVisionFrameTimer = setInterval(async () => {
+            // 在每次执行前再做一次检查，避免竞态
+            if (!proactiveVisionEnabled || !isRecording) {
+                stopProactiveVisionDuringSpeech();
+                return;
+            }
+
+            // 如果手动开启了屏幕共享，重置计数器（即跳过发送）
+            if (screenButton && screenButton.classList.contains('active')) {
+                // do nothing this tick, just wait for next interval
+                return;
+            }
+
+            await sendOneProactiveVisionFrame();
+        }, PROACTIVE_VISION_FRAME_INTERVAL);
+    }
+
+    function stopProactiveVisionDuringSpeech() {
+        if (proactiveVisionFrameTimer) {
+            clearInterval(proactiveVisionFrameTimer);
+            proactiveVisionFrameTimer = null;
+        }
     }
 
     function stopProactiveChatSchedule() {
