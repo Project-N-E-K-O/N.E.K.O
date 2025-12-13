@@ -300,6 +300,11 @@ Live2DManager.prototype.enableMouseTracking = function(model, options = {}) {
     
     // 方法2：同时保留 window 的 pointermove 监听（适用于普通浏览器）
     const onPointerMove = (event) => {
+        // 检查模型是否存在，防止切换模型时出现错误
+        if (!model) {
+            return;
+        }
+        
         // 使用 clientX/Y 作为全局坐标
         const pointer = { x: event.clientX, y: event.clientY };
         
@@ -327,23 +332,27 @@ Live2DManager.prototype.enableMouseTracking = function(model, options = {}) {
             return;
         }
 
-        const bounds = model.getBounds();
-        const dx = Math.max(bounds.left - pointer.x, 0, pointer.x - bounds.right);
-        const dy = Math.max(bounds.top - pointer.y, 0, pointer.y - bounds.bottom);
-        const distance = Math.sqrt(dx * dx + dy * dy);
+        try {
+            const bounds = model.getBounds();
+            const dx = Math.max(bounds.left - pointer.x, 0, pointer.x - bounds.right);
+            const dy = Math.max(bounds.top - pointer.y, 0, pointer.y - bounds.bottom);
+            const distance = Math.sqrt(dx * dx + dy * dy);
 
-        if (distance < threshold) {
-            showButtons();
-            // 只有当鼠标在模型附近时才调用 focus，避免 Electron 透明窗口中的全局跟踪问题
-            if (this.isFocusing) {
-                model.focus(pointer.x, pointer.y);
+            if (distance < threshold) {
+                showButtons();
+                // 只有当鼠标在模型附近时才调用 focus，避免 Electron 透明窗口中的全局跟踪问题
+                if (this.isFocusing) {
+                    model.focus(pointer.x, pointer.y);
+                }
+            } else {
+                // 鼠标离开模型区域，启动隐藏定时器
+                this.isFocusing = false;
+                const lockIcon = document.getElementById('live2d-lock-icon');
+                if (lockIcon) lockIcon.style.display = 'none';
+                startHideTimer();
             }
-        } else {
-            // 鼠标离开模型区域，启动隐藏定时器
-            this.isFocusing = false;
-            const lockIcon = document.getElementById('live2d-lock-icon');
-            if (lockIcon) lockIcon.style.display = 'none';
-            startHideTimer();
+        } catch (error) {
+            console.error('Live2D 交互错误:', error);
         }
     };
 

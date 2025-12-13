@@ -2398,6 +2398,10 @@
                                     </div>
                                     <!-- 防止点击的覆盖层 -->
                                     <div id="live2d-preview-overlay" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 100; pointer-events: auto;"></div>
+                                    <!-- 刷新按钮 -->
+                                    <button id="live2d-refresh-btn" style="position: absolute; top: 10px; right: 10px; z-index: 101; width: 30px; height: 30px; border: none; border-radius: 50%; background-color: rgba(0, 0, 0, 0.5); color: white; cursor: pointer; display: flex; justify-content: center; align-items: center; font-size: 16px; pointer-events: auto;" title="刷新Live2D预览" onclick="refreshLive2DPreview()">
+                                        ↻
+                                    </button>
                                 </div>
                                 <!-- 动作和表情预览控件 -->
                                 <div id="live2d-preview-controls" style="display: none; padding: 10px; background-color: #f0f0f0; border-top: 1px solid #eaeaea; z-index: 2;">
@@ -4619,7 +4623,7 @@ function viewItemDetails(itemId) {
             showMessage('正在保存角色卡...', 'info');
             
             // 调用API保存角色卡JSON文件
-            fetch('/api/character-card/save', {
+            fetch('/api/characters/character-card/save', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -4851,6 +4855,13 @@ function viewItemDetails(itemId) {
                 if (window.t) {
                     toggleButton.textContent = window.t('common.cancel');
                 }
+                
+                // 角色卡区域展开后，如果已经加载了Live2D模型，重新计算模型大小
+                setTimeout(() => {
+                    if (live2dPreviewManager && live2dPreviewManager.currentModel) {
+                        live2dPreviewManager.applyModelSettings(live2dPreviewManager.currentModel, {});
+                    }
+                }, 100); // 给DOM一些时间来更新尺寸
             } else {
                 // 折叠角色卡区域
                 characterCardLayout.style.display = 'none';
@@ -5327,7 +5338,7 @@ function viewItemDetails(itemId) {
                 let finalSteamId = modelInfo.item_id;
                 console.log('modelInfo:', modelInfo);
                 console.log('finalSteamId:', finalSteamId);
-                showMessage(window.t('live2d.loadingModel', `正在加载模型: ${modelName}...`, { model: modelName }), 'info');
+                showMessage((window.t && window.t('live2d.loadingModel', { model: modelName })) || `正在加载模型: ${modelName}...`, 'info');
                 
                 // 1. Fetch files list
                 let filesRes;
@@ -5366,7 +5377,7 @@ function viewItemDetails(itemId) {
                     console.log('构建的模型URL(本地):', modelJsonUrl);
                 }
                 const modelConfigRes = await fetch(modelJsonUrl);
-                if (!modelConfigRes.ok) throw new Error(window.t('live2d.modelConfigFetchFailed', `无法获取模型配置: ${modelConfigRes.statusText}`, { status: modelConfigRes.statusText }));
+                if (!modelConfigRes.ok) throw new Error((window.t && window.t('live2d.modelConfigFetchFailed', { status: modelConfigRes.statusText })) || `无法获取模型配置: ${modelConfigRes.statusText}`);
                 const modelConfig = await modelConfigRes.json();
 
                 // 3. Add URL context for the loader
@@ -5407,16 +5418,48 @@ function viewItemDetails(itemId) {
                 // 更新预览控件
                 await updatePreviewControlsAfterModelLoad(filesData);
                 
+                // 模型加载完成后，确保它在容器中正确显示
+                setTimeout(() => {
+                    if (live2dPreviewManager && live2dPreviewManager.currentModel) {
+                        live2dPreviewManager.applyModelSettings(live2dPreviewManager.currentModel, {});
+                    }
+                }, 100);
+                
                 console.log('Live2D模型加载成功:', modelName);
                 // 更新全局selectedModelInfo变量
                 selectedModelInfo = modelInfo;
-                showMessage(window.t('live2d.modelLoadSuccess', `模型 ${modelName} 加载成功`, { model: modelName }), 'success');
+                showMessage((window.t && window.t('live2d.modelLoadSuccess', { model: modelName })) || `模型 ${modelName} 加载成功`, 'success');
             } catch (error) {
                 console.error('Failed to load Live2D model by name:', error);
-                showMessage(window.t('live2d.modelLoadFailed', `加载模型 ${modelName} 失败`, { model: modelName }), 'error');
+                showMessage((window.t && window.t('live2d.modelLoadFailed', { model: modelName })) || `加载模型 ${modelName} 失败`, 'error');
                 
                 // 在加载失败时隐藏预览控件
                 hidePreviewControls();
+            }
+        }
+        
+        // 刷新Live2D预览
+        async function refreshLive2DPreview() {
+            try {
+                // 检查当前是否有选中的模型
+                const selectedModelName = document.getElementById('model-select').value;
+                
+                if (!selectedModelName) {
+                    showMessage(window.t('live2d.noModelSelectedForRefresh', '请先选择一个模型进行预览'), 'warning');
+                    return;
+                }
+                
+                // 显示刷新中提示
+                showMessage(window.t('live2d.refreshingPreview', '正在刷新Live2D预览...'), 'info');
+                
+                // 重新加载当前模型
+                await loadLive2DModelByName(selectedModelName, selectedModelInfo);
+                
+                // 显示刷新成功提示
+                showMessage(window.t('live2d.previewRefreshed', 'Live2D预览已刷新'), 'success');
+            } catch (error) {
+                console.error('Failed to refresh Live2D preview:', error);
+                showMessage(window.t('live2d.refreshFailed', '刷新Live2D预览失败'), 'error');
             }
         }
         
@@ -5754,8 +5797,8 @@ function viewItemDetails(itemId) {
                     // 计算适合预览区域的缩放值，减小最大缩放值以确保模型完全显示
                     const defaultScale = Math.min(
                         0.25,  // 减小最大缩放值，使模型整体更小
-                        (containerHeight * 0.85) / 7000,  // 根据容器高度计算缩放，使用更保守的比例
-                        (containerWidth * 0.85) / 7000    // 根据容器宽度计算缩放，使用更保守的比例
+                        (containerHeight * 0.85) / 7000,  // 根据容器高度计算缩放，使用更合理的比例
+                        (containerWidth * 0.85) / 7000    // 根据容器宽度计算缩放，使用更合理的比例
                     );
                     
                     model.scale.set(defaultScale);
