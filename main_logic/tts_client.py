@@ -665,16 +665,12 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
     class Callback(ResultCallback):
         def __init__(self, response_queue):
             self.response_queue = response_queue
-            self.cache = np.zeros(0).astype(np.float32)
             
         def on_open(self): 
             pass
             
         def on_complete(self): 
-            if len(self.cache) > 0:
-                data = (soxr.resample(self.cache, 24000, 48000, quality='HQ') * 32768.).clip(-32768, 32767).astype(np.int16).tobytes()
-                self.response_queue.put(data)
-                self.cache = np.zeros(0).astype(np.float32)
+            pass
                 
         def on_error(self, message: str): 
             print(f"TTS Error: {message}")
@@ -686,13 +682,8 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             pass
             
         def on_data(self, data: bytes) -> None:
-            audio = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
-            self.cache = np.concatenate([self.cache, audio])
-            if len(self.cache) >= 8000:
-                data = self.cache[:8000]
-                data = (soxr.resample(data, 24000, 48000, quality='HQ') * 32768.).clip(-32768, 32767).astype(np.int16).tobytes()
-                self.response_queue.put(data)
-                self.cache = self.cache[8000:]
+            # 直接转发 OGG OPUS 数据到前端解码
+            self.response_queue.put(data)
             
     callback = Callback(response_queue)
     current_speech_id = None
@@ -727,7 +718,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                     model="cosyvoice-v3-plus",
                     voice=voice_id,
                     speech_rate=1.1,
-                    format=AudioFormat.PCM_24000HZ_MONO_16BIT,
+                    format=AudioFormat.OGG_OPUS_48KHZ_MONO_64KBPS,
                     callback=callback,
                 )
             except Exception as e:

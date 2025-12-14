@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 
 <head>
@@ -1763,6 +1763,9 @@
     <script src="/static/libs/pixi.min.js"></script> <!-- PixiJS v7 CDN -->
     <script src="/static/libs/index.min.js"></script> <!-- pixi-live2d-display v0.5.0-ls-6（RaSan147 fork，支持v7） -->
     <!-- i18next 已在 head 中加载，这里不再需要 -->
+    <!-- OGG OPUS WASM 解码器 (@wasm-audio-decoders/ogg-opus-decoder) -->
+    <script>window.webpackChunkogg_opus_decoder = window.webpackChunkogg_opus_decoder || [];</script>
+    <script src="/static/libs/ogg-opus-decoder.min.js" charset="UTF-8"></script>
     <script src="/static/common_ui.js"></script>
     <script>
         // 等待配置加载完成后再加载 Live2D 和 app.js

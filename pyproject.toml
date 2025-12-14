@@ -35,7 +35,9 @@ dependencies = [
   "pytesseract",
   "pywin32; sys_platform == 'win32'",
   "pywinauto; sys_platform == 'win32'",
+  "pygetwindow; sys_platform == 'win32'",
   "pyrnnoise>=0.4.0",
+  "beautifulsoup4>=4.12.0",
 ]
 
 

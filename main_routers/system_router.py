@@ -25,7 +25,7 @@ import httpx
 
 from .shared_state import get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
 from config import get_extra_body, MEMORY_SERVER_PORT
-from config.prompts_sys import emotion_analysis_prompt, proactive_chat_prompt, proactive_chat_prompt_screenshot
+from config.prompts_sys import emotion_analysis_prompt, proactive_chat_prompt, proactive_chat_prompt_screenshot, proactive_chat_prompt_window_search
 from utils.workshop_utils import get_workshop_path
 from utils.screenshot_utils import analyze_screenshot_from_data_url
 
@@ -581,11 +581,11 @@ async def proxy_image(image_path: str):
 
 @router.post('/proactive_chat')
 async def proactive_chat(request: Request):
-    """主动搭话：根据概率选择使用图片或热门内容，让AI决定是否主动发起对话"""
+    """主动搭话：根据模式选择使用图片、首页推荐或窗口搜索，让AI决定是否主动发起对话"""
     try:
         _config_manager = get_config_manager()
         session_manager = get_session_manager()
-        from utils.web_scraper import fetch_trending_content, format_trending_content
+        from utils.web_scraper import fetch_trending_content, format_trending_content, fetch_window_context_content, format_window_context_content
         
         # 获取当前角色数据
         master_name_current, her_name_current, _, _, _, _, _, _, _, _ = _config_manager.get_character_data()
@@ -613,11 +613,15 @@ async def proactive_chat(request: Request):
         # 防御性检查：确保screenshot_data是字符串类型
         has_screenshot = bool(screenshot_data) and isinstance(screenshot_data, str)
         
-        # 前端已经根据三种模式决定是否使用截图
-        use_screenshot = has_screenshot
+        # 检查是否使用窗口搜索模式
+        use_window_search = data.get('use_window_search', False)
         
-        if use_screenshot:
-            logger.info(f"[{lanlan_name}] 前端选择使用截图进行主动搭话")
+        # 前端已经根据三种模式决定是否使用截图
+        use_screenshot = has_screenshot and not use_window_search
+        
+        if use_window_search:
+            logger.info(f"[{lanlan_name}] 前端选择使用窗口搜索进行主动搭话")
+        elif use_screenshot:
             
             # 处理前端发送的截图数据
             try:
@@ -639,30 +643,96 @@ async def proactive_chat(request: Request):
                     "error": f"截图处理失败: {str(e)}",
                     "action": "pass"
                 }, status_code=500)
-        else:
-            logger.info(f"[{lanlan_name}] 前端选择使用热门内容进行主动搭话")
+        elif not use_window_search:
+            logger.info(f"[{lanlan_name}] 前端选择使用首页推荐进行主动搭话")
         
-        if not use_screenshot:
-            # 热门内容主动对话
+        # 根据不同模式获取内容
+        window_context_content = None
+        formatted_content = None
+        
+        if use_window_search:
+            # 窗口搜索主动对话
+            try:
+                window_context_content = await fetch_window_context_content(limit=5)
+                
+                if not window_context_content['success']:
+                    logger.warning(f"[{lanlan_name}] 获取窗口上下文失败: {window_context_content.get('error')}")
+                    # 窗口搜索失败时回退到首页推荐
+                    logger.info(f"[{lanlan_name}] 回退到首页推荐模式")
+                    use_window_search = False
+                else:
+                    formatted_window_content = format_window_context_content(window_context_content)
+                    # 截断窗口标题以避免记录敏感信息
+                    raw_title = window_context_content.get('window_title', '')
+                    sanitized_title = raw_title[:30] + '...' if len(raw_title) > 30 else raw_title
+                    
+                    # 显示具体获取的搜索结果标题，使用更清晰的分隔
+                    search_results = window_context_content.get('search_results', [])
+                    if search_results:
+                        result_titles = [result.get('title', '') for result in search_results]  # 显示全部搜索结果
+                        if result_titles:
+                            logger.info(f"[{lanlan_name}] 成功获取窗口上下文: {sanitized_title}")
+                            logger.info(f"搜索结果 (共{len(result_titles)}条):")
+                            for title in result_titles:
+                                logger.info(f"  - {title}")
+                        else:
+                            logger.info(f"[{lanlan_name}] 成功获取窗口上下文: {sanitized_title} - 但未获取到搜索结果")
+                    else:
+                        logger.info(f"[{lanlan_name}] 成功获取窗口上下文: {sanitized_title} - 但未获取到搜索结果")
+                
+            except Exception:
+                logger.exception(f"[{lanlan_name}] 获取窗口上下文失败")
+                # 回退到首页推荐
+                use_window_search = False
+        
+        if not use_screenshot and not use_window_search:
+            # 首页推荐主动对话
             try:
                 trending_content = await fetch_trending_content(bilibili_limit=10, weibo_limit=10)
                 
                 if not trending_content['success']:
                     return JSONResponse({
                         "success": False,
-                        "error": "无法获取热门内容",
+                        "error": "无法获取首页推荐",
                         "detail": trending_content.get('error', '未知错误')
                     }, status_code=500)
                 
                 formatted_content = format_trending_content(trending_content)
-                logger.info(f"[{lanlan_name}] 成功获取热门内容")
+                
+                # 显示具体的首页推荐内容详情
+                content_details = []
+                
+                bilibili_data = trending_content.get('bilibili', {})
+                if bilibili_data.get('success'):
+                    videos = bilibili_data.get('videos', [])
+                    bilibili_titles = [video.get('title', '') for video in videos[:5]]  # 只显示前5个
+                    if bilibili_titles:
+                        content_details.append("B站视频:")
+                        for title in bilibili_titles:
+                            content_details.append(f"  - {title}")
+                
+                weibo_data = trending_content.get('weibo', {})
+                if weibo_data.get('success'):
+                    trending_list = weibo_data.get('trending', [])
+                    weibo_words = [item.get('word', '') for item in trending_list[:5]]  # 只显示前5个
+                    if weibo_words:
+                        content_details.append("微博话题:")
+                        for word in weibo_words:
+                            content_details.append(f"  - {word}")
+                
+                if content_details:
+                    logger.info(f"[{lanlan_name}] 成功获取首页推荐:")
+                    for detail in content_details:
+                        logger.info(detail)
+                else:
+                    logger.info(f"[{lanlan_name}] 成功获取首页推荐 - 但未获取到具体内容")
                 
             except Exception:
-                logger.exception(f"[{lanlan_name}] 获取热门内容失败")
+                logger.exception(f"[{lanlan_name}] 获取首页推荐失败")
                 return JSONResponse({
                     "success": False,
-                    "error": "爬取热门内容时出错",
-                    "detail": "请检查网络连接或热门内容服务状态"
+                    "error": "爬取首页推荐时出错",
+                    "detail": "请检查网络连接或推荐服务状态"
                 }, status_code=500)
         
         # 2. 获取new_dialogue prompt
@@ -684,15 +754,24 @@ async def proactive_chat(request: Request):
                 memory_context=memory_context
             )
             logger.info(f"[{lanlan_name}] 使用图片主动对话提示词")
+        elif use_window_search:
+            # 窗口搜索模板：基于当前活跃窗口和百度搜索结果让AI决定是否主动发起对话
+            system_prompt = proactive_chat_prompt_window_search.format(
+                lanlan_name=lanlan_name,
+                master_name=master_name_current,
+                window_context=formatted_window_content,
+                memory_context=memory_context
+            )
+            logger.info(f"[{lanlan_name}] 使用窗口搜索主动对话提示词")
         else:
-            # 热门内容模板：基于网络热点让AI决定是否主动发起对话
+            # 首页推荐模板：基于首页信息流让AI决定是否主动发起对话
             system_prompt = proactive_chat_prompt.format(
                 lanlan_name=lanlan_name,
                 master_name=master_name_current,
                 trending_content=formatted_content,
                 memory_context=memory_context
             )
-            logger.info(f"[{lanlan_name}] 使用热门内容主动对话提示词")
+            logger.info(f"[{lanlan_name}] 使用首页推荐主动对话提示词")
 
         # 4. 直接使用langchain ChatOpenAI获取AI回复（不创建临时session）
         try:

@@ -1,3 +1,61 @@
+// ==================== OGG OPUS 流式解码器 (WASM) ====================
+// 使用 @wasm-audio-decoders/ogg-opus-decoder
+// https://github.com/eshaz/wasm-audio-decoders/tree/main/src/ogg-opus-decoder
+// 库已在 index.html 中预加载，全局变量为 window["ogg-opus-decoder"]
+let oggOpusDecoder = null;
+let oggOpusDecoderReady = null;
+
+async function getOggOpusDecoder() {
+    if (oggOpusDecoder) return oggOpusDecoder;
+    if (oggOpusDecoderReady) return oggOpusDecoderReady;
+    
+    oggOpusDecoderReady = (async () => {
+        const module = window["ogg-opus-decoder"];
+        if (!module || !module.OggOpusDecoder) {
+            console.error('ogg-opus-decoder 未加载，请检查 index.html');
+            return null;
+        }
+        
+        try {
+            const decoder = new module.OggOpusDecoder();
+            await decoder.ready;
+            console.log('OGG OPUS WASM 解码器已就绪');
+            oggOpusDecoder = decoder;
+            return decoder;
+        } catch (e) {
+            console.error('创建 OGG OPUS 解码器失败:', e);
+            return null;
+        }
+    })();
+    
+    return oggOpusDecoderReady;
+}
+
+// 重置解码器（在新的音频流开始时调用）
+async function resetOggOpusDecoder() {
+    if (oggOpusDecoder) {
+        try {
+            oggOpusDecoder.free();
+        } catch (e) {}
+        oggOpusDecoder = null;
+        oggOpusDecoderReady = null;
+    }
+}
+
+async function decodeOggOpusChunk(uint8Array) {
+    const decoder = await getOggOpusDecoder();
+    if (!decoder) {
+        throw new Error('OGG OPUS 解码器不可用');
+    }
+    
+    // decode() 用于流式解码
+    const { channelData, samplesDecoded, sampleRate } = await decoder.decode(uint8Array);
+    if (channelData && channelData[0] && channelData[0].length > 0) {
+        return { float32Data: channelData[0], sampleRate: sampleRate || 48000 };
+    }
+    return null; // 数据不足，等待更多
+}
+
 // ==================== 全局窗口管理函数 ====================
 // 关闭所有已打开的设置窗口（弹窗）
 window.closeAllSettingsWindows = function () {
@@ -151,8 +209,11 @@ function init_app() {
     let proactiveChatEnabled = false;
     let proactiveVisionEnabled = false;
     let proactiveChatTimer = null;
-    let proactiveChatBackoffLevel = 0; // 退避级别：0=30s, 1=1min, 2=2min, 3=4min, etc.
+    let proactiveChatBackoffLevel = 0; // 退避级别：0=30s, 1=75s, 2=187.5s, etc.
     const PROACTIVE_CHAT_BASE_DELAY = 30000; // 30秒基础延迟
+    // 主动视觉在语音时的单帧推送（当同时开启主动视觉 && 语音对话时，每10秒推送一帧）
+    let proactiveVisionFrameTimer = null;
+    const PROACTIVE_VISION_FRAME_INTERVAL = 10000; // 10秒
 
     // 截图最大尺寸（720p，用于节流数据传输）
     const MAX_SCREENSHOT_WIDTH = 1280;
@@ -867,6 +928,13 @@ function init_app() {
             // 添加active类以保持激活状态的颜色
             screenButton.classList.add('active');
 
+            // 手动开始屏幕共享时，重置/停止语音期间的主动视觉定时，避免双重触发
+            try {
+                stopProactiveVisionDuringSpeech();
+            } catch (e) {
+                console.warn('停止语音期间主动视觉失败:', e);
+            }
+
             // 当用户停止共享屏幕时
             screenCaptureStream.getVideoTracks()[0].onended = () => {
                 stopScreening();
@@ -909,6 +977,15 @@ function init_app() {
         // 移除active类
         screenButton.classList.remove('active');
         syncFloatingScreenButtonState(false);
+
+        // 停止手动屏幕共享后，如果满足条件则恢复语音期间主动视觉定时
+        try {
+            if (proactiveVisionEnabled && isRecording) {
+                startProactiveVisionDuringSpeech();
+            }
+        } catch (e) {
+            console.warn('恢复语音期间主动视觉失败:', e);
+        }
     }
 
     window.switchMicCapture = async () => {
@@ -1249,6 +1326,15 @@ function init_app() {
             showLive2d();
             await startMicCapture();
 
+            // 启动语音期间的主动视觉定时（如果已开启主动视觉）
+            try {
+                if (proactiveVisionEnabled) {
+                    startProactiveVisionDuringSpeech();
+                }
+            } catch (e) {
+                console.warn('启动语音期间主动视觉失败:', e);
+            }
+
             // 录音启动成功后，隐藏准备提示，显示"可以说话了"提示
             hideVoicePreparingToast();
 
@@ -1510,7 +1596,8 @@ function init_app() {
             return;
         }
 
-        // 用户主动发送文本时，重置主动搭话计时器
+        // 用户主动发送文本时，记录时间戳并重置主动搭话计时器
+        lastUserInputTime = Date.now();
         resetProactiveChatBackoff();
 
         // 如果还没有启动session，先启动
@@ -1679,6 +1766,10 @@ function init_app() {
 
             // 使用统一的截图辅助函数进行截取
             const { dataUrl, width, height } = captureCanvasFrame(video);
+
+            // 清理 video 元素释放资源
+            video.srcObject = null;
+            video.remove();
 
             console.log(`截图成功，尺寸: ${width}x${height}`);
 
@@ -2019,6 +2110,8 @@ function init_app() {
 
     // 停止录音
     function stopRecording() {
+        // 停止语音期间主动视觉定时
+        stopProactiveVisionDuringSpeech();
 
         stopScreening();
         if (!isRecording) return;
@@ -2074,6 +2167,9 @@ function init_app() {
         isPlaying = false;
         audioStartTime = 0;
         nextStartTime = 0; // 新增：重置预调度时间
+        
+        // 重置 OGG OPUS 流式解码器
+        resetOggOpusDecoder();
     }
 
 
@@ -2149,10 +2245,9 @@ function init_app() {
 
 
     async function handleAudioBlob(blob) {
-        // 你现有的PCM处理代码...
-        const pcmBytes = await blob.arrayBuffer();
-        if (!pcmBytes || pcmBytes.byteLength === 0) {
-            console.warn('收到空的PCM数据，跳过处理');
+        const arrayBuffer = await blob.arrayBuffer();
+        if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+            console.warn('收到空的音频数据，跳过处理');
             return;
         }
 
@@ -2164,12 +2259,42 @@ function init_app() {
             await audioPlayerContext.resume();
         }
 
-        const int16Array = new Int16Array(pcmBytes);
-        const audioBuffer = audioPlayerContext.createBuffer(1, int16Array.length, 48000);
-        const channelData = audioBuffer.getChannelData(0);
-        for (let i = 0; i < int16Array.length; i++) {
-            channelData[i] = int16Array[i] / 32768.0;
+        // 检测是否是 OGG 格式 (魔数 "OggS" = 0x4F 0x67 0x67 0x53)
+        const header = new Uint8Array(arrayBuffer, 0, 4);
+        const isOgg = header[0] === 0x4F && header[1] === 0x67 && header[2] === 0x67 && header[3] === 0x53;
+
+        let float32Data;
+        let sampleRate = 48000;
+
+        if (isOgg) {
+            // OGG OPUS 格式，用 WASM 流式解码
+            try {
+                const result = await decodeOggOpusChunk(new Uint8Array(arrayBuffer));
+                if (!result) {
+                    // 数据不足，等待更多
+                    return;
+                }
+                float32Data = result.float32Data;
+                sampleRate = result.sampleRate;
+            } catch (e) {
+                console.error('OGG OPUS 解码失败:', e);
+                return;
+            }
+        } else {
+            // PCM Int16 格式，直接转换
+            const int16Array = new Int16Array(arrayBuffer);
+            float32Data = new Float32Array(int16Array.length);
+            for (let i = 0; i < int16Array.length; i++) {
+                float32Data[i] = int16Array[i] / 32768.0;
+            }
         }
+
+        if (!float32Data || float32Data.length === 0) {
+            return;
+        }
+
+        const audioBuffer = audioPlayerContext.createBuffer(1, float32Data.length, sampleRate);
+        audioBuffer.copyToChannel(float32Data, 0);
 
         const bufferObj = { seq: seqCounter++, buffer: audioBuffer };
         audioBufferQueue.push(bufferObj);
@@ -2618,7 +2743,11 @@ function init_app() {
 
                         if (proactiveVisionEnabled) {
                             resetProactiveChatBackoff();
+                            // 如果当前处于语音模式，启动语音期间的主动视觉定时
+                            if (isRecording) startProactiveVisionDuringSpeech();
                         } else {
+                            // 关闭主动视觉时停止语音期间的定时
+                            stopProactiveVisionDuringSpeech();
                             // 只有当主动搭话也关闭时才停止调度
                             const currentProactiveChat = typeof window.proactiveChatEnabled !== 'undefined'
                                 ? window.proactiveChatEnabled
@@ -2963,6 +3092,23 @@ function init_app() {
 
         // 显示欢迎消息，提示用户可以开始对话
         showStatusToast(window.t ? window.t('app.welcomeBack', { name: lanlan_config.lanlan_name }) : `🫴 ${lanlan_config.lanlan_name}回来了！`, 3000);
+
+        // 恢复主动搭话与主动视觉调度（即使不自动开启会话）
+        try {
+            const currentProactiveChat = typeof window.proactiveChatEnabled !== 'undefined'
+                ? window.proactiveChatEnabled
+                : proactiveChatEnabled;
+            const currentProactiveVision = typeof window.proactiveVisionEnabled !== 'undefined'
+                ? window.proactiveVisionEnabled
+                : proactiveVisionEnabled;
+
+            if (currentProactiveChat || currentProactiveVision) {
+                // 重置退避并安排下一次（scheduleProactiveChat 会检查 isRecording）
+                resetProactiveChatBackoff();
+            }
+        } catch (e) {
+            console.warn('恢复主动搭话/主动视觉失败:', e);
+        }
 
         // 延迟重置模式切换标志
         setTimeout(() => {
@@ -4653,16 +4799,16 @@ function init_app() {
             return;
         }
 
-        // 计算延迟时间（指数退避）
-        const delay = PROACTIVE_CHAT_BASE_DELAY * Math.pow(2, proactiveChatBackoffLevel);
+        // 计算延迟时间（指数退避，倍率2.5）
+        const delay = PROACTIVE_CHAT_BASE_DELAY * Math.pow(2.5, proactiveChatBackoffLevel);
         console.log(`主动搭话：${delay / 1000}秒后触发（退避级别：${proactiveChatBackoffLevel}）`);
 
         proactiveChatTimer = setTimeout(async () => {
             console.log('触发主动搭话...');
             await triggerProactiveChat();
 
-            // 增加退避级别（最多到4分钟，即level 3）
-            if (proactiveChatBackoffLevel < 3) {
+            // 增加退避级别（最多到约3分钟，即level 2：30s * 2.5^2 = 187.5s）
+            if (proactiveChatBackoffLevel < 2) {
                 proactiveChatBackoffLevel++;
             }
 
@@ -4673,20 +4819,49 @@ function init_app() {
 
     async function triggerProactiveChat() {
         try {
-            // 根据三种模式决定使用哪种搭话方式
+            // 根据模式决定使用哪种搭话方式
+            // Windows系统下支持三种模式：截图、窗口标题搜索、热门内容
+            // 非Windows系统下只支持截图和热门内容
             let useScreenshot = false;
+            let useWindowTitle = false;
+            const isWindows = isWindowsOS();
 
             if (proactiveChatEnabled && proactiveVisionEnabled) {
-                // 两个都开启时：各50%
-                useScreenshot = Math.random() < 0.5;
-                console.log(`主动搭话模式：双开模式，使用${useScreenshot ? '截图搭话' : '热门内容'}`);
+                // 两个都开启时：
+                // Windows: 1/3截图, 1/3窗口标题, 1/3热门内容
+                // 非Windows: 50%截图, 50%热门内容
+                if (isWindows) {
+                    const rand = Math.random();
+                    if (rand < 0.33) {
+                        useScreenshot = true;
+                        console.log('主动搭话模式：双开模式(Windows)，使用截图搭话');
+                    } else if (rand < 0.66) {
+                        useWindowTitle = true;
+                        console.log('主动搭话模式：双开模式(Windows)，使用窗口标题搭话');
+                    } else {
+                        console.log('主动搭话模式：双开模式(Windows)，使用热门内容');
+                    }
+                } else {
+                    useScreenshot = Math.random() < 0.5;
+                    console.log(`主动搭话模式：双开模式，使用${useScreenshot ? '截图搭话' : '热门内容'}`);
+                }
             } else if (proactiveVisionEnabled) {
-                // 只开启主动视觉时：100%屏幕截图搭话
+                // 只开启主动视觉时：
+                // Windows和非Windows都是100%截图
                 useScreenshot = true;
                 console.log('主动搭话模式：仅视觉模式，使用截图搭话');
+            } else if (proactiveChatEnabled && isWindows) {
+                // 只开启主动搭话时(Windows)：50%窗口标题, 50%热门内容
+                if (Math.random() < 0.5) {
+                    useWindowTitle = true;
+                    console.log('主动搭话模式：仅搭话模式(Windows)，使用窗口标题搭话');
+                } else {
+                    console.log('主动搭话模式：仅搭话模式(Windows)，使用热门内容');
+                }
             } else if (proactiveChatEnabled) {
-                // 只开启主动搭话时：100%热门内容
+                // 只开启主动搭话时(非Windows)：100%热门内容
                 useScreenshot = false;
+                useWindowTitle = false;
                 console.log('主动搭话模式：仅搭话模式，使用热门内容');
             } else {
                 // 两个都关闭，不执行搭话
@@ -4703,9 +4878,15 @@ function init_app() {
                 const screenshotDataUrl = await captureProactiveChatScreenshot();
 
                 if (!screenshotDataUrl) {
-                    console.log('主动搭话截图失败，退回使用热门内容搭话');
-                    // 截图失败时，如果主动搭话功能开启，则退回使用热门内容
-                    if (proactiveChatEnabled) {
+                    console.log('主动搭话截图失败，退回使用其他方式');
+                    // 截图失败时的回退策略
+                    if (isWindows && proactiveChatEnabled) {
+                        // Windows下回退到窗口标题
+                        useScreenshot = false;
+                        useWindowTitle = true;
+                        console.log('已切换到窗口标题搭话模式');
+                    } else if (proactiveChatEnabled) {
+                        // 非Windows或不支持窗口标题时回退到热门内容
                         useScreenshot = false;
                         console.log('已切换到热门内容搭话模式');
                     } else {
@@ -4715,6 +4896,43 @@ function init_app() {
                     }
                 } else {
                     requestBody.screenshot_data = screenshotDataUrl;
+                }
+            }
+
+            if (useWindowTitle && !useScreenshot) {
+                // 使用窗口标题搭话（Windows only）
+                try {
+                    const titleResponse = await fetch('/api/get_window_title');
+                    const titleResult = await titleResponse.json();
+                    
+                    // await 期间用户可能关闭了功能，避免继续执行
+                    if (!proactiveChatEnabled && !proactiveVisionEnabled) {
+                        console.log('功能已关闭，取消本次搭话');
+                        return;
+                    }
+
+                    if (titleResult.success && titleResult.window_title) {
+                        requestBody.window_title = titleResult.window_title;
+                        console.log('成功获取窗口标题:', titleResult.window_title);
+                    } else {
+                        console.log('获取窗口标题失败，退回使用热门内容');
+                        if (proactiveChatEnabled) {
+                            useWindowTitle = false;
+                            console.log('已切换到热门内容搭话模式');
+                        } else {
+                            console.log('获取窗口标题失败且未开启主动搭话，跳过本次搭话');
+                            return;
+                        }
+                    }
+                } catch (error) {
+                    console.error('获取窗口标题时出错:', error);
+                    if (proactiveChatEnabled) {
+                        useWindowTitle = false;
+                        console.log('已切换到热门内容搭话模式');
+                    } else {
+                        console.log('获取窗口标题失败且未开启主动搭话，跳过本次搭话');
+                        return;
+                    }
                 }
             }
 
@@ -4730,6 +4948,13 @@ function init_app() {
 
             if (result.success) {
                 if (result.action === 'chat') {
+                    // 检测用户是否在20秒内有过输入
+                    const timeSinceLastInput = Date.now() - lastUserInputTime;
+                    if (timeSinceLastInput < 20000) {
+                        console.log(`主动搭话作废：用户在${Math.round(timeSinceLastInput / 1000)}秒前有过输入`);
+                        return;
+                    }
+                    
                     console.log('主动搭话已发送:', result.message);
                     // 后端会直接通过session发送消息和TTS，前端无需处理显示
                 } else if (result.action === 'pass') {
@@ -4750,10 +4975,118 @@ function init_app() {
         scheduleProactiveChat();
     }
 
+    // 发送单帧屏幕数据（优先使用已存在的 screenCaptureStream，否则临时调用 getDisplayMedia）
+    async function sendOneProactiveVisionFrame() {
+        try {
+            if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
+            let dataUrl = null;
+
+            if (screenCaptureStream) {
+                const video = document.createElement('video');
+                video.srcObject = screenCaptureStream;
+                video.autoplay = true;
+                video.muted = true;
+                try {
+                    await video.play();
+                } catch (e) {
+                    // 某些情况下不需要 play() 成功也能读取帧
+                }
+                const frame = captureCanvasFrame(video, 0.8);
+                dataUrl = frame && frame.dataUrl ? frame.dataUrl : null;
+                // 清理 video 元素释放资源
+                video.srcObject = null;
+                video.remove();
+            } else {
+                // 临时调用捕获函数（会弹出授权），函数内部会关闭流
+                dataUrl = await captureProactiveChatScreenshot();
+            }
+
+            if (dataUrl && socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({
+                    action: 'stream_data',
+                    data: dataUrl,
+                    input_type: isMobile() ? 'camera' : 'screen'
+                }));
+                console.log('[ProactiveVision] 发送单帧屏幕数据');
+            }
+        } catch (e) {
+            console.error('sendOneProactiveVisionFrame 失败:', e);
+        }
+    }
+
+    function startProactiveVisionDuringSpeech() {
+        // 如果已有定时器先清理
+        if (proactiveVisionFrameTimer) {
+            clearInterval(proactiveVisionFrameTimer);
+            proactiveVisionFrameTimer = null;
+        }
+
+        // 仅在条件满足时启动：已开启主动视觉 && 正在录音 && 未手动屏幕共享
+        if (!proactiveVisionEnabled || !isRecording) return;
+        if (screenButton && screenButton.classList.contains('active')) return; // 手动共享时不启动
+
+        proactiveVisionFrameTimer = setInterval(async () => {
+            // 在每次执行前再做一次检查，避免竞态
+            if (!proactiveVisionEnabled || !isRecording) {
+                stopProactiveVisionDuringSpeech();
+                return;
+            }
+
+            // 如果手动开启了屏幕共享，重置计数器（即跳过发送）
+            if (screenButton && screenButton.classList.contains('active')) {
+                // do nothing this tick, just wait for next interval
+                return;
+            }
+
+            await sendOneProactiveVisionFrame();
+        }, PROACTIVE_VISION_FRAME_INTERVAL);
+    }
+
+    function stopProactiveVisionDuringSpeech() {
+        if (proactiveVisionFrameTimer) {
+            clearInterval(proactiveVisionFrameTimer);
+            proactiveVisionFrameTimer = null;
+        }
+    }
+
     function stopProactiveChatSchedule() {
         if (proactiveChatTimer) {
             clearTimeout(proactiveChatTimer);
             proactiveChatTimer = null;
+        }
+    }
+
+    /**
+     * 安全的Windows系统检测函数
+     * 优先使用 navigator.userAgentData，然后 fallback 到 navigator.userAgent，最后才用已弃用的 navigator.platform
+     * @returns {boolean} 是否为Windows系统
+     */
+    function isWindowsOS() {
+        try {
+            // 优先使用现代 API（如果支持）
+            if (navigator.userAgentData && navigator.userAgentData.platform) {
+                const platform = navigator.userAgentData.platform.toLowerCase();
+                return platform.includes('win');
+            }
+            
+            // Fallback 到 userAgent 字符串检测
+            if (navigator.userAgent) {
+                const ua = navigator.userAgent.toLowerCase();
+                return ua.includes('win');
+            }
+            
+            // 最后的兼容方案：使用已弃用的 platform API
+            if (navigator.platform) {
+                const platform = navigator.platform.toLowerCase();
+                return platform.includes('win');
+            }
+            
+            // 如果所有方法都不可用，默认返回false
+            return false;
+        } catch (error) {
+            console.error('Windows检测失败:', error);
+            return false;
         }
     }
 
@@ -4787,6 +5120,10 @@ function init_app() {
 
             // 使用统一的截图辅助函数进行截取（使用0.85质量）
             const { dataUrl, width, height } = captureCanvasFrame(video, 0.85);
+
+            // 清理 video 元素释放资源
+            video.srcObject = null;
+            video.remove();
 
             console.log(`主动搭话截图成功，尺寸: ${width}x${height}`);
             return dataUrl;
