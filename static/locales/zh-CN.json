@@ -31,6 +31,8 @@
     "characterCardGender": "性别",
     "characterCardDescription": "描述",
     "characterCardSetting": "设定",
+    "characterCardSettingEnglishOnly": "(请使用英语)",
+    "editMode": "编辑模式",
     "characterCardModel": "模型",
     "characterCardVoice": "音色",
     "characterCardTags": "角色卡标签",

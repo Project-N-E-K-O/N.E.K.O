@@ -31,6 +31,8 @@
     "characterCardGender": "Gender",
     "characterCardDescription": "Description",
     "characterCardSetting": "Prompt",
+    "characterCardSettingEnglishOnly": "(English only)",
+    "editMode": "Edit Mode",
     "characterCardModel": "Card Model",
     "characterCardVoice": "Voice",
     "characterCardTags": "Card Tags",
