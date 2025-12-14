@@ -1,6 +1,7 @@
 # 忽略敏感配置
 core_config.txt
 test.py
+mcp_server/servers.json
 
 # 忽略日志文件
 *.log
