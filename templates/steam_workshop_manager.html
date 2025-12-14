@@ -4145,6 +4145,134 @@ function viewItemDetails(itemId) {
         // 全局变量：存储所有可用模型信息
         let availableModels = [];
         
+        // 自动扫描创意工坊角色卡并添加到系统
+        async function autoScanAndAddWorkshopCharacterCards() {
+            try {
+                console.log('开始自动扫描创意工坊角色卡...');
+                
+                // 1. 获取所有订阅的创意工坊物品
+                const subscribedResponse = await fetch('/api/steam/workshop/subscribed-items');
+                const subscribedResult = await subscribedResponse.json();
+                
+                if (!subscribedResult.success) {
+                    console.error('获取订阅物品失败:', subscribedResult.error);
+                    return;
+                }
+                
+                const subscribedItems = subscribedResult.items;
+                console.log(`找到 ${subscribedItems.length} 个订阅物品`);
+                
+                let addedCount = 0;
+                
+                // 2. 遍历所有已安装的物品
+                for (const item of subscribedItems) {
+                    if (!item.installedFolder) {
+                        console.log(`物品 ${item.title} (${item.publishedFileId}) 未安装，跳过`);
+                        continue;
+                    }
+                    
+                    const itemId = item.publishedFileId;
+                    const folderPath = item.installedFolder;
+                    
+                    console.log(`检查物品 ${item.title} (${itemId}) 的安装目录: ${folderPath}`);
+                    
+                    // 3. 使用新的API扫描目录中所有.chara.json文件
+                    try {
+                        const listResponse = await fetch(`/api/steam/workshop/list-chara-files?directory=${encodeURIComponent(folderPath)}`);
+                        const listResult = await listResponse.json();
+                        
+                        if (listResult.success && listResult.files.length > 0) {
+                            console.log(`在目录 ${folderPath} 中找到 ${listResult.files.length} 个角色卡文件:`);
+                            
+                            // 4. 遍历所有找到的.chara.json文件
+                            for (const file of listResult.files) {
+                                console.log(`  - ${file.name}`);
+                                await scanCharaFile(file.path, itemId, item.title);
+                            }
+                        } else {
+                            console.log(`在目录 ${folderPath} 中未找到角色卡文件`);
+                        }
+                    } catch (listError) {
+                        console.error(`扫描目录 ${folderPath} 中的角色卡文件失败:`, listError);
+                    }
+                }
+                
+                console.log('自动扫描创意工坊角色卡完成');
+                
+            } catch (error) {
+                console.error('自动扫描和添加角色卡失败:', error);
+            }
+        }
+        
+        // 扫描单个角色卡文件
+        async function scanCharaFile(filePath, itemId, itemTitle) {
+            try {
+                // 使用新的read-file API读取文件内容
+                const readResponse = await fetch(`/api/steam/workshop/read-file?path=${encodeURIComponent(filePath)}`);
+                const readResult = await readResponse.json();
+                
+                if (readResult.success) {
+                    // 解析文件内容
+                    const charaData = JSON.parse(readResult.content);
+                    
+                    // 验证角色卡数据是否有效，兼容中英文字段名
+                    if (!charaData['档案名'] && !charaData['名称'] && !charaData['name']) {
+                        console.log(`角色卡 ${filePath} 缺少名称字段，跳过`);
+                        return;
+                    }
+                    
+                    // 转换为符合catgirl API格式的数据，兼容中英文字段名
+                    const catgirlFormat = {
+                        '档案名': charaData['档案名'] || charaData['name'] || '',
+                        '名称': charaData['名称'] || charaData['name'] || '',
+                        '描述': charaData['描述'] || charaData['description'] || '',
+                        '标签': charaData['标签'] || charaData['tags'] || [],
+                        '原始数据': charaData,
+                        '文件路径': filePath,
+                        '创意工坊物品ID': itemId
+                    };
+                    
+                    // 添加其他字段，避免重复处理已存在的字段
+                    const processedKeys = ['档案名', '名称', '描述', '标签', '原始数据', '文件路径', '创意工坊物品ID'];
+                    for (const [key, value] of Object.entries(charaData)) {
+                        // 跳过已处理的关键字段和空值
+                        if (!processedKeys.includes(key) && key !== 'name' && key !== 'description' && key !== 'tags' && value) {
+                            catgirlFormat[key] = value;
+                        }
+                    }
+                    
+                    // 调用catgirl API添加到系统
+                    const addResponse = await fetch('/api/characters/catgirl', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(catgirlFormat)
+                    });
+                    
+                    const addResult = await addResponse.json();
+                    // 获取角色卡名称（兼容中英文字段）
+                    const charaName = catgirlFormat['档案名'] || charaData.name || '未知名称';
+                    
+                    if (addResult.success) {
+                        console.log(`成功添加角色卡: ${charaName} (来自物品: ${itemTitle})`);
+                        // 延迟刷新角色卡列表，确保数据已保存
+                        setTimeout(() => {
+                            loadCharacterCards();
+                        }, 500);
+                    } else {
+                        console.log(`角色卡 ${charaName} 已存在或添加失败: ${addResult.error}`);
+                    }
+                } else if (readResult.error !== '文件不存在') {
+                    console.error(`读取角色卡文件 ${filePath} 失败:`, readResult.error);
+                }
+            } catch (error) {
+                if (error.message !== 'Failed to fetch') {
+                    console.error(`处理角色卡文件 ${filePath} 时出错:`, error);
+                }
+            }
+        }
+
         // 初始化页面
         window.onload = function() {
             // 检查是否需要切换到特定标签页
@@ -4178,6 +4306,9 @@ function viewItemDetails(itemId) {
             
             // 页面加载时自动加载角色卡
             loadCharacterCards();
+            
+            // 页面加载时自动扫描创意工坊角色卡并添加到系统
+            autoScanAndAddWorkshopCharacterCards();
             
             // 初始化模型选择功能
             initModelSelection();
@@ -5211,7 +5342,6 @@ function viewItemDetails(itemId) {
             try {
                 const formData = new FormData();
                 
-                // 添加所有文件到FormDatac:\Users\STG-MAIN02\AppData\Roaming\Tencent\QQ\Temp\3~Z50}GPO5_5ZAA)92$PG$M_tmb.jpg
                 for (const file of files) {
                     // 保留文件的相对路径
                     formData.append('files', file, file.webkitRelativePath || file.name);

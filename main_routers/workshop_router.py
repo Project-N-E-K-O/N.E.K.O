@@ -1049,6 +1049,82 @@ async def check_upload_status(item_path: str = None):
         }, status_code=500)
 
 
+@router.get('/read-file')
+async def read_workshop_file(path: str):
+    """读取创意工坊文件内容"""
+    try:
+        logger.info(f"读取创意工坊文件请求，路径: {path}")
+        
+        # 解码URL编码的路径
+        decoded_path = unquote(path)
+        logger.info(f"解码后的路径: {decoded_path}")
+        
+        # 安全检查：确保路径包含 steamapps/workshop
+        if 'steamapps\workshop' not in decoded_path.lower() and 'steamapps/workshop' not in decoded_path.lower():
+            logger.warning(f"非创意工坊路径访问被拒绝: {decoded_path}")
+            return JSONResponse(content={"success": False, "error": "访问被拒绝: 只能读取创意工坊目录下的文件"}, status_code=403)
+        
+        # 检查文件是否存在
+        if not os.path.exists(decoded_path) or not os.path.isfile(decoded_path):
+            logger.warning(f"文件不存在: {decoded_path}")
+            return JSONResponse(content={"success": False, "error": "文件不存在"}, status_code=404)
+        
+        # 检查文件大小限制（例如5MB）
+        MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
+        file_size = os.path.getsize(decoded_path)
+        if file_size > MAX_FILE_SIZE:
+            logger.warning(f"文件过大: {decoded_path} ({file_size / 1024 / 1024:.2f}MB > {MAX_FILE_SIZE / 1024 / 1024}MB)")
+            return JSONResponse(content={"success": False, "error": "文件过大"}, status_code=413)
+        
+        # 读取文件内容
+        with open(decoded_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        logger.info(f"成功读取文件: {decoded_path}")
+        return JSONResponse(content={"success": True, "content": content})
+    except Exception as e:
+        logger.error(f"读取文件失败: {str(e)}")
+        return JSONResponse(content={"success": False, "error": f"读取文件失败: {str(e)}"}, status_code=500)
+
+
+@router.get('/list-chara-files')
+async def list_chara_files(directory: str):
+    """列出指定目录下所有的.chara.json文件"""
+    try:
+        logger.info(f"列出创意工坊目录下的角色卡文件请求，目录: {directory}")
+        
+        # 解码URL编码的路径
+        decoded_dir = unquote(directory)
+        logger.info(f"解码后的目录路径: {decoded_dir}")
+        
+        # 安全检查：确保路径包含 steamapps/workshop
+        if 'steamapps\workshop' not in decoded_dir.lower() and 'steamapps/workshop' not in decoded_dir.lower():
+            logger.warning(f"非创意工坊路径访问被拒绝: {decoded_dir}")
+            return JSONResponse(content={"success": False, "error": "访问被拒绝: 只能访问创意工坊目录下的文件"}, status_code=403)
+        
+        # 检查目录是否存在
+        if not os.path.exists(decoded_dir) or not os.path.isdir(decoded_dir):
+            logger.warning(f"目录不存在: {decoded_dir}")
+            return JSONResponse(content={"success": False, "error": "目录不存在"}, status_code=404)
+        
+        # 查找所有.chara.json文件
+        chara_files = []
+        for filename in os.listdir(decoded_dir):
+            if filename.endswith('.chara.json'):
+                file_path = os.path.join(decoded_dir, filename)
+                if os.path.isfile(file_path):
+                    chara_files.append({
+                        'name': filename,
+                        'path': file_path
+                    })
+        
+        logger.info(f"成功列出目录下的角色卡文件: {decoded_dir}, 找到 {len(chara_files)} 个文件")
+        return JSONResponse(content={"success": True, "files": chara_files})
+    except Exception as e:
+        logger.error(f"列出角色卡文件失败: {str(e)}")
+        return JSONResponse(content={"success": False, "error": f"列出角色卡文件失败: {str(e)}"}, status_code=500)
+
+
 @router.post('/publish')
 async def publish_to_workshop(request: Request):
     steamworks = get_steamworks()
