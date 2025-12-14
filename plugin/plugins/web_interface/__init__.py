@@ -3,6 +3,7 @@ Web Interface Plugin
 
 一个提供 FastAPI Web 界面的插件，在插件激活后可以通过网页访问并查看消息。
 """
+import html
 import logging
 import threading
 from typing import Any, Optional
@@ -198,14 +199,18 @@ class WebInterfacePlugin(NekoPluginBase):
             priority = int(msg.get("priority", 5)) if isinstance(msg.get("priority"), (int, str)) else 5
             priority_class = "priority-high" if priority >= 7 else "priority-normal"
             timestamp = msg.get("timestamp", "")[:19].replace("T", " ")
+            # 转义所有用户输入内容以防止 XSS 攻击
+            source_escaped = html.escape(str(msg.get('source', 'unknown')))
+            content_escaped = html.escape(str(msg.get('content', '')))
+            timestamp_escaped = html.escape(timestamp)
             messages_html += f"""
             <div class="message {priority_class}">
                 <div class="message-header">
-                    <span class="source">{msg.get('source', 'unknown')}</span>
-                    <span class="timestamp">{timestamp}</span>
+                    <span class="source">{source_escaped}</span>
+                    <span class="timestamp">{timestamp_escaped}</span>
                     <span class="priority">优先级: {priority}</span>
                 </div>
-                <div class="message-content">{msg.get('content', '')}</div>
+                <div class="message-content">{content_escaped}</div>
             </div>
             """
         
@@ -430,6 +435,13 @@ class WebInterfacePlugin(NekoPluginBase):
     <script>
         let autoRefreshInterval = null;
         
+        // HTML 转义函数，防止 XSS 攻击
+        function escapeHtml(text) {{
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }}
+        
         function refreshMessages() {{
             fetch('/api/messages')
                 .then(response => response.json())
@@ -440,25 +452,52 @@ class WebInterfacePlugin(NekoPluginBase):
                         return;
                     }}
                     
-                    let html = '';
+                    // 清空容器
+                    container.innerHTML = '';
                     const recentMessages = data.messages.slice(-20).reverse();
                     recentMessages.forEach(msg => {{
                         // 确保 priority 是数字类型
                         const priority = parseInt(msg.priority) || 5;
                         const priorityClass = priority >= 7 ? 'priority-high' : 'priority-normal';
                         const timestamp = msg.timestamp ? msg.timestamp.substring(0, 19).replace('T', ' ') : '';
-                        html += `
-                            <div class="message ${{priorityClass}}">
-                                <div class="message-header">
-                                    <span class="source">${{msg.source || 'unknown'}}</span>
-                                    <span class="timestamp">${{timestamp}}</span>
-                                    <span class="priority">优先级: ${{priority}}</span>
-                                </div>
-                                <div class="message-content">${{msg.content || ''}}</div>
-                            </div>
-                        `;
+                        
+                        // 转义所有用户输入内容
+                        const sourceEscaped = escapeHtml(String(msg.source || 'unknown'));
+                        const contentEscaped = escapeHtml(String(msg.content || ''));
+                        const timestampEscaped = escapeHtml(timestamp);
+                        
+                        // 使用 createElement 和 textContent 来安全地创建 DOM 元素
+                        const messageDiv = document.createElement('div');
+                        messageDiv.className = `message ${{priorityClass}}`;
+                        
+                        const headerDiv = document.createElement('div');
+                        headerDiv.className = 'message-header';
+                        
+                        const sourceSpan = document.createElement('span');
+                        sourceSpan.className = 'source';
+                        sourceSpan.textContent = sourceEscaped;
+                        
+                        const timestampSpan = document.createElement('span');
+                        timestampSpan.className = 'timestamp';
+                        timestampSpan.textContent = timestampEscaped;
+                        
+                        const prioritySpan = document.createElement('span');
+                        prioritySpan.className = 'priority';
+                        prioritySpan.textContent = `优先级: ${{priority}}`;
+                        
+                        headerDiv.appendChild(sourceSpan);
+                        headerDiv.appendChild(timestampSpan);
+                        headerDiv.appendChild(prioritySpan);
+                        
+                        const contentDiv = document.createElement('div');
+                        contentDiv.className = 'message-content';
+                        contentDiv.textContent = contentEscaped;
+                        
+                        messageDiv.appendChild(headerDiv);
+                        messageDiv.appendChild(contentDiv);
+                        
+                        container.appendChild(messageDiv);
                     }});
-                    container.innerHTML = html;
                 }})
                 .catch(error => {{
                     console.error('刷新消息失败:', error);

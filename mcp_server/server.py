@@ -196,7 +196,7 @@ class StdioMcpClient:
                 *self.args,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.DEVNULL
             )
             
             # 创建读写流
@@ -243,8 +243,14 @@ class StdioMcpClient:
                     logger.error(f"[Stdio MCP Client] Failed to parse JSON response: {line[:100]}, error: {e}")
                 except Exception as e:
                     logger.error(f"[Stdio MCP Client] Error processing response: {e}")
-        except Exception as e:
-            logger.error(f"[Stdio MCP Client] Error in read loop: {e}")
+        except Exception:
+            logger.exception("[Stdio MCP Client] Error in read loop")
+        finally:
+            # 进程输出结束时，收敛所有未完成请求
+            for _rid, fut in list(self._pending_requests.items()):
+                if not fut.done():
+                    fut.set_exception(Exception("stdio mcp process closed"))
+            self._pending_requests.clear()
     
     async def _mcp_request(self, method: str, params: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
         """发送 MCP JSON-RPC 2.0 请求"""
@@ -482,20 +488,26 @@ class McpClient:
         if params is not None:
             payload["params"] = params
         
-        # 添加详细的调试日志
+        # 添加详细的调试日志（避免泄露敏感数据）
         import json
-        logger.info(f"[MCP Client] Sending {method} request to {self.base_url}")
-        logger.info(f"[MCP Client] Request payload: {json.dumps(payload, indent=2)}")
+        logger.debug(f"[MCP Client] Sending {method} request to {self.base_url}")
+        # 只记录非敏感字段，避免泄露参数中的敏感信息
+        safe_payload = {
+            "jsonrpc": payload.get("jsonrpc"),
+            "id": payload.get("id"),
+            "method": payload.get("method")
+        }
+        logger.debug(f"[MCP Client] Request payload (redacted): {json.dumps(safe_payload, indent=2)}")
         
         # 准备请求头（如果需要 session ID，添加到请求头）
         request_headers = {}
         if self._session_id:
             request_headers['mcp-session-id'] = self._session_id
-            logger.info(f"[MCP Client] Using session ID: {self._session_id[:20]}...")
+            logger.debug(f"[MCP Client] Using session ID: {self._session_id[:20]}...")
         
         try:
             resp = await self.http.post(self.mcp_endpoint, json=payload, headers=request_headers)
-            logger.info(f"[MCP Client] Response status: {resp.status_code} from {self.base_url}")
+            logger.debug(f"[MCP Client] Response status: {resp.status_code} from {self.base_url}")
             
             # 检查响应头中是否有 session ID（Remote MCP 服务可能在响应头中返回）
             session_id_header = resp.headers.get('mcp-session-id') or resp.headers.get('MCP-Session-ID')
@@ -506,7 +518,7 @@ class McpClient:
             resp.raise_for_status()
             
             result = resp.json()
-            logger.info(f"[MCP Client] Response payload: {json.dumps(result, indent=2)}")
+            logger.debug(f"[MCP Client] Response received from {self.base_url}")
             
             if "error" in result:
                 error_info = result['error']
@@ -670,6 +682,9 @@ class McpClient:
 # 全局 MCP 客户端字典（支持 HTTP 和 stdio 客户端）
 _mcp_clients: Dict[str, Union[McpClient, StdioMcpClient]] = {}
 
+# 全局状态锁，保护并发访问
+_state_lock = asyncio.Lock()
+
 
 from contextlib import asynccontextmanager
 
@@ -699,11 +714,6 @@ async def lifespan(app: FastAPI):
 
 # 初始化 FastAPI 应用，使用 lifespan 事件处理器（必须在路由定义之前）
 app = FastAPI(title="Simple MCP Server", version="1.0.0", lifespan=lifespan)
-
-# 挂载静态文件（UI文件）
-ui_dir = os.path.join(os.path.dirname(__file__), "ui")
-if os.path.exists(ui_dir):
-    app.mount("/ui", StaticFiles(directory=ui_dir), name="ui")
 
 
 def create_jsonrpc_response(request_id: Any, result: Any = None, error: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -912,8 +922,8 @@ async def mcp_endpoint(request: Request):
                 "Invalid JSON"
             )
         )
-    except Exception as e:
-        logger.exception(f"[MCP Server] Unexpected error: {e}")
+    except Exception:
+        logger.exception("[MCP Server] Unexpected error")
         return JSONResponse(
             status_code=500,
             content=create_jsonrpc_error(
@@ -929,115 +939,126 @@ async def connect_to_remote_servers():
     """连接到远程 MCP 服务器并获取工具"""
     global TOOLS, REMOTE_TOOL_MAPPING
     
-    # 初始化工具列表为本地工具
-    TOOLS = LOCAL_TOOLS.copy()
-    logger.info(f"[MCP Server] Initialized with {len(LOCAL_TOOLS)} local tools: {[t['name'] for t in LOCAL_TOOLS]}")
-    
-    if not REMOTE_SERVERS:
-        logger.info("[MCP Server] No remote servers configured, using local tools only")
-        return
-    
-    logger.info("=" * 60)
-    logger.info(f"[MCP Server] Starting connection to {len(REMOTE_SERVERS)} remote server(s)...")
-    logger.info("=" * 60)
-    
-    connected_count = 0
-    failed_count = 0
-    
-    for idx, server_config in enumerate(REMOTE_SERVERS, 1):
-        server_identifier = get_server_identifier(server_config)
-        logger.info(f"[MCP Server] [{idx}/{len(REMOTE_SERVERS)}] Processing server: {server_identifier}")
+    async with _state_lock:
+        # 清理旧映射和连接，避免残留脏数据
+        REMOTE_TOOL_MAPPING.clear()
+        # 关闭所有现有连接
+        for client in list(_mcp_clients.values()):
+            try:
+                await client.close()
+            except Exception:
+                pass
+        _mcp_clients.clear()
         
-        try:
-            # 判断服务器类型
-            if isinstance(server_config, str):
-                # HTTP 服务器（旧格式）
-                client = McpClient(server_config)
-            elif isinstance(server_config, dict):
-                server_type = server_config.get("type", "http")
-                if server_type == "stdio":
-                    # stdio 服务器
-                    command = server_config.get("command", "")
-                    args = server_config.get("args", [])
-                    if not command:
-                        logger.error(f"[MCP Server] ❌ stdio server config missing 'command' field")
-                        failed_count += 1
-                        continue
-                    client = StdioMcpClient(command, args)
-                else:
-                    # HTTP 服务器（新格式）
-                    server_url = server_config.get("url", "")
-                    if not server_url:
-                        logger.error(f"[MCP Server] ❌ HTTP server config missing 'url' field")
-                        failed_count += 1
-                        continue
-                    api_key = server_config.get("api_key")
-                    client = McpClient(server_url, api_key)
-            else:
-                logger.error(f"[MCP Server] ❌ Invalid server config format: {server_config}")
-                failed_count += 1
-                continue
+        # 初始化工具列表为本地工具
+        TOOLS = LOCAL_TOOLS.copy()
+        logger.info(f"[MCP Server] Initialized with {len(LOCAL_TOOLS)} local tools: {[t['name'] for t in LOCAL_TOOLS]}")
+        
+        if not REMOTE_SERVERS:
+            logger.info("[MCP Server] No remote servers configured, using local tools only")
+            return
+        
+        logger.info("=" * 60)
+        logger.info(f"[MCP Server] Starting connection to {len(REMOTE_SERVERS)} remote server(s)...")
+        logger.info("=" * 60)
+        
+        connected_count = 0
+        failed_count = 0
+        
+        for idx, server_config in enumerate(REMOTE_SERVERS, 1):
+            server_identifier = get_server_identifier(server_config)
+            logger.info(f"[MCP Server] [{idx}/{len(REMOTE_SERVERS)}] Processing server: {server_identifier}")
             
-            # 初始化连接
-            if await client.initialize():
-                # 获取工具列表
-                remote_tools = await client.list_tools()
-                
-                if remote_tools:
-                    # 保存客户端
-                    _mcp_clients[server_identifier] = client
-                    connected_count += 1
-                    
-                    # 添加远程工具到工具列表
-                    added_count = 0
-                    skipped_count = 0
-                    for tool in remote_tools:
-                        tool_name = tool.get("name")
-                        if tool_name:
-                            # 检查是否有名称冲突
-                            if any(t["name"] == tool_name for t in TOOLS):
-                                logger.warning(f"[MCP Server] ⚠️  Tool '{tool_name}' already exists, skipping from {server_identifier}")
-                                skipped_count += 1
-                                continue
-                            
-                            TOOLS.append(tool)
-                            REMOTE_TOOL_MAPPING[tool_name] = server_identifier
-                            added_count += 1
-                            logger.info(f"[MCP Server]    ✅ Added tool: {tool_name}")
-                    
-                    logger.info(f"[MCP Server] ✅ Successfully connected to {server_identifier}")
-                    logger.info(f"[MCP Server]    Added {added_count} tools, skipped {skipped_count} duplicate(s)")
+            try:
+                # 判断服务器类型
+                if isinstance(server_config, str):
+                    # HTTP 服务器（旧格式）
+                    client = McpClient(server_config)
+                elif isinstance(server_config, dict):
+                    server_type = server_config.get("type", "http")
+                    if server_type == "stdio":
+                        # stdio 服务器
+                        command = server_config.get("command", "")
+                        args = server_config.get("args", [])
+                        if not command:
+                            logger.error(f"[MCP Server] ❌ stdio server config missing 'command' field")
+                            failed_count += 1
+                            continue
+                        client = StdioMcpClient(command, args)
+                    else:
+                        # HTTP 服务器（新格式）
+                        server_url = server_config.get("url", "")
+                        if not server_url:
+                            logger.error(f"[MCP Server] ❌ HTTP server config missing 'url' field")
+                            failed_count += 1
+                            continue
+                        api_key = server_config.get("api_key")
+                        client = McpClient(server_url, api_key)
                 else:
-                    logger.warning(f"[MCP Server] ⚠️  Connected to {server_identifier} but no tools found")
+                    logger.error(f"[MCP Server] ❌ Invalid server config format: {server_config}")
+                    failed_count += 1
+                    continue
+                
+                # 初始化连接
+                if await client.initialize():
+                    # 获取工具列表
+                    remote_tools = await client.list_tools()
+                    
+                    if remote_tools:
+                        # 保存客户端
+                        _mcp_clients[server_identifier] = client
+                        connected_count += 1
+                        
+                        # 添加远程工具到工具列表
+                        added_count = 0
+                        skipped_count = 0
+                        for tool in remote_tools:
+                            tool_name = tool.get("name")
+                            if tool_name:
+                                # 检查是否有名称冲突
+                                if any(t["name"] == tool_name for t in TOOLS):
+                                    logger.warning(f"[MCP Server] ⚠️  Tool '{tool_name}' already exists, skipping from {server_identifier}")
+                                    skipped_count += 1
+                                    continue
+                                
+                                TOOLS.append(tool)
+                                REMOTE_TOOL_MAPPING[tool_name] = server_identifier
+                                added_count += 1
+                                logger.info(f"[MCP Server]    ✅ Added tool: {tool_name}")
+                        
+                        logger.info(f"[MCP Server] ✅ Successfully connected to {server_identifier}")
+                        logger.info(f"[MCP Server]    Added {added_count} tools, skipped {skipped_count} duplicate(s)")
+                    else:
+                        logger.warning(f"[MCP Server] ⚠️  Connected to {server_identifier} but no tools found")
+                        await client.close()
+                        failed_count += 1
+                else:
+                    logger.error(f"[MCP Server] ❌ Failed to initialize connection to {server_identifier}")
                     await client.close()
                     failed_count += 1
-            else:
-                logger.error(f"[MCP Server] ❌ Failed to initialize connection to {server_identifier}")
-                await client.close()
+                    
+            except Exception as e:
+                logger.error(f"[MCP Server] ❌ Error connecting to {server_identifier}: {e}")
+                logger.exception("[MCP Server] Exception details:")
                 failed_count += 1
-                
-        except Exception as e:
-            logger.error(f"[MCP Server] ❌ Error connecting to {server_identifier}: {e}")
-            logger.exception(f"[MCP Server] Exception details:")
-            failed_count += 1
-    
-    # 连接摘要
-    logger.info("=" * 60)
-    logger.info(f"[MCP Server] Connection Summary:")
-    logger.info(f"  ✅ Successfully connected: {connected_count}/{len(REMOTE_SERVERS)}")
-    logger.info(f"  ❌ Failed connections: {failed_count}/{len(REMOTE_SERVERS)}")
-    logger.info(f"  📦 Total tools: {len(TOOLS)} ({len(LOCAL_TOOLS)} local, {len(TOOLS) - len(LOCAL_TOOLS)} remote)")
-    logger.info(f"  🔗 Active connections: {len(_mcp_clients)}")
-    logger.info("=" * 60)
-    
-    # 列出所有可用工具
-    if TOOLS:
-        logger.info(f"[MCP Server] Available tools:")
-        for tool in TOOLS:
-            tool_name = tool.get("name")
-            is_remote = tool_name in REMOTE_TOOL_MAPPING
-            source = REMOTE_TOOL_MAPPING.get(tool_name, "local")
-            logger.info(f"  - {tool_name} ({'remote' if is_remote else 'local'} from {source})")
+        
+        # 连接摘要
+        logger.info("=" * 60)
+        logger.info(f"[MCP Server] Connection Summary:")
+        logger.info(f"  ✅ Successfully connected: {connected_count}/{len(REMOTE_SERVERS)}")
+        logger.info(f"  ❌ Failed connections: {failed_count}/{len(REMOTE_SERVERS)}")
+        logger.info(f"  📦 Total tools: {len(TOOLS)} ({len(LOCAL_TOOLS)} local, {len(TOOLS) - len(LOCAL_TOOLS)} remote)")
+        logger.info(f"  🔗 Active connections: {len(_mcp_clients)}")
+        logger.info("=" * 60)
+        
+        # 列出所有可用工具
+        if TOOLS:
+            logger.info(f"[MCP Server] Available tools:")
+            for tool in TOOLS:
+                tool_name = tool.get("name")
+                is_remote = tool_name in REMOTE_TOOL_MAPPING
+                source = REMOTE_TOOL_MAPPING.get(tool_name, "local")
+                logger.info(f"  - {tool_name} ({'remote' if is_remote else 'local'} from {source})")
 
 
 @app.get("/health")
@@ -1131,20 +1152,15 @@ async def get_status():
     }
 
 
-@app.get("/ui", response_class=HTMLResponse)
-async def web_ui():
-    """Web 界面"""
-    html_path = os.path.join(os.path.dirname(__file__), "ui", "index.html")
-    if os.path.exists(html_path):
-        return FileResponse(html_path)
-    else:
-        return HTMLResponse(content="<h1>Web UI not found</h1><p>Please ensure ui/index.html exists.</p>", status_code=404)
+# /ui 路由已移除，使用 mount 提供静态文件服务
+# 访问 /ui 会自动提供 index.html（如果存在），或访问 /ui/index.html
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard():
     """Dashboard 重定向到 UI"""
-    return await web_ui()
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/ui/index.html")
 
 
 @app.get("/api/servers")
@@ -1530,6 +1546,7 @@ async def reconnect_servers():
 
 
 # 挂载静态文件（UI文件）- 必须在所有路由定义之后
+# 注意：访问 /ui 会提供目录内容，访问 /ui/index.html 获取主页面
 ui_dir = os.path.join(os.path.dirname(__file__), "ui")
 if os.path.exists(ui_dir):
     app.mount("/ui", StaticFiles(directory=ui_dir), name="ui")

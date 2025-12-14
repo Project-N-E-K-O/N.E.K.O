@@ -507,7 +507,7 @@ Return only the JSON object, nothing else.
                 try:
                     decision = json.loads(text)
                 except Exception as e:
-                    logger.exception(f"[UserPlugin Assessment] JSON parse error: {e}; raw_text (truncated): {repr(raw_text)[:2000]}")
+                    logger.exception(f"[UserPlugin Assessment] JSON parse error; raw_text (truncated): {repr(raw_text)[:2000]}")
                     # Try to extract JSON from the text if it's embedded in other text
                     try:
                         # Try to find JSON object in the text (improved regex to handle nested objects)
@@ -709,8 +709,8 @@ Return only the JSON object, nothing else.
             logger.info(f"[TaskExecutor] ✅ Using UserPlugin: {up_decision.task_description}, plugin_id={getattr(up_decision, 'plugin_id', None)}")
             try:
                 return await self._execute_user_plugin(task_id=task_id, up_decision=up_decision)
-            except Exception as e:
-                logger.exception(f"[TaskExecutor] UserPlugin execution failed: {e}")
+            except Exception:
+                logger.exception("[TaskExecutor] UserPlugin execution failed")
                 return TaskResult(
                     task_id=task_id,
                     has_task=True,
@@ -969,8 +969,8 @@ Return only the JSON object, nothing else.
                         tool_args=plugin_args,
                         reason=getattr(up_decision, "reason", "") or "trigger_failed"
                     )
-        except Exception as e:
-            logger.exception(f"[TaskExecutor] Trigger call error: {e}")
+        except Exception:
+            logger.exception("[TaskExecutor] Trigger call error")
             return TaskResult(
                 task_id=task_id,
                 has_task=True,
