@@ -13,6 +13,7 @@ import os
 import sys
 import asyncio
 import logging
+import re
 from urllib.parse import unquote
 
 from fastapi import APIRouter, Request
@@ -796,7 +797,8 @@ async def proactive_chat(request: Request):
                 model=correction_model,
                 base_url=correction_base_url,
                 api_key=correction_api_key,
-                temperature=1.1,
+                temperature=1.,
+                max_completion_tokens=500,
                 streaming=False  # 不需要流式，直接获取完整响应
             )
             
@@ -837,11 +839,36 @@ async def proactive_chat(request: Request):
             
             logger.info(f"[{lanlan_name}] AI决策结果: {response_text[:100]}...")
 
+            # --- 新增机制：用正则表达式寻找最后一个"主动搭话"后接换行的地方 ---
+            match = re.search(r'主动搭话\s*\n', response_text)
+            if match:
+                # 从最后一个"主动搭话\n"之后截取内容
+                # 使用 finditer 来找到所有匹配，取最后一个
+                matches = list(re.finditer(r'主动搭话\s*\n', response_text))
+                if matches:
+                    last_match = matches[-1]
+                    response_text = response_text[last_match.end():].strip()
+                    logger.info(f"[{lanlan_name}] 截取'主动搭话'后的内容: {response_text[:50]}...")
+
             # --- 新增验证：在继续输出前严格执行响应内容规则 ---
-            # 1) 字数限制：若超过100字符，则放弃输出该response_text
+            # 1) 字数限制：按150英文词（空格拆分）或中文字来计算，超过则放弃输出
             try:
-                if len(response_text) > 100:
-                    logger.warning(f"[{lanlan_name}] AI回复超过长度限制（{len(response_text)}字符），已放弃输出")
+                # 计算混合长度：中文字符计1，英文单词计1
+                def count_words_and_chars(text):
+                    count = 0
+                    # 用正则分离中文字符和英文单词
+                    # 匹配中文字符
+                    chinese_chars = re.findall(r'[\u4e00-\u9fff]', text)
+                    count += len(chinese_chars)
+                    # 移除中文字符后，按空格拆分计算英文单词
+                    text_without_chinese = re.sub(r'[\u4e00-\u9fff]', ' ', text)
+                    english_words = [w for w in text_without_chinese.split() if w.strip()]
+                    count += len(english_words)
+                    return count
+                
+                text_length = count_words_and_chars(response_text)
+                if text_length > 150:
+                    logger.warning(f"[{lanlan_name}] AI回复超过长度限制（{text_length}词/字），已放弃输出")
                     return JSONResponse({
                         "success": True,
                         "action": "pass",

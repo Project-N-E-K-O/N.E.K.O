@@ -8,14 +8,14 @@ let oggOpusDecoderReady = null;
 async function getOggOpusDecoder() {
     if (oggOpusDecoder) return oggOpusDecoder;
     if (oggOpusDecoderReady) return oggOpusDecoderReady;
-    
+
     oggOpusDecoderReady = (async () => {
         const module = window["ogg-opus-decoder"];
         if (!module || !module.OggOpusDecoder) {
             console.error('ogg-opus-decoder 未加载，请检查 index.html');
             return null;
         }
-        
+
         try {
             const decoder = new module.OggOpusDecoder();
             await decoder.ready;
@@ -27,7 +27,7 @@ async function getOggOpusDecoder() {
             return null;
         }
     })();
-    
+
     return oggOpusDecoderReady;
 }
 
@@ -36,7 +36,7 @@ async function resetOggOpusDecoder() {
     if (oggOpusDecoder) {
         try {
             oggOpusDecoder.free();
-        } catch (e) {}
+        } catch (e) { }
         oggOpusDecoder = null;
         oggOpusDecoderReady = null;
     }
@@ -47,7 +47,7 @@ async function decodeOggOpusChunk(uint8Array) {
     if (!decoder) {
         throw new Error('OGG OPUS 解码器不可用');
     }
-    
+
     // decode() 用于流式解码
     const { channelData, samplesDecoded, sampleRate } = await decoder.decode(uint8Array);
     if (channelData && channelData[0] && channelData[0].length > 0) {
@@ -211,9 +211,9 @@ function init_app() {
     let proactiveChatTimer = null;
     let proactiveChatBackoffLevel = 0; // 退避级别：0=30s, 1=75s, 2=187.5s, etc.
     const PROACTIVE_CHAT_BASE_DELAY = 30000; // 30秒基础延迟
-    // 主动视觉在语音时的单帧推送（当同时开启主动视觉 && 语音对话时，每10秒推送一帧）
+    // 主动视觉在语音时的单帧推送（当同时开启主动视觉 && 语音对话时，每15秒推送一帧）
     let proactiveVisionFrameTimer = null;
-    const PROACTIVE_VISION_FRAME_INTERVAL = 10000; // 10秒
+    const PROACTIVE_VISION_FRAME_INTERVAL = 15000; // 15秒
 
     // 截图最大尺寸（720p，用于节流数据传输）
     const MAX_SCREENSHOT_WIDTH = 1280;
@@ -414,7 +414,7 @@ function init_app() {
                                     const sessionStartPromise = new Promise((resolve, reject) => {
                                         sessionStartedResolver = resolve;
 
-                                        // 设置超时（15秒），如果超时则拒绝
+                                        // 设置超时（10秒），如果超时则拒绝
                                         setTimeout(() => {
                                             if (sessionStartedResolver) {
                                                 sessionStartedResolver = null;
@@ -561,6 +561,19 @@ function init_app() {
 
     // 初始化连接
     connectWebSocket();
+
+    // 监听记忆编辑通知（从 memory_browser iframe 发送）
+    window.addEventListener('message', function (event) {
+        if (event.data && event.data.type === 'memory_edited') {
+            console.log('记忆已编辑，刷新上下文:', event.data.catgirl_name);
+            // 停止当前语音捕获，用户再次开麦时会自动刷新上下文
+            if (isRecording) {
+                stopMicCapture();
+            }
+            // 显示提示
+            showStatusToast(window.t ? window.t('memory.refreshed') : '记忆已更新，下次对话将使用新记忆', 4000);
+        }
+    });
 
     // 添加消息到聊天界面
     function appendMessage(text, sender, isNewMessage = true) {
@@ -2167,7 +2180,7 @@ function init_app() {
         isPlaying = false;
         audioStartTime = 0;
         nextStartTime = 0; // 新增：重置预调度时间
-        
+
         // 重置 OGG OPUS 流式解码器
         resetOggOpusDecoder();
     }
@@ -4807,8 +4820,8 @@ function init_app() {
             console.log('触发主动搭话...');
             await triggerProactiveChat();
 
-            // 增加退避级别（最多到约3分钟，即level 2：30s * 2.5^2 = 187.5s）
-            if (proactiveChatBackoffLevel < 2) {
+            // 增加退避级别（最多到约7分钟，即level 3：30s * 2.5^3 = 7.5min）
+            if (proactiveChatBackoffLevel < 3) {
                 proactiveChatBackoffLevel++;
             }
 
@@ -4904,7 +4917,7 @@ function init_app() {
                 try {
                     const titleResponse = await fetch('/api/get_window_title');
                     const titleResult = await titleResponse.json();
-                    
+
                     // await 期间用户可能关闭了功能，避免继续执行
                     if (!proactiveChatEnabled && !proactiveVisionEnabled) {
                         console.log('功能已关闭，取消本次搭话');
@@ -4954,7 +4967,7 @@ function init_app() {
                         console.log(`主动搭话作废：用户在${Math.round(timeSinceLastInput / 1000)}秒前有过输入`);
                         return;
                     }
-                    
+
                     console.log('主动搭话已发送:', result.message);
                     // 后端会直接通过session发送消息和TTS，前端无需处理显示
                 } else if (result.action === 'pass') {
@@ -5069,19 +5082,19 @@ function init_app() {
                 const platform = navigator.userAgentData.platform.toLowerCase();
                 return platform.includes('win');
             }
-            
+
             // Fallback 到 userAgent 字符串检测
             if (navigator.userAgent) {
                 const ua = navigator.userAgent.toLowerCase();
                 return ua.includes('win');
             }
-            
+
             // 最后的兼容方案：使用已弃用的 platform API
             if (navigator.platform) {
                 const platform = navigator.platform.toLowerCase();
                 return platform.includes('win');
             }
-            
+
             // 如果所有方法都不可用，默认返回false
             return false;
         } catch (error) {

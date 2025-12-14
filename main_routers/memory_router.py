@@ -240,7 +240,27 @@ async def save_recent_file(request: Request):
     try:
         with open(resolved_path, 'w', encoding='utf-8') as f:
             json.dump(arr, f, ensure_ascii=False, indent=2)
-        return {"success": True}
+        
+        # 从文件名提取猫娘名 (recent_XXX.json -> XXX)
+        match = re.match(r'^recent_(.+)\.json$', filename)
+        catgirl_name = match.group(1) if match else None
+        
+        if catgirl_name:
+            # 中断 memory_server 的 review 任务
+            import httpx
+            from config import MEMORY_SERVER_PORT
+            try:
+                async with httpx.AsyncClient() as client:
+                    await client.post(
+                        f"http://localhost:{MEMORY_SERVER_PORT}/cancel_correction/{catgirl_name}",
+                        timeout=2.0
+                    )
+                    logger.info(f"已发送取消 {catgirl_name} 记忆整理任务的请求")
+            except Exception as e:
+                logger.warning(f"Failed to cancel correction task: {e}")
+        
+        # 返回成功并提示需要刷新上下文
+        return {"success": True, "need_refresh": True, "catgirl_name": catgirl_name}
     except Exception as e:
         logger.error(f"Failed to save recent file: {e}")
         return {"success": False, "error": str(e)}

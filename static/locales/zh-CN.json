@@ -470,7 +470,7 @@
   },
   "voice": {
     "title": "音色注册 - 请使用阿里云API",
-    "selectFile": "选择本地音频文件（15秒最佳，请勿超过45秒，wav/mp3格式）",
+    "selectFile": "选择本地音频文件（15秒最佳，请勿超过30秒，wav/mp3格式）",
     "customPrefix": "自定义前缀（阿里云需要）",
     "customPrefixNote": "不超过10个字符，只支持数字和英文字母",
     "prefixPlaceholder": "不超过10个字符，只支持数字和英文字母",

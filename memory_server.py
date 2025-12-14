@@ -259,6 +259,29 @@ async def reload_config():
         logger.error(f"重新加载配置时出错: {e}", exc_info=True)
         return {"status": "error", "message": str(e)}
 
+@app.post("/cancel_correction/{lanlan_name}")
+async def cancel_correction(lanlan_name: str):
+    """中断指定角色的记忆整理任务（用于记忆编辑后立即生效）"""
+    global correction_tasks, correction_cancel_flags
+    
+    if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
+        logger.info(f"🛑 收到取消请求，中断 {lanlan_name} 的correction任务")
+        
+        if lanlan_name in correction_cancel_flags:
+            correction_cancel_flags[lanlan_name].set()
+        
+        correction_tasks[lanlan_name].cancel()
+        try:
+            await correction_tasks[lanlan_name]
+        except asyncio.CancelledError:
+            logger.info(f"✅ {lanlan_name} 的correction任务已成功中断")
+        except Exception as e:
+            logger.warning(f"⚠️ 中断 {lanlan_name} 的correction任务时出现异常: {e}")
+        
+        return {"status": "cancelled"}
+    
+    return {"status": "no_task"}
+
 @app.get("/new_dialog/{lanlan_name}")
 async def new_dialog(lanlan_name: str):
     global correction_tasks, correction_cancel_flags

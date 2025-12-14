@@ -470,8 +470,8 @@
     }
   },
   "voice": {
-    "title": "Voice Registration",
-    "selectFile": "Select local audio file (15 seconds recommended, max 45 seconds, wav/mp3 format)",
+    "title": "Voice Registration - Please Use Alibaba Cloud API",
+    "selectFile": "Select local audio file (15 seconds recommended, max 30 seconds, wav/mp3 format)",
     "customPrefix": "Custom Prefix (Required for Alibaba Cloud)",
     "customPrefixNote": "Maximum 10 characters, numbers and English letters only",
     "prefixPlaceholder": "Maximum 10 characters, numbers and English letters only",

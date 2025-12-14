@@ -46,6 +46,7 @@ __pycache__/
 .env.development.local
 .env.test.local
 .env.production.local
+.agent
 
 # Rust: ignore target and cargo artifacts
 /launcher/target/

@@ -4,7 +4,7 @@
 <head>
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <meta charset="UTF-8">
-    <title data-i18n="voice.title">音色注册网页 - Project N.E.K.O.</title>
+    <title data-i18n="voice.title">音色注册 - 请使用阿里云API - Project N.E.K.O.</title>
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
     <script src="/static/i18n-i18next.js"></script>
     <style>
@@ -173,8 +173,8 @@
 
 <body>
     <div class="container">
-        <h2 data-i18n="voice.title">音色注册</h2>
-        <label data-i18n="voice.selectFile">选择本地音频文件（15秒最佳，请勿超过45秒，wav/mp3格式）</label>
+        <h2 data-i18n="voice.title">音色注册 - 请使用阿里云API</h2>
+        <label data-i18n="voice.selectFile">选择本地音频文件（15秒最佳，请勿超过30秒，wav/mp3格式）</label>
         <div class="file-input-wrapper">
             <input type="file" id="audioFile" accept="audio/*">
             <label for="audioFile" class="file-input-label" id="fileInputLabel"
@@ -286,11 +286,14 @@
                 method: 'POST',
                 body: formData
             })
-                .then(res => {
+                .then(async res => {
+                    const data = await res.json();
                     if (!res.ok) {
-                        throw new Error(`API returned ${res.status}`);
+                        // 从响应体中提取详细错误信息
+                        const errorMsg = data.error || data.detail || `API returned ${res.status}`;
+                        throw new Error(errorMsg);
                     }
-                    return res.json();
+                    return data;
                 })
                 .then(data => {
                     if (data.voice_id) {
