@@ -15,7 +15,6 @@ from multiprocessing import Queue as MPQueue, Process
 import threading
 import io
 import wave
-import soundfile as sf
 import aiohttp
 from functools import partial
 logger = logging.getLogger(__name__)
@@ -666,31 +665,15 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
     class Callback(ResultCallback):
         def __init__(self, response_queue):
             self.response_queue = response_queue
-            self.ogg_buffer = bytearray()
-            self.decoded_samples = 0  # 已输出的采样数
             
         def on_open(self): 
             pass
             
         def on_complete(self): 
-            # 解码剩余数据
-            if len(self.ogg_buffer) > 0:
-                try:
-                    audio, sr = sf.read(io.BytesIO(self.ogg_buffer), dtype='float32')
-                    if len(audio) > self.decoded_samples:
-                        new_audio = audio[self.decoded_samples:]
-                        audio_int16 = (new_audio * 32768.0).clip(-32768, 32767).astype(np.int16)
-                        self.response_queue.put(audio_int16.tobytes())
-                except Exception as e:
-                    logger.error(f"on_complete 解码出错: {e}")
-                finally:
-                    self.ogg_buffer = bytearray()
-                    self.decoded_samples = 0
+            pass
                 
         def on_error(self, message: str): 
             print(f"TTS Error: {message}")
-            self.ogg_buffer = bytearray()
-            self.decoded_samples = 0
             
         def on_close(self): 
             pass
@@ -699,19 +682,8 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             pass
             
         def on_data(self, data: bytes) -> None:
-            # 累积 OGG 数据
-            self.ogg_buffer.extend(data)
-            try:
-                # 尝试解码当前累积的所有数据
-                audio, sr = sf.read(io.BytesIO(self.ogg_buffer), dtype='float32')
-                # 只输出新解码的部分
-                if len(audio) > self.decoded_samples:
-                    new_audio = audio[self.decoded_samples:]
-                    audio_int16 = (new_audio * 32768.0).clip(-32768, 32767).astype(np.int16)
-                    self.response_queue.put(audio_int16.tobytes())
-                    self.decoded_samples = len(audio)
-            except Exception as e:
-                print("TTS Error: ", e)
+            # 直接转发 OGG OPUS 数据到前端解码
+            self.response_queue.put(data)
             
     callback = Callback(response_queue)
     current_speech_id = None
