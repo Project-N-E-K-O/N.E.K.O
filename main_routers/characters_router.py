@@ -1168,3 +1168,36 @@ async def get_character_cards():
         logger.error(f"获取角色卡列表失败: {e}")
         return {"success": False, "error": str(e)}
 
+
+@router.post('/catgirl/save-to-model-folder')
+async def save_catgirl_to_model_folder(request: Request):
+    """将角色卡保存到模型所在文件夹"""
+    try:
+        data = await request.json()
+        chara_data = data.get('charaData')
+        model_name = data.get('modelName')  # 接收模型名称而不是路径
+        file_name = data.get('fileName')
+        
+        if not chara_data or not model_name or not file_name:
+            return JSONResponse({"success": False, "error": "缺少必要参数"}, status_code=400)
+        
+        # 使用find_model_directory函数查找模型的实际文件系统路径
+        from utils.frontend_utils import find_model_directory
+        model_folder_path, _ = find_model_directory(model_name)
+        
+        # 确保模型文件夹存在
+        if not os.path.exists(model_folder_path):
+            os.makedirs(model_folder_path, exist_ok=True)
+            logger.info(f"已创建模型文件夹: {model_folder_path}")
+        
+        # 保存角色卡到模型文件夹
+        file_path = os.path.join(model_folder_path, file_name)
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(chara_data, f, ensure_ascii=False, indent=2)
+        
+        logger.info(f"角色卡已成功保存到模型文件夹: {file_path}")
+        return {"success": True, "path": file_path, "modelFolderPath": model_folder_path}
+    except Exception as e:
+        logger.error(f"保存角色卡到模型文件夹失败: {e}")
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+

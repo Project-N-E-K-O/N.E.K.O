@@ -2291,7 +2291,7 @@
                                 <button id="save-character-card-btn" class="btn btn-success" onclick="saveCharacterCard()" style="flex: 1; padding: 12px 0; font-size: 16px;">
                                     💾 <span data-i18n="common.save">保存角色卡</span>
                                 </button>
-                                <button class="btn btn-primary" onclick="toggleUploadSection()" style="flex: 1; padding: 12px 0; font-size: 16px;">
+                                <button class="btn btn-primary" onclick="handleUploadToWorkshop()" style="flex: 1; padding: 12px 0; font-size: 16px;">
                                     🚀 <span data-i18n="steam.uploadToWorkshop">上传到创意工坊</span>
                                 </button>
                                 <button class="btn" style="flex: 1; padding: 12px 0; font-size: 16px; background-color: #e81123; color: white;" onclick="deleteCharacterCardModal()">
@@ -2349,16 +2349,23 @@
         // 上传区域切换功能
         function toggleUploadSection() {
             // 查找上传表单区域
+            console.log('toggleUploadSection函数被调用');
             const uploadFormSection = document.querySelector('.upload-section');
+            console.log('找到的上传表单区域:', uploadFormSection);
             if (uploadFormSection) {
                 // 切换上传表单的显示/隐藏
+                console.log('当前上传表单区域的display样式:', uploadFormSection.style.display);
                 if (uploadFormSection.style.display === 'none' || uploadFormSection.style.display === '') {
                     uploadFormSection.style.display = 'block';
                     // 滚动到上传表单区域
                     uploadFormSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    console.log('上传表单区域已显示');
                 } else {
                     uploadFormSection.style.display = 'none';
+                    console.log('上传表单区域已隐藏');
                 }
+            } else {
+                console.log('未找到上传表单区域');
             }
         }
         
@@ -2905,101 +2912,6 @@ showMessage(errorMessage, 'error', 3000);
                 });
         }
         
-        // 快速上传物品
-        async function quickUploadItem(event, itemId, folderPath) {
-            let button = null;
-            try {
-                // 显示上传中状态
-                button = event?.target || null;
-                if (button) {
-                    button.disabled = true;
-                    button.innerHTML = '<i class="fa fa-spinner fa-spin"></i> 上传中...';
-                }
-                
-                // 显示路径验证通知
-                showMessage(window.t ? window.t('steam.validatingFolder', {path: folderPath}) : `正在验证文件夹: ${folderPath}`, 'info');
-                
-                // 增强的路径规范化，支持Windows和其他系统
-                const normalizedPath = folderPath.replace(/\\/g, '/');
-                
-                // 调用API获取物品详情，这里会进行服务器端路径验证
-                const itemResponse = await fetch(`/api/steam/workshop/local-items/${itemId}?folder_path=${encodeURIComponent(normalizedPath)}`);
-                if (!itemResponse.ok) {
-                    throw new Error(`HTTP错误，状态码: ${itemResponse.status}`);
-                }
-                
-                const itemData = await itemResponse.json();
-                if (!itemData.success) {
-                    throw new Error(`获取物品详情失败: ${itemData.error || '未知错误'}`);
-                }
-                
-                const item = itemData.item;
-                
-                // 检查预览图片是否存在，如果不存在则尝试查找
-                let previewImage = item.previewImage;
-                if (!previewImage || !await doesFileExist(previewImage)) {
-                    previewImage = await findPreviewImage(item.path);
-                    if (!previewImage) {
-                        showMessage(window.t ? window.t('steam.previewImageNotFound') : '未找到预览图片', 'warning');
-                    }
-                }
-                
-                // 确保预览图片路径格式一致
-                if (previewImage) {
-                    previewImage = previewImage.replace(/\\/g, '/');
-                }
-                
-                // 构建快速上传数据
-                const uploadData = {
-                    title: item.name || '未命名物品',
-                    description: `通过N.E.K.O快速上传于 ${formatDate(new Date())}`,
-                    content_folder: item.path,
-                    preview_image: previewImage || '',
-                    visibility: 0, // 默认公开
-                    tags: item.tags || ['模组'],
-                    allow_comments: true
-                };
-                
-                // 发送API请求
-                const publishResponse = await fetch('/api/steam/workshop/publish', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify(uploadData)
-                });
-                
-                if (!publishResponse.ok) {
-                    throw new Error(`HTTP错误，状态码: ${publishResponse.status}`);
-                }
-                
-                const publishData = await publishResponse.json();
-                if (publishData.success) {
-                    showMessage(window.t ? window.t('steam.quickUploadSuccess', {id: publishData.published_file_id}) : `快速上传成功！ID: ${publishData.published_file_id}`, 'success');
-                    
-                    // 更新本地数据缓存
-                    if (item.publishDate) {
-                        item.publishDate = new Date();
-                    }
-                    item.publishedFileId = publishData.published_file_id;
-                    
-                    // 重新扫描以更新状态
-                    setTimeout(() => {
-                        scanLocalItems();
-                    }, 1000);
-                } else {
-                    throw new Error(`发布失败: ${publishData.error || '未知错误'}`);
-                }
-            } catch (error) {
-                showMessage(window.t ? window.t('steam.uploadFailed', {error: error.message}) : `上传失败: ${error.message}`, 'error');
-            } finally {
-                // 恢复按钮状态
-                if (button) {
-                    button.disabled = false;
-                    button.innerHTML = '<i class="fa fa-rocket"></i> 快速上传';
-                }
-            }
-        }
         
         // 格式化日期
         /* 注释掉不完整的formatDate版本 */
@@ -4792,6 +4704,187 @@ function viewItemDetails(itemId) {
         }
         
         // 删除角色卡
+        function handleUploadToWorkshop() {
+            console.log('handleUploadToWorkshop函数被调用');
+            // 收集角色卡参数
+            const name = document.getElementById('character-card-name').value;
+            const gender = document.getElementById('character-card-gender').value;
+            const age = document.getElementById('character-card-age').value;
+            const description = document.getElementById('character-card-description').value;
+            const setting = document.getElementById('character-card-setting').value;
+            let selectedModelName = document.getElementById('model-select').value;
+            const selectedVoicePrefix = document.getElementById('voice-select').value;
+            
+            if (!name) {
+                showMessage('请输入角色卡名称', 'error');
+                return;
+            }
+            
+            // 设置默认模型
+            if (!selectedModelName) {
+                if (availableModels.length > 0) {
+                    selectedModelName = availableModels[0].name;
+                } else {
+                    showMessage('没有可用的模型', 'error');
+                    return;
+                }
+            }
+            
+            // 获取选中的音色信息
+            let voiceId = null;
+            if (selectedVoicePrefix && window.availableVoices) {
+                Object.entries(window.availableVoices).forEach(([id, voiceData]) => {
+                    if (voiceData.prefix === selectedVoicePrefix || id === selectedVoicePrefix) {
+                        voiceId = id;
+                    }
+                });
+            }
+            
+            if (!voiceId && window.availableVoices) {
+                voiceId = Object.keys(window.availableVoices)[0] || null;
+            }
+            
+            // 获取当前语言
+            const currentLanguage = typeof i18next !== 'undefined' ? i18next.language : 'zh-CN';
+            
+            // 构建猫娘数据对象
+            const catgirlData = {};
+            
+            if (currentLanguage === 'zh-CN') {
+                catgirlData['档案名'] = name;
+                catgirlData['性别'] = gender;
+                catgirlData['年龄'] = age;
+                catgirlData['描述'] = description;
+            } else {
+                catgirlData['name'] = name;
+                catgirlData['gender'] = gender;
+                catgirlData['age'] = age;
+                catgirlData['description'] = description;
+            }
+            
+            catgirlData.live2d = selectedModelName;
+            catgirlData.system_prompt = setting;
+            
+            if (voiceId) {
+                catgirlData.voice_id = voiceId;
+            }
+            
+            // 获取角色卡标签
+            const characterCardTags = [];
+            const tagElements = document.querySelectorAll('#character-card-tags-container .tag');
+            if (tagElements && tagElements.length > 0) {
+                tagElements.forEach(tagElement => {
+                    const tagText = tagElement.textContent.replace('×', '').trim();
+                    if (tagText) {
+                        characterCardTags.push(tagText);
+                    }
+                });
+            }
+            
+            if (currentLanguage === 'zh-CN') {
+                catgirlData['关键词'] = characterCardTags;
+            } else {
+                catgirlData['tags'] = characterCardTags;
+            }
+            
+            // 获取注意事项
+            const notesInput = document.getElementById('notes-input');
+            const notes = notesInput ? notesInput.value.trim() : '';
+            
+            if (currentLanguage === 'zh-CN') {
+                if (notes) {
+                    catgirlData['注意事项'] = notes;
+                }
+            } else {
+                if (notes) {
+                    catgirlData['notes'] = notes;
+                }
+            }
+            
+            // 获取当前选中模型的文件夹路径
+            const selectedModelInfo = availableModels.find(model => model.name === selectedModelName);
+            if (!selectedModelInfo) {
+                showMessage('未找到选中的模型信息', 'error');
+                return;
+            }
+            
+            // 从模型路径中提取文件夹路径（假设模型路径格式为：models/xxx/xxx.model3.json）
+            const modelPath = selectedModelInfo.path;
+            const modelFolderPath = modelPath.substring(0, modelPath.lastIndexOf('/'));
+            
+            // 构建保存角色卡的文件名和路径
+            const charaFileName = `${name}.chara.json`;
+            const charaFilePath = `${modelFolderPath}/${charaFileName}`;
+            
+            // 显示保存状态
+            showMessage('正在保存角色卡到模型文件夹...', 'info');
+            
+            // 调用API保存角色卡到模型文件夹
+            console.log('开始调用API保存角色卡');
+            fetch('/api/characters/catgirl/save-to-model-folder', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    charaData: catgirlData,
+                    modelName: selectedModelName,
+                    fileName: charaFileName
+                })
+            })
+            .then(response => {
+                console.log('API响应:', response);
+                if (!response.ok) {
+                    throw new Error(`HTTP错误，状态码: ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(result => {
+                console.log('API响应数据:', result);
+                if (result.success) {
+                    console.log('角色卡保存到模型文件夹成功:', result);
+                    showMessage('角色卡已保存到模型文件夹', 'success');
+                    
+                    // 填充上传表单，使用后端返回的实际文件系统路径
+                    console.log('开始填充上传表单');
+                    const itemTitle = document.getElementById('item-title');
+                    const itemDescription = document.getElementById('item-description');
+                    const contentFolder = document.getElementById('content-folder');
+                    const tagsContainer = document.getElementById('tags-container');
+                    
+                    console.log('找到的表单元素:', { itemTitle, itemDescription, contentFolder, tagsContainer });
+                    
+                    if (itemTitle) itemTitle.value = name;
+                    if (itemDescription) itemDescription.value = description;
+                    if (contentFolder) contentFolder.value = result.modelFolderPath;
+                    
+                    // 添加角色卡标签到上传标签
+                    if (tagsContainer) {
+                        tagsContainer.innerHTML = '';
+                        characterCardTags.forEach(tag => {
+                            addTag(tag);
+                        });
+                    }
+                    
+                } else {
+                    console.log('API返回失败:', result.error);
+                    showMessage(`保存角色卡到模型文件夹失败: ${result.error || '未知错误'}`, 'error');
+                }
+            })
+            .catch(error => {
+                console.error('保存角色卡到模型文件夹失败:', error);
+                showMessage(`保存角色卡到模型文件夹失败: ${error.message}`, 'error');
+            })
+            .finally(() => {
+                // 无论API调用是否成功，都切换到上传区域
+                console.log('调用toggleUploadSection函数');
+                // 先确保本地物品标签页可见
+                switchTab('local-items-content');
+                // 然后显示上传表单区域
+                toggleUploadSection();
+            });
+        }
+
         function deleteCharacterCard(cardId) {
             // 使用自定义确认模态框替换默认的confirm
             showConfirmModal('确定要删除这个角色卡吗？', () => {
@@ -6506,7 +6599,16 @@ function viewItemDetails(itemId) {
                 
                 // 创建FormData对象，用于上传文件
                 const formData = new FormData();
-                formData.append('file', file);
+                
+                // 获取原始文件扩展名
+                const fileExtension = file.name.split('.').pop().toLowerCase();
+                // 创建新的File对象，使用统一的文件名"preview.扩展名"
+                const renamedFile = new File([file], `preview.${fileExtension}`, {
+                    type: file.type,
+                    lastModified: file.lastModified
+                });
+                
+                formData.append('file', renamedFile);
                 
                 // 显示上传进度
                 showMessage(window.t ? window.t('steam.uploadingPreviewImage') : '正在上传预览图片...', 'info');
