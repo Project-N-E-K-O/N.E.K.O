@@ -58,15 +58,16 @@ def find_preview_image_in_folder(folder_path):
 @router.post('/upload-preview-image')
 async def upload_preview_image(request: Request):
     """
-    上传预览图片，返回服务器上的临时文件路径
+    上传预览图片，将其统一命名为preview.*并保存到指定的内容文件夹（如果提供）
     """
     try:
-        import tempfile
+        import os
         from fastapi import UploadFile, File
         
-        # 接收上传的文件
+        # 接收上传的文件和表单数据
         form = await request.form()
         file = form.get('file')
+        content_folder = form.get('content_folder')
         
         if not file:
             return JSONResponse({
@@ -84,14 +85,44 @@ async def upload_preview_image(request: Request):
                 "message": "只允许上传JPEG和PNG格式的图片"
             }, status_code=400)
         
-        # 创建临时文件
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as temp_file:
-            temp_file.write(await file.read())
-            temp_file_path = temp_file.name
+        # 获取文件扩展名
+        file_extension = os.path.splitext(file.filename)[1].lower()
+        
+        # 处理内容文件夹路径
+        if content_folder:
+            # 规范化路径
+            import urllib.parse
+            content_folder = urllib.parse.unquote(content_folder)
+            if os.name == 'nt':
+                content_folder = content_folder.replace('/', '\\')
+                if content_folder.startswith('\\\\'):
+                    content_folder = content_folder[2:]
+            else:
+                content_folder = content_folder.replace('\\', '/')
+            
+            # 验证内容文件夹存在
+            if not os.path.exists(content_folder) or not os.path.isdir(content_folder):
+                # 如果文件夹不存在，回退到临时目录
+                logger.warning(f"指定的内容文件夹不存在: {content_folder}，使用临时目录")
+                content_folder = None
+        
+        # 创建统一命名的预览图路径
+        if content_folder:
+            # 直接保存到内容文件夹
+            preview_image_path = os.path.join(content_folder, f'preview{file_extension}')
+        else:
+            # 使用临时目录
+            import tempfile
+            temp_folder = tempfile.gettempdir()
+            preview_image_path = os.path.join(temp_folder, f'preview{file_extension}')
+        
+        # 保存文件到指定路径
+        with open(preview_image_path, 'wb') as f:
+            f.write(await file.read())
         
         return JSONResponse({
             "success": True,
-            "file_path": temp_file_path,
+            "file_path": preview_image_path,
             "message": "文件上传成功"
         })
     except Exception as e:

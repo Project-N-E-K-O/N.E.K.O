@@ -1982,9 +1982,6 @@
                     <div class="section-header">
                         <h2 data-i18n="steam.uploadToWorkshop">上传到创意工坊</h2>
                     </div>
-                    <div class="info-box">
-                        <p data-i18n="steam.uploadInstructions">请先在"管理本地物品"区域选择一个未发布的物品，然后点击"准备上传"按钮。内容文件夹路径和预览图片路径将自动填充。</p>
-                    </div>
                     
                     <div id="message-area"></div>
                     
@@ -2801,31 +2798,6 @@ showMessage(errorMessage, 'error', 3000);
                 
                 // 生成卡片HTML，对所有用户输入进行转义以防止XSS攻击
                 // 添加data-item-path属性用于后续检查上传标记文件
-                return `
-                    <div class="workshop-card" data-item-path="${encodeURIComponent(item.path)}">
-                        <div class="card-header">
-                            <img src="${previewUrl}" alt="${escapeHtml(item.name || (window.t ? window.t('steam.localItem') : '本地物品'))}" class="card-image">
-                            <div class="status-badge ${statusClass}">${statusText}</div>
-                        </div>
-                        <div class="card-content">
-                            <h3 class="card-title">${escapeHtml(item.name || (window.t ? window.t('steam.unnamedItem') : '未命名物品'))}</h3>
-                            <div class="card-info-grid">
-                                <div class="card-info-item"><span class="info-label">${window.t ? window.t('steam.modified_date') : '修改日期'}</span> <span class="info-value">${formatDate(item.lastModified)}</span></div>
-                                  <div class="card-info-item"><span class="info-label">${window.t ? window.t('steam.size') : '大小'}</span> <span class="info-value">${formatFileSize(item.size)}</span></div>
-                            </div>
-
-                             
-                            ${!isPublished ? `
-                                <div class="card-actions">
-                                    <button class="button button-primary" onclick="prepareItemForUpload('${escapeHtml(item.id).replace(/'/g, '&#39;')}', '${encodeURIComponent(item.path.replace(/\\/g, '/'))}')">${window.t ? window.t('steam.upload_to_workshop') : '上传至Workshop'}</button>
-                                </div>` : `
-                                <div class="card-actions">
-                                    <button class="button button-disabled" disabled>${window.t ? window.t('steam.status.published') : '已发布'}</button>
-                                </div>
-                            `}
-                        </div>
-                    </div>
-                `;
             }).join('');
             
             // 生成卡片后，检查每个物品的上传标记文件状态
@@ -6599,16 +6571,20 @@ function viewItemDetails(itemId) {
                 
                 // 创建FormData对象，用于上传文件
                 const formData = new FormData();
-                
                 // 获取原始文件扩展名
                 const fileExtension = file.name.split('.').pop().toLowerCase();
                 // 创建新的File对象，使用统一的文件名"preview.扩展名"
-                const renamedFile = new File([file], `preview.${fileExtension}`, {
-                    type: file.type,
-                    lastModified: file.lastModified
+                const renamedFile = new File([file], `preview.${fileExtension}`, { 
+                    type: file.type, 
+                    lastModified: file.lastModified 
                 });
-                
                 formData.append('file', renamedFile);
+                
+                // 获取内容文件夹路径（如果已选择）
+                const contentFolder = document.getElementById('content-folder').value.trim();
+                if (contentFolder) {
+                    formData.append('content_folder', contentFolder);
+                }
                 
                 // 显示上传进度
                 showMessage(window.t ? window.t('steam.uploadingPreviewImage') : '正在上传预览图片...', 'info');
