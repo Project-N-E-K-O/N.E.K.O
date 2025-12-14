@@ -198,22 +198,39 @@ def find_models():
                 for file in files:
                     if file.endswith('.model3.json'):
                         # 获取模型名称 (使用其所在的文件夹名，更加直观)
-                        model_name = os.path.basename(root)
+                        folder_name = os.path.basename(root)
+                        
+                        # 对于user_mods来源，跳过纯数字文件夹（Steam Workshop物品）
+                        # 这些物品会由get_live2d_models通过Steam API获取正确的标题
+                        if source == 'user_mods' and folder_name.isdigit():
+                            logging.debug(f"跳过Steam Workshop物品文件夹: {folder_name} (将由Steam API处理)")
+                            dirs[:] = []  # 不再深入此目录
+                            break
+                        
+                        # 从.model3.json文件名提取模型名称（去掉.model3.json后缀）
+                        model_file_name = os.path.splitext(os.path.splitext(file)[0])[0]
+                        
+                        # 使用文件夹名作为模型名称和显示名称
+                        display_name = folder_name
+                        model_name = folder_name
                         
                         # 构建可被浏览器访问的URL路径
                         # 1. 计算文件相对于 search_root_dir 的路径
                         relative_path = os.path.relpath(os.path.join(root, file), search_root_dir)
-                        # 2. 将本地路径分隔符 (如'\') 替换为URL分隔符 ('/')
+                        # 2. 将本地路径分隔符 (如'\\') 替换为URL分隔符 ('/')
                         model_path = relative_path.replace(os.path.sep, '/')
                         
                         # 如果模型名称已存在，添加来源后缀以区分
                         existing_names = [m["name"] for m in found_models]
-                        display_name = model_name
+                        final_name = model_name
                         if model_name in existing_names:
-                            display_name = f"{model_name}_{source}"
+                            final_name = f"{model_name}_{source}"
+                            # 同时更新display_name以区分
+                            display_name = f"{display_name} ({source})"
                         
                         found_models.append({
-                            "name": display_name,
+                            "name": final_name,
+                            "display_name": display_name,
                             "path": f"{url_prefix}/{model_path}",
                             "source": source
                         })

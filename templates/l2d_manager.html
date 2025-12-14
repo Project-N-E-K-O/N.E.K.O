@@ -490,10 +490,11 @@
                     availableModels.forEach(model => {
                         const option = document.createElement('option');
                         option.value = model.name;
-                        option.textContent = model.name;
+                        // 使用display_name（如果存在）显示更友好的名称
+                        option.textContent = model.display_name || model.name;
                         // 使用data属性存储item_id，这样更容易在change事件中获取
                         option.dataset.itemId = model.item_id;
-                        console.log('添加模型选项:', model.name, 'item_id:', model.item_id);
+                        console.log('添加模型选项:', model.name, 'display_name:', model.display_name, 'item_id:', model.item_id);
                         modelSelect.appendChild(option);
                     });
 
@@ -889,7 +890,8 @@
                                 availableModels.forEach(model => {
                                     const option = document.createElement('option');
                                     option.value = model.name;
-                                    option.textContent = model.name;
+                                    // 使用display_name（如果存在）显示更友好的名称
+                                    option.textContent = model.display_name || model.name;
                                     modelSelect.appendChild(option);
                                 });
 
