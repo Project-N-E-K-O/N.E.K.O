@@ -836,7 +836,32 @@ async def proactive_chat(request: Request):
                         }, status_code=503)
             
             logger.info(f"[{lanlan_name}] AI决策结果: {response_text[:100]}...")
-            
+
+            # --- 新增验证：在继续输出前严格执行响应内容规则 ---
+            # 1) 字数限制：若超过100字符，则放弃输出该response_text
+            try:
+                if len(response_text) > 100:
+                    logger.warning(f"[{lanlan_name}] AI回复超过长度限制（{len(response_text)}字符），已放弃输出")
+                    return JSONResponse({
+                        "success": True,
+                        "action": "pass",
+                        "message": "AI回复超过长度限制，已放弃输出"
+                    })
+            except Exception:
+                logger.exception(f"[{lanlan_name}] 在检查回复长度时发生错误")
+
+            # 2) 特殊字符检测：若包含 '|' 则截断内容并终止输出流程（仅保留'|'前的内容）
+            if '|' in response_text:
+                logger.warning(f"[{lanlan_name}] AI回复包含禁止字符 '|'，将截断内容并继续（仅保留'|'之前的部分）")
+                response_text = response_text.split('|', 1)[0].strip()
+                # 若截断后为空，则放弃输出
+                if not response_text:
+                    return JSONResponse({
+                        "success": True,
+                        "action": "pass",
+                        "message": "AI回复被截断后为空，已放弃输出"
+                    })
+
             # 5. 判断AI是否选择搭话
             if "[PASS]" in response_text or not response_text:
                 return JSONResponse({
