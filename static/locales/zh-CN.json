@@ -22,7 +22,8 @@
     "input": "输入",
     "unavailable": "不可用",
     "prevPage": "上一页",
-    "nextPage": "下一页"
+    "nextPage": "下一页",
+    "selectFile": "选择文件"
   },
   "steam": {
     "characterCards": "角色卡",

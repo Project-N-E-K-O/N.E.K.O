@@ -22,7 +22,8 @@
     "input": "Input",
     "unavailable": "Unavailable",
     "prevPage": "Previous Page",
-    "nextPage": "Next Page"
+    "nextPage": "Next Page",
+    "selectFile": "Select File"
   },
   "steam": {
     "characterCards": "Character Cards",

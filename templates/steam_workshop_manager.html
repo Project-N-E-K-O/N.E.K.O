@@ -2356,6 +2356,10 @@
                     uploadFormSection.style.display = 'block';
                     // 滚动到上传表单区域
                     uploadFormSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    // 更新翻译，确保新显示的元素都能正确翻译
+                    if (window.updatePageTexts) {
+                        window.updatePageTexts();
+                    }
                     console.log('上传表单区域已显示');
                 } else {
                     uploadFormSection.style.display = 'none';
@@ -2386,6 +2390,10 @@
                 if (toggleButton) {
                     toggleButton.textContent = window.t ? window.t('steam.localItemsHide') : '隐藏本地物品';
                 }
+                // 更新翻译，确保新显示的元素都能正确翻译
+                if (window.updatePageTexts) {
+                    window.updatePageTexts();
+                }
                 // 平滑滚动到本地物品区域
                 localItemsSection.scrollIntoView({ behavior: 'smooth' });
             } else if (localItemsSection) {
@@ -2397,6 +2405,59 @@
         }
         
         // 标签页切换功能
+        // 从localStorage加载同步数据并填充到创意工坊上传表单
+        function applyWorkshopSyncData() {
+            try {
+                // 从localStorage获取同步数据
+                const workshopSyncDataStr = localStorage.getItem('workshopSyncData');
+                if (workshopSyncDataStr) {
+                    const workshopSyncData = JSON.parse(workshopSyncDataStr);
+                    console.log('从localStorage加载的同步数据:', workshopSyncData);
+                    
+                    // 1. 填充标签
+                    const tagsContainer = document.getElementById('tags-container');
+                    if (tagsContainer) {
+                        // 清空现有标签
+                        tagsContainer.innerHTML = '';
+                        
+                        // 添加从角色卡同步的标签
+                        if (workshopSyncData.tags && Array.isArray(workshopSyncData.tags)) {
+                            workshopSyncData.tags.forEach(tag => {
+                                addTag(tag);
+                            });
+                        }
+                    }
+                    
+                    // 2. 填充描述（包含注意事项）
+                    const itemDescription = document.getElementById('item-description');
+                    if (itemDescription) {
+                        let newDescription = workshopSyncData.description || '';
+                        
+                        // 如果有注意事项，将其添加到描述后面
+                        if (workshopSyncData.notes && workshopSyncData.notes.trim()) {
+                            // 如果描述不为空，添加两个换行符作为分隔
+                            if (newDescription.trim()) {
+                                newDescription += '\n\n';
+                            }
+                            // 根据当前语言选择注意事项标题
+                            const currentLanguage = typeof i18next !== 'undefined' ? i18next.language : 'zh-CN';
+                            const notesTitle = currentLanguage === 'zh-CN' ? '注意事项：\n' : 'Notes:\n';
+                            newDescription += notesTitle + workshopSyncData.notes.trim();
+                        }
+                        
+                        itemDescription.value = newDescription;
+                        console.log('设置的描述内容:', newDescription);
+                    } else {
+                        console.error('未找到创意工坊描述输入框');
+                    }
+                } else {
+                    console.log('localStorage中没有同步数据');
+                }
+            } catch (error) {
+                console.error('应用同步数据时出错:', error);
+            }
+        }
+        
         function switchTab(tabId, event) {
             
             // 隐藏所有标签内容
@@ -2429,6 +2490,10 @@
             const selectedTab = document.getElementById(tabId);
             if (selectedTab) {
                 selectedTab.style.display = 'block';
+                // 更新翻译，确保新显示的元素都能正确翻译
+                if (window.updatePageTexts) {
+                    window.updatePageTexts();
+                }
             }
             
             // 设置选中的标签按钮为活动状态（兼容旧的标签按钮）
@@ -2459,6 +2524,11 @@
             // 如果切换到角色卡页面，自动执行模型扫描
             if (tabId === 'character-cards-content') {
                 scanModels();
+            }
+            
+            // 如果切换到本地物品页面，应用从localStorage加载的同步数据
+            if (tabId === 'local-items-content') {
+                applyWorkshopSyncData();
             }
         }
         
@@ -2548,6 +2618,10 @@
             if (panel.style.display === 'none') {
                 // 显示面板，添加简单动画效果
                 panel.style.display = 'block';
+                // 更新翻译，确保新显示的元素都能正确翻译
+                if (window.updatePageTexts) {
+                    window.updatePageTexts();
+                }
                 panel.style.opacity = '0';
                 panel.style.transition = 'opacity 0.3s ease-in-out';
                 
@@ -4324,8 +4398,7 @@ function viewItemDetails(itemId) {
                 localStorage.removeItem('lastActiveTab');
             }
             
-            // 初始化时添加一些示例标签
-            addCharacterCardTag('character-card', window.t ? window.t('steam.defaultTagMod') : 'Mod');
+            // 初始化时添加默认的Character标签
             addCharacterCardTag('character-card', window.t ? window.t('steam.defaultTagCharacter') : 'Character');
             
             // 初始化i18n文本
@@ -4817,6 +4890,41 @@ function viewItemDetails(itemId) {
                     console.log('角色保存成功:', result);
                     showMessage('角色已保存', 'success');
                     
+                    // 将需要同步的数据存储到localStorage中，以便在切换到创意工坊上传页面时使用
+                    try {
+                        // 1. 获取角色卡标签
+                        const characterCardTags = [];
+                        const tagElements = document.querySelectorAll('#character-card-tags-container .tag');
+                        tagElements.forEach(tagElement => {
+                            const tagText = tagElement.textContent.replace('×', '').trim();
+                            if (tagText) {
+                                characterCardTags.push(tagText);
+                            }
+                        });
+                        
+                        // 2. 获取角色卡描述和注意事项
+                        const characterDescriptionElement = document.getElementById('character-card-description');
+                        const cardDescription = characterDescriptionElement ? characterDescriptionElement.value : '';
+                        
+                        const notesInput = document.getElementById('notes-input');
+                        const cardNotes = notesInput ? notesInput.value.trim() : '';
+                        
+                        // 3. 将数据存储到localStorage
+                        const workshopSyncData = {
+                            tags: characterCardTags,
+                            description: cardDescription,
+                            notes: cardNotes
+                        };
+                        localStorage.setItem('workshopSyncData', JSON.stringify(workshopSyncData));
+                        console.log('已将同步数据存储到localStorage:', workshopSyncData);
+                        
+                        // 显示同步成功的提示
+                        showMessage('角色卡数据已同步到创意工坊上传页面', 'success');
+                    } catch (error) {
+                        console.error('存储同步数据时出错:', error);
+                        showMessage('同步数据存储失败', 'error');
+                    }
+                    
                     // 重置当前编辑ID
                     currentEditCardId = null;
                     
@@ -4825,11 +4933,6 @@ function viewItemDetails(itemId) {
                     
                     // 设置刷新后要显示的标签页
                     localStorage.setItem('lastActiveTab', 'character-cards-content');
-                    
-                    // 刷新页面
-                    setTimeout(() => {
-                        window.location.reload();
-                    }, 1000);
                 } else {
                     throw new Error(result.error || '保存失败');
                 }
@@ -4999,7 +5102,21 @@ function viewItemDetails(itemId) {
                     console.log('找到的表单元素:', { itemTitle, itemDescription, contentFolder, tagsContainer });
                     
                     if (itemTitle) itemTitle.value = name;
-                    if (itemDescription) itemDescription.value = description;
+                    if (itemDescription) {
+                        // 构建包含注意事项的描述
+                        let fullDescription = description;
+                        if (notes && notes.trim()) {
+                            if (fullDescription.trim()) {
+                                fullDescription += '\n\n';
+                            }
+                            // 根据当前语言选择注意事项标题
+                            const currentLanguage = typeof i18next !== 'undefined' ? i18next.language : 'zh-CN';
+                            const notesTitle = currentLanguage === 'zh-CN' ? '注意事项：\n' : 'Notes:\n';
+                            fullDescription += notesTitle + notes.trim();
+                        }
+                        itemDescription.value = fullDescription;
+                        console.log('设置的完整描述内容:', fullDescription);
+                    }
                     if (contentFolder) contentFolder.value = result.modelFolderPath;
                     
                     // 添加角色卡标签到上传标签
@@ -5244,6 +5361,27 @@ function viewItemDetails(itemId) {
                 card.tags.forEach(tag => {
                     addTag(tag, 'character-card');
                 });
+            }
+            
+            // 检查是否选择了音色，如果是则添加Voice标签
+            const currentVoiceValue = voiceSelect.value;
+            if (currentVoiceValue) {
+                // 检查是否已经有Voice标签
+                const tagsContainer = document.getElementById('character-card-tags-container');
+                const existingTags = Array.from(tagsContainer.querySelectorAll('.tag'));
+                let hasVoiceTag = false;
+                
+                existingTags.forEach(tag => {
+                    const tagText = tag.textContent.replace('×', '').trim();
+                    if (tagText === 'Voice' || tagText === '语音') {
+                        hasVoiceTag = true;
+                    }
+                });
+                
+                // 如果没有Voice标签，添加它
+                if (!hasVoiceTag) {
+                    addCharacterCardTag('character-card', 'Voice');
+                }
             }
             
             // 加载注意事项
@@ -6137,7 +6275,38 @@ function viewItemDetails(itemId) {
             }
             
             if (voiceSelect) {
-                voiceSelect.addEventListener('change', updateCardPreview);
+                voiceSelect.addEventListener('change', function() {
+                    updateCardPreview();
+                    
+                    // 处理Voice标签
+                    const voiceValue = this.value;
+                    const tagsContainer = document.getElementById('character-card-tags-container');
+                    const voiceTags = tagsContainer.querySelectorAll('.tag');
+                    let hasVoiceTag = false;
+                    
+                    // 检查是否已经有Voice标签
+                    Array.from(voiceTags).forEach(tag => {
+                        const tagText = tag.textContent.replace('×', '').trim();
+                        if (tagText === 'Voice' || tagText === '语音') {
+                            hasVoiceTag = true;
+                        }
+                    });
+                    
+                    // 如果选择了音色且没有Voice标签，添加标签
+                    if (voiceValue && !hasVoiceTag) {
+                        addCharacterCardTag('character-card', 'Voice');
+                    }
+                    // 如果取消了音色选择且有Voice标签，移除标签
+                    else if (!voiceValue && hasVoiceTag) {
+                        const voiceTag = Array.from(voiceTags).find(tag => {
+                            const tagText = tag.textContent.replace('×', '').trim();
+                            return tagText === 'Voice' || tagText === '语音';
+                        });
+                        if (voiceTag) {
+                            removeTag(voiceTag.querySelector('.tag-remove'), 'character-card');
+                        }
+                    }
+                });
             }
             
     
