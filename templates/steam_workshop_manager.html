@@ -4097,24 +4097,63 @@ function viewItemDetails(itemId) {
                         }
                         showMessage(statusMessage, 'success');
                         
-                        // 从live2d文件夹中删除对应物品
-                        fetch('/api/steam/workshop/remove-workshop-item', {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json'
-                            },
-                            body: JSON.stringify({ item_name: itemName })
-                        })
-                        .then(response => response.json())
-                        .then(result => {
-                            if (result.success) {
-                                console.log(`成功从live2d文件夹删除物品: ${itemName}`);
-                            } else {
-                                console.error(`从live2d文件夹删除物品失败: ${itemName}, 错误: ${result.error}`);
+                        // 获取并删除与该物品相关的角色卡
+                        async function deleteRelatedCharacterCards() {
+                            try {
+                                // 首先获取所有已添加的角色卡
+                                const cardsResponse = await fetch('/api/characters/');
+                                if (!cardsResponse.ok) throw new Error('获取角色卡列表失败');
+                                
+                                const cards = await cardsResponse.json();
+                                let hasDeletionFailed = false;
+                                
+                                // 查找与当前物品名称相关的角色卡
+                                for (const cardName in cards.猫娘 || {}) {
+                                    const card = cards.猫娘[cardName];
+                                    // 检查角色卡名称是否包含物品名称
+                                    if (cardName.includes(itemName) || (card.名称 && card.名称.includes(itemName))) {
+                                        // 删除相关角色卡
+                                        const deleteUrl = `/api/characters/catgirl/${encodeURIComponent(cardName)}`;
+                                        const deleteResponse = await fetch(deleteUrl, {
+                                            method: 'DELETE',
+                                            headers: {
+                                                'Content-Type': 'application/json'
+                                            }
+                                        });
+                                        
+                                        if (deleteResponse.ok) {
+                                            console.log(`成功删除角色卡: ${cardName}`);
+                                        } else {
+                                            const deleteData = await deleteResponse.json();
+                                            console.error(`删除角色卡失败: ${cardName}, 错误: ${deleteData.error}`);
+                                            
+                                            // 检查是否是"当前正在使用的猫娘"错误
+                                            if (deleteData.error && deleteData.error.includes('当前正在使用的猫娘')) {
+                                                hasDeletionFailed = true;
+                                                showMessage(`无法删除角色卡 "${cardName}": ${deleteData.error}`, 'warning');
+                                            } else {
+                                                // 其他错误类型
+                                                showMessage(`删除角色卡 "${cardName}" 失败: ${deleteData.error || '未知错误'}`, 'error');
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                if (hasDeletionFailed) {
+                                    showMessage('部分角色卡删除失败，可能是因为它们正在被使用中', 'warning');
+                                }
+                            } catch (error) {
+                                console.error('处理角色卡删除时出错:', error);
+                                showMessage('删除角色卡时发生错误: ' + error.message, 'error');
                             }
-                        })
-                        .catch(error => {
-                            console.error(`删除物品请求失败: ${itemName}, 错误: ${error}`);
+                        }
+                        
+                        // 调用删除相关角色卡的函数
+                        deleteRelatedCharacterCards().then(() => {
+                            // 删除完成后重新加载角色卡列表
+                            setTimeout(() => {
+                                loadCharacterCards();
+                            }, 500);
                         });
                         
                         // 立即重新加载订阅列表
@@ -4261,7 +4300,9 @@ function viewItemDetails(itemId) {
                             loadCharacterCards();
                         }, 500);
                     } else {
-                        console.log(`角色卡 ${charaName} 已存在或添加失败: ${addResult.error}`);
+                        const errorMsg = `角色卡 ${charaName} 已存在或添加失败: ${addResult.error}`;
+                        console.log(errorMsg);
+                        showMessage(errorMsg, 'warning');
                     }
                 } else if (readResult.error !== '文件不存在') {
                     console.error(`读取角色卡文件 ${filePath} 失败:`, readResult.error);
@@ -4326,7 +4367,7 @@ function viewItemDetails(itemId) {
         // 加载角色卡数据
         async function loadCharacterData() {
             try {
-                const resp = await fetch('/api/characters');
+                const resp = await fetch('/api/characters/');
                 return await resp.json();
             } catch (error) {
                 console.error('加载角色数据失败:', error);

@@ -707,6 +707,39 @@ async def unsubscribe_workshop_item(request: Request):
             # 记录取消订阅的结果
             if result.result == 1:  # k_EResultOK
                 logger.info(f"取消订阅成功回调: {item_id_int}")
+                # 取消订阅成功后，删除相关的角色卡
+                try:
+                    from utils.frontend_utils import find_workshop_item_by_id
+                    import os
+                    import json
+                    
+                    # 查找创意工坊物品文件夹
+                    item_path, _ = find_workshop_item_by_id(str(item_id_int))
+                    logger.info(f"找到创意工坊物品路径: {item_path}")
+                    
+                    # 扫描文件夹及其子文件夹，查找所有.chara.json文件
+                    chara_files = []
+                    for root, _, files in os.walk(item_path):
+                        for file in files:
+                            if file.endswith('.chara.json'):
+                                chara_files.append(os.path.join(root, file))
+                    
+                    # 解析.chara.json文件，获取角色卡名称并记录日志
+                    for chara_file_path in chara_files:
+                        try:
+                            with open(chara_file_path, 'r', encoding='utf-8') as f:
+                                chara_data = json.load(f)
+                            
+                            # 获取角色卡名称，兼容中英文字段名
+                            chara_name = chara_data.get('档案名') or chara_data.get('name')
+                            if chara_name:
+                                logger.info(f"找到角色卡: {chara_name}，将在前端删除")
+                            else:
+                                logger.warning(f"角色卡文件 {chara_file_path} 缺少名称字段")
+                        except Exception as e:
+                            logger.error(f"处理角色卡文件 {chara_file_path} 时出错: {e}")
+                except Exception as e:
+                    logger.error(f"删除角色卡时出错: {e}")
             else:
                 logger.warning(f"取消订阅失败回调: {item_id_int}, 错误代码: {result.result}")
         
