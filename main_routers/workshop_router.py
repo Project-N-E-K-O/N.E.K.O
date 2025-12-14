@@ -1109,12 +1109,23 @@ async def read_workshop_file(path: str):
             logger.warning(f"文件过大: {decoded_path} ({file_size / 1024 / 1024:.2f}MB > {MAX_FILE_SIZE / 1024 / 1024}MB)")
             return JSONResponse(content={"success": False, "error": "文件过大"}, status_code=413)
         
-        # 读取文件内容
-        with open(decoded_path, 'r', encoding='utf-8') as f:
-            content = f.read()
+        # 尝试判断文件类型并选择合适的读取方式
+        file_extension = os.path.splitext(decoded_path)[1].lower()
+        is_binary = file_extension in ['.mp3', '.wav', '.png', '.jpg', '.jpeg', '.gif']
         
-        logger.info(f"成功读取文件: {decoded_path}")
-        return JSONResponse(content={"success": True, "content": content})
+        if is_binary:
+            # 以二进制模式读取文件并进行base64编码
+            import base64
+            with open(decoded_path, 'rb') as f:
+                binary_content = f.read()
+            content = base64.b64encode(binary_content).decode('utf-8')
+        else:
+            # 以文本模式读取文件
+            with open(decoded_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+        
+        logger.info(f"成功读取文件: {decoded_path}, 是二进制文件: {is_binary}")
+        return JSONResponse(content={"success": True, "content": content, "is_binary": is_binary})
     except Exception as e:
         logger.error(f"读取文件失败: {str(e)}")
         return JSONResponse(content={"success": False, "error": f"读取文件失败: {str(e)}"}, status_code=500)
@@ -1156,6 +1167,47 @@ async def list_chara_files(directory: str):
     except Exception as e:
         logger.error(f"列出角色卡文件失败: {str(e)}")
         return JSONResponse(content={"success": False, "error": f"列出角色卡文件失败: {str(e)}"}, status_code=500)
+
+
+@router.get('/list-audio-files')
+async def list_audio_files(directory: str):
+    """列出指定目录下所有的音频文件(.mp3, .wav)"""
+    try:
+        logger.info(f"列出创意工坊目录下的音频文件请求，目录: {directory}")
+        
+        # 解码URL编码的路径
+        decoded_dir = unquote(directory)
+        logger.info(f"解码后的目录路径: {decoded_dir}")
+        
+        # 安全检查：确保路径包含 steamapps/workshop
+        if 'steamapps\workshop' not in decoded_dir.lower() and 'steamapps/workshop' not in decoded_dir.lower():
+            logger.warning(f"非创意工坊路径访问被拒绝: {decoded_dir}")
+            return JSONResponse(content={"success": False, "error": "访问被拒绝: 只能访问创意工坊目录下的文件"}, status_code=403)
+        
+        # 检查目录是否存在
+        if not os.path.exists(decoded_dir) or not os.path.isdir(decoded_dir):
+            logger.warning(f"目录不存在: {decoded_dir}")
+            return JSONResponse(content={"success": False, "error": "目录不存在"}, status_code=404)
+        
+        # 查找所有音频文件
+        audio_files = []
+        for filename in os.listdir(decoded_dir):
+            if filename.endswith(('.mp3', '.wav')):
+                file_path = os.path.join(decoded_dir, filename)
+                if os.path.isfile(file_path):
+                    # 提取文件名前缀（不含扩展名）作为prefix
+                    prefix = os.path.splitext(filename)[0]
+                    audio_files.append({
+                        'name': filename,
+                        'path': file_path,
+                        'prefix': prefix
+                    })
+        
+        logger.info(f"成功列出目录下的音频文件: {decoded_dir}, 找到 {len(audio_files)} 个文件")
+        return JSONResponse(content={"success": True, "files": audio_files})
+    except Exception as e:
+        logger.error(f"列出音频文件失败: {str(e)}")
+        return JSONResponse(content={"success": False, "error": f"列出音频文件失败: {str(e)}"}, status_code=500)
 
 
 @router.post('/publish')

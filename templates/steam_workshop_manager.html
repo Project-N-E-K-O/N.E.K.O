@@ -2176,6 +2176,7 @@
                                         <select id="model-select" class="control-input" style="width: 100%; padding-right: 25px; cursor: pointer;">
                                             <option value="">未选择模型</option>
                                         </select>
+                                        <button class="btn btn-secondary" onclick="openModelDirectory()" style="cursor: pointer; white-space: nowrap;" disabled>打开目录</button>
                                     </div>
                                 </div>
                             </div>
@@ -2189,7 +2190,28 @@
                                             <select id="voice-select" class="control-input" style="width: 100%; padding-right: 25px; cursor: pointer;">
                                                 <option value="">未选择音色</option>
                                             </select>
+                                            <button class="btn btn-secondary" onclick="registerVoice()" style="cursor: pointer; white-space: nowrap;">注册音色</button>
                                         </div>
+                                        <div style="color: #888; font-size: 12px; margin-top: 5px;">如有音色文件请一起放入模型目录，文件名请使用数字和英文字母</div>
+                                    </div>
+                                    
+                                    <!-- 注册音色表单 -->
+                                    <div class="control-group" style="margin-bottom: 20px; padding: 10px; background-color: #f5f5f5; border-radius: 8px; box-sizing: border-box;">
+                                        <div class="control-label">注册新音色</div>
+                                        <div style="margin-bottom: 10px;">
+                                            <label data-i18n="voice.selectFile">选择本地音频文件（15秒最佳，请勿超过45秒，wav/mp3格式）</label>
+                                        </div>
+                                        <div class="file-input-wrapper" style="margin-bottom: 15px;">
+                                            <input type="file" id="audioFile" accept="audio/*" style="display: none;">
+                                            <label for="audioFile" class="btn btn-secondary" id="fileInputLabel" data-i18n="voice.chooseFile">选择文件</label>
+                                            <span class="file-name-display" id="fileNameDisplay" data-i18n="voice.noFileSelected" style="margin-left: 10px; color: #666; font-size: 14px;">未选择文件</span>
+                                        </div>
+                                        <div class="field-row" style="margin-bottom: 15px;">
+                                            <label data-i18n="voice.customPrefix">自定义前缀（阿里云需要）</label>
+                                            <label class="hint" data-i18n="voice.customPrefixNote" style="font-weight: normal; font-size: 12px; color: #888; display: block; margin-bottom: 5px;">不超过10个字符，只支持数字和英文字母</label>
+                                            <input type="text" id="prefix" data-i18n-placeholder="voice.prefixPlaceholder" placeholder="不超过10个字符，只支持数字和英文字母" required style="max-width: 600px; width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box;">
+                                        </div>
+                                        <div class="result" id="voice-register-result" style="margin-top: 10px; font-size: 14px;"></div>
                                     </div>
                                 </div>
                             </div>
@@ -2356,6 +2378,14 @@
                     uploadFormSection.style.display = 'block';
                     // 滚动到上传表单区域
                     uploadFormSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    // 手动更新选择文件按钮的翻译
+                    const selectFileButton = document.querySelector('button[data-i18n="common.selectFile"]');
+                    console.log('找到的选择文件按钮:', selectFileButton);
+                    if (selectFileButton && window.t) {
+                        const translatedText = window.t('common.selectFile');
+                        console.log('common.selectFile的翻译:', translatedText);
+                        selectFileButton.textContent = translatedText;
+                    }
                     // 更新翻译，确保新显示的元素都能正确翻译
                     if (window.updatePageTexts) {
                         window.updatePageTexts();
@@ -4258,6 +4288,38 @@ function viewItemDetails(itemId) {
         // 全局变量：存储所有可用模型信息
         let availableModels = [];
         
+        // 全局Set：用于跟踪已处理的音频文件，防止重复注册
+        // 使用localStorage持久化存储，避免页面刷新后重复扫描
+        let processedAudioFiles = new Set();
+        
+        // 页面加载时从localStorage恢复已处理的音频文件列表
+        function loadProcessedAudioFiles() {
+            try {
+                const stored = localStorage.getItem('neko_processed_audio_files');
+                if (stored) {
+                    const files = JSON.parse(stored);
+                    processedAudioFiles = new Set(files);
+                    console.log(`已从localStorage恢复 ${processedAudioFiles.size} 个已处理音频文件记录`);
+                }
+            } catch (error) {
+                console.error('从localStorage加载已处理音频文件失败:', error);
+                processedAudioFiles = new Set();
+            }
+        }
+        
+        // 保存已处理的音频文件列表到localStorage
+        function saveProcessedAudioFiles() {
+            try {
+                const files = Array.from(processedAudioFiles);
+                localStorage.setItem('neko_processed_audio_files', JSON.stringify(files));
+            } catch (error) {
+                console.error('保存已处理音频文件到localStorage失败:', error);
+            }
+        }
+        
+        // 页面加载时初始化
+        loadProcessedAudioFiles();
+        
         // 自动扫描创意工坊角色卡并添加到系统
         async function autoScanAndAddWorkshopCharacterCards() {
             try {
@@ -4308,12 +4370,94 @@ function viewItemDetails(itemId) {
                     } catch (listError) {
                         console.error(`扫描目录 ${folderPath} 中的角色卡文件失败:`, listError);
                     }
+                    
+                    // 5. 使用新的API扫描目录中所有音频文件(.mp3, .wav)
+                    try {
+                        const audioListResponse = await fetch(`/api/steam/workshop/list-audio-files?directory=${encodeURIComponent(folderPath)}`);
+                        const audioListResult = await audioListResponse.json();
+                        
+                        if (audioListResult.success && audioListResult.files.length > 0) {
+                            console.log(`在目录 ${folderPath} 中找到 ${audioListResult.files.length} 个音频文件:`);
+                            
+                            // 6. 遍历所有找到的音频文件
+                            for (const audioFile of audioListResult.files) {
+                                console.log(`  - ${audioFile.name}`);
+                                await scanAudioFile(audioFile.path, audioFile.prefix, itemId, item.title);
+                            }
+                        } else {
+                            console.log(`在目录 ${folderPath} 中未找到音频文件`);
+                        }
+                    } catch (audioListError) {
+                        console.error(`扫描目录 ${folderPath} 中的音频文件失败:`, audioListError);
+                    }
                 }
                 
                 console.log('自动扫描创意工坊角色卡完成');
                 
             } catch (error) {
                 console.error('自动扫描和添加角色卡失败:', error);
+            }
+        }
+        
+        // 扫描单个音频文件并调用voice_clone API
+        async function scanAudioFile(filePath, prefix, itemId, itemTitle) {
+            // 检查文件是否已处理
+            if (processedAudioFiles.has(filePath)) {
+                console.log(`音频文件 ${filePath} 已处理，跳过注册`);
+                return;
+            }
+            
+            try {
+                // 使用现有的read-file API读取文件内容
+                const readResponse = await fetch(`/api/steam/workshop/read-file?path=${encodeURIComponent(filePath)}`);
+                const readResult = await readResponse.json();
+                
+                if (readResult.success) {
+                    // 将base64内容转换为Blob
+                    const base64ToBlob = (base64, mimeType) => {
+                        const byteCharacters = atob(base64);
+                        const byteNumbers = new Array(byteCharacters.length);
+                        for (let i = 0; i < byteCharacters.length; i++) {
+                            byteNumbers[i] = byteCharacters.charCodeAt(i);
+                        }
+                        const byteArray = new Uint8Array(byteNumbers);
+                        return new Blob([byteArray], {type: mimeType});
+                    };
+                    
+                    // 确定文件类型
+                    const fileExtension = filePath.split('.').pop().toLowerCase();
+                    const mimeType = fileExtension === 'mp3' ? 'audio/mpeg' : 'audio/wav';
+                    
+                    // 创建Blob对象
+                    const blob = base64ToBlob(readResult.content, mimeType);
+                    
+                    // 创建FormData对象
+                    const formData = new FormData();
+                    formData.append('file', blob, filePath.split('\\').pop());
+                    formData.append('prefix', prefix);
+                    
+                    // 调用voice_clone API
+                    const cloneResponse = await fetch('/api/characters/voice_clone', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const cloneResult = await cloneResponse.json();
+                    
+                    if (cloneResponse.ok) {
+                        console.log(`成功克隆音频文件 ${filePath}:`, cloneResult);
+                        // 标记文件为已处理
+                        processedAudioFiles.add(filePath);
+                        // 保存到localStorage以持久化
+                        saveProcessedAudioFiles();
+                    } else {
+                        console.error(`克隆音频文件 ${filePath} 失败:`, cloneResult.error);
+                    }
+                } else {
+                    console.error(`读取音频文件 ${filePath} 失败:`, readResult.error);
+                }
+            } catch (error) {
+                console.error(`处理音频文件 ${filePath} 时出错:`, error);
             }
         }
         
@@ -4824,10 +4968,7 @@ function viewItemDetails(itemId) {
             catgirlData.live2d = selectedModelName;
             catgirlData.system_prompt = setting;
             
-            // 添加voice_id（如果有）
-            if (voiceId) {
-                catgirlData.voice_id = voiceId;
-            }
+
             
             // 获取角色卡标签
             const characterCardTags = [];
@@ -5012,9 +5153,7 @@ function viewItemDetails(itemId) {
             catgirlData.live2d = selectedModelName;
             catgirlData.system_prompt = setting;
             
-            if (voiceId) {
-                catgirlData.voice_id = voiceId;
-            }
+
             
             // 获取角色卡标签
             const characterCardTags = [];
@@ -5754,7 +5893,7 @@ function viewItemDetails(itemId) {
             formData.append('file', fileInput.files[0]);
             formData.append('prefix', prefix);
             
-            fetch('/api/voice_clone', {
+            fetch('/api/characters/voice_clone', {
                 method: 'POST',
                 body: formData
             })
@@ -5832,6 +5971,7 @@ function viewItemDetails(itemId) {
         
         function initModelSelection() {
             const modelSelect = document.getElementById('model-select');
+            const openDirBtn = document.querySelector('button[onclick="openModelDirectory()"]');
             
             // 添加模型选择事件监听
             modelSelect.addEventListener('change', () => {
@@ -5842,8 +5982,13 @@ function viewItemDetails(itemId) {
                     
                     // 加载模型到Live2D预览区域
                     loadLive2DModelByName(selectedModelName, selectedModelInfo);
+                    
+                    // 启用打开目录按钮
+                    openDirBtn.disabled = false;
                 } else {
                     selectedModelInfo = null;
+                    // 禁用打开目录按钮
+                    openDirBtn.disabled = true;
                 }
             });
         }
@@ -6972,5 +7117,30 @@ function viewItemDetails(itemId) {
     <script src="/static/live2d-ui-buttons.js"></script>
     <script src="/static/live2d-init.js"></script>
     
+    <script>
+        // 打开模型目录函数
+        function openModelDirectory() {
+            const modelSelect = document.getElementById('model-select');
+            const selectedModelName = modelSelect.value;
+            
+            if (!selectedModelName) {
+                showMessage(window.t ? window.t('steam.noModelSelected') : '请先选择一个模型', 'warning');
+                return;
+            }
+            
+            // 调用后端API打开目录
+            fetch(`/api/live2d/open_model_directory/${encodeURIComponent(selectedModelName)}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (!data.success) {
+                        showMessage(data.error || (window.t ? window.t('steam.openDirectoryFailed') : '打开目录失败'), 'error');
+                    }
+                })
+                .catch(error => {
+                    console.error('打开目录失败:', error);
+                    showMessage(window.t ? window.t('steam.openDirectoryFailed') : '打开目录失败', 'error');
+                });
+        }
+    </script>
 </body>
 </html>
