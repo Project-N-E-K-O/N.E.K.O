@@ -602,13 +602,7 @@ async def update_catgirl(name: str, request: Request):
                 'available_voices': available_voices
             }, status_code=400)
     
-    # 只更新前端传来的字段，未传字段保留原值，且不允许通过此接口修改 system_prompt
-    removed_fields = []
-    for k, v in characters['猫娘'][name].items():
-        if k not in data and k not in ('档案名', 'system_prompt', 'voice_id', 'live2d'):
-            removed_fields.append(k)
-    for k in removed_fields:
-        characters['猫娘'][name].pop(k)
+
     
     # 处理voice_id的特殊逻辑：如果传入空字符串，则删除该字段
     if 'voice_id' in data and data['voice_id'] == '':

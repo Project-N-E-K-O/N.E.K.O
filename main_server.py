@@ -33,6 +33,7 @@ import mimetypes
 mimetypes.add_type("application/javascript", ".js")
 import asyncio
 import logging
+from datetime import datetime
 
 
 from fastapi import FastAPI, Request, WebSocket, UploadFile, Body, File
@@ -357,10 +358,7 @@ lock = asyncio.Lock()
 # --- FastAPI App Setup ---
 app = FastAPI()
 
-@app.on_event("startup")
-async def startup_event():
-    """FastAPI应用启动事件处理函数"""
-    await _init_and_mount_workshop()
+
 
 class CustomStaticFiles(StaticFiles):
     async def get_response(self, path, scope):
@@ -2002,7 +2000,7 @@ async def _init_and_mount_workshop():
     """
     try:
         # 1. 获取订阅的创意工坊物品列表
-        workshop_items_result = get_subscribed_workshop_items()
+        workshop_items_result = await get_subscribed_workshop_items()
         
         # 2. 提取物品列表传给 utils 层
         subscribed_items = []

@@ -28,6 +28,8 @@ from utils.workshop_utils import (
 )
 
 router = APIRouter(prefix="/api/steam/workshop", tags=["workshop"])
+# 全局互斥锁，用于序列化创意工坊发布操作，防止并发回调混乱
+publish_lock = threading.Lock()
 logger = logging.getLogger("Main")
 
 def get_folder_size(folder_path):
@@ -97,8 +99,8 @@ async def upload_preview_image(request: Request):
                 content_folder = content_folder.replace('/', '\\')
                 if content_folder.startswith('\\\\'):
                     content_folder = content_folder[2:]
-            else:
-                content_folder = content_folder.replace('\\', '/')
+                else:
+                    content_folder = content_folder.replace('\\', '/')
             
             # 验证内容文件夹存在
             if not os.path.exists(content_folder) or not os.path.isdir(content_folder):
@@ -1082,6 +1084,13 @@ async def check_upload_status(item_path: str = None):
         }, status_code=500)
 
 
+def _assert_under_base(path: str, base: str) -> str:
+    full = os.path.realpath(os.path.normpath(path))
+    base_full = os.path.realpath(os.path.normpath(base))
+    if os.path.commonpath([full, base_full]) != base_full:
+        raise PermissionError("path not allowed")
+    return full
+
 @router.get('/read-file')
 async def read_workshop_file(path: str):
     """读取创意工坊文件内容"""
@@ -1090,12 +1099,8 @@ async def read_workshop_file(path: str):
         
         # 解码URL编码的路径
         decoded_path = unquote(path)
+        decoded_path = _assert_under_base(decoded_path, get_workshop_path())
         logger.info(f"解码后的路径: {decoded_path}")
-        
-        # 安全检查：确保路径包含 steamapps/workshop
-        if 'steamapps\workshop' not in decoded_path.lower() and 'steamapps/workshop' not in decoded_path.lower():
-            logger.warning(f"非创意工坊路径访问被拒绝: {decoded_path}")
-            return JSONResponse(content={"success": False, "error": "访问被拒绝: 只能读取创意工坊目录下的文件"}, status_code=403)
         
         # 检查文件是否存在
         if not os.path.exists(decoded_path) or not os.path.isfile(decoded_path):
@@ -1138,13 +1143,8 @@ async def list_chara_files(directory: str):
         logger.info(f"列出创意工坊目录下的角色卡文件请求，目录: {directory}")
         
         # 解码URL编码的路径
-        decoded_dir = unquote(directory)
+        decoded_dir = _assert_under_base(unquote(directory), get_workshop_path())
         logger.info(f"解码后的目录路径: {decoded_dir}")
-        
-        # 安全检查：确保路径包含 steamapps/workshop
-        if 'steamapps\workshop' not in decoded_dir.lower() and 'steamapps/workshop' not in decoded_dir.lower():
-            logger.warning(f"非创意工坊路径访问被拒绝: {decoded_dir}")
-            return JSONResponse(content={"success": False, "error": "访问被拒绝: 只能访问创意工坊目录下的文件"}, status_code=403)
         
         # 检查目录是否存在
         if not os.path.exists(decoded_dir) or not os.path.isdir(decoded_dir):
@@ -1175,14 +1175,9 @@ async def list_audio_files(directory: str):
     try:
         logger.info(f"列出创意工坊目录下的音频文件请求，目录: {directory}")
         
-        # 解码URL编码的路径
-        decoded_dir = unquote(directory)
+        # 解码URL编码的路径并验证是否在workshop目录下
+        decoded_dir = _assert_under_base(unquote(directory), get_workshop_path())
         logger.info(f"解码后的目录路径: {decoded_dir}")
-        
-        # 安全检查：确保路径包含 steamapps/workshop
-        if 'steamapps\workshop' not in decoded_dir.lower() and 'steamapps/workshop' not in decoded_dir.lower():
-            logger.warning(f"非创意工坊路径访问被拒绝: {decoded_dir}")
-            return JSONResponse(content={"success": False, "error": "访问被拒绝: 只能访问创意工坊目录下的文件"}, status_code=403)
         
         # 检查目录是否存在
         if not os.path.exists(decoded_dir) or not os.path.isdir(decoded_dir):
@@ -1400,149 +1395,151 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
     """
     在单独的线程中执行Steam创意工坊发布操作
     """
-    # 在函数内部添加导入语句，确保枚举在函数作用域内可用
-    from steamworks.enums import EWorkshopFileType, ERemoteStoragePublishedFileVisibility, EItemUpdateStatus
-    
-    # 检查是否存在现有的上传标记文件
-    item_id = None
-    try:
-        if os.path.exists(content_folder) and os.path.isdir(content_folder):
-            # 查找以steam_workshop_id_开头的txt文件
-            import glob
-            marker_files = glob.glob(os.path.join(content_folder, "steam_workshop_id_*.txt"))
-            
-            if marker_files:
-                # 使用第一个找到的标记文件
-                marker_file = marker_files[0]
-                
-                # 从文件名中提取物品ID
-                import re
-                match = re.search(r'steam_workshop_id_([0-9]+)\.txt', marker_file)
-                if match:
-                    item_id = int(match.group(1))
-                    logger.info(f"检测到物品已上传，找到标记文件: {marker_file}，物品ID: {item_id}")
-    except Exception as e:
-        logger.error(f"检查上传标记文件时出错: {e}")
-        # 即使检查失败，也继续尝试上传，不阻止功能
-    try:
-        # 再次验证内容文件夹，确保在多线程环境中仍然有效
-        if not os.path.exists(content_folder) or not os.path.isdir(content_folder):
-            raise Exception(f"内容文件夹不存在或无效: {content_folder}")
-        
-        # 统计文件夹内容，确保有文件可上传
-        file_count = 0
-        for root, dirs, files in os.walk(content_folder):
-            file_count += len(files)
-        
-        if file_count == 0:
-            raise Exception(f"内容文件夹中没有找到可上传的文件: {content_folder}")
-        
-        logger.info(f"内容文件夹验证通过，包含 {file_count} 个文件")
-        
-        # 获取当前应用ID
-        app_id = steamworks.app_id
-        logger.info(f"使用应用ID: {app_id} 进行创意工坊上传")
-        
-        # 增强的Steam连接状态验证
+    with publish_lock:
         try:
-            # 基础连接状态检查
-            is_steam_running = steamworks.IsSteamRunning()
-            is_overlay_enabled = steamworks.IsOverlayEnabled()
-            is_logged_on = steamworks.Users.LoggedOn()
-            steam_id = steamworks.Users.GetSteamID()
-            
-            # 应用相关权限检查
-            app_owned = steamworks.Apps.IsAppInstalled(app_id)
-            app_owned_license = steamworks.Apps.IsSubscribedApp(app_id)
-            app_subscribed = steamworks.Apps.IsSubscribed()
-            
-            # 记录详细的连接状态
-            logger.info(f"Steam客户端运行状态: {is_steam_running}")
-            logger.info(f"Steam覆盖层启用状态: {is_overlay_enabled}")
-            logger.info(f"用户登录状态: {is_logged_on}")
-            logger.info(f"用户SteamID: {steam_id}")
-            logger.info(f"应用ID {app_id} 安装状态: {app_owned}")
-            logger.info(f"应用ID {app_id} 订阅许可状态: {app_owned_license}")
-            logger.info(f"当前应用订阅状态: {app_subscribed}")
-            
-            # 预检查连接状态，如果存在问题则提前报错
-            if not is_steam_running:
-                raise Exception("Steam客户端未运行，请先启动Steam客户端")
-            if not is_logged_on:
-                raise Exception("用户未登录Steam，请确保已登录Steam客户端")
-            
-        except Exception as e:
-            logger.error(f"Steam连接状态验证失败: {e}")
-            # 即使验证失败也继续执行，但提供警告
-            logger.warning(f"继续尝试创意工坊上传，但可能会因为Steam连接问题而失败")
+            # 在函数内部添加导入语句，确保枚举在函数作用域内可用
+            from steamworks.enums import EWorkshopFileType, ERemoteStoragePublishedFileVisibility, EItemUpdateStatus
+    
+            # 检查是否存在现有的上传标记文件
+            item_id = None
+            try:
+                if os.path.exists(content_folder) and os.path.isdir(content_folder):
+                    # 查找以steam_workshop_id_开头的txt文件
+                    import glob
+                    marker_files = glob.glob(os.path.join(content_folder, "steam_workshop_id_*.txt"))
+                    
+                    if marker_files:
+                        # 使用第一个找到的标记文件
+                        marker_file = marker_files[0]
+                        
+                        # 从文件名中提取物品ID
+                        import re
+                        match = re.search(r'steam_workshop_id_([0-9]+)\.txt', marker_file)
+                        if match:
+                            item_id = int(match.group(1))
+                            logger.info(f"检测到物品已上传，找到标记文件: {marker_file}，物品ID: {item_id}")
+            except Exception as e:
+                logger.error(f"检查上传标记文件时出错: {e}")
+            # 即使检查失败，也继续尝试上传，不阻止功能
         
-        # 错误映射表，根据错误码提供更具体的错误信息
-        error_codes = {
-            1: "成功",
-            10: "权限不足 - 可能需要登录Steam客户端或缺少创意工坊上传权限",
-            111: "网络连接错误 - 无法连接到Steam网络",
-            100: "服务不可用 - Steam创意工坊服务暂时不可用",
-            8: "文件已存在 - 相同内容的物品已存在",
-            34: "服务器忙 - Steam服务器暂时无法处理请求",
-            116: "请求超时 - 与Steam服务器通信超时"
-        }
+            try:
+                # 再次验证内容文件夹，确保在多线程环境中仍然有效
+                if not os.path.exists(content_folder) or not os.path.isdir(content_folder):
+                    raise Exception(f"内容文件夹不存在或无效: {content_folder}")
+            
+                # 统计文件夹内容，确保有文件可上传
+                file_count = 0
+                for root, dirs, files in os.walk(content_folder):
+                    file_count += len(files)
+            
+                if file_count == 0:
+                    raise Exception(f"内容文件夹中没有找到可上传的文件: {content_folder}")
+            
+                logger.info(f"内容文件夹验证通过，包含 {file_count} 个文件")
+            
+                # 获取当前应用ID
+                app_id = steamworks.app_id
+                logger.info(f"使用应用ID: {app_id} 进行创意工坊上传")
+            
+                # 增强的Steam连接状态验证
+                # 基础连接状态检查
+                is_steam_running = steamworks.IsSteamRunning()
+                is_overlay_enabled = steamworks.IsOverlayEnabled()
+                is_logged_on = steamworks.Users.LoggedOn()
+                steam_id = steamworks.Users.GetSteamID()
+            
+                # 应用相关权限检查
+                app_owned = steamworks.Apps.IsAppInstalled(app_id)
+                app_owned_license = steamworks.Apps.IsSubscribedApp(app_id)
+                app_subscribed = steamworks.Apps.IsSubscribed()
+            
+                # 记录详细的连接状态
+                logger.info(f"Steam客户端运行状态: {is_steam_running}")
+                logger.info(f"Steam覆盖层启用状态: {is_overlay_enabled}")
+                logger.info(f"用户登录状态: {is_logged_on}")
+                logger.info(f"用户SteamID: {steam_id}")
+                logger.info(f"应用ID {app_id} 安装状态: {app_owned}")
+                logger.info(f"应用ID {app_id} 订阅许可状态: {app_owned_license}")
+                logger.info(f"当前应用订阅状态: {app_subscribed}")
+            
+                # 预检查连接状态，如果存在问题则提前报错
+                if not is_steam_running:
+                    raise Exception("Steam客户端未运行，请先启动Steam客户端")
+                if not is_logged_on:
+                    raise Exception("用户未登录Steam，请确保已登录Steam客户端")
         
-        # 如果没有找到现有物品ID，则创建新物品
-        if item_id is None:
-            # 对于新物品，先创建一个空物品
-            # 使用回调来处理创建结果
-            created_item_id = [None]
-            created_event = threading.Event()
-            create_result = [None]  # 用于存储创建结果
+            except Exception as e:
+                logger.error(f"Steam连接状态验证失败: {e}")
+                # 即使验证失败也继续执行，但提供警告
+                logger.warning(f"继续尝试创意工坊上传，但可能会因为Steam连接问题而失败")
+        
+            # 错误映射表，根据错误码提供更具体的错误信息
+            error_codes = {
+                1: "成功",
+                10: "权限不足 - 可能需要登录Steam客户端或缺少创意工坊上传权限",
+                111: "网络连接错误 - 无法连接到Steam网络",
+                100: "服务不可用 - Steam创意工坊服务暂时不可用",
+                8: "文件已存在 - 相同内容的物品已存在",
+                34: "服务器忙 - Steam服务器暂时无法处理请求",
+                116: "请求超时 - 与Steam服务器通信超时"
+            }
+        
+            # 如果没有找到现有物品ID，则创建新物品
+            if item_id is None:
+                # 对于新物品，先创建一个空物品
+                # 使用回调来处理创建结果
+                created_item_id = [None]
+                created_event = threading.Event()
+                create_result = [None]  # 用于存储创建结果
             
-            def onCreateItem(result):
-                nonlocal created_item_id, create_result
-                create_result[0] = result.result
-                # 直接从结构体读取字段而不是字典
-                if result.result == 1:  # k_EResultOK
-                    created_item_id[0] = result.publishedFileId
-                    logger.info(f"成功创建创意工坊物品，ID: {created_item_id[0]}")
-                    created_event.set()
-                else:
-                    error_msg = error_codes.get(result.result, f"未知错误码: {result.result}")
-                    logger.error(f"创建创意工坊物品失败，错误码: {result.result} ({error_msg})")
-                    created_event.set()
+                def onCreateItem(result):
+                    nonlocal created_item_id, create_result
+                    create_result[0] = result.result
+                    # 直接从结构体读取字段而不是字典
+                    if result.result == 1:  # k_EResultOK
+                        created_item_id[0] = result.publishedFileId
+                        logger.info(f"成功创建创意工坊物品，ID: {created_item_id[0]}")
+                        created_event.set()
+                    else:
+                        error_msg = error_codes.get(result.result, f"未知错误码: {result.result}")
+                        logger.error(f"创建创意工坊物品失败，错误码: {result.result} ({error_msg})")
+                        created_event.set()
             
-            # 设置创建物品回调
-            steamworks.Workshop.SetItemCreatedCallback(onCreateItem)
+                # 设置创建物品回调
+                steamworks.Workshop.SetItemCreatedCallback(onCreateItem)
             
-            # 创建新的创意工坊物品（使用文件类型枚举表示UGC）
-            logger.info(f"开始创建创意工坊物品: {title}")
-            logger.info(f"调用SteamWorkshop.CreateItem({app_id}, {EWorkshopFileType.COMMUNITY})")
-            steamworks.Workshop.CreateItem(app_id, EWorkshopFileType.COMMUNITY)
+                # 创建新的创意工坊物品（使用文件类型枚举表示UGC）
+                logger.info(f"开始创建创意工坊物品: {title}")
+                logger.info(f"调用SteamWorkshop.CreateItem({app_id}, {EWorkshopFileType.COMMUNITY})")
+                steamworks.Workshop.CreateItem(app_id, EWorkshopFileType.COMMUNITY)
             
-            # 等待创建完成或超时，增加超时时间并添加调试信息
-            logger.info("等待创意工坊物品创建完成...")
-            # 使用循环等待，定期调用run_callbacks处理回调
-            start_time = time.time()
-            timeout = 60  # 超时时间60秒
-            while time.time() - start_time < timeout:
-                if created_event.is_set():
-                    break
-                # 定期调用run_callbacks处理Steam API回调
-                try:
-                    steamworks.run_callbacks()
-                except Exception as e:
-                    logger.error(f"执行Steam回调时出错: {str(e)}")
-                time.sleep(0.1)  # 每100毫秒检查一次
+                # 等待创建完成或超时，增加超时时间并添加调试信息
+                logger.info("等待创意工坊物品创建完成...")
+                # 使用循环等待，定期调用run_callbacks处理回调
+                start_time = time.time()
+                timeout = 60  # 超时时间60秒
+                while time.time() - start_time < timeout:
+                    if created_event.is_set():
+                        break
+                    # 定期调用run_callbacks处理Steam API回调
+                    try:
+                        steamworks.run_callbacks()
+                    except Exception as e:
+                        logger.error(f"执行Steam回调时出错: {str(e)}")
+                    time.sleep(0.1)  # 每100毫秒检查一次
             
-            if not created_event.is_set():
-                logger.error("创建创意工坊物品超时，可能是网络问题或Steam服务暂时不可用")
-                raise TimeoutError("创建创意工坊物品超时")
+                if not created_event.is_set():
+                    logger.error("创建创意工坊物品超时，可能是网络问题或Steam服务暂时不可用")
+                    raise TimeoutError("创建创意工坊物品超时")
             
-            if created_item_id[0] is None:
-                # 提供更具体的错误信息
-                error_msg = error_codes.get(create_result[0], f"未知错误码: {create_result[0]}")
-                logger.error(f"创建创意工坊物品失败: {error_msg}")
+                if created_item_id[0] is None:
+                    # 提供更具体的错误信息
+                    error_msg = error_codes.get(create_result[0], f"未知错误码: {create_result[0]}")
+                    logger.error(f"创建创意工坊物品失败: {error_msg}")
                 
-                # 针对错误码10（权限不足）提供更详细的错误信息和解决方案
-                if create_result[0] == 10:
-                    detailed_error = f"""权限不足 - 请确保:
+                    # 针对错误码10（权限不足）提供更详细的错误信息和解决方案
+                    if create_result[0] == 10:
+                        detailed_error = f"""权限不足 - 请确保:
 1. Steam客户端已启动并登录
 2. 您的Steam账号拥有应用ID {app_id} 的访问权限
 3. Steam创意工坊功能未被禁用
@@ -1556,144 +1553,142 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
                     logger.error(f"- 用户登录状态: {steamworks.Users.LoggedOn()}")
                     logger.error(f"- 应用订阅状态: {steamworks.Apps.IsSubscribedApp(app_id)}")
                     raise Exception(f"创建创意工坊物品失败: {detailed_error} (错误码: {create_result[0]})")
+                # 将新创建的物品ID赋值给item_id变量
+                item_id = created_item_id[0]
+            else:
+                logger.info(f"使用现有物品ID进行更新: {item_id}")       
+        
+            # 开始更新物品
+            logger.info(f"开始更新物品内容: {title}")
+            update_handle = steamworks.Workshop.StartItemUpdate(app_id, item_id)
+        
+            # 设置物品属性
+            logger.info("设置物品基本属性...")
+            steamworks.Workshop.SetItemTitle(update_handle, title)
+            if description:
+                steamworks.Workshop.SetItemDescription(update_handle, description)
+        
+            # 设置物品内容 - 这是文件上传的核心步骤
+            logger.info(f"设置物品内容文件夹: {content_folder}")
+            content_set_result = steamworks.Workshop.SetItemContent(update_handle, content_folder)
+            logger.info(f"内容设置结果: {content_set_result}")
+            
+            # 设置预览图片（如果提供）
+            if preview_image:
+                logger.info(f"设置预览图片: {preview_image}")
+                preview_set_result = steamworks.Workshop.SetItemPreview(update_handle, preview_image)
+                logger.info(f"预览图片设置结果: {preview_set_result}")
+        
+            # 导入枚举类型并将整数值转换为枚举对象
+            from steamworks.enums import ERemoteStoragePublishedFileVisibility
+            if visibility == 0:
+                visibility_enum = ERemoteStoragePublishedFileVisibility.PUBLIC
+            elif visibility == 1:
+                visibility_enum = ERemoteStoragePublishedFileVisibility.FRIENDS_ONLY
+            elif visibility == 2:
+                visibility_enum = ERemoteStoragePublishedFileVisibility.PRIVATE
+            else:
+                # 默认设为公开
+                visibility_enum = ERemoteStoragePublishedFileVisibility.PUBLIC
+                
+            # 设置物品可见性
+            logger.info(f"设置物品可见性: {visibility_enum}")
+            steamworks.Workshop.SetItemVisibility(update_handle, visibility_enum)
+            
+            # 设置标签（如果有）
+            if tags:
+                logger.info(f"设置物品标签: {tags}")
+                steamworks.Workshop.SetItemTags(update_handle, tags)
+            
+            # 提交更新，使用回调来处理结果
+            updated = [False]
+            error_code = [0]
+            update_event = threading.Event()
+            
+            def onSubmitItemUpdate(result):
+                nonlocal updated, error_code
+                # 直接从结构体读取字段而不是字典
+                error_code[0] = result.result
+                if result.result == 1:  # k_EResultOK
+                    updated[0] = True
+                    logger.info(f"物品更新提交成功，结果代码: {result.result}")
                 else:
-                    raise Exception(f"创建创意工坊物品失败: {error_msg} (错误码: {create_result[0]})")
+                    logger.error(f"提交创意工坊物品更新失败，错误码: {result.result}")
+                update_event.set()
             
-            # 将新创建的物品ID赋值给item_id变量
-            item_id = created_item_id[0]
-        else:
-            logger.info(f"使用现有物品ID进行更新: {item_id}")
-        
-        # 开始更新物品
-        logger.info(f"开始更新物品内容: {title}")
-        update_handle = steamworks.Workshop.StartItemUpdate(app_id, item_id)
-        
-        # 设置物品属性
-        logger.info("设置物品基本属性...")
-        steamworks.Workshop.SetItemTitle(update_handle, title)
-        if description:
-            steamworks.Workshop.SetItemDescription(update_handle, description)
-        
-        # 设置物品内容 - 这是文件上传的核心步骤
-        logger.info(f"设置物品内容文件夹: {content_folder}")
-        content_set_result = steamworks.Workshop.SetItemContent(update_handle, content_folder)
-        logger.info(f"内容设置结果: {content_set_result}")
-        
-        # 设置预览图片（如果提供）
-        if preview_image:
-            logger.info(f"设置预览图片: {preview_image}")
-            preview_set_result = steamworks.Workshop.SetItemPreview(update_handle, preview_image)
-            logger.info(f"预览图片设置结果: {preview_set_result}")
-        
-        # 导入枚举类型并将整数值转换为枚举对象
-        from steamworks.enums import ERemoteStoragePublishedFileVisibility
-        if visibility == 0:
-            visibility_enum = ERemoteStoragePublishedFileVisibility.PUBLIC
-        elif visibility == 1:
-            visibility_enum = ERemoteStoragePublishedFileVisibility.FRIENDS_ONLY
-        elif visibility == 2:
-            visibility_enum = ERemoteStoragePublishedFileVisibility.PRIVATE
-        else:
-            # 默认设为公开
-            visibility_enum = ERemoteStoragePublishedFileVisibility.PUBLIC
+            # 设置更新物品回调
+            steamworks.Workshop.SetItemUpdatedCallback(onSubmitItemUpdate)
             
-        # 设置物品可见性
-        logger.info(f"设置物品可见性: {visibility_enum}")
-        steamworks.Workshop.SetItemVisibility(update_handle, visibility_enum)
-        
-        # 设置标签（如果有）
-        if tags:
-            logger.info(f"设置物品标签: {tags}")
-            steamworks.Workshop.SetItemTags(update_handle, tags)
-        
-        # 提交更新，使用回调来处理结果
-        updated = [False]
-        error_code = [0]
-        update_event = threading.Event()
-        
-        def onSubmitItemUpdate(result):
-            nonlocal updated, error_code
-            # 直接从结构体读取字段而不是字典
-            error_code[0] = result.result
-            if result.result == 1:  # k_EResultOK
-                updated[0] = True
-                logger.info(f"物品更新提交成功，结果代码: {result.result}")
-            else:
-                logger.error(f"提交创意工坊物品更新失败，错误码: {result.result}")
-            update_event.set()
-        
-        # 设置更新物品回调
-        steamworks.Workshop.SetItemUpdatedCallback(onSubmitItemUpdate)
-        
-        # 提交更新
-        logger.info(f"开始提交物品更新，更新说明: {change_note}")
-        steamworks.Workshop.SubmitItemUpdate(update_handle, change_note)
-        
-        # 等待更新完成或超时，增加超时时间并添加调试信息
-        logger.info("等待创意工坊物品更新完成...")
-        # 使用循环等待，定期调用run_callbacks处理回调
-        start_time = time.time()
-        timeout = 180  # 超时时间180秒
-        last_progress = -1
-        
-        while time.time() - start_time < timeout:
-            if update_event.is_set():
-                break
-            # 定期调用run_callbacks处理Steam API回调
+            # 提交更新
+            logger.info(f"开始提交物品更新，更新说明: {change_note}")
+            steamworks.Workshop.SubmitItemUpdate(update_handle, change_note)
+            
+            # 等待更新完成或超时，增加超时时间并添加调试信息
+            logger.info("等待创意工坊物品更新完成...")
+            # 使用循环等待，定期调用run_callbacks处理回调
+            start_time = time.time()
+            timeout = 180  # 超时时间180秒
+            last_progress = -1
+            
+            while time.time() - start_time < timeout:
+                if update_event.is_set():
+                    break
+                # 定期调用run_callbacks处理Steam API回调
+                try:
+                    steamworks.run_callbacks()
+                    # 记录上传进度（更详细的进度报告）
+                    if update_handle:
+                        progress = steamworks.Workshop.GetItemUpdateProgress(update_handle)
+                        if 'status' in progress:
+                            status_text = "未知"
+                            if progress['status'] == EItemUpdateStatus.UPLOADING_CONTENT:
+                                status_text = "上传内容"
+                            elif progress['status'] == EItemUpdateStatus.UPLOADING_PREVIEW_FILE:
+                                status_text = "上传预览图"
+                            elif progress['status'] == EItemUpdateStatus.COMMITTING_CHANGES:
+                                status_text = "提交更改"
+                            
+                            if 'progress' in progress:
+                                current_progress = int(progress['progress'] * 100)
+                                # 只有进度有明显变化时才记录日志
+                                if current_progress != last_progress:
+                                    logger.info(f"上传状态: {status_text}, 进度: {current_progress}%")
+                                    last_progress = current_progress
+                except Exception as e:
+                    logger.error(f"执行Steam回调时出错: {str(e)}")
+                time.sleep(0.5)  # 每500毫秒检查一次，减少日志量
+            
+            if not update_event.is_set():
+                logger.error("提交创意工坊物品更新超时，可能是网络问题或Steam服务暂时不可用")
+                raise TimeoutError("提交创意工坊物品更新超时")
+            
+            if not updated[0]:
+                # 根据错误码提供更详细的错误信息
+                if error_code[0] == 25:  # LIMIT_EXCEEDED
+                    error_msg = "提交创意工坊物品更新失败：内容超过Steam限制（错误码25）。请检查内容大小、文件数量或其他限制。"
+                else:
+                    error_msg = f"提交创意工坊物品更新失败，错误码: {error_code[0]}"
+                logger.error(error_msg)
+                raise Exception(error_msg)
+            
+            logger.info(f"创意工坊物品上传成功完成！物品ID: {item_id}")
+            
+            # 在原文件夹创建带物品ID的txt文件，标记为已上传
+            # 在原文件夹创建带物品ID的txt文件，标记为已上传
             try:
-                steamworks.run_callbacks()
-                # 记录上传进度（更详细的进度报告）
-                if update_handle:
-                    progress = steamworks.Workshop.GetItemUpdateProgress(update_handle)
-                    if 'status' in progress:
-                        status_text = "未知"
-                        if progress['status'] == EItemUpdateStatus.UPLOADING_CONTENT:
-                            status_text = "上传内容"
-                        elif progress['status'] == EItemUpdateStatus.UPLOADING_PREVIEW_FILE:
-                            status_text = "上传预览图"
-                        elif progress['status'] == EItemUpdateStatus.COMMITTING_CHANGES:
-                            status_text = "提交更改"
-                        
-                        if 'progress' in progress:
-                            current_progress = int(progress['progress'] * 100)
-                            # 只有进度有明显变化时才记录日志
-                            if current_progress != last_progress:
-                                logger.info(f"上传状态: {status_text}, 进度: {current_progress}%")
-                                last_progress = current_progress
+                marker_file_path = os.path.join(content_folder, f"steam_workshop_id_{item_id}.txt")
+                with open(marker_file_path, 'w', encoding='utf-8') as f:
+                    f.write(f"Steam创意工坊物品ID: {item_id}\n")
+                    f.write(f"上传时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}\n")
+                    f.write(f"物品标题: {title}\n")
+                logger.info(f"已在原文件夹创建上传标记文件: {marker_file_path}")
             except Exception as e:
-                logger.error(f"执行Steam回调时出错: {str(e)}")
-            time.sleep(0.5)  # 每500毫秒检查一次，减少日志量
-        
-        if not update_event.is_set():
-            logger.error("提交创意工坊物品更新超时，可能是网络问题或Steam服务暂时不可用")
-            raise TimeoutError("提交创意工坊物品更新超时")
-        
-        if not updated[0]:
-            # 根据错误码提供更详细的错误信息
-            if error_code[0] == 25:  # LIMIT_EXCEEDED
-                error_msg = "提交创意工坊物品更新失败：内容超过Steam限制（错误码25）。请检查内容大小、文件数量或其他限制。"
-            else:
-                error_msg = f"提交创意工坊物品更新失败，错误码: {error_code[0]}"
-            logger.error(error_msg)
-            raise Exception(error_msg)
-        
-        logger.info(f"创意工坊物品上传成功完成！物品ID: {item_id}")
-        
-        # 在原文件夹创建带物品ID的txt文件，标记为已上传
-        try:
-            marker_file_path = os.path.join(content_folder, f"steam_workshop_id_{item_id}.txt")
-            with open(marker_file_path, 'w', encoding='utf-8') as f:
-                f.write(f"Steam创意工坊物品ID: {item_id}\n")
-                f.write(f"上传时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}\n")
-                f.write(f"物品标题: {title}\n")
-            logger.info(f"已在原文件夹创建上传标记文件: {marker_file_path}")
+                logger.error(f"创建上传标记文件失败: {e}")
+                # 即使创建标记文件失败，也不影响物品上传的成功返回
+
+            return item_id
         except Exception as e:
-            logger.error(f"创建上传标记文件失败: {e}")
-            # 即使创建标记文件失败，也不影响物品上传的成功返回
-        
-        return item_id
-        
-    except Exception as e:
-        logger.error(f"发布创意工坊物品时出错: {e}")
-        raise
+            logger.error(f"发布创意工坊物品时出错: {e}")
+            raise
+
 
