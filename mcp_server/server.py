@@ -370,7 +370,9 @@ class StdioMcpClient:
         if not self._initialized:
             await self.initialize()
         
-        logger.info(f"[Stdio MCP Client] Calling tool '{tool_name}' with arguments: {arguments}")
+        arg_keys = list((arguments or {}).keys())
+        logger.info(f"[Stdio MCP Client] Calling tool '{tool_name}' with arg_keys: {arg_keys}")
+        logger.debug(f"[Stdio MCP Client] Full arguments: {arguments}")
         result = await self._mcp_request("tools/call", {
             "name": tool_name,
             "arguments": arguments or {}
@@ -666,7 +668,9 @@ class McpClient:
         if not self._initialized:
             await self.initialize()
         
-        logger.info(f"[MCP Client] Calling tool '{tool_name}' on {self.base_url} with arguments: {arguments}")
+        arg_keys = list((arguments or {}).keys())
+        logger.info(f"[MCP Client] Calling tool '{tool_name}' on {self.base_url} with arg_keys: {arg_keys}")
+        logger.debug(f"[MCP Client] Full arguments: {arguments}")
         result = await self._mcp_request("tools/call", {
             "name": tool_name,
             "arguments": arguments or {}

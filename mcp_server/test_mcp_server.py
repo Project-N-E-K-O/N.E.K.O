@@ -463,7 +463,12 @@ if __name__ == "__main__":
     
     def run_server():
         try:
-            uvicorn.run(app, host=host, port=port, log_level="info")
+            # 在非主线程中运行 uvicorn 时，需要禁用信号处理以避免 ValueError
+            config = uvicorn.Config(app, host=host, port=port, log_level="info")
+            server = uvicorn.Server(config)
+            # 禁用信号处理（daemon 线程中不支持信号处理）
+            server.install_signal_handlers = lambda: None
+            server.run()
         except OSError as e:
             if "Address already in use" in str(e) or "address is already in use" in str(e).lower():
                 logger.error(f"[Test MCP Server] 端口 {port} 已被占用！")

@@ -2,11 +2,14 @@
   "servers": [
     {
       "type": "http",
-      "url": "http://localhost:3283"
+      "url": "http://localhost:3283",
+      "name": "Local Test Server"
     },
     {
       "type": "http",
-      "url": "https://mcp.api-inference.modelscope.net/EXAMPLE_TOKEN/mcp"
+      "url": "https://mcp.api-inference.modelscope.net/EXAMPLE_TOKEN/mcp",
+      "name": "Example External Server",
+      "note": "Replace EXAMPLE_TOKEN with your actual token or use environment variable"
     }
   ],
   "updated_at": "2025-12-14T15:13:18.727256"

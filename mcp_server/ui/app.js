@@ -62,6 +62,17 @@ function updateStatusIndicator(status) {
     }
 }
 
+// HTML 转义函数，防止 XSS 攻击
+function escapeHtml(value) {
+    const s = String(value ?? '');
+    return s
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 // 格式化时间
 function formatTime(isoString) {
     if (!isoString) return '-';
@@ -82,16 +93,16 @@ function renderToolsList(container, tools) {
         const paramList = Object.keys(params).map(key => {
             const param = params[key];
             const isRequired = required.includes(key);
-            return `<span class="param ${isRequired ? 'required' : 'optional'}">${key}${isRequired ? '*' : ''}</span>`;
+            return `<span class="param ${isRequired ? 'required' : 'optional'}">${escapeHtml(key)}${isRequired ? '*' : ''}</span>`;
         }).join(' ');
 
         return `
             <div class="tool-item">
                 <div class="tool-header">
-                    <span class="tool-name">${tool.name}</span>
+                    <span class="tool-name">${escapeHtml(tool.name)}</span>
                     <span class="tool-source">${tool.source === 'local' ? '本地' : '远程'}</span>
                 </div>
-                <div class="tool-description">${tool.description || 'No description'}</div>
+                <div class="tool-description">${escapeHtml(tool.description || 'No description')}</div>
                 ${paramList ? `<div class="tool-params">参数: ${paramList}</div>` : ''}
             </div>
         `;
@@ -126,7 +137,7 @@ function renderServersList(container, servers, showStatus = false) {
             <div class="server-item">
                 <div class="server-info">
                     ${typeBadge}
-                    <div class="server-url">${serverInfo}</div>
+                    <div class="server-url">${escapeHtml(serverInfo)}</div>
                 </div>
                 ${status}
             </div>
@@ -164,10 +175,10 @@ function renderServerConfigList(container, servers, connectedServers = []) {
             <div class="server-config-item">
                 <div class="server-config-info">
                     ${typeBadge}
-                    <div class="server-url">${serverInfo}</div>
+                    <div class="server-url">${escapeHtml(serverInfo)}</div>
                     ${status}
                 </div>
-                <button class="btn-delete" onclick="deleteServer('${identifier.replace(/'/g, "\\'")}')" title="删除服务器">🗑️</button>
+                <button class="btn-delete" data-identifier="${escapeHtml(identifier)}" title="删除服务器">🗑️</button>
             </div>
         `;
     }).join('');
@@ -482,7 +493,7 @@ async function importRemoteConfig() {
                 resultHtml += '<div class="import-added"><strong>已添加:</strong><ul>';
                 data.added.forEach(server => {
                     const serverInfo = server.identifier || server.url || JSON.stringify(server);
-                    resultHtml += `<li>${server.name}: ${serverInfo}</li>`;
+                    resultHtml += `<li>${escapeHtml(server.name)}: ${escapeHtml(serverInfo)}</li>`;
                 });
                 resultHtml += '</ul></div>';
             }
@@ -490,7 +501,7 @@ async function importRemoteConfig() {
             if (data.skipped && data.skipped.length > 0) {
                 resultHtml += '<div class="import-skipped"><strong>已跳过:</strong><ul>';
                 data.skipped.forEach(server => {
-                    resultHtml += `<li>${server.name}: ${server.reason}</li>`;
+                    resultHtml += `<li>${escapeHtml(server.name)}: ${escapeHtml(server.reason)}</li>`;
                 });
                 resultHtml += '</ul></div>';
             }
@@ -498,7 +509,7 @@ async function importRemoteConfig() {
             if (data.errors && data.errors.length > 0) {
                 resultHtml += '<div class="import-errors"><strong>错误:</strong><ul>';
                 data.errors.forEach(error => {
-                    resultHtml += `<li>${error}</li>`;
+                    resultHtml += `<li>${escapeHtml(error)}</li>`;
                 });
                 resultHtml += '</ul></div>';
             }
@@ -520,13 +531,13 @@ async function importRemoteConfig() {
                 }, 500);
             }
         } else {
-            elements.importResult.innerHTML = `<div class="import-error"><strong>❌ 导入失败:</strong><p>${data.error || 'Unknown error'}</p></div>`;
+            elements.importResult.innerHTML = `<div class="import-error"><strong>❌ 导入失败:</strong><p>${escapeHtml(data.error || 'Unknown error')}</p></div>`;
             elements.importResult.style.display = 'block';
             elements.importResult.className = 'import-result import-error';
         }
     } catch (error) {
         console.error('Failed to import config:', error);
-        elements.importResult.innerHTML = `<div class="import-error"><strong>❌ 导入失败:</strong><p>${error.message}</p></div>`;
+        elements.importResult.innerHTML = `<div class="import-error"><strong>❌ 导入失败:</strong><p>${escapeHtml(error.message)}</p></div>`;
         elements.importResult.style.display = 'block';
         elements.importResult.className = 'import-result import-error';
     } finally {
@@ -534,9 +545,6 @@ async function importRemoteConfig() {
         elements.confirmImportBtn.textContent = '导入';
     }
 }
-
-// 将 deleteServer 暴露到全局作用域，以便 HTML 中的 onclick 可以调用
-window.deleteServer = deleteServer;
 
 // 事件监听
 elements.refreshBtn.addEventListener('click', refresh);
@@ -551,6 +559,16 @@ elements.cancelBtn.addEventListener('click', hideAddServerModal);
 elements.cancelImportBtn.addEventListener('click', hideImportRemoteModal);
 elements.confirmAddBtn.addEventListener('click', addServer);
 elements.confirmImportBtn.addEventListener('click', importRemoteConfig);
+
+// 使用事件委托处理删除按钮点击（避免 inline onclick 的 XSS 风险）
+elements.serverConfigList.addEventListener('click', (e) => {
+    const btn = e.target.closest('.btn-delete');
+    if (!btn) return;
+    const identifier = btn.getAttribute('data-identifier');
+    if (identifier) {
+        deleteServer(identifier);
+    }
+});
 
 // 点击模态框外部关闭
 elements.addServerModal.addEventListener('click', (e) => {
