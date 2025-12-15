@@ -510,8 +510,21 @@ def get_workshop_item_path(item_id: str):
                 "message": f"物品 {item_id} 尚未安装或安装信息不可用"
             }, status_code=404)
         
-        # 提取安装路径
-        folder_path = install_info.get('folder', '')
+        # 提取安装路径，兼容字典和元组两种返回格式
+        folder_path = ''
+        size_on_disk: int | None = None
+        
+        if isinstance(install_info, dict):
+            folder_path = install_info.get('folder', '') or ''
+            disk_size = install_info.get('disk_size')
+            if isinstance(disk_size, (int, float)):
+                size_on_disk = int(disk_size)
+        elif isinstance(install_info, tuple) and len(install_info) >= 3:
+            folder, disk_size = install_info[1], install_info[2]
+            if isinstance(folder, (str, bytes)):
+                folder_path = str(folder)
+            if isinstance(disk_size, (int, float)):
+                size_on_disk = int(disk_size)
         
         # 构建响应
         response = {
@@ -523,12 +536,8 @@ def get_workshop_item_path(item_id: str):
         }
         
         # 如果有磁盘大小信息，也一并返回
-        try:
-            disk_size = install_info.get('disk_size')
-            if isinstance(disk_size, (int, float)):
-                response['size_on_disk'] = int(disk_size)
-        except:
-            pass
+        if size_on_disk is not None:
+            response['size_on_disk'] = size_on_disk
         
         return response
         

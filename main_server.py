@@ -821,32 +821,7 @@ async def get_config_info():
             "live2d_dir": ""
         }
 
-@app.post("/api/steam/upload-preview-image")
-async def upload_preview_image(file: UploadFile = File(...)):
-    """上传预览图片到临时位置"""
-    try:
-        # 验证文件类型
-        if not file.filename.lower().endswith(('.jpg', '.jpeg', '.png')):
-            return JSONResponse(status_code=400, content={"success": False, "error": "只支持 JPG 和 PNG 格式"})
-        
-        # 验证文件大小（小于1MB）
-        content = await file.read()
-        if len(content) > 1024 * 1024:
-            return {"success": False, "error": "文件大小必须小于1MB"}
-        
-        # 保存到临时目录
-        temp_dir = _config_manager.app_docs_dir / "temp"
-        temp_dir.mkdir(exist_ok=True)
-        temp_path = temp_dir / file.filename
-        
-        with open(temp_path, 'wb') as f:
-            f.write(content)
-        
-        logger.info(f"预览图片已上传到: {temp_path}")
-        return {"success": True, "path": str(temp_path)}
-    except Exception as e:
-        logger.error(f"上传预览图片失败: {e}")
-        return {"success": False, "error": str(e)}
+
 
 @app.post("/api/config/core_api")
 async def update_core_config(request: Request):
