@@ -752,12 +752,13 @@ function init_app() {
             }
 
             // 获取麦克风流，使用选择的麦克风设备ID
+            // 注意：不在此处指定 sampleRate，因为 getUserMedia 的 sampleRate 只是偏好设置
+            // 实际采样率由 AudioContext 强制为 48kHz（见 startAudioWorklet）
             const baseAudioConstraints = {
                 noiseSuppression: false,
                 echoCancellation: true,
                 autoGainControl: false,
-                channelCount: 1,
-                sampleRate: 48000
+                channelCount: 1
             };
 
             const constraints = {
@@ -2046,9 +2047,11 @@ function init_app() {
             workletNode = null;
         }
 
-        // 创建音频上下文
-        audioContext = new AudioContext();
-        console.log("音频上下文采样率:", audioContext.sampleRate);
+        // 创建音频上下文，强制使用 48kHz 采样率
+        // 这确保无论设备原生采样率如何，RNNoise 都能正确处理
+        // Chromium 会在必要时进行软件重采样
+        audioContext = new AudioContext({ sampleRate: 48000 });
+        console.log("音频上下文采样率 (强制48kHz):", audioContext.sampleRate);
 
         // 创建媒体流源
         const source = audioContext.createMediaStreamSource(stream);

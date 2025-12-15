@@ -10,6 +10,7 @@ import threading
 import re
 import logging
 import time
+import locale
 from datetime import datetime
 from websockets import exceptions as web_exceptions
 from fastapi import WebSocket, WebSocketDisconnect
@@ -31,7 +32,26 @@ import httpx
 # Setup logger for this module
 logger = logging.getLogger(__name__)
 
-
+def _get_timestamp():
+    """Generate formatted timestamp like: Sunday, December 14, 2025 at 12:27 PM"""
+    try:
+        old_locale = locale.getlocale(locale.LC_TIME)
+        try:
+            locale.setlocale(locale.LC_TIME, 'en_US.UTF-8')
+        except locale.Error:
+            try:
+                locale.setlocale(locale.LC_TIME, 'English_United States.1252')
+            except locale.Error:
+                pass
+        now = datetime.now()
+        timestamp = now.strftime("%A, %B %d, %Y at %I:%M %p")
+        try:
+            locale.setlocale(locale.LC_TIME, old_locale)
+        except:
+            pass
+        return timestamp
+    except Exception:
+        return datetime.now().strftime("%Y-%m-%d %H:%M")
 
 # --- 一个带有定期上下文压缩+在线热切换的语音会话管理器 ---
 class LLMSessionManager:
@@ -657,7 +677,7 @@ class LLMSessionManager:
         async def start_llm_session():
             """异步创建并连接 LLM Session"""
             # 获取初始 prompt
-            initial_prompt = (f"你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{self.lanlan_name}），并在对方请求时、回答'我试试'并尝试操纵电脑。" if self._is_agent_enabled() else f"你是一个角色扮演大师。请按要求扮演以下角色（{self.lanlan_name}）。") + self.lanlan_prompt
+            initial_prompt = _get_timestamp() + "\n" + (f"你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{self.lanlan_name}），并在对方请求时、回答'我试试'并尝试操纵电脑。" if self._is_agent_enabled() else f"你是一个角色扮演大师。请按要求扮演以下角色（{self.lanlan_name}）。") + self.lanlan_prompt
             
             # 连接 Memory Server 获取记忆上下文
             try:
@@ -941,7 +961,7 @@ class LLMSessionManager:
                 )
                 logger.info(f"🔄 热切换准备: 创建语音模式 OmniRealtimeClient")
             
-            initial_prompt = (f"你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{self.lanlan_name}），在对方请求时、回答“我试试”并尝试操纵电脑。" if self._is_agent_enabled() else f"你是一个角色扮演大师。请按要求扮演以下角色（{self.lanlan_name}）。") + self.lanlan_prompt
+            initial_prompt = _get_timestamp() + "\n" + (f"你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{self.lanlan_name}），在对方请求时、回答“我试试”并尝试操纵电脑。" if self._is_agent_enabled() else f"你是一个角色扮演大师。请按要求扮演以下角色（{self.lanlan_name}）。") + self.lanlan_prompt
             self.initial_cache_snapshot_len = len(self.message_cache_for_new_session)
             async with httpx.AsyncClient() as client:
                 resp = await client.get(f"http://localhost:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
