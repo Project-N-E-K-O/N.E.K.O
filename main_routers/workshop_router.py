@@ -88,8 +88,12 @@ async def upload_preview_image(request: Request):
             }, status_code=400)
         
         # 获取文件扩展名
-        file_extension = os.path.splitext(file.filename)[1].lower()
-        
+        # 扩展名按 content-type 固定映射，别信 filename
+        content_type_to_ext = {"image/jpeg": ".jpg", "image/jpg": ".jpg", "image/png": ".png"}
+        file_extension = content_type_to_ext.get(file.content_type)
+        if not file_extension:
+            return JSONResponse({"success": False, "error": "文件类型不允许"}, status_code=400)
+                    
         # 处理内容文件夹路径
         if content_folder:
             # 规范化路径
@@ -845,6 +849,12 @@ async def scan_local_workshop_items(request: Request):
                 folder_path = os.path.normpath(folder_path)
             
             logger.info(f'用户指定路径: {folder_path}')
+
+        try:
+            folder_path = _assert_under_base(folder_path, base_workshop_folder)
+        except PermissionError:
+            logger.warning(f'路径遍历尝试被拒绝: {folder_path}')
+            return JSONResponse(content={"success": False, "error": "权限错误：指定的路径不在基础目录下"}, status_code=403)
         
         logger.info(f'最终使用的文件夹路径: {folder_path}, 默认路径使用状态: {default_path_used}')
         
@@ -1238,6 +1248,16 @@ async def publish_to_workshop(request: Request):
         
         # 规范化路径处理 - 改进版，确保在所有情况下都能正确处理路径
         content_folder = unquote(content_folder)
+        # 安全检查：验证content_folder是否在允许的范围内
+        try:
+            content_folder = _assert_under_base(content_folder, get_workshop_path())
+        except PermissionError:
+            return JSONResponse(content={
+                "success": False,
+                "error": "权限错误",
+                "message": "指定的内容文件夹不在允许的范围内"
+            }, status_code=403)
+
         # 处理Windows路径，确保使用正确的路径分隔符
         if os.name == 'nt':
             # 将所有路径分隔符统一为反斜杠

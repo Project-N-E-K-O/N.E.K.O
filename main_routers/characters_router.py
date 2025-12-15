@@ -1184,8 +1184,13 @@ async def save_catgirl_to_model_folder(request: Request):
             os.makedirs(model_folder_path, exist_ok=True)
             logger.info(f"已创建模型文件夹: {model_folder_path}")
         
+        # 防路径穿越：只允许文件名，不允许路径
+        safe_name = os.path.basename(file_name)
+        if safe_name != file_name or ".." in safe_name or safe_name.startswith(("/", "\\")):
+            return JSONResponse({"success": False, "error": "非法文件名"}, status_code=400)
+            
         # 保存角色卡到模型文件夹
-        file_path = os.path.join(model_folder_path, file_name)
+        file_path = os.path.join(model_folder_path, safe_name)
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(chara_data, f, ensure_ascii=False, indent=2)
         
