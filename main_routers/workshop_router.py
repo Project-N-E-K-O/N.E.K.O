@@ -62,10 +62,7 @@ async def upload_preview_image(request: Request):
     """
     上传预览图片，将其统一命名为preview.*并保存到指定的内容文件夹（如果提供）
     """
-    try:
-        import os
-        from fastapi import UploadFile, File
-        
+    try:  
         # 接收上传的文件和表单数据
         form = await request.form()
         file = form.get('file')
@@ -300,7 +297,7 @@ def get_subscribed_workshop_items():
                                 downloaded_value = int(downloaded.value) if hasattr(downloaded, 'value') else int(downloaded)
                                 total_value = int(total.value) if hasattr(total, 'value') else int(total)
                                 progress_value = float(progress.value) if hasattr(progress, 'value') else float(progress)
-                            except:
+                            except: # noqa
                                 downloaded_value, total_value, progress_value = 0, 0, 0.0
                                 
                             item_info["downloadProgress"] = {
@@ -335,11 +332,6 @@ def get_subscribed_workshop_items():
                         
                         # 发送查询请求
                         steamworks.Workshop.SendQueryUGCRequest(query_handle, callback=query_completed_callback, override_callback=True)
-                        
-                        # 等待查询完成（简单的轮询方式）
-                        import time
-                        timeout = 2  # 2秒超时
-                        start_time = time.time()
                         
                         # 由于这是异步回调，我们简单地等待一小段时间让查询有机会完成
                         time.sleep(0.5)  # 等待0.5秒
@@ -725,7 +717,6 @@ async def unsubscribe_workshop_item(request: Request):
                 # 取消订阅成功后，删除相关的角色卡
                 try:
                     from utils.frontend_utils import find_workshop_item_by_id
-                    import os
                     import json
                     
                     # 查找创意工坊物品文件夹
@@ -1328,7 +1319,7 @@ async def publish_to_workshop(request: Request):
                     logger.info(f'找到自动预览图片: {auto_preview}')
                     preview_image = auto_preview
                 else:
-                    logger.warning(f'无法找到预览图片')
+                    logger.warning('无法找到预览图片')
                     preview_image = ''
             
             if preview_image and not os.path.isfile(preview_image):
@@ -1500,7 +1491,7 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
             except Exception as e:
                 logger.error(f"Steam连接状态验证失败: {e}")
                 # 即使验证失败也继续执行，但提供警告
-                logger.warning(f"继续尝试创意工坊上传，但可能会因为Steam连接问题而失败")
+                logger.warning("继续尝试创意工坊上传，但可能会因为Steam连接问题而失败")
         
             # 错误映射表，根据错误码提供更具体的错误信息
             error_codes = {
@@ -1576,7 +1567,7 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
 5. 检查防火墙设置是否阻止了应用程序访问Steam网络
 6. 确保steam_appid.txt文件中的应用ID正确
 7. 您的Steam账号有权限上传到该应用的创意工坊"""
-                    logger.error(f"创意工坊上传失败 - 详细诊断信息:")
+                    logger.error("创意工坊上传失败 - 详细诊断信息:")
                     logger.error(f"- 应用ID: {app_id}")
                     logger.error(f"- Steam运行状态: {steamworks.IsSteamRunning()}")
                     logger.error(f"- 用户登录状态: {steamworks.Users.LoggedOn()}")
@@ -1609,7 +1600,6 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
                 logger.info(f"预览图片设置结果: {preview_set_result}")
         
             # 导入枚举类型并将整数值转换为枚举对象
-            from steamworks.enums import ERemoteStoragePublishedFileVisibility
             if visibility == 0:
                 visibility_enum = ERemoteStoragePublishedFileVisibility.PUBLIC
             elif visibility == 1:
