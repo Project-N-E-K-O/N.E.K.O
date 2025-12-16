@@ -911,3 +911,27 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 
+@router.get('/open_model_directory/{model_name}')
+def open_model_directory(model_name: str):
+    """打开指定Live2D模型的目录"""
+    try:
+        import sys
+        # 查找模型目录
+        model_dir, url_prefix = find_model_directory(model_name)
+        
+        if not os.path.exists(model_dir):
+            return JSONResponse(status_code=404, content={"success": False, "error": f"模型目录不存在: {model_dir}"})
+        
+        # 使用os.startfile在Windows上打开目录
+        if os.name == 'nt':  # Windows
+            os.startfile(model_dir)
+        elif os.name == 'posix':  # macOS or Linux
+            import subprocess
+            subprocess.Popen(['open', model_dir]) if sys.platform == 'darwin' else subprocess.Popen(['xdg-open', model_dir])
+        
+        return {"success": True, "message": f"已打开模型目录: {model_dir}", "directory": model_dir}
+    except Exception as e:
+        logger.error(f"打开模型目录失败: {e}")
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+
