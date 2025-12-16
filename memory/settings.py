@@ -5,6 +5,8 @@ from openai import APIConnectionError, InternalServerError, RateLimitError
 from config import SETTING_PROPOSER_MODEL, SETTING_VERIFIER_MODEL
 from utils.config_manager import get_config_manager
 from config.prompts_sys import settings_extractor_prompt, settings_verifier_prompt
+from utils.xml_memory_utils import dict_to_xml, xml_to_dict
+import os
 
 
 class ImportantSettingsManager:
@@ -36,14 +38,44 @@ class ImportantSettingsManager:
                 self.lanlan_basic_config[i].pop('system_prompt', None)
                 self.lanlan_basic_config[i].pop('live2d', None)
                 self.lanlan_basic_config[i].pop('voice_id', None)
-                with open(self.settings_file[i], 'r', encoding='utf-8') as f:
-                    self.settings[i] = json.load(f)
-            except (FileNotFoundError, json.JSONDecodeError):
+                xml_path = self.settings_file[i].replace('.json', '.xml')
+                json_path = self.settings_file[i]
+                if os.path.exists(xml_path):
+                    try:
+                        with open(xml_path, 'r', encoding='utf-8') as f:
+                            self.settings[i] = xml_to_dict(f.read())
+                    except Exception as e:
+                        # 尝试读取JSON格式（向后兼容）
+                        if os.path.exists(json_path):
+                            try:
+                                with open(json_path, 'r', encoding='utf-8') as f:
+                                    self.settings[i] = json.load(f)
+                                # 转换并保存为XML
+                                with open(xml_path, 'w', encoding='utf-8') as f:
+                                    f.write(dict_to_xml(self.settings[i], 'settings'))
+                            except:
+                                self.settings[i] = {i: {}, self.name_mapping['human']: {}}
+                        else:
+                            self.settings[i] = {i: {}, self.name_mapping['human']: {}}
+                elif os.path.exists(json_path):
+                    # 向后兼容：读取JSON并转换为XML
+                    try:
+                        with open(json_path, 'r', encoding='utf-8') as f:
+                            self.settings[i] = json.load(f)
+                        # 转换并保存为XML
+                        with open(xml_path, 'w', encoding='utf-8') as f:
+                            f.write(dict_to_xml(self.settings[i], 'settings'))
+                    except:
+                        self.settings[i] = {i: {}, self.name_mapping['human']: {}}
+                else:
+                    self.settings[i] = {i: {}, self.name_mapping['human']: {}}
+            except Exception as e:
                 self.settings[i] = {i: {}, self.name_mapping['human']: {}}
 
     def save_settings(self, lanlan_name):
-        with open(self.settings_file[lanlan_name], 'w', encoding='utf-8') as f:
-            json.dump(self.settings[lanlan_name], f, indent=2, ensure_ascii=False)
+        xml_path = self.settings_file[lanlan_name].replace('.json', '.xml')
+        with open(xml_path, 'w', encoding='utf-8') as f:
+            f.write(dict_to_xml(self.settings[lanlan_name], 'settings'))
 
     async def detect_and_resolve_contradictions(self, old_settings, new_settings, lanlan_name):
         # 使用LLM检测矛盾并解决它们

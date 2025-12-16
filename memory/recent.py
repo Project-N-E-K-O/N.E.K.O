@@ -8,6 +8,7 @@ import os
 import asyncio
 import logging
 from openai import APIConnectionError, InternalServerError, RateLimitError
+from utils.xml_memory_utils import messages_to_xml, messages_from_xml
 
 from config.prompts_sys import recent_history_manager_prompt, detailed_recent_history_manager_prompt, further_summarize_prompt, history_review_prompt
 
@@ -25,9 +26,38 @@ class CompressedRecentHistoryManager:
         self.name_mapping = name_mapping
         self.user_histories = {}
         for ln in self.log_file_path:
-            if os.path.exists(self.log_file_path[ln]):
-                with open(self.log_file_path[ln], encoding='utf-8') as f:
-                    self.user_histories[ln] = messages_from_dict(json.load(f))
+            xml_path = self.log_file_path[ln].replace('.json', '.xml')
+            json_path = self.log_file_path[ln]
+            if os.path.exists(xml_path):
+                try:
+                    with open(xml_path, encoding='utf-8') as f:
+                        self.user_histories[ln] = messages_from_xml(f.read())
+                except Exception as e:
+                    logger.warning(f"读取XML文件失败: {e}，尝试JSON格式")
+                    if os.path.exists(json_path):
+                        try:
+                            with open(json_path, encoding='utf-8') as f:
+                                self.user_histories[ln] = messages_from_dict(json.load(f))
+                            # 转换并保存为XML
+                            with open(xml_path, 'w', encoding='utf-8') as f:
+                                f.write(messages_to_xml(self.user_histories[ln]))
+                            logger.info(f"已将 {ln} 的历史记录从JSON转换为XML")
+                        except:
+                            self.user_histories[ln] = []
+                    else:
+                        self.user_histories[ln] = []
+            elif os.path.exists(json_path):
+                # 向后兼容：读取JSON并转换为XML
+                try:
+                    with open(json_path, encoding='utf-8') as f:
+                        self.user_histories[ln] = messages_from_dict(json.load(f))
+                    # 转换并保存为XML
+                    with open(xml_path, 'w', encoding='utf-8') as f:
+                        f.write(messages_to_xml(self.user_histories[ln]))
+                    logger.info(f"已将 {ln} 的历史记录从JSON转换为XML")
+                except Exception as e:
+                    logger.warning(f"读取并转换JSON文件失败: {e}")
+                    self.user_histories[ln] = []
             else:
                 self.user_histories[ln] = []
     
@@ -65,7 +95,7 @@ class CompressedRecentHistoryManager:
                 # 确保memory目录存在
                 self._config_manager.ensure_memory_directory()
                 memory_base = str(self._config_manager.memory_dir)
-                default_path = os.path.join(memory_base, f'recent_{lanlan_name}.json')
+                default_path = os.path.join(memory_base, f'recent_{lanlan_name}.xml')
                 self.log_file_path[lanlan_name] = default_path
                 logger.info(f"[RecentHistory] 角色 '{lanlan_name}' 不在配置中，使用默认路径: {default_path}")
         except Exception as e:
@@ -75,7 +105,7 @@ class CompressedRecentHistoryManager:
                 # 确保memory目录存在
                 self._config_manager.ensure_memory_directory()
                 memory_base = str(self._config_manager.memory_dir)
-                default_path = os.path.join(memory_base, f'recent_{lanlan_name}.json')
+                default_path = os.path.join(memory_base, f'recent_{lanlan_name}.xml')
                 if lanlan_name not in self.log_file_path:
                     self.log_file_path[lanlan_name] = default_path
                     logger.info(f"[RecentHistory] 使用默认路径: {default_path}")
@@ -103,11 +133,11 @@ class CompressedRecentHistoryManager:
             logger.info(f"[RecentHistory] {lanlan_name} 添加了 {len(new_messages)} 条新消息，当前共 {len(self.user_histories[lanlan_name])} 条")
 
             # 确保文件目录存在
-            file_path = self.log_file_path[lanlan_name]
+            file_path = self.log_file_path[lanlan_name].replace('.json', '.xml')
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
             
             with open(file_path, "w", encoding='utf-8') as f:  # Save the updated history to file before compressing
-                json.dump(messages_to_dict(self.user_histories[lanlan_name]), f, indent=2, ensure_ascii=False)
+                f.write(messages_to_xml(self.user_histories[lanlan_name]))
 
             if len(self.user_histories[lanlan_name]) > self.max_history_length:
                 # 压缩旧消息
@@ -120,20 +150,20 @@ class CompressedRecentHistoryManager:
             logger.error(f"[RecentHistory] 更新历史记录时出错: {e}", exc_info=True)
             # 即使出错，也尝试保存当前状态
             try:
-                file_path = self.log_file_path[lanlan_name]
+                file_path = self.log_file_path[lanlan_name].replace('.json', '.xml')
                 os.makedirs(os.path.dirname(file_path), exist_ok=True)
                 with open(file_path, "w", encoding='utf-8') as f:
-                    json.dump(messages_to_dict(self.user_histories.get(lanlan_name, [])), f, indent=2, ensure_ascii=False)
+                    f.write(messages_to_xml(self.user_histories.get(lanlan_name, [])))
             except Exception as save_error:
                 logger.error(f"[RecentHistory] 保存历史记录失败: {save_error}", exc_info=True)
             return
 
         # 最终保存
         try:
-            file_path = self.log_file_path[lanlan_name]
+            file_path = self.log_file_path[lanlan_name].replace('.json', '.xml')
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
             with open(file_path, "w", encoding='utf-8') as f:
-                json.dump(messages_to_dict(self.user_histories[lanlan_name]), f, indent=2, ensure_ascii=False)
+                f.write(messages_to_xml(self.user_histories[lanlan_name]))
             logger.info(f"[RecentHistory] {lanlan_name} 历史记录已保存到文件: {file_path}")
         except Exception as e:
             logger.error(f"[RecentHistory] 最终保存历史记录失败: {e}", exc_info=True)
@@ -259,7 +289,7 @@ class CompressedRecentHistoryManager:
                 # 确保memory目录存在
                 self._config_manager.ensure_memory_directory()
                 memory_base = str(self._config_manager.memory_dir)
-                default_path = os.path.join(memory_base, f'recent_{lanlan_name}.json')
+                default_path = os.path.join(memory_base, f'recent_{lanlan_name}.xml')
                 self.log_file_path[lanlan_name] = default_path
                 logger.info(f"[RecentHistory] 角色 '{lanlan_name}' 不在配置中，使用默认路径: {default_path}")
         except Exception as e:
@@ -267,7 +297,7 @@ class CompressedRecentHistoryManager:
             # 即使配置检查失败，也尝试使用默认路径
             try:
                 memory_base = str(self._config_manager.memory_dir)
-                default_path = f'{memory_base}/recent_{lanlan_name}.json'
+                default_path = f'{memory_base}/recent_{lanlan_name}.xml'
                 if lanlan_name not in self.log_file_path:
                     self.log_file_path[lanlan_name] = default_path
             except Exception as e2:
@@ -405,8 +435,9 @@ class CompressedRecentHistoryManager:
                     self.user_histories[lanlan_name] = corrected_messages
                     
                     # 保存到文件
-                    with open(self.log_file_path[lanlan_name], "w", encoding='utf-8') as f:
-                        json.dump(messages_to_dict(corrected_messages), f, indent=2, ensure_ascii=False)
+                    file_path = self.log_file_path[lanlan_name].replace('.json', '.xml')
+                    with open(file_path, "w", encoding='utf-8') as f:
+                        f.write(messages_to_xml(corrected_messages))
                     
                     print(f"✅ {lanlan_name} 的记忆已修正并保存")
                     return True

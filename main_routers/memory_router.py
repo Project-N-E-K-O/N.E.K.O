@@ -27,8 +27,8 @@ router = APIRouter(prefix="/api/memory", tags=["memory"])
 VALID_NAME_PATTERN = re.compile(r'^[\w\-\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]{1,100}$')
 
 # Strict pattern for valid recent file names: must start with "recent", followed by
-# alphanumeric, dots, underscores, or hyphens, and end with .json
-VALID_RECENT_FILENAME_PATTERN = re.compile(r'^recent[0-9A-Za-z._-]+\.json$')
+# alphanumeric, dots, underscores, or hyphens, and end with .xml (or .json for backward compatibility)
+VALID_RECENT_FILENAME_PATTERN = re.compile(r'^recent[0-9A-Za-z._-]+\.(xml|json)$')
 
 
 def validate_catgirl_name(name: str) -> tuple[bool, str]:
@@ -108,7 +108,7 @@ def validate_recent_filename(filename: str) -> tuple[bool, str]:
     
     # Ensure filename matches strict pattern
     if not VALID_RECENT_FILENAME_PATTERN.match(filename):
-        return False, "文件名格式不合法，必须匹配 recent[0-9A-Za-z._-]+.json"
+        return False, "文件名格式不合法，必须匹配 recent[0-9A-Za-z._-]+.(xml|json)"
     
     # Ensure Path(filename).name == filename (no directory components)
     if Path(filename).name != filename:
@@ -156,22 +156,68 @@ logger = logging.getLogger("Main")
 
 @router.get('/recent_files')
 async def get_recent_files():
-    """获取 memory 目录下所有 recent*.json 文件名列表"""
+    """获取 memory 目录下所有 recent*.xml 文件名列表（也包含.json以向后兼容）"""
     from utils.config_manager import get_config_manager
     cm = get_config_manager()
-    files = glob.glob(str(cm.memory_dir / 'recent*.json'))
+    # 优先获取XML文件，也包含JSON文件以向后兼容
+    xml_files = glob.glob(str(cm.memory_dir / 'recent*.xml'))
+    json_files = glob.glob(str(cm.memory_dir / 'recent*.json'))
+    # 合并并去重（如果同时存在.xml和.json，只保留.xml）
+    all_files = set()
+    for f in json_files:
+        xml_version = f.replace('.json', '.xml')
+        if xml_version not in xml_files:
+            all_files.add(f)
+    all_files.update(xml_files)
+    files = sorted(all_files)
     file_names = [os.path.basename(f) for f in files]
-    return {"files": file_names}
+    
+    # 获取角色配置，创建文件名到显示名的映射
+    character_data = cm.load_characters()
+    catgirl_data = character_data.get('猫娘', {})
+    
+    def get_display_name(char_key):
+        """获取角色的显示名称（优先使用昵称，其次档案名，最后使用key）"""
+        char_info = catgirl_data.get(char_key, {})
+        # 优先使用昵称
+        if '昵称' in char_info and char_info['昵称']:
+            nickname = str(char_info['昵称']).strip()
+            if nickname:
+                nickname = nickname.split(',')[0].strip()
+                if nickname:
+                    return nickname
+        # 其次使用档案名
+        if '档案名' in char_info and char_info['档案名']:
+            profile_name = str(char_info['档案名']).strip()
+            if profile_name:
+                return profile_name
+        # 最后使用key本身
+        return char_key
+    
+    # 创建文件名到显示名的映射
+    file_display_map = {}
+    for filename in file_names:
+        # 提取角色key（recent_XXX.xml -> XXX）
+        match = re.match(r'^recent_(.+)\.(xml|json)$', filename)
+        if match:
+            char_key = match.group(1)
+            display_name = get_display_name(char_key)
+            file_display_map[filename] = display_name
+    
+    return {
+        "files": file_names,
+        "display_names": file_display_map  # 添加显示名映射
+    }
 
 
 @router.get('/recent_file')
 async def get_recent_file(filename: str):
-    """获取指定 recent*.json 文件内容"""
+    """获取指定 recent*.xml 文件内容（也支持.json以向后兼容）"""
     # Reject path traversal attempts
     if '/' in filename or '\\' in filename or '..' in filename:
         return JSONResponse({"success": False, "error": "文件名不能包含路径分隔符或目录遍历字符"}, status_code=400)
     
-    if not (filename.startswith('recent') and filename.endswith('.json')):
+    if not (filename.startswith('recent') and (filename.endswith('.xml') or filename.endswith('.json'))):
         return JSONResponse({"success": False, "error": "文件名不合法"}, status_code=400)
     
     from utils.config_manager import get_config_manager
@@ -194,6 +240,9 @@ async def get_recent_file(filename: str):
 @router.post('/recent_file/save')
 async def save_recent_file(request: Request):
     import json
+    from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+    from utils.xml_memory_utils import messages_to_xml
+    
     data = await request.json()
     filename = data.get('filename')
     chat = data.get('chat')
@@ -213,6 +262,10 @@ async def save_recent_file(request: Request):
     from utils.config_manager import get_config_manager
     cm = get_config_manager()
     
+    # 确保使用XML格式（将.json扩展名改为.xml）
+    if filename.endswith('.json'):
+        filename = filename.replace('.json', '.xml')
+    
     # Use safe_memory_path to validate and construct the target path
     memory_dir = Path(cm.memory_dir)
     resolved_path, path_error = safe_memory_path(memory_dir, filename)
@@ -220,29 +273,27 @@ async def save_recent_file(request: Request):
         logger.warning(f"Path traversal attempt blocked for filename: {filename!r} - {path_error}")
         return JSONResponse({"success": False, "error": path_error}, status_code=400)
     
-    arr = []
+    # 将chat转换为LangChain消息对象
+    messages = []
     for msg in chat:
         t = msg.get('role')
         text = msg.get('text', '')
-        arr.append({
-            "type": t,
-            "data": {
-                "content": text,
-                "additional_kwargs": {},
-                "response_metadata": {},
-                "type": t,
-                "name": None,
-                "id": None,
-                "example": False,
-                **({"tool_calls": [], "invalid_tool_calls": [], "usage_metadata": None} if t == "ai" else {})
-            }
-        })
+        if t == 'human' or t == 'user':
+            messages.append(HumanMessage(content=text))
+        elif t == 'ai' or t == 'assistant':
+            messages.append(AIMessage(content=text))
+        elif t == 'system':
+            messages.append(SystemMessage(content=text))
+        else:
+            messages.append(HumanMessage(content=text))
+    
     try:
+        # 保存为XML格式
         with open(resolved_path, 'w', encoding='utf-8') as f:
-            json.dump(arr, f, ensure_ascii=False, indent=2)
+            f.write(messages_to_xml(messages))
         
-        # 从文件名提取猫娘名 (recent_XXX.json -> XXX)
-        match = re.match(r'^recent_(.+)\.json$', filename)
+        # 从文件名提取猫娘名 (recent_XXX.xml -> XXX)
+        match = re.match(r'^recent_(.+)\.xml$', filename)
         catgirl_name = match.group(1) if match else None
         
         if catgirl_name:
@@ -298,8 +349,11 @@ async def update_catgirl_name(request: Request):
         memory_dir = Path(cm.memory_dir)
         
         # Construct and validate file paths
-        old_filename = f'recent_{old_name}.json'
-        new_filename = f'recent_{new_name}.json'
+        old_filename = f'recent_{old_name}.xml'
+        new_filename = f'recent_{new_name}.xml'
+        # 向后兼容：如果XML文件不存在，尝试JSON文件
+        old_json = f'recent_{old_name}.json'
+        new_json = f'recent_{new_name}.json'
         
         old_file_path, old_path_error = safe_memory_path(memory_dir, old_filename)
         if old_file_path is None:
@@ -311,10 +365,16 @@ async def update_catgirl_name(request: Request):
             logger.warning(f"Path traversal attempt blocked for new_name: {new_name!r} - {new_path_error}")
             return JSONResponse({"success": False, "error": new_path_error}, status_code=400)
         
-        # 检查旧文件是否存在
+        # 检查旧文件是否存在（优先XML，向后兼容JSON）
+        old_json_path, _ = safe_memory_path(memory_dir, old_json)
         if not os.path.exists(old_file_path):
-            logger.warning(f"记忆文件不存在: {old_file_path}")
-            return JSONResponse({"success": False, "error": f"记忆文件不存在: {old_filename}"}, status_code=404)
+            if old_json_path and os.path.exists(old_json_path):
+                # 如果XML不存在但JSON存在，使用JSON路径
+                old_file_path = old_json_path
+                old_filename = old_json
+            else:
+                logger.warning(f"记忆文件不存在: {old_file_path}")
+                return JSONResponse({"success": False, "error": f"记忆文件不存在: {old_filename}"}, status_code=404)
         
         # 如果新文件已存在，先删除
         if os.path.exists(new_file_path):

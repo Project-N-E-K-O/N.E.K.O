@@ -558,15 +558,50 @@ class ConfigManager:
 
         name_mapping = {'human': master_name, 'system': "SYSTEM_MESSAGE"}
         lanlan_prompt_map = {}
+        
+        # 创建角色key到显示名的映射
+        def get_display_name(char_key):
+            """获取角色的显示名称（优先使用昵称，其次档案名，最后使用key）"""
+            char_info = catgirl_data.get(char_key, {})
+            # 优先使用昵称
+            if '昵称' in char_info and char_info['昵称']:
+                nickname = str(char_info['昵称']).strip()
+                if nickname:
+                    # 如果有多个昵称（用逗号分隔），取第一个
+                    nickname = nickname.split(',')[0].strip()
+                    # 清理文件名不安全的字符
+                    unsafe_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|']
+                    for char in unsafe_chars:
+                        nickname = nickname.replace(char, '_')
+                    nickname = nickname.strip('. ')
+                    if nickname:
+                        return nickname
+            # 其次使用档案名
+            if '档案名' in char_info and char_info['档案名']:
+                profile_name = str(char_info['档案名']).strip()
+                if profile_name:
+                    unsafe_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|']
+                    for char in unsafe_chars:
+                        profile_name = profile_name.replace(char, '_')
+                    profile_name = profile_name.strip('. ')
+                    if profile_name:
+                        return profile_name
+            # 最后使用key本身
+            return char_key
+        
+        # 为每个角色生成显示名
+        display_name_map = {name: get_display_name(name) for name in catgirl_names}
+        
         for name in catgirl_names:
             prompt_value = catgirl_data.get(name, {}).get('system_prompt', lanlan_prompt)
             lanlan_prompt_map[name] = prompt_value
 
         memory_base = str(self.memory_dir)
-        semantic_store = {name: f'{memory_base}/semantic_memory_{name}' for name in catgirl_names}
-        time_store = {name: f'{memory_base}/time_indexed_{name}' for name in catgirl_names}
-        setting_store = {name: f'{memory_base}/settings_{name}.json' for name in catgirl_names}
-        recent_log = {name: f'{memory_base}/recent_{name}.json' for name in catgirl_names}
+        # 使用显示名而不是key来生成文件路径
+        semantic_store = {name: f'{memory_base}/semantic_memory_{display_name_map[name]}' for name in catgirl_names}
+        time_store = {name: f'{memory_base}/time_indexed_{display_name_map[name]}' for name in catgirl_names}
+        setting_store = {name: f'{memory_base}/settings_{display_name_map[name]}.xml' for name in catgirl_names}
+        recent_log = {name: f'{memory_base}/recent_{display_name_map[name]}.xml' for name in catgirl_names}
 
         return (
             master_name,

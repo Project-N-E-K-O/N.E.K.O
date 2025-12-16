@@ -311,16 +311,18 @@
 
                     let foundCurrentCatgirl = false;
                     data.files.forEach(f => {
-                        // 提取猫娘名
-                        let match = f.match(/^recent_(.+)\.json$/);
-                        let catName = match ? match[1] : f;
+                        // 提取猫娘key（支持.xml和.json）
+                        let match = f.match(/^recent_(.+)\.(xml|json)$/);
+                        let catKey = match ? match[1] : f;
+                        // 使用显示名映射（如果存在），否则使用key
+                        let displayName = (data.display_names && data.display_names[f]) ? data.display_names[f] : catKey;
                         const li = document.createElement('li');
                         // 按钮样式（使用 DOM API，避免插入未转义内容）
                         const btn = document.createElement('button');
                         btn.className = 'cat-btn';
                         btn.setAttribute('data-filename', f);
-                        btn.setAttribute('data-catname', catName);
-                        btn.textContent = catName;
+                        btn.setAttribute('data-catname', catKey);
+                        btn.textContent = displayName;
                         btn.addEventListener('click', () => selectMemoryFile(f, li, catName));
                         li.appendChild(btn);
                         li.onclick = () => selectMemoryFile(f, li, catName);
@@ -461,12 +463,57 @@
             editDiv.innerHTML = window.t ? window.t('memory.loading') : '加载中...';
             document.getElementById('save-row').style.display = '';
             try {
-                // 直接获取原始JSON内容
+                // 获取文件内容（支持XML和JSON）
                 const resp = await fetch('/api/memory/recent_file?filename=' + encodeURIComponent(filename));
                 const data = await resp.json();
                 if (data.content) {
                     let arr = [];
-                    try { arr = JSON.parse(data.content); } catch (e) { arr = []; }
+                    const isXml = filename.endsWith('.xml');
+                    
+                    if (isXml) {
+                        // 解析XML格式
+                        try {
+                            const parser = new DOMParser();
+                            const xmlDoc = parser.parseFromString(data.content, 'text/xml');
+                            const messages = xmlDoc.querySelectorAll('message');
+                            
+                            arr = Array.from(messages).map(msg => {
+                                const type = msg.getAttribute('type') || 'human';
+                                const contentElem = msg.querySelector('content');
+                                let content = '';
+                                
+                                if (contentElem) {
+                                    // 检查是否有子元素（复杂内容）
+                                    const items = contentElem.querySelectorAll('item');
+                                    if (items.length > 0) {
+                                        // 提取所有item的text
+                                        content = Array.from(items).map(item => item.textContent || '').join('\n');
+                                    } else {
+                                        content = contentElem.textContent || '';
+                                    }
+                                }
+                                
+                                return {
+                                    type: type,
+                                    data: {
+                                        content: content
+                                    }
+                                };
+                            });
+                        } catch (e) {
+                            console.error('XML解析失败:', e);
+                            arr = [];
+                        }
+                    } else {
+                        // 解析JSON格式（向后兼容）
+                        try { 
+                            arr = JSON.parse(data.content); 
+                        } catch (e) { 
+                            console.error('JSON解析失败:', e);
+                            arr = []; 
+                        }
+                    }
+                    
                     chatData = arr.map(item => {
                         if (item.type === 'system') {
                             return { role: 'system', text: item.data && item.data.content ? item.data.content : '' };
@@ -490,8 +537,9 @@
                     editDiv.innerHTML = window.t ? window.t('memory.noChatContent') : '无聊天内容';
                 }
             } catch (e) {
+                console.error('加载记忆文件失败:', e);
                 chatData = [];
-                editDiv.innerHTML = window.t ? window.t('memory.loadFailed') : '加载失败';
+                editDiv.innerHTML = window.t ? window.t('memory.loadFailed') : '加载失败: ' + e.message;
             }
         }
         document.getElementById('save-memory-btn').onclick = async function () {
