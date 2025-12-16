@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 import logging
+import re
 from typing import Optional, Callable, Dict, Any, Awaitable
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
@@ -13,6 +14,9 @@ from utils.frontend_utils import calculate_text_similarity
 
 # Setup logger for this module
 logger = logging.getLogger(__name__)
+
+# XML停止标签检测模式（模块级别，避免重复编译）
+STOP_PATTERN = re.compile(r'<stop\s*/?>|</stop\s*>', re.IGNORECASE)
 
 class OmniOfflineClient:
     """
@@ -283,12 +287,8 @@ class OmniOfflineClient:
                         # 只处理非空内容，从源头过滤空文本
                         if content and content.strip():
                             # 围栏检测：检查XML标签 <stop> 或 </stop>
-                            import re
-                            # 检测 <stop> 或 </stop> 标签（不区分大小写）
-                            stop_pattern = re.compile(r'<stop\s*/?>|</stop\s*>', re.IGNORECASE)
-                            
                             # 在当前内容块中检测
-                            match = stop_pattern.search(content)
+                            match = STOP_PATTERN.search(content)
                             if match:
                                 # 找到围栏标签，截断到标签位置
                                 fence_pos = match.start()
@@ -299,7 +299,7 @@ class OmniOfflineClient:
                             # 也在累积缓冲区中检测（处理跨块的标签）
                             if not fence_triggered:
                                 xml_buffer += content
-                                match = stop_pattern.search(xml_buffer)
+                                match = STOP_PATTERN.search(xml_buffer)
                                 if match:
                                     # 找到围栏标签，计算需要截断的内容
                                     fence_pos = match.start()

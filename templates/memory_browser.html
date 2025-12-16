@@ -347,7 +347,6 @@
                         btn.textContent = displayName;
                         btn.addEventListener('click', () => selectMemoryFile(f, li, catKey));
                         li.appendChild(btn);
-                        li.onclick = () => selectMemoryFile(f, li, catKey);
                         ul.appendChild(li);
 
                         // 如果是当前猫娘，自动选择
@@ -375,9 +374,14 @@
                     return;
                 }
                 
-                // 显示错误信息
+                // 显示错误信息（使用DOM API避免XSS注入风险）
                 const errorText = errorMsg.length > 50 ? errorMsg.substring(0, 50) + '...' : errorMsg;
-                ul.innerHTML = `<li style="color:#e74c3c;" title="${errorMsg}">${window.t ? window.t('memory.loadFailed') : '加载失败'}: ${errorText}</li>`;
+                const li = document.createElement('li');
+                li.style.color = '#e74c3c';
+                li.title = errorMsg;
+                li.textContent = (window.t ? window.t('memory.loadFailed') : '加载失败') + ': ' + errorText;
+                ul.innerHTML = '';
+                ul.appendChild(li);
             }
         }
 
@@ -511,6 +515,14 @@
                         try {
                             const parser = new DOMParser();
                             const xmlDoc = parser.parseFromString(data.content, 'text/xml');
+                            
+                            // 检查XML解析是否成功
+                            const parseError = xmlDoc.querySelector('parsererror');
+                            if (parseError) {
+                                console.error('XML格式错误:', parseError.textContent);
+                                throw new Error('XML格式无效');
+                            }
+                            
                             const messages = xmlDoc.querySelectorAll('message');
                             
                             arr = Array.from(messages).map(msg => {
@@ -575,7 +587,7 @@
             } catch (e) {
                 console.error('加载记忆文件失败:', e);
                 chatData = [];
-                editDiv.innerHTML = window.t ? window.t('memory.loadFailed') : '加载失败: ' + e.message;
+                editDiv.textContent = (window.t ? window.t('memory.loadFailed') : '加载失败') + ': ' + (e.message || '');
             }
         }
         document.getElementById('save-memory-btn').onclick = async function () {

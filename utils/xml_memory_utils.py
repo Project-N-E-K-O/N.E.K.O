@@ -4,6 +4,14 @@ XML记忆存储工具函数
 """
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
+try:
+    # 使用defusedxml来安全解析外部输入的XML，防止XXE攻击
+    from defusedxml.ElementTree import fromstring as safe_fromstring
+except ImportError:
+    # 如果defusedxml未安装，回退到标准库（不推荐，存在XXE风险）
+    import warnings
+    warnings.warn("defusedxml未安装，XML解析存在XXE安全风险。建议安装: pip install defusedxml")
+    safe_fromstring = ET.fromstring
 from langchain_core.messages import (
     BaseMessage, HumanMessage, AIMessage, SystemMessage,
     messages_to_dict, messages_from_dict
@@ -29,11 +37,11 @@ def unescape_xml_text(text: str) -> str:
     if not isinstance(text, str):
         text = str(text)
     return (text
-            .replace('&amp;', '&')
             .replace('&lt;', '<')
             .replace('&gt;', '>')
             .replace('&quot;', '"')
-            .replace('&apos;', "'"))
+            .replace('&apos;', "'")
+            .replace('&amp;', '&'))
 
 
 def message_to_xml_element(message: BaseMessage) -> ET.Element:
@@ -193,9 +201,9 @@ def xml_element_to_message(elem: ET.Element) -> BaseMessage:
 
 
 def messages_from_xml(xml_str: str) -> List[BaseMessage]:
-    """从XML字符串恢复消息列表"""
+    """从XML字符串恢复消息列表（使用安全解析，防止XXE攻击）"""
     try:
-        root = ET.fromstring(xml_str)
+        root = safe_fromstring(xml_str)
         messages = []
         for msg_elem in root.findall('message'):
             message = xml_element_to_message(msg_elem)
@@ -234,23 +242,33 @@ def dict_to_xml(data: Dict[str, Any], root_name: str = 'data') -> str:
 
 
 def xml_to_dict(xml_str: str) -> Dict[str, Any]:
-    """从XML字符串恢复字典"""
-    root = ET.fromstring(xml_str)
+    """从XML字符串恢复字典（使用安全解析，防止XXE攻击）"""
+    root = safe_fromstring(xml_str)
     
     def elem_to_dict(elem):
         result = {}
         for child in elem:
             if len(child) == 0:
-                result[child.tag] = child.text or ''
-            else:
-                if child.tag == 'item':
-                    # 处理列表项
-                    parent_tag = elem.tag
-                    if parent_tag not in result:
-                        result[parent_tag] = []
-                    result[parent_tag].append(elem_to_dict(child))
+                # 叶子节点：处理重复键，转换为列表
+                if child.tag in result:
+                    if not isinstance(result[child.tag], list):
+                        result[child.tag] = [result[child.tag]]
+                    result[child.tag].append(child.text or '')
                 else:
-                    result[child.tag] = elem_to_dict(child)
+                    result[child.tag] = child.text or ''
+            else:
+                # 检查子元素是否都是 item（列表结构）
+                items = child.findall('item')
+                if items:
+                    result[child.tag] = [elem_to_dict(item) for item in items]
+                else:
+                    # 处理重复键，转换为列表
+                    if child.tag in result:
+                        if not isinstance(result[child.tag], list):
+                            result[child.tag] = [result[child.tag]]
+                        result[child.tag].append(elem_to_dict(child))
+                    else:
+                        result[child.tag] = elem_to_dict(child)
         return result
     
     return elem_to_dict(root)
