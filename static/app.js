@@ -757,7 +757,7 @@ function init_app() {
             const baseAudioConstraints = {
                 noiseSuppression: false,
                 echoCancellation: true,
-                autoGainControl: false,
+                autoGainControl: true,
                 channelCount: 1
             };
 

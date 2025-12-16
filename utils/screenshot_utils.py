@@ -58,7 +58,7 @@ async def process_screen_data(data: str) -> Optional[str]:
             return None
         
         w, h = image.size
-        logger.info(f"屏幕数据验证完成: 尺寸 {w}x{h}")
+        logger.debug(f"屏幕数据验证完成: 尺寸 {w}x{h}")
         
         return img_b64
             

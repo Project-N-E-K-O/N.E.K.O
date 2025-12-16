@@ -471,7 +471,7 @@
   "voice": {
     "title": "音色注册 - 请使用阿里云API",
     "selectFile": "选择本地音频文件（15秒最佳，请勿超过30秒，wav/mp3格式）",
-    "customPrefix": "自定义前缀（阿里云需要）",
+    "customPrefix": "自定义前缀（必填，用于区分音色）",
     "customPrefixNote": "不超过10个字符，只支持数字和英文字母",
     "prefixPlaceholder": "不超过10个字符，只支持数字和英文字母",
     "register": "注册音色",
@@ -486,7 +486,18 @@
     "voiceWillTakeEffect": "新语音将在下次对话时生效",
     "voiceIdSaveRequestError": "voice_id自动保存请求出错",
     "chooseFile": "选择文件",
-    "noFileSelected": "未选择文件"
+    "noFileSelected": "未选择文件",
+    "refLanguage": "参考音频语言（注意：不是目标音频，是您上传的参考音频的语言）",
+    "refLanguageNote": "选择您上传的参考音频的语言。",
+    "lang": {
+      "ch": "中文",
+      "en": "英语",
+      "fr": "法语",
+      "de": "德语",
+      "ja": "日语",
+      "ko": "韩语",
+      "ru": "俄语"
+    }
   },
   "memory": {
     "title": "记忆整理",

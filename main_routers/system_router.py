@@ -14,6 +14,7 @@ import sys
 import asyncio
 import logging
 import re
+import time
 from urllib.parse import unquote
 
 from fastapi import APIRouter, Request
@@ -103,13 +104,13 @@ async def emotion_analysis(request: Request):
                 "content": text
             }
         ]
-        
+
         # 异步调用模型
         request_params = {
             "model": model,
             "messages": messages,
             "temperature": 0.3,
-            "max_tokens": 100
+            "max_completion_tokens": 20
         }
         
         # 只有在需要时才添加 extra_body
@@ -953,12 +954,38 @@ async def proactive_chat(request: Request):
             async with mgr.lock:
                 mgr.current_speech_id = str(uuid4())
             
+            # 检查最近5秒内是否有用户活动（语音输入或文本输入）
+            # 如果有，则放弃本次主动搭话
+            if mgr.last_user_activity_time is not None:
+                time_since_last_activity = time.time() - mgr.last_user_activity_time
+                if time_since_last_activity < 5:
+                    logger.info(f"[{lanlan_name}] 检测到最近 {time_since_last_activity:.1f} 秒内有用户活动，放弃主动搭话")
+                    return JSONResponse({
+                        "success": True,
+                        "action": "pass",
+                        "message": f"最近{time_since_last_activity:.1f}秒内有用户活动，放弃主动搭话"
+                    })
+            
+            # 记录开始输出的时间戳，用于检测输出过程中是否有新的用户输入
+            output_start_time = time.time()
+            
             # 通过handle_text_data处理这段话（触发TTS和前端显示）
             # 分chunk发送以模拟流式效果
             chunks = [response_text[i:i+10] for i in range(0, len(response_text), 10)]
             for i, chunk in enumerate(chunks):
+                # 检查输出过程中是否有新的用户输入
+                if mgr.last_user_activity_time is not None and mgr.last_user_activity_time > output_start_time:
+                    logger.info(f"[{lanlan_name}] 输出过程中检测到用户活动，停止主动搭话输出 (已输出 {i}/{len(chunks)} chunks)")
+                    # 调用新消息处理来清空TTS队列
+                    await mgr.handle_new_message() # 这里的处理并不严谨，默认了用户输入时不会立即触发其他TTS，没有进行状态锁
+                    return JSONResponse({
+                        "success": True,
+                        "action": "interrupted",
+                        "message": "输出过程中检测到用户活动，已停止"
+                    })
+                
                 await mgr.handle_text_data(chunk, is_first_chunk=(i == 0))
-                await asyncio.sleep(0.05)  # 小延迟模拟流式
+                await asyncio.sleep(0.15)  # 小延迟模拟流式
             
             # 调用response完成回调
             if hasattr(mgr, 'handle_response_complete'):

@@ -49,7 +49,7 @@ def _get_timestamp():
             locale.setlocale(locale.LC_TIME, old_locale)
         except:
             pass
-        return timestamp
+        return "Current time: " + timestamp
     except Exception:
         return datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -154,6 +154,9 @@ class LLMSessionManager:
         self.session_ready = False  # Session是否完全就绪
         self.pending_input_data = []  # 待处理的输入数据: [message_dict, ...]
         self.input_cache_lock = asyncio.Lock()  # 保护输入缓存的锁
+        
+        # 用户活动时间戳：用于主动搭话检测最近是否有用户输入
+        self.last_user_activity_time = None  # float timestamp or None
 
     async def handle_new_message(self):
         """处理新模型输出：清空TTS队列并通知前端"""
@@ -297,6 +300,9 @@ class LLMSessionManager:
 
     async def handle_input_transcript(self, transcript: str):
         """输入转录回调：同步转录文本到消息队列和缓存，并发送到前端显示"""
+        # 更新用户活动时间戳（用于主动搭话检测）
+        self.last_user_activity_time = time.time()
+        
         # 推送到同步消息队列
         self.sync_message_queue.put({"type": "user", "data": {"input_type": "transcript", "data": transcript.strip()}})
         
@@ -1037,10 +1043,9 @@ class LLMSessionManager:
                 except Exception:
                     items = ""
                 final_prime_text += (
-                    "\n[注入指令] 请忽略上一次用户的最后一条输入，不要继续该轮对话。"
-                    " 在你的下一次响应中，用简洁自然的一段话汇报和解释你先前执行的任务的结果，简要说明你做了什么：\n"
+                    f"\n[注入指令] 请{self.lanlan_name}忽略最后一轮对话。用简洁自然的一段话向{self.master_name}汇报和解释先前执行的任务的结果，简要说明自己做了什么：\n"
                     + items +
-                    "\n完成上述汇报后，恢复正常的对话节奏。"
+                    "\n完成上述汇报后，再恢复正常对话。"
                 )
                 # 清空队列，避免重复注入
                 self.pending_extra_replies.clear()

@@ -74,8 +74,8 @@ class AudioProcessor:
     RESET_TIMEOUT_SECONDS = 2.0
     
     # AGC Configuration
-    AGC_TARGET_LEVEL = 0.25        # Target RMS level (0.0-1.0)
-    AGC_MAX_GAIN = 5.0             # Maximum gain multiplier
+    AGC_TARGET_LEVEL = 0.25        # Target RMS level (0.0-1.0), raised for easier VAD trigger
+    AGC_MAX_GAIN = 12.0             # Maximum gain multiplier, raised for quieter mics
     AGC_MIN_GAIN = 0.25            # Minimum gain multiplier
     AGC_ATTACK_TIME = 0.01         # Attack time in seconds (fast response to peaks)
     AGC_RELEASE_TIME = 0.4         # Release time in seconds (slow return to normal)
@@ -160,7 +160,7 @@ class AudioProcessor:
             if self._denoiser is not None:
                 self._reset_internal_state()
                 self._last_speech_time = current_time  # Prevent infinite reset loop
-                logger.info("🔄 RNNoise state auto-reset after silence")
+                logger.debug("🔄 RNNoise state auto-reset after silence")
             self._needs_reset = False
         
         # Apply RNNoise if available (processes int16, returns int16)

@@ -472,7 +472,7 @@
   "voice": {
     "title": "Voice Registration - Please Use Alibaba Cloud API",
     "selectFile": "Select local audio file (15 seconds recommended, max 30 seconds, wav/mp3 format)",
-    "customPrefix": "Custom Prefix (Required for Alibaba Cloud)",
+    "customPrefix": "Custom Prefix (Required, used to distinguish different voices)",
     "customPrefixNote": "Maximum 10 characters, numbers and English letters only",
     "prefixPlaceholder": "Maximum 10 characters, numbers and English letters only",
     "register": "Register Voice",
@@ -487,7 +487,18 @@
     "voiceWillTakeEffect": "New voice will take effect in the next conversation",
     "voiceIdSaveRequestError": "Error occurred while saving voice_id",
     "chooseFile": "Choose File",
-    "noFileSelected": "No file selected"
+    "noFileSelected": "No file selected",
+    "refLanguage": "Reference Audio Language (Note: This is the language of your uploaded reference audio, NOT the target output language)",
+    "refLanguageNote": "Select the language of your uploaded reference audio.",
+    "lang": {
+      "ch": "Chinese",
+      "en": "English",
+      "fr": "French",
+      "de": "German",
+      "ja": "Japanese",
+      "ko": "Korean",
+      "ru": "Russian"
+    }
   },
   "memory": {
     "title": "Memory Browser",

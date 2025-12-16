@@ -33,13 +33,39 @@ async def fetch_bilibili_trending(limit: int = 10) -> Dict[str, Any]:
     """
     获取B站首页推荐视频
     使用B站的首页推荐API
+    通过随机化参数来获取更多样的推荐内容
     """
     try:
-        # B站首页推荐API
-        url = "https://api.bilibili.com/x/web-interface/index/top/feed/rcmd"
+        # B站首页推荐API (WBI签名版本)
+        url = "https://api.bilibili.com/x/web-interface/wbi/index/top/feed/rcmd"
+        
+        # 生成随机翻页参数，模拟用户浏览行为
+        fresh_idx = random.randint(1, 10)  # 当前翻页号
+        fresh_idx_1h = fresh_idx  # 一小时内的翻页号，保持一致
+        brush = fresh_idx  # 刷子参数，与翻页号一致
+        y_num = random.randint(4, 6)  # 一行中视频数量
+        fetch_row = fresh_idx * y_num  # 本次抓取的最后一行行号
+        
+        # 生成随机视口大小
+        screen_widths = [1920, 1680, 1536, 1440, 1366, 2560]
+        screen_heights = [1080, 1050, 864, 900, 768, 1440]
+        screen_width = random.choice(screen_widths)
+        screen_height = random.choice(screen_heights)
+        screen = f"{screen_width}-{screen_height}"
+        
         params = {
-            "ps": limit,  # 每页数量
-            "fresh_type": 3,  # 刷新类型
+            "ps": limit,  # 每页数量，增加随机性，最大30
+            "fresh_type": random.randint(3, 5),  # 刷新类型，值越大越相关
+            "fresh_idx": fresh_idx,  # 当前翻页号
+            "fresh_idx_1h": fresh_idx_1h,  # 一小时前的翻页号
+            "brush": brush,  # 刷子参数
+            "fetch_row": fetch_row,  # 本次抓取的最后一行行号
+            "y_num": y_num,  # 普通列数
+            "last_y_num": y_num + random.randint(0, 2),  # 总列数
+            "web_location": 1430650,  # 主页位置
+            "feed_version": "V8",  # feed版本
+            "homepage_ver": 1,  # 首页版本
+            "screen": screen,  # 浏览器视口大小
         }
         
         # 添加完整的headers来模拟浏览器请求
@@ -109,10 +135,97 @@ async def fetch_bilibili_trending(limit: int = 10) -> Dict[str, Any]:
 async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
     """
     获取微博热议话题
-    使用微博热搜榜API（作为首页热议内容的替代）
+    优先使用s.weibo.com热搜榜页面（刷新频率更高），需要Cookie
+    如果失败则回退到公开API
+    """
+    from bs4 import BeautifulSoup
+    
+    # 微博Cookie配置 - 用于访问热搜页面
+    WEIBO_COOKIE = "SUB=_2AkMWJrkXf8NxqwJRmP8SxWjnaY12zwnEieKgekjMJRMxHRl-yj9jqmtbtRB6PaaX-IGp-AjmO6k5cS-OH2X9CayaTzVD"
+    
+    try:
+        # 优先使用s.weibo.com热搜页面（刷新频率更高）
+        url = "https://s.weibo.com/top/summary?cate=realtimehot"
+        
+        headers = {
+            'User-Agent': get_random_user_agent(),
+            'Referer': 'https://s.weibo.com/',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            'Cookie': WEIBO_COOKIE,
+        }
+        
+        # 添加随机延迟
+        await asyncio.sleep(random.uniform(0.1, 0.5))
+        
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            
+            # 检查是否重定向到登录页面
+            if 'passport' in str(response.url):
+                logger.warning("微博Cookie可能已过期，回退到公开API")
+                return await _fetch_weibo_trending_fallback(limit)
+            
+            html = response.text
+            soup = BeautifulSoup(html, 'html.parser')
+            
+            # 解析热搜列表 (td-02 class)
+            td_items = soup.find_all('td', class_='td-02')
+            
+            if not td_items:
+                logger.warning("未找到热搜数据，回退到公开API")
+                return await _fetch_weibo_trending_fallback(limit)
+            
+            trending_list = []
+            for i, td in enumerate(td_items):
+                if len(trending_list) >= limit:
+                    break
+                    
+                a_tag = td.find('a')
+                span = td.find('span')
+                
+                if a_tag:
+                    word = a_tag.get_text(strip=True)
+                    if not word:
+                        continue
+                    
+                    # 解析热度值
+                    hot_text = span.get_text(strip=True) if span else ''
+                    # 热度可能包含类型标签如"剧集 336075"，需要提取数字
+                    import re
+                    hot_match = re.search(r'(\d+)', hot_text)
+                    raw_hot = int(hot_match.group(1)) if hot_match else 0
+                    
+                    # 提取标签（如"剧集"、"晚会"等）
+                    note = re.sub(r'\d+', '', hot_text).strip() if hot_text else ''
+                    
+                    trending_list.append({
+                        'word': word,
+                        'raw_hot': raw_hot,
+                        'note': note,
+                        'rank': i + 1
+                    })
+            
+            if trending_list:
+                logger.info(f"成功从s.weibo.com获取{len(trending_list)}条热搜")
+                return {
+                    'success': True,
+                    'trending': trending_list
+                }
+            else:
+                return await _fetch_weibo_trending_fallback(limit)
+                
+    except Exception as e:
+        logger.warning(f"s.weibo.com热搜获取失败: {e}，回退到公开API")
+        return await _fetch_weibo_trending_fallback(limit)
+
+
+async def _fetch_weibo_trending_fallback(limit: int = 10) -> Dict[str, Any]:
+    """
+    微博热搜回退方案 - 使用公开的ajax API
     """
     try:
-        # 微博热搜榜API（公开接口）
         url = "https://weibo.com/ajax/side/hotSearch"
         
         headers = {
@@ -127,7 +240,6 @@ async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
             'Pragma': 'no-cache',
         }
         
-        # 添加随机延迟，避免请求过快
         await asyncio.sleep(random.uniform(0.1, 0.5))
         
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
@@ -140,7 +252,6 @@ async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
                 realtime_list = data.get('data', {}).get('realtime', [])
                 
                 for item in realtime_list[:limit]:
-                    # 跳过广告
                     if item.get('is_ad'):
                         continue
                     
@@ -156,7 +267,7 @@ async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
                     'trending': trending_list[:limit]
                 }
             else:
-                logger.error(f"微博API返回错误")
+                logger.error("微博公开API返回错误")
                 return {
                     'success': False,
                     'error': '微博API返回错误'
@@ -251,13 +362,9 @@ def format_trending_content(trending_content: Dict[str, Any]) -> str:
         for i, video in enumerate(videos[:5], 1):  # 只取前5个
             title = video.get('title', '')
             author = video.get('author', '')
-            like = video.get('like', 0)
-            
-            # 格式化点赞数
-            like_str = f"{like//10000}万" if like >= 10000 else str(like)
             
             output_lines.append(f"{i}. {title}")
-            output_lines.append(f"   UP主: {author} | 点赞: {like_str}")
+            output_lines.append(f"   UP主: {author}")
         
         output_lines.append("")  # 空行
     
@@ -269,13 +376,9 @@ def format_trending_content(trending_content: Dict[str, Any]) -> str:
         
         for i, item in enumerate(trending_list[:5], 1):  # 只取前5个
             word = item.get('word', '')
-            hot = item.get('raw_hot', 0)
             note = item.get('note', '')
             
-            # 格式化热度
-            hot_str = f"{hot//10000}万" if hot >= 10000 else str(hot)
-            
-            line = f"{i}. {word} (热度: {hot_str})"
+            line = f"{i}. {word}"
             if note:
                 line += f" [{note}]"
             output_lines.append(line)

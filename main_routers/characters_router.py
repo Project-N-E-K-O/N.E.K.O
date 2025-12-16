@@ -833,7 +833,16 @@ async def register_voice(request: Request):
 
 
 @router.post('/voice_clone')
-async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...)):
+async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref_language: str = Form(default="ch")):
+    """
+    语音克隆接口
+    
+    参数:
+        file: 音频文件
+        prefix: 音色前缀名
+        ref_language: 参考音频的语言，可选值：ch, en, fr, de, ja, ko, ru
+                      注意：这是参考音频的语言，不是目标语音的语言
+    """
     # 直接读取到内存
     try:
         file_content = await file.read()
@@ -841,6 +850,17 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...)):
     except Exception as e:
         logger.error(f"读取文件到内存失败: {e}")
         return JSONResponse({'error': f'读取文件失败: {e}'}, status_code=500)
+    
+    # 根据参考音频语言计算 language_hints
+    # 对于中文 (ch)，language_hints 为空列表
+    # 对于其他语言，language_hints 为包含该语言代码的单元素列表
+    valid_languages = ['ch', 'en', 'fr', 'de', 'ja', 'ko', 'ru']
+    if ref_language not in valid_languages:
+        logger.warning(f"无效的语言代码 '{ref_language}'，使用默认值 'ch'")
+        ref_language = 'ch'
+    
+    language_hints = [] if ref_language == 'ch' else [ref_language]
+    logger.info(f"参考音频语言: {ref_language}, language_hints: {language_hints}")
 
 
     def validate_audio_file(file_buffer: io.BytesIO, filename: str) -> tuple[str, str]:
@@ -1033,7 +1053,7 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...)):
                 logger.info(f"开始音色注册（尝试 {attempt + 1}/{max_retries}），使用URL: {tmp_url}")
                 
                 # 尝试执行音色注册
-                voice_id = service.create_voice(target_model=target_model, prefix=prefix, url=tmp_url)
+                voice_id = service.create_voice(target_model=target_model, prefix=prefix, url=tmp_url, language_hints=language_hints)
                     
                 logger.info(f"音色注册成功，voice_id: {voice_id}")
                 voice_data = {
