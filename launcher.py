@@ -72,7 +72,12 @@ def run_memory_server(ready_event: Event):
     try:
         # 确保工作目录正确
         if getattr(sys, 'frozen', False):
-            os.chdir(sys._MEIPASS)
+            if hasattr(sys, '_MEIPASS'):
+                # PyInstaller
+                os.chdir(sys._MEIPASS)
+            else:
+                # Nuitka
+                os.chdir(os.path.dirname(os.path.abspath(__file__)))
             # 禁用 typeguard（子进程需要重新禁用）
             try:
                 import typeguard
@@ -81,7 +86,7 @@ def run_memory_server(ready_event: Event):
                 typeguard.typechecked = dummy_typechecked
                 if hasattr(typeguard, '_decorators'):
                     typeguard._decorators.typechecked = dummy_typechecked
-            except:
+            except: # noqa
                 pass
         
         import memory_server
@@ -134,7 +139,12 @@ def run_agent_server(ready_event: Event):
     try:
         # 确保工作目录正确
         if getattr(sys, 'frozen', False):
-            os.chdir(sys._MEIPASS)
+            if hasattr(sys, '_MEIPASS'):
+                # PyInstaller
+                os.chdir(sys._MEIPASS)
+            else:
+                # Nuitka
+                os.chdir(os.path.dirname(os.path.abspath(__file__)))
             # 禁用 typeguard（子进程需要重新禁用）
             try:
                 import typeguard
@@ -143,7 +153,7 @@ def run_agent_server(ready_event: Event):
                 typeguard.typechecked = dummy_typechecked
                 if hasattr(typeguard, '_decorators'):
                     typeguard._decorators.typechecked = dummy_typechecked
-            except:
+            except: # noqa
                 pass
         
         import agent_server
@@ -172,7 +182,7 @@ def run_main_server(ready_event: Event):
                 # Nuitka
                 os.chdir(os.path.dirname(os.path.abspath(__file__)))
         
-        print(f"[Main Server] Importing main_server module...")
+        print("[Main Server] Importing main_server module...")
         import main_server
         import uvicorn
         
@@ -190,8 +200,6 @@ def run_main_server(ready_event: Event):
         server = uvicorn.Server(config)
         
         # 添加启动完成的回调
-        import asyncio
-        
         async def startup():
             print(f"[Main Server] Running on port {MAIN_SERVER_PORT}")
             ready_event.set()
@@ -214,7 +222,7 @@ def check_port(port: int, timeout: float = 0.5) -> bool:
         result = sock.connect_ex(('127.0.0.1', port))
         sock.close()
         return result == 0
-    except:
+    except: # noqa
         return False
 
 def show_spinner(stop_event: threading.Event, message: str = "正在启动服务器"):

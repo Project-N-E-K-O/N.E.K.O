@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-import sys, os
+import sys
+import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Windows multiprocessing 支持：确保子进程不会重复执行模块级初始化
@@ -115,21 +116,12 @@ def get_default_steam_info():
         if 'logger' in globals():
             logger.error(f"Error accessing Steamworks API: {e}")
 
-# 初始化Steamworks，但即使失败也继续启动服务
-# 只在主进程中初始化，防止子进程重复初始化
-if _IS_MAIN_PROCESS:
-    steamworks = initialize_steamworks()
-    # 尝试获取Steam信息，如果失败也不会阻止服务启动
-    get_default_steam_info()
-else:
-    steamworks = None
-
-
-# 使用真实的截图库，函数已从utils.screenshot_utils导入
-
+# Steamworks 初始化将在 @app.on_event("startup") 中延迟执行
+# 这样可以避免在模块导入时就执行 DLL 加载等操作
+steamworks = None
 
 # Configure logging (子进程静默初始化，避免重复打印初始化消息)
-from utils.logger_config import setup_logging
+from utils.logger_config import setup_logging # noqa: E402
 
 logger, log_config = setup_logging(service_name="Main", log_level=logging.INFO, silent=not _IS_MAIN_PROCESS)
 
@@ -142,7 +134,7 @@ def cleanup():
         try:
             while sync_message_queue[k] and not sync_message_queue[k].empty():
                 sync_message_queue[k].get_nowait()
-        except:
+        except: # noqa: E722
             pass
     logger.info("Cleanup completed")
 
@@ -278,7 +270,7 @@ async def initialize_character_data():
             need_start_thread = True
             try:
                 sync_process[k].join(timeout=0.1)
-            except:
+            except: # noqa: E722
                 pass
         
         if need_start_thread:
@@ -395,6 +387,7 @@ from main_routers import (
 from main_routers.shared_state import init_shared_state
 
 # Initialize shared state for routers to access
+# 注意：steamworks 会在 startup 事件中初始化后更新
 if _IS_MAIN_PROCESS:
     init_shared_state(
         sync_message_queue=sync_message_queue,
@@ -403,7 +396,7 @@ if _IS_MAIN_PROCESS:
         session_id=session_id,
         sync_process=sync_process,
         websocket_locks=websocket_locks,
-        steamworks=steamworks,
+        steamworks=None,  # 延迟初始化，会在 startup 事件中设置
         templates=templates,
         config_manager=_config_manager,
         logger=logger,
@@ -437,6 +430,87 @@ app.include_router(websocket_router)
 app.include_router(agent_router)
 app.include_router(system_router)
 app.include_router(pages_router)  # Mount last for catch-all routes
+
+# 后台预加载任务
+_preload_task: asyncio.Task = None
+
+
+async def _background_preload():
+    """后台预加载音频处理模块
+    
+    注意：不需要 Event 同步机制，因为 Python 的 import lock 会自动等待首次导入完成。
+    如果用户在预加载完成前点击语音，再次 import 会自动阻塞等待。
+    """
+    try:
+        logger.info("🔄 后台预加载音频处理模块...")
+        # 在线程池中执行同步导入（避免阻塞事件循环）
+        import concurrent.futures
+        loop = asyncio.get_event_loop()
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            await loop.run_in_executor(pool, _sync_preload_modules)
+    except Exception as e:
+        logger.warning(f"⚠️ 音频处理模块预加载失败（不影响使用）: {e}")
+
+
+def _sync_preload_modules():
+    """同步预加载延迟导入的模块（在线程池中执行）
+    
+    注意：以下模块已通过导入链在启动时加载，无需预加载：
+    - numpy, soxr: 通过 core.py / audio_processor.py
+    - websockets: 通过 omni_realtime_client.py
+    - langchain_openai/langchain_core: 通过 omni_offline_client.py
+    - httpx: 通过 core.py
+    - aiohttp: 通过 tts_client.py
+    
+    真正需要预加载的延迟导入模块：
+    - pyrnnoise/audiolab: audio_processor.py 中通过 _get_rnnoise() 延迟加载
+    - dashscope: tts_client.py 中仅在 cosyvoice_vc_tts_worker 函数内部导入
+    """
+    import time
+    start = time.time()
+    
+    # 1. pyrnnoise/audiolab (音频降噪 - 延迟加载，可能较慢)
+    try:
+        from utils.audio_processor import _get_rnnoise
+        _get_rnnoise()
+        logger.debug("  ✓ pyrnnoise loaded")
+    except Exception as e:
+        logger.debug(f"  ✗ pyrnnoise: {e}")
+    
+    # 2. dashscope (阿里云 CosyVoice TTS SDK - 仅在使用自定义音色时需要)
+    try:
+        import dashscope  # noqa: F401
+        logger.debug("  ✓ dashscope loaded")
+    except Exception as e:
+        logger.debug(f"  ✗ dashscope: {e}")
+    
+    elapsed = time.time() - start
+    logger.info(f"📦 模块预加载完成，耗时 {elapsed:.2f}s")
+
+
+# Startup 事件：延迟初始化 Steamworks
+@app.on_event("startup")
+async def on_startup():
+    """服务器启动时执行的初始化操作"""
+    global steamworks, _preload_task
+    
+    # 只在主进程中初始化 Steamworks
+    if _IS_MAIN_PROCESS:
+        logger.info("正在初始化 Steamworks...")
+        steamworks = initialize_steamworks()
+        
+        # 更新 shared_state 中的 steamworks 引用
+        from main_routers.shared_state import set_steamworks
+        set_steamworks(steamworks)
+        
+        # 尝试获取 Steam 信息
+        get_default_steam_info()
+        
+        # 在后台异步预加载音频模块（不阻塞服务器启动）
+        # 注意：不需要等待机制，Python import lock 会自动处理并发
+        _preload_task = asyncio.create_task(_background_preload())
+        
+        logger.info("Startup 初始化完成，后台正在预加载音频模块...")
 
 # 使用 FastAPI 的 app.state 来管理启动配置
 def get_start_config():
