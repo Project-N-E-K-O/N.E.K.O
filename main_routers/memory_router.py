@@ -26,9 +26,9 @@ router = APIRouter(prefix="/api/memory", tags=["memory"])
 # - Must be 1-100 characters long
 VALID_NAME_PATTERN = re.compile(r'^[\w\-\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]{1,100}$')
 
-# Strict pattern for valid recent file names: must start with "recent", followed by
-# alphanumeric, dots, underscores, or hyphens, and end with .json
-VALID_RECENT_FILENAME_PATTERN = re.compile(r'^recent[0-9A-Za-z._-]+\.json$')
+# Pattern for valid recent file names: must start with "recent_", have content, and end with .json
+# Uses blacklist approach instead of whitelist to support CJK characters
+VALID_RECENT_FILENAME_PATTERN = re.compile(r'^recent_.+\.json$')
 
 
 def validate_catgirl_name(name: str) -> tuple[bool, str]:
@@ -108,7 +108,7 @@ def validate_recent_filename(filename: str) -> tuple[bool, str]:
     
     # Ensure filename matches strict pattern
     if not VALID_RECENT_FILENAME_PATTERN.match(filename):
-        return False, "文件名格式不合法，必须匹配 recent[0-9A-Za-z._-]+.json"
+        return False, "文件名格式不合法，必须以 recent_ 开头并以 .json 结尾"
     
     # Ensure Path(filename).name == filename (no directory components)
     if Path(filename).name != filename:

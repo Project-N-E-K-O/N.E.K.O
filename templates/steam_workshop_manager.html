@@ -2832,7 +2832,7 @@ console.log('准备显示成功提示:', successMessage);
                 })
                 .catch(error => {
                     console.error('扫描本地物品失败:', error);
-                    showMessage(window.t ? window.t('steam.scanError', { error: error.message }) : `扫描时出错: ${error.message}`, 'error', 3000);
+                    showMessage(window.t ? window.t('steam.workshopScanError', { error: error.message }) : `扫描时出错: ${error.message}`, 'error', 3000);
                 });
         }
 
@@ -5713,7 +5713,7 @@ function viewItemDetails(itemId) {
             })
             .catch(error => {
                 console.error('扫描模型失败:', error);
-                showMessage(window.t ? window.t('steam.scanError') : '扫描模型失败', 'error');
+                showMessage(window.t ? window.t('steam.modelScanError') : '扫描模型失败', 'error');
             });
         }
         
@@ -5846,7 +5846,7 @@ function viewItemDetails(itemId) {
                 }
             } catch (error) {
                 console.error('加载音色列表失败:', error);
-                showMessage(window.t ? window.t('steam.scanError') : '扫描音色失败', 'error');
+                showMessage(window.t ? window.t('steam.voiceScanError') : '扫描音色失败', 'error');
             }
         }
         

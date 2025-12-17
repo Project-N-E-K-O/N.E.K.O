@@ -38,6 +38,9 @@ DEFAULT_CORE_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
 DEFAULT_CORE_MODEL = "qwen3-omni-flash-realtime"
 DEFAULT_OPENROUTER_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
+# 屏幕分享模式的原生图片输入限流配置（秒）
+NATIVE_IMAGE_MIN_INTERVAL = 1.5
+
 # 用户自定义模型配置的默认 Provider/URL/API_KEY（空字符串表示使用全局配置）
 DEFAULT_SUMMARY_MODEL_PROVIDER = ""
 DEFAULT_SUMMARY_MODEL_URL = ""
@@ -271,6 +274,8 @@ MODELS_EXTRA_BODY_MAP = {
     "glm-4.6v": EXTRA_BODY_CLAUDE,
     # Silicon (zai-org) - 使用 Qwen 格式
     "zai-org/GLM-4.6V": EXTRA_BODY_OPENAI,
+    "free-model": {"tools":[{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
+    "step-2-mini": {"tools":[{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
 }
 
 
@@ -318,6 +323,7 @@ __all__ = [
     'MCP_ROUTER_URL',
     'TFLINK_UPLOAD_URL',
     'TFLINK_ALLOWED_HOSTS',
+    'NATIVE_IMAGE_MIN_INTERVAL',
     # API 和模型配置的默认值
     'DEFAULT_CORE_API_KEY',
     'DEFAULT_AUDIO_API_KEY',

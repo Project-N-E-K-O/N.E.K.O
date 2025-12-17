@@ -9,6 +9,7 @@ import logging
 
 from typing import Optional, Callable, Dict, Any, Awaitable
 from enum import Enum
+from config import NATIVE_IMAGE_MIN_INTERVAL
 from utils.config_manager import get_config_manager
 from utils.audio_processor import AudioProcessor
 from utils.frontend_utils import calculate_text_similarity
@@ -113,7 +114,7 @@ class OmniRealtimeClient:
         # Track image recognition per turn
         self._image_recognized_this_turn = False
         self._image_being_analyzed = False
-        self._image_description = "[用户的实时屏幕截图或相机画面正在分析中。你先不要瞎编内容，可以请用户稍等片刻。在此期间不要用搜索功能应付。等收到画面分析结果后再描述画面。]"
+        self._image_description = "[实时屏幕截图或相机画面正在分析中。先不要瞎编内容，可以稍等片刻。在此期间不要用搜索功能应付。等收到画面分析结果后再描述画面。]"
         
         # Silence detection for auto-closing inactive sessions
         # 只在 GLM 和 free API 时启用90秒静默超时，Qwen 和 Step 放行
@@ -140,6 +141,21 @@ class OmniRealtimeClient:
         self._repetition_threshold = 0.8  # 相似度阈值
         self._max_recent_responses = 3  # 最多存储的回复数
         self._current_response_transcript = ""  # 当前回复的转录文本
+        
+        # Backpressure control - 防止503过载错误
+        self._send_semaphore = asyncio.Semaphore(25)  # 最多25个并发发送
+        self._is_throttled = False  # 503检测后节流状态
+        self._throttle_until = 0.0  # 节流结束时间戳
+        self._throttle_duration = 2.0  # 节流持续时间（秒）
+        
+        # Fatal error detection - 检测到致命错误后立即中断
+        self._fatal_error_occurred = False  # 致命错误标志
+        
+        # Interruption state - suppress output after user interruption until next response
+        self._interrupted = False  # 打断状态标志，防止重复消息块
+        
+        # Native image input rate limiting
+        self._last_native_image_time = 0.0  # 上次原生图片输入时间戳
 
     async def _check_silence_timeout(self):
         """定期检查是否超过静默超时时间，如果是则触发超时回调"""
@@ -238,7 +254,10 @@ class OmniRealtimeClient:
                         "prefix_padding_ms": 300,
                         "silence_duration_ms": 500
                     },
-                    "temperature": 1.0
+                    "turn_detection_threshold": 0.2,
+                    "smooth_output": False,
+                    "repetition_penalty": 1.2,
+                    "temperature": 0.7
                 })
             elif "gpt" in self.model:
                 await self.update_session({
@@ -306,13 +325,42 @@ class OmniRealtimeClient:
             raise ValueError(f"Invalid turn detection mode: {self.turn_detection_mode}")
 
     async def send_event(self, event) -> None:
+        # 检查是否已发生致命错误，直接跳过发送
+        if self._fatal_error_occurred:
+            return
+        
+        # Backpressure: 检查是否处于节流状态
+        if self._is_throttled:
+            if time.time() < self._throttle_until:
+                # 仍在节流期，丢弃音频帧以减轻服务器压力
+                if event.get("type") == "input_audio_buffer.append":
+                    return  # 丢弃音频帧
+            else:
+                # 节流期结束，恢复正常发送
+                self._is_throttled = False
+                logger.info("🔄 Backpressure throttle ended, resuming sends")
+        
         event['event_id'] = "event_" + str(int(time.time() * 1000))
         if self.ws:
-            try:
-                await self.ws.send(json.dumps(event))
-            except Exception as e:
-                logger.warning(f"⚠️ 发送事件失败: {e}")
-                raise
+            async with self._send_semaphore:  # 限制并发发送数量
+                try:
+                    await self.ws.send(json.dumps(event))
+                except Exception as e:
+                    error_msg = str(e)
+                    logger.warning(f"⚠️ 发送事件失败: {error_msg}")
+                    
+                    # 检测致命错误：Response timeout 或 1011 错误码
+                    if 'Response timeout' in error_msg or '1011' in error_msg:
+                        if not self._fatal_error_occurred:
+                            self._fatal_error_occurred = True
+                            logger.error("💥 检测到致命错误 (Response timeout / 1011)，立即中断语音对话")
+                            if self.on_connection_error:
+                                asyncio.create_task(self.on_connection_error("💥 连接超时 (Response timeout)，语音对话已中断。"))
+                            # 尝试关闭连接
+                            asyncio.create_task(self.close())
+                        return  # 不再抛出异常，直接返回
+                    
+                    raise
 
     async def update_session(self, config: Dict[str, Any]) -> None:
         """Update session configuration."""
@@ -365,7 +413,7 @@ class OmniRealtimeClient:
             )
             
             if description:
-                self._image_description = f"[用户的实时屏幕截图或相机画面]: {description}"
+                self._image_description = f"[实时屏幕截图或相机画面]: {description}"
                 logger.info("✅ Image analysis complete.")
                 self._image_being_analyzed = False
                 return description
@@ -388,9 +436,21 @@ class OmniRealtimeClient:
         """Stream raw image data to the API."""
 
         try:
-            if '用户的实时屏幕截图或相机画面正在分析中' in self._image_description and self.model in ['step', 'free']:
+            if '实时屏幕截图或相机画面正在分析中' in self._image_description and self.model in ['step', 'free']:
                 await self._analyze_image_with_vision_model(image_b64)
                 return
+            
+            # Check if model supports native image input
+            supports_native_image = any(m in self.model for m in ["qwen", "glm", "gpt"])
+            
+            # Rate limiting for native image input
+            if supports_native_image:
+                current_time = time.time()
+                elapsed = current_time - self._last_native_image_time
+                if elapsed < NATIVE_IMAGE_MIN_INTERVAL:
+                    # Skip this image frame due to rate limiting
+                    return
+                self._last_native_image_time = current_time
 
             if self._audio_in_buffer:
                 if "qwen" in self.model:
@@ -452,13 +512,13 @@ class OmniRealtimeClient:
 
     async def create_response(self, instructions: str, skipped: bool = False) -> None:
         """Request a response from the API. First adds message to conversation, then creates response."""
-        if skipped == True:
+        if skipped:
             self._skip_until_next_response = True
 
         if "qwen" in self.model:
             await self.update_session({"instructions": self.instructions + '\n' + instructions})
 
-            logger.info(f"Creating response with instructions override")
+            logger.info("Creating response with instructions override")
             await self.send_event({"type": "response.create"})
         else:
             # 先通过 conversation.item.create 添加系统消息（增量）
@@ -479,7 +539,7 @@ class OmniRealtimeClient:
             await self.send_event(item_event)
             
             # 然后调用 response.create，不带 instructions（避免替换 session instructions）
-            logger.info(f"Creating response without instructions override")
+            logger.info("Creating response without instructions override")
             await self.send_event({"type": "response.create"})
 
     async def cancel_response(self) -> None:
@@ -529,6 +589,9 @@ class OmniRealtimeClient:
 
         logger.info("Handling interruption")
 
+        # Mark as interrupted to suppress any remaining output until next response
+        self._interrupted = True
+
         # 1. Cancel the current response
         if self._current_response_id:
             await self.cancel_response()
@@ -556,10 +619,35 @@ class OmniRealtimeClient:
                 # else:
                 #     print(f"Event type: {event_type}")
                 if event_type == "error":
-                    logger.error(f"API Error: {event['error']}")
-                    if '欠费' in event['error'] or 'standing' in event['error']:
+                    error_msg = str(event.get('error', ''))
+                    logger.error(f"API Error: {error_msg}")
+                    
+                    # 检测503过载错误，触发backpressure节流
+                    if '503' in error_msg or 'overloaded' in error_msg.lower():
+                        self._is_throttled = True
+                        self._throttle_until = time.time() + self._throttle_duration
+                        logger.warning(f"⚡ 503 detected, throttling for {self._throttle_duration}s")
+                        if self.on_status_message:
+                            await self.on_status_message("⚠️ 服务器繁忙，正在自动调节发送速率...")
+                        continue  # 不关闭连接，只进行节流
+                    
+                    if '欠费' in error_msg or 'standing' in error_msg:
+                        error_msg = str(event.get('error', ''))
+                        logger.error(f"API Error: {error_msg}")
+                    
+                    # 检测503过载错误，触发backpressure节流
+                    if '503' in error_msg or 'overloaded' in error_msg.lower():
+                        self._is_throttled = True
+                        self._throttle_until = time.time() + self._throttle_duration
+                        logger.warning(f"⚡ 503 detected, throttling for {self._throttle_duration}s")
+                        if self.on_status_message:
+                            await self.on_status_message("⚠️ 服务器繁忙，正在自动调节发送速率...")
+                        continue  # 不关闭连接，只进行节流
+                    
+                    if '欠费' in error_msg or 'standing' in error_msg:
                         if self.on_connection_error:
-                            await self.on_connection_error(event['error'])
+                            await self.on_connection_error(error_msg)
+                            await self.on_connection_error(error_msg)
                         await self.close()
                     continue
                 elif event_type == "response.done":
@@ -582,6 +670,7 @@ class OmniRealtimeClient:
                 elif event_type == "response.created":
                     self._current_response_id = event.get("response", {}).get("id")
                     self._is_responding = True
+                    self._interrupted = False  # Clear interruption flag on new response
                     self._is_first_text_chunk = self._is_first_transcript_chunk = True
                     # 清空转录 buffer，防止累积旧内容
                     self._output_transcript_buffer = ""
@@ -608,7 +697,7 @@ class OmniRealtimeClient:
                     self._print_input_transcript = False
                     self._output_transcript_buffer = ""
 
-                if not self._skip_until_next_response:
+                if not self._skip_until_next_response and not self._interrupted:
                     if event_type in ["response.text.delta", "response.output_text.delta"]:
                         if self.on_text_delta:
                             if "glm" not in self.model:

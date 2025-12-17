@@ -5,19 +5,46 @@ TTS Helper模块
 import numpy as np
 import soxr
 import time
-import asyncio
 import json
 import base64
 import logging
 import websockets
-from enum import Enum
-from multiprocessing import Queue as MPQueue, Process
-import threading
 import io
 import wave
 import aiohttp
 from functools import partial
 logger = logging.getLogger(__name__)
+
+
+def _resample_audio(audio_int16: np.ndarray, src_rate: int, dst_rate: int, 
+                    resampler: 'soxr.ResampleStream | None' = None) -> bytes:
+    """使用 soxr 进行高质量音频重采样
+    
+    Args:
+        audio_int16: int16 格式的音频 numpy 数组
+        src_rate: 源采样率
+        dst_rate: 目标采样率
+        resampler: 可选的流式重采样器，用于维护 chunk 间状态
+        
+    Returns:
+        重采样后的 bytes
+    """
+    if src_rate == dst_rate:
+        return audio_int16.tobytes()
+    
+    # 转换为 float32 进行高质量重采样
+    audio_float = audio_int16.astype(np.float32) / 32768.0
+    
+    if resampler is not None:
+        # 使用流式重采样器（维护 chunk 边界状态）
+        resampled_float = resampler.resample_chunk(audio_float)
+    else:
+        # 无状态重采样（不推荐用于流式音频）
+        resampled_float = soxr.resample(audio_float, src_rate, dst_rate, quality='HQ')
+    
+    # 转回 int16
+    resampled_int16 = (resampled_float * 32768.0).clip(-32768, 32767).astype(np.int16)
+    return resampled_int16.tobytes()
 
 
 def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice_id, free_mode=False):
@@ -49,6 +76,8 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         session_id = None
         session_ready = asyncio.Event()
         response_done = asyncio.Event()  # 用于标记当前响应是否完成
+        # 流式重采样器（24kHz→48kHz）- 维护 chunk 边界状态
+        resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
         
         try:
             # 连接WebSocket
@@ -150,9 +179,8 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                     
                                     # 转换为 numpy 数组
                                     audio_array = np.frombuffer(pcm_data, dtype=np.int16)
-                                    # 重采样 24000Hz -> 48000Hz
-                                    resampled = np.repeat(audio_array, 48000 // 24000)
-                                    response_queue.put(resampled.tobytes())
+                                    # 使用流式重采样器 24000Hz -> 48000Hz
+                                    response_queue.put(_resample_audio(audio_array, 24000, 48000, resampler))
                             except Exception as e:
                                 logger.error(f"处理音频数据时出错: {e}")
                         elif event_type in ["tts.response.done", "tts.response.audio.done"]:
@@ -195,7 +223,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                             if ws:
                                 try:
                                     await ws.close()
-                                except:
+                                except:  # noqa: E722
                                     pass
                                 ws = None
                             if receive_task and not receive_task.done():
@@ -216,10 +244,11 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 if current_speech_id != sid:
                     current_speech_id = sid
                     response_done.clear()
+                    resampler.clear()  # 重置重采样器状态（新轮次音频不应与上轮次连续）
                     if ws:
                         try:
                             await ws.close()
-                        except:
+                        except:  # noqa: E722
                             pass
                     if receive_task and not receive_task.done():
                         receive_task.cancel()
@@ -290,9 +319,8 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                                 
                                                 # 转换为 numpy 数组
                                                 audio_array = np.frombuffer(pcm_data, dtype=np.int16)
-                                                # 重采样 24000Hz -> 48000Hz
-                                                resampled = np.repeat(audio_array, 48000 // 24000)
-                                                response_queue.put(resampled.tobytes())
+                                                # 使用流式重采样器 24000Hz -> 48000Hz
+                                                response_queue.put(_resample_audio(audio_array, 24000, 48000, resampler))
                                         except Exception as e:
                                             logger.error(f"处理音频数据时出错: {e}")
                                     elif event_type in ["tts.response.done", "tts.response.audio.done"]:
@@ -384,6 +412,8 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
         receive_task = None
         session_ready = asyncio.Event()
         response_done = asyncio.Event()  # 用于标记当前响应是否完成
+        # 流式重采样器（24kHz→48kHz）- 维护 chunk 边界状态
+        resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
         
         try:
             # 连接WebSocket
@@ -459,8 +489,8 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                             try:
                                 audio_bytes = base64.b64decode(event.get("delta", ""))
                                 audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
-                                resampled = np.repeat(audio_array, 2)
-                                response_queue.put(resampled.tobytes())
+                                # 使用流式重采样器 24000Hz -> 48000Hz
+                                response_queue.put(_resample_audio(audio_array, 24000, 48000, resampler))
                             except Exception as e:
                                 logger.error(f"处理音频数据时出错: {e}")
                         elif event_type in ["response.done", "response.audio.done", "output.done"]:
@@ -503,7 +533,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                             if ws:
                                 try:
                                     await ws.close()
-                                except:
+                                except:  # noqa: E722
                                     pass
                                 ws = None
                             if receive_task and not receive_task.done():
@@ -524,10 +554,11 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 if current_speech_id != sid:
                     current_speech_id = sid
                     response_done.clear()
+                    resampler.clear()  # 重置重采样器状态（新轮次音频不应与上轮次连续）
                     if ws:
                         try:
                             await ws.close()
-                        except:
+                        except:  # noqa: E722
                             pass
                     if receive_task and not receive_task.done():
                         receive_task.cancel()
@@ -577,8 +608,8 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                         try:
                                             audio_bytes = base64.b64decode(event.get("delta", ""))
                                             audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
-                                            resampled = np.repeat(audio_array, 2)
-                                            response_queue.put(resampled.tobytes())
+                                            # 使用流式重采样器 24000Hz -> 48000Hz
+                                            response_queue.put(_resample_audio(audio_array, 24000, 48000, resampler))
                                         except Exception as e:
                                             logger.error(f"处理音频数据时出错: {e}")
                                     elif event_type in ["response.done", "response.audio.done", "output.done"]:
