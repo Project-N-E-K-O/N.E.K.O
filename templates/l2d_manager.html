@@ -590,8 +590,7 @@
             // 修改模型选择事件，自动保存模型设置
             modelSelect.addEventListener('change', async (e) => {
                 const modelName = e.target.value;
-                const modelId = e.target.dataset.itemId
-                console.log("id:", modelId)
+
                 if (!modelName) return;
 
                 currentModelInfo = availableModels.find(m => m.name === modelName);

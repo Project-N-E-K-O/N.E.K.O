@@ -215,6 +215,11 @@ def find_models():
                         final_name = model_name
                         if model_name in existing_names:
                             final_name = f"{model_name}_{source}"
+                            # 如果加后缀后还是重复，再加个数字后缀
+                            counter = 1
+                            while final_name in existing_names:
+                                final_name = f"{model_name}_{source}_{counter}"
+                                counter += 1
                             # 同时更新display_name以区分
                             display_name = f"{display_name} ({source})"
                         
