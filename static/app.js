@@ -437,6 +437,18 @@ function init_app() {
                                     if (screenCaptureStream != null) {
                                         await startScreenSharing();
                                     }
+                                    
+                                    // 同步更新Live2D浮动按钮状态
+                                    if (window.live2dManager && window.live2dManager._floatingButtons) {
+                                        // 更新麦克风按钮状态
+                                        syncFloatingMicButtonState(true);
+                                        
+                                        // 更新屏幕分享按钮状态（如果屏幕共享已开启）
+                                        if (screenCaptureStream != null) {
+                                            syncFloatingScreenButtonState(true);
+                                        }
+                                    }
+                                    
                                     showStatusToast(window.t ? window.t('app.restartComplete', { name: lanlan_config.lanlan_name }) : `重启完成，${lanlan_config.lanlan_name}回来了！`, 4000);
                                 } catch (error) {
                                     console.error("重启时出错:", error);

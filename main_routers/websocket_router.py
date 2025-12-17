@@ -89,6 +89,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 input_type = message.get("input_type", "audio")
                 if input_type in ['audio', 'screen', 'camera', 'text']:
                     # 传递input_mode参数，告知session manager使用何种模式
+                    # 注意：音频模块由 main_server 后台预加载，Python import lock 会自动等待首次导入完成
                     mode = 'text' if input_type == 'text' else 'audio'
                     asyncio.create_task(session_manager[lanlan_name].start_session(websocket, message.get("new_session", False), mode))
                 else:
