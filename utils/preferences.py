@@ -58,7 +58,7 @@ def save_user_preferences(preferences: List[Dict[str, Any]]) -> bool:
         print(f"保存用户偏好失败: {e}")
         return False
 
-def update_model_preferences(model_path: str, position: Dict[str, float], scale: Dict[str, float], parameters: Optional[Dict[str, float]] = None) -> bool:
+def update_model_preferences(model_path: str, position: Dict[str, float], scale: Dict[str, float], parameters: Optional[Dict[str, float]] = None, display: Optional[Dict[str, float]] = None) -> bool:
     """
     更新指定模型的偏好设置
     
@@ -67,6 +67,7 @@ def update_model_preferences(model_path: str, position: Dict[str, float], scale:
         position (Dict[str, float]): 位置信息 {'x': float, 'y': float}
         scale (Dict[str, float]): 缩放信息 {'x': float, 'y': float}
         parameters (Optional[Dict[str, float]]): 模型参数 {'paramId': value}
+        display (Optional[Dict[str, float]]): 显示器信息 {'screenX': float, 'screenY': float}，用于多屏幕位置恢复
         
     Returns:
         bool: 更新成功返回True，失败返回False
@@ -93,6 +94,10 @@ def update_model_preferences(model_path: str, position: Dict[str, float], scale:
         if parameters is not None:
             new_model_pref['parameters'] = parameters
         
+        # 如果有显示器信息，添加到偏好中（用于多屏幕位置恢复）
+        if display is not None:
+            new_model_pref['display'] = display
+        
         if model_index >= 0:
             # 更新现有模型的偏好，保留已有的参数（如果新参数为None则不更新参数）
             existing_pref = current_preferences[model_index]
@@ -101,6 +106,12 @@ def update_model_preferences(model_path: str, position: Dict[str, float], scale:
             elif 'parameters' in existing_pref:
                 # 保留已有参数
                 new_model_pref['parameters'] = existing_pref['parameters']
+            # 处理显示器信息
+            if display is not None:
+                pass  # 已在上面添加到 new_model_pref
+            elif 'display' in existing_pref:
+                # 保留已有显示器信息
+                new_model_pref['display'] = existing_pref['display']
             current_preferences[model_index] = new_model_pref
         else:
             # 添加新模型的偏好到列表开头（作为首选）

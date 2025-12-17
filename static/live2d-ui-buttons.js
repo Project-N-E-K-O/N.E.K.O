@@ -112,11 +112,13 @@ Live2DManager.prototype.setupHTMLLockIcon = function (model) {
             const screenWidth = window.innerWidth;
             const screenHeight = window.innerHeight;
 
+            // 计算锁图标目标位置
             const targetX = bounds.right * 0.7 + bounds.left * 0.3;
             const targetY = bounds.top * 0.3 + bounds.bottom * 0.7;
 
-            lockIcon.style.left = `${Math.min(targetX, screenWidth - 40)}px`;
-            lockIcon.style.top = `${Math.min(targetY, screenHeight - 40)}px`;
+            // 边界限制（现在窗口只覆盖一个屏幕，使用简单的边界检测）
+            lockIcon.style.left = `${Math.max(0, Math.min(targetX, screenWidth - 40))}px`;
+            lockIcon.style.top = `${Math.max(0, Math.min(targetY, screenHeight - 40))}px`;
         } catch (_) {
             // 忽略单帧异常
         }
@@ -736,6 +738,10 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
             const bounds = model.getBounds();
             const screenWidth = window.innerWidth;
             const screenHeight = window.innerHeight;
+            
+            // 计算模型中心点
+            const modelCenterX = (bounds.left + bounds.right) / 2;
+            const modelCenterY = (bounds.top + bounds.bottom) / 2;
 
             // 计算模型实际高度
             const modelHeight = bounds.bottom - bounds.top;
@@ -756,19 +762,24 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
             // X轴：定位在角色右侧（与锁按钮类似的横向位置）
             const targetX = bounds.right * 0.8 + bounds.left * 0.2;
 
-            // Y轴：工具栏中心与模型中心对齐
-            const modelCenterY = (bounds.top + bounds.bottom) / 2;
             // 使用缩放后的实际工具栏高度
             const actualToolbarHeight = baseToolbarHeight * scale;
+            const actualToolbarWidth = 80 * scale;
+            
+            // Y轴：工具栏中心与模型中心对齐
             // 让工具栏的中心位于模型中间，所以top = 中间 - 高度/2
             const targetY = modelCenterY - actualToolbarHeight / 2;
 
-            // 边界限制：确保不超出屏幕顶部和底部
+            // 边界限制：确保不超出当前屏幕（窗口只覆盖一个屏幕）
             const minY = 20; // 距离屏幕顶部的最小距离
             const maxY = screenHeight - actualToolbarHeight - 20; // 距离屏幕底部的最小距离
             const boundedY = Math.max(minY, Math.min(targetY, maxY));
 
-            buttonsContainer.style.left = `${Math.min(targetX, screenWidth - 80 * scale)}px`;
+            // X轴边界限制：确保不超出当前屏幕
+            const maxX = screenWidth - actualToolbarWidth;
+            const boundedX = Math.max(0, Math.min(targetX, maxX));
+
+            buttonsContainer.style.left = `${boundedX}px`;
             buttonsContainer.style.top = `${boundedY}px`;
             // 不要在这里设置 display，让鼠标检测逻辑来控制显示/隐藏
         } catch (_) {
