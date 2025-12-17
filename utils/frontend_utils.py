@@ -207,8 +207,6 @@ def find_models():
                             dirs[:] = []  # 不再深入此目录
                             break
                         
-                        # 从.model3.json文件名提取模型名称（去掉.model3.json后缀）
-                        model_file_name = os.path.splitext(os.path.splitext(file)[0])[0]
                         
                         # 使用文件夹名作为模型名称和显示名称
                         display_name = folder_name

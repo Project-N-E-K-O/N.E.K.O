@@ -345,10 +345,7 @@ lock = asyncio.Lock()
 # --- FastAPI App Setup ---
 app = FastAPI()
 
-@app.on_event("startup")
-async def startup_event():
-    """FastAPI应用启动事件处理函数"""
-    await _init_and_mount_workshop()
+
 
 class CustomStaticFiles(StaticFiles):
     async def get_response(self, path, scope):
