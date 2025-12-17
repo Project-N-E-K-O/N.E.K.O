@@ -200,14 +200,6 @@ def find_models():
                         # 获取模型名称 (使用其所在的文件夹名，更加直观)
                         folder_name = os.path.basename(root)
                         
-                        # 对于user_mods来源，跳过纯数字文件夹（Steam Workshop物品）
-                        # 这些物品会由get_live2d_models通过Steam API获取正确的标题
-                        if source == 'user_mods' and folder_name.isdigit():
-                            logging.debug(f"跳过Steam Workshop物品文件夹: {folder_name} (将由Steam API处理)")
-                            dirs[:] = []  # 不再深入此目录
-                            break
-                        
-                        
                         # 使用文件夹名作为模型名称和显示名称
                         display_name = folder_name
                         model_name = folder_name
