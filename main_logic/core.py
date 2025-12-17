@@ -6,7 +6,6 @@ TTS部分使用了两个队列，原本只需要一个，但是阿里的TTS API�
 import asyncio
 import json
 import struct  # For packing audio data
-import threading
 import re
 import logging
 import time
@@ -20,10 +19,10 @@ from utils.screenshot_utils import process_screen_data
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.tts_client import get_tts_worker
-import base64
 from config import MEMORY_SERVER_PORT
 from utils.config_manager import get_config_manager
-from multiprocessing import Process, Queue as MPQueue
+from threading import Thread
+from queue import Queue
 from uuid import uuid4
 import numpy as np
 import soxr
@@ -47,7 +46,7 @@ def _get_timestamp():
         timestamp = now.strftime("%A, %B %d, %Y at %I:%M %p")
         try:
             locale.setlocale(locale.LC_TIME, old_locale)
-        except:
+        except: # noqa
             pass
         return "Current time: " + timestamp
     except Exception:
@@ -63,9 +62,11 @@ class LLMSessionManager:
         self.is_active = False
         self.active_session_is_idle = False
         self.current_expression = None
-        self.tts_request_queue = MPQueue() # TTS request (多进程队列)
-        self.tts_response_queue = MPQueue() # TTS response (多进程队列)
-        self.tts_process = None  # TTS子进程
+        self.tts_request_queue = Queue()  # TTS request (线程队列)
+        self.tts_response_queue = Queue()  # TTS response (线程队列)
+        self.tts_thread = None  # TTS线程
+        # 流式音频重采样器（24kHz→48kHz）- 维护内部状态避免 chunk 边界不连续
+        self.audio_resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
         self.lock = asyncio.Lock()  # 使用异步锁替代同步锁
         self.websocket_lock = None  # websocket操作的共享锁，由main_server设置
         self.current_speech_id = None
@@ -160,12 +161,14 @@ class LLMSessionManager:
 
     async def handle_new_message(self):
         """处理新模型输出：清空TTS队列并通知前端"""
-        if self.use_tts and self.tts_process and self.tts_process.is_alive():
+        # 重置音频重采样器状态（新轮次音频不应与上轮次连续）
+        self.audio_resampler.clear()
+        if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             # 清空响应队列中待发送的音频数据
             while not self.tts_response_queue.empty():
                 try:
                     self.tts_response_queue.get_nowait()
-                except:
+                except: # noqa
                     break
             # 发送终止信号以清空TTS请求队列并停止当前合成
             try:
@@ -186,12 +189,12 @@ class LLMSessionManager:
             async with self.tts_cache_lock:
                 self.tts_pending_chunks.clear()
             
-            if self.tts_process and self.tts_process.is_alive():
+            if self.tts_thread and self.tts_thread.is_alive():
                 # 清空响应队列中待发送的音频数据
                 while not self.tts_response_queue.empty():
                     try:
                         self.tts_response_queue.get_nowait()
-                    except:
+                    except: # noqa
                         break
         
         # 文本模式下，无论是否使用TTS，都要发送文本到前端显示
@@ -201,7 +204,7 @@ class LLMSessionManager:
         if self.use_tts:
             async with self.tts_cache_lock:
                 # 检查TTS是否就绪
-                if self.tts_ready and self.tts_process and self.tts_process.is_alive():
+                if self.tts_ready and self.tts_thread and self.tts_thread.is_alive():
                     # TTS已就绪，直接发送
                     try:
                         self.tts_request_queue.put((self.current_speech_id, text))
@@ -211,11 +214,11 @@ class LLMSessionManager:
                     # TTS未就绪，先缓存
                     self.tts_pending_chunks.append((self.current_speech_id, text))
                     if len(self.tts_pending_chunks) == 1:
-                        logger.info(f"TTS未就绪，开始缓存文本chunk...")
+                        logger.info("TTS未就绪，开始缓存文本chunk...")
 
     async def handle_response_complete(self):
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""
-        if self.use_tts and self.tts_process and self.tts_process.is_alive():
+        if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             logger.info("📨 Response complete (LLM 回复结束)")
             try:
                 self.tts_request_queue.put((None, None))
@@ -288,9 +291,12 @@ class LLMSessionManager:
         """Qwen音频回调：推送音频到WebSocket前端"""
         if not self.use_tts:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                # 这里假设audio_data为PCM16字节流，直接推送
+                # 这里假设audio_data为PCM16字节流，使用流式重采样器处理
                 audio = np.frombuffer(audio_data, dtype=np.int16)
-                audio = (soxr.resample(audio.astype(np.float32) / 32768.0, 24000, 48000, quality='HQ')*32767.).clip(-32768, 32767).astype(np.int16)
+                audio_float = audio.astype(np.float32) / 32768.0
+                # 使用流式重采样器（维护内部状态，避免 chunk 边界不连续）
+                resampled_float = self.audio_resampler.resample_chunk(audio_float)
+                audio = (resampled_float * 32767.0).clip(-32768, 32767).astype(np.int16)
 
                 await self.send_speech(audio.tobytes())
                 # 你可以根据需要加上格式、isNewMessage等标记
@@ -340,7 +346,7 @@ class LLMSessionManager:
         if self.use_tts:
             async with self.tts_cache_lock:
                 # 检查TTS是否就绪
-                if self.tts_ready and self.tts_process and self.tts_process.is_alive():
+                if self.tts_ready and self.tts_thread and self.tts_thread.is_alive():
                     # TTS已就绪，直接发送
                     try:
                         self.tts_request_queue.put((self.current_speech_id, text))
@@ -350,7 +356,7 @@ class LLMSessionManager:
                     # TTS未就绪，先缓存
                     self.tts_pending_chunks.append((self.current_speech_id, text))
                     if len(self.tts_pending_chunks) == 1:
-                        logger.info(f"TTS未就绪，开始缓存文本chunk...")
+                        logger.info("TTS未就绪，开始缓存文本chunk...")
 
     async def send_lanlan_response(self, text: str, is_first_chunk: bool = False):
         """Qwen输出转录回调：可用于前端显示/缓存/同步。"""
@@ -464,7 +470,7 @@ class LLMSessionManager:
             chunk_count = len(self.tts_pending_chunks)
             logger.info(f"TTS就绪，开始处理缓存的 {chunk_count} 个文本chunk...")
             
-            if self.tts_process and self.tts_process.is_alive():
+            if self.tts_thread and self.tts_thread.is_alive():
                 for speech_id, text in self.tts_pending_chunks:
                     try:
                         self.tts_request_queue.put((speech_id, text))
@@ -515,7 +521,7 @@ class LLMSessionManager:
     async def start_session(self, websocket: WebSocket, new=False, input_mode='audio'):
         # 检查是否正在启动中
         if self.is_starting_session:
-            logger.warning(f"⚠️ Session正在启动中，忽略重复请求")
+            logger.warning("⚠️ Session正在启动中，忽略重复请求")
             return
         
         # 标记正在启动
@@ -570,7 +576,7 @@ class LLMSessionManager:
         
         async with self.lock:
             if self.is_active:
-                logger.warning(f"检测到活跃的旧session，正在清理...")
+                logger.warning("检测到活跃的旧session，正在清理...")
                 # 释放锁后清理，避免死锁
         
         # 如果检测到旧 session，先清理
@@ -580,19 +586,16 @@ class LLMSessionManager:
             await asyncio.sleep(0.5)
             logger.info("旧session清理完成")
         
-        # 如果当前不需要TTS但TTS进程仍在运行，关闭它
-        if not self.use_tts and self.tts_process and self.tts_process.is_alive():
-            logger.info("当前模式不需要TTS，关闭TTS进程")
+        # 如果当前不需要TTS但TTS线程仍在运行，发送停止信号
+        if not self.use_tts and self.tts_thread and self.tts_thread.is_alive():
+            logger.info("当前模式不需要TTS，关闭TTS线程")
             try:
-                self.tts_request_queue.put((None, None))
-                self.tts_process.terminate()
-                self.tts_process.join(timeout=2.0)
-                if self.tts_process.is_alive():
-                    self.tts_process.kill()
+                self.tts_request_queue.put((None, None))  # 通知线程退出
+                self.tts_thread.join(timeout=1.0)  # 等待线程结束
             except Exception as e:
-                logger.error(f"关闭TTS进程时出错: {e}")
+                logger.error(f"关闭TTS线程时出错: {e}")
             finally:
-                self.tts_process = None
+                self.tts_thread = None
 
         # 定义 TTS 启动协程（如果需要）
         async def start_tts_if_needed():
@@ -600,8 +603,8 @@ class LLMSessionManager:
             if not self.use_tts:
                 return True
             
-            # 启动TTS子进程
-            if self.tts_process is None or not self.tts_process.is_alive():
+            # 启动TTS线程
+            if self.tts_thread is None or not self.tts_thread.is_alive():
                 # 使用工厂函数获取合适的 TTS worker
                 has_custom_voice = bool(self.voice_id)
                 tts_worker = get_tts_worker(
@@ -609,19 +612,19 @@ class LLMSessionManager:
                     has_custom_voice=has_custom_voice
                 )
                 
-                self.tts_request_queue = MPQueue() # TTS request (多进程队列)
-                self.tts_response_queue = MPQueue() # TTS response (多进程队列)
+                self.tts_request_queue = Queue()  # TTS request (线程队列)
+                self.tts_response_queue = Queue()  # TTS response (线程队列)
                 # 根据是否有自定义音色选择 TTS API 配置
                 if has_custom_voice:
                     tts_config = self._config_manager.get_model_api_config('tts_custom')
                 else:
                     tts_config = self._config_manager.get_model_api_config('tts_default')
-                self.tts_process = Process(
+                self.tts_thread = Thread(
                     target=tts_worker,
                     args=(self.tts_request_queue, self.tts_response_queue, tts_config['api_key'], self.voice_id)
                 )
-                self.tts_process.daemon = True
-                self.tts_process.start()
+                self.tts_thread.daemon = True
+                self.tts_thread.start()
                 
                 # 等待TTS进程发送就绪信号（最多等待8秒）
                 tts_type = "自定义音色(CosyVoice)" if has_custom_voice else f"{self.core_api_type}默认TTS"
@@ -648,7 +651,7 @@ class LLMSessionManager:
                                 # 不是就绪信号，放回队列
                                 self.tts_response_queue.put(msg)
                                 break
-                    except:
+                    except: # noqa
                         pass
                     
                     # 小睡眠避免忙等
@@ -741,7 +744,7 @@ class LLMSessionManager:
             # 连接 session
             if self.session:
                 await self.session.connect(initial_prompt, native_audio = not self.use_tts)
-                logger.info(f"✅ LLM Session 已连接")
+                logger.info("✅ LLM Session 已连接")
                 print(initial_prompt)
                 return True
             else:
@@ -760,7 +763,7 @@ class LLMSessionManager:
 
         try:
             # 并行启动 TTS 和 LLM Session
-            logger.info(f"🚀 并行启动 TTS 和 LLM Session...")
+            logger.info("🚀 并行启动 TTS 和 LLM Session...")
             start_parallel_time = time.time()
             
             tts_result, llm_result = await asyncio.gather(
@@ -791,7 +794,7 @@ class LLMSessionManager:
                 # 这样可以大幅减少首轮对话的延迟（让 API 提前处理并缓存 instructions 的 KV cache）
                 if isinstance(self.session, OmniRealtimeClient):
                     try:
-                        logger.info(f"🔥 开始预热 Session，prefill instructions...")
+                        logger.info("🔥 开始预热 Session，prefill instructions...")
                         warmup_start = time.time()
                         
                         # 创建一个事件来等待预热完成
@@ -812,7 +815,7 @@ class LLMSessionManager:
                             warmup_time = time.time() - warmup_start
                             logger.info(f"✅ Session预热完成 (耗时: {warmup_time:.2f}秒)，首轮对话延迟已优化")
                         except asyncio.TimeoutError:
-                            logger.warning(f"⚠️ Session预热超时（5秒），继续执行...")
+                            logger.warning("⚠️ Session预热超时（5秒），继续执行...")
                         
                         # 恢复原始回调
                         self.session.on_response_done = original_callback
@@ -849,7 +852,7 @@ class LLMSessionManager:
             if is_memory_server_error:
                 # Memory Server 错误使用专门的日志格式
                 logger.error(f"🧠 {error_str}")
-                await self.send_status(f"🧠 记忆服务器未启动！请先运行 memory_server.py")
+                await self.send_status("🧠 记忆服务器未启动！请先运行 memory_server.py")
                 # Memory Server 错误不计入失败次数（因为这是配置问题而非网络问题）
                 self.session_start_failure_count -= 1
             else:
@@ -946,7 +949,7 @@ class LLMSessionManager:
                     on_connection_error=self.handle_connection_error,
                     on_response_done=self.handle_response_complete
                 )
-                logger.info(f"🔄 热切换准备: 创建文本模式 OmniOfflineClient")
+                logger.info("🔄 热切换准备: 创建文本模式 OmniOfflineClient")
             else:
                 # 语音模式：使用 OmniRealtimeClient
                 realtime_config = self._config_manager.get_model_api_config('realtime')
@@ -965,7 +968,7 @@ class LLMSessionManager:
                     on_status_message=self.send_status,
                     api_type=self.core_api_type  # 传入API类型，用于判断是否启用静默超时
                 )
-                logger.info(f"🔄 热切换准备: 创建语音模式 OmniRealtimeClient")
+                logger.info("🔄 热切换准备: 创建语音模式 OmniRealtimeClient")
             
             initial_prompt = _get_timestamp() + "\n" + (f"你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{self.lanlan_name}），在对方请求时、回答“我试试”并尝试操纵电脑。" if self._is_agent_enabled() else f"你是一个角色扮演大师。请按要求扮演以下角色（{self.lanlan_name}）。") + self.lanlan_prompt
             self.initial_cache_snapshot_len = len(self.message_cache_for_new_session)
@@ -1031,10 +1034,10 @@ class LLMSessionManager:
             incremental_cache = self.message_cache_for_new_session[self.initial_cache_snapshot_len:]
             # 1. Send incremental cache (or a heartbeat) to PENDING session for its *second* ignored response
             if incremental_cache:
-                final_prime_text = f"SYSTEM_MESSAGE | " + self._convert_cache_to_str(incremental_cache)
+                final_prime_text = "SYSTEM_MESSAGE | " + self._convert_cache_to_str(incremental_cache)
             else:  # Ensure session cycles a turn even if no incremental cache
                 logger.info(f"🔄 No incremental cache found. 缓存长度: {len(self.message_cache_for_new_session)}, 快照长度: {self.initial_cache_snapshot_len}")
-                final_prime_text = f"SYSTEM_MESSAGE | 系统自动报时，当前时间： " + str(datetime.now().strftime("%Y-%m-%d %H:%M"))
+                final_prime_text = "SYSTEM_MESSAGE | 系统自动报时，当前时间： " + str(datetime.now().strftime("%Y-%m-%d %H:%M"))
 
             # 若存在需要植入的额外提示，则指示模型忽略上一条消息，并在下一次响应中统一向用户补充这些提示
             if self.pending_extra_replies and len(self.pending_extra_replies) > 0:
@@ -1137,7 +1140,6 @@ class LLMSessionManager:
         await self.cleanup()
 
     async def stream_data(self, message: dict):  # 向Core API发送Media数据
-        data = message.get("data")
         input_type = message.get("input_type")
         
         # 检查session是否就绪
@@ -1148,7 +1150,7 @@ class LLMSessionManager:
                     # Session正在启动中，缓存输入数据
                     self.pending_input_data.append(message)
                     if len(self.pending_input_data) == 1:
-                        logger.info(f"Session正在启动中，开始缓存输入数据...")
+                        logger.info("Session正在启动中，开始缓存输入数据...")
                     else:
                         logger.debug(f"继续缓存输入数据 (总计: {len(self.pending_input_data)} 条)...")
                     return
@@ -1163,7 +1165,7 @@ class LLMSessionManager:
                 
                 # 检查启动是否成功
                 if not self.session or not self.is_active:
-                    logger.warning(f"⚠️ Session启动失败，放弃本次数据流")
+                    logger.warning("⚠️ Session启动失败，放弃本次数据流")
                     return
         
         # Session已就绪，直接处理
@@ -1176,7 +1178,7 @@ class LLMSessionManager:
         
         # 如果正在启动session，这不应该发生（因为stream_data已经检查过了）
         if self.is_starting_session:
-            logger.debug(f"Session正在启动中，跳过...")
+            logger.debug("Session正在启动中，跳过...")
             return
         
         # 如果 session 不存在或不活跃，检查是否可以自动重建
@@ -1207,9 +1209,9 @@ class LLMSessionManager:
                         self.sync_message_queue.put({'type': 'system', 'data': 'websocket disconnected'})
                         return
                 else:
-                    logger.warning(f"  └─ WebSocket状态: exists=True, 但没有client_state属性!")
+                    logger.warning("  └─ WebSocket状态: exists=True, 但没有client_state属性!")
             else:
-                logger.error(f"  └─ WebSocket状态: exists=False! 连接可能已断开，请刷新页面")
+                logger.error("  └─ WebSocket状态: exists=False! 连接可能已断开，请刷新页面")
                 # 通过sync_message_queue发送错误提示
                 self.sync_message_queue.put({'type': 'system', 'data': 'websocket disconnected'})
                 return
@@ -1220,7 +1222,7 @@ class LLMSessionManager:
             
             # 检查启动是否成功
             if not self.session or not self.is_active:
-                logger.warning(f"⚠️ Session启动失败，放弃本次数据流")
+                logger.warning("⚠️ Session启动失败，放弃本次数据流")
                 return
         
         try:
@@ -1330,9 +1332,9 @@ class LLMSessionManager:
         except web_exceptions.ConnectionClosedError as e:
             logger.error(f"💥 Stream: Error sending data to session: {e}")
             if '1011' in str(e):
-                print(f"💥 备注：检测到1011错误。该错误表示API服务器异常。请首先检查自己的麦克风是否有声音。")
+                print("💥 备注：检测到1011错误。该错误表示API服务器异常。请首先检查自己的麦克风是否有声音。")
             if '1007' in str(e):
-                print(f"💥 备注：检测到1007错误。该错误大概率是欠费导致。")
+                print("💥 备注：检测到1007错误。该错误大概率是欠费导致。")
             await self.disconnected_by_server()
             return
         except Exception as e:
@@ -1383,28 +1385,25 @@ class LLMSessionManager:
                 pass
             self.tts_handler_task = None
             
-        if self.tts_process and self.tts_process.is_alive():
+        if self.tts_thread and self.tts_thread.is_alive():
             try:
-                self.tts_request_queue.put((None, None))  # 通知子进程退出
-                self.tts_process.terminate()
-                self.tts_process.join(timeout=2.0)
-                if self.tts_process.is_alive():
-                    self.tts_process.kill()  # 强制杀死进程
+                self.tts_request_queue.put((None, None))  # 通知线程退出
+                self.tts_thread.join(timeout=2.0)  # 等待线程结束
             except Exception as e:
-                logger.error(f"💥 关闭TTS进程时出错: {e}")
+                logger.error(f"💥 关闭TTS线程时出错: {e}")
             finally:
-                self.tts_process = None
+                self.tts_thread = None
                 
         # 清理TTS队列和缓存状态
         try:
             while not self.tts_request_queue.empty():
                 self.tts_request_queue.get_nowait()
-        except:
+        except: # noqa
             pass
         try:
             while not self.tts_response_queue.empty():
                 self.tts_response_queue.get_nowait()
-        except:
+        except: # noqa
             pass
         
         # 重置TTS缓存状态

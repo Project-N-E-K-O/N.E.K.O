@@ -151,6 +151,9 @@ class OmniRealtimeClient:
         # Fatal error detection - 检测到致命错误后立即中断
         self._fatal_error_occurred = False  # 致命错误标志
         
+        # Interruption state - suppress output after user interruption until next response
+        self._interrupted = False  # 打断状态标志，防止重复消息块
+        
         # Native image input rate limiting
         self._last_native_image_time = 0.0  # 上次原生图片输入时间戳
 
@@ -509,13 +512,13 @@ class OmniRealtimeClient:
 
     async def create_response(self, instructions: str, skipped: bool = False) -> None:
         """Request a response from the API. First adds message to conversation, then creates response."""
-        if skipped == True:
+        if skipped:
             self._skip_until_next_response = True
 
         if "qwen" in self.model:
             await self.update_session({"instructions": self.instructions + '\n' + instructions})
 
-            logger.info(f"Creating response with instructions override")
+            logger.info("Creating response with instructions override")
             await self.send_event({"type": "response.create"})
         else:
             # 先通过 conversation.item.create 添加系统消息（增量）
@@ -536,7 +539,7 @@ class OmniRealtimeClient:
             await self.send_event(item_event)
             
             # 然后调用 response.create，不带 instructions（避免替换 session instructions）
-            logger.info(f"Creating response without instructions override")
+            logger.info("Creating response without instructions override")
             await self.send_event({"type": "response.create"})
 
     async def cancel_response(self) -> None:
@@ -586,6 +589,9 @@ class OmniRealtimeClient:
 
         logger.info("Handling interruption")
 
+        # Mark as interrupted to suppress any remaining output until next response
+        self._interrupted = True
+
         # 1. Cancel the current response
         if self._current_response_id:
             await self.cancel_response()
@@ -626,8 +632,8 @@ class OmniRealtimeClient:
                         continue  # 不关闭连接，只进行节流
                     
                     if '欠费' in error_msg or 'standing' in error_msg:
-                    error_msg = str(event.get('error', ''))
-                    logger.error(f"API Error: {error_msg}")
+                        error_msg = str(event.get('error', ''))
+                        logger.error(f"API Error: {error_msg}")
                     
                     # 检测503过载错误，触发backpressure节流
                     if '503' in error_msg or 'overloaded' in error_msg.lower():
@@ -664,6 +670,7 @@ class OmniRealtimeClient:
                 elif event_type == "response.created":
                     self._current_response_id = event.get("response", {}).get("id")
                     self._is_responding = True
+                    self._interrupted = False  # Clear interruption flag on new response
                     self._is_first_text_chunk = self._is_first_transcript_chunk = True
                     # 清空转录 buffer，防止累积旧内容
                     self._output_transcript_buffer = ""
@@ -690,7 +697,7 @@ class OmniRealtimeClient:
                     self._print_input_transcript = False
                     self._output_transcript_buffer = ""
 
-                if not self._skip_until_next_response:
+                if not self._skip_until_next_response and not self._interrupted:
                     if event_type in ["response.text.delta", "response.output_text.delta"]:
                         if self.on_text_delta:
                             if "glm" not in self.model:

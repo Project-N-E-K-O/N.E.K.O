@@ -1,14 +1,12 @@
 # -- coding: utf-8 --
 
 import asyncio
-import json
-import time
 import logging
 from typing import Optional, Callable, Dict, Any, Awaitable
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from openai import APIConnectionError, InternalServerError, RateLimitError
-from config import get_extra_body, get_model_tools
+from config import get_extra_body
 from utils.frontend_utils import calculate_text_similarity
 
 # Setup logger for this module
@@ -92,10 +90,6 @@ class OmniOfflineClient:
             streaming=True,
             extra_body=get_extra_body(self.model) or None
         )
-        # Bind tools if configured for this model
-        model_tools = get_model_tools(self.model)
-        if model_tools:
-            self.llm = self.llm.bind_tools(model_tools)
         
         # State management
         self._is_responding = False
@@ -160,10 +154,6 @@ class OmniOfflineClient:
                 streaming=True,
                 extra_body=get_extra_body(self.model) or None
             )
-            # Bind tools if configured for this model
-            model_tools = get_model_tools(self.model)
-            if model_tools:
-                self.llm = self.llm.bind_tools(model_tools)
     
     async def _check_repetition(self, response: str) -> bool:
         """

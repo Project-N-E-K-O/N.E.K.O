@@ -189,15 +189,6 @@ def find_models():
     except Exception as e:
         logging.warning(f"无法访问用户文档live2d目录: {e}")
     
-    # 添加用户mod路径
-    try:
-        config_mgr = get_config_manager()
-        user_mod_dir = config_mgr.get_workshop_path()
-        if os.path.exists(user_mod_dir):
-            search_dirs.append(('user_mods', user_mod_dir, '/user_mods'))
-            logging.info(f"已添加用户mod路径: {user_mod_dir}")
-    except Exception as e:
-        logging.warning(f"无法访问用户mod路径: {e}")
     
     # 遍历所有搜索目录
     for source, search_root_dir, url_prefix in search_dirs:
@@ -207,22 +198,34 @@ def find_models():
                 for file in files:
                     if file.endswith('.model3.json'):
                         # 获取模型名称 (使用其所在的文件夹名，更加直观)
-                        model_name = os.path.basename(root)
+                        folder_name = os.path.basename(root)
+                        
+                        # 使用文件夹名作为模型名称和显示名称
+                        display_name = folder_name
+                        model_name = folder_name
                         
                         # 构建可被浏览器访问的URL路径
                         # 1. 计算文件相对于 search_root_dir 的路径
                         relative_path = os.path.relpath(os.path.join(root, file), search_root_dir)
-                        # 2. 将本地路径分隔符 (如'\') 替换为URL分隔符 ('/')
+                        # 2. 将本地路径分隔符 (如'\\') 替换为URL分隔符 ('/')
                         model_path = relative_path.replace(os.path.sep, '/')
                         
                         # 如果模型名称已存在，添加来源后缀以区分
                         existing_names = [m["name"] for m in found_models]
-                        display_name = model_name
+                        final_name = model_name
                         if model_name in existing_names:
-                            display_name = f"{model_name}_{source}"
+                            final_name = f"{model_name}_{source}"
+                            # 如果加后缀后还是重复，再加个数字后缀
+                            counter = 1
+                            while final_name in existing_names:
+                                final_name = f"{model_name}_{source}_{counter}"
+                                counter += 1
+                            # 同时更新display_name以区分
+                            display_name = f"{display_name} ({source})"
                         
                         found_models.append({
-                            "name": display_name,
+                            "name": final_name,
+                            "display_name": display_name,
                             "path": f"{url_prefix}/{model_path}",
                             "source": source
                         })
@@ -279,9 +282,9 @@ def find_model_directory(model_name: str):
     返回 (实际路径, URL前缀) 元组
     """
     from utils.config_manager import get_config_manager
-    # 从配置文件获取WORKSHOP_PATH
+    # 从配置文件获取WORKSHOP_PATH，如果不存在则使用steam_workshop_path
     workshop_config_data = load_workshop_config()
-    WORKSHOP_SEARCH_DIR = workshop_config_data.get("WORKSHOP_PATH")
+    WORKSHOP_SEARCH_DIR = workshop_config_data.get("WORKSHOP_PATH", workshop_config_data.get("steam_workshop_path", workshop_config_data.get("default_workshop_folder")))
     # 首先尝试在用户文档目录
     try:
         config_mgr = get_config_manager()
@@ -366,9 +369,9 @@ def find_workshop_item_by_id(item_id: str) -> tuple:
         (物品路径, URL前缀) 元组，即使找不到也会返回默认值
     """
     try:
-        # 从配置文件获取WORKSHOP_PATH，如果不存在则使用默认路径
+        # 从配置文件获取WORKSHOP_PATH，如果不存在则使用steam_workshop_path或默认路径
         workshop_config = load_workshop_config()
-        workshop_dir = workshop_config.get("WORKSHOP_PATH", workshop_config.get("default_workshop_folder", "static"))
+        workshop_dir = workshop_config.get("WORKSHOP_PATH", workshop_config.get("steam_workshop_path", workshop_config.get("default_workshop_folder", "static")))
         
         # 如果路径不存在或为空，使用默认的static目录
         if not workshop_dir or not os.path.exists(workshop_dir):

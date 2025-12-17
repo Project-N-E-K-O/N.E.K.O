@@ -437,6 +437,18 @@ function init_app() {
                                     if (screenCaptureStream != null) {
                                         await startScreenSharing();
                                     }
+                                    
+                                    // 同步更新Live2D浮动按钮状态
+                                    if (window.live2dManager && window.live2dManager._floatingButtons) {
+                                        // 更新麦克风按钮状态
+                                        syncFloatingMicButtonState(true);
+                                        
+                                        // 更新屏幕分享按钮状态（如果屏幕共享已开启）
+                                        if (screenCaptureStream != null) {
+                                            syncFloatingScreenButtonState(true);
+                                        }
+                                    }
+                                    
                                     showStatusToast(window.t ? window.t('app.restartComplete', { name: lanlan_config.lanlan_name }) : `重启完成，${lanlan_config.lanlan_name}回来了！`, 4000);
                                 } catch (error) {
                                     console.error("重启时出错:", error);
@@ -2643,7 +2655,6 @@ function init_app() {
                     { href: `/memory_browser`, text: '📝 记忆管理' },
                     { href: `/chara_manager`, text: '👤 角色设置' },
                     { href: `/l2d?lanlan_name=${lanlan_config.lanlan_name}`, text: '🎨 Live2D管理' },
-                    { href: `/api_key`, textKey: 'settings.menu.apiSettings', text: window.t ? window.t('settings.menu.apiSettings') : '🔑 API设置' },
                     { href: `/steam_workshop_manager`, textKey: 'steam.workshop', text: window.t ? window.t('steam.workshop') : 'steam创意工坊' }
                 ];
 

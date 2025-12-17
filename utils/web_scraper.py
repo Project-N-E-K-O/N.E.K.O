@@ -12,6 +12,7 @@ import logging
 from urllib.parse import quote
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage
+from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
@@ -642,7 +643,6 @@ async def search_baidu(query: str, limit: int = 5) -> Dict[str, Any]:
             'error': str(e)
         }
 
-from bs4 import BeautifulSoup
 
 def parse_baidu_results(html_content: str, limit: int = 5) -> List[Dict[str, str]]:
     """

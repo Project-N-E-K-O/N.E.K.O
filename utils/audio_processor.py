@@ -39,6 +39,11 @@ def _get_rnnoise():
         except ImportError:
             logger.warning("⚠️ pyrnnoise library not installed. Run: pip install pyrnnoise")
             _rnnoise_available = False
+        except Exception as e:
+            # Nuitka 打包后可能出现 TypeError: iter() returned non-iterator
+            # 这是 Jinja2 PackageLoader 与 Nuitka 资源系统不兼容导致的
+            logger.warning(f"⚠️ pyrnnoise import failed (Nuitka compatibility issue): {e}")
+            _rnnoise_available = False
     return _RNNoise if _rnnoise_available else None
 
 
