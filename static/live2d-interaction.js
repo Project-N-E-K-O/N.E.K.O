@@ -84,6 +84,9 @@ Live2DManager.prototype.setupDragAndDrop = function(model) {
             // 拖拽结束后恢复按钮的事件拦截
             disableButtonEventPropagation();
             
+            // 检测是否需要切换屏幕（多屏幕支持）
+            this._checkAndSwitchDisplay(model);
+            
             // 拖拽结束后自动保存位置
             this._savePositionAfterInteraction();
         }
@@ -399,7 +402,7 @@ Live2DManager.prototype.enableMouseTracking = function(model, options = {}) {
 };
 
 // 交互后保存位置和缩放的辅助函数
-Live2DManager.prototype._savePositionAfterInteraction = function() {
+Live2DManager.prototype._savePositionAfterInteraction = async function() {
     if (!this.currentModel || !this._lastLoadedModelPath) {
         console.debug('无法保存位置：模型或路径未设置');
         return;
@@ -415,8 +418,26 @@ Live2DManager.prototype._savePositionAfterInteraction = function() {
         return;
     }
     
+    // 获取当前窗口所在显示器的信息（用于多屏幕位置恢复）
+    let displayInfo = null;
+    if (window.electronScreen && window.electronScreen.getCurrentDisplay) {
+        try {
+            const currentDisplay = await window.electronScreen.getCurrentDisplay();
+            if (currentDisplay && Number.isFinite(currentDisplay.screenX) && 
+                Number.isFinite(currentDisplay.screenY)) {
+                displayInfo = {
+                    screenX: currentDisplay.screenX,
+                    screenY: currentDisplay.screenY
+                };
+                console.debug('保存显示器位置:', displayInfo);
+            }
+        } catch (error) {
+            console.warn('获取显示器信息失败:', error);
+        }
+    }
+    
     // 异步保存，不阻塞交互
-    this.saveUserPreferences(this._lastLoadedModelPath, position, scale)
+    this.saveUserPreferences(this._lastLoadedModelPath, position, scale, null, displayInfo)
         .then(success => {
             if (success) {
                 console.debug('模型位置和缩放已自动保存');
@@ -442,3 +463,121 @@ Live2DManager.prototype._debouncedSavePosition = function() {
     }, 500);
 };
 
+// 多屏幕支持：检测模型是否移出当前屏幕并切换到新屏幕
+Live2DManager.prototype._checkAndSwitchDisplay = async function(model) {
+    // 仅在 Electron 环境下执行
+    if (!window.electronScreen || !window.electronScreen.moveWindowToDisplay) {
+        return;
+    }
+    
+    try {
+        // 获取模型中心点的窗口坐标
+        const bounds = model.getBounds();
+        const modelCenterX = (bounds.left + bounds.right) / 2;
+        const modelCenterY = (bounds.top + bounds.bottom) / 2;
+        
+        // 获取所有屏幕信息
+        const displays = await window.electronScreen.getAllDisplays();
+        if (!displays || displays.length <= 1) {
+            // 只有一个屏幕，不需要切换
+            return;
+        }
+        
+        // 检查模型是否在当前窗口范围内
+        const windowWidth = window.innerWidth;
+        const windowHeight = window.innerHeight;
+        
+        // 如果模型大部分还在当前窗口内，不切换
+        if (modelCenterX >= 0 && modelCenterX < windowWidth &&
+            modelCenterY >= 0 && modelCenterY < windowHeight) {
+            return;
+        }
+        
+        // 模型移出了当前窗口，查找目标屏幕
+        // 需要转换为屏幕坐标（相对于屏幕的绝对坐标）
+        // displays 返回的已经包含 screenX, screenY
+        let targetDisplay = null;
+        for (const display of displays) {
+            // display.x, display.y 是相对于当前窗口的坐标
+            // display.screenX, display.screenY 是屏幕绝对坐标
+            
+            // 计算模型中心的屏幕绝对坐标
+            // 当前窗口左上角在屏幕上的位置可以从 display 中推算
+            // display.screenX - display.x = 窗口左上角的屏幕 X
+            const windowScreenX = display.screenX - display.x;
+            const windowScreenY = display.screenY - display.y;
+            
+            const modelScreenX = windowScreenX + modelCenterX;
+            const modelScreenY = windowScreenY + modelCenterY;
+            
+            // 检查这个点是否在某个屏幕内
+            if (modelScreenX >= display.screenX && 
+                modelScreenX < display.screenX + display.width &&
+                modelScreenY >= display.screenY && 
+                modelScreenY < display.screenY + display.height) {
+                targetDisplay = display;
+                break;
+            }
+        }
+        
+        if (targetDisplay) {
+            console.log('[Live2D] 检测到模型移出当前屏幕，准备切换到屏幕:', targetDisplay.id);
+            
+            // 计算模型在目标屏幕中的新坐标
+            // 首先获取当前窗口在屏幕中的位置
+            const currentDisplay = displays.find(d => d.x === 0 && d.y === 0) || displays[0];
+            const windowScreenX = currentDisplay.screenX;
+            const windowScreenY = currentDisplay.screenY;
+            
+            // 模型的屏幕绝对坐标
+            const modelScreenX = windowScreenX + modelCenterX;
+            const modelScreenY = windowScreenY + modelCenterY;
+            
+            // 调用切换屏幕
+            const result = await window.electronScreen.moveWindowToDisplay(modelScreenX, modelScreenY);
+            
+            if (result && result.success && !result.sameDisplay) {
+                console.log('[Live2D] 屏幕切换成功:', result);
+                
+                // 计算模型在新窗口中的位置
+                // 新窗口左上角是 targetDisplay.screenX, targetDisplay.screenY
+                // 模型新的窗口坐标 = 模型屏幕坐标 - 新窗口屏幕坐标
+                const newModelX = modelScreenX - targetDisplay.screenX;
+                const newModelY = modelScreenY - targetDisplay.screenY;
+                
+                // 考虑缩放因子变化
+                if (result.scaleRatio && result.scaleRatio !== 1) {
+                    // 如果不同屏幕有不同的缩放，可能需要调整模型大小
+                    // 但通常保持模型原大小更合理，只调整位置
+                    console.log('[Live2D] 屏幕缩放比变化:', result.scaleRatio);
+                }
+                
+                // 使用模型宽高的一半作为偏移，因为我们计算的是中心点
+                const modelWidth = bounds.right - bounds.left;
+                const modelHeight = bounds.bottom - bounds.top;
+                
+                model.x = newModelX - modelWidth / 2 + (bounds.right - bounds.left) / 2;
+                model.y = newModelY - modelHeight / 2 + (bounds.bottom - bounds.top) / 2;
+                
+                // 简化：直接设置到中心点偏移后的位置
+                model.x = newModelX;
+                model.y = newModelY;
+                
+                console.log('[Live2D] 模型新位置:', model.x, model.y);
+                
+                // 切换屏幕后保存位置和新的显示器信息
+                this._savePositionAfterInteraction();
+            }
+        }
+    } catch (error) {
+        console.error('[Live2D] 检测/切换屏幕时出错:', error);
+    }
+};
+
+// 监听屏幕切换事件，更新相关状态
+if (typeof window !== 'undefined') {
+    window.addEventListener('electron-display-changed', (event) => {
+        console.log('[Live2D] 收到屏幕切换事件:', event.detail);
+        // 可以在这里做额外的处理，比如重新计算UI位置等
+    });
+}

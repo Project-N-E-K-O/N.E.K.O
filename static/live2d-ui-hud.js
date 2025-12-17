@@ -458,12 +458,12 @@ Live2DManager.prototype._setupDragging = function (hud) {
             const newX = clientX - dragOffsetX;
             const newY = clientY - dragOffsetY;
 
-            // 获取窗口尺寸和HUD尺寸
+            // 获取HUD尺寸和窗口尺寸
+            const hudRect = hud.getBoundingClientRect();
             const windowWidth = window.innerWidth;
             const windowHeight = window.innerHeight;
-            const hudRect = hud.getBoundingClientRect();
 
-            // 边界检查 - 确保HUD不会超出视口
+            // 边界检查 - 确保HUD不会超出窗口
             const constrainedX = Math.max(0, Math.min(newX, windowWidth - hudRect.width));
             const constrainedY = Math.max(0, Math.min(newY, windowHeight - hudRect.height));
 
@@ -523,18 +523,22 @@ Live2DManager.prototype._setupDragging = function (hud) {
         hud.style.opacity = '1';
         hud.style.transition = 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease';
 
-        // 最终位置校准
+        // 最终位置校准（多屏幕支持）
         requestAnimationFrame(() => {
             const rect = hud.getBoundingClientRect();
-            const windowWidth = window.innerWidth;
-            const windowHeight = window.innerHeight;
 
-            // 确保位置在视口内
+            // 使用缓存的屏幕边界进行限制
+            const displayLeft = cachedDisplayHUD.x;
+            const displayTop = cachedDisplayHUD.y;
+            const displayRight = cachedDisplayHUD.x + cachedDisplayHUD.width;
+            const displayBottom = cachedDisplayHUD.y + cachedDisplayHUD.height;
+
+            // 确保位置在当前屏幕内
             let finalLeft = parseFloat(hud.style.left) || 0;
             let finalTop = parseFloat(hud.style.top) || 0;
 
-            finalLeft = Math.max(0, Math.min(finalLeft, windowWidth - rect.width));
-            finalTop = Math.max(0, Math.min(finalTop, windowHeight - rect.height));
+            finalLeft = Math.max(displayLeft, Math.min(finalLeft, displayRight - rect.width));
+            finalTop = Math.max(displayTop, Math.min(finalTop, displayBottom - rect.height));
 
             hud.style.left = finalLeft + 'px';
             hud.style.top = finalTop + 'px';
@@ -618,18 +622,22 @@ Live2DManager.prototype._setupDragging = function (hud) {
         hud.style.opacity = '1';
         hud.style.transition = 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease';
 
-        // 最终位置校准
+        // 最终位置校准（多屏幕支持）
         requestAnimationFrame(() => {
             const rect = hud.getBoundingClientRect();
-            const windowWidth = window.innerWidth;
-            const windowHeight = window.innerHeight;
 
-            // 确保位置在视口内
+            // 使用缓存的屏幕边界进行限制
+            const displayLeft = cachedDisplayHUD.x;
+            const displayTop = cachedDisplayHUD.y;
+            const displayRight = cachedDisplayHUD.x + cachedDisplayHUD.width;
+            const displayBottom = cachedDisplayHUD.y + cachedDisplayHUD.height;
+
+            // 确保位置在当前屏幕内
             let finalLeft = parseFloat(hud.style.left) || 0;
             let finalTop = parseFloat(hud.style.top) || 0;
 
-            finalLeft = Math.max(0, Math.min(finalLeft, windowWidth - rect.width));
-            finalTop = Math.max(0, Math.min(finalTop, windowHeight - rect.height));
+            finalLeft = Math.max(displayLeft, Math.min(finalLeft, displayRight - rect.width));
+            finalTop = Math.max(displayTop, Math.min(finalTop, displayBottom - rect.height));
 
             hud.style.left = finalLeft + 'px';
             hud.style.top = finalTop + 'px';
@@ -657,24 +665,34 @@ Live2DManager.prototype._setupDragging = function (hud) {
     document.addEventListener('touchmove', handleTouchMove, { passive: false });
     document.addEventListener('touchend', handleTouchEnd, { passive: false });
 
-    // 窗口大小变化时重新校准位置
-    const handleResize = () => {
+    // 窗口大小变化时重新校准位置（多屏幕支持）
+    const handleResize = async () => {
         if (isDragging || touchDragging) return;
+
+        // 更新屏幕信息
+        const rect = hud.getBoundingClientRect();
+        const centerX = rect.left + rect.width / 2;
+        const centerY = rect.top + rect.height / 2;
+        await updateDisplayBounds(centerX, centerY);
 
         requestAnimationFrame(() => {
             const rect = hud.getBoundingClientRect();
-            const windowWidth = window.innerWidth;
-            const windowHeight = window.innerHeight;
+            
+            // 使用缓存的屏幕边界进行限制
+            const displayLeft = cachedDisplayHUD.x;
+            const displayTop = cachedDisplayHUD.y;
+            const displayRight = cachedDisplayHUD.x + cachedDisplayHUD.width;
+            const displayBottom = cachedDisplayHUD.y + cachedDisplayHUD.height;
 
-            // 如果HUD超出视口，调整到可见位置
-            if (rect.left < 0 || rect.top < 0 ||
-                rect.right > windowWidth || rect.bottom > windowHeight) {
+            // 如果HUD超出当前屏幕，调整到可见位置
+            if (rect.left < displayLeft || rect.top < displayTop ||
+                rect.right > displayRight || rect.bottom > displayBottom) {
 
                 let newLeft = parseFloat(hud.style.left) || 0;
                 let newTop = parseFloat(hud.style.top) || 0;
 
-                newLeft = Math.max(0, Math.min(newLeft, windowWidth - rect.width));
-                newTop = Math.max(0, Math.min(newTop, windowHeight - rect.height));
+                newLeft = Math.max(displayLeft, Math.min(newLeft, displayRight - rect.width));
+                newTop = Math.max(displayTop, Math.min(newTop, displayBottom - rect.height));
 
                 hud.style.left = newLeft + 'px';
                 hud.style.top = newTop + 'px';

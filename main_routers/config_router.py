@@ -85,9 +85,11 @@ async def save_preferences(request: Request):
         
         # 获取参数（可选）
         parameters = data.get('parameters')
+        # 获取显示器信息（可选，用于多屏幕位置恢复）
+        display = data.get('display')
         
         # 更新偏好
-        if update_model_preferences(data['model_path'], data['position'], data['scale'], parameters):
+        if update_model_preferences(data['model_path'], data['position'], data['scale'], parameters, display):
             return {"success": True, "message": "偏好设置已保存"}
         else:
             return {"success": False, "error": "保存失败"}
