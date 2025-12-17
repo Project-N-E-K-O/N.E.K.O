@@ -175,20 +175,32 @@ async def get_recent_files():
     catgirl_data = character_data.get('猫娘', {})
     
     def get_display_name(char_key):
-        """获取角色的显示名称（优先使用昵称，其次档案名，最后使用key）"""
+        """获取角色的显示名称（优先使用昵称，其次档案名，最后使用key），并清理不安全字符"""
         char_info = catgirl_data.get(char_key, {})
+        unsafe_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|']
+
         # 优先使用昵称
         if '昵称' in char_info and char_info['昵称']:
             nickname = str(char_info['昵称']).strip()
             if nickname:
+                # 如果有多个昵称（用逗号分隔），取第一个
                 nickname = nickname.split(',')[0].strip()
+                for ch in unsafe_chars:
+                    nickname = nickname.replace(ch, '_')
+                nickname = nickname.strip('. ')
                 if nickname:
                     return nickname
+
         # 其次使用档案名
         if '档案名' in char_info and char_info['档案名']:
             profile_name = str(char_info['档案名']).strip()
             if profile_name:
-                return profile_name
+                for ch in unsafe_chars:
+                    profile_name = profile_name.replace(ch, '_')
+                profile_name = profile_name.strip('. ')
+                if profile_name:
+                    return profile_name
+
         # 最后使用key本身
         return char_key
     
@@ -276,14 +288,16 @@ async def save_recent_file(request: Request):
     for msg in chat:
         t = msg.get('role')
         text = msg.get('text', '')
+        # 保留除 role/text 外的额外字段
+        extra_fields = {k: v for k, v in msg.items() if k not in ['role', 'text']}
         if t == 'human' or t == 'user':
-            messages.append(HumanMessage(content=text))
+            messages.append(HumanMessage(content=text, additional_kwargs=extra_fields))
         elif t == 'ai' or t == 'assistant':
-            messages.append(AIMessage(content=text))
+            messages.append(AIMessage(content=text, additional_kwargs=extra_fields))
         elif t == 'system':
-            messages.append(SystemMessage(content=text))
+            messages.append(SystemMessage(content=text, additional_kwargs=extra_fields))
         else:
-            messages.append(HumanMessage(content=text))
+            messages.append(HumanMessage(content=text, additional_kwargs=extra_fields))
     
     try:
         # 保存为XML格式
