@@ -110,6 +110,11 @@ def get_steamworks():
     return _state['steamworks']
 
 
+def set_steamworks(steamworks):
+    """Set the steamworks instance (called during startup event)."""
+    _state['steamworks'] = steamworks
+
+
 def get_templates():
     """Get the templates dictionary."""
     _check_initialized('templates')
