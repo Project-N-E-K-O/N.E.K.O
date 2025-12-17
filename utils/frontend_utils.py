@@ -279,7 +279,7 @@ def find_model_directory(model_name: str):
     from utils.config_manager import get_config_manager
     # 从配置文件获取WORKSHOP_PATH，如果不存在则使用steam_workshop_path
     workshop_config_data = load_workshop_config()
-    WORKSHOP_SEARCH_DIR = workshop_config_data.get("WORKSHOP_PATH", workshop_config_data.get("steam_workshop_path"))
+    WORKSHOP_SEARCH_DIR = workshop_config_data.get("WORKSHOP_PATH", workshop_config_data.get("steam_workshop_path", workshop_config_data.get("default_workshop_folder")))
     # 首先尝试在用户文档目录
     try:
         config_mgr = get_config_manager()
