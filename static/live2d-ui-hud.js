@@ -3,6 +3,83 @@
  * 包含任务面板、任务卡片、HUD拖拽功能
  */
 
+// 缓存当前显示器边界信息（多屏幕支持）
+let cachedDisplayHUD = {
+    x: 0,
+    y: 0,
+    width: window.innerWidth,
+    height: window.innerHeight
+};
+
+// 更新显示器边界信息
+async function updateDisplayBounds(centerX, centerY) {
+    if (!window.electronScreen || !window.electronScreen.getAllDisplays) {
+        // 非 Electron 环境，使用窗口大小
+        cachedDisplayHUD = {
+            x: 0,
+            y: 0,
+            width: window.innerWidth,
+            height: window.innerHeight
+        };
+        return;
+    }
+
+    try {
+        const displays = await window.electronScreen.getAllDisplays();
+        if (!displays || displays.length === 0) {
+            // 没有显示器信息，使用窗口大小
+            cachedDisplayHUD = {
+                x: 0,
+                y: 0,
+                width: window.innerWidth,
+                height: window.innerHeight
+            };
+            return;
+        }
+
+        // 如果提供了中心点坐标，找到包含该点的显示器
+        if (typeof centerX === 'number' && typeof centerY === 'number') {
+            for (const display of displays) {
+                if (centerX >= display.x && centerX < display.x + display.width &&
+                    centerY >= display.y && centerY < display.y + display.height) {
+                    cachedDisplayHUD = {
+                        x: display.x,
+                        y: display.y,
+                        width: display.width,
+                        height: display.height
+                    };
+                    return;
+                }
+            }
+        }
+
+        // 否则使用主显示器或第一个显示器
+        const primaryDisplay = displays.find(d => d.primary) || displays[0];
+        cachedDisplayHUD = {
+            x: primaryDisplay.x,
+            y: primaryDisplay.y,
+            width: primaryDisplay.width,
+            height: primaryDisplay.height
+        };
+    } catch (error) {
+        console.warn('Failed to update display bounds:', error);
+        // 失败时使用窗口大小
+        cachedDisplayHUD = {
+            x: 0,
+            y: 0,
+            width: window.innerWidth,
+            height: window.innerHeight
+        };
+    }
+}
+
+// 将 updateDisplayBounds 暴露到全局，确保其他脚本或模块可以调用（兼容不同加载顺序）
+try {
+    if (typeof window !== 'undefined') window.updateDisplayBounds = updateDisplayBounds;
+} catch (e) {
+    // 忽略不可用的全局对象情形
+}
+
 // 创建Agent弹出框内容
 Live2DManager.prototype._createAgentPopupContent = function (popup) {
     // 添加状态显示栏 - Fluent Design
@@ -71,6 +148,9 @@ Live2DManager.prototype.createAgentTaskHUD = function () {
         this._cleanupDragging();
         this._cleanupDragging = null;
     }
+
+    // 初始化显示器边界缓存
+    updateDisplayBounds();
 
     const hud = document.createElement('div');
     hud.id = 'agent-task-hud';
@@ -528,6 +608,10 @@ Live2DManager.prototype._setupDragging = function (hud) {
             const rect = hud.getBoundingClientRect();
 
             // 使用缓存的屏幕边界进行限制
+            if (!cachedDisplayHUD) {
+                console.warn('cachedDisplayHUD not initialized, skipping bounds check');
+                return;
+            }
             const displayLeft = cachedDisplayHUD.x;
             const displayTop = cachedDisplayHUD.y;
             const displayRight = cachedDisplayHUD.x + cachedDisplayHUD.width;
@@ -627,6 +711,10 @@ Live2DManager.prototype._setupDragging = function (hud) {
             const rect = hud.getBoundingClientRect();
 
             // 使用缓存的屏幕边界进行限制
+            if (!cachedDisplayHUD) {
+                console.warn('cachedDisplayHUD not initialized, skipping bounds check');
+                return;
+            }
             const displayLeft = cachedDisplayHUD.x;
             const displayTop = cachedDisplayHUD.y;
             const displayRight = cachedDisplayHUD.x + cachedDisplayHUD.width;
@@ -679,6 +767,10 @@ Live2DManager.prototype._setupDragging = function (hud) {
             const rect = hud.getBoundingClientRect();
             
             // 使用缓存的屏幕边界进行限制
+            if (!cachedDisplayHUD) {
+                console.warn('cachedDisplayHUD not initialized, skipping bounds check');
+                return;
+            }
             const displayLeft = cachedDisplayHUD.x;
             const displayTop = cachedDisplayHUD.y;
             const displayRight = cachedDisplayHUD.x + cachedDisplayHUD.width;

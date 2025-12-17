@@ -113,8 +113,10 @@ async function initLive2DModel() {
                         );
                         if (result && result.success) {
                             console.log('窗口位置恢复成功:', result);
-                        } else if (result && !result.sameDisplay) {
+                        } else if (result && result.sameDisplay) {
                             console.log('窗口已在正确的显示器上');
+                        } else {
+                            console.warn('窗口移动失败:', result);
                         }
                     } catch (error) {
                         console.warn('恢复窗口位置失败:', error);

@@ -552,14 +552,7 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function(model) {
                     console.log('[Live2D] 屏幕缩放比变化:', result.scaleRatio);
                 }
                 
-                // 使用模型宽高的一半作为偏移，因为我们计算的是中心点
-                const modelWidth = bounds.right - bounds.left;
-                const modelHeight = bounds.bottom - bounds.top;
-                
-                model.x = newModelX - modelWidth / 2 + (bounds.right - bounds.left) / 2;
-                model.y = newModelY - modelHeight / 2 + (bounds.bottom - bounds.top) / 2;
-                
-                // 简化：直接设置到中心点偏移后的位置
+                //直接设置到中心点位置
                 model.x = newModelX;
                 model.y = newModelY;
                 
