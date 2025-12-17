@@ -495,22 +495,26 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function(model) {
         
         // 模型移出了当前窗口，查找目标屏幕
         // 需要转换为屏幕坐标（相对于屏幕的绝对坐标）
-        // displays 返回的已经包含 screenX, screenY
+        
+        // 首先获取当前窗口所在的显示器
+        const currentDisplay = await window.electronScreen.getCurrentDisplay();
+        if (!currentDisplay) {
+            console.warn('[Live2D] 无法获取当前显示器信息');
+            return;
+        }
+        
+        // 计算当前窗口左上角在屏幕上的绝对位置
+        const windowScreenX = currentDisplay.screenX - currentDisplay.x;
+        const windowScreenY = currentDisplay.screenY - currentDisplay.y;
+        
+        // 计算模型中心点的屏幕绝对坐标
+        const modelScreenX = windowScreenX + modelCenterX;
+        const modelScreenY = windowScreenY + modelCenterY;
+        
+        // 遍历所有显示器，找到包含模型中心点的显示器
         let targetDisplay = null;
         for (const display of displays) {
-            // display.x, display.y 是相对于当前窗口的坐标
-            // display.screenX, display.screenY 是屏幕绝对坐标
-            
-            // 计算模型中心的屏幕绝对坐标
-            // 当前窗口左上角在屏幕上的位置可以从 display 中推算
-            // display.screenX - display.x = 窗口左上角的屏幕 X
-            const windowScreenX = display.screenX - display.x;
-            const windowScreenY = display.screenY - display.y;
-            
-            const modelScreenX = windowScreenX + modelCenterX;
-            const modelScreenY = windowScreenY + modelCenterY;
-            
-            // 检查这个点是否在某个屏幕内
+            // 检查模型中心点是否在这个显示器内
             if (modelScreenX >= display.screenX && 
                 modelScreenX < display.screenX + display.width &&
                 modelScreenY >= display.screenY && 
@@ -523,17 +527,7 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function(model) {
         if (targetDisplay) {
             console.log('[Live2D] 检测到模型移出当前屏幕，准备切换到屏幕:', targetDisplay.id);
             
-            // 计算模型在目标屏幕中的新坐标
-            // 首先获取当前窗口在屏幕中的位置
-            const currentDisplay = displays.find(d => d.x === 0 && d.y === 0) || displays[0];
-            const windowScreenX = currentDisplay.screenX;
-            const windowScreenY = currentDisplay.screenY;
-            
-            // 模型的屏幕绝对坐标
-            const modelScreenX = windowScreenX + modelCenterX;
-            const modelScreenY = windowScreenY + modelCenterY;
-            
-            // 调用切换屏幕
+            // 使用之前已经计算好的模型屏幕绝对坐标调用切换屏幕
             const result = await window.electronScreen.moveWindowToDisplay(modelScreenX, modelScreenY);
             
             if (result && result.success && !result.sameDisplay) {
