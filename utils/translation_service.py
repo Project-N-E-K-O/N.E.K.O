@@ -9,7 +9,6 @@
 import asyncio
 import logging
 from typing import Optional, Dict, Any
-from functools import lru_cache
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
@@ -19,8 +18,7 @@ logger = logging.getLogger(__name__)
 SUPPORTED_LANGUAGES = ['zh-CN', 'en']
 DEFAULT_LANGUAGE = 'zh-CN'
 
-# 翻译缓存（简单的内存缓存）
-_translation_cache: Dict[str, str] = {}
+# 缓存最大条目数
 _cache_max_size = 1000
 
 
@@ -44,11 +42,11 @@ class TranslationService:
             # 使用辅助API配置（correction模型通常用于文本处理）
             correction_config = self.config_manager.get_model_api_config('correction')
             
-            if not correction_config.get('api_key') or not correction_config.get('model'):
-                logger.warning("翻译服务：辅助API配置不完整，无法进行翻译")
+            if not correction_config.get('api_key') or not correction_config.get('model') or not correction_config.get('base_url'):
+                logger.warning("翻译服务：辅助API配置不完整（缺少 api_key、model 或 base_url），无法进行翻译")
                 return None
             
-            # 如果客户端已存在且配置未变化，直接返回
+            # 懒加载：如果客户端已存在，直接返回（注意：不会检测配置变化）
             if self._llm_client is not None:
                 return self._llm_client
             
@@ -73,7 +71,7 @@ class TranslationService:
     
     def _save_to_cache(self, text: str, target_lang: str, translated: str):
         """保存翻译结果到缓存"""
-        # 简单的LRU缓存：如果缓存过大，删除最旧的条目
+        # 简单的FIFO缓存：如果缓存过大，删除最早的条目
         if len(self._cache) >= _cache_max_size:
             # 删除第一个条目（FIFO）
             first_key = next(iter(self._cache))
@@ -103,7 +101,7 @@ class TranslationService:
         self, 
         text: str, 
         target_lang: str,
-        source_lang: Optional[str] = None
+        
     ) -> str:
         """
         翻译文本
@@ -111,7 +109,7 @@ class TranslationService:
         Args:
             text: 要翻译的文本
             target_lang: 目标语言 ('zh-CN' 或 'en')
-            source_lang: 源语言（可选，自动检测）
+            
         
         Returns:
             翻译后的文本，如果翻译失败则返回原文
