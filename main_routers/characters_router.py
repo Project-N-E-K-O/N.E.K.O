@@ -32,9 +32,56 @@ logger = logging.getLogger("Main")
 
 
 @router.get('/')
-async def get_characters():
+async def get_characters(request: Request):
+    """获取角色数据，支持根据用户语言自动翻译人设"""
     _config_manager = get_config_manager()
-    return JSONResponse(content=_config_manager.load_characters())
+    characters_data = _config_manager.load_characters()
+    
+    # 尝试从请求参数或请求头获取用户语言
+    user_language = request.query_params.get('language') or request.headers.get('Accept-Language', 'zh-CN')
+    # 标准化语言代码
+    if user_language.startswith('zh'):
+        user_language = 'zh-CN'
+    elif user_language.startswith('en'):
+        user_language = 'en'
+    else:
+        user_language = 'zh-CN'  # 默认中文
+    
+    # 如果语言是中文，不需要翻译
+    if user_language == 'zh-CN':
+        return JSONResponse(content=characters_data)
+    
+    # 需要翻译：翻译人设数据
+    try:
+        from utils.translation_service import get_translation_service
+        translation_service = get_translation_service(_config_manager)
+        
+        # 翻译主人数据
+        if '主人' in characters_data and isinstance(characters_data['主人'], dict):
+            characters_data['主人'] = await translation_service.translate_dict(
+                characters_data['主人'],
+                user_language,
+                fields_to_translate=['档案名', '昵称']
+            )
+        
+        # 翻译猫娘数据
+        if '猫娘' in characters_data and isinstance(characters_data['猫娘'], dict):
+            translated_catgirls = {}
+            for catgirl_name, catgirl_data in characters_data['猫娘'].items():
+                if isinstance(catgirl_data, dict):
+                    translated_catgirls[catgirl_name] = await translation_service.translate_dict(
+                        catgirl_data,
+                        user_language,
+                        fields_to_translate=['档案名', '昵称', '性别']  # 注意：不翻译 system_prompt
+                    )
+                else:
+                    translated_catgirls[catgirl_name] = catgirl_data
+            characters_data['猫娘'] = translated_catgirls
+        
+        return JSONResponse(content=characters_data)
+    except Exception as e:
+        logger.error(f"翻译人设数据失败: {e}，返回原始数据")
+        return JSONResponse(content=characters_data)
 
 
 @router.get('/current_live2d_model')
@@ -272,9 +319,12 @@ async def update_catgirl_voice_id(name: str, request: Request):
             # 1. 先发送刷新消息（WebSocket还连着）
             if session_manager[name].websocket:
                 try:
+                    # 翻译消息
+                    message_text = "语音已更新，页面即将刷新"
+                    translated_message = await session_manager[name]._translate_if_needed(message_text)
                     await session_manager[name].websocket.send_text(json.dumps({
                         "type": "reload_page",
-                        "message": "语音已更新，页面即将刷新"
+                        "message": translated_message
                     }))
                     logger.info(f"已通知 {name} 的前端刷新页面")
                 except Exception as e:
@@ -633,9 +683,12 @@ async def update_catgirl(name: str, request: Request):
             # 1. 先发送刷新消息（WebSocket还连着）
             if session_manager[name].websocket:
                 try:
+                    # 翻译消息
+                    message_text = "语音已更新，页面即将刷新"
+                    translated_message = await session_manager[name]._translate_if_needed(message_text)
                     await session_manager[name].websocket.send_text(json.dumps({
                         "type": "reload_page",
-                        "message": "语音已更新，页面即将刷新"
+                        "message": translated_message
                     }))
                     logger.info(f"已通知 {name} 的前端刷新页面")
                 except Exception as e:

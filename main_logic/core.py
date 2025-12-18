@@ -136,6 +136,11 @@ class LLMSessionManager:
         
         # 用户活动时间戳：用于主动搭话检测最近是否有用户输入
         self.last_user_activity_time = None  # float timestamp or None
+        
+        # 用户语言设置（从前端获取）
+        self.user_language = 'zh-CN'  # 默认中文
+        # 翻译服务（延迟初始化）
+        self._translation_service = None
 
     async def handle_new_message(self):
         """处理新模型输出：清空TTS队列并通知前端"""
@@ -342,10 +347,13 @@ class LLMSessionManager:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 # 去掉情绪标签
                 text = self.emotion_pattern.sub('', text)
+                
+                # 根据用户语言翻译文本（注意：流式消息逐块翻译，可能不够完美，但保证实时性）
+                translated_text = await self._translate_if_needed(text)
 
                 message = {
                     "type": "gemini_response",
-                    "text": text,
+                    "text": translated_text,
                     "isNewMessage": is_first_chunk  # 标记是否是新消息的第一个chunk
                 }
                 await self.websocket.send_json(message)
@@ -353,6 +361,7 @@ class LLMSessionManager:
                 if hasattr(self, 'is_preparing_new_session') and self.is_preparing_new_session:
                     if not hasattr(self, 'message_cache_for_new_session'):
                         self.message_cache_for_new_session = []
+                    # 注意：缓存使用原始文本，不翻译（用于记忆等内部处理）
                     if len(self.message_cache_for_new_session) == 0 or self.message_cache_for_new_session[-1]['role']==self.master_name:
                         self.message_cache_for_new_session.append(
                             {"role": self.lanlan_name, "text": text})
@@ -1412,14 +1421,46 @@ class LLMSessionManager:
             # 如果没有设置websocket_lock（旧代码路径），直接清理
             self.websocket = None
 
+    def _get_translation_service(self):
+        """获取翻译服务实例（延迟初始化）"""
+        if self._translation_service is None:
+            from utils.translation_service import get_translation_service
+            self._translation_service = get_translation_service(self._config_manager)
+        return self._translation_service
+    
+    def set_user_language(self, language: str):
+        """设置用户语言"""
+        if language in ['zh-CN', 'en']:
+            self.user_language = language
+            logger.info(f"用户语言已设置为: {language}")
+        else:
+            logger.warning(f"不支持的语言: {language}，保持当前语言: {self.user_language}")
+    
+    async def _translate_if_needed(self, text: str) -> str:
+        """如果需要，翻译文本"""
+        if not text or self.user_language == 'zh-CN':
+            # 默认语言是中文，不需要翻译
+            return text
+        
+        try:
+            translation_service = self._get_translation_service()
+            translated = await translation_service.translate_text(text, self.user_language)
+            return translated
+        except Exception as e:
+            logger.error(f"翻译失败: {e}，返回原文")
+            return text
+    
     async def send_status(self, message: str): # 向前端发送status message
         try:
+            # 根据用户语言翻译消息
+            translated_message = await self._translate_if_needed(message)
+            
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                data = json.dumps({"type": "status", "message": message})
+                data = json.dumps({"type": "status", "message": translated_message})
                 await self.websocket.send_text(data)
 
-                # 同步到同步服务器
-                self.sync_message_queue.put({'type': 'json', 'data': {"type": "status", "message": message}})
+                # 同步到同步服务器（使用翻译后的消息）
+                self.sync_message_queue.put({'type': 'json', 'data': {"type": "status", "message": translated_message}})
         except WebSocketDisconnect:
             pass
         except Exception as e:
