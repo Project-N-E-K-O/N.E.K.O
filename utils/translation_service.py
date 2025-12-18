@@ -40,23 +40,38 @@ class TranslationService:
         self._cache = OrderedDict()
         self._cache_lock = None  # 懒加载：在首次使用时创建异步锁
     def _get_llm_client(self) -> Optional[ChatOpenAI]:
-        """获取LLM客户端（用于翻译）"""
+        """
+        获取LLM客户端（用于翻译）
+        
+        注意：当前使用辅助API配置作为回退方案。
+        未来应该添加独立的 'translation' 模型配置（如 qwen-mt-turbo），
+        而不是复用其他任务的模型配置。
+        """
         try:
-            # 使用辅助API配置（correction模型通常用于文本处理）
-            correction_config = self.config_manager.get_model_api_config('correction')
+            # 尝试使用独立的翻译模型配置（如果存在）
+            # TODO: 在 config_manager 中添加 'translation' 模型类型支持
+            try:
+                translation_config = self.config_manager.get_model_api_config('translation')
+                config = translation_config
+            except (ValueError, KeyError):
+                # 回退到辅助API配置（使用 emotion 模型，因为它也是文本处理任务）
+                # 注意：这是临时方案，未来应该使用独立的翻译模型配置
+                emotion_config = self.config_manager.get_model_api_config('emotion')
+                config = emotion_config
             
-            if not correction_config.get('api_key') or not correction_config.get('model') or not correction_config.get('base_url'):
-                logger.warning("翻译服务：辅助API配置不完整（缺少 api_key、model 或 base_url），无法进行翻译")
+            if not config.get('api_key') or not config.get('model') or not config.get('base_url'):
+                logger.warning("翻译服务：API配置不完整（缺少 api_key、model 或 base_url），无法进行翻译")
                 return None
             
             # 懒加载：如果客户端已存在，直接返回（注意：不会检测配置变化）
             if self._llm_client is not None:
                 return self._llm_client
             
+            # 使用翻译任务的专用参数
             self._llm_client = ChatOpenAI(
-                model=correction_config.get('model', 'qwen-turbo'),
-                base_url=correction_config.get('base_url'),
-                api_key=correction_config.get('api_key'),
+                model=config.get('model', 'qwen-turbo'),
+                base_url=config.get('base_url'),
+                api_key=config.get('api_key'),
                 temperature=0.3,  # 低温度保证翻译准确性
                 max_tokens=2000,  # 增加令牌数以支持更长文本
                 timeout=30.0,  # 增加超时时间
