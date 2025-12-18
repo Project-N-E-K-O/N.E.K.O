@@ -76,7 +76,7 @@ Live2DManager.prototype.setupDragAndDrop = function(model) {
         enableButtonEventPropagation();
     });
 
-    const onDragEnd = () => {
+    const onDragEnd = async () => {
         if (isDragging) {
             isDragging = false;
             document.getElementById('live2d-canvas').style.cursor = 'grab';
@@ -85,10 +85,13 @@ Live2DManager.prototype.setupDragAndDrop = function(model) {
             disableButtonEventPropagation();
             
             // 检测是否需要切换屏幕（多屏幕支持）
-            this._checkAndSwitchDisplay(model);
+            // _checkAndSwitchDisplay returns true if a display switch occurred (and saved internally)
+            const displaySwitched = await this._checkAndSwitchDisplay(model);
             
-            // 拖拽结束后自动保存位置
-            this._savePositionAfterInteraction();
+            // 拖拽结束后自动保存位置（仅当没有发生屏幕切换时）
+            if (!displaySwitched) {
+                await this._savePositionAfterInteraction();
+            }
         }
     };
 
@@ -473,10 +476,11 @@ Live2DManager.prototype._debouncedSavePosition = function() {
 };
 
 // 多屏幕支持：检测模型是否移出当前屏幕并切换到新屏幕
+// Returns true if a display switch occurred (and position was saved internally), false otherwise
 Live2DManager.prototype._checkAndSwitchDisplay = async function(model) {
     // 仅在 Electron 环境下执行
     if (!window.electronScreen || !window.electronScreen.moveWindowToDisplay) {
-        return;
+        return false;
     }
     
     try {
@@ -489,7 +493,7 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function(model) {
         const displays = await window.electronScreen.getAllDisplays();
         if (!displays || displays.length <= 1) {
             // 只有一个屏幕，不需要切换
-            return;
+            return false;
         }
         
         // 检查模型是否在当前窗口范围内
@@ -499,7 +503,7 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function(model) {
         // 如果模型大部分还在当前窗口内，不切换
         if (modelCenterX >= 0 && modelCenterX < windowWidth &&
             modelCenterY >= 0 && modelCenterY < windowHeight) {
-            return;
+            return false;
         }
         
         // 模型移出了当前窗口，查找目标屏幕
@@ -509,7 +513,7 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function(model) {
         const currentDisplay = await window.electronScreen.getCurrentDisplay();
         if (!currentDisplay) {
             console.warn('[Live2D] 无法获取当前显示器信息');
-            return;
+            return false;
         }
         
         // 计算当前窗口左上角在屏幕上的绝对位置
@@ -562,11 +566,14 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function(model) {
                 console.log('[Live2D] 模型新位置:', model.x, model.y);
                 
                 // 切换屏幕后保存位置和新的显示器信息
-                this._savePositionAfterInteraction();
+                await this._savePositionAfterInteraction();
+                return true;  // Display switch occurred
             }
         }
+        return false;  // No display switch occurred
     } catch (error) {
         console.error('[Live2D] 检测/切换屏幕时出错:', error);
+        return false;
     }
 };
 
