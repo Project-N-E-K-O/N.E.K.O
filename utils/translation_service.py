@@ -8,6 +8,7 @@
 
 import asyncio
 import logging
+import re
 from typing import Optional, Dict, Any
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -18,8 +19,6 @@ logger = logging.getLogger(__name__)
 SUPPORTED_LANGUAGES = ['zh-CN', 'en']
 DEFAULT_LANGUAGE = 'zh-CN'
 
-# 缓存最大条目数
-_cache_max_size = 1000
 
 
 class TranslationService:
@@ -71,7 +70,8 @@ class TranslationService:
     
     def _save_to_cache(self, text: str, target_lang: str, translated: str):
         """保存翻译结果到缓存"""
-        # 简单的FIFO缓存：如果缓存过大，删除最早的条目
+        # 简单的FIFO缓存：如果缓存过大，删除最早加入的条目
+        _cache_max_size = 1000
         if len(self._cache) >= _cache_max_size:
             # 删除第一个条目（FIFO）
             first_key = next(iter(self._cache))
@@ -92,7 +92,6 @@ class TranslationService:
             'zh-CN' 或 'en'
         """
         # 简单检测：如果包含中文字符，认为是中文
-        import re
         if re.search(r'[\u4e00-\u9fff]', text):
             return 'zh-CN'
         return 'en'
@@ -101,7 +100,6 @@ class TranslationService:
         self, 
         text: str, 
         target_lang: str,
-        
     ) -> str:
         """
         翻译文本
