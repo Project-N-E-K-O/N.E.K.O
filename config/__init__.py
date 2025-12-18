@@ -151,7 +151,7 @@ DEFAULT_CORE_API_PROFILES = {
     },
     'openai': {
         'CORE_URL': "wss://api.openai.com/v1/realtime",
-        'CORE_MODEL': "gpt-realtime",
+        'CORE_MODEL': "gpt-realtime-mini-2025-12-15",
     },
     'step': {
         'CORE_URL': "wss://api.stepfun.com/v1/realtime",

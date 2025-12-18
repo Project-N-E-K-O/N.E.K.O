@@ -855,7 +855,7 @@ async def proactive_chat(request: Request):
                         if mgr.websocket:
                             try:
                                 await mgr.send_status(f"正在重试中...（第{attempt + 1}次）")
-                            except:
+                            except: # noqa
                                 pass
                         await asyncio.sleep(wait_time)
                     else:
@@ -982,11 +982,11 @@ async def proactive_chat(request: Request):
             async with mgr.lock:
                 mgr.current_speech_id = str(uuid4())
             
-            # 检查最近5秒内是否有用户活动（语音输入或文本输入）
+            # 检查最近30秒内是否有用户活动（语音输入或文本输入）
             # 如果有，则放弃本次主动搭话
             if mgr.last_user_activity_time is not None:
                 time_since_last_activity = time.time() - mgr.last_user_activity_time
-                if time_since_last_activity < 5:
+                if time_since_last_activity < 30:
                     logger.info(f"[{lanlan_name}] 检测到最近 {time_since_last_activity:.1f} 秒内有用户活动，放弃主动搭话")
                     return JSONResponse({
                         "success": True,

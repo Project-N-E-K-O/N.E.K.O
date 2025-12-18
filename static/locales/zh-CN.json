@@ -606,7 +606,6 @@
     "save": "保存",
     "clear": "清空",
     "tip1": "刚刚结束的对话内容要稍等片刻才会载入，可以重新点击猫娘名称刷新。",
-    "tip2": "App版退出时，请从系统托盘区右键退出记忆管理。",
     "noFiles": "无文件",
     "loadFailed": "加载失败",
     "noChatContent": "无聊天内容",
@@ -818,7 +817,7 @@
     "toggles": {
       "allowInterrupt": "允许打断",
       "proactiveChat": "主动搭话",
-      "proactiveVision": "主动视觉",
+      "proactiveVision": "自主视觉",
       "agentMaster": "Agent总开关",
       "keyboardControl": "键鼠控制",
       "userPlugin": "用户插件",

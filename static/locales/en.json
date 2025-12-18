@@ -608,7 +608,6 @@
     "save": "Save",
     "clear": "Clear",
     "tip1": "Recently ended conversations will take a moment to load. You can click the catgirl name again to refresh.",
-    "tip2": "When exiting the App version, please right-click the system tray to exit memory management.",
     "noFiles": "No files",
     "loadFailed": "Load failed",
     "noChatContent": "No chat content",
@@ -820,7 +819,7 @@
     "toggles": {
       "allowInterrupt": "Allow Interrupt",
       "proactiveChat": "Proactive Chat",
-      "proactiveVision": "Proactive Vision",
+      "proactiveVision": "Autonomous Vision",
       "agentMaster": "Agent Master Switch",
       "keyboardControl": "Keyboard & Mouse Control",
       "userPlugin": "User Plugin",

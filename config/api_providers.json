@@ -21,7 +21,7 @@
       "name": "GPT-Realtime（OpenAI）",
       "description": "智能水平最高，但国内无法使用且价格昂贵",
       "core_url": "wss://api.openai.com/v1/realtime",
-      "core_model": "gpt-realtime"
+      "core_model": "gpt-realtime-mini-2025-12-15"
     },
     "step": {
       "key": "step",
