@@ -9,6 +9,9 @@
 import asyncio
 import logging
 import re
+import hashlib
+import threading
+from collections import OrderedDict
 from typing import Optional, Dict, Any
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -19,7 +22,8 @@ logger = logging.getLogger(__name__)
 SUPPORTED_LANGUAGES = ['zh-CN', 'en']
 DEFAULT_LANGUAGE = 'zh-CN'
 
-
+# 缓存配置
+CACHE_MAX_SIZE = 1000
 
 class TranslationService:
     """翻译服务类"""
@@ -33,7 +37,7 @@ class TranslationService:
         """
         self.config_manager = config_manager
         self._llm_client = None
-        self._cache = {}
+        self._cache = OrderedDict()
     
     def _get_llm_client(self) -> Optional[ChatOpenAI]:
         """获取LLM客户端（用于翻译）"""
@@ -54,8 +58,8 @@ class TranslationService:
                 base_url=correction_config.get('base_url'),
                 api_key=correction_config.get('api_key'),
                 temperature=0.3,  # 低温度保证翻译准确性
-                max_tokens=1000,
-                timeout=10.0,  # 10秒超时
+                max_tokens=2000,  # 增加令牌数以支持更长文本
+                timeout=30.0,  # 增加超时时间
             )
             
             return self._llm_client
@@ -71,8 +75,8 @@ class TranslationService:
     def _save_to_cache(self, text: str, target_lang: str, translated: str):
         """保存翻译结果到缓存"""
         # 简单的FIFO缓存：如果缓存过大，删除最早加入的条目
-        _cache_max_size = 1000
-        if len(self._cache) >= _cache_max_size:
+        
+        if len(self._cache) >= self.CACHE_MAX_SIZE:
             # 删除第一个条目（FIFO）
             first_key = next(iter(self._cache))
             del self._cache[first_key]
@@ -82,8 +86,9 @@ class TranslationService:
     
     def _get_cache_key(self, text: str, target_lang: str) -> str:
         """生成缓存键"""
-        return f"{target_lang}:{hash(text)}"
-    
+        # 使用稳定哈希以支持未来的缓存持久化
+        text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
+        return f"{target_lang}:{text_hash}"
     def _detect_language(self, text: str) -> str:
         """
         简单检测文本语言（中文/英文）
@@ -224,7 +229,7 @@ Rules:
                 result[key] = await self.translate_dict(value, target_lang, fields_to_translate)
             elif isinstance(value, list):
                 # 处理列表：如果是字符串列表，翻译每个元素
-                if value and isinstance(value[0], str):
+                if value and all(isinstance(item, str) for item in value):
                     result[key] = [await self.translate_text(item, target_lang) for item in value]
         
         return result
@@ -238,6 +243,9 @@ def get_translation_service(config_manager) -> TranslationService:
     """获取翻译服务实例（单例模式）"""
     global _translation_service_instance
     if _translation_service_instance is None:
-        _translation_service_instance = TranslationService(config_manager)
+        with _instance_lock:
+            # 双重检查锁定模式
+            if _translation_service_instance is None:
+                _translation_service_instance = TranslationService(config_manager)
     return _translation_service_instance
 
