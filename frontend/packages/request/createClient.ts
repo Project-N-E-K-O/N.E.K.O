@@ -19,6 +19,11 @@ const safeStringify = (value: unknown): string => {
   }
 };
 
+// 由 Vite 构建时注入（见 packages/request/vite.config.ts）。
+// 在 React Native/Metro 环境中这些常量通常不存在，应保持可选。
+declare const __NEKO_VITE_MODE__: string | undefined;
+declare const __NEKO_VITE_NODE_ENV__: string | undefined;
+
 /**
  * 检查是否启用请求日志
  * 优先读取 config 覆盖 / 全局标记，其次根据构建模式判断
@@ -30,14 +35,19 @@ const isRequestLogEnabled = (logEnabledOverride?: boolean): boolean => {
   const globalFlag = (globalThis as any)?.NEKO_REQUEST_LOG_ENABLED;
   if (typeof globalFlag === "boolean") return globalFlag;
 
-  try {
-    const env = (import.meta as any)?.env;
-    const mode = env?.MODE || env?.NODE_ENV || "development";
-    return mode === "development";
-  } catch {
-    /* c8 ignore next */
-    return false;
-  }
+  // 注意：不要使用 import.meta（Metro/Hermes 可能无法解析）。
+  // Web(Vite) 侧通过全局常量注入保持“开发默认开日志”的体验；
+  // RN 侧可通过 __DEV__ 或 process.env.NODE_ENV 判断。
+  const mode =
+    (typeof __NEKO_VITE_MODE__ === "string" && __NEKO_VITE_MODE__) ||
+    (typeof __NEKO_VITE_NODE_ENV__ === "string" && __NEKO_VITE_NODE_ENV__) ||
+    // React Native 常见全局：__DEV__
+    (typeof (globalThis as any).__DEV__ === "boolean" ? ((globalThis as any).__DEV__ ? "development" : "production") : "") ||
+    // Node/Jest/某些打包环境
+    (typeof process !== "undefined" && (process as any)?.env?.NODE_ENV ? String((process as any).env.NODE_ENV) : "") ||
+    "";
+
+  return mode === "development";
 };
 
 /**

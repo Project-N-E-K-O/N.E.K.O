@@ -10,10 +10,11 @@ describe("nativeStorage 独立测试", () => {
       removeItem: vi.fn(async (_key: string) => {})
     };
 
-    // @ts-ignore vitest 支持 virtual 选项，这里显式标记
-    vi.doMock("@react-native-async-storage/async-storage", () => ({ default: asyncStorageMock }), {
-      virtual: true
-    });
+    (vi as any).doMock(
+      "@react-native-async-storage/async-storage",
+      () => ({ default: asyncStorageMock }),
+      { virtual: true }
+    );
 
     const nativeStorage = (await import("../src/storage/nativeStorage")).default;
 
@@ -28,8 +29,7 @@ describe("nativeStorage 独立测试", () => {
   it("动态导入失败时抛出明确错误", async () => {
     vi.resetModules();
 
-    // @ts-ignore vitest 支持 virtual 选项，这里显式标记
-    vi.doMock(
+    (vi as any).doMock(
       "@react-native-async-storage/async-storage",
       () => {
         throw new Error("module missing");

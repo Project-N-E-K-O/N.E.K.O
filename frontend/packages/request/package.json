@@ -4,8 +4,16 @@
   "type": "module",
   "private": true,
   "description": "统一请求库，支持 Web / React Native，提供 Axios、Token 刷新、请求队列等功能",
-  "main": "src/index.ts",
-  "types": "src/index.ts",
+  "main": "index.ts",
+  "types": "index.ts",
+  "react-native": "index.native.ts",
+  "exports": {
+    ".": {
+      "react-native": "./index.native.ts",
+      "default": "./index.ts"
+    },
+    "./web": "./index.web.ts"
+  },
   "scripts": {
     "build": "vite build --config vite.config.ts",
     "typecheck": "tsc --noEmit",

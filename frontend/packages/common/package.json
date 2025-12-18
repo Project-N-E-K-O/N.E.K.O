@@ -5,6 +5,11 @@
   "description": "跨端共享的工具和类型",
   "main": "index.ts",
   "types": "index.ts",
+  "exports": {
+    ".": {
+      "default": "./index.ts"
+    }
+  },
   "scripts": {
     "build": "vite build --config vite.config.ts",
     "typecheck": "tsc --noEmit"

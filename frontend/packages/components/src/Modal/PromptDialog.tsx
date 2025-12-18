@@ -82,14 +82,14 @@ export function PromptDialog({
   // 获取按钮文本（支持国际化）
   const getOkText = () => {
     if (okText) return okText;
-    const canTranslate = typeof window !== "undefined" && typeof window.t === "function";
-    return canTranslate ? window.t("common.ok") : "确定";
+    const t = typeof window !== "undefined" ? (window as any).t : undefined;
+    return typeof t === "function" ? String(t("common.ok")) : "确定";
   };
 
   const getCancelText = () => {
     if (cancelText) return cancelText;
-    const canTranslate = typeof window !== "undefined" && typeof window.t === "function";
-    return canTranslate ? window.t("common.cancel") : "取消";
+    const t = typeof window !== "undefined" ? (window as any).t : undefined;
+    return typeof t === "function" ? String(t("common.cancel")) : "取消";
   };
 
   return (
@@ -107,7 +107,7 @@ export function PromptDialog({
           type="text"
           className="modal-input"
           value={inputValue}
-          onChange={(e) => setInputValue(e.target.value)}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setInputValue(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
         />

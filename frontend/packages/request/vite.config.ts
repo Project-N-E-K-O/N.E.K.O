@@ -10,7 +10,10 @@ export default defineConfig(({ mode }) => {
     define: {
       // 注入构建模式，用于判断是否启用日志
       "import.meta.env.MODE": JSON.stringify(mode),
-      "import.meta.env.NODE_ENV": JSON.stringify(mode === 'production' ? 'production' : 'development')
+      "import.meta.env.NODE_ENV": JSON.stringify(mode === "production" ? "production" : "development"),
+      // 同时注入不依赖 import.meta 的常量，便于跨端复用（Metro 可能无法解析 import.meta）
+      __NEKO_VITE_MODE__: JSON.stringify(mode),
+      __NEKO_VITE_NODE_ENV__: JSON.stringify(mode === "production" ? "production" : "development")
     },
     // 配置 esbuild，确保不移除 console.log
     esbuild: {

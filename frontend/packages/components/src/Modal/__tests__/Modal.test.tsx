@@ -45,7 +45,7 @@ describe("Modal", () => {
       // console.log("handle", handle);
       expect(handle).not.toBeNull();
 
-      let promise: Promise<boolean>;
+      let promise!: Promise<boolean>;
       await act(async () => {
         promise = handle!.alert("Test alert message");
       });
@@ -65,7 +65,7 @@ describe("Modal", () => {
       await act(async () => {});
       expect(handle).not.toBeNull();
 
-      let promise: Promise<boolean>;
+      let promise!: Promise<boolean>;
       await act(async () => {
         promise = handle!.alert("Test message");
       });
@@ -118,7 +118,7 @@ describe("Modal", () => {
       await act(async () => {});
       expect(handle).not.toBeNull();
 
-      let promise: Promise<boolean>;
+      let promise!: Promise<boolean>;
       await act(async () => {
         promise = handle!.confirm("Confirm this action?");
       });
@@ -139,7 +139,7 @@ describe("Modal", () => {
       await act(async () => {});
       expect(handle).not.toBeNull();
 
-      let promise: Promise<boolean>;
+      let promise!: Promise<boolean>;
       await act(async () => {
         promise = handle!.confirm("Confirm?");
       });
@@ -161,7 +161,7 @@ describe("Modal", () => {
       await act(async () => {});
       expect(handle).not.toBeNull();
 
-      let promise: Promise<boolean>;
+      let promise!: Promise<boolean>;
       await act(async () => {
         promise = handle!.confirm("Confirm?");
       });
@@ -216,7 +216,7 @@ describe("Modal", () => {
       await act(async () => {});
       expect(handle).not.toBeNull();
 
-      let promise: Promise<string | null>;
+      let promise!: Promise<string | null>;
       await act(async () => {
         promise = handle!.prompt("Enter your name:");
       });
@@ -236,7 +236,7 @@ describe("Modal", () => {
       await act(async () => {});
       expect(handle).not.toBeNull();
 
-      let promise: Promise<string | null>;
+      let promise!: Promise<string | null>;
       await act(async () => {
         promise = handle!.prompt("Enter name:");
       });
@@ -261,7 +261,7 @@ describe("Modal", () => {
       await act(async () => {});
       expect(handle).not.toBeNull();
 
-      let promise: Promise<string | null>;
+      let promise!: Promise<string | null>;
       await act(async () => {
         promise = handle!.prompt("Enter name:");
       });
@@ -299,7 +299,7 @@ describe("Modal", () => {
       await act(async () => {});
       expect(handle).not.toBeNull();
 
-      let promise: Promise<string | null>;
+      let promise!: Promise<string | null>;
       await act(async () => {
         promise = handle!.prompt("Enter name:");
       });
@@ -323,9 +323,9 @@ describe("Modal", () => {
       await act(async () => {});
       expect(handle).not.toBeNull();
 
-      let alertPromise: Promise<boolean>;
-      let confirmPromise: Promise<boolean>;
-      let promptPromise: Promise<string | null>;
+      let alertPromise!: Promise<boolean>;
+      let confirmPromise!: Promise<boolean>;
+      let promptPromise!: Promise<string | null>;
       await act(async () => {
         alertPromise = handle!.alert("Test");
         confirmPromise = handle!.confirm("Test");
