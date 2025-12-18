@@ -198,12 +198,12 @@ Live2DManager.prototype.setupTouchZoom = function(model) {
         }
     };
     
-    const onTouchEnd = (event) => {
+    const onTouchEnd = async (event) => {
         // 当手指数量小于2时，停止缩放
         if (event.touches.length < 2) {
             if (isTouchZooming) {
                 // 触摸缩放结束后自动保存位置和缩放
-                this._savePositionAfterInteraction();
+                await this._savePositionAfterInteraction();
             }
             isTouchZooming = false;
         }
@@ -435,13 +435,30 @@ Live2DManager.prototype._savePositionAfterInteraction = async function() {
     if (window.electronScreen && window.electronScreen.getCurrentDisplay) {
         try {
             const currentDisplay = await window.electronScreen.getCurrentDisplay();
-            if (currentDisplay && Number.isFinite(currentDisplay.screenX) && 
-                Number.isFinite(currentDisplay.screenY)) {
-                displayInfo = {
-                    screenX: currentDisplay.screenX,
-                    screenY: currentDisplay.screenY
-                };
-                console.debug('保存显示器位置:', displayInfo);
+            console.debug('currentDisplay', currentDisplay);
+            if (currentDisplay) {
+                // 优先使用 screenX/screenY，兜底使用 bounds.x/bounds.y
+                let screenX = currentDisplay.screenX;
+                let screenY = currentDisplay.screenY;
+                
+                // 如果 screenX/screenY 不存在，尝试从 bounds 获取
+                if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) {
+                    if (currentDisplay.bounds && 
+                        Number.isFinite(currentDisplay.bounds.x) && 
+                        Number.isFinite(currentDisplay.bounds.y)) {
+                        screenX = currentDisplay.bounds.x;
+                        screenY = currentDisplay.bounds.y;
+                        console.debug('使用 bounds 作为显示器位置');
+                    }
+                }
+                
+                if (Number.isFinite(screenX) && Number.isFinite(screenY)) {
+                    displayInfo = {
+                        screenX: screenX,
+                        screenY: screenY
+                    };
+                    console.debug('保存显示器位置:', displayInfo);
+                }
             }
         } catch (error) {
             console.warn('获取显示器信息失败:', error);
