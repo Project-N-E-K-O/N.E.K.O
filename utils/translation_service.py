@@ -38,7 +38,7 @@ class TranslationService:
         self.config_manager = config_manager
         self._llm_client = None
         self._cache = OrderedDict()
-        self._cache_lock = asyncio.Lock()
+        self._cache_lock = None  # 懒加载：在首次使用时创建异步锁
     def _get_llm_client(self) -> Optional[ChatOpenAI]:
         """获取LLM客户端（用于翻译）"""
         try:
@@ -67,15 +67,22 @@ class TranslationService:
             logger.error(f"翻译服务：初始化LLM客户端失败: {e}")
             return None
     
-    def _get_from_cache(self, text: str, target_lang: str) -> Optional[str]:
-        """从缓存获取翻译结果"""
-        cache_key = self._get_cache_key(text, target_lang)
-        return self._cache.get(cache_key)
+    async def _get_from_cache(self, text: str, target_lang: str) -> Optional[str]:
+        """从缓存获取翻译结果（使用锁保护以避免数据竞争）"""
+        async with self._get_cache_lock():
+            cache_key = self._get_cache_key(text, target_lang)
+            return self._cache.get(cache_key)
+    
+    def _get_cache_lock(self):
+        """懒加载获取缓存锁（确保在事件循环运行后创建）"""
+        if self._cache_lock is None:
+            self._cache_lock = asyncio.Lock()
+        return self._cache_lock
     
     async def _save_to_cache(self, text: str, target_lang: str, translated: str):
         """保存翻译结果到缓存"""
         # 简单的FIFO缓存：如果缓存过大，删除最早加入的条目
-        async with self._cache_lock:
+        async with self._get_cache_lock():
             if len(self._cache) >= CACHE_MAX_SIZE:
                 # 删除第一个条目（FIFO）
                 first_key = next(iter(self._cache))
@@ -131,7 +138,7 @@ class TranslationService:
             return text
         
         # 检查缓存
-        cached = self._get_from_cache(text, target_lang)
+        cached = await self._get_from_cache(text, target_lang)
         if cached is not None:
             return cached
         
