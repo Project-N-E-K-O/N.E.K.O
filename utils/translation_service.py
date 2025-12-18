@@ -125,17 +125,10 @@ class TranslationService:
             logger.warning(f"翻译服务：不支持的目标语言 {target_lang}，返回原文")
             return text
         
-        # 如果目标语言是默认语言（中文），且文本已经是中文，不需要翻译
-        if target_lang == DEFAULT_LANGUAGE:
-            detected = self._detect_language(text)
-            if detected == 'zh-CN':
-                return text
-        
-        # 如果目标语言是英文，且文本已经是英文，不需要翻译
-        if target_lang == 'en':
-            detected = self._detect_language(text)
-            if detected == 'en':
-                return text
+        # 检测源语言，如果和目标语言相同则不需要翻译
+        detected_lang = self._detect_language(text)
+        if detected_lang == target_lang:
+            return text
         
         # 检查缓存
         cached = self._get_from_cache(text, target_lang)
