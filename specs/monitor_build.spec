@@ -8,6 +8,18 @@ import os
 import sys
 from PyInstaller.utils.hooks import collect_data_files
 
+# 获取 spec 文件所在目录和项目根目录
+SPEC_DIR = os.path.dirname(os.path.abspath(SPEC))
+PROJECT_ROOT = os.path.dirname(SPEC_DIR)
+
+# 切换到项目根目录
+original_dir = os.getcwd()
+os.chdir(PROJECT_ROOT)
+
+print(f"[Build] SPEC_DIR: {SPEC_DIR}")
+print(f"[Build] PROJECT_ROOT: {PROJECT_ROOT}")
+print(f"[Build] Working from: {os.getcwd()}")
+
 block_cipher = None
 
 # 添加必要的二进制文件（DLLs）
@@ -60,8 +72,8 @@ datas += [
 ]
 
 a = Analysis(
-    ['monitor.py'],
-    pathex=[],
+    [os.path.join(PROJECT_ROOT, 'monitor.py')],  # 使用绝对路径
+    pathex=[PROJECT_ROOT],
     binaries=binaries,
     datas=datas,
     hiddenimports=[
@@ -115,10 +127,10 @@ exe = EXE(
     runtime_tmpdir=None,
     console=True,
     disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
+    argv_emulation=True if sys.platform == 'darwin' else False,  # macOS 需要开启
+    target_arch='arm64' if sys.platform == 'darwin' else None,  # Apple Silicon 架构
     codesign_identity=None,
     entitlements_file=None,
-    icon='assets/icon.ico' if os.path.exists('assets/icon.ico') else None,
+    icon='assets/icon.ico' if sys.platform == 'win32' else None,  # macOS 暂不使用图标
 )
 
