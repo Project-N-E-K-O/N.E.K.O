@@ -38,7 +38,7 @@ class TranslationService:
         self.config_manager = config_manager
         self._llm_client = None
         self._cache = OrderedDict()
-    
+        self._cache_lock = asyncio.Lock()
     def _get_llm_client(self) -> Optional[ChatOpenAI]:
         """获取LLM客户端（用于翻译）"""
         try:
@@ -72,17 +72,17 @@ class TranslationService:
         cache_key = self._get_cache_key(text, target_lang)
         return self._cache.get(cache_key)
     
-    def _save_to_cache(self, text: str, target_lang: str, translated: str):
+    async def _save_to_cache(self, text: str, target_lang: str, translated: str):
         """保存翻译结果到缓存"""
         # 简单的FIFO缓存：如果缓存过大，删除最早加入的条目
-        
-        if len(self._cache) >= CACHE_MAX_SIZE:
+        async with self._cache_lock:
+            if len(self._cache) >= CACHE_MAX_SIZE:
             # 删除第一个条目（FIFO）
-            first_key = next(iter(self._cache))
-            del self._cache[first_key]
-        
-        cache_key = self._get_cache_key(text, target_lang)
-        self._cache[cache_key] = translated
+                first_key = next(iter(self._cache))
+                del self._cache[first_key]
+                
+            cache_key = self._get_cache_key(text, target_lang)
+            self._cache[cache_key] = translated
     
     def _get_cache_key(self, text: str, target_lang: str) -> str:
         """生成缓存键"""
@@ -168,7 +168,10 @@ Rules:
             ])
             
             translated = response.content.strip()
-            
+            # 验证翻译结果不为空
+            if not translated:
+                logger.warning(f"翻译服务：LLM返回空结果，使用原文: '{text[:50]}...'")
+                return text            
             # 保存到缓存
             self._save_to_cache(text, target_lang, translated)
             
