@@ -76,7 +76,7 @@ class TranslationService:
         """保存翻译结果到缓存"""
         # 简单的FIFO缓存：如果缓存过大，删除最早加入的条目
         
-        if len(self._cache) >= self.CACHE_MAX_SIZE:
+        if len(self._cache) >= CACHE_MAX_SIZE:
             # 删除第一个条目（FIFO）
             first_key = next(iter(self._cache))
             del self._cache[first_key]
@@ -230,14 +230,15 @@ Rules:
             elif isinstance(value, list):
                 # 处理列表：如果是字符串列表，翻译每个元素
                 if value and all(isinstance(item, str) for item in value):
-                    result[key] = [await self.translate_text(item, target_lang) for item in value]
-        
+                    result[key] = await asyncio.gather(*[
+                        self.translate_text(item, target_lang) for item in value
+                    ])
         return result
 
 
 # 全局翻译服务实例（延迟初始化）
 _translation_service_instance: Optional[TranslationService] = None
-
+_instance_lock = threading.Lock()
 
 def get_translation_service(config_manager) -> TranslationService:
     """获取翻译服务实例（单例模式）"""
