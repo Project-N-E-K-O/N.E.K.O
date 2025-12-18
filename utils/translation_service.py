@@ -77,7 +77,7 @@ class TranslationService:
         # 简单的FIFO缓存：如果缓存过大，删除最早加入的条目
         async with self._cache_lock:
             if len(self._cache) >= CACHE_MAX_SIZE:
-        # 删除第一个条目（FIFO）
+                # 删除第一个条目（FIFO）
                 first_key = next(iter(self._cache))
                 del self._cache[first_key]
                 
@@ -173,7 +173,7 @@ Rules:
                 logger.warning(f"翻译服务：LLM返回空结果，使用原文: '{text[:50]}...'")
                 return text            
             # 保存到缓存
-            self._save_to_cache(text, target_lang, translated)
+            await self._save_to_cache(text, target_lang, translated)
             
             logger.debug(f"翻译服务：'{text[:50]}...' -> '{translated[:50]}...' ({target_lang})")
             return translated
