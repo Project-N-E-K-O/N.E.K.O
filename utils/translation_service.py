@@ -66,10 +66,6 @@ class TranslationService:
             logger.error(f"翻译服务：初始化LLM客户端失败: {e}")
             return None
     
-    def _get_cache_key(self, text: str, target_lang: str) -> str:
-        """生成缓存键"""
-        return f"{target_lang}:{text}"
-    
     def _get_from_cache(self, text: str, target_lang: str) -> Optional[str]:
         """从缓存获取翻译结果"""
         cache_key = self._get_cache_key(text, target_lang)
@@ -217,22 +213,23 @@ Rules:
         
         for key, value in result.items():
             if key in fields_to_translate and isinstance(value, str) and value.strip():
-                result[key] = await self.translate_text(value, target_lang)
-            elif isinstance(value, dict):
-                # 递归翻译嵌套字典
-                result[key] = await self.translate_dict(value, target_lang, fields_to_translate)
-            elif isinstance(value, list):
-                # 处理列表（如昵称可能是 "T酱, 小T" 这样的字符串，或列表）
-                if value and isinstance(value[0], str):
-                    # 如果是字符串列表，翻译每个元素
-                    result[key] = [await self.translate_text(item, target_lang) for item in value]
-                elif isinstance(value, str):
-                    # 如果是逗号分隔的字符串，先分割再翻译
+                # 处理字符串：如果是逗号分隔的字符串（如昵称 "T酱, 小T"），先分割再翻译
+                if ',' in value:
                     items = [item.strip() for item in value.split(',')]
                     translated_items = await asyncio.gather(*[
                         self.translate_text(item, target_lang) for item in items
                     ])
                     result[key] = ', '.join(translated_items)
+                else:
+                    # 普通字符串直接翻译
+                    result[key] = await self.translate_text(value, target_lang)
+            elif isinstance(value, dict):
+                # 递归翻译嵌套字典
+                result[key] = await self.translate_dict(value, target_lang, fields_to_translate)
+            elif isinstance(value, list):
+                # 处理列表：如果是字符串列表，翻译每个元素
+                if value and isinstance(value[0], str):
+                    result[key] = [await self.translate_text(item, target_lang) for item in value]
         
         return result
 
