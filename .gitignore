@@ -53,6 +53,9 @@ __pycache__/
 **/target/
 Cargo.lock
 
+# UV package manager lock file
+uv.lock
+
 # Node/Front-end temp (if any)
 node_modules/
 *.cache/
