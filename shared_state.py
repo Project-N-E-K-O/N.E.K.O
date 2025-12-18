@@ -24,7 +24,7 @@ _state = {
     'templates': _UNSET,
     'config_manager': _UNSET,
     'logger': _UNSET,
-    'initialize_character_data': _UNSET,  # Function reference
+    'initialize_character_data': None,  # Function reference
 }
 
 

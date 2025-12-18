@@ -30,27 +30,27 @@ def _get_app_root():
 if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
     os.add_dll_directory(_get_app_root())
     
-import mimetypes
+import mimetypes # noqa
 mimetypes.add_type("application/javascript", ".js")
-import asyncio
-import logging
-
-
-from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
-from main_logic import core as core, cross_server as cross_server
-from fastapi.templating import Jinja2Templates
-from threading import Thread, Event as ThreadEvent
-from queue import Queue
-import atexit
-import httpx
-from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT
-from utils.config_manager import get_config_manager
+import asyncio # noqa
+import logging # noqa
+from fastapi import FastAPI # noqa
+from fastapi.staticfiles import StaticFiles # noqa
+from main_logic import core as core, cross_server as cross_server # noqa
+from fastapi.templating import Jinja2Templates # noqa
+from threading import Thread, Event as ThreadEvent # noqa
+from queue import Queue # noqa
+import atexit # noqa
+import httpx # noqa
+from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT # noqa
+from utils.config_manager import get_config_manager # noqa
 # 导入创意工坊工具模块
-from utils.workshop_utils import (
+from utils.workshop_utils import ( # noqa
     get_workshop_root,
     get_workshop_path
 )
+# 导入创意工坊路由中的函数
+from main_routers.workshop_router import get_subscribed_workshop_items # noqa
 
 # 确定 templates 目录位置（使用 _get_app_root）
 template_dir = _get_app_root()
@@ -315,7 +315,7 @@ async def initialize_character_data():
             try:
                 while not sync_message_queue[k].empty():
                     sync_message_queue[k].get_nowait()
-            except:
+            except: # noqa
                 pass
             del sync_message_queue[k]
         
@@ -345,6 +345,8 @@ lock = asyncio.Lock()
 # --- FastAPI App Setup ---
 app = FastAPI()
 
+
+
 class CustomStaticFiles(StaticFiles):
     async def get_response(self, path, scope):
         response = await super().get_response(path, scope)
@@ -360,6 +362,7 @@ app.mount("/static", CustomStaticFiles(directory=static_dir), name="static")
 # 挂载用户文档下的live2d目录（只在主进程中执行，子进程不提供HTTP服务）
 if _IS_MAIN_PROCESS:
     _config_manager.ensure_live2d_directory()
+    _config_manager.ensure_chara_directory()
     user_live2d_path = str(_config_manager.live2d_dir)
     if os.path.exists(user_live2d_path):
         app.mount("/user_live2d", CustomStaticFiles(directory=user_live2d_path), name="user_live2d")
@@ -373,7 +376,7 @@ if _IS_MAIN_PROCESS:
 
 # --- Initialize Shared State and Mount Routers ---
 # Import and mount routers from main_routers package
-from main_routers import (
+from main_routers import ( # noqa
     config_router,
     characters_router,
     live2d_router,
@@ -384,7 +387,7 @@ from main_routers import (
     agent_router,
     system_router,
 )
-from main_routers.shared_state import init_shared_state
+from main_routers.shared_state import init_shared_state # noqa
 
 # Initialize shared state for routers to access
 # 注意：steamworks 会在 startup 事件中初始化后更新
@@ -509,7 +512,7 @@ async def on_startup():
         # 在后台异步预加载音频模块（不阻塞服务器启动）
         # 注意：不需要等待机制，Python import lock 会自动处理并发
         _preload_task = asyncio.create_task(_background_preload())
-        
+        await _init_and_mount_workshop()
         logger.info("Startup 初始化完成，后台正在预加载音频模块...")
 
 # 使用 FastAPI 的 app.state 来管理启动配置
@@ -539,7 +542,7 @@ async def _init_and_mount_workshop():
     """
     try:
         # 1. 获取订阅的创意工坊物品列表
-        workshop_items_result = await workshop_router.get_subscribed_workshop_items()
+        workshop_items_result = get_subscribed_workshop_items()
         
         # 2. 提取物品列表传给 utils 层
         subscribed_items = []
@@ -648,7 +651,6 @@ def find_preview_image_in_folder(folder_path):
 if __name__ == "__main__":
     import uvicorn
     import argparse
-    import os
     import signal
     
     parser = argparse.ArgumentParser()

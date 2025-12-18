@@ -210,6 +210,7 @@ function init_app() {
     let proactiveVisionEnabled = false;
     let proactiveChatTimer = null;
     let proactiveChatBackoffLevel = 0; // 退避级别：0=30s, 1=75s, 2=187.5s, etc.
+    let isProactiveChatRunning = false; // 锁：防止主动搭话执行期间重复触发
     const PROACTIVE_CHAT_BASE_DELAY = 30000; // 30秒基础延迟
     // 主动视觉在语音时的单帧推送（当同时开启主动视觉 && 语音对话时，每15秒推送一帧）
     let proactiveVisionFrameTimer = null;
@@ -857,6 +858,7 @@ function init_app() {
 
         // 停止录音后，重置主动搭话退避级别并开始定时
         if (proactiveChatEnabled || proactiveVisionEnabled) {
+            lastUserInputTime = Date.now();
             resetProactiveChatBackoff();
         }
 
@@ -2640,7 +2642,7 @@ function init_app() {
                 proactiveVisionDiv.style.cssText = 'padding: 10px 12px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(0,0,0,0.1);';
                 const proactiveVisionSpan = document.createElement('span');
                 proactiveVisionSpan.style.fontSize = '14px';
-                proactiveVisionSpan.textContent = window.t ? window.t('settings.toggles.proactiveVision') : '👁️ 主动视觉';
+                proactiveVisionSpan.textContent = window.t ? window.t('settings.toggles.proactiveVision') : '自主视觉';
                 proactiveVisionSpan.setAttribute('data-i18n', 'settings.toggles.proactiveVision');
                 proactiveVisionDiv.appendChild(proactiveVisionSpan);
                 const proactiveVisionCheckbox = document.createElement('input');
@@ -2655,7 +2657,6 @@ function init_app() {
                     { href: `/memory_browser`, text: '📝 记忆管理' },
                     { href: `/chara_manager`, text: '👤 角色设置' },
                     { href: `/l2d?lanlan_name=${lanlan_config.lanlan_name}`, text: '🎨 Live2D管理' },
-                    { href: `/api_key`, textKey: 'settings.menu.apiSettings', text: window.t ? window.t('settings.menu.apiSettings') : '🔑 API设置' },
                     { href: `/steam_workshop_manager`, textKey: 'steam.workshop', text: window.t ? window.t('steam.workshop') : 'steam创意工坊' }
                 ];
 
@@ -4815,8 +4816,14 @@ function init_app() {
             proactiveChatTimer = null;
         }
 
-        // 两个功能都关闭时跳过
-        if (!proactiveChatEnabled && !proactiveVisionEnabled) {
+        // 主动搭话关闭时跳过（定时主动搭话只需要proactiveChatEnabled）
+        if (!proactiveChatEnabled) {
+            return;
+        }
+
+        // 如果主动搭话正在执行中，不安排新的定时器（等当前执行完成后自动安排）
+        if (isProactiveChatRunning) {
+            console.log('主动搭话正在执行中，延迟安排下一次');
             return;
         }
 
@@ -4832,8 +4839,20 @@ function init_app() {
         console.log(`主动搭话：${delay / 1000}秒后触发（退避级别：${proactiveChatBackoffLevel}）`);
 
         proactiveChatTimer = setTimeout(async () => {
+            // 双重检查锁：定时器触发时再次检查是否正在执行
+            if (isProactiveChatRunning) {
+                console.log('主动搭话定时器触发时发现正在执行中，跳过本次');
+                return;
+            }
+
             console.log('触发主动搭话...');
-            await triggerProactiveChat();
+            isProactiveChatRunning = true; // 加锁
+
+            try {
+                await triggerProactiveChat();
+            } finally {
+                isProactiveChatRunning = false; // 解锁
+            }
 
             // 增加退避级别（最多到约7分钟，即level 3：30s * 2.5^3 = 7.5min）
             if (proactiveChatBackoffLevel < 3) {
@@ -5239,8 +5258,8 @@ function init_app() {
     // 加载设置
     loadSettings();
 
-    // 如果已开启主动搭话或主动视觉，立即启动定时器
-    if (proactiveChatEnabled || proactiveVisionEnabled) {
+    // 如果已开启主动搭话，立即启动定时器
+    if (proactiveChatEnabled) {
         scheduleProactiveChat();
     }
 

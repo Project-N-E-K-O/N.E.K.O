@@ -49,6 +49,7 @@ class ConfigManager:
         self.memory_dir = self.app_docs_dir / "memory"
         self.live2d_dir = self.app_docs_dir / "live2d"
         self.workshop_dir = self.app_docs_dir / "workshop"
+        self.chara_dir = self.app_docs_dir / "character_cards"
 
         self.project_config_dir = self._get_project_config_directory()
         self.project_memory_dir = self._get_project_memory_directory()
@@ -302,6 +303,19 @@ class ConfigManager:
             return True
         except Exception as e:
             print(f"Warning: Failed to create live2d directory: {e}", file=sys.stderr)
+            return False
+        
+    def ensure_chara_directory(self):
+        """确保我的文档下的character_cards目录存在"""
+        try:
+            # 先确保app_docs_dir存在
+            if not self._ensure_app_docs_directory():
+                return False
+            
+            self.chara_dir.mkdir(exist_ok=True)
+            return True
+        except Exception as e:
+            print(f"Warning: Failed to create character_cards directory: {e}", file=sys.stderr)
             return False
     
     def get_config_path(self, filename):
@@ -1001,6 +1015,7 @@ class ConfigManager:
             "memory_dir": str(self.memory_dir),
             "live2d_dir": str(self.live2d_dir),
             "workshop_dir": str(self.workshop_dir),
+            "chara_dir": str(self.chara_dir),
             "project_config_dir": str(self.project_config_dir),
             "project_memory_dir": str(self.project_memory_dir),
             "config_files": {

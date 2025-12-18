@@ -602,13 +602,7 @@ async def update_catgirl(name: str, request: Request):
                 'available_voices': available_voices
             }, status_code=400)
     
-    # 只更新前端传来的字段，未传字段保留原值，且不允许通过此接口修改 system_prompt
-    removed_fields = []
-    for k, v in characters['猫娘'][name].items():
-        if k not in data and k not in ('档案名', 'system_prompt', 'voice_id', 'live2d'):
-            removed_fields.append(k)
-    for k in removed_fields:
-        characters['猫娘'][name].pop(k)
+
     
     # 处理voice_id的特殊逻辑：如果传入空字符串，则删除该字段
     if 'voice_id' in data and data['voice_id'] == '':
@@ -1146,5 +1140,83 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
         tmp_url = locals().get('tmp_url', '未获取到URL')
         logger.error(f"注册音色时发生未预期的错误: {str(e)}")
         return JSONResponse({'error': f'注册音色时发生错误: {str(e)}', 'file_url': tmp_url}, status_code=500)
+    
+@router.get('/character-card/list')
+async def get_character_cards():
+    """获取character_cards文件夹中的所有角色卡"""
+    try:
+        # 获取config_manager实例
+        config_mgr = get_config_manager()
+        
+        # 确保character_cards目录存在
+        config_mgr.ensure_chara_directory()
+        
+        character_cards = []
+        
+        # 遍历character_cards目录下的所有.chara.json文件
+        for filename in os.listdir(config_mgr.chara_dir):
+            if filename.endswith('.chara.json'):
+                try:
+                    file_path = os.path.join(config_mgr.chara_dir, filename)
+                    
+                    # 读取文件内容
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    
+                    # 检查是否包含基本信息
+                    if data and data.get('name'):
+                        character_cards.append({
+                            'id': filename[:-11],  # 去掉.chara.json后缀
+                            'name': data['name'],
+                            'description': data.get('description', ''),
+                            'tags': data.get('tags', []),
+                            'rawData': data,
+                            'path': file_path
+                        })
+                except Exception as e:
+                    logger.error(f"读取角色卡文件 {filename} 时出错: {e}")
+        
+        logger.info(f"已加载 {len(character_cards)} 个角色卡")
+        return {"success": True, "character_cards": character_cards}
+    except Exception as e:
+        logger.error(f"获取角色卡列表失败: {e}")
+        return {"success": False, "error": str(e)}
 
+
+@router.post('/catgirl/save-to-model-folder')
+async def save_catgirl_to_model_folder(request: Request):
+    """将角色卡保存到模型所在文件夹"""
+    try:
+        data = await request.json()
+        chara_data = data.get('charaData')
+        model_name = data.get('modelName')  # 接收模型名称而不是路径
+        file_name = data.get('fileName')
+        
+        if not chara_data or not model_name or not file_name:
+            return JSONResponse({"success": False, "error": "缺少必要参数"}, status_code=400)
+        
+        # 使用find_model_directory函数查找模型的实际文件系统路径
+        from utils.frontend_utils import find_model_directory
+        model_folder_path, _ = find_model_directory(model_name)
+        
+        # 确保模型文件夹存在
+        if not os.path.exists(model_folder_path):
+            os.makedirs(model_folder_path, exist_ok=True)
+            logger.info(f"已创建模型文件夹: {model_folder_path}")
+        
+        # 防路径穿越：只允许文件名，不允许路径
+        safe_name = os.path.basename(file_name)
+        if safe_name != file_name or ".." in safe_name or safe_name.startswith(("/", "\\")):
+            return JSONResponse({"success": False, "error": "非法文件名"}, status_code=400)
+            
+        # 保存角色卡到模型文件夹
+        file_path = os.path.join(model_folder_path, safe_name)
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(chara_data, f, ensure_ascii=False, indent=2)
+        
+        logger.info(f"角色卡已成功保存到模型文件夹: {file_path}")
+        return {"success": True, "path": file_path, "modelFolderPath": model_folder_path}
+    except Exception as e:
+        logger.error(f"保存角色卡到模型文件夹失败: {e}")
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 

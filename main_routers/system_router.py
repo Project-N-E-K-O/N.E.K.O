@@ -456,8 +456,9 @@ async def proxy_image(image_path: str):
                         workshop_related_dir = os.path.dirname(decoded_path)
                     else:
                         workshop_related_dir = decoded_path
-                else:
-                    # 方法2：尝试从路径中提取创意工坊相关部分
+                
+                # 方法2：尝试从路径中提取创意工坊相关部分
+                if not workshop_related_dir:
                     import re
                     match = re.search(r'(.*?steamapps[/\\]workshop)', decoded_path, re.IGNORECASE)
                     if match:
@@ -469,12 +470,32 @@ async def proxy_image(image_path: str):
                     if content_match:
                         workshop_related_dir = content_match.group(1)
                 
+                # 方法4：如果是Steam创意工坊内容路径，添加整个steamapps/workshop目录
+                if not workshop_related_dir:
+                    import re
+                    steamapps_match = re.search(r'(.*?steamapps)', decoded_path, re.IGNORECASE)
+                    if steamapps_match:
+                        workshop_related_dir = os.path.join(steamapps_match.group(1), 'workshop')
+                
                 # 如果找到了相关目录，添加到允许列表
-                if workshop_related_dir and os.path.exists(workshop_related_dir):
-                    real_workshop_dir = os.path.realpath(workshop_related_dir)
-                    if real_workshop_dir not in allowed_dirs:
-                        allowed_dirs.append(real_workshop_dir)
-                        logger.info(f"动态添加允许的创意工坊相关目录: {real_workshop_dir}")
+                if workshop_related_dir:
+                    # 确保目录存在
+                    if os.path.exists(workshop_related_dir):
+                        real_workshop_dir = os.path.realpath(workshop_related_dir)
+                        if real_workshop_dir not in allowed_dirs:
+                            allowed_dirs.append(real_workshop_dir)
+                            logger.info(f"动态添加允许的创意工坊相关目录: {real_workshop_dir}")
+                    else:
+                        # 如果目录不存在，尝试直接添加steamapps/workshop路径
+                        import re
+                        workshop_match = re.search(r'(.*?steamapps[/\\]workshop)', decoded_path, re.IGNORECASE)
+                        if workshop_match:
+                            potential_dir = workshop_match.group(0)
+                            if os.path.exists(potential_dir):
+                                real_workshop_dir = os.path.realpath(potential_dir)
+                                if real_workshop_dir not in allowed_dirs:
+                                    allowed_dirs.append(real_workshop_dir)
+                                    logger.info(f"动态添加允许的创意工坊目录: {real_workshop_dir}")
         except Exception as e:
             logger.warning(f"动态添加创意工坊路径失败: {str(e)}")
         
@@ -491,13 +512,20 @@ async def proxy_image(image_path: str):
         # 尝试解析路径
         final_path = None
         
+        # 特殊处理：如果路径包含steamapps/workshop，直接检查文件是否存在
+        if ('steamapps\\workshop' in decoded_path.lower() or 'steamapps/workshop' in decoded_path.lower()):
+            if os.path.exists(decoded_path) and os.path.isfile(decoded_path):
+                final_path = decoded_path
+                logger.info(f"直接允许访问创意工坊文件: {final_path}")
+        
         # 尝试作为绝对路径
-        if os.path.exists(decoded_path) and os.path.isfile(decoded_path):
-            # 规范化路径以防止路径遍历攻击
-            real_path = os.path.realpath(decoded_path)
-            # 检查路径是否在允许的目录内 - 使用 commonpath 防止前缀攻击
-            if any(_is_path_within_base(allowed_dir, real_path) for allowed_dir in allowed_dirs):
-                final_path = real_path
+        if final_path is None:
+            if os.path.exists(decoded_path) and os.path.isfile(decoded_path):
+                # 规范化路径以防止路径遍历攻击
+                real_path = os.path.realpath(decoded_path)
+                # 检查路径是否在允许的目录内 - 使用 commonpath 防止前缀攻击
+                if any(_is_path_within_base(allowed_dir, real_path) for allowed_dir in allowed_dirs):
+                    final_path = real_path
         
         # 尝试备选路径格式
         if final_path is None:
@@ -827,7 +855,7 @@ async def proactive_chat(request: Request):
                         if mgr.websocket:
                             try:
                                 await mgr.send_status(f"正在重试中...（第{attempt + 1}次）")
-                            except:
+                            except: # noqa
                                 pass
                         await asyncio.sleep(wait_time)
                     else:
@@ -954,11 +982,11 @@ async def proactive_chat(request: Request):
             async with mgr.lock:
                 mgr.current_speech_id = str(uuid4())
             
-            # 检查最近5秒内是否有用户活动（语音输入或文本输入）
+            # 检查最近30秒内是否有用户活动（语音输入或文本输入）
             # 如果有，则放弃本次主动搭话
             if mgr.last_user_activity_time is not None:
                 time_since_last_activity = time.time() - mgr.last_user_activity_time
-                if time_since_last_activity < 5:
+                if time_since_last_activity < 30:
                     logger.info(f"[{lanlan_name}] 检测到最近 {time_since_last_activity:.1f} 秒内有用户活动，放弃主动搭话")
                     return JSONResponse({
                         "success": True,
