@@ -77,7 +77,7 @@ class TranslationService:
         # 简单的FIFO缓存：如果缓存过大，删除最早加入的条目
         async with self._cache_lock:
             if len(self._cache) >= CACHE_MAX_SIZE:
-            # 删除第一个条目（FIFO）
+        # 删除第一个条目（FIFO）
                 first_key = next(iter(self._cache))
                 del self._cache[first_key]
                 
@@ -209,7 +209,10 @@ Rules:
             fields_to_translate = ['档案名', '昵称', '性别', '年龄']
         
         for key, value in result.items():
-            if key in fields_to_translate and isinstance(value, str) and value.strip():
+            # 检查字段是否应该被翻译（如果 fields_to_translate 为 None，则翻译所有字段）
+            should_translate = fields_to_translate is None or key in fields_to_translate
+            
+            if should_translate and isinstance(value, str) and value.strip():
                 # 处理字符串：如果是逗号分隔的字符串（如昵称 "T酱, 小T"），先分割再翻译
                 if ',' in value:
                     items = [item.strip() for item in value.split(',')]
@@ -221,11 +224,12 @@ Rules:
                     # 普通字符串直接翻译
                     result[key] = await self.translate_text(value, target_lang)
             elif isinstance(value, dict):
-                # 递归翻译嵌套字典
-                result[key] = await self.translate_dict(value, target_lang, fields_to_translate)
+                # 递归翻译嵌套字典（只有当字段在 fields_to_translate 中或 fields_to_translate 为 None 时才翻译）
+                if should_translate:
+                    result[key] = await self.translate_dict(value, target_lang, fields_to_translate)
             elif isinstance(value, list):
-                # 处理列表：如果是字符串列表，翻译每个元素
-                if value and all(isinstance(item, str) for item in value):
+                # 处理列表：如果是字符串列表，翻译每个元素（只有当字段在 fields_to_translate 中或 fields_to_translate 为 None 时才翻译）
+                if should_translate and value and all(isinstance(item, str) for item in value):
                     result[key] = await asyncio.gather(*[
                         self.translate_text(item, target_lang) for item in value
                     ])
