@@ -68,8 +68,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true # 关键修改：启用推送
           tags: |
-            ghcr.io/wuhins/n.e.k.o:${{ steps.version_calc.outputs.VERSION }}
-            ghcr.io/wuhins/n.e.k.o:latest
+            ghcr.io/project-n-e-k-o/n.e.k.o:${{ steps.version_calc.outputs.VERSION }}
+            ghcr.io/project-n-e-k-o/n.e.k.o:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
