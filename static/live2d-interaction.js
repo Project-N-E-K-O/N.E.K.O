@@ -503,8 +503,14 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function(model) {
     try {
         // 获取模型中心点的窗口坐标
         const bounds = model.getBounds();
-        const modelCenterX = (bounds.left + bounds.right) / 2;
-        const modelCenterY = (bounds.top + bounds.bottom) / 2;
+        
+        // 计算锚点偏移量
+        const offsetX = model.anchor.x * model.width * model.scale.x;
+        const offsetY = model.anchor.y * model.height * model.scale.y;
+        
+        // 计算考虑锚点后的模型中心点
+        const modelCenterX = (bounds.left + bounds.right) / 2 - offsetX;
+        const modelCenterY = (bounds.top + bounds.bottom) / 2 - offsetY;
         
         // 获取所有屏幕信息
         const displays = await window.electronScreen.getAllDisplays();
