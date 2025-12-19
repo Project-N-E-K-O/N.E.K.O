@@ -59,17 +59,28 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Docker image
+      - name: Build and push Docker image (Push to Registry)
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./docker/github/workflow/Dockerfile
           platforms: linux/amd64,linux/arm64
-          push: true # 关键修改：启用推送
-          outputs: type=oci,dest=/tmp/multi-arch-image.tar
+          push: true # 专注于推送
           tags: |
             ghcr.io/project-n-e-k-o/n.e.k.o:${{ steps.version_calc.outputs.VERSION }}
             ghcr.io/project-n-e-k-o/n.e.k.o:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and export Docker image (Export to File)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/github/workflow/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: false # 确保不推送
+          outputs: type=oci,dest=/tmp/multi-arch-image.tar # 专注于导出
+          tags: ghcr.io/project-n-e-k-o/n.e.k.o:${{ steps.version_calc.outputs.VERSION }} # 标签仅用于构建缓存
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
