@@ -66,14 +66,7 @@ RUN ln -sf /usr/bin/python3.11 /usr/bin/python3 && \
 RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
     if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
     # 根据架构选择最优安装方式[7](@ref)
-    case "$TARGETARCH" in \
-        amd64) \
-            wget -qO- https://astral.sh/uv/install.sh | sh ;; \
-        arm64) \
-            wget -qO- https://astral.sh/uv/install.sh | sh ;; \
-        *) \
-            echo "不支持的架构: $TARGETARCH" && exit 1 ;; \
-    esac && \
+    wget -qO- https://astral.sh/uv/install.sh | sh && \
     echo 'export PATH="/root/.cargo/bin:$PATH"' >> /root/.bashrc
 
 # 5. 配置 uv 使用阿里云镜像
