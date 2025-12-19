@@ -77,6 +77,6 @@ jobs:
         if: always() # 即使推送成功也保留导出文件作为备份
         uses: actions/upload-artifact@v4
         with:
-          name: multi-arch-oci-image-${{ env.VERSION }}
+          name: multi-arch-oci-image-${{ steps.version_calc.outputs.VERSION }}
           path: /tmp/multi-arch-image.tar
           retention-days: 14
