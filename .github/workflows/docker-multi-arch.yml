@@ -1,4 +1,4 @@
-name: Build and Push Multi-arch Docker Image
+name: Build and Export Multi-arch Docker Image
 
 on:
   push:
@@ -17,20 +17,23 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GHCR
+      - name: Log in to GHCR (Optional, for cache)
+        # 登录仅用于可能的基础镜像拉取和缓存推送，与镜像推送无关
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ REPOSITORY_OWNER_GITHUB }}
-          password: ${{ SECRETS_GITHUB_TOKEN }}
+          username: ${{ github.repository_owner }} # 请确认使用 ${{ github.actor }} 或 ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Docker image
+      - name: Build and export Docker images
         uses: docker/build-push-action@v5
         with:
-          context: . 
-          file: ./docker/github/workflow/Dockerfile
+          context: .
+          file: ./docker/Dockerfile # 请确认路径是否正确
           platforms: linux/amd64,linux/arm64
-          push: true
+          push: false # 关键：禁用自动推送
+          # 使用 output 参数将构建结果导出为文件
+          outputs: type=image,dest=/tmp/images.tar,name-cache=ghcr.io/wuhins/n.e.k.o:latest
           tags: |
             ghcr.io/wuhins/n.e.k.o:latest
             ghcr.io/wuhins/n.e.k.o:${{ github.sha }}
@@ -40,3 +43,11 @@ jobs:
           #   HTTPS_PROXY=${{ secrets.HTTPS_PROXY }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Upload image artifacts
+        # 将导出的镜像文件上传到工作流制品，供后续下载
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-images
+          path: /tmp/images.tar
+          retention-days: 14 # 设置制品的保留天数
