@@ -14,6 +14,9 @@ on:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read   # 用于拉取代码
+      packages: write  # 核心：授予向GHCR推送镜像的权限
     outputs: # 定义作业输出，便于后续步骤使用
       image_version: ${{ steps.version_calc.outputs.VERSION }}
     steps:
