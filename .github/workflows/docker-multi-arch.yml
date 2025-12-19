@@ -17,21 +17,21 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and export Docker images
+      - name: Build and export Docker images as OCI tarball
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./docker/github/workflow/Dockerfile # 请确保此路径准确
+          file: ./docker/github/workflow/Dockerfile
           platforms: linux/amd64,linux/arm64
-          push: false # 关键：不推送到仓库
-          outputs: type=docker,dest=/tmp/image.tar # 关键修改：使用 type=docker 并指定单一文件路径
-          tags: ghcr.io/wuhins/n.e.k.o:latest # 为构建指定一个标签
+          # 关键修改：使用 oci 导出器，并指定输出路径
+          outputs: type=oci,dest=/tmp/multi-arch-image.tar
+          tags: ghcr.io/wuhins/n.e.k.o:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Upload image artifacts
+      - name: Upload OCI image tarball
         uses: actions/upload-artifact@v4
         with:
-          name: docker-image-amd64-arm64
-          path: /tmp/image.tar
+          name: multi-arch-oci-image
+          path: /tmp/multi-arch-image.tar
           retention-days: 14
