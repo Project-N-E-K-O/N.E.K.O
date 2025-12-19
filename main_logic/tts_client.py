@@ -1017,6 +1017,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
         ws = None
         receive_task = None
         current_speech_id = None
+        ready_sent = False #初始化就绪信号标志
 
         # CosyVoice2 默认采样率通常为 24000Hz (如果是 CosyVoice1 则为 22050Hz)
         # 你的 server 代码加载的是 CosyVoice2-0.5B，所以这里设定为 24000
@@ -1042,7 +1043,6 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                     if not ready_sent:
                         response_queue.put(("__ready__", True))
                         ready_sent = True
-
                     # 确保旧任务结束 如果接收的不是空而且没有表示接收已经结束 暂时停止接收？
                     if receive_task is not None and not receive_task.done():
                         receive_task.cancel()
@@ -1054,7 +1054,9 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
 
                 except Exception as e:
                     logger.error(f"连接本地服务失败: {e} (请检查 model_server.py 是否运行)")
-                    response_queue.put(("__ready__", False))
+                    if not ready_sent:
+                        response_queue.put(("__ready__", False))
+                        return # 首次链接失败，直接推出
                     await asyncio.sleep(2)
                     # 把请求放回去或者丢弃？这里简单处理：丢弃并继续，避免死循环阻塞
                     continue
