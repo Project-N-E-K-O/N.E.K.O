@@ -45,7 +45,6 @@ jobs:
           fi
           # 设置输出，供后续步骤使用
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
-          echo "::set-output name=VERSION::$VERSION"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
