@@ -488,7 +488,10 @@ Live2DManager.prototype._debouncedSavePosition = function() {
     
     // 设置新的定时器，500ms后保存
     this._savePositionDebounceTimer = setTimeout(() => {
-        this._savePositionAfterInteraction();
+        this._savePositionAfterInteraction().catch(error => {
+            // 错误已在 _savePositionAfterInteraction 内部记录，这里只是确保 Promise 被处理
+            console.error('防抖动保存位置时出错:', error);
+        });
     }, 500);
 };
 
