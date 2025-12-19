@@ -55,7 +55,7 @@ check_dependencies() {
     echo "   Nginx version: $(nginx -v 2>&1)"
 }
 
-# 3. 配置Nginx反向代理
+# setup_nginx_proxy sets up and writes the Nginx main and site configuration for the container, creating proxy rules (including WebSocket support), static file serving, a health endpoint, removes the client request body size limit, and validates the resulting configuration.
 setup_nginx_proxy() {
     echo "🌐 Setting up Nginx reverse proxy..."
     
