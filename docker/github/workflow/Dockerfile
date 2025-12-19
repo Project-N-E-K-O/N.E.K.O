@@ -65,7 +65,6 @@ RUN ln -sf /usr/bin/python3.11 /usr/bin/python3 && \
 # 4. 安装 uv（条件性代理设置）[7](@ref)
 RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
     if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
-    # 根据架构选择最优安装方式[7](@ref)
     wget -qO- https://astral.sh/uv/install.sh | sh && \
     echo 'export PATH="/root/.cargo/bin:$PATH"' >> /root/.bashrc
 
