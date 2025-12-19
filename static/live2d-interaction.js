@@ -534,8 +534,8 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function(model) {
         }
         
         // 计算当前窗口左上角在屏幕上的绝对位置
-        const windowScreenX = currentDisplay.screenX - currentDisplay.x;
-        const windowScreenY = currentDisplay.screenY - currentDisplay.y;
+        const windowScreenX = currentDisplay.screenX;
+        const windowScreenY = currentDisplay.screenY;
         
         // 计算模型中心点的屏幕绝对坐标
         const modelScreenX = windowScreenX + modelCenterX;
@@ -576,9 +576,14 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function(model) {
                     console.log('[Live2D] 屏幕缩放比变化:', result.scaleRatio);
                 }
                 
-                //直接设置到中心点位置
-                model.x = newModelX;
-                model.y = newModelY;
+                // 计算锚点偏移量
+                // newModelX/newModelY 是模型中心点的坐标，但 PIXI 的 x/y 是相对于锚点的
+                // 需要减去锚点偏移量来得到正确的位置
+                const offsetX = model.anchor.x * model.width * model.scale.x;
+                const offsetY = model.anchor.y * model.height * model.scale.y;
+                
+                model.x = newModelX - offsetX;
+                model.y = newModelY - offsetY;
                 
                 console.log('[Live2D] 模型新位置:', model.x, model.y);
                 
