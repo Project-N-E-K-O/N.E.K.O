@@ -75,7 +75,7 @@ RUN mkdir -p /root/.config/uv && \
     echo 'url = "https://mirrors.aliyun.com/pypi/simple/"' >> /root/.config/uv/uv.toml && \
     echo 'default = true' >> /root/.config/uv/uv.toml
 
-# 6. 克隆 N.E.K.O. 项目（条件性代理设置）
+# 6. 复制项目代码到容器
 COPY . /app
 
 # 7. 设置环境变量
