@@ -9,7 +9,7 @@ on:
       version:
         description: '镜像版本号 (例如: 1.0.0-beta.1)'
         required: true
-        default: 'latest'
+        default: 'PLEASE-SET-VERSION'
 
 jobs:
   build-and-push:
