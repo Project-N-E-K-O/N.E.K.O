@@ -76,12 +76,7 @@ RUN mkdir -p /root/.config/uv && \
     echo 'default = true' >> /root/.config/uv/uv.toml
 
 # 6. 克隆 N.E.K.O. 项目（条件性代理设置）
-RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
-    if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
-    cd / && \
-    git clone https://github.com/Project-N-E-K-O/N.E.K.O.git app && \
-    cd /app && \
-    git checkout main
+COPY . /app
 
 # 7. 设置环境变量
 ENV PATH="/root/.cargo/bin:/usr/bin:/usr/local/bin:$PATH"
