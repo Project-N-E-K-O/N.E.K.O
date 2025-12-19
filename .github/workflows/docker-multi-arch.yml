@@ -29,7 +29,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./docker/Dockerfile # 请确认路径是否正确
+          file: ./docker/github/workflow/Dockerfile # 请确认路径是否正确
           platforms: linux/amd64,linux/arm64
           push: false # 关键：禁用自动推送
           # 使用 output 参数将构建结果导出为文件
