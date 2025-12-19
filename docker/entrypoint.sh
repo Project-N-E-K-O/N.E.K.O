@@ -101,6 +101,9 @@ server {
     # 禁用默认的Nginx版本显示
     server_tokens off;
     
+    #取消客户端请求体大小限制
+    client_max_body_size 0;
+
     # 代理到N.E.K.O主服务
     location / {
         proxy_pass http://127.0.0.1:${NEKO_MAIN_SERVER_PORT};
