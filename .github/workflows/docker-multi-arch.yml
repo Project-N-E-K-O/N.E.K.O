@@ -29,11 +29,11 @@ jobs:
         id: version_calc
         run: |
           # 策略1: 如果是由 git tag 触发，则使用 tag 作为版本号 (去掉 'v' 前缀)
-          if [[ $GITHUB_REF == refs/tags/* ]]; then
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             VERSION=${GITHUB_REF#refs/tags/v}
             echo "版本号来源于Git标签: $VERSION"
           # 策略2: 如果手动触发，则使用 input 中的 version 参数
-          elif [[ ${{ github.event_name }} == 'workflow_dispatch' ]]; then
+          elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             VERSION="${{ github.event.inputs.version }}"
             echo "版本号来源于手动输入: $VERSION"
           # 策略3: 默认情况，生成基于日期和提交哈希的版本号
