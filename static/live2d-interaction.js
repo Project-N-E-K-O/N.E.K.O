@@ -503,14 +503,8 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function(model) {
     try {
         // 获取模型中心点的窗口坐标
         const bounds = model.getBounds();
-        
-        // 计算锚点偏移量
-        const offsetX = model.anchor.x * model.width * model.scale.x;
-        const offsetY = model.anchor.y * model.height * model.scale.y;
-        
-        // 计算考虑锚点后的模型中心点
-        const modelCenterX = (bounds.left + bounds.right) / 2 - offsetX;
-        const modelCenterY = (bounds.top + bounds.bottom) / 2 - offsetY;
+        const modelCenterX = (bounds.left + bounds.right) / 2;
+        const modelCenterY = (bounds.top + bounds.bottom) / 2;
         
         // 获取所有屏幕信息
         const displays = await window.electronScreen.getAllDisplays();
@@ -582,14 +576,11 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function(model) {
                     console.log('[Live2D] 屏幕缩放比变化:', result.scaleRatio);
                 }
                 
-                // 计算锚点偏移量
-                // newModelX/newModelY 是模型中心点的坐标，但 PIXI 的 x/y 是相对于锚点的
-                // 需要减去锚点偏移量来得到正确的位置
-                const offsetX = model.anchor.x * model.width * model.scale.x;
-                const offsetY = model.anchor.y * model.height * model.scale.y;
-                
-                model.x = newModelX - offsetX;
-                model.y = newModelY - offsetY;
+                // 从中心点转换到锚点位置
+                // newModelX/newModelY 是模型视觉中心的坐标
+                // PIXI 的 x/y 是锚点位置，需要根据锚点偏离中心的距离调整
+                model.x = newModelX + (model.anchor.x - 0.5) * model.width * model.scale.x;
+                model.y = newModelY + (model.anchor.y - 0.5) * model.height * model.scale.y;
                 
                 console.log('[Live2D] 模型新位置:', model.x, model.y);
                 
