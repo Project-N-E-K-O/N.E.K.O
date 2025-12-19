@@ -41,7 +41,7 @@ jobs:
             echo "版本号为自动生成: $VERSION"
           fi
           # 设置输出，供后续步骤使用
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "::set-output name=VERSION::$VERSION"
 
       - name: Set up QEMU
@@ -66,7 +66,7 @@ jobs:
           push: true # 关键修改：启用推送
           tags: |
             ghcr.io/wuhins/n.e.k.o:${{ env.VERSION }}
-            ghcr.io/wuhins/n.e.k.o:latest # 同时更新 latest 标签
+            ghcr.io/wuhins/n.e.k.o:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
