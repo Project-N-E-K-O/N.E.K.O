@@ -5384,31 +5384,43 @@ window.addEventListener('message', function (event) {
 
 // ==================== 字幕提示框功能 ====================
 
+// 归一化语言代码：将 BCP-47 格式（如 'zh-CN', 'en-US'）归一化为简单代码（'zh', 'en', 'ja'）
+// 与 detectLanguage() 返回的格式保持一致，避免误判
+function normalizeLanguageCode(lang) {
+    if (!lang) return 'zh'; // 默认中文
+    const langLower = lang.toLowerCase();
+    if (langLower.startsWith('zh')) {
+        return 'zh';
+    } else if (langLower.startsWith('ja')) {
+        return 'ja';
+    } else if (langLower.startsWith('en')) {
+        return 'en';
+    }
+    return 'zh'; // 默认中文
+}
+
 // 字幕开关状态
 let subtitleEnabled = localStorage.getItem('subtitleEnabled') === 'true';
-let userLanguage = localStorage.getItem('userLanguage') || 'zh'; // 从localStorage获取，默认中文
+// 从localStorage获取用户语言，归一化为简单代码（'zh', 'en', 'ja'）与 detectLanguage() 保持一致
+let userLanguage = normalizeLanguageCode(localStorage.getItem('userLanguage') || 'zh');
 
-// 获取用户语言
+// 获取用户语言（支持语言代码归一化）
 async function getUserLanguage() {
     try {
         // 尝试从API获取
         const response = await fetch('/api/config/user_language');
         const data = await response.json();
         if (data.success && data.language) {
-            userLanguage = data.language;
+            // 归一化语言代码：将 BCP-47 格式（如 'zh-CN', 'en-US'）归一化为简单代码（'zh', 'en', 'ja'）
+            // 与 detectLanguage() 返回的格式保持一致，避免误判
+            userLanguage = normalizeLanguageCode(data.language);
             localStorage.setItem('userLanguage', userLanguage);
             return userLanguage;
         }
     } catch (error) {
         // API失败时，尝试从浏览器语言获取
         const browserLang = navigator.language || navigator.userLanguage;
-        if (browserLang.startsWith('zh')) {
-            userLanguage = 'zh';
-        } else if (browserLang.startsWith('ja')) {
-            userLanguage = 'ja';
-        } else if (browserLang.startsWith('en')) {
-            userLanguage = 'en';
-        }
+        userLanguage = normalizeLanguageCode(browserLang);
         localStorage.setItem('userLanguage', userLanguage);
     }
     return userLanguage;
@@ -5453,8 +5465,8 @@ let pendingTranslation = null; // 跟踪正在进行的翻译请求（用于去�
 
 // 检查并显示字幕提示框
 async function checkAndShowSubtitlePrompt(text) {
-    // 确保已获取用户语言
-    if (!userLanguage || userLanguage === 'zh') {
+    // 确保已获取用户语言（已归一化为 'zh', 'en', 'ja' 格式，与 detectLanguage() 保持一致）
+    if (!userLanguage) {
         await getUserLanguage();
     }
     
