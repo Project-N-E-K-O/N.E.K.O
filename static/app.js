@@ -483,6 +483,10 @@ function init_app() {
                         }, 100);
                         
                         // 消息完成时立即翻译（参考Xiao8项目实现）
+                        // 职责说明：后端已在 send_lanlan_response 中根据 user_language 翻译了消息文本
+                        // 如果 user_language != 'zh-CN'，后端会将中文回复翻译为用户语言，前端气泡显示翻译后的文本
+                        // 这里字幕模块的作用是：检测消息语言，如果与用户语言不同（如AI用日语回复但用户语言是中文），
+                        // 则显示翻译字幕。如果语言相同，则不会显示字幕（避免重复翻译）
                         if (fullText && fullText.trim()) {
                             translateAndShowSubtitle(fullText);
                         }

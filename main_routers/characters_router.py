@@ -64,19 +64,21 @@ async def get_characters(request: Request):
                 fields_to_translate=['档案名', '昵称']
             )
         
-        # 翻译猫娘数据
+        # 翻译猫娘数据（并行翻译以提升性能）
         if '猫娘' in characters_data and isinstance(characters_data['猫娘'], dict):
-            translated_catgirls = {}
-            for catgirl_name, catgirl_data in characters_data['猫娘'].items():
-                if isinstance(catgirl_data, dict):
-                    translated_catgirls[catgirl_name] = await translation_service.translate_dict(
-                        catgirl_data,
-                        user_language,
+            async def translate_catgirl(name, data):
+                if isinstance(data, dict):
+                    return name, await translation_service.translate_dict(
+                        data, user_language,
                         fields_to_translate=['档案名', '昵称', '性别']  # 注意：不翻译 system_prompt
                     )
-                else:
-                    translated_catgirls[catgirl_name] = catgirl_data
-            characters_data['猫娘'] = translated_catgirls
+                return name, data
+            
+            results = await asyncio.gather(*[
+                translate_catgirl(name, data)
+                for name, data in characters_data['猫娘'].items()
+            ])
+            characters_data['猫娘'] = dict(results)
         
         return JSONResponse(content=characters_data)
     except Exception as e:

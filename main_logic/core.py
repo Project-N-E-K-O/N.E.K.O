@@ -349,6 +349,9 @@ class LLMSessionManager:
                 text = self.emotion_pattern.sub('', text)
                 
                 # 根据用户语言翻译文本（注意：流式消息逐块翻译，可能不够完美，但保证实时性）
+                # 职责说明：后端负责将AI回复翻译为用户语言，前端字幕模块负责检测非用户语言并显示翻译字幕
+                # 如果 user_language != 'zh-CN'，这里会将中文回复翻译为用户语言，前端气泡显示翻译后的文本
+                # 前端字幕模块会在 turn end 时检测消息语言，如果与用户语言不同，会再次调用翻译API显示字幕
                 translated_text = await self._translate_if_needed(text)
 
                 message = {
@@ -1429,12 +1432,33 @@ class LLMSessionManager:
         return self._translation_service
     
     def set_user_language(self, language: str):
-        """设置用户语言"""
-        if language in ['zh-CN', 'en']:
-            self.user_language = language
-            logger.info(f"用户语言已设置为: {language}")
+        """
+        设置用户语言（支持语言代码归一化）
+        
+        支持的归一化规则：
+        - 'zh', 'zh-CN', 'zh-TW' 等以 'zh' 开头的 → 'zh-CN'
+        - 'en', 'en-US', 'en-GB' 等以 'en' 开头的 → 'en'
+        - 其他语言（如 'ja', 'ja-JP'）暂不支持，保持默认 'zh-CN'
+        """
+        if not language:
+            logger.warning(f"语言参数为空，保持当前语言: {self.user_language}")
+            return
+        
+        # 语言代码归一化（支持 BCP-47 格式）
+        language_lower = language.lower()
+        if language_lower.startswith('zh'):
+            normalized_lang = 'zh-CN'
+        elif language_lower.startswith('en'):
+            normalized_lang = 'en'
         else:
-            logger.warning(f"不支持的语言: {language}，保持当前语言: {self.user_language}")
+            logger.warning(f"不支持的语言: {language}，仅支持 zh-CN/en，保持当前语言: {self.user_language}")
+            return
+        
+        self.user_language = normalized_lang
+        if normalized_lang != language:
+            logger.info(f"用户语言已归一化: {language} → {normalized_lang}")
+        else:
+            logger.info(f"用户语言已设置为: {normalized_lang}")
     
     async def _translate_if_needed(self, text: str) -> str:
         """如果需要，翻译文本"""
@@ -1451,6 +1475,12 @@ class LLMSessionManager:
             return text
     
     async def send_status(self, message: str): # 向前端发送status message
+        """
+        发送状态消息（已纳入翻译通道）
+        
+        注意：status 消息会被翻译后发送到 WebSocket 和同步队列（sync_message_queue）
+        如果下游监控服务依赖中文关键字，建议改为基于 type/code 等机器字段进行判断
+        """
         try:
             # 根据用户语言翻译消息
             translated_message = await self._translate_if_needed(message)

@@ -227,12 +227,13 @@ Rules:
         result = data.copy()
         
         # 默认要翻译的字段（人设相关）
-        if fields_to_translate is None:
-            fields_to_translate = ['档案名', '昵称', '性别', '年龄']
+        default_fields = ['档案名', '昵称', '性别', '年龄']
+        translate_all = fields_to_translate is None
+        fields_set = set(fields_to_translate) if fields_to_translate else set(default_fields)
         
         for key, value in result.items():
-            # 检查字段是否应该被翻译（如果 fields_to_translate 为 None，则翻译所有字段）
-            should_translate = fields_to_translate is None or key in fields_to_translate
+            # 检查字段是否应该被翻译
+            should_translate = translate_all or key in fields_set
             
             if should_translate and isinstance(value, str) and value.strip():
                 # 处理字符串：如果是逗号分隔的字符串（如昵称 "T酱, 小T"），先分割再翻译
