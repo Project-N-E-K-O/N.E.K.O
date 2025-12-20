@@ -660,18 +660,14 @@
             sendMessageToMainPage('reload_model_parameters');
             // 延迟一点确保消息发送
             setTimeout(() => {
-                if (window.opener) {
-                    window.close();
-                } else {
-                    // 获取当前URL参数，保留lanlan_name等参数
-                    const urlParams = new URLSearchParams(window.location.search);
-                    const lanlanName = urlParams.get('lanlan_name');
-                    let targetUrl = '/l2d';
-                    if (lanlanName) {
-                        targetUrl += `?lanlan_name=${encodeURIComponent(lanlanName)}`;
-                    }
-                    window.location.href = targetUrl;
+                // 获取当前URL参数，保留lanlan_name等参数
+                const urlParams = new URLSearchParams(window.location.search);
+                const lanlanName = urlParams.get('lanlan_name');
+                let targetUrl = '/l2d';
+                if (lanlanName) {
+                    targetUrl += `?lanlan_name=${encodeURIComponent(lanlanName)}`;
                 }
+                window.location.href = targetUrl;
             }, 100);
         });
 
