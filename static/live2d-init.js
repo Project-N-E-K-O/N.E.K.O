@@ -99,6 +99,30 @@ async function initLive2DModel() {
             if (modelPreferences && modelPreferences.parameters) {
                 console.log('找到模型偏好设置，参数数量:', Object.keys(modelPreferences.parameters).length);
             }
+            
+            // 检查是否有保存的显示器信息（多屏幕位置恢复）
+            if (modelPreferences && modelPreferences.display && 
+                window.electronScreen && window.electronScreen.moveWindowToDisplay) {
+                const savedDisplay = modelPreferences.display;
+                if (Number.isFinite(savedDisplay.screenX) && Number.isFinite(savedDisplay.screenY)) {
+                    console.log('恢复窗口到保存的显示器位置:', savedDisplay);
+                    try {
+                        const result = await window.electronScreen.moveWindowToDisplay(
+                            savedDisplay.screenX + 10,  // 在保存的屏幕坐标中心点附近
+                            savedDisplay.screenY + 10
+                        );
+                        if (result && result.success) {
+                            console.log('窗口位置恢复成功:', result);
+                        } else if (result && result.sameDisplay) {
+                            console.log('窗口已在正确的显示器上');
+                        } else {
+                            console.warn('窗口移动失败:', result);
+                        }
+                    } catch (error) {
+                        console.warn('恢复窗口位置失败:', error);
+                    }
+                }
+            }
         }
         
         // 加载模型
