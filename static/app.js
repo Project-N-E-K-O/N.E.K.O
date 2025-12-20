@@ -5907,8 +5907,14 @@ function showSubtitlePrompt() {
         window.i18next.on('languageChanged', () => {
             if (labelText && window.t) {
                 const translated = window.t('subtitle.enable');
-                // 如果翻译返回的是key本身（说明翻译不存在），使用默认文本
-                labelText.textContent = (translated && translated !== 'subtitle.enable') ? translated : '开启字幕';
+                // 如果翻译返回的是key本身（说明翻译不存在），使用当前语言的fallback
+                if (translated && translated !== 'subtitle.enable') {
+                    labelText.textContent = translated;
+                } else {
+                    // 使用与初始渲染相同的fallback逻辑
+                    const currentLang = normalizeLanguageCode(window.i18next.language || navigator.language);
+                    labelText.textContent = fallbacks[currentLang] || fallbacks['en'];
+                }
             }
         });
     }
