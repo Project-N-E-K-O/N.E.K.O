@@ -663,12 +663,6 @@ if __name__ == "__main__":
     import signal
     
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--host",
-        type=str,
-        default=os.environ.get("NEKO_MAIN_SERVER_HOST", "127.0.0.1"),
-        help='监听地址（默认 127.0.0.1 仅本机可访问；如需手机/RN 访问请用 0.0.0.0）',
-    )
     parser.add_argument("--open-browser",   action="store_true",
                         help="启动后是否打开浏览器并监控它")
     parser.add_argument("--page",           type=str, default="",
@@ -680,7 +674,6 @@ if __name__ == "__main__":
     # Use os.path.abspath to show full path clearly
     logger.info(f"Serving static files from: {os.path.abspath('static')}")
     logger.info(f"Serving index.html from: {os.path.abspath('templates/index.html')}")
-    logger.info(f"Access UI at: http://{args.host}:{MAIN_SERVER_PORT} (如 host=0.0.0.0 可用局域网IP访问)")
     logger.info("-----------------------------")
 
     # 使用统一的速率限制日志过滤器
@@ -695,7 +688,7 @@ if __name__ == "__main__":
     # 1) 配置 UVicorn
     config = uvicorn.Config(
         app=app,
-        host=args.host,
+        host="127.0.0.1",
         port=MAIN_SERVER_PORT,
         log_level="info",
         loop="asyncio",
@@ -730,7 +723,7 @@ if __name__ == "__main__":
 
     # 4) 启动服务器（阻塞，直到 server.should_exit=True）
     logger.info("--- Starting FastAPI Server ---")
-    logger.info(f"Access UI at: http://{args.host}:{MAIN_SERVER_PORT}/{args.page}")
+    logger.info(f"Access UI at: http://127.0.0.1:{MAIN_SERVER_PORT}/{args.page}")
     
     try:
         server.run()
