@@ -56,7 +56,6 @@ def add_data(src, dest):
     src_path = os.path.join(PROJECT_ROOT, src)
     if '*' in src:
         # 处理通配符
-        import glob
         files = glob.glob(src_path)
         for f in files:
             datas.append((f, dest))
@@ -90,10 +89,12 @@ if sys.platform == 'darwin':
         binaries.append((libSteamworksPy, '.'))
 elif sys.platform == 'win32':
     # Windows 使用 .dll
-    binaries += [
-        (os.path.join(PROJECT_ROOT, 'steam_api64.dll'), '.'),
-        (os.path.join(PROJECT_ROOT, 'SteamworksPy64.dll'), '.'),
-    ]
+    steam_api_dll = os.path.join(PROJECT_ROOT, 'steam_api64.dll')
+    steamworks_dll = os.path.join(PROJECT_ROOT, 'SteamworksPy64.dll')
+    if os.path.exists(steam_api_dll):
+        binaries.append((steam_api_dll, '.'))
+    if os.path.exists(steamworks_dll):
+        binaries.append((steamworks_dll, '.'))
     # 添加 steam_api64.lib（如果存在，供编译时使用）
     steam_lib = os.path.join(PROJECT_ROOT, 'steam_api64.lib')
     if os.path.exists(steam_lib):
