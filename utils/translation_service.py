@@ -114,11 +114,36 @@ class TranslationService:
             cache_key = self._get_cache_key(text, target_lang)
             self._cache[cache_key] = translated
     
+    def _normalize_language_code(self, lang: str) -> str:
+        """
+        归一化语言代码（统一处理 'zh' 和 'zh-CN' 等格式）
+        
+        Args:
+            lang: 语言代码
+            
+        Returns:
+            归一化后的语言代码 ('zh-CN', 'en', 'ja')
+        """
+        if not lang:
+            return 'zh-CN'  # 默认中文
+        
+        lang_lower = lang.lower()
+        if lang_lower.startswith('zh'):
+            return 'zh-CN'
+        elif lang_lower.startswith('ja'):
+            return 'ja'
+        elif lang_lower.startswith('en'):
+            return 'en'
+        else:
+            return lang  # 保持原样（如果不在支持列表中，后续会检查）
+    
     def _get_cache_key(self, text: str, target_lang: str) -> str:
-        """生成缓存键"""
+        """生成缓存键（使用归一化后的语言代码）"""
+        # 先归一化语言代码，确保缓存键一致性
+        normalized_lang = self._normalize_language_code(target_lang)
         # 使用稳定哈希以支持未来的缓存持久化
         text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
-        return f"{target_lang}:{text_hash}"
+        return f"{normalized_lang}:{text_hash}"
     def _detect_language(self, text: str) -> str:
         """
         简单检测文本语言（中文/日文/英文）
@@ -154,15 +179,8 @@ class TranslationService:
             return text
         
         # 归一化目标语言代码（统一处理 'zh' 和 'zh-CN'）
-        target_lang_normalized = target_lang.lower()
-        if target_lang_normalized.startswith('zh'):
-            target_lang_normalized = 'zh-CN'
-        elif target_lang_normalized.startswith('ja'):
-            target_lang_normalized = 'ja'
-        elif target_lang_normalized.startswith('en'):
-            target_lang_normalized = 'en'
-        else:
-            target_lang_normalized = target_lang
+        # 注意：必须在缓存操作之前归一化，确保缓存键一致性
+        target_lang_normalized = self._normalize_language_code(target_lang)
         
         # 检查目标语言是否支持
         if target_lang_normalized not in SUPPORTED_LANGUAGES:
@@ -172,12 +190,12 @@ class TranslationService:
         # 检测源语言，如果和目标语言相同则不需要翻译
         detected_lang = self._detect_language(text)
         # 归一化检测到的语言代码以便比较
-        detected_lang_normalized = 'zh-CN' if detected_lang == 'zh-CN' else detected_lang
+        detected_lang_normalized = self._normalize_language_code(detected_lang)
         if detected_lang_normalized == target_lang_normalized:
             return text
         
-        # 检查缓存
-        cached = await self._get_from_cache(text, target_lang)
+        # 检查缓存（使用归一化后的语言代码）
+        cached = await self._get_from_cache(text, target_lang_normalized)
         if cached is not None:
             return cached
         
@@ -236,8 +254,8 @@ Rules:
             if not translated:
                 logger.warning(f"翻译服务：LLM返回空结果，使用原文: '{text[:50]}...'")
                 return text            
-            # 保存到缓存
-            await self._save_to_cache(text, target_lang, translated)
+            # 保存到缓存（使用归一化后的语言代码）
+            await self._save_to_cache(text, target_lang_normalized, translated)
             
             logger.debug(f"翻译服务：'{text[:50]}...' -> '{translated[:50]}...' ({target_lang})")
             return translated
