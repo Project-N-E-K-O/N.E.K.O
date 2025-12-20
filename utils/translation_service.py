@@ -18,8 +18,8 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 logger = logging.getLogger(__name__)
 
-# 支持的语言列表
-SUPPORTED_LANGUAGES = ['zh-CN', 'en']
+# 支持的语言列表（支持多种格式以兼容不同调用方式）
+SUPPORTED_LANGUAGES = ['zh', 'zh-CN', 'en', 'ja']
 DEFAULT_LANGUAGE = 'zh-CN'
 
 # 缓存配置
@@ -121,12 +121,15 @@ class TranslationService:
         return f"{target_lang}:{text_hash}"
     def _detect_language(self, text: str) -> str:
         """
-        简单检测文本语言（中文/英文）
+        简单检测文本语言（中文/日文/英文）
         
         Returns:
-            'zh-CN' 或 'en'
+            'zh-CN'、'ja' 或 'en'
         """
-        # 简单检测：如果包含中文字符，认为是中文
+        # 检测日文假名（优先判断，因为日文也包含汉字）
+        if re.search(r'[\u3040-\u309f\u30a0-\u30ff]', text):
+            return 'ja'
+        # 检测中文字符
         if re.search(r'[\u4e00-\u9fff]', text):
             return 'zh-CN'
         return 'en'
@@ -141,7 +144,7 @@ class TranslationService:
         
         Args:
             text: 要翻译的文本
-            target_lang: 目标语言 ('zh-CN' 或 'en')
+            target_lang: 目标语言 ('zh', 'zh-CN', 'en', 'ja')
             
         
         Returns:
@@ -150,14 +153,27 @@ class TranslationService:
         if not text or not text.strip():
             return text
         
+        # 归一化目标语言代码（统一处理 'zh' 和 'zh-CN'）
+        target_lang_normalized = target_lang.lower()
+        if target_lang_normalized.startswith('zh'):
+            target_lang_normalized = 'zh-CN'
+        elif target_lang_normalized.startswith('ja'):
+            target_lang_normalized = 'ja'
+        elif target_lang_normalized.startswith('en'):
+            target_lang_normalized = 'en'
+        else:
+            target_lang_normalized = target_lang
+        
         # 检查目标语言是否支持
-        if target_lang not in SUPPORTED_LANGUAGES:
-            logger.warning(f"翻译服务：不支持的目标语言 {target_lang}，返回原文")
+        if target_lang_normalized not in SUPPORTED_LANGUAGES:
+            logger.warning(f"翻译服务：不支持的目标语言 {target_lang} (归一化后: {target_lang_normalized})，返回原文")
             return text
         
         # 检测源语言，如果和目标语言相同则不需要翻译
         detected_lang = self._detect_language(text)
-        if detected_lang == target_lang:
+        # 归一化检测到的语言代码以便比较
+        detected_lang_normalized = 'zh-CN' if detected_lang == 'zh-CN' else detected_lang
+        if detected_lang_normalized == target_lang_normalized:
             return text
         
         # 检查缓存
@@ -172,13 +188,31 @@ class TranslationService:
             return text
         
         try:
-            # 构建翻译提示
-            if target_lang == 'en':
+            # 构建翻译提示（根据归一化后的语言代码）
+            if target_lang_normalized == 'en':
                 target_lang_name = "English"
-                source_lang_name = "Chinese"
-            else:
+                if detected_lang == 'zh-CN':
+                    source_lang_name = "Chinese"
+                elif detected_lang == 'ja':
+                    source_lang_name = "Japanese"
+                else:
+                    source_lang_name = "the source language"
+            elif target_lang_normalized == 'ja':
+                target_lang_name = "Japanese"
+                if detected_lang == 'zh-CN':
+                    source_lang_name = "Chinese"
+                elif detected_lang == 'en':
+                    source_lang_name = "English"
+                else:
+                    source_lang_name = "the source language"
+            else:  # zh-CN
                 target_lang_name = "简体中文"
-                source_lang_name = "English"
+                if detected_lang == 'en':
+                    source_lang_name = "English"
+                elif detected_lang == 'ja':
+                    source_lang_name = "Japanese"
+                else:
+                    source_lang_name = "the source language"
             
             system_prompt = f"""You are a professional translator. Translate the given text from {source_lang_name} to {target_lang_name}.
 
@@ -259,9 +293,10 @@ Rules:
             should_translate = translate_all or key in fields_set
             
             if should_translate and isinstance(value, str) and value.strip():
-                # 处理字符串：如果是逗号分隔的字符串（如昵称 "T酱, 小T"），先分割再翻译
-                if ',' in value:
-                    items = [item.strip() for item in value.split(',')]
+                # 只对特定字段（如昵称）进行逗号分隔处理
+                # 使用 ", " (逗号+空格) 作为分隔符更可靠，避免误拆分普通文本中的逗号
+                if key in {'昵称', 'nickname'} and ', ' in value:
+                    items = [item.strip() for item in value.split(', ')]
                     translated_items = await asyncio.gather(*[
                         self.translate_text(item, target_lang) for item in items
                     ])
