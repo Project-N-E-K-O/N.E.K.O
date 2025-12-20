@@ -148,7 +148,7 @@ describe("RequestQueue", () => {
   });
 
   describe("clear", () => {
-    it("clears the queue", () => {
+    it("clears the queue", async () => {
       const request: QueuedRequest = {
         resolve: vi.fn(),
         reject: vi.fn(),
@@ -158,7 +158,7 @@ describe("RequestQueue", () => {
       queue.enqueue(request);
       queue.clear();
 
-      queue.processQueue();
+      await queue.processQueue();
       expect(request.resolve).not.toHaveBeenCalled();
     });
 
