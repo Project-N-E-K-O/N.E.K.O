@@ -674,6 +674,7 @@ if __name__ == "__main__":
     # Use os.path.abspath to show full path clearly
     logger.info(f"Serving static files from: {os.path.abspath('static')}")
     logger.info(f"Serving index.html from: {os.path.abspath('templates/index.html')}")
+    logger.info(f"Access UI at: http://127.0.0.1:{MAIN_SERVER_PORT} (or your network IP:{MAIN_SERVER_PORT})")
     logger.info("-----------------------------")
 
     # 使用统一的速率限制日志过滤器
