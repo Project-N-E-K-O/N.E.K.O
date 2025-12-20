@@ -179,7 +179,8 @@ function init_app() {
     // 麦克风启动中标志，用于区分"正在启动"和"已录音"两个阶段
     window.isMicStarting = false;
     let socket;
-    let currentGeminiMessage = null;
+    // 将 currentGeminiMessage 改为全局变量，供字幕模块使用
+    window.currentGeminiMessage = null;
     let audioPlayerContext = null;
     let videoTrack, videoSenderInterval;
     let audioBufferQueue = [];
@@ -471,8 +472,8 @@ function init_app() {
                 } else if (response.type === 'system' && response.data === 'turn end') {
                     console.log('收到turn end事件，开始情感分析');
                     // 消息完成时进行情感分析
-                    if (currentGeminiMessage) {
-                        const fullText = currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '');
+                    if (window.currentGeminiMessage) {
+                        const fullText = window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '');
                         setTimeout(async () => {
                             const emotionResult = await analyzeEmotion(fullText);
                             if (emotionResult && emotionResult.emotion) {
@@ -604,12 +605,12 @@ function init_app() {
             });
         }
 
-        if (sender === 'gemini' && !isNewMessage && currentGeminiMessage) {
+        if (sender === 'gemini' && !isNewMessage && window.currentGeminiMessage) {
             // 追加到现有的Gemini消息
-            // currentGeminiMessage.textContent += text;
-            currentGeminiMessage.insertAdjacentHTML('beforeend', text.replaceAll('\n', '<br>'));
+            // window.currentGeminiMessage.textContent += text;
+            window.currentGeminiMessage.insertAdjacentHTML('beforeend', text.replaceAll('\n', '<br>'));
             // 检测追加内容后的完整消息语言
-            const fullText = currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '');
+            const fullText = window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '');
             checkAndShowSubtitlePrompt(fullText);
             
             // 注意：翻译现在在消息完成时（turn end事件）立即执行，不再使用延迟机制
@@ -625,7 +626,7 @@ function init_app() {
 
             // 如果是Gemini消息，更新当前消息引用
             if (sender === 'gemini') {
-                currentGeminiMessage = messageDiv;
+                window.currentGeminiMessage = messageDiv;
 
                 // 检测AI消息的语言，如果与用户语言不同，显示字幕提示框
                 checkAndShowSubtitlePrompt(text);
@@ -2163,7 +2164,7 @@ function init_app() {
 
         isRecording = false;
         window.isRecording = false;
-        currentGeminiMessage = null;
+        window.currentGeminiMessage = null;
 
         // 停止静音检测
         stopSilenceDetection();
@@ -5760,8 +5761,8 @@ function showSubtitlePrompt() {
             }
             pendingTranslation = null;
             
-            if (currentGeminiMessage && currentGeminiMessage.textContent) {
-                const fullText = currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '');
+            if (window.currentGeminiMessage && window.currentGeminiMessage.textContent) {
+                const fullText = window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '');
                 if (fullText && fullText.trim()) {
                     // 确保字幕显示元素存在且可见
                     const subtitleDisplay = document.getElementById('subtitle-display');
@@ -5796,8 +5797,8 @@ document.addEventListener('DOMContentLoaded', function() {
     getUserLanguage();
     
     // 检查当前消息中是否有非用户语言
-    if (currentGeminiMessage) {
-        const fullText = currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '');
+    if (window.currentGeminiMessage) {
+        const fullText = window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '');
         checkAndShowSubtitlePrompt(fullText);
     }
 });
