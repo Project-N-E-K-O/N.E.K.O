@@ -76,7 +76,7 @@ Live2DManager.prototype.setupDragAndDrop = function(model) {
         enableButtonEventPropagation();
     });
 
-    const onDragEnd = () => {
+    const onDragEnd = async () => {
         if (isDragging) {
             isDragging = false;
             document.getElementById('live2d-canvas').style.cursor = 'grab';
@@ -84,8 +84,14 @@ Live2DManager.prototype.setupDragAndDrop = function(model) {
             // 拖拽结束后恢复按钮的事件拦截
             disableButtonEventPropagation();
             
-            // 拖拽结束后自动保存位置
-            this._savePositionAfterInteraction();
+            // 检测是否需要切换屏幕（多屏幕支持）
+            // _checkAndSwitchDisplay returns true if a display switch occurred (and saved internally)
+            const displaySwitched = await this._checkAndSwitchDisplay(model);
+            
+            // 拖拽结束后自动保存位置（仅当没有发生屏幕切换时）
+            if (!displaySwitched) {
+                await this._savePositionAfterInteraction();
+            }
         }
     };
 
@@ -192,12 +198,12 @@ Live2DManager.prototype.setupTouchZoom = function(model) {
         }
     };
     
-    const onTouchEnd = (event) => {
+    const onTouchEnd = async (event) => {
         // 当手指数量小于2时，停止缩放
         if (event.touches.length < 2) {
             if (isTouchZooming) {
                 // 触摸缩放结束后自动保存位置和缩放
-                this._savePositionAfterInteraction();
+                await this._savePositionAfterInteraction();
             }
             isTouchZooming = false;
         }
@@ -408,7 +414,7 @@ Live2DManager.prototype.enableMouseTracking = function(model, options = {}) {
 };
 
 // 交互后保存位置和缩放的辅助函数
-Live2DManager.prototype._savePositionAfterInteraction = function() {
+Live2DManager.prototype._savePositionAfterInteraction = async function() {
     if (!this.currentModel || !this._lastLoadedModelPath) {
         console.debug('无法保存位置：模型或路径未设置');
         return;
@@ -424,8 +430,43 @@ Live2DManager.prototype._savePositionAfterInteraction = function() {
         return;
     }
     
+    // 获取当前窗口所在显示器的信息（用于多屏幕位置恢复）
+    let displayInfo = null;
+    if (window.electronScreen && window.electronScreen.getCurrentDisplay) {
+        try {
+            const currentDisplay = await window.electronScreen.getCurrentDisplay();
+            console.debug('currentDisplay', currentDisplay);
+            if (currentDisplay) {
+                // 优先使用 screenX/screenY，兜底使用 bounds.x/bounds.y
+                let screenX = currentDisplay.screenX;
+                let screenY = currentDisplay.screenY;
+                
+                // 如果 screenX/screenY 不存在，尝试从 bounds 获取
+                if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) {
+                    if (currentDisplay.bounds && 
+                        Number.isFinite(currentDisplay.bounds.x) && 
+                        Number.isFinite(currentDisplay.bounds.y)) {
+                        screenX = currentDisplay.bounds.x;
+                        screenY = currentDisplay.bounds.y;
+                        console.debug('使用 bounds 作为显示器位置');
+                    }
+                }
+                
+                if (Number.isFinite(screenX) && Number.isFinite(screenY)) {
+                    displayInfo = {
+                        screenX: screenX,
+                        screenY: screenY
+                    };
+                    console.debug('保存显示器位置:', displayInfo);
+                }
+            }
+        } catch (error) {
+            console.warn('获取显示器信息失败:', error);
+        }
+    }
+    
     // 异步保存，不阻塞交互
-    this.saveUserPreferences(this._lastLoadedModelPath, position, scale)
+    this.saveUserPreferences(this._lastLoadedModelPath, position, scale, null, displayInfo)
         .then(success => {
             if (success) {
                 console.debug('模型位置和缩放已自动保存');
@@ -447,7 +488,121 @@ Live2DManager.prototype._debouncedSavePosition = function() {
     
     // 设置新的定时器，500ms后保存
     this._savePositionDebounceTimer = setTimeout(() => {
-        this._savePositionAfterInteraction();
+        this._savePositionAfterInteraction().catch(error => {
+            // 错误已在 _savePositionAfterInteraction 内部记录，这里只是确保 Promise 被处理
+            console.error('防抖动保存位置时出错:', error);
+        });
     }, 500);
 };
 
+// 多屏幕支持：检测模型是否移出当前屏幕并切换到新屏幕
+// Returns true if a display switch occurred (and position was saved internally), false otherwise
+Live2DManager.prototype._checkAndSwitchDisplay = async function(model) {
+    // 仅在 Electron 环境下执行
+    if (!window.electronScreen || !window.electronScreen.moveWindowToDisplay) {
+        return false;
+    }
+    
+    try {
+        // 获取模型中心点的窗口坐标
+        const bounds = model.getBounds();
+        const modelCenterX = (bounds.left + bounds.right) / 2;
+        const modelCenterY = (bounds.top + bounds.bottom) / 2;
+        
+        // 获取所有屏幕信息
+        const displays = await window.electronScreen.getAllDisplays();
+        if (!displays || displays.length <= 1) {
+            // 只有一个屏幕，不需要切换
+            return false;
+        }
+        
+        // 检查模型是否在当前窗口范围内
+        const windowWidth = window.innerWidth;
+        const windowHeight = window.innerHeight;
+        
+        // 如果模型大部分还在当前窗口内，不切换
+        if (modelCenterX >= 0 && modelCenterX < windowWidth &&
+            modelCenterY >= 0 && modelCenterY < windowHeight) {
+            return false;
+        }
+        
+        // 模型移出了当前窗口，查找目标屏幕
+        // 需要转换为屏幕坐标（相对于屏幕的绝对坐标）
+        
+        // 首先获取当前窗口所在的显示器
+        const currentDisplay = await window.electronScreen.getCurrentDisplay();
+        if (!currentDisplay) {
+            console.warn('[Live2D] 无法获取当前显示器信息');
+            return false;
+        }
+        
+        // 计算当前窗口左上角在屏幕上的绝对位置
+        const windowScreenX = currentDisplay.screenX;
+        const windowScreenY = currentDisplay.screenY;
+        
+        // 计算模型中心点的屏幕绝对坐标
+        const modelScreenX = windowScreenX + modelCenterX;
+        const modelScreenY = windowScreenY + modelCenterY;
+        
+        // 遍历所有显示器，找到包含模型中心点的显示器
+        let targetDisplay = null;
+        for (const display of displays) {
+            // 检查模型中心点是否在这个显示器内
+            if (modelScreenX >= display.screenX && 
+                modelScreenX < display.screenX + display.width &&
+                modelScreenY >= display.screenY && 
+                modelScreenY < display.screenY + display.height) {
+                targetDisplay = display;
+                break;
+            }
+        }
+        
+        if (targetDisplay) {
+            console.log('[Live2D] 检测到模型移出当前屏幕，准备切换到屏幕:', targetDisplay.id);
+            
+            // 使用之前已经计算好的模型屏幕绝对坐标调用切换屏幕
+            const result = await window.electronScreen.moveWindowToDisplay(modelScreenX, modelScreenY);
+            
+            if (result && result.success && !result.sameDisplay) {
+                console.log('[Live2D] 屏幕切换成功:', result);
+                
+                // 计算模型在新窗口中的位置
+                // 新窗口左上角是 targetDisplay.screenX, targetDisplay.screenY
+                // 模型新的窗口坐标 = 模型屏幕坐标 - 新窗口屏幕坐标
+                const newModelX = modelScreenX - targetDisplay.screenX;
+                const newModelY = modelScreenY - targetDisplay.screenY;
+                
+                // 考虑缩放因子变化
+                if (result.scaleRatio && result.scaleRatio !== 1) {
+                    // 如果不同屏幕有不同的缩放，可能需要调整模型大小
+                    // 但通常保持模型原大小更合理，只调整位置
+                    console.log('[Live2D] 屏幕缩放比变化:', result.scaleRatio);
+                }
+                
+                // 从中心点转换到锚点位置
+                // newModelX/newModelY 是模型视觉中心的坐标
+                // PIXI 的 x/y 是锚点位置，需要根据锚点偏离中心的距离调整
+                model.x = newModelX + (model.anchor.x - 0.5) * model.width * model.scale.x;
+                model.y = newModelY + (model.anchor.y - 0.5) * model.height * model.scale.y;
+                
+                console.log('[Live2D] 模型新位置:', model.x, model.y);
+                
+                // 切换屏幕后保存位置和新的显示器信息
+                await this._savePositionAfterInteraction();
+                return true;  // Display switch occurred
+            }
+        }
+        return false;  // No display switch occurred
+    } catch (error) {
+        console.error('[Live2D] 检测/切换屏幕时出错:', error);
+        return false;
+    }
+};
+
+// 监听屏幕切换事件，更新相关状态
+if (typeof window !== 'undefined') {
+    window.addEventListener('electron-display-changed', (event) => {
+        console.log('[Live2D] 收到屏幕切换事件:', event.detail);
+        // 可以在这里做额外的处理，比如重新计算UI位置等
+    });
+}

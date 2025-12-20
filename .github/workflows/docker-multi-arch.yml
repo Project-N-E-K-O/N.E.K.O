@@ -1,0 +1,93 @@
+name: Docker Build
+
+on:
+  push:
+    tags:
+      - 'v*' # 匹配 v 开头的标签，例如 v1.0.0
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '镜像版本号 (例如: 1.0.0-beta.1)'
+        required: true
+        default: 'PLEASE-SET-VERSION'
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read   # 用于拉取代码
+      packages: write  # 核心：授予向GHCR推送镜像的权限
+    outputs: # 定义作业输出，便于后续步骤使用
+      image_version: ${{ steps.version_calc.outputs.VERSION }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 获取完整的提交历史，便于生成版本信息
+
+      - name: Calculate Docker image version
+        id: version_calc
+        run: |
+          # 策略1: 如果是由 git tag 触发，则使用 tag 作为版本号 (去掉 'v' 前缀)
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+            echo "版本号来源于Git标签: $VERSION"
+          # 策略2: 如果手动触发，则使用 input 中的 version 参数
+          elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            VERSION="${{ github.event.inputs.version }}"
+            echo "版本号来源于手动输入: $VERSION"
+          # 策略3: 默认情况，生成基于日期和提交哈希的版本号
+          else
+            COMMIT_SHORT=$(git rev-parse --short HEAD)
+            DATE=$(date +%Y%m%d)
+            VERSION="${DATE}-${COMMIT_SHORT}"
+            echo "版本号为自动生成: $VERSION"
+          fi
+          # 设置输出，供后续步骤使用
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image (Push to Registry)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/github/workflow/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true # 专注于推送
+          tags: |
+            ghcr.io/project-n-e-k-o/n.e.k.o:${{ steps.version_calc.outputs.VERSION }}
+            ghcr.io/project-n-e-k-o/n.e.k.o:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and export Docker image (Export to File)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/github/workflow/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: false # 确保不推送
+          outputs: type=oci,dest=/tmp/multi-arch-image.tar # 专注于导出
+          tags: ghcr.io/project-n-e-k-o/n.e.k.o:${{ steps.version_calc.outputs.VERSION }} # 标签仅用于构建缓存
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Upload OCI image tarball (Optional)
+        if: always() # 即使推送成功也保留导出文件作为备份
+        uses: actions/upload-artifact@v4
+        with:
+          name: multi-arch-oci-image-${{ steps.version_calc.outputs.VERSION }}
+          path: /tmp/multi-arch-image.tar
+          retention-days: 14
