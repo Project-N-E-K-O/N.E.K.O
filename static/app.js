@@ -610,9 +610,8 @@ function init_app() {
         }
 
         if (sender === 'gemini' && !isNewMessage && window.currentGeminiMessage) {
-            // 追加到现有的Gemini消息
-            // window.currentGeminiMessage.textContent += text;
-            window.currentGeminiMessage.insertAdjacentHTML('beforeend', text.replaceAll('\n', '<br>'));
+            // 追加到现有的Gemini消息（使用 textContent 避免 XSS 风险，换行由 CSS white-space: pre-wrap 处理）
+            window.currentGeminiMessage.textContent += text;
             // 检测追加内容后的完整消息语言
             const fullText = window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '');
             checkAndShowSubtitlePrompt(fullText);

@@ -216,7 +216,10 @@ Rules:
         Args:
             data: 要翻译的字典
             target_lang: 目标语言
-            fields_to_translate: 需要翻译的字段列表，如果为None则翻译所有字符串值
+            fields_to_translate: 需要翻译的字段列表
+                - None: 翻译所有字符串值
+                - [] (空列表): 不翻译任何字段
+                - [字段名, ...]: 只翻译列表中的字段
         
         Returns:
             翻译后的字典
@@ -226,10 +229,22 @@ Rules:
         
         result = data.copy()
         
-        # 默认要翻译的字段（人设相关）
-        default_fields = ['档案名', '昵称', '性别', '年龄']
-        translate_all = fields_to_translate is None
-        fields_set = set(fields_to_translate) if fields_to_translate else set(default_fields)
+        # 处理 fields_to_translate 参数语义：
+        # - None: 翻译所有字段
+        # - []: 不翻译任何字段（明确表示"空列表就是不翻译"）
+        # - 非空列表: 只翻译列表中的字段
+        if fields_to_translate is None:
+            # None 表示翻译所有字符串值
+            translate_all = True
+            fields_set = set()
+        elif len(fields_to_translate) == 0:
+            # 空列表表示不翻译任何字段
+            translate_all = False
+            fields_set = set()
+        else:
+            # 非空列表表示只翻译列表中的字段
+            translate_all = False
+            fields_set = set(fields_to_translate)
         
         for key, value in result.items():
             # 检查字段是否应该被翻译

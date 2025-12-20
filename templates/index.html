@@ -513,6 +513,7 @@
             color: #333;
             margin-right: auto;
             border-bottom-left-radius: 4px;
+            white-space: pre-wrap; /* 保留换行，配合 textContent 使用避免 XSS 风险 */
         }
 
         @keyframes fadeIn {
