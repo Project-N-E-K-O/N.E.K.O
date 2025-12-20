@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 import sys
 import os
+import platform
 from PyInstaller.utils.hooks import collect_all
 from PyInstaller.building.build_main import Tree
 
@@ -57,8 +58,11 @@ def add_data(src, dest):
     if '*' in src:
         # 处理通配符
         files = glob.glob(src_path)
-        for f in files:
-            datas.append((f, dest))
+        if files:
+            for f in files:
+                datas.append((f, dest))
+        else:
+            print(f"[Build] Warning: No files matched pattern '{src}', skipping")
     elif os.path.exists(src_path):
         datas.append((src_path, dest))
     else:
@@ -303,7 +307,7 @@ exe = EXE(
     console=True,
     disable_windowed_traceback=False,
     argv_emulation=True if sys.platform == 'darwin' else False,  # macOS 需要开启
-    target_arch='arm64' if sys.platform == 'darwin' else None,  # Apple Silicon 架构
+    target_arch=platform.machine() if sys.platform == 'darwin' else None,  # 自动检测 macOS 架构 (arm64/x86_64)
     codesign_identity=None,
     entitlements_file=None,
     icon='assets/icon.ico' if sys.platform == 'win32' else None,  # macOS 暂不使用图标

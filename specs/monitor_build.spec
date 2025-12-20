@@ -6,6 +6,7 @@ Monitor 独立打包配置文件
 
 import os
 import sys
+import platform
 from PyInstaller.utils.hooks import collect_data_files
 
 # 获取 spec 文件所在目录和项目根目录
@@ -128,7 +129,7 @@ exe = EXE(
     console=True,
     disable_windowed_traceback=False,
     argv_emulation=True if sys.platform == 'darwin' else False,  # macOS 需要开启
-    target_arch='arm64' if sys.platform == 'darwin' else None,  # Apple Silicon 架构
+    target_arch=platform.machine() if sys.platform == 'darwin' else None,  # 自动检测 macOS 架构 (arm64/x86_64)
     codesign_identity=None,
     entitlements_file=None,
     icon='assets/icon.ico' if sys.platform == 'win32' else None,  # macOS 暂不使用图标
