@@ -17,7 +17,9 @@
   "scripts": {
     "build": "vite build --config vite.config.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "typecheck:native": "tsc --noEmit -p tsconfig.native.json",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build && node -e \"console.error('\\n[@project_neko/request] 这是 N.E.K.O monorepo 内部 workspace 包（package.json 入口刻意指向 TS 源码，并非可发布的 dist 产物）。\\n如需发布到 npm，请先实现 dist 编译产物并更新 main/types/exports 指向 dist，再移除 private/prepublishOnly 防护。\\n'); process.exit(1)\""
   },
   "keywords": [
     "axios",

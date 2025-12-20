@@ -40,6 +40,11 @@ from typing import List, Dict
 from multiprocessing import Process, freeze_support, Event
 from config import MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
 
+# 服务器监听地址：
+# - 默认 127.0.0.1（仅本机可访问）
+# - 如需从手机/RN 访问，请设置环境变量 NEKO_MAIN_SERVER_HOST=0.0.0.0
+NEKO_MAIN_SERVER_HOST = os.environ.get("NEKO_MAIN_SERVER_HOST", "127.0.0.1")
+
 # 服务器配置
 SERVERS = [
     {
@@ -191,7 +196,7 @@ def run_main_server(ready_event: Event):
         # 直接运行 FastAPI app，不依赖 main_server 的 __main__ 块
         config = uvicorn.Config(
             app=main_server.app,
-            host="127.0.0.1",
+            host=NEKO_MAIN_SERVER_HOST,
             port=MAIN_SERVER_PORT,
             log_level="error",
             loop="asyncio",

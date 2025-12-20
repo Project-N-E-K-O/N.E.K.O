@@ -284,6 +284,8 @@ cd frontend && npm run build:dev
 6. **`build:web`**: 构建 Web 应用入口，生成 `react_web.js`（ES 模块），输出到 `dist/webapp`
 7. **`copy:react-umd`**: 复制 `vendor/react/*.js` 到 `static/bundles`
 
+> 说明：`packages/request` 与 `packages/common` 在 workspace 内以 **TypeScript 源码**形式被其他包直接引用（`main/types/exports` 指向 `.ts` 文件），其 `build` 仅用于生成 `static/bundles/*` 的 ES/UMD 浏览器产物（不是 `dist/` 形式的发布包）。详见各包目录下的 `README.md`。
+
 ### 单独构建
 
 可以单独构建某个包或入口：

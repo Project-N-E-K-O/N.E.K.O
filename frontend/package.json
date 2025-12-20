@@ -30,6 +30,7 @@
     "build:web:dev": "vite build --config vite.web.config.ts --mode development",
     "build:web:prod": "vite build --config vite.web.config.ts --mode production",
     "typecheck": "tsc --noEmit",
+    "typecheck:native": "npm -w @project_neko/common run typecheck:native && npm -w @project_neko/request run typecheck:native",
     "test": "vitest run --pool=threads",
     "test:watch": "vitest",
     "test:ui": "vitest --ui",
