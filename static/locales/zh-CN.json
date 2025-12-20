@@ -833,7 +833,8 @@
     }
   },
   "subtitle": {
-    "title": "实时字幕"
+    "title": "实时字幕",
+    "enable": "开启字幕"
   },
   "viewer": {
     "title": "Viewer - Project N.E.K.O."

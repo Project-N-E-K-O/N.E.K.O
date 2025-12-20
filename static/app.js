@@ -5683,9 +5683,11 @@ function showSubtitlePrompt() {
     const labelText = document.createElement('span');
     labelText.classList.add('subtitle-toggle-label');
     labelText.setAttribute('data-i18n', 'subtitle.enable');
-    // 使用i18n翻译，如果i18n未加载则使用默认文本
+    // 使用i18n翻译，如果i18n未加载或翻译不存在则使用默认文本
     if (window.t) {
-        labelText.textContent = window.t('subtitle.enable');
+        const translated = window.t('subtitle.enable');
+        // 如果翻译返回的是key本身（说明翻译不存在），使用默认文本
+        labelText.textContent = (translated && translated !== 'subtitle.enable') ? translated : '开启字幕';
     } else {
         labelText.textContent = '开启字幕'; // 默认中文
     }
@@ -5708,7 +5710,9 @@ function showSubtitlePrompt() {
     if (window.i18next) {
         window.i18next.on('languageChanged', () => {
             if (labelText && window.t) {
-                labelText.textContent = window.t('subtitle.enable');
+                const translated = window.t('subtitle.enable');
+                // 如果翻译返回的是key本身（说明翻译不存在），使用默认文本
+                labelText.textContent = (translated && translated !== 'subtitle.enable') ? translated : '开启字幕';
             }
         });
     }
