@@ -125,7 +125,7 @@ class TranslationService:
             归一化后的语言代码 ('zh-CN', 'en', 'ja')
         """
         if not lang:
-            return 'zh-CN'  # 默认中文
+            return DEFAULT_LANGUAGE  # 默认中文
         
         lang_lower = lang.lower()
         if lang_lower.startswith('zh'):
@@ -209,25 +209,25 @@ class TranslationService:
             # 构建翻译提示（根据归一化后的语言代码）
             if target_lang_normalized == 'en':
                 target_lang_name = "English"
-                if detected_lang == 'zh-CN':
+                if detected_lang_normalized == 'zh-CN':
                     source_lang_name = "Chinese"
-                elif detected_lang == 'ja':
+                elif detected_lang_normalized == 'ja':
                     source_lang_name = "Japanese"
                 else:
                     source_lang_name = "the source language"
             elif target_lang_normalized == 'ja':
                 target_lang_name = "Japanese"
-                if detected_lang == 'zh-CN':
+                if detected_lang_normalized == 'zh-CN':
                     source_lang_name = "Chinese"
-                elif detected_lang == 'en':
+                elif detected_lang_normalized == 'en':
                     source_lang_name = "English"
                 else:
                     source_lang_name = "the source language"
             else:  # zh-CN
                 target_lang_name = "简体中文"
-                if detected_lang == 'en':
+                if detected_lang_normalized == 'en':
                     source_lang_name = "English"
-                elif detected_lang == 'ja':
+                elif detected_lang_normalized == 'ja':
                     source_lang_name = "Japanese"
                 else:
                     source_lang_name = "the source language"
@@ -340,12 +340,19 @@ _translation_service_instance: Optional[TranslationService] = None
 _instance_lock = threading.Lock()
 
 def get_translation_service(config_manager) -> TranslationService:
-    """获取翻译服务实例（单例模式）"""
+    """
+    获取翻译服务实例（单例模式）
+    
+    注意：如果传入不同的 config_manager，会使用第一次创建时的实例。
+    建议始终传入同一个 config_manager 实例以确保配置一致性。
+    """
     global _translation_service_instance
     if _translation_service_instance is None:
         with _instance_lock:
             # 双重检查锁定模式
             if _translation_service_instance is None:
                 _translation_service_instance = TranslationService(config_manager)
+    elif _translation_service_instance.config_manager is not config_manager:
+        logger.warning("get_translation_service: 传入了不同的 config_manager，但会使用第一次创建时的实例")
     return _translation_service_instance
 
