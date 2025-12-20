@@ -25,6 +25,49 @@
     "nextPage": "下一页",
     "selectFile": "选择文件"
   },
+  "webapp": {
+    "header": {
+      "title": "N.E.K.O 前端主页",
+      "subtitle": "单页应用，无路由 / 无 SSR"
+    },
+    "language": {
+      "label": "语言",
+      "zhCN": "中文",
+      "en": "English"
+    },
+    "card": {
+      "title": "开始使用",
+      "step1": "在此处挂载你的组件或业务入口。",
+      "step2Prefix": "如需调用接口，可在 ",
+      "step2Suffix": " 基础上封装请求。",
+      "step3Prefix": "构建产物输出到 ",
+      "step3Suffix": "（用于开发/调试），模板按需引用即可。"
+    },
+    "actions": {
+      "requestPageConfig": "请求 page_config",
+      "showToast": "显示 StatusToast",
+      "modalAlert": "Modal Alert",
+      "modalConfirm": "Modal Confirm",
+      "modalPrompt": "Modal Prompt"
+    },
+    "toast": {
+      "apiSuccess": "接口调用成功（示例 toast）",
+      "confirmed": "确认已执行",
+      "hello": "你好，{{name}}!"
+    },
+    "modal": {
+      "alertTitle": "提示",
+      "alertMessage": "这是一条 Alert 弹窗",
+      "confirmTitle": "确认",
+      "confirmMessage": "确认要执行该操作吗？",
+      "promptMessage": "请输入昵称：",
+      "okText": "好的",
+      "cancelText": "再想想"
+    },
+    "errors": {
+      "requestFailed": "请求失败"
+    }
+  },
   "steam": {
     "characterCards": "角色卡",
     "characterCardName": "昵称",

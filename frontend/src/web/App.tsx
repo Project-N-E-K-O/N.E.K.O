@@ -1,6 +1,7 @@
 import "./styles.css";
-import { useCallback, useRef } from "react";
-import { Button, StatusToast, Modal } from "@project_neko/components";
+import { useCallback, useEffect, useRef } from "react";
+import type { ChangeEvent } from "react";
+import { Button, StatusToast, Modal, useT, tOrDefault } from "@project_neko/components";
 import type { StatusToastHandle, ModalHandle } from "@project_neko/components";
 import { createRequestClient, WebTokenStorage } from "@project_neko/request";
 
@@ -33,9 +34,39 @@ const request = createRequestClient({
  *
  * 展示了请求示例、StatusToast 以及 Modal 交互入口。
  */
-function App() {
+export interface AppProps {
+  language: "zh-CN" | "en";
+  onChangeLanguage: (lng: "zh-CN" | "en") => void;
+}
+
+function App({ language, onChangeLanguage }: AppProps) {
+  const t = useT();
   const toastRef = useRef<StatusToastHandle | null>(null);
   const modalRef = useRef<ModalHandle | null>(null);
+
+  useEffect(() => {
+    const getLang = () => {
+      try {
+        const w: any = typeof window !== "undefined" ? (window as any) : undefined;
+        return (
+          w?.i18n?.language ||
+          (typeof localStorage !== "undefined" ? localStorage.getItem("i18nextLng") : null) ||
+          (typeof navigator !== "undefined" ? navigator.language : null) ||
+          "unknown"
+        );
+      } catch (_e) {
+        return "unknown";
+      }
+    };
+
+    console.log("[webapp] 当前 i18n 语言:", getLang());
+
+    const onLocaleChange = () => {
+      console.log("[webapp] i18n 语言已更新:", getLang());
+    };
+    window.addEventListener("localechange", onLocaleChange);
+    return () => window.removeEventListener("localechange", onLocaleChange);
+  }, []);
 
   const handleClick = useCallback(async () => {
     try {
@@ -45,36 +76,45 @@ function App() {
       // 将返回结果展示在控制台或弹窗
       console.log("page_config:", data);
     } catch (err: any) {
-      console.error("请求失败", err);
+      console.error(tOrDefault(t, "webapp.errors.requestFailed", "请求失败"), err);
     }
-  }, []);
+  }, [t]);
 
   const handleToast = useCallback(() => {
-    toastRef.current?.show("接口调用成功（示例 toast）", 2500);
-  }, []);
+    toastRef.current?.show(
+      tOrDefault(t, "webapp.toast.apiSuccess", "接口调用成功（示例 toast）"),
+      2500
+    );
+  }, [t]);
 
   const handleAlert = useCallback(async () => {
-    await modalRef.current?.alert("这是一条 Alert 弹窗", "提示");
-  }, []);
+    await modalRef.current?.alert(
+      tOrDefault(t, "webapp.modal.alertMessage", "这是一条 Alert 弹窗"),
+      tOrDefault(t, "webapp.modal.alertTitle", "提示")
+    );
+  }, [t]);
 
   const handleConfirm = useCallback(async () => {
     const ok =
-      (await modalRef.current?.confirm("确认要执行该操作吗？", "确认", {
-        okText: "好的",
-        cancelText: "再想想",
+      (await modalRef.current?.confirm(tOrDefault(t, "webapp.modal.confirmMessage", "确认要执行该操作吗？"), tOrDefault(t, "webapp.modal.confirmTitle", "确认"), {
+        okText: tOrDefault(t, "webapp.modal.okText", "好的"),
+        cancelText: tOrDefault(t, "webapp.modal.cancelText", "再想想"),
         danger: false,
       })) ?? false;
     if (ok) {
-      toastRef.current?.show("确认已执行", 2000);
+      toastRef.current?.show(tOrDefault(t, "webapp.toast.confirmed", "确认已执行"), 2000);
     }
-  }, []);
+  }, [t]);
 
   const handlePrompt = useCallback(async () => {
-    const name = await modalRef.current?.prompt("请输入昵称：", "Neko");
+    const name = await modalRef.current?.prompt(tOrDefault(t, "webapp.modal.promptMessage", "请输入昵称："), "Neko");
     if (name) {
-      toastRef.current?.show(`你好，${name}!`, 2500);
+      toastRef.current?.show(
+        tOrDefault(t, "webapp.toast.hello", `你好，${name}!`, { name }),
+        2500
+      );
     }
-  }, []);
+  }, [t]);
 
   return (
     <>
@@ -82,30 +122,58 @@ function App() {
       <Modal ref={modalRef} />
       <main className="app">
         <header className="app__header">
-          <h1>N.E.K.O 前端主页</h1>
-          <p>单页应用，无路由 / 无 SSR</p>
+          <div className="app__headerRow">
+            <div className="app__headerText">
+              <h1>{tOrDefault(t, "webapp.header.title", "N.E.K.O 前端主页")}</h1>
+              <p>{tOrDefault(t, "webapp.header.subtitle", "单页应用，无路由 / 无 SSR")}</p>
+            </div>
+            <div className="langSwitch">
+              <label className="langSwitch__label" htmlFor="lang-select">
+                {tOrDefault(t, "webapp.language.label", "语言")}
+              </label>
+              <select
+                id="lang-select"
+                className="langSwitch__select"
+                value={language}
+                onChange={(e: ChangeEvent<HTMLSelectElement>) =>
+                  onChangeLanguage(e.target.value as "zh-CN" | "en")
+                }
+              >
+                <option value="zh-CN">{tOrDefault(t, "webapp.language.zhCN", "中文")}</option>
+                <option value="en">{tOrDefault(t, "webapp.language.en", "English")}</option>
+              </select>
+            </div>
+          </div>
         </header>
         <section className="app__content">
           <div className="card">
-            <h2>开始使用</h2>
+            <h2>{tOrDefault(t, "webapp.card.title", "开始使用")}</h2>
             <ol>
-              <li>在此处挂载你的组件或业务入口。</li>
-              <li>如需调用接口，可在 <code>@common</code> 下封装请求。</li>
-              <li>构建产物输出到 <code>static/bundles/react_web.js</code>，模板引用即可。</li>
+              <li>{tOrDefault(t, "webapp.card.step1", "在此处挂载你的组件或业务入口。")}</li>
+              <li>
+                {tOrDefault(t, "webapp.card.step2Prefix", "如需调用接口，可在 ")}
+                <code>@project_neko/request</code>
+                {tOrDefault(t, "webapp.card.step2Suffix", " 基础上封装请求。")}
+              </li>
+              <li>
+                {tOrDefault(t, "webapp.card.step3Prefix", "构建产物输出到 ")}
+                <code>frontend/dist/webapp</code>
+                {tOrDefault(t, "webapp.card.step3Suffix", "（用于开发/调试），模板按需引用即可。")}
+              </li>
             </ol>
-            <div style={{ marginTop: "16px", display: "flex", gap: "8px", flexWrap: "wrap" }}>
-              <Button onClick={handleClick}>请求 page_config</Button>
+            <div className="card__actions">
+              <Button onClick={handleClick}>{tOrDefault(t, "webapp.actions.requestPageConfig", "请求 page_config")}</Button>
               <Button variant="secondary" onClick={handleToast}>
-                显示 StatusToast
+                {tOrDefault(t, "webapp.actions.showToast", "显示 StatusToast")}
               </Button>
               <Button variant="primary" onClick={handleAlert}>
-                Modal Alert
+                {tOrDefault(t, "webapp.actions.modalAlert", "Modal Alert")}
               </Button>
               <Button variant="success" onClick={handleConfirm}>
-                Modal Confirm
+                {tOrDefault(t, "webapp.actions.modalConfirm", "Modal Confirm")}
               </Button>
               <Button variant="danger" onClick={handlePrompt}>
-                Modal Prompt
+                {tOrDefault(t, "webapp.actions.modalPrompt", "Modal Prompt")}
               </Button>
             </div>
           </div>

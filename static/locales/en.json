@@ -25,6 +25,49 @@
     "nextPage": "Next Page",
     "selectFile": "Select File"
   },
+  "webapp": {
+    "header": {
+      "title": "N.E.K.O Web App",
+      "subtitle": "Single-page app, no router / no SSR"
+    },
+    "language": {
+      "label": "Language",
+      "zhCN": "中文",
+      "en": "English"
+    },
+    "card": {
+      "title": "Get started",
+      "step1": "Mount your components or entry points here.",
+      "step2Prefix": "For API calls, build on top of ",
+      "step2Suffix": ".",
+      "step3Prefix": "Build output goes to ",
+      "step3Suffix": " (for dev/debug). Reference it from templates as needed."
+    },
+    "actions": {
+      "requestPageConfig": "Request page_config",
+      "showToast": "Show StatusToast",
+      "modalAlert": "Modal Alert",
+      "modalConfirm": "Modal Confirm",
+      "modalPrompt": "Modal Prompt"
+    },
+    "toast": {
+      "apiSuccess": "API call succeeded (demo toast)",
+      "confirmed": "Confirmed",
+      "hello": "Hi, {{name}}!"
+    },
+    "modal": {
+      "alertTitle": "Notice",
+      "alertMessage": "This is an alert dialog",
+      "confirmTitle": "Confirm",
+      "confirmMessage": "Are you sure you want to proceed?",
+      "promptMessage": "Enter a nickname:",
+      "okText": "OK",
+      "cancelText": "Cancel"
+    },
+    "errors": {
+      "requestFailed": "Request failed"
+    }
+  },
   "steam": {
     "characterCards": "Character Cards",
     "characterCardName": "Nickname",

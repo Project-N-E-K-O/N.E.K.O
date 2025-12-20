@@ -30,6 +30,38 @@ body {
   color: #475569;
 }
 
+.app__headerRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.app__headerText {
+  min-width: 0;
+}
+
+.langSwitch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.langSwitch__label {
+  font-size: 14px;
+  color: #475569;
+}
+
+.langSwitch__select {
+  height: 32px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 0 10px;
+  background: #fff;
+  color: #0f172a;
+}
+
 .app__content {
   margin-top: 32px;
 }
@@ -46,5 +78,12 @@ ol {
   margin: 0;
   padding-left: 20px;
   color: #334155;
+}
+
+.card__actions {
+  margin-top: 16px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
