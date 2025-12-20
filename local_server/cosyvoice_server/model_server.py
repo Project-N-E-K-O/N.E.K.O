@@ -6,6 +6,7 @@ import uuid
 import logging
 import uvicorn
 import numpy as np
+import config
 import torch
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
@@ -31,7 +32,7 @@ print(f"已添加 CosyVoice 路径: {COSYVOICE_PROJECT_ROOT}")
 
 # 4. 现在可以正常导入了
 try:
-    from cosyvoice.cli.cosyvoice import CosyVoice2
+    from cosyvoice.cli.cosyvoice import CosyVoice3
     from cosyvoice.utils.file_utils import load_wav
 except ImportError as e:
     print("---------------------------------------------------------")
@@ -43,15 +44,15 @@ except ImportError as e:
     sys.exit(1)
 
 
-MODEL_DIR = os.path.join(COSYVOICE_PROJECT_ROOT, "pretrained_models/CosyVoice2-0.5B")
+MODEL_DIR = os.path.join(COSYVOICE_PROJECT_ROOT, "pretrained_models/Fun-CosyVoice3-0.5B")
 # 或者如果你把模型拷到了 Lanlan 下面：
-# MODEL_DIR = "pretrained_models/CosyVoice2-0.5B"
+# MODEL_DIR = "pretrained_models/Fun-CosyVoice3-0.5B"
 
 
-logger.info("正在加载 CosyVoice2 模型，请稍候...")
+logger.info("正在加载 CosyVoice3 模型，请稍候...")
 # 【关键修改】开启 use_flow_cache
-cosyvoice_model = CosyVoice2(MODEL_DIR, load_jit=False, load_trt=False, fp16=False, use_flow_cache=True)
-logger.info("CosyVoice2 模型加载完成！")
+cosyvoice_model = CosyVoice3(MODEL_DIR, fp16=False)
+logger.info("CosyVoice3 模型加载完成！")
 
 PROMPT_WAV_PATH = os.path.join(COSYVOICE_PROJECT_ROOT, "asset/zero_shot_prompt.wav")
 PROMPT_TEXT = "希望你以后能够做得比我还好呦。"
@@ -122,7 +123,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     model_output_gen = cosyvoice_model.inference_zero_shot(
                         tts_text=text,
                         prompt_text=PROMPT_TEXT,
-                        prompt_speech_16k=default_prompt_speech_16k,
+                        prompt_wav=PROMPT_WAV_PATH,
                         stream=True
                     )
 
@@ -154,4 +155,4 @@ async def websocket_endpoint(websocket: WebSocket):
 
 if __name__ == "__main__":
     # 启动服务，端口 8000
-    uvicorn.run(app, host="127.0.0.1", port=8000) # 8000需要更改
+    uvicorn.run(app, host=config.SERVER_HOST, port=config.SERVER_PORT)

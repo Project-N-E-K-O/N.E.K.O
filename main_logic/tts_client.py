@@ -1056,7 +1056,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                     logger.error(f"连接本地服务失败: {e} (请检查 model_server.py 是否运行)")
                     if not ready_sent:
                         response_queue.put(("__ready__", False))
-                        return # 首次链接失败，直接推出
+                        return # 首次链接失败，直接退出
                     await asyncio.sleep(2)
                     # 把请求放回去或者丢弃？这里简单处理：丢弃并继续，避免死循环阻塞
                     continue
