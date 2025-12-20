@@ -675,8 +675,8 @@ if __name__ == "__main__":
     logger.info(f"Serving static files from: {os.path.abspath('static')}")
     logger.info(f"Serving index.html from: {os.path.abspath('templates/index.html')}")
     logger.info(f"Server mode: {'DEV' if DEV_MODE else 'PROD'}; bind host: {MAIN_SERVER_HOST}; port: {MAIN_SERVER_PORT}")
-    display_host = "127.0.0.1" if MAIN_SERVER_HOST == "0.0.0.0" else MAIN_SERVER_HOST
-    logger.info(f"Access UI at: http://{display_host}:{MAIN_SERVER_PORT} (or your network IP:{MAIN_SERVER_PORT})")
+    display_host = MAIN_SERVER_HOST if MAIN_SERVER_HOST != "0.0.0.0" else "localhost/your-network-ip"
+    logger.info(f"Access UI at: http://{display_host}:{MAIN_SERVER_PORT}")
     logger.info("-----------------------------")
 
     # 使用统一的速率限制日志过滤器
