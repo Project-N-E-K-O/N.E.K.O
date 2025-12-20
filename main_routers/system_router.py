@@ -34,6 +34,9 @@ from utils.screenshot_utils import analyze_screenshot_from_data_url
 router = APIRouter(prefix="/api", tags=["system"])
 logger = logging.getLogger("Main")
 
+# XML停止标签检测模式（模块级别，避免重复编译）
+STOP_PATTERN = re.compile(r'<stop\s*/?>|</stop\s*>', re.IGNORECASE)
+
 
 def _is_path_within_base(base_dir: str, candidate_path: str) -> bool:
     """
@@ -906,10 +909,11 @@ async def proactive_chat(request: Request):
             except Exception:
                 logger.exception(f"[{lanlan_name}] 在检查回复长度时发生错误")
 
-            # 2) 特殊字符检测：若包含 '|' 则截断内容并终止输出流程（仅保留'|'前的内容）
-            if '|' in response_text:
-                logger.warning(f"[{lanlan_name}] AI回复包含禁止字符 '|'，将截断内容并继续（仅保留'|'之前的部分）")
-                response_text = response_text.split('|', 1)[0].strip()
+            # 2) XML围栏检测：若包含 <stop> 或 </stop> 标签则截断内容并终止输出流程
+            match = STOP_PATTERN.search(response_text)
+            if match:
+                logger.warning(f"[{lanlan_name}] AI回复包含XML停止标签，将截断内容并继续（仅保留标签之前的部分）")
+                response_text = response_text[:match.start()].strip()
                 # 若截断后为空，则放弃输出
                 if not response_text:
                     return JSONResponse({

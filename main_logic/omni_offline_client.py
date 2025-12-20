@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 from typing import Optional, Callable, Dict, Any, Awaitable
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
@@ -11,6 +12,9 @@ from utils.frontend_utils import calculate_text_similarity
 
 # Setup logger for this module
 logger = logging.getLogger(__name__)
+
+# XML停止标签检测模式（模块级别，避免重复编译）
+STOP_PATTERN = re.compile(r'<stop\s*/?>|</stop\s*>', re.IGNORECASE)
 
 class OmniOfflineClient:
     """
@@ -263,8 +267,8 @@ class OmniOfflineClient:
                 try:
                     assistant_message = ""
                     is_first_chunk = True
-                    pipe_count = 0  # 围栏：追踪 | 字符的出现次数
                     fence_triggered = False  # 围栏是否已触发
+                    xml_buffer = ""  # 用于累积XML标签检测
                     
                     # Stream response using langchain
                     async for chunk in self.llm.astream(self._conversation_history):
@@ -280,18 +284,33 @@ class OmniOfflineClient:
                         
                         # 只处理非空内容，从源头过滤空文本
                         if content and content.strip():
-                            # 围栏检测：检查 | 字符
-                            for char in content:
-                                if char == '|':
-                                    pipe_count += 1
-                                    if pipe_count >= 2:
-                                        # 触发围栏：找到第二个 | 的位置并截断
-                                        pipe_positions = [i for i, c in enumerate(content) if c == '|']
-                                        if len(pipe_positions) >= 2:
-                                            content = content[:pipe_positions[1]]
-                                        fence_triggered = True
-                                        logger.info("OmniOfflineClient: 围栏触发 - 检测到第二个 | 字符，截断输出")
-                                        break
+                            # 围栏检测：检查XML标签 <stop> 或 </stop>
+                            # 在当前内容块中检测
+                            match = STOP_PATTERN.search(content)
+                            if match:
+                                # 找到围栏标签，截断到标签位置
+                                fence_pos = match.start()
+                                content = content[:fence_pos]
+                                fence_triggered = True
+                                logger.info("OmniOfflineClient: 围栏触发 - 检测到XML停止标签 <stop>，截断输出")
+                            else:
+                                # 累积缓冲区检测（处理跨块的标签）
+                                xml_buffer += content
+                                match = STOP_PATTERN.search(xml_buffer)
+                                if match:
+                                    # 找到围栏标签，计算需要截断的内容
+                                    fence_pos = match.start()
+                                    # 计算当前content块中需要保留的部分
+                                    buffer_before_content = len(xml_buffer) - len(content)
+                                    if fence_pos >= buffer_before_content:
+                                        # 标签在当前content块中
+                                        content = content[:fence_pos - buffer_before_content]
+                                    else:
+                                        # 标签在之前的缓冲区中，当前content全部丢弃
+                                        content = ""
+                                    fence_triggered = True
+                                    logger.info("OmniOfflineClient: 围栏触发 - 检测到XML停止标签 <stop>（跨块），截断输出")
+                                    xml_buffer = xml_buffer[:fence_pos]
                             
                             if content and content.strip():
                                 assistant_message += content
@@ -304,6 +323,13 @@ class OmniOfflineClient:
                                     await self.on_text_delta(content, is_first_chunk)
                                 
                                 is_first_chunk = False
+                            
+                            # 限制XML缓冲区大小，避免内存问题（保留最近500个字符用于检测）
+                            if not fence_triggered:
+                                if len(xml_buffer) > 500:
+                                    xml_buffer = xml_buffer[-500:]
+                            else:
+                                xml_buffer = ""
                         elif content and not content.strip():
                             # 记录被过滤的空内容（仅包含空白字符）
                             logger.debug(f"OmniOfflineClient: 过滤空白内容 - content_repr: {repr(content)[:100]}")
