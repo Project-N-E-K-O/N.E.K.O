@@ -48,7 +48,7 @@ async def send_reload_page_notice(session, message_text: str = "语音已更新�
     
     try:
         # 翻译消息
-        translated_message = await session._translate_if_needed(message_text)
+        translated_message = await session.translate_if_needed(message_text)
         await session.websocket.send_text(json.dumps({
             "type": "reload_page",
             "message": translated_message

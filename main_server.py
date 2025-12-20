@@ -504,7 +504,7 @@ def _sync_preload_modules():
     except Exception as e:
         logger.debug(f"  ✗ pyrnnoise: {e}")
     
-    # 2. dashscope (阿里云 CosyVoice TTS SDK - 仅在使用自定义音色时需要)
+    # 4. dashscope (阿里云 CosyVoice TTS SDK - 仅在使用自定义音色时需要)
     try:
         import dashscope  # noqa: F401
         logger.debug("  ✓ dashscope loaded")
@@ -521,7 +521,7 @@ async def on_startup():
     """服务器启动时执行的初始化操作"""
     # 初始化全局语言变量（优先级：Steam设置 > 系统设置）
     try:
-        from utils.global_language import initialize_global_language
+        from utils.language_utils import initialize_global_language
         global_lang = initialize_global_language()
         logger.info(f"全局语言初始化完成: {global_lang}")
     except Exception as e:

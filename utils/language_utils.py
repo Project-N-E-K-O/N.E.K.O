@@ -3,16 +3,259 @@
 语言检测和翻译工具模块
 用于检测文本语言并翻译到目标语言
 优先级：Google 翻译 (googletrans) -> translatepy (仅使用中国大陆可访问的服务，免费) -> LLM 翻译
+
+同时包含全局语言管理功能：
+- 维护全局语言变量，优先级：Steam设置 > 系统设置
+- 判断中文区/非中文区
 """
 import re
+import locale
 import logging
+import threading
 import asyncio
+import os
 from typing import Optional, Tuple
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from utils.config_manager import get_config_manager
 
 logger = logging.getLogger(__name__)
+
+# ============================================================================
+# 全局语言管理部分（原 global_language.py）
+# ============================================================================
+
+# 全局语言变量（线程安全）
+_global_language: Optional[str] = None
+_global_language_lock = threading.Lock()
+_global_language_initialized = False
+
+# 全局区域标识（中文区/非中文区）
+_global_region: Optional[str] = None  # 'china' 或 'non-china'
+
+
+def _is_china_region() -> bool:
+    """
+    判断当前系统是否在中文区
+    
+    Returns:
+        True 表示中文区，False 表示非中文区
+    """
+    try:
+        # 获取系统 locale（使用 locale.getlocale() 替代已弃用的 getdefaultlocale()）
+        # locale.getlocale() 返回 (language_code, encoding) 元组
+        system_locale = locale.getlocale()[0]
+        if system_locale:
+            # 检查是否是中文 locale
+            system_locale_lower = system_locale.lower()
+            if system_locale_lower.startswith('zh'):
+                return True
+        
+        # 如果无法从 locale 判断，尝试从系统语言环境变量判断
+        lang_env = os.environ.get('LANG', '').lower()
+        if lang_env.startswith('zh'):
+            return True
+        
+        # 默认判断：如果系统 locale 不是中文，则认为是非中文区
+        return False
+    except Exception as e:
+        logger.warning(f"判断系统区域失败: {e}，默认使用非中文区")
+        return False
+
+
+def _get_system_language() -> str:
+    """
+    从系统设置获取语言
+    
+    Returns:
+        语言代码 ('zh', 'en', 'ja')，默认返回 'zh'
+    """
+    try:
+        # 获取系统 locale（使用 locale.getlocale() 替代已弃用的 getdefaultlocale()）
+        # locale.getlocale() 返回 (language_code, encoding) 元组
+        system_locale = locale.getlocale()[0]
+        if system_locale:
+            system_locale_lower = system_locale.lower()
+            if system_locale_lower.startswith('zh'):
+                return 'zh'
+            elif system_locale_lower.startswith('ja'):
+                return 'ja'
+            elif system_locale_lower.startswith('en'):
+                return 'en'
+        
+        # 尝试从环境变量获取
+        lang_env = os.environ.get('LANG', '').lower()
+        if lang_env.startswith('zh'):
+            return 'zh'
+        elif lang_env.startswith('ja'):
+            return 'ja'
+        elif lang_env.startswith('en'):
+            return 'en'
+        
+        return 'zh'  # 默认中文
+    except Exception as e:
+        logger.warning(f"获取系统语言失败: {e}，使用默认中文")
+        return 'zh'
+
+
+def _get_steam_language() -> Optional[str]:
+    """
+    从 Steam 设置获取语言
+    
+    Returns:
+        语言代码 ('zh', 'en', 'ja')，如果无法获取则返回 None
+    """
+    try:
+        from main_routers.shared_state import get_steamworks
+        
+        steamworks = get_steamworks()
+        if steamworks is None:
+            return None
+        
+        # Steam 语言代码到我们的语言代码的映射
+        STEAM_TO_LANG_MAP = {
+            'schinese': 'zh',
+            'tchinese': 'zh',
+            'english': 'en',
+            'japanese': 'ja',
+            'ja': 'ja'
+        }
+        
+        # 获取 Steam 当前游戏语言
+        steam_language = steamworks.Apps.GetCurrentGameLanguage()
+        if isinstance(steam_language, bytes):
+            steam_language = steam_language.decode('utf-8')
+        
+        user_lang = STEAM_TO_LANG_MAP.get(steam_language)
+        if user_lang:
+            logger.debug(f"从Steam获取用户语言: {steam_language} -> {user_lang}")
+            return user_lang
+        
+        return None
+    except Exception as e:
+        logger.debug(f"从Steam获取语言失败: {e}")
+        return None
+
+
+def initialize_global_language() -> str:
+    """
+    初始化全局语言变量（优先级：Steam设置 > 系统设置）
+    
+    Returns:
+        初始化后的语言代码 ('zh', 'en', 'ja')
+    """
+    global _global_language, _global_region, _global_language_initialized
+    
+    with _global_language_lock:
+        if _global_language_initialized:
+            return _global_language or 'zh'
+        
+        # 判断区域
+        _global_region = 'china' if _is_china_region() else 'non-china'
+        logger.info(f"系统区域判断: {_global_region}")
+        
+        # 优先级1：尝试从 Steam 获取
+        steam_lang = _get_steam_language()
+        if steam_lang:
+            _global_language = steam_lang
+            logger.info(f"全局语言已初始化（来自Steam）: {_global_language}")
+            _global_language_initialized = True
+            return _global_language
+        
+        # 优先级2：从系统设置获取
+        system_lang = _get_system_language()
+        _global_language = system_lang
+        logger.info(f"全局语言已初始化（来自系统设置）: {_global_language}")
+        _global_language_initialized = True
+        return _global_language
+
+
+def get_global_language() -> str:
+    """
+    获取全局语言变量
+    
+    Returns:
+        语言代码 ('zh', 'en', 'ja')，默认返回 'zh'
+    """
+    global _global_language
+    
+    with _global_language_lock:
+        if not _global_language_initialized:
+            return initialize_global_language()
+        
+        return _global_language or 'zh'
+
+
+def set_global_language(language: str) -> None:
+    """
+    设置全局语言变量（手动设置，会覆盖自动检测）
+    
+    Args:
+        language: 语言代码 ('zh', 'en', 'ja')
+    """
+    global _global_language, _global_language_initialized
+    
+    # 归一化语言代码
+    lang_lower = language.lower()
+    if lang_lower.startswith('zh'):
+        normalized_lang = 'zh'
+    elif lang_lower.startswith('ja'):
+        normalized_lang = 'ja'
+    elif lang_lower.startswith('en'):
+        normalized_lang = 'en'
+    else:
+        logger.warning(f"不支持的语言代码: {language}，保持当前语言")
+        return
+    
+    with _global_language_lock:
+        _global_language = normalized_lang
+        _global_language_initialized = True
+        logger.info(f"全局语言已手动设置为: {_global_language}")
+
+
+def get_global_region() -> str:
+    """
+    获取全局区域标识
+    
+    Returns:
+        'china' 或 'non-china'
+    """
+    global _global_region
+    
+    with _global_language_lock:
+        if _global_region is None:
+            # 如果区域未初始化，先初始化语言（会同时初始化区域）
+            initialize_global_language()
+        
+        return _global_region or 'non-china'
+
+
+def is_china_region() -> bool:
+    """
+    判断当前是否在中文区
+    
+    Returns:
+        True 表示中文区，False 表示非中文区
+    """
+    return get_global_region() == 'china'
+
+
+def reset_global_language() -> None:
+    """
+    重置全局语言变量（重新初始化）
+    """
+    global _global_language, _global_region, _global_language_initialized
+    
+    with _global_language_lock:
+        _global_language = None
+        _global_region = None
+        _global_language_initialized = False
+        logger.info("全局语言变量已重置")
+
+
+# ============================================================================
+# 语言检测和翻译部分（原 language_utils.py）
+# ============================================================================
 
 # 尝试导入 googletrans
 try:
@@ -176,7 +419,7 @@ async def translate_with_translatepy(text: str, source_lang: str, target_lang: s
                     if chunk_result:
                         translated_chunks.append(chunk_result)
                     else:
-                        logger.warning(f"translatepy 分段翻译返回空结果")
+                        logger.warning("translatepy 分段翻译返回空结果")
                         return None
                 except Exception as chunk_error:
                     logger.warning(f"translatepy 分段翻译异常: {type(chunk_error).__name__}: {chunk_error}")
@@ -229,10 +472,9 @@ def detect_language(text: str) -> str:
             return 'ja'
     
     # 判断主要语言
+    # 注意：如果包含假名已经在上面返回 'ja' 了，这里只需要判断中文和英文
     if chinese_count > english_count and chinese_count > 0:
         return 'zh'
-    elif japanese_count > 0 or (chinese_count > 0 and japanese_count > 0):
-        return 'ja'
     elif english_count > 0:
         return 'en'
     else:
@@ -277,7 +519,6 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
     
     # 判断当前区域，决定翻译服务优先级
     try:
-        from utils.global_language import is_china_region
         is_china = is_china_region()
     except Exception as e:
         logger.warning(f"获取区域信息失败: {e}，默认使用非中文区优先级")
@@ -383,7 +624,7 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
                 logger.info(f"✅ [翻译服务] Google翻译成功: {source_lang} -> {target_lang}")
                 return translated_text, google_failed
             else:
-                logger.debug(f"❌ [翻译服务] Google翻译不可用（超时或失败），立即降级到 translatepy")
+                logger.debug("❌ [翻译服务] Google翻译不可用（超时或失败），立即降级到 translatepy")
                 google_failed = True  # 标记 Google 翻译失败
         else:
             logger.debug("⚠️ [翻译服务] Google 翻译不可用（googletrans 未安装），尝试 translatepy")
@@ -397,7 +638,7 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
                     logger.info(f"✅ [翻译服务] translatepy翻译成功: {source_lang} -> {target_lang}")
                     return translated_text, google_failed
                 else:
-                    logger.debug(f"❌ [翻译服务] translatepy翻译返回空结果，回退到 LLM 翻译")
+                    logger.debug("❌ [翻译服务] translatepy翻译返回空结果，回退到 LLM 翻译")
             except Exception as e:
                 logger.debug(f"❌ [翻译服务] translatepy翻译异常: {type(e).__name__}，回退到 LLM 翻译")
         else:
@@ -415,7 +656,7 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
                 logger.info(f"✅ [翻译服务] Google翻译成功: {source_lang} -> {target_lang}")
                 return translated_text, google_failed
             else:
-                logger.debug(f"❌ [翻译服务] Google翻译失败，回退到 LLM 翻译")
+                logger.debug("❌ [翻译服务] Google翻译失败，回退到 LLM 翻译")
                 google_failed = True  # 标记 Google 翻译失败
         else:
             logger.debug("⚠️ [翻译服务] Google 翻译不可用（googletrans 未安装），回退到 LLM 翻译")
@@ -477,14 +718,8 @@ def get_user_language() -> str:
         用户语言代码 ('zh', 'en', 'ja')，默认返回 'zh'
     """
     try:
-        from main_routers.config_router import get_steam_language
-        import asyncio
-        
-        # 尝试从Steam获取语言设置
-        # 注意：这是一个同步函数，但get_steam_language是异步的
-        # 我们需要在调用时处理这个异步问题
-        # 这里先返回默认值，实际使用时会在异步上下文中调用
-        return 'zh'  # 默认中文
+        from utils.global_language import get_global_language
+        return get_global_language()
     except Exception:
         return 'zh'  # 默认中文
 
@@ -497,7 +732,6 @@ async def get_user_language_async() -> str:
         用户语言代码 ('zh', 'en', 'ja')，默认返回 'zh'
     """
     try:
-        from utils.global_language import get_global_language
         return get_global_language()
     except Exception as e:
         logger.warning(f"获取全局语言失败: {e}，使用默认中文")

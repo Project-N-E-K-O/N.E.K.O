@@ -348,16 +348,10 @@ class LLMSessionManager:
                 # 去掉情绪标签
                 text = self.emotion_pattern.sub('', text)
                 
-                # 不再在流式传输时翻译，直接发送原始文本（中文）
-                # 职责说明：前端会在收到完整消息后（turn end时）进行翻译
-                # 这样可以避免在流式传输过程中进行翻译，提高响应速度，同时翻译质量更好（基于完整消息）
-                # 前端会在 turn end 时：
-                # 1. 如果用户语言不是中文，翻译整个消息并更新气泡显示
-                # 2. 检测消息语言，如果与用户语言不同，显示翻译字幕
 
                 message = {
                     "type": "gemini_response",
-                    "text": text,  # 直接发送原始文本，不翻译
+                    "text": text,  
                     "isNewMessage": is_first_chunk  # 标记是否是新消息的第一个chunk
                 }
                 await self.websocket.send_json(message)
@@ -1439,22 +1433,25 @@ class LLMSessionManager:
         支持的归一化规则：
         - 'zh', 'zh-CN', 'zh-TW' 等以 'zh' 开头的 → 'zh-CN'
         - 'en', 'en-US', 'en-GB' 等以 'en' 开头的 → 'en'
-        - 其他语言（如 'ja', 'ja-JP'）暂不支持，保持默认 'zh-CN'
+        - 'ja', 'ja-JP' 等以 'ja' 开头的 → 'ja'
+        - 其他语言暂不支持，保持默认 'zh-CN'
         """
         if not language:
             logger.warning(f"语言参数为空，保持当前语言: {self.user_language}")
             return
-        
+
         # 语言代码归一化（支持 BCP-47 格式）
         language_lower = language.lower()
         if language_lower.startswith('zh'):
             normalized_lang = 'zh-CN'
         elif language_lower.startswith('en'):
             normalized_lang = 'en'
+        elif language_lower.startswith('ja'):
+            normalized_lang = 'ja'
         else:
-            logger.warning(f"不支持的语言: {language}，仅支持 zh-CN/en，保持当前语言: {self.user_language}")
+            logger.warning(f"不支持的语言: {language}，仅支持 zh-CN/en/ja，保持当前语言: {self.user_language}")
             return
-        
+
         self.user_language = normalized_lang
         if normalized_lang != language:
             logger.info(f"用户语言已归一化: {language} → {normalized_lang}")

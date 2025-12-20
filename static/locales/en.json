@@ -835,7 +835,8 @@
     }
   },
   "subtitle": {
-    "title": "Live Subtitle"
+    "title": "Live Subtitle",
+    "enable": "Enable Subtitle"
   },
   "viewer": {
     "title": "Viewer - Project N.E.K.O."
