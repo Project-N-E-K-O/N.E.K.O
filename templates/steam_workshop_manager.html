@@ -4948,8 +4948,10 @@ function viewItemDetails(itemId) {
         
         // 刷新Live2D预览
         if (live2d && live2d !== '') {
-            // 直接调用loadLive2DModelByName函数刷新预览
-            loadLive2DModelByName(live2d);
+            // 从availableModels中查找对应的modelInfo
+            const modelInfo = availableModels.find(model => model.name === live2d);
+            // 调用loadLive2DModelByName函数刷新预览，传递modelInfo以避免重复API调用
+            loadLive2DModelByName(live2d, modelInfo);
         }
         
         // 更新角色卡预览
