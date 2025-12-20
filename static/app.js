@@ -470,10 +470,12 @@ function init_app() {
                         console.warn('未知表情指令或表情系统未初始化:', response.message);
                     }
                 } else if (response.type === 'system' && response.data === 'turn end') {
-                    console.log('收到turn end事件，开始情感分析');
-                    // 消息完成时进行情感分析
+                    console.log('收到turn end事件，开始情感分析和翻译');
+                    // 消息完成时进行情感分析和翻译
                     if (window.currentGeminiMessage) {
                         const fullText = window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '');
+                        
+                        // 情感分析
                         setTimeout(async () => {
                             const emotionResult = await analyzeEmotion(fullText);
                             if (emotionResult && emotionResult.emotion) {
@@ -482,13 +484,23 @@ function init_app() {
                             }
                         }, 100);
                         
-                        // 消息完成时立即翻译（参考Xiao8项目实现）
-                        // 职责说明：后端已在 send_lanlan_response 中根据 user_language 翻译了消息文本
-                        // 如果 user_language != 'zh-CN'，后端会将中文回复翻译为用户语言，前端气泡显示翻译后的文本
-                        // 这里字幕模块的作用是：检测消息语言，如果与用户语言不同（如AI用日语回复但用户语言是中文），
-                        // 则显示翻译字幕。如果语言相同，则不会显示字幕（避免重复翻译）
+                        // 前端翻译：如果用户语言不是中文，翻译整个消息并更新气泡显示
                         if (fullText && fullText.trim()) {
-                            translateAndShowSubtitle(fullText);
+                            // 使用立即执行的异步函数处理翻译
+                            (async () => {
+                                // 确保已获取用户语言
+                                if (!userLanguage) {
+                                    await getUserLanguage();
+                                }
+                                
+                                // 如果用户语言不是中文，翻译整个消息并更新气泡
+                                if (userLanguage && userLanguage !== 'zh') {
+                                    await translateMessageBubble(fullText, window.currentGeminiMessage);
+                                }
+                                
+                                // 字幕翻译：检测消息语言，如果与用户语言不同，显示翻译字幕
+                                translateAndShowSubtitle(fullText);
+                            })();
                         }
                     }
 
@@ -5402,6 +5414,8 @@ function normalizeLanguageCode(lang) {
 let subtitleEnabled = localStorage.getItem('subtitleEnabled') === 'true';
 // 从localStorage获取用户语言，归一化为简单代码（'zh', 'en', 'ja'）与 detectLanguage() 保持一致
 let userLanguage = normalizeLanguageCode(localStorage.getItem('userLanguage') || 'zh');
+// Google 翻译失败标记（会话级，页面刷新后重置）
+let googleTranslateFailed = false;
 
 // 获取用户语言（支持语言代码归一化）
 async function getUserLanguage() {
@@ -5461,6 +5475,68 @@ function detectLanguage(text) {
 let subtitleTimeout = null;
 let currentTranslateAbortController = null; // 用于取消正在进行的翻译请求
 let pendingTranslation = null; // 跟踪正在进行的翻译请求（用于去重，参考Xiao8项目）
+
+// 翻译消息气泡（如果用户语言不是中文）
+async function translateMessageBubble(text, messageElement) {
+    /**
+     * 翻译消息气泡内容
+     * 如果用户语言不是中文，将AI回复翻译为用户语言并更新气泡显示
+     */
+    if (!text || !text.trim() || !messageElement) {
+        return;
+    }
+    
+    // 确保已获取用户语言
+    if (!userLanguage) {
+        await getUserLanguage();
+    }
+    
+    // 如果用户语言是中文，不需要翻译
+    if (!userLanguage || userLanguage === 'zh') {
+        return;
+    }
+    
+    try {
+        // 调用翻译API
+        const response = await fetch('/api/config/translate', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                text: text,
+                target_lang: userLanguage || 'zh',
+                source_lang: 'zh', // AI回复默认是中文
+                skip_google: googleTranslateFailed
+            })
+        });
+        
+        if (!response.ok) {
+            console.warn('翻译消息气泡失败:', response.status);
+            return;
+        }
+        
+        const result = await response.json();
+        
+        // 如果后端返回 google_failed=true，标记 Google 翻译失败
+        if (result.google_failed === true) {
+            googleTranslateFailed = true;
+            console.log('Google 翻译失败，本次会话中将跳过 Google 翻译');
+        }
+        
+        // 如果翻译成功，更新气泡内容
+        if (result.success && result.translated_text && result.translated_text !== text) {
+            // 保留时间戳和图标，只替换文本内容
+            const timestampMatch = messageElement.textContent.match(/^\[(\d{2}:\d{2}:\d{2})\] 🎀 /);
+            if (timestampMatch) {
+                messageElement.textContent = `[${timestampMatch[1]}] 🎀 ${result.translated_text}`;
+                console.log('消息气泡已翻译:', result.translated_text.substring(0, 50) + '...');
+            }
+        }
+    } catch (error) {
+        console.error('翻译消息气泡异常:', error);
+    }
+}
 
 // 检查并显示字幕提示框
 async function checkAndShowSubtitlePrompt(text) {
@@ -5528,6 +5604,7 @@ async function translateAndShowSubtitle(text) {
         }
         
         // 调用翻译API（API内部会检测语言，如果相同则不翻译）
+        // 如果 Google 翻译在本次会话中失败过，传递 skip_google 参数
         const response = await fetch('/api/config/translate', {
             method: 'POST',
             headers: {
@@ -5536,7 +5613,8 @@ async function translateAndShowSubtitle(text) {
             body: JSON.stringify({
                 text: text,
                 target_lang: userLanguage || 'zh',
-                source_lang: null // 自动检测
+                source_lang: null, // 自动检测
+                skip_google: googleTranslateFailed // 如果 Google 翻译失败过，跳过它
             }),
             signal: currentTranslateAbortController.signal
         });
@@ -5558,6 +5636,16 @@ async function translateAndShowSubtitle(text) {
             return;
         }
         pendingTranslation = null;
+        
+        // 如果后端返回 google_failed=true，标记 Google 翻译失败（本次会话中不再尝试）
+        if (result.google_failed === true) {
+            googleTranslateFailed = true;
+            console.log('Google 翻译失败，本次会话中将跳过 Google 翻译');
+        }
+        
+        // 使用前端检测的语言结果来决定是否显示提示框（更可靠）
+        const frontendDetectedLang = detectLanguage(text);
+        const isNonUserLanguage = frontendDetectedLang !== 'unknown' && frontendDetectedLang !== userLanguage;
         
         // 只有源语言和目标语言不同时才显示字幕（避免字幕和对话框显示一样的内容）
         if (result.success && result.translated_text && 
@@ -5598,29 +5686,30 @@ async function translateAndShowSubtitle(text) {
                 console.log('开关已关闭，不显示字幕');
             }
         } else {
-            // 如果语言相同或检测失败
-            // 注意：如果字幕开关已开启，即使语言相同也应该显示提示框（让用户知道可以关闭）
-            if (subtitleEnabled) {
-                // 语言相同但开关已开启，显示提示框但不显示字幕
+            // 如果后端返回语言相同，但前端检测到非用户语言，仍然显示提示框
+            // 因为前端检测更准确（基于实际显示的文本）
+            if (isNonUserLanguage) {
+                // 前端检测到非用户语言，显示提示框（即使后端检测可能不准确）
                 showSubtitlePrompt();
                 subtitleDisplay.textContent = '';
                 subtitleDisplay.classList.remove('show');
                 subtitleDisplay.classList.add('hidden');
                 subtitleDisplay.style.opacity = '0';
+                console.log('前端检测到非用户语言，显示提示框（后端检测可能不准确）');
             } else {
-                // 语言相同且开关关闭，隐藏提示和字幕
+                // 前端也检测到是用户语言，隐藏提示框和字幕
                 hideSubtitlePrompt();
                 subtitleDisplay.textContent = '';
                 subtitleDisplay.classList.remove('show');
                 subtitleDisplay.classList.add('hidden');
                 subtitleDisplay.style.opacity = '0';
+                console.log('对话已是用户语言，自动隐藏字幕提示');
             }
             // 清除自动隐藏定时器
             if (subtitleTimeout) {
                 clearTimeout(subtitleTimeout);
                 subtitleTimeout = null;
             }
-            console.log('语言相同，隐藏字幕');
         }
     } catch (error) {
         // 如果是取消请求，不显示错误
@@ -5699,13 +5788,20 @@ function showSubtitlePrompt() {
     const labelText = document.createElement('span');
     labelText.classList.add('subtitle-toggle-label');
     labelText.setAttribute('data-i18n', 'subtitle.enable');
-    // 使用i18n翻译，如果i18n未加载或翻译不存在则使用默认文本
+    // 使用i18n翻译，如果i18n未加载或翻译不存在则根据浏览器语言提供fallback
+    const browserLang = normalizeLanguageCode(navigator.language);
+    const fallbacks = {
+        'zh': '开启字幕',
+        'en': 'Enable Subtitle',
+        'ja': '字幕を有効にする'
+    };
     if (window.t) {
         const translated = window.t('subtitle.enable');
-        // 如果翻译返回的是key本身（说明翻译不存在），使用默认文本
-        labelText.textContent = (translated && translated !== 'subtitle.enable') ? translated : '开启字幕';
+        // 如果翻译返回的是key本身（说明翻译不存在），使用浏览器语言的fallback
+        labelText.textContent = (translated && translated !== 'subtitle.enable') ? translated : (fallbacks[browserLang] || fallbacks['en']);
     } else {
-        labelText.textContent = '开启字幕'; // 默认中文
+        // i18n未加载时，使用浏览器语言的fallback
+        labelText.textContent = fallbacks[browserLang] || fallbacks['en'];
     }
     
     toggleWrapper.appendChild(indicator);
@@ -5779,12 +5875,15 @@ function showSubtitlePrompt() {
             if (window.currentGeminiMessage && window.currentGeminiMessage.textContent) {
                 const fullText = window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '');
                 if (fullText && fullText.trim()) {
-                    // 确保字幕显示元素存在且可见
+                    // 确保字幕显示元素存在且可见（translateAndShowSubtitle 内部也会检查，但这里提前检查可以避免不必要的API调用）
                     const subtitleDisplay = document.getElementById('subtitle-display');
-                    if (subtitleDisplay) {
-                        subtitleDisplay.classList.remove('hidden');
+                    if (!subtitleDisplay) {
+                        console.error('字幕显示元素不存在，无法显示字幕');
+                        return;
                     }
-                    // 重新翻译并显示字幕
+                    // 确保元素可见
+                    subtitleDisplay.classList.remove('hidden');
+                    // 重新翻译并显示字幕（translateAndShowSubtitle 内部会再次检查元素存在性）
                     translateAndShowSubtitle(fullText);
                 }
             }

@@ -468,11 +468,35 @@ def _sync_preload_modules():
     真正需要预加载的延迟导入模块：
     - pyrnnoise/audiolab: audio_processor.py 中通过 _get_rnnoise() 延迟加载
     - dashscope: tts_client.py 中仅在 cosyvoice_vc_tts_worker 函数内部导入
+    - googletrans/translatepy: language_utils.py 中延迟导入的翻译库
+    - translation_service: main_logic/core.py 中延迟初始化的翻译服务
     """
     import time
     start = time.time()
     
-    # 1. pyrnnoise/audiolab (音频降噪 - 延迟加载，可能较慢)
+    # 1. 翻译服务相关模块（避免首轮对话延迟）
+    try:
+        # 预加载翻译库（googletrans, translatepy 等）
+        from utils import language_utils
+        # 触发翻译库的导入（如果可用）
+        _ = language_utils.GOOGLETRANS_AVAILABLE
+        _ = language_utils.TRANSLATEPY_AVAILABLE
+        logger.debug("✅ 翻译库预加载完成")
+    except Exception as e:
+        logger.debug(f"⚠️ 翻译库预加载失败（不影响使用）: {e}")
+    
+    # 2. 翻译服务实例（需要 config_manager）
+    try:
+        from utils.translation_service import get_translation_service
+        from utils.config_manager import get_config_manager
+        config_manager = get_config_manager()
+        # 预初始化翻译服务实例（触发 LLM 客户端创建等）
+        translation_service = get_translation_service(config_manager)
+        logger.debug("✅ 翻译服务预加载完成")
+    except Exception as e:
+        logger.debug(f"⚠️ 翻译服务预加载失败（不影响使用）: {e}")
+    
+    # 3. pyrnnoise/audiolab (音频降噪 - 延迟加载，可能较慢)
     try:
         from utils.audio_processor import _get_rnnoise
         _get_rnnoise()
@@ -491,10 +515,17 @@ def _sync_preload_modules():
     logger.info(f"📦 模块预加载完成，耗时 {elapsed:.2f}s")
 
 
-# Startup 事件：延迟初始化 Steamworks
+# Startup 事件：延迟初始化 Steamworks 和全局语言
 @app.on_event("startup")
 async def on_startup():
     """服务器启动时执行的初始化操作"""
+    # 初始化全局语言变量（优先级：Steam设置 > 系统设置）
+    try:
+        from utils.global_language import initialize_global_language
+        global_lang = initialize_global_language()
+        logger.info(f"全局语言初始化完成: {global_lang}")
+    except Exception as e:
+        logger.warning(f"全局语言初始化失败: {e}，将使用默认值")
     global steamworks, _preload_task
     
     # 只在主进程中初始化 Steamworks

@@ -506,14 +506,23 @@ async def translate_text_api(request: Request):
                 "target_lang": target_lang_normalized
             }
         
+        # 检查是否跳过 Google 翻译（前端传递的会话级失败标记）
+        skip_google = data.get('skip_google', False)
+        
         # 调用翻译服务
         try:
-            translated = await translate_text(text, target_lang_normalized, detected_source_lang)
+            translated, google_failed = await translate_text(
+                text, 
+                target_lang_normalized, 
+                detected_source_lang,
+                skip_google=skip_google
+            )
             return {
                 "success": True,
                 "translated_text": translated,
                 "source_lang": detected_source_lang,
-                "target_lang": target_lang_normalized
+                "target_lang": target_lang_normalized,
+                "google_failed": google_failed  # 告诉前端 Google 翻译是否失败
             }
         except Exception as e:
             logger.error(f"翻译失败: {e}")

@@ -348,15 +348,16 @@ class LLMSessionManager:
                 # 去掉情绪标签
                 text = self.emotion_pattern.sub('', text)
                 
-                # 根据用户语言翻译文本（注意：流式消息逐块翻译，可能不够完美，但保证实时性）
-                # 职责说明：后端负责将AI回复翻译为用户语言，前端字幕模块负责检测非用户语言并显示翻译字幕
-                # 如果 user_language != 'zh-CN'，这里会将中文回复翻译为用户语言，前端气泡显示翻译后的文本
-                # 前端字幕模块会在 turn end 时检测消息语言，如果与用户语言不同，会再次调用翻译API显示字幕
-                translated_text = await self._translate_if_needed(text)
+                # 不再在流式传输时翻译，直接发送原始文本（中文）
+                # 职责说明：前端会在收到完整消息后（turn end时）进行翻译
+                # 这样可以避免在流式传输过程中进行翻译，提高响应速度，同时翻译质量更好（基于完整消息）
+                # 前端会在 turn end 时：
+                # 1. 如果用户语言不是中文，翻译整个消息并更新气泡显示
+                # 2. 检测消息语言，如果与用户语言不同，显示翻译字幕
 
                 message = {
                     "type": "gemini_response",
-                    "text": translated_text,
+                    "text": text,  # 直接发送原始文本，不翻译
                     "isNewMessage": is_first_chunk  # 标记是否是新消息的第一个chunk
                 }
                 await self.websocket.send_json(message)
@@ -1460,8 +1461,16 @@ class LLMSessionManager:
         else:
             logger.info(f"用户语言已设置为: {normalized_lang}")
     
-    async def _translate_if_needed(self, text: str) -> str:
-        """如果需要，翻译文本"""
+    async def translate_if_needed(self, text: str) -> str:
+        """
+        如果需要，翻译文本（公开方法，供外部模块使用）
+        
+        Args:
+            text: 要翻译的文本
+            
+        Returns:
+            str: 翻译后的文本（如果不需要翻译则返回原文）
+        """
         if not text or self.user_language == 'zh-CN':
             # 默认语言是中文，不需要翻译
             return text
@@ -1483,7 +1492,7 @@ class LLMSessionManager:
         """
         try:
             # 根据用户语言翻译消息
-            translated_message = await self._translate_if_needed(message)
+            translated_message = await self.translate_if_needed(message)
             
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 data = json.dumps({"type": "status", "message": translated_message})
