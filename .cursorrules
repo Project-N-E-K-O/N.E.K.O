@@ -13,7 +13,7 @@
 ## 一、frontend/ 目录维护规则
 
 ### 1.1 技术栈约束
-- **框架**: React 19.1.1（使用经典 JSX 转换，确保 UMD 兼容性）
+- **框架**: React 19.1.1（React App 使用标准 React；组件库 UMD 构建需使用经典 JSX 转换以兼容 React UMD）
 - **构建工具**: Vite 7.1.7
 - **语言**: TypeScript 5.9.2（严格模式）
 - **包管理**: npm workspaces
@@ -30,13 +30,15 @@
   - 使用 `@project_neko/components` 引用组件库
   - 使用 `@project_neko/common` 引用公共工具
   - 使用 `@project_neko/request` 引用请求库
+  - 使用 `@project_neko/realtime` 引用 Realtime/WebSocket 库
   - 路径别名在 `tsconfig.json` 和 `vite.web.config.ts` 中已配置
 
 - **构建产物**:
-  - 所有构建产物输出到 `static/bundles/`（仓库根目录）
-  - 组件库必须同时产出 ES 和 UMD 格式
-  - UMD 全局变量命名：`ProjectNekoComponents`、`ProjectNekoRequest`、`ProjectNekoCommon`、`ProjectNekoBridge`
-  - 确保构建产物包含 source map（`.map` 文件）
+  - **packages 的库构建产物**输出到仓库根 `static/bundles/`（ES + UMD）
+  - **React WebApp（frontend/src）**构建产物输出到 `frontend/dist/webapp`（用于开发/调试，避免与静态资源混淆）
+  - 组件库必须同时产出 ES 和 UMD 格式，UMD 外部化 `react` 与 `react-dom`
+  - UMD 全局变量命名：`ProjectNekoComponents`、`ProjectNekoRequest`、`ProjectNekoCommon`、`ProjectNekoRealtime`、`ProjectNekoBridge`
+  - sourcemap：当前配置为**开发模式生成**（`--mode development`），生产模式默认不生成；如需排查线上问题，优先用开发构建复现或临时开启 sourcemap（需同步评估体积/泄露风险）
 
 ### 1.3 文件组织
 
@@ -80,10 +82,11 @@
 1. `clean:bundles` - 清空 `static/bundles/`
 2. `build:request` - 构建请求库
 3. `build:common` - 构建通用工具
-4. `build:components` - 构建组件库
-5. `build:web-bridge` - 构建桥接层
-6. `build:web` - 构建 Web 应用入口
-7. `copy:react-umd` - 复制 React UMD 文件
+4. `build:realtime` - 构建 Realtime/WebSocket 库
+5. `build:components` - 构建组件库
+6. `build:web-bridge` - 构建桥接层
+7. `build:web` - 构建 Web 应用入口（产物在 `frontend/dist/webapp`）
+8. `copy:react-umd` - 复制 React/ReactDOM UMD 文件到 `static/bundles/`
 
 ### 1.5 禁止事项
 - ❌ 不要直接修改 `static/bundles/` 中的构建产物（这些文件由构建流程自动生成）
@@ -91,13 +94,62 @@
 - ❌ 不要在组件中使用内联样式（除非是动态计算的样式值）
 - ❌ 不要直接导入 `react` 和 `react-dom` 的源码（UMD 构建时会外部化）
 
+### 1.6 packages 分层与 i18n 规则（过渡期：HTML/JS + bundles；终态：React App）
+
+> 背景：`frontend/packages/*` 中的代码既要被旧 `templates/ + static/*.js`（通过 `static/bundles/*.js` 的 UMD）使用，也要被新的 `frontend/src` React App 使用。
+> 因此必须遵循 **“宿主无关（host-agnostic）优先”** 的分层：React App 是一个“宿主”，旧 HTML/JS 也是一个“宿主”。
+
+#### 1.6.1 总原则（必须遵守）
+- ✅ **packages 默认不得假设宿主环境**：除非明确属于桥接层，否则不应强依赖 DOM / `window` / React Provider。
+- ✅ **i18n 不在底层库做“翻译字符串”**：底层库只输出 **可翻译信息**（`code + params`），由宿主决定如何翻译/展示。
+- ✅ **兼容性复杂度集中到 `packages/web-bridge`**：跨界/兼容逻辑不要分散到其它包。
+
+#### 1.6.2 `packages/common` / `packages/request` / `packages/realtime`（必须不依赖 React）
+- ✅ **禁止依赖 React**：不得引入 `react`、不得要求 Provider、不得依赖 JSX。
+- ✅ **禁止耦合 DOM**：不得读写 DOM、不得假设浏览器 API（除非是明确的 web-only 入口文件，并在文档中写清楚）。
+- ✅ **i18n 处理方式**：
+  - **推荐**：返回结构化错误/状态（例如 `{ code: "SESSION_TIMEOUT", params: {...} }`）。
+  - **可选**：接受可选的 `t(key, params?)` 回调（函数依赖注入），库本身不初始化 i18n、不持有全局单例。
+  - **禁止**：在这些包内引入 `i18next` / `react-i18next` / `react-intl` 等并自行初始化。
+
+#### 1.6.3 `packages/components`（可完全 React 化，但必须可被 UMD/HTML 使用）
+- ✅ **允许使用标准 React i18n**（如 `react-i18next` / `react-intl`），用于 React App 的“正统”用法。
+- ✅ **但组件库必须提供“无 Provider 运行路径”**（用于旧 HTML/JS + UMD bundles）：
+  - 组件库内部应统一通过一个最小契约获取翻译函数：`t(key, params?) => string`。
+  - **优先级建议**：组件库 Provider 注入的 `t` → `window.t`（若存在）→ 回退到 key/默认文案。
+  - 组件库不得强制要求宿主一定提供某种 Provider（否则旧页面通过 `<script src="/static/bundles/components.js">` 会直接崩溃）。
+- ✅ **翻译资源归宿主**：
+  - 旧页面翻译资源在 `static/locales/*.json`（通过 `static/i18n-i18next.js` 暴露 `window.t`）。
+  - React App 可按其 i18n 体系加载资源，但要与组件库的 `t` 契约对齐。
+  - **禁止**：把整套业务翻译资源硬打进组件库 bundles（会导致双实例、体积膨胀、与宿主语言状态分裂）。
+
+#### 1.6.4 `packages/web-bridge`（唯一允许“跨界”的地方）
+- ✅ **职责**：把 React 组件能力（如 Toast/Modal）与基础能力（request/realtime）暴露到 `window`，供旧页面使用。
+- ✅ **允许读写 `window` / 监听全局事件**（这是桥接层的边界）。
+- ✅ **i18n 桥接建议**：
+  - 旧页面以 `window.t` 为主（由 `static/i18n-i18next.js` 提供），并通过 `localechange` 事件通知语言变化。
+  - `web-bridge` 在挂载 React 组件树时应把宿主的 `t` 注入到组件库（Provider 包裹或等价机制），并在 `localechange` 时触发 re-render，保证 UMD 场景语言可切换。
+
+#### 1.6.5 迁移节奏建议（不强制，但推荐）
+- **阶段 0**：旧页面继续使用 `static/i18n-i18next.js`（`window.t` + `localechange`），组件库保持 `window.t` fallback。
+- **阶段 1**：React App 使用标准 React i18n；如需让 UMD 组件在同页生效，可把 React 的 `t` 同步到 `window.t`（仅作为兼容层）。
+- **阶段 2**：逐步把组件库里散落的 `window.t?.(...)` 收敛到组件库 i18n 适配层（例如 `useT()`），但保留 window fallback。
+- **阶段 3**：当旧页面被替换后，再评估是否移除 `window.t` 依赖/或将旧页面 i18n 也迁移成 bundles 形式。
+
+#### 1.6.6 Code Review 检查点（新增）
+- [ ] `common/request/realtime` 是否引入了 React / DOM / i18n 初始化？（应为否）
+- [ ] `components` 是否在无 Provider 时仍能运行？是否提供 `window.t` fallback？
+- [ ] 是否把 i18n 兼容/全局事件监听集中在 `web-bridge`，而不是散落在其它包？
+- [ ] 旧模板脚本顺序是否确保 `window.t` 在需要时已就绪？
+
 ---
 
 ## 二、templates/ 目录维护规则
 
 ### 2.1 文件性质
 - 这些是服务端 HTML 模板文件，由 Python Flask/Jinja2 渲染
-- 模板中会引用 `static/bundles/` 中的构建产物
+- **现状**：模板主要仍引用 `static/*.js` 的 legacy 脚本（未全面迁移到 bundles）
+- **迁移目标**：逐步将页面迁移为引用 `static/bundles/` 中的构建产物（UMD），并通过 `packages/web-bridge` 暴露统一 window API
 - 模板可能包含内联样式和脚本（历史遗留，逐步迁移）
 
 ### 2.2 模板文件列表
@@ -109,16 +161,17 @@
 | `l2d_manager.html` | Live2D 模型管理器 |
 | `live2d_emotion_manager.html` | Live2D 情绪配置管理 |
 | `live2d_parameter_editor.html` | Live2D 参数编辑器 |
-| `api_key_settings.html` | API 密钥设置页面 |
 | `memory_browser.html` | 记忆浏览器 |
-| `voice_clone.html` | 语音克隆设置 |
 | `steam_workshop_manager.html` | Steam 创意工坊管理 |
 | `subtitle.html` | 字幕显示页面 |
 
 ### 2.3 脚本引用顺序
-**必须严格按照以下顺序引用脚本**（参考 `templates/index.html`）：
+当某个模板页**迁移为 bundles/UMD** 用法时，建议遵循以下顺序（避免全局 API/依赖未就绪）：
 
 ```html
+<!-- 0. i18n（若页面/组件需要 window.t；建议尽早加载） -->
+<script src="/static/i18n-i18next.js"></script>
+
 <!-- 1. 请求库（不依赖 React，可先加载） -->
 <script src="/static/bundles/request.js"></script>
 
@@ -136,7 +189,6 @@
 <script src="/static/bundles/components.js"></script>
 
 <!-- 6. 其他工具库 -->
-<script src="/static/i18n-i18next.js"></script>
 <script src="/static/common_dialogs.js"></script>
 ```
 
@@ -209,6 +261,7 @@ static/bundles/
 ├── components.css                     # 组件库样式
 ├── request.js / request.es.js         # 请求库
 ├── common.js / common.es.js           # 通用工具
+├── realtime.js / realtime.es.js       # Realtime/WebSocket 库
 ├── web-bridge.js / web-bridge.es.js   # 桥接层
 ├── react.production.min.js            # React UMD
 ├── react-dom.production.min.js        # ReactDOM UMD

@@ -15,3 +15,7 @@ export type { AlertDialogProps } from "./src/Modal/AlertDialog";
 export type { ConfirmDialogProps } from "./src/Modal/ConfirmDialog";
 export type { PromptDialogProps } from "./src/Modal/PromptDialog";
 
+// i18n adapter (Provider -> window.t -> fallback)
+export { I18nProvider, useT, tOrDefault } from "./src/i18n";
+export type { TFunction, I18nProviderProps } from "./src/i18n";
+

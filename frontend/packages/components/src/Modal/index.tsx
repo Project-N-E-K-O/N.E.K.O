@@ -9,6 +9,7 @@ import React, {
 import { AlertDialog } from "./AlertDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { PromptDialog } from "./PromptDialog";
+import { tOrDefault, useT } from "../i18n";
 import "./Modal.css";
 
 // 对话框类型
@@ -66,6 +67,7 @@ const Modal = forwardRef<ModalHandle | null, {}>(function ModalComponent(_, ref)
     config: null,
     resolve: null,
   });
+  const t = useT();
 
   // 使用 ref 跟踪最新的 dialogState，以便在清理函数中访问最新值
   const dialogStateRef = useRef<DialogState>(dialogState);
@@ -144,34 +146,17 @@ const Modal = forwardRef<ModalHandle | null, {}>(function ModalComponent(_, ref)
   }, []);
 
   const getDefaultTitle = useCallback((type: DialogType): string => {
-    try {
-      if (window.t && typeof window.t === "function") {
-        switch (type) {
-          case "alert":
-            return window.t("common.alert");
-          case "confirm":
-            return window.t("common.confirm");
-          case "prompt":
-            return window.t("common.input");
-          default:
-            return "提示";
-        }
-      }
-    } catch (e) {
-      // 忽略错误
-    }
-    // 降级到默认值
     switch (type) {
       case "alert":
-        return "提示";
+        return tOrDefault(t, "common.alert", "提示");
       case "confirm":
-        return "确认";
+        return tOrDefault(t, "common.confirm", "确认");
       case "prompt":
-        return "输入";
+        return tOrDefault(t, "common.input", "输入");
       default:
         return "提示";
     }
-  }, []);
+  }, [t]);
 
   // React 内部直接调用的 API，供 ref 或自定义 hook 使用
   const showAlert = useCallback(
