@@ -133,8 +133,12 @@ class OmniRealtimeClient:
         self._audio_processor = AudioProcessor(
             input_sample_rate=48000,
             output_sample_rate=16000,
-            noise_reduce_enabled=True  # RNNoise with auto-reset enabled
+            noise_reduce_enabled=True,  # RNNoise with auto-reset enabled
+            on_silence_reset=self._on_silence_reset  # 静音重置时发送 input_audio_buffer.clear
         )
+        
+        # 静音重置事件异步队列
+        self._silence_reset_pending = False
         
         # 重复度检测
         self._recent_responses = []  # 存储最近3轮助手回复
@@ -194,6 +198,19 @@ class OmniRealtimeClient:
             logger.info("静默检测任务被取消")
         except Exception as e:
             logger.error(f"静默检测任务出错: {e}")
+    
+    def _on_silence_reset(self):
+        """当音频处理器检测到2秒静音并重置缓存时调用。标记待发送clear事件。"""
+        self._silence_reset_pending = True
+        logger.info("🔇 RNNoise检测到2秒静音，待发送 input_audio_buffer.clear")
+    
+    async def clear_audio_buffer(self):
+        """发送 input_audio_buffer.clear 事件清空服务端缓存。"""
+        clear_event = {
+            "type": "input_audio_buffer.clear"
+        }
+        await self.send_event(clear_event)
+        logger.info("📤 已发送 input_audio_buffer.clear 事件")
 
     async def connect(self, instructions: str, native_audio=True) -> None:
         """Establish WebSocket connection with the Realtime API."""
@@ -262,7 +279,7 @@ class OmniRealtimeClient:
             elif "gpt" in self.model:
                 await self.update_session({
                     "type": "realtime",
-                    "model": "gpt-realtime",
+                    "model": "gpt-realtime-mini-2025-12-15",
                     "instructions": instructions + '\n请使用卡哇伊的声音与用户交流。\n',
                     "output_modalities": ['audio'] if 'audio' in self._modalities else ['text'],
                     "audio": {
@@ -390,6 +407,11 @@ class OmniRealtimeClient:
             # Skip if RNNoise is buffering (returns empty)
             if len(audio_chunk) == 0:
                 return
+            
+            # 检查是否有待发送的静音重置事件（2秒静音触发）
+            if self._silence_reset_pending:
+                self._silence_reset_pending = False
+                await self.clear_audio_buffer()
         
         audio_b64 = base64.b64encode(audio_chunk).decode()
 

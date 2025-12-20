@@ -149,7 +149,7 @@ class Live2DManager {
     }
 
     // 保存用户偏好
-    async saveUserPreferences(modelPath, position, scale, parameters) {
+    async saveUserPreferences(modelPath, position, scale, parameters, display) {
         try {
             // 验证位置和缩放值是否为有效的有限数值
             if (!position || typeof position !== 'object' ||
@@ -179,6 +179,15 @@ class Live2DManager {
             // 如果有参数，添加到偏好中
             if (parameters && typeof parameters === 'object') {
                 preferences.parameters = parameters;
+            }
+
+            // 如果有显示器信息，添加到偏好中（用于多屏幕位置恢复）
+            if (display && typeof display === 'object' &&
+                Number.isFinite(display.screenX) && Number.isFinite(display.screenY)) {
+                preferences.display = {
+                    screenX: display.screenX,
+                    screenY: display.screenY
+                };
             }
 
             const response = await fetch('/api/config/preferences', {

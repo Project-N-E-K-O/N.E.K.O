@@ -187,6 +187,25 @@
             display: block;
         }
 
+        /* 限制live2d-link的可点击区域，只在文字部分可点击，不占据整行 */
+        .fold-content .live2d-link {
+            display: inline-block;
+            flex: 0 0 auto;
+            max-width: fit-content;
+            width: auto;
+            cursor: pointer;
+            color: #4f8cff;
+            text-decoration: underline;
+            padding: 6px 0;
+        }
+
+        /* 确保field-row的空白区域不触发链接点击 */
+        .fold-content .field-row::after {
+            content: '';
+            flex: 1;
+            pointer-events: none;
+        }
+
         .catgirl-block {
             border: 1px solid #e0e0e0;
             border-radius: 8px;
@@ -228,7 +247,11 @@
 
 <body>
     <div class="container">
-        <h2 data-i18n="character.manager">角色管理</h2>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+            <h2 style="margin: 0;" data-i18n="character.manager">角色管理</h2>
+            <button class="btn sm" onclick="openApiKeySettings()" style="background: #6c757d;"
+                data-i18n="character.apiKeySettings">🔑 API Key 设置</button>
+        </div>
         <div class="section" id="master-section">
             <div class="tips" data-i18n="character.masterProfile">🐷主人档案（唯一）：档案名为必填项，其他均为可选项，可自行删减。</div>
             <div class="catgirl-block">
@@ -987,7 +1010,6 @@
             live2dRow.appendChild(live2dLabel);
             const live2dLink = document.createElement('span');
             live2dLink.className = 'live2d-link';
-            live2dLink.style.cssText = 'flex:1;cursor:pointer;color:#4f8cff;text-decoration:underline;display:inline-block;padding:6px 0';
             live2dLink.title = window.t ? window.t('character.manageLive2D') : '点击管理Live2D模型';
             live2dLink.textContent = cat['live2d'] ? cat['live2d'] : (window.t ? window.t('character.live2dNotSet') : '未设置');
             live2dRow.appendChild(live2dLink);
@@ -1008,6 +1030,12 @@
             defaultOption.textContent = window.t ? window.t('character.voiceNotSet') : '未指定音色';
             voiceSelect.appendChild(defaultOption);
             voiceRow.appendChild(voiceSelect);
+            const registerVoiceBtn = document.createElement('button');
+            registerVoiceBtn.type = 'button';
+            registerVoiceBtn.className = 'btn sm';
+            registerVoiceBtn.textContent = window.t ? window.t('character.registerNewVoice') : '注册新声音';
+            registerVoiceBtn.addEventListener('click', function () { openVoiceClone(key || ''); });
+            voiceRow.appendChild(registerVoiceBtn);
             foldContent.appendChild(voiceRow);
 
             // system_prompt fold
@@ -1044,6 +1072,7 @@
 
             // 操作按钮区
             const btnArea = document.createElement('div');
+            btnArea.className = 'btn-area';
             btnArea.style.textAlign = 'right';
             btnArea.style.marginTop = '10px';
 
@@ -1229,7 +1258,7 @@
             // 在 form.onsubmit 之前添加
             async function loadVoices() {
                 try {
-                    const response = await fetch('/api/voices');
+                    const response = await fetch('/api/characters/voices');
                     const data = await response.json();
                     const select = form.querySelector('select[name="voice_id"]');
                     if (select) {
@@ -1449,6 +1478,20 @@
 
         // 猫娘档案名重命名
         window.renameCatgirl = async function (oldName) {
+            // 先检查是否是当前角色且在语音模式下
+            try {
+                const statusRes = await fetch('/api/characters/catgirl/' + encodeURIComponent(oldName) + '/voice_mode_status');
+                const statusData = await statusRes.json();
+
+                if (statusData.is_current && statusData.is_voice_mode) {
+                    await showAlert(window.t ? window.t('character.cannotRenameInVoiceMode') : '语音状态下无法修改角色名称，请先停止语音对话后再修改');
+                    return;
+                }
+            } catch (error) {
+                console.warn('检查语音模式状态失败:', error);
+                // 如果检查失败，继续执行，让后端来处理
+            }
+
             const newName = await showPrompt(
                 window.t ? window.t('character.enterNewProfileName') : '请输入新的猫娘档案名',
                 oldName,
@@ -1540,6 +1583,56 @@
                         document.body.removeChild(modalToRemove);
                     }
                     window.removeEventListener('message', handler);
+                }
+            });
+            modal.appendChild(iframe);
+            document.body.appendChild(modal);
+        }
+
+        function openVoiceClone(lanlanName) {
+            // 检查是否已有弹窗存在（根据lanlanName区分）
+            const modalId = 'voice-clone-modal-' + encodeURIComponent(lanlanName);
+            const existingModal = document.getElementById(modalId);
+            if (existingModal) {
+                // 如果已存在，聚焦到该弹窗
+                existingModal.style.display = 'block';
+                return;
+            }
+
+            // 创建弹窗容器
+            let modal = document.createElement('div');
+            modal.id = modalId;
+            modal.style.position = 'fixed';
+            modal.style.left = '0';
+            modal.style.top = '0';
+            modal.style.width = '100vw';
+            modal.style.height = '100vh';
+            modal.style.background = 'rgba(0,0,0,0.4)';
+            modal.style.zIndex = '9999';
+            modal.onclick = function (e) {
+                if (e.target === modal) {
+                    document.body.removeChild(modal);
+                }
+            };
+            // 创建iframe
+            let iframe = document.createElement('iframe');
+            iframe.src = 'voice_clone?lanlan_name=' + encodeURIComponent(lanlanName);
+            iframe.style.width = '600px';
+            iframe.style.height = '400px';
+            iframe.style.border = 'none';
+            iframe.style.background = '#fff';
+            iframe.style.display = 'block';
+            iframe.style.margin = '60px auto';
+            iframe.style.borderRadius = '8px';
+            // 监听voice_id变更，注册页面可在window.parent.postMessage通知
+            window.addEventListener('message', function handler(e) {
+                if (e.data && e.data.type === 'voice_id_updated') {
+                    const modalToRemove = document.getElementById(modalId);
+                    if (modalToRemove) {
+                        document.body.removeChild(modalToRemove);
+                    }
+                    window.removeEventListener('message', handler);
+                    loadCharacterData();
                 }
             });
             modal.appendChild(iframe);

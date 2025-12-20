@@ -9,7 +9,6 @@ import struct  # For packing audio data
 import re
 import logging
 import time
-import locale
 from datetime import datetime
 from websockets import exceptions as web_exceptions
 from fastapi import WebSocket, WebSocketDisconnect
@@ -30,27 +29,6 @@ import httpx
 
 # Setup logger for this module
 logger = logging.getLogger(__name__)
-
-def _get_timestamp():
-    """Generate formatted timestamp like: Sunday, December 14, 2025 at 12:27 PM"""
-    try:
-        old_locale = locale.getlocale(locale.LC_TIME)
-        try:
-            locale.setlocale(locale.LC_TIME, 'en_US.UTF-8')
-        except locale.Error:
-            try:
-                locale.setlocale(locale.LC_TIME, 'English_United States.1252')
-            except locale.Error:
-                pass
-        now = datetime.now()
-        timestamp = now.strftime("%A, %B %d, %Y at %I:%M %p")
-        try:
-            locale.setlocale(locale.LC_TIME, old_locale)
-        except: # noqa
-            pass
-        return "Current time: " + timestamp
-    except Exception:
-        return datetime.now().strftime("%Y-%m-%d %H:%M")
 
 # --- 一个带有定期上下文压缩+在线热切换的语音会话管理器 ---
 class LLMSessionManager:
@@ -686,13 +664,13 @@ class LLMSessionManager:
         async def start_llm_session():
             """异步创建并连接 LLM Session"""
             # 获取初始 prompt
-            initial_prompt = _get_timestamp() + "\n" + (f"你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{self.lanlan_name}），并在对方请求时、回答'我试试'并尝试操纵电脑。" if self._is_agent_enabled() else f"你是一个角色扮演大师。请按要求扮演以下角色（{self.lanlan_name}）。") + self.lanlan_prompt
+            initial_prompt = (f"你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{self.lanlan_name}），并在对方请求时、回答'我试试'并尝试操纵电脑。" if self._is_agent_enabled() else f"你是一个角色扮演大师。请按要求扮演以下角色（{self.lanlan_name}）。") + self.lanlan_prompt
             
             # 连接 Memory Server 获取记忆上下文
             try:
                 async with httpx.AsyncClient(timeout=2.0) as client:
                     resp = await client.get(f"http://localhost:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
-                    initial_prompt += resp.text
+                    initial_prompt += resp.text + f"========以上为前情概要。现在请{self.lanlan_name}准备，即将开始用语音与{self.master_name}继续对话。========\n"
             except httpx.ConnectError:
                 raise ConnectionError(f"❌ 记忆服务未启动！请先启动记忆服务 (端口 {self.memory_server_port})")
             except httpx.TimeoutException:
@@ -745,7 +723,7 @@ class LLMSessionManager:
             if self.session:
                 await self.session.connect(initial_prompt, native_audio = not self.use_tts)
                 logger.info("✅ LLM Session 已连接")
-                print(initial_prompt)
+                print(initial_prompt)  #只在控制台显示，不输出到日志文件
                 return True
             else:
                 raise Exception("Session not initialized")
@@ -970,7 +948,7 @@ class LLMSessionManager:
                 )
                 logger.info("🔄 热切换准备: 创建语音模式 OmniRealtimeClient")
             
-            initial_prompt = _get_timestamp() + "\n" + (f"你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{self.lanlan_name}），在对方请求时、回答“我试试”并尝试操纵电脑。" if self._is_agent_enabled() else f"你是一个角色扮演大师。请按要求扮演以下角色（{self.lanlan_name}）。") + self.lanlan_prompt
+            initial_prompt = (f"你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{self.lanlan_name}），在对方请求时、回答“我试试”并尝试操纵电脑。" if self._is_agent_enabled() else f"你是一个角色扮演大师。请按要求扮演以下角色（{self.lanlan_name}）。") + self.lanlan_prompt
             self.initial_cache_snapshot_len = len(self.message_cache_for_new_session)
             async with httpx.AsyncClient() as client:
                 resp = await client.get(f"http://localhost:{self.memory_server_port}/new_dialog/{self.lanlan_name}")
@@ -1034,10 +1012,9 @@ class LLMSessionManager:
             incremental_cache = self.message_cache_for_new_session[self.initial_cache_snapshot_len:]
             # 1. Send incremental cache (or a heartbeat) to PENDING session for its *second* ignored response
             if incremental_cache:
-                final_prime_text = "SYSTEM_MESSAGE | " + self._convert_cache_to_str(incremental_cache)
+                final_prime_text = self._convert_cache_to_str(incremental_cache)
             else:  # Ensure session cycles a turn even if no incremental cache
                 logger.info(f"🔄 No incremental cache found. 缓存长度: {len(self.message_cache_for_new_session)}, 快照长度: {self.initial_cache_snapshot_len}")
-                final_prime_text = "SYSTEM_MESSAGE | 系统自动报时，当前时间： " + str(datetime.now().strftime("%Y-%m-%d %H:%M"))
 
             # 若存在需要植入的额外提示，则指示模型忽略上一条消息，并在下一次响应中统一向用户补充这些提示
             if self.pending_extra_replies and len(self.pending_extra_replies) > 0:
@@ -1046,9 +1023,9 @@ class LLMSessionManager:
                 except Exception:
                     items = ""
                 final_prime_text += (
-                    f"\n[注入指令] 请{self.lanlan_name}忽略最后一轮对话。用简洁自然的一段话向{self.master_name}汇报和解释先前执行的任务的结果，简要说明自己做了什么：\n"
+                    f"\n========以上为前情概要。请{self.lanlan_name}先用简洁自然的一段话向{self.master_name}汇报和解释先前执行的任务的结果，简要说明自己做了什么：\n"
                     + items +
-                    "\n完成上述汇报后，再恢复正常对话。"
+                    "\n完成上述汇报后，再恢复正常对话。========\n"
                 )
                 # 清空队列，避免重复注入
                 self.pending_extra_replies.clear()
@@ -1057,11 +1034,13 @@ class LLMSessionManager:
                 except web_exceptions.ConnectionClosed as e:
                     logger.warning(f"⚠️ Final Swap Sequence: pending_session连接已关闭，跳过create_response: {e}")
             else:
-                final_prime_text += f"=======以上为前情概要。现在请{self.lanlan_name}准备，即将开始用语音与{self.master_name}继续对话。\n"
+                final_prime_text += f"========以上为前情概要。现在请{self.lanlan_name}准备，即将开始用语音与{self.master_name}继续对话。========\n"
                 try:
                     await self.pending_session.create_response(final_prime_text, skipped=True)
                 except web_exceptions.ConnectionClosed as e:
                     logger.warning(f"⚠️ Final Swap Sequence: pending_session连接已关闭，跳过create_response: {e}")
+
+            print(final_prime_text) #只在控制台显示，不输出到日志文件
 
             # 2. Start temporary listener for PENDING session's *second* ignored response
             if self.pending_session_final_prime_complete_event:

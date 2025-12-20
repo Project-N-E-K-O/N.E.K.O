@@ -293,7 +293,7 @@ async def update_catgirl_voice_id(name: str, request: Request):
         # 3. 重新加载配置，让新的voice_id生效
         initialize_character_data = get_initialize_character_data()
         await initialize_character_data()
-        logger.info(f"配置已重新加载，新的voice_id已生效")
+        logger.info("配置已重新加载，新的voice_id已生效")
     else:
         # 不是当前猫娘，跳过重新加载，避免影响当前猫娘的session
         logger.info(f"切换的是其他猫娘 {name} 的音色，跳过重新加载以避免影响当前猫娘的session")
@@ -490,8 +490,8 @@ async def set_current_catgirl(request: Request):
     if notification_count > 0:
         logger.info(f"✅ 已通过WebSocket通知 {notification_count} 个连接的客户端：猫娘已从 {old_catgirl} 切换到 {catgirl_name}")
     else:
-        logger.warning(f"⚠️ 没有找到任何活跃的WebSocket连接来通知猫娘切换")
-        logger.warning(f"提示：请确保前端页面已打开并建立了WebSocket连接，且已调用start_session")
+        logger.warning("⚠️ 没有找到任何活跃的WebSocket连接来通知猫娘切换")
+        logger.warning("提示：请确保前端页面已打开并建立了WebSocket连接，且已调用start_session")
     
     return {"success": True}
 
@@ -602,7 +602,13 @@ async def update_catgirl(name: str, request: Request):
                 'available_voices': available_voices
             }, status_code=400)
     
-
+    # 只更新前端传来的字段，未传字段保留原值，且不允许通过此接口修改 system_prompt
+    removed_fields = []
+    for k, v in characters['猫娘'][name].items():
+        if k not in data and k not in ('档案名', 'system_prompt', 'voice_id', 'live2d'):
+            removed_fields.append(k)
+    for k in removed_fields:
+        characters['猫娘'][name].pop(k)
     
     # 处理voice_id的特殊逻辑：如果传入空字符串，则删除该字段
     if 'voice_id' in data and data['voice_id'] == '':
@@ -654,7 +660,7 @@ async def update_catgirl(name: str, request: Request):
         # 自动重新加载配置
         initialize_character_data = get_initialize_character_data()
         await initialize_character_data()
-        logger.info(f"配置已重新加载，新的voice_id已生效")
+        logger.info("配置已重新加载，新的voice_id已生效")
     elif voice_id_changed and not is_current_catgirl:
         # 不是当前猫娘，跳过重新加载，避免影响当前猫娘的session
         logger.info(f"切换的是其他猫娘 {name} 的音色，跳过重新加载以避免影响当前猫娘的session")
@@ -1000,7 +1006,7 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
                 
                 if not tmp_url:
                     logger.error(f"无法从响应中提取URL: {data}")
-                    return JSONResponse({'error': f'上传成功但无法从响应中提取URL'}, status_code=500)
+                    return JSONResponse({'error': '上传成功但无法从响应中提取URL'}, status_code=500)
                 
                 # 确保URL有效
                 if not tmp_url.startswith(('http://', 'https://')):
@@ -1011,7 +1017,7 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
                 test_resp = await client.head(tmp_url, timeout=10)
                 if test_resp.status_code >= 400:
                     logger.error(f"生成的URL无法访问: {tmp_url}, 状态码: {test_resp.status_code}")
-                    return JSONResponse({'error': f'生成的临时URL无法访问，请重试'}, status_code=500)
+                    return JSONResponse({'error': '生成的临时URL无法访问，请重试'}, status_code=500)
                     
                 logger.info(f"成功获取临时URL并验证可访问性: {tmp_url}")
                 

@@ -95,13 +95,16 @@ class AudioProcessor:
         output_sample_rate: int = 16000,
         noise_reduce_enabled: bool = True,
         agc_enabled: bool = True,
-        limiter_enabled: bool = True
+        limiter_enabled: bool = True,
+        on_silence_reset: Optional[callable] = None
     ):
         self.input_sample_rate = input_sample_rate
         self.output_sample_rate = output_sample_rate
         self.noise_reduce_enabled = noise_reduce_enabled
         self.agc_enabled = agc_enabled
         self.limiter_enabled = limiter_enabled
+        # 静音重置回调：当检测到2秒静音并重置状态时调用
+        self.on_silence_reset = on_silence_reset
         
         # Initialize RNNoise denoiser
         self._denoiser = None
@@ -161,11 +164,18 @@ class AudioProcessor:
         
         # Check if we need to reset (after long silence or on request)
         current_time = time.time()
-        if self._needs_reset or (current_time - self._last_speech_time > self.RESET_TIMEOUT_SECONDS):
+        silence_triggered = (current_time - self._last_speech_time > self.RESET_TIMEOUT_SECONDS)
+        if self._needs_reset or silence_triggered:
             if self._denoiser is not None:
                 self._reset_internal_state()
                 self._last_speech_time = current_time  # Prevent infinite reset loop
                 logger.debug("🔄 RNNoise state auto-reset after silence")
+                # 调用静音重置回调（仅在静音触发时，非手动请求时）
+                if silence_triggered and self.on_silence_reset:
+                    try:
+                        self.on_silence_reset()
+                    except Exception as e:
+                        logger.error(f"❌ on_silence_reset callback error: {e}")
             self._needs_reset = False
         
         # Apply RNNoise if available (processes int16, returns int16)

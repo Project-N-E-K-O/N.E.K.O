@@ -16,7 +16,8 @@ import re
 import regex
 import os
 import logging
-import json
+import locale
+from datetime import datetime
 from pathlib import Path
 import httpx
 
@@ -467,4 +468,23 @@ def find_model_config_file(model_name: str) -> str:
     # 如果没找到，返回默认路径
     return f"{url_prefix}/{model_name}/{model_name}.model3.json"
 
-
+def get_timestamp():
+    """Generate formatted timestamp like: Sunday, December 14, 2025 at 12:27 PM"""
+    try:
+        old_locale = locale.getlocale(locale.LC_TIME)
+        try:
+            locale.setlocale(locale.LC_TIME, 'en_US.UTF-8')
+        except locale.Error:
+            try:
+                locale.setlocale(locale.LC_TIME, 'English_United States.1252')
+            except locale.Error:
+                pass
+        now = datetime.now()
+        timestamp = now.strftime("%A, %B %d, %Y at %I:%M %p")
+        try:
+            locale.setlocale(locale.LC_TIME, old_locale)
+        except: # noqa
+            pass
+        return timestamp
+    except Exception:
+        return datetime.now().strftime("%Y-%m-%d %H:%M")
