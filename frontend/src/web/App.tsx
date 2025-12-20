@@ -3,18 +3,19 @@ import { useCallback, useRef } from "react";
 import { Button, StatusToast, Modal } from "@project_neko/components";
 import type { StatusToastHandle, ModalHandle } from "@project_neko/components";
 import { createRequestClient, WebTokenStorage } from "@project_neko/request";
+import ChatDemoPage from "./pages/ChatDemoPage";
 
 const trimTrailingSlash = (url?: string) => (url ? url.replace(/\/+$/, "") : "");
 
 const API_BASE = trimTrailingSlash(
   (import.meta as any).env?.VITE_API_BASE_URL ||
-    (typeof window !== "undefined" ? (window as any).API_BASE_URL : "") ||
-    "http://localhost:48911"
+  (typeof window !== "undefined" ? (window as any).API_BASE_URL : "") ||
+  "http://localhost:48911"
 );
 const STATIC_BASE = trimTrailingSlash(
   (import.meta as any).env?.VITE_STATIC_SERVER_URL ||
-    (typeof window !== "undefined" ? (window as any).STATIC_SERVER_URL : "") ||
-    API_BASE
+  (typeof window !== "undefined" ? (window as any).STATIC_SERVER_URL : "") ||
+  API_BASE
 );
 
 // 创建一个简单的请求客户端；若无需鉴权，可忽略 token，默认存储在 localStorage
@@ -108,6 +109,10 @@ function App() {
                 Modal Prompt
               </Button>
             </div>
+          </div>
+          {/* 👇 新增：聊天系统 React 迁移 Demo */}
+          <div style={{ marginTop: 24 }}>
+            <ChatDemoPage />
           </div>
         </section>
       </main>
