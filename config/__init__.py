@@ -3,21 +3,129 @@
 
 from copy import deepcopy
 import logging
+import os
 
 from config.prompts_chara import lanlan_prompt
 
 logger = logging.getLogger(__name__)
 
+# --- Optional .env loader (no external deps) ---
+# NOTE:
+# - Python/FastAPI does NOT auto-load ".env" unless you use python-dotenv explicitly.
+# - We load it here so `os.environ` can be populated before reading config values.
+# - Existing environment variables always win (we won't override them).
+def _strip_quotes(s: str) -> str:
+    if len(s) >= 2 and ((s[0] == s[-1] == '"') or (s[0] == s[-1] == "'")):
+        return s[1:-1]
+    return s
+
+
+def _try_load_dotenv_file(dotenv_path: str) -> bool:
+    try:
+        if not dotenv_path or not os.path.exists(dotenv_path) or not os.path.isfile(dotenv_path):
+            return False
+        with open(dotenv_path, "r", encoding="utf-8") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                # support: export KEY=VALUE
+                if line.startswith("export "):
+                    line = line[len("export ") :].strip()
+                if "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = _strip_quotes(value.strip())
+                if not key:
+                    continue
+                # don't override existing env
+                if key not in os.environ:
+                    os.environ[key] = value
+        logger.info("Loaded .env from %s", dotenv_path)
+        return True
+    except Exception as e:
+        logger.warning("Failed to load .env from %s: %s", dotenv_path, e)
+        return False
+
+
+def _load_dotenv() -> None:
+    # Highest priority: explicit path
+    explicit = os.environ.get("NEKO_DOTENV_PATH", "").strip()
+    if explicit and _try_load_dotenv_file(explicit):
+        return
+
+    # Try current working directory first (common when running `python main_server.py`)
+    cwd_path = os.path.join(os.getcwd(), ".env")
+    if _try_load_dotenv_file(cwd_path):
+        return
+
+    # Fallback: repo root (parent of config/ directory)
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    root_path = os.path.join(repo_root, ".env")
+    _try_load_dotenv_file(root_path)
+
+
+_load_dotenv()
+
+# --- Environment helpers ---
+def _get_env_bool(name: str, default: bool = False) -> bool:
+    """Parse boolean-like env values.
+
+    Truthy: 1, true, yes, y, on (case-insensitive)
+    Falsy:  0, false, no, n, off, "" (case-insensitive)
+    """
+    raw = os.environ.get(name, None)
+    if raw is None:
+        return default
+    val = str(raw).strip().lower()
+    if val in ("1", "true", "yes", "y", "on"):
+        return True
+    if val in ("0", "false", "no", "n", "off", ""):
+        return False
+    logger.warning("Invalid boolean env var %s=%r, using default=%s", name, raw, default)
+    return default
+
+
+def _get_env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, None)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        logger.warning("Invalid int env var %s=%r, using default=%s", name, raw, default)
+        return default
+
+
+# --- Runtime mode (dev/prod) ---
+# Supported env switches:
+# - NEKO_DEV_MODE=1 / true
+# - NEKO_DEV=1 / true
+# - NEKO_ENV=dev / development / local
+# - DEBUG=1 / true
+DEV_MODE = (
+    _get_env_bool("NEKO_DEV_MODE", False)
+    or _get_env_bool("NEKO_DEV", False)
+    or (os.environ.get("NEKO_ENV", "").strip().lower() in ("dev", "development", "local"))
+    or _get_env_bool("DEBUG", False)
+)
+
+# Main server bind host:
+# - dev: 0.0.0.0 (方便局域网/容器访问)
+# - prod/default: 127.0.0.1（保持原有安全默认值）
+MAIN_SERVER_HOST = "0.0.0.0" if DEV_MODE else "127.0.0.1"
+
 # 应用程序名称配置
 APP_NAME = "N.E.K.O"
 
 # 服务器端口配置
-MAIN_SERVER_PORT = 48911
-MEMORY_SERVER_PORT = 48912
-MONITOR_SERVER_PORT = 48913
-COMMENTER_SERVER_PORT = 48914
-TOOL_SERVER_PORT = 48915
-USER_PLUGIN_SERVER_PORT = 48916
+MAIN_SERVER_PORT = _get_env_int("NEKO_MAIN_SERVER_PORT", 48911)
+MEMORY_SERVER_PORT = _get_env_int("NEKO_MEMORY_SERVER_PORT", 48912)
+MONITOR_SERVER_PORT = _get_env_int("NEKO_MONITOR_SERVER_PORT", 48913)
+COMMENTER_SERVER_PORT = _get_env_int("NEKO_COMMENTER_SERVER_PORT", 48914)
+TOOL_SERVER_PORT = _get_env_int("NEKO_TOOL_SERVER_PORT", 48915)
+USER_PLUGIN_SERVER_PORT = _get_env_int("NEKO_USER_PLUGIN_SERVER_PORT", 48916)
 
 # MCP Router配置
 MCP_ROUTER_URL = 'http://localhost:3282'
@@ -297,6 +405,8 @@ def get_extra_body(model: str) -> dict | None:
 
 __all__ = [
     'APP_NAME',
+    'DEV_MODE',
+    'MAIN_SERVER_HOST',
     'CONFIG_FILES',
     'DEFAULT_MASTER_TEMPLATE',
     'DEFAULT_LANLAN_TEMPLATE',

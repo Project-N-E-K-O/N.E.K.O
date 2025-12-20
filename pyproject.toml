@@ -7,7 +7,7 @@ name = "N.E.K.O"
 version = "1.0.0"
 description = "N.E.K.O. Desktop"
 readme = "README.MD"
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.11,<3.12"
 dependencies = [
   "fastapi~=0.115.9",
   "websockets~=15.0.1",
