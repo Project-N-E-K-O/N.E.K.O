@@ -17,6 +17,7 @@ from fastapi import APIRouter, Request
 from .shared_state import get_config_manager, get_steamworks, get_session_manager, get_initialize_character_data
 from .characters_router import get_current_live2d_model
 from utils.preferences import load_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top
+from utils.language_utils import detect_language, translate_text
 
 router = APIRouter(prefix="/api/config", tags=["config"])
 logger = logging.getLogger("Main")
@@ -432,6 +433,107 @@ async def get_api_providers_config():
             "error": str(e),
             "core_api_providers": [],
             "assist_api_providers": [],
+        }
+
+
+@router.post("/translate")
+async def translate_text_api(request: Request):
+    """
+    翻译文本API（供前端字幕模块使用）
+    
+    请求格式:
+    {
+        "text": "要翻译的文本",
+        "target_lang": "目标语言代码 ('zh', 'en', 'ja')",
+        "source_lang": "源语言代码 (可选，为null时自动检测)"
+    }
+    
+    响应格式:
+    {
+        "success": true/false,
+        "translated_text": "翻译后的文本",
+        "source_lang": "检测到的源语言代码",
+        "target_lang": "目标语言代码"
+    }
+    """
+    try:
+        data = await request.json()
+        text = data.get('text', '').strip()
+        target_lang = data.get('target_lang', 'zh')
+        source_lang = data.get('source_lang')
+        
+        if not text:
+            return {
+                "success": False,
+                "error": "文本不能为空",
+                "translated_text": "",
+                "source_lang": "unknown",
+                "target_lang": target_lang
+            }
+        
+        # 归一化目标语言代码（前端可能传 'zh', 'en', 'ja'）
+        target_lang_normalized = target_lang.lower()
+        if target_lang_normalized.startswith('zh'):
+            target_lang_normalized = 'zh'
+        elif target_lang_normalized.startswith('en'):
+            target_lang_normalized = 'en'
+        elif target_lang_normalized.startswith('ja'):
+            target_lang_normalized = 'ja'
+        else:
+            target_lang_normalized = 'zh'  # 默认中文
+        
+        # 检测源语言（如果未提供）
+        if source_lang is None:
+            detected_source_lang = detect_language(text)
+        else:
+            # 归一化源语言代码
+            source_lang_normalized = source_lang.lower()
+            if source_lang_normalized.startswith('zh'):
+                detected_source_lang = 'zh'
+            elif source_lang_normalized.startswith('en'):
+                detected_source_lang = 'en'
+            elif source_lang_normalized.startswith('ja'):
+                detected_source_lang = 'ja'
+            else:
+                detected_source_lang = detect_language(text)
+        
+        # 如果源语言和目标语言相同，不需要翻译
+        if detected_source_lang == target_lang_normalized or detected_source_lang == 'unknown':
+            return {
+                "success": True,
+                "translated_text": text,
+                "source_lang": detected_source_lang,
+                "target_lang": target_lang_normalized
+            }
+        
+        # 调用翻译服务
+        try:
+            translated = await translate_text(text, target_lang_normalized, detected_source_lang)
+            return {
+                "success": True,
+                "translated_text": translated,
+                "source_lang": detected_source_lang,
+                "target_lang": target_lang_normalized
+            }
+        except Exception as e:
+            logger.error(f"翻译失败: {e}")
+            # 翻译失败时返回原文
+            return {
+                "success": False,
+                "error": str(e),
+                "translated_text": text,
+                "source_lang": detected_source_lang,
+                "target_lang": target_lang_normalized
+            }
+            
+    except Exception as e:
+        logger.error(f"翻译API处理失败: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "translated_text": "",
+            "source_lang": "unknown",
+            "target_lang": "zh"
         }
 
 

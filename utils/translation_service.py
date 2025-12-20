@@ -39,6 +39,7 @@ class TranslationService:
         self._llm_client = None
         self._cache = OrderedDict()
         self._cache_lock = None  # 懒加载：在首次使用时创建异步锁
+        self._cache_lock_init_lock = threading.Lock()  # 用于保护异步锁的创建过程
     def _get_llm_client(self) -> Optional[ChatOpenAI]:
         """
         获取LLM客户端（用于翻译）
@@ -89,9 +90,16 @@ class TranslationService:
             return self._cache.get(cache_key)
     
     def _get_cache_lock(self):
-        """懒加载获取缓存锁（确保在事件循环运行后创建）"""
+        """
+        懒加载获取缓存锁（确保在事件循环运行后创建）
+        
+        使用双重检查锁定模式避免多协程环境下的竞态条件
+        """
         if self._cache_lock is None:
-            self._cache_lock = asyncio.Lock()
+            with self._cache_lock_init_lock:
+                # 双重检查：在获取线程锁后再次检查，避免多个协程同时创建锁
+                if self._cache_lock is None:
+                    self._cache_lock = asyncio.Lock()
         return self._cache_lock
     
     async def _save_to_cache(self, text: str, target_lang: str, translated: str):
