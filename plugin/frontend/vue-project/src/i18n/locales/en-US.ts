@@ -1,0 +1,131 @@
+/**
+ * English language pack
+ */
+export default {
+  common: {
+    loading: 'Loading...',
+    refresh: 'Refresh',
+    search: 'Search',
+    filter: 'Filter',
+    reset: 'Reset',
+    confirm: 'Confirm',
+    cancel: 'Cancel',
+    save: 'Save',
+    delete: 'Delete',
+    edit: 'Edit',
+    add: 'Add',
+    back: 'Back',
+    submit: 'Submit',
+    close: 'Close',
+    success: 'Success',
+    error: 'Error',
+    warning: 'Warning',
+    info: 'Info',
+    noData: 'No Data',
+    unknown: 'Unknown',
+    nA: 'N/A'
+  },
+  nav: {
+    dashboard: 'Dashboard',
+    plugins: 'Plugins',
+    metrics: 'Metrics',
+    logs: 'Logs',
+    serverLogs: 'Server Logs'
+  },
+  dashboard: {
+    title: 'Dashboard',
+    pluginOverview: 'Plugin Overview',
+    totalPlugins: 'Total Plugins',
+    running: 'Running',
+    stopped: 'Stopped',
+    crashed: 'Crashed',
+    globalMetrics: 'Global Performance Monitoring',
+    totalCpuUsage: 'Total CPU Usage',
+    totalMemoryUsage: 'Total Memory Usage',
+    totalThreads: 'Total Threads',
+    activePlugins: 'Active Plugins',
+    serverInfo: 'Server Info',
+    sdkVersion: 'SDK Version',
+    updateTime: 'Update Time',
+    noMetricsData: 'No Performance Data',
+    failedToLoadServerInfo: 'Failed to load server info'
+  },
+  plugins: {
+    title: 'Plugins',
+    name: 'Plugin Name',
+    id: 'Plugin ID',
+    version: 'Version',
+    description: 'Description',
+    status: 'Status',
+    sdkVersion: 'SDK Version',
+    actions: 'Actions',
+    start: 'Start',
+    stop: 'Stop',
+    reload: 'Reload',
+    viewDetails: 'View Details',
+    noPlugins: 'No Plugins',
+    pluginNotFound: 'Plugin not found',
+    pluginDetail: 'Plugin Detail',
+    basicInfo: 'Basic Info',
+    entries: 'Entry Points',
+    performance: 'Performance',
+    logs: 'Logs',
+    entryPoint: 'Entry Point',
+    entryName: 'Name',
+    entryId: 'ID',
+    entryDescription: 'Description',
+    trigger: 'Trigger',
+    noEntries: 'No Entry Points'
+  },
+  metrics: {
+    title: 'Metrics',
+    pluginMetrics: 'Plugin Performance Metrics',
+    cpuUsage: 'CPU Usage',
+    memoryUsage: 'Memory Usage',
+    threads: 'Threads',
+    pid: 'Process ID',
+    noMetrics: 'No Performance Data',
+    refreshInterval: 'Refresh Interval',
+    seconds: 'seconds'
+  },
+  logs: {
+    title: 'Logs',
+    pluginLogs: 'Plugin Logs',
+    serverLogs: 'Server Logs',
+    level: 'Level',
+    time: 'Time',
+    source: 'Source',
+    file: 'File',
+    message: 'Message',
+    allLevels: 'All Levels',
+    noLogs: 'No Logs',
+    autoScroll: 'Auto Scroll',
+    scrollToBottom: 'Scroll to Bottom',
+    logFiles: 'Log Files',
+    selectFile: 'Select File'
+  },
+  status: {
+    running: 'Running',
+    stopped: 'Stopped',
+    crashed: 'Crashed',
+    loading: 'Loading'
+  },
+  logLevel: {
+    DEBUG: 'Debug',
+    INFO: 'Info',
+    WARNING: 'Warning',
+    ERROR: 'Error',
+    CRITICAL: 'Critical',
+    UNKNOWN: 'Unknown'
+  },
+  messages: {
+    fetchFailed: 'Failed to fetch data',
+    operationSuccess: 'Operation successful',
+    operationFailed: 'Operation failed',
+    confirmDelete: 'Confirm delete?',
+    confirmStop: 'Confirm stop plugin?',
+    confirmStart: 'Confirm start plugin?',
+    confirmReload: 'Confirm reload plugin?'
+  }
+}
+

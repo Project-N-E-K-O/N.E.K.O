@@ -66,11 +66,28 @@ class PluginFileLogger:
         self.backup_count = backup_count
         self.max_files = max_files
         
-        # 日志目录：插件目录下的logs子目录
-        self.log_dir = self.plugin_dir / "logs"
-        
-        # 确保日志目录存在
-        self.log_dir.mkdir(parents=True, exist_ok=True)
+        # 日志目录：优先使用项目根目录下的 log/plugins/{plugin_id} 目录
+        # 如果不可用，则使用插件目录下的logs子目录作为降级方案
+        try:
+            from pathlib import Path as PathLib
+            # 尝试使用项目根目录下的 log/plugins/{plugin_id} 目录
+            project_root = PathLib.cwd()
+            log_dir = project_root / "log" / "plugins" / plugin_id
+            log_dir.mkdir(parents=True, exist_ok=True)
+            # 测试目录是否可写
+            test_file = log_dir / ".test_write"
+            try:
+                test_file.write_text("test")
+                test_file.unlink()
+                self.log_dir = log_dir
+            except (OSError, PermissionError):
+                # 如果不可写，使用降级方案
+                self.log_dir = self.plugin_dir / "logs"
+                self.log_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            # 如果出现任何异常，使用降级方案
+            self.log_dir = self.plugin_dir / "logs"
+            self.log_dir.mkdir(parents=True, exist_ok=True)
         
         # 日志文件名：使用插件ID、日期和时间
         datetime_str = datetime.now().strftime("%Y%m%d_%H%M%S")

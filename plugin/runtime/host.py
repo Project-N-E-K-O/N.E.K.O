@@ -274,6 +274,8 @@ class PluginProcessHost:
 
     def __init__(self, plugin_id: str, entry_point: str, config_path: Path):
         self.plugin_id = plugin_id
+        self.entry_point = entry_point
+        self.config_path = config_path
         self.logger = logging.getLogger(f"plugin.host.{plugin_id}")
         
         # 创建队列（由通信资源管理器管理）

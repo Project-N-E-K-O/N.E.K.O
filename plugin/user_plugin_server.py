@@ -9,8 +9,14 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request, Query
+from fastapi import FastAPI, HTTPException, Request, Query, Body
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from config import USER_PLUGIN_SERVER_PORT
+
+# 配置服务器日志
+from utils.logger_config import setup_logging
+server_logger, server_log_config = setup_logging(service_name="PluginServer", log_level=logging.INFO)
 
 from plugin.core.state import state
 from plugin.api.models import (
@@ -30,6 +36,10 @@ from plugin.server.services import (
 )
 from plugin.server.lifecycle import startup, shutdown
 from plugin.server.utils import now_iso
+from plugin.server.management import start_plugin, stop_plugin, reload_plugin
+from plugin.server.logs import get_plugin_logs, get_plugin_log_files
+from plugin.server.config_service import load_plugin_config, update_plugin_config
+from plugin.server.metrics_service import metrics_collector
 from plugin.settings import MESSAGE_QUEUE_DEFAULT_MAX_COUNT
 
 
@@ -42,7 +52,22 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="N.E.K.O User Plugin Server", lifespan=lifespan)
-logger = logging.getLogger("user_plugin_server")
+# 使用配置好的服务器 logger
+logger = server_logger
+
+# 配置 CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",  # Vite 开发服务器
+        "http://127.0.0.1:5173",
+        "http://localhost:48911",  # 主服务器（如果需要）
+        "http://127.0.0.1:48911",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # 注册异常处理中间件
 register_exception_handlers(app)
@@ -64,6 +89,21 @@ async def available():
     return {
         "status": "ok",
         "available": True,
+        "plugins_count": plugins_count,
+        "time": now_iso()
+    }
+
+
+@app.get("/server/info")
+async def server_info():
+    """返回服务器信息，包括SDK版本"""
+    from plugin.sdk.version import SDK_VERSION
+    
+    with state.plugins_lock:
+        plugins_count = len(state.plugins)
+    
+    return {
+        "sdk_version": SDK_VERSION,
         "plugins_count": plugins_count,
         "time": now_iso()
     }
@@ -252,6 +292,274 @@ async def plugin_push_message(payload: PluginPushMessageRequest):
         raise
     except Exception as e:
         logger.exception("plugin_push: unexpected error")
+        raise HTTPException(status_code=500, detail="Internal server error") from e
+
+
+# ========== 插件管理路由（扩展） ==========
+
+@app.post("/plugin/{plugin_id}/start")
+async def start_plugin_endpoint(plugin_id: str):
+    """
+    启动插件
+    
+    - POST /plugin/{plugin_id}/start
+    """
+    try:
+        return await start_plugin(plugin_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to start plugin {plugin_id}")
+        raise HTTPException(status_code=500, detail="Internal server error") from e
+
+
+@app.post("/plugin/{plugin_id}/stop")
+async def stop_plugin_endpoint(plugin_id: str):
+    """
+    停止插件
+    
+    - POST /plugin/{plugin_id}/stop
+    """
+    try:
+        return await stop_plugin(plugin_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to stop plugin {plugin_id}")
+        raise HTTPException(status_code=500, detail="Internal server error") from e
+
+
+@app.post("/plugin/{plugin_id}/reload")
+async def reload_plugin_endpoint(plugin_id: str):
+    """
+    重载插件
+    
+    - POST /plugin/{plugin_id}/reload
+    """
+    try:
+        return await reload_plugin(plugin_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to reload plugin {plugin_id}")
+        raise HTTPException(status_code=500, detail="Internal server error") from e
+
+
+# ========== 性能监控路由 ==========
+
+@app.get("/plugin/metrics")
+async def get_all_plugin_metrics():
+    """
+    获取所有插件的性能指标
+    
+    - GET /plugin/metrics
+    """
+    try:
+        metrics = metrics_collector.get_current_metrics()
+        
+        # 确保 metrics 是列表
+        if not isinstance(metrics, list):
+            logger.warning(f"get_current_metrics returned non-list: {type(metrics)}")
+            metrics = []
+        
+        # 确保每个 metric 都是字典
+        safe_metrics = []
+        for m in metrics:
+            if isinstance(m, dict):
+                safe_metrics.append(m)
+            else:
+                logger.warning(f"Invalid metric format: {type(m)}")
+        
+        # 计算全局性能指标（metrics 是字典列表）
+        total_cpu = sum(float(m.get("cpu_percent", 0.0)) for m in safe_metrics)
+        total_memory_mb = sum(float(m.get("memory_mb", 0.0)) for m in safe_metrics)
+        total_memory_percent = sum(float(m.get("memory_percent", 0.0)) for m in safe_metrics)
+        total_threads = sum(int(m.get("num_threads", 0)) for m in safe_metrics)
+        
+        return {
+            "metrics": safe_metrics,
+            "count": len(safe_metrics),
+            "global": {
+                "total_cpu_percent": round(total_cpu, 2),
+                "total_memory_mb": round(total_memory_mb, 2),
+                "total_memory_percent": round(total_memory_percent, 2),
+                "total_threads": total_threads,
+                "active_plugins": len([m for m in safe_metrics if m.get("pid") is not None])
+            },
+            "time": now_iso()
+        }
+    except Exception as e:
+        logger.exception("Failed to get plugin metrics")
+        # 返回空结果而不是抛出异常，避免前端显示错误
+        return {
+            "metrics": [],
+            "count": 0,
+            "global": {
+                "total_cpu_percent": 0.0,
+                "total_memory_mb": 0.0,
+                "total_memory_percent": 0.0,
+                "total_threads": 0,
+                "active_plugins": 0
+            },
+            "time": now_iso()
+        }
+
+
+@app.get("/plugin/metrics/{plugin_id}")
+async def get_plugin_metrics(plugin_id: str):
+    """
+    获取指定插件的性能指标
+    
+    - GET /plugin/metrics/{plugin_id}
+    """
+    try:
+        metrics = metrics_collector.get_current_metrics(plugin_id)
+        if not metrics:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No metrics available for plugin '{plugin_id}'"
+            )
+        return {
+            "plugin_id": plugin_id,
+            "metrics": metrics[0],
+            "time": now_iso()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to get metrics for plugin {plugin_id}")
+        raise HTTPException(status_code=500, detail="Internal server error") from e
+
+
+@app.get("/plugin/metrics/{plugin_id}/history")
+async def get_plugin_metrics_history(
+    plugin_id: str,
+    limit: int = Query(default=100, ge=1, le=1000),
+    start_time: Optional[str] = Query(default=None),
+    end_time: Optional[str] = Query(default=None)
+):
+    """
+    获取插件性能指标历史
+    
+    - GET /plugin/metrics/{plugin_id}/history?limit=100
+    """
+    try:
+        history = metrics_collector.get_metrics_history(
+            plugin_id=plugin_id,
+            limit=limit,
+            start_time=start_time,
+            end_time=end_time
+        )
+        return {
+            "plugin_id": plugin_id,
+            "history": history,
+            "count": len(history),
+            "time": now_iso()
+        }
+    except Exception as e:
+        logger.exception(f"Failed to get metrics history for plugin {plugin_id}")
+        raise HTTPException(status_code=500, detail="Internal server error") from e
+
+
+# ========== 配置管理路由 ==========
+
+@app.get("/plugin/{plugin_id}/config")
+async def get_plugin_config_endpoint(plugin_id: str):
+    """
+    获取插件配置
+    
+    - GET /plugin/{plugin_id}/config
+    """
+    try:
+        return load_plugin_config(plugin_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to get config for plugin {plugin_id}")
+        raise HTTPException(status_code=500, detail="Internal server error") from e
+
+
+class ConfigUpdateRequest(BaseModel):
+    """配置更新请求"""
+    config: dict
+
+
+@app.put("/plugin/{plugin_id}/config")
+async def update_plugin_config_endpoint(plugin_id: str, payload: ConfigUpdateRequest):
+    """
+    更新插件配置
+    
+    - PUT /plugin/{plugin_id}/config
+    """
+    try:
+        return update_plugin_config(plugin_id, payload.config)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to update config for plugin {plugin_id}")
+        raise HTTPException(status_code=500, detail="Internal server error") from e
+
+
+# ========== 日志路由 ==========
+
+@app.get("/plugin/{plugin_id}/logs")
+async def get_plugin_logs_endpoint(
+    plugin_id: str,
+    lines: int = Query(default=100, ge=1, le=10000),
+    level: Optional[str] = Query(default=None, description="日志级别: DEBUG, INFO, WARNING, ERROR"),
+    start_time: Optional[str] = Query(default=None),
+    end_time: Optional[str] = Query(default=None),
+    search: Optional[str] = Query(default=None, description="关键词搜索")
+):
+    """
+    获取插件日志或服务器日志
+    
+    - GET /plugin/{plugin_id}/logs?lines=100&level=INFO&search=error
+    - GET /plugin/_server/logs - 获取服务器日志
+    """
+    try:
+        result = get_plugin_logs(
+            plugin_id=plugin_id,
+            lines=lines,
+            level=level,
+            start_time=start_time,
+            end_time=end_time,
+            search=search
+        )
+        # 如果返回结果中包含错误信息，记录但不抛出异常（返回空日志列表）
+        if "error" in result:
+            logger.warning(f"Error getting logs for {plugin_id}: {result.get('error')}")
+        return result
+    except Exception as e:
+        logger.exception(f"Failed to get logs for plugin {plugin_id}: {e}")
+        # 返回空结果而不是抛出异常，避免前端显示错误
+        return {
+            "plugin_id": plugin_id,
+            "logs": [],
+            "total_lines": 0,
+            "returned_lines": 0,
+            "error": str(e)
+        }
+
+
+@app.get("/plugin/{plugin_id}/logs/files")
+async def get_plugin_log_files_endpoint(plugin_id: str):
+    """
+    获取插件日志文件列表或服务器日志文件列表
+    
+    - GET /plugin/{plugin_id}/logs/files
+    - GET /plugin/_server/logs/files - 获取服务器日志文件列表
+    """
+    try:
+        files = get_plugin_log_files(plugin_id)
+        return {
+            "plugin_id": plugin_id,
+            "log_files": files,
+            "count": len(files),
+            "time": now_iso()
+        }
+    except Exception as e:
+        logger.exception(f"Failed to get log files for plugin {plugin_id}")
         raise HTTPException(status_code=500, detail="Internal server error") from e
 
 

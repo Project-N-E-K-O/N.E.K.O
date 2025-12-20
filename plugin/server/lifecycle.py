@@ -11,6 +11,7 @@ from plugin.core.state import state
 from plugin.runtime.registry import load_plugins_from_toml
 from plugin.runtime.host import PluginProcessHost
 from plugin.runtime.status import status_manager
+from plugin.server.metrics_service import metrics_collector
 from plugin.settings import (
     PLUGIN_CONFIG_ROOT,
     PLUGIN_SHUTDOWN_TIMEOUT,
@@ -54,16 +55,29 @@ async def startup() -> None:
         plugin_hosts_getter=lambda: state.plugin_hosts
     )
     logger.info("Status consumer started")
+    
+    # 启动性能指标收集器
+    await metrics_collector.start(
+        plugin_hosts_getter=lambda: state.plugin_hosts
+    )
+    logger.info("Metrics collector started")
 
 
 async def shutdown() -> None:
     """
     服务器关闭时的清理
     
-    1. 关闭状态消费任务
-    2. 关闭所有插件的资源
+    1. 停止性能指标收集器
+    2. 关闭状态消费任务
+    3. 关闭所有插件的资源
     """
     logger.info("Shutting down all plugins...")
+    
+    # 停止性能指标收集器
+    try:
+        await metrics_collector.stop()
+    except Exception:
+        logger.exception("Error stopping metrics collector")
     
     # 关闭状态消费任务
     try:
