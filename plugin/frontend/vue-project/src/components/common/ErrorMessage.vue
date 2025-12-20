@@ -24,7 +24,7 @@ withDefaults(defineProps<Props>(), {
 </script>
 
 <style scoped>
-.el-alert {
+:deep(.el-alert) {
   margin: 20px 0;
 }
 </style>

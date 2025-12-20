@@ -72,7 +72,7 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
             raise HTTPException(
                 status_code=500,
                 detail="TOML library not available. Please install 'tomli' package."
-            )
+            ) from None
     
     with open(config_path, 'rb') as f:
         conf = tomllib.load(f)

@@ -34,14 +34,7 @@ service.interceptors.request.use(
 // 响应拦截器
 service.interceptors.response.use(
   (response: AxiosResponse) => {
-    // 直接返回 response.data，简化调用方的处理
-    // 如果返回的状态码不是 200，则视为错误
-    if (response.status !== 200) {
-      const res = response.data as any
-      ElMessage.error(res.message || '请求失败')
-      return Promise.reject(new Error(res.message || '请求失败'))
-    }
-
+    // Axios 默认只会把 2xx 响应放到这里，直接返回 data 即可
     return response.data
   },
   (error: AxiosError) => {

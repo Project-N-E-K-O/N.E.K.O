@@ -2,7 +2,7 @@
 
 ## 项目结构
 
-```
+```bash
 src/
 ├── api/              # API 服务层
 ├── assets/           # 静态资源
@@ -68,7 +68,7 @@ npm run format
 
 在 `.env` 文件中配置 API 基础 URL：
 
-```
+```env
 VITE_API_BASE_URL=http://localhost:48916
 ```
 

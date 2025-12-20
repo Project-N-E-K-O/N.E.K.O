@@ -125,7 +125,38 @@ export default {
     confirmDelete: 'Confirm delete?',
     confirmStop: 'Confirm stop plugin?',
     confirmStart: 'Confirm start plugin?',
-    confirmReload: 'Confirm reload plugin?'
+    confirmReload: 'Confirm reload plugin?',
+    pluginStarted: 'Plugin started successfully',
+    pluginStopped: 'Plugin stopped',
+    pluginReloaded: 'Plugin reloaded successfully',
+    startFailed: 'Failed to start',
+    stopFailed: 'Failed to stop',
+    reloadFailed: 'Failed to reload'
+  },
+  welcome: {
+    about: {
+      title: 'About N.E.K.O.',
+      description: 'N.E.K.O. (Networked Emotional Knowing Organism) is a "living" AI companion metaverse, built together by you and me. It is an open-source driven, charity-oriented UGC platform dedicated to building an AI-native metaverse closely connected to the real world.'
+    },
+    pluginManagement: {
+      title: 'Plugin Management',
+      description: 'Access the plugin list through the left navigation bar. You can view, start, stop, and reload plugins. Each plugin has independent performance monitoring and log viewing features to help you better manage and debug the plugin system.'
+    },
+    mcpServer: {
+      title: 'MCP Server',
+      description: 'N.E.K.O. supports Model Context Protocol (MCP) servers, allowing plugins to interact with other AI systems and services through standardized protocols. You can view and manage MCP connections in the plugin details page.'
+    },
+    documentation: {
+      title: 'Documentation & Resources',
+      description: 'Check out the project documentation for more information:',
+      links: '<a href="https://github.com/wehos/N.E.K.O" target="_blank" rel="noopener">GitHub Repository</a>, <a href="https://store.steampowered.com/app/4099310/__NEKO/" target="_blank" rel="noopener">Steam Store Page</a>, and <a href="https://discord.gg/5kgHfepNJr" target="_blank" rel="noopener">Discord Community</a>.',
+      readme: 'README.md file:'
+    },
+    community: {
+      title: 'Community & Support',
+      description: 'Join our community to connect with other developers and users:',
+      links: '<a href="https://discord.gg/5kgHfepNJr" target="_blank" rel="noopener">Discord Server</a>, <a href="https://qm.qq.com/q/hN82yFONJQ" target="_blank" rel="noopener">QQ Group</a>, and <a href="https://github.com/wehos/N.E.K.O/issues" target="_blank" rel="noopener">GitHub Issues</a>.'
+    }
   }
 }
 

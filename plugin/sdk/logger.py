@@ -69,9 +69,8 @@ class PluginFileLogger:
         # 日志目录：优先使用项目根目录下的 log/plugins/{plugin_id} 目录
         # 如果不可用，则使用插件目录下的logs子目录作为降级方案
         try:
-            from pathlib import Path as PathLib
             # 尝试使用项目根目录下的 log/plugins/{plugin_id} 目录
-            project_root = PathLib.cwd()
+            project_root = Path.cwd()
             log_dir = project_root / "log" / "plugins" / plugin_id
             log_dir.mkdir(parents=True, exist_ok=True)
             # 测试目录是否可写

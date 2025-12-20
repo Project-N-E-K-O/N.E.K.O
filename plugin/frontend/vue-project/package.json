@@ -13,12 +13,12 @@
     "build-only": "vite build",
     "type-check": "vue-tsc --build",
     "lint": "eslint . --fix --cache",
-    "format": "prettier --write --experimental-cli src/"
+    "format": "prettier --write src/"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
     "@tanstack/vue-virtual": "^3.0.0",
-    "axios": "^1.7.7",
+    "axios": "^1.8.2",
     "dayjs": "^1.11.13",
     "element-plus": "^2.8.8",
     "pinia": "^3.0.4",

@@ -23,7 +23,7 @@ export const useMetricsStore = defineStore('metrics', () => {
       allMetrics.value = response.metrics || []
       
       // 更新当前指标
-      response.metrics.forEach(metric => {
+      (response.metrics || []).forEach(metric => {
         currentMetrics.value[metric.plugin_id] = metric
       })
       
