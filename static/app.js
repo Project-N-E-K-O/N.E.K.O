@@ -5538,11 +5538,11 @@ function detectLanguage(text) {
     }
     
     // 中文检测
-    const chinesePattern = /[\u4e00-\u9fff]/;
+    const chinesePattern = /[\u4e00-\u9fff]/g;
     // 日文检测（平假名、片假名）
-    const japanesePattern = /[\u3040-\u309f\u30a0-\u30ff]/;
+    const japanesePattern = /[\u3040-\u309f\u30a0-\u30ff]/g;
     // 英文检测
-    const englishPattern = /[a-zA-Z]/;
+    const englishPattern = /[a-zA-Z]/g;
     
     const chineseCount = (text.match(chinesePattern) || []).length;
     const japaneseCount = (text.match(japanesePattern) || []).length;
@@ -5567,6 +5567,8 @@ function detectLanguage(text) {
 let subtitleTimeout = null;
 let currentTranslateAbortController = null;
 let pendingTranslation = null;
+// 流式输出时字幕语言检测的防抖计时器
+let subtitleCheckDebounceTimer = null;
 
 // 翻译消息气泡（如果用户语言不是中文）
 async function translateMessageBubble(text, messageElement) {

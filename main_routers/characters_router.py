@@ -46,6 +46,10 @@ async def send_reload_page_notice(session, message_text: str = "语音已更新�
     if not session or not session.websocket:
         return False
     
+    # 检查 WebSocket 连接状态
+    if not hasattr(session.websocket, 'client_state') or session.websocket.client_state != session.websocket.client_state.CONNECTED:
+        return False
+    
     try:
         # 翻译消息
         translated_message = await session.translate_if_needed(message_text)
@@ -68,7 +72,11 @@ async def get_characters(request: Request):
     characters_data = copy.deepcopy(_config_manager.load_characters())
     
     # 尝试从请求参数或请求头获取用户语言
-    user_language = request.query_params.get('language') or request.headers.get('Accept-Language', 'zh-CN')
+    user_language = request.query_params.get('language')
+    if not user_language:
+        accept_lang = request.headers.get('Accept-Language', 'zh-CN')
+        # Accept-Language 可能包含多个语言，取第一个
+        user_language = accept_lang.split(',')[0].split(';')[0].strip()
     # 标准化语言代码
     if user_language.startswith('zh'):
         user_language = 'zh-CN'

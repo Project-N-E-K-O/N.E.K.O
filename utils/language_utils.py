@@ -14,7 +14,7 @@ import logging
 import threading
 import asyncio
 import os
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from utils.config_manager import get_config_manager
@@ -303,6 +303,47 @@ JAPANESE_PATTERN = re.compile(r'[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff]')  # �
 ENGLISH_PATTERN = re.compile(r'[a-zA-Z]')
 
 
+def _split_text_into_chunks(text: str, max_chunk_size: int) -> List[str]:
+    """
+    将文本分段，尝试在句号、换行符等位置分割
+    
+    Args:
+        text: 要分段的文本
+        max_chunk_size: 每个分段的最大字符数
+        
+    Returns:
+        分段后的文本列表
+    """
+    if len(text) <= max_chunk_size:
+        return [text]
+    
+    chunks = []
+    current_chunk = ""
+    for char in text:
+        current_chunk += char
+        if len(current_chunk) >= max_chunk_size:
+            # 尝试在句号、换行符等位置分割
+            last_period = max(
+                current_chunk.rfind('。'),
+                current_chunk.rfind('.'),
+                current_chunk.rfind('！'),
+                current_chunk.rfind('!'),
+                current_chunk.rfind('？'),
+                current_chunk.rfind('?'),
+                current_chunk.rfind('\n')
+            )
+            if last_period > max_chunk_size * 0.7:  # 如果找到合适的分割点
+                chunks.append(current_chunk[:last_period + 1])
+                current_chunk = current_chunk[last_period + 1:]
+            else:
+                chunks.append(current_chunk)
+                current_chunk = ""
+    if current_chunk:
+        chunks.append(current_chunk)
+    
+    return chunks
+
+
 async def translate_with_translatepy(text: str, source_lang: str, target_lang: str) -> Optional[str]:
     """
     使用 translatepy 进行翻译（只使用中国大陆可直接访问的翻译服务，免费，不需要 API key）
@@ -378,34 +419,11 @@ async def translate_with_translatepy(text: str, source_lang: str, target_lang: s
         
         # 如果文本太长（超过5000字符），分段翻译
         max_chunk_size = 5000
-        if len(text) > max_chunk_size:
-            # 分段翻译
-            chunks = []
-            current_chunk = ""
-            for char in text:
-                current_chunk += char
-                if len(current_chunk) >= max_chunk_size:
-                    # 尝试在句号、换行符等位置分割
-                    last_period = max(
-                        current_chunk.rfind('。'),
-                        current_chunk.rfind('.'),
-                        current_chunk.rfind('！'),
-                        current_chunk.rfind('!'),
-                        current_chunk.rfind('？'),
-                        current_chunk.rfind('?'),
-                        current_chunk.rfind('\n')
-                    )
-                    if last_period > max_chunk_size * 0.7:  # 如果找到合适的分割点
-                        chunks.append(current_chunk[:last_period + 1])
-                        current_chunk = current_chunk[last_period + 1:]
-                    else:
-                        chunks.append(current_chunk)
-                        current_chunk = ""
-            if current_chunk:
-                chunks.append(current_chunk)
-            
+        chunks = _split_text_into_chunks(text, max_chunk_size)
+        
+        if len(chunks) > 1:
             # 在线程池中翻译每个分段
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             translated_chunks = []
             for chunk in chunks:
                 try:
@@ -428,7 +446,7 @@ async def translate_with_translatepy(text: str, source_lang: str, target_lang: s
             translated_text = ''.join(translated_chunks)
         else:
             # 单次翻译，在线程池中运行
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             translated_text = await loop.run_in_executor(
                 None, 
                 _translate_sync, 
@@ -557,32 +575,9 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
             async def _translate_internal():
                 # 如果文本太长（超过15k字符），分段翻译
                 max_chunk_size = 15000
-                if len(text) > max_chunk_size:
-                    # 分段翻译
-                    chunks = []
-                    current_chunk = ""
-                    for char in text:
-                        current_chunk += char
-                        if len(current_chunk) >= max_chunk_size:
-                            # 尝试在句号、换行符等位置分割
-                            last_period = max(
-                                current_chunk.rfind('。'),
-                                current_chunk.rfind('.'),
-                                current_chunk.rfind('！'),
-                                current_chunk.rfind('!'),
-                                current_chunk.rfind('？'),
-                                current_chunk.rfind('?'),
-                                current_chunk.rfind('\n')
-                            )
-                            if last_period > max_chunk_size * 0.7:  # 如果找到合适的分割点
-                                chunks.append(current_chunk[:last_period + 1])
-                                current_chunk = current_chunk[last_period + 1:]
-                            else:
-                                chunks.append(current_chunk)
-                                current_chunk = ""
-                    if current_chunk:
-                        chunks.append(current_chunk)
-                    
+                chunks = _split_text_into_chunks(text, max_chunk_size)
+                
+                if len(chunks) > 1:
                     # 翻译每个分段（第一个分段使用auto检测，后续使用已检测的源语言）
                     translated_chunks = []
                     for i, chunk in enumerate(chunks):
@@ -718,9 +713,9 @@ def get_user_language() -> str:
         用户语言代码 ('zh', 'en', 'ja')，默认返回 'zh'
     """
     try:
-        from utils.global_language import get_global_language
         return get_global_language()
-    except Exception:
+    except Exception as e:
+        logger.warning(f"获取全局语言失败: {e}，使用默认中文")
         return 'zh'  # 默认中文
 
 
