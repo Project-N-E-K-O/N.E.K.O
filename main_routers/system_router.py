@@ -27,7 +27,7 @@ import httpx
 
 from .shared_state import get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
 from config import get_extra_body, MEMORY_SERVER_PORT
-from config.prompts_sys import emotion_analysis_prompt, proactive_chat_prompt, proactive_chat_prompt_screenshot, proactive_chat_prompt_window_search
+from config.prompts_sys import emotion_analysis_prompt, proactive_chat_prompt, proactive_chat_prompt_screenshot, proactive_chat_prompt_window_search, proactive_chat_rewrite_prompt
 from utils.workshop_utils import get_workshop_path
 from utils.screenshot_utils import analyze_screenshot_from_data_url
 from utils.language_utils import detect_language, translate_text, normalize_language_code
@@ -880,8 +880,17 @@ async def proactive_chat(request: Request):
                     response_text = response_text[last_match.end():].strip()
                     logger.info(f"[{lanlan_name}] 截取'主动搭话'后的内容: {response_text[:50]}...")
 
+            # 5. 判断AI是否选择搭话
+            if "[PASS]" in response_text:
+                return JSONResponse({
+                    "success": True,
+                    "action": "pass",
+                    "message": "AI选择暂时不搭话"
+                })
+
             # --- 新增验证：在继续输出前严格执行响应内容规则 ---
             # 1) 字数限制：按150英文词（空格拆分）或中文字来计算，超过则放弃输出
+            text_length = 200
             try:
                 # 计算混合长度：中文字符计1，英文单词计1
                 def count_words_and_chars(text):
@@ -897,35 +906,48 @@ async def proactive_chat(request: Request):
                     return count
                 
                 text_length = count_words_and_chars(response_text)
-                if text_length > 150:
-                    logger.warning(f"[{lanlan_name}] AI回复超过长度限制（{text_length}词/字），已放弃输出")
-                    return JSONResponse({
-                        "success": True,
-                        "action": "pass",
-                        "message": "AI回复超过长度限制，已放弃输出"
-                    })
             except Exception:
                 logger.exception(f"[{lanlan_name}] 在检查回复长度时发生错误")
 
-            # 2) 特殊字符检测：若包含 '|' 则截断内容并终止输出流程（仅保留'|'前的内容）
-            if '|' in response_text:
-                logger.warning(f"[{lanlan_name}] AI回复包含禁止字符 '|'，将截断内容并继续（仅保留'|'之前的部分）")
-                response_text = response_text.split('|', 1)[0].strip()
-                # 若截断后为空，则放弃输出
-                if not response_text:
+            if text_length > 100 or response_text.find("|") != -1:
+                            # --- 使用改写模型清洁输出 ---
+                try:
+                    # 使用相同的correction模型进行改写
+                    rewrite_llm = ChatOpenAI(
+                        model=correction_model,
+                        base_url=correction_base_url,
+                        api_key=correction_api_key,
+                        temperature=0.3,  # 降低温度以获得更稳定的改写结果
+                        max_completion_tokens=200,
+                        streaming=False
+                    )
+                    
+                    # 构造改写提示
+                    rewrite_prompt = proactive_chat_rewrite_prompt.format(raw_output=response_text)
+                    
+                    # 调用改写模型
+                    rewrite_response = await asyncio.wait_for(
+                        rewrite_llm.ainvoke([SystemMessage(content=rewrite_prompt)]),
+                        timeout=6.0
+                    )
+                    response_text = rewrite_response.content.strip()
+                    logger.debug(f"[{lanlan_name}] 改写后内容: {response_text[:100]}...")
+
+                    if "主动搭话" in response_text or '|' in response_text or '[PASS]' in response_text:
+                        logger.warning(f"[{lanlan_name}] AI回复经二次改写后仍失败，放弃主动搭话。")
+                        return JSONResponse({
+                            "success": True,
+                            "action": "pass",
+                            "message": "AI回复改写失败，已放弃输出"
+                        })
+
+                except Exception as e:
+                    logger.warning(f"[{lanlan_name}] 改写模型调用失败，错误提示: {e}")
                     return JSONResponse({
                         "success": True,
                         "action": "pass",
-                        "message": "AI回复被截断后为空，已放弃输出"
+                        "message": "AI回复改写失败，已放弃输出"
                     })
-
-            # 5. 判断AI是否选择搭话
-            if "[PASS]" in response_text or not response_text:
-                return JSONResponse({
-                    "success": True,
-                    "action": "pass",
-                    "message": "AI选择暂时不搭话"
-                })
             
             # 6. AI选择搭话，需要通过session manager处理
             # 首先检查是否有真实的websocket连接

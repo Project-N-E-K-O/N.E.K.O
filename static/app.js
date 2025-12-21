@@ -413,16 +413,9 @@ function init_app() {
                             setTimeout(async () => {
                                 try {
                                     // 创建一个 Promise 来等待 session_started 消息
+                                    let autoRestartTimeoutId = null;
                                     const sessionStartPromise = new Promise((resolve, reject) => {
                                         sessionStartedResolver = resolve;
-
-                                        // 设置超时（10秒），如果超时则拒绝
-                                        setTimeout(() => {
-                                            if (sessionStartedResolver) {
-                                                sessionStartedResolver = null;
-                                                reject(new Error(window.t ? window.t('app.sessionTimeout') : 'Session启动超时'));
-                                            }
-                                        }, 10000);
                                     });
 
                                     // 发送start session事件
@@ -430,6 +423,23 @@ function init_app() {
                                         action: 'start_session',
                                         input_type: 'audio'
                                     }));
+                                    
+                                    // 在发送消息后才开始超时计时（自动重启场景）
+                                    autoRestartTimeoutId = setTimeout(() => {
+                                        if (sessionStartedResolver) {
+                                            sessionStartedResolver = null;
+                                            
+                                            // 超时时向后端发送 end_session 消息
+                                            if (socket.readyState === WebSocket.OPEN) {
+                                                socket.send(JSON.stringify({
+                                                    action: 'end_session'
+                                                }));
+                                                console.log('[Auto Restart Timeout] 已向后端发送 end_session 消息');
+                                            }
+                                            
+                                            reject(new Error(window.t ? window.t('app.sessionTimeout') : 'Session启动超时'));
+                                        }
+                                    }, 10000);
 
                                     // 等待session真正启动成功
                                     await sessionStartPromise;
@@ -454,8 +464,49 @@ function init_app() {
                                     showStatusToast(window.t ? window.t('app.restartComplete', { name: lanlan_config.lanlan_name }) : `重启完成，${lanlan_config.lanlan_name}回来了！`, 4000);
                                 } catch (error) {
                                     console.error("重启时出错:", error);
+                                    
+                                    // 重启失败时向后端发送 end_session 消息
+                                    if (socket.readyState === WebSocket.OPEN) {
+                                        socket.send(JSON.stringify({
+                                            action: 'end_session'
+                                        }));
+                                        console.log('[Auto Restart Failed] 已向后端发送 end_session 消息');
+                                    }
+                                    
                                     hideVoicePreparingToast(); // 确保重启失败时隐藏准备提示
                                     showStatusToast(window.t ? window.t('app.restartFailed', { error: error.message }) : `重启失败: ${error.message}`, 5000);
+                                    
+                                    // 完整的状态清理逻辑：确保重启失败时正确恢复到待机状态
+                                    // 1. 移除按钮状态类
+                                    micButton.classList.remove('recording');
+                                    micButton.classList.remove('active');
+                                    screenButton.classList.remove('active');
+                                    
+                                    // 2. 重置录音标志
+                                    isRecording = false;
+                                    window.isRecording = false;
+                                    
+                                    // 3. 同步Live2D浮动按钮状态
+                                    syncFloatingMicButtonState(false);
+                                    syncFloatingScreenButtonState(false);
+                                    
+                                    // 4. 重新启用基本输入按钮（切换到文本模式）
+                                    micButton.disabled = false;
+                                    textSendButton.disabled = false;
+                                    textInputBox.disabled = false;
+                                    screenshotButton.disabled = false;
+                                    resetSessionButton.disabled = false;
+                                    
+                                    // 5. 禁用语音控制按钮
+                                    muteButton.disabled = true;
+                                    screenButton.disabled = true;
+                                    stopButton.disabled = true;
+                                    
+                                    // 6. 显示文本输入区
+                                    const textInputArea = document.getElementById('text-input-area');
+                                    if (textInputArea) {
+                                        textInputArea.classList.remove('hidden');
+                                    }
                                 }
                             }, 7500); // 7.5秒后执行
                         }
@@ -1389,13 +1440,30 @@ function init_app() {
                 if (window.sessionTimeoutId) {
                     clearTimeout(window.sessionTimeoutId);
                 }
+            });
 
+            // 发送start session事件
+            if (socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({
+                    action: 'start_session',
+                    input_type: 'audio'
+                }));
+                
                 // 设置超时（10秒），如果超时则拒绝
                 timeoutId = setTimeout(() => {
                     if (sessionStartedResolver) {
                         const resolver = sessionStartedResolver;
                         sessionStartedResolver = null; // 先清除，防止重复触发
                         window.sessionTimeoutId = null; // 清除全局定时器ID
+                        
+                        // 超时时向后端发送 end_session 消息
+                        if (socket.readyState === WebSocket.OPEN) {
+                            socket.send(JSON.stringify({
+                                action: 'end_session'
+                            }));
+                            console.log('[Session Timeout] 已向后端发送 end_session 消息');
+                        }
+                        
                         // 更新提示信息，显示超时
                         showVoicePreparingToast(window.t ? window.t('app.sessionTimeout') || '连接超时' : '连接超时，请检查网络连接');
                         reject(new Error(window.t ? window.t('app.sessionTimeout') : 'Session启动超时'));
@@ -1406,14 +1474,6 @@ function init_app() {
 
                 // 保存到全局变量，以便在 session_started 事件中清除
                 window.sessionTimeoutId = timeoutId;
-            });
-
-            // 发送start session事件
-            if (socket.readyState === WebSocket.OPEN) {
-                socket.send(JSON.stringify({
-                    action: 'start_session',
-                    input_type: 'audio'
-                }));
             } else {
                 // WebSocket未连接，清除超时定时器和状态
                 if (timeoutId) {
@@ -1493,6 +1553,14 @@ function init_app() {
             }
             if (sessionStartedResolver) {
                 sessionStartedResolver = null;
+            }
+            
+            // 确保后端清理资源，避免前后端状态不一致
+            if (socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({
+                    action: 'end_session'
+                }));
+                console.log('[Session Start Failed] 已向后端发送 end_session 消息');
             }
 
             // 隐藏准备提示

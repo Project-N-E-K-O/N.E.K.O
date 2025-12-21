@@ -85,7 +85,7 @@ class AudioProcessor:
     API_SAMPLE_RATE = 16000      # API expects 16kHz
     
     # Reset denoiser if no speech detected for this many seconds
-    RESET_TIMEOUT_SECONDS = 2.0
+    RESET_TIMEOUT_SECONDS = 4.0
     
     # AGC Configuration
     AGC_TARGET_LEVEL = 0.25        # Target RMS level (0.0-1.0), raised for easier VAD trigger
@@ -113,7 +113,7 @@ class AudioProcessor:
         self.noise_reduce_enabled = noise_reduce_enabled
         self.agc_enabled = agc_enabled
         self.limiter_enabled = limiter_enabled
-        # 静音重置回调：当检测到2秒静音并重置状态时调用
+        # 静音重置回调：当检测到4秒静音并重置状态时调用
         self.on_silence_reset = on_silence_reset
         
         # Initialize RNNoise denoiser
@@ -230,7 +230,6 @@ class AudioProcessor:
                 quality='HQ'
             )
             audio_int16 = (audio_float * 32768.0).clip(-32768, 32767).astype(np.int16)
-        
         return audio_int16.tobytes()
     
     def _process_with_rnnoise(self, audio: np.ndarray) -> np.ndarray:
@@ -245,8 +244,8 @@ class AudioProcessor:
         # Add to frame buffer (int16)
         self._frame_buffer = np.concatenate([self._frame_buffer, audio])
         
-        # Limit buffer size to prevent memory issues (max 1 second of audio)
-        max_buffer_samples = self.RNNOISE_SAMPLE_RATE
+        # Limit buffer size to prevent memory issues (max 1 seconds of audio)
+        max_buffer_samples = 1 * self.RNNOISE_SAMPLE_RATE
         if len(self._frame_buffer) > max_buffer_samples:
             self._frame_buffer = self._frame_buffer[-max_buffer_samples:]
         
@@ -266,7 +265,7 @@ class AudioProcessor:
                     self._last_speech_prob = prob
                     
                     # Track last time speech was detected
-                    if prob > 0.5:
+                    if prob > 0.2:
                         self._last_speech_time = time.time()
                     
                     output_frames.append(denoised_frame.flatten())
