@@ -79,6 +79,10 @@ def _plugin_process_runner(
             status_queue=status_queue,
             message_queue=message_queue,
             _plugin_comm_queue=plugin_comm_queue,
+            _cmd_queue=cmd_queue,  # 传递命令队列，用于在等待期间处理命令
+            _res_queue=res_queue,  # 传递结果队列，用于在等待期间处理响应
+            _entry_map=None,  # 将在后面设置
+            _instance=None,  # 将在后面设置
         )
         instance = cls(ctx)
 
@@ -103,6 +107,12 @@ def _plugin_process_runner(
                 entry_map[name] = member
 
         logger.info("Plugin instance created. Mapped entries: %s", list(entry_map.keys()))
+        
+        # 设置命令队列和入口映射到上下文，用于在等待期间处理命令
+        ctx._cmd_queue = cmd_queue
+        ctx._res_queue = res_queue
+        ctx._entry_map = entry_map
+        ctx._instance = instance
 
         # 生命周期：startup
         lifecycle_events = events_by_type.get("lifecycle", {})
@@ -198,22 +208,9 @@ def _plugin_process_runner(
         # 命令循环
         while True:
             try:
-                # #region agent log
-                log_file = "/home/yun_wan/python_programe/N.E.K.O/.cursor/debug.log"
                 queue_get_start = time.time()
-                try:
-                    with open(log_file, "a") as f:
-                        f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"host.py:{199}","message":"cmd_queue.get before","data":{{"plugin_id":"{plugin_id}"}},"timestamp":{int(time.time()*1000)}}}\n')
-                except: pass
-                # #endregion
                 msg = cmd_queue.get(timeout=QUEUE_GET_TIMEOUT)
                 queue_get_duration = time.time() - queue_get_start
-                # #region agent log
-                try:
-                    with open(log_file, "a") as f:
-                        f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"host.py:{201}","message":"cmd_queue.get after","data":{{"plugin_id":"{plugin_id}","msg_type":"{msg.get("type")}","req_id":"{msg.get("req_id","unknown")}","queue_get_duration":{queue_get_duration}}},"timestamp":{int(time.time()*1000)}}}\n')
-                except: pass
-                # #endregion
             except Empty:
                 continue
 
@@ -339,6 +336,8 @@ def _plugin_process_runner(
                 args = msg["args"]
                 req_id = msg["req_id"]
                 
+                trigger_start_time = time.time()
+                
                 # 关键日志：记录接收到的触发消息
                 logger.info(
                     "[Plugin Process] Received TRIGGER: plugin_id=%s, entry_id=%s, req_id=%s",
@@ -384,9 +383,42 @@ def _plugin_process_runner(
                     except (ValueError, TypeError) as e:
                         logger.debug("[Plugin Process] Failed to inspect signature: %s", e)
                     
+                    method_exec_start = time.time()
                     if asyncio.iscoroutinefunction(method):
-                        logger.debug("[Plugin Process] Method is async, calling with asyncio.run")
-                        res = asyncio.run(method(**args))
+                        logger.debug("[Plugin Process] Method is async, running in thread to avoid blocking command loop")
+                        # 关键修复：在独立线程中运行异步方法，避免阻塞命令循环
+                        # 这样命令循环可以继续处理其他命令（包括响应命令）
+                        import threading
+                        result_container = {"result": None, "exception": None, "done": False}
+                        event = threading.Event()
+                        
+                        def run_async():
+                            try:
+                                result_container["result"] = asyncio.run(method(**args))
+                            except Exception as e:
+                                result_container["exception"] = e
+                            finally:
+                                result_container["done"] = True
+                                event.set()
+                        
+                        thread = threading.Thread(target=run_async, daemon=False)
+                        thread.start()
+                        
+                        # 等待异步方法完成（允许超时）
+                        start_time = time.time()
+                        timeout_seconds = PLUGIN_TRIGGER_TIMEOUT * 2
+                        check_interval = 0.01  # 10ms
+                        
+                        while not result_container["done"]:
+                            if time.time() - start_time > timeout_seconds:
+                                logger.error(f"Async method {entry_id} execution timed out")
+                                raise TimeoutError(f"Async method execution timed out after {timeout_seconds}s")
+                            event.wait(timeout=check_interval)
+                        
+                        if result_container["exception"]:
+                            raise result_container["exception"]
+                        else:
+                            res = result_container["result"]
                     else:
                         logger.debug("[Plugin Process] Method is sync, calling directly")
                         try:
@@ -409,6 +441,13 @@ def _plugin_process_runner(
                             )
                             raise
                     
+                    method_exec_duration = time.time() - method_exec_start
+                    # #region agent log
+                    try:
+                        with open(log_file, "a") as f:
+                            f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"host.py:{412}","message":"TRIGGER method execution complete","data":{{"req_id":"{req_id}","exec_duration":{method_exec_duration}}},"timestamp":{int(time.time()*1000)}}}\n')
+                    except: pass
+                    # #endregion
                     ret_payload["success"] = True
                     ret_payload["data"] = res
                     
@@ -430,7 +469,22 @@ def _plugin_process_runner(
                     logger.exception("Unexpected error executing %s", entry_id)
                     ret_payload["error"] = f"Unexpected error: {str(e)}"
 
+                # #region agent log
+                trigger_total_duration = time.time() - trigger_start_time
+                res_queue_put_start = time.time()
+                try:
+                    with open(log_file, "a") as f:
+                        f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"host.py:{456}","message":"TRIGGER res_queue.put before","data":{{"req_id":"{req_id}","trigger_total_duration":{trigger_total_duration}}},"timestamp":{int(time.time()*1000)}}}\n')
+                except: pass
+                # #endregion
                 res_queue.put(ret_payload)
+                res_queue_put_duration = time.time() - res_queue_put_start
+                # #region agent log
+                try:
+                    with open(log_file, "a") as f:
+                        f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"host.py:{459}","message":"TRIGGER res_queue.put after","data":{{"req_id":"{req_id}","put_duration":{res_queue_put_duration},"trigger_total_duration":{time.time()-trigger_start_time}}},"timestamp":{int(time.time()*1000)}}}\n')
+                except: pass
+                # #endregion
 
     except (KeyboardInterrupt, SystemExit):
         # 系统级中断，正常退出

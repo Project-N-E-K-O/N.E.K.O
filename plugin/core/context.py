@@ -3,14 +3,20 @@
 
 提供插件运行时上下文，包括状态更新和消息推送功能。
 """
+import asyncio
+import inspect
 import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from queue import Empty
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI
+
+from plugin.api.exceptions import PluginEntryNotFoundError, PluginError
+from plugin.settings import EVENT_META_ATTR
 
 
 @dataclass
@@ -23,6 +29,10 @@ class PluginContext:
     message_queue: Any = None  # 消息推送队列
     app: Optional[FastAPI] = None
     _plugin_comm_queue: Optional[Any] = None  # 插件间通信队列（主进程提供）
+    _cmd_queue: Optional[Any] = None  # 命令队列（用于在等待期间处理命令）
+    _res_queue: Optional[Any] = None  # 结果队列（用于在等待期间处理响应）
+    _entry_map: Optional[Dict[str, Any]] = None  # 入口映射（用于处理命令）
+    _instance: Optional[Any] = None  # 插件实例（用于处理命令）
 
     def update_status(self, status: Dict[str, Any]) -> None:
         """
@@ -156,8 +166,14 @@ class PluginContext:
         
         # 等待响应（同步等待，因为这是在插件进程的单线程中）
         # 主进程会将响应存储在响应映射中，通过 request_id 直接查询
+        # 
+        # 注意：这个等待会阻塞命令循环。如果命令循环正在处理一个命令，
+        # 而该命令内部调用了 trigger_plugin_event，那么命令循环无法处理
+        # 新的命令（包括响应命令），可能导致死锁或超时。
+        # 
+        # 根本原因：asyncio.run() 阻塞了命令循环，导致无法处理新命令
         start_time = time.time()
-        check_interval = 0.05  # 检查间隔（50ms），平衡响应速度和 CPU 占用
+        check_interval = 0.01  # 检查间隔（10ms），平衡响应速度和 CPU 占用
         
         while time.time() - start_time < timeout:
             # 从响应映射中查询响应（避免共享队列的竞态条件）
@@ -181,6 +197,9 @@ class PluginContext:
                     return result
             
             # 等待一段时间后再次检查
+            # 注意：这个等待会阻塞命令循环，这是架构限制
+            # 问题的根本原因是 asyncio.run() 阻塞了命令循环
+            # 我们无法在等待期间处理命令，因为无法将 req_id 映射回 request_id
             time.sleep(check_interval)
         
         # 超时：清理可能存在的响应（防止后续干扰）
@@ -197,4 +216,4 @@ class PluginContext:
         raise TimeoutError(
             f"Plugin {target_plugin_id} event {event_type}.{event_id} timed out after {timeout}s"
         )
-
+    

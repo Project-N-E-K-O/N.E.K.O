@@ -117,6 +117,7 @@ class TimerServicePlugin(NekoPluginBase):
             
             # 如果达到最大次数，自动停止定时器（在回调之后，避免死锁）
             if max_count and max_count > 0:
+                should_stop = False
                 with self._timer_lock:
                     if timer_id in self._timers:
                         tick_count = self._timers[timer_id].get("tick_count", 0)
@@ -124,12 +125,15 @@ class TimerServicePlugin(NekoPluginBase):
                             self.logger.info(
                                 f"[TimerService] 定时器 '{timer_id}' 已达到最大次数 {max_count}，自动停止"
                             )
-                            # 在锁外停止定时器，避免死锁
-                            stop_result = self._stop_timer_internal(timer_id)
-                            if stop_result.get("success"):
-                                self.logger.info(
-                                    f"[TimerService] 定时器 '{timer_id}' 已自动停止"
-                                )
+                            should_stop = True
+                
+                # 在锁外停止定时器，避免死锁
+                if should_stop:
+                    stop_result = self._stop_timer_internal(timer_id)
+                    if stop_result.get("success"):
+                        self.logger.info(
+                            f"[TimerService] 定时器 '{timer_id}' 已自动停止"
+                        )
         except Exception as e:
             self.logger.exception(f"[TimerService] 处理定时器 '{timer_id}' 触发时出错: {e}")
     

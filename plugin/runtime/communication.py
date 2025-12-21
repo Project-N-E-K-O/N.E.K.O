@@ -242,13 +242,6 @@ class PluginCommunicationResourceManager:
             TimeoutError: 如果超时
             PluginExecutionError: 如果事件执行出错
         """
-        # #region agent log
-        log_file = "/home/yun_wan/python_programe/N.E.K.O/.cursor/debug.log"
-        try:
-            with open(log_file, "a") as f:
-                f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"communication.py:{244}","message":"trigger_custom_event start","data":{{"req_id_placeholder":"new","event_type":"{event_type}","event_id":"{event_id}","timeout":{timeout}}},"timestamp":{int(time.time()*1000)}}}\n')
-        except: pass
-        # #endregion
         req_id = str(uuid.uuid4())
         future = asyncio.Future()
         self._pending_futures[req_id] = future
@@ -269,39 +262,12 @@ class PluginCommunicationResourceManager:
             "event_id": event_id,
             "args": args
         }
-        # #region agent log
-        log_file = "/home/yun_wan/python_programe/N.E.K.O/.cursor/debug.log"
-        try:
-            with open(log_file, "a") as f:
-                f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"communication.py:{264}","message":"cmd_queue.put before","data":{{"req_id":"{req_id}","queue_size_estimate":"unknown"}},"timestamp":{int(time.time()*1000)}}}\n')
-        except: pass
-        # #endregion
         self.cmd_queue.put(trigger_msg)
-        # #region agent log
-        try:
-            with open(log_file, "a") as f:
-                f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"communication.py:{266}","message":"cmd_queue.put after","data":{{"req_id":"{req_id}"}},"timestamp":{int(time.time()*1000)}}}\n')
-        except: pass
-        # #endregion
         
         # 等待结果（带超时）
         wait_start_time = time.time()
-        # #region agent log
-        log_file = "/home/yun_wan/python_programe/N.E.K.O/.cursor/debug.log"
-        try:
-            with open(log_file, "a") as f:
-                f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"communication.py:{268}","message":"wait_for future start","data":{{"req_id":"{req_id}","timeout":{timeout}}},"timestamp":{int(time.time()*1000)}}}\n')
-        except: pass
-        # #endregion
         try:
             result = await asyncio.wait_for(future, timeout=timeout)
-            # #region agent log
-            wait_duration = time.time() - wait_start_time
-            try:
-                with open(log_file, "a") as f:
-                    f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"communication.py:{270}","message":"future resolved","data":{{"req_id":"{req_id}","wait_duration":{wait_duration}}},"timestamp":{int(time.time()*1000)}}}\n')
-            except: pass
-            # #endregion
             if result["success"]:
                 return result["data"]
             else:
@@ -311,13 +277,6 @@ class PluginCommunicationResourceManager:
                     result.get("error", "Unknown error")
                 )
         except asyncio.TimeoutError:
-            wait_duration = time.time() - wait_start_time
-            # #region agent log
-            try:
-                with open(log_file, "a") as f:
-                    f.write(f'{{"sessionId":"debug-session","runId":"run1","hypothesisId":"A,B,C,D","location":"communication.py:{284}","message":"timeout error","data":{{"req_id":"{req_id}","wait_duration":{wait_duration},"timeout":{timeout}}},"timestamp":{int(time.time()*1000)}}}\n')
-            except: pass
-            # #endregion
             self.logger.error(
                 f"Plugin {self.plugin_id} custom event {event_type}.{event_id} timed out after {timeout}s, req_id={req_id}"
             )

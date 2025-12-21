@@ -819,7 +819,6 @@ class WebInterfacePlugin(NekoPluginBase):
     async def test_timer(self, interval: float = 10, count: int = 5, **_):
         """测试定时器服务"""
         self.logger.info(f"[WebInterface] 测试定时器: interval={interval}s, count={count}")
-        
         try:
             timer_id = f"web_interface_test_{int(time.time())}"
             

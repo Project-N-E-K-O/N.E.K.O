@@ -34,6 +34,10 @@ async def startup() -> None:
     2. 启动插件的通信资源
     3. 启动状态消费任务
     """
+    # 确保插件响应映射在主进程中提前初始化，避免子进程各自创建新的 Manager 字典
+    from plugin.core.state import state
+    _ = state.plugin_response_map  # 预初始化共享响应映射
+    
     # 加载插件
     load_plugins_from_toml(PLUGIN_CONFIG_ROOT, logger, _factory)
     with state.plugins_lock:

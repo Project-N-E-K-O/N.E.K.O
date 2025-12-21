@@ -5,6 +5,7 @@
 """
 import asyncio
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from queue import Empty
 from typing import Dict, Any, Optional
@@ -139,7 +140,6 @@ class PluginRouter:
         args = request.get("args", {})
         request_id = request.get("request_id")
         timeout = request.get("timeout", 10.0)  # 增加默认超时时间以应对命令循环可能的延迟
-        
         logger.info(
             f"[PluginRouter] Routing request: {from_plugin} -> {to_plugin}, "
             f"event={event_type}.{event_id}, req_id={request_id}"
