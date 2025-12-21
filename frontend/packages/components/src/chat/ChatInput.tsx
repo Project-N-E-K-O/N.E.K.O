@@ -1,4 +1,5 @@
-import { SetStateAction, useState } from "react";
+import React, { useState } from "react";
+import type { SetStateAction } from "react";
 
 interface Props {
   onSend: (text: string) => void;

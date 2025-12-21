@@ -1,4 +1,5 @@
-import { ChatMessage } from "./types";
+import React from "react";
+import type { ChatMessage } from "./types";
 
 interface Props {
   messages: ChatMessage[];

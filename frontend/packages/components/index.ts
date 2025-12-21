@@ -15,3 +15,4 @@ export type { AlertDialogProps } from "./src/Modal/AlertDialog";
 export type { ConfirmDialogProps } from "./src/Modal/ConfirmDialog";
 export type { PromptDialogProps } from "./src/Modal/PromptDialog";
 
+export * from "./src/chat";

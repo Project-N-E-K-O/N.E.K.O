@@ -3,7 +3,7 @@ import { useCallback, useRef } from "react";
 import { Button, StatusToast, Modal } from "@project_neko/components";
 import type { StatusToastHandle, ModalHandle } from "@project_neko/components";
 import { createRequestClient, WebTokenStorage } from "@project_neko/request";
-import ChatDemoPage from "./pages/ChatDemoPage";
+import { ChatContainer } from "@project_neko/components";
 
 const trimTrailingSlash = (url?: string) => (url ? url.replace(/\/+$/, "") : "");
 
@@ -111,8 +111,8 @@ function App() {
             </div>
           </div>
           {/* 👇 新增：聊天系统 React 迁移 Demo */}
-          <div style={{ marginTop: 24 }}>
-            <ChatDemoPage />
+          <div style={{ marginTop: 24, height: 600 }}>
+            <ChatContainer />
           </div>
         </section>
       </main>
