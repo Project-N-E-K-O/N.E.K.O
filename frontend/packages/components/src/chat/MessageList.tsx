@@ -1,11 +1,18 @@
 import React from "react";
 import type { ChatMessage } from "./types";
+import { useEffect, useRef } from "react";
 
 interface Props {
   messages: ChatMessage[];
 }
 
 export default function MessageList({ messages }: Props) {
+  const endRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
   return (
     <div style={{ padding: 16, overflowY: "auto", flex: 1 }}>
       {messages.map((msg) => (
@@ -32,6 +39,7 @@ export default function MessageList({ messages }: Props) {
           </div>
         </div>
       ))}
+      <div ref={endRef} />
     </div>
   );
 }
