@@ -116,13 +116,12 @@ Live2DManager.prototype.setupReturnButtonContainerDrag = function (returnButtonC
             const newX = containerStartX + deltaX;
             const newY = containerStartY + deltaY;
 
-            const screenWidth = window.innerWidth;
-            const screenHeight = window.innerHeight;
+            // 边界检查 - 使用窗口尺寸（窗口只覆盖当前屏幕）
             const containerWidth = returnButtonContainer.offsetWidth || 64;
             const containerHeight = returnButtonContainer.offsetHeight || 64;
 
-            const boundedX = Math.max(0, Math.min(newX, screenWidth - containerWidth));
-            const boundedY = Math.max(0, Math.min(newY, screenHeight - containerHeight));
+            const boundedX = Math.max(0, Math.min(newX, window.innerWidth - containerWidth));
+            const boundedY = Math.max(0, Math.min(newY, window.innerHeight - containerHeight));
 
             returnButtonContainer.style.left = `${boundedX}px`;
             returnButtonContainer.style.top = `${boundedY}px`;
@@ -180,13 +179,12 @@ Live2DManager.prototype.setupReturnButtonContainerDrag = function (returnButtonC
             const newX = containerStartX + deltaX;
             const newY = containerStartY + deltaY;
 
-            const screenWidth = window.innerWidth;
-            const screenHeight = window.innerHeight;
+            // 边界检查 - 使用窗口尺寸
             const containerWidth = returnButtonContainer.offsetWidth || 64;
             const containerHeight = returnButtonContainer.offsetHeight || 64;
 
-            const boundedX = Math.max(0, Math.min(newX, screenWidth - containerWidth));
-            const boundedY = Math.max(0, Math.min(newY, screenHeight - containerHeight));
+            const boundedX = Math.max(0, Math.min(newX, window.innerWidth - containerWidth));
+            const boundedY = Math.max(0, Math.min(newY, window.innerHeight - containerHeight));
 
             returnButtonContainer.style.left = `${boundedX}px`;
             returnButtonContainer.style.top = `${boundedY}px`;

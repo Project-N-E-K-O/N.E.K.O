@@ -2,6 +2,8 @@ import type { ModalHandle, StatusToastHandle } from "@project_neko/components";
 import type { RequestClientConfig, TokenStorage } from "@project_neko/request";
 import { createRequestClient } from "@project_neko/request";
 import { WebTokenStorage } from "@project_neko/request";
+import { createRealtimeClient } from "@project_neko/realtime";
+import type { RealtimeClientOptions } from "@project_neko/realtime";
 import type { AxiosInstance } from "axios";
 import "./global";
 
@@ -56,6 +58,16 @@ export interface RequestWindowOptions {
   apiBaseUrl?: string;
   staticServerUrl?: string;
   websocketUrl?: string;
+}
+
+export interface RealtimeWindowOptions {
+  /**
+   * 默认情况下会使用 window.buildWebSocketUrl（若已由 bindRequestToWindow 注入）
+   * 或回退到 location 推导。
+   */
+  path?: string;
+  url?: string;
+  protocols?: string | string[];
 }
 
 /**
@@ -368,6 +380,60 @@ export function bindRequestToWindow(client: AxiosInstance, options: RequestWindo
   };
 }
 
+/**
+ * 将 Realtime(WebSocket) 客户端构造器与默认实例绑定到 window，并派发 `websocketReady`。
+ *
+ * 暴露：
+ * - `window.createRealtimeClient(options)`：创建并返回 client
+ * - `window.realtime`：默认 client（若传入 options.url 或 options.path）
+ *
+ * 注意：
+ * - 旧模板可直接使用 UMD `window.ProjectNekoRealtime`，此绑定是“更统一的 window API”。
+ * - 默认实例不会自动 connect；由调用方决定何时 connect。
+ */
+export function bindRealtimeToWindow(options: RealtimeWindowOptions = {}): { client: any | null; cleanup: Cleanup } {
+  if (typeof window === "undefined") {
+    return { client: null, cleanup: () => {} };
+  }
+
+  const factory = (opts: RealtimeClientOptions) => createRealtimeClient(opts);
+
+  Object.defineProperty(window, "createRealtimeClient", {
+    value: factory,
+    writable: true,
+    configurable: true,
+    enumerable: true,
+  });
+
+  let client: any | null = null;
+  const urlOrPath = options.url || options.path;
+  if (urlOrPath) {
+    client = createRealtimeClient({
+      url: options.url,
+      path: options.path,
+      protocols: options.protocols,
+      buildUrl: typeof window.buildWebSocketUrl === "function" ? window.buildWebSocketUrl : undefined,
+    });
+
+    Object.defineProperty(window, "realtime", {
+      value: client,
+      writable: true,
+      configurable: true,
+      enumerable: true,
+    });
+  }
+
+  const readyTimer = setTimeout(() => {
+    window.dispatchEvent(new CustomEvent("websocketReady"));
+  }, 0);
+
+  const cleanup = () => {
+    clearTimeout(readyTimer);
+  };
+
+  return { client, cleanup };
+}
+
 export interface CreateAndBindRequestOptions
   extends Partial<RequestClientConfig>,
     RequestWindowOptions {
@@ -473,5 +539,10 @@ export function autoBindDefaultRequest(): AxiosInstance | null {
 // 立即执行一次自动绑定，确保页面引入 web-bridge 后即可使用 window.request
 if (typeof window !== "undefined") {
   autoBindDefaultRequest();
+  // 仅提供构造器（window.createRealtimeClient）。默认不创建实例/不自动 connect，避免旧页面产生隐式连接。
+  if (!window.__nekoBridgeRealtimeBound) {
+    bindRealtimeToWindow();
+    window.__nekoBridgeRealtimeBound = true;
+  }
 }
 

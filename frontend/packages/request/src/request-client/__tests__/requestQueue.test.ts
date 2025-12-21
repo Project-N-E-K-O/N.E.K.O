@@ -20,7 +20,7 @@ describe("RequestQueue", () => {
   });
 
   describe("enqueue", () => {
-    it("adds request to queue", () => {
+    it("adds request to queue", async () => {
       const request: QueuedRequest = {
         resolve: vi.fn(),
         reject: vi.fn(),
@@ -28,16 +28,41 @@ describe("RequestQueue", () => {
       };
 
       queue.enqueue(request);
+
+      // enqueue 本身不应立刻触发处理
+      expect(request.resolve).not.toHaveBeenCalled();
+      expect(request.reject).not.toHaveBeenCalled();
+
+      // 触发处理：如果确实入队，则 resolve 会被调用
+      await queue.processQueue();
+      expect(request.resolve).toHaveBeenCalledTimes(1);
+      expect(request.resolve).toHaveBeenCalledWith(request.config);
+      expect(request.reject).not.toHaveBeenCalled();
     });
 
-    it("accepts multiple requests", () => {
-      const requests = Array.from({ length: 5 }, () => ({
+    it("accepts multiple requests", async () => {
+      const requests: QueuedRequest[] = Array.from({ length: 5 }, (_, idx) => ({
         resolve: vi.fn(),
         reject: vi.fn(),
-        config: {} as any
+        config: { id: idx } as any
       }));
 
       requests.forEach((req) => queue.enqueue(req));
+
+      // enqueue 不应立即调用回调
+      requests.forEach((req) => {
+        expect(req.resolve).not.toHaveBeenCalled();
+        expect(req.reject).not.toHaveBeenCalled();
+      });
+
+      await queue.processQueue();
+
+      // 应逐个成功处理队列中的请求
+      requests.forEach((req) => {
+        expect(req.resolve).toHaveBeenCalledTimes(1);
+        expect(req.resolve).toHaveBeenCalledWith(req.config);
+        expect(req.reject).not.toHaveBeenCalled();
+      });
     });
   });
 
@@ -123,7 +148,7 @@ describe("RequestQueue", () => {
   });
 
   describe("clear", () => {
-    it("clears the queue", () => {
+    it("clears the queue", async () => {
       const request: QueuedRequest = {
         resolve: vi.fn(),
         reject: vi.fn(),
@@ -133,7 +158,7 @@ describe("RequestQueue", () => {
       queue.enqueue(request);
       queue.clear();
 
-      queue.processQueue();
+      await queue.processQueue();
       expect(request.resolve).not.toHaveBeenCalled();
     });
 

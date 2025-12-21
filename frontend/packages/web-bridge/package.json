@@ -11,7 +11,8 @@
   },
   "peerDependencies": {
     "@project_neko/components": "0.1.0",
-    "@project_neko/request": "0.1.0"
+    "@project_neko/request": "0.1.0",
+    "@project_neko/realtime": "0.1.0"
   }
 }
 

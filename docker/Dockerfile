@@ -1,3 +1,7 @@
+# 在 Dockerfile 顶部添加构建参数定义
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+
 # 使用 Debian bookworm 作为基础镜像
 FROM debian:bookworm
 
@@ -20,9 +24,9 @@ RUN echo "deb http://mirrors.aliyun.com/debian/ bookworm main non-free non-free-
     echo "deb-src http://mirrors.aliyun.com/debian/ bookworm-backports main non-free non-free-firmware contrib" >> /etc/apt/sources.list
 
 # 2. 更新系统并安装基础依赖
-# 注意：此阶段编译需要预填临时代理，否则编译速度会很慢，除非你在国外
-RUN export http_proxy=http://192.168.8.2:10809 && \
-    export https_proxy=http://192.168.8.2:10809 && \
+# 注意：此阶段编译需要传递代理参数，否则编译速度会很慢，除非你在国外
+RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
+    if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
     apt-get update && \
     apt-get install -y --no-install-recommends \
     git \
@@ -54,9 +58,9 @@ RUN ln -sf /usr/bin/python3.11 /usr/bin/python3 && \
     ln -sf /usr/bin/python3.11 /usr/bin/python
 
 # 4. 安装 uv
-# 注意：此阶段编译需要预填临时代理，否则编译速度会很慢，除非你在国外
-RUN export http_proxy=http://192.168.8.2:10809 && \
-    export https_proxy=http://192.168.8.2:10809 && \
+# 注意：此阶段编译需要传递代理参数，否则编译速度会很慢，除非你在国外
+RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
+    if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
     wget -qO- https://astral.sh/uv/install.sh | sh && \
     echo 'export PATH="/root/.cargo/bin:$PATH"' >> /root/.bashrc && \
     unset http_proxy && \
@@ -69,9 +73,9 @@ RUN mkdir -p /root/.config/uv && \
     echo 'default = true' >> /root/.config/uv/uv.toml
 
 # 6. 克隆 N.E.K.O. 项目
-# 注意：此阶段编译需要预填临时代理，否则编译速度会很慢，除非你在国外
-RUN export http_proxy=http://192.168.8.2:10809 && \
-    export https_proxy=http://192.168.8.2:10809 && \
+# 注意：此阶段编译需要传递代理参数，否则编译速度会很慢，除非你在国外
+RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
+    if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
     cd / && \
     git clone https://github.com/Project-N-E-K-O/N.E.K.O.git app && \
     cd /app && \

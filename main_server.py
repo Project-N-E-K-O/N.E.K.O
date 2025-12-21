@@ -42,7 +42,7 @@ from threading import Thread, Event as ThreadEvent # noqa
 from queue import Queue # noqa
 import atexit # noqa
 import httpx # noqa
-from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT # noqa
+from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT, MAIN_SERVER_HOST, DEV_MODE # noqa
 from utils.config_manager import get_config_manager # noqa
 from fastapi.middleware.cors import CORSMiddleware # noqa
 # 导入创意工坊工具模块
@@ -674,7 +674,9 @@ if __name__ == "__main__":
     # Use os.path.abspath to show full path clearly
     logger.info(f"Serving static files from: {os.path.abspath('static')}")
     logger.info(f"Serving index.html from: {os.path.abspath('templates/index.html')}")
-    logger.info(f"Access UI at: http://127.0.0.1:{MAIN_SERVER_PORT} (or your network IP:{MAIN_SERVER_PORT})")
+    logger.info(f"Server mode: {'DEV' if DEV_MODE else 'PROD'}; bind host: {MAIN_SERVER_HOST}; port: {MAIN_SERVER_PORT}")
+    display_host = MAIN_SERVER_HOST if MAIN_SERVER_HOST != "0.0.0.0" else "localhost/your-network-ip"
+    logger.info(f"Access UI at: http://{display_host}:{MAIN_SERVER_PORT}")
     logger.info("-----------------------------")
 
     # 使用统一的速率限制日志过滤器
@@ -689,7 +691,7 @@ if __name__ == "__main__":
     # 1) 配置 UVicorn
     config = uvicorn.Config(
         app=app,
-        host="127.0.0.1",
+        host=MAIN_SERVER_HOST,
         port=MAIN_SERVER_PORT,
         log_level="info",
         loop="asyncio",
@@ -724,7 +726,7 @@ if __name__ == "__main__":
 
     # 4) 启动服务器（阻塞，直到 server.should_exit=True）
     logger.info("--- Starting FastAPI Server ---")
-    logger.info(f"Access UI at: http://127.0.0.1:{MAIN_SERVER_PORT}/{args.page}")
+    logger.info(f"Access UI at: http://{display_host}:{MAIN_SERVER_PORT}/{args.page}")
     
     try:
         server.run()

@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
-import sys, os
+import sys
+import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from memory import CompressedRecentHistoryManager, SemanticMemory, ImportantSettingsManager, TimeIndexedMemory
 from fastapi import FastAPI
+from fastapi.responses import PlainTextResponse
 import json
 import uvicorn
 from langchain_core.messages import convert_to_messages
@@ -14,6 +16,7 @@ import re
 import asyncio
 import logging
 import argparse
+from utils.frontend_utils import get_timestamp
 
 # Setup logger
 from utils.logger_config import setup_logging
@@ -292,10 +295,10 @@ async def new_dialog(lanlan_name: str):
         catgirl_names = list(character_data.get('猫娘', {}).keys())
         if lanlan_name not in catgirl_names:
             logger.warning(f"角色 '{lanlan_name}' 不在配置中，返回空上下文")
-            return ""
+            return PlainTextResponse("")
     except Exception as e:
         logger.error(f"检查角色配置失败: {e}")
-        return ""
+        return PlainTextResponse("")
     
     # 中断正在进行的correction任务
     if lanlan_name in correction_tasks and not correction_tasks[lanlan_name].done():
@@ -318,8 +321,8 @@ async def new_dialog(lanlan_name: str):
     brackets_pattern = re.compile(r'(\[.*?\]|\(.*?\)|（.*?）|【.*?】|\{.*?\}|<.*?>)')
     master_name, _, _, _, name_mapping, _, _, _, _, _ = _config_manager.get_character_data()
     name_mapping['ai'] = lanlan_name
-    result = f"\n========{lanlan_name}的内心活动========\n{lanlan_name}的脑海里经常想着自己和{master_name}的事情，她记得{json.dumps(settings_manager.get_settings(lanlan_name), ensure_ascii=False)}\n\n"
-    result += f"开始聊天前，{lanlan_name}又在脑海内整理了近期发生的事情。\n"
+    result = f"\n========以下是{lanlan_name}的内心活动========\n{lanlan_name}的脑海里经常想着自己和{master_name}的事情，她记得{json.dumps(settings_manager.get_settings(lanlan_name), ensure_ascii=False)}\n\n"
+    result += f"现在时间是{get_timestamp()}。开始聊天前，{lanlan_name}又在脑海内整理了近期发生的事情。\n"
     for i in recent_history_manager.get_recent_history(lanlan_name):
         if type(i.content) == str:
             cleaned_content = brackets_pattern.sub('', i.content).strip()
@@ -327,7 +330,7 @@ async def new_dialog(lanlan_name: str):
         else:
             texts = [brackets_pattern.sub('', j['text']).strip() for j in i.content if j['type'] == 'text']
             result += f"{name_mapping[i.type]} | " + "\n".join(texts) + "\n"
-    return result
+    return PlainTextResponse(result)
 
 if __name__ == "__main__":
     import threading

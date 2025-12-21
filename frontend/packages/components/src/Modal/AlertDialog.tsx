@@ -1,6 +1,7 @@
 import React from "react";
 import { BaseModal } from "./BaseModal";
 import type { BaseModalProps } from "./BaseModal";
+import { tOrDefault, useT } from "../i18n";
 
 export interface AlertDialogProps extends Omit<BaseModalProps, "children"> {
   message: string;
@@ -13,7 +14,7 @@ export interface AlertDialogProps extends Omit<BaseModalProps, "children"> {
  *
  * The primary button invokes `onConfirm` when clicked; the dialog does not close automatically
  * — the parent should handle closing (e.g., by calling `onClose`). The button label uses
- * `okText` if provided, otherwise it attempts to use `window.t("common.ok")` and falls back to `"确定"`.
+ * `okText` if provided, otherwise it attempts to use i18n (`common.ok`) and falls back to `"确定"`.
  *
  * @param message - The message text displayed in the modal body
  * @param okText - Optional text for the primary button; when omitted the component attempts localization
@@ -32,6 +33,8 @@ export function AlertDialog({
   closeOnClickOutside = true,
   closeOnEscape = true,
 }: AlertDialogProps) {
+  const t = useT();
+
   const handleConfirm = () => {
     onConfirm();
     // 不在这里调用 onClose，让父组件处理关闭逻辑
@@ -40,13 +43,7 @@ export function AlertDialog({
   // 获取确定按钮文本（支持国际化）
   const getOkText = () => {
     if (okText) return okText;
-    try {
-      return window.t && typeof window.t === "function"
-        ? window.t("common.ok")
-        : "确定";
-    } catch (e) {
-      return "确定";
-    }
+    return tOrDefault(t, "common.ok", "确定");
   };
 
   return (

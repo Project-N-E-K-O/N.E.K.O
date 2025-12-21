@@ -37,8 +37,13 @@ declare global {
     STATIC_SERVER_URL?: string;
     WEBSOCKET_URL?: string;
 
+    // Realtime/WebSocket 相关
+    createRealtimeClient?: (options: any) => any;
+    realtime?: any;
+
     // 内部标记：web-bridge 是否已自动绑定默认 request
     __nekoBridgeRequestBound?: boolean;
+    __nekoBridgeRealtimeBound?: boolean;
   }
 }
 

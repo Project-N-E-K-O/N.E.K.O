@@ -1,6 +1,7 @@
 import React from "react";
 import { BaseModal } from "./BaseModal";
 import type { BaseModalProps } from "./BaseModal";
+import { tOrDefault, useT } from "../i18n";
 
 export interface ConfirmDialogProps extends Omit<BaseModalProps, "children"> {
   message: string;
@@ -43,6 +44,8 @@ export function ConfirmDialog({
   closeOnClickOutside = true,
   closeOnEscape = true,
 }: ConfirmDialogProps) {
+  const t = useT();
+
   const handleConfirm = () => {
     onConfirm();
     // 不在这里调用 onClose，让父组件处理关闭逻辑
@@ -58,24 +61,12 @@ export function ConfirmDialog({
   // 获取按钮文本（支持国际化）
   const getOkText = () => {
     if (okText) return okText;
-    try {
-      return window.t && typeof window.t === "function"
-        ? window.t("common.ok")
-        : "确定";
-    } catch (e) {
-      return "确定";
-    }
+    return tOrDefault(t, "common.ok", "确定");
   };
 
   const getCancelText = () => {
     if (cancelText) return cancelText;
-    try {
-      return window.t && typeof window.t === "function"
-        ? window.t("common.cancel")
-        : "取消";
-    } catch (e) {
-      return "取消";
-    }
+    return tOrDefault(t, "common.cancel", "取消");
   };
 
   return (

@@ -17,7 +17,8 @@ export default defineConfig(({ mode }) => {
       alias: {
         "@project_neko/components": path.resolve(__dirname, "packages/components/index.ts"),
         "@project_neko/common": path.resolve(__dirname, "packages/common/index.ts"),
-        "@project_neko/request": path.resolve(__dirname, "packages/request/index.ts")
+        "@project_neko/request": path.resolve(__dirname, "packages/request/index.ts"),
+        "@project_neko/realtime": path.resolve(__dirname, "packages/realtime/index.ts")
       }
     },
     server: {

@@ -1,0 +1,35 @@
+{
+  "name": "@project_neko/realtime",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "跨平台 Realtime(WebSocket) 客户端：支持 Web / 旧版 HTML/JS(UMD) / React Native",
+  "main": "index.ts",
+  "types": "index.ts",
+  "react-native": "index.native.ts",
+  "exports": {
+    ".": {
+      "react-native": "./index.native.ts",
+      "default": "./index.ts"
+    },
+    "./web": "./index.web.ts"
+  },
+  "scripts": {
+    "build": "vite build --config vite.config.ts",
+    "typecheck": "tsc --noEmit",
+    "typecheck:native": "tsc --noEmit -p tsconfig.native.json",
+    "prepublishOnly": "npm run build && node -e \"console.error('\\n[@project_neko/realtime] 这是 N.E.K.O monorepo 内部 workspace 包（package.json 入口刻意指向 TS 源码，并非可发布的 dist 产物）。\\n如需发布到 npm，请先实现 dist 编译产物并更新 main/types/exports 指向 dist，再移除 private/prepublishOnly 防护。\\n'); process.exit(1)\""
+  },
+  "keywords": [
+    "websocket",
+    "realtime",
+    "web",
+    "umd",
+    "react-native"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {}
+}
+
+

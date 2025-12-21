@@ -18,7 +18,9 @@
       "@project_neko/components": ["packages/components/index.ts"],
       "@project_neko/components/*": ["packages/components/src/*"],
       "@project_neko/request": ["packages/request/index.ts"],
-      "@project_neko/request/*": ["packages/request/src/*"]
+      "@project_neko/request/*": ["packages/request/src/*"],
+      "@project_neko/realtime": ["packages/realtime/index.ts"],
+      "@project_neko/realtime/*": ["packages/realtime/src/*"]
     }
   },
   "include": ["src/**/*", "packages/**/*", "vite.common.config.ts", "vite.web.config.ts", "src/types/**/*"]

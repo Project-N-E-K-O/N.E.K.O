@@ -210,6 +210,7 @@ function init_app() {
     let proactiveVisionEnabled = false;
     let proactiveChatTimer = null;
     let proactiveChatBackoffLevel = 0; // 退避级别：0=30s, 1=75s, 2=187.5s, etc.
+    let isProactiveChatRunning = false; // 锁：防止主动搭话执行期间重复触发
     const PROACTIVE_CHAT_BASE_DELAY = 30000; // 30秒基础延迟
     // 主动视觉在语音时的单帧推送（当同时开启主动视觉 && 语音对话时，每15秒推送一帧）
     let proactiveVisionFrameTimer = null;
@@ -857,6 +858,7 @@ function init_app() {
 
         // 停止录音后，重置主动搭话退避级别并开始定时
         if (proactiveChatEnabled || proactiveVisionEnabled) {
+            lastUserInputTime = Date.now();
             resetProactiveChatBackoff();
         }
 
@@ -2566,231 +2568,6 @@ function init_app() {
     window.addEventListener('live2d-agent-click', () => {
         // 不执行任何操作，只是展开弹出框
         console.log('Agent工具按钮被点击，显示弹出框');
-    });
-
-    // 设置按钮 - 填充弹出框内容
-    let settingsPopupInitialized = false;
-    window.addEventListener('live2d-settings-click', () => {
-        console.log('设置按钮被点击');
-
-        // 每次打开设置弹出框时，同步 window 中的最新值到局部变量
-        if (typeof window.focusModeEnabled !== 'undefined') {
-            focusModeEnabled = window.focusModeEnabled;
-        }
-        if (typeof window.proactiveChatEnabled !== 'undefined') {
-            proactiveChatEnabled = window.proactiveChatEnabled;
-        }
-
-        // 如果已经初始化过，更新开关状态
-        if (settingsPopupInitialized) {
-            const proactiveChatToggle = document.getElementById('proactive-chat-toggle-l2d');
-            const focusModeToggle = document.getElementById('focus-mode-toggle-l2d');
-            if (proactiveChatToggle) {
-                proactiveChatToggle.checked = proactiveChatEnabled;
-            }
-            if (focusModeToggle) {
-                focusModeToggle.checked = focusModeEnabled;
-            }
-            return; // 已初始化，直接返回
-        }
-
-        // 仅第一次点击时填充内容
-        if (!settingsPopupInitialized) {
-            const popup = document.getElementById('live2d-popup-settings');
-            if (popup) {
-                // 清空现有内容
-                popup.innerHTML = '';
-
-                // 创建设置项容器
-                const container = document.createElement('div');
-                container.style.cssText = 'min-width: 200px; max-width: 300px;';
-
-                // 主动搭话开关
-                const proactiveChatDiv = document.createElement('div');
-                proactiveChatDiv.style.cssText = 'padding: 10px 12px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(0,0,0,0.1);';
-                const proactiveChatSpan = document.createElement('span');
-                proactiveChatSpan.style.fontSize = '14px';
-                proactiveChatSpan.textContent = window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话';
-                proactiveChatSpan.setAttribute('data-i18n', 'settings.toggles.proactiveChat');
-                proactiveChatDiv.appendChild(proactiveChatSpan);
-                const proactiveChatCheckbox = document.createElement('input');
-                proactiveChatCheckbox.type = 'checkbox';
-                proactiveChatCheckbox.id = 'proactive-chat-toggle-l2d';
-                proactiveChatCheckbox.style.cssText = 'cursor: pointer; width: 18px; height: 18px;';
-                proactiveChatDiv.appendChild(proactiveChatCheckbox);
-                container.appendChild(proactiveChatDiv);
-
-                // Focus模式开关
-                const focusModeDiv = document.createElement('div');
-                focusModeDiv.style.cssText = 'padding: 10px 12px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(0,0,0,0.1);';
-                const focusModeSpan = document.createElement('span');
-                focusModeSpan.style.fontSize = '14px';
-                focusModeSpan.textContent = window.t ? window.t('settings.toggles.allowInterrupt') : '🎯 允许打断';
-                focusModeSpan.setAttribute('data-i18n', 'settings.toggles.allowInterrupt');
-                focusModeDiv.appendChild(focusModeSpan);
-                const focusModeCheckbox = document.createElement('input');
-                focusModeCheckbox.type = 'checkbox';
-                focusModeCheckbox.id = 'focus-mode-toggle-l2d';
-                focusModeCheckbox.style.cssText = 'cursor: pointer; width: 18px; height: 18px;';
-                focusModeDiv.appendChild(focusModeCheckbox);
-                container.appendChild(focusModeDiv);
-
-                // 主动视觉开关
-                const proactiveVisionDiv = document.createElement('div');
-                proactiveVisionDiv.style.cssText = 'padding: 10px 12px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(0,0,0,0.1);';
-                const proactiveVisionSpan = document.createElement('span');
-                proactiveVisionSpan.style.fontSize = '14px';
-                proactiveVisionSpan.textContent = window.t ? window.t('settings.toggles.proactiveVision') : '👁️ 主动视觉';
-                proactiveVisionSpan.setAttribute('data-i18n', 'settings.toggles.proactiveVision');
-                proactiveVisionDiv.appendChild(proactiveVisionSpan);
-                const proactiveVisionCheckbox = document.createElement('input');
-                proactiveVisionCheckbox.type = 'checkbox';
-                proactiveVisionCheckbox.id = 'proactive-vision-toggle-l2d';
-                proactiveVisionCheckbox.style.cssText = 'cursor: pointer; width: 18px; height: 18px;';
-                proactiveVisionDiv.appendChild(proactiveVisionCheckbox);
-                container.appendChild(proactiveVisionDiv);
-
-                // 页面链接
-                const links = [
-                    { href: `/memory_browser`, text: '📝 记忆管理' },
-                    { href: `/chara_manager`, text: '👤 角色设置' },
-                    { href: `/l2d?lanlan_name=${lanlan_config.lanlan_name}`, text: '🎨 Live2D管理' },
-                    { href: `/steam_workshop_manager`, textKey: 'steam.workshop', text: window.t ? window.t('steam.workshop') : 'steam创意工坊' }
-                ];
-
-                // 已打开的设置窗口引用映射（URL -> Window对象）
-                if (!window._openSettingsWindows) {
-                    window._openSettingsWindows = {};
-                }
-
-                links.forEach(link => {
-                    const linkDiv = document.createElement('div');
-                    linkDiv.style.cssText = 'display: block; padding: 10px 12px; text-decoration: none; color: #333; font-size: 14px; border-bottom: 1px solid rgba(0,0,0,0.05); transition: background 0.2s; cursor: pointer;';
-                    linkDiv.textContent = link.text;
-                    if (link.textKey) {
-                        linkDiv.setAttribute('data-i18n', link.textKey);
-                    }
-                    linkDiv.onmouseenter = () => linkDiv.style.background = 'rgba(79, 140, 255, 0.1)';
-                    linkDiv.onmouseleave = () => linkDiv.style.background = 'transparent';
-                    linkDiv.onclick = (e) => {
-                        e.preventDefault();
-                        const url = link.href;
-
-                        // 检查是否已有该URL的窗口打开
-                        if (window._openSettingsWindows[url]) {
-                            const existingWindow = window._openSettingsWindows[url];
-                            // 检查窗口是否仍然打开
-                            if (existingWindow && !existingWindow.closed) {
-                                // 聚焦到已存在的窗口
-                                existingWindow.focus();
-                                return;
-                            } else {
-                                // 窗口已关闭，清除引用
-                                delete window._openSettingsWindows[url];
-                            }
-                        }
-
-                        // 打开新窗口并保存引用
-                        const newWindow = window.open(url, '_blank', 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no');
-                        if (newWindow) {
-                            window._openSettingsWindows[url] = newWindow;
-
-                            // 监听窗口关闭事件，清除引用
-                            const checkClosed = setInterval(() => {
-                                if (newWindow.closed) {
-                                    delete window._openSettingsWindows[url];
-                                    clearInterval(checkClosed);
-                                }
-                            }, 500);
-                        }
-                    };
-                    container.appendChild(linkDiv);
-                });
-
-                popup.appendChild(container);
-
-                // 设置初始状态
-                const proactiveChatToggle = document.getElementById('proactive-chat-toggle-l2d');
-                const proactiveVisionToggle = document.getElementById('proactive-vision-toggle-l2d');
-                const focusModeToggle = document.getElementById('focus-mode-toggle-l2d');
-
-                // 从 window 同步最新值到局部变量（防止从 l2d 页面返回时值丢失）
-                if (typeof window.proactiveChatEnabled !== 'undefined') {
-                    proactiveChatEnabled = window.proactiveChatEnabled;
-                }
-                if (typeof window.proactiveVisionEnabled !== 'undefined') {
-                    proactiveVisionEnabled = window.proactiveVisionEnabled;
-                }
-                if (typeof window.focusModeEnabled !== 'undefined') {
-                    focusModeEnabled = window.focusModeEnabled;
-                }
-
-                if (proactiveChatToggle) {
-                    proactiveChatToggle.checked = proactiveChatEnabled;
-                    proactiveChatToggle.addEventListener('change', (event) => {
-                        event.stopPropagation();
-                        proactiveChatEnabled = event.target.checked;
-                        window.proactiveChatEnabled = proactiveChatEnabled; // 同步到全局
-                        saveSettings();
-
-                        console.log(`主动搭话已${proactiveChatEnabled ? '开启' : '关闭'}`);
-
-                        if (proactiveChatEnabled) {
-                            resetProactiveChatBackoff();
-                        } else {
-                            // 只有当主动视觉也关闭时才停止调度
-                            if (!proactiveVisionEnabled) {
-                                stopProactiveChatSchedule();
-                            }
-                        }
-                    });
-                }
-
-                if (focusModeToggle) {
-                    focusModeToggle.checked = focusModeEnabled;
-                    focusModeToggle.addEventListener('change', (event) => {
-                        event.stopPropagation();
-                        focusModeEnabled = event.target.checked;
-                        window.focusModeEnabled = focusModeEnabled; // 同步到全局
-                        saveSettings();
-
-                        console.log(`Focus模式已${focusModeEnabled ? '开启' : '关闭'}`);
-                    });
-                }
-
-                if (proactiveVisionToggle) {
-                    proactiveVisionToggle.checked = proactiveVisionEnabled;
-                    proactiveVisionToggle.addEventListener('change', (event) => {
-                        event.stopPropagation();
-                        proactiveVisionEnabled = event.target.checked;
-                        window.proactiveVisionEnabled = proactiveVisionEnabled; // 同步到全局
-                        saveSettings();
-
-                        console.log(`主动视觉已${proactiveVisionEnabled ? '开启' : '关闭'}`);
-
-                        if (proactiveVisionEnabled) {
-                            resetProactiveChatBackoff();
-                            // 如果当前处于语音模式，启动语音期间的主动视觉定时
-                            if (isRecording) startProactiveVisionDuringSpeech();
-                        } else {
-                            // 关闭主动视觉时停止语音期间的定时
-                            stopProactiveVisionDuringSpeech();
-                            // 只有当主动搭话也关闭时才停止调度
-                            const currentProactiveChat = typeof window.proactiveChatEnabled !== 'undefined'
-                                ? window.proactiveChatEnabled
-                                : proactiveChatEnabled;
-                            if (!currentProactiveChat) {
-                                stopProactiveChatSchedule();
-                            }
-                        }
-                    });
-                }
-
-                settingsPopupInitialized = true;
-                console.log('设置弹出框已初始化');
-
-            }
-        }
     });
 
     // 睡觉按钮（请她离开）
@@ -4814,8 +4591,14 @@ function init_app() {
             proactiveChatTimer = null;
         }
 
-        // 两个功能都关闭时跳过
-        if (!proactiveChatEnabled && !proactiveVisionEnabled) {
+        // 主动搭话关闭时跳过（定时主动搭话只需要proactiveChatEnabled）
+        if (!proactiveChatEnabled) {
+            return;
+        }
+
+        // 如果主动搭话正在执行中，不安排新的定时器（等当前执行完成后自动安排）
+        if (isProactiveChatRunning) {
+            console.log('主动搭话正在执行中，延迟安排下一次');
             return;
         }
 
@@ -4831,8 +4614,20 @@ function init_app() {
         console.log(`主动搭话：${delay / 1000}秒后触发（退避级别：${proactiveChatBackoffLevel}）`);
 
         proactiveChatTimer = setTimeout(async () => {
+            // 双重检查锁：定时器触发时再次检查是否正在执行
+            if (isProactiveChatRunning) {
+                console.log('主动搭话定时器触发时发现正在执行中，跳过本次');
+                return;
+            }
+
             console.log('触发主动搭话...');
-            await triggerProactiveChat();
+            isProactiveChatRunning = true; // 加锁
+
+            try {
+                await triggerProactiveChat();
+            } finally {
+                isProactiveChatRunning = false; // 解锁
+            }
 
             // 增加退避级别（最多到约7分钟，即level 3：30s * 2.5^3 = 7.5min）
             if (proactiveChatBackoffLevel < 3) {
@@ -5238,8 +5033,8 @@ function init_app() {
     // 加载设置
     loadSettings();
 
-    // 如果已开启主动搭话或主动视觉，立即启动定时器
-    if (proactiveChatEnabled || proactiveVisionEnabled) {
+    // 如果已开启主动搭话，立即启动定时器
+    if (proactiveChatEnabled) {
         scheduleProactiveChat();
     }
 
