@@ -273,12 +273,16 @@ def update_plugin_config(plugin_id: str, updates: Dict[str, Any]) -> Dict[str, A
                 # 在大多数文件系统上，rename 是原子操作
                 os.replace(temp_path, config_path)
                 
-                # 确保目录的元数据也同步到磁盘
-                config_dir_fd = os.open(config_dir, os.O_DIRECTORY)
+                # 确保目录的元数据也同步到磁盘（部分平台不支持 O_DIRECTORY）
                 try:
-                    os.fsync(config_dir_fd)
-                finally:
-                    os.close(config_dir_fd)
+                    config_dir_fd = os.open(config_dir, os.O_DIRECTORY)
+                    try:
+                        os.fsync(config_dir_fd)
+                    finally:
+                        os.close(config_dir_fd)
+                except (AttributeError, OSError):
+                    # Windows 等平台无 O_DIRECTORY，或目录 fsync 不被支持
+                    pass
             
             except Exception:
                 # 如果写入失败，清理临时文件

@@ -27,6 +27,9 @@ class PluginRuntimeState:
         self.plugin_hosts_lock = threading.Lock()  # 保护 plugin_hosts 字典的线程安全
         self._event_queue: Optional[asyncio.Queue] = None
         self._message_queue: Optional[asyncio.Queue] = None
+        self._plugin_comm_queue: Optional[Any] = None
+        self._plugin_response_map: Optional[Any] = None
+        self._plugin_response_map_manager: Optional[Any] = None
 
     @property
     def event_queue(self) -> asyncio.Queue:
@@ -39,10 +42,6 @@ class PluginRuntimeState:
         if self._message_queue is None:
             self._message_queue = asyncio.Queue(maxsize=MESSAGE_QUEUE_MAX)
         return self._message_queue
-    
-    _plugin_comm_queue: Optional[Any] = None  # 插件间通信队列（multiprocessing.Queue）
-    _plugin_response_map: Optional[Any] = None  # 响应映射：{request_id: response}（使用 Manager().dict() 实现跨进程共享）
-    _plugin_response_map_manager: Optional[Any] = None  # Manager 实例（需要保持引用）
     
     @property
     def plugin_comm_queue(self):

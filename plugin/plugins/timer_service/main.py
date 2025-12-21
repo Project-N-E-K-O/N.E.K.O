@@ -386,7 +386,11 @@ class TimerServicePlugin(NekoPluginBase):
         
         # 等待线程结束（在锁外，避免死锁）
         if thread and thread.is_alive():
-            thread.join(timeout=2.0)
+            # 如果在定时器线程内调用停止（例如达到最大次数的回调里），不能 join 当前线程
+            if thread is threading.current_thread():
+                self.logger.debug("[TimerService] Skip joining current timer thread for '%s'", timer_id)
+            else:
+                thread.join(timeout=2.0)
         
         # 计算运行时间（在锁外）
         elapsed = time.time() - started_at

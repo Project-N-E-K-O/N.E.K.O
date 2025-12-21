@@ -208,9 +208,7 @@ def _plugin_process_runner(
         # 命令循环
         while True:
             try:
-                queue_get_start = time.time()
                 msg = cmd_queue.get(timeout=QUEUE_GET_TIMEOUT)
-                queue_get_duration = time.time() - queue_get_start
             except Empty:
                 continue
 
@@ -558,17 +556,14 @@ class PluginProcessHost:
         self.status_queue = status_queue
         self.message_queue = message_queue
     
-    async def start(self, message_target_queue=None, plugin_comm_queue=None) -> None:
+    async def start(self, message_target_queue=None) -> None:
         """
         启动后台任务（需要在异步上下文中调用）
         
         Args:
             message_target_queue: 主进程的消息队列，用于接收插件推送的消息
-            plugin_comm_queue: 主进程的插件间通信队列，用于插件间通信
         """
         await self.comm_manager.start(message_target_queue=message_target_queue)
-        # 保存通信队列引用，用于后续传递给插件进程
-        self._plugin_comm_queue = plugin_comm_queue
     
     async def shutdown(self, timeout: float = PLUGIN_SHUTDOWN_TIMEOUT) -> None:
         """
