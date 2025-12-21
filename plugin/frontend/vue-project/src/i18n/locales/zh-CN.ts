@@ -121,6 +121,7 @@ export default {
     noMatches: '没有匹配的日志',
     logFile: '日志文件',
     totalLines: '总行数',
+    returnedLines: '返回行数',
     connected: '已连接',
     disconnected: '未连接',
     connectionFailed: '日志流连接失败'

@@ -1,7 +1,7 @@
 """
 插件进程间通信资源管理器
 
-负责管理插件进程间的通信资源，包括队列、Future、后台任务等。
+负责管理插件进程间的通信资源,包括队列、Future、后台任务等。
 """
 from __future__ import annotations
 
@@ -204,6 +204,72 @@ class PluginCommunicationResourceManager:
                 raise TimeoutError(f"Plugin execution timed out after {timeout}s") from None
         finally:
             # 清理 Future（无论成功还是失败）
+            self._pending_futures.pop(req_id, None)
+    
+    async def trigger_custom_event(
+        self, 
+        event_type: str, 
+        event_id: str, 
+        args: dict, 
+        timeout: float = PLUGIN_TRIGGER_TIMEOUT
+    ) -> Any:
+        """
+        触发自定义事件执行
+        
+        Args:
+            event_type: 自定义事件类型（例如 "file_change", "user_action"）
+            event_id: 事件ID
+            args: 参数字典
+            timeout: 超时时间（秒）
+        
+        Returns:
+            事件处理器返回的结果
+        
+        Raises:
+            TimeoutError: 如果超时
+            PluginExecutionError: 如果事件执行出错
+        """
+        req_id = str(uuid.uuid4())
+        future = asyncio.Future()
+        self._pending_futures[req_id] = future
+        
+        self.logger.info(
+            "[CommManager] Sending TRIGGER_CUSTOM command: plugin_id=%s, event_type=%s, event_id=%s, req_id=%s",
+            self.plugin_id,
+            event_type,
+            event_id,
+            req_id,
+        )
+        
+        try:
+            # 发送命令
+            trigger_msg = {
+                "type": "TRIGGER_CUSTOM",
+                "req_id": req_id,
+                "event_type": event_type,
+                "event_id": event_id,
+                "args": args
+            }
+            self.cmd_queue.put(trigger_msg)
+            
+            # 等待结果（带超时）
+            try:
+                result = await asyncio.wait_for(future, timeout=timeout)
+                if result["success"]:
+                    return result["data"]
+                else:
+                    raise PluginExecutionError(
+                        self.plugin_id, 
+                        f"{event_type}.{event_id}", 
+                        result.get("error", "Unknown error")
+                    )
+            except asyncio.TimeoutError:
+                self.logger.error(
+                    f"Plugin {self.plugin_id} custom event {event_type}.{event_id} timed out after {timeout}s"
+                )
+                raise TimeoutError(f"Custom event execution timed out after {timeout}s") from None
+        finally:
+            # 清理 Future
             self._pending_futures.pop(req_id, None)
     
     async def send_stop_command(self) -> None:

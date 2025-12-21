@@ -121,6 +121,7 @@ export default {
     noMatches: 'No matching logs',
     logFile: 'Log File',
     totalLines: 'Total Lines',
+    returnedLines: 'Returned Lines',
     connected: 'Connected',
     disconnected: 'Disconnected',
     connectionFailed: 'Log stream connection failed'

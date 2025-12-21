@@ -14,8 +14,13 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 import uvicorn
 
+import httpx
 from plugin.sdk.base import NekoPluginBase
 from plugin.sdk.decorators import neko_plugin, lifecycle, plugin_entry
+import os
+
+# 获取插件服务器端口
+USER_PLUGIN_SERVER_PORT = int(os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", "48916"))
 
 
 @neko_plugin
@@ -186,6 +191,33 @@ class WebInterfacePlugin(NekoPluginBase):
                 "message_count": len(self.messages),
                 "uptime": "active"
             }
+        
+        @self.app.get("/api/timers")
+        async def get_timers():
+            """获取定时器列表 API（如果 timer_service 可用）"""
+            try:
+                # 使用 Queue 机制调用 timer_service 插件
+                result = await self._call_plugin_async(
+                    plugin_id="timer_service",
+                    event_type="plugin_entry",
+                    event_id="list_timers",
+                    args={}
+                )
+                if result.get("success"):
+                    return result
+                else:
+                    return {
+                        "success": False,
+                        "error": result.get("error", "未知错误"),
+                        "timers": []
+                    }
+            except Exception as e:
+                self.logger.exception("获取定时器列表失败")
+                return {
+                    "success": False,
+                    "error": str(e),
+                    "timers": []
+                }
     
     def _add_message(self, source: str, content: str, priority: int = 5):
         """添加消息到列表"""
@@ -706,5 +738,234 @@ class WebInterfacePlugin(NekoPluginBase):
             "url": f"http://{self.host}:{self.port}",
             "message_count": msg_count,
             "thread_alive": thread_alive
+        }
+    
+    @plugin_entry(
+        id="check_plugins",
+        name="检查插件状态",
+        description="检查所有已加载的插件状态，包括 timer_service"
+    )
+    async def check_plugins(self, **_):
+        """检查插件状态"""
+        try:
+            # 通过 HTTP API 获取插件列表
+            url = f"http://localhost:{USER_PLUGIN_SERVER_PORT}/plugins"
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                response = await client.get(url)
+                if response.status_code == 200:
+                    data = response.json()
+                    plugins = data.get("plugins", [])
+                    plugin_ids = [p.get("id") for p in plugins if isinstance(p, dict)]
+                    timer_service_available = "timer_service" in plugin_ids
+                    
+                    result = {
+                        "success": True,
+                        "loaded_plugins": plugin_ids,
+                        "timer_service_available": timer_service_available,
+                        "total_plugins": len(plugin_ids)
+                    }
+                    
+                    if timer_service_available:
+                        result["message"] = "定时器服务插件已加载"
+                    else:
+                        result["message"] = f"定时器服务插件未加载。已加载的插件: {plugin_ids}"
+                        result["suggestion"] = "请检查 timer_service 插件的配置和日志"
+                    
+                    self.logger.info(f"[WebInterface] 插件状态检查: {result}")
+                    return result
+                else:
+                    return {
+                        "success": False,
+                        "error": f"无法获取插件列表，HTTP {response.status_code}",
+                        "loaded_plugins": []
+                    }
+        except Exception as e:
+            self.logger.exception(f"[WebInterface] 检查插件状态失败: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "loaded_plugins": []
+            }
+    
+    @plugin_entry(
+        id="test_timer",
+        name="测试定时器",
+        description="测试定时器服务，创建一个简单的定时器并在 Web 界面显示消息",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "interval": {
+                    "type": "number",
+                    "description": "定时器间隔（秒）",
+                    "default": 10,
+                    "minimum": 1
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "执行次数（0表示不限制）",
+                    "default": 5,
+                    "minimum": 0
+                }
+            }
+        }
+    )
+    async def test_timer(self, interval: float = 10, count: int = 5, **_):
+        """测试定时器服务"""
+        self.logger.info(f"[WebInterface] 测试定时器: interval={interval}s, count={count}")
+        
+        try:
+            timer_id = f"web_interface_test_{int(time.time())}"
+            
+            # 通过 HTTP API 调用 timer_service 插件
+            url = f"http://localhost:{USER_PLUGIN_SERVER_PORT}/plugin/trigger"
+            payload = {
+                "plugin_id": "timer_service",
+                "entry_id": "start_timer",
+                "args": {
+                    "timer_id": timer_id,
+                    "interval": interval,
+                    "immediate": True,
+                    "callback_plugin_id": self.ctx.plugin_id,
+                    "callback_entry_id": "on_timer_tick",
+                    "callback_args": {
+                        "timer_id": timer_id,
+                        "max_count": count,
+                        "current_count": 0
+                    }
+                }
+            }
+            
+            self.logger.info(f"[WebInterface] 调用 timer_service.start_timer: {payload}")
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(url, json=payload)
+                if response.status_code != 200:
+                    error_msg = f"调用 timer_service 失败，HTTP {response.status_code}: {response.text}"
+                    self.logger.error(f"[WebInterface] {error_msg}")
+                    return {
+                        "success": False,
+                        "error": error_msg
+                    }
+                
+                result = response.json()
+                self.logger.info(f"[WebInterface] timer_service 响应: {result}")
+            
+                if result.get("success") or result.get("plugin_response", {}).get("success"):
+                    plugin_response = result.get("plugin_response", {})
+                    if plugin_response.get("success"):
+                        self._add_message(
+                            "定时器测试",
+                            f"定时器已启动: {timer_id}，间隔 {interval} 秒，最多执行 {count} 次",
+                            priority=7
+                        )
+                        return {
+                            "success": True,
+                            "timer_id": timer_id,
+                            "interval": interval,
+                            "result": plugin_response
+                        }
+                    else:
+                        error_msg = plugin_response.get("error", "未知错误")
+                        self.logger.warning(f"[WebInterface] 定时器启动失败: {error_msg}")
+                        return {
+                            "success": False,
+                            "error": error_msg,
+                            "result": plugin_response
+                        }
+                else:
+                    error_msg = result.get("plugin_forward_error", {}).get("error") or result.get("error", "未知错误")
+                    self.logger.warning(f"[WebInterface] 定时器启动失败: {error_msg}")
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "result": result
+                    }
+        except httpx.HTTPError as e:
+            self.logger.exception(f"[WebInterface] HTTP 请求失败: {e}")
+            return {
+                "success": False,
+                "error": f"HTTP 请求失败: {str(e)}"
+            }
+        except Exception as e:
+            self.logger.exception(f"[WebInterface] 测试定时器失败: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    @plugin_entry(
+        id="on_timer_tick",
+        name="定时器触发回调",
+        description="定时器触发时的回调入口点",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "timer_id": {"type": "string"},
+                "max_count": {"type": "integer"},
+                "current_count": {"type": "integer"}
+            }
+        }
+    )
+    def on_timer_tick(self, timer_id: str = None, max_count: int = 0, current_count: int = 0, **_):
+        """定时器触发回调"""
+        # current_count 已经由 timer_service 更新为正确的值，不需要再加1
+        self.logger.info(
+            f"[WebInterface] 定时器触发: {timer_id}, 第 {current_count} 次 (最大: {max_count if max_count > 0 else '∞'})"
+        )
+        
+        # 添加消息到 Web 界面
+        self._add_message(
+            "定时器",
+            f"定时器 {timer_id} 触发 (第 {current_count}/{max_count if max_count > 0 else '∞'} 次)",
+            priority=6
+        )
+        
+        # 如果达到最大次数，停止定时器
+        if max_count > 0 and current_count >= max_count:
+            self.logger.info(f"[WebInterface] 定时器 {timer_id} 已达到最大次数，准备停止")
+            # 异步停止定时器（在后台执行，不阻塞）
+            import asyncio
+            async def _stop_timer():
+                try:
+                    url = f"http://localhost:{USER_PLUGIN_SERVER_PORT}/plugin/trigger"
+                    payload = {
+                        "plugin_id": "timer_service",
+                        "entry_id": "stop_timer",
+                        "args": {"timer_id": timer_id}
+                    }
+                    async with httpx.AsyncClient(timeout=5.0) as client:
+                        response = await client.post(url, json=payload)
+                        if response.status_code == 200:
+                            result = response.json()
+                            plugin_response = result.get("plugin_response", {})
+                            if plugin_response.get("success"):
+                                self._add_message(
+                                    "定时器",
+                                    f"定时器 {timer_id} 已自动停止（达到最大次数 {max_count}）",
+                                    priority=7
+                                )
+                            else:
+                                self.logger.warning(f"[WebInterface] 停止定时器失败: {plugin_response.get('error')}")
+                        else:
+                            self.logger.warning(f"[WebInterface] 停止定时器 HTTP 错误: {response.status_code}")
+                except Exception as e:
+                    self.logger.exception(f"[WebInterface] 停止定时器失败: {e}")
+            
+            # 在新线程中执行异步操作
+            def _run_async():
+                try:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(_stop_timer())
+                    loop.close()
+                except Exception as e:
+                    self.logger.exception(f"[WebInterface] 异步停止定时器失败: {e}")
+            
+            threading.Thread(target=_run_async, daemon=True).start()
+        
+        return {
+            "success": True,
+            "timer_id": timer_id,
+            "count": current_count,
+            "max_count": max_count
         }
 

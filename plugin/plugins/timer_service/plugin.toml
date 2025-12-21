@@ -1,0 +1,11 @@
+[plugin]
+id = "timer_service"
+name = "定时器服务插件"
+version = "1.0.0"
+description = "提供定时器管理功能，其他插件可以通过调用此插件来实现定时任务。使用自定义事件实现定时触发。"
+entry = "plugins.timer_service.main:TimerServicePlugin"
+
+[plugin.sdk]
+supported = ">=0.1.0"
+recommended = ">=0.1.0"
+

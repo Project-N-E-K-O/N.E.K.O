@@ -39,6 +39,17 @@ class PluginRuntimeState:
         if self._message_queue is None:
             self._message_queue = asyncio.Queue(maxsize=MESSAGE_QUEUE_MAX)
         return self._message_queue
+    
+    _plugin_comm_queue: Optional[Any] = None  # 插件间通信队列（multiprocessing.Queue）
+    
+    @property
+    def plugin_comm_queue(self):
+        """插件间通信队列（用于插件调用其他插件的 custom_event）"""
+        if self._plugin_comm_queue is None:
+            import multiprocessing
+            # 使用 multiprocessing.Queue 因为需要跨进程
+            self._plugin_comm_queue = multiprocessing.Queue()
+        return self._plugin_comm_queue
 
 
 # 全局状态实例
