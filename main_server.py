@@ -515,6 +515,31 @@ async def on_startup():
         await _init_and_mount_workshop()
         logger.info("Startup 初始化完成，后台正在预加载音频模块...")
 
+        # 初始化全局语言变量（优先级：Steam设置 > 系统设置）
+        try:
+            from utils.language_utils import initialize_global_language
+            global_lang = initialize_global_language()
+            logger.info(f"全局语言初始化完成: {global_lang}")
+        except Exception as e:
+            logger.warning(f"全局语言初始化失败: {e}，将使用默认值")
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    """服务器关闭时清理资源"""
+    if _IS_MAIN_PROCESS:
+        logger.info("正在清理资源...")
+        
+        # 等待预加载任务完成（如果还在运行）
+        global _preload_task
+        if _preload_task and not _preload_task.done():
+            try:
+                await asyncio.wait_for(_preload_task, timeout=1.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                pass  # 超时或取消时忽略，继续关闭流程
+        
+        logger.info("✅ 资源清理完成")
+
 # 使用 FastAPI 的 app.state 来管理启动配置
 def get_start_config():
     """从 app.state 获取启动配置"""
@@ -719,5 +744,17 @@ if __name__ == "__main__":
     
     try:
         server.run()
+    except KeyboardInterrupt:
+        # Ctrl+C 正常关闭，不显示 traceback
+        logger.info("收到关闭信号（Ctrl+C），正在关闭服务器...")
+    except Exception as e:
+        # 检查是否是正常关闭相关的异常
+        error_str = str(e).lower()
+        if any(keyword in error_str for keyword in ['cancelled', 'keyboardinterrupt', 'event loop is closed']):
+            logger.info("服务器正在关闭...")
+        else:
+            # 真正的错误，显示完整 traceback
+            logger.error(f"服务器运行时发生错误: {e}", exc_info=True)
+            raise
     finally:
         logger.info("服务器已关闭")

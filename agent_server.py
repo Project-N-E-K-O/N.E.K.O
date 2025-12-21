@@ -518,6 +518,59 @@ async def startup():
     logger.info("[Agent] ✅ Agent server started with simplified task executor")
 
 
+@app.on_event("shutdown")
+async def shutdown():
+    """服务器关闭时清理所有 AsyncClient 实例"""
+    logger.info("[Agent] 正在清理 AsyncClient 资源...")
+    
+    # 清理 Processor 中的 McpRouterClient
+    if Modules.processor and hasattr(Modules.processor, 'router'):
+        try:
+            await Modules.processor.router.aclose()
+            logger.debug("[Agent] ✅ Processor.router 已清理")
+        except (asyncio.CancelledError, RuntimeError) as e:
+            # 正常关闭流程中的取消或事件循环已关闭
+            error_str = str(e).lower()
+            if 'cancelled' in error_str or 'event loop is closed' in error_str or 'loop is closed' in error_str:
+                logger.debug("[Agent] Processor.router 清理时事件循环已关闭（正常关闭）")
+            else:
+                logger.warning(f"[Agent] ⚠️ 清理 Processor.router 时出错: {e}")
+        except Exception as e:
+            logger.warning(f"[Agent] ⚠️ 清理 Processor.router 时出现意外错误: {e}")
+    
+    # 清理 TaskPlanner 中的 McpRouterClient
+    if Modules.planner and hasattr(Modules.planner, 'router'):
+        try:
+            await Modules.planner.router.aclose()
+            logger.debug("[Agent] ✅ TaskPlanner.router 已清理")
+        except (asyncio.CancelledError, RuntimeError) as e:
+            # 正常关闭流程中的取消或事件循环已关闭
+            error_str = str(e).lower()
+            if 'cancelled' in error_str or 'event loop is closed' in error_str or 'loop is closed' in error_str:
+                logger.debug("[Agent] TaskPlanner.router 清理时事件循环已关闭（正常关闭）")
+            else:
+                logger.warning(f"[Agent] ⚠️ 清理 TaskPlanner.router 时出错: {e}")
+        except Exception as e:
+            logger.warning(f"[Agent] ⚠️ 清理 TaskPlanner.router 时出现意外错误: {e}")
+    
+    # 清理 DirectTaskExecutor 中的 McpRouterClient
+    if Modules.task_executor and hasattr(Modules.task_executor, 'router'):
+        try:
+            await Modules.task_executor.router.aclose()
+            logger.debug("[Agent] ✅ DirectTaskExecutor.router 已清理")
+        except (asyncio.CancelledError, RuntimeError) as e:
+            # 正常关闭流程中的取消或事件循环已关闭
+            error_str = str(e).lower()
+            if 'cancelled' in error_str or 'event loop is closed' in error_str or 'loop is closed' in error_str:
+                logger.debug("[Agent] DirectTaskExecutor.router 清理时事件循环已关闭（正常关闭）")
+            else:
+                logger.warning(f"[Agent] ⚠️ 清理 DirectTaskExecutor.router 时出错: {e}")
+        except Exception as e:
+            logger.warning(f"[Agent] ⚠️ 清理 DirectTaskExecutor.router 时出现意外错误: {e}")
+    
+    logger.info("[Agent] ✅ AsyncClient 资源清理完成")
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "agent_flags": Modules.agent_flags}
