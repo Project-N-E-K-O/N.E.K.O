@@ -528,13 +528,12 @@ async def shutdown():
         try:
             await Modules.processor.router.aclose()
             logger.debug("[Agent] ✅ Processor.router 已清理")
-        except (asyncio.CancelledError, RuntimeError) as e:
-            # 正常关闭流程中的取消或事件循环已关闭
-            error_str = str(e).lower()
-            if 'cancelled' in error_str or 'event loop is closed' in error_str or 'loop is closed' in error_str:
-                logger.debug("[Agent] Processor.router 清理时事件循环已关闭（正常关闭）")
-            else:
-                logger.warning(f"[Agent] ⚠️ 清理 Processor.router 时出错: {e}")
+        except asyncio.CancelledError:
+            # 正常关闭流程中的取消
+            logger.debug("[Agent] Processor.router 清理时被取消（正常关闭）")
+        except RuntimeError as e:
+            # RuntimeError 可能包含事件循环已关闭等正常关闭情况
+            logger.debug(f"[Agent] Processor.router 清理时遇到 RuntimeError（可能是正常关闭）: {e}")
         except Exception as e:
             logger.warning(f"[Agent] ⚠️ 清理 Processor.router 时出现意外错误: {e}")
     
@@ -543,13 +542,12 @@ async def shutdown():
         try:
             await Modules.planner.router.aclose()
             logger.debug("[Agent] ✅ TaskPlanner.router 已清理")
-        except (asyncio.CancelledError, RuntimeError) as e:
-            # 正常关闭流程中的取消或事件循环已关闭
-            error_str = str(e).lower()
-            if 'cancelled' in error_str or 'event loop is closed' in error_str or 'loop is closed' in error_str:
-                logger.debug("[Agent] TaskPlanner.router 清理时事件循环已关闭（正常关闭）")
-            else:
-                logger.warning(f"[Agent] ⚠️ 清理 TaskPlanner.router 时出错: {e}")
+        except asyncio.CancelledError:
+            # 正常关闭流程中的取消
+            logger.debug("[Agent] TaskPlanner.router 清理时被取消（正常关闭）")
+        except RuntimeError as e:
+            # RuntimeError 可能包含事件循环已关闭等正常关闭情况
+            logger.debug(f"[Agent] TaskPlanner.router 清理时遇到 RuntimeError（可能是正常关闭）: {e}")
         except Exception as e:
             logger.warning(f"[Agent] ⚠️ 清理 TaskPlanner.router 时出现意外错误: {e}")
     
@@ -558,13 +556,12 @@ async def shutdown():
         try:
             await Modules.task_executor.router.aclose()
             logger.debug("[Agent] ✅ DirectTaskExecutor.router 已清理")
-        except (asyncio.CancelledError, RuntimeError) as e:
-            # 正常关闭流程中的取消或事件循环已关闭
-            error_str = str(e).lower()
-            if 'cancelled' in error_str or 'event loop is closed' in error_str or 'loop is closed' in error_str:
-                logger.debug("[Agent] DirectTaskExecutor.router 清理时事件循环已关闭（正常关闭）")
-            else:
-                logger.warning(f"[Agent] ⚠️ 清理 DirectTaskExecutor.router 时出错: {e}")
+        except asyncio.CancelledError:
+            # 正常关闭流程中的取消
+            logger.debug("[Agent] DirectTaskExecutor.router 清理时被取消（正常关闭）")
+        except RuntimeError as e:
+            # RuntimeError 可能包含事件循环已关闭等正常关闭情况
+            logger.debug(f"[Agent] DirectTaskExecutor.router 清理时遇到 RuntimeError（可能是正常关闭）: {e}")
         except Exception as e:
             logger.warning(f"[Agent] ⚠️ 清理 DirectTaskExecutor.router 时出现意外错误: {e}")
     

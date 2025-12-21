@@ -7,6 +7,7 @@
 import logging
 import re
 import asyncio
+import threading
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Set
 from collections import deque
@@ -347,6 +348,8 @@ def get_plugin_logs(
 
 # 全局日志监控器字典：{plugin_id: LogFileWatcher}
 _log_watchers: Dict[str, 'LogFileWatcher'] = {}
+# 保护 _log_watchers 的线程锁（用于异步环境下的并发访问）
+_log_watchers_lock = threading.Lock()
 
 
 def read_log_file_incremental(log_file: Path, last_position: int) -> tuple[List[Dict[str, Any]], int]:
@@ -545,11 +548,12 @@ async def log_stream_endpoint(websocket: WebSocket, plugin_id: str):
     """
     await websocket.accept()
     
-    # 获取或创建监控器
-    if plugin_id not in _log_watchers:
-        _log_watchers[plugin_id] = LogFileWatcher(plugin_id)
+    # 获取或创建监控器（使用锁保护，避免并发访问问题）
+    with _log_watchers_lock:
+        if plugin_id not in _log_watchers:
+            _log_watchers[plugin_id] = LogFileWatcher(plugin_id)
+        watcher = _log_watchers[plugin_id]
     
-    watcher = _log_watchers[plugin_id]
     watcher.add_client(websocket)
     
     try:
@@ -560,7 +564,7 @@ async def log_stream_endpoint(websocket: WebSocket, plugin_id: str):
         while True:
             try:
                 # 接收客户端消息（如过滤条件变更等）
-                data = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                _ = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
                 # 可以处理客户端消息，比如更新过滤条件
                 # 目前暂时忽略
             except asyncio.TimeoutError:
@@ -585,9 +589,10 @@ async def log_stream_endpoint(websocket: WebSocket, plugin_id: str):
         # 确保清理客户端连接
         try:
             watcher.remove_client(websocket)
-            # 如果没有客户端了，清理监控器
-            if not watcher.clients:
-                _log_watchers.pop(plugin_id, None)
+            # 如果没有客户端了，清理监控器（使用锁保护）
+            with _log_watchers_lock:
+                if not watcher.clients:
+                    _log_watchers.pop(plugin_id, None)
         except Exception as e:
             logger.debug(f"Error cleaning up watcher for {plugin_id}: {e}")
 

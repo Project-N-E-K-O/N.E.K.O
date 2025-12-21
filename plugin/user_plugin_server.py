@@ -37,7 +37,7 @@ from plugin.server.services import (
 from plugin.server.lifecycle import startup, shutdown
 from plugin.server.utils import now_iso
 from plugin.server.management import start_plugin, stop_plugin, reload_plugin
-from plugin.server.logs import get_plugin_logs, get_plugin_log_files, log_stream_endpoint, log_stream_endpoint
+from plugin.server.logs import get_plugin_logs, get_plugin_log_files, log_stream_endpoint
 from plugin.server.config_service import load_plugin_config, update_plugin_config
 from plugin.server.metrics_service import metrics_collector
 from plugin.settings import MESSAGE_QUEUE_DEFAULT_MAX_COUNT

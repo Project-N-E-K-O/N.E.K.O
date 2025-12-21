@@ -21,9 +21,9 @@ from plugin.settings import (
 logger = logging.getLogger("user_plugin_server")
 
 
-def _factory(pid: str, entry: str, config_path: Path) -> PluginProcessHost:
+def _factory(plugin_id: str, entry: str, config_path: Path) -> PluginProcessHost:
     """插件进程宿主工厂函数"""
-    return PluginProcessHost(plugin_id=pid, entry_point=entry, config_path=config_path)
+    return PluginProcessHost(plugin_id=plugin_id, entry_point=entry, config_path=config_path)
 
 
 async def startup() -> None:

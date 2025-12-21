@@ -1,13 +1,15 @@
 /**
  * 日志流 WebSocket 连接管理
  */
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, onMounted, onUnmounted, watch, type Ref, type MaybeRef, toRef, isRef } from 'vue'
 import { useLogsStore } from '@/stores/logs'
 import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { API_BASE_URL } from '@/utils/constants'
 
-export function useLogStream(pluginId: string) {
+export function useLogStream(pluginIdInput: MaybeRef<string>) {
+  // 将输入转换为响应式引用
+  const pluginId = isRef(pluginIdInput) ? pluginIdInput : toRef(() => pluginIdInput)
   const { t } = useI18n()
   const logsStore = useLogsStore()
   const ws = ref<WebSocket | null>(null)
@@ -19,12 +21,13 @@ export function useLogStream(pluginId: string) {
 
   // 获取 WebSocket URL
   function getWebSocketUrl(): string {
+    const id = pluginId.value
     // 在开发环境中，如果使用代理（API_BASE_URL 为空），使用当前窗口的 host
     // Vite 代理会自动转发 WebSocket 请求
     if (!API_BASE_URL || API_BASE_URL === '') {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const host = window.location.host
-      return `${protocol}//${host}/ws/logs/${pluginId}`
+      return `${protocol}//${host}/ws/logs/${id}`
     }
     
     // 生产环境：使用与 HTTP API 相同的基础 URL
@@ -32,13 +35,13 @@ export function useLogStream(pluginId: string) {
       const apiUrl = new URL(API_BASE_URL)
       const protocol = apiUrl.protocol === 'https:' ? 'wss:' : 'ws:'
       const host = apiUrl.host
-      return `${protocol}//${host}/ws/logs/${pluginId}`
+      return `${protocol}//${host}/ws/logs/${id}`
     } catch (e) {
       // 如果 URL 解析失败，回退到当前窗口的 host
       console.warn('[LogStream] Failed to parse API_BASE_URL, using current host:', e)
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const host = window.location.host
-      return `${protocol}//${host}/ws/logs/${pluginId}`
+      return `${protocol}//${host}/ws/logs/${id}`
     }
   }
 
@@ -55,27 +58,28 @@ export function useLogStream(pluginId: string) {
       ws.value.onopen = () => {
         isConnected.value = true
         reconnectAttempts.value = 0
-        console.log(`[LogStream] Connected to ${pluginId}`)
+        console.log(`[LogStream] Connected to ${pluginId.value}`)
       }
 
       ws.value.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data)
+          const id = pluginId.value
           
           if (data.type === 'initial') {
             // 初始日志：替换所有日志
-            logsStore.logs[pluginId] = data.logs || []
-            logsStore.logFileInfo[pluginId] = {
+            logsStore.logs[id] = data.logs || []
+            logsStore.logFileInfo[id] = {
               log_file: data.log_file,
               total_lines: data.total_lines || 0,
               returned_lines: data.logs?.length || 0
             }
-            console.log(`[LogStream] Received initial logs for ${pluginId}:`, data.logs?.length || 0)
+            console.log(`[LogStream] Received initial logs for ${id}:`, data.logs?.length || 0)
           } else if (data.type === 'append') {
             // 追加新日志
-            const currentLogs = logsStore.logs[pluginId] || []
-            logsStore.logs[pluginId] = [...currentLogs, ...(data.logs || [])]
-            console.log(`[LogStream] Appended ${data.logs?.length || 0} new logs for ${pluginId}`)
+            const currentLogs = logsStore.logs[id] || []
+            logsStore.logs[id] = [...currentLogs, ...(data.logs || [])]
+            console.log(`[LogStream] Appended ${data.logs?.length || 0} new logs for ${id}`)
           } else if (data.type === 'ping') {
             // 心跳消息，可以回复 pong（可选）
             // 目前不需要回复
@@ -86,13 +90,13 @@ export function useLogStream(pluginId: string) {
       }
 
       ws.value.onerror = (error) => {
-        console.error(`[LogStream] WebSocket error for ${pluginId}:`, error)
+        console.error(`[LogStream] WebSocket error for ${pluginId.value}:`, error)
         isConnected.value = false
       }
 
       ws.value.onclose = (event) => {
         isConnected.value = false
-        console.log(`[LogStream] Disconnected from ${pluginId}`, event.code, event.reason)
+        console.log(`[LogStream] Disconnected from ${pluginId.value}`, event.code, event.reason)
         
         // 如果不是正常关闭，尝试重连
         if (event.code !== 1000 && reconnectAttempts.value < maxReconnectAttempts) {
@@ -102,7 +106,7 @@ export function useLogStream(pluginId: string) {
             connect()
           }, reconnectDelay)
         } else if (reconnectAttempts.value >= maxReconnectAttempts) {
-          console.error(`[LogStream] Max reconnection attempts reached for ${pluginId}`)
+          console.error(`[LogStream] Max reconnection attempts reached for ${pluginId.value}`)
           ElMessage.error(t('logs.connectionFailed'))
         }
       }
@@ -138,7 +142,7 @@ export function useLogStream(pluginId: string) {
   }
 
   // 监听 pluginId 变化，重新连接
-  watch(() => pluginId, (newId, oldId) => {
+  watch(pluginId, (newId, oldId) => {
     if (oldId && oldId !== newId) {
       disconnect()
     }
@@ -149,7 +153,7 @@ export function useLogStream(pluginId: string) {
 
   // 组件挂载时连接
   onMounted(() => {
-    if (pluginId) {
+    if (pluginId.value) {
       connect()
     }
   })

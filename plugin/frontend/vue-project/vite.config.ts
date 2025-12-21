@@ -18,8 +18,9 @@ export default defineConfig({
   server: {
     port: 5173,
     fs: {
-      // 允许访问项目根目录之外的文件
-      strict: false
+      // 允许访问父目录（更安全的替代方案，而不是完全禁用严格模式）
+      // 这样可以访问项目根目录之外的必要文件，同时保持文件系统的安全防护
+      allow: ['..']
     },
     proxy: {
       // 代理所有插件服务器 API 请求

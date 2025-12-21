@@ -22,8 +22,9 @@ function applyDarkMode(dark: boolean) {
 
 /**
  * 初始化深色模式
+ * 导出以便在应用启动时调用（在 main.ts 中）
  */
-function initDarkMode() {
+export function initDarkMode() {
   const saved = localStorage.getItem(DARK_MODE_KEY)
   if (saved !== null) {
     const dark = saved === 'true'
@@ -46,7 +47,7 @@ function toggleDarkMode() {
  * 使用深色模式的 Composable
  */
 export function useDarkMode() {
-  // 在组件挂载时同步状态
+  // 在组件挂载时同步状态（作为备用，主要初始化在模块加载时完成）
   onMounted(() => {
     const html = document.documentElement
     isDark.value = html.classList.contains('dark')
@@ -57,4 +58,7 @@ export function useDarkMode() {
     toggleDarkMode
   }
 }
+
+// 注意：initDarkMode 现在在 main.ts 中被调用（在应用挂载前）
+// 这样可以避免页面闪烁，并确保状态在应用启动时就正确初始化
 

@@ -4,7 +4,9 @@
 提供插件配置的读取和更新功能。
 """
 import logging
+import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Dict, Any, Optional
 from datetime import datetime
@@ -136,7 +138,7 @@ def load_plugin_config(plugin_id: str) -> Dict[str, Any]:
             "config_path": str(config_path)
         }
     except Exception as e:
-        logger.exception(f"Failed to load config for plugin {plugin_id}: {e}")
+        logger.exception(f"Failed to load config for plugin {plugin_id}")
         raise HTTPException(
             status_code=500,
             detail=f"Failed to load config: {str(e)}"
@@ -174,20 +176,49 @@ def update_plugin_config(plugin_id: str, updates: Dict[str, Any]) -> Dict[str, A
     config_path = get_plugin_config_path(plugin_id)
     
     try:
-        # 使用文件锁保护读写操作，避免并发写入冲突
-        with open(config_path, 'r+b') as f:
+        # 读取现有配置
+        with open(config_path, 'rb') as f:
             with file_lock(f):
-                # 读取现有配置
                 current_config = tomllib.load(f)
-                
-                # 深度合并
-                merged_config = deep_merge(current_config, updates)
-                
-                # 写入文件（先清空再写入）
-                f.seek(0)
-                f.truncate()
-                tomli_w.dump(merged_config, f)
-                f.flush()  # 确保数据写入磁盘
+        
+        # 深度合并
+        merged_config = deep_merge(current_config, updates)
+        
+        # 使用临时文件 + 原子性 rename 的方式，确保配置持久化的可靠性
+        # 这样即使写入过程中出问题，原文件也不会损坏
+        config_dir = config_path.parent
+        temp_fd, temp_path = tempfile.mkstemp(
+            suffix='.toml',
+            prefix='.plugin_config_',
+            dir=config_dir
+        )
+        
+        try:
+            # 写入临时文件
+            with os.fdopen(temp_fd, 'wb') as temp_file:
+                tomli_w.dump(merged_config, temp_file)
+                temp_file.flush()  # 确保数据从 Python 缓冲区写入操作系统
+                os.fsync(temp_file.fileno())  # 确保数据立即写入磁盘
+            
+            # 原子性地替换原文件
+            # 在大多数文件系统上，rename 是原子操作
+            os.replace(temp_path, config_path)
+            
+            # 确保目录的元数据也同步到磁盘
+            config_dir_fd = os.open(config_dir, os.O_DIRECTORY)
+            try:
+                os.fsync(config_dir_fd)
+            finally:
+                os.close(config_dir_fd)
+        
+        except Exception:
+            # 如果写入失败，清理临时文件
+            try:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+            except Exception:
+                pass
+            raise
         
         # 重新加载配置
         updated = load_plugin_config(plugin_id)
@@ -204,7 +235,7 @@ def update_plugin_config(plugin_id: str, updates: Dict[str, Any]) -> Dict[str, A
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"Failed to update config for plugin {plugin_id}: {e}")
+        logger.exception(f"Failed to update config for plugin {plugin_id}")
         raise HTTPException(
             status_code=500,
             detail=f"Failed to update config: {str(e)}"

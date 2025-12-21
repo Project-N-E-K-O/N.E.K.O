@@ -77,7 +77,17 @@
               <span>{{ $t('dashboard.serverInfo') }}</span>
             </div>
           </template>
-          <div v-if="serverInfo" class="server-info">
+          <div v-if="serverInfoLoading" class="server-info-loading">
+            <LoadingSpinner :loading="true" :text="$t('common.loading')" />
+          </div>
+          <div v-else-if="serverInfoError" class="server-info-error">
+            <el-alert type="warning" :closable="false">
+              <template #title>
+                <span>{{ $t('dashboard.failedToLoadServerInfo') }}</span>
+              </template>
+            </el-alert>
+          </div>
+          <div v-else-if="serverInfo" class="server-info">
             <div class="info-item">
               <span class="info-label">{{ $t('dashboard.sdkVersion') }}</span>
               <el-tag v-if="serverInfo.sdk_version" type="info" size="large">
@@ -89,16 +99,6 @@
               <span class="info-label">{{ $t('dashboard.updateTime') }}</span>
               <span class="info-value">{{ serverInfo.time ? formatTime(serverInfo.time) : '-' }}</span>
             </div>
-          </div>
-          <div v-else-if="serverInfoLoading" class="server-info-loading">
-            <LoadingSpinner :loading="true" :text="$t('common.loading')" />
-          </div>
-          <div v-else class="server-info-error">
-            <el-alert type="warning" :closable="false">
-              <template #title>
-                <span>{{ $t('dashboard.failedToLoadServerInfo') }}</span>
-              </template>
-            </el-alert>
           </div>
         </el-card>
       </el-col>
@@ -123,6 +123,7 @@ const metricsStore = useMetricsStore()
 
 const serverInfo = ref<ServerInfo | null>(null)
 const serverInfoLoading = ref(false)
+const serverInfoError = ref(false)
 const metricsLoading = ref(false)
 const globalMetrics = ref<GlobalMetrics | null>(null)
 
@@ -164,6 +165,7 @@ function formatTime(time: string): string {
 
 async function fetchServerInfo() {
   serverInfoLoading.value = true
+  serverInfoError.value = false
   try {
     const info = await getServerInfo()
     console.log('Server info received:', info)
@@ -180,12 +182,8 @@ async function fetchServerInfo() {
     }
   } catch (err: any) {
     console.error('Failed to fetch server info:', err)
-    // 即使失败也设置一个默认值，避免一直显示加载
-    serverInfo.value = {
-      sdk_version: 'Unknown',
-      plugins_count: 0,
-      time: new Date().toISOString()
-    }
+    serverInfoError.value = true
+    // 保持 serverInfo 为 null，让模板显示错误提示
   } finally {
     serverInfoLoading.value = false
   }
