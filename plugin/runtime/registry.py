@@ -4,6 +4,8 @@ from dataclasses import dataclass
 import importlib
 import inspect
 import logging
+import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Callable, Type, Optional
 
@@ -143,18 +145,37 @@ def load_plugins_from_toml(
         return
 
     logger.info("Loading plugins from %s", plugin_config_root)
-    for toml_path in plugin_config_root.glob("*/plugin.toml"):
+    
+    # 设置 Python 路径，确保能够导入插件模块
+    # 获取项目根目录（假设 plugin_config_root 在 plugin/plugins）
+    project_root = plugin_config_root.parent.parent.resolve()
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+        logger.info("Added project root to sys.path: %s", project_root)
+    logger.info("Current working directory: %s", os.getcwd())
+    logger.info("Python path (first 3): %s", sys.path[:3])
+    
+    found_toml_files = list(plugin_config_root.glob("*/plugin.toml"))
+    logger.info("Found %d plugin.toml files: %s", len(found_toml_files), [str(p) for p in found_toml_files])
+    
+    for toml_path in found_toml_files:
+        logger.info("Processing plugin config: %s", toml_path)
         try:
             with toml_path.open("rb") as f:
                 conf = tomllib.load(f)
             pdata = conf.get("plugin") or {}
             pid = pdata.get("id")
             if not pid:
+                logger.warning("Plugin config %s has no 'id' field, skipping", toml_path)
                 continue
 
+            logger.info("Plugin ID: %s", pid)
             entry = pdata.get("entry")
             if not entry or ":" not in entry:
+                logger.warning("Plugin %s has invalid entry point '%s', skipping", pid, entry)
                 continue
+            
+            logger.info("Plugin %s entry point: %s", pid, entry)
 
             sdk_config = pdata.get("sdk")
             sdk_supported_str = None
@@ -162,7 +183,8 @@ def load_plugins_from_toml(
             sdk_untested_str = None
             sdk_conflicts_list: List[str] = []
 
-            # Backward compatibility: fall back to single sdk_version when no sdk block present
+            # Parse SDK version requirements from [plugin.sdk] block
+            logger.debug("Plugin %s SDK config: %s", pid, sdk_config)
             if isinstance(sdk_config, dict):
                 sdk_recommended_str = sdk_config.get("recommended")
                 sdk_supported_str = sdk_config.get("supported") or sdk_config.get("compatible")
@@ -172,8 +194,18 @@ def load_plugins_from_toml(
                     sdk_conflicts_list = [str(c) for c in raw_conflicts if c]
                 elif isinstance(raw_conflicts, str) and raw_conflicts.strip():
                     sdk_conflicts_list = [raw_conflicts.strip()]
+                logger.info(
+                    "Plugin %s SDK requirements: supported=%s, recommended=%s, untested=%s, conflicts=%s",
+                    pid, sdk_supported_str, sdk_recommended_str, sdk_untested_str, sdk_conflicts_list
+                )
             else:
-                sdk_supported_str = pdata.get("sdk_version") or sdk_config
+                # SDK configuration must be a dict (plugin.sdk block)
+                logger.error(
+                    "Plugin %s: SDK configuration must be a dict (plugin.sdk block), got %s; skipping load",
+                    pid,
+                    type(sdk_config).__name__
+                )
+                continue
 
             host_version_obj: Optional[Version] = None
             if Version and SpecifierSet:
@@ -193,6 +225,7 @@ def load_plugins_from_toml(
                 ]
 
                 # Conflict check
+                logger.debug("Plugin %s: checking conflicts against host SDK %s", pid, SDK_VERSION)
                 if any(spec and _version_matches(spec, host_version_obj) for spec in conflict_specs):
                     logger.error(
                         "Plugin %s conflicts with host SDK %s (conflict ranges: %s); skipping load",
@@ -201,10 +234,13 @@ def load_plugins_from_toml(
                         sdk_conflicts_list,
                     )
                     continue
+                logger.debug("Plugin %s: no conflicts detected", pid)
 
                 # Compatibility check (supported or untested range)
+                logger.debug("Plugin %s: checking compatibility - supported_spec=%s, untested_spec=%s", pid, supported_spec, untested_spec)
                 in_supported = _version_matches(supported_spec, host_version_obj)
                 in_untested = _version_matches(untested_spec, host_version_obj)
+                logger.debug("Plugin %s: compatibility check result - in_supported=%s, in_untested=%s", pid, in_supported, in_untested)
 
                 if supported_spec and not (in_supported or in_untested):
                     logger.error(
@@ -215,6 +251,7 @@ def load_plugins_from_toml(
                         SDK_VERSION,
                     )
                     continue
+                logger.info("Plugin %s: SDK version check passed", pid)
 
                 # Recommended range warning
                 if recommended_spec and not _version_matches(recommended_spec, host_version_obj):
@@ -235,6 +272,7 @@ def load_plugins_from_toml(
                     )
             else:
                 # If we cannot parse versions, require at least string equality for legacy sdk_version
+                logger.warning("Plugin %s: Cannot parse SDK versions, using string comparison", pid)
                 if sdk_supported_str and sdk_supported_str != SDK_VERSION:
                     logger.error(
                         "Plugin %s requires sdk_version %s but host SDK is %s; skipping load",
@@ -243,26 +281,33 @@ def load_plugins_from_toml(
                         SDK_VERSION,
                     )
                     continue
+                logger.info("Plugin %s: SDK version string check passed", pid)
 
             module_path, class_name = entry.split(":", 1)
+            logger.info("Plugin %s: importing module '%s', class '%s'", pid, module_path, class_name)
             try:
                 mod = importlib.import_module(module_path)
+                logger.info("Plugin %s: module '%s' imported successfully", pid, module_path)
                 cls: Type[Any] = getattr(mod, class_name)
+                logger.info("Plugin %s: class '%s' found in module", pid, class_name)
             except (ImportError, ModuleNotFoundError) as e:
-                logger.error("Failed to import module '%s' for plugin %s: %s", module_path, pid, e)
+                logger.error("Failed to import module '%s' for plugin %s: %s", module_path, pid, e, exc_info=True)
                 continue
             except AttributeError as e:
-                logger.error("Class '%s' not found in module '%s' for plugin %s: %s", class_name, module_path, pid, e)
+                logger.error("Class '%s' not found in module '%s' for plugin %s: %s", class_name, module_path, pid, e, exc_info=True)
                 continue
             except Exception as e:
-                logger.exception("Unexpected error importing plugin class %s", entry)
+                logger.exception("Unexpected error importing plugin class %s for plugin %s", entry, pid)
                 continue
 
             try:
+                logger.info("Plugin %s: creating process host...", pid)
                 host = process_host_factory(pid, entry, toml_path)
+                logger.info("Plugin %s: process host created successfully", pid)
                 state.plugin_hosts[pid] = host
+                logger.info("Plugin %s: registered in plugin_hosts", pid)
             except (OSError, RuntimeError) as e:
-                logger.error("Failed to start process for plugin %s: %s", pid, e)
+                logger.error("Failed to start process for plugin %s: %s", pid, e, exc_info=True)
                 continue
             except Exception as e:
                 logger.exception("Unexpected error starting process for plugin %s", pid)
@@ -287,7 +332,7 @@ def load_plugins_from_toml(
             logger.info("Loaded plugin %s (Process: %s)", pid, getattr(host, "process", None))
         except (KeyError, ValueError, TypeError) as e:
             # TOML 解析或配置错误
-            logger.error("Invalid plugin configuration in %s: %s", toml_path, e)
+            logger.error("❌ Invalid plugin configuration in %s: %s", toml_path, e, exc_info=True)
         except Exception as e:
             # 其他未知错误
-            logger.exception("Unexpected error loading plugin from %s", toml_path)
+            logger.exception("❌ Unexpected error loading plugin from %s", toml_path)

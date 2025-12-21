@@ -1,0 +1,199 @@
+/**
+ * English language pack
+ */
+export default {
+  common: {
+    loading: 'Loading...',
+    refresh: 'Refresh',
+    search: 'Search',
+    filter: 'Filter',
+    reset: 'Reset',
+    confirm: 'Confirm',
+    cancel: 'Cancel',
+    save: 'Save',
+    delete: 'Delete',
+    edit: 'Edit',
+    add: 'Add',
+    back: 'Back',
+    submit: 'Submit',
+    close: 'Close',
+    success: 'Success',
+    error: 'Error',
+    warning: 'Warning',
+    info: 'Info',
+    noData: 'No Data',
+    unknown: 'Unknown',
+    nA: 'N/A',
+    darkMode: 'Dark Mode',
+    lightMode: 'Light Mode'
+  },
+  nav: {
+    dashboard: 'Dashboard',
+    plugins: 'Plugins',
+    metrics: 'Metrics',
+    logs: 'Logs',
+    serverLogs: 'Server Logs'
+  },
+  dashboard: {
+    title: 'Dashboard',
+    pluginOverview: 'Plugin Overview',
+    totalPlugins: 'Total Plugins',
+    running: 'Running',
+    stopped: 'Stopped',
+    crashed: 'Crashed',
+    globalMetrics: 'Global Performance Monitoring',
+    totalCpuUsage: 'Total CPU Usage',
+    totalMemoryUsage: 'Total Memory Usage',
+    totalThreads: 'Total Threads',
+    activePlugins: 'Active Plugins',
+    serverInfo: 'Server Info',
+    sdkVersion: 'SDK Version',
+    updateTime: 'Update Time',
+    noMetricsData: 'No Performance Data',
+    failedToLoadServerInfo: 'Failed to load server info'
+  },
+  plugins: {
+    title: 'Plugins',
+    name: 'Plugin Name',
+    id: 'Plugin ID',
+    version: 'Version',
+    description: 'Description',
+    status: 'Status',
+    sdkVersion: 'SDK Version',
+    actions: 'Actions',
+    start: 'Start',
+    stop: 'Stop',
+    reload: 'Reload',
+    viewDetails: 'View Details',
+    noPlugins: 'No Plugins',
+    pluginNotFound: 'Plugin not found',
+    pluginDetail: 'Plugin Detail',
+    basicInfo: 'Basic Info',
+    entries: 'Entry Points',
+    performance: 'Performance',
+    logs: 'Logs',
+    entryPoint: 'Entry Point',
+    entryName: 'Name',
+    entryId: 'ID',
+    entryDescription: 'Description',
+    trigger: 'Trigger',
+    noEntries: 'No Entry Points',
+    showMetrics: 'Show Metrics',
+    hideMetrics: 'Hide Metrics'
+  },
+  metrics: {
+    title: 'Metrics',
+    pluginMetrics: 'Plugin Performance Metrics',
+    cpuUsage: 'CPU Usage',
+    memoryUsage: 'Memory Usage',
+    threads: 'Threads',
+    pid: 'Process ID',
+    noMetrics: 'No Performance Data',
+    refreshInterval: 'Refresh Interval',
+    seconds: 'seconds',
+    cpu: 'CPU Usage',
+    memory: 'Memory',
+    memoryPercent: 'Memory %',
+    pendingRequests: 'Pending Requests',
+    totalExecutions: 'Total Executions',
+    noData: 'No data'
+  },
+  logs: {
+    title: 'Logs',
+    pluginLogs: 'Plugin Logs',
+    serverLogs: 'Server Logs',
+    level: 'Level',
+    time: 'Time',
+    source: 'Source',
+    file: 'File',
+    message: 'Message',
+    allLevels: 'All Levels',
+    noLogs: 'No Logs',
+    autoScroll: 'Auto Scroll',
+    scrollToBottom: 'Scroll to Bottom',
+    logFiles: 'Log Files',
+    selectFile: 'Select File',
+    search: 'Search logs...',
+    lines: 'Lines',
+    totalLogs: 'Total {count} logs',
+    loadError: 'Failed to load logs: {error}',
+    emptyFile: 'Log file is empty or does not exist',
+    noMatches: 'No matching logs',
+    logFile: 'Log File',
+    totalLines: 'Total Lines',
+    returnedLines: 'Returned Lines',
+    connected: 'Connected',
+    disconnected: 'Disconnected',
+    connectionFailed: 'Log stream connection failed'
+  },
+  status: {
+    running: 'Running',
+    stopped: 'Stopped',
+    crashed: 'Crashed',
+    loading: 'Loading'
+  },
+  logLevel: {
+    DEBUG: 'Debug',
+    INFO: 'Info',
+    WARNING: 'Warning',
+    ERROR: 'Error',
+    CRITICAL: 'Critical',
+    UNKNOWN: 'Unknown'
+  },
+  messages: {
+    fetchFailed: 'Failed to fetch data',
+    operationSuccess: 'Operation successful',
+    operationFailed: 'Operation failed',
+    confirmDelete: 'Confirm delete?',
+    confirmStop: 'Confirm stop plugin?',
+    confirmStart: 'Confirm start plugin?',
+    confirmReload: 'Confirm reload plugin?',
+    pluginStarted: 'Plugin started successfully',
+    pluginStopped: 'Plugin stopped',
+    pluginReloaded: 'Plugin reloaded successfully',
+    startFailed: 'Failed to start',
+    stopFailed: 'Failed to stop',
+    reloadFailed: 'Failed to reload'
+  },
+  welcome: {
+    about: {
+      title: 'About N.E.K.O.',
+      description: 'N.E.K.O. (Networked Emotional Knowing Organism) is a "living" AI companion metaverse, built together by you and me. It is an open-source driven, charity-oriented UGC platform dedicated to building an AI-native metaverse closely connected to the real world.'
+    },
+    pluginManagement: {
+      title: 'Plugin Management',
+      description: 'Access the plugin list through the left navigation bar. You can view, start, stop, and reload plugins. Each plugin has independent performance monitoring and log viewing features to help you better manage and debug the plugin system.'
+    },
+    mcpServer: {
+      title: 'MCP Server',
+      description: 'N.E.K.O. supports Model Context Protocol (MCP) servers, allowing plugins to interact with other AI systems and services through standardized protocols. You can view and manage MCP connections in the plugin details page.'
+    },
+    documentation: {
+      title: 'Documentation & Resources',
+      description: 'Check out the project documentation for more information:',
+      links: [
+        { text: 'GitHub Repository', url: 'https://github.com/Project-N-E-K-O/N.E.K.O' },
+        { text: 'Steam Store Page', url: 'https://store.steampowered.com/app/4099310/__NEKO/' },
+        { text: 'Discord Community', url: 'https://discord.gg/5kgHfepNJr' }
+      ],
+      linkSeparator: ', ',
+      linkLastSeparator: ', and ',
+      readme: 'README.md file:',
+      openFailed: 'Failed to open README.md in editor',
+      openTimeout: 'Request timeout, failed to open README.md file',
+      openError: 'Error occurred while opening README.md file'
+    },
+    community: {
+      title: 'Community & Support',
+      description: 'Join our community to connect with other developers and users:',
+      links: [
+        { text: 'Discord Server', url: 'https://discord.gg/5kgHfepNJr' },
+        { text: 'QQ Group', url: 'https://qm.qq.com/q/hN82yFONJQ' },
+        { text: 'GitHub Issues', url: 'https://github.com/Project-N-E-K-O/N.E.K.O/issues' }
+      ],
+      linkSeparator: ', ',
+      linkLastSeparator: ', and '
+    }
+  }
+}
+

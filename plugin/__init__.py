@@ -1,10 +1,9 @@
 """
-Plugin 模块 - 向后兼容导入
+Plugin 模块
 
-提供向后兼容的导入路径，允许旧代码继续工作。
+提供插件系统的核心功能和SDK。
 """
 
-# 向后兼容：从旧路径导入
 from plugin.core.state import state, PluginRuntimeState
 from plugin.core.context import PluginContext
 from plugin.runtime.status import status_manager, PluginStatusManager
@@ -61,43 +60,6 @@ from plugin.sdk.decorators import (
     message,
     timer_interval,
 )
-
-# 向后兼容：提供旧模块路径的别名
-import sys
-import types
-
-# 创建虚拟模块以支持旧导入路径
-# 注意：这是临时的兼容层，建议迁移到新的导入路径
-# 未来版本可能会移除这些虚拟模块
-_old_modules = {
-    'plugin.server_base': types.ModuleType('plugin.server_base'),
-    'plugin.event_base': types.ModuleType('plugin.event_base'),
-    'plugin.plugin_base': types.ModuleType('plugin.plugin_base'),
-    'plugin.resource_manager': types.ModuleType('plugin.resource_manager'),
-}
-
-# 填充虚拟模块
-_old_modules['plugin.server_base'].state = state
-_old_modules['plugin.server_base'].PluginRuntimeState = PluginRuntimeState
-_old_modules['plugin.server_base'].PluginContext = PluginContext
-_old_modules['plugin.server_base'].EVENT_QUEUE_MAX = EVENT_QUEUE_MAX
-_old_modules['plugin.server_base'].MESSAGE_QUEUE_MAX = MESSAGE_QUEUE_MAX
-
-_old_modules['plugin.event_base'].EventMeta = EventMeta
-_old_modules['plugin.event_base'].EventHandler = EventHandler
-_old_modules['plugin.event_base'].EventType = EventType
-_old_modules['plugin.event_base'].EVENT_META_ATTR = EVENT_META_ATTR
-
-_old_modules['plugin.plugin_base'].NekoPluginBase = NekoPluginBase
-_old_modules['plugin.plugin_base'].PluginMeta = SDKPluginMeta
-_old_modules['plugin.plugin_base'].NEKO_PLUGIN_TAG = NEKO_PLUGIN_TAG
-_old_modules['plugin.plugin_base'].NEKO_PLUGIN_META_ATTR = NEKO_PLUGIN_META_ATTR
-
-_old_modules['plugin.resource_manager'].PluginCommunicationResourceManager = PluginCommunicationResourceManager
-
-# 注册虚拟模块
-for name, module in _old_modules.items():
-    sys.modules[name] = module
 
 __all__ = [
     # Core

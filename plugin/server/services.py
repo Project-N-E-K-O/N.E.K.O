@@ -119,9 +119,18 @@ async def trigger_plugin(
     Raises:
         HTTPException: 如果插件不存在或执行失败
     """
+    # 关键日志：记录触发请求
     logger.info(
-        "[plugin_trigger] plugin_id=%s entry_id=%s task_id=%s args=%s",
-        plugin_id, entry_id, task_id, args
+        "[plugin_trigger] Processing trigger: plugin_id=%s, entry_id=%s, task_id=%s",
+        plugin_id, entry_id, task_id
+    )
+    
+    # 详细参数信息使用 DEBUG
+    logger.debug(
+        "[plugin_trigger] Args: type=%s, keys=%s, content=%s",
+        type(args),
+        list(args.keys()) if isinstance(args, dict) else "N/A",
+        args,
     )
     
     # 记录事件到队列
@@ -163,8 +172,18 @@ async def trigger_plugin(
     plugin_response: Any = None
     plugin_error: Optional[Dict[str, Any]] = None
     
+    logger.debug(
+        "[plugin_trigger] Calling host.trigger: entry_id=%s, args=%s",
+        entry_id,
+        args,
+    )
+    
     try:
         plugin_response = await host.trigger(entry_id, args, timeout=PLUGIN_EXECUTION_TIMEOUT)
+        logger.debug(
+            "[plugin_trigger] Plugin response: %s",
+            str(plugin_response)[:500] if plugin_response else None,
+        )
     except TimeoutError as e:
         plugin_error = {"error": "Plugin execution timed out"}
         logger.error(f"Plugin {plugin_id} entry {entry_id} timed out: {e}")

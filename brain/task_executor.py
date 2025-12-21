@@ -5,6 +5,7 @@ DirectTaskExecutor: 合并 Analyzer + Planner 的功能
 优先使用 MCP,其次使用 ComputerUse,最后使用 UserPlugin
 """
 import json
+import re
 import asyncio
 import logging
 from typing import Dict, Any, List, Optional, Tuple, Callable, Awaitable
@@ -319,7 +320,7 @@ OUTPUT FORMAT (strict JSON):
                         {"role": "user", "content": user_prompt},
                     ],
                     "temperature": 0,
-                    "max_tokens": 400
+                    "max_tokens": 800  # 增加 token 限制, 避免 JSON 被截断
                 }
                 
                 extra_body = get_extra_body(model)
@@ -464,7 +465,7 @@ Return only the JSON object, nothing else.
                         {"role": "user", "content": user_prompt},
                     ],
                     "temperature": 0,
-                    "max_tokens": 400
+                    "max_tokens": 800  # 增加 token 限制, 避免 JSON 被截断
                 }
                 
                 extra_body = get_extra_body(model)
@@ -495,11 +496,47 @@ Return only the JSON object, nothing else.
                     logger.warning("[UserPlugin Assessment] Empty LLM response; cannot parse JSON")
                     return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason="Empty LLM response")
                 
+                # Try to fix common JSON issues before parsing
+                # Remove trailing commas before closing braces/brackets
+                # Fix trailing commas in objects and arrays
+                text = re.sub(r',(\s*[}\]])', r'\1', text)
+                # NOTE: 避免"去注释"误伤字符串内容；只做最小化 JSON 修复
+                # 不删除注释，因为正则表达式会误伤 JSON 字符串中的内容（如 http://、/*...*/）
+                
                 try:
                     decision = json.loads(text)
                 except Exception as e:
-                    logger.exception(f"[UserPlugin Assessment] JSON parse error: {e}; raw_text (truncated): {repr(raw_text)[:2000]}")
-                    return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason=f"JSON parse error: {e}")
+                    # 只在 DEBUG 级别记录 raw_text，避免隐私泄露和日志膨胀
+                    logger.debug(
+                        "[UserPlugin Assessment] JSON parse error; raw_text (truncated): %s",
+                        (repr(raw_text)[:2000] if raw_text is not None else None),
+                    )
+                    # ERROR 级别只记录错误信息，不包含敏感内容
+                    logger.exception("[UserPlugin Assessment] JSON parse error: %s", str(e))
+                    # Try to extract JSON from the text if it's embedded in other text
+                    try:
+                        # Try to find JSON object in the text (improved regex to handle nested objects)
+                        json_match = re.search(r'\{[^{}]*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}[^{}]*)*\}', text)
+                        if json_match:
+                            cleaned_text = json_match.group(0)
+                            # Fix trailing commas again
+                            cleaned_text = re.sub(r',(\s*[}\]])', r'\1', cleaned_text)
+                            decision = json.loads(cleaned_text)
+                            logger.info("[UserPlugin Assessment] Successfully extracted JSON from text")
+                        else:
+                            # JSON extraction failed - return safe default instead of trying to reconstruct
+                            logger.warning("[UserPlugin Assessment] Failed to extract valid JSON from response")
+                            return UserPluginDecision(
+                                has_task=False, 
+                                can_execute=False, 
+                                task_description="", 
+                                plugin_id=None, 
+                                plugin_args=None, 
+                                reason=f"JSON parse error: {e}"
+                            )
+                    except Exception as e2:
+                        logger.warning(f"[UserPlugin Assessment] Failed to extract JSON: {e2}")
+                        return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason=f"JSON parse error: {e}")
                 
                 # return a simple object-like struct, include entry_id if provided by the LLM
                 return UserPluginDecision(
@@ -667,7 +704,7 @@ Return only the JSON object, nothing else.
             try:
                 return await self._execute_user_plugin(task_id=task_id, up_decision=up_decision)
             except Exception as e:
-                logger.exception(f"[TaskExecutor] UserPlugin execution failed: {e}")
+                logger.exception("[TaskExecutor] UserPlugin execution failed")
                 return TaskResult(
                     task_id=task_id,
                     has_task=True,
@@ -851,13 +888,23 @@ Return only the JSON object, nothing else.
         if plugin_entry_id:
             trigger_body["entry_id"] = plugin_entry_id
             logger.info("[TaskExecutor] Using explicit plugin_entry_id for trigger: %s", plugin_entry_id)
-        # send trigger (avoid dumping full args at INFO)
+        
+        # 关键日志: 记录准备触发插件
         logger.info(
-            "[TaskExecutor] POST to plugin trigger %s (plugin_id=%s, entry_id=%s, arg_keys=%s)",
-            trigger_endpoint,
+            "[TaskExecutor] Preparing plugin trigger: plugin_id=%s, entry_id=%s, endpoint=%s",
             plugin_id,
             plugin_entry_id,
+            trigger_endpoint,
+        )
+        # 详细参数信息使用 DEBUG
+        logger.debug(
+            "[TaskExecutor] Plugin args: arg_keys=%s, arg_values=%s",
             list(plugin_args.keys()) if isinstance(plugin_args, dict) else str(type(plugin_args)),
+            {k: str(v)[:100] for k, v in plugin_args.items()} if isinstance(plugin_args, dict) else plugin_args,
+        )
+        logger.debug(
+            "[TaskExecutor] Full trigger_body: %s",
+            trigger_body,
         )
         try:
             import httpx
@@ -917,7 +964,7 @@ Return only the JSON object, nothing else.
                         reason=getattr(up_decision, "reason", "") or "trigger_failed"
                     )
         except Exception as e:
-            logger.exception(f"[TaskExecutor] Trigger call error: {e}")
+            logger.exception("[TaskExecutor] Trigger call error")
             return TaskResult(
                 task_id=task_id,
                 has_task=True,

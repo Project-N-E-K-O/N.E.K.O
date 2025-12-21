@@ -530,6 +530,14 @@ async def shutdown():
             logger.debug("[Agent] ✅ Processor.router 已清理")
         except Exception as e:
             logger.warning(f"[Agent] ⚠️ 清理 Processor.router 时出错: {e}")
+        except asyncio.CancelledError:
+            # 正常关闭流程中的取消
+            logger.debug("[Agent] Processor.router 清理时被取消（正常关闭）")
+        except RuntimeError as e:
+            # RuntimeError 可能包含事件循环已关闭等正常关闭情况
+            logger.debug(f"[Agent] Processor.router 清理时遇到 RuntimeError（可能是正常关闭）: {e}")
+        except Exception as e:
+            logger.warning(f"[Agent] ⚠️ 清理 Processor.router 时出现意外错误: {e}")
     
     # 清理 TaskPlanner 中的 McpRouterClient
     if Modules.planner and hasattr(Modules.planner, 'router'):
@@ -538,6 +546,14 @@ async def shutdown():
             logger.debug("[Agent] ✅ TaskPlanner.router 已清理")
         except Exception as e:
             logger.warning(f"[Agent] ⚠️ 清理 TaskPlanner.router 时出错: {e}")
+        except asyncio.CancelledError:
+            # 正常关闭流程中的取消
+            logger.debug("[Agent] TaskPlanner.router 清理时被取消（正常关闭）")
+        except RuntimeError as e:
+            # RuntimeError 可能包含事件循环已关闭等正常关闭情况
+            logger.debug(f"[Agent] TaskPlanner.router 清理时遇到 RuntimeError（可能是正常关闭）: {e}")
+        except Exception as e:
+            logger.warning(f"[Agent] ⚠️ 清理 TaskPlanner.router 时出现意外错误: {e}")
     
     # 清理 DirectTaskExecutor 中的 McpRouterClient
     if Modules.task_executor and hasattr(Modules.task_executor, 'router'):
@@ -546,6 +562,14 @@ async def shutdown():
             logger.debug("[Agent] ✅ DirectTaskExecutor.router 已清理")
         except Exception as e:
             logger.warning(f"[Agent] ⚠️ 清理 DirectTaskExecutor.router 时出错: {e}")
+        except asyncio.CancelledError:
+            # 正常关闭流程中的取消
+            logger.debug("[Agent] DirectTaskExecutor.router 清理时被取消（正常关闭）")
+        except RuntimeError as e:
+            # RuntimeError 可能包含事件循环已关闭等正常关闭情况
+            logger.debug(f"[Agent] DirectTaskExecutor.router 清理时遇到 RuntimeError（可能是正常关闭）: {e}")
+        except Exception as e:
+            logger.warning(f"[Agent] ⚠️ 清理 DirectTaskExecutor.router 时出现意外错误: {e}")
     
     logger.info("[Agent] ✅ AsyncClient 资源清理完成")
 

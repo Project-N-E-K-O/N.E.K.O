@@ -38,6 +38,9 @@ dependencies = [
   "beautifulsoup4>=4.12.0",
   "googletrans>=4.0.2",
   "translatepy",
+  "tomli>=2.3.0",
+  "tomli-w>=1.2.0",
+  "psutil>=7.1.3",
 ]
 
 

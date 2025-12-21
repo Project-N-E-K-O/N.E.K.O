@@ -608,6 +608,9 @@ async def on_shutdown():
         # 注意：main_server.py 本身不直接创建 McpRouterClient 实例
         # 但为了完整性，我们在这里处理可能存在的其他 httpx.AsyncClient 实例
         # 主要的清理工作应该在 agent_server.py 的 shutdown 事件中完成
+    """服务器关闭时清理资源"""
+    if _IS_MAIN_PROCESS:
+        logger.info("正在清理资源...")
         
         # 等待预加载任务完成（如果还在运行）
         global _preload_task
@@ -616,6 +619,8 @@ async def on_shutdown():
                 await asyncio.wait_for(_preload_task, timeout=1.0)
             except (asyncio.TimeoutError, Exception):
                 pass  # 超时或出错时忽略，继续关闭流程
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                logger.debug("预加载任务清理时超时或取消（正常关闭流程）")
         
         logger.info("✅ 资源清理完成")
 
@@ -823,5 +828,15 @@ if __name__ == "__main__":
     
     try:
         server.run()
+    except KeyboardInterrupt:
+        # Ctrl+C 正常关闭，不显示 traceback
+        logger.info("收到关闭信号（Ctrl+C），正在关闭服务器...")
+    except (asyncio.CancelledError, SystemExit):
+        # 正常的关闭信号
+        logger.info("服务器正在关闭...")
+    except Exception as e:
+        # 真正的错误，显示完整 traceback
+        logger.error(f"服务器运行时发生错误: {e}", exc_info=True)
+        raise
     finally:
         logger.info("服务器已关闭")

@@ -150,4 +150,58 @@ class NekoPluginBase:
         self.file_logger = file_logger
         
         return file_logger
+    
+    def call_plugin(
+        self,
+        plugin_id: str,
+        event_type: str,
+        event_id: str,
+        args: Dict[str, Any],
+        timeout: float = 5.0
+    ) -> Dict[str, Any]:
+        """
+        调用其他插件的自定义事件（插件间功能复用）
+        
+        这是插件间功能复用的推荐方式，使用 Queue 而不是 HTTP。
+        处理流程和 plugin_entry 一样，在单线程的命令循环中执行。
+        
+        Args:
+            plugin_id: 目标插件ID
+            event_type: 自定义事件类型
+            event_id: 事件ID
+            args: 参数字典
+            timeout: 超时时间（秒）
+            
+        Returns:
+            事件处理器的返回结果
+            
+        Raises:
+            RuntimeError: 如果通信队列不可用
+            TimeoutError: 如果超时
+            Exception: 如果事件执行失败
+            
+        Example:
+            ```python
+            # 在插件A中调用插件B的 custom_event
+            result = self.call_plugin(
+                plugin_id="timer_service",
+                event_type="timer_tick",
+                event_id="on_timer_tick",
+                args={"timer_id": "xxx", "count": 1}
+            )
+            ```
+        """
+        if not hasattr(self.ctx, "trigger_plugin_event"):
+            raise RuntimeError(
+                f"Plugin communication not available for plugin {self._plugin_id}. "
+                "This method requires plugin communication queue."
+            )
+        
+        return self.ctx.trigger_plugin_event(
+            target_plugin_id=plugin_id,
+            event_type=event_type,
+            event_id=event_id,
+            args=args,
+            timeout=timeout
+        )
 

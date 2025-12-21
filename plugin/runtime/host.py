@@ -5,6 +5,8 @@ import importlib
 import inspect
 import logging
 import multiprocessing
+import os
+import sys
 import threading
 from pathlib import Path
 from typing import Any, Dict
@@ -39,6 +41,7 @@ def _plugin_process_runner(
     res_queue: Queue,
     status_queue: Queue,
     message_queue: Queue,
+    plugin_comm_queue: Queue = None,
 ) -> None:
     """
     独立进程中的运行函数，负责加载插件、映射入口、处理命令并返回结果。
@@ -47,9 +50,26 @@ def _plugin_process_runner(
     logger = logging.getLogger(f"plugin.{plugin_id}")
 
     try:
+        # 设置 Python 路径，确保能够导入插件模块
+        # 获取项目根目录（假设 config_path 在 plugin/plugins/xxx/plugin.toml）
+        project_root = config_path.parent.parent.parent.resolve()
+        if str(project_root) not in sys.path:
+            sys.path.insert(0, str(project_root))
+            logger.info("[Plugin Process] Added project root to sys.path: %s", project_root)
+        
+        logger.info("[Plugin Process] Starting plugin process for %s", plugin_id)
+        logger.info("[Plugin Process] Entry point: %s", entry_point)
+        logger.info("[Plugin Process] Config path: %s", config_path)
+        logger.info("[Plugin Process] Current working directory: %s", os.getcwd())
+        logger.info("[Plugin Process] Python path: %s", sys.path[:3])  # 只显示前3个路径
+        
         module_path, class_name = entry_point.split(":", 1)
+        logger.info("[Plugin Process] Importing module: %s", module_path)
         mod = importlib.import_module(module_path)
+        logger.info("[Plugin Process] Module imported successfully: %s", module_path)
+        logger.info("[Plugin Process] Getting class: %s", class_name)
         cls = getattr(mod, class_name)
+        logger.info("[Plugin Process] Class found: %s", cls)
 
         ctx = PluginContext(
             plugin_id=plugin_id,
@@ -57,6 +77,7 @@ def _plugin_process_runner(
             config_path=config_path,
             status_queue=status_queue,
             message_queue=message_queue,
+            _plugin_comm_queue=plugin_comm_queue,
         )
         instance = cls(ctx)
 
@@ -135,6 +156,44 @@ def _plugin_process_runner(
                     t.start()
                     logger.info("Started timer '%s' every %ss", eid, seconds)
 
+        # 处理自定义事件：自动启动
+        def _run_custom_event_auto(fn, fn_name: str, event_type: str):
+            """执行自动启动的自定义事件"""
+            try:
+                if asyncio.iscoroutinefunction(fn):
+                    asyncio.run(fn())
+                else:
+                    fn()
+            except (KeyboardInterrupt, SystemExit):
+                logger.info("Custom event '%s' interrupted", fn_name)
+            except Exception as e:
+                logger.exception("Custom event '%s' failed: %s", fn_name, e)
+
+        # 扫描所有自定义事件类型
+        for event_type, events in events_by_type.items():
+            if event_type in ("plugin_entry", "lifecycle", "message", "timer"):
+                continue  # 跳过标准类型
+            
+            # 这是自定义事件类型
+            logger.info("Found custom event type: %s with %d handlers", event_type, len(events))
+            for eid, fn in events.items():
+                meta = getattr(fn, EVENT_META_ATTR, None)
+                if not meta:
+                    continue
+                
+                # 处理自动启动的自定义事件
+                if getattr(meta, "auto_start", False):
+                    trigger_method = getattr(meta, "extra", {}).get("trigger_method", "auto")
+                    if trigger_method == "auto":
+                        # 在独立线程中启动
+                        t = threading.Thread(
+                            target=_run_custom_event_auto,
+                            args=(fn, eid, event_type),
+                            daemon=True,
+                        )
+                        t.start()
+                        logger.info("Started auto custom event '%s' (type: %s)", eid, event_type)
+
         # 命令循环
         while True:
             try:
@@ -145,10 +204,65 @@ def _plugin_process_runner(
             if msg["type"] == "STOP":
                 break
 
+            if msg["type"] == "TRIGGER_CUSTOM":
+                # 触发自定义事件（通过命令队列）
+                event_type = msg.get("event_type")
+                event_id = msg.get("event_id")
+                args = msg.get("args", {})
+                req_id = msg.get("req_id", "unknown")
+                
+                logger.info(
+                    "[Plugin Process] Received TRIGGER_CUSTOM: plugin_id=%s, event_type=%s, event_id=%s, req_id=%s",
+                    plugin_id,
+                    event_type,
+                    event_id,
+                    req_id,
+                )
+                
+                # 查找自定义事件处理器
+                custom_events = events_by_type.get(event_type, {})
+                method = custom_events.get(event_id)
+                
+                ret_payload = {"req_id": req_id, "success": False, "data": None, "error": None}
+                
+                try:
+                    if not method:
+                        ret_payload["error"] = f"Custom event '{event_type}.{event_id}' not found"
+                    else:
+                        # 执行自定义事件
+                        if asyncio.iscoroutinefunction(method):
+                            res = asyncio.run(method(**args))
+                        else:
+                            res = method(**args)
+                        ret_payload["success"] = True
+                        ret_payload["data"] = res
+                except Exception as e:
+                    logger.exception("Error executing custom event %s.%s", event_type, event_id)
+                    ret_payload["error"] = str(e)
+                
+                res_queue.put(ret_payload)
+                continue
+
             if msg["type"] == "TRIGGER":
                 entry_id = msg["entry_id"]
                 args = msg["args"]
                 req_id = msg["req_id"]
+                
+                # 关键日志：记录接收到的触发消息
+                logger.info(
+                    "[Plugin Process] Received TRIGGER: plugin_id=%s, entry_id=%s, req_id=%s",
+                    plugin_id,
+                    entry_id,
+                    req_id,
+                )
+                # 详细参数信息使用 DEBUG
+                logger.debug(
+                    "[Plugin Process] Args: type=%s, keys=%s, content=%s",
+                    type(args),
+                    list(args.keys()) if isinstance(args, dict) else "N/A",
+                    args,
+                )
+                
                 method = entry_map.get(entry_id) or getattr(instance, entry_id, None) or getattr(
                     instance, f"entry_{entry_id}", None
                 )
@@ -159,23 +273,50 @@ def _plugin_process_runner(
                     if not method:
                         raise PluginEntryNotFoundError(plugin_id, entry_id)
                     
-                    logger.info("Executing entry '%s' using method '%s'", entry_id, getattr(method, "__name__", entry_id))
+                    method_name = getattr(method, "__name__", entry_id)
+                    # 关键日志：记录开始执行
+                    logger.info(
+                        "[Plugin Process] Executing entry '%s' using method '%s'",
+                        entry_id,
+                        method_name,
+                    )
+                    
+                    # 详细方法签名和参数匹配信息使用 DEBUG
+                    try:
+                        sig = inspect.signature(method)
+                        params = list(sig.parameters.keys())
+                        logger.debug(
+                            "[Plugin Process] Method signature: params=%s, args_keys=%s",
+                            params,
+                            list(args.keys()) if isinstance(args, dict) else "N/A",
+                        )
+                    except (ValueError, TypeError) as e:
+                        logger.debug("[Plugin Process] Failed to inspect signature: %s", e)
                     
                     if asyncio.iscoroutinefunction(method):
+                        logger.debug("[Plugin Process] Method is async, calling with asyncio.run")
                         res = asyncio.run(method(**args))
                     else:
+                        logger.debug("[Plugin Process] Method is sync, calling directly")
                         try:
+                            logger.debug(
+                                "[Plugin Process] Calling method with args: %s",
+                                args,
+                            )
                             res = method(**args)
+                            logger.debug(
+                                "[Plugin Process] Method call succeeded, result type: %s",
+                                type(res),
+                            )
                         except TypeError as err:
-                            # 检查是否可能是旧式接口（只接收一个 dict 参数）
+                            # 参数不匹配，记录详细信息并抛出
                             sig = inspect.signature(method)
                             params = list(sig.parameters.keys())
-                            if len(params) == 1 and params[0] not in args:
-                                # 旧式只接收一个 dict 的接口，尝试向后兼容
-                                res = method(args)
-                            else:
-                                # 不是旧式接口，重新抛出原始 TypeError
-                                raise err
+                            logger.error(
+                                "[Plugin Process] Invalid call to entry %s: %s, params=%s, args_keys=%s",
+                                entry_id, err, params, list(args.keys()) if isinstance(args, dict) else "N/A"
+                            )
+                            raise
                     
                     ret_payload["success"] = True
                     ret_payload["data"] = res
@@ -231,6 +372,8 @@ class PluginProcessHost:
 
     def __init__(self, plugin_id: str, entry_point: str, config_path: Path):
         self.plugin_id = plugin_id
+        self.entry_point = entry_point
+        self.config_path = config_path
         self.logger = logging.getLogger(f"plugin.host.{plugin_id}")
         
         # 创建队列（由通信资源管理器管理）
@@ -240,9 +383,13 @@ class PluginProcessHost:
         message_queue: Queue = multiprocessing.Queue()
         
         # 创建并启动进程
+        # 获取插件间通信队列（从 state 获取）
+        from plugin.core.state import state
+        plugin_comm_queue = state.plugin_comm_queue
+        
         self.process = multiprocessing.Process(
             target=_plugin_process_runner,
-            args=(plugin_id, entry_point, config_path, cmd_queue, res_queue, status_queue, message_queue),
+            args=(plugin_id, entry_point, config_path, cmd_queue, res_queue, status_queue, message_queue, plugin_comm_queue),
             daemon=False,
         )
         self.process.start()
@@ -260,20 +407,23 @@ class PluginProcessHost:
             message_queue=message_queue,
         )
         
-        # 为了向后兼容，保留这些属性
+        # 保留队列引用（用于 shutdown_sync 等同步方法）
         self.cmd_queue = cmd_queue
         self.res_queue = res_queue
         self.status_queue = status_queue
         self.message_queue = message_queue
     
-    async def start(self, message_target_queue=None) -> None:
+    async def start(self, message_target_queue=None, plugin_comm_queue=None) -> None:
         """
         启动后台任务（需要在异步上下文中调用）
         
         Args:
             message_target_queue: 主进程的消息队列，用于接收插件推送的消息
+            plugin_comm_queue: 主进程的插件间通信队列，用于插件间通信
         """
         await self.comm_manager.start(message_target_queue=message_target_queue)
+        # 保存通信队列引用，用于后续传递给插件进程
+        self._plugin_comm_queue = plugin_comm_queue
     
     async def shutdown(self, timeout: float = PLUGIN_SHUTDOWN_TIMEOUT) -> None:
         """
@@ -327,11 +477,65 @@ class PluginProcessHost:
     
     async def trigger(self, entry_id: str, args: dict, timeout: float = PLUGIN_TRIGGER_TIMEOUT) -> Any:
         """
+        触发插件入口点执行
+        
+        Args:
+            entry_id: 入口点 ID
+            args: 参数字典
+            timeout: 超时时间
+        
+        Returns:
+            插件返回的结果
+        """
+        # 关键日志：记录触发请求
+        self.logger.info(
+            "[PluginHost] Trigger called: plugin_id=%s, entry_id=%s",
+            self.plugin_id,
+            entry_id,
+        )
+        # 详细参数信息使用 DEBUG
+        self.logger.debug(
+            "[PluginHost] Args: type=%s, keys=%s, content=%s",
+            type(args),
+            list(args.keys()) if isinstance(args, dict) else "N/A",
+            args,
+        )
+        """
         发送 TRIGGER 命令到子进程并等待结果
         
         委托给通信资源管理器处理
         """
         return await self.comm_manager.trigger(entry_id, args, timeout)
+    
+    async def trigger_custom_event(
+        self, 
+        event_type: str, 
+        event_id: str, 
+        args: dict, 
+        timeout: float = PLUGIN_TRIGGER_TIMEOUT
+    ) -> Any:
+        """
+        触发自定义事件执行
+        
+        Args:
+            event_type: 自定义事件类型（例如 "file_change", "user_action"）
+            event_id: 事件ID
+            args: 参数字典
+            timeout: 超时时间
+        
+        Returns:
+            事件处理器返回的结果
+        
+        Raises:
+            PluginError: 如果事件不存在或执行失败
+        """
+        self.logger.info(
+            "[PluginHost] Trigger custom event: plugin_id=%s, event_type=%s, event_id=%s",
+            self.plugin_id,
+            event_type,
+            event_id,
+        )
+        return await self.comm_manager.trigger_custom_event(event_type, event_id, args, timeout)
     
     def is_alive(self) -> bool:
         """检查进程是否存活"""

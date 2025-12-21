@@ -68,8 +68,8 @@ class RobustLoggerConfig:
         """
         获取合适的日志目录
         优先级：
-        1. 用户文档目录/{APP_NAME}/logs（我的文档，默认首选）
-        2. 应用程序所在目录/logs
+        1. 应用程序所在目录/log（项目根目录，首选！）
+        2. 用户文档目录/{APP_NAME}/logs（我的文档）
         3. 用户数据目录（AppData等）
         4. 用户主目录
         5. 临时目录（最后的降级选项）
@@ -77,17 +77,7 @@ class RobustLoggerConfig:
         Returns:
             Path: 日志目录路径
         """
-        # 尝试1: 使用用户文档目录（我的文档，默认首选！）
-        try:
-            docs_dir = self._get_documents_directory()
-            # 使用配置的应用名称目录
-            log_dir = docs_dir / self.app_name / "logs"
-            if self._test_directory_writable(log_dir):
-                return log_dir
-        except Exception as e:
-            print(f"Warning: Failed to use Documents directory: {e}", file=sys.stderr)
-        
-        # 尝试2: 使用应用程序所在目录
+        # 尝试1: 使用应用程序所在目录的 log 文件夹（项目根目录，首选！）
         try:
             # 对于exe打包的应用，使用exe所在目录
             if getattr(sys, 'frozen', False):
@@ -97,11 +87,26 @@ class RobustLoggerConfig:
                 # 如果是脚本运行，使用项目根目录
                 app_dir = Path.cwd()
             
+            # 优先使用 log 文件夹
+            log_dir = app_dir / "log"
+            if self._test_directory_writable(log_dir):
+                return log_dir
+            # 如果 log 文件夹不可用，尝试 logs 文件夹
             log_dir = app_dir / "logs"
             if self._test_directory_writable(log_dir):
                 return log_dir
         except Exception as e:
             print(f"Warning: Failed to use application directory: {e}", file=sys.stderr)
+        
+        # 尝试2: 使用用户文档目录（我的文档）
+        try:
+            docs_dir = self._get_documents_directory()
+            # 使用配置的应用名称目录
+            log_dir = docs_dir / self.app_name / "logs"
+            if self._test_directory_writable(log_dir):
+                return log_dir
+        except Exception as e:
+            print(f"Warning: Failed to use Documents directory: {e}", file=sys.stderr)
         
         # 尝试3: 使用系统用户数据目录
         try:
@@ -147,9 +152,11 @@ class RobustLoggerConfig:
         except Exception as e:
             print(f"Warning: Failed to use temp directory: {e}", file=sys.stderr)
         
-        # 如果所有方法都失败，返回当前目录
-        print(f"Warning: All log directory attempts failed, using current directory", file=sys.stderr)
-        return Path.cwd() / "logs"
+        # 如果所有方法都失败，返回当前目录下的 log 文件夹
+        print("Warning: All log directory attempts failed, using current directory", file=sys.stderr)
+        log_dir = Path.cwd() / "log"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        return log_dir
     
     def _get_documents_directory(self):
         """获取系统的用户文档目录（使用系统API）"""
