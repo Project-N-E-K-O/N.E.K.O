@@ -39,6 +39,7 @@ from plugin.server.management import start_plugin, stop_plugin, reload_plugin
 from plugin.server.logs import get_plugin_logs, get_plugin_log_files, log_stream_endpoint
 from plugin.server.config_service import load_plugin_config, update_plugin_config
 from plugin.server.metrics_service import metrics_collector
+from plugin.server.auth import require_admin
 from plugin.settings import MESSAGE_QUEUE_DEFAULT_MAX_COUNT
 
 
@@ -94,20 +95,40 @@ async def available():
 
 
 @app.get("/server/info")
-async def server_info():
+async def server_info(_: str = require_admin):
     """
     返回服务器信息，包括SDK版本
     
-    TODO: Consider hiding SDK version for security (version fingerprinting).
+    - 需要管理员验证码（Bearer Token）
     """
     from plugin.sdk.version import SDK_VERSION
     
     with state.plugins_lock:
         plugins_count = len(state.plugins)
+        registered_plugins = list(state.plugins.keys())
+    
+    with state.plugin_hosts_lock:
+        running_plugins_count = len(state.plugin_hosts)
+        running_plugins = list(state.plugin_hosts.keys())
+        # 检查每个运行插件的进程状态
+        running_details = {}
+        for pid, host in state.plugin_hosts.items():
+            if hasattr(host, 'process') and host.process:
+                running_details[pid] = {
+                    "pid": host.process.pid,
+                    "alive": host.process.is_alive(),
+                    "exitcode": host.process.exitcode
+                }
+            else:
+                running_details[pid] = {"error": "No process object"}
     
     return {
         "sdk_version": SDK_VERSION,
         "plugins_count": plugins_count,
+        "registered_plugins": registered_plugins,
+        "running_plugins_count": running_plugins_count,
+        "running_plugins": running_plugins,
+        "running_details": running_details,
         "time": now_iso()
     }
 
@@ -301,14 +322,12 @@ async def plugin_push_message(payload: PluginPushMessageRequest):
 # ========== 插件管理路由（扩展） ==========
 
 @app.post("/plugin/{plugin_id}/start")
-async def start_plugin_endpoint(plugin_id: str):
+async def start_plugin_endpoint(plugin_id: str, _: str = require_admin):
     """
     启动插件
     
     - POST /plugin/{plugin_id}/start
-    
-    TODO: Add authentication/authorization (e.g., API Key).
-    SECURITY: This endpoint is currently unprotected and should only be exposed to trusted local clients.
+    - 需要管理员验证码（Bearer Token）
     """
     try:
         return await start_plugin(plugin_id)
@@ -320,14 +339,12 @@ async def start_plugin_endpoint(plugin_id: str):
 
 
 @app.post("/plugin/{plugin_id}/stop")
-async def stop_plugin_endpoint(plugin_id: str):
+async def stop_plugin_endpoint(plugin_id: str, _: str = require_admin):
     """
     停止插件
     
     - POST /plugin/{plugin_id}/stop
-    
-    TODO: Add authentication/authorization (e.g., API Key).
-    SECURITY: This endpoint is currently unprotected and should only be exposed to trusted local clients.
+    - 需要管理员验证码（Bearer Token）
     """
     try:
         return await stop_plugin(plugin_id)
@@ -339,14 +356,12 @@ async def stop_plugin_endpoint(plugin_id: str):
 
 
 @app.post("/plugin/{plugin_id}/reload")
-async def reload_plugin_endpoint(plugin_id: str):
+async def reload_plugin_endpoint(plugin_id: str, _: str = require_admin):
     """
     重载插件
     
     - POST /plugin/{plugin_id}/reload
-    
-    TODO: Add authentication/authorization (e.g., API Key).
-    SECURITY: This endpoint is currently unprotected and should only be exposed to trusted local clients.
+    - 需要管理员验证码（Bearer Token）
     """
     try:
         return await reload_plugin(plugin_id)
@@ -360,14 +375,12 @@ async def reload_plugin_endpoint(plugin_id: str):
 # ========== 性能监控路由 ==========
 
 @app.get("/plugin/metrics")
-async def get_all_plugin_metrics():
+async def get_all_plugin_metrics(_: str = require_admin):
     """
     获取所有插件的性能指标
     
     - GET /plugin/metrics
-    
-    TODO: Add authentication (e.g., Read-Only API Key).
-    SECURITY: This endpoint exposes system resource usage and should be protected.
+    - 需要管理员验证码（Bearer Token）
     """
     try:
         metrics = metrics_collector.get_current_metrics()
@@ -421,19 +434,87 @@ async def get_all_plugin_metrics():
 
 
 @app.get("/plugin/metrics/{plugin_id}")
-async def get_plugin_metrics(plugin_id: str):
+async def get_plugin_metrics(plugin_id: str, _: str = require_admin):
     """
     获取指定插件的性能指标
     
     - GET /plugin/metrics/{plugin_id}
+    - 需要管理员验证码（Bearer Token）
+    
+    如果插件正在运行但没有指标数据（比如刚启动），返回 200 但 metrics 为 null。
+    如果插件不存在，返回 404。
     """
     try:
-        metrics = metrics_collector.get_current_metrics(plugin_id)
-        if not metrics:
+        # 检查插件是否已注册（在 state.plugins 中）
+        with state.plugins_lock:
+            plugin_registered = plugin_id in state.plugins
+        
+        # 检查插件是否正在运行（在 state.plugin_hosts 中）
+        with state.plugin_hosts_lock:
+            plugin_running = plugin_id in state.plugin_hosts
+            if plugin_running:
+                host = state.plugin_hosts[plugin_id]
+                # 检查进程状态
+                process_alive = False
+                if hasattr(host, "process") and host.process:
+                    process_alive = host.process.is_alive()
+                    if process_alive:
+                        logger.debug(
+                            f"Plugin {plugin_id} is running (pid: {host.process.pid})"
+                        )
+                    else:
+                        # 进程已退出，记录退出码
+                        exitcode = getattr(host.process, 'exitcode', None)
+                        logger.debug(
+                            f"Plugin {plugin_id} process is not alive (exitcode: {exitcode}, pid: {host.process.pid if hasattr(host.process, 'pid') else 'N/A'})"
+                        )
+                else:
+                    logger.debug(f"Plugin {plugin_id} host has no process object")
+            else:
+                host = None
+                process_alive = False
+                # 调试：列出所有正在运行的插件
+                all_running_plugins = list(state.plugin_hosts.keys())
+                logger.info(
+                    f"Plugin {plugin_id} is registered but not in plugin_hosts. "
+                    f"Currently tracked plugins in plugin_hosts: {all_running_plugins}. "
+                    f"Plugin may need to be started manually via /plugin/{plugin_id}/start"
+                )
+        
+        # 如果插件未注册，返回 404
+        if not plugin_registered:
             raise HTTPException(
                 status_code=404,
-                detail=f"No metrics available for plugin '{plugin_id}'"
+                detail=f"Plugin '{plugin_id}' not found"
             )
+        
+        # 获取指标数据
+        metrics = metrics_collector.get_current_metrics(plugin_id)
+        
+        if not metrics:
+            # 插件已注册但没有指标数据
+            # 检查进程状态以提供更详细的信息
+            if not plugin_running:
+                message = "Plugin is registered but not running (start the plugin to collect metrics)"
+            elif not process_alive:
+                message = "Plugin process is not alive (may have crashed or stopped)"
+            else:
+                message = "Plugin is running but no metrics available yet (may be collecting, check collector status)"
+            
+            logger.debug(
+                f"Plugin {plugin_id} registered but no metrics: registered={plugin_registered}, "
+                f"running={plugin_running}, process_alive={process_alive}, has_host={host is not None}"
+            )
+            
+            return {
+                "plugin_id": plugin_id,
+                "metrics": None,
+                "message": message,
+                "plugin_running": plugin_running,
+                "process_alive": process_alive,
+                "time": now_iso()
+            }
+        
         return {
             "plugin_id": plugin_id,
             "metrics": metrics[0],
@@ -451,12 +532,14 @@ async def get_plugin_metrics_history(
     plugin_id: str,
     limit: int = Query(default=100, ge=1, le=1000),
     start_time: Optional[str] = Query(default=None),
-    end_time: Optional[str] = Query(default=None)
+    end_time: Optional[str] = Query(default=None),
+    _: str = require_admin
 ):
     """
     获取插件性能指标历史
     
     - GET /plugin/metrics/{plugin_id}/history?limit=100
+    - 需要管理员验证码（Bearer Token）
     """
     try:
         history = metrics_collector.get_metrics_history(
@@ -500,15 +583,12 @@ class ConfigUpdateRequest(BaseModel):
 
 
 @app.put("/plugin/{plugin_id}/config")
-async def update_plugin_config_endpoint(plugin_id: str, payload: ConfigUpdateRequest):
+async def update_plugin_config_endpoint(plugin_id: str, payload: ConfigUpdateRequest, _: str = require_admin):
     """
     更新插件配置
     
     - PUT /plugin/{plugin_id}/config
-    
-    TODO: Add authentication and authorization.
-    TODO: Implement strict schema validation for configuration updates.
-    SECURITY: This endpoint allows arbitrary configuration modification and must be protected.
+    - 需要管理员验证码（Bearer Token）
     """
     try:
         return update_plugin_config(plugin_id, payload.config)
@@ -528,16 +608,15 @@ async def get_plugin_logs_endpoint(
     level: Optional[str] = Query(default=None, description="日志级别: DEBUG, INFO, WARNING, ERROR"),
     start_time: Optional[str] = Query(default=None),
     end_time: Optional[str] = Query(default=None),
-    search: Optional[str] = Query(default=None, description="关键词搜索")
+    search: Optional[str] = Query(default=None, description="关键词搜索"),
+    _: str = require_admin
 ):
     """
     获取插件日志或服务器日志
     
     - GET /plugin/{plugin_id}/logs?lines=100&level=INFO&search=error
     - GET /plugin/_server/logs - 获取服务器日志
-    
-    TODO: Add authentication (e.g., Admin API Key).
-    SECURITY: Logs may contain sensitive information. Access must be restricted.
+    - 需要管理员验证码（Bearer Token）
     """
     try:
         result = get_plugin_logs(
@@ -565,15 +644,13 @@ async def get_plugin_logs_endpoint(
 
 
 @app.get("/plugin/{plugin_id}/logs/files")
-async def get_plugin_log_files_endpoint(plugin_id: str):
+async def get_plugin_log_files_endpoint(plugin_id: str, _: str = require_admin):
     """
     获取插件日志文件列表或服务器日志文件列表
     
     - GET /plugin/{plugin_id}/logs/files
     - GET /plugin/_server/logs/files - 获取服务器日志文件列表
-    
-    TODO: Add authentication.
-    SECURITY: Exposing log file paths and contents can be a security risk.
+    - 需要管理员验证码（Bearer Token）
     """
     try:
         files = get_plugin_log_files(plugin_id)
@@ -595,10 +672,17 @@ async def websocket_log_stream(websocket: WebSocket, plugin_id: str):
     
     - WS /ws/logs/{plugin_id} - 实时接收插件日志
     - WS /ws/logs/_server - 实时接收服务器日志
-    
-    TODO: Implement WebSocket authentication (e.g., via query parameter or initial handshake).
-    SECURITY: Real-time log streaming allows monitoring system behavior and must be secured.
+    - 注意：WebSocket 认证需要在连接时通过查询参数传递验证码
     """
+    # WebSocket 认证通过查询参数实现
+    code = websocket.query_params.get("code", "").upper()
+    from plugin.server.auth import get_admin_code
+    admin_code = get_admin_code()
+    
+    if not admin_code or code != admin_code:
+        await websocket.close(code=1008, reason="Authentication required")
+        return
+    
     await log_stream_endpoint(websocket, plugin_id)
 
 

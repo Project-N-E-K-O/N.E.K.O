@@ -3,6 +3,7 @@
  */
 import { ref, onMounted, onUnmounted, watch, type Ref, type MaybeRef, toRef, isRef } from 'vue'
 import { useLogsStore } from '@/stores/logs'
+import { useAuthStore } from '@/stores/auth'
 import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { API_BASE_URL } from '@/utils/constants'
@@ -12,6 +13,7 @@ export function useLogStream(pluginIdInput: MaybeRef<string>) {
   const pluginId = isRef(pluginIdInput) ? pluginIdInput : toRef(() => pluginIdInput)
   const { t } = useI18n()
   const logsStore = useLogsStore()
+  const authStore = useAuthStore()
   const ws = ref<WebSocket | null>(null)
   const isConnected = ref(false)
   const reconnectTimer = ref<number | null>(null)
@@ -22,27 +24,39 @@ export function useLogStream(pluginIdInput: MaybeRef<string>) {
   // 获取 WebSocket URL
   function getWebSocketUrl(): string {
     const id = pluginId.value
+    const authCode = authStore.authCode
+    
+    // 构建基础 URL
+    let baseUrl: string
     // 在开发环境中，如果使用代理（API_BASE_URL 为空），使用当前窗口的 host
     // Vite 代理会自动转发 WebSocket 请求
     if (!API_BASE_URL || API_BASE_URL === '') {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const host = window.location.host
-      return `${protocol}//${host}/ws/logs/${id}`
+      baseUrl = `${protocol}//${host}/ws/logs/${id}`
+    } else {
+      // 生产环境：使用与 HTTP API 相同的基础 URL
+      try {
+        const apiUrl = new URL(API_BASE_URL)
+        const protocol = apiUrl.protocol === 'https:' ? 'wss:' : 'ws:'
+        const host = apiUrl.host
+        baseUrl = `${protocol}//${host}/ws/logs/${id}`
+      } catch (e) {
+        // 如果 URL 解析失败，回退到当前窗口的 host
+        console.warn('[LogStream] Failed to parse API_BASE_URL, using current host:', e)
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+        const host = window.location.host
+        baseUrl = `${protocol}//${host}/ws/logs/${id}`
+      }
     }
     
-    // 生产环境：使用与 HTTP API 相同的基础 URL
-    try {
-      const apiUrl = new URL(API_BASE_URL)
-      const protocol = apiUrl.protocol === 'https:' ? 'wss:' : 'ws:'
-      const host = apiUrl.host
-      return `${protocol}//${host}/ws/logs/${id}`
-    } catch (e) {
-      // 如果 URL 解析失败，回退到当前窗口的 host
-      console.warn('[LogStream] Failed to parse API_BASE_URL, using current host:', e)
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      const host = window.location.host
-      return `${protocol}//${host}/ws/logs/${id}`
+    // 添加验证码查询参数
+    if (authCode) {
+      const separator = baseUrl.includes('?') ? '&' : '?'
+      return `${baseUrl}${separator}code=${encodeURIComponent(authCode)}`
     }
+    
+    return baseUrl
   }
 
   // 连接 WebSocket

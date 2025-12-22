@@ -555,10 +555,13 @@ class PluginProcessHost:
             daemon=True,
         )
         self.process.start()
+        self.logger.info(f"Plugin {plugin_id} process started (pid: {self.process.pid})")
         
         # 验证进程状态
         if not self.process.is_alive():
-            self.logger.warning(f"Plugin {plugin_id} process is not alive after initialization")
+            self.logger.error(f"Plugin {plugin_id} process is not alive after initialization (exitcode: {self.process.exitcode})")
+        else:
+            self.logger.info(f"Plugin {plugin_id} process is alive and running (pid: {self.process.pid})")
         
         # 创建通信资源管理器
         self.comm_manager = PluginCommunicationResourceManager(

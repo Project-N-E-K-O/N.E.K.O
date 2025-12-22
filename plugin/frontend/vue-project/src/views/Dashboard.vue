@@ -111,6 +111,7 @@ import { ref, computed, onMounted } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
+import { useAuthStore } from '@/stores/auth'
 import { getServerInfo } from '@/api/plugins'
 import { PluginStatus } from '@/utils/constants'
 import type { ServerInfo, GlobalMetrics } from '@/types/api'
@@ -120,6 +121,7 @@ import dayjs from 'dayjs'
 
 const pluginStore = usePluginStore()
 const metricsStore = useMetricsStore()
+const authStore = useAuthStore()
 
 const serverInfo = ref<ServerInfo | null>(null)
 const serverInfoLoading = ref(false)
@@ -162,6 +164,11 @@ function formatTime(time: string): string {
 }
 
 async function fetchServerInfo() {
+  // 如果未认证，不发送请求
+  if (!authStore.isAuthenticated) {
+    return
+  }
+  
   serverInfoLoading.value = true
   serverInfoError.value = false
   try {
@@ -179,6 +186,10 @@ async function fetchServerInfo() {
       throw new Error('Invalid server info response')
     }
   } catch (err: any) {
+    // 如果是认证错误，不显示错误提示（会自动跳转登录）
+    if (err.response?.status === 401 || err.response?.status === 403) {
+      return
+    }
     console.error('Failed to fetch server info:', err)
     serverInfoError.value = true
     // 保持 serverInfo 为 null，让模板显示错误提示
@@ -188,6 +199,11 @@ async function fetchServerInfo() {
 }
 
 async function fetchGlobalMetrics() {
+  // 如果未认证，不发送请求
+  if (!authStore.isAuthenticated) {
+    return
+  }
+  
   metricsLoading.value = true
   try {
     const response = await metricsStore.fetchAllMetrics()
@@ -196,6 +212,10 @@ async function fetchGlobalMetrics() {
       globalMetrics.value = response.global
     }
   } catch (err: any) {
+    // 如果是认证错误，不显示错误提示（会自动跳转登录）
+    if (err.response?.status === 401 || err.response?.status === 403) {
+      return
+    }
     console.error('Failed to fetch global metrics:', err)
   } finally {
     metricsLoading.value = false

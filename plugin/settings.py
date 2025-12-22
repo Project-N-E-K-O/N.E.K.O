@@ -131,6 +131,17 @@ PLUGIN_LOG_BACKUP_COUNT = 10
 PLUGIN_LOG_MAX_FILES = 20
 
 
+# ========== 插件加载配置 ==========
+
+# 是否启用依赖检查（默认：True）
+# 如果设置为 False，将跳过所有插件依赖检查，允许加载不满足依赖的插件
+PLUGIN_ENABLE_DEPENDENCY_CHECK = os.getenv("PLUGIN_ENABLE_DEPENDENCY_CHECK", "false").lower() in ("true", "1", "yes")
+
+# 是否启用 ID 冲突检查（默认：True）
+# 如果设置为 False，将跳过所有插件 ID 冲突检查，允许使用相同 ID 的插件（可能导致不可预期行为）
+PLUGIN_ENABLE_ID_CONFLICT_CHECK = os.getenv("PLUGIN_ENABLE_ID_CONFLICT_CHECK", "false").lower() in ("true", "1", "yes")
+
+
 # ========== 配置验证 ==========
 
 def validate_config() -> None:

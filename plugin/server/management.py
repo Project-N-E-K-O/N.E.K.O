@@ -4,12 +4,12 @@
 提供插件的启动、停止、重载等管理功能。
 """
 import asyncio
-import logging
 import importlib
 from pathlib import Path
 from typing import Dict, Any, Optional
 
 from fastapi import HTTPException
+from loguru import logger
 
 from plugin.core.state import state
 from plugin.runtime.host import PluginProcessHost
@@ -22,8 +22,6 @@ from plugin.settings import (
     PLUGIN_SHUTDOWN_TIMEOUT,
 )
 from plugin.sdk.version import SDK_VERSION
-
-logger = logging.getLogger("user_plugin_server")
 
 
 def _get_plugin_config_path(plugin_id: str) -> Optional[Path]:
@@ -97,7 +95,7 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
     )
     if plugin_id != original_plugin_id:
         logger.debug(
-            "Plugin ID changed from '%s' to '%s' due to conflict (detailed warning logged above)",
+            "Plugin ID changed from '{}' to '{}' due to conflict (detailed warning logged above)",
             original_plugin_id,
             plugin_id
         )
@@ -125,7 +123,7 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
             )
             if final_plugin_id != plugin_id:
                 logger.debug(
-                    "Plugin ID changed during registration from '%s' to '%s' (detailed warning logged above)",
+                    "Plugin ID changed during registration from '{}' to '{}' (detailed warning logged above)",
                     plugin_id,
                     final_plugin_id
                 )
@@ -134,7 +132,44 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
                 if hasattr(host, 'plugin_id'):
                     host.plugin_id = plugin_id
             
+            # 检查进程是否还在运行
+            if hasattr(host, 'process') and host.process:
+                if not host.process.is_alive():
+                    logger.error(
+                        "Plugin {} process died immediately after startup (exitcode: {})",
+                        plugin_id, host.process.exitcode
+                    )
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Plugin '{plugin_id}' process died immediately after startup (exitcode: {host.process.exitcode})"
+                    )
+                logger.info(
+                    "Plugin {} registered in plugin_hosts (pid: {}, alive: {})",
+                    plugin_id, host.process.pid, host.process.is_alive()
+                )
+            else:
+                logger.warning("Plugin {} host has no process object", plugin_id)
+            
             state.plugin_hosts[plugin_id] = host
+            logger.info(
+                "Plugin {} successfully registered in plugin_hosts (pid: {}). Total running plugins: {}",
+                plugin_id,
+                host.process.pid if hasattr(host, 'process') and host.process else 'N/A',
+                len(state.plugin_hosts)
+            )
+        
+        # 验证注册是否成功
+        with state.plugin_hosts_lock:
+            if plugin_id not in state.plugin_hosts:
+                logger.error(
+                    "Plugin {} was not found in plugin_hosts after registration! This should not happen.",
+                    plugin_id
+                )
+            else:
+                logger.debug(
+                    "Plugin {} confirmed in plugin_hosts after registration",
+                    plugin_id
+                )
         
         # 扫描元数据
         module_path, class_name = entry.split(":", 1)
@@ -156,18 +191,18 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
             dependencies = _parse_plugin_dependencies(conf, logger, plugin_id)
             dependency_check_failed = False
             if dependencies:
-                logger.info("Plugin %s: found %d dependency(ies)", plugin_id, len(dependencies))
+                logger.info("Plugin {}: found {} dependency(ies)", plugin_id, len(dependencies))
                 for dep in dependencies:
                     # 检查依赖（包括简化格式和完整格式）
                     satisfied, error_msg = _check_plugin_dependency(dep, logger, plugin_id)
                     if not satisfied:
                         logger.error(
-                            "Plugin %s: dependency check failed: %s; cannot start",
+                            "Plugin {}: dependency check failed: {}; cannot start",
                             plugin_id, error_msg
                         )
                         dependency_check_failed = True
                         break
-                    logger.debug("Plugin %s: dependency check passed", plugin_id)
+                    logger.debug("Plugin {}: dependency check passed", plugin_id)
             
             # 如果依赖检查失败，抛出异常
             if dependency_check_failed:
@@ -192,8 +227,49 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
                 config_path=config_path,
                 entry_point=entry
             )
+            
+            # 如果 register_plugin 返回 None，说明检测到重复，需要清理
+            if resolved_id is None:
+                logger.warning(
+                    "Plugin {} detected as duplicate in register_plugin, removing from plugin_hosts",
+                    plugin_id
+                )
+                # 移除刚注册的 host
+                with state.plugin_hosts_lock:
+                    if plugin_id in state.plugin_hosts:
+                        existing_host = state.plugin_hosts.pop(plugin_id)
+                        # 尝试关闭进程
+                        try:
+                            if hasattr(existing_host, 'shutdown'):
+                                existing_host.shutdown(timeout=1.0)
+                            elif hasattr(existing_host, 'process') and existing_host.process:
+                                existing_host.process.terminate()
+                                existing_host.process.join(timeout=1.0)
+                        except Exception as e:
+                            logger.debug("Error shutting down duplicate plugin {}: {}", plugin_id, e)
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Plugin '{plugin_id}' is already registered (duplicate detected)"
+                )
+            
+            # 如果 ID 被进一步重命名（双重冲突），需要更新 plugin_hosts 中的键
             if resolved_id != plugin_id:
-                # 如果 ID 被进一步重命名（双重冲突），更新 plugin_id
+                logger.warning(
+                    "Plugin ID changed during registration from '{}' to '{}', updating plugin_hosts",
+                    plugin_id, resolved_id
+                )
+                # 更新 plugin_hosts 中的键
+                with state.plugin_hosts_lock:
+                    if plugin_id in state.plugin_hosts:
+                        host = state.plugin_hosts.pop(plugin_id)
+                        state.plugin_hosts[resolved_id] = host
+                        # 更新 host 的 plugin_id（如果可能）
+                        if hasattr(host, 'plugin_id'):
+                            host.plugin_id = resolved_id
+                        logger.info(
+                            "Plugin host moved from '{}' to '{}' in plugin_hosts",
+                            plugin_id, resolved_id
+                        )
                 plugin_id = resolved_id
         except Exception as e:
             logger.warning(f"Failed to scan metadata for plugin {plugin_id}: {e}")

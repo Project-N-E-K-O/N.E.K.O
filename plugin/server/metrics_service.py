@@ -88,9 +88,11 @@ class MetricsCollector:
                 
                 plugin_hosts = self._plugin_hosts_getter()
                 if not plugin_hosts:
+                    logger.debug("No plugin hosts available for metrics collection")
                     await asyncio.sleep(self.interval)
                     continue
                 
+                logger.debug(f"Collecting metrics for {len(plugin_hosts)} plugins: {list(plugin_hosts.keys())}")
                 for plugin_id, host in plugin_hosts.items():
                     try:
                         metrics = await self._collect_plugin_metrics(plugin_id, host)
@@ -102,8 +104,18 @@ class MetricsCollector:
                                 # 只保留最近1000条记录
                                 if len(self._metrics_history[plugin_id]) > 1000:
                                     self._metrics_history[plugin_id].pop(0)
+                                logger.debug(f"Successfully collected and stored metrics for plugin {plugin_id}")
+                        else:
+                            # 记录为什么没有收集到指标
+                            process = getattr(host, "process", None)
+                            if not process:
+                                logger.debug(f"No process object for plugin {plugin_id}")
+                            elif not process.is_alive():
+                                logger.debug(f"Process for plugin {plugin_id} is not alive (pid: {process.pid if process else 'N/A'})")
+                            else:
+                                logger.debug(f"Failed to collect metrics for plugin {plugin_id} (process alive but collection returned None)")
                     except Exception as e:
-                        logger.debug(f"Failed to collect metrics for plugin {plugin_id}: {e}")
+                        logger.warning(f"Exception while collecting metrics for plugin {plugin_id}: {e}", exc_info=True)
                 
             except asyncio.CancelledError:
                 break
@@ -115,12 +127,18 @@ class MetricsCollector:
     async def _collect_plugin_metrics(self, plugin_id: str, host: Any) -> Optional[PluginMetrics]:
         """收集单个插件的性能指标"""
         if not PSUTIL_AVAILABLE:
+            logger.debug(f"psutil not available, cannot collect metrics for {plugin_id}")
             return None
         
         try:
             # 获取进程信息
             process = getattr(host, "process", None)
-            if not process or not process.is_alive():
+            if not process:
+                logger.debug(f"No process object for plugin {plugin_id}")
+                return None
+            
+            if not process.is_alive():
+                logger.debug(f"Process for plugin {plugin_id} is not alive (pid: {process.pid})")
                 return None
             
             pid = process.pid
@@ -133,7 +151,11 @@ class MetricsCollector:
                 memory_mb = memory_info.rss / 1024 / 1024
                 memory_percent = ps_process.memory_percent()
                 num_threads = ps_process.num_threads()
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
+            except psutil.NoSuchProcess:
+                logger.debug(f"Process {pid} for plugin {plugin_id} no longer exists (NoSuchProcess)")
+                return None
+            except psutil.AccessDenied:
+                logger.warning(f"Access denied when collecting metrics for plugin {plugin_id} (pid: {pid})")
                 return None
             
             # 获取队列状态
@@ -153,7 +175,7 @@ class MetricsCollector:
                 pending_requests=pending_requests,
             )
         except Exception as e:
-            logger.debug(f"Error collecting metrics for {plugin_id}: {e}")
+            logger.warning(f"Unexpected error collecting metrics for {plugin_id}: {e}", exc_info=True)
             return None
     
     def get_current_metrics(self, plugin_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -163,6 +185,12 @@ class MetricsCollector:
                 history = self._metrics_history.get(plugin_id, [])
                 if history:
                     return [self._metrics_to_dict(history[-1])]
+                # 调试：记录为什么找不到指标
+                available_ids = list(self._metrics_history.keys())
+                logger.debug(
+                    f"Metrics not found for plugin_id '{plugin_id}'. "
+                    f"Available plugin_ids in metrics_history: {available_ids}"
+                )
                 return []
             else:
                 # 返回所有插件的最新指标
@@ -170,6 +198,7 @@ class MetricsCollector:
                 for pid, history in self._metrics_history.items():
                     if history:
                         result.append(self._metrics_to_dict(history[-1]))
+                logger.debug(f"get_current_metrics (all): found {len(result)} plugins with metrics")
                 return result
     
     def get_metrics_history(

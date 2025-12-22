@@ -4,6 +4,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { getAllMetrics, getPluginMetrics, getPluginMetricsHistory } from '@/api/metrics'
+import { useAuthStore } from '@/stores/auth'
 import type { PluginMetrics } from '@/types/api'
 
 export const useMetricsStore = defineStore('metrics', () => {
@@ -16,6 +17,24 @@ export const useMetricsStore = defineStore('metrics', () => {
 
   // 操作
   async function fetchAllMetrics() {
+    // 检查认证状态
+    const authStore = useAuthStore()
+    if (!authStore.isAuthenticated) {
+      console.log('[Metrics] Not authenticated, skipping fetchAllMetrics')
+      return {
+        metrics: [],
+        count: 0,
+        global: {
+          total_cpu_percent: 0.0,
+          total_memory_mb: 0.0,
+          total_memory_percent: 0.0,
+          total_threads: 0,
+          active_plugins: 0
+        },
+        time: new Date().toISOString()
+      }
+    }
+    
     loading.value = true
     error.value = null
     try {
@@ -39,13 +58,63 @@ export const useMetricsStore = defineStore('metrics', () => {
   }
 
   async function fetchPluginMetrics(pluginId: string) {
+    if (!pluginId) {
+      console.warn('[Metrics] fetchPluginMetrics called with empty pluginId')
+      return
+    }
+    
+    // 检查认证状态
+    const authStore = useAuthStore()
+    if (!authStore.isAuthenticated) {
+      console.log(`[Metrics] Not authenticated, skipping fetch for ${pluginId}`)
+      return
+    }
+    
+    console.log(`[Metrics] Fetching metrics for plugin: ${pluginId}`)
+    
     try {
       const response = await getPluginMetrics(pluginId)
-      if (response.metrics) {
-        currentMetrics.value[pluginId] = response.metrics
+      console.log(`[Metrics] Received response for ${pluginId}:`, response)
+      
+      // 检查响应格式
+      if (!response || typeof response !== 'object') {
+        console.warn(`[Metrics] Invalid response format for ${pluginId}:`, response)
+        return
+      }
+      
+      if (response.metrics && typeof response.metrics === 'object') {
+        // 确保 metrics 包含必需的字段
+        if (response.metrics.plugin_id && response.metrics.timestamp) {
+          currentMetrics.value[pluginId] = response.metrics
+          console.log(`[Metrics] Successfully stored metrics for ${pluginId}`)
+        } else {
+          console.warn(`[Metrics] Incomplete metrics data for ${pluginId}:`, response.metrics)
+        }
+      } else {
+        // 插件正在运行但没有指标数据（可能正在收集）
+        // 清除之前的指标数据，让组件显示"暂无数据"
+        if (currentMetrics.value[pluginId]) {
+          delete currentMetrics.value[pluginId]
+        }
+        // 记录消息（如果有）
+        if (response.message) {
+          console.log(`[Metrics] ${pluginId}: ${response.message}`)
+        } else {
+          console.log(`[Metrics] ${pluginId}: No metrics available (metrics is null)`)
+        }
       }
     } catch (err: any) {
-      console.error(`Failed to fetch metrics for plugin ${pluginId}:`, err)
+      // 404 表示插件不存在，这是正常的
+      if (err.response?.status === 404) {
+        console.log(`[Metrics] Plugin ${pluginId} not found (404)`)
+        // 清除该插件的指标数据（如果存在）
+        if (currentMetrics.value[pluginId]) {
+          delete currentMetrics.value[pluginId]
+        }
+        return
+      }
+      // 其他错误才记录
+      console.error(`[Metrics] Failed to fetch metrics for plugin ${pluginId}:`, err)
       // 即使失败也不抛出异常，让组件显示"暂无数据"
     }
   }

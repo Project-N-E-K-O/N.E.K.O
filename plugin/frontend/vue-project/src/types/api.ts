@@ -140,8 +140,11 @@ export interface MetricsResponse {
 // 单个插件性能指标
 export interface PluginMetricsResult {
   plugin_id: string
-  metrics: PluginMetrics
+  metrics: PluginMetrics | null
   time: string
+  message?: string
+  plugin_running?: boolean
+  process_alive?: boolean
 }
 
 // 插件性能指标历史

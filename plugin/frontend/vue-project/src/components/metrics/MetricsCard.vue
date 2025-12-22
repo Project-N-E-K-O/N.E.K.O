@@ -54,7 +54,12 @@ function formatTime(timestamp: string) {
 }
 
 onMounted(async () => {
-  await metricsStore.fetchPluginMetrics(props.pluginId)
+  console.log(`[MetricsCard] Component mounted for plugin: ${props.pluginId}`)
+  if (props.pluginId) {
+    await metricsStore.fetchPluginMetrics(props.pluginId)
+  } else {
+    console.warn('[MetricsCard] Component mounted with empty pluginId')
+  }
 })
 </script>
 

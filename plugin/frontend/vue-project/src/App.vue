@@ -1,10 +1,9 @@
 <template>
-  <AppLayout />
+  <router-view />
 </template>
 
 <script setup lang="ts">
 import { onMounted } from 'vue'
-import AppLayout from '@/components/layout/AppLayout.vue'
 
 // 调试：确认组件已加载
 onMounted(() => {

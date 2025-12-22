@@ -34,6 +34,21 @@ export default {
     logs: '日志',
     serverLogs: '服务器日志'
   },
+  auth: {
+    login: '登录',
+    logout: '退出登录',
+    codePlaceholder: '请输入4位字母验证码',
+    codeHint: '验证码在服务器启动时显示在终端中',
+    codeFormat: '格式：4个大写字母（如：ABCD）',
+    loginSuccess: '登录成功',
+    loginFailed: '登录失败',
+    codeError: '验证码错误，请重新输入',
+    networkError: '网络错误，但验证码已保存',
+    unauthorized: '未授权，请重新登录',
+    forbidden: '拒绝访问：验证码错误或已过期',
+    logoutConfirm: '确定要退出登录吗？',
+    logoutSuccess: '已退出登录'
+  },
   dashboard: {
     title: '仪表盘',
     pluginOverview: '插件概览',

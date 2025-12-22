@@ -17,6 +17,12 @@
         @click="handleRefresh"
         :loading="refreshing"
       />
+      <el-button
+        :icon="SwitchButton"
+        circle
+        @click="handleLogout"
+        title="退出登录"
+      />
     </div>
   </div>
 </template>
@@ -24,15 +30,19 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { Refresh, Sunny, Moon } from '@element-plus/icons-vue'
+import { Refresh, Sunny, Moon, SwitchButton } from '@element-plus/icons-vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { usePluginStore } from '@/stores/plugin'
-import { ElMessage } from 'element-plus'
+import { useAuthStore } from '@/stores/auth'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import LanguageSwitcher from '@/components/common/LanguageSwitcher.vue'
 import { useDarkMode } from '@/composables/useDarkMode'
 
 const route = useRoute()
+const router = useRouter()
 const pluginStore = usePluginStore()
+const authStore = useAuthStore()
 const { t } = useI18n()
 const refreshing = ref(false)
 const { isDark, toggleDarkMode } = useDarkMode()
@@ -56,6 +66,21 @@ async function handleRefresh() {
     ElMessage.error(t('messages.operationFailed'))
   } finally {
     refreshing.value = false
+  }
+}
+
+async function handleLogout() {
+  try {
+    await ElMessageBox.confirm('确定要退出登录吗？', '提示', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+    authStore.clearAuthCode()
+    ElMessage.success('已退出登录')
+    router.push('/login')
+  } catch {
+    // 用户取消
   }
 }
 </script>

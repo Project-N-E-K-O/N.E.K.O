@@ -34,6 +34,21 @@ export default {
     logs: 'Logs',
     serverLogs: 'Server Logs'
   },
+  auth: {
+    login: 'Login',
+    logout: 'Logout',
+    codePlaceholder: 'Enter 4-letter code',
+    codeHint: 'Code is displayed in terminal when server starts',
+    codeFormat: 'Format: 4 uppercase letters (e.g., ABCD)',
+    loginSuccess: 'Login successful',
+    loginFailed: 'Login failed',
+    codeError: 'Invalid code, please try again',
+    networkError: 'Network error, but code saved',
+    unauthorized: 'Unauthorized, please login',
+    forbidden: 'Access denied: Invalid or expired code',
+    logoutConfirm: 'Are you sure you want to logout?',
+    logoutSuccess: 'Logged out'
+  },
   dashboard: {
     title: 'Dashboard',
     pluginOverview: 'Plugin Overview',

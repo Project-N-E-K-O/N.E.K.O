@@ -16,6 +16,7 @@ from plugin.runtime.host import PluginProcessHost
 from plugin.runtime.status import status_manager
 from plugin.server.metrics_service import metrics_collector
 from plugin.server.plugin_router import plugin_router
+from plugin.server.auth import generate_admin_code, set_admin_code
 from plugin.settings import (
     PLUGIN_CONFIG_ROOT,
     PLUGIN_SHUTDOWN_TIMEOUT,
@@ -62,9 +63,37 @@ async def startup() -> None:
     
     # 加载插件
     load_plugins_from_toml(PLUGIN_CONFIG_ROOT, logger, _factory)
+    
+    # 立即检查 plugin_hosts 状态
+    with state.plugin_hosts_lock:
+        plugin_hosts_after_load = dict(state.plugin_hosts)
+        logger.info(
+            "Plugin hosts immediately after load_plugins_from_toml: {} plugins, keys: {}",
+            len(plugin_hosts_after_load),
+            list(plugin_hosts_after_load.keys())
+        )
+    
     with state.plugins_lock:
         plugin_keys = list(state.plugins.keys())
     logger.info("Plugin registry after startup: {}", plugin_keys)
+    
+    # 再次检查 plugin_hosts（可能在 register_plugin 调用后发生变化）
+    with state.plugin_hosts_lock:
+        plugin_hosts_after_plugins = dict(state.plugin_hosts)
+        logger.info(
+            "Plugin hosts after plugins registry: {} plugins, keys: {}",
+            len(plugin_hosts_after_plugins),
+            list(plugin_hosts_after_plugins.keys())
+        )
+        if len(plugin_hosts_after_load) != len(plugin_hosts_after_plugins):
+            logger.warning(
+                "Plugin hosts count changed from {} to {} after plugins registry! "
+                "Lost plugins: {}, Gained plugins: {}",
+                len(plugin_hosts_after_load),
+                len(plugin_hosts_after_plugins),
+                set(plugin_hosts_after_load.keys()) - set(plugin_hosts_after_plugins.keys()),
+                set(plugin_hosts_after_plugins.keys()) - set(plugin_hosts_after_load.keys())
+            )
     
     # 启动诊断：列出插件实例和公共方法
     _log_startup_diagnostics()
@@ -74,12 +103,22 @@ async def startup() -> None:
     logger.info("Plugin router started")
     
     # 启动所有插件的通信资源管理器
-    for plugin_id, host in state.plugin_hosts.items():
+    with state.plugin_hosts_lock:
+        plugin_hosts_copy = dict(state.plugin_hosts)
+        logger.info("Found {} plugins in plugin_hosts: {}", len(plugin_hosts_copy), list(plugin_hosts_copy.keys()))
+    
+    if not plugin_hosts_copy:
+        logger.warning(
+            "No plugins found in plugin_hosts after loading. "
+            "Plugins may need to be started manually via POST /plugin/{{plugin_id}}/start"
+        )
+    
+    for plugin_id, host in plugin_hosts_copy.items():
         try:
             await host.start(message_target_queue=state.message_queue)
-            logger.debug(f"Started communication resources for plugin {plugin_id}")
+            logger.debug("Started communication resources for plugin {}", plugin_id)
         except Exception as e:
-            logger.exception(f"Failed to start communication resources for plugin {plugin_id}: {e}")
+            logger.exception("Failed to start communication resources for plugin {}: {}", plugin_id, e)
     
     # 启动状态消费任务
     await status_manager.start_status_consumer(
@@ -88,10 +127,26 @@ async def startup() -> None:
     logger.info("Status consumer started")
     
     # 启动性能指标收集器
+    # 注意：需要在锁保护下获取 plugin_hosts
+    def get_plugin_hosts():
+        with state.plugin_hosts_lock:
+            return dict(state.plugin_hosts)  # 返回副本，避免长时间持有锁
+    
     await metrics_collector.start(
-        plugin_hosts_getter=lambda: state.plugin_hosts
+        plugin_hosts_getter=get_plugin_hosts
     )
     logger.info("Metrics collector started")
+    
+    # 生成并设置管理员验证码
+    admin_code = generate_admin_code()
+    set_admin_code(admin_code)
+    # 在终端打印验证码（使用 print 确保输出到终端）
+    print("\n" + "=" * 60, flush=True)
+    print(f"🔐 管理员验证码: {admin_code}", flush=True)
+    print("=" * 60, flush=True)
+    print("请在请求头中添加: Authorization: Bearer <验证码>", flush=True)
+    print("=" * 60 + "\n", flush=True)
+    logger.info(f"Admin authentication code generated: {admin_code}")
 
 
 async def _shutdown_internal() -> None:

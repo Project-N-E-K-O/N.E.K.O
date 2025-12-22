@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Callable, Type, Optional
 
+from loguru import logger as loguru_logger
+
 try:
     import tomllib  # type: ignore[attr-defined]
 except ImportError:  # pragma: no cover
@@ -583,7 +585,7 @@ def _get_existing_plugin_info(plugin_id: str) -> Optional[Dict[str, Any]]:
 
 def _resolve_plugin_id_conflict(
     plugin_id: str,
-    logger: logging.Logger,
+    logger: Any,  # loguru.Logger or logging.Logger
     config_path: Optional[Path] = None,
     entry_point: Optional[str] = None,
     plugin_data: Optional[Dict[str, Any]] = None
@@ -626,14 +628,14 @@ def _resolve_plugin_id_conflict(
     with state.plugin_hosts_lock:
         in_hosts = plugin_id in state.plugin_hosts
     logger.info(
-        "Plugin ID '%s' conflict detected: in_plugins=%s, in_hosts=%s, current_config_path=%s",
+        "Plugin ID '{}' conflict detected: in_plugins={}, in_hosts={}, current_config_path={}",
         plugin_id, in_plugins, in_hosts, config_path
     )
     
     # 首先检查路径是否相同（最可靠的判断方式）
     existing_info = _get_existing_plugin_info(plugin_id)
     logger.info(
-        "Existing plugin info for '%s': has_config_path=%s, has_entry_point=%s, has_plugin_meta=%s, config_path=%s",
+        "Existing plugin info for '{}': has_config_path={}, has_entry_point={}, has_plugin_meta={}, config_path={}",
         plugin_id,
         existing_info.get("config_path") is not None if existing_info else False,
         existing_info.get("entry_point") is not None if existing_info else False,
@@ -702,7 +704,7 @@ def _resolve_plugin_id_conflict(
     
     # 调试：记录当前插件的哈希计算数据
     logger.debug(
-        "Current plugin hash calculation - plugin_id=%s, config_path=%s, entry_point=%s, plugin_data=%s",
+        "Current plugin hash calculation - plugin_id={}, config_path={}, entry_point={}, plugin_data={}",
         plugin_id, config_path, entry_point, plugin_data
     )
     
@@ -816,7 +818,7 @@ def _resolve_plugin_id_conflict(
 
 def register_plugin(
     plugin: PluginMeta,
-    logger: Optional[logging.Logger] = None,
+    logger: Optional[Any] = None,  # loguru.Logger or logging.Logger
     config_path: Optional[Path] = None,
     entry_point: Optional[str] = None
 ) -> Optional[str]:
@@ -833,7 +835,7 @@ def register_plugin(
         实际注册的插件 ID（如果发生冲突，返回重命名后的 ID）
     """
     if logger is None:
-        logger = logging.getLogger(__name__)
+        logger = loguru_logger
     
     # 准备插件数据用于哈希计算
     plugin_data = {
@@ -1180,9 +1182,10 @@ def load_plugins_from_toml(
         
         logger.info("Loading plugin: {}", pid)
         
-        # 依赖检查
+        # 依赖检查（可通过配置禁用）
+        from plugin.settings import PLUGIN_ENABLE_DEPENDENCY_CHECK
         dependency_check_failed = False
-        if dependencies:
+        if PLUGIN_ENABLE_DEPENDENCY_CHECK and dependencies:
             logger.info("Plugin {}: found {} dependency(ies), checking...", pid, len(dependencies))
             for dep in dependencies:
                 # 检查依赖（包括简化格式和完整格式）
@@ -1197,6 +1200,12 @@ def load_plugins_from_toml(
                 logger.debug("Plugin {}: dependency '{}' check passed", pid, getattr(dep, 'id', getattr(dep, 'entry', getattr(dep, 'custom_event', 'unknown'))))
             if not dependency_check_failed:
                 logger.info("Plugin {}: all dependencies satisfied", pid)
+        elif not PLUGIN_ENABLE_DEPENDENCY_CHECK and dependencies:
+            logger.warning(
+                "Plugin {}: has {} dependency(ies), but dependency check is disabled. "
+                "Loading plugin without dependency validation.",
+                pid, len(dependencies)
+            )
         else:
             logger.debug("Plugin {}: no dependencies to check", pid)
         
@@ -1240,50 +1249,104 @@ def load_plugins_from_toml(
         }
         
         original_pid = pid
-        resolved_pid = _resolve_plugin_id_conflict(
-            pid,
-            logger,
-            config_path=toml_path,
-            entry_point=entry,
-            plugin_data=plugin_data_for_hash
-        )
         
-        # 如果返回 None，说明检测到重复加载（路径相同），应该跳过
-        if resolved_pid is None:
-            logger.info(
-                "Plugin %s from %s is already loaded (duplicate detected in conflict resolution), skipping duplicate load",
-                original_pid, toml_path
-            )
-            continue
+        # ID 冲突检查（可通过配置禁用）
+        from plugin.settings import PLUGIN_ENABLE_ID_CONFLICT_CHECK
         
-        # 如果返回的ID与原始ID相同，需要检查是否是重复加载
-        if resolved_pid == original_pid:
-            # 检查ID是否已被占用
-            def _check_id_taken(pid: str) -> bool:
-                with state.plugins_lock:
-                    if pid in state.plugins:
-                        return True
-                with state.plugin_hosts_lock:
-                    if pid in state.plugin_hosts:
-                        return True
-                return False
+        if PLUGIN_ENABLE_ID_CONFLICT_CHECK:
+            # 在调用 _resolve_plugin_id_conflict 之前，检查插件是否已经在 plugin_hosts 中
+            # 如果已经在 plugin_hosts 中，说明这是重复加载，应该跳过
+            with state.plugin_hosts_lock:
+                if pid in state.plugin_hosts:
+                    existing_host = state.plugin_hosts[pid]
+                    existing_config = getattr(existing_host, 'config_path', None)
+                    if existing_config:
+                        try:
+                            if Path(existing_config).resolve() == toml_path.resolve():
+                                logger.info(
+                                    "Plugin {} from {} is already loaded in plugin_hosts (same config path), skipping duplicate load",
+                                    pid, toml_path
+                                )
+                                continue
+                        except (OSError, RuntimeError):
+                            pass
             
-            is_still_taken = _check_id_taken(original_pid)
-            if is_still_taken:
-                # ID已被占用，说明是重复加载，跳过
+            resolved_pid = _resolve_plugin_id_conflict(
+                pid,
+                logger,
+                config_path=toml_path,
+                entry_point=entry,
+                plugin_data=plugin_data_for_hash
+            )
+            
+            # 如果返回 None，说明检测到重复加载（路径相同），应该跳过
+            if resolved_pid is None:
                 logger.info(
-                    "Plugin %s from %s is already loaded (ID already taken), skipping duplicate load",
+                    "Plugin {} from {} is already loaded (duplicate detected in conflict resolution), skipping duplicate load",
                     original_pid, toml_path
                 )
                 continue
-            # 如果ID未被占用，说明这是第一次加载，继续处理
         
-        pid = resolved_pid
-        if pid != original_pid:
-            logger.warning(
-                "Plugin from %s: ID changed from '%s' to '%s' due to conflict",
-                toml_path, original_pid, pid
-            )
+            # 如果返回的ID与原始ID相同，需要检查是否是重复加载
+            if resolved_pid == original_pid:
+                # 检查ID是否已被占用
+                def _check_id_taken(pid: str) -> bool:
+                    with state.plugins_lock:
+                        if pid in state.plugins:
+                            return True
+                    with state.plugin_hosts_lock:
+                        if pid in state.plugin_hosts:
+                            return True
+                    return False
+                
+                is_still_taken = _check_id_taken(original_pid)
+                if is_still_taken:
+                    # ID已被占用，说明是重复加载，跳过
+                    logger.info(
+                        "Plugin {} from {} is already loaded (ID already taken), skipping duplicate load",
+                        original_pid, toml_path
+                    )
+                    continue
+                # 如果ID未被占用，说明这是第一次加载，继续处理
+            
+            pid = resolved_pid
+            if pid != original_pid:
+                logger.warning(
+                    "Plugin {} from {}: ID changed from '{}' to '{}' due to conflict",
+                    original_pid, toml_path, pid
+                )
+
+        # 在创建 host 之前，先检查插件是否已注册
+        # 如果已注册，检查是否已有运行的 host
+        with state.plugins_lock:
+            plugin_already_registered = pid in state.plugins
+        
+        if plugin_already_registered:
+            with state.plugin_hosts_lock:
+                if pid in state.plugin_hosts:
+                    existing_host = state.plugin_hosts[pid]
+                    if hasattr(existing_host, 'is_alive') and existing_host.is_alive():
+                        logger.info(
+                            "Plugin {} from {} is already registered and running, skipping duplicate load",
+                            pid, toml_path
+                        )
+                        continue
+                    else:
+                        logger.info(
+                            "Plugin {} from {} is already registered but not running, skipping duplicate load",
+                            pid, toml_path
+                        )
+                        continue
+                else:
+                    # 已注册但未运行，跳过自动启动（需要手动启动）
+                    # 这是关键问题：插件已注册但没有 host，需要手动启动
+                    logger.warning(
+                        "Plugin {} from {} is already registered in state.plugins but has no host in plugin_hosts. "
+                        "This indicates the plugin was registered but the host creation was skipped or failed. "
+                        "Please start the plugin manually via POST /plugin/{}/start",
+                        pid, toml_path, pid
+                    )
+                    continue
 
         module_path, class_name = entry.split(":", 1)
         logger.info("Plugin {}: importing module '{}', class '{}'", pid, module_path, class_name)
@@ -1305,7 +1368,12 @@ def load_plugins_from_toml(
         try:
             logger.info("Plugin {}: creating process host...", pid)
             host = process_host_factory(pid, entry, toml_path)
-            logger.info("Plugin {}: process host created successfully", pid)
+            logger.info(
+                "Plugin {}: process host created successfully (pid: {}, alive: {})",
+                pid,
+                getattr(host.process, 'pid', 'N/A') if hasattr(host, 'process') and host.process else 'N/A',
+                host.process.is_alive() if hasattr(host, 'process') and host.process else False
+            )
             
             # 如果 ID 被重命名，更新 host 的 plugin_id（如果支持）
             if pid != original_pid and hasattr(host, 'plugin_id'):
@@ -1364,12 +1432,45 @@ def load_plugins_from_toml(
             author=author,
             dependencies=dependencies,
         )
+        
+        # 在调用 register_plugin 之前，验证 host 是否还在 plugin_hosts 中
+        with state.plugin_hosts_lock:
+            host_still_exists = pid in state.plugin_hosts
+            if not host_still_exists:
+                logger.error(
+                    "Plugin {} host was removed from plugin_hosts before register_plugin call! "
+                    "This should not happen. Current plugin_hosts keys: {}",
+                    pid, list(state.plugin_hosts.keys())
+                )
+        
         resolved_id = register_plugin(
             plugin_meta,
             logger,
             config_path=toml_path,
             entry_point=entry
         )
+        
+        logger.debug(
+            "Plugin {}: register_plugin returned resolved_id={}, original pid={}",
+            pid, resolved_id, pid
+        )
+        
+        # 验证 register_plugin 调用后 host 是否还在
+        with state.plugin_hosts_lock:
+            host_after_register = pid in state.plugin_hosts
+            all_keys_after = list(state.plugin_hosts.keys())
+            if host_still_exists and not host_after_register:
+                logger.error(
+                    "Plugin {} host was removed from plugin_hosts during register_plugin call! "
+                    "resolved_id={}, host_still_exists={}, host_after_register={}, "
+                    "Current plugin_hosts keys: {}",
+                    pid, resolved_id, host_still_exists, host_after_register, all_keys_after
+                )
+            elif host_still_exists and host_after_register:
+                logger.debug(
+                    "Plugin {} host still exists in plugin_hosts after register_plugin (resolved_id={})",
+                    pid, resolved_id
+                )
         
         # 如果 register_plugin 返回 None 或原始 ID 但检测到重复，说明这是重复加载
         # 需要移除刚注册的 host 和清理资源
@@ -1400,7 +1501,23 @@ def load_plugins_from_toml(
             continue
         
         if resolved_id != pid:
-            # 如果 ID 被进一步重命名（双重冲突），更新 pid
+            # 如果 ID 被进一步重命名（双重冲突），需要更新 plugin_hosts 中的键
+            logger.warning(
+                "Plugin ID changed during registration from '{}' to '{}', updating plugin_hosts",
+                pid, resolved_id
+            )
+            # 更新 plugin_hosts 中的键
+            with state.plugin_hosts_lock:
+                if pid in state.plugin_hosts:
+                    host = state.plugin_hosts.pop(pid)
+                    state.plugin_hosts[resolved_id] = host
+                    # 更新 host 的 plugin_id（如果可能）
+                    if hasattr(host, 'plugin_id'):
+                        host.plugin_id = resolved_id
+                    logger.info(
+                        "Plugin host moved from '{}' to '{}' in plugin_hosts",
+                        pid, resolved_id
+                    )
             pid = resolved_id
 
         logger.info("Loaded plugin {} (Process: {})", pid, getattr(host, "process", None))

@@ -48,7 +48,8 @@ const metrics = computed<PluginMetrics | null>(() => {
 
 // 如果当前没有该插件的指标数据，尝试单独获取
 onMounted(async () => {
-  if (!metrics.value) {
+  console.log(`[PluginMetricsInline] Component mounted for plugin: ${props.pluginId}, has metrics: ${!!metrics.value}`)
+  if (props.pluginId && !metrics.value) {
     await metricsStore.fetchPluginMetrics(props.pluginId)
   }
 })

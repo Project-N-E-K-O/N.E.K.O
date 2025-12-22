@@ -46,10 +46,25 @@ def build_plugin_list() -> List[Dict[str, Any]]:
     
     logger.info("加载插件列表成功")
     
+    # 获取运行状态（需要检查 plugin_hosts）
+    with state.plugin_hosts_lock:
+        running_plugins = set(state.plugin_hosts.keys())
+        # 创建 host 的副本以便后续检查（在锁外使用）
+        hosts_copy = dict(state.plugin_hosts)
+    
     for plugin_id, plugin_meta in plugins_copy.items():
         try:
             plugin_info = plugin_meta.copy()
             plugin_info["entries"] = []
+            
+            # 检查插件是否正在运行
+            is_running = False
+            if plugin_id in running_plugins:
+                host = hosts_copy.get(plugin_id)
+                if host and hasattr(host, 'is_alive'):
+                    is_running = host.is_alive()
+            
+            plugin_info["status"] = "running" if is_running else "stopped"
             
             # 处理每个插件的入口点
             seen = set()  # 用于去重 (event_type, id)
@@ -145,13 +160,35 @@ async def trigger_plugin(
     }
     _enqueue_event(event)
     
-    # 获取插件宿主
-    host = state.plugin_hosts.get(plugin_id)
+    # 首先检查插件是否已注册
+    with state.plugins_lock:
+        plugin_registered = plugin_id in state.plugins
+    
+    # 获取插件宿主（检查是否正在运行）
+    with state.plugin_hosts_lock:
+        host = state.plugin_hosts.get(plugin_id)
+        all_running_plugin_ids = list(state.plugin_hosts.keys())
+    
     if not host:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Plugin '{plugin_id}' is not running/loaded"
+        logger.debug(
+            "Plugin {} not found in plugin_hosts. Registered plugins: {}, Running plugins: {}",
+            plugin_id,
+            list(state.plugins.keys()) if state.plugins else [],
+            all_running_plugin_ids
         )
+        # 插件未运行，检查是否已注册
+        if plugin_registered:
+            # 插件已注册但未运行，返回 503（服务不可用）而不是 404（未找到）
+            raise HTTPException(
+                status_code=503,
+                detail=f"Plugin '{plugin_id}' is registered but not running. Please start the plugin first via POST /plugin/{plugin_id}/start"
+            )
+        else:
+            # 插件未注册，返回 404
+            raise HTTPException(
+                status_code=404,
+                detail=f"Plugin '{plugin_id}' is not found/registered"
+            )
     
     # 检查进程健康状态
     try:
