@@ -129,6 +129,7 @@ class LLMSessionManager:
         self.tts_ready = False  # TTS是否完全就绪
         self.tts_pending_chunks = []  # 待处理的TTS文本chunk: [(speech_id, text), ...]
         self.tts_cache_lock = asyncio.Lock()  # 保护缓存的锁
+        self.tts_restart_lock = asyncio.Lock()  # 避免并发重启TTS线程
         
         # 输入数据缓存机制：确保session初始化期间的输入不丢失
         self.session_ready = False  # Session是否完全就绪
@@ -177,61 +178,66 @@ class LLMSessionManager:
         if self.tts_thread and self.tts_thread.is_alive():
             return True
 
-        logger.warning(f"[{self.lanlan_name}] TTS线程不在运行，尝试重启。原因: {reason}")
-        # 清理旧handler
-        if self.tts_handler_task and not self.tts_handler_task.done():
-            self.tts_handler_task.cancel()
-            try:
-                await asyncio.wait_for(self.tts_handler_task, timeout=1.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
-            self.tts_handler_task = None
+        async with self.tts_restart_lock:
+            # 双重检查，防止已被其他协程拉起
+            if self.tts_thread and self.tts_thread.is_alive():
+                return True
 
-        # 重建队列与线程
-        has_custom_voice = bool(self.voice_id)
-        tts_worker = get_tts_worker(core_api_type=self.core_api_type, has_custom_voice=has_custom_voice)
-        if has_custom_voice:
-            tts_config = self._config_manager.get_model_api_config('tts_custom')
-        else:
-            tts_config = self._config_manager.get_model_api_config('tts_default')
+            logger.warning(f"[{self.lanlan_name}] TTS线程不在运行，尝试重启。原因: {reason}")
+            # 清理旧handler
+            if self.tts_handler_task and not self.tts_handler_task.done():
+                self.tts_handler_task.cancel()
+                try:
+                    await asyncio.wait_for(self.tts_handler_task, timeout=1.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+                self.tts_handler_task = None
 
-        self.tts_request_queue = Queue()
-        self.tts_response_queue = Queue()
-        self.tts_thread = Thread(
-            target=tts_worker,
-            args=(self.tts_request_queue, self.tts_response_queue, tts_config['api_key'], self.voice_id)
-        )
-        self.tts_thread.daemon = True
-        self.tts_thread.start()
+            # 重建队列与线程
+            has_custom_voice = bool(self.voice_id)
+            tts_worker = get_tts_worker(core_api_type=self.core_api_type, has_custom_voice=has_custom_voice)
+            if has_custom_voice:
+                tts_config = self._config_manager.get_model_api_config('tts_custom')
+            else:
+                tts_config = self._config_manager.get_model_api_config('tts_default')
 
-        # 等待就绪信号
-        tts_ready = False
-        start_time = time.time()
-        timeout = 8.0
-        while time.time() - start_time < timeout:
-            try:
-                if not self.tts_response_queue.empty():
-                    msg = self.tts_response_queue.get_nowait()
-                    if isinstance(msg, tuple) and len(msg) == 2 and msg[0] == "__ready__":
-                        tts_ready = msg[1]
-                        break
-                    else:
-                        self.tts_response_queue.put(msg)
-                        break
-            except Exception:
-                pass
-            await asyncio.sleep(0.05)
+            self.tts_request_queue = Queue()
+            self.tts_response_queue = Queue()
+            self.tts_thread = Thread(
+                target=tts_worker,
+                args=(self.tts_request_queue, self.tts_response_queue, tts_config['api_key'], self.voice_id)
+            )
+            self.tts_thread.daemon = True
+            self.tts_thread.start()
 
-        async with self.tts_cache_lock:
-            self.tts_ready = tts_ready
-        if tts_ready:
-            self._log_tts_state("ensure-tts-alive-restarted")
-        else:
-            logger.error(f"[{self.lanlan_name}] TTS线程重启未在{timeout}s内就绪")
+            # 等待就绪信号
+            tts_ready = False
+            start_time = time.time()
+            timeout = 8.0
+            while time.time() - start_time < timeout:
+                try:
+                    if not self.tts_response_queue.empty():
+                        msg = self.tts_response_queue.get_nowait()
+                        if isinstance(msg, tuple) and len(msg) == 2 and msg[0] == "__ready__":
+                            tts_ready = msg[1]
+                            break
+                        else:
+                            self.tts_response_queue.put(msg)
+                            break
+                except Exception:
+                    pass
+                await asyncio.sleep(0.05)
 
-        # 启动新的响应处理协程
-        self.tts_handler_task = asyncio.create_task(self.tts_response_handler())
-        return tts_ready
+            async with self.tts_cache_lock:
+                self.tts_ready = tts_ready
+            if tts_ready:
+                self._log_tts_state("ensure-tts-alive-restarted")
+            else:
+                logger.error(f"[{self.lanlan_name}] TTS线程重启未在{timeout}s内就绪")
+
+            # 启动新的响应处理协程
+            self.tts_handler_task = asyncio.create_task(self.tts_response_handler())
+            return tts_ready
 
     async def handle_new_message(self):
         """处理新模型输出：清空TTS队列并通知前端"""
