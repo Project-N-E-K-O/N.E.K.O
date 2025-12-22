@@ -423,24 +423,39 @@ def main():
         # 尝试优雅关闭
         cleanup_servers()
         
-        print("\n确保所有进程已终止...", flush=True)
-        # 强制退出前，直接杀死整个进程组，这是最彻底的清理方式
+        # 等待一段时间，确认进程是否真的无法终止
+        print("\n等待进程清理完成...", flush=True)
+        time.sleep(2)
         
-        try:
-            if hasattr(os, 'killpg'):
-                pgid = os.getpgrp()
-                # 发送 SIGKILL 给整个进程组
-                # 注意：这会立即杀死当前进程，所以这行代码之后的内容可能不会执行
-                os.killpg(pgid, signal.SIGKILL)
-            else:
-                # Windows: 使用 taskkill 强制杀死进程树
-                import subprocess
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(os.getpid())], 
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
+        # 检查是否还有存活的进程
+        has_alive = any(
+            server.get('process') and server['process'].is_alive()
+            for server in SERVERS
+        )
+        
+        if has_alive:
+            print("\n检测到进程未能正常退出，尝试强制终止...", flush=True)
             
-        os._exit(0)
+            try:
+                if hasattr(os, 'killpg'):
+                    pgid = os.getpgrp()
+                    # 先尝试 SIGTERM 允许清理
+                    os.killpg(pgid, signal.SIGTERM)
+                    time.sleep(1)
+                    # 如果还活着，再使用 SIGKILL
+                    os.killpg(pgid, signal.SIGKILL)
+                else:
+                    # Windows: 使用 taskkill 强制杀死进程树
+                    import subprocess
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(os.getpid())], 
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+        
+        print("\n清理完成", flush=True)
+        # 正常退出，允许 atexit 运行（除非还有残留进程需要强制退出）
+        if has_alive:
+            os._exit(1)
     
     return 0
 

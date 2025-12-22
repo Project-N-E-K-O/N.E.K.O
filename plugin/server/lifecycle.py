@@ -150,8 +150,8 @@ async def shutdown() -> None:
         # 尝试最后的清理
         try:
             state.cleanup_plugin_comm_resources()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to cleanup plugin comm resources during forced shutdown: {e}")
         
         # 强制退出，防止进程卡死
         os._exit(1)

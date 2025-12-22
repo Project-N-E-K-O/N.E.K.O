@@ -55,7 +55,11 @@ PLUGIN_TRIGGER_TIMEOUT = 10.0
 PLUGIN_SHUTDOWN_TIMEOUT = 5.0
 
 # 插件全局关闭超时（秒）
-PLUGIN_SHUTDOWN_TOTAL_TIMEOUT = int(os.getenv("PLUGIN_SHUTDOWN_TOTAL_TIMEOUT", "30"))
+_shutdown_total_timeout_str = os.getenv("PLUGIN_SHUTDOWN_TOTAL_TIMEOUT", "30")
+try:
+    PLUGIN_SHUTDOWN_TOTAL_TIMEOUT = int(_shutdown_total_timeout_str)
+except ValueError:
+    PLUGIN_SHUTDOWN_TOTAL_TIMEOUT = 30  # 默认值
 
 # 队列操作超时（queue.get）
 QUEUE_GET_TIMEOUT = 1.0
@@ -163,6 +167,11 @@ def validate_config() -> None:
         raise ValueError("PLUGIN_SHUTDOWN_TIMEOUT must be positive")
     if PLUGIN_SHUTDOWN_TIMEOUT > 300:
         raise ValueError("PLUGIN_SHUTDOWN_TIMEOUT is unreasonably large (max: 300s)")
+    
+    if PLUGIN_SHUTDOWN_TOTAL_TIMEOUT <= 0:
+        raise ValueError("PLUGIN_SHUTDOWN_TOTAL_TIMEOUT must be positive")
+    if PLUGIN_SHUTDOWN_TOTAL_TIMEOUT > 300:
+        raise ValueError("PLUGIN_SHUTDOWN_TOTAL_TIMEOUT is unreasonably large (max: 300s)")
     
     if COMMUNICATION_THREAD_POOL_MAX_WORKERS <= 0:
         raise ValueError("COMMUNICATION_THREAD_POOL_MAX_WORKERS must be positive")

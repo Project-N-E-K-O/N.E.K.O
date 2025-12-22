@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import base64
 from datetime import datetime
-from typing import Any, Dict, Literal, Optional, List
+from typing import Any, Dict, Literal, Optional, List, Union
 
 from pydantic import BaseModel, Field, field_serializer
 from plugin.sdk.version import SDK_VERSION
@@ -59,7 +59,7 @@ class PluginDependency(BaseModel):
     recommended: Optional[str] = None
     supported: Optional[str] = None
     untested: Optional[str] = None  # 如果使用依赖配置，此字段是必须的
-    conflicts: Optional[List[str]] = None  # 可以是版本范围列表，或 true（表示冲突）
+    conflicts: Optional[Union[List[str], bool]] = None  # 可以是版本范围列表，或 true（表示冲突）
 
 
 class PluginMeta(BaseModel):

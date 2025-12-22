@@ -615,9 +615,6 @@ def _resolve_plugin_id_conflict(
                 return True
         return False
     
-    # 在函数内部定义，以便在下面使用
-    _is_id_taken_local = _is_id_taken
-    
     # 检查ID是否被占用
     is_taken = _is_id_taken(plugin_id)
     if not is_taken:
