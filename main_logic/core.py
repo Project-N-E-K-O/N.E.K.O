@@ -290,10 +290,6 @@ class LLMSessionManager:
                 if not self.tts_thread or not self.tts_thread.is_alive():
                     await self._ensure_tts_alive(reason="handle_text_data enqueue")
 
-                # 确保线程活着，否则尝试重启
-                if not self.tts_thread or not self.tts_thread.is_alive():
-                    await self._ensure_tts_alive(reason="handle_output_transcript enqueue")
-
                 # 检查TTS是否就绪
                 if self.tts_ready and self.tts_thread and self.tts_thread.is_alive():
                     # TTS已就绪，直接发送
