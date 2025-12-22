@@ -1261,7 +1261,7 @@
                     const response = await fetch('/api/characters/voices');
                     const data = await response.json();
                     const select = form.querySelector('select[name="voice_id"]');
-                    if (select) {
+                    if (select && data && data.voices) {
                         // 清空现有选项并使用 DOM API 创建
                         while (select.firstChild) select.removeChild(select.firstChild);
                         const voiceNotSetText = window.t ? window.t('character.voiceNotSet') : '未指定音色';
