@@ -2380,6 +2380,8 @@ function init_app() {
         const scheduleAheadTime = 5;
 
         initializeGlobalAnalyser();
+        // 若初始化仍失败，兜底直接将后续 source 连接到 destination，避免静音
+        const hasAnalyser = !!globalAnalyser;
 
         // 关键：预调度所有在lookahead时间内的chunk
         while (nextChunkTime < audioPlayerContext.currentTime + scheduleAheadTime) {
@@ -2390,22 +2392,13 @@ function init_app() {
 
                 const source = audioPlayerContext.createBufferSource();
                 source.buffer = nextBuffer;
-                // source.connect(audioPlayerContext.destination);
+                if (hasAnalyser) {
+                    source.connect(globalAnalyser);
+                } else {
+                    source.connect(audioPlayerContext.destination);
+                }
 
-
-                // 创建analyser节点用于lipSync
-                // const analyser = audioPlayerContext.createAnalyser();
-                // analyser.fftSize = 2048;
-                // source.connect(analyser);
-                // analyser.connect(audioPlayerContext.destination);
-                // if (window.LanLan1 && window.LanLan1.live2dModel) {
-                //     startLipSync(window.LanLan1.live2dModel, analyser);
-                // }
-
-
-                source.connect(globalAnalyser);
-
-                if (!lipSyncActive && window.LanLan1 && window.LanLan1.live2dModel) {
+                if (hasAnalyser && !lipSyncActive && window.LanLan1 && window.LanLan1.live2dModel) {
                     startLipSync(window.LanLan1.live2dModel, globalAnalyser);
                     lipSyncActive = true;
                 }
@@ -2514,6 +2507,15 @@ function init_app() {
             nextChunkTime = audioPlayerContext.currentTime + 0.1;
             isPlaying = true;
             scheduleAudioChunks(); // 开始调度循环
+        } else {
+            // 若已经在播放，立即尝试补调度，避免卡住
+            setTimeout(() => {
+                try {
+                    scheduleAudioChunks();
+                } catch (e) {
+                    // 静默兜底，避免控制台噪声
+                }
+            }, 0);
         }
     }
 
