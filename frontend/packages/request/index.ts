@@ -15,23 +15,11 @@ export type {
 // 导出创建函数
 export { createRequestClient } from "./createClient";
 
-// 导出 Token 存储实现
-export { WebTokenStorage, NativeTokenStorage } from "./src/request-client/tokenStorage";
+// 导出 Token 存储实现（注意：默认入口必须保持 Web/SSR 安全，避免 Metro(Web) 解析 RN 依赖）
+export { WebTokenStorage } from "./src/request-client/tokenStorage.web";
 
 // 导出存储抽象
 export { default as webStorage } from "./src/storage/webStorage";
-// nativeStorage 使用动态导入，避免在 Web 环境中加载 React Native 依赖
-// 如需使用，请使用: const nativeStorage = await import('@project_neko/request').then(m => m.nativeStorage);
 export { default as storage } from "./src/storage/index";
 export type { Storage } from "./src/storage/types";
-
-/**
- * Loads the native storage implementation at runtime to avoid bundling native dependencies in web builds.
- *
- * @returns The default export from ./src/storage/nativeStorage — the native storage implementation.
- */
-export async function getNativeStorage() {
-  const module = await import("./src/storage/nativeStorage");
-  return module.default;
-}
 

@@ -4,7 +4,7 @@ import type { AxiosResponse, InternalAxiosRequestConfig } from "axios";
 import { createRequestClient } from "../createClient";
 import type { TokenStorage } from "../src/request-client/types";
 import { RequestQueue } from "../src/request-client/requestQueue";
-import { getNativeStorage } from "../index";
+import { getNativeStorage } from "../index.native";
 
 type AdapterResult = Pick<AxiosResponse, "status" | "statusText" | "headers" | "data">;
 

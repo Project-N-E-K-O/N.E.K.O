@@ -1,5 +1,5 @@
 import { createRequestClient } from "./createClient";
-import { WebTokenStorage } from "./src/request-client/tokenStorage";
+import { WebTokenStorage } from "./src/request-client/tokenStorage.web";
 
 const REFRESH_API_TIMEOUT_MS = 10_000;
 
@@ -95,6 +95,6 @@ export const request = createRequestClient({
 
 // 导出类型和工具
 export { createRequestClient } from "./createClient";
-export { WebTokenStorage } from "./src/request-client/tokenStorage";
+export { WebTokenStorage } from "./src/request-client/tokenStorage.web";
 export type { RequestClientConfig, TokenStorage, TokenRefreshFn, TokenRefreshResult } from "./src/request-client/types";
 

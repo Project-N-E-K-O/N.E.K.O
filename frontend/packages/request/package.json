@@ -5,11 +5,13 @@
   "private": true,
   "description": "统一请求库，支持 Web / React Native，提供 Axios、Token 刷新、请求队列等功能",
   "main": "index.ts",
+  "browser": "index.web.ts",
   "types": "index.ts",
   "react-native": "index.native.ts",
   "exports": {
     ".": {
       "react-native": "./index.native.ts",
+      "browser": "./index.web.ts",
       "default": "./index.ts"
     },
     "./web": "./index.web.ts"

@@ -17,6 +17,15 @@ export function createNativeRequestClient(options: { baseURL: string; refreshApi
   });
 }
 
+/**
+ * Native-only: loads the native storage implementation.
+ * 注意：此函数仅应在 React Native 环境使用。
+ */
+export async function getNativeStorage() {
+  const module = await import("./src/storage/nativeStorage");
+  return module.default;
+}
+
 // 导出类型和工具
 export { createRequestClient } from "./createClient";
 export { NativeTokenStorage } from "./src/request-client/tokenStorage";
