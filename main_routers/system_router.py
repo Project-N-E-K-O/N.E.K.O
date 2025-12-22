@@ -918,7 +918,7 @@ async def proactive_chat(request: Request):
                         base_url=correction_base_url,
                         api_key=correction_api_key,
                         temperature=0.3,  # 降低温度以获得更稳定的改写结果
-                        max_completion_tokens=200,
+                        max_completion_tokens=500,
                         streaming=False
                     )
                     
@@ -933,7 +933,7 @@ async def proactive_chat(request: Request):
                     response_text = rewrite_response.content.strip()
                     logger.debug(f"[{lanlan_name}] 改写后内容: {response_text[:100]}...")
 
-                    if "主动搭话" in response_text or '|' in response_text or '[PASS]' in response_text:
+                    if "主动搭话" in response_text or '|' in response_text or '[PASS]' in response_text or count_words_and_chars(response_text) > 100:
                         logger.warning(f"[{lanlan_name}] AI回复经二次改写后仍失败，放弃主动搭话。")
                         return JSONResponse({
                             "success": True,
@@ -1038,9 +1038,13 @@ async def proactive_chat(request: Request):
                 await mgr.handle_text_data(chunk, is_first_chunk=(i == 0))
                 await asyncio.sleep(0.15)  # 小延迟模拟流式
             
-            # 调用response完成回调
-            if hasattr(mgr, 'handle_response_complete'):
-                await mgr.handle_response_complete()
+            # 发送turn end信号（不调用handle_response_complete以避免触发热重置）
+            mgr.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+            try:
+                if mgr.websocket and hasattr(mgr.websocket, 'client_state') and mgr.websocket.client_state == mgr.websocket.client_state.CONNECTED:
+                    await mgr.websocket.send_json({'type': 'system', 'data': 'turn end'})
+            except Exception as e:
+                logger.warning(f"[{lanlan_name}] 发送turn end失败: {e}")
             
             return JSONResponse({
                 "success": True,

@@ -1286,6 +1286,7 @@ class LLMSessionManager:
             if incremental_cache:
                 final_prime_text = self._convert_cache_to_str(incremental_cache)
             else:  # Ensure session cycles a turn even if no incremental cache
+                final_prime_text = ""  # Initialize to empty string to prevent NameError
                 logger.debug(f"🔄 No incremental cache found. 缓存长度: {len(self.message_cache_for_new_session)}, 快照长度: {self.initial_cache_snapshot_len}")
 
             # 若存在需要植入的额外提示，则指示模型忽略上一条消息，并在下一次响应中统一向用户补充这些提示

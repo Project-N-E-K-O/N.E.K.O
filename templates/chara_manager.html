@@ -1363,7 +1363,19 @@
                     if (!response.ok) {
                         const errorText = await response.text();
                         console.error('API请求失败:', response.status, errorText);
-                        await showAlert(window.t ? window.t('character.saveFailedWithError', { error: errorText }) : '保存失败: ' + errorText);
+                        
+                        // 尝试解析JSON错误消息
+                        let errorMessage = errorText;
+                        try {
+                            const errorJson = JSON.parse(errorText);
+                            if (errorJson.error) {
+                                errorMessage = errorJson.error;
+                            }
+                        } catch (e) {
+                            // 如果不是JSON格式，保持原错误文本
+                        }
+                        
+                        await showAlert(window.t ? window.t('character.saveFailedWithError', { error: errorMessage }) : '保存失败: ' + errorMessage);
                         return;
                     }
 
