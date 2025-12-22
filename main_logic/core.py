@@ -448,6 +448,10 @@ class LLMSessionManager:
                         self.current_speech_id = str(uuid4())
                     self._log_tts_state("handle_output_transcript-first-chunk-new-speech-id")
 
+                # 确保线程活着，否则尝试重启（与 handle_text_data 保持一致）
+                if not self.tts_thread or not self.tts_thread.is_alive():
+                    await self._ensure_tts_alive(reason="handle_output_transcript enqueue")
+
                 # 检查TTS是否就绪
                 if self.tts_ready and self.tts_thread and self.tts_thread.is_alive():
                     # TTS已就绪，直接发送
