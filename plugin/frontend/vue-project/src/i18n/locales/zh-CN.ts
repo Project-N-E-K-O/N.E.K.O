@@ -25,7 +25,8 @@ export default {
     unknown: '未知',
     nA: 'N/A',
     darkMode: '深色模式',
-    lightMode: '浅色模式'
+    lightMode: '浅色模式',
+    logoutConfirmTitle: '提示'
   },
   nav: {
     dashboard: '仪表盘',

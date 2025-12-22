@@ -45,7 +45,7 @@ async def verify_admin_code(
     验证管理员验证码（OAuth2 Bearer Token 模式）
     
     Args:
-        credentials: HTTP Bearer 凭证（从 Authorization 头获取）
+        credentials: HTTP Bearer 凭证(从 Authorization 头获取)
     
     Returns:
         验证通过时返回 "authenticated"

@@ -78,7 +78,7 @@ const errorMessage = ref('')
 
 const isCodeValid = computed(() => {
   const normalized = code.value.trim().toUpperCase()
-  return /^[A-Z]{0,4}$/.test(normalized) && normalized.length === 4
+  return /^[A-Z]{4}$/.test(normalized)
 })
 
 function handleInput() {
@@ -115,11 +115,10 @@ async function handleLogin() {
         errorMessage.value = '验证码错误，请重新输入'
         ElMessage.error('验证码错误')
       } else {
-        // 其他错误，可能是网络问题，但验证码可能正确
-        // 先保存验证码，让用户继续使用
-        ElMessage.warning('网络错误，但验证码已保存')
-        const redirect = (route.query.redirect as string) || '/'
-        router.push(redirect)
+        // 其他错误（500、网络问题等），不保存验证码
+        authStore.clearAuthCode()
+        errorMessage.value = '服务器连接失败，请稍后重试'
+        ElMessage.error('无法连接到服务器')
       }
     }
   } catch (error) {

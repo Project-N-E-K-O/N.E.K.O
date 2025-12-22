@@ -21,7 +21,7 @@
         :icon="SwitchButton"
         circle
         @click="handleLogout"
-        title="退出登录"
+        :title="$t('auth.logout')"
       />
     </div>
   </div>
@@ -71,13 +71,17 @@ async function handleRefresh() {
 
 async function handleLogout() {
   try {
-    await ElMessageBox.confirm('确定要退出登录吗？', '提示', {
-      confirmButtonText: '确定',
-      cancelButtonText: '取消',
-      type: 'warning'
-    })
+    await ElMessageBox.confirm(
+      t('auth.logoutConfirm'),
+      t('common.logoutConfirmTitle'),
+      {
+        confirmButtonText: t('common.confirm'),
+        cancelButtonText: t('common.cancel'),
+        type: 'warning'
+      }
+    )
     authStore.clearAuthCode()
-    ElMessage.success('已退出登录')
+    ElMessage.success(t('auth.logoutSuccess'))
     router.push('/login')
   } catch {
     // 用户取消

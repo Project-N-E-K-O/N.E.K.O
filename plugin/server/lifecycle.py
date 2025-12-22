@@ -4,6 +4,7 @@
 处理服务器启动和关闭时的插件加载、资源初始化等。
 """
 import asyncio
+import atexit
 import logging
 import os
 from pathlib import Path
@@ -188,6 +189,73 @@ async def _shutdown_internal() -> None:
     except Exception:
         logger.exception("Error cleaning up plugin communication resources")
 
+def _log_shutdown_diagnostics() -> None:
+    """记录关闭时的诊断信息，用于排查超时问题"""
+    try:
+        # 记录当前插件状态
+        with state.plugin_hosts_lock:
+            plugin_hosts_snapshot = dict(state.plugin_hosts)
+        
+        if plugin_hosts_snapshot:
+            logger.error("Shutdown timeout diagnostics: {} plugin(s) still registered:", len(plugin_hosts_snapshot))
+            for plugin_id, host in plugin_hosts_snapshot.items():
+                try:
+                    is_alive = False
+                    exitcode = None
+                    if hasattr(host, 'process') and host.process:
+                        is_alive = host.process.is_alive()
+                        exitcode = host.process.exitcode
+                    
+                    logger.error(
+                        "  - Plugin '{}': process_alive={}, exitcode={}, host_type={}",
+                        plugin_id,
+                        is_alive,
+                        exitcode,
+                        type(host).__name__
+                    )
+                except Exception as e:
+                    logger.error("  - Plugin '{}': failed to get status: {}", plugin_id, e)
+        else:
+            logger.error("Shutdown timeout diagnostics: no plugins registered")
+        
+        # 记录当前运行的任务
+        try:
+            tasks = [t for t in asyncio.all_tasks() if not t.done()]
+            if tasks:
+                logger.error("Shutdown timeout diagnostics: {} task(s) still running:", len(tasks))
+                for task in tasks:
+                    logger.error(
+                        "  - Task '{}': done={}, cancelled={}, exception={}",
+                        task.get_name(),
+                        task.done(),
+                        task.cancelled(),
+                        task.exception() if task.done() else None
+                    )
+            else:
+                logger.error("Shutdown timeout diagnostics: no tasks running")
+        except Exception as e:
+            logger.error("Shutdown timeout diagnostics: failed to enumerate tasks: {}", e)
+    except Exception as e:
+        logger.error("Shutdown timeout diagnostics: failed to collect diagnostics: {}", e, exc_info=True)
+
+
+def _final_log_flush() -> None:
+    """进程退出前的最后日志刷新"""
+    try:
+        # 强制刷新 loguru 的所有日志处理器
+        logger.info("Final log flush before process exit")
+        # loguru 会自动处理，但我们可以显式调用
+        import sys
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass  # 忽略退出时的错误
+
+
+# 注册 atexit 处理器，确保进程退出时刷新日志
+atexit.register(_final_log_flush)
+
+
 async def shutdown() -> None:
     """
     服务器关闭时的清理
@@ -201,17 +269,30 @@ async def shutdown() -> None:
         await asyncio.wait_for(_shutdown_internal(), timeout=PLUGIN_SHUTDOWN_TOTAL_TIMEOUT)
         logger.info("All plugins have been gracefully shutdown.")
     except asyncio.TimeoutError:
-        logger.error(f"Plugin shutdown process timed out ({PLUGIN_SHUTDOWN_TOTAL_TIMEOUT}s), forcing cleanup")
+        logger.error(
+            "Plugin shutdown process timed out ({}s), forcing cleanup",
+            PLUGIN_SHUTDOWN_TOTAL_TIMEOUT
+        )
+        
+        # 记录详细的诊断信息
+        _log_shutdown_diagnostics()
+        
         # 尝试最后的清理
         try:
             state.cleanup_plugin_comm_resources()
+            logger.debug("Plugin communication resources cleaned up during forced shutdown")
         except Exception as e:
-            logger.debug(f"Failed to cleanup plugin comm resources during forced shutdown: {e}")
+            logger.debug("Failed to cleanup plugin comm resources during forced shutdown: {}", e)
+        
+        # 强制刷新日志
+        _final_log_flush()
         
         # 强制退出，防止进程卡死
         os._exit(1)
     except Exception:
         logger.exception("Unexpected error during shutdown")
+        # 即使出错也尝试刷新日志
+        _final_log_flush()
 
 
 def _log_startup_diagnostics() -> None:

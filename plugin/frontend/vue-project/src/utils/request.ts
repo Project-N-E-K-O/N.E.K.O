@@ -7,6 +7,22 @@ import { ElMessage } from 'element-plus'
 import { API_BASE_URL, API_TIMEOUT } from './constants'
 import { useAuthStore } from '@/stores/auth'
 
+// 处理认证失败的辅助函数
+async function handleAuthError() {
+  try {
+    const authStore = useAuthStore()
+    authStore.clearAuthCode()
+  } catch (err) {
+    console.debug('Auth store not available:', err)
+  }
+  // 动态导入 router 避免循环依赖
+  import('@/router').then(({ default: router }) => {
+    router.push('/login')
+  })
+  // 不显示错误消息，因为会自动跳转
+  ElMessage.closeAll()
+}
+
 // 创建 axios 实例
 const service: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
@@ -44,7 +60,7 @@ service.interceptors.response.use(
     // Axios 默认只会把 2xx 响应放到这里，直接返回 data 即可
     return response.data
   },
-  (error: AxiosError) => {
+  async (error: AxiosError) => {
     // 对于 404 错误，不输出错误日志（这是正常的，某些资源可能不存在）
     // 对于 401/403 错误，也不输出错误日志（会自动跳转登录页）
     const status = error.response?.status
@@ -64,35 +80,11 @@ service.interceptors.response.use(
           break
         case 401:
           message = '未授权，请重新登录'
-          // 清除认证信息并跳转到登录页
-          try {
-            const authStore = useAuthStore()
-            authStore.clearAuthCode()
-          } catch (err) {
-            console.debug('Auth store not available:', err)
-          }
-          // 动态导入 router 避免循环依赖
-          import('@/router').then(({ default: router }) => {
-            router.push('/login')
-          })
-          // 不显示错误消息，因为会自动跳转
-          ElMessage.closeAll()
+          await handleAuthError()
           break
         case 403:
           message = data.detail || '拒绝访问：验证码错误或已过期'
-          // 403 也可能是验证码错误，清除认证信息
-          try {
-            const authStore = useAuthStore()
-            authStore.clearAuthCode()
-          } catch (err) {
-            console.debug('Auth store not available:', err)
-          }
-          // 动态导入 router 避免循环依赖
-          import('@/router').then(({ default: router }) => {
-            router.push('/login')
-          })
-          // 不显示错误消息，因为会自动跳转
-          ElMessage.closeAll()
+          await handleAuthError()
           break
         case 404:
           message = data.detail || '请求的资源不存在'

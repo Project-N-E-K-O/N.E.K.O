@@ -942,7 +942,7 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
     """
     在不实例化的情况下扫描类属性，提取 @EventHandler 元数据并填充全局表。
     """
-    logger = logging.getLogger(__name__)
+    logger = loguru_logger
     for name, member in inspect.getmembers(cls):
         event_meta = getattr(member, EVENT_META_ATTR, None)
         if event_meta is None and hasattr(member, "__wrapped__"):
@@ -958,7 +958,6 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
 
     entries = conf.get("entries") or pdata.get("entries") or []
     for ent in entries:
-        logger = logging.getLogger(__name__)
         try:
             eid = ent.get("id") if isinstance(ent, dict) else str(ent)
             if not eid:

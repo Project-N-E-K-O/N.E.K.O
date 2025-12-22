@@ -8,8 +8,9 @@ const AUTH_CODE_KEY = 'neko_admin_code'
 
 export const useAuthStore = defineStore('auth', () => {
   // 状态
-  const authCode = ref<string | null>(localStorage.getItem(AUTH_CODE_KEY))
-
+  let storedCode: string | null = null
+  try { storedCode = localStorage.getItem(AUTH_CODE_KEY) } catch {}
+  const authCode = ref<string | null>(storedCode)
   // 计算属性
   const isAuthenticated = computed(() => authCode.value !== null && authCode.value.length === 4)
 
@@ -19,7 +20,7 @@ export const useAuthStore = defineStore('auth', () => {
     const normalizedCode = code.trim().toUpperCase()
     if (normalizedCode.length === 4 && /^[A-Z]{4}$/.test(normalizedCode)) {
       authCode.value = normalizedCode
-      localStorage.setItem(AUTH_CODE_KEY, normalizedCode)
+      try { localStorage.setItem(AUTH_CODE_KEY, normalizedCode) } catch {}
       return true
     }
     return false
@@ -27,7 +28,11 @@ export const useAuthStore = defineStore('auth', () => {
 
   function clearAuthCode() {
     authCode.value = null
+  }
+    try {
     localStorage.removeItem(AUTH_CODE_KEY)
+  } catch (err) {
+    console.warn('Failed to clear auth code from storage:', err)
   }
 
   function getAuthHeader(): string | null {

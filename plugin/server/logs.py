@@ -223,6 +223,7 @@ def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
     1. 插件日志格式: 2024-01-01 00:00:00 - [plugin.xxx] - INFO - file.py:123 - message
     2. 服务器日志格式: 2024-01-01 00:00:00,123 - user_plugin_server - INFO - message
     3. 标准日志格式: 2024-01-01 00:00:00 - INFO - message
+    4. 管道分隔格式: 2024-01-01 00:00:00 | INFO | module:function:123 | message
     """
     line = line.strip()
     if not line:
@@ -264,6 +265,36 @@ def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
             "level": level.strip(),
             "file": "",
             "line": 0,
+            "message": message.strip()
+        }
+    
+    # 模式4: 管道分隔格式 - 2024-01-01 00:00:00 | INFO | module:function:123 | message
+    # 支持格式: timestamp | level | location | message
+    # location 可以是 module:function:line 或 module:function 或 module
+    pattern4 = r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s*\|\s*(\w+)\s*\|\s*([^|]+)\s*\|\s*(.+)'
+    match = re.match(pattern4, line)
+    if match:
+        timestamp, level, location, message = match.groups()
+        # 解析 location: 可能是 module:function:line 或 module:function 或 module
+        location_parts = location.strip().split(':')
+        if len(location_parts) >= 3:
+            # module:function:line
+            file = location_parts[0]
+            line_num = int(location_parts[-1]) if location_parts[-1].isdigit() else 0
+        elif len(location_parts) == 2:
+            # module:function
+            file = location_parts[0]
+            line_num = 0
+        else:
+            # module
+            file = location_parts[0] if location_parts else ""
+            line_num = 0
+        
+        return {
+            "timestamp": timestamp.strip(),
+            "level": level.strip(),
+            "file": file.strip(),
+            "line": line_num,
             "message": message.strip()
         }
     

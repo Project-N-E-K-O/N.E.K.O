@@ -114,6 +114,7 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
         # 注册到状态
         with state.plugin_hosts_lock:
             # 再次检查冲突（可能在启动过程中其他插件已注册）
+            original_plugin_id = plugin_id
             final_plugin_id = _resolve_plugin_id_conflict(
                 plugin_id,
                 logger,
@@ -121,16 +122,29 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
                 entry_point=entry,
                 plugin_data=pdata
             )
-            if final_plugin_id != plugin_id:
-                logger.debug(
-                    "Plugin ID changed during registration from '{}' to '{}' (detailed warning logged above)",
-                    plugin_id,
-                    final_plugin_id
+            if final_plugin_id != original_plugin_id:
+                logger.warning(
+                    "Plugin ID changed during registration from '{}' to '{}' (detailed warning logged above). "
+                    "Note: The subprocess was already started with the original ID '{}', so it will continue using that ID internally.",
+                    original_plugin_id,
+                    final_plugin_id,
+                    original_plugin_id
                 )
                 plugin_id = final_plugin_id
-                # 更新 host 的 plugin_id（如果可能）
-                if hasattr(host, 'plugin_id'):
-                    host.plugin_id = plugin_id
+                # 更新 host 的 plugin_id 属性
+                host.plugin_id = plugin_id
+                # 重新绑定 logger 以使用新的 plugin_id
+                # 注意：子进程已经启动，无法更改其内部的 plugin_id
+                host.logger = host.logger.bind(plugin_id=final_plugin_id)
+                
+                # 如果原始 ID 已经在 plugin_hosts 中，需要移除旧的键
+                if original_plugin_id in state.plugin_hosts:
+                    old_host = state.plugin_hosts.pop(original_plugin_id)
+                    if old_host != host:
+                        logger.warning(
+                            "Removed old host entry for plugin '{}' (different host object)",
+                            original_plugin_id
+                        )
             
             # 检查进程是否还在运行
             if hasattr(host, 'process') and host.process:
@@ -246,7 +260,10 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
                                 existing_host.process.terminate()
                                 existing_host.process.join(timeout=1.0)
                         except Exception as e:
-                            logger.debug("Error shutting down duplicate plugin {}: {}", plugin_id, e)
+                            logger.warning(
+                                "Error shutting down duplicate plugin {}: {}",
+                                plugin_id, e, exc_info=True
+                            )
                 raise HTTPException(
                     status_code=400,
                     detail=f"Plugin '{plugin_id}' is already registered (duplicate detected)"

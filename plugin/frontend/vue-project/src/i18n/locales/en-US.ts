@@ -25,7 +25,8 @@ export default {
     unknown: 'Unknown',
     nA: 'N/A',
     darkMode: 'Dark Mode',
-    lightMode: 'Light Mode'
+    lightMode: 'Light Mode',
+    logoutConfirmTitle: 'Notice'
   },
   nav: {
     dashboard: 'Dashboard',
