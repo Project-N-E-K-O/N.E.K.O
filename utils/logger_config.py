@@ -7,6 +7,8 @@
 - 自动清理旧日志
 - 降级策略（当无法写入时的备用方案）
 - 跨平台支持
+
+现在使用loguru作为日志后端
 """
 import os
 import sys
@@ -15,6 +17,9 @@ from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
 from pathlib import Path
 from datetime import datetime, timedelta
 import shutil
+
+from loguru import logger as loguru_logger
+from loguru import _defaults
 
 from config import APP_NAME
 
@@ -392,36 +397,98 @@ class EnhancedLogger:
 
 def setup_logging(app_name=None, service_name=None, log_level=None, silent=False):
     """
-    便捷函数：设置日志配置
+    便捷函数：设置日志配置（使用loguru）
     
     Args:
         app_name: 应用名称，默认使用配置中的 APP_NAME（用于确定日志目录）
         service_name: 服务名称，用于区分不同服务的日志文件（如Main、Memory、Agent）
-        log_level: 日志级别
+        log_level: 日志级别（字符串："DEBUG", "INFO", "WARNING", "ERROR" 或logging常量）
         silent: 静默模式，不打印初始化消息（用于子进程避免重复输出）
         
     Returns:
-        tuple: (增强的logger实例, 日志配置对象)
+        tuple: (loguru logger实例, 日志配置对象)
         
     注意：
-        返回的logger会自动在error()调用时包含traceback（如果在异常上下文中）
+        loguru会自动在error()调用时包含traceback
         也可以使用logger.exception()来明确记录异常信息
     """
-    config = RobustLoggerConfig(app_name=app_name, service_name=service_name, log_level=log_level)
-    base_logger = config.setup_logger()
+    # 移除loguru的默认handler
+    loguru_logger.remove()
     
-    # 包装为增强logger
-    logger = EnhancedLogger(base_logger)
+    # 转换日志级别
+    if log_level is None:
+        log_level_str = "INFO"
+    elif isinstance(log_level, int):
+        # 如果是logging常量，转换为字符串
+        level_map = {
+            logging.DEBUG: "DEBUG",
+            logging.INFO: "INFO",
+            logging.WARNING: "WARNING",
+            logging.ERROR: "ERROR",
+            logging.CRITICAL: "CRITICAL",
+        }
+        log_level_str = level_map.get(log_level, "INFO")
+    else:
+        log_level_str = str(log_level).upper()
+    
+    # 获取日志配置
+    config = RobustLoggerConfig(app_name=app_name, service_name=service_name, log_level=log_level)
+    log_dir = config.get_log_directory_path()
+    log_file = config.get_log_file_path()
+    
+    # 日志格式
+    log_format = (
+        "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+        "<level>{level: <8}</level> | "
+        "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | "
+        "<level>{message}</level>"
+    )
+    
+    # 添加控制台输出
+    loguru_logger.add(
+        sys.stdout,
+        format=log_format,
+        level=log_level_str,
+        colorize=True,
+    )
+    
+    # 添加文件输出（带轮转）
+    loguru_logger.add(
+        log_file,
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} | {message}",
+        level=log_level_str,
+        rotation=config.max_bytes,  # 按大小轮转
+        retention=config.backup_count,  # 保留的备份文件数
+        compression=None,  # 不压缩
+        encoding="utf-8",
+    )
+    
+    # 添加错误日志文件（单独记录ERROR及以上级别）
+    if service_name:
+        error_filename = f"{config.app_name}_{service_name}_error.log"
+    else:
+        error_filename = f"{config.app_name}_error.log"
+    error_log_file = Path(log_dir) / error_filename
+    
+    loguru_logger.add(
+        str(error_log_file),
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} | {message}",
+        level="ERROR",
+        rotation=config.max_bytes,
+        retention=config.backup_count,
+        compression=None,
+        encoding="utf-8",
+    )
     
     # 记录日志配置信息（子进程静默模式下跳过）
     if not silent:
         service_info = f"{service_name}" if service_name else config.app_name
-        logger.info(f"=== {service_info} 日志系统已初始化 ===")
-        logger.info(f"日志目录: {config.get_log_directory_path()}")
-        logger.info(f"日志级别: {logging.getLevelName(config.log_level)}")
-        logger.info("=" * 50)
+        loguru_logger.info(f"=== {service_info} 日志系统已初始化（loguru）===")
+        loguru_logger.info(f"日志目录: {log_dir}")
+        loguru_logger.info(f"日志级别: {log_level_str}")
+        loguru_logger.info("=" * 50)
     
-    return logger, config
+    return loguru_logger, config
 
 
 # =============================================================================

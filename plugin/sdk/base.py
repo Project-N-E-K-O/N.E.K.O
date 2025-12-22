@@ -3,7 +3,6 @@
 
 提供插件开发的基础类和接口。
 """
-import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Dict, Any, List
@@ -83,26 +82,26 @@ class NekoPluginBase:
     
     def enable_file_logging(
         self,
-        log_level: Optional[int] = None,
+        log_level: Optional[str] = None,
         max_bytes: Optional[int] = None,
         backup_count: Optional[int] = None,
         max_files: Optional[int] = None,
-    ) -> logging.Logger:
+    ) -> Any:
         """
-        启用插件文件日志功能
+        启用插件文件日志功能（使用loguru）
         
         为插件创建独立的文件日志，日志文件保存在插件的logs目录下。
         日志会同时输出到文件和控制台（终端）。
         自动管理日志文件数量，支持日志轮转。
         
         Args:
-            log_level: 日志级别，默认使用配置中的PLUGIN_LOG_LEVEL
+            log_level: 日志级别（字符串："DEBUG", "INFO", "WARNING", "ERROR"），默认使用配置中的PLUGIN_LOG_LEVEL
             max_bytes: 单个日志文件最大大小（字节），默认使用配置中的PLUGIN_LOG_MAX_BYTES
             backup_count: 保留的备份文件数量，默认使用配置中的PLUGIN_LOG_BACKUP_COUNT
             max_files: 最多保留的日志文件总数，默认使用配置中的PLUGIN_LOG_MAX_FILES
             
         Returns:
-            配置好的logger实例（已添加文件handler和控制台handler）
+            配置好的loguru logger实例（已添加文件handler和控制台handler）
             
         使用示例:
             ```python
@@ -110,7 +109,7 @@ class NekoPluginBase:
                 def __init__(self, ctx):
                     super().__init__(ctx)
                     # 启用文件日志（同时输出到文件和控制台）
-                    self.file_logger = self.enable_file_logging(log_level=logging.DEBUG)
+                    self.file_logger = self.enable_file_logging(log_level="DEBUG")
                     # 使用file_logger记录日志，会同时显示在终端和保存到文件
                     self.file_logger.info("Plugin initialized")
             ```

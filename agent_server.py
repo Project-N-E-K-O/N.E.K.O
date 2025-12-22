@@ -5,7 +5,6 @@ import mimetypes
 mimetypes.add_type("application/javascript", ".js")
 import asyncio
 import uuid
-import logging
 from typing import Dict, Any, Optional
 from datetime import datetime
 import time
@@ -28,7 +27,7 @@ app = FastAPI(title="N.E.K.O Tool Server")
 
 # Configure logging
 from utils.logger_config import setup_logging, ThrottledLogger
-logger, log_config = setup_logging(service_name="Agent", log_level=logging.INFO)
+logger, log_config = setup_logging(service_name="Agent", log_level="INFO")
 
 
 class Modules:
@@ -1119,11 +1118,12 @@ async def admin_control(payload: Dict[str, Any]):
 
 if __name__ == "__main__":
     import uvicorn
+    import logging  # 仍需要用于uvicorn的过滤器
     
     # 使用统一的速率限制日志过滤器
     from utils.logger_config import create_agent_server_filter
     
-    # Add filter to uvicorn access logger
+    # Add filter to uvicorn access logger (uvicorn仍使用标准logging)
     logging.getLogger("uvicorn.access").addFilter(create_agent_server_filter())
     
     uvicorn.run(app, host="127.0.0.1", port=TOOL_SERVER_PORT)

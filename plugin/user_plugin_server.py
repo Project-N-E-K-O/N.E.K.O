@@ -5,7 +5,6 @@ HTTP 服务器主文件，定义所有路由端点。
 """
 from __future__ import annotations
 
-import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -16,7 +15,7 @@ from config import USER_PLUGIN_SERVER_PORT
 
 # 配置服务器日志
 from utils.logger_config import setup_logging
-server_logger, server_log_config = setup_logging(service_name="PluginServer", log_level=logging.INFO)
+server_logger, server_log_config = setup_logging(service_name="PluginServer", log_level="INFO")
 
 from plugin.core.state import state
 from plugin.api.models import (
@@ -578,6 +577,5 @@ async def websocket_log_stream(websocket: WebSocket, plugin_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    logging.basicConfig(level=logging.DEBUG)
     host = "127.0.0.1"  # 默认只暴露本机
     uvicorn.run(app, host=host, port=USER_PLUGIN_SERVER_PORT)

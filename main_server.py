@@ -33,7 +33,6 @@ if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
 import mimetypes # noqa
 mimetypes.add_type("application/javascript", ".js")
 import asyncio # noqa
-import logging # noqa
 from fastapi import FastAPI # noqa
 from fastapi.staticfiles import StaticFiles # noqa
 from main_logic import core as core, cross_server as cross_server # noqa
@@ -123,7 +122,7 @@ steamworks = None
 # Configure logging (子进程静默初始化，避免重复打印初始化消息)
 from utils.logger_config import setup_logging # noqa: E402
 
-logger, log_config = setup_logging(service_name="Main", log_level=logging.INFO, silent=not _IS_MAIN_PROCESS)
+logger, log_config = setup_logging(service_name="Main", log_level="INFO", silent=not _IS_MAIN_PROCESS)
 
 _config_manager = get_config_manager()
 
@@ -754,6 +753,7 @@ if __name__ == "__main__":
     import uvicorn
     import argparse
     import signal
+    import logging  # 仍需要用于uvicorn和httpx的过滤器
     
     parser = argparse.ArgumentParser()
     parser.add_argument("--open-browser",   action="store_true",
@@ -770,13 +770,15 @@ if __name__ == "__main__":
     logger.info(f"Access UI at: http://127.0.0.1:{MAIN_SERVER_PORT} (or your network IP:{MAIN_SERVER_PORT})")
     logger.info("-----------------------------")
 
-    # 使用统一的速率限制日志过滤器
+    # 注意：loguru不直接支持logging.Filter，如果需要速率限制，可以在loguru的sink中实现
+    # 暂时保留对uvicorn和httpx的logging过滤（它们仍使用标准logging）
+    import logging
     from utils.logger_config import create_main_server_filter, create_httpx_filter
     
-    # Add filter to uvicorn access logger
+    # Add filter to uvicorn access logger (uvicorn仍使用标准logging)
     logging.getLogger("uvicorn.access").addFilter(create_main_server_filter())
     
-    # Add filter to httpx logger for availability check requests
+    # Add filter to httpx logger for availability check requests (httpx仍使用标准logging)
     logging.getLogger("httpx").addFilter(create_httpx_filter())
 
     # 1) 配置 UVicorn

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import importlib
 import inspect
-import logging
 import multiprocessing
 import os
 import sys
@@ -13,6 +12,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from multiprocessing import Queue
 from queue import Empty
+
+from loguru import logger as loguru_logger
 
 from plugin.sdk.events import EVENT_META_ATTR, EventHandler
 from plugin.core.state import state
@@ -48,32 +49,56 @@ def _plugin_process_runner(
     """
     独立进程中的运行函数，负责加载插件、映射入口、处理命令并返回结果。
     """
-    logging.basicConfig(level=logging.INFO, format=f"[Proc-{plugin_id}] %(message)s")
-    logger = logging.getLogger(f"plugin.{plugin_id}")
+    # 获取项目根目录（假设 config_path 在 plugin/plugins/xxx/plugin.toml）
+    # config_path.parent.parent.parent 只能得到 ./plugin 目录
+    # 需要再往上一级才能得到项目根目录（包含 plugin/ 目录的那一层）
+    project_root = config_path.parent.parent.parent.parent.resolve()
+    
+    # 配置loguru logger for plugin process
+    from loguru import logger
+    # 移除默认handler
+    logger.remove()
+    # 绑定插件ID到logger上下文
+    logger = logger.bind(plugin_id=plugin_id)
+    # 添加控制台输出
+    logger.add(
+        sys.stdout,
+        format=f"<green>{{time:YYYY-MM-DD HH:mm:ss}}</green> | <level>{{level: <8}}</level> | [Proc-{plugin_id}] <level>{{message}}</level>",
+        level="INFO",
+        colorize=True,
+    )
+    # 添加文件输出（使用项目根目录的log目录）
+    log_dir = project_root / "log" / "plugins" / plugin_id
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / f"{plugin_id}_{time.strftime('%Y%m%d_%H%M%S')}.log"
+    logger.add(
+        str(log_file),
+        format=f"{{time:YYYY-MM-DD HH:mm:ss}} | {{level: <8}} | [Proc-{plugin_id}] {{message}}",
+        level="INFO",
+        rotation="10 MB",
+        retention=10,
+        encoding="utf-8",
+    )
 
     try:
         # 设置 Python 路径，确保能够导入插件模块
-        # 获取项目根目录（假设 config_path 在 plugin/plugins/xxx/plugin.toml）
-        # config_path.parent.parent.parent 只能得到 ./plugin 目录
-        # 需要再往上一级才能得到项目根目录（包含 plugin/ 目录的那一层）
-        project_root = config_path.parent.parent.parent.parent.resolve()
         if str(project_root) not in sys.path:
             sys.path.insert(0, str(project_root))
-            logger.info("[Plugin Process] Added project root to sys.path: %s", project_root)
+            logger.info("[Plugin Process] Added project root to sys.path: {}", project_root)
         
-        logger.info("[Plugin Process] Starting plugin process for %s", plugin_id)
-        logger.info("[Plugin Process] Entry point: %s", entry_point)
-        logger.info("[Plugin Process] Config path: %s", config_path)
-        logger.info("[Plugin Process] Current working directory: %s", os.getcwd())
-        logger.info("[Plugin Process] Python path: %s", sys.path[:3])  # 只显示前3个路径
+        logger.info("[Plugin Process] Starting plugin process for {}", plugin_id)
+        logger.info("[Plugin Process] Entry point: {}", entry_point)
+        logger.info("[Plugin Process] Config path: {}", config_path)
+        logger.info("[Plugin Process] Current working directory: {}", os.getcwd())
+        logger.info("[Plugin Process] Python path: {}", sys.path[:3])  # 只显示前3个路径
         
         module_path, class_name = entry_point.split(":", 1)
-        logger.info("[Plugin Process] Importing module: %s", module_path)
+        logger.info("[Plugin Process] Importing module: {}", module_path)
         mod = importlib.import_module(module_path)
-        logger.info("[Plugin Process] Module imported successfully: %s", module_path)
-        logger.info("[Plugin Process] Getting class: %s", class_name)
+        logger.info("[Plugin Process] Module imported successfully: {}", module_path)
+        logger.info("[Plugin Process] Getting class: {}", class_name)
         cls = getattr(mod, class_name)
-        logger.info("[Plugin Process] Class found: %s", cls)
+        logger.info("[Plugin Process] Class found: {}", cls)
 
         # 注意：_entry_map 和 _instance 在 PluginContext 中定义为 Optional，
         # 这里先设置为 None，在创建 instance 和扫描入口映射后再设置。
@@ -118,7 +143,7 @@ def _plugin_process_runner(
             else:
                 entry_map[name] = member
 
-        logger.info("Plugin instance created. Mapped entries: %s", list(entry_map.keys()))
+        logger.info("Plugin instance created. Mapped entries: {}", list(entry_map.keys()))
         
         # 设置命令队列、入口映射和实例到上下文，用于在等待期间处理命令
         # 这些属性在 PluginContext 中定义为 Optional，现在进行初始化
@@ -155,10 +180,10 @@ def _plugin_process_runner(
                         fn()
                 except (KeyboardInterrupt, SystemExit):
                     # 系统级中断，停止定时任务
-                    logger.info("Timer '%s' interrupted, stopping", fn_name)
+                    logger.info("Timer '{}' interrupted, stopping", fn_name)
                     break
                 except Exception as e:
-                    logger.exception("Timer '%s' failed: %s", fn_name, e)
+                    logger.exception("Timer '{}' failed: {}", fn_name, e)
                     # 定时任务失败不应中断循环，继续执行
                 stop_event.wait(interval_seconds)
 
@@ -178,7 +203,7 @@ def _plugin_process_runner(
                         daemon=True,
                     )
                     t.start()
-                    logger.info("Started timer '%s' every %ss", eid, seconds)
+                    logger.info("Started timer '{}' every {}s", eid, seconds)
 
         # 处理自定义事件：自动启动
         def _run_custom_event_auto(fn, fn_name: str, event_type: str):
@@ -189,9 +214,9 @@ def _plugin_process_runner(
                 else:
                     fn()
             except (KeyboardInterrupt, SystemExit):
-                logger.info("Custom event '%s' (type: %s) interrupted", fn_name, event_type)
+                logger.info("Custom event '{}' (type: {}) interrupted", fn_name, event_type)
             except Exception:
-                logger.exception("Custom event '%s' (type: %s) failed", fn_name, event_type)
+                logger.exception("Custom event '{}' (type: {}) failed", fn_name, event_type)
 
         # 扫描所有自定义事件类型
         for event_type, events in events_by_type.items():
@@ -199,7 +224,7 @@ def _plugin_process_runner(
                 continue  # 跳过标准类型
             
             # 这是自定义事件类型
-            logger.info("Found custom event type: %s with %d handlers", event_type, len(events))
+            logger.info("Found custom event type: {} with {} handlers", event_type, len(events))
             for eid, fn in events.items():
                 meta = getattr(fn, EVENT_META_ATTR, None)
                 if not meta:
@@ -216,7 +241,7 @@ def _plugin_process_runner(
                             daemon=True,
                         )
                         t.start()
-                        logger.info("Started auto custom event '%s' (type: %s)", eid, event_type)
+                        logger.info("Started auto custom event '{}' (type: {})", eid, event_type)
 
         # 命令循环
         while True:
@@ -298,11 +323,11 @@ def _plugin_process_runner(
                         ret_payload["success"] = True
                         ret_payload["data"] = res
                         logger.debug(
-                            "[Plugin Process] Custom event %s.%s completed, req_id=%s",
+                            "[Plugin Process] Custom event {}.{} completed, req_id={}",
                             event_type, event_id, req_id
                         )
                 except Exception as e:
-                    logger.exception("Error executing custom event %s.%s", event_type, event_id)
+                    logger.exception("Error executing custom event {}.{}", event_type, event_id)
                     ret_payload["error"] = str(e)
                 
                 # 发送响应到结果队列
@@ -374,7 +399,7 @@ def _plugin_process_runner(
                             list(args.keys()) if isinstance(args, dict) else "N/A",
                         )
                     except (ValueError, TypeError) as e:
-                        logger.debug("[Plugin Process] Failed to inspect signature: %s", e)
+                        logger.debug("[Plugin Process] Failed to inspect signature: {}", e)
                     
                     if asyncio.iscoroutinefunction(method):
                         logger.debug("[Plugin Process] Method is async, running in thread to avoid blocking command loop")
@@ -438,31 +463,31 @@ def _plugin_process_runner(
                     
                 except PluginError as e:
                     # 插件系统已知异常，直接使用
-                    logger.warning("Plugin error executing %s: %s", entry_id, e)
+                    logger.warning("Plugin error executing {}: {}", entry_id, e)
                     ret_payload["error"] = str(e)
                 except (TypeError, ValueError, AttributeError) as e:
                     # 参数或方法调用错误
-                    logger.error("Invalid call to entry %s: %s", entry_id, e)
+                    logger.error("Invalid call to entry {}: {}", entry_id, e)
                     ret_payload["error"] = f"Invalid call: {str(e)}"
                 except (KeyboardInterrupt, SystemExit):
                     # 系统级中断，需要特殊处理
-                    logger.warning("Entry %s interrupted", entry_id)
+                    logger.warning("Entry {} interrupted", entry_id)
                     ret_payload["error"] = "Execution interrupted"
                     raise  # 重新抛出系统级异常
                 except Exception as e:
                     # 其他未知异常
-                    logger.exception("Unexpected error executing %s", entry_id)
+                    logger.exception("Unexpected error executing {}", entry_id)
                     ret_payload["error"] = f"Unexpected error: {str(e)}"
 
                 res_queue.put(ret_payload)
 
     except (KeyboardInterrupt, SystemExit):
         # 系统级中断，正常退出
-        logger.info("Plugin process %s interrupted", plugin_id)
+        logger.info("Plugin process {} interrupted", plugin_id)
         raise
     except Exception as e:
         # 进程崩溃，记录详细信息
-        logger.exception("Plugin process %s crashed: %s", plugin_id, e)
+        logger.exception("Plugin process {} crashed: {}", plugin_id, e)
         # 尝试发送错误信息到结果队列（如果可能）
         try:
             res_queue.put({
@@ -489,7 +514,8 @@ class PluginProcessHost:
         self.plugin_id = plugin_id
         self.entry_point = entry_point
         self.config_path = config_path
-        self.logger = logging.getLogger(f"plugin.host.{plugin_id}")
+        # 使用loguru logger，绑定插件ID
+        self.logger = loguru_logger.bind(plugin_id=plugin_id, host=True)
         
         # 创建队列（由通信资源管理器管理）
         cmd_queue: Queue = multiprocessing.Queue()

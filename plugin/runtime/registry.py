@@ -57,7 +57,7 @@ def _parse_specifier(spec: Optional[str], logger: logging.Logger) -> Optional[Sp
     try:
         return SpecifierSet(spec)
     except InvalidSpecifier as e:
-        logger.error("Invalid sdk specifier '%s': %s", spec, e)
+        logger.error("Invalid sdk specifier '{}': {}", spec, e)
         return None
 
 
@@ -200,7 +200,7 @@ def _check_plugin_dependency(
                 dep_id, dep_plugin_meta, dependency, logger, plugin_id
             )
             if satisfied:
-                logger.debug("Plugin %s: dependency satisfied by provider '%s'", plugin_id, dep_id)
+                logger.debug("Plugin {}: dependency satisfied by provider '{}'", plugin_id, dep_id)
                 return True, None
         
         # 所有候选插件都不满足
@@ -238,7 +238,7 @@ def _check_plugin_dependency(
                 dep_id, dep_plugin_meta, dependency, logger, plugin_id
             )
             if satisfied:
-                logger.debug("Plugin %s: dependency entry '%s' satisfied by plugin '%s'", plugin_id, entry_spec, dep_id)
+                logger.debug("Plugin {}: dependency entry '{}' satisfied by plugin '{}'", plugin_id, entry_spec, dep_id)
                 return True, None
         
         # 所有提供该入口的插件都不满足版本要求
@@ -280,7 +280,7 @@ def _check_plugin_dependency(
                 dep_id, dep_plugin_meta, dependency, logger, plugin_id
             )
             if satisfied:
-                logger.debug("Plugin %s: dependency custom_event '%s' satisfied by plugin '%s'", plugin_id, custom_event_spec, dep_id)
+                logger.debug("Plugin {}: dependency custom_event '{}' satisfied by plugin '{}'", plugin_id, custom_event_spec, dep_id)
                 return True, None
         
         # 所有提供该事件的插件都不满足版本要求
@@ -335,7 +335,7 @@ def _check_single_plugin_version(
                 if any(spec and _version_matches(spec, dep_version_obj) for spec in conflict_specs):
                     return False, f"Dependency plugin '{dep_id}' version {dep_version_str} conflicts with required ranges: {dependency.conflicts}"
             except InvalidVersion:
-                logger.warning("Cannot parse dependency plugin '%s' version '%s'", dep_id, dep_version_str)
+                logger.warning("Cannot parse dependency plugin '{}' version '{}'", dep_id, dep_version_str)
     
     # 如果使用依赖配置，untested 是必须的
     if dependency.untested is None:
@@ -366,11 +366,11 @@ def _check_single_plugin_version(
                 recommended_spec = _parse_specifier(dependency.recommended, logger)
                 if recommended_spec and not _version_matches(recommended_spec, dep_version_obj):
                     logger.warning(
-                        "Plugin %s: dependency '%s' version %s is outside recommended range %s",
+                        "Plugin {}: dependency '{}' version {} is outside recommended range {}",
                         plugin_id, dep_id, dep_version_str, dependency.recommended
                     )
         except InvalidVersion:
-            logger.warning("Cannot parse dependency plugin '%s' version '%s'", dep_id, dep_version_str)
+            logger.warning("Cannot parse dependency plugin '{}' version '{}'", dep_id, dep_version_str)
     
     return True, None
 
@@ -409,7 +409,7 @@ def _parse_plugin_dependencies(
     
     for dep_config in dep_configs:
         if not isinstance(dep_config, dict):
-            logger.warning("Plugin %s: invalid dependency config (not a dict), skipping", plugin_id)
+            logger.warning("Plugin {}: invalid dependency config (not a dict), skipping", plugin_id)
             continue
         
         # 支持四种依赖方式：id、entry、custom_event、providers（至少需要一个）
@@ -419,19 +419,19 @@ def _parse_plugin_dependencies(
         dep_providers = dep_config.get("providers")
         
         if not dep_id and not dep_entry and not dep_custom_event and not dep_providers:
-            logger.warning("Plugin %s: dependency config must have at least one of 'id', 'entry', 'custom_event', or 'providers' field, skipping", plugin_id)
+            logger.warning("Plugin {}: dependency config must have at least one of 'id', 'entry', 'custom_event', or 'providers' field, skipping", plugin_id)
             continue
         
         # 检查 entry 和 custom_event 互斥
         if dep_entry and dep_custom_event:
-            logger.warning("Plugin %s: dependency config cannot have both 'entry' and 'custom_event' fields (they are mutually exclusive), skipping", plugin_id)
+            logger.warning("Plugin {}: dependency config cannot have both 'entry' and 'custom_event' fields (they are mutually exclusive), skipping", plugin_id)
             continue
         
         # 处理简化格式：conflicts = true（仅支持 id 方式）
         conflicts = dep_config.get("conflicts")
         if conflicts is True:
             if not dep_id:
-                logger.warning("Plugin %s: dependency with conflicts=true requires 'id' field, skipping", plugin_id)
+                logger.warning("Plugin {}: dependency with conflicts=true requires 'id' field, skipping", plugin_id)
                 continue
             # 简化格式：只有 id 和 conflicts = true
             dependencies.append(PluginDependency(
@@ -445,7 +445,7 @@ def _parse_plugin_dependencies(
         untested = dep_config.get("untested")
         if untested is None:
             logger.warning(
-                "Plugin %s: dependency missing required 'untested' field, skipping",
+                "Plugin {}: dependency missing required 'untested' field, skipping",
                 plugin_id
             )
             continue
@@ -489,31 +489,46 @@ def _calculate_plugin_hash(config_path: Optional[Path] = None, entry_point: Opti
     """
     计算插件的哈希值，用于比较插件内容是否相同
     
+    注意：为了确保相同插件产生相同哈希值，路径会被规范化（resolve为绝对路径）
+    
     Args:
         config_path: 插件配置文件路径
         entry_point: 插件入口点
-        plugin_data: 插件配置数据（可选）
+        plugin_data: 插件配置数据（可选），应包含 id、name、version、entry 字段
     
     Returns:
         插件的哈希值（十六进制字符串）
     """
     hash_data = []
     
-    # 添加配置文件路径（如果提供）
+    # 添加配置文件路径（如果提供）- 规范化路径以确保一致性
     if config_path:
-        hash_data.append(f"config_path:{str(config_path.resolve())}")
+        try:
+            # 使用 resolve() 获取绝对路径并规范化
+            resolved_path = config_path.resolve()
+            # 使用字符串表示，确保跨平台一致性
+            hash_data.append(f"config_path:{str(resolved_path)}")
+        except (OSError, RuntimeError):
+            # 如果路径解析失败，使用原始路径的字符串表示
+            hash_data.append(f"config_path:{str(config_path)}")
     
-    # 添加入口点（如果提供）
+    # 添加入口点（如果提供）- 标准化格式
     if entry_point:
-        hash_data.append(f"entry_point:{entry_point}")
+        hash_data.append(f"entry_point:{entry_point.strip()}")
     
     # 添加插件配置数据的关键字段（如果提供）
     if plugin_data:
-        # 使用关键字段来标识插件
+        # 使用关键字段来标识插件，按固定顺序以确保一致性
         key_fields = ["id", "name", "version", "entry"]
         for field in key_fields:
             if field in plugin_data:
-                hash_data.append(f"{field}:{plugin_data[field]}")
+                value = plugin_data[field]
+                # 确保值为字符串，None 转为空字符串
+                if value is None:
+                    value = ""
+                else:
+                    value = str(value).strip()
+                hash_data.append(f"{field}:{value}")
     
     # 计算哈希值
     content = "|".join(hash_data)
@@ -528,26 +543,37 @@ def _get_existing_plugin_info(plugin_id: str) -> Optional[Dict[str, Any]]:
         plugin_id: 插件 ID
     
     Returns:
-        插件信息字典，包含 config_path、entry_point 等，如果不存在则返回 None
+        插件信息字典，包含 config_path、entry_point、plugin_meta 等，如果不存在则返回 None
     """
+    result = {}
+    
+    # 优先从 plugin_hosts 获取信息（更完整）
     with state.plugin_hosts_lock:
         if plugin_id in state.plugin_hosts:
             host = state.plugin_hosts[plugin_id]
             # 尝试获取 host 的配置信息
             config_path = getattr(host, 'config_path', None)
             entry_point = getattr(host, 'entry_point', None)
-            if config_path or entry_point:
-                return {
-                    "config_path": config_path,
-                    "entry_point": entry_point,
-                }
+            if config_path:
+                result["config_path"] = config_path
+            if entry_point:
+                result["entry_point"] = entry_point
     
+    # 从 plugins 获取插件元数据（如果还没有）
     with state.plugins_lock:
         if plugin_id in state.plugins:
-            plugin_meta = state.plugins[plugin_id]
-            return {
-                "plugin_meta": plugin_meta,
-            }
+            plugin_meta_raw = state.plugins[plugin_id]
+            # plugin_meta 可能是字典（model_dump()的结果）或 PluginMeta 对象
+            if isinstance(plugin_meta_raw, dict):
+                # 如果是字典，尝试构建 PluginMeta 对象或直接使用字典
+                result["plugin_meta"] = plugin_meta_raw
+            else:
+                # 如果是对象，直接使用
+                result["plugin_meta"] = plugin_meta_raw
+    
+    # 如果获取到了任何信息，返回结果
+    if result:
+        return result
     
     return None
 
@@ -558,7 +584,7 @@ def _resolve_plugin_id_conflict(
     config_path: Optional[Path] = None,
     entry_point: Optional[str] = None,
     plugin_data: Optional[Dict[str, Any]] = None
-) -> str:
+) -> Optional[str]:
     """
     检测并解决插件 ID 冲突
     
@@ -574,7 +600,7 @@ def _resolve_plugin_id_conflict(
         plugin_data: 当前插件的配置数据（可选，用于哈希计算）
     
     Returns:
-        解决冲突后的插件 ID（如果无冲突则返回原始 ID）
+        解决冲突后的插件 ID（如果无冲突则返回原始 ID，如果是重复加载则返回 None）
     """
     def _is_id_taken(pid: str) -> bool:
         """检查 ID 是否已被占用"""
@@ -586,23 +612,146 @@ def _resolve_plugin_id_conflict(
                 return True
         return False
     
-    if not _is_id_taken(plugin_id):
+    # 在函数内部定义，以便在下面使用
+    _is_id_taken_local = _is_id_taken
+    
+    # 检查ID是否被占用
+    is_taken = _is_id_taken(plugin_id)
+    if not is_taken:
         return plugin_id
+    
+    # ID已被占用，记录详细信息用于调试
+    with state.plugins_lock:
+        in_plugins = plugin_id in state.plugins
+    with state.plugin_hosts_lock:
+        in_hosts = plugin_id in state.plugin_hosts
+    logger.info(
+        "Plugin ID '%s' conflict detected: in_plugins=%s, in_hosts=%s, current_config_path=%s",
+        plugin_id, in_plugins, in_hosts, config_path
+    )
+    
+    # 首先检查路径是否相同（最可靠的判断方式）
+    existing_info = _get_existing_plugin_info(plugin_id)
+    logger.info(
+        "Existing plugin info for '%s': has_config_path=%s, has_entry_point=%s, has_plugin_meta=%s, config_path=%s",
+        plugin_id,
+        existing_info.get("config_path") is not None if existing_info else False,
+        existing_info.get("entry_point") is not None if existing_info else False,
+        existing_info.get("plugin_meta") is not None if existing_info else False,
+        str(existing_info.get("config_path")) if existing_info and existing_info.get("config_path") else None,
+    )
+    
+    if existing_info and config_path:
+        existing_config_path = existing_info.get("config_path")
+        if existing_config_path:
+            try:
+                # 规范化路径进行比较
+                existing_resolved = Path(existing_config_path).resolve()
+                current_resolved = Path(config_path).resolve()
+                logger.info(
+                    "Comparing paths for plugin_id=%s: existing='%s', current='%s', match=%s",
+                    plugin_id, existing_resolved, current_resolved, existing_resolved == current_resolved
+                )
+                if existing_resolved == current_resolved:
+                    # 路径相同，但需要检查是否是同一个插件（避免自检测）
+                    # 如果 existing_info 中的 entry_point 与当前 entry_point 相同，说明是同一个插件
+                    existing_entry_point = existing_info.get("entry_point")
+                    if existing_entry_point and entry_point and existing_entry_point == entry_point:
+                        # 这是同一个插件，不是重复加载
+                        # 可能是在 register_plugin 中调用时检测到自己
+                        logger.debug(
+                            "Plugin '%s' with same config path and entry point detected, but this is the same plugin (not a duplicate)",
+                            plugin_id
+                        )
+                        # 返回原始ID，允许继续
+                        return plugin_id
+                    
+                    # 路径相同但 entry_point 不同，说明是真正的重复加载
+                    logger.warning(
+                        "Plugin ID conflict detected: '%s' already exists with same config path '%s'. "
+                        "This appears to be a duplicate load of the same plugin. "
+                        "Skipping duplicate load.",
+                        plugin_id, current_resolved
+                    )
+                    # 返回 None 作为特殊标记，表示这是重复加载，应该跳过
+                    return None
+                else:
+                    logger.warning(
+                        "Paths are different for plugin_id=%s: existing='%s' vs current='%s'",
+                        plugin_id, existing_resolved, current_resolved
+                    )
+            except (OSError, RuntimeError) as e:
+                logger.warning("Failed to resolve paths for comparison: %s", e)
+        else:
+            logger.warning(
+                "Existing plugin '%s' has no config_path, cannot compare paths. existing_info=%s",
+                plugin_id, existing_info
+            )
     
     # 计算当前插件的哈希值
     current_hash = _calculate_plugin_hash(config_path, entry_point, plugin_data)
     
-    # 获取已存在插件的信息
-    existing_info = _get_existing_plugin_info(plugin_id)
+    # 调试：记录当前插件的哈希计算数据
+    logger.debug(
+        "Current plugin hash calculation - plugin_id=%s, config_path=%s, entry_point=%s, plugin_data=%s",
+        plugin_id, config_path, entry_point, plugin_data
+    )
+    
     existing_hash = None
     if existing_info:
         existing_config_path = existing_info.get("config_path")
         existing_entry_point = existing_info.get("entry_point")
-        existing_plugin_data = existing_info.get("plugin_meta")
+        existing_plugin_meta = existing_info.get("plugin_meta")
+        
+        # 规范化路径（如果存在）
+        if existing_config_path and isinstance(existing_config_path, Path):
+            try:
+                existing_config_path = existing_config_path.resolve()
+            except (OSError, RuntimeError):
+                pass  # 如果解析失败，使用原始路径
+        
+        # 构建已存在插件的 plugin_data（用于哈希计算，格式与当前插件一致）
+        existing_plugin_data = None
+        if existing_plugin_meta:
+            # 从 PluginMeta 对象或字典中提取数据
+            if isinstance(existing_plugin_meta, dict):
+                # 如果是字典（model_dump()的结果）
+                existing_plugin_data = {
+                    "id": existing_plugin_meta.get("id"),
+                    "name": existing_plugin_meta.get("name"),
+                    "version": existing_plugin_meta.get("version"),
+                    "entry": existing_entry_point or "",
+                }
+            else:
+                # 如果是 PluginMeta 对象
+                existing_plugin_data = {
+                    "id": getattr(existing_plugin_meta, 'id', None),
+                    "name": getattr(existing_plugin_meta, 'name', None),
+                    "version": getattr(existing_plugin_meta, 'version', None),
+                    "entry": existing_entry_point or "",
+                }
+        elif existing_entry_point:
+            # 如果没有 plugin_meta，至少使用 entry_point
+            existing_plugin_data = {
+                "entry": existing_entry_point,
+            }
+        
+        # 调试：记录已存在插件的哈希计算数据
+        logger.debug(
+            "Existing plugin hash calculation - plugin_id=%s, config_path=%s, entry_point=%s, plugin_data=%s",
+            plugin_id, existing_config_path, existing_entry_point, existing_plugin_data
+        )
+        
         existing_hash = _calculate_plugin_hash(
             existing_config_path,
             existing_entry_point,
             existing_plugin_data
+        )
+        
+        # 调试：详细比较
+        logger.debug(
+            "Hash comparison for plugin_id=%s: existing_hash=%s, current_hash=%s, match=%s",
+            plugin_id, existing_hash, current_hash, existing_hash == current_hash
         )
     
     # ID 冲突，生成新的唯一 ID
@@ -616,9 +765,9 @@ def _resolve_plugin_id_conflict(
     if existing_hash and current_hash == existing_hash:
         # 哈希值相同，说明是同一个插件的重复加载
         logger.warning(
-            "Plugin ID conflict detected: '%s' already exists with identical content (hash: %s). "
+            "Plugin ID conflict detected: '{}' already exists with identical content (hash: {}). "
             "This appears to be a duplicate load of the same plugin. "
-            "Renaming to '%s' to avoid conflict. "
+            "Renaming to '{}' to avoid conflict. "
             "Please check if the plugin is being loaded multiple times from different locations.",
             plugin_id,
             current_hash,
@@ -626,25 +775,31 @@ def _resolve_plugin_id_conflict(
         )
         if config_path and existing_info and existing_info.get("config_path"):
             logger.warning(
-                "Duplicate plugin locations: existing='%s', current='%s'",
+                "Duplicate plugin locations: existing='{}', current='{}'",
                 existing_info.get("config_path"),
                 config_path
             )
     else:
-        # 哈希值不同，说明是不同的插件使用了相同的 ID
+        # 哈希值不同，说明是不同的插件使用了相同的 ID，或者信息不完整导致哈希不同
+        # 记录详细信息以便调试
         logger.warning(
-            "Plugin ID conflict detected: '%s' already exists with different content. "
-            "This is a different plugin using the same ID. "
-            "Renaming to '%s' to avoid conflict. "
+            "Plugin ID conflict detected: '{}' already exists with different content. "
+            "This is a different plugin using the same ID, or the same plugin with incomplete information. "
+            "Renaming to '{}' to avoid conflict. "
             "Please update the plugin configuration to use a unique ID.",
             plugin_id,
             new_id
         )
         if existing_hash and current_hash:
             logger.warning(
-                "Content hash comparison: existing='%s', current='%s'",
+                "Content hash comparison: existing='{}', current='{}'",
                 existing_hash,
                 current_hash
+            )
+            # 记录详细信息以便调试
+            logger.debug(
+                "Conflict details for plugin_id={}: existing_info={}, current_config_path={}, current_entry_point={}, current_plugin_data={}",
+                plugin_id, existing_info, config_path, entry_point, plugin_data
             )
     
     return new_id
@@ -655,7 +810,7 @@ def register_plugin(
     logger: Optional[logging.Logger] = None,
     config_path: Optional[Path] = None,
     entry_point: Optional[str] = None
-) -> str:
+) -> Optional[str]:
     """
     注册插件到注册表
     
@@ -687,6 +842,15 @@ def register_plugin(
         entry_point=entry_point,
         plugin_data=plugin_data
     )
+    
+    # 如果返回 None，说明是重复加载，不应该注册
+    if resolved_id is None:
+        logger.warning(
+            "Plugin {} is already loaded (duplicate detected), skipping registration",
+            plugin.id
+        )
+        # 返回 None 作为特殊标记，表示这是重复加载
+        return None
     
     # 如果 ID 被重命名，更新插件元数据
     if resolved_id != plugin.id:
@@ -740,7 +904,7 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
                 handler_fn = getattr(cls, eid)
             except AttributeError:
                 logger.warning(
-                    "Entry id %s for plugin %s has no handler on class %s, skipping",
+                    "Entry id {} for plugin {} has no handler on class {}, skipping",
                     eid,
                     pid,
                     cls.__name__,
@@ -757,7 +921,7 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
                 state.event_handlers[f"{pid}.{eid}"] = eh
                 state.event_handlers[f"{pid}:plugin_entry:{eid}"] = eh
         except (AttributeError, KeyError, TypeError) as e:
-            logger.warning("Error parsing entry %s for plugin %s: %s", ent, pid, e, exc_info=True)
+            logger.warning("Error parsing entry {} for plugin {}: {}", ent, pid, e, exc_info=True)
             # 继续处理其他条目，不中断整个插件加载
 
 
@@ -769,43 +933,68 @@ def load_plugins_from_toml(
     """
     扫描插件配置，启动子进程，并静态扫描元数据用于注册列表。
     process_host_factory 接收 (plugin_id, entry_point, config_path) 并返回宿主对象。
+    
+    加载过程分为三个阶段：
+    1. 收集（Collect）：扫描所有 TOML 文件，解析配置和依赖。
+    2. 排序（Sort）：根据插件依赖关系进行拓扑排序，确保依赖先加载。
+    3. 加载（Load）：按顺序执行实际加载。
     """
     if not plugin_config_root.exists():
-        logger.info("No plugin config directory %s, skipping", plugin_config_root)
+        logger.info("No plugin config directory {}, skipping", plugin_config_root)
         return
 
-    logger.info("Loading plugins from %s", plugin_config_root)
+    logger.info("Loading plugins from {}", plugin_config_root)
     
     # 设置 Python 路径，确保能够导入插件模块
     # 获取项目根目录（假设 plugin_config_root 在 plugin/plugins）
     project_root = plugin_config_root.parent.parent.resolve()
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
-        logger.info("Added project root to sys.path: %s", project_root)
-    logger.info("Current working directory: %s", os.getcwd())
-    logger.info("Python path (first 3): %s", sys.path[:3])
+        logger.info("Added project root to sys.path: {}", project_root)
+    logger.info("Current working directory: {}", os.getcwd())
+    logger.info("Python path (first 3): {}", sys.path[:3])
     
     found_toml_files = list(plugin_config_root.glob("*/plugin.toml"))
-    logger.info("Found %d plugin.toml files: %s", len(found_toml_files), [str(p) for p in found_toml_files])
+    logger.info("Found {} plugin.toml files: {}", len(found_toml_files), [str(p) for p in found_toml_files])
+    
+    # === Phase 1: Collect and Parse ===
+    plugin_contexts = []
+    processed_paths = set()
+    # 临时映射：pid -> context，用于后续构建依赖图
+    pid_to_context = {}
     
     for toml_path in found_toml_files:
-        logger.info("Processing plugin config: %s", toml_path)
+        logger.info("Processing plugin config: {}", toml_path)
         try:
             with toml_path.open("rb") as f:
                 conf = tomllib.load(f)
             pdata = conf.get("plugin") or {}
             pid = pdata.get("id")
             if not pid:
-                logger.warning("Plugin config %s has no 'id' field, skipping", toml_path)
+                logger.warning("Plugin config {} has no 'id' field, skipping", toml_path)
                 continue
 
-            logger.info("Plugin ID: %s", pid)
+            logger.info("Plugin ID: {}", pid)
+            
+            # 检查配置文件路径是否已经被处理过（检测重复扫描）
+            try:
+                resolved_path = toml_path.resolve()
+                if str(resolved_path) in processed_paths:
+                    logger.warning(
+                        "Plugin config file {} has already been processed in this scan, skipping duplicate",
+                        toml_path
+                    )
+                    continue
+                processed_paths.add(str(resolved_path))
+            except (OSError, RuntimeError) as e:
+                logger.debug("Failed to resolve path for duplicate check: {}", e)
+            
             entry = pdata.get("entry")
             if not entry or ":" not in entry:
-                logger.warning("Plugin %s has invalid entry point '%s', skipping", pid, entry)
+                logger.warning("Plugin {} has invalid entry point '{}', skipping", pid, entry)
                 continue
             
-            logger.info("Plugin %s entry point: %s", pid, entry)
+            logger.info("Plugin {} entry point: {}", pid, entry)
 
             sdk_config = pdata.get("sdk")
             sdk_supported_str = None
@@ -814,7 +1003,6 @@ def load_plugins_from_toml(
             sdk_conflicts_list: List[str] = []
 
             # Parse SDK version requirements from [plugin.sdk] block
-            logger.debug("Plugin %s SDK config: %s", pid, sdk_config)
             if isinstance(sdk_config, dict):
                 sdk_recommended_str = sdk_config.get("recommended")
                 sdk_supported_str = sdk_config.get("supported") or sdk_config.get("compatible")
@@ -824,12 +1012,8 @@ def load_plugins_from_toml(
                     sdk_conflicts_list = [str(c) for c in raw_conflicts if c]
                 elif isinstance(raw_conflicts, str) and raw_conflicts.strip():
                     sdk_conflicts_list = [raw_conflicts.strip()]
-                logger.info(
-                    "Plugin %s SDK requirements: supported=%s, recommended=%s, untested=%s, conflicts=%s",
-                    pid, sdk_supported_str, sdk_recommended_str, sdk_untested_str, sdk_conflicts_list
-                )
-            else:
-                # SDK configuration must be a dict (plugin.sdk block)
+            elif sdk_config is not None:
+                # SDK configuration must be a dict (plugin.sdk block) if present
                 logger.error(
                     "Plugin %s: SDK configuration must be a dict (plugin.sdk block), got %s; skipping load",
                     pid,
@@ -837,6 +1021,7 @@ def load_plugins_from_toml(
                 )
                 continue
 
+            # SDK Version Checks
             host_version_obj: Optional[Version] = None
             if Version and SpecifierSet:
                 try:
@@ -855,176 +1040,373 @@ def load_plugins_from_toml(
                 ]
 
                 # Conflict check
-                logger.debug("Plugin %s: checking conflicts against host SDK %s", pid, SDK_VERSION)
                 if any(spec and _version_matches(spec, host_version_obj) for spec in conflict_specs):
                     logger.error(
                         "Plugin %s conflicts with host SDK %s (conflict ranges: %s); skipping load",
-                        pid,
-                        SDK_VERSION,
-                        sdk_conflicts_list,
+                        pid, SDK_VERSION, sdk_conflicts_list
                     )
                     continue
-                logger.debug("Plugin %s: no conflicts detected", pid)
 
-                # Compatibility check (supported or untested range)
-                logger.debug("Plugin %s: checking compatibility - supported_spec=%s, untested_spec=%s", pid, supported_spec, untested_spec)
+                # Compatibility check
                 in_supported = _version_matches(supported_spec, host_version_obj)
                 in_untested = _version_matches(untested_spec, host_version_obj)
-                logger.debug("Plugin %s: compatibility check result - in_supported=%s, in_untested=%s", pid, in_supported, in_untested)
 
                 if supported_spec and not (in_supported or in_untested):
                     logger.error(
                         "Plugin %s requires SDK in %s (or untested %s) but host SDK is %s; skipping load",
-                        pid,
-                        sdk_supported_str,
-                        sdk_untested_str,
-                        SDK_VERSION,
+                        pid, sdk_supported_str, sdk_untested_str, SDK_VERSION
                     )
                     continue
-                logger.info("Plugin %s: SDK version check passed", pid)
-
-                # Recommended range warning
+                
+                # Warnings
                 if recommended_spec and not _version_matches(recommended_spec, host_version_obj):
-                    logger.warning(
-                        "Plugin %s: host SDK %s is outside recommended range %s",
-                        pid,
-                        SDK_VERSION,
-                        sdk_recommended_str,
-                    )
-
-                # Untested warning
+                    logger.warning("Plugin %s: host SDK %s is outside recommended range %s", pid, SDK_VERSION, sdk_recommended_str)
                 if in_untested and not in_supported:
-                    logger.warning(
-                        "Plugin %s: host SDK %s is within untested range %s; proceed with caution",
-                        pid,
-                        SDK_VERSION,
-                        sdk_untested_str,
-                    )
+                    logger.warning("Plugin %s: host SDK %s is within untested range %s; proceed with caution", pid, SDK_VERSION, sdk_untested_str)
             else:
-                # If we cannot parse versions, require at least string equality for legacy sdk_version
-                logger.warning("Plugin %s: Cannot parse SDK versions, using string comparison", pid)
+                # Fallback string comparison
                 if sdk_supported_str and sdk_supported_str != SDK_VERSION:
-                    logger.error(
-                        "Plugin %s requires sdk_version %s but host SDK is %s; skipping load",
-                        pid,
-                        sdk_supported_str,
-                        SDK_VERSION,
-                    )
+                    logger.error("Plugin %s requires sdk_version %s but host SDK is %s; skipping load", pid, sdk_supported_str, SDK_VERSION)
                     continue
-                logger.info("Plugin %s: SDK version string check passed", pid)
 
-            # 解析并检查插件依赖
+            # 解析依赖
             dependencies = _parse_plugin_dependencies(conf, logger, pid)
-            dependency_check_failed = False
-            if dependencies:
-                logger.info("Plugin %s: found %d dependency(ies)", pid, len(dependencies))
-                for dep in dependencies:
-                    # 检查依赖（包括简化格式和完整格式）
-                    satisfied, error_msg = _check_plugin_dependency(dep, logger, pid)
-                    if not satisfied:
-                        logger.error(
-                            "Plugin %s: dependency check failed: %s; skipping load",
-                            pid, error_msg
-                        )
-                        dependency_check_failed = True
-                        break
-                    logger.debug("Plugin %s: dependency check passed", pid)
             
-            # 如果依赖检查失败，跳过加载
-            if dependency_check_failed:
-                continue
-
-            # 检测并解决插件 ID 冲突（在创建 host 之前）
-            original_pid = pid
-            pid = _resolve_plugin_id_conflict(
-                pid,
-                logger,
-                config_path=toml_path,
-                entry_point=entry,
-                plugin_data=pdata
-            )
-            if pid != original_pid:
-                logger.debug(
-                    "Plugin from %s: ID changed from '%s' to '%s' due to conflict",
-                    toml_path, original_pid, pid
-                )
-
-            module_path, class_name = entry.split(":", 1)
-            logger.info("Plugin %s: importing module '%s', class '%s'", pid, module_path, class_name)
-            try:
-                mod = importlib.import_module(module_path)
-                logger.info("Plugin %s: module '%s' imported successfully", pid, module_path)
-                cls: Type[Any] = getattr(mod, class_name)
-                logger.info("Plugin %s: class '%s' found in module", pid, class_name)
-            except (ImportError, ModuleNotFoundError) as e:
-                logger.error("Failed to import module '%s' for plugin %s: %s", module_path, pid, e, exc_info=True)
-                continue
-            except AttributeError as e:
-                logger.error("Class '%s' not found in module '%s' for plugin %s: %s", class_name, module_path, pid, e, exc_info=True)
-                continue
-            except Exception as e:
-                logger.exception("Unexpected error importing plugin class %s for plugin %s", entry, pid)
-                continue
-
-            try:
-                logger.info("Plugin %s: creating process host...", pid)
-                host = process_host_factory(pid, entry, toml_path)
-                logger.info("Plugin %s: process host created successfully", pid)
-                
-                # 如果 ID 被重命名，更新 host 的 plugin_id（如果支持）
-                if pid != original_pid and hasattr(host, 'plugin_id'):
-                    host.plugin_id = pid
-                    logger.debug("Updated host plugin_id to '%s'", pid)
-                
-                with state.plugin_hosts_lock:
-                    state.plugin_hosts[pid] = host
-                logger.info("Plugin %s: registered in plugin_hosts", pid)
-            except (OSError, RuntimeError) as e:
-                logger.error("Failed to start process for plugin %s: %s", pid, e, exc_info=True)
-                continue
-            except Exception as e:
-                logger.exception("Unexpected error starting process for plugin %s", pid)
-                continue
-
-            scan_static_metadata(pid, cls, conf, pdata)
-
-            # 读取作者信息
-            author_data = pdata.get("author")
-            author = None
-            if author_data and isinstance(author_data, dict):
-                author = PluginAuthor(
-                    name=author_data.get("name"),
-                    email=author_data.get("email")
-                )
-
-            plugin_meta = PluginMeta(
-                id=pid,
-                name=pdata.get("name", pid),
-                description=pdata.get("description", ""),
-                version=pdata.get("version", "0.1.0"),
-                sdk_version=sdk_supported_str or SDK_VERSION,
-                sdk_recommended=sdk_recommended_str,
-                sdk_supported=sdk_supported_str,
-                sdk_untested=sdk_untested_str,
-                sdk_conflicts=sdk_conflicts_list,
-                input_schema=getattr(cls, "input_schema", {}) or {"type": "object", "properties": {}},
-                author=author,
-                dependencies=dependencies,
-            )
-            resolved_id = register_plugin(
-                plugin_meta,
-                logger,
-                config_path=toml_path,
-                entry_point=entry
-            )
-            if resolved_id != pid:
-                # 如果 ID 被进一步重命名（双重冲突），更新 pid
-                pid = resolved_id
-
-            logger.info("Loaded plugin %s (Process: %s)", pid, getattr(host, "process", None))
-        except (KeyError, ValueError, TypeError) as e:
-            # TOML 解析或配置错误
-            logger.error("❌ Invalid plugin configuration in %s: %s", toml_path, e, exc_info=True)
+            # 保存上下文
+            context = {
+                "pid": pid,
+                "toml_path": toml_path,
+                "conf": conf,
+                "pdata": pdata,
+                "entry": entry,
+                "dependencies": dependencies,
+                "sdk_supported_str": sdk_supported_str,
+                "sdk_recommended_str": sdk_recommended_str,
+                "sdk_untested_str": sdk_untested_str,
+                "sdk_conflicts_list": sdk_conflicts_list,
+            }
+            plugin_contexts.append(context)
+            pid_to_context[pid] = context
+            
+        except (tomllib.TOMLDecodeError, OSError) as e:
+            logger.error("Failed to parse plugin config {}: {}", toml_path, e)
+            continue
         except Exception as e:
-            # 其他未知错误
-            logger.exception("❌ Unexpected error loading plugin from %s", toml_path)
+            logger.exception("Unexpected error processing config {}", toml_path)
+            continue
+
+    # === Phase 2: Topological Sort ===
+    logger.info("Sorting {} plugins based on dependencies...", len(plugin_contexts))
+    
+    # 构建图：pid -> set(dependency_pids)
+    graph: Dict[str, set] = {ctx["pid"]: set() for ctx in plugin_contexts}
+    
+    for ctx in plugin_contexts:
+        pid = ctx["pid"]
+        for dep in ctx["dependencies"]:
+            # 只处理显式的 ID 依赖
+            if dep.id:
+                # 只有当依赖的插件也在本次加载列表中时，才添加边
+                # 如果依赖是外部已加载的插件，不影响本次排序顺序
+                if dep.id in pid_to_context:
+                    graph[pid].add(dep.id)
+                    logger.debug("Dependency edge: {} -> {}", pid, dep.id)
+    
+    # Kahn's Algorithm for Topological Sort
+    sorted_contexts = []
+    # 计算入度
+    in_degree = {pid: 0 for pid in graph}
+    for u in graph:
+        for v in graph[u]:
+            # v 是 u 的依赖，意味着 v 必须在 u 之前加载
+            # 在拓扑排序中，边通常表示顺序约束
+            # 如果我们要输出加载顺序：先加载无依赖的
+            # 这里的 graph[pid] 包含 pid 依赖的插件列表
+            # 意味着 graph[u] 中的节点必须在 u 之前
+            # 这实际上是依赖图的反向？不，这是 "Dependencies of U".
+            # 为了使用 Kahn 算法输出加载顺序，我们需要边 Dependency -> Dependent
+            pass
+            
+    # 重新构建图以便于 Kahn 算法：Node = Plugin, Edge = Dependency -> Dependent
+    # 即：如果 A 依赖 B，则有一条边 B -> A (B 必须先完成)
+    adj_list: Dict[str, List[str]] = {pid: [] for pid in pid_to_context}
+    in_degree = {pid: 0 for pid in pid_to_context}
+    
+    for ctx in plugin_contexts:
+        dependent = ctx["pid"]
+        for dep in ctx["dependencies"]:
+            if dep.id and dep.id in pid_to_context:
+                dependency = dep.id
+                # Dependency -> Dependent
+                adj_list[dependency].append(dependent)
+                in_degree[dependent] += 1
+    
+    # 队列中放入所有入度为 0 的节点（无依赖或依赖已满足）
+    queue = [pid for pid in pid_to_context if in_degree[pid] == 0]
+    # 为了保持确定性，按字母顺序排序
+    queue.sort()
+    
+    final_order = []
+    while queue:
+        u = queue.pop(0)
+        final_order.append(u)
+        
+        for v in adj_list[u]:
+            in_degree[v] -= 1
+            if in_degree[v] == 0:
+                queue.append(v)
+        # 保持队列有序
+        queue.sort()
+    
+    # 检查是否有循环依赖
+    if len(final_order) != len(plugin_contexts):
+        loaded_set = set(final_order)
+        missing = [ctx["pid"] for ctx in plugin_contexts if ctx["pid"] not in loaded_set]
+        logger.error("Circular dependency detected or failed sort! Missing plugins: {}", missing)
+        # 这种情况下，我们将未排序的插件追加到后面，尝试尽力加载
+        final_order.extend(missing)
+    
+    logger.info("Plugin load order: {}", final_order)
+    
+    # === Phase 3: Load ===
+    for pid in final_order:
+        context = pid_to_context.get(pid)
+        if not context:
+            continue
+            
+        toml_path = context["toml_path"]
+        conf = context["conf"]
+        pdata = context["pdata"]
+        entry = context["entry"]
+        dependencies = context["dependencies"]
+        sdk_supported_str = context["sdk_supported_str"]
+        sdk_recommended_str = context["sdk_recommended_str"]
+        sdk_untested_str = context["sdk_untested_str"]
+        sdk_conflicts_list = context["sdk_conflicts_list"]
+        
+        logger.info("Loading plugin: {}", pid)
+        
+        # 依赖检查
+        dependency_check_failed = False
+        if dependencies:
+            logger.info("Plugin {}: found {} dependency(ies), checking...", pid, len(dependencies))
+            for dep in dependencies:
+                # 检查依赖（包括简化格式和完整格式）
+                satisfied, error_msg = _check_plugin_dependency(dep, logger, pid)
+                if not satisfied:
+                    logger.error(
+                        "Plugin {}: dependency check failed: {}; skipping load",
+                        pid, error_msg
+                    )
+                    dependency_check_failed = True
+                    break
+                logger.debug("Plugin {}: dependency '{}' check passed", pid, getattr(dep, 'id', getattr(dep, 'entry', getattr(dep, 'custom_event', 'unknown'))))
+            if not dependency_check_failed:
+                logger.info("Plugin {}: all dependencies satisfied", pid)
+        else:
+            logger.debug("Plugin {}: no dependencies to check", pid)
+        
+        if dependency_check_failed:
+            logger.info("Plugin {}: skipping due to failed dependency check", pid)
+            continue
+
+        # 检查插件是否已经加载（通过检查 config_path 是否相同）
+        # 如果同一个配置文件已经被加载，直接跳过
+        with state.plugin_hosts_lock:
+            if pid in state.plugin_hosts:
+                existing_host = state.plugin_hosts[pid]
+                existing_config_path = getattr(existing_host, 'config_path', None)
+                if existing_config_path:
+                    try:
+                        # 规范化路径进行比较
+                        existing_resolved = Path(existing_config_path).resolve()
+                        current_resolved = toml_path.resolve()
+                        if existing_resolved == current_resolved:
+                            logger.warning(
+                                "Plugin %s from %s is already loaded (same config path), skipping duplicate load",
+                                pid, toml_path
+                            )
+                            continue
+                    except (OSError, RuntimeError):
+                        # 如果路径解析失败，使用字符串比较
+                        if str(existing_config_path) == str(toml_path):
+                            logger.warning(
+                                "Plugin %s from %s is already loaded (same config path), skipping duplicate load",
+                                pid, toml_path
+                            )
+                            continue
+        
+        # 检测并解决插件 ID 冲突（在创建 host 之前，依赖检查之后）
+        # 构建用于哈希计算的 plugin_data（与 register_plugin 中的格式一致）
+        plugin_data_for_hash = {
+            "id": pid,
+            "name": pdata.get("name", pid),
+            "version": pdata.get("version", "0.1.0"),
+            "entry": entry or "",
+        }
+        
+        original_pid = pid
+        resolved_pid = _resolve_plugin_id_conflict(
+            pid,
+            logger,
+            config_path=toml_path,
+            entry_point=entry,
+            plugin_data=plugin_data_for_hash
+        )
+        
+        # 如果返回 None，说明检测到重复加载（路径相同），应该跳过
+        if resolved_pid is None:
+            logger.info(
+                "Plugin %s from %s is already loaded (duplicate detected in conflict resolution), skipping duplicate load",
+                original_pid, toml_path
+            )
+            continue
+        
+        # 如果返回的ID与原始ID相同，需要检查是否是重复加载
+        if resolved_pid == original_pid:
+            # 检查ID是否已被占用
+            def _check_id_taken(pid: str) -> bool:
+                with state.plugins_lock:
+                    if pid in state.plugins:
+                        return True
+                with state.plugin_hosts_lock:
+                    if pid in state.plugin_hosts:
+                        return True
+                return False
+            
+            is_still_taken = _check_id_taken(original_pid)
+            if is_still_taken:
+                # ID已被占用，说明是重复加载，跳过
+                logger.info(
+                    "Plugin %s from %s is already loaded (ID already taken), skipping duplicate load",
+                    original_pid, toml_path
+                )
+                continue
+            # 如果ID未被占用，说明这是第一次加载，继续处理
+        
+        pid = resolved_pid
+        if pid != original_pid:
+            logger.warning(
+                "Plugin from %s: ID changed from '%s' to '%s' due to conflict",
+                toml_path, original_pid, pid
+            )
+
+        module_path, class_name = entry.split(":", 1)
+        logger.info("Plugin {}: importing module '{}', class '{}'", pid, module_path, class_name)
+        try:
+            mod = importlib.import_module(module_path)
+            logger.info("Plugin {}: module '{}' imported successfully", pid, module_path)
+            cls: Type[Any] = getattr(mod, class_name)
+            logger.info("Plugin {}: class '{}' found in module", pid, class_name)
+        except (ImportError, ModuleNotFoundError) as e:
+            logger.error("Failed to import module '{}' for plugin {}: {}", module_path, pid, e, exc_info=True)
+            continue
+        except AttributeError as e:
+            logger.error("Class '{}' not found in module '{}' for plugin {}: {}", class_name, module_path, pid, e, exc_info=True)
+            continue
+        except Exception as e:
+            logger.exception("Unexpected error importing plugin class {} for plugin {}", entry, pid)
+            continue
+
+        try:
+            logger.info("Plugin {}: creating process host...", pid)
+            host = process_host_factory(pid, entry, toml_path)
+            logger.info("Plugin {}: process host created successfully", pid)
+            
+            # 如果 ID 被重命名，更新 host 的 plugin_id（如果支持）
+            if pid != original_pid and hasattr(host, 'plugin_id'):
+                host.plugin_id = pid
+                logger.debug("Updated host plugin_id to '{}'", pid)
+            
+            with state.plugin_hosts_lock:
+                # 检查是否已经存在（防止重复注册）
+                if pid in state.plugin_hosts:
+                    existing_host = state.plugin_hosts[pid]
+                    existing_config = getattr(existing_host, 'config_path', None)
+                    if existing_config:
+                        try:
+                            if Path(existing_config).resolve() == toml_path.resolve():
+                                logger.warning(
+                                    "Plugin %s from %s is already registered in plugin_hosts, skipping duplicate registration",
+                                    pid, toml_path
+                                )
+                                continue
+                        except (OSError, RuntimeError):
+                            pass
+                    state.plugin_hosts[pid] = host
+            logger.info("Plugin {}: registered in plugin_hosts", pid)
+            
+            # 在注册后立即检查是否重复（通过 register_plugin 的冲突检测）
+            # 如果 register_plugin 检测到重复并返回 None，说明这是重复加载，应该移除刚注册的 host
+        except (OSError, RuntimeError) as e:
+            logger.error("Failed to start process for plugin {}: {}", pid, e, exc_info=True)
+            continue
+        except Exception as e:
+            logger.exception("Unexpected error starting process for plugin {}", pid)
+            continue
+
+        scan_static_metadata(pid, cls, conf, pdata)
+
+        # 读取作者信息
+        author_data = pdata.get("author")
+        author = None
+        if author_data and isinstance(author_data, dict):
+            author = PluginAuthor(
+                name=author_data.get("name"),
+                email=author_data.get("email")
+            )
+
+        plugin_meta = PluginMeta(
+            id=pid,
+            name=pdata.get("name", pid),
+            description=pdata.get("description", ""),
+            version=pdata.get("version", "0.1.0"),
+            sdk_version=sdk_supported_str or SDK_VERSION,
+            sdk_recommended=sdk_recommended_str,
+            sdk_supported=sdk_supported_str,
+            sdk_untested=sdk_untested_str,
+            sdk_conflicts=sdk_conflicts_list,
+            input_schema=getattr(cls, "input_schema", {}) or {"type": "object", "properties": {}},
+            author=author,
+            dependencies=dependencies,
+        )
+        resolved_id = register_plugin(
+            plugin_meta,
+            logger,
+            config_path=toml_path,
+            entry_point=entry
+        )
+        
+        # 如果 register_plugin 返回 None 或原始 ID 但检测到重复，说明这是重复加载
+        # 需要移除刚注册的 host 和清理资源
+        if resolved_id is None:
+            logger.warning(
+                "Plugin %s from %s detected as duplicate in register_plugin, removing from plugin_hosts",
+                pid, toml_path
+            )
+            # 移除刚注册的 host
+            with state.plugin_hosts_lock:
+                if pid in state.plugin_hosts:
+                    existing_host = state.plugin_hosts.pop(pid)
+                    # 尝试关闭进程
+                    try:
+                        if hasattr(existing_host, 'shutdown'):
+                            import asyncio
+                            # 如果是异步的，需要处理
+                            if asyncio.iscoroutinefunction(existing_host.shutdown):
+                                logger.debug("Plugin %s host shutdown is async, skipping in sync context", pid)
+                            else:
+                                existing_host.shutdown(timeout=1.0)
+                        elif hasattr(existing_host, 'process') and existing_host.process:
+                            existing_host.process.terminate()
+                            existing_host.process.join(timeout=1.0)
+                    except Exception as e:
+                        logger.debug("Error shutting down duplicate plugin {}: {}", pid, e)
+            logger.info("Plugin {} removed from plugin_hosts due to duplicate detection", pid)
+            continue
+        
+        if resolved_id != pid:
+            # 如果 ID 被进一步重命名（双重冲突），更新 pid
+            pid = resolved_id
+
+        logger.info("Loaded plugin {} (Process: {})", pid, getattr(host, "process", None))

@@ -38,11 +38,32 @@ async def startup() -> None:
     from plugin.core.state import state
     _ = state.plugin_response_map  # 预初始化共享响应映射
     
+    # 清理旧的状态（防止重启时残留）
+    with state.plugin_hosts_lock:
+        # 关闭所有旧的插件进程
+        for plugin_id, host in list(state.plugin_hosts.items()):
+            try:
+                if hasattr(host, 'process') and host.process and host.process.is_alive():
+                    logger.debug(f"Cleaning up old plugin process: {plugin_id}")
+                    host.process.terminate()
+                    host.process.join(timeout=1.0)
+            except Exception as e:
+                logger.debug(f"Error cleaning up old plugin {plugin_id}: {e}")
+        state.plugin_hosts.clear()
+    
+    with state.plugins_lock:
+        state.plugins.clear()
+    
+    with state.event_handlers_lock:
+        state.event_handlers.clear()
+    
+    logger.debug("Cleared old plugin state")
+    
     # 加载插件
     load_plugins_from_toml(PLUGIN_CONFIG_ROOT, logger, _factory)
     with state.plugins_lock:
         plugin_keys = list(state.plugins.keys())
-    logger.info("Plugin registry after startup: %s", plugin_keys)
+    logger.info("Plugin registry after startup: {}", plugin_keys)
     
     # 启动诊断：列出插件实例和公共方法
     _log_startup_diagnostics()

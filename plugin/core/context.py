@@ -24,7 +24,7 @@ class PluginContext:
     """插件运行时上下文"""
     plugin_id: str
     config_path: Path
-    logger: Any  # logging.Logger
+    logger: Any  # loguru.Logger
     status_queue: Any
     message_queue: Any = None  # 消息推送队列
     app: Optional[FastAPI] = None

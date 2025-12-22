@@ -110,11 +110,9 @@ RESULT_CONSUMER_SLEEP_INTERVAL = 0.1
 
 # ========== 插件Logger配置 ==========
 
-# 插件文件日志默认配置
-import logging
-
-# 默认日志级别
-PLUGIN_LOG_LEVEL = logging.INFO
+# 插件文件日志默认配置（使用loguru）
+# 默认日志级别（字符串格式，loguru使用）
+PLUGIN_LOG_LEVEL = "INFO"
 
 # 单个日志文件最大大小（字节），默认5MB
 PLUGIN_LOG_MAX_BYTES = 5 * 1024 * 1024
