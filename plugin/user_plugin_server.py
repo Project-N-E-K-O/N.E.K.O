@@ -578,4 +578,4 @@ async def websocket_log_stream(websocket: WebSocket, plugin_id: str):
 if __name__ == "__main__":
     import uvicorn
     host = "127.0.0.1"  # 默认只暴露本机
-    uvicorn.run(app, host=host, port=USER_PLUGIN_SERVER_PORT)
+    uvicorn.run(app, host=host, port=USER_PLUGIN_SERVER_PORT, log_config=None)

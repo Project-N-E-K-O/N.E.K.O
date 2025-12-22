@@ -359,4 +359,4 @@ if __name__ == "__main__":
         shutdown_monitor.start()
     
     # 启动服务器
-    uvicorn.run(app, host="127.0.0.1", port=MEMORY_SERVER_PORT)
+    uvicorn.run(app, host="127.0.0.1", port=MEMORY_SERVER_PORT, log_config=None)

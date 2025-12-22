@@ -431,4 +431,4 @@ async def cleanup_disconnected_clients():
 
 if __name__ == "__main__":
     # 在打包环境中，直接传递 app 对象而不是字符串
-    uvicorn.run(app, host="0.0.0.0", port=MONITOR_SERVER_PORT, reload=False)
+    uvicorn.run(app, host="0.0.0.0", port=MONITOR_SERVER_PORT, reload=False, log_config=None)

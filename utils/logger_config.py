@@ -24,6 +24,28 @@ from loguru import _defaults
 from config import APP_NAME
 
 
+class InterceptHandler(logging.Handler):
+    """
+    拦截 logging 模块的日志并转发到 loguru
+    """
+    def emit(self, record: logging.LogRecord) -> None:
+        # 获取 loguru 对应的日志级别
+        try:
+            level = loguru_logger.level(record.levelname).name
+        except ValueError:
+            level = str(record.levelno)
+
+        # 查找调用者的帧，以便正确记录日志源
+        frame, depth = logging.currentframe(), 2
+        while frame.f_code.co_filename == logging.__file__:
+            frame = frame.f_back
+            depth += 1
+
+        loguru_logger.opt(depth=depth, exception=record.exc_info).log(
+            level, record.getMessage()
+        )
+
+
 class RobustLoggerConfig:
     """鲁棒的日志配置类"""
     
@@ -487,6 +509,23 @@ def setup_logging(app_name=None, service_name=None, log_level=None, silent=False
         loguru_logger.info(f"日志目录: {log_dir}")
         loguru_logger.info(f"日志级别: {log_level_str}")
         loguru_logger.info("=" * 50)
+    
+    # 拦截 Uvicorn 和 FastAPI 日志
+    # 将 logging 模块的 handler 替换为 InterceptHandler
+    intercept_handler = InterceptHandler()
+    
+    # uvicorn
+    logging.getLogger("uvicorn").handlers = [intercept_handler]
+    logging.getLogger("uvicorn.access").handlers = [intercept_handler]
+    # uvicorn.error 默认会传播到 uvicorn，但为了保险起见也拦截
+    logging.getLogger("uvicorn.error").handlers = [intercept_handler]
+    
+    # fastapi
+    logging.getLogger("fastapi").handlers = [intercept_handler]
+    
+    # 确保 loguru 能够捕获到标准库 logging 的日志
+    # 设置 logging 根 logger 的级别，否则低于 WARNING 的日志可能不会被传递给 handler
+    logging.basicConfig(handlers=[intercept_handler], level=0)
     
     return loguru_logger, config
 

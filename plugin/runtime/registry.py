@@ -927,7 +927,7 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
 
 def load_plugins_from_toml(
     plugin_config_root: Path,
-    logger: logging.Logger,
+    logger: Any,
     process_host_factory: Callable[[str, str, Path], Any],
 ) -> None:
     """

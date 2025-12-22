@@ -164,7 +164,7 @@ def run_agent_server(ready_event: Event):
         # Agent Server 不需要等待，立即通知就绪
         ready_event.set()
         
-        uvicorn.run(agent_server.app, host="127.0.0.1", port=TOOL_SERVER_PORT, log_level="error")
+        uvicorn.run(agent_server.app, host="127.0.0.1", port=TOOL_SERVER_PORT, log_level="error", log_config=None)
     except Exception as e:
         print(f"Agent Server error: {e}")
         import traceback

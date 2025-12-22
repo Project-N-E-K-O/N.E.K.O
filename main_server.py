@@ -789,6 +789,7 @@ if __name__ == "__main__":
         log_level="info",
         loop="asyncio",
         reload=False,
+        log_config=None,  # 禁止 Uvicorn 重新配置日志，使用 loguru 拦截器
     )
     server = uvicorn.Server(config)
     

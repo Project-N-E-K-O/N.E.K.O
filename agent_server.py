@@ -1126,4 +1126,4 @@ if __name__ == "__main__":
     # Add filter to uvicorn access logger (uvicorn仍使用标准logging)
     logging.getLogger("uvicorn.access").addFilter(create_agent_server_filter())
     
-    uvicorn.run(app, host="127.0.0.1", port=TOOL_SERVER_PORT)
+    uvicorn.run(app, host="127.0.0.1", port=TOOL_SERVER_PORT, log_config=None)

@@ -7,6 +7,8 @@ import asyncio
 import logging
 from pathlib import Path
 
+from loguru import logger
+
 from plugin.core.state import state
 from plugin.runtime.registry import load_plugins_from_toml
 from plugin.runtime.host import PluginProcessHost
@@ -18,7 +20,7 @@ from plugin.settings import (
     PLUGIN_SHUTDOWN_TIMEOUT,
 )
 
-logger = logging.getLogger("user_plugin_server")
+# logger = logging.getLogger("user_plugin_server")
 
 
 def _factory(plugin_id: str, entry: str, config_path: Path) -> PluginProcessHost:
