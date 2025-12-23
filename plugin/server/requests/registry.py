@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Dict
+from typing import Dict
 
-
-RequestHandler = Callable[[Dict[str, Any], Callable[..., None]], Awaitable[None]]
-
+from plugin.server.requests.typing import RequestHandler
 
 def build_request_handlers() -> Dict[str, RequestHandler]:
     from plugin.server.requests.plugin_to_plugin import handle_plugin_to_plugin

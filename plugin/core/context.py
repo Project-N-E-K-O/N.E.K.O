@@ -181,6 +181,9 @@ class PluginContext:
             response = state.get_plugin_response(request_id)
             
             if response is not None:
+                if not isinstance(response, dict):
+                    self.logger.error(f"Invalid response type: {type(response)}")
+                    continue
                 # 找到我们的响应
                 if response.get("error"):
                     error_msg = response.get("error")
@@ -304,7 +307,7 @@ class PluginContext:
                 "This method can only be called from within a plugin process."
             )
         if not isinstance(updates, dict):
-            raise ValueError("updates must be a dict")
+            raise TypeError("updates must be a dict")
 
         request_id = str(uuid.uuid4())
         request = {

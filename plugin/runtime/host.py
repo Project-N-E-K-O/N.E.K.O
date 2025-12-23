@@ -540,7 +540,6 @@ class PluginProcessHost:
         
         # 创建并启动进程
         # 获取插件间通信队列（从 state 获取）
-        from plugin.core.state import state
         plugin_comm_queue = state.plugin_comm_queue
         
         self.process = multiprocessing.Process(
