@@ -788,7 +788,6 @@ if __name__ == "__main__":
 
     # 注意：loguru不直接支持logging.Filter，如果需要速率限制，可以在loguru的sink中实现
     # 暂时保留对uvicorn和httpx的logging过滤（它们仍使用标准logging）
-    import logging
     from utils.logger_config import create_main_server_filter, create_httpx_filter
     
     # Add filter to uvicorn access logger (uvicorn仍使用标准logging)

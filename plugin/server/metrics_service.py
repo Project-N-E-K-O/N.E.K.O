@@ -4,7 +4,6 @@
 提供插件性能指标的收集和查询功能。
 """
 import asyncio
-import logging
 import threading
 from typing import Dict, Any, Optional, List, Callable
 from dataclasses import dataclass, field
@@ -17,10 +16,10 @@ except ImportError:
     PSUTIL_AVAILABLE = False
     psutil = None
 
+from loguru import logger
+
 from plugin.core.state import state
 from plugin.server.utils import now_iso
-
-logger = logging.getLogger("user_plugin_server")
 
 
 @dataclass

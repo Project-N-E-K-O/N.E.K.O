@@ -582,6 +582,210 @@ class ConfigUpdateRequest(BaseModel):
     config: dict
 
 
+def validate_config_updates(plugin_id: str, updates: dict) -> None:
+    """
+    验证配置更新的安全性
+    
+    禁止修改关键字段，验证字段类型和格式，防止注入攻击。
+    
+    Args:
+        plugin_id: 插件ID
+        updates: 要更新的配置部分
+    
+    Raises:
+        HTTPException: 如果配置更新不安全或无效
+    """
+    # 定义禁止修改的关键字段
+    FORBIDDEN_FIELDS = {
+        "plugin": ["id", "entry"]  # 插件ID和入口点不允许修改
+    }
+    
+    # 检查是否尝试修改禁止的字段
+    for section, forbidden_keys in FORBIDDEN_FIELDS.items():
+        if section in updates:
+            section_updates = updates[section]
+            if isinstance(section_updates, dict):
+                for key in forbidden_keys:
+                    if key in section_updates:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Cannot modify critical field '{section}.{key}'. This field is protected."
+                        )
+    
+    # 验证 plugin.id 如果存在（防止通过嵌套结构修改）
+    def check_nested_forbidden(data: dict, path: str = "") -> None:
+        """递归检查嵌套字典中的禁止字段"""
+        for key, value in data.items():
+            current_path = f"{path}.{key}" if path else key
+            
+            # 检查 plugin.id 和 plugin.entry
+            if current_path == "plugin.id" or current_path == "plugin.entry":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot modify critical field '{current_path}'. This field is protected."
+                )
+            
+            # 递归检查嵌套字典
+            if isinstance(value, dict):
+                check_nested_forbidden(value, current_path)
+            elif isinstance(value, list):
+                # 检查列表中的字典（如 plugin.dependency）
+                for idx, item in enumerate(value):
+                    if isinstance(item, dict):
+                        check_nested_forbidden(item, f"{current_path}[{idx}]")
+    
+    check_nested_forbidden(updates)
+    
+    # 验证字段类型和格式
+    if "plugin" in updates:
+        plugin_updates = updates["plugin"]
+        if isinstance(plugin_updates, dict):
+            # 验证 name（如果存在）
+            if "name" in plugin_updates:
+                name = plugin_updates["name"]
+                if not isinstance(name, str):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="plugin.name must be a string"
+                    )
+                if len(name) > 200:  # 防止过长的名称
+                    raise HTTPException(
+                        status_code=400,
+                        detail="plugin.name is too long (max 200 characters)"
+                    )
+            
+            # 验证 version（如果存在）
+            if "version" in plugin_updates:
+                version = plugin_updates["version"]
+                if not isinstance(version, str):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="plugin.version must be a string"
+                    )
+                # 基本版本格式验证（语义化版本）
+                if len(version) > 50:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="plugin.version format is invalid (max 50 characters)"
+                    )
+            
+            # 验证 description（如果存在）
+            if "description" in plugin_updates:
+                description = plugin_updates["description"]
+                if not isinstance(description, str):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="plugin.description must be a string"
+                    )
+                if len(description) > 5000:  # 防止过长的描述
+                    raise HTTPException(
+                        status_code=400,
+                        detail="plugin.description is too long (max 5000 characters)"
+                    )
+    
+    # 验证 plugin.author（如果存在）
+    if "plugin" in updates and isinstance(updates["plugin"], dict):
+        if "author" in updates["plugin"]:
+            author = updates["plugin"]["author"]
+            if isinstance(author, dict):
+                if "name" in author and not isinstance(author["name"], str):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="plugin.author.name must be a string"
+                    )
+                if "email" in author:
+                    email = author["email"]
+                    if not isinstance(email, str):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="plugin.author.email must be a string"
+                        )
+                    # 基本邮箱格式验证
+                    if "@" not in email or len(email) > 200:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="plugin.author.email format is invalid"
+                        )
+    
+    # 验证 plugin.sdk（如果存在）
+    if "plugin" in updates and isinstance(updates["plugin"], dict):
+        if "sdk" in updates["plugin"]:
+            sdk = updates["plugin"]["sdk"]
+            if isinstance(sdk, dict):
+                # 验证版本范围字段（应该是字符串或字符串列表）
+                for key in ["recommended", "supported", "untested"]:
+                    if key in sdk:
+                        value = sdk[key]
+                        if not isinstance(value, str):
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"plugin.sdk.{key} must be a string"
+                            )
+                        if len(value) > 200:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"plugin.sdk.{key} is too long (max 200 characters)"
+                            )
+                
+                # 验证 conflicts（应该是字符串列表或布尔值）
+                if "conflicts" in sdk:
+                    conflicts = sdk["conflicts"]
+                    if isinstance(conflicts, bool):
+                        pass  # 允许布尔值
+                    elif isinstance(conflicts, list):
+                        for item in conflicts:
+                            if not isinstance(item, str):
+                                raise HTTPException(
+                                    status_code=400,
+                                    detail="plugin.sdk.conflicts must be a list of strings or a boolean"
+                                )
+                            if len(item) > 200:
+                                raise HTTPException(
+                                    status_code=400,
+                                    detail="plugin.sdk.conflicts items are too long (max 200 characters)"
+                                )
+                    else:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="plugin.sdk.conflicts must be a list of strings or a boolean"
+                        )
+    
+    # 验证 plugin.dependency（如果存在）
+    if "plugin" in updates and isinstance(updates["plugin"], dict):
+        if "dependency" in updates["plugin"]:
+            dependencies = updates["plugin"]["dependency"]
+            if not isinstance(dependencies, list):
+                raise HTTPException(
+                    status_code=400,
+                    detail="plugin.dependency must be a list"
+                )
+            for dep in dependencies:
+                if not isinstance(dep, dict):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="plugin.dependency items must be dictionaries"
+                    )
+                # 验证依赖字段的类型
+                for key in ["id", "entry", "custom_event"]:
+                    if key in dep and not isinstance(dep[key], str):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"plugin.dependency.{key} must be a string"
+                        )
+                if "providers" in dep:
+                    if not isinstance(dep["providers"], list):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="plugin.dependency.providers must be a list"
+                        )
+                    for provider in dep["providers"]:
+                        if not isinstance(provider, str):
+                            raise HTTPException(
+                                status_code=400,
+                                detail="plugin.dependency.providers items must be strings"
+                            )
+
+
 @app.put("/plugin/{plugin_id}/config")
 async def update_plugin_config_endpoint(plugin_id: str, payload: ConfigUpdateRequest, _: str = require_admin):
     """
@@ -589,8 +793,14 @@ async def update_plugin_config_endpoint(plugin_id: str, payload: ConfigUpdateReq
     
     - PUT /plugin/{plugin_id}/config
     - 需要管理员验证码（Bearer Token）
+    - 禁止修改关键字段（plugin.id, plugin.entry）
+    - 验证字段类型和格式
     """
     try:
+        # 验证配置更新的安全性
+        validate_config_updates(plugin_id, payload.config)
+        
+        # 执行更新
         return update_plugin_config(plugin_id, payload.config)
     except HTTPException:
         raise

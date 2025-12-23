@@ -453,9 +453,9 @@ def main():
                 pass
         
         print("\n清理完成", flush=True)
-        # 正常退出，允许 atexit 运行（除非还有残留进程需要强制退出）
+        # 如果还有残留进程，使用非零退出码
         if has_alive:
-            os._exit(1)
+            sys.exit(1)
     
     return 0
 

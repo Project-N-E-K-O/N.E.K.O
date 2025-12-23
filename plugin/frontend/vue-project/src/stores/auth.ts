@@ -28,11 +28,11 @@ export const useAuthStore = defineStore('auth', () => {
 
   function clearAuthCode() {
     authCode.value = null
-  }
     try {
-    localStorage.removeItem(AUTH_CODE_KEY)
-  } catch (err) {
-    console.warn('Failed to clear auth code from storage:', err)
+      localStorage.removeItem(AUTH_CODE_KEY)
+    } catch (err) {
+      console.warn('Failed to clear auth code from storage:', err)
+    }
   }
 
   function getAuthHeader(): string | null {

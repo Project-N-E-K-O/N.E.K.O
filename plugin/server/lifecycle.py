@@ -65,10 +65,10 @@ async def startup() -> None:
     # 加载插件
     load_plugins_from_toml(PLUGIN_CONFIG_ROOT, logger, _factory)
     
-    # 立即检查 plugin_hosts 状态
+    # 立即检查 plugin_hosts 状态（诊断日志，使用 debug 级别）
     with state.plugin_hosts_lock:
         plugin_hosts_after_load = dict(state.plugin_hosts)
-        logger.info(
+        logger.debug(
             "Plugin hosts immediately after load_plugins_from_toml: {} plugins, keys: {}",
             len(plugin_hosts_after_load),
             list(plugin_hosts_after_load.keys())
@@ -76,12 +76,12 @@ async def startup() -> None:
     
     with state.plugins_lock:
         plugin_keys = list(state.plugins.keys())
-    logger.info("Plugin registry after startup: {}", plugin_keys)
+    logger.debug("Plugin registry after startup: {}", plugin_keys)
     
     # 再次检查 plugin_hosts（可能在 register_plugin 调用后发生变化）
     with state.plugin_hosts_lock:
         plugin_hosts_after_plugins = dict(state.plugin_hosts)
-        logger.info(
+        logger.debug(
             "Plugin hosts after plugins registry: {} plugins, keys: {}",
             len(plugin_hosts_after_plugins),
             list(plugin_hosts_after_plugins.keys())

@@ -1468,7 +1468,7 @@ def load_plugins_from_toml(
         except (OSError, RuntimeError) as e:
             logger.error("Failed to start process for plugin {}: {}", pid, e, exc_info=True)
             continue
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected error starting process for plugin {}", pid)
             continue
 
