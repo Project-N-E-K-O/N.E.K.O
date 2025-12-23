@@ -204,8 +204,8 @@ def _plugin_process_runner(
                     # 系统级中断，停止定时任务
                     logger.info("Timer '{}' interrupted, stopping", fn_name)
                     break
-                except Exception as e:
-                    logger.exception("Timer '{}' failed: {}", fn_name, e)
+                except Exception:
+                    logger.exception("Timer '{}' failed", fn_name)
                     # 定时任务失败不应中断循环，继续执行
                 stop_event.wait(interval_seconds)
 
@@ -488,7 +488,7 @@ def _plugin_process_runner(
                     ret_payload["error"] = str(e)
                 except (TypeError, ValueError, AttributeError) as e:
                     # 参数或方法调用错误
-                    logger.error("Invalid call to entry {}: {}", entry_id, e)
+                    logger.exception("Invalid call to entry {}", entry_id)
                     ret_payload["error"] = f"Invalid call: {str(e)}"
                 except (KeyboardInterrupt, SystemExit):
                     # 系统级中断，需要特殊处理
@@ -508,7 +508,7 @@ def _plugin_process_runner(
         raise
     except Exception as e:
         # 进程崩溃，记录详细信息
-        logger.exception("Plugin process {} crashed: {}", plugin_id, e)
+        logger.exception("Plugin process {} crashed", plugin_id)
         # 尝试发送错误信息到结果队列（如果可能）
         try:
             res_queue.put({
@@ -609,8 +609,8 @@ class PluginProcessHost:
         for q in [self.cmd_queue, self.res_queue, self.status_queue, self.message_queue]:
             try:
                 q.cancel_join_thread()
-            except Exception:
-                pass
+            except Exception as e:
+                self.logger.debug("Failed to cancel queue join thread: {}", e)
 
         # 4. 关闭进程
         success = await asyncio.to_thread(self._shutdown_process, timeout)
@@ -647,8 +647,8 @@ class PluginProcessHost:
         for q in [self.cmd_queue, self.res_queue, self.status_queue, self.message_queue]:
             try:
                 q.cancel_join_thread()
-            except Exception:
-                pass
+            except Exception as e:
+                self.logger.debug("Failed to cancel queue join thread: {}", e)
                 
         self._shutdown_process(timeout=timeout)
     

@@ -5,7 +5,6 @@ Web Interface Plugin
 """
 import asyncio
 import html
-import logging
 import socket
 import threading
 import time
@@ -83,7 +82,7 @@ class WebInterfacePlugin(NekoPluginBase):
                     finally:
                         try:
                             s.close()
-                        except Exception:
+                        except OSError:
                             pass
                 return start_port
 
@@ -891,7 +890,7 @@ class WebInterfacePlugin(NekoPluginBase):
                     "result": result
                 }
         except Exception as e:
-            self.logger.exception(f"[WebInterface] 测试定时器失败: {e}")
+            self.logger.exception("[WebInterface] 测试定时器失败")
             return {
                 "success": False,
                 "error": str(e)

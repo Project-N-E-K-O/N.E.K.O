@@ -233,7 +233,7 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
                         # 尝试关闭进程
                         try:
                             if hasattr(existing_host, 'shutdown'):
-                                existing_host.shutdown(timeout=1.0)
+                                await existing_host.shutdown(timeout=1.0)
                             elif hasattr(existing_host, 'process') and existing_host.process:
                                 existing_host.process.terminate()
                                 existing_host.process.join(timeout=1.0)
@@ -267,7 +267,17 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
                         )
                 plugin_id = resolved_id
         except Exception as e:
-            logger.warning(f"Failed to scan metadata for plugin {plugin_id}: {e}")
+            logger.exception("Failed to initialize plugin {} after process start", plugin_id)
+            try:
+                with state.plugin_hosts_lock:
+                    existing_host = state.plugin_hosts.pop(plugin_id, None)
+                if existing_host is not None:
+                    await existing_host.shutdown(timeout=1.0)
+                else:
+                    await host.shutdown(timeout=1.0)
+            except Exception:
+                logger.warning("Failed to cleanup plugin {} after initialization failure", plugin_id)
+            raise
         
         logger.info(f"Plugin {plugin_id} started successfully")
         response = {
@@ -281,6 +291,8 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
             response["message"] = f"Plugin started successfully (renamed from '{original_plugin_id}' to '{plugin_id}' due to ID conflict)"
         return response
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception(f"Failed to start plugin {plugin_id}: {e}")
         raise HTTPException(

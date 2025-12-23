@@ -88,16 +88,21 @@ class PluginStatusManager:
             }
 
         for pid in registered_plugin_ids:
-            if pid not in cached:
-                cached[pid] = _build_synthetic(pid, "stopped")
+            cached.setdefault(pid, _build_synthetic(pid, "stopped"))
 
         for pid, host in plugin_hosts_snapshot.items():
             alive = False
             try:
-                alive = bool(getattr(host, "is_alive") and host.is_alive())
-            except Exception:
+                is_alive = getattr(host, "is_alive", None)
+                if callable(is_alive):
+                    alive = bool(is_alive())
+            except Exception as e:
+                self.logger.debug("检查插件 %s 存活状态时出错: %s", pid, e)
                 alive = False
-            cached[pid] = _build_synthetic(pid, "running" if alive else "crashed")
+
+            existing = cached.get(pid)
+            if existing is None or existing.get("source") == "main_process_synthetic":
+                cached[pid] = _build_synthetic(pid, "running" if alive else "crashed")
 
         if plugin_id is None:
             return cached

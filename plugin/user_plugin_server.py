@@ -506,7 +506,7 @@ async def get_all_plugin_metrics(_: str = require_admin):
             },
             "time": now_iso()
         }
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to get plugin metrics: Unexpected error type")
         # 返回空结果而不是抛出异常，避免前端显示错误
         return {
@@ -952,7 +952,7 @@ async def get_plugin_logs_endpoint(
             "returned_lines": 0,
             "error": "Failed to retrieve logs"
         }
-    except Exception as e:
+    except Exception:
         logger.exception(f"Failed to get logs for plugin {plugin_id}: Unexpected error type")
         # 返回空结果而不是抛出异常，避免前端显示错误
         return {
