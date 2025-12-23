@@ -4,8 +4,11 @@
 提供插件运行时上下文，包括状态更新和消息推送功能。
 """
 import asyncio
+import contextlib
+import contextvars
 import inspect
 import time
+import tomllib
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -17,6 +20,9 @@ from fastapi import FastAPI
 
 from plugin.api.exceptions import PluginEntryNotFoundError, PluginError
 from plugin.settings import EVENT_META_ATTR
+
+
+_IN_HANDLER: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_in_handler", default=None)
 
 
 @dataclass
@@ -33,6 +39,50 @@ class PluginContext:
     _res_queue: Optional[Any] = None  # 结果队列（用于在等待期间处理响应）
     _entry_map: Optional[Dict[str, Any]] = None  # 入口映射（用于处理命令）
     _instance: Optional[Any] = None  # 插件实例（用于处理命令）
+
+    def _get_sync_call_in_handler_policy(self) -> str:
+        try:
+            st = self.config_path.stat()
+            cache_mtime = getattr(self, "_a1_policy_mtime", None)
+            cache_value = getattr(self, "_a1_policy_value", None)
+            if cache_mtime == st.st_mtime and isinstance(cache_value, str):
+                return cache_value
+
+            with self.config_path.open("rb") as f:
+                conf = tomllib.load(f)
+            policy = (
+                conf.get("plugin", {})
+                .get("safety", {})
+                .get("sync_call_in_handler", "warn")
+            )
+            if policy not in ("warn", "reject"):
+                policy = "warn"
+            setattr(self, "_a1_policy_mtime", st.st_mtime)
+            setattr(self, "_a1_policy_value", policy)
+            return policy
+        except Exception:
+            return "warn"
+
+    def _enforce_sync_call_policy(self, method_name: str) -> None:
+        handler_ctx = _IN_HANDLER.get()
+        if handler_ctx is None:
+            return
+        policy = self._get_sync_call_in_handler_policy()
+        msg = (
+            f"Sync call '{method_name}' invoked inside handler ({handler_ctx}). "
+            "This may block the command loop and cause deadlocks/timeouts."
+        )
+        if policy == "reject":
+            raise RuntimeError(msg)
+        self.logger.warning(msg)
+
+    @contextlib.contextmanager
+    def _handler_scope(self, handler_ctx: str):
+        token = _IN_HANDLER.set(handler_ctx)
+        try:
+            yield
+        finally:
+            _IN_HANDLER.reset(token)
 
     def update_status(self, status: Dict[str, Any]) -> None:
         """
@@ -135,6 +185,7 @@ class PluginContext:
             TimeoutError: 如果超时
             Exception: 如果事件执行失败
         """
+        self._enforce_sync_call_policy("trigger_plugin_event")
         if self._plugin_comm_queue is None:
             raise RuntimeError(
                 f"Plugin communication queue not available for plugin {self.plugin_id}. "
@@ -221,6 +272,7 @@ class PluginContext:
         )
 
     def query_plugins(self, filters: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
+        self._enforce_sync_call_policy("query_plugins")
         if self._plugin_comm_queue is None:
             raise RuntimeError(
                 f"Plugin communication queue not available for plugin {self.plugin_id}. "
@@ -264,6 +316,7 @@ class PluginContext:
         raise TimeoutError(f"Plugin query timed out after {timeout}s")
 
     def get_own_config(self, timeout: float = 5.0) -> Dict[str, Any]:
+        self._enforce_sync_call_policy("get_own_config")
         if self._plugin_comm_queue is None:
             raise RuntimeError(
                 f"Plugin communication queue not available for plugin {self.plugin_id}. "
@@ -301,6 +354,7 @@ class PluginContext:
         raise TimeoutError(f"Plugin config get timed out after {timeout}s")
 
     def update_own_config(self, updates: Dict[str, Any], timeout: float = 10.0) -> Dict[str, Any]:
+        self._enforce_sync_call_policy("update_own_config")
         if self._plugin_comm_queue is None:
             raise RuntimeError(
                 f"Plugin communication queue not available for plugin {self.plugin_id}. "

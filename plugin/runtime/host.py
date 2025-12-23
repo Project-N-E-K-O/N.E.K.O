@@ -173,10 +173,11 @@ def _plugin_process_runner(
         startup_fn = lifecycle_events.get("startup")
         if startup_fn:
             try:
-                if asyncio.iscoroutinefunction(startup_fn):
-                    asyncio.run(startup_fn())
-                else:
-                    startup_fn()
+                with ctx._handler_scope("lifecycle.startup"):
+                    if asyncio.iscoroutinefunction(startup_fn):
+                        asyncio.run(startup_fn())
+                    else:
+                        startup_fn()
             except (KeyboardInterrupt, SystemExit):
                 # 系统级中断，直接抛出
                 raise
@@ -190,10 +191,11 @@ def _plugin_process_runner(
         def _run_timer_interval(fn, interval_seconds: int, fn_name: str, stop_event: threading.Event):
             while not stop_event.is_set():
                 try:
-                    if asyncio.iscoroutinefunction(fn):
-                        asyncio.run(fn())
-                    else:
-                        fn()
+                    with ctx._handler_scope(f"timer.{fn_name}"):
+                        if asyncio.iscoroutinefunction(fn):
+                            asyncio.run(fn())
+                        else:
+                            fn()
                 except (KeyboardInterrupt, SystemExit):
                     # 系统级中断，停止定时任务
                     logger.info("Timer '{}' interrupted, stopping", fn_name)
@@ -225,10 +227,11 @@ def _plugin_process_runner(
         def _run_custom_event_auto(fn, fn_name: str, event_type: str):
             """执行自动启动的自定义事件"""
             try:
-                if asyncio.iscoroutinefunction(fn):
-                    asyncio.run(fn())
-                else:
-                    fn()
+                with ctx._handler_scope(f"{event_type}.{fn_name}"):
+                    if asyncio.iscoroutinefunction(fn):
+                        asyncio.run(fn())
+                    else:
+                        fn()
             except (KeyboardInterrupt, SystemExit):
                 logger.info("Custom event '{}' (type: {}) interrupted", fn_name, event_type)
             except Exception:
@@ -308,7 +311,8 @@ def _plugin_process_runner(
                             
                             def run_async(method=method, args=args, result_container=result_container, event=event):
                                 try:
-                                    result_container["result"] = asyncio.run(method(**args))
+                                    with ctx._handler_scope(f"{event_type}.{event_id}"):
+                                        result_container["result"] = asyncio.run(method(**args))
                                 except Exception as e:
                                     result_container["exception"] = e
                                 finally:
@@ -335,7 +339,8 @@ def _plugin_process_runner(
                                 res = result_container["result"]
                         else:
                             logger.debug("[Plugin Process] Custom event is sync, calling directly")
-                            res = method(**args)
+                            with ctx._handler_scope(f"{event_type}.{event_id}"):
+                                res = method(**args)
                         ret_payload["success"] = True
                         ret_payload["data"] = res
                         logger.debug(
@@ -426,7 +431,8 @@ def _plugin_process_runner(
                         
                         def run_async(method=method, args=args, result_container=result_container, event=event):
                             try:
-                                result_container["result"] = asyncio.run(method(**args))
+                                with ctx._handler_scope(f"plugin_entry.{entry_id}"):
+                                    result_container["result"] = asyncio.run(method(**args))
                             except Exception as e:
                                 result_container["exception"] = e
                             finally:
@@ -458,7 +464,8 @@ def _plugin_process_runner(
                                 "[Plugin Process] Calling method with args: %s",
                                 args,
                             )
-                            res = method(**args)
+                            with ctx._handler_scope(f"plugin_entry.{entry_id}"):
+                                res = method(**args)
                             logger.debug(
                                 "[Plugin Process] Method call succeeded, result type: %s",
                                 type(res),

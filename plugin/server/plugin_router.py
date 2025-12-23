@@ -71,7 +71,18 @@ class PluginRouter:
             self._router_task = None
             # 关闭线程池执行器
             if self._executor is not None:
-                self._executor.shutdown(wait=True)
+                executor = self._executor
+                try:
+                    await asyncio.wait_for(
+                        asyncio.to_thread(executor.shutdown, wait=True, cancel_futures=True),
+                        timeout=2.0,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("Plugin router executor did not stop in time, forcing shutdown")
+                    try:
+                        executor.shutdown(wait=False, cancel_futures=True)
+                    except TypeError:
+                        executor.shutdown(wait=False)
                 self._executor = None
             logger.info("Plugin router stopped")
     

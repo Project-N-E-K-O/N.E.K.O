@@ -7,6 +7,7 @@ import asyncio
 import atexit
 import logging
 import os
+import time
 from pathlib import Path
 
 from loguru import logger
@@ -152,28 +153,33 @@ async def startup() -> None:
 
 async def _shutdown_internal() -> None:
     """内部关闭逻辑"""
+    t0 = time.time()
     # 1. 停止插件间通信路由器
     try:
+        step_t0 = time.time()
         await plugin_router.stop()
-        logger.debug("Plugin router stopped")
+        logger.debug("Plugin router stopped (cost={:.3f}s)", time.time() - step_t0)
     except Exception:
         logger.exception("Error stopping plugin router")
     
     # 2. 停止性能指标收集器
     try:
+        step_t0 = time.time()
         await metrics_collector.stop()
-        logger.debug("Metrics collector stopped")
+        logger.debug("Metrics collector stopped (cost={:.3f}s)", time.time() - step_t0)
     except Exception:
         logger.exception("Error stopping metrics collector")
     
     # 3. 关闭状态消费任务
     try:
+        step_t0 = time.time()
         await status_manager.shutdown_status_consumer(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
-        logger.debug("Status consumer stopped")
+        logger.debug("Status consumer stopped (cost={:.3f}s)", time.time() - step_t0)
     except Exception:
         logger.exception("Error shutting down status consumer")
     
     # 4. 关闭所有插件的资源
+    step_t0 = time.time()
     shutdown_tasks = []
     for plugin_id, host in state.plugin_hosts.items():
         shutdown_tasks.append(host.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT))
@@ -181,13 +187,17 @@ async def _shutdown_internal() -> None:
     # 并发关闭所有插件
     if shutdown_tasks:
         await asyncio.gather(*shutdown_tasks, return_exceptions=True)
+    logger.debug("Plugin hosts shutdown complete (cost={:.3f}s)", time.time() - step_t0)
     
     # 5. 清理插件间通信资源（队列和响应映射）
     try:
+        step_t0 = time.time()
         state.cleanup_plugin_comm_resources()
-        logger.debug("Plugin communication resources cleaned up")
+        logger.debug("Plugin communication resources cleaned up (cost={:.3f}s)", time.time() - step_t0)
     except Exception:
         logger.exception("Error cleaning up plugin communication resources")
+
+    logger.debug("Shutdown internal completed (total_cost={:.3f}s)", time.time() - t0)
 
 def _log_shutdown_diagnostics() -> None:
     """记录关闭时的诊断信息，用于排查超时问题"""

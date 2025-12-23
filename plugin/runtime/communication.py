@@ -127,9 +127,9 @@ class PluginCommunicationResourceManager:
         
         # 关闭线程池
         if self._executor:
-            # 不等待线程结束，因为它们可能阻塞在 queue.get 上
-            # 只要线程是 daemon，主进程退出时它们会被清理
-            self._executor.shutdown(wait=False)
+            # 必须等待线程退出，否则非 daemon 线程会阻止主进程退出。
+            # 这里投递到 executor 的 queue.get/put 都带超时（QUEUE_GET_TIMEOUT），因此可在可控时间内退出。
+            self._executor.shutdown(wait=True, cancel_futures=True)
             self._executor = None
         
         self.logger.debug(f"Communication resources for plugin {self.plugin_id} shutdown complete")
