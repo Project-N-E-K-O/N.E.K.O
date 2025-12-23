@@ -465,12 +465,26 @@ Live2DManager.prototype._createSettingsToggleItem = function (toggle, popup) {
                 window.saveNEKOSettings();
             }
 
-            if (isChecked && typeof window.resetProactiveChatBackoff === 'function') {
-                window.resetProactiveChatBackoff();
-            } else if (!isChecked && typeof window.stopProactiveChatSchedule === 'function') {
-                // 只有当主动搭话也关闭时才停止调度
-                if (!window.proactiveChatEnabled) {
-                    window.stopProactiveChatSchedule();
+            if (isChecked) {
+                if (typeof window.resetProactiveChatBackoff === 'function') {
+                    window.resetProactiveChatBackoff();
+                }
+                // 如果正在语音对话中，启动15秒1帧定时器
+                if (typeof window.isRecording !== 'undefined' && window.isRecording) {
+                    if (typeof window.startProactiveVisionDuringSpeech === 'function') {
+                        window.startProactiveVisionDuringSpeech();
+                    }
+                }
+            } else {
+                if (typeof window.stopProactiveChatSchedule === 'function') {
+                    // 只有当主动搭话也关闭时才停止调度
+                    if (!window.proactiveChatEnabled) {
+                        window.stopProactiveChatSchedule();
+                    }
+                }
+                // 停止语音期间的主动视觉定时器
+                if (typeof window.stopProactiveVisionDuringSpeech === 'function') {
+                    window.stopProactiveVisionDuringSpeech();
                 }
             }
             console.log(`主动视觉已${isChecked ? '开启' : '关闭'}`);

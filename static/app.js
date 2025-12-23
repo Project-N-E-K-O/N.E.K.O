@@ -5139,6 +5139,8 @@ function init_app() {
     // 暴露函数到全局作用域，供 live2d.js 调用
     window.resetProactiveChatBackoff = resetProactiveChatBackoff;
     window.stopProactiveChatSchedule = stopProactiveChatSchedule;
+    window.startProactiveVisionDuringSpeech = startProactiveVisionDuringSpeech;
+    window.stopProactiveVisionDuringSpeech = stopProactiveVisionDuringSpeech;
 
     // 保存设置到localStorage
     function saveSettings() {
