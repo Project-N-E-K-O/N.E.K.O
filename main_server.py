@@ -127,20 +127,6 @@ logger, log_config = setup_logging(service_name="Main", log_level=logging.INFO, 
 
 _config_manager = get_config_manager()
 
-def _log_session_state(name: str, mgr: core.LLMSessionManager, context: str = ""):
-    """输出session/TTS关键状态，用于排查打断后TTS异常."""
-    try:
-        logger.debug(
-            f"[SessionState][{name}] {context} "
-            f"use_tts={getattr(mgr, 'use_tts', None)}, "
-            f"tts_ready={getattr(mgr, 'tts_ready', None)}, "
-            f"tts_thread_alive={getattr(mgr, 'tts_thread', None) and getattr(mgr.tts_thread, 'is_alive', lambda: False)()}, "
-            f"current_speech_id={getattr(mgr, 'current_speech_id', None)}, "
-            f"input_mode={getattr(mgr, 'input_mode', None)}"
-        )
-    except Exception as e:  # 安全兜底，避免日志本身影响主流程
-        logger.warning(f"[SessionState][{name}] 状态日志失败: {e}")
-
 def cleanup():
     logger.info("Starting cleanup process")
     for k in sync_message_queue:
@@ -247,7 +233,6 @@ async def initialize_character_data():
                     # 更新voice_id（这是切换音色时需要的）
                     old_mgr.voice_id = lanlan_basic_config_updated[k].get('voice_id', '')
                     logger.info(f"{k} 有活跃session，只更新配置，不重新创建session_manager")
-                    _log_session_state(k, old_mgr, context="active-session-reload")
                 except Exception as e:
                     logger.error(f"更新 {k} 的活跃session配置失败: {e}", exc_info=True)
                     # 配置更新失败，但为了不影响正在运行的session，继续使用旧配置
@@ -262,7 +247,6 @@ async def initialize_character_data():
                 
                 # 将websocket锁存储到session manager中，供cleanup()使用
                 session_manager[k].websocket_lock = websocket_locks[k]
-                _log_session_state(k, session_manager[k], context="new-session-manager-created")
                 
                 # 恢复websocket引用（如果存在）
                 if old_websocket:

@@ -214,7 +214,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                             await ws.send(json.dumps(done_event))
                             # 等待服务器返回响应完成事件，然后关闭连接
                             try:
-                                await asyncio.wait_for(response_done.wait(), timeout=30.0)
+                                await asyncio.wait_for(response_done.wait(), timeout=20.0)
                                 logger.debug("音频生成完成，主动关闭连接")
                             except asyncio.TimeoutError:
                                 logger.warning("等待响应完成超时（30秒），强制关闭连接")
@@ -524,7 +524,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                             }))
                             # 等待服务器返回响应完成事件，然后关闭连接
                             try:
-                                await asyncio.wait_for(response_done.wait(), timeout=30.0)
+                                await asyncio.wait_for(response_done.wait(), timeout=20.0)
                                 logger.debug("音频生成完成，主动关闭连接")
                             except asyncio.TimeoutError:
                                 logger.warning("等待响应完成超时（30秒），强制关闭连接")
@@ -698,13 +698,16 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             self.response_queue = response_queue
             
         def on_open(self): 
-            pass
+            # 连接已建立，发送就绪信号
+            elapsed = time.time() - self.construct_start_time if hasattr(self, 'construct_start_time') else -1
+            print(f"TTS 连接已建立!! (构造到open耗时: {elapsed:.2f}s)")
             
         def on_complete(self): 
             pass
                 
         def on_error(self, message: str): 
-            print(f"TTS Error: {message}")
+            if "request timeout after 23 seconds" not in message:
+                print(f"TTS Error: {message}")
             
         def on_close(self): 
             pass
@@ -729,22 +732,41 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         sid, tts_text = request_queue.get()
 
         if sid is None:
-            # 停止当前合成
+            # 停止当前合成 - 告诉TTS没有更多文本了
+            # 注意：streaming_complete() 只是标记输入结束，音频还会继续回传
+            # close() 应该在下次需要新 synthesizer 时再调用，不能立即调用
             if synthesizer is not None:
                 try:
-                    synthesizer.streaming_complete()
-                except Exception:
-                    synthesizer = None
-            continue
-            
-        if current_speech_id is None or current_speech_id != sid or synthesizer is None:
-            current_speech_id = sid
-            try:
-                if synthesizer is not None:
+                    synthesizer.streaming_complete(complete_timeout_millis=20000)
+                except Exception as e:
+                    logger.warning(f"TTS streaming_complete 失败: {e}")
+                finally:
                     try:
                         synthesizer.close()
                     except Exception:
                         pass
+                    synthesizer = None   
+            current_speech_id = None
+
+        if current_speech_id is None:
+            current_speech_id = sid
+
+        if current_speech_id != sid:
+            if synthesizer is not None:
+                try:
+                    synthesizer.close()
+                except Exception:
+                    pass
+            synthesizer = None
+            current_speech_id = sid
+            
+        # 需要重建 synthesizer
+        if synthesizer is None:
+            current_speech_id = sid
+            
+            # 创建新的 synthesizer
+            try:
+                callback.construct_start_time = time.time()
                 synthesizer = SpeechSynthesizer(
                     model="cosyvoice-v3-plus",
                     voice=voice_id,
@@ -752,21 +774,28 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                     format=AudioFormat.OGG_OPUS_48KHZ_MONO_64KBPS,
                     callback=callback,
                 )
+                synthesizer.streaming_call("。")
             except Exception as e:
-                print("TTS Error: ", e)
+                print("TTS Init Error: ", e)
                 synthesizer = None
                 current_speech_id = None
+                time.sleep(0.1)
                 continue
                     
         if tts_text is None or not tts_text.strip():
             time.sleep(0.01)
             continue
             
-        # 处理表情等逻辑
+        # 发送文本到 TTS
         try:
             synthesizer.streaming_call(tts_text)
         except Exception as e:
-            print("TTS Error: ", e)
+            print("TTS Call Error: ", e)
+            if synthesizer is not None:
+                try:
+                    synthesizer.close()
+                except Exception:
+                    pass
             synthesizer = None
             current_speech_id = None
             continue
