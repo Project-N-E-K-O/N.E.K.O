@@ -4,6 +4,7 @@
 <head>
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <link rel="manifest" href="/static/manifest.json">
+    <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black">
     <link rel="apple-touch-icon" href="/static/xiaoba_192.png">
@@ -1633,31 +1634,54 @@
                 currentLanlanName = lanlan_config.lanlan_name = charactersData['当前猫娘'];
                 console.log('AFTER currentLanlanName: ', currentLanlanName);
 
-                // 从猫娘配置中获取当前角色的 live2d 模型名称
+                // 从猫娘配置中获取当前角色的模型信息（支持Live2D和VRM）
                 const catgirlConfig = charactersData['猫娘']?.[currentLanlanName];
                 if (!catgirlConfig) {
                     console.warn(`未找到角色 ${currentLanlanName} 的配置，跳过模型检查`);
                     return;
                 }
-                const newModelName = catgirlConfig.live2d || 'mao_pro';
-                console.log('AFTER newModelName: ', newModelName);
+                
+                const modelType = catgirlConfig.model_type || 'live2d';
+                let newModelPath = '';
+                
+                if (modelType === 'vrm') {
+                    // VRM模型：直接使用vrm字段中的路径
+                    const vrmPath = catgirlConfig.vrm || '';
+                    if (vrmPath) {
+                        // 如果是本地路径，转换为HTTP URL
+                        if (vrmPath.includes(':') || (!vrmPath.startsWith('/') && !vrmPath.startsWith('http'))) {
+                            const filename = vrmPath.split(/[\\/]/).pop();
+                            newModelPath = `/user_vrm/${filename}`;
+                        } else {
+                            newModelPath = vrmPath;
+                        }
+                        console.log('VRM模型路径:', newModelPath);
+                    } else {
+                        console.warn(`角色 ${currentLanlanName} 的VRM模型路径为空`);
+                        return;
+                    }
+                } else {
+                    // Live2D模型：使用原有逻辑
+                    const newModelName = catgirlConfig.live2d || 'mao_pro';
+                    console.log('Live2D模型名称: ', newModelName);
 
-                // 3. 获取所有可用模型列表
-                const modelsResponse = await fetch('/api/live2d/models');
-                if (!modelsResponse.ok) {
-                    console.warn('获取模型列表失败，跳过模型检查');
-                    return;
-                }
-                const models = await modelsResponse.json();
+                    // 3. 获取所有可用模型列表
+                    const modelsResponse = await fetch('/api/live2d/models');
+                    if (!modelsResponse.ok) {
+                        console.warn('获取模型列表失败，跳过模型检查');
+                        return;
+                    }
+                    const models = await modelsResponse.json();
 
-                // 4. 根据模型名称查找对应的模型路径
-                const modelInfo = models.find(m => m.name === newModelName);
-                if (!modelInfo) {
-                    console.warn(`未找到模型 ${newModelName}，跳过模型检查`);
-                    return;
+                    // 4. 根据模型名称查找对应的模型路径
+                    const modelInfo = models.find(m => m.name === newModelName);
+                    if (!modelInfo) {
+                        console.warn(`未找到模型 ${newModelName}，跳过模型检查`);
+                        return;
+                    }
+                    newModelPath = modelInfo.path;
+                    console.log('Live2D模型路径: ', newModelPath);
                 }
-                const newModelPath = modelInfo.path;
-                console.log('AFTER newModelPath: ', newModelPath);
 
                 // 5. 检查当前加载的模型路径（优先使用 _lastLoadedModelPath）
                 const currentModel = window.live2dManager?.getCurrentModel();
@@ -1669,12 +1693,23 @@
                 } else if (window.live2dManager?.modelRootPath && window.live2dManager?.modelName) {
                     currentModelPath = `${window.live2dManager.modelRootPath}/${window.live2dManager.modelName}.model3.json`;
                 }
+                
+                // 对于VRM模型，还需要检查VRM管理器的当前模型
+                if (modelType === 'vrm' && window.vrmManager) {
+                    // VRM模型的路径检查逻辑
+                    const currentVrmModel = window.vrmManager.currentModelInfo;
+                    if (currentVrmModel && currentVrmModel.url) {
+                        currentModelPath = currentVrmModel.url;
+                    }
+                }
 
-                // 6. 总是重新加载用户偏好（位置、缩放等可能被修改）
-                const preferences = await window.live2dManager.loadUserPreferences();
+                // 6. 对于Live2D模型，重新加载用户偏好（位置、缩放等可能被修改）
                 let modelPreferences = null;
-                if (preferences && preferences.length > 0) {
-                    modelPreferences = preferences.find(p => p && p.model_path === newModelPath);
+                if (modelType !== 'vrm' && window.live2dManager) {
+                    const preferences = await window.live2dManager.loadUserPreferences();
+                    if (preferences && preferences.length > 0) {
+                        modelPreferences = preferences.find(p => p && p.model_path === newModelPath);
+                    }
                 }
 
                 // 7. 比较模型路径，判断是否需要完全重新加载模型（使用更准确的路径比较）
@@ -1690,16 +1725,23 @@
                     const normalizedCurrent = normalizePath(currentModelPath);
                     const normalizedNew = normalizePath(newModelPath);
 
-                    // 提取模型名称进行比较
-                    const currentModelName = normalizedCurrent.split('/').filter(Boolean).pop()?.replace('.model3.json', '') || '';
-                    const newModelNameCompare = normalizedNew.split('/').filter(Boolean).pop()?.replace('.model3.json', '') || '';
-
-                    if (normalizedCurrent === normalizedNew) {
-                        needReload = false;
-                    } else if (currentModelName && newModelNameCompare && currentModelName === newModelNameCompare) {
-                        needReload = false;
+                    // 对于VRM模型，比较文件名；对于Live2D模型，比较完整路径
+                    if (modelType === 'vrm') {
+                        const currentFileName = normalizedCurrent.split('/').filter(Boolean).pop() || '';
+                        const newFileName = normalizedNew.split('/').filter(Boolean).pop() || '';
+                        needReload = currentFileName !== newFileName;
                     } else {
-                        needReload = true;
+                        // 提取模型名称进行比较
+                        const currentModelName = normalizedCurrent.split('/').filter(Boolean).pop()?.replace('.model3.json', '') || '';
+                        const newModelNameCompare = normalizedNew.split('/').filter(Boolean).pop()?.replace('.model3.json', '') || '';
+
+                        if (normalizedCurrent === normalizedNew) {
+                            needReload = false;
+                        } else if (currentModelName && newModelNameCompare && currentModelName === newModelNameCompare) {
+                            needReload = false;
+                        } else {
+                            needReload = true;
+                        }
                     }
                 }
 
@@ -1708,18 +1750,43 @@
                     console.log(`检测到模型变化，重新加载: ${newModelPath}`);
                     console.log(`当前模型: ${currentModelPath}`);
                     console.log(`新模型: ${newModelPath}`);
+                    console.log(`模型类型: ${modelType}`);
 
-                    await window.live2dManager.loadModel(newModelPath, {
-                        preferences: modelPreferences,
-                        isMobile: window.innerWidth <= 768
-                    });
+                    if (modelType === 'vrm') {
+                        // VRM模型：重新加载VRM模型
+                        if (window.vrmManager) {
+                            // 隐藏Live2D容器，显示VRM容器
+                            const live2dContainer = document.getElementById('live2d-container');
+                            const vrmContainer = document.getElementById('vrm-container');
+                            if (live2dContainer) live2dContainer.style.display = 'none';
+                            if (vrmContainer) vrmContainer.style.display = 'block';
+                            
+                            // 加载VRM模型
+                            await window.vrmManager.loadModel(newModelPath);
+                            console.log('VRM模型已重新加载');
+                        } else {
+                            console.warn('VRM管理器未初始化，无法加载VRM模型');
+                        }
+                    } else {
+                        // Live2D模型：使用原有逻辑
+                        // 隐藏VRM容器，显示Live2D容器
+                        const live2dContainer = document.getElementById('live2d-container');
+                        const vrmContainer = document.getElementById('vrm-container');
+                        if (live2dContainer) live2dContainer.style.display = 'block';
+                        if (vrmContainer) vrmContainer.style.display = 'none';
+                        
+                        await window.live2dManager.loadModel(newModelPath, {
+                            preferences: modelPreferences,
+                            isMobile: window.innerWidth <= 768
+                        });
 
-                    // 更新全局引用
-                    window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
-                    window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
-                    window.LanLan1.emotionMapping = window.live2dManager.getEmotionMapping();
+                        // 更新全局引用
+                        window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
+                        window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
+                        window.LanLan1.emotionMapping = window.live2dManager.getEmotionMapping();
 
-                    console.log('模型已重新加载');
+                        console.log('Live2D模型已重新加载');
+                    }
                 } else {
                     // 模型未变，但需要更新位置和缩放设置
                     console.log('模型未改变，但重新应用用户偏好设置');
@@ -1975,9 +2042,22 @@
     <script src="/static/libs/live2d.min.js"></script> <!-- Cubism 2.1核心库（支持旧模型） -->
     <script src="/static/libs/pixi.min.js"></script> <!-- PixiJS v7 CDN -->
     <script src="/static/libs/index.min.js"></script> <!-- pixi-live2d-display v0.5.0-ls-6（RaSan147 fork，支持v7） -->
-    <!-- Three.js和three-vrm库 -->
-    <script src="https://cdn.jsdelivr.net/npm/three@0.150.0/build/three.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@2.0.0/dist/three-vrm.min.js"></script>
+    <!-- Three.js 和 three-vrm 的 importmap（用于动态导入 ES 模块） -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "/static/libs/three.module.js",
+            "three/addons/": "/static/libs/three/addons/",
+            "@pixiv/three-vrm": "/static/libs/three-vrm.module.min.js"
+        }
+    }
+    </script>
+    <!-- 将 THREE 挂载到 window 对象，以便非模块脚本可以使用 -->
+    <script type="module">
+        import * as THREE from 'three';
+        window.THREE = THREE;
+        console.log('[Three.js] ES 模块已加载并挂载到 window.THREE');
+    </script>
     <!-- i18next 已在 head 中加载，这里不再需要 -->
     <!-- OGG OPUS WASM 解码器 (@wasm-audio-decoders/ogg-opus-decoder) -->
     <script>window.webpackChunkogg_opus_decoder = window.webpackChunkogg_opus_decoder || [];</script>
@@ -2006,36 +2086,64 @@
                 // 按顺序加载脚本的辅助函数
                 async function loadScriptsSequentially(scripts) {
                     for (const src of scripts) {
-                        await new Promise((resolve, reject) => {
-                            const script = document.createElement('script');
-                            script.src = src;
-                            script.onload = resolve;
-                            script.onerror = reject;
-                            document.body.appendChild(script);
-                        });
+                        try {
+                            await new Promise((resolve, reject) => {
+                                const script = document.createElement('script');
+                                script.src = src;
+                                script.onload = resolve;
+                                script.onerror = (error) => {
+                                    console.error(`脚本加载失败: ${src}`, error);
+                                    reject(error);
+                                };
+                                document.body.appendChild(script);
+                            });
+                        } catch (error) {
+                            console.error(`加载脚本失败，但继续加载其他脚本: ${src}`, error);
+                            // 继续加载下一个脚本，不中断整个流程
+                        }
                     }
                 }
 
                 // 加载所有 live2d 模块
                 await loadScriptsSequentially(live2dModules);
 
-                // 加载VRM管理器
-                const vrmManagerScript = document.createElement('script');
-                vrmManagerScript.src = '/static/vrm-manager.js';
-                await new Promise((resolve, reject) => {
-                    vrmManagerScript.onload = resolve;
-                    vrmManagerScript.onerror = reject;
-                    document.body.appendChild(vrmManagerScript);
-                });
+                // 加载VRM模块（按顺序加载，失败不影响Live2D）
+                try {
+                    const vrmModules = [
+                        '/static/vrm-core.js',
+                        '/static/vrm-expression.js',
+                        '/static/vrm-animation.js',
+                        '/static/vrm-interaction.js',
+                        '/static/vrm-manager.js'
+                    ];
+                    
+                    for (const moduleSrc of vrmModules) {
+                        const script = document.createElement('script');
+                        script.src = moduleSrc;
+                        await new Promise((resolve, reject) => {
+                            script.onload = resolve;
+                            script.onerror = (error) => {
+                                console.warn(`VRM模块加载失败（不影响Live2D）: ${moduleSrc}`, error);
+                                resolve(); // 即使失败也继续，不中断流程
+                            };
+                            document.body.appendChild(script);
+                        });
+                    }
 
-                // 加载VRM初始化脚本
-                const vrmInitScript = document.createElement('script');
-                vrmInitScript.src = '/static/vrm-init.js';
-                await new Promise((resolve, reject) => {
-                    vrmInitScript.onload = resolve;
-                    vrmInitScript.onerror = reject;
-                    document.body.appendChild(vrmInitScript);
-                });
+                    // 加载VRM初始化脚本
+                    const vrmInitScript = document.createElement('script');
+                    vrmInitScript.src = '/static/vrm-init.js';
+                    await new Promise((resolve, reject) => {
+                        vrmInitScript.onload = resolve;
+                        vrmInitScript.onerror = (error) => {
+                            console.warn('VRM初始化脚本加载失败（不影响Live2D）:', error);
+                            resolve(); // 即使失败也继续
+                        };
+                        document.body.appendChild(vrmInitScript);
+                    });
+                } catch (vrmError) {
+                    console.warn('VRM模块加载过程中出错（不影响Live2D）:', vrmError);
+                }
 
                 // 等待 live2d 模块加载完成后再加载 app.js
                 const appScript = document.createElement('script');

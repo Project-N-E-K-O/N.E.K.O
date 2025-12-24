@@ -48,9 +48,8 @@ class ConfigManager:
         self.config_dir = self.app_docs_dir / "config"
         self.memory_dir = self.app_docs_dir / "memory"
         self.live2d_dir = self.app_docs_dir / "live2d"
-        # VRM模型存储在项目目录下的static/vrm（使用动态路径，无硬编码）
-        project_root = self._get_project_root()
-        self.vrm_dir = project_root / "static" / "vrm"
+        # VRM模型存储在用户文档目录下（与Live2D保持一致）
+        self.vrm_dir = self.app_docs_dir / "vrm"
         self.vrm_animation_dir = self.vrm_dir / "animation"  # VRMA动画文件目录
         self.workshop_dir = self.app_docs_dir / "workshop"
         self.chara_dir = self.app_docs_dir / "character_cards"
@@ -324,8 +323,11 @@ class ConfigManager:
             return False
         
     def ensure_vrm_directory(self):
-        """确保项目目录下的vrm目录和animation子目录存在"""
+        """确保用户文档目录下的vrm目录和animation子目录存在"""
         try:
+            # 先确保app_docs_dir存在
+            if not self._ensure_app_docs_directory():
+                return False
             # 创建vrm目录
             self.vrm_dir.mkdir(parents=True, exist_ok=True)
             # 创建animation子目录

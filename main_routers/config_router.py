@@ -22,10 +22,14 @@ from utils.preferences import load_user_preferences, update_model_preferences, v
 router = APIRouter(prefix="/api/config", tags=["config"])
 logger = logging.getLogger("Main")
 
+# VRM 模型路径常量（与 main_server.py 中的挂载点保持一致）
+VRM_STATIC_PATH = "/static/vrm"  # 项目目录下的 VRM 模型路径
+VRM_USER_PATH = "/user_vrm"  # 用户文档目录下的 VRM 模型路径
+
 
 @router.get("/page_config")
 async def get_page_config(lanlan_name: str = ""):
-    """获取页面配置（lanlan_name 和 model_path）"""
+    """获取页面配置（lanlan_name 和 model_path），支持Live2D和VRM模型"""
     try:
         # 获取角色数据
         _config_manager = get_config_manager()
@@ -34,21 +38,53 @@ async def get_page_config(lanlan_name: str = ""):
         # 如果提供了 lanlan_name 参数，使用它；否则使用当前角色
         target_name = lanlan_name if lanlan_name else her_name
         
-        # 获取 live2d 和 live2d_item_id 字段
-        live2d = lanlan_basic_config.get(target_name, {}).get('live2d', 'mao_pro')
-        live2d_item_id = lanlan_basic_config.get(target_name, {}).get('live2d_item_id', '')
+        # 获取角色配置
+        catgirl_config = lanlan_basic_config.get(target_name, {})
+        model_type = catgirl_config.get('model_type', 'live2d')  # 默认为live2d以保持兼容性
         
-        logger.debug(f"获取页面配置 - 角色: {target_name}, 模型: {live2d}, item_id: {live2d_item_id}")
+        model_path = ""
         
-        # 使用 get_current_live2d_model 函数获取正确的模型信息
-        # 第一个参数是角色名称，第二个参数是item_id
-        model_response = await get_current_live2d_model(target_name, live2d_item_id)
-        # 提取JSONResponse中的内容
-        model_data = model_response.body.decode('utf-8')
-        import json
-        model_json = json.loads(model_data)
-        model_info = model_json.get('model_info', {})
-        model_path = model_info.get('path', '')
+        # 根据模型类型获取模型路径
+        if model_type == 'vrm':
+            # VRM模型：直接使用vrm字段中的路径
+            import os
+            from pathlib import Path
+            vrm_path = catgirl_config.get('vrm', '')
+            if vrm_path:
+                # 如果是本地路径，转换为HTTP URL
+                if ':' in vrm_path or (not vrm_path.startswith('/') and not vrm_path.startswith('http')):
+                    filename = os.path.basename(vrm_path)
+                    # 检查文件是否在项目目录的 static/vrm/ 下
+                    project_root = _config_manager._get_project_root()
+                    project_vrm_path = project_root / 'static' / 'vrm' / filename
+                    if project_vrm_path.exists():
+                        model_path = f'{VRM_STATIC_PATH}/{filename}'
+                        logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型在项目目录: {vrm_path} -> {model_path}")
+                    else:
+                        # 否则使用用户文档目录
+                        model_path = f'{VRM_USER_PATH}/{filename}'
+                        logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型在用户目录: {vrm_path} -> {model_path}")
+                else:
+                    model_path = vrm_path
+                    logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型路径: {vrm_path} -> {model_path}")
+            else:
+                logger.warning(f"角色 {target_name} 的VRM模型路径为空")
+        else:
+            # Live2D模型：使用原有逻辑
+            live2d = catgirl_config.get('live2d', 'mao_pro')
+            live2d_item_id = catgirl_config.get('live2d_item_id', '')
+            
+            logger.debug(f"获取页面配置 - 角色: {target_name}, Live2D模型: {live2d}, item_id: {live2d_item_id}")
+            
+            # 使用 get_current_live2d_model 函数获取正确的模型信息
+            from main_routers.characters_router import get_current_live2d_model
+            model_response = await get_current_live2d_model(target_name, live2d_item_id)
+            # 提取JSONResponse中的内容
+            model_data = model_response.body.decode('utf-8')
+            import json
+            model_json = json.loads(model_data)
+            model_info = model_json.get('model_info', {})
+            model_path = model_info.get('path', '')
         
         return {
             "success": True,

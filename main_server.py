@@ -369,11 +369,18 @@ if _IS_MAIN_PROCESS:
         app.mount("/user_live2d", CustomStaticFiles(directory=user_live2d_path), name="user_live2d")
         logger.info(f"已挂载用户Live2D目录: {user_live2d_path}")
     
-    # 挂载VRM模型目录（项目目录下的static/vrm）
+    # 挂载VRM模型目录（用户文档目录）
     user_vrm_path = str(_config_manager.vrm_dir)
     if os.path.exists(user_vrm_path):
         app.mount("/user_vrm", CustomStaticFiles(directory=user_vrm_path), name="user_vrm")
         logger.info(f"已挂载VRM目录: {user_vrm_path}")
+    
+    # 挂载项目目录下的static/vrm（作为备用，如果文件在项目目录中）
+    project_vrm_path = os.path.join(static_dir, 'vrm')
+    if os.path.exists(project_vrm_path) and os.path.isdir(project_vrm_path):
+        # 注意：由于 /static 已经挂载，文件可以通过 /static/vrm/ 访问
+        # 但为了兼容性，我们也检查这个路径是否存在
+        logger.info(f"项目VRM目录存在: {project_vrm_path} (可通过 /static/vrm/ 访问)")
     
     # 挂载VRM动画目录（static/vrm/animation）
     vrm_animation_path = str(_config_manager.vrm_animation_dir)
@@ -400,6 +407,7 @@ from main_routers import ( # noqa
     config_router,
     characters_router,
     live2d_router,
+    vrm_router,
     workshop_router,
     memory_router,
     pages_router,
@@ -446,6 +454,7 @@ async def beacon_shutdown():
 app.include_router(config_router)
 app.include_router(characters_router)
 app.include_router(live2d_router)
+app.include_router(vrm_router)
 app.include_router(workshop_router)
 app.include_router(memory_router)
 # Note: pages_router should be mounted last due to catch-all route /{lanlan_name}

@@ -1002,18 +1002,32 @@
             const foldContent = document.createElement('div');
             foldContent.className = 'fold-content';
 
-            // live2d row
-            const live2dRow = document.createElement('div');
-            live2dRow.className = 'field-row';
-            const live2dLabel = document.createElement('label');
-            live2dLabel.textContent = 'live2d';
-            live2dRow.appendChild(live2dLabel);
-            const live2dLink = document.createElement('span');
-            live2dLink.className = 'live2d-link';
-            live2dLink.title = window.t ? window.t('character.manageModel') : '点击管理模型';
-            live2dLink.textContent = cat['live2d'] ? cat['live2d'] : (window.t ? window.t('character.live2dNotSet') : '未设置');
-            live2dRow.appendChild(live2dLink);
-            foldContent.appendChild(live2dRow);
+            // 模型设定 row（支持Live2D和VRM）
+            const modelRow = document.createElement('div');
+            modelRow.className = 'field-row';
+            const modelLabel = document.createElement('label');
+            modelLabel.textContent = window.t ? window.t('character.modelSettings') : '模型设定';
+            modelRow.appendChild(modelLabel);
+            const modelLink = document.createElement('span');
+            modelLink.className = 'live2d-link'; // 保持class名以兼容现有样式
+            modelLink.title = window.t ? window.t('character.manageModel') : '点击管理模型';
+            
+            // 显示当前模型（优先显示VRM，如果没有则显示Live2D）
+            const modelType = cat.get('model_type', 'live2d');
+            let modelDisplayText = '';
+            if (modelType === 'vrm' && cat.get('vrm')) {
+                const vrmPath = cat.get('vrm');
+                const vrmName = vrmPath.split(/[\\/]/).pop() || vrmPath;
+                modelDisplayText = `VRM: ${vrmName}`;
+            } else if (cat.get('live2d')) {
+                modelDisplayText = cat.get('live2d');
+            } else {
+                modelDisplayText = window.t ? window.t('character.modelNotSet') : '未设置';
+            }
+            
+            modelLink.textContent = modelDisplayText;
+            modelRow.appendChild(modelLink);
+            foldContent.appendChild(modelRow);
 
             // voice_id row
             const voiceRow = document.createElement('div');
@@ -1105,13 +1119,13 @@
             btnArea.appendChild(cancelButton);
 
             form.appendChild(btnArea);
-            // live2d弹窗逻辑
-            const live2dLinkEl = form.querySelector('.live2d-link');
-            if (live2dLinkEl) {
-                live2dLinkEl.onclick = async function () {
+            // 模型设定弹窗逻辑
+            const modelLinkEl = form.querySelector('.live2d-link');
+            if (modelLinkEl) {
+                modelLinkEl.onclick = async function () {
                     const catgirlName = form.querySelector('[name="档案名"]').value;
                     if (!catgirlName) {
-                        await showAlert(window.t ? window.t('character.fillProfileNameFirst') : '请先填写猫娘档案名，然后再设置Live2D模型');
+                        await showAlert(window.t ? window.t('character.fillProfileNameFirst') : '请先填写猫娘档案名，然后再设置模型');
                         return;
                     }
                     const url = `/model_manager?lanlan_name=${encodeURIComponent(catgirlName)}`;
