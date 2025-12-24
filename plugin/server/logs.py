@@ -297,6 +297,28 @@ def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
             "line": line_num,
             "message": message.strip()
         }
+
+    # 模式5: loguru 管道分隔格式 - 2024-01-01 00:00:00 | INFO | [Proc-xxx] message
+    # 支持格式: timestamp | level | message
+    pattern5 = r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s*\|\s*(\w+)\s*\|\s*(.+)'
+    match = re.match(pattern5, line)
+    if match:
+        timestamp, level, message = match.groups()
+        message = message.strip()
+
+        file = ""
+        # 尝试提取 loguru 前缀，如 [Proc-xxx] 或 [Plugin-xxx]
+        prefix_match = re.match(r'^\[([^\]]+)\]\s*(.*)$', message)
+        if prefix_match:
+            file, message = prefix_match.groups()
+
+        return {
+            "timestamp": timestamp.strip(),
+            "level": level.strip(),
+            "file": (file or "").strip(),
+            "line": 0,
+            "message": (message or "").strip()
+        }
     
     # 如果格式不匹配，返回原始行
     return {

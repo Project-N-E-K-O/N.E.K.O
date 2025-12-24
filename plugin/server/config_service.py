@@ -204,6 +204,31 @@ def load_plugin_config(plugin_id: str) -> Dict[str, Any]:
         ) from e
 
 
+def load_plugin_config_toml(plugin_id: str) -> Dict[str, Any]:
+    """加载插件配置（TOML 原文）"""
+    config_path = get_plugin_config_path(plugin_id)
+    try:
+        with open(config_path, 'r', encoding='utf-8', errors='strict') as f:
+            toml_text = f.read()
+
+        stat = config_path.stat()
+
+        return {
+            "plugin_id": plugin_id,
+            "toml": toml_text,
+            "last_modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            "config_path": str(config_path)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to load TOML config for plugin {plugin_id}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load config: {str(e)}"
+        ) from e
+
+
 def deep_merge(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
     """深度合并字典"""
     result = base.copy()
@@ -316,4 +341,104 @@ def update_plugin_config(plugin_id: str, updates: Dict[str, Any]) -> Dict[str, A
                 status_code=500,
                 detail=f"Failed to update config: {str(e)}"
             ) from e
+
+
+def update_plugin_config_toml(plugin_id: str, toml_text: str) -> Dict[str, Any]:
+    """使用 TOML 原文更新插件配置（覆盖写入）。
+
+    安全性：
+    - 解析 TOML，保证语法正确
+    - 禁止修改 plugin.id / plugin.entry（只要值发生变化就拒绝；允许原文包含它们）
+    - 使用进程锁 + 文件锁 + 原子替换
+    """
+    if tomllib is None:
+        raise HTTPException(status_code=500, detail="TOML library not available")
+
+    # 获取插件专属的进程内锁
+    with _config_update_locks_lock:
+        if plugin_id not in _config_update_locks:
+            _config_update_locks[plugin_id] = threading.Lock()
+        lock = _config_update_locks[plugin_id]
+
+    with lock:
+        config_path = get_plugin_config_path(plugin_id)
+
+        try:
+            parsed_new = tomllib.loads(toml_text or "")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid TOML format: {str(e)}") from e
+
+        try:
+            with open(config_path, 'r+b') as f:
+                with file_lock(f):
+                    current_config = tomllib.load(f)
+
+                    def _get_protected(cfg: Dict[str, Any], key: str) -> Any:
+                        plugin_section = cfg.get("plugin") if isinstance(cfg.get("plugin"), dict) else {}
+                        return plugin_section.get(key)
+
+                    # 只要 value 变化就拒绝
+                    current_id = _get_protected(current_config, "id")
+                    current_entry = _get_protected(current_config, "entry")
+                    new_id = _get_protected(parsed_new, "id")
+                    new_entry = _get_protected(parsed_new, "entry")
+
+                    if new_id is not None and current_id is not None and new_id != current_id:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Cannot modify critical field 'plugin.id'. This field is protected."
+                        )
+                    if new_entry is not None and current_entry is not None and new_entry != current_entry:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Cannot modify critical field 'plugin.entry'. This field is protected."
+                        )
+
+                    # 原子写入（使用临时文件 + replace）
+                    config_dir = config_path.parent
+                    temp_fd, temp_path = tempfile.mkstemp(
+                        suffix='.toml',
+                        prefix='.plugin_config_',
+                        dir=config_dir
+                    )
+                    try:
+                        with os.fdopen(temp_fd, 'wb') as temp_file:
+                            data = (toml_text or "").encode('utf-8')
+                            temp_file.write(data)
+                            temp_file.flush()
+                            os.fsync(temp_file.fileno())
+
+                        os.replace(temp_path, config_path)
+
+                        try:
+                            config_dir_fd = os.open(config_dir, os.O_DIRECTORY)
+                            try:
+                                os.fsync(config_dir_fd)
+                            finally:
+                                os.close(config_dir_fd)
+                        except (AttributeError, OSError):
+                            pass
+                    except Exception:
+                        try:
+                            if os.path.exists(temp_path):
+                                os.unlink(temp_path)
+                        except Exception:
+                            pass
+                        raise
+
+            updated = load_plugin_config(plugin_id)
+
+            logger.info(f"Updated TOML config for plugin {plugin_id}")
+            return {
+                "success": True,
+                "plugin_id": plugin_id,
+                "config": updated["config"],
+                "requires_reload": True,
+                "message": "Config updated successfully"
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.exception(f"Failed to update TOML config for plugin {plugin_id}")
+            raise HTTPException(status_code=500, detail=f"Failed to update config: {str(e)}") from e
 

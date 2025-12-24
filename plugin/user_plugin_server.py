@@ -145,6 +145,24 @@ app.mount(
 )
 
 
+@app.middleware("http")
+async def _frontend_cache_headers(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+
+    if path.startswith("/ui/assets/"):
+        response.headers.setdefault("Cache-Control", "public, max-age=31536000, immutable")
+        return response
+
+    if path == "/ui" or path == "/ui/" or (path.startswith("/ui/") and path.endswith(".html")):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
+
+    return response
+
+
 # ========== 基础路由 ==========
 
 @app.get("/health")
@@ -416,7 +434,15 @@ async def frontend_index():
             status_code=404,
             detail=f"Frontend index not found: {index_file}. Please export frontend first.",
         )
-    return FileResponse(str(index_file), media_type="text/html; charset=utf-8")
+    return FileResponse(
+        str(index_file),
+        media_type="text/html; charset=utf-8",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.get("/ui/{full_path:path}")
@@ -428,6 +454,15 @@ async def frontend_file(full_path: str):
         raise HTTPException(status_code=404, detail="Not found")
 
     if candidate.is_file():
+        if candidate.suffix.lower() == ".html":
+            return FileResponse(
+                str(candidate),
+                headers={
+                    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                },
+            )
         return FileResponse(str(candidate))
 
     raise HTTPException(status_code=404, detail="Not found")
@@ -721,9 +756,34 @@ async def get_plugin_config_endpoint(plugin_id: str, _: str = require_admin):
         raise handle_plugin_error(e, f"Failed to get config for plugin {plugin_id}", 500) from e
 
 
+@app.get("/plugin/{plugin_id}/config/toml")
+async def get_plugin_config_toml_endpoint(plugin_id: str, _: str = require_admin):
+    """获取插件配置（TOML 原文）
+
+    - GET /plugin/{plugin_id}/config/toml
+    - 需要管理员验证码（Bearer Token）
+    """
+    try:
+        from plugin.server.config_service import load_plugin_config_toml
+
+        return load_plugin_config_toml(plugin_id)
+    except HTTPException:
+        raise
+    except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
+        raise handle_plugin_error(e, f"Failed to get TOML config for plugin {plugin_id}", 500) from e
+    except Exception as e:
+        logger.exception(f"Failed to get TOML config for plugin {plugin_id}: Unexpected error type")
+        raise handle_plugin_error(e, f"Failed to get TOML config for plugin {plugin_id}", 500) from e
+
+
 class ConfigUpdateRequest(BaseModel):
     """配置更新请求"""
     config: dict
+
+
+class ConfigTomlUpdateRequest(BaseModel):
+    """TOML 配置更新请求"""
+    toml: str
 
 
 def validate_config_updates(plugin_id: str, updates: dict) -> None:
@@ -953,6 +1013,27 @@ async def update_plugin_config_endpoint(plugin_id: str, payload: ConfigUpdateReq
     except Exception as e:
         logger.exception(f"Failed to update config for plugin {plugin_id}: Unexpected error type")
         raise handle_plugin_error(e, f"Failed to update config for plugin {plugin_id}", 500) from e
+
+
+@app.put("/plugin/{plugin_id}/config/toml")
+async def update_plugin_config_toml_endpoint(plugin_id: str, payload: ConfigTomlUpdateRequest, _: str = require_admin):
+    """更新插件配置（TOML 原文覆盖写入）
+
+    - PUT /plugin/{plugin_id}/config/toml
+    - 需要管理员验证码（Bearer Token）
+    - 后端会解析 TOML，禁止修改关键字段（plugin.id, plugin.entry）
+    """
+    try:
+        from plugin.server.config_service import update_plugin_config_toml
+
+        return update_plugin_config_toml(plugin_id, payload.toml)
+    except HTTPException:
+        raise
+    except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
+        raise handle_plugin_error(e, f"Failed to update TOML config for plugin {plugin_id}", 500) from e
+    except Exception as e:
+        logger.exception(f"Failed to update TOML config for plugin {plugin_id}: Unexpected error type")
+        raise handle_plugin_error(e, f"Failed to update TOML config for plugin {plugin_id}", 500) from e
 
 
 # ========== 日志路由 ==========

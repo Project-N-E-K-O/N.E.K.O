@@ -34,6 +34,10 @@
           <MetricsCard :plugin-id="pluginId" />
         </el-tab-pane>
 
+        <el-tab-pane :label="$t('plugins.config')" name="config">
+          <PluginConfigEditor :plugin-id="pluginId" />
+        </el-tab-pane>
+
         <el-tab-pane :label="$t('plugins.logs')" name="logs">
           <LogViewer :plugin-id="pluginId" />
         </el-tab-pane>
@@ -53,6 +57,7 @@ import StatusIndicator from '@/components/common/StatusIndicator.vue'
 import PluginActions from '@/components/plugin/PluginActions.vue'
 import EntryList from '@/components/plugin/EntryList.vue'
 import MetricsCard from '@/components/metrics/MetricsCard.vue'
+import PluginConfigEditor from '@/components/plugin/PluginConfigEditor.vue'
 import LogViewer from '@/components/logs/LogViewer.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 

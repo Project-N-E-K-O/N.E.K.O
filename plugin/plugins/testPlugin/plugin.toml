@@ -18,8 +18,8 @@ conflicts = [
 
 [debug]
 enable = true
-loaded_at = "2025-12-24T09:33:49.060661Z"
+loaded_at = "2025-12-24T16:35:22.485716Z"
 interval_seconds = 3
-burst_size = 5
+burst_size = 4
 max_count = 5
 timer_id = "testPlugin_debug_1766568146"
