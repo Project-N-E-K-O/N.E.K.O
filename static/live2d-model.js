@@ -147,6 +147,8 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
         // 设置交互性
         if (options.dragEnabled !== false) {
             this.setupDragAndDrop(model);
+            // 启用窗口大小改变时的自动吸附检测
+            this.setupResizeSnapDetection();
         }
 
         // 设置滚轮缩放
@@ -309,6 +311,8 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
                 // 设置交互性
                 if (options.dragEnabled !== false) {
                     this.setupDragAndDrop(model);
+                    // 启用窗口大小改变时的自动吸附检测
+                    this.setupResizeSnapDetection();
                 }
 
                 // 设置滚轮缩放

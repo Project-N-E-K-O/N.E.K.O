@@ -2,6 +2,236 @@
  * Live2D Interaction - 拖拽、缩放、鼠标跟踪等交互功能
  */
 
+// ===== 自动吸附功能配置 =====
+const SNAP_CONFIG = {
+    // 吸附阈值：模型超出屏幕边界多少像素时触发吸附
+    threshold: 50,
+    // 吸附边距：吸附后距离屏幕边缘的最小距离
+    margin: 5,
+    // 动画持续时间（毫秒）
+    animationDuration: 300,
+    // 动画缓动函数类型
+    easingType: 'easeOutCubic'
+};
+
+// 缓动函数集合
+const EasingFunctions = {
+    // 线性
+    linear: t => t,
+    // 缓出二次方
+    easeOutQuad: t => t * (2 - t),
+    // 缓出三次方（更自然）
+    easeOutCubic: t => (--t) * t * t + 1,
+    // 缓出弹性
+    easeOutElastic: t => {
+        const p = 0.3;
+        return Math.pow(2, -10 * t) * Math.sin((t - p / 4) * (2 * Math.PI) / p) + 1;
+    },
+    // 缓入缓出
+    easeInOutQuad: t => t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t
+};
+
+/**
+ * 检测模型是否超出当前屏幕边界，并计算吸附目标位置
+ * @param {PIXI.DisplayObject} model - Live2D 模型对象
+ * @returns {Object|null} 返回吸附信息，如果不需要吸附则返回 null
+ */
+Live2DManager.prototype._checkSnapRequired = async function(model) {
+    if (!model) return null;
+    
+    try {
+        const bounds = model.getBounds();
+        const modelLeft = bounds.left;
+        const modelRight = bounds.right;
+        const modelTop = bounds.top;
+        const modelBottom = bounds.bottom;
+        const modelWidth = bounds.width;
+        const modelHeight = bounds.height;
+        
+        // 获取当前屏幕边界
+        let screenLeft = 0;
+        let screenTop = 0;
+        let screenRight = window.innerWidth;
+        let screenBottom = window.innerHeight;
+        
+        // 在 Electron 环境下，尝试获取更精确的屏幕信息
+        if (window.electronScreen && window.electronScreen.getCurrentDisplay) {
+            try {
+                const currentDisplay = await window.electronScreen.getCurrentDisplay();
+                if (currentDisplay && currentDisplay.workArea) {
+                    // workArea 是排除任务栏后的可用区域
+                    screenRight = currentDisplay.workArea.width || window.innerWidth;
+                    screenBottom = currentDisplay.workArea.height || window.innerHeight;
+                }
+            } catch (e) {
+                console.debug('获取屏幕工作区域失败，使用窗口尺寸');
+            }
+        }
+        
+        // 计算超出边界的距离
+        let overflowLeft = screenLeft - modelLeft;       // 左边超出（正值表示超出）
+        let overflowRight = modelRight - screenRight;    // 右边超出
+        let overflowTop = screenTop - modelTop;          // 上边超出
+        let overflowBottom = modelBottom - screenBottom; // 下边超出
+        
+        // 检查是否有任何边超出阈值
+        const threshold = SNAP_CONFIG.threshold;
+        const margin = SNAP_CONFIG.margin;
+        
+        const needsSnapLeft = overflowLeft > threshold;
+        const needsSnapRight = overflowRight > threshold;
+        const needsSnapTop = overflowTop > threshold;
+        const needsSnapBottom = overflowBottom > threshold;
+        
+        if (!needsSnapLeft && !needsSnapRight && !needsSnapTop && !needsSnapBottom) {
+            return null; // 不需要吸附
+        }
+        
+        // 计算目标位置
+        let targetX = model.x;
+        let targetY = model.y;
+        
+        // 水平方向吸附
+        if (needsSnapLeft && needsSnapRight) {
+            // 模型比屏幕还宽，居中显示
+            targetX = model.x + (screenRight - screenLeft) / 2 - (modelLeft + modelWidth / 2);
+        } else if (needsSnapLeft) {
+            // 左边超出，向右移动
+            targetX = model.x + overflowLeft + margin;
+        } else if (needsSnapRight) {
+            // 右边超出，向左移动
+            targetX = model.x - overflowRight - margin;
+        }
+        
+        // 垂直方向吸附
+        if (needsSnapTop && needsSnapBottom) {
+            // 模型比屏幕还高，居中显示
+            targetY = model.y + (screenBottom - screenTop) / 2 - (modelTop + modelHeight / 2);
+        } else if (needsSnapTop) {
+            // 上边超出，向下移动
+            targetY = model.y + overflowTop + margin;
+        } else if (needsSnapBottom) {
+            // 下边超出，向上移动
+            targetY = model.y - overflowBottom - margin;
+        }
+        
+        // 验证目标位置
+        if (!Number.isFinite(targetX) || !Number.isFinite(targetY)) {
+            console.warn('计算的吸附目标位置无效');
+            return null;
+        }
+        
+        // 如果位置变化太小，不执行吸附
+        const dx = Math.abs(targetX - model.x);
+        const dy = Math.abs(targetY - model.y);
+        if (dx < 1 && dy < 1) {
+            return null;
+        }
+        
+        return {
+            startX: model.x,
+            startY: model.y,
+            targetX: targetX,
+            targetY: targetY,
+            overflow: {
+                left: overflowLeft,
+                right: overflowRight,
+                top: overflowTop,
+                bottom: overflowBottom
+            }
+        };
+    } catch (error) {
+        console.error('检测吸附时出错:', error);
+        return null;
+    }
+};
+
+/**
+ * 执行平滑吸附动画
+ * @param {PIXI.DisplayObject} model - Live2D 模型对象
+ * @param {Object} snapInfo - 吸附信息（由 _checkSnapRequired 返回）
+ * @returns {Promise<boolean>} 动画完成后返回 true
+ */
+Live2DManager.prototype._performSnapAnimation = function(model, snapInfo) {
+    return new Promise((resolve) => {
+        if (!model || !snapInfo) {
+            resolve(false);
+            return;
+        }
+        
+        const { startX, startY, targetX, targetY } = snapInfo;
+        const duration = SNAP_CONFIG.animationDuration;
+        const easingFn = EasingFunctions[SNAP_CONFIG.easingType] || EasingFunctions.easeOutCubic;
+        
+        const startTime = performance.now();
+        
+        // 标记正在执行吸附动画，防止其他操作干扰
+        this._isSnapping = true;
+        
+        const animate = (currentTime) => {
+            // 检查模型是否仍然有效
+            if (!model || model.destroyed) {
+                this._isSnapping = false;
+                resolve(false);
+                return;
+            }
+            
+            const elapsed = currentTime - startTime;
+            const progress = Math.min(elapsed / duration, 1);
+            const easedProgress = easingFn(progress);
+            
+            // 计算当前位置
+            model.x = startX + (targetX - startX) * easedProgress;
+            model.y = startY + (targetY - startY) * easedProgress;
+            
+            if (progress < 1) {
+                requestAnimationFrame(animate);
+            } else {
+                // 确保最终位置精确
+                model.x = targetX;
+                model.y = targetY;
+                this._isSnapping = false;
+                
+                console.debug('[Live2D] 吸附动画完成，最终位置:', targetX, targetY);
+                resolve(true);
+            }
+        };
+        
+        console.debug('[Live2D] 开始吸附动画:', { from: { x: startX, y: startY }, to: { x: targetX, y: targetY } });
+        requestAnimationFrame(animate);
+    });
+};
+
+/**
+ * 检测并执行自动吸附（主入口函数）
+ * @param {PIXI.DisplayObject} model - Live2D 模型对象
+ * @returns {Promise<boolean>} 是否执行了吸附
+ */
+Live2DManager.prototype._checkAndPerformSnap = async function(model) {
+    // 如果正在执行吸附动画，跳过
+    if (this._isSnapping) {
+        return false;
+    }
+    
+    const snapInfo = await this._checkSnapRequired(model);
+    
+    if (!snapInfo) {
+        return false;
+    }
+    
+    console.log('[Live2D] 检测到模型超出屏幕边界，执行自动吸附');
+    console.debug('[Live2D] 超出信息:', snapInfo.overflow);
+    
+    const animated = await this._performSnapAnimation(model, snapInfo);
+    
+    if (animated) {
+        // 吸附完成后保存位置
+        await this._savePositionAfterInteraction();
+    }
+    
+    return animated;
+};
+
 // 设置拖拽功能
 Live2DManager.prototype.setupDragAndDrop = function(model) {
     model.interactive = true;
@@ -88,9 +318,16 @@ Live2DManager.prototype.setupDragAndDrop = function(model) {
             // _checkAndSwitchDisplay returns true if a display switch occurred (and saved internally)
             const displaySwitched = await this._checkAndSwitchDisplay(model);
             
-            // 拖拽结束后自动保存位置（仅当没有发生屏幕切换时）
+            // 如果没有发生屏幕切换，检测并执行自动吸附
             if (!displaySwitched) {
-                await this._savePositionAfterInteraction();
+                // 执行自动吸附检测和动画
+                const snapped = await this._checkAndPerformSnap(model);
+                
+                // 如果没有执行吸附，则正常保存位置
+                if (!snapped) {
+                    await this._savePositionAfterInteraction();
+                }
+                // 如果执行了吸附，_checkAndPerformSnap 内部会保存位置
             }
         }
     };
@@ -587,8 +824,19 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function(model) {
                 
                 console.log('[Live2D] 模型新位置:', model.x, model.y);
                 
-                // 切换屏幕后保存位置和新的显示器信息
-                await this._savePositionAfterInteraction();
+                // 屏幕切换后，延迟一帧再检测是否需要吸附
+                // 这是因为窗口大小可能还未更新完成
+                await new Promise(resolve => requestAnimationFrame(resolve));
+                
+                // 检测并执行自动吸附（切换到新屏幕后模型可能仍超出边界）
+                const snapped = await this._checkAndPerformSnap(model);
+                
+                // 如果没有执行吸附，保存位置
+                if (!snapped) {
+                    await this._savePositionAfterInteraction();
+                }
+                // 如果执行了吸附，_checkAndPerformSnap 内部会保存位置
+                
                 return true;  // Display switch occurred
             }
         }
@@ -599,10 +847,89 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function(model) {
     }
 };
 
-// 监听屏幕切换事件，更新相关状态
-if (typeof window !== 'undefined') {
-    window.addEventListener('electron-display-changed', (event) => {
-        console.log('[Live2D] 收到屏幕切换事件:', event.detail);
-        // 可以在这里做额外的处理，比如重新计算UI位置等
-    });
-}
+/**
+ * 设置窗口大小改变时的自动吸附检测
+ * 当窗口/屏幕大小改变时，检测模型是否超出边界并执行吸附
+ */
+Live2DManager.prototype.setupResizeSnapDetection = function() {
+    // 防止重复绑定
+    if (this._resizeSnapHandler) {
+        window.removeEventListener('resize', this._resizeSnapHandler);
+    }
+    
+    // 防抖动的 resize 处理函数
+    let resizeTimeout = null;
+    
+    this._resizeSnapHandler = () => {
+        // 如果正在拖拽或吸附，跳过
+        if (this._isSnapping) return;
+        
+        // 清除之前的定时器
+        if (resizeTimeout) {
+            clearTimeout(resizeTimeout);
+        }
+        
+        // 延迟执行，避免频繁触发
+        resizeTimeout = setTimeout(async () => {
+            if (!this.currentModel) return;
+            
+            console.debug('[Live2D] 窗口大小改变，检测是否需要吸附');
+            
+            // 执行吸附检测
+            await this._checkAndPerformSnap(this.currentModel);
+        }, 300);
+    };
+    
+    window.addEventListener('resize', this._resizeSnapHandler);
+    
+    console.debug('[Live2D] 已启用窗口大小改变时的自动吸附检测');
+};
+
+/**
+ * 手动触发吸附检测（供外部调用）
+ * @returns {Promise<boolean>} 是否执行了吸附
+ */
+Live2DManager.prototype.snapToScreen = async function() {
+    if (!this.currentModel) {
+        console.warn('[Live2D] 无法执行吸附：模型未加载');
+        return false;
+    }
+    
+    return await this._checkAndPerformSnap(this.currentModel);
+};
+
+/**
+ * 更新吸附配置
+ * @param {Object} config - 配置对象
+ * @param {number} [config.threshold] - 吸附阈值（像素）
+ * @param {number} [config.margin] - 吸附边距（像素）
+ * @param {number} [config.animationDuration] - 动画持续时间（毫秒）
+ * @param {string} [config.easingType] - 缓动函数类型
+ */
+Live2DManager.prototype.setSnapConfig = function(config) {
+    if (!config) return;
+    
+    if (typeof config.threshold === 'number' && config.threshold >= 0) {
+        SNAP_CONFIG.threshold = config.threshold;
+    }
+    if (typeof config.margin === 'number' && config.margin >= 0) {
+        SNAP_CONFIG.margin = config.margin;
+    }
+    if (typeof config.animationDuration === 'number' && config.animationDuration > 0) {
+        SNAP_CONFIG.animationDuration = config.animationDuration;
+    }
+    if (typeof config.easingType === 'string' && EasingFunctions[config.easingType]) {
+        SNAP_CONFIG.easingType = config.easingType;
+    }
+    
+    console.debug('[Live2D] 吸附配置已更新:', SNAP_CONFIG);
+};
+
+/**
+ * 获取当前吸附配置
+ * @returns {Object} 当前配置
+ */
+Live2DManager.prototype.getSnapConfig = function() {
+    return { ...SNAP_CONFIG };
+};
+
