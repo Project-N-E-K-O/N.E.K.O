@@ -447,6 +447,11 @@ async def frontend_index():
 
 @app.get("/ui/{full_path:path}")
 async def frontend_file(full_path: str):
+    # SPA history fallback: allow browser refresh on routes like /ui/plugins/{id}
+    # Note: assets are served via the mounted StaticFiles app at /ui/assets
+    if full_path.startswith("assets/"):
+        raise HTTPException(status_code=404, detail="Not found")
+
     candidate = (_FRONTEND_ROOT_DIR / full_path).resolve()
     try:
         candidate.relative_to(_FRONTEND_ROOT_DIR.resolve())
@@ -465,7 +470,21 @@ async def frontend_file(full_path: str):
             )
         return FileResponse(str(candidate))
 
-    raise HTTPException(status_code=404, detail="Not found")
+    index_file = _FRONTEND_ROOT_DIR / "index.html"
+    if not index_file.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Frontend index not found: {index_file}. Please export frontend first.",
+        )
+    return FileResponse(
+        str(index_file),
+        media_type="text/html; charset=utf-8",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 # ========== 插件管理路由（扩展） ==========
@@ -786,6 +805,16 @@ class ConfigTomlUpdateRequest(BaseModel):
     toml: str
 
 
+class ConfigTomlParseRequest(BaseModel):
+    """TOML 解析请求（不落盘）"""
+    toml: str
+
+
+class ConfigTomlRenderRequest(BaseModel):
+    """TOML 渲染请求（不落盘）"""
+    config: dict
+
+
 def validate_config_updates(plugin_id: str, updates: dict) -> None:
     """
     验证配置更新的安全性
@@ -1013,6 +1042,48 @@ async def update_plugin_config_endpoint(plugin_id: str, payload: ConfigUpdateReq
     except Exception as e:
         logger.exception(f"Failed to update config for plugin {plugin_id}: Unexpected error type")
         raise handle_plugin_error(e, f"Failed to update config for plugin {plugin_id}", 500) from e
+
+
+@app.post("/plugin/{plugin_id}/config/parse_toml")
+async def parse_toml_to_config_endpoint(plugin_id: str, payload: ConfigTomlParseRequest, _: str = require_admin):
+    """解析 TOML 原文为配置对象（不落盘）。
+
+    - POST /plugin/{plugin_id}/config/parse_toml
+    - 需要管理员验证码（Bearer Token）
+    - 禁止修改关键字段（plugin.id, plugin.entry）
+    """
+    try:
+        from plugin.server.config_service import parse_toml_to_config
+
+        return parse_toml_to_config(plugin_id, payload.toml)
+    except HTTPException:
+        raise
+    except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
+        raise handle_plugin_error(e, f"Failed to parse TOML for plugin {plugin_id}", 500) from e
+    except Exception as e:
+        logger.exception(f"Failed to parse TOML for plugin {plugin_id}: Unexpected error type")
+        raise handle_plugin_error(e, f"Failed to parse TOML for plugin {plugin_id}", 500) from e
+
+
+@app.post("/plugin/{plugin_id}/config/render_toml")
+async def render_config_to_toml_endpoint(plugin_id: str, payload: ConfigTomlRenderRequest, _: str = require_admin):
+    """渲染配置对象为 TOML 原文（不落盘）。
+
+    - POST /plugin/{plugin_id}/config/render_toml
+    - 需要管理员验证码（Bearer Token）
+    - 禁止修改关键字段（plugin.id, plugin.entry）
+    """
+    try:
+        from plugin.server.config_service import render_config_to_toml
+
+        return render_config_to_toml(plugin_id, payload.config)
+    except HTTPException:
+        raise
+    except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
+        raise handle_plugin_error(e, f"Failed to render TOML for plugin {plugin_id}", 500) from e
+    except Exception as e:
+        logger.exception(f"Failed to render TOML for plugin {plugin_id}: Unexpected error type")
+        raise handle_plugin_error(e, f"Failed to render TOML for plugin {plugin_id}", 500) from e
 
 
 @app.put("/plugin/{plugin_id}/config/toml")

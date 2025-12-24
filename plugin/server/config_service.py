@@ -4,6 +4,7 @@
 提供插件配置的读取和更新功能。
 """
 import logging
+import io
 import os
 import re
 import sys
@@ -441,4 +442,85 @@ def update_plugin_config_toml(plugin_id: str, toml_text: str) -> Dict[str, Any]:
         except Exception as e:
             logger.exception(f"Failed to update TOML config for plugin {plugin_id}")
             raise HTTPException(status_code=500, detail=f"Failed to update config: {str(e)}") from e
+
+
+def _validate_protected_fields_unchanged(
+    current_config: Dict[str, Any],
+    new_config: Dict[str, Any],
+) -> None:
+    def _get(cfg: Dict[str, Any], key: str) -> Any:
+        plugin_section = cfg.get("plugin") if isinstance(cfg.get("plugin"), dict) else {}
+        return plugin_section.get(key)
+
+    current_id = _get(current_config, "id")
+    current_entry = _get(current_config, "entry")
+    new_id = _get(new_config, "id")
+    new_entry = _get(new_config, "entry")
+
+    if new_id is not None and current_id is not None and new_id != current_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot modify critical field 'plugin.id'. This field is protected.",
+        )
+    if new_entry is not None and current_entry is not None and new_entry != current_entry:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot modify critical field 'plugin.entry'. This field is protected.",
+        )
+
+
+def parse_toml_to_config(plugin_id: str, toml_text: str) -> Dict[str, Any]:
+    """解析 TOML 原文为配置对象（不落盘）。
+
+    - 语法错误返回 400
+    - 同 update_plugin_config_toml 一样，禁止修改 plugin.id / plugin.entry（用于表单/源码同步时阻止非法草稿）
+    """
+    if tomllib is None:
+        raise HTTPException(status_code=500, detail="TOML library not available")
+
+    try:
+        parsed = tomllib.loads(toml_text or "")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid TOML format: {str(e)}") from e
+
+    current = load_plugin_config(plugin_id)
+    current_config = current.get("config") if isinstance(current, dict) else {}
+    if isinstance(current_config, dict):
+        _validate_protected_fields_unchanged(current_config, parsed)
+
+    return {
+        "plugin_id": plugin_id,
+        "config": parsed,
+    }
+
+
+def render_config_to_toml(plugin_id: str, config: Dict[str, Any]) -> Dict[str, Any]:
+    """把配置对象渲染为 TOML 原文（不落盘）。
+
+    - 禁止修改 plugin.id / plugin.entry（若传入的 config 尝试改动则 400）
+    """
+    if tomli_w is None:
+        raise HTTPException(status_code=500, detail="TOML library not available")
+
+    if not isinstance(config, dict):
+        raise HTTPException(status_code=400, detail="config must be an object")
+
+    current = load_plugin_config(plugin_id)
+    current_config = current.get("config") if isinstance(current, dict) else {}
+    if isinstance(current_config, dict):
+        _validate_protected_fields_unchanged(current_config, config)
+
+    try:
+        buf = io.BytesIO()
+        tomli_w.dump(config, buf)
+        toml_text = buf.getvalue().decode("utf-8")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to render TOML: {str(e)}") from e
+
+    return {
+        "plugin_id": plugin_id,
+        "toml": toml_text,
+    }
 

@@ -111,7 +111,8 @@ export default {
     addField: 'Add Field',
     addItem: 'Add Item',
     fieldName: 'Field Name',
-    fieldType: 'Field Type'
+    fieldType: 'Field Type',
+    diffPreview: 'Diff Preview'
   },
   metrics: {
     title: 'Metrics',

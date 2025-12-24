@@ -111,7 +111,8 @@ export default {
     addField: '新增字段',
     addItem: '新增项',
     fieldName: '字段名',
-    fieldType: '字段类型'
+    fieldType: '字段类型',
+    diffPreview: '差异预览'
   },
   metrics: {
     title: '性能指标',
