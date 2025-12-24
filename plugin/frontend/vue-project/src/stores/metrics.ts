@@ -39,10 +39,13 @@ export const useMetricsStore = defineStore('metrics', () => {
     error.value = null
     try {
       const response = await getAllMetrics()
-      allMetrics.value = response.metrics || []
+      const metricsList: PluginMetrics[] = Array.isArray((response as any)?.metrics)
+        ? ((response as any).metrics as PluginMetrics[])
+        : []
+      allMetrics.value = metricsList
       
       // 更新当前指标
-      (response.metrics || []).forEach(metric => {
+      metricsList.forEach((metric: PluginMetrics) => {
         currentMetrics.value[metric.plugin_id] = metric
       })
       

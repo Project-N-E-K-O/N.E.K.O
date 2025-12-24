@@ -8,8 +8,13 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import Optional
 
+import asyncio
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException, Request, Query, Body, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from config import USER_PLUGIN_SERVER_PORT
 
@@ -43,7 +48,6 @@ from plugin.server.metrics_service import metrics_collector
 from plugin.server.auth import require_admin
 from plugin.settings import MESSAGE_QUEUE_DEFAULT_MAX_COUNT
 from plugin.api.exceptions import PluginError
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -117,6 +121,7 @@ app.add_middleware(
         "http://localhost:48911",  # 主服务器（如果需要）
         "http://127.0.0.1:48911",
     ],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -124,6 +129,20 @@ app.add_middleware(
 
 # 注册异常处理中间件
 register_exception_handlers(app)
+
+
+def _get_frontend_root_dir() -> Path:
+    plugin_root = Path(__file__).resolve().parent
+    exported = plugin_root / "frontend" / "exported"
+    return exported
+
+
+_FRONTEND_ROOT_DIR = _get_frontend_root_dir()
+app.mount(
+    "/ui/assets",
+    StaticFiles(directory=str(_FRONTEND_ROOT_DIR / "assets"), check_dir=False),
+    name="frontend-assets",
+)
 
 
 # ========== 基础路由 ==========
@@ -386,6 +405,32 @@ async def plugin_push_message(payload: PluginPushMessageRequest):
     except Exception as e:
         logger.exception("plugin_push: Unexpected error type")
         raise handle_plugin_error(e, "plugin_push", 500) from e
+
+
+@app.get("/ui", response_class=HTMLResponse)
+@app.get("/ui/", response_class=HTMLResponse)
+async def frontend_index():
+    index_file = _FRONTEND_ROOT_DIR / "index.html"
+    if not index_file.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Frontend index not found: {index_file}. Please export frontend first.",
+        )
+    return FileResponse(str(index_file), media_type="text/html; charset=utf-8")
+
+
+@app.get("/ui/{full_path:path}")
+async def frontend_file(full_path: str):
+    candidate = (_FRONTEND_ROOT_DIR / full_path).resolve()
+    try:
+        candidate.relative_to(_FRONTEND_ROOT_DIR.resolve())
+    except Exception:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    if candidate.is_file():
+        return FileResponse(str(candidate))
+
+    raise HTTPException(status_code=404, detail="Not found")
 
 
 # ========== 插件管理路由（扩展） ==========
