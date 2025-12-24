@@ -541,6 +541,22 @@
                 return lanlanName;
             }
 
+            // 动态设置参数编辑器链接，传递 lanlan_name 参数
+            (async function updateParameterEditorLink() {
+                try {
+                    const paramEditorLink = document.querySelector('a[href="/live2d_parameter_editor"]');
+                    if (paramEditorLink) {
+                        const lanlanName = await getLanlanName();
+                        if (lanlanName) {
+                            paramEditorLink.href = `/live2d_parameter_editor?lanlan_name=${encodeURIComponent(lanlanName)}`;
+                            console.log('参数编辑器链接已更新，角色:', lanlanName);
+                        }
+                    }
+                } catch (error) {
+                    console.error('更新参数编辑器链接失败:', error);
+                }
+            })();
+
             // 保存模型设置到角色的函数
             async function saveModelToCharacter(modelName, itemId = null) {
                 try {
