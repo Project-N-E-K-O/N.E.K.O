@@ -5385,6 +5385,37 @@ function init_app() {
             const live2dContainer = document.getElementById('live2d-container');
             const vrmContainer = document.getElementById('vrm-container');
             
+            // 先清理之前的模型（如果存在）
+            // 如果之前是Live2D，现在要切换到VRM，先清理Live2D
+            if (modelType === 'vrm' && window.live2dManager && window.live2dManager.currentModel) {
+                console.log('[猫娘切换] 清理旧的Live2D模型');
+                try {
+                    if (window.live2dManager.pixi_app && window.live2dManager.pixi_app.stage) {
+                        window.live2dManager.pixi_app.stage.removeChild(window.live2dManager.currentModel);
+                    }
+                    window.live2dManager.currentModel.destroy({ children: true });
+                    window.live2dManager.currentModel = null;
+                } catch (e) {
+                    console.warn('[猫娘切换] 清理Live2D模型时出错:', e);
+                }
+            }
+            // 如果之前是VRM，现在要切换到Live2D，先清理VRM
+            else if (modelType === 'live2d' && window.vrmManager && window.vrmManager.currentModel) {
+                console.log('[猫娘切换] 清理旧的VRM模型');
+                try {
+                    if (typeof window.vrmManager.removeModel === 'function') {
+                        window.vrmManager.removeModel();
+                    } else if (window.vrmManager.currentModel && window.vrmManager.currentModel.scene) {
+                        if (window.vrmManager.scene) {
+                            window.vrmManager.scene.remove(window.vrmManager.currentModel.scene);
+                        }
+                        window.vrmManager.currentModel = null;
+                    }
+                } catch (e) {
+                    console.warn('[猫娘切换] 清理VRM模型时出错:', e);
+                }
+            }
+            
             if (modelType === 'vrm') {
                 // VRM模型：隐藏Live2D容器，显示VRM容器
                 console.log('[猫娘切换] 切换到VRM模型');
@@ -5393,6 +5424,9 @@ function init_app() {
                     vrmContainer.style.display = 'block';
                     vrmContainer.classList.remove('hidden');
                 }
+                
+                // 等待容器完全显示
+                await new Promise(resolve => setTimeout(resolve, 100));
                 
                 // 获取VRM模型路径
                 const vrmPath = catgirlConfig.vrm || '';
@@ -5423,7 +5457,54 @@ function init_app() {
                     vrmContainer.style.display = 'none';
                     vrmContainer.classList.add('hidden');
                 }
-                if (live2dContainer) live2dContainer.style.display = 'block';
+                if (live2dContainer) {
+                    live2dContainer.style.display = 'block';
+                }
+                
+                // 等待容器完全显示，确保pixi_app.stage准备好
+                await new Promise(resolve => setTimeout(resolve, 100));
+                
+                // 确保Live2D的pixi_app已初始化
+                if (!window.live2dManager) {
+                    throw new Error('live2dManager 不存在');
+                }
+                
+                // 检查容器是否可见
+                const container = document.getElementById('live2d-canvas');
+                if (!container) {
+                    throw new Error('Live2D容器不存在');
+                }
+                
+                // 确保容器可见
+                if (container.offsetWidth === 0 || container.offsetHeight === 0) {
+                    console.warn('[猫娘切换] Live2D容器尺寸为0，等待容器显示...');
+                    // 等待容器显示
+                    await new Promise(resolve => {
+                        const checkVisible = () => {
+                            if (container.offsetWidth > 0 && container.offsetHeight > 0) {
+                                resolve();
+                            } else {
+                                setTimeout(checkVisible, 50);
+                            }
+                        };
+                        checkVisible();
+                    });
+                }
+                
+                // 如果pixi_app未初始化，尝试初始化
+                if (!window.live2dManager.pixi_app) {
+                    console.log('[猫娘切换] Live2D pixi_app未初始化，尝试初始化...');
+                    if (typeof window.live2dManager.initPIXI === 'function') {
+                        await window.live2dManager.initPIXI();
+                    } else {
+                        throw new Error('live2dManager.initPIXI 方法不存在');
+                    }
+                }
+                
+                // 再次确认pixi_app已初始化
+                if (!window.live2dManager.pixi_app || !window.live2dManager.pixi_app.stage) {
+                    throw new Error('Live2D pixi_app.stage 未准备好');
+                }
                 
                 // 获取Live2D模型信息
                 const modelResponse = await fetch(`/api/characters/current_live2d_model?catgirl_name=${encodeURIComponent(newCatgirl)}`);
@@ -5439,63 +5520,56 @@ function init_app() {
                         console.log('[猫娘切换] ⚠️ 新猫娘未设置Live2D模型，使用默认模型 mao_pro');
                     }
 
-                    // 检查 live2dManager 是否存在并已初始化
-                    if (!window.live2dManager) {
-                        console.error('[猫娘切换] live2dManager 不存在，无法重新加载模型');
-                    } else if (!window.live2dManager.pixi_app) {
-                        console.error('[猫娘切换] live2dManager 未初始化，无法重新加载模型');
-                    } else {
-                        const currentModel = window.live2dManager.getCurrentModel();
-                        const currentModelPath = currentModel ? (currentModel.url || '') : '';
-                        const newModelPath = modelData.model_info.path;
+                    // live2dManager已经在前面检查过了，直接使用
+                    const currentModel = window.live2dManager.getCurrentModel();
+                    const currentModelPath = currentModel ? (currentModel.url || '') : '';
+                    const newModelPath = modelData.model_info.path;
 
-                        console.log('[猫娘切换] 当前模型路径:', currentModelPath);
-                        console.log('[猫娘切换] 新模型路径:', newModelPath);
+                    console.log('[猫娘切换] 当前模型路径:', currentModelPath);
+                    console.log('[猫娘切换] 新模型路径:', newModelPath);
 
-                        // 重新加载模型（无论路径是否相同，因为猫娘已切换）
-                        console.log('[猫娘切换] 重新加载 Live2D 模型，当前路径:', currentModelPath, '新路径:', newModelPath);
+                    // 重新加载模型（无论路径是否相同，因为猫娘已切换）
+                    console.log('[猫娘切换] 重新加载 Live2D 模型，当前路径:', currentModelPath, '新路径:', newModelPath);
 
-                        // 获取模型配置
-                        const modelConfigRes = await fetch(newModelPath);
-                        if (modelConfigRes.ok) {
-                            const modelConfig = await modelConfigRes.json();
-                            modelConfig.url = newModelPath;
+                    // 获取模型配置
+                    const modelConfigRes = await fetch(newModelPath);
+                    if (modelConfigRes.ok) {
+                        const modelConfig = await modelConfigRes.json();
+                        modelConfig.url = newModelPath;
 
-                            console.log('[猫娘切换] 开始加载模型配置...');
+                        console.log('[猫娘切换] 开始加载模型配置...');
 
-                            // 加载用户偏好设置
-                            const preferences = await window.live2dManager.loadUserPreferences();
-                            let modelPreferences = null;
-                            if (preferences && preferences.length > 0) {
-                                modelPreferences = preferences.find(p => p && p.model_path === newModelPath);
-                                if (modelPreferences) {
-                                    console.log('[猫娘切换] 找到模型偏好设置:', modelPreferences);
-                                } else {
-                                    console.log('[猫娘切换] 未找到模型偏好设置，将使用默认设置');
-                                }
+                        // 加载用户偏好设置
+                        const preferences = await window.live2dManager.loadUserPreferences();
+                        let modelPreferences = null;
+                        if (preferences && preferences.length > 0) {
+                            modelPreferences = preferences.find(p => p && p.model_path === newModelPath);
+                            if (modelPreferences) {
+                                console.log('[猫娘切换] 找到模型偏好设置:', modelPreferences);
+                            } else {
+                                console.log('[猫娘切换] 未找到模型偏好设置，将使用默认设置');
                             }
-
-                            // 加载新模型
-                            await window.live2dManager.loadModel(modelConfig, {
-                                preferences: modelPreferences,
-                                isMobile: window.innerWidth <= 768
-                            });
-
-                            // 更新全局引用
-                            if (window.LanLan1) {
-                                window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
-                                window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
-                                window.LanLan1.emotionMapping = window.live2dManager.getEmotionMapping();
-                            }
-
-                            console.log('[猫娘切换] Live2D 模型已重新加载完成');
-                        } else {
-                            console.error('[猫娘切换] 无法获取模型配置，状态:', modelConfigRes.status);
                         }
+
+                        // 加载新模型
+                        await window.live2dManager.loadModel(modelConfig, {
+                            preferences: modelPreferences,
+                            isMobile: window.innerWidth <= 768
+                        });
+
+                        // 更新全局引用
+                        if (window.LanLan1) {
+                            window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
+                            window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
+                            window.LanLan1.emotionMapping = window.live2dManager.getEmotionMapping();
+                        }
+
+                        console.log('[猫娘切换] Live2D 模型已重新加载完成');
+                    } else {
+                        console.error('[猫娘切换] 无法获取模型配置，状态:', modelConfigRes.status);
                     }
-                }
-            } else {
-                console.warn('[猫娘切换] 无法获取新猫娘的 Live2D 模型信息，尝试加载默认模型 mao_pro:', modelData);
+                } else {
+                    console.warn('[猫娘切换] 无法获取新猫娘的 Live2D 模型信息，尝试加载默认模型 mao_pro:', modelData);
 
                 // 前端回退机制：如果后端没有返回有效的模型信息，尝试直接加载mao_pro
                 try {
@@ -5545,7 +5619,10 @@ function init_app() {
                 } catch (fallbackError) {
                     console.error('[猫娘切换] 回退到默认模型失败:', fallbackError);
                 }
+                }
             }
+            
+            // 切换成功提示
             showStatusToast(window.t ? window.t('app.switchedCatgirl', { name: newCatgirl }) : `已切换到 ${newCatgirl}`, 3000);
         } catch (error) {
             console.error('[猫娘切换] 重新加载 Live2D 模型失败:', error);
