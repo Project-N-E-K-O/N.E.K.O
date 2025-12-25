@@ -33,6 +33,7 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
         } catch (_) {}
         this._mouthOverrideInstalled = false;
         this._origCoreModelUpdate = null;
+        this._coreModelRef = null;
         // 同时移除 mouthTicker（若曾启用过 ticker 模式）
         if (this._mouthTicker && this.pixi_app && this.pixi_app.ticker) {
             try { this.pixi_app.ticker.remove(this._mouthTicker); } catch (_) {}
@@ -538,12 +539,39 @@ Live2DManager.prototype.installMouthOverride = function() {
     }
     
     // 覆盖 coreModel.update - 在调用原始 update 之前写入参数
-    // 先保存原始的 update 方法
+    // 先保存原始的 update 方法（使用更安全的方式保存引用）
     const origCoreModelUpdate = coreModel.update ? coreModel.update.bind(coreModel) : null;
     this._origCoreModelUpdate = origCoreModelUpdate;
+    // 同时保存 coreModel 引用，用于验证
+    this._coreModelRef = coreModel;
     
     // 覆盖 coreModel.update，确保在调用原始方法前写入参数
     coreModel.update = () => {
+        // 首先检查覆盖是否仍然有效（防止在清理后仍然被调用）
+        if (!this._mouthOverrideInstalled || !this._coreModelRef) {
+            // 覆盖已被清理，但函数可能仍在运行，直接返回
+            return;
+        }
+        
+        // 验证 coreModel 是否仍然有效（防止模型切换后调用已销毁的 coreModel）
+        if (!this.currentModel || !this.currentModel.internalModel || !this.currentModel.internalModel.coreModel) {
+            // coreModel 已无效，清理覆盖标志并返回
+            this._mouthOverrideInstalled = false;
+            this._origCoreModelUpdate = null;
+            this._coreModelRef = null;
+            return;
+        }
+        
+        // 验证是否是同一个 coreModel（防止切换模型后调用错误的 coreModel）
+        const currentCoreModel = this.currentModel.internalModel.coreModel;
+        if (currentCoreModel !== coreModel && currentCoreModel !== this._coreModelRef) {
+            // coreModel 已切换，清理覆盖标志并返回
+            this._mouthOverrideInstalled = false;
+            this._origCoreModelUpdate = null;
+            this._coreModelRef = null;
+            return;
+        }
+        
         try {
             // 这里的逻辑主要为了确保渲染前参数正确（防止 physics 等后续步骤重置了某些值）
             // 注意：如果 physics 运行在 motionManager.update 之后但在 coreModel.update 之前，
@@ -554,7 +582,7 @@ Live2DManager.prototype.installMouthOverride = function() {
             // 1. 强制写入口型参数
             for (const [id, idx] of Object.entries(mouthParamIndices)) {
                 try {
-                    coreModel.setParameterValueByIndex(idx, this.mouthValue);
+                    currentCoreModel.setParameterValueByIndex(idx, this.mouthValue);
                 } catch (_) {}
             }
             
@@ -567,7 +595,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                         for (const p of params) {
                             if (lipSyncParams.includes(p.Id)) continue;
                             try {
-                                coreModel.setParameterValueById(p.Id, p.Value);
+                                currentCoreModel.setParameterValueById(p.Id, p.Value);
                             } catch (_) {}
                         }
                     }
@@ -578,14 +606,52 @@ Live2DManager.prototype.installMouthOverride = function() {
         }
         
         // 调用原始的 update 方法（重要：必须调用，否则模型无法渲染）
-        if (origCoreModelUpdate) {
+        // 检查是否是同一个 coreModel（防止切换模型后调用错误的 coreModel）
+        if (currentCoreModel === coreModel && origCoreModelUpdate) {
+            // 是同一个 coreModel，可以安全调用保存的原始方法
             try {
+                // 在调用前再次验证 coreModel 是否仍然有效
+                if (!currentCoreModel || typeof currentCoreModel.setParameterValueByIndex !== 'function') {
+                    console.warn('coreModel 已无效，跳过 update 调用');
+                    return;
+                }
                 origCoreModelUpdate();
             } catch (e) {
+                // 如果调用失败，说明 origCoreModelUpdate 可能持有已销毁的引用
+                // 尝试从 Live2D 库中获取原始的 update 方法
                 console.error('调用原始 coreModel.update 方法时出错:', e);
+                
+                // 尝试通过 Live2D 的内部 API 获取原始 update 方法
+                try {
+                    // 检查是否有内部模型和核心模型
+                    if (currentCoreModel && currentCoreModel.internalModel) {
+                        // 尝试直接调用内部模型的 update（如果存在）
+                        const internalModel = currentCoreModel.internalModel;
+                        if (internalModel.update && typeof internalModel.update === 'function' && internalModel.update !== currentCoreModel.update) {
+                            internalModel.update();
+                            return;
+                        }
+                    }
+                    
+                    // 如果无法获取原始方法，至少确保模型能继续渲染
+                    // 不调用 update 会导致模型无法更新，但不会崩溃
+                    console.warn('无法调用原始 update 方法，模型可能无法正常更新');
+                } catch (e2) {
+                    console.error('尝试恢复 update 方法也失败:', e2);
+                }
             }
         } else {
-            console.error('警告：原始 coreModel.update 方法不存在，模型可能无法正常渲染');
+            // coreModel 已切换，不能使用保存的 origCoreModelUpdate
+            if (currentCoreModel !== coreModel) {
+                console.warn('检测到 coreModel 已切换，跳过旧模型的 update 调用');
+                return;
+            }
+            
+            // 如果 origCoreModelUpdate 不存在，说明这是第一次调用或者原始方法丢失
+            // 这种情况下，模型可能无法正常更新，但至少不会崩溃
+            if (!origCoreModelUpdate) {
+                console.warn('原始 coreModel.update 方法不可用，跳过调用');
+            }
         }
     };
 

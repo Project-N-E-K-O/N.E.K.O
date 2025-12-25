@@ -5363,6 +5363,7 @@ function init_app() {
         document.title = `${newCatgirl} Terminal - Project N.E.K.O.`;
 
         // 重新加载模型（根据新角色的模型类型加载VRM或Live2D）
+        let modelType = 'live2d'; // 默认值，用于错误处理
         try {
             console.log('[猫娘切换] 开始获取新角色的模型配置...');
             
@@ -5378,7 +5379,7 @@ function init_app() {
                 throw new Error(`未找到角色 ${newCatgirl} 的配置`);
             }
             
-            const modelType = catgirlConfig.model_type || 'live2d';
+            modelType = catgirlConfig.model_type || 'live2d';
             console.log('[猫娘切换] 新角色的模型类型:', modelType);
             
             // 切换容器显示
@@ -5390,10 +5391,102 @@ function init_app() {
             if (modelType === 'vrm' && window.live2dManager && window.live2dManager.currentModel) {
                 console.log('[猫娘切换] 清理旧的Live2D模型');
                 try {
-                    if (window.live2dManager.pixi_app && window.live2dManager.pixi_app.stage) {
-                        window.live2dManager.pixi_app.stage.removeChild(window.live2dManager.currentModel);
+                    // 清理鼠标跟踪监听器
+                    if (window.live2dManager._mouseTrackingListener) {
+                        window.removeEventListener('pointermove', window.live2dManager._mouseTrackingListener);
+                        window.live2dManager._mouseTrackingListener = null;
                     }
-                    window.live2dManager.currentModel.destroy({ children: true });
+                    
+                    // 清理拖拽监听器
+                    if (window.live2dManager._dragMoveListener) {
+                        window.removeEventListener('pointermove', window.live2dManager._dragMoveListener);
+                        window.live2dManager._dragMoveListener = null;
+                    }
+                    
+                    // 清理浮动按钮系统
+                    if (window.live2dManager._floatingButtonsTicker && window.live2dManager.pixi_app && window.live2dManager.pixi_app.ticker) {
+                        window.live2dManager.pixi_app.ticker.remove(window.live2dManager._floatingButtonsTicker);
+                        window.live2dManager._floatingButtonsTicker = null;
+                    }
+                    
+                    // 清理浮动按钮容器（移除所有按钮，避免与VRM的按钮冲突）
+                    // 注意：不清除容器本身，只清空按钮内容，让VRM的setupFloatingButtons重新创建按钮
+                    const floatingButtonsContainer = document.getElementById('live2d-floating-buttons');
+                    if (floatingButtonsContainer) {
+                        console.log('[猫娘切换] 清理Live2D浮动按钮容器中的按钮');
+                        // 移除所有子元素（按钮）
+                        while (floatingButtonsContainer.firstChild) {
+                            floatingButtonsContainer.removeChild(floatingButtonsContainer.firstChild);
+                        }
+                        // 不隐藏容器，让VRM的setupFloatingButtons来重新设置
+                        // 容器初始状态应该是隐藏的（display: none），等待鼠标靠近时显示
+                    }
+                    
+                    // 清理浮动按钮引用
+                    if (window.live2dManager._floatingButtons) {
+                        window.live2dManager._floatingButtons = {};
+                    }
+                    if (window.live2dManager._floatingButtonsContainer) {
+                        window.live2dManager._floatingButtonsContainer = null;
+                    }
+                    
+                    // 清理 coreModel.update 覆盖（重要：必须在销毁模型之前还原，防止旧的覆盖函数继续运行）
+                    try {
+                        if (window.live2dManager.currentModel && 
+                            window.live2dManager.currentModel.internalModel && 
+                            window.live2dManager.currentModel.internalModel.coreModel) {
+                            const coreModel = window.live2dManager.currentModel.internalModel.coreModel;
+                            // 如果已安装覆盖，尝试还原
+                            if (window.live2dManager._mouthOverrideInstalled && 
+                                window.live2dManager._origCoreModelUpdate && 
+                                typeof window.live2dManager._origCoreModelUpdate === 'function') {
+                                console.log('[猫娘切换] 还原 coreModel.update 覆盖');
+                                try {
+                                    coreModel.update = window.live2dManager._origCoreModelUpdate;
+                                } catch (e) {
+                                    console.warn('[猫娘切换] 还原 coreModel.update 时出错:', e);
+                                }
+                            } else if (window.live2dManager._mouthOverrideInstalled) {
+                                // 如果覆盖已安装但原始方法不存在，尝试创建一个空函数或直接移除覆盖
+                                console.log('[猫娘切换] 覆盖已安装但原始方法不存在，创建安全的 update 函数');
+                                try {
+                                    // 创建一个安全的 update 函数，只调用原始逻辑（如果存在）
+                                    coreModel.update = function() {
+                                        // 空函数，防止错误
+                                    };
+                                } catch (e) {
+                                    console.warn('[猫娘切换] 创建安全 update 函数时出错:', e);
+                                }
+                            }
+                        }
+                        // 清理覆盖标志和引用（无论是否成功还原）
+                        window.live2dManager._mouthOverrideInstalled = false;
+                        window.live2dManager._origCoreModelUpdate = null;
+                        window.live2dManager._coreModelRef = null;
+                    } catch (e) {
+                        console.warn('[猫娘切换] 清理 coreModel.update 覆盖时出错:', e);
+                        // 即使出错，也要清理标志
+                        window.live2dManager._mouthOverrideInstalled = false;
+                        window.live2dManager._origCoreModelUpdate = null;
+                        window.live2dManager._coreModelRef = null;
+                    }
+                    
+                    // 从舞台移除模型
+                    if (window.live2dManager.pixi_app && window.live2dManager.pixi_app.stage) {
+                        try {
+                            window.live2dManager.pixi_app.stage.removeChild(window.live2dManager.currentModel);
+                        } catch (e) {
+                            console.warn('[猫娘切换] 从舞台移除模型时出错:', e);
+                        }
+                    }
+                    
+                    // 销毁模型
+                    try {
+                        window.live2dManager.currentModel.destroy({ children: true });
+                    } catch (e) {
+                        console.warn('[猫娘切换] 销毁模型时出错:', e);
+                    }
+                    
                     window.live2dManager.currentModel = null;
                 } catch (e) {
                     console.warn('[猫娘切换] 清理Live2D模型时出错:', e);
@@ -5425,8 +5518,56 @@ function init_app() {
                     vrmContainer.classList.remove('hidden');
                 }
                 
-                // 等待容器完全显示
+                // 等待容器完全显示并确保有尺寸
                 await new Promise(resolve => setTimeout(resolve, 100));
+                
+                // 检查VRM容器是否可见且有尺寸
+                if (vrmContainer && (vrmContainer.offsetWidth === 0 || vrmContainer.offsetHeight === 0)) {
+                    console.warn('[猫娘切换] VRM容器尺寸为0，等待容器显示...');
+                    await new Promise(resolve => {
+                        const checkVisible = () => {
+                            if (vrmContainer.offsetWidth > 0 && vrmContainer.offsetHeight > 0) {
+                                resolve();
+                            } else {
+                                setTimeout(checkVisible, 50);
+                            }
+                        };
+                        checkVisible();
+                    });
+                }
+                
+                // 确保VRM管理器已初始化
+                if (!window.vrmManager) {
+                    console.log('[猫娘切换] VRM管理器未初始化，尝试初始化...');
+                    // 如果VRMManager类存在，创建实例
+                    if (typeof VRMManager !== 'undefined') {
+                        window.vrmManager = new VRMManager();
+                    } else {
+                        throw new Error('VRMManager 类未定义，无法初始化VRM管理器');
+                    }
+                }
+                
+                // 检查VRM场景和相机是否已初始化
+                if (!window.vrmManager.camera || !window.vrmManager.scene || !window.vrmManager.renderer) {
+                    console.log('[猫娘切换] VRM场景未初始化，开始初始化Three.js场景...');
+                    const vrmCanvas = document.getElementById('vrm-canvas');
+                    if (!vrmCanvas) {
+                        throw new Error('VRM canvas 元素不存在');
+                    }
+                    
+                    // 使用 initThreeJS 方法初始化场景
+                    if (typeof window.vrmManager.initThreeJS === 'function') {
+                        await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
+                        console.log('[猫娘切换] VRM场景初始化完成');
+                    } else {
+                        throw new Error('vrmManager.initThreeJS 方法不存在');
+                    }
+                    
+                    // 验证初始化是否成功
+                    if (!window.vrmManager.camera || !window.vrmManager.scene || !window.vrmManager.renderer) {
+                        throw new Error('VRM场景初始化失败：camera、scene 或 renderer 未创建');
+                    }
+                }
                 
                 // 获取VRM模型路径
                 const vrmPath = catgirlConfig.vrm || '';
@@ -5434,19 +5575,47 @@ function init_app() {
                     throw new Error('VRM模型路径为空');
                 }
                 
-                // 转换路径格式
+                // 转换路径格式（参考 vrm-init.js 的逻辑）
                 let modelPath = vrmPath;
-                if (vrmPath.includes(':') || (!vrmPath.startsWith('/') && !vrmPath.startsWith('http'))) {
+                if (vrmPath.includes(':') || vrmPath.includes('\\') || (!vrmPath.startsWith('/') && !vrmPath.startsWith('http'))) {
+                    // 本地路径，需要转换
                     const filename = vrmPath.split(/[\\/]/).pop();
-                    modelPath = `/user_vrm/${filename}`;
+                    // 先尝试 /static/vrm/（项目目录），如果不存在再尝试 /user_vrm/（用户文档目录）
+                    // 注意：这里先尝试 /static/vrm/，因为项目目录中的文件更常见
+                    modelPath = `/static/vrm/${filename}`;
+                    console.log('[猫娘切换] 检测到本地路径，先尝试项目目录:', modelPath);
+                    // 如果文件不存在，会在加载时失败，然后可以尝试 /user_vrm/
+                } else if (!vrmPath.startsWith('/') && !vrmPath.startsWith('http')) {
+                    // 相对路径，也尝试转换
+                    const filename = vrmPath.split(/[\\/]/).pop();
+                    modelPath = `/static/vrm/${filename}`;
+                    console.log('[猫娘切换] 检测到相对路径，转换为项目目录路径:', modelPath);
                 }
                 
                 console.log('[猫娘切换] VRM模型路径:', modelPath);
                 
                 // 加载VRM模型
                 if (window.vrmManager) {
-                    await window.vrmManager.loadModel(modelPath);
-                    console.log('[猫娘切换] VRM模型已加载完成');
+                    try {
+                        await window.vrmManager.loadModel(modelPath);
+                        console.log('[猫娘切换] VRM模型已加载完成');
+                    } catch (loadError) {
+                        // 如果加载失败且路径是 /static/vrm/，尝试 /user_vrm/
+                        if (modelPath.startsWith('/static/vrm/') && (loadError.message.includes('404') || loadError.message.includes('Not Found'))) {
+                            const filename = modelPath.split('/').pop();
+                            const fallbackPath = `/user_vrm/${filename}`;
+                            console.log('[猫娘切换] 项目目录路径加载失败，尝试用户目录路径:', fallbackPath);
+                            try {
+                                await window.vrmManager.loadModel(fallbackPath);
+                                console.log('[猫娘切换] VRM模型已从用户目录加载完成');
+                            } catch (fallbackError) {
+                                console.error('[猫娘切换] 用户目录路径也加载失败:', fallbackError);
+                                throw new Error(`VRM模型加载失败: 项目目录(${modelPath})和用户目录(${fallbackPath})都无法加载`);
+                            }
+                        } else {
+                            throw loadError;
+                        }
+                    }
                 } else {
                     throw new Error('VRM管理器未初始化');
                 }
@@ -5491,20 +5660,66 @@ function init_app() {
                     });
                 }
                 
-                // 如果pixi_app未初始化，尝试初始化
-                if (!window.live2dManager.pixi_app) {
-                    console.log('[猫娘切换] Live2D pixi_app未初始化，尝试初始化...');
+                // 检查 canvas 元素是否存在
+                const canvas = document.getElementById('live2d-canvas');
+                if (!canvas) {
+                    throw new Error('Live2D canvas 元素不存在');
+                }
+                
+                // 如果pixi_app未初始化或stage不存在，尝试初始化
+                if (!window.live2dManager.pixi_app || !window.live2dManager.pixi_app.stage) {
+                    console.log('[猫娘切换] Live2D pixi_app未初始化或stage不存在，尝试初始化...');
+                    
+                    // 如果 pixi_app 存在但 stage 不存在，销毁旧的 pixi_app
+                    if (window.live2dManager.pixi_app && !window.live2dManager.pixi_app.stage) {
+                        console.log('[猫娘切换] 检测到 pixi_app 存在但 stage 不存在，销毁旧的 pixi_app');
+                        try {
+                            if (window.live2dManager.pixi_app.destroy) {
+                                window.live2dManager.pixi_app.destroy(true);
+                            }
+                        } catch (e) {
+                            console.warn('[猫娘切换] 销毁旧的 pixi_app 时出错:', e);
+                        }
+                        window.live2dManager.pixi_app = null;
+                        window.live2dManager.isInitialized = false;
+                    }
+                    
                     if (typeof window.live2dManager.initPIXI === 'function') {
-                        await window.live2dManager.initPIXI();
+                        // 传递必需的参数：canvasId 和 containerId
+                        await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
+                        console.log('[猫娘切换] initPIXI 调用完成');
+                        
+                        // 验证 pixi_app 是否真的被创建
+                        if (!window.live2dManager.pixi_app) {
+                            throw new Error('initPIXI 调用后 pixi_app 仍然不存在');
+                        }
+                        
+                        // 立即检查 stage 是否存在
+                        if (!window.live2dManager.pixi_app.stage) {
+                            console.error('[猫娘切换] initPIXI 后 stage 仍然不存在，pixi_app 详情:', {
+                                pixi_app: window.live2dManager.pixi_app,
+                                hasStage: 'stage' in window.live2dManager.pixi_app,
+                                stage: window.live2dManager.pixi_app.stage,
+                                canvas: !!canvas,
+                                containerVisible: container.offsetWidth > 0 && container.offsetHeight > 0
+                            });
+                            
+                            // 尝试重新创建
+                            console.log('[猫娘切换] 尝试重新创建 PIXI.Application...');
+                            window.live2dManager.pixi_app = null;
+                            window.live2dManager.isInitialized = false;
+                            await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
+                            
+                            if (!window.live2dManager.pixi_app || !window.live2dManager.pixi_app.stage) {
+                                throw new Error('重新创建 PIXI.Application 后 stage 仍然不存在');
+                            }
+                        }
                     } else {
                         throw new Error('live2dManager.initPIXI 方法不存在');
                     }
                 }
                 
-                // 再次确认pixi_app已初始化
-                if (!window.live2dManager.pixi_app || !window.live2dManager.pixi_app.stage) {
-                    throw new Error('Live2D pixi_app.stage 未准备好');
-                }
+                console.log('[猫娘切换] pixi_app.stage 已准备好');
                 
                 // 获取Live2D模型信息
                 const modelResponse = await fetch(`/api/characters/current_live2d_model?catgirl_name=${encodeURIComponent(newCatgirl)}`);
@@ -5625,9 +5840,14 @@ function init_app() {
             // 切换成功提示
             showStatusToast(window.t ? window.t('app.switchedCatgirl', { name: newCatgirl }) : `已切换到 ${newCatgirl}`, 3000);
         } catch (error) {
-            console.error('[猫娘切换] 重新加载 Live2D 模型失败:', error);
+            console.error('[猫娘切换] 模型切换失败:', error);
+            console.error('[猫娘切换] 错误详情:', {
+                message: error.message,
+                stack: error.stack,
+                modelType: modelType || 'unknown',
+                newCatgirl: newCatgirl
+            });
             showStatusToast(window.t ? window.t('app.switchCatgirlFailed', { name: newCatgirl }) : `切换到 ${newCatgirl} 失败`, 4000);
-            console.error('[猫娘切换] 错误堆栈:', error.stack);
         } finally {
             // 在所有操作完成后重置标记
             isSwitchingCatgirl = false;

@@ -113,9 +113,33 @@ class Live2DManager {
 
     // 初始化 PIXI 应用
     async initPIXI(canvasId, containerId, options = {}) {
-        if (this.isInitialized) {
+        if (this.isInitialized && this.pixi_app && this.pixi_app.stage) {
             console.warn('Live2D 管理器已经初始化');
             return this.pixi_app;
+        }
+
+        // 如果已初始化但 stage 不存在，重置状态
+        if (this.isInitialized && (!this.pixi_app || !this.pixi_app.stage)) {
+            console.warn('Live2D 管理器标记为已初始化，但 pixi_app 或 stage 不存在，重置状态');
+            if (this.pixi_app && this.pixi_app.destroy) {
+                try {
+                    this.pixi_app.destroy(true);
+                } catch (e) {
+                    console.warn('销毁旧的 pixi_app 时出错:', e);
+                }
+            }
+            this.pixi_app = null;
+            this.isInitialized = false;
+        }
+
+        const canvas = document.getElementById(canvasId);
+        const container = document.getElementById(containerId);
+        
+        if (!canvas) {
+            throw new Error(`找不到 canvas 元素: ${canvasId}`);
+        }
+        if (!container) {
+            throw new Error(`找不到容器元素: ${containerId}`);
         }
 
         const defaultOptions = {
@@ -124,15 +148,32 @@ class Live2DManager {
             backgroundAlpha: 0
         };
 
-        this.pixi_app = new PIXI.Application({
-            view: document.getElementById(canvasId),
-            resizeTo: document.getElementById(containerId),
-            ...defaultOptions,
-            ...options
-        });
+        try {
+            this.pixi_app = new PIXI.Application({
+                view: canvas,
+                resizeTo: container,
+                ...defaultOptions,
+                ...options
+            });
 
-        this.isInitialized = true;
-        return this.pixi_app;
+            // 验证 pixi_app 和 stage 是否创建成功
+            if (!this.pixi_app) {
+                throw new Error('PIXI.Application 创建失败：返回值为 null 或 undefined');
+            }
+            
+            if (!this.pixi_app.stage) {
+                throw new Error('PIXI.Application 创建失败：stage 属性不存在');
+            }
+
+            this.isInitialized = true;
+            console.log('[Live2D Core] PIXI.Application 初始化成功，stage 已创建');
+            return this.pixi_app;
+        } catch (error) {
+            console.error('[Live2D Core] PIXI.Application 初始化失败:', error);
+            this.pixi_app = null;
+            this.isInitialized = false;
+            throw error;
+        }
     }
 
     // 加载用户偏好

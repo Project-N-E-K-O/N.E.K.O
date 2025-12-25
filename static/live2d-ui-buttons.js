@@ -151,33 +151,68 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
         return;
     }
 
-    // 创建按钮容器
-    const buttonsContainer = document.createElement('div');
-    buttonsContainer.id = 'live2d-floating-buttons';
-    Object.assign(buttonsContainer.style, {
-        position: 'fixed',
-        zIndex: '99999',  // 确保始终浮动在顶层，不被live2d遮挡
-        pointerEvents: 'none',
-        display: 'none', // 初始隐藏，鼠标靠近时才显示
-        flexDirection: 'column',
-        gap: '12px'
-    });
+    // 检查是否已存在浮动按钮容器，如果存在则清理它（避免重复创建）
+    let buttonsContainer = document.getElementById('live2d-floating-buttons');
+    if (buttonsContainer) {
+        console.log('[Live2D UI] 检测到已存在的浮动按钮容器，清理旧按钮并重置样式');
+        // 移除所有子元素（按钮）
+        while (buttonsContainer.firstChild) {
+            buttonsContainer.removeChild(buttonsContainer.firstChild);
+        }
+        // 清理浮动按钮引用
+        this._floatingButtons = {};
+        // 重置容器样式，确保状态正确（初始应该是隐藏的）
+        Object.assign(buttonsContainer.style, {
+            position: 'fixed',
+            zIndex: '99999',  // 确保始终浮动在顶层，不被live2d遮挡
+            pointerEvents: 'none',
+            display: 'none', // 初始隐藏，鼠标靠近时才显示
+            flexDirection: 'column',
+            gap: '12px',
+            visibility: 'visible', // 确保visibility不是hidden
+            opacity: '1' // 确保opacity不是0
+        });
+    } else {
+        // 创建新的按钮容器
+        buttonsContainer = document.createElement('div');
+        buttonsContainer.id = 'live2d-floating-buttons';
+        Object.assign(buttonsContainer.style, {
+            position: 'fixed',
+            zIndex: '99999',  // 确保始终浮动在顶层，不被live2d遮挡
+            pointerEvents: 'none',
+            display: 'none', // 初始隐藏，鼠标靠近时才显示
+            flexDirection: 'column',
+            gap: '12px'
+        });
+    }
 
     // 阻止浮动按钮容器上的指针事件传播到window，避免触发live2d拖拽
+    // 无论容器是新创建还是已存在，都需要确保事件监听器已添加
     const stopContainerEvent = (e) => {
         e.stopPropagation();
     };
-    buttonsContainer.addEventListener('pointerdown', stopContainerEvent, true);
-    buttonsContainer.addEventListener('pointermove', stopContainerEvent, true);
-    buttonsContainer.addEventListener('pointerup', stopContainerEvent, true);
-    buttonsContainer.addEventListener('mousedown', stopContainerEvent, true);
-    buttonsContainer.addEventListener('mousemove', stopContainerEvent, true);
-    buttonsContainer.addEventListener('mouseup', stopContainerEvent, true);
-    buttonsContainer.addEventListener('touchstart', stopContainerEvent, true);
-    buttonsContainer.addEventListener('touchmove', stopContainerEvent, true);
-    buttonsContainer.addEventListener('touchend', stopContainerEvent, true);
+    // 检查是否已添加事件监听器（通过检查是否有自定义属性）
+    if (!buttonsContainer.hasAttribute('data-events-attached')) {
+        buttonsContainer.addEventListener('pointerdown', stopContainerEvent, true);
+        buttonsContainer.addEventListener('pointermove', stopContainerEvent, true);
+        buttonsContainer.addEventListener('pointerup', stopContainerEvent, true);
+        buttonsContainer.addEventListener('mousedown', stopContainerEvent, true);
+        buttonsContainer.addEventListener('mousemove', stopContainerEvent, true);
+        buttonsContainer.addEventListener('mouseup', stopContainerEvent, true);
+        buttonsContainer.addEventListener('touchstart', stopContainerEvent, true);
+        buttonsContainer.addEventListener('touchmove', stopContainerEvent, true);
+        buttonsContainer.addEventListener('touchend', stopContainerEvent, true);
+        buttonsContainer.setAttribute('data-events-attached', 'true');
+    }
 
-    document.body.appendChild(buttonsContainer);
+    // 只有在容器不存在时才添加到 body（如果已存在则复用）
+    if (!document.getElementById('live2d-floating-buttons') || buttonsContainer.parentNode !== document.body) {
+        // 如果容器已存在但在其他地方，先移除
+        if (buttonsContainer.parentNode) {
+            buttonsContainer.parentNode.removeChild(buttonsContainer);
+        }
+        document.body.appendChild(buttonsContainer);
+    }
     this._floatingButtonsContainer = buttonsContainer;
     this._floatingButtons = this._floatingButtons || {};
 
