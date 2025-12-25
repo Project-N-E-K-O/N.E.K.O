@@ -5296,6 +5296,38 @@ function init_app() {
             return;
         }
 
+        // 辅助函数：恢复模型和对话框的可见性
+        function restoreModelAndDialogVisibility() {
+            const live2dContainer = document.getElementById('live2d-container');
+            const live2dCanvas = document.getElementById('live2d-canvas');
+            const chatContainer = document.getElementById('chat-container');
+            const textInputArea = document.getElementById('text-input-area');
+            
+            if (live2dContainer) {
+                live2dContainer.classList.remove('minimized');
+                live2dContainer.style.removeProperty('display');
+                live2dContainer.style.removeProperty('visibility');
+            }
+            if (live2dCanvas) {
+                live2dCanvas.classList.remove('minimized');
+                live2dCanvas.style.removeProperty('visibility');
+                live2dCanvas.style.visibility = 'visible';
+                const isLocked = window.live2dManager ? window.live2dManager.isLocked : true;
+                live2dCanvas.style.pointerEvents = isLocked ? 'none' : 'auto';
+            }
+            if (chatContainer) {
+                chatContainer.classList.remove('minimized');
+                chatContainer.style.removeProperty('display');
+                chatContainer.style.removeProperty('visibility');
+            }
+            if (textInputArea) {
+                textInputArea.classList.remove('hidden');
+            }
+            if (window.live2dManager) {
+                window.live2dManager._goodbyeClicked = false;
+            }
+        }
+
         console.log('[猫娘切换] 🚀 开始切换，从', lanlan_config.lanlan_name, '切换到', newCatgirl);
 
         // 显示切换提示
@@ -5438,34 +5470,7 @@ function init_app() {
                         }
 
                         // 确保模型和对话框可见
-                        const live2dContainer = document.getElementById('live2d-container');
-                        const live2dCanvas = document.getElementById('live2d-canvas');
-                        const chatContainer = document.getElementById('chat-container');
-                        const textInputArea = document.getElementById('text-input-area');
-                        
-                        if (live2dContainer) {
-                            live2dContainer.classList.remove('minimized');
-                            live2dContainer.style.removeProperty('display');
-                            live2dContainer.style.removeProperty('visibility');
-                        }
-                        if (live2dCanvas) {
-                            live2dCanvas.classList.remove('minimized');
-                            live2dCanvas.style.removeProperty('visibility');
-                            live2dCanvas.style.visibility = 'visible';
-                            const isLocked = window.live2dManager ? window.live2dManager.isLocked : true;
-                            live2dCanvas.style.pointerEvents = isLocked ? 'none' : 'auto';
-                        }
-                        if (chatContainer) {
-                            chatContainer.classList.remove('minimized');
-                            chatContainer.style.removeProperty('display');
-                            chatContainer.style.removeProperty('visibility');
-                        }
-                        if (textInputArea) {
-                            textInputArea.classList.remove('hidden');
-                        }
-                        if (window.live2dManager) {
-                            window.live2dManager._goodbyeClicked = false;
-                        }
+                        restoreModelAndDialogVisibility();
                         
                         console.log('[猫娘切换] Live2D 模型已重新加载完成');
                     } else {
@@ -5521,34 +5526,7 @@ function init_app() {
                                         }
                                         
                                         // 确保模型和对话框可见
-                                        const live2dContainer = document.getElementById('live2d-container');
-                                        const live2dCanvas = document.getElementById('live2d-canvas');
-                                        const chatContainer = document.getElementById('chat-container');
-                                        const textInputArea = document.getElementById('text-input-area');
-                                        
-                                        if (live2dContainer) {
-                                            live2dContainer.classList.remove('minimized');
-                                            live2dContainer.style.removeProperty('display');
-                                            live2dContainer.style.removeProperty('visibility');
-                                        }
-                                        if (live2dCanvas) {
-                                            live2dCanvas.classList.remove('minimized');
-                                            live2dCanvas.style.removeProperty('visibility');
-                                            live2dCanvas.style.visibility = 'visible';
-                                            const isLocked = window.live2dManager ? window.live2dManager.isLocked : true;
-                                            live2dCanvas.style.pointerEvents = isLocked ? 'none' : 'auto';
-                                        }
-                                        if (chatContainer) {
-                                            chatContainer.classList.remove('minimized');
-                                            chatContainer.style.removeProperty('display');
-                                            chatContainer.style.removeProperty('visibility');
-                                        }
-                                        if (textInputArea) {
-                                            textInputArea.classList.remove('hidden');
-                                        }
-                                        if (window.live2dManager) {
-                                            window.live2dManager._goodbyeClicked = false;
-                                        }
+                                        restoreModelAndDialogVisibility();
 
                                         console.log('[猫娘切换] 已成功回退到默认模型 mao_pro');
                                     } else {
