@@ -377,7 +377,28 @@ class VRMAnimation {
     update(deltaTime) {
         // 更新 VRMA 动画
         if (this.vrmaMixer && this.vrmaAction && this.vrmaIsPlaying) {
+            // 确保action仍然启用
+            if (!this.vrmaAction.enabled) {
+                console.warn('[VRMA] 动画Action被禁用，重新启用...');
+                this.vrmaAction.enabled = true;
+                this.vrmaAction.play();
+            }
+            
             this.vrmaMixer.update(deltaTime);
+            
+            // 每60帧输出一次调试信息（约每秒一次）
+            if (this._debugFrameCount === undefined) this._debugFrameCount = 0;
+            this._debugFrameCount++;
+            if (this._debugFrameCount % 60 === 0) {
+                console.log('[VRMA] 动画更新中:', {
+                    time: this.vrmaAction.time.toFixed(3),
+                    weight: this.vrmaAction.getEffectiveWeight().toFixed(3),
+                    isRunning: this.vrmaAction.isRunning(),
+                    enabled: this.vrmaAction.enabled,
+                    deltaTime: deltaTime.toFixed(4)
+                });
+            }
+            
             // 检查非循环动画是否播放完毕
             if (this.vrmaAction && !this.vrmaAction.loop) {
                 const clip = this.vrmaAction.getClip();
@@ -385,6 +406,13 @@ class VRMAnimation {
                     this.stopVRMAAnimation();
                 }
             }
+        } else if (this.vrmaIsPlaying) {
+            // 如果标记为播放但mixer或action不存在，输出警告
+            console.warn('[VRMA] 动画标记为播放但mixer或action不存在:', {
+                hasMixer: !!this.vrmaMixer,
+                hasAction: !!this.vrmaAction,
+                isPlaying: this.vrmaIsPlaying
+            });
         }
 
         // 在渲染循环中持续更新口型表情
@@ -412,11 +440,20 @@ class VRMAnimation {
      * 加载并播放 VRMA 动画
      */
     async playVRMAAnimation(vrmaPath, options = {}) {
+        console.log('[VRMA] playVRMAAnimation 被调用:', {
+            vrmaPath: vrmaPath,
+            options: options,
+            hasModel: !!this.manager.currentModel,
+            hasVRM: !!(this.manager.currentModel && this.manager.currentModel.vrm),
+            hasScene: !!(this.manager.currentModel && this.manager.currentModel.vrm && this.manager.currentModel.vrm.scene)
+        });
+
         if (!this.manager.currentModel || !this.manager.currentModel.vrm || !this.manager.currentModel.vrm.scene) {
             throw new Error('VRM 模型未加载');
         }
 
         try {
+            console.log('[VRMA] 停止之前的动画...');
             this.stopVRMAAnimation();
 
             // 动态导入 GLTFLoader 和 VRMLoaderPlugin（与vrm-core.js保持一致）
@@ -440,22 +477,33 @@ class VRMAnimation {
                 VRMLoaderPlugin = window.VRMLoaderPlugin;
             }
 
+            console.log('[VRMA] 创建GLTFLoader并加载动画文件:', vrmaPath);
             const loader = new GLTFLoader();
             loader.register((parser) => {
                 return new VRMLoaderPlugin(parser);
             });
 
             const gltf = await new Promise((resolve, reject) => {
+                console.log('[VRMA] 开始加载VRMA文件...');
                 loader.load(
                     vrmaPath,
-                    (gltf) => resolve(gltf),
+                    (gltf) => {
+                        console.log('[VRMA] VRMA文件加载成功:', {
+                            hasAnimations: !!(gltf.animations && gltf.animations.length > 0),
+                            animationCount: gltf.animations ? gltf.animations.length : 0
+                        });
+                        resolve(gltf);
+                    },
                     (progress) => {
                         if (progress.lengthComputable) {
                             const percent = (progress.loaded / progress.total) * 100;
                             console.log(`[VRMA] 加载进度: ${percent.toFixed(1)}%`);
                         }
                     },
-                    (error) => reject(error)
+                    (error) => {
+                        console.error('[VRMA] VRMA文件加载失败:', error);
+                        reject(error);
+                    }
                 );
             });
 
@@ -560,6 +608,10 @@ class VRMAnimation {
             const timeScale = options.timeScale !== undefined ? options.timeScale : 1.0;
             this.vrmaAction.timeScale = timeScale;
 
+            // 确保动画权重设置为1.0，这样才能看到动画效果
+            this.vrmaAction.setEffectiveWeight(1.0);
+            this.vrmaAction.setEffectiveTimeScale(1.0);
+
             // 如果是非循环动画，监听播放完毕事件
             if (!loop) {
                 const onFinished = () => {
@@ -569,8 +621,19 @@ class VRMAnimation {
                 this.vrmaAction.addEventListener('finished', onFinished);
             }
 
+            // 启用并播放动画
+            this.vrmaAction.enabled = true;
             this.vrmaAction.play();
             this.vrmaIsPlaying = true;
+            
+            console.log('[VRMA] 动画Action设置:', {
+                enabled: this.vrmaAction.enabled,
+                isRunning: this.vrmaAction.isRunning(),
+                weight: this.vrmaAction.getEffectiveWeight(),
+                timeScale: this.vrmaAction.getEffectiveTimeScale(),
+                loop: loop,
+                clipDuration: clip.duration
+            });
 
             console.log('[VRMA] 动画播放成功:', {
                 url: vrmaPath,
