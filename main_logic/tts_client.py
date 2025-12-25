@@ -981,9 +981,9 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False):
     try:
         cm = get_config_manager()
         tts_config = cm.get_model_api_config('tts_custom')
-        user_url = tts_config.get('user_url')
+        user_url = tts_config.get('base_url')
         # 只要base_url 这里填写了参数 那就确定使用本地服务
-        if user_url and ('http' in user_url or 'ws' in user_url):
+        if user_url and ('http://' in user_url or 'https://' in user_url or 'ws://' in user_url or 'wss://' in user_url):
             return local_cosyvoice_worker
     except Exception as e:
         logger.warning(f'TTS调度器检查报告：{e}')
@@ -1098,7 +1098,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             }
 
             try:
-                await ws.send(json.dump(payload))
+                await ws.send(json.dumps(payload))
             except Exception as e:
                 logger.error(f"发送数据失败: {e}")
                 ws = None  # 标记连接断开，下次循环重连
