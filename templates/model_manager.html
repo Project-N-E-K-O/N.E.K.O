@@ -398,7 +398,7 @@
 
             for (const moduleSrc of vrmModules) {
                 const script = document.createElement('script');
-                script.src = moduleSrc;
+                script.src = moduleSrc + '?v=' + Date.now();
                 await new Promise((resolve, reject) => {
                     script.onload = () => {
                         console.log(`VRM模块加载成功: ${moduleSrc}`);

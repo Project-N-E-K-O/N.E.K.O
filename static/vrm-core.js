@@ -590,22 +590,19 @@ class VRMCore {
             // 动态导入 GLTFLoader 和 VRMLoaderPlugin（参考 vrm.js）
             let GLTFLoader, VRMLoaderPlugin;
             
-            // 尝试使用 ES 模块导入
+            // 使用 ES 模块导入（与动画模块保持一致）
+            console.log('[VRM] 开始导入GLTFLoader模块...');
             try {
                 const loaderModule = await import('three/addons/loaders/GLTFLoader.js');
                 GLTFLoader = loaderModule.GLTFLoader;
+                console.log('[VRM] GLTFLoader导入成功');
+
                 const vrmModule = await import('@pixiv/three-vrm');
                 VRMLoaderPlugin = vrmModule.VRMLoaderPlugin;
+                console.log('[VRM] VRMLoaderPlugin导入成功');
             } catch (e) {
-                // 如果 ES 模块导入失败，尝试使用全局变量
-                if (typeof window.GLTFLoader === 'undefined') {
-                    throw new Error('GLTFLoader未加载，请确保已引入three.js');
-                }
-                if (typeof window.VRMLoaderPlugin === 'undefined') {
-                    throw new Error('three-vrm库未加载');
-                }
-                GLTFLoader = window.GLTFLoader;
-                VRMLoaderPlugin = window.VRMLoaderPlugin;
+                console.error('[VRM] ES模块导入失败:', e);
+                throw new Error(`无法加载必要的VRM模块: ${e.message}`);
             }
 
             const loader = new GLTFLoader();
