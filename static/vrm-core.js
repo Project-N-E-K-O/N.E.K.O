@@ -99,7 +99,6 @@ class VRMCore {
             buttonsContainer.addEventListener('touchend', stopContainerEvent, true);
 
             document.body.appendChild(buttonsContainer);
-            console.log('[VRM] 已创建浮动按钮容器');
         }
 
         // 如果 Live2D 管理器存在且有 setupFloatingButtons 方法，调用它来初始化按钮
@@ -860,5 +859,4 @@ class VRMCore {
 
 // 导出到全局
 window.VRMCore = VRMCore;
-console.log('[VRM Core] VRMCore 已注册到全局对象');
 

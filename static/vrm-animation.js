@@ -1,11 +1,7 @@
 /**
  * VRM 动画模块
  * 负责 VRMA 动画播放和口型同步
- * 版本: 2024-01-20 (ES6模块导入版本)
  */
-
-// 版本标识 - 用于确认代码已更新
-console.log('[VRM Animation] 模块已加载 - ES6模块导入版本');
 
 class VRMAnimation {
     constructor(manager) {
@@ -381,34 +377,12 @@ class VRMAnimation {
     update(deltaTime) {
         // 更新 VRMA 动画
         if (this.vrmaMixer && this.vrmaAction && this.vrmaIsPlaying) {
-            // 确保action仍然启用
             if (!this.vrmaAction.enabled) {
-                console.warn('[VRMA] 动画Action被禁用，重新启用...');
                 this.vrmaAction.enabled = true;
                 this.vrmaAction.play();
             }
             
             this.vrmaMixer.update(deltaTime);
-            
-            // 每60帧输出一次调试信息（约每秒一次）
-            if (this._debugFrameCount === undefined) this._debugFrameCount = 0;
-            this._debugFrameCount++;
-            if (this._debugFrameCount % 60 === 0) {
-                const mixerInfo = this.vrmaMixer ? {
-                    mixerTime: this.vrmaMixer.time.toFixed(3),
-                    mixerRoot: this.vrmaMixer.getRoot(),
-                    mixerStats: this.vrmaMixer.stats
-                } : 'no mixer';
-
-                console.log('[VRMA] 动画更新中:', {
-                    time: this.vrmaAction.time.toFixed(3),
-                    weight: this.vrmaAction.getEffectiveWeight().toFixed(3),
-                    isRunning: this.vrmaAction.isRunning(),
-                    enabled: this.vrmaAction.enabled,
-                    deltaTime: deltaTime.toFixed(4),
-                    mixer: mixerInfo
-                });
-            }
             
             // 检查非循环动画是否播放完毕
             if (this.vrmaAction && !this.vrmaAction.loop) {
@@ -417,13 +391,6 @@ class VRMAnimation {
                     this.stopVRMAAnimation();
                 }
             }
-        } else if (this.vrmaIsPlaying) {
-            // 如果标记为播放但mixer或action不存在，输出警告
-            console.warn('[VRMA] 动画标记为播放但mixer或action不存在:', {
-                hasMixer: !!this.vrmaMixer,
-                hasAction: !!this.vrmaAction,
-                isPlaying: this.vrmaIsPlaying
-            });
         }
 
         // 在渲染循环中持续更新口型表情
@@ -451,75 +418,34 @@ class VRMAnimation {
      * 加载并播放 VRMA 动画
      */
     async playVRMAAnimation(vrmaPath, options = {}) {
-        console.log('[VRMA] playVRMAAnimation 被调用:', {
-            vrmaPath: vrmaPath,
-            options: options,
-            hasModel: !!this.manager.currentModel,
-            hasVRM: !!(this.manager.currentModel && this.manager.currentModel.vrm),
-            hasScene: !!(this.manager.currentModel && this.manager.currentModel.vrm && this.manager.currentModel.vrm.scene)
-        });
-
         if (!this.manager.currentModel || !this.manager.currentModel.vrm || !this.manager.currentModel.vrm.scene) {
             throw new Error('VRM 模型未加载');
         }
 
         try {
-            console.log('[VRMA] 停止之前的动画...');
             this.stopVRMAAnimation();
 
             // 动态导入 GLTFLoader 和 VRMLoaderPlugin
-            console.log('[VRMA] 开始导入必要的模块...');
             let GLTFLoader, VRMLoaderPlugin;
 
-            // 优先使用 ES 模块导入（更可靠）
             try {
-                console.log('[VRMA] 尝试ES6模块导入...');
-                console.log('[VRMA] 检查importmap支持...');
-                
-                // 检查是否有importmap支持
-                if (!document.querySelector('script[type="importmap"]')) {
-                    console.warn('[VRMA] 警告：未找到importmap，ES6模块导入可能失败');
-                }
-                
                 const loaderModule = await import('three/addons/loaders/GLTFLoader.js');
-                console.log('[VRMA] loaderModule:', loaderModule);
-                
                 if (!loaderModule.GLTFLoader) {
                     throw new Error('loaderModule.GLTFLoader 未定义');
                 }
-                
                 GLTFLoader = loaderModule.GLTFLoader;
-                console.log('[VRMA] GLTFLoader导入成功，类型:', typeof GLTFLoader);
 
                 const vrmModule = await import('@pixiv/three-vrm');
-                console.log('[VRMA] vrmModule:', vrmModule);
-                
                 if (!vrmModule.VRMLoaderPlugin) {
                     throw new Error('vrmModule.VRMLoaderPlugin 未定义');
                 }
-                
                 VRMLoaderPlugin = vrmModule.VRMLoaderPlugin;
-                console.log('[VRMA] VRMLoaderPlugin导入成功，类型:', typeof VRMLoaderPlugin);
             } catch (e) {
-                console.error('[VRMA] ES6模块导入失败:', e);
-                console.error('[VRMA] 错误详情:', {
-                    message: e.message,
-                    stack: e.stack,
-                    name: e.name
-                });
-                throw new Error(`无法加载必要的VRM模块: ${e.message}。请确保importmap已正确配置。`);
+                throw new Error(`无法加载必要的VRM模块: ${e.message}`);
             }
 
-            console.log('[VRMA] 创建GLTFLoader并加载动画文件:', vrmaPath);
-            
-            // 验证 GLTFLoader 是否已正确导入
             if (!GLTFLoader || typeof GLTFLoader !== 'function') {
-                console.error('[VRMA] GLTFLoader 验证失败:', {
-                    GLTFLoader: typeof GLTFLoader,
-                    isFunction: typeof GLTFLoader === 'function',
-                    value: GLTFLoader
-                });
-                throw new Error('GLTFLoader 未正确导入，请检查ES6模块导入是否成功');
+                throw new Error('GLTFLoader 未正确导入');
             }
             
             const loader = new GLTFLoader();
@@ -528,26 +454,11 @@ class VRMAnimation {
             });
 
             const gltf = await new Promise((resolve, reject) => {
-                console.log('[VRMA] 开始加载VRMA文件...');
                 loader.load(
                     vrmaPath,
-                    (gltf) => {
-                        console.log('[VRMA] VRMA文件加载成功:', {
-                            hasAnimations: !!(gltf.animations && gltf.animations.length > 0),
-                            animationCount: gltf.animations ? gltf.animations.length : 0
-                        });
-                        resolve(gltf);
-                    },
-                    (progress) => {
-                        if (progress.lengthComputable) {
-                            const percent = (progress.loaded / progress.total) * 100;
-                            console.log(`[VRMA] 加载进度: ${percent.toFixed(1)}%`);
-                        }
-                    },
-                    (error) => {
-                        console.error('[VRMA] VRMA文件加载失败:', error);
-                        reject(error);
-                    }
+                    (gltf) => resolve(gltf),
+                    (progress) => {},
+                    (error) => reject(error)
                 );
             });
 
@@ -562,19 +473,15 @@ class VRMAnimation {
             const vrmNodeNames = new Set();
             const vrmNodeMap = new Map();
 
-            console.log('[VRMA] 收集VRM模型节点...');
-
             // 优先收集humanoid骨骼节点（VRM标准骨骼）
             if (this.manager.currentModel.vrm.humanoid) {
                 const humanBones = this.manager.currentModel.vrm.humanoid.humanBones;
                 if (humanBones) {
-                    console.log('[VRMA] humanoid骨骼数量:', Object.keys(humanBones).length);
                     Object.keys(humanBones).forEach(boneName => {
                         const bone = humanBones[boneName];
                         if (bone && bone.node && bone.node.name) {
                             vrmNodeNames.add(bone.node.name);
                             vrmNodeMap.set(bone.node.name, bone.node);
-                            console.log(`[VRMA] humanoid骨骼: ${boneName} -> ${bone.node.name}`);
                         }
                     });
                 }
@@ -588,60 +495,35 @@ class VRMAnimation {
                 }
             });
             
-            console.log(`[VRMA] 模型节点总数: ${vrmNodeNames.size}`);
-            
             const validTracks = [];
             const skippedTracks = [];
             const trackNodeNames = new Set();
             
             // 收集动画中的所有节点名称
-            console.log('[VRMA] 分析动画轨道...');
             for (const track of originalClip.tracks) {
                 const match = track.name.match(/^([^.]+)\.(.+)$/);
                 if (match) {
                     trackNodeNames.add(match[1]);
-                    console.log(`[VRMA] 动画轨道: ${track.name} -> 节点: ${match[1]}, 属性: ${match[2]}`);
-                } else {
-                    console.log(`[VRMA] 无法解析的轨道: ${track.name}`);
                 }
             }
-
-            console.log(`[VRMA] 动画中的节点总数: ${trackNodeNames.size}`);
-            console.log(`[VRMA] 动画轨道总数: ${originalClip.tracks.length}`);
-            console.log(`[VRMA] 动画节点列表:`, Array.from(trackNodeNames));
 
             // 尝试映射轨道到VRM节点
             for (const track of originalClip.tracks) {
                 const match = track.name.match(/^([^.]+)\.(.+)$/);
                 if (match) {
                     const nodeName = match[1];
-                    const property = match[2];
-
-                    console.log(`[VRMA] 检查轨道映射: ${nodeName}.${property}`);
-
                     if (vrmNodeNames.has(nodeName)) {
                         validTracks.push(track);
-                        console.log(`[VRMA] ✓ 轨道匹配: ${nodeName}`);
                     } else {
                         skippedTracks.push(nodeName);
-                        console.log(`[VRMA] ✗ 轨道不匹配: ${nodeName} (属性: ${property})`);
                     }
                 } else {
                     skippedTracks.push(track.name);
-                    console.log(`[VRMA] ✗ 无效轨道格式: ${track.name}`);
                 }
             }
             
             if (validTracks.length === 0) {
-                // 提供更详细的错误信息
                 const missingNodes = Array.from(trackNodeNames).filter(name => !vrmNodeNames.has(name));
-                const modelNodes = Array.from(vrmNodeNames).slice(0, 20);
-                console.error('[VRMA] 节点匹配失败详情:', {
-                    动画节点数: trackNodeNames.size,
-                    模型节点数: vrmNodeNames.size,
-                    缺失的节点: missingNodes.slice(0, 10),
-                    模型节点示例: modelNodes
-                });
                 throw new Error(`VRMA动画中没有找到与VRM模型匹配的节点。动画需要 ${trackNodeNames.size} 个节点，但模型只有 ${vrmNodeNames.size} 个节点。缺失的节点示例: ${missingNodes.slice(0, 5).join(', ')}`);
             }
             
@@ -651,25 +533,10 @@ class VRMAnimation {
                 validTracks
             );
             
-            if (skippedTracks.length > 0) {
-                const uniqueSkipped = [...new Set(skippedTracks)];
-                console.log(`[VRMA] 已过滤 ${skippedTracks.length} 个不匹配的轨道（${uniqueSkipped.length} 个唯一节点）`);
-                console.log(`[VRMA] 有效轨道: ${validTracks.length} 个`);
-            }
-            
-            // 创建AnimationMixer - VRM动画绑定逻辑
+            // 创建AnimationMixer
             if (!this.vrmaMixer) {
-                // 对于VRM模型，AnimationMixer应该绑定到GLTF的scene（包含所有骨骼变换）
-                // 而不是VRM的scene（可能只是一个包装器）
-                const bindTarget = this.manager.currentModel.scene; // 使用GLTF的scene
+                const bindTarget = this.manager.currentModel.scene;
                 this.vrmaMixer = new window.THREE.AnimationMixer(bindTarget);
-                console.log('[VRMA] 创建AnimationMixer，绑定到GLTF.scene');
-                console.log('[VRMA] VRM对象结构:', {
-                    hasScene: !!this.manager.currentModel.vrm.scene,
-                    hasHumanoid: !!this.manager.currentModel.vrm.humanoid,
-                    gltfScene: !!this.manager.currentModel.scene,
-                    vrmSceneChildren: this.manager.currentModel.vrm.scene ? this.manager.currentModel.vrm.scene.children.length : 0
-                });
             }
 
             this.vrmaAction = this.vrmaMixer.clipAction(clip);
@@ -697,44 +564,8 @@ class VRMAnimation {
             this.vrmaAction.enabled = true;
             this.vrmaAction.play();
             this.vrmaIsPlaying = true;
-            
-            console.log('[VRMA] 动画Action设置:', {
-                enabled: this.vrmaAction.enabled,
-                isRunning: this.vrmaAction.isRunning(),
-                weight: this.vrmaAction.getEffectiveWeight(),
-                timeScale: this.vrmaAction.getEffectiveTimeScale(),
-                loop: loop,
-                clipDuration: clip.duration,
-                mixer: !!this.vrmaMixer,
-                tracks: validTracks.length,
-                root: this.vrmaMixer ? this.vrmaMixer.getRoot() : 'none'
-            });
-
-            // 测试动画是否真的在运行
-            setTimeout(() => {
-                console.log('[VRMA] 动画启动后检查:', {
-                    time: this.vrmaAction.time,
-                    isRunning: this.vrmaAction.isRunning(),
-                    enabled: this.vrmaAction.enabled,
-                    mixerTime: this.vrmaMixer ? this.vrmaMixer.time : 'no mixer'
-                });
-            }, 100);
-
-            console.log('[VRMA] 动画播放成功:', {
-                url: vrmaPath,
-                action: this.vrmaAction,
-                isPlaying: this.vrmaAction.isRunning(),
-                time: this.vrmaAction.time,
-                weight: this.vrmaAction.getEffectiveWeight(),
-                effectiveWeight: this.vrmaAction.getEffectiveWeight(),
-                mixer: this.vrmaMixer,
-                clip: clip,
-                tracksCount: validTracks.length,
-                originalTracksCount: originalClip.tracks.length
-            });
 
         } catch (error) {
-            console.error('[VRMA] 加载动画失败:', error);
             throw error;
         }
     }
@@ -749,12 +580,10 @@ class VRMAnimation {
                 this.vrmaAction.reset();
                 this.vrmaAction = null;
             } catch (error) {
-                console.warn('[VRMA] 停止动画时出错:', error);
                 this.vrmaAction = null;
             }
         }
         this.vrmaIsPlaying = false;
-        console.log('[VRMA] 动画已停止');
     }
     
     /**
@@ -765,11 +594,9 @@ class VRMAnimation {
             if (this.vrmaIsPlaying) {
                 this.vrmaAction.paused = true;
                 this.vrmaIsPlaying = false;
-                console.log('[VRMA] 动画已暂停');
             } else {
                 this.vrmaAction.paused = false;
                 this.vrmaIsPlaying = true;
-                console.log('[VRMA] 动画已恢复');
             }
         }
     }
