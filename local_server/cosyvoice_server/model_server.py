@@ -54,8 +54,11 @@ logger.info("正在加载 CosyVoice3 模型，请稍候...")
 cosyvoice_model = CosyVoice3(MODEL_DIR, fp16=False)
 logger.info("CosyVoice3 模型加载完成！")
 
-PROMPT_WAV_PATH = os.path.join(COSYVOICE_PROJECT_ROOT, "asset/zero_shot_prompt.wav")
-PROMPT_TEXT = "希望你以后能够做得比我还好呦。"
+# PROMPT_WAV_PATH = os.path.join(COSYVOICE_PROJECT_ROOT, "asset/sft_longwan_zh.wav")
+# PROMPT_TEXT = "希望你以后能够做得比我还好呦。"
+
+PROMPT_WAV_PATH = os.path.join(COSYVOICE_PROJECT_ROOT, "asset/Angry_ZH_prompt.wav")
+PROMPT_TEXT = "刚才还好好的，一眨眼又消失了，真的是要气死我了。。"
 
 try:
     if os.path.exists(PROMPT_WAV_PATH):

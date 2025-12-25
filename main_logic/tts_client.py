@@ -977,6 +977,17 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False):
     Returns:
         对应的 TTS worker 函数
     """
+    #指定本地模型的判断方式
+    try:
+        cm = get_config_manager()
+        tts_config = cm.get_model_api_config('tts_custom')
+        user_url = tts_config.get('user_url')
+        # 只要base_url 这里填写了参数 那就确定使用本地服务
+        if user_url and ('http' in user_url or 'ws' in user_url):
+            return local_cosyvoice_worker
+    except Exception as e:
+        logger.warning(f'TTS调度器检查报告：{e}')
+
     # 如果有自定义音色，使用 CosyVoice（仅阿里云支持）
     if has_custom_voice:
         return cosyvoice_vc_tts_worker
@@ -1003,14 +1014,14 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
     # 获取config_manager中的配置 config_manager中有tts_custom_URL
     cm = get_config_manager()
     tts_config = cm.get_model_api_config('tts_custom')
-    user_url = tts_config.get('base_url')
 
-    # 这里的user_url是用户自己填写的还是分配的
+    user_url = tts_config.get('base_url','')
     if user_url :
         ws_base = user_url.replace('https://', 'wss://').replace('http://', 'ws://').rstrip('/')
         WS_URL = f'{ws_base}/api/v1/ws/cosyvoice'
     else:
         logger.error('本地cosyvoice未配置url, 请在设置中填写正确的端口')
+        response_queue.put(("__ready__", False)) # 发送失败失败信号,
         return
 
     async def async_worker():
@@ -1018,12 +1029,42 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
         receive_task = None
         current_speech_id = None
         ready_sent = False #初始化就绪信号标志
-
-        # CosyVoice2 默认采样率通常为 24000Hz (如果是 CosyVoice1 则为 22050Hz)
-        # 你的 server 代码加载的是 CosyVoice2-0.5B，所以这里设定为 24000
+        # CosyVoice3 默认采样率通常为 24000Hz (如果是 CosyVoice1 则为 22050Hz)
+        # 你的 server 代码加载的是 Fun-CosyVoice3-0.5B，所以这里设定为 24000
         SRC_RATE = 24000
+        # 重采样？ 调用soxr.ResampleStream 参数分别为 原采样率 ,重采样后的采样率 num_channels是声道数？
         resampler = soxr.ResampleStream(SRC_RATE, 48000, 1, dtype='float32')
 
+        # === 内部辅助函数：连接/重连 ===
+        async def ensure_connection():
+            nonlocal ws, receive_task
+            # 如果已有连接，先尝试关闭
+            if ws:
+                try: await ws.close()
+                except: pass
+
+            logger.info(f"🔄 [LocalTTS] 正在连接: {WS_URL}")
+            ws = await websockets.connect(WS_URL, ping_interval=None)
+            logger.info("✅ [LocalTTS] 连接成功")
+
+            # 重新启动接收任务
+            if receive_task and not receive_task.done():
+                receive_task.cancel()
+            receive_task = asyncio.create_task(receive_loop(ws, resampler, response_queue))
+            return ws
+        # ============================
+
+        # 1. 初始连接 (先连上再发 ready 信号，防止死锁)
+        try:
+            await ensure_connection()
+            response_queue.put(("__ready__", True))
+        except Exception as e:
+            logger.error(f"❌ [LocalTTS] 初始连接失败: {e}")
+            logger.error("请确保 model_server.py 已运行且端口正确")
+            response_queue.put(("__ready__", False))
+            return
+
+        # 主循环
         while True:
             # 1. 获取请求 (非阻塞获取以便处理连接状态)
             try:
@@ -1031,42 +1072,9 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                 loop = asyncio.get_running_loop()
                 sid, tts_text = await loop.run_in_executor(None, request_queue.get)
             except Exception:
-                break  # 进程退出
+                break
 
-            # 2. 检查连接
-            if ws is None or ws.closed:
-                try:
-                    logger.info(f"正在连接本地 CosyVoice: {WS_URL}")
-                    ws = await websockets.connect(WS_URL, ping_interval=None)
-                    logger.info("本地 CosyVoice 连接成功")
-                    # 首次连接成功，发送就绪信号
-                    if not ready_sent:
-                        response_queue.put(("__ready__", True))
-                        ready_sent = True
-                    # 确保旧任务结束 如果接收的不是空而且没有表示接收已经结束 暂时停止接收？
-                    if receive_task is not None and not receive_task.done():
-                        receive_task.cancel()
-                        try:
-                            await receive_task
-                        except  asyncio.CancelledError:
-                            pass
-                    receive_task = asyncio.create_task(receive_loop(ws, resampler, response_queue))
-
-                except Exception as e:
-                    logger.error(f"连接本地服务失败: {e} (请检查 model_server.py 是否运行)")
-                    if not ready_sent:
-                        response_queue.put(("__ready__", False))
-                        return # 首次链接失败，直接退出
-                    await asyncio.sleep(2)
-                    # 把请求放回去或者丢弃？这里简单处理：丢弃并继续，避免死循环阻塞
-                    continue
-
-            # 3. 处理请求
-            if sid is None:
-                # 收到 None 表示停止/打断
-                # 在 WebSocket 模式下，通常不需要断开连接，只需要不再发送后续文本
-                # 但如果需要立即停止正在播放的声音，前端会处理 response_queue 的清空
-                continue
+            if sid is None: continue
 
             if sid != current_speech_id:
                 current_speech_id = sid
@@ -1075,21 +1083,22 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             if not tts_text or not tts_text.strip():
                 continue
 
-            # 4. 发送生成请求 (匹配 model_server.py 的协议)
-            try:
-                payload = {
-                    "header": {
-                        "action": "run-task",
-                        "task_id": str(uuid.uuid4())
-                    },
-                    "payload": {
-                        "input": {
-                            "text": tts_text
-                        }
-                    }
+            # 构造 payload
+            # 注意：Zero-Shot 模式下 voice_id 可能为空，这里给一个默认值防止报错
+            payload = {
+                "header": {
+                    "action": "run-task",
+                    "task_id": str(uuid.uuid4()),
+                    'streaming': 'duplex'
+                },
+                "payload": {
+                    "input": {"text": tts_text},
+                    "parameters": {"voice_id": voice_id if voice_id else "zero_shot_default"}
                 }
-                await ws.send(json.dumps(payload))
+            }
 
+            try:
+                await ws.send(json.dump(payload))
             except Exception as e:
                 logger.error(f"发送数据失败: {e}")
                 ws = None  # 标记连接断开，下次循环重连
@@ -1098,9 +1107,8 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
         """独立接收任务，处理音频流和状态信息"""
         try:
             async for message in ws:
-                # 如果是 bytes，说明是音频数据
                 if isinstance(message, bytes):
-                    # model_server.py 发送的是 int16 bytes
+                    # 接收 PCM -> 重采样 -> 输出
                     audio_array = np.frombuffer(message, dtype=np.int16)
 
                     # 重采样 24k -> 48k 并发送
@@ -1112,6 +1120,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                     try:
                         msg_json = json.loads(message)
                         action = msg_json.get("header", {}).get("action")
+
                         if action == "task-failed":
                             logger.error(f"本地合成报错: {msg_json}")
                     except Exception as e:
