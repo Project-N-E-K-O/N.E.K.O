@@ -1040,8 +1040,8 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             nonlocal ws, receive_task
             # 如果已有连接，先尝试关闭
             if ws:
-                try: await ws.close()
-                except: pass
+                try: await ws.closed()
+                except Exception: pass
 
             logger.info(f"🔄 [LocalTTS] 正在连接: {WS_URL}")
             ws = await websockets.connect(WS_URL, ping_interval=None)
@@ -1074,7 +1074,11 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             except Exception:
                 break
 
-            if sid is None: continue
+            if sid is None:
+                # 受到终止信号, 可以在这里进行清理
+                # 例如 发送特殊的完成信息到服务器 或者重置状态
+                current_speech_id = None
+                continue
 
             if sid != current_speech_id:
                 current_speech_id = sid
@@ -1102,6 +1106,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                 except Exception as e:
                     logger.error(f'发送信息失败：{e}')
                     ws = None
+                    continue
             try:
                 await ws.send(json.dumps(payload))
             except Exception as e:
