@@ -285,12 +285,11 @@ async def update_catgirl_l2d(name: str, request: Request):
         if '猫娘' not in characters:
             characters['猫娘'] = {}
         
-        # 确保指定猫娘的配置存在
-        if name not in characters['猫娘']:
-            return JSONResponse(
-                {'success': False, 'error': '猫娘不存在'}, 
-                status_code=404
-            )
+        # 如果指定猫娘的配置不存在，自动创建
+        is_new_character = name not in characters['猫娘']
+        if is_new_character:
+            logger.info(f"角色 {name} 不存在，自动创建角色并设置Live2D模型")
+            characters['猫娘'][name] = {}
         
         # 更新Live2D模型设置，同时保存item_id（如果有）
         characters['猫娘'][name]['live2d'] = live2d_model
@@ -305,6 +304,22 @@ async def update_catgirl_l2d(name: str, request: Request):
         # 自动重新加载配置
         initialize_character_data = get_initialize_character_data()
         await initialize_character_data()
+        
+        # 如果是新创建的角色，通知记忆服务器重新加载配置
+        if is_new_character:
+            try:
+                async with httpx.AsyncClient() as client:
+                    resp = await client.post(f"http://localhost:{MEMORY_SERVER_PORT}/reload", timeout=5.0)
+                    if resp.status_code == 200:
+                        result = resp.json()
+                        if result.get('status') == 'success':
+                            logger.info(f"✅ 已通知记忆服务器重新加载配置（新角色: {name}）")
+                        else:
+                            logger.warning(f"⚠️ 记忆服务器重新加载配置返回: {result.get('message')}")
+                    else:
+                        logger.warning(f"⚠️ 记忆服务器重新加载配置失败，状态码: {resp.status_code}")
+            except Exception as e:
+                logger.warning(f"⚠️ 通知记忆服务器重新加载配置时出错: {e}（不影响角色创建）")
         
         return JSONResponse(content={
             'success': True,
@@ -634,7 +649,6 @@ async def add_catgirl(request: Request):
     
     # 通知记忆服务器重新加载配置
     try:
-        import httpx
         async with httpx.AsyncClient() as client:
             resp = await client.post(f"http://localhost:{MEMORY_SERVER_PORT}/reload", timeout=5.0)
             if resp.status_code == 200:

@@ -5382,8 +5382,18 @@ function init_app() {
                 if (!window.live2dManager) {
                     console.error('[猫娘切换] live2dManager 不存在，无法重新加载模型');
                 } else if (!window.live2dManager.pixi_app) {
-                    console.error('[猫娘切换] live2dManager 未初始化，无法重新加载模型');
-                } else {
+                    // 如果pixi_app不存在，尝试重新初始化
+                    console.warn('[猫娘切换] live2dManager 未初始化，尝试重新初始化...');
+                    try {
+                        await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
+                        console.log('[猫娘切换] live2dManager 重新初始化成功');
+                    } catch (initError) {
+                        console.error('[猫娘切换] 重新初始化失败:', initError);
+                    }
+                }
+                
+                // 再次检查是否已初始化
+                if (window.live2dManager && window.live2dManager.pixi_app) {
                     const currentModel = window.live2dManager.getCurrentModel();
                     const currentModelPath = currentModel ? (currentModel.url || '') : '';
                     const newModelPath = modelData.model_info.path;
@@ -5427,6 +5437,36 @@ function init_app() {
                             window.LanLan1.emotionMapping = window.live2dManager.getEmotionMapping();
                         }
 
+                        // 确保模型和对话框可见
+                        const live2dContainer = document.getElementById('live2d-container');
+                        const live2dCanvas = document.getElementById('live2d-canvas');
+                        const chatContainer = document.getElementById('chat-container');
+                        const textInputArea = document.getElementById('text-input-area');
+                        
+                        if (live2dContainer) {
+                            live2dContainer.classList.remove('minimized');
+                            live2dContainer.style.removeProperty('display');
+                            live2dContainer.style.removeProperty('visibility');
+                        }
+                        if (live2dCanvas) {
+                            live2dCanvas.classList.remove('minimized');
+                            live2dCanvas.style.removeProperty('visibility');
+                            live2dCanvas.style.visibility = 'visible';
+                            const isLocked = window.live2dManager ? window.live2dManager.isLocked : true;
+                            live2dCanvas.style.pointerEvents = isLocked ? 'none' : 'auto';
+                        }
+                        if (chatContainer) {
+                            chatContainer.classList.remove('minimized');
+                            chatContainer.style.removeProperty('display');
+                            chatContainer.style.removeProperty('visibility');
+                        }
+                        if (textInputArea) {
+                            textInputArea.classList.remove('hidden');
+                        }
+                        if (window.live2dManager) {
+                            window.live2dManager._goodbyeClicked = false;
+                        }
+                        
                         console.log('[猫娘切换] Live2D 模型已重新加载完成');
                     } else {
                         console.error('[猫娘切换] 无法获取模型配置，状态:', modelConfigRes.status);
@@ -5439,43 +5479,89 @@ function init_app() {
                 try {
                     console.log('[猫娘切换] 尝试回退到默认模型 mao_pro');
 
-                    if (window.live2dManager && window.live2dManager.pixi_app) {
-                        // 查找mao_pro模型
-                        const modelsResponse = await fetch('/api/live2d/models');
-                        if (modelsResponse.ok) {
-                            const models = await modelsResponse.json();
-                            const maoProModel = models.find(m => m.name === 'mao_pro');
+                    if (window.live2dManager) {
+                        // 如果pixi_app不存在，尝试重新初始化
+                        if (!window.live2dManager.pixi_app) {
+                            console.warn('[猫娘切换] live2dManager 未初始化，尝试重新初始化...');
+                            try {
+                                await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
+                                console.log('[猫娘切换] live2dManager 重新初始化成功');
+                            } catch (initError) {
+                                console.error('[猫娘切换] 重新初始化失败:', initError);
+                            }
+                        }
+                        
+                        // 再次检查是否已初始化
+                        if (window.live2dManager.pixi_app) {
+                            // 查找mao_pro模型
+                            const modelsResponse = await fetch('/api/live2d/models');
+                            if (modelsResponse.ok) {
+                                const models = await modelsResponse.json();
+                                const maoProModel = models.find(m => m.name === 'mao_pro');
 
-                            if (maoProModel) {
-                                console.log('[猫娘切换] 找到默认模型 mao_pro，路径:', maoProModel.path);
+                                if (maoProModel) {
+                                    console.log('[猫娘切换] 找到默认模型 mao_pro，路径:', maoProModel.path);
 
-                                // 获取模型配置
-                                const modelConfigRes = await fetch(maoProModel.path);
-                                if (modelConfigRes.ok) {
-                                    const modelConfig = await modelConfigRes.json();
-                                    modelConfig.url = maoProModel.path;
+                                    // 获取模型配置
+                                    const modelConfigRes = await fetch(maoProModel.path);
+                                    if (modelConfigRes.ok) {
+                                        const modelConfig = await modelConfigRes.json();
+                                        modelConfig.url = maoProModel.path;
 
-                                    // 加载默认模型
-                                    await window.live2dManager.loadModel(modelConfig, {
-                                        isMobile: window.innerWidth <= 768
-                                    });
+                                        // 加载默认模型
+                                        await window.live2dManager.loadModel(modelConfig, {
+                                            isMobile: window.innerWidth <= 768
+                                        });
 
-                                    // 更新全局引用
-                                    if (window.LanLan1) {
-                                        window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
-                                        window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
-                                        window.LanLan1.emotionMapping = window.live2dManager.getEmotionMapping();
+                                        // 更新全局引用
+                                        if (window.LanLan1) {
+                                            window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
+                                            window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
+                                            window.LanLan1.emotionMapping = window.live2dManager.getEmotionMapping();
+                                        }
+                                        
+                                        // 确保模型和对话框可见
+                                        const live2dContainer = document.getElementById('live2d-container');
+                                        const live2dCanvas = document.getElementById('live2d-canvas');
+                                        const chatContainer = document.getElementById('chat-container');
+                                        const textInputArea = document.getElementById('text-input-area');
+                                        
+                                        if (live2dContainer) {
+                                            live2dContainer.classList.remove('minimized');
+                                            live2dContainer.style.removeProperty('display');
+                                            live2dContainer.style.removeProperty('visibility');
+                                        }
+                                        if (live2dCanvas) {
+                                            live2dCanvas.classList.remove('minimized');
+                                            live2dCanvas.style.removeProperty('visibility');
+                                            live2dCanvas.style.visibility = 'visible';
+                                            const isLocked = window.live2dManager ? window.live2dManager.isLocked : true;
+                                            live2dCanvas.style.pointerEvents = isLocked ? 'none' : 'auto';
+                                        }
+                                        if (chatContainer) {
+                                            chatContainer.classList.remove('minimized');
+                                            chatContainer.style.removeProperty('display');
+                                            chatContainer.style.removeProperty('visibility');
+                                        }
+                                        if (textInputArea) {
+                                            textInputArea.classList.remove('hidden');
+                                        }
+                                        if (window.live2dManager) {
+                                            window.live2dManager._goodbyeClicked = false;
+                                        }
+
+                                        console.log('[猫娘切换] 已成功回退到默认模型 mao_pro');
+                                    } else {
+                                        console.error('[猫娘切换] 无法获取默认模型配置，状态:', modelConfigRes.status);
                                     }
-
-                                    console.log('[猫娘切换] 已成功回退到默认模型 mao_pro');
                                 } else {
-                                    console.error('[猫娘切换] 无法获取默认模型配置，状态:', modelConfigRes.status);
+                                    console.error('[猫娘切换] 未找到默认模型 mao_pro');
                                 }
                             } else {
-                                console.error('[猫娘切换] 未找到默认模型 mao_pro');
+                                console.error('[猫娘切换] 无法获取模型列表');
                             }
                         } else {
-                            console.error('[猫娘切换] 无法获取模型列表');
+                            console.error('[猫娘切换] live2dManager 未初始化，无法加载默认模型');
                         }
                     } else {
                         console.error('[猫娘切换] live2dManager 未初始化，无法加载默认模型');
