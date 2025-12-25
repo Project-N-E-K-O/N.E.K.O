@@ -18,7 +18,7 @@ conflicts = [
 
 [debug]
 enable = true
-loaded_at = "2025-12-25T09:00:23.303010Z"
+loaded_at = "2025-12-25T11:45:30.045191Z"
 interval_seconds = 3
 burst_size = 2
 max_count = 5

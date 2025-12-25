@@ -50,6 +50,7 @@ def file_lock(file_obj):
     """
     if not _has_file_lock:
         # 如果没有文件锁支持,直接返回(不锁定)
+        logger.warning("File locking is not available on this platform. Concurrent access may cause data corruption.")
         yield
         return
     
@@ -279,6 +280,8 @@ def replace_plugin_config(plugin_id: str, new_config: Dict[str, Any]) -> Dict[st
                         current_config.get("plugin") if isinstance(current_config.get("plugin"), dict) else {}
                     )
 
+                    _validate_protected_fields_unchanged(current_config, new_config)
+
                     if "id" not in plugin_section and "id" in current_plugin_section:
                         plugin_section["id"] = current_plugin_section.get("id")
                     if "entry" not in plugin_section and "entry" in current_plugin_section:
@@ -501,7 +504,7 @@ def update_plugin_config_toml(plugin_id: str, toml_text: str) -> Dict[str, Any]:
                     )
                     try:
                         with os.fdopen(temp_fd, 'wb') as temp_file:
-                            data = (toml_text or "").encode('utf-8')
+                            data = toml_text.encode('utf-8')
                             temp_file.write(data)
                             temp_file.flush()
                             os.fsync(temp_file.fileno())
