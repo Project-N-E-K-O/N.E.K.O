@@ -99,7 +99,6 @@ class VRMCore {
             buttonsContainer.addEventListener('touchend', stopContainerEvent, true);
 
             document.body.appendChild(buttonsContainer);
-            console.log('[VRM] 已创建浮动按钮容器');
         }
 
         // 如果 Live2D 管理器存在且有 setupFloatingButtons 方法，调用它来初始化按钮
@@ -114,13 +113,11 @@ class VRMCore {
                         window.live2dManager.getPixiApp();
                     }
                 } catch (initError) {
-                    console.warn('[VRM] 初始化 PixiJS 应用失败:', initError);
                 }
             }
 
             // 如果 pixi_app 仍然不存在，创建一个虚拟的 ticker
             if (!window.live2dManager.pixi_app) {
-                console.warn('[VRM] PixiJS 应用未初始化，创建虚拟 ticker 用于浮动按钮');
                 // 创建一个虚拟的 pixi_app 对象，只包含 ticker
                 window.live2dManager.pixi_app = {
                     ticker: {
@@ -176,9 +173,7 @@ class VRMCore {
 
             try {
                 window.live2dManager.setupFloatingButtons(virtualModel);
-                console.log('[VRM] 已通过 Live2D 管理器初始化浮动按钮');
             } catch (e) {
-                console.warn('[VRM] 通过 Live2D 管理器初始化浮动按钮失败:', e);
             }
         }
     }
@@ -213,7 +208,6 @@ class VRMCore {
             
             return '0.0';
         } catch (error) {
-            console.warn('[VRM] 检测模型版本时出错，默认使用 0.0:', error);
             return '0.0';
         }
     }
@@ -354,7 +348,6 @@ class VRMCore {
         };
         this._lockIconAnimationFrame = requestAnimationFrame(updateLockIconPosition);
 
-        console.log('[VRM] 锁图标已创建');
     }
 
     /**
@@ -506,7 +499,7 @@ class VRMCore {
         this.manager.renderer.shadowMap.enabled = false;
         this.manager.renderer.outputEncoding = THREE.sRGBEncoding;
         this.manager.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-        this.manager.renderer.toneMappingExposure = 1.0; // 平衡曝光度，既有细节又有适当亮度
+        this.manager.renderer.toneMappingExposure = 1.2; // 提高曝光度，使模型更亮
         this.manager.renderer.useLegacyLights = false;
 
         // 确保容器和 canvas 可以接收事件
@@ -518,7 +511,6 @@ class VRMCore {
         canvas.style.width = '100%';
         canvas.style.height = '100%';
         canvas.style.display = 'block';
-        console.log('[VRM Core] Canvas 样式设置完成:', {
             pointerEvents: canvas.style.pointerEvents,
             computedPointerEvents: window.getComputedStyle(canvas).pointerEvents
         });
@@ -542,37 +534,37 @@ class VRMCore {
             this.manager.controls.update();
         }
 
-        // 添加灯光 - 平衡亮度和立体感
-        // 环境光：提供基础照明
-        const ambientIntensity = this.performanceMode === 'low' ? 0.6 : 0.5;
+        // 添加灯光 - 增强亮度和立体感
+        // 环境光：提供基础照明，增加强度使模型更亮
+        const ambientIntensity = this.performanceMode === 'low' ? 0.8 : 0.7;
         const ambientLight = new THREE.AmbientLight(0xffffff, ambientIntensity);
         this.manager.scene.add(ambientLight);
 
-        // 主方向光：从斜上方照射，提供主要照明
-        const directionalLight1 = new THREE.DirectionalLight(0xffffff, 1.0);
+        // 主方向光：从斜上方照射，提供主要照明，增强强度
+        const directionalLight1 = new THREE.DirectionalLight(0xffffff, 1.5);
         directionalLight1.position.set(1, 2, 1.5);
         directionalLight1.castShadow = false;
         this.manager.scene.add(directionalLight1);
 
-        // 中等和高性能模式：添加轮廓光和补光
+        // 中等和高性能模式：添加轮廓光和补光，增强强度
         if (this.performanceMode !== 'low') {
-            // 轮廓光：从侧后方照射，增强轮廓立体感
-            const rimLight = new THREE.DirectionalLight(0xffffff, 0.6);
+            // 轮廓光：从侧后方照射，增强轮廓立体感，增加强度
+            const rimLight = new THREE.DirectionalLight(0xffffff, 0.9);
             rimLight.position.set(-2, 1, -1);
             rimLight.castShadow = false;
             this.manager.scene.add(rimLight);
 
-            // 高性能模式：添加柔和的补光
+            // 高性能模式：添加柔和的补光，增强强度
             if (this.performanceMode === 'high') {
-                const fillLight = new THREE.DirectionalLight(0xffffff, 0.4);
+                const fillLight = new THREE.DirectionalLight(0xffffff, 0.6);
                 fillLight.position.set(0, -1, 1);
                 fillLight.castShadow = false;
                 this.manager.scene.add(fillLight);
             }
         }
 
-        // 添加柔和的顶部光源，提供整体照明
-        const topLight = new THREE.DirectionalLight(0xffffff, 0.7);
+        // 添加柔和的顶部光源，提供整体照明，增强强度
+        const topLight = new THREE.DirectionalLight(0xffffff, 1.0);
         topLight.position.set(0, 3, 0);
         topLight.castShadow = false;
         this.manager.scene.add(topLight);
@@ -590,22 +582,15 @@ class VRMCore {
             // 动态导入 GLTFLoader 和 VRMLoaderPlugin（参考 vrm.js）
             let GLTFLoader, VRMLoaderPlugin;
             
-            // 尝试使用 ES 模块导入
+            // 使用 ES 模块导入（与动画模块保持一致）
             try {
                 const loaderModule = await import('three/addons/loaders/GLTFLoader.js');
                 GLTFLoader = loaderModule.GLTFLoader;
+
                 const vrmModule = await import('@pixiv/three-vrm');
                 VRMLoaderPlugin = vrmModule.VRMLoaderPlugin;
             } catch (e) {
-                // 如果 ES 模块导入失败，尝试使用全局变量
-                if (typeof window.GLTFLoader === 'undefined') {
-                    throw new Error('GLTFLoader未加载，请确保已引入three.js');
-                }
-                if (typeof window.VRMLoaderPlugin === 'undefined') {
-                    throw new Error('three-vrm库未加载');
-                }
-                GLTFLoader = window.GLTFLoader;
-                VRMLoaderPlugin = window.VRMLoaderPlugin;
+                throw new Error(`无法加载必要的VRM模块: ${e.message}`);
             }
 
             const loader = new GLTFLoader();
@@ -645,7 +630,6 @@ class VRMCore {
             
             // 检测 VRM 模型版本（0.0 或 1.0）
             this.vrmVersion = this.detectVRMVersion(vrm);
-            console.log(`[VRM] 检测到模型版本: ${this.vrmVersion}`);
 
             // 计算模型的边界框，用于确定合适的初始大小
             const box = new THREE.Box3().setFromObject(vrm.scene);
@@ -675,7 +659,6 @@ class VRMCore {
                     
                     // 如果forward向量指向Z轴正方向（远离相机），说明是背面，需要旋转
                     if (forwardVec.z > 0.3) {
-                        console.log('[VRM] 检测到模型朝向为背面（通过骨骼检测），旋转180度使其正面朝向');
                         needsRotation = true;
                     }
                 }
@@ -685,7 +668,6 @@ class VRMCore {
             vrm.scene.rotation.set(0, needsRotation ? Math.PI : 0, 0);
             
             if (needsRotation) {
-                console.log('[VRM] 模型已旋转180度，确保正面朝向相机');
             }
             
             // 计算合适的初始缩放（参考Live2D的默认大小计算，参考 vrm.js）
@@ -733,7 +715,6 @@ class VRMCore {
             
             // 添加到场景
             this.manager.scene.add(vrm.scene);
-            console.log('[VRM] 模型已添加到场景，场景子对象数量:', this.manager.scene.children.length);
 
             // 优化材质设置（根据性能模式）
             this.optimizeMaterials();
@@ -766,7 +747,6 @@ class VRMCore {
                 url: modelUrl
             };
 
-            console.log('[VRM] 模型引用已设置:', {
                 hasModel: !!this.manager.currentModel,
                 hasScene: !!this.manager.currentModel.scene,
                 hasVRM: !!this.manager.currentModel.vrm
@@ -777,13 +757,36 @@ class VRMCore {
                 this.manager.animation.updateMouthExpressionMapping();
             }
 
+            // 自动播放wait03动画（循环播放）
+            // 延迟一点确保所有资源都已准备好
+            setTimeout(async () => {
+                if (this.manager.animation && typeof this.manager.animation.playVRMAAnimation === 'function') {
+                    try {
+                        const animationPath = '/static/vrm/animation/wait03.vrma';
+                        await this.manager.animation.playVRMAAnimation(animationPath, {
+                            loop: true,
+                            fadeIn: 0.5,
+                            fadeOut: 0.5
+                        });
+                    } catch (error) {
+                        setTimeout(async () => {
+                            try {
+                                await this.manager.animation.playVRMAAnimation('/static/vrm/animation/wait03.vrma', {
+                                    loop: true
+                                });
+                            } catch (retryError) {
+                            }
+                        }, 1000);
+                    }
+                }
+            }, 500);
+
             // 设置锁按钮（在模型加载完成后）
             this.setupLockIcon();
-            
+
             // 启用鼠标跟踪（用于控制浮动按钮显示/隐藏）
             if (this.manager.interaction && typeof this.manager.interaction.enableMouseTracking === 'function') {
                 this.manager.interaction.enableMouseTracking(true);
-                console.log('[VRM] 已启用鼠标跟踪（用于浮动按钮控制）');
             }
 
             return this.manager.currentModel;
@@ -830,5 +833,4 @@ class VRMCore {
 
 // 导出到全局
 window.VRMCore = VRMCore;
-console.log('[VRM Core] VRMCore 已注册到全局对象');
 

@@ -372,7 +372,8 @@
     <script src="/static/live2d-ui-hud.js"></script>
     <script src="/static/live2d-ui-drag.js"></script>
     <script src="/static/live2d-init.js"></script>
-    <!-- Three.js 和 three-vrm 的 importmap（用于动态导入 ES 模块） -->
+    <!-- Three.js 核心库和importmap（用于ES6模块导入）-->
+    <script src="/static/libs/three.module.js"></script>
     <script type="importmap">
     {
         "imports": {
@@ -382,7 +383,55 @@
         }
     }
     </script>
-    <script type="module" src="/static/vrm.js?v=2" onload="window.vrmModuleLoaded = true; this.setAttribute('data-loaded', 'true');" onerror="console.error('VRM模块加载失败');"></script>
+    <script src="/static/libs/three-vrm.module.min.js"></script>
+    <!-- VRM模块（按顺序加载，失败不影响Live2D）-->
+    <script>
+    (async function() {
+        try {
+            const vrmModules = [
+                '/static/vrm-core.js',
+                '/static/vrm-expression.js',
+                '/static/vrm-animation.js',
+                '/static/vrm-interaction.js',
+                '/static/vrm-manager.js'
+            ];
+
+            for (const moduleSrc of vrmModules) {
+                const script = document.createElement('script');
+                script.src = moduleSrc + '?v=' + Date.now();
+                await new Promise((resolve, reject) => {
+                    script.onload = () => {
+                        console.log(`VRM模块加载成功: ${moduleSrc}`);
+                        resolve();
+                    };
+                    script.onerror = (error) => {
+                        console.warn(`VRM模块加载失败（不影响Live2D）: ${moduleSrc}`, error);
+                        resolve(); // 即使失败也继续，不中断流程
+                    };
+                    document.body.appendChild(script);
+                });
+            }
+
+            // 加载VRM初始化脚本
+            const vrmInitScript = document.createElement('script');
+            vrmInitScript.src = '/static/vrm-init.js?v=' + Date.now();
+            await new Promise((resolve, reject) => {
+                vrmInitScript.onload = () => {
+                    console.log('VRM初始化脚本加载成功');
+                    window.vrmModuleLoaded = true;
+                    resolve();
+                };
+                vrmInitScript.onerror = (error) => {
+                    console.warn('VRM初始化脚本加载失败（不影响Live2D）:', error);
+                    resolve();
+                };
+                document.body.appendChild(vrmInitScript);
+            });
+        } catch (error) {
+            console.warn('VRM模块加载过程出现异常（不影响Live2D）:', error);
+        }
+    })();
+    </script>
 
     <script>
         // 用于页面间通信的事件处理
@@ -866,10 +915,9 @@
                             }
                             
                             if (typeof window.VRMManager === 'undefined') {
-                                // 如果仍然未定义，检查脚本标签是否已加载
-                                const vrmScript = document.querySelector('script[src*="vrm.js"]');
-                                if (vrmScript && !vrmScript.hasAttribute('data-loaded')) {
-                                    // 脚本标签存在但可能还在加载，再等待一下
+                                // 如果仍然未定义，检查VRM模块是否已加载
+                                if (!window.vrmModuleLoaded) {
+                                    // VRM模块还在加载中，再等待一下
                                     await new Promise(resolve => {
                                         const checkInterval = setInterval(() => {
                                             if (typeof window.VRMManager !== 'undefined') {
@@ -1018,10 +1066,9 @@
                             }
                             
                             if (typeof window.VRMManager === 'undefined') {
-                                // 如果仍然未定义，检查脚本标签是否已加载
-                                const vrmScript = document.querySelector('script[src*="vrm.js"]');
-                                if (vrmScript && !vrmScript.hasAttribute('data-loaded')) {
-                                    // 脚本标签存在但可能还在加载，再等待一下
+                                // 如果仍然未定义，检查VRM模块是否已加载
+                                if (!window.vrmModuleLoaded) {
+                                    // VRM模块还在加载中，再等待一下
                                     await new Promise(resolve => {
                                         const checkInterval = setInterval(() => {
                                             if (typeof window.VRMManager !== 'undefined') {
