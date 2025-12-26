@@ -17,6 +17,7 @@ class PluginTriggerRequest(BaseModel):
     plugin_id: str
     entry_id: str
     args: Dict[str, Any] = {}
+    lanlan_name: Optional[str] = None
     task_id: Optional[str] = None
 
 

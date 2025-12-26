@@ -390,6 +390,45 @@ class PluginContext:
         _ = state.get_plugin_response(request_id)
         raise TimeoutError(f"System config get timed out after {timeout}s")
 
+    def query_memory(self, lanlan_name: str, query: str, timeout: float = 5.0) -> Dict[str, Any]:
+        self._enforce_sync_call_policy("query_memory")
+        if self._plugin_comm_queue is None:
+            raise RuntimeError(
+                f"Plugin communication queue not available for plugin {self.plugin_id}. "
+                "This method can only be called from within a plugin process."
+            )
+
+        request_id = str(uuid.uuid4())
+        request = {
+            "type": "MEMORY_QUERY",
+            "from_plugin": self.plugin_id,
+            "request_id": request_id,
+            "lanlan_name": lanlan_name,
+            "query": query,
+            "timeout": timeout,
+        }
+
+        try:
+            self._plugin_comm_queue.put(request, timeout=timeout)
+        except Exception as e:
+            raise RuntimeError(f"Failed to send memory query request: {e}") from e
+
+        start_time = time.time()
+        check_interval = 0.01
+        while time.time() - start_time < timeout:
+            from plugin.core.state import state
+            response = state.get_plugin_response(request_id)
+            if response is not None:
+                if response.get("error"):
+                    raise RuntimeError(str(response.get("error")))
+                result = response.get("result")
+                return result if isinstance(result, dict) else {"result": result}
+            time.sleep(check_interval)
+
+        from plugin.core.state import state
+        _ = state.get_plugin_response(request_id)
+        raise TimeoutError(f"Memory query timed out after {timeout}s")
+
     def update_own_config(self, updates: Dict[str, Any], timeout: float = 10.0) -> Dict[str, Any]:
         self._enforce_sync_call_policy("update_own_config")
         if self._plugin_comm_queue is None:

@@ -21,6 +21,7 @@ from .config import PluginConfig
 from .plugins import Plugins
 from .events import EventMeta, EventHandler
 from .system_info import SystemInfo
+from .memory import MemoryClient
 
 __all__ = [
     "SDK_VERSION",
@@ -43,4 +44,5 @@ __all__ = [
     "EventMeta",
     "EventHandler",
     "SystemInfo",
+    "MemoryClient",
 ]

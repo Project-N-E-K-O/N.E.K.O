@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -24,6 +25,35 @@ from plugin.settings import (
     RESULT_CONSUMER_SLEEP_INTERVAL,
 )
 from plugin.api.exceptions import PluginExecutionError
+
+
+def _format_log_text(value: Any) -> str:
+    s = "" if value is None else str(value)
+
+    try:
+        max_len = int(os.getenv("NEKO_PLUGIN_LOG_CONTENT_MAX", "200"))
+    except Exception:
+        max_len = 200
+    if max_len <= 0:
+        max_len = 200
+
+    truncated = False
+    if len(s) > max_len:
+        s = s[:max_len]
+        truncated = True
+
+    try:
+        wrap = int(os.getenv("NEKO_PLUGIN_LOG_WRAP", "0"))
+    except Exception:
+        wrap = 0
+
+    if wrap and wrap > 0:
+        s = "\n".join(s[i : i + wrap] for i in range(0, len(s), wrap))
+
+    if truncated:
+        s = s + "...(truncated)"
+
+    return s
 
 
 @dataclass
@@ -440,15 +470,18 @@ class PluginCommunicationResourceManager:
                             f"Source: {msg.get('source', 'unknown')} | "
                             f"Priority: {msg.get('priority', 0)} | "
                             f"Description: {msg.get('description', '')} | "
-                            f"Content: {str(msg.get('content', ''))[:100]}"
+                            f"Content: {_format_log_text(msg.get('content', ''))}"
                         )
                 except asyncio.QueueFull:
-                    self.logger.warning(f"Main message queue is full, dropping message from plugin {self.plugin_id}")
+                    self.logger.warning(
+                        f"Main message queue is full, dropping message from plugin {self.plugin_id}"
+                    )
                 except (AttributeError, RuntimeError) as e:
                     self.logger.error(f"Queue error forwarding message from plugin {self.plugin_id}: {e}")
                 except Exception as e:
-                    self.logger.exception(f"Unexpected error forwarding message from plugin {self.plugin_id}: {e}")
-                    
+                    self.logger.exception(
+                        f"Unexpected error forwarding message from plugin {self.plugin_id}: {e}"
+                    )
             except Empty:
                 # 队列为空，继续等待
                 continue

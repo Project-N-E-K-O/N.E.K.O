@@ -61,6 +61,7 @@ from plugin.sdk.decorators import (
     timer_interval,
 )
 from plugin.sdk.system_info import SystemInfo
+from plugin.sdk.memory import MemoryClient
 
 __all__ = [
     # Core
@@ -114,6 +115,7 @@ __all__ = [
     'message',
     'timer_interval',
     'SystemInfo',
+    'MemoryClient',
     # Logger
     'PluginFileLogger',
     'enable_plugin_file_logging',

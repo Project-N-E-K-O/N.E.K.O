@@ -12,6 +12,7 @@ def build_request_handlers() -> Dict[str, RequestHandler]:
         handle_plugin_config_update,
     )
     from plugin.server.requests.system_config import handle_plugin_system_config_get
+    from plugin.server.requests.memory import handle_memory_query
 
     return {
         "PLUGIN_TO_PLUGIN": handle_plugin_to_plugin,
@@ -19,4 +20,5 @@ def build_request_handlers() -> Dict[str, RequestHandler]:
         "PLUGIN_CONFIG_GET": handle_plugin_config_get,
         "PLUGIN_CONFIG_UPDATE": handle_plugin_config_update,
         "PLUGIN_SYSTEM_CONFIG_GET": handle_plugin_system_config_get,
+        "MEMORY_QUERY": handle_memory_query,
     }

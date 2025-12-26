@@ -5,6 +5,7 @@
 """
 import asyncio
 import logging
+import os
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -32,6 +33,36 @@ from plugin.sdk.errors import ErrorCode
 from plugin.sdk.responses import fail, is_envelope
 
 logger = logging.getLogger("user_plugin_server")
+
+
+def _format_log_text(value: Any) -> str:
+    s = "" if value is None else str(value)
+
+    try:
+        max_len = int(os.getenv("NEKO_PLUGIN_LOG_CONTENT_MAX", "200"))
+    except Exception:
+        max_len = 200
+    if max_len <= 0:
+        max_len = 200
+
+    truncated = False
+    if len(s) > max_len:
+        s = s[:max_len]
+        truncated = True
+
+    try:
+        wrap = int(os.getenv("NEKO_PLUGIN_LOG_WRAP", "0"))
+    except Exception:
+        wrap = 0
+
+    if wrap and wrap > 0:
+        # Hard-wrap to avoid giant single-line log entries.
+        s = "\n".join(s[i : i + wrap] for i in range(0, len(s), wrap))
+
+    if truncated:
+        s = s + "...(truncated)"
+
+    return s
 
 
 def build_plugin_list() -> List[Dict[str, Any]]:
@@ -403,13 +434,13 @@ def get_messages_from_queue(
             messages.append(message_dict)
             
             # 服务器终端日志输出
-            content_str = msg.get("content") or ""
+            content_str = _format_log_text(msg.get("content") or "")
             logger.info(
                 f"[MESSAGE] Plugin: {msg.get('plugin_id', 'unknown')} | "
                 f"Source: {msg.get('source', 'unknown')} | "
                 f"Priority: {msg.get('priority', 0)} | "
                 f"Description: {msg.get('description', '')} | "
-                f"Content: {content_str[:100]}"
+                f"Content: {content_str}"
             )
             
             count += 1
@@ -468,7 +499,7 @@ def push_message_to_queue(
             f"Type: {message_type} | "
             f"Priority: {priority} | "
             f"Description: {description} | "
-            f"Content: {(content or '')[:100]}"
+            f"Content: {_format_log_text(content or '')}"
         )
     except asyncio.QueueFull:
         # 队列满时，尝试移除最旧的消息

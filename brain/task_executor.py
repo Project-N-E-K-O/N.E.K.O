@@ -82,6 +82,7 @@ class DirectTaskExecutor:
         self.plugin_list = []
         self.user_plugin_enabled_default = False
         self._external_plugin_provider: Optional[Callable[[bool], Awaitable[List[Dict[str, Any]]]]] = None
+        self._current_lanlan_name: Optional[str] = None
     
     
     def set_plugin_list_provider(self, provider: Callable[[bool], Awaitable[List[Dict[str, Any]]]]):
@@ -571,6 +572,10 @@ Return only the JSON object, nothing else.
         """
         import uuid
         task_id = str(uuid.uuid4())
+
+        # Cache current lanlan_name for downstream user_plugin trigger injection.
+        # This allows plugins to access memory without requiring every caller to manually pass lanlan_name.
+        self._current_lanlan_name = lanlan_name
         
         if agent_flags is None:
             agent_flags = {"mcp_enabled": False, "computer_use_enabled": False}
@@ -884,7 +889,26 @@ Return only the JSON object, nothing else.
             )
         # Route via /plugin/trigger; use separate top-level entry_id when provided
         trigger_endpoint = f"http://localhost:{USER_PLUGIN_SERVER_PORT}/plugin/trigger"
-        trigger_body = {"task_id": task_id, "plugin_id": plugin_id, "args": plugin_args or {}}
+        safe_args: Dict[str, Any]
+        if isinstance(plugin_args, dict):
+            safe_args = dict(plugin_args)
+        else:
+            safe_args = {}
+
+        # Inject context for plugins (reserved field).
+        # Plugins can read args.get('_ctx', {}).get('lanlan_name') to know which character/session they belong to.
+        try:
+            if self._current_lanlan_name:
+                ctx_obj = safe_args.get("_ctx")
+                if not isinstance(ctx_obj, dict):
+                    ctx_obj = {}
+                if "lanlan_name" not in ctx_obj:
+                    ctx_obj["lanlan_name"] = self._current_lanlan_name
+                safe_args["_ctx"] = ctx_obj
+        except Exception:
+            pass
+
+        trigger_body = {"task_id": task_id, "plugin_id": plugin_id, "args": safe_args}
         if plugin_entry_id:
             trigger_body["entry_id"] = plugin_entry_id
             logger.info("[TaskExecutor] Using explicit plugin_entry_id for trigger: %s", plugin_entry_id)

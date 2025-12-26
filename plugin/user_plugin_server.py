@@ -328,10 +328,23 @@ async def plugin_trigger(payload: PluginTriggerRequest, request: Request):
             args_preview,
         )
         
+        trigger_args = payload.args if isinstance(payload.args, dict) else {}
+        # Merge lanlan_name into a reserved context field for plugin authors.
+        # Priority: explicit payload.lanlan_name > args['_ctx']['lanlan_name'] (if present)
+        try:
+            if payload.lanlan_name:
+                ctx_obj = trigger_args.get("_ctx")
+                if not isinstance(ctx_obj, dict):
+                    ctx_obj = {}
+                ctx_obj.setdefault("lanlan_name", payload.lanlan_name)
+                trigger_args["_ctx"] = ctx_obj
+        except Exception:
+            pass
+
         return await trigger_plugin(
             plugin_id=payload.plugin_id,
             entry_id=payload.entry_id,
-            args=payload.args,
+            args=trigger_args,
             task_id=payload.task_id,
             client_host=client_host,
         )
