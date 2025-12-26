@@ -1030,6 +1030,34 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
     # === 新增：定义断句标点 ===
     PUNCTUATIONS = {"。", "！", "？", "…", "\n", ".", "!", "?", "；", ";"}
 
+    async def receive_loop(ws, resampler, response_queue):
+        """独立接收任务，处理音频流和状态信息"""
+        try:
+            async for message in ws:
+                if isinstance(message, bytes):
+                    # 接收 PCM -> 重采样 -> 输出
+                    audio_array = np.frombuffer(message, dtype=np.int16)
+
+                    # 重采样 24k -> 48k 并发送
+                    resampled_bytes = _resample_audio(audio_array, 24000, 48000, resampler)
+                    response_queue.put(resampled_bytes)
+
+                # 如果是 str，说明是 JSON 状态信息 (task-started, task-finished)
+                elif isinstance(message, str):
+                    try:
+                        msg_json = json.loads(message)
+                        action = msg_json.get("header", {}).get("action")
+
+                        if action == "task-failed":
+                            logger.error(f"本地合成报错: {msg_json}")
+                    except Exception as e:
+                        logger.debug(f'解析状态消息失败：{e}')
+
+        except websockets.exceptions.ConnectionClosed:
+            logger.info("本地 WebSocket 连接断开")
+        except Exception as e:
+            logger.error(f"接收循环异常: {e}")
+
     async def async_worker():
         text_buffer = "" # 文本缓冲
         ws = None
@@ -1073,6 +1101,8 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
 
         # 主循环
         while True:
+
+
             # 1. 获取请求 (非阻塞获取以便处理连接状态)
             try:
                 # 在 loop 中运行 request_queue.get 以便支持打断
@@ -1113,8 +1143,9 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                     await ws_conn.send(json.dumps(payload))
                     logger.info(f"发送合成片段: {text}")
                 except Exception as e:
-                    # ... (这里放你刚才写的重连逻辑) ...
-                    pass
+                    logger.error(f"发送文本到服务器失败{e}")
+                    nonlocal ws
+                    ws = None
 
             # 3. 检查是否包含标点符号（断句）
             # 只要缓冲区里有标点，就切分出来发送
@@ -1190,33 +1221,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             #         ws = None
 
             # =====
-    async def receive_loop(ws, resampler, response_queue):
-        """独立接收任务，处理音频流和状态信息"""
-        try:
-            async for message in ws:
-                if isinstance(message, bytes):
-                    # 接收 PCM -> 重采样 -> 输出
-                    audio_array = np.frombuffer(message, dtype=np.int16)
 
-                    # 重采样 24k -> 48k 并发送
-                    resampled_bytes = _resample_audio(audio_array, 24000, 48000, resampler)
-                    response_queue.put(resampled_bytes)
-
-                # 如果是 str，说明是 JSON 状态信息 (task-started, task-finished)
-                elif isinstance(message, str):
-                    try:
-                        msg_json = json.loads(message)
-                        action = msg_json.get("header", {}).get("action")
-
-                        if action == "task-failed":
-                            logger.error(f"本地合成报错: {msg_json}")
-                    except Exception as e:
-                        logger.debug(f'解析状态消息失败：{e}')
-
-        except websockets.exceptions.ConnectionClosed:
-            logger.info("本地 WebSocket 连接断开")
-        except Exception as e:
-            logger.error(f"接收循环异常: {e}")
 
     # 运行 Asyncio 循环
     try:
