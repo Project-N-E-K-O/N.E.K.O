@@ -1015,43 +1015,31 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
     适配 model_server.py 定义的 /api/v1/ws/cosyvoice 接口
     """
 
-    # 获取config_manager中的配置 config_manager中有tts_custom_URL
-    # 暴力测试 ------------------------- 测试完成后记得删掉
-    WS_URL = 'ws://127.0.0.1:9541/api/v1/ws/cosyvoice'
-    # cm = get_config_manager()
-    # tts_config = cm.get_model_api_config('tts_custom')
-    #
-    # #如果你调用了user
-    # user_url = tts_config.get('base_url','')
-    # if user_url :
-    #     ws_base = user_url.replace('https://', 'wss://').replace('http://', 'ws://').rstrip('/')
-    #     WS_URL = f'{ws_base}/api/v1/ws/cosyvoice'
-    # else:
-    #     logger.error('本地cosyvoice未配置url, 请在设置中填写正确的端口')
-    #     response_queue.put(("__ready__", False)) # 发送失败失败信号,
-    #     return
+    cm = get_config_manager()
+    tts_config = cm.get_model_api_config('tts_custom')
+
+    #如果你调用了user
+    user_url = tts_config.get('base_url','')
+    if user_url :
+        ws_base = user_url.replace('https://', 'wss://').replace('http://', 'ws://').rstrip('/')
+        WS_URL = f'{ws_base}/api/v1/ws/cosyvoice'
+    else:
+        logger.error('本地cosyvoice未配置url, 请在设置中填写正确的端口')
+        response_queue.put(("__ready__", False)) # 发送失败失败信号,
+        return
     # === 新增：定义断句标点 ===
     PUNCTUATIONS = {"。", "！", "？", "…", "\n", ".", "!", "?", "；", ";"}
 
     async def async_worker():
-        # 检查问题使用的代码 --------------
-        logger.info("✅ [LocalTTS] 连接成功")
-        response_queue.put(("__ready__", True))
         text_buffer = "" # 文本缓冲
-
-        # === 调试点1 确认进入主循环
-        print(">>> [DEBUG] 进入 Worker 主循环，等待文本...")
-        #------------------
         ws = None
         receive_task = None
         current_speech_id = None
-        # ready_sent = False #初始化就绪信号标志
         # CosyVoice3 默认采样率通常为 24000Hz (如果是 CosyVoice1 则为 22050Hz)
         # 你的 server 代码加载的是 Fun-CosyVoice3-0.5B，所以这里设定为 24000
         SRC_RATE = 24000
         # 重采样？ 调用soxr.ResampleStream 参数分别为 原采样率 ,重采样后的采样率 num_channels是声道数？
         resampler = soxr.ResampleStream(SRC_RATE, 48000, 1, dtype='float32')
-
         # === 内部辅助函数：连接/重连 ===
         async def ensure_connection():
             nonlocal ws, receive_task
@@ -1089,17 +1077,9 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             try:
                 # 在 loop 中运行 request_queue.get 以便支持打断
                 loop = asyncio.get_running_loop()
-                # ==== 调试点 2 正在等待队列 ===
-                'TODO:清理测试的代码'
-                print(">>> [DEBUG] 正在等待 request_queue.get ...")
-                #
                 sid, tts_text = await loop.run_in_executor(None, request_queue.get)
-                # === 调试点 3：获取到了数据 ===
-                print(f">>> [DEBUG] 队列收到数据! sid={sid}, text={tts_text}")
-            except Exception:
-                # === 调试点 3
-                print(f">>> [DEBUG] 队列获取异常: {e}")
-                # ===
+            except Exception as e:
+                logger.error(f'队列获取异常{e}')
                 break
 
             if sid != current_speech_id:
@@ -1159,9 +1139,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                 else:
                     # 没有标点，跳出循环继续等待更多字
                     break
-            #'TODO: 这里可能是单个字的发送'
 
-            #
             # # 构造 payload
             # # 注意：Zero-Shot 模式下 voice_id 可能为空，这里给一个默认值防止报错
             # payload = {
@@ -1177,7 +1155,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             # }
             #
 
-            # === 旧代码 'TODO: 这里是旧的 ws问题 需要解决'
+            # === 旧代码
             # if ws is None or ws.closed:
             #     try:
             #         await ensure_connection()
