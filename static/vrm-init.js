@@ -6,16 +6,48 @@
 const VRM_STATIC_PATH = '/static/vrm';  // 项目目录下的 VRM 模型路径
 const VRM_USER_PATH = '/user_vrm';  // 用户文档目录下的 VRM 模型路径
 
-// 创建全局 VRM 管理器实例（如果VRMManager类存在）
-try {
-    if (typeof VRMManager !== 'undefined') {
-        window.vrmManager = new VRMManager();
-    } else {
+// 创建全局 VRM 管理器实例（延迟创建，确保所有模块都已加载）
+window.vrmManager = null;
+
+// 延迟初始化函数（带最大重试次数限制）
+let initRetryCount = 0;
+const MAX_INIT_RETRIES = 50; // 最多重试50次（5秒）
+
+function initializeVRMManager() {
+    try {
+        // 如果已经创建了实例，不再重复创建
+        if (window.vrmManager) {
+            return;
+        }
+
+        // 检查所有必要的VRM模块是否都已加载
+        const requiredModules = ['VRMManager', 'VRMCore', 'VRMExpression', 'VRMAnimation', 'VRMInteraction'];
+        const missingModules = requiredModules.filter(module => typeof window[module] === 'undefined');
+
+        if (missingModules.length > 0) {
+            initRetryCount++;
+            if (initRetryCount >= MAX_INIT_RETRIES) {
+                console.warn(`[VRM Init] 达到最大重试次数(${MAX_INIT_RETRIES})，停止初始化。缺失模块: ${missingModules.join(', ')}`);
+                return;
+            }
+            // 如果还有模块未加载，延迟执行
+            setTimeout(initializeVRMManager, 100);
+            return;
+        }
+
+        // 所有模块都已加载，创建VRMManager实例
+        if (!window.vrmManager) {
+            window.vrmManager = new VRMManager();
+            console.log('[VRM Init] VRMManager实例创建成功');
+        }
+    } catch (error) {
+        console.warn('[VRM Init] VRMManager创建失败:', error);
         window.vrmManager = null;
     }
-} catch (error) {
-    window.vrmManager = null;
 }
+
+// 启动延迟初始化
+initializeVRMManager();
 
 // 自动初始化函数（延迟执行，等待 vrmModel 设置）
 async function initVRMModel() {

@@ -22,6 +22,8 @@ class VRMManager {
         this.canvas = null;
         this.controls = null;
         this.isLocked = false; // 锁定状态，锁定时不响应拖拽和缩放
+        this._isInitialized = false; // 标记是否已初始化Three.js场景
+        this._animationFrameId = null; // 动画循环ID
 
         console.log('[VRM Manager] 检查依赖模块...');
 
@@ -61,14 +63,32 @@ class VRMManager {
      * 初始化Three.js场景
      */
     async initThreeJS(canvasId, containerId) {
+        // 如果已经初始化过，跳过重复初始化
+        if (this._isInitialized && this.scene && this.camera && this.renderer) {
+            console.log('[VRM Manager] Three.js场景已初始化，跳过重复初始化');
+            return true;
+        }
+
+        // 确保core已初始化
         if (!this.core) {
-            throw new Error('VRMCore 未初始化，请确保已加载所有VRM模块');
+            if (typeof window.VRMCore === 'undefined') {
+                throw new Error('VRMCore 未加载，请刷新页面重试');
+            }
+            // 初始化core
+            this.core = new window.VRMCore(this);
+            console.log('[VRM Manager] 延迟初始化 VRMCore');
         }
         await this.core.init(canvasId, containerId);
         if (this.interaction) {
             this.interaction.initDragAndZoom();
         }
-        this.animate();
+        
+        // 只有在没有运行动画循环时才启动
+        if (!this._animationFrameId) {
+            this.animate();
+        }
+        
+        this._isInitialized = true;
         console.log('Three.js场景初始化完成');
         return true;
     }
@@ -96,48 +116,71 @@ class VRMManager {
     animate() {
         // 如果已经被dispose，停止循环
         if (!this.renderer || !this.scene || !this.camera) {
+            this._animationFrameId = null;
             return;
         }
 
-        this._animationFrameId = requestAnimationFrame(() => this.animate());
-
-        const delta = this.clock ? this.clock.getDelta() : 0.016;
-
-        // 更新控制器
-        if (this.controls) {
-            this.controls.update();
+        // 如果已经有动画循环在运行，不启动新的循环
+        if (this._animationFrameId !== null) {
+            return;
         }
 
-        // 更新动画模块
-        if (this.animation) {
-            this.animation.update(delta);
-        }
-
-        // 更新VRM模型
-        if (this.currentModel && this.currentModel.vrm) {
-            this.currentModel.vrm.update(delta);
-        }
-
-        // 更新浮动按钮位置（如果按钮已显示）
-        if (this.interaction && typeof this.interaction.updateFloatingButtonsPosition === 'function') {
-            const buttonsContainer = document.getElementById('live2d-floating-buttons');
-            if (buttonsContainer && buttonsContainer.style.display === 'flex') {
-                this.interaction.updateFloatingButtonsPosition();
+        const animateLoop = () => {
+            // 如果已经被dispose，停止循环
+            if (!this.renderer || !this.scene || !this.camera) {
+                this._animationFrameId = null;
+                return;
             }
-        }
 
-        // 渲染场景
-        if (this.renderer && this.scene && this.camera) {
-            this.renderer.render(this.scene, this.camera);
-        }
+            this._animationFrameId = requestAnimationFrame(animateLoop);
+
+            const delta = this.clock ? this.clock.getDelta() : 0.016;
+
+            // 更新控制器
+            if (this.controls) {
+                this.controls.update();
+            }
+
+            // 更新动画模块
+            if (this.animation) {
+                this.animation.update(delta);
+            }
+
+            // 更新VRM模型
+            if (this.currentModel && this.currentModel.vrm) {
+                this.currentModel.vrm.update(delta);
+            }
+
+            // 更新浮动按钮位置（如果按钮已显示）
+            if (this.interaction && typeof this.interaction.updateFloatingButtonsPosition === 'function') {
+                const buttonsContainer = document.getElementById('live2d-floating-buttons');
+                if (buttonsContainer && buttonsContainer.style.display === 'flex') {
+                    this.interaction.updateFloatingButtonsPosition();
+                }
+            }
+
+            // 渲染场景
+            if (this.renderer && this.scene && this.camera) {
+                this.renderer.render(this.scene, this.camera);
+            }
+        };
+
+        // 启动动画循环
+        this._animationFrameId = requestAnimationFrame(animateLoop);
     }
 
     /**
      * 加载VRM模型
      */
     async loadModel(modelUrl, options = {}) {
+        // 确保core已初始化
         if (!this.core) {
-            throw new Error('VRMCore 未初始化，请确保已加载所有VRM模块');
+            if (typeof window.VRMCore === 'undefined') {
+                throw new Error('VRMCore 未加载，请刷新页面重试');
+            }
+            // 初始化core
+            this.core = new window.VRMCore(this);
+            console.log('[VRM Manager] 延迟初始化 VRMCore');
         }
         return await this.core.loadModel(modelUrl, options);
     }
@@ -190,6 +233,9 @@ class VRMManager {
             cancelAnimationFrame(this._animationFrameId);
             this._animationFrameId = null;
         }
+
+        // 重置初始化标志
+        this._isInitialized = false;
 
         // 移除当前模型
         this.removeModel();
@@ -276,8 +322,14 @@ class VRMManager {
      * 兼容旧接口
      */
     async loadAndPlayAnimation(animationUrl, options = {}) {
+        // 确保animation已初始化
         if (!this.animation) {
-            throw new Error('VRMAnimation 未初始化，请确保已加载所有VRM模块');
+            if (typeof window.VRMAnimation === 'undefined') {
+                throw new Error('VRMAnimation 未加载，请刷新页面重试');
+            }
+            // 初始化animation
+            this.animation = new window.VRMAnimation(this);
+            console.log('[VRM Manager] 延迟初始化 VRMAnimation');
         }
         return await this.animation.playVRMAAnimation(animationUrl, options);
     }
@@ -335,8 +387,14 @@ class VRMManager {
      * 设置表情（委托给expression模块）
      */
     setExpression(expressionName, weight) {
+        // 确保expression已初始化
         if (!this.expression) {
-            return false;
+            if (typeof window.VRMExpression === 'undefined') {
+                return false;
+            }
+            // 初始化expression
+            this.expression = new window.VRMExpression(this);
+            console.log('[VRM Manager] 延迟初始化 VRMExpression');
         }
         return this.expression.setExpression(expressionName, weight);
     }
@@ -345,8 +403,14 @@ class VRMManager {
      * 获取所有可用表情（委托给expression模块）
      */
     getAvailableExpressions() {
+        // 确保expression已初始化
         if (!this.expression) {
-            return [];
+            if (typeof window.VRMExpression === 'undefined') {
+                return [];
+            }
+            // 初始化expression
+            this.expression = new window.VRMExpression(this);
+            console.log('[VRM Manager] 延迟初始化 VRMExpression');
         }
         return this.expression.getAvailableExpressions();
     }
@@ -364,8 +428,14 @@ class VRMManager {
      * 启动口型同步（委托给animation模块）
      */
     startLipSync(analyser) {
+        // 确保animation已初始化
         if (!this.animation) {
-            return false;
+            if (typeof window.VRMAnimation === 'undefined') {
+                return false;
+            }
+            // 初始化animation
+            this.animation = new window.VRMAnimation(this);
+            console.log('[VRM Manager] 延迟初始化 VRMAnimation');
         }
         return this.animation.startLipSync(analyser);
     }
@@ -383,9 +453,16 @@ class VRMManager {
      * 启用/禁用鼠标跟踪（委托给interaction模块）
      */
     enableMouseTracking(enabled) {
-        if (this.interaction) {
-            return this.interaction.enableMouseTracking(enabled);
+        // 确保interaction已初始化
+        if (!this.interaction) {
+            if (typeof window.VRMInteraction === 'undefined') {
+                return false;
+            }
+            // 初始化interaction
+            this.interaction = new window.VRMInteraction(this);
+            console.log('[VRM Manager] 延迟初始化 VRMInteraction');
         }
+        return this.interaction.enableMouseTracking(enabled);
     }
 }
 

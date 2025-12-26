@@ -21,7 +21,7 @@ logger = logging.getLogger("Main")
 
 # VRM 模型路径常量（与 main_server.py 中的挂载点保持一致）
 VRM_USER_PATH = "/user_vrm"  # 用户文档目录下的 VRM 模型路径
-VRM_USER_ANIMATION_PATH = "/user_vrm/animation"  # 用户文档目录下的 VRM 动画路径
+VRM_STATIC_ANIMATION_PATH = "/static/vrm/animation"  # 项目目录下的 VRM 动画路径（与前端代码保持一致）
 VRM_MODELS_ANIMATION_PATH = "/models/vrm/animations"  # 项目目录下的 VRM 动画路径
 
 
@@ -127,13 +127,24 @@ def get_vrm_animations():
         animations = []
         for anim_dir in animations_dirs:
             if anim_dir.exists():
+                # 根据目录确定URL前缀
+                if anim_dir == config_mgr.vrm_animation_dir:
+                    # static/vrm/animation 目录 -> /static/vrm/animation/
+                    url_prefix = VRM_STATIC_ANIMATION_PATH
+                elif anim_dir == models_animations_dir:
+                    # models/vrm/animations 目录 -> /models/vrm/animations/
+                    url_prefix = VRM_MODELS_ANIMATION_PATH
+                else:
+                    # 其他目录默认使用 /user_vrm/animation/
+                    url_prefix = "/user_vrm/animation"
+
                 # 查找.vrma文件
                 for anim_file in anim_dir.glob('*.vrma'):
                     animations.append({
                         "name": anim_file.stem,
                         "filename": anim_file.name,
                         "path": str(anim_file),
-                        "url": f"{VRM_USER_ANIMATION_PATH}/{anim_file.name}" if anim_dir == config_mgr.vrm_animation_dir else f"{VRM_MODELS_ANIMATION_PATH}/{anim_file.name}",
+                        "url": f"{url_prefix}/{anim_file.name}",
                         "type": "vrma",
                         "size": anim_file.stat().st_size if anim_file.exists() else 0
                     })
@@ -144,7 +155,7 @@ def get_vrm_animations():
                             "name": anim_file.stem,
                             "filename": anim_file.name,
                             "path": str(anim_file),
-                            "url": f"{VRM_USER_ANIMATION_PATH}/{anim_file.name}" if anim_dir == config_mgr.vrm_animation_dir else f"{VRM_MODELS_ANIMATION_PATH}/{anim_file.name}",
+                            "url": f"{url_prefix}/{anim_file.name}",
                             "type": "vrm",
                             "size": anim_file.stat().st_size if anim_file.exists() else 0
                         })

@@ -383,11 +383,29 @@
         }
     }
     </script>
+    <!-- 将 THREE 挂载到 window 对象，以便非模块脚本可以使用 -->
+    <script type="module">
+        import * as THREE from 'three';
+        window.THREE = THREE;
+        console.log('[Three.js] ES 模块已加载并挂载到 window.THREE');
+    </script>
     <script src="/static/libs/three-vrm.module.min.js"></script>
     <!-- VRM模块（按顺序加载，失败不影响Live2D）-->
     <script>
     (async function() {
         try {
+            // 等待 THREE.js 加载完成
+            let threeLoadRetryCount = 0;
+            const maxRetries = 50; // 最多等待5秒
+            while (typeof window.THREE === 'undefined' && threeLoadRetryCount < maxRetries) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+                threeLoadRetryCount++;
+            }
+            if (typeof window.THREE === 'undefined') {
+                throw new Error('Three.js 库未加载，请刷新页面重试。');
+            }
+            console.log('[VRM] Three.js 已加载，开始加载VRM模块');
+
             const vrmModules = [
                 '/static/vrm-core.js',
                 '/static/vrm-expression.js',
@@ -933,14 +951,43 @@
                                 }
                             }
                             
-                            if (typeof window.VRMManager === 'undefined') {
-                                throw new Error('VRMManager 仍未定义。请检查浏览器控制台是否有脚本加载错误，或刷新页面重试。');
+                            // 检查所有必要的VRM模块是否都已加载
+                            const requiredModules = ['VRMManager', 'VRMCore', 'VRMExpression', 'VRMAnimation', 'VRMInteraction'];
+                            const missingModules = requiredModules.filter(module => typeof window[module] === 'undefined');
+
+                            if (missingModules.length > 0) {
+                                throw new Error(`VRM模块未完全加载，缺失: ${missingModules.join(', ')}。请刷新页面重试。`);
+                            }
+
+                            showStatus(t('live2d.waitingVRMLoader', '正在初始化 VRM 管理器...'));
+                            
+                            // 检查是否已有vrmManager实例，避免重复创建
+                            if (!vrmManager && window.vrmManager) {
+                                vrmManager = window.vrmManager;
+                                console.log('[VRM Manager] 复用已存在的VRMManager实例');
+                            } else if (!vrmManager) {
+                                vrmManager = new window.VRMManager();
+                                window.vrmManager = vrmManager;
+                                console.log('[VRM Manager] 创建新的VRMManager实例');
+                            } else {
+                                console.log('[VRM Manager] 使用现有的vrmManager实例');
                             }
                             
-                            showStatus(t('live2d.waitingVRMLoader', '正在初始化 VRM 管理器...'));
-                            vrmManager = new window.VRMManager('vrm-container', {});
-                            await vrmManager.init();
-                            window.vrmManager = vrmManager;
+                            // 确保 vrm-container 中有 canvas 元素
+                            const vrmContainer = document.getElementById('vrm-container');
+                            if (vrmContainer && !vrmContainer.querySelector('canvas')) {
+                                const canvas = document.createElement('canvas');
+                                canvas.id = 'vrm-canvas';
+                                vrmContainer.appendChild(canvas);
+                            }
+                            
+                            // 只有在未初始化Three.js场景时才初始化
+                            // 使用_isInitialized标志或检查scene/camera/renderer
+                            if (!vrmManager._isInitialized && (!vrmManager.scene || !vrmManager.camera || !vrmManager.renderer)) {
+                                await vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
+                            } else {
+                                console.log('[VRM Manager] Three.js场景已初始化，跳过重复初始化');
+                            }
                             
                             showStatus(t('live2d.vrmInitialized', 'VRM 管理器初始化成功'));
                         } catch (error) {
@@ -1084,14 +1131,43 @@
                                 }
                             }
                             
-                            if (typeof window.VRMManager === 'undefined') {
-                                throw new Error('VRMManager 仍未定义。请检查浏览器控制台是否有脚本加载错误，或刷新页面重试。');
+                            // 检查所有必要的VRM模块是否都已加载
+                            const requiredModules = ['VRMManager', 'VRMCore', 'VRMExpression', 'VRMAnimation', 'VRMInteraction'];
+                            const missingModules = requiredModules.filter(module => typeof window[module] === 'undefined');
+
+                            if (missingModules.length > 0) {
+                                throw new Error(`VRM模块未完全加载，缺失: ${missingModules.join(', ')}。请刷新页面重试。`);
+                            }
+
+                            showStatus(t('live2d.waitingVRMLoader', '正在初始化 VRM 管理器...'));
+                            
+                            // 检查是否已有vrmManager实例，避免重复创建
+                            if (!vrmManager && window.vrmManager) {
+                                vrmManager = window.vrmManager;
+                                console.log('[VRM Manager] 复用已存在的VRMManager实例');
+                            } else if (!vrmManager) {
+                                vrmManager = new window.VRMManager();
+                                window.vrmManager = vrmManager;
+                                console.log('[VRM Manager] 创建新的VRMManager实例');
+                            } else {
+                                console.log('[VRM Manager] 使用现有的vrmManager实例');
                             }
                             
-                            showStatus(t('live2d.waitingVRMLoader', '正在初始化 VRM 管理器...'));
-                            vrmManager = new window.VRMManager('vrm-container', {});
-                            await vrmManager.init();
-                            window.vrmManager = vrmManager;
+                            // 确保 vrm-container 中有 canvas 元素
+                            const vrmContainer = document.getElementById('vrm-container');
+                            if (vrmContainer && !vrmContainer.querySelector('canvas')) {
+                                const canvas = document.createElement('canvas');
+                                canvas.id = 'vrm-canvas';
+                                vrmContainer.appendChild(canvas);
+                            }
+                            
+                            // 只有在未初始化Three.js场景时才初始化
+                            // 使用_isInitialized标志或检查scene/camera/renderer
+                            if (!vrmManager._isInitialized && (!vrmManager.scene || !vrmManager.camera || !vrmManager.renderer)) {
+                                await vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
+                            } else {
+                                console.log('[VRM Manager] Three.js场景已初始化，跳过重复初始化');
+                            }
                             
                             showStatus(t('live2d.vrmInitialized', 'VRM 管理器初始化成功'));
                         } catch (error) {
@@ -1170,19 +1246,19 @@
                         vrmAnimationSelect.innerHTML = `<option value="">${t('live2d.vrmAnimation.selectAnimation', '选择动作')}</option>`;
                         vrmAnimations.forEach(anim => {
                             const option = document.createElement('option');
-                            // 处理不同的返回格式：可能是字符串路径，也可能是对象
-                            const animPath = typeof anim === 'string' ? anim : (anim.path || anim);
-                            const animUrl = typeof anim === 'string' ? anim : (anim.url || anim.path || anim);
-                            const animName = typeof anim === 'string' ? anim.split(/[\\/]/).pop() : (anim.name || anim.filename || anim.path || anim).split(/[\\/]/).pop();
+                            // 后端返回的格式：{ name, filename, path, url, type, size }
+                            // url 字段已经是正确的HTTP URL，直接使用
+                            const animUrl = anim.url || anim.path || anim;
+                            const animPath = anim.path || anim;
+                            const animName = anim.name || anim.filename || animUrl.split(/[\\/]/).pop();
                             
-                            // 使用HTTP URL作为value（用于加载），保存原始路径在data-path中
-                            // 如果animUrl是本地路径（包含:或不是以/开头），转换为HTTP URL
+                            // 如果animUrl是本地路径（包含:或不是以/开头），需要转换
                             let finalUrl = animUrl;
                             if (finalUrl.includes(':') || (!finalUrl.startsWith('/') && !finalUrl.startsWith('http'))) {
                                 const filename = finalUrl.split(/[\\/]/).pop();
-                                // 根据路径判断应该使用哪个URL前缀
+                                // 根据path判断应该使用哪个URL前缀
                                 if (animPath && animPath.includes('static/vrm/animation')) {
-                                    finalUrl = `/user_vrm/animation/${filename}`;
+                                    finalUrl = `/static/vrm/animation/${filename}`;
                                 } else if (animPath && animPath.includes('models/vrm/animations')) {
                                     finalUrl = `/models/vrm/animations/${filename}`;
                                 } else {
@@ -1305,8 +1381,9 @@
                     let finalAnimationUrl = animationUrl;
                     if (finalAnimationUrl.includes(':') || (!finalAnimationUrl.startsWith('/') && !finalAnimationUrl.startsWith('http'))) {
                         const filename = finalAnimationUrl.split(/[\\/]/).pop();
+                        // 根据path判断应该使用哪个URL前缀
                         if (originalPath && originalPath.includes('static/vrm/animation')) {
-                            finalAnimationUrl = `/user_vrm/animation/${filename}`;
+                            finalAnimationUrl = `/static/vrm/animation/${filename}`;
                         } else if (originalPath && originalPath.includes('models/vrm/animations')) {
                             finalAnimationUrl = `/models/vrm/animations/${filename}`;
                         } else {

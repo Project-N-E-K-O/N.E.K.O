@@ -511,9 +511,6 @@ class VRMCore {
         canvas.style.width = '100%';
         canvas.style.height = '100%';
         canvas.style.display = 'block';
-            pointerEvents: canvas.style.pointerEvents,
-            computedPointerEvents: window.getComputedStyle(canvas).pointerEvents
-        });
 
         // 添加轨道控制器
         if (typeof window.OrbitControls !== 'undefined') {
@@ -577,7 +574,10 @@ class VRMCore {
      */
     async loadModel(modelUrl, options = {}) {
         const THREE = window.THREE;
-        
+        if (!THREE) {
+            throw new Error('Three.js库未加载，无法加载VRM模型');
+        }
+
         try {
             // 动态导入 GLTFLoader 和 VRMLoaderPlugin（参考 vrm.js）
             let GLTFLoader, VRMLoaderPlugin;
@@ -747,6 +747,7 @@ class VRMCore {
                 url: modelUrl
             };
 
+            console.log('[VRM Core] 模型加载完成:', {
                 hasModel: !!this.manager.currentModel,
                 hasScene: !!this.manager.currentModel.scene,
                 hasVRM: !!this.manager.currentModel.vrm

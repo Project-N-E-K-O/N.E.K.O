@@ -46,13 +46,22 @@ async def get_page_config(lanlan_name: str = ""):
         
         # 根据模型类型获取模型路径
         if model_type == 'vrm':
-            # VRM模型：直接使用vrm字段中的路径
+            # VRM模型：处理路径转换
             import os
             from pathlib import Path
             vrm_path = catgirl_config.get('vrm', '')
             if vrm_path:
-                # 如果是本地路径，转换为HTTP URL
-                if ':' in vrm_path or (not vrm_path.startswith('/') and not vrm_path.startswith('http')):
+                # 处理不同格式的路径
+                if vrm_path.startswith('http://') or vrm_path.startswith('https://'):
+                    # HTTP URL，直接使用
+                    model_path = vrm_path
+                    logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型HTTP路径: {model_path}")
+                elif vrm_path.startswith('/'):
+                    # 绝对路径，直接使用（服务器端路径）
+                    model_path = vrm_path
+                    logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型绝对路径: {model_path}")
+                else:
+                    # 本地文件路径，需要转换为HTTP URL
                     filename = os.path.basename(vrm_path)
                     # 检查文件是否在项目目录的 static/vrm/ 下
                     project_root = _config_manager._get_project_root()
@@ -61,12 +70,16 @@ async def get_page_config(lanlan_name: str = ""):
                         model_path = f'{VRM_STATIC_PATH}/{filename}'
                         logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型在项目目录: {vrm_path} -> {model_path}")
                     else:
-                        # 否则使用用户文档目录
-                        model_path = f'{VRM_USER_PATH}/{filename}'
-                        logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型在用户目录: {vrm_path} -> {model_path}")
-                else:
-                    model_path = vrm_path
-                    logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型路径: {vrm_path} -> {model_path}")
+                        # 检查用户文档目录
+                        user_vrm_dir = _config_manager.vrm_dir
+                        user_vrm_path = user_vrm_dir / filename
+                        if user_vrm_path.exists():
+                            model_path = f'{VRM_USER_PATH}/{filename}'
+                            logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型在用户目录: {vrm_path} -> {model_path}")
+                        else:
+                            # 文件不存在，默认使用项目目录路径
+                            model_path = f'{VRM_STATIC_PATH}/{filename}'
+                            logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型路径未找到，使用默认: {vrm_path} -> {model_path}")
             else:
                 logger.warning(f"角色 {target_name} 的VRM模型路径为空")
         else:

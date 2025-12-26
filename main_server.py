@@ -463,6 +463,7 @@ app.include_router(agent_router)
 app.include_router(system_router)
 app.include_router(pages_router)  # Mount last for catch-all routes
 
+
 # 后台预加载任务
 _preload_task: asyncio.Task = None
 
