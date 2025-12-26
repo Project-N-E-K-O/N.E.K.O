@@ -2037,7 +2037,7 @@
                             <input type="file" id="preview-image-file" accept="image/*" style="display: none;">
                             <button class="btn btn-secondary" onclick="selectPreviewImage()" data-i18n="common.selectFile">选择文件</button>
                         </div>
-                        <div class="control-hint" style="color: red; font-size: 14px;" data-i18n="steam.previewImageSizeHint">提示：预览图片大小需要小于1MB</div>
+                        <div class="control-hint" id="preview-image-size-hint" style="color: #333; font-size: 14px;" data-i18n="steam.previewImageSizeHint">提示：预览图片大小需要小于1MB</div>
                     </div>
                     
                     <div class="control-group">
@@ -2143,9 +2143,6 @@
                 <div class="section-card">
                     <div class="section-header" style="display: flex; justify-content: space-between; align-items: center;">
                          <h2 data-i18n="steam.characterCardsList">角色卡列表</h2>
-                         <button id="new-character-card-btn" class="btn btn-primary" title="创建新角色卡" onclick="clearCharacterCardForm()" style="width: 36px; height: 36px; padding: 0; display: flex; justify-content: center; align-items: center; font-size: 24px; line-height: 1;">
-                             +
-                         </button>
                       </div>
                     
                     <div id="character-cards-list" class="cards-container">
@@ -2168,33 +2165,28 @@
                         <div class="character-card-inputs">
                             <div class="control-group">
                                 <div class="control-label" data-i18n="steam.characterCardName">角色名称</div>
-                                <div style="position: relative;">
-                                    <input type="text" id="character-card-name" class="control-input">
-                                    <span id="edit-mode-lock" style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); color: #666; display: none;">
-                                        🔒 <span data-i18n="steam.editMode">编辑模式</span>
-                                    </span>
-                                </div>
+                                <input type="text" id="character-card-name" class="control-input" readonly style="cursor: default; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">
                             </div>
                             
                             <div class="control-group">
                                 <div class="control-label" data-i18n="steam.characterCardGender">性别</div>
-                                <input type="text" id="character-card-gender" class="control-input">
+                                <input type="text" id="character-card-gender" class="control-input" readonly style="cursor: default; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">
                             </div>
                             
                             <div class="control-group">
                                 <div class="control-label" data-i18n="steam.characterCardAge">年龄</div>
-                                <input type="text" id="character-card-age" class="control-input">
+                                <input type="text" id="character-card-age" class="control-input" readonly style="cursor: default; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">
                             </div>
                             
                             <div class="control-group">
                                 <div class="control-label" data-i18n="steam.characterCardDescription">描述</div>
-                                <textarea id="character-card-description" class="control-input" style="white-space: pre-wrap; min-height: 100px;"></textarea>
+                                <textarea id="character-card-description" class="control-input" style="white-space: pre-wrap; min-height: 100px; cursor: default; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;" readonly></textarea>
                             </div>
                             
                             <div class="control-group">
                                 <div class="control-label" data-i18n="steam.characterCardSetting">角色设定</div>
                                 <div style="color: #999; font-size: 12px; " data-i18n="steam.characterCardSettingEnglishOnly"></div>
-                                <textarea id="character-card-setting" class="control-input" style="white-space: pre-wrap; min-height: 100px;"></textarea>
+                                <textarea id="character-card-setting" class="control-input" style="white-space: pre-wrap; min-height: 100px; cursor: default; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;" readonly></textarea>
 
                             </div>
                             
@@ -2203,10 +2195,9 @@
                                 <div id="character-card-model-selection">
                                     <!-- 模型选择区域 -->
                                     <div style="display: flex; gap: 8px; margin-bottom: 10px;">
-                                        <select id="model-select" class="control-input" style="width: 100%; padding-right: 25px; cursor: pointer;">
+                                        <select id="model-select" class="control-input" style="width: 100%; padding-right: 25px; cursor: default; opacity: 0.7; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;" disabled>
                                             <option value="">未选择模型</option>
                                         </select>
-                                        <button class="btn btn-secondary" onclick="openModelDirectory()" style="cursor: pointer; white-space: nowrap;" disabled>打开目录</button>
                                     </div>
                                 </div>
                             </div>
@@ -2214,53 +2205,23 @@
                             <div class="control-group">
                                 <div class="control-label">角色音色</div>
                                 <div id="character-card-voice-selection">
-                                    <!-- 音色选择区域 -->
+                                    <!-- 音色显示区域 -->
                                     <div class="control-group" style="margin-bottom: 20px;">
-                                        <div style="display: flex; gap: 8px; margin-bottom: 10px;">
-                                            <select id="voice-select" class="control-input" style="width: 100%; padding-right: 25px; cursor: pointer;">
-                                                <option value="">未选择音色</option>
-                                            </select>
-                                            <button class="btn btn-secondary" onclick="registerVoice()" style="cursor: pointer; white-space: nowrap;">注册音色</button>
+                                        <div id="voice-select" class="control-input" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; background-color: #f9f9f9; color: #333; cursor: default; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">
+                                            未选择音色
                                         </div>
                                         <div style="color: #888; font-size: 12px; margin-top: 5px;">如有音色文件请一起放入模型目录，文件名请使用数字和英文字母</div>
-                                    </div>
-                                    
-                                    <!-- 注册音色表单 -->
-                                    <div class="control-group" style="margin-bottom: 20px; padding: 10px; background-color: #f5f5f5; border-radius: 8px; box-sizing: border-box;">
-                                        <div class="control-label">注册新音色</div>
-                                        <div style="margin-bottom: 10px;">
-                                            <label data-i18n="voice.selectFile">选择本地音频文件（15秒最佳，请勿超过45秒，wav/mp3格式）</label>
-                                        </div>
-                                        <div class="file-input-wrapper" style="margin-bottom: 15px;">
-                                            <input type="file" id="audioFile" accept="audio/*" style="display: none;">
-                                            <label for="audioFile" class="btn btn-secondary" id="fileInputLabel" data-i18n="voice.chooseFile">选择文件</label>
-                                            <span class="file-name-display" id="fileNameDisplay" data-i18n="voice.noFileSelected" style="margin-left: 10px; color: #666; font-size: 14px;">未选择文件</span>
-                                        </div>
-                                        <div class="field-row" style="margin-bottom: 15px;">
-                                            <label data-i18n="voice.customPrefix">自定义前缀（阿里云需要）</label>
-                                            <label class="hint" data-i18n="voice.customPrefixNote" style="font-weight: normal; font-size: 12px; color: #888; display: block; margin-bottom: 5px;">不超过10个字符，只支持数字和英文字母</label>
-                                            <input type="text" id="prefix" data-i18n-placeholder="voice.prefixPlaceholder" placeholder="不超过10个字符，只支持数字和英文字母" required style="max-width: 600px; width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box;">
-                                        </div>
-                                        <div class="result" id="voice-register-result" style="margin-top: 10px; font-size: 14px;"></div>
                                     </div>
                                 </div>
                             </div>
                             
                             <div class="control-group">
                                 <div class="control-label" data-i18n="steam.characterCardTags">角色卡标签</div>
-                                <div id="character-card-tags-wrapper" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px; border: 1px solid #ddd; border-radius: 8px; background-color: #f9f9f9;">
-                                    <div class="tags-container" id="character-card-tags-container"></div>
-                                    <input type="text" id="character-card-tag-input" placeholder="输入标签后按空格添加" style="flex: 1; min-width: 150px; padding: 4px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px;">
+                                <div id="character-card-tags-wrapper" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px; border: 1px solid #ddd; border-radius: 4px; background-color: #f9f9f9; min-height: 38px; box-sizing: border-box;">
+                                    <div class="tags-container" id="character-card-tags-container" style="min-height: 22px;"></div>
                                 </div>
                             </div>
                             
-                            <div class="control-group">
-                                <div class="control-label" data-i18n="steam.characterNotes">注意事项</div>
-                                <div id="notes-input-container">
-                                    <input type="text" id="notes-input" placeholder="输入注意事项（最多30字）" maxlength="30" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 8px; background-color: #f9f9f9; font-size: 14px;">
-                                    <div id="notes-counter" style="text-align: right; font-size: 12px; color: #666; margin-top: 4px;">0/30</div>
-                                </div>
-                            </div>
                         </div>
                         
                         <!-- 右侧预览区域 -->
@@ -2329,17 +2290,7 @@
                                 </div>
                             </div>
                             
-                            <h3 data-i18n="steam.notesPreview">注意事项</h3>
-                            <div id="notes-preview" style="padding: 12px; border: 1px solid #eaeaea; border-radius: 4px; background-color: #f8f8f8;">
-                                <div class="tags-container" id="preview-notes-container">
-                                    <!-- 注意事项预览将在这里显示 -->
-                                </div>
-                            </div>
-                            
                             <div class="save-button-container">
-                                <button id="save-character-card-btn" class="btn btn-success" onclick="saveCharacterCard()" style="flex: 1; padding: 12px 0; font-size: 16px;">
-                                    💾 <span data-i18n="common.save">保存角色卡</span>
-                                </button>
                                 <button class="btn btn-primary" onclick="handleUploadToWorkshop()" style="flex: 1; padding: 12px 0; font-size: 16px;">
                                     🚀 <span data-i18n="steam.uploadToWorkshop">上传到创意工坊</span>
                                 </button>
@@ -2488,25 +2439,11 @@
                         }
                     }
                     
-                    // 2. 填充描述（包含注意事项）
+                    // 2. 填充描述
                     const itemDescription = document.getElementById('item-description');
                     if (itemDescription) {
-                        let newDescription = workshopSyncData.description || '';
-                        
-                        // 如果有注意事项，将其添加到描述后面
-                        if (workshopSyncData.notes && workshopSyncData.notes.trim()) {
-                            // 如果描述不为空，添加两个换行符作为分隔
-                            if (newDescription.trim()) {
-                                newDescription += '\n\n';
-                            }
-                            // 根据当前语言选择注意事项标题
-                            const currentLanguage = typeof i18next !== 'undefined' ? i18next.language : 'zh-CN';
-                            const notesTitle = currentLanguage === 'zh-CN' ? '注意事项：\n' : 'Notes:\n';
-                            newDescription += notesTitle + workshopSyncData.notes.trim();
-                        }
-                        
-                        itemDescription.value = newDescription;
-                        console.log('设置的描述内容:', newDescription);
+                        itemDescription.value = workshopSyncData.description || '';
+                        console.log('设置的描述内容:', workshopSyncData.description);
                     } else {
                         console.error('未找到创意工坊描述输入框');
                     }
@@ -4609,8 +4546,8 @@ function viewItemDetails(itemId) {
                 localStorage.removeItem('lastActiveTab');
             }
             
-            // 初始化时添加默认的Character标签
-            addCharacterCardTag('character-card', window.t ? window.t('steam.defaultTagCharacter') : 'Character');
+            // 标签仅从后端读取，不提供手动添加功能
+            // addCharacterCardTag('character-card', window.t ? window.t('steam.defaultTagCharacter') : 'Character');
             
             // 初始化i18n文本
             if (document.getElementById('loading-text')) {
@@ -4663,14 +4600,8 @@ function viewItemDetails(itemId) {
         // 全局变量：角色卡列表
         let globalCharacterCards = [];
         
-        // 全局变量：当前编辑的角色卡ID
-        let currentEditCardId = null;
-        
         // 全局变量：当前打开的角色卡ID（用于模态框操作）
         let currentCharacterCardId = null;
-        
-        // 全局变量：当前编辑的角色卡原始键名（用于API请求）
-        let currentEditCardOriginalName = null;
         
         // 加载角色卡列表
         async function loadCharacterCards() {
@@ -4721,7 +4652,7 @@ function viewItemDetails(itemId) {
                     description: description,
                     tags: tags,
                     rawData: data,  // 保存原始数据，方便详情页使用
-                    originalName: name  // 保存原始键名，用于编辑模式下的API请求
+                    originalName: name  // 保存原始键名
                 });
             }
 
@@ -4811,7 +4742,7 @@ function viewItemDetails(itemId) {
                             <div class="card-content">
                                 <p class="card-description">${card.description}</p>
                                 <div class="tags-container">
-                                    ${card.tags.map(tag => `<span class="tag">${tag}<span class="tag-remove" onclick="removeTag(this, 'character-card')">×</span></span>`).join('')}
+                                    ${card.tags.map(tag => `<span class="tag">${tag}</span>`).join('')}
                                 </div>
                             </div>
                         `;
@@ -4838,12 +4769,6 @@ function viewItemDetails(itemId) {
     function expandCharacterCardSection(card) {
         // 更新当前打开的角色卡ID
         currentCharacterCardId = card.id;
-        
-        // 设置当前编辑的角色卡ID（启用编辑模式）
-        currentEditCardId = card.id;
-        
-        // 保存当前编辑的角色卡原始键名
-        currentEditCardOriginalName = card.originalName;
         
         // 获取原始数据，确保存在 - 兼容数据直接在card对象中的情况
         const rawData = card.rawData || card || {};
@@ -4874,23 +4799,10 @@ function viewItemDetails(itemId) {
         let voiceId = rawData['voice_id'] || (rawData['voice'] && rawData['voice']['voice_id']);
         const voiceSelect = document.getElementById('voice-select');
         
-        // 确保voiceId值存在于音色选择器中
-        if (!voiceId || !Array.from(voiceSelect.options).some(option => option.value === voiceId)) {
-            // 使用第一个可用的音色作为默认值
-            if (window.availableVoices && Object.keys(window.availableVoices).length > 0) {
-                voiceId = Object.keys(window.availableVoices)[0];
-                console.log('使用第一个可用音色作为默认值:', voiceId);
-            } else {
-                voiceId = '';
-            }
-        }
-        
         // 填充角色卡区域数据
         document.getElementById('character-card-name').value = nickname;
-        // 编辑模式下锁定名称输入框
+        // 所有输入框均为只读模式
         document.getElementById('character-card-name').readOnly = true;
-        // 显示编辑模式标识
-        document.getElementById('edit-mode-lock').style.display = 'block';
         document.getElementById('character-card-gender').value = gender;
         document.getElementById('character-card-age').value = age;
         document.getElementById('character-card-description').value = description;
@@ -4899,8 +4811,15 @@ function viewItemDetails(itemId) {
         // 更新模型选择
         modelSelect.value = live2d;
         
-        // 更新音色选择
-        voiceSelect.value = voiceId || '';
+        // 更新音色显示
+        if (voiceId && window.availableVoices && window.availableVoices[voiceId]) {
+            const voiceData = window.availableVoices[voiceId];
+            voiceSelect.textContent = voiceData.prefix || voiceId;
+        } else if (voiceId) {
+            voiceSelect.textContent = voiceId;
+        } else {
+            voiceSelect.textContent = '未选择音色';
+        }
         
         // 更新标签
         const tagsContainer = document.getElementById('character-card-tags-container');
@@ -4909,34 +4828,9 @@ function viewItemDetails(itemId) {
             card.tags.forEach(tag => {
                 const tagElement = document.createElement('span');
                 tagElement.className = 'tag';
-                tagElement.innerHTML = `${tag}<span class="tag-remove" onclick="removeTag(this, 'character-card')">×</span>`;
+                tagElement.textContent = tag;
                 tagsContainer.appendChild(tagElement);
             });
-        }
-        
-        // 更新注意事项
-        let notes = '';
-        if (rawData['注意事项']) {
-            notes = rawData['注意事项'];
-        } else if (rawData['notes']) {
-            notes = rawData['notes'];
-        }
-        
-        if (notes) {
-            const notesInput = document.getElementById('notes-input');
-            const notesCounter = document.getElementById('notes-counter');
-            if (notesInput && notesCounter) {
-                notesInput.value = notes;
-                notesCounter.textContent = `${notes.length}/30`;
-            }
-        } else {
-            // 清空注意事项
-            const notesInput = document.getElementById('notes-input');
-            const notesCounter = document.getElementById('notes-counter');
-            if (notesInput && notesCounter) {
-                notesInput.value = '';
-                notesCounter.textContent = '0/30';
-            }
         }
         
         // 显示角色卡区域
@@ -4959,200 +4853,8 @@ function viewItemDetails(itemId) {
         
         // 更新标签预览
         updateTagsPreview();
-        
-        // 更新注意事项预览
-        updateNotesPreview();
     }
     
-    // 保存角色卡
-    function saveCharacterCard() {
-            console.log('saveCharacterCard函数被调用');
-            // 收集角色卡参数
-            const name = document.getElementById('character-card-name').value;
-            const gender = document.getElementById('character-card-gender').value;
-            const age = document.getElementById('character-card-age').value;
-            const description = document.getElementById('character-card-description').value;
-            const setting = document.getElementById('character-card-setting').value;
-            let selectedModelName = document.getElementById('model-select').value;
-            const selectedVoicePrefix = document.getElementById('voice-select').value;
-            console.log('表单数据:', {name, gender, age, description, setting, selectedModelName, selectedVoicePrefix});
-            
-            if (!name) {
-                showMessage('请输入角色卡名称', 'error');
-                return;
-            }
-            
-            // 设置默认模型
-            if (!selectedModelName) {
-                // 使用第一个可用的模型作为默认值
-                if (availableModels.length > 0) {
-                    selectedModelName = availableModels[0].name;
-                    console.log('使用第一个可用模型作为默认值:', selectedModelName);
-                } else {
-                    selectedModelName = '';
-                    console.log('没有可用的模型');
-                }
-            }
-            
-            // 获取选中的音色信息
-            let voiceId = null;
-            if (selectedVoicePrefix && window.availableVoices) {
-                // 查找对应的音色信息
-                Object.entries(window.availableVoices).forEach(([id, voiceData]) => {
-                    if (voiceData.prefix === selectedVoicePrefix || id === selectedVoicePrefix) {
-                        voiceId = id;
-                    }
-                });
-            }
-            
-            // 如果没有找到voiceId，使用默认值
-            if (!voiceId && window.availableVoices) {
-                // 获取第一个可用的voiceId作为默认值
-                voiceId = Object.keys(window.availableVoices)[0] || null;
-                console.log('使用默认voiceId:', voiceId);
-            }
-            
-            // 获取当前语言
-            const currentLanguage = typeof i18next !== 'undefined' ? i18next.language : 'zh-CN';
-            
-            // 构建猫娘数据对象 - 根据当前语言动态设置字段名称
-            const catgirlData = {};
-            
-            // 根据语言设置所有字段名称
-            if (currentLanguage === 'zh-CN') {
-                // 中文字段名
-                catgirlData['档案名'] = name;
-                catgirlData['性别'] = gender;
-                catgirlData['年龄'] = age;
-                catgirlData['描述'] = description;
-            } else {
-                // 英文字段名
-                catgirlData['name'] = name;
-                catgirlData['gender'] = gender;
-                catgirlData['age'] = age;
-                catgirlData['description'] = description;
-            }
-            
-            // 技术相关字段保持统一英文名称
-            catgirlData.live2d = selectedModelName;
-            catgirlData.system_prompt = setting;
-            
-
-            
-            // 获取角色卡标签
-            const characterCardTags = [];
-            const tagElements = document.querySelectorAll('#character-card-tags-container .tag');
-            if (tagElements && tagElements.length > 0) {
-                tagElements.forEach(tagElement => {
-                    const tagText = tagElement.textContent.replace('×', '').trim();
-                    if (tagText) {
-                        characterCardTags.push(tagText);
-                    }
-                });
-            }
-            
-            // 根据语言设置标签字段名称
-            if (currentLanguage === 'zh-CN') {
-                catgirlData['关键词'] = characterCardTags;
-            } else {
-                catgirlData['tags'] = characterCardTags;
-            }
-            
-            // 获取注意事项
-            const notesInput = document.getElementById('notes-input');
-            const notes = notesInput ? notesInput.value.trim() : '';
-            
-            // 根据语言设置注意事项字段名称
-            if (currentLanguage === 'zh-CN') {
-                if (notes) {
-                    catgirlData['注意事项'] = notes;
-                }
-            } else {
-                if (notes) {
-                    catgirlData['notes'] = notes;
-                }
-            }
-            
-            // 显示保存状态
-            showMessage('正在保存角色...', 'info');
-            
-            // 调用API保存角色：如果是编辑模式则使用PUT更新，否则使用POST创建
-            const isEditMode = currentEditCardId !== null;
-            // 编辑模式下使用原始键名构建API URL，确保正确匹配后端存储
-            const apiUrl = isEditMode ? `/api/characters/catgirl/${encodeURIComponent(currentEditCardOriginalName)}` : '/api/characters/catgirl';
-            const method = isEditMode ? 'PUT' : 'POST';
-            
-            fetch(apiUrl, {
-                method: method,
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(catgirlData)
-            })
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error(`HTTP错误，状态码: ${response.status}`);
-                }
-                return response.json();
-            })
-            .then(result => {
-                if (result.success) {
-                    console.log('角色保存成功:', result);
-                    showMessage('角色已保存', 'success');
-                    
-                    // 将需要同步的数据存储到localStorage中，以便在切换到创意工坊上传页面时使用
-                    try {
-                        // 1. 获取角色卡标签
-                        const characterCardTags = [];
-                        const tagElements = document.querySelectorAll('#character-card-tags-container .tag');
-                        tagElements.forEach(tagElement => {
-                            const tagText = tagElement.textContent.replace('×', '').trim();
-                            if (tagText) {
-                                characterCardTags.push(tagText);
-                            }
-                        });
-                        
-                        // 2. 获取角色卡描述和注意事项
-                        const characterDescriptionElement = document.getElementById('character-card-description');
-                        const cardDescription = characterDescriptionElement ? characterDescriptionElement.value : '';
-                        
-                        const notesInput = document.getElementById('notes-input');
-                        const cardNotes = notesInput ? notesInput.value.trim() : '';
-                        
-                        // 3. 将数据存储到localStorage
-                        const workshopSyncData = {
-                            tags: characterCardTags,
-                            description: cardDescription,
-                            notes: cardNotes
-                        };
-                        localStorage.setItem('workshopSyncData', JSON.stringify(workshopSyncData));
-                        console.log('已将同步数据存储到localStorage:', workshopSyncData);
-                        
-                        // 显示同步成功的提示
-                        showMessage('角色卡数据已同步到创意工坊上传页面', 'success');
-                    } catch (error) {
-                        console.error('存储同步数据时出错:', error);
-                        showMessage('同步数据存储失败', 'error');
-                    }
-                    
-                    // 重置当前编辑ID
-                    currentEditCardId = null;
-                    
-                    // 保存后刷新列表
-                    loadCharacterCards();
-                    
-                    // 设置刷新后要显示的标签页
-                    localStorage.setItem('lastActiveTab', 'character-cards-content');
-                } else {
-                    throw new Error(result.error || '保存失败');
-                }
-            })
-            .catch(error => {
-                console.error('保存角色失败:', error);
-                showMessage(`保存角色失败: ${error.message}`, 'error');
-            });
-        }
-        
         // 加载角色卡
         function loadCharacterCard() {
             // 这里将实现加载角色卡的逻辑
@@ -5170,7 +4872,7 @@ function viewItemDetails(itemId) {
             const description = document.getElementById('character-card-description').value;
             const setting = document.getElementById('character-card-setting').value;
             let selectedModelName = document.getElementById('model-select').value;
-            const selectedVoicePrefix = document.getElementById('voice-select').value;
+            const selectedVoicePrefix = document.getElementById('voice-select').textContent.trim();
             
             if (!name) {
                 showMessage('请输入角色卡名称', 'error');
@@ -5242,20 +4944,6 @@ function viewItemDetails(itemId) {
                 catgirlData['tags'] = characterCardTags;
             }
             
-            // 获取注意事项
-            const notesInput = document.getElementById('notes-input');
-            const notes = notesInput ? notesInput.value.trim() : '';
-            
-            if (currentLanguage === 'zh-CN') {
-                if (notes) {
-                    catgirlData['注意事项'] = notes;
-                }
-            } else {
-                if (notes) {
-                    catgirlData['notes'] = notes;
-                }
-            }
-            
             // 获取当前选中模型的文件夹路径
             const selectedModelInfo = availableModels.find(model => model.name === selectedModelName);
             if (!selectedModelInfo) {
@@ -5311,19 +4999,8 @@ function viewItemDetails(itemId) {
                     
                     if (itemTitle) itemTitle.value = name;
                     if (itemDescription) {
-                        // 构建包含注意事项的描述
-                        let fullDescription = description;
-                        if (notes && notes.trim()) {
-                            if (fullDescription.trim()) {
-                                fullDescription += '\n\n';
-                            }
-                            // 根据当前语言选择注意事项标题
-                            const currentLanguage = typeof i18next !== 'undefined' ? i18next.language : 'zh-CN';
-                            const notesTitle = currentLanguage === 'zh-CN' ? '注意事项：\n' : 'Notes:\n';
-                            fullDescription += notesTitle + notes.trim();
-                        }
-                        itemDescription.value = fullDescription;
-                        console.log('设置的完整描述内容:', fullDescription);
+                        itemDescription.value = description;
+                        console.log('设置的完整描述内容:', description);
                     }
                     if (contentFolder) contentFolder.value = result.modelFolderPath;
                     
@@ -5450,16 +5127,13 @@ function viewItemDetails(itemId) {
                 return;
             }
             
-            // 设置当前编辑的角色卡ID
-            currentEditCardId = cardId;
-            
             // 显示角色卡创建区域
             const characterCardLayout = document.getElementById('character-card-layout');
             characterCardLayout.style.display = 'flex';
             
             // 将角色卡数据填充到表单字段中
             document.getElementById('character-card-name').value = card.name || '';
-            // 编辑模式下锁定名称输入框
+            // 所有输入框均为只读模式
             document.getElementById('character-card-name').readOnly = true;
             document.getElementById('character-card-gender').value = card.rawData.性别 || '';
             document.getElementById('character-card-age').value = card.rawData.年龄 || '';
@@ -5535,91 +5209,57 @@ function viewItemDetails(itemId) {
                 voiceValue = card.rawData.voice_id;
             }
             
-            // 根据音色值选择对应的音色
+            // 根据音色值显示对应的音色
             const voiceSelect = document.getElementById('voice-select');
             
-            // 确保voiceValue存在于音色选择器中
-            let foundVoiceOption = false;
+            // 显示音色值
             if (voiceValue) {
-                // 尝试直接通过value匹配
-                const option = voiceSelect.querySelector(`option[value="${voiceValue}"]`);
-                if (option) {
-                    voiceSelect.value = voiceValue;
-                    foundVoiceOption = true;
+                // 如果voiceValue是ID，尝试从availableVoices获取显示名称
+                if (window.availableVoices && window.availableVoices[voiceValue]) {
+                    const voiceData = window.availableVoices[voiceValue];
+                    voiceSelect.textContent = voiceData.prefix || voiceValue;
                 } else {
-                    // 如果直接匹配失败，尝试通过文本内容匹配
-                    for (let i = 0; i < voiceSelect.options.length; i++) {
-                        if (voiceSelect.options[i].textContent === voiceValue) {
-                            voiceSelect.selectedIndex = i;
-                            foundVoiceOption = true;
-                            break;
-                        }
-                    }
+                    voiceSelect.textContent = voiceValue;
                 }
+            } else {
+                voiceSelect.textContent = '未选择音色';
             }
             
-            // 如果没有找到匹配的音色，使用第一个可用的音色作为默认值
-            if (!foundVoiceOption) {
-                if (voiceSelect.options.length > 1) { // 跳过默认的"选择音色"选项
-                    voiceSelect.selectedIndex = 1;
-                    voiceValue = voiceSelect.value;
-                    console.log('使用第一个可用音色作为默认值:', voiceValue);
-                } else {
-                    console.log('没有可用的音色选项');
-                }
-            }
-            
-            // 加载标签
+            // 加载标签（仅显示，不提供删除功能）
             clearTags('character-card');
             if (card.tags && card.tags.length > 0) {
                 card.tags.forEach(tag => {
-                    addTag(tag, 'character-card');
+                    const tagsContainer = document.getElementById('character-card-tags-container');
+                    const tagElement = document.createElement('span');
+                    tagElement.className = 'tag';
+                    tagElement.textContent = tag;
+                    tagsContainer.appendChild(tagElement);
                 });
             }
             
-            // 检查是否选择了音色，如果是则添加Voice标签
-            const currentVoiceValue = voiceSelect.value;
-            if (currentVoiceValue) {
-                // 检查是否已经有Voice标签
-                const tagsContainer = document.getElementById('character-card-tags-container');
-                const existingTags = Array.from(tagsContainer.querySelectorAll('.tag'));
-                let hasVoiceTag = false;
-                
-                existingTags.forEach(tag => {
-                    const tagText = tag.textContent.replace('×', '').trim();
-                    if (tagText === 'Voice' || tagText === '语音') {
-                        hasVoiceTag = true;
-                    }
-                });
-                
-                // 如果没有Voice标签，添加它
-                if (!hasVoiceTag) {
-                    addCharacterCardTag('character-card', 'Voice');
-                }
-            }
+            // 标签仅从后端读取，不提供自动添加功能
+            // const currentVoiceValue = voiceSelect.value;
+            // if (currentVoiceValue) {
+            //     const tagsContainer = document.getElementById('character-card-tags-container');
+            //     const existingTags = Array.from(tagsContainer.querySelectorAll('.tag'));
+            //     let hasVoiceTag = false;
+            //     
+            //     existingTags.forEach(tag => {
+            //         const tagText = tag.textContent.replace('×', '').trim();
+            //         if (tagText === 'Voice' || tagText === '语音') {
+            //             hasVoiceTag = true;
+            //         }
+            //     });
+            //     
+            //     if (!hasVoiceTag) {
+            //         addCharacterCardTag('character-card', 'Voice');
+            //     }
+            // }
             
-            // 加载注意事项
-            let notes = '';
-            if (card.rawData['注意事项']) {
-                notes = card.rawData['注意事项'];
-            } else if (card.rawData['notes']) {
-                notes = card.rawData['notes'];
-            }
-            
-            if (notes) {
-                const notesInput = document.getElementById('notes-input');
-                const notesCounter = document.getElementById('notes-counter');
-                if (notesInput && notesCounter) {
-                    notesInput.value = notes;
-                    notesCounter.textContent = `${notes.length}/30`;
-                }
-            }
             
             // 更新预览区域
             updateCardPreview();
             updateTagsPreview();
-            updateNotesPreview();
-            
             showMessage('角色卡数据已加载到编辑区域', 'success');
         }
         
@@ -5788,30 +5428,13 @@ function viewItemDetails(itemId) {
             try {
                 const response = await fetch('/api/characters/voices');
                 const data = await response.json();
-                const select = document.getElementById('voice-select');
-                if (select) {
+                const voiceSelect = document.getElementById('voice-select');
+                if (voiceSelect) {
                     // 保存完整的音色数据到全局变量
                     window.availableVoices = data.voices;
                     
-                    // 清空现有选项
-                    while (select.firstChild) {
-                        select.removeChild(select.firstChild);
-                    }
-                    
-                    // 添加默认选项
-                    const defaultOption = document.createElement('option');
-                    defaultOption.value = '';
-                    defaultOption.textContent = window.t ? window.t('steam.selectVoice') : '请选择音色';
-                    select.appendChild(defaultOption);
-                    
-                    // 添加音色选项
+                    // 音色数据已加载，用于后续显示音色名称
                     const voiceCount = Object.keys(data.voices).length;
-                    Object.entries(data.voices).forEach(([voiceId, voiceData]) => {
-                        const option = document.createElement('option');
-                        option.value = voiceData.prefix || voiceId;
-                        option.textContent = voiceData.prefix || voiceId;
-                        select.appendChild(option);
-                    });
                     
                     // 显示扫描完成提示
                     const successMessage = window.t ? window.t('steam.scanComplete', {count: voiceCount}) : `扫描完成，共找到 ${voiceCount} 个音色`;
@@ -6363,20 +5986,14 @@ function viewItemDetails(itemId) {
         function clearCharacterCardForm(skipConfirm = false) {
             const clearAction = function() {
                 document.getElementById('character-card-name').value = '';
-                // 创建新角色卡时允许编辑名称
-                document.getElementById('character-card-name').readOnly = false;
-                // 隐藏编辑模式标识
-                document.getElementById('edit-mode-lock').style.display = 'none';
-                // 重置编辑模式状态
-                currentEditCardId = null;
+                // 所有输入框保持只读模式
+                document.getElementById('character-card-name').readOnly = true;
+                // 重置状态
                 currentCharacterCardId = null;
-                currentEditCardOriginalName = null;
                 document.getElementById('character-card-gender').value = '未知';
                 document.getElementById('character-card-age').value = '';
                 document.getElementById('character-card-description').value = '';
                 document.getElementById('character-card-setting').value = '';
-                document.getElementById('notes-input').value = '';
-                document.getElementById('notes-counter').textContent = '0/30';
                 clearSelectedModel();
                 clearTags('character-card');
                 updateCardPreview();
@@ -6410,7 +6027,7 @@ function viewItemDetails(itemId) {
             const age = document.getElementById('character-card-age').value;
             const description = document.getElementById('character-card-description').value;
             const setting = document.getElementById('character-card-setting').value;
-            const voice = document.getElementById('voice-select').value;
+            const voice = document.getElementById('voice-select').textContent.trim();
             
             const previewName = document.getElementById('preview-card-name');
             const previewGender = document.getElementById('preview-card-gender');
@@ -6452,26 +6069,6 @@ function viewItemDetails(itemId) {
             });
         }
         
-        // 更新注意事项标签预览
-        window.updateNotesPreview = function() {
-            const notesInput = document.getElementById('notes-input');
-            const previewContainer = document.getElementById('preview-notes-container');
-            
-            // 确保预览容器存在
-            if (!previewContainer) return;
-            
-            // 清空预览容器
-            previewContainer.innerHTML = '';
-            
-            // 从文本输入框获取注意事项内容
-            if (notesInput && notesInput.value.trim()) {
-                const newNote = document.createElement('span');
-                newNote.className = 'tag';
-                newNote.textContent = notesInput.value.trim();
-                previewContainer.appendChild(newNote);
-            }
-        }
-        
         // 为输入字段添加事件监听器，自动更新预览
         document.addEventListener('DOMContentLoaded', function() {
             const nameInput = document.getElementById('character-card-name');
@@ -6508,34 +6105,31 @@ function viewItemDetails(itemId) {
                 voiceSelect.addEventListener('change', function() {
                     updateCardPreview();
                     
-                    // 处理Voice标签
-                    const voiceValue = this.value;
-                    const tagsContainer = document.getElementById('character-card-tags-container');
-                    const voiceTags = tagsContainer.querySelectorAll('.tag');
-                    let hasVoiceTag = false;
-                    
-                    // 检查是否已经有Voice标签
-                    Array.from(voiceTags).forEach(tag => {
-                        const tagText = tag.textContent.replace('×', '').trim();
-                        if (tagText === 'Voice' || tagText === '语音') {
-                            hasVoiceTag = true;
-                        }
-                    });
-                    
-                    // 如果选择了音色且没有Voice标签，添加标签
-                    if (voiceValue && !hasVoiceTag) {
-                        addCharacterCardTag('character-card', 'Voice');
-                    }
-                    // 如果取消了音色选择且有Voice标签，移除标签
-                    else if (!voiceValue && hasVoiceTag) {
-                        const voiceTag = Array.from(voiceTags).find(tag => {
-                            const tagText = tag.textContent.replace('×', '').trim();
-                            return tagText === 'Voice' || tagText === '语音';
-                        });
-                        if (voiceTag) {
-                            removeTag(voiceTag.querySelector('.tag-remove'), 'character-card');
-                        }
-                    }
+                    // 标签仅从后端读取，不提供自动添加/删除功能
+                    // const voiceValue = this.value;
+                    // const tagsContainer = document.getElementById('character-card-tags-container');
+                    // const voiceTags = tagsContainer.querySelectorAll('.tag');
+                    // let hasVoiceTag = false;
+                    // 
+                    // Array.from(voiceTags).forEach(tag => {
+                    //     const tagText = tag.textContent.replace('×', '').trim();
+                    //     if (tagText === 'Voice' || tagText === '语音') {
+                    //         hasVoiceTag = true;
+                    //     }
+                    // });
+                    // 
+                    // if (voiceValue && !hasVoiceTag) {
+                    //     addCharacterCardTag('character-card', 'Voice');
+                    // }
+                    // else if (!voiceValue && hasVoiceTag) {
+                    //     const voiceTag = Array.from(voiceTags).find(tag => {
+                    //         const tagText = tag.textContent.replace('×', '').trim();
+                    //         return tagText === 'Voice' || tagText === '语音';
+                    //     });
+                    //     if (voiceTag) {
+                    //         removeTag(voiceTag.querySelector('.tag-remove'), 'character-card');
+                    //     }
+                    // }
                 });
             }
             
@@ -6605,49 +6199,8 @@ function viewItemDetails(itemId) {
             }
         }
         
-        // 处理角色卡标签输入框变化
-        document.addEventListener('DOMContentLoaded', function() {
-            const characterTagInput = document.getElementById('character-card-tag-input');
-            
-            if (characterTagInput) {
-                console.log('角色卡标签输入框已找到并绑定事件');
-                characterTagInput.addEventListener('input', function() {
-                    console.log('角色卡标签输入框输入事件触发:', this.value);
-                    const inputValue = this.value;
-                    
-                    // 当输入空格时添加标签
-                    if (inputValue.endsWith(' ')) {
-                        console.log('检测到空格，准备添加标签');
-                        const tagValue = inputValue.trim();
-                        addCharacterCardTag('character-card', tagValue);
-                        this.value = '';
-                    }
-                });
-            } else {
-                console.error('未找到角色卡标签输入框');
-            }
-            
-            // 处理注意事项字数统计
-            const notesInput = document.getElementById('notes-input');
-            const notesCounter = document.getElementById('notes-counter');
-            
-            if (notesInput && notesCounter) {
-                notesInput.addEventListener('input', function() {
-                    const length = this.value.length;
-                    notesCounter.textContent = `${length}/30`;
-                    
-                    // 超过限制时显示警告
-                    if (length > 30) {
-                        notesCounter.style.color = '#e74c3c';
-                    } else {
-                        notesCounter.style.color = '#666';
-                    }
-                    
-                    // 实时更新预览
-                    updateNotesPreview();
-                });
-            }
-        });
+        // 角色卡标签输入框已移除，标签仅用于显示
+        
         
         // 移除标签
         function removeTag(tagElement, type) {
@@ -7138,6 +6691,25 @@ function viewItemDetails(itemId) {
         fileInput.onchange = function(e) {
             if (e.target.files && e.target.files[0]) {
                 const file = e.target.files[0];
+                const hintElement = document.getElementById('preview-image-size-hint');
+                
+                // 校验文件大小（1MB = 1024 * 1024 字节）
+                const maxSize = 1024 * 1024; // 1MB
+                if (file.size > maxSize) {
+                    // 文件超过1MB，将提示文字变为红色
+                    if (hintElement) {
+                        hintElement.style.color = 'red';
+                    }
+                    showMessage(window.t ? window.t('steam.previewImageSizeExceeded') : '预览图片大小超过1MB，请选择较小的图片', 'error');
+                    // 清空文件选择
+                    e.target.value = '';
+                    return;
+                } else {
+                    // 文件大小符合要求，将提示文字恢复为黑色
+                    if (hintElement) {
+                        hintElement.style.color = '#333';
+                    }
+                }
                 
                 // 创建FormData对象，用于上传文件
                 const formData = new FormData();
@@ -7202,31 +6774,6 @@ function viewItemDetails(itemId) {
     <script src="/static/live2d-ui-buttons.js"></script>
     <script src="/static/live2d-init.js"></script>
     
-    <script>
-        // 打开模型目录函数
-        function openModelDirectory() {
-            const modelSelect = document.getElementById('model-select');
-            const selectedModelName = modelSelect.value;
-            
-            if (!selectedModelName) {
-                showMessage(window.t ? window.t('steam.noModelSelected') : '请先选择一个模型', 'warning');
-                return;
-            }
-            
-            // 调用后端API打开目录
-            fetch(`/api/live2d/open_model_directory/${encodeURIComponent(selectedModelName)}`)
-                .then(response => response.json())
-                .then(data => {
-                    if (!data.success) {
-                        showMessage(data.error || (window.t ? window.t('steam.openDirectoryFailed') : '打开目录失败'), 'error');
-                    }
-                })
-                .catch(error => {
-                    console.error('打开目录失败:', error);
-                    showMessage(window.t ? window.t('steam.openDirectoryFailed') : '打开目录失败', 'error');
-                });
-        }
-    </script>
 </body>
 
 </html>
