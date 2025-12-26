@@ -167,8 +167,7 @@ proactive_chat_prompt_window_search = """你是{lanlan_name}，现在看到了{m
 
 请回复：
 - 如果选择主动搭话，直接说出你想说的话（简短自然即可）。请不要生成思考过程。
-- 如果选择不搭话，只回复"[PASS]"
-"""
+- 如果选择不搭话，只回复"[PASS]"。 """
 
 proactive_chat_rewrite_prompt = """你是一个文本清洁专家。请将以下LLM生成的主动搭话内容进行改写和清洁。
 

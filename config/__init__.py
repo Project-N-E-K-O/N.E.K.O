@@ -268,6 +268,7 @@ MODELS_EXTRA_BODY_MAP = {
     "qwen3-vl-plus-2025-09-23": EXTRA_BODY_OPENAI,
     "qwen3-vl-plus": EXTRA_BODY_OPENAI,
     "qwen3-vl-flash": EXTRA_BODY_OPENAI,
+    "deepseek-ai/DeepSeek-V3.2": EXTRA_BODY_OPENAI,
     # GLM 系列
     "glm-4.5-air": EXTRA_BODY_CLAUDE,
     "glm-4.6v-flash": EXTRA_BODY_CLAUDE,
