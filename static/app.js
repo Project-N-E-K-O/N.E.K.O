@@ -215,6 +215,7 @@ function init_app() {
     // 主动搭话功能相关
     let proactiveChatEnabled = false;
     let proactiveVisionEnabled = false;
+    let realisticOutputEnabled = false;
     let proactiveChatTimer = null;
     let proactiveChatBackoffLevel = 0; // 退避级别：0=30s, 1=75s, 2=187.5s, etc.
     let isProactiveChatRunning = false; // 锁：防止主动搭话执行期间重复触发
@@ -265,6 +266,7 @@ function init_app() {
     // 暴露到全局作用域，供 live2d.js 等其他模块访问和修改
     window.proactiveChatEnabled = proactiveChatEnabled;
     window.proactiveVisionEnabled = proactiveVisionEnabled;
+    window.realisticOutputEnabled = realisticOutputEnabled;
     window.focusModeEnabled = focusModeEnabled;
 
     // WebSocket心跳保活
@@ -732,6 +734,67 @@ function init_app() {
 
     // 添加消息到聊天界面
     function appendMessage(text, sender, isNewMessage = true) {
+        function isRealisticOutputEnabled() {
+            return typeof window.realisticOutputEnabled !== 'undefined'
+                ? window.realisticOutputEnabled
+                : realisticOutputEnabled;
+        }
+
+        function normalizeGeminiText(s) {
+            return (s || '').replace(/\r\n/g, '\n');
+        }
+
+        function splitIntoSentences(buffer) {
+            // 逐字符扫描，尽量兼容中英文标点与流式输入
+            const sentences = [];
+            const s = normalizeGeminiText(buffer);
+            let start = 0;
+
+            const isBoundary = (ch, next) => {
+                if (ch === '\n') return true;
+                if (ch === '。' || ch === '！' || ch === '？') return true;
+                if (ch === '!' || ch === '?') return true;
+                if (ch === '.') {
+                    // 英文句点：尽量避免把小数/缩写切断，要求后面是空白/换行/结束/常见结束符
+                    if (!next) return true;
+                    return /\s|\n|["')\]]/.test(next);
+                }
+                return false;
+            };
+
+            for (let i = 0; i < s.length; i++) {
+                const ch = s[i];
+                const next = i + 1 < s.length ? s[i + 1] : '';
+                if (isBoundary(ch, next)) {
+                    const piece = s.slice(start, i + 1);
+                    const trimmed = piece.replace(/^\s+/, '').replace(/\s+$/, '');
+                    if (trimmed) sentences.push(trimmed);
+                    start = i + 1;
+                }
+            }
+
+            const rest = s.slice(start);
+            return { sentences, rest };
+        }
+
+        function createGeminiBubble(sentence) {
+            const messageDiv = document.createElement('div');
+            messageDiv.classList.add('message', 'gemini');
+            messageDiv.textContent = "[" + getCurrentTimeString() + "] 🎀 " + sentence;
+            chatContainer.appendChild(messageDiv);
+            window.currentGeminiMessage = messageDiv;
+
+            // 检测AI消息的语言，如果与用户语言不同，显示字幕提示框
+            checkAndShowSubtitlePrompt(sentence);
+
+            // 如果是AI第一次回复，更新状态并检查成就
+            if (isFirstAIResponse) {
+                isFirstAIResponse = false;
+                console.log('检测到AI第一次回复');
+                checkAndUnlockFirstDialogueAchievement();
+            }
+        }
+
         function getCurrentTimeString() {
             return new Date().toLocaleTimeString('en-US', {
                 hour12: false,
@@ -741,17 +804,28 @@ function init_app() {
             });
         }
 
-        if (sender === 'gemini' && !isNewMessage && window.currentGeminiMessage &&
+        if (sender === 'gemini' && isRealisticOutputEnabled()) {
+            // 拟真输出：流式内容先缓冲，按句号/问号/感叹号/换行等切分，每句一个气泡
+            if (isNewMessage) {
+                window._realisticGeminiBuffer = '';
+            }
+            const prev = typeof window._realisticGeminiBuffer === 'string' ? window._realisticGeminiBuffer : '';
+            const combined = prev + normalizeGeminiText(text);
+            const { sentences, rest } = splitIntoSentences(combined);
+            window._realisticGeminiBuffer = rest;
+
+            sentences.forEach(s => createGeminiBubble(s));
+        } else if (sender === 'gemini' && !isNewMessage && window.currentGeminiMessage &&
             window.currentGeminiMessage.nodeType === Node.ELEMENT_NODE &&
             window.currentGeminiMessage.isConnected) {
             // 追加到现有消息（使用 textContent 避免 XSS 风险）
             window.currentGeminiMessage.textContent += text;
-            
+
             // 防抖机制优化流式输出时的语言检测
             if (subtitleCheckDebounceTimer) {
                 clearTimeout(subtitleCheckDebounceTimer);
             }
-            
+
             subtitleCheckDebounceTimer = setTimeout(() => {
                 if (!window.currentGeminiMessage ||
                     window.currentGeminiMessage.nodeType !== Node.ELEMENT_NODE ||
@@ -759,7 +833,7 @@ function init_app() {
                     subtitleCheckDebounceTimer = null;
                     return;
                 }
-                
+
                 const fullText = window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '');
                 if (fullText && fullText.trim()) {
                     if (userLanguage === null) {
@@ -5216,6 +5290,9 @@ function init_app() {
         const currentVision = typeof window.proactiveVisionEnabled !== 'undefined'
             ? window.proactiveVisionEnabled
             : proactiveVisionEnabled;
+        const currentRealistic = typeof window.realisticOutputEnabled !== 'undefined'
+            ? window.realisticOutputEnabled
+            : realisticOutputEnabled;
         const currentFocus = typeof window.focusModeEnabled !== 'undefined'
             ? window.focusModeEnabled
             : focusModeEnabled;
@@ -5223,6 +5300,7 @@ function init_app() {
         const settings = {
             proactiveChatEnabled: currentProactive,
             proactiveVisionEnabled: currentVision,
+            realisticOutputEnabled: currentRealistic,
             focusModeEnabled: currentFocus
         };
         localStorage.setItem('project_neko_settings', JSON.stringify(settings));
@@ -5230,6 +5308,7 @@ function init_app() {
         // 同步回局部变量，保持一致性
         proactiveChatEnabled = currentProactive;
         proactiveVisionEnabled = currentVision;
+        realisticOutputEnabled = currentRealistic;
         focusModeEnabled = currentFocus;
     }
 
@@ -5248,6 +5327,9 @@ function init_app() {
                 // 主动视觉：从localStorage加载设置
                 proactiveVisionEnabled = settings.proactiveVisionEnabled ?? false;
                 window.proactiveVisionEnabled = proactiveVisionEnabled; // 同步到全局
+                // 拟真输出：从localStorage加载设置
+                realisticOutputEnabled = settings.realisticOutputEnabled ?? false;
+                window.realisticOutputEnabled = realisticOutputEnabled; // 同步到全局
                 // Focus模式：从localStorage加载设置
                 focusModeEnabled = settings.focusModeEnabled ?? false;
                 window.focusModeEnabled = focusModeEnabled; // 同步到全局
@@ -5255,6 +5337,7 @@ function init_app() {
                 console.log('已加载设置:', {
                     proactiveChatEnabled: proactiveChatEnabled,
                     proactiveVisionEnabled: proactiveVisionEnabled,
+                    realisticOutputEnabled: realisticOutputEnabled,
                     focusModeEnabled: focusModeEnabled,
                     focusModeDesc: focusModeEnabled ? 'AI说话时自动静音麦克风（不允许打断）' : '允许打断AI说话'
                 });
@@ -5262,12 +5345,14 @@ function init_app() {
                 // 如果没有保存的设置，也要确保全局变量被初始化
                 console.log('未找到保存的设置，使用默认值');
                 window.proactiveChatEnabled = proactiveChatEnabled;
+                window.realisticOutputEnabled = realisticOutputEnabled;
                 window.focusModeEnabled = focusModeEnabled;
             }
         } catch (error) {
             console.error('加载设置失败:', error);
             // 出错时也要确保全局变量被初始化
             window.proactiveChatEnabled = proactiveChatEnabled;
+            window.realisticOutputEnabled = realisticOutputEnabled;
             window.focusModeEnabled = focusModeEnabled;
         }
     }

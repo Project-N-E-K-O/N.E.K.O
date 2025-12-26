@@ -818,6 +818,7 @@
     },
     "toggles": {
       "allowInterrupt": "Allow Interrupt",
+      "realisticOutput": "Realistic Output",
       "proactiveChat": "Proactive Chat",
       "proactiveVision": "Autonomous Vision",
       "agentMaster": "Agent Master Switch",

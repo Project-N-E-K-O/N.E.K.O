@@ -818,6 +818,7 @@
     },
     "toggles": {
       "allowInterrupt": "允许打断",
+      "realisticOutput": "拟真输出",
       "proactiveChat": "主动搭话",
       "proactiveVision": "自主视觉",
       "agentMaster": "Agent总开关",
