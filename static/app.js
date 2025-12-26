@@ -562,42 +562,39 @@ function init_app() {
                     console.log('收到turn end事件，开始情感分析和翻译');
                     // 合并消息关闭（分句模式）时：兜底 flush 未以标点结尾的最后缓冲，避免最后一段永远不显示
                     try {
-                        const mergeEnabled = typeof window.mergeMessagesEnabled !== 'undefined'
-                            ? window.mergeMessagesEnabled
-                            : (typeof window.realisticOutputEnabled !== 'undefined' ? window.realisticOutputEnabled : false);
-                        if (!mergeEnabled) {
-                            const rest = typeof window._realisticGeminiBuffer === 'string' ? window._realisticGeminiBuffer : '';
-                            const trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
-                            if (trimmed) {
-                                const messageDiv = document.createElement('div');
-                                messageDiv.classList.add('message', 'gemini');
-                                const timeStr = new Date().toLocaleTimeString('en-US', {
-                                    hour12: false,
-                                    hour: '2-digit',
-                                    minute: '2-digit',
-                                    second: '2-digit'
-                                });
-                                messageDiv.textContent = `[${timeStr}] 🎀 ${trimmed}`;
-                                chatContainer.appendChild(messageDiv);
-                                try {
-                                    chatContainer.scrollTop = chatContainer.scrollHeight;
-                                } catch (_) { }
-                                window.currentGeminiMessage = messageDiv;
-                                window._realisticGeminiBuffer = '';
+                        const rest = typeof window._realisticGeminiBuffer === 'string'
+                            ? window._realisticGeminiBuffer
+                            : '';
+                        const trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
+                        if (trimmed) {
+                            const messageDiv = document.createElement('div');
+                            messageDiv.classList.add('message', 'gemini');
+                            const timeStr = new Date().toLocaleTimeString('en-US', {
+                                hour12: false,
+                                hour: '2-digit',
+                                minute: '2-digit',
+                                second: '2-digit'
+                            });
+                            messageDiv.textContent = `[${timeStr}] 🎀 ${trimmed}`;
+                            chatContainer.appendChild(messageDiv);
+                            try {
+                                chatContainer.scrollTop = chatContainer.scrollHeight;
+                            } catch (_) { }
+                            window.currentGeminiMessage = messageDiv;
+                            window._realisticGeminiBuffer = '';
 
-                                // 与正常气泡创建行为保持一致：字幕提示 & 首次对话成就
+                            // 与正常气泡创建行为保持一致：字幕提示 & 首次对话成就
+                            try {
+                                checkAndShowSubtitlePrompt(trimmed);
+                            } catch (e) {
+                                console.warn('turn end flush subtitle prompt failed:', e);
+                            }
+                            if (typeof isFirstAIResponse !== 'undefined' && isFirstAIResponse) {
+                                isFirstAIResponse = false;
                                 try {
-                                    checkAndShowSubtitlePrompt(trimmed);
+                                    checkAndUnlockFirstDialogueAchievement();
                                 } catch (e) {
-                                    console.warn('turn end flush subtitle prompt failed:', e);
-                                }
-                                if (typeof isFirstAIResponse !== 'undefined' && isFirstAIResponse) {
-                                    isFirstAIResponse = false;
-                                    try {
-                                        checkAndUnlockFirstDialogueAchievement();
-                                    } catch (e) {
-                                        console.warn('turn end flush first-dialogue achievement failed:', e);
-                                    }
+                                    console.warn('turn end flush first-dialogue achievement failed:', e);
                                 }
                             }
                         }
@@ -786,7 +783,6 @@ function init_app() {
     function appendMessage(text, sender, isNewMessage = true) {
         function isMergeMessagesEnabled() {
             if (typeof window.mergeMessagesEnabled !== 'undefined') return window.mergeMessagesEnabled;
-            if (typeof window.realisticOutputEnabled !== 'undefined') return window.realisticOutputEnabled;
             return mergeMessagesEnabled;
         }
 
@@ -5367,7 +5363,7 @@ function init_app() {
             : proactiveVisionEnabled;
         const currentMerge = typeof window.mergeMessagesEnabled !== 'undefined'
             ? window.mergeMessagesEnabled
-            : (typeof window.realisticOutputEnabled !== 'undefined' ? window.realisticOutputEnabled : mergeMessagesEnabled);
+            : mergeMessagesEnabled;
         const currentFocus = typeof window.focusModeEnabled !== 'undefined'
             ? window.focusModeEnabled
             : focusModeEnabled;
@@ -5402,8 +5398,8 @@ function init_app() {
                 // 主动视觉：从localStorage加载设置
                 proactiveVisionEnabled = settings.proactiveVisionEnabled ?? false;
                 window.proactiveVisionEnabled = proactiveVisionEnabled; // 同步到全局
-                // 合并消息：从localStorage加载设置（兼容旧字段 realisticOutputEnabled）
-                mergeMessagesEnabled = (settings.mergeMessagesEnabled ?? settings.realisticOutputEnabled) ?? false;
+                // 合并消息：从localStorage加载设置
+                mergeMessagesEnabled = settings.mergeMessagesEnabled ?? false;
                 window.mergeMessagesEnabled = mergeMessagesEnabled; // 同步到全局
                 // Focus模式：从localStorage加载设置
                 focusModeEnabled = settings.focusModeEnabled ?? false;

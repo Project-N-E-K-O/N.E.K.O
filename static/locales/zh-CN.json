@@ -818,7 +818,7 @@
     },
     "toggles": {
       "allowInterrupt": "允许打断",
-      "realisticOutput": "合并消息",
+      "mergeMessages": "合并消息",
       "proactiveChat": "主动搭话",
       "proactiveVision": "自主视觉",
       "agentMaster": "Agent总开关",

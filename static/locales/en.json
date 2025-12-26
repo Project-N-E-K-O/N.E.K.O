@@ -818,7 +818,7 @@
     },
     "toggles": {
       "allowInterrupt": "Allow Interrupt",
-      "realisticOutput": "Merge Messages",
+      "mergeMessages": "Merge Messages",
       "proactiveChat": "Proactive Chat",
       "proactiveVision": "Autonomous Vision",
       "agentMaster": "Agent Master Switch",
