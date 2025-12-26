@@ -215,7 +215,7 @@ function init_app() {
     // 主动搭话功能相关
     let proactiveChatEnabled = false;
     let proactiveVisionEnabled = false;
-    let realisticOutputEnabled = false;
+    let mergeMessagesEnabled = false;
     let proactiveChatTimer = null;
     let proactiveChatBackoffLevel = 0; // 退避级别：0=30s, 1=75s, 2=187.5s, etc.
     let isProactiveChatRunning = false; // 锁：防止主动搭话执行期间重复触发
@@ -266,7 +266,7 @@ function init_app() {
     // 暴露到全局作用域，供 live2d.js 等其他模块访问和修改
     window.proactiveChatEnabled = proactiveChatEnabled;
     window.proactiveVisionEnabled = proactiveVisionEnabled;
-    window.realisticOutputEnabled = realisticOutputEnabled;
+    window.mergeMessagesEnabled = mergeMessagesEnabled;
     window.focusModeEnabled = focusModeEnabled;
 
     // WebSocket心跳保活
@@ -562,9 +562,9 @@ function init_app() {
                     console.log('收到turn end事件，开始情感分析和翻译');
                     // 合并消息关闭（分句模式）时：兜底 flush 未以标点结尾的最后缓冲，避免最后一段永远不显示
                     try {
-                        const mergeEnabled = typeof window.realisticOutputEnabled !== 'undefined'
-                            ? window.realisticOutputEnabled
-                            : false;
+                        const mergeEnabled = typeof window.mergeMessagesEnabled !== 'undefined'
+                            ? window.mergeMessagesEnabled
+                            : (typeof window.realisticOutputEnabled !== 'undefined' ? window.realisticOutputEnabled : false);
                         if (!mergeEnabled) {
                             const rest = typeof window._realisticGeminiBuffer === 'string' ? window._realisticGeminiBuffer : '';
                             const trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
@@ -581,6 +581,21 @@ function init_app() {
                                 chatContainer.appendChild(messageDiv);
                                 window.currentGeminiMessage = messageDiv;
                                 window._realisticGeminiBuffer = '';
+
+                                // 与正常气泡创建行为保持一致：字幕提示 & 首次对话成就
+                                try {
+                                    checkAndShowSubtitlePrompt(trimmed);
+                                } catch (e) {
+                                    console.warn('turn end flush subtitle prompt failed:', e);
+                                }
+                                if (typeof isFirstAIResponse !== 'undefined' && isFirstAIResponse) {
+                                    isFirstAIResponse = false;
+                                    try {
+                                        checkAndUnlockFirstDialogueAchievement();
+                                    } catch (e) {
+                                        console.warn('turn end flush first-dialogue achievement failed:', e);
+                                    }
+                                }
                             }
                         }
                     } catch (e) {
@@ -767,9 +782,9 @@ function init_app() {
     // 添加消息到聊天界面
     function appendMessage(text, sender, isNewMessage = true) {
         function isMergeMessagesEnabled() {
-            return typeof window.realisticOutputEnabled !== 'undefined'
-                ? window.realisticOutputEnabled
-                : realisticOutputEnabled;
+            if (typeof window.mergeMessagesEnabled !== 'undefined') return window.mergeMessagesEnabled;
+            if (typeof window.realisticOutputEnabled !== 'undefined') return window.realisticOutputEnabled;
+            return mergeMessagesEnabled;
         }
 
         function normalizeGeminiText(s) {
@@ -5347,9 +5362,9 @@ function init_app() {
         const currentVision = typeof window.proactiveVisionEnabled !== 'undefined'
             ? window.proactiveVisionEnabled
             : proactiveVisionEnabled;
-        const currentRealistic = typeof window.realisticOutputEnabled !== 'undefined'
-            ? window.realisticOutputEnabled
-            : realisticOutputEnabled;
+        const currentMerge = typeof window.mergeMessagesEnabled !== 'undefined'
+            ? window.mergeMessagesEnabled
+            : (typeof window.realisticOutputEnabled !== 'undefined' ? window.realisticOutputEnabled : mergeMessagesEnabled);
         const currentFocus = typeof window.focusModeEnabled !== 'undefined'
             ? window.focusModeEnabled
             : focusModeEnabled;
@@ -5357,7 +5372,7 @@ function init_app() {
         const settings = {
             proactiveChatEnabled: currentProactive,
             proactiveVisionEnabled: currentVision,
-            realisticOutputEnabled: currentRealistic,
+            mergeMessagesEnabled: currentMerge,
             focusModeEnabled: currentFocus
         };
         localStorage.setItem('project_neko_settings', JSON.stringify(settings));
@@ -5365,7 +5380,7 @@ function init_app() {
         // 同步回局部变量，保持一致性
         proactiveChatEnabled = currentProactive;
         proactiveVisionEnabled = currentVision;
-        realisticOutputEnabled = currentRealistic;
+        mergeMessagesEnabled = currentMerge;
         focusModeEnabled = currentFocus;
     }
 
@@ -5384,9 +5399,9 @@ function init_app() {
                 // 主动视觉：从localStorage加载设置
                 proactiveVisionEnabled = settings.proactiveVisionEnabled ?? false;
                 window.proactiveVisionEnabled = proactiveVisionEnabled; // 同步到全局
-                // 拟真输出：从localStorage加载设置
-                realisticOutputEnabled = settings.realisticOutputEnabled ?? false;
-                window.realisticOutputEnabled = realisticOutputEnabled; // 同步到全局
+                // 合并消息：从localStorage加载设置（兼容旧字段 realisticOutputEnabled）
+                mergeMessagesEnabled = (settings.mergeMessagesEnabled ?? settings.realisticOutputEnabled) ?? false;
+                window.mergeMessagesEnabled = mergeMessagesEnabled; // 同步到全局
                 // Focus模式：从localStorage加载设置
                 focusModeEnabled = settings.focusModeEnabled ?? false;
                 window.focusModeEnabled = focusModeEnabled; // 同步到全局
@@ -5394,7 +5409,7 @@ function init_app() {
                 console.log('已加载设置:', {
                     proactiveChatEnabled: proactiveChatEnabled,
                     proactiveVisionEnabled: proactiveVisionEnabled,
-                    realisticOutputEnabled: realisticOutputEnabled,
+                    mergeMessagesEnabled: mergeMessagesEnabled,
                     focusModeEnabled: focusModeEnabled,
                     focusModeDesc: focusModeEnabled ? 'AI说话时自动静音麦克风（不允许打断）' : '允许打断AI说话'
                 });
@@ -5402,14 +5417,14 @@ function init_app() {
                 // 如果没有保存的设置，也要确保全局变量被初始化
                 console.log('未找到保存的设置，使用默认值');
                 window.proactiveChatEnabled = proactiveChatEnabled;
-                window.realisticOutputEnabled = realisticOutputEnabled;
+                window.mergeMessagesEnabled = mergeMessagesEnabled;
                 window.focusModeEnabled = focusModeEnabled;
             }
         } catch (error) {
             console.error('加载设置失败:', error);
             // 出错时也要确保全局变量被初始化
             window.proactiveChatEnabled = proactiveChatEnabled;
-            window.realisticOutputEnabled = realisticOutputEnabled;
+            window.mergeMessagesEnabled = mergeMessagesEnabled;
             window.focusModeEnabled = focusModeEnabled;
         }
     }

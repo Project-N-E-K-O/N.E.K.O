@@ -333,8 +333,12 @@ Live2DManager.prototype._createSettingsToggleItem = function (toggle, popup) {
     });
 
     // 从 window 获取当前状态（如果 app.js 已经初始化）
-    if (toggle.id === 'realistic-output' && typeof window.realisticOutputEnabled !== 'undefined') {
-        checkbox.checked = window.realisticOutputEnabled;
+    if (toggle.id === 'realistic-output') {
+        if (typeof window.mergeMessagesEnabled !== 'undefined') {
+            checkbox.checked = window.mergeMessagesEnabled;
+        } else if (typeof window.realisticOutputEnabled !== 'undefined') {
+            checkbox.checked = window.realisticOutputEnabled;
+        }
     } else if (toggle.id === 'focus-mode' && typeof window.focusModeEnabled !== 'undefined') {
         // inverted: 允许打断 = !focusModeEnabled（focusModeEnabled为true表示关闭打断）
         checkbox.checked = toggle.inverted ? !window.focusModeEnabled : window.focusModeEnabled;
@@ -436,7 +440,7 @@ Live2DManager.prototype._createSettingsToggleItem = function (toggle, popup) {
 
         // 同步到 app.js 中的对应开关（这样会触发 app.js 的完整逻辑）
         if (toggle.id === 'realistic-output') {
-            window.realisticOutputEnabled = isChecked;
+            window.mergeMessagesEnabled = isChecked;
 
             // 保存到localStorage
             if (typeof window.saveNEKOSettings === 'function') {
