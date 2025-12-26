@@ -977,10 +977,7 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False):
     Returns:
         对应的 TTS worker 函数
     """
-    #指定本地模型的判断方式
-    # 强制暴力测试
-    return local_cosyvoice_worker
-    #
+
     try:
         cm = get_config_manager()
         tts_config = cm.get_model_api_config('tts_custom')
@@ -1087,7 +1084,6 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                 receive_task.cancel()
             receive_task = asyncio.create_task(receive_loop(ws, resampler, response_queue))
             return ws
-        # ============================
 
         # 1. 初始连接 (先连上再发 ready 信号，防止死锁)
         try:
@@ -1101,7 +1097,6 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
 
         # 主循环
         while True:
-
 
             # 1. 获取请求 (非阻塞获取以便处理连接状态)
             try:
@@ -1170,58 +1165,6 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                 else:
                     # 没有标点，跳出循环继续等待更多字
                     break
-
-            # # 构造 payload
-            # # 注意：Zero-Shot 模式下 voice_id 可能为空，这里给一个默认值防止报错
-            # payload = {
-            #     "header": {
-            #         "action": "run-task",
-            #         "task_id": str(uuid.uuid4()),
-            #         'streaming': 'duplex'
-            #     },
-            #     "payload": {
-            #         "input": {"text": tts_text},
-            #         "parameters": {"voice_id": voice_id if voice_id else "zero_shot_default"}
-            #     }
-            # }
-            #
-
-            # === 旧代码
-            # if ws is None or ws.closed:
-            #     try:
-            #         await ensure_connection()
-            #     except Exception as e:
-            #         logger.error(f'发送信息失败：{e}')
-            #         ws = None
-            #         continue
-            # try:
-            #     await ws.send(json.dumps(payload))
-            # except Exception as e:
-            #     logger.error(f"发送数据失败: {e}")
-            #     ws = None  # 标记连接断开，下次循环重连
-            #
-            # try:
-            #     # 1. 如果连接为空，先连接
-            #     if ws is None:
-            #         await ensure_connection()
-            #
-            #     # 2. 尝试发送
-            #     await ws.send(json.dumps(payload))
-            #
-            # except Exception as first_error:
-            #     # 3. 如果发送失败（可能是连接断了但 ws 不是 None），尝试重连并重发
-            #     logger.warning(f"发送失败，尝试重连: {first_error}")
-            #     try:
-            #         await ensure_connection()
-            #         await ws.send(json.dumps(payload))
-            #         logger.info("重连并重发成功")
-            #     except Exception as final_error:
-            #         # 4. 彻底失败
-            #         logger.error(f"重连后发送依然失败: {final_error}")
-            #         ws = None
-
-            # =====
-
 
     # 运行 Asyncio 循环
     try:
