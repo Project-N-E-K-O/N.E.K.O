@@ -548,6 +548,11 @@ Live2DManager.prototype.enableMouseTracking = function(model, options = {}) {
             return;
         }
         
+        // 检查模型是否已被销毁或不在舞台上
+        if (model.destroyed || !model.parent || !this.pixi_app || !this.pixi_app.stage) {
+            return;
+        }
+        
         // 使用 clientX/Y 作为全局坐标
         const pointer = { x: event.clientX, y: event.clientY };
         
@@ -577,6 +582,7 @@ Live2DManager.prototype.enableMouseTracking = function(model, options = {}) {
 
         try {
             const bounds = model.getBounds();
+            
             const dx = Math.max(bounds.left - pointer.x, 0, pointer.x - bounds.right);
             const dy = Math.max(bounds.top - pointer.y, 0, pointer.y - bounds.bottom);
             const distance = Math.sqrt(dx * dx + dy * dy);
@@ -595,7 +601,11 @@ Live2DManager.prototype.enableMouseTracking = function(model, options = {}) {
                 startHideTimer();
             }
         } catch (error) {
-            console.error('Live2D 交互错误:', error);
+            // 静默处理错误，避免控制台刷屏
+            // 只在开发模式下输出详细错误信息
+            if (window.DEBUG || window.location.hostname === 'localhost') {
+                console.error('Live2D 交互错误:', error);
+            }
         }
     };
 

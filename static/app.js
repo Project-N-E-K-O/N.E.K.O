@@ -215,6 +215,7 @@ function init_app() {
     // 主动搭话功能相关
     let proactiveChatEnabled = false;
     let proactiveVisionEnabled = false;
+    let mergeMessagesEnabled = false;
     let proactiveChatTimer = null;
     let proactiveChatBackoffLevel = 0; // 退避级别：0=30s, 1=75s, 2=187.5s, etc.
     let isProactiveChatRunning = false; // 锁：防止主动搭话执行期间重复触发
@@ -265,6 +266,7 @@ function init_app() {
     // 暴露到全局作用域，供 live2d.js 等其他模块访问和修改
     window.proactiveChatEnabled = proactiveChatEnabled;
     window.proactiveVisionEnabled = proactiveVisionEnabled;
+    window.mergeMessagesEnabled = mergeMessagesEnabled;
     window.focusModeEnabled = focusModeEnabled;
 
     // WebSocket心跳保活
@@ -558,12 +560,59 @@ function init_app() {
                     }
                 } else if (response.type === 'system' && response.data === 'turn end') {
                     console.log('收到turn end事件，开始情感分析和翻译');
+                    // 合并消息关闭（分句模式）时：兜底 flush 未以标点结尾的最后缓冲，避免最后一段永远不显示
+                    try {
+                        const rest = typeof window._realisticGeminiBuffer === 'string'
+                            ? window._realisticGeminiBuffer
+                            : '';
+                        const trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
+                        if (trimmed) {
+                            const messageDiv = document.createElement('div');
+                            messageDiv.classList.add('message', 'gemini');
+                            const timeStr = new Date().toLocaleTimeString('en-US', {
+                                hour12: false,
+                                hour: '2-digit',
+                                minute: '2-digit',
+                                second: '2-digit'
+                            });
+                            messageDiv.textContent = `[${timeStr}] 🎀 ${trimmed}`;
+                            chatContainer.appendChild(messageDiv);
+                            try {
+                                chatContainer.scrollTop = chatContainer.scrollHeight;
+                            } catch (_) { }
+                            window.currentGeminiMessage = messageDiv;
+                            window._realisticGeminiBuffer = '';
+
+                            // 与正常气泡创建行为保持一致：字幕提示 & 首次对话成就
+                            try {
+                                checkAndShowSubtitlePrompt(trimmed);
+                            } catch (e) {
+                                console.warn('turn end flush subtitle prompt failed:', e);
+                            }
+                            if (typeof isFirstAIResponse !== 'undefined' && isFirstAIResponse) {
+                                isFirstAIResponse = false;
+                                try {
+                                    checkAndUnlockFirstDialogueAchievement();
+                                } catch (e) {
+                                    console.warn('turn end flush first-dialogue achievement failed:', e);
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        console.warn('turn end flush realistic buffer failed:', e);
+                    }
                     // 消息完成时进行情感分析和翻译
-                    if (window.currentGeminiMessage &&
-                        window.currentGeminiMessage.nodeType === Node.ELEMENT_NODE &&
-                        window.currentGeminiMessage.isConnected &&
-                        typeof window.currentGeminiMessage.textContent === 'string') {
-                        const fullText = window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '');
+                    {
+                        const bufferedFullText = typeof window._geminiTurnFullText === 'string'
+                            ? window._geminiTurnFullText
+                            : '';
+                        const fallbackFromBubble = (window.currentGeminiMessage &&
+                            window.currentGeminiMessage.nodeType === Node.ELEMENT_NODE &&
+                            window.currentGeminiMessage.isConnected &&
+                            typeof window.currentGeminiMessage.textContent === 'string')
+                            ? window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '')
+                            : '';
+                        const fullText = (bufferedFullText && bufferedFullText.trim()) ? bufferedFullText : fallbackFromBubble;
                         
                         if (!fullText || !fullText.trim()) {
                             return;
@@ -732,6 +781,66 @@ function init_app() {
 
     // 添加消息到聊天界面
     function appendMessage(text, sender, isNewMessage = true) {
+        function isMergeMessagesEnabled() {
+            if (typeof window.mergeMessagesEnabled !== 'undefined') return window.mergeMessagesEnabled;
+            return mergeMessagesEnabled;
+        }
+
+        function normalizeGeminiText(s) {
+            return (s || '').replace(/\r\n/g, '\n');
+        }
+
+        function splitIntoSentences(buffer) {
+            // 逐字符扫描，尽量兼容中英文标点与流式输入
+            const sentences = [];
+            const s = normalizeGeminiText(buffer);
+            let start = 0;
+
+            const isBoundary = (ch, next) => {
+                if (ch === '\n') return true;
+                if (ch === '。' || ch === '！' || ch === '？') return true;
+                if (ch === '!' || ch === '?') return true;
+                if (ch === '.') {
+                    // 英文句点：尽量避免把小数/缩写切断，要求后面是空白/换行/结束/常见结束符
+                    if (!next) return true;
+                    return /\s|\n|["')\]]/.test(next);
+                }
+                return false;
+            };
+
+            for (let i = 0; i < s.length; i++) {
+                const ch = s[i];
+                const next = i + 1 < s.length ? s[i + 1] : '';
+                if (isBoundary(ch, next)) {
+                    const piece = s.slice(start, i + 1);
+                    const trimmed = piece.replace(/^\s+/, '').replace(/\s+$/, '');
+                    if (trimmed) sentences.push(trimmed);
+                    start = i + 1;
+                }
+            }
+
+            const rest = s.slice(start);
+            return { sentences, rest };
+        }
+
+        function createGeminiBubble(sentence) {
+            const messageDiv = document.createElement('div');
+            messageDiv.classList.add('message', 'gemini');
+            messageDiv.textContent = "[" + getCurrentTimeString() + "] 🎀 " + sentence;
+            chatContainer.appendChild(messageDiv);
+            window.currentGeminiMessage = messageDiv;
+
+            // 检测AI消息的语言，如果与用户语言不同，显示字幕提示框
+            checkAndShowSubtitlePrompt(sentence);
+
+            // 如果是AI第一次回复，更新状态并检查成就
+            if (isFirstAIResponse) {
+                isFirstAIResponse = false;
+                console.log('检测到AI第一次回复');
+                checkAndUnlockFirstDialogueAchievement();
+            }
+        }
+
         function getCurrentTimeString() {
             return new Date().toLocaleTimeString('en-US', {
                 hour12: false,
@@ -741,17 +850,53 @@ function init_app() {
             });
         }
 
-        if (sender === 'gemini' && !isNewMessage && window.currentGeminiMessage &&
+        // 维护“本轮 AI 回复”的完整文本（用于 turn end 时整段翻译/情感分析）
+        if (sender === 'gemini') {
+            if (isNewMessage) {
+                window._geminiTurnFullText = '';
+            }
+            const prevFull = typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '';
+            window._geminiTurnFullText = prevFull + normalizeGeminiText(text);
+        }
+
+        if (sender === 'gemini' && !isMergeMessagesEnabled()) {
+            // 拟真输出（合并消息关闭）：流式内容先缓冲，按句号/问号/感叹号/换行等切分，每句一个气泡
+            if (isNewMessage) {
+                window._realisticGeminiBuffer = '';
+            }
+            const prev = typeof window._realisticGeminiBuffer === 'string' ? window._realisticGeminiBuffer : '';
+            const combined = prev + normalizeGeminiText(text);
+            const { sentences, rest } = splitIntoSentences(combined);
+            window._realisticGeminiBuffer = rest;
+
+            sentences.forEach(s => createGeminiBubble(s));
+        } else if (sender === 'gemini' && isMergeMessagesEnabled() && isNewMessage) {
+            // 合并消息开启：新一轮开始时，清空拟真缓冲，防止残留
+            window._realisticGeminiBuffer = '';
+            const messageDiv = document.createElement('div');
+            messageDiv.classList.add('message', 'gemini');
+            messageDiv.textContent = "[" + getCurrentTimeString() + "] 🎀 " + (text || '');
+            chatContainer.appendChild(messageDiv);
+            window.currentGeminiMessage = messageDiv;
+
+            checkAndShowSubtitlePrompt(text);
+
+            if (isFirstAIResponse) {
+                isFirstAIResponse = false;
+                console.log('检测到AI第一次回复');
+                checkAndUnlockFirstDialogueAchievement();
+            }
+        } else if (sender === 'gemini' && isMergeMessagesEnabled() && !isNewMessage && window.currentGeminiMessage &&
             window.currentGeminiMessage.nodeType === Node.ELEMENT_NODE &&
             window.currentGeminiMessage.isConnected) {
             // 追加到现有消息（使用 textContent 避免 XSS 风险）
             window.currentGeminiMessage.textContent += text;
-            
+
             // 防抖机制优化流式输出时的语言检测
             if (subtitleCheckDebounceTimer) {
                 clearTimeout(subtitleCheckDebounceTimer);
             }
-            
+
             subtitleCheckDebounceTimer = setTimeout(() => {
                 if (!window.currentGeminiMessage ||
                     window.currentGeminiMessage.nodeType !== Node.ELEMENT_NODE ||
@@ -759,7 +904,7 @@ function init_app() {
                     subtitleCheckDebounceTimer = null;
                     return;
                 }
-                
+
                 const fullText = window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '');
                 if (fullText && fullText.trim()) {
                     if (userLanguage === null) {
@@ -5216,6 +5361,9 @@ function init_app() {
         const currentVision = typeof window.proactiveVisionEnabled !== 'undefined'
             ? window.proactiveVisionEnabled
             : proactiveVisionEnabled;
+        const currentMerge = typeof window.mergeMessagesEnabled !== 'undefined'
+            ? window.mergeMessagesEnabled
+            : mergeMessagesEnabled;
         const currentFocus = typeof window.focusModeEnabled !== 'undefined'
             ? window.focusModeEnabled
             : focusModeEnabled;
@@ -5223,6 +5371,7 @@ function init_app() {
         const settings = {
             proactiveChatEnabled: currentProactive,
             proactiveVisionEnabled: currentVision,
+            mergeMessagesEnabled: currentMerge,
             focusModeEnabled: currentFocus
         };
         localStorage.setItem('project_neko_settings', JSON.stringify(settings));
@@ -5230,6 +5379,7 @@ function init_app() {
         // 同步回局部变量，保持一致性
         proactiveChatEnabled = currentProactive;
         proactiveVisionEnabled = currentVision;
+        mergeMessagesEnabled = currentMerge;
         focusModeEnabled = currentFocus;
     }
 
@@ -5248,6 +5398,9 @@ function init_app() {
                 // 主动视觉：从localStorage加载设置
                 proactiveVisionEnabled = settings.proactiveVisionEnabled ?? false;
                 window.proactiveVisionEnabled = proactiveVisionEnabled; // 同步到全局
+                // 合并消息：从localStorage加载设置
+                mergeMessagesEnabled = settings.mergeMessagesEnabled ?? false;
+                window.mergeMessagesEnabled = mergeMessagesEnabled; // 同步到全局
                 // Focus模式：从localStorage加载设置
                 focusModeEnabled = settings.focusModeEnabled ?? false;
                 window.focusModeEnabled = focusModeEnabled; // 同步到全局
@@ -5255,6 +5408,7 @@ function init_app() {
                 console.log('已加载设置:', {
                     proactiveChatEnabled: proactiveChatEnabled,
                     proactiveVisionEnabled: proactiveVisionEnabled,
+                    mergeMessagesEnabled: mergeMessagesEnabled,
                     focusModeEnabled: focusModeEnabled,
                     focusModeDesc: focusModeEnabled ? 'AI说话时自动静音麦克风（不允许打断）' : '允许打断AI说话'
                 });
@@ -5262,12 +5416,14 @@ function init_app() {
                 // 如果没有保存的设置，也要确保全局变量被初始化
                 console.log('未找到保存的设置，使用默认值');
                 window.proactiveChatEnabled = proactiveChatEnabled;
+                window.mergeMessagesEnabled = mergeMessagesEnabled;
                 window.focusModeEnabled = focusModeEnabled;
             }
         } catch (error) {
             console.error('加载设置失败:', error);
             // 出错时也要确保全局变量被初始化
             window.proactiveChatEnabled = proactiveChatEnabled;
+            window.mergeMessagesEnabled = mergeMessagesEnabled;
             window.focusModeEnabled = focusModeEnabled;
         }
     }
@@ -5294,6 +5450,38 @@ function init_app() {
         if (!newCatgirl) {
             console.log('[猫娘切换] ⚠️ 新猫娘名称为空，忽略');
             return;
+        }
+
+        // 辅助函数：恢复模型和对话框的可见性
+        function restoreModelAndDialogVisibility() {
+            const live2dContainer = document.getElementById('live2d-container');
+            const live2dCanvas = document.getElementById('live2d-canvas');
+            const chatContainer = document.getElementById('chat-container');
+            const textInputArea = document.getElementById('text-input-area');
+            
+            if (live2dContainer) {
+                live2dContainer.classList.remove('minimized');
+                live2dContainer.style.removeProperty('display');
+                live2dContainer.style.removeProperty('visibility');
+            }
+            if (live2dCanvas) {
+                live2dCanvas.classList.remove('minimized');
+                live2dCanvas.style.removeProperty('visibility');
+                live2dCanvas.style.visibility = 'visible';
+                const isLocked = window.live2dManager ? window.live2dManager.isLocked : true;
+                live2dCanvas.style.pointerEvents = isLocked ? 'none' : 'auto';
+            }
+            if (chatContainer) {
+                chatContainer.classList.remove('minimized');
+                chatContainer.style.removeProperty('display');
+                chatContainer.style.removeProperty('visibility');
+            }
+            if (textInputArea) {
+                textInputArea.classList.remove('hidden');
+            }
+            if (window.live2dManager) {
+                window.live2dManager._goodbyeClicked = false;
+            }
         }
 
         console.log('[猫娘切换] 🚀 开始切换，从', lanlan_config.lanlan_name, '切换到', newCatgirl);
@@ -5382,8 +5570,18 @@ function init_app() {
                 if (!window.live2dManager) {
                     console.error('[猫娘切换] live2dManager 不存在，无法重新加载模型');
                 } else if (!window.live2dManager.pixi_app) {
-                    console.error('[猫娘切换] live2dManager 未初始化，无法重新加载模型');
-                } else {
+                    // 如果pixi_app不存在，尝试重新初始化
+                    console.warn('[猫娘切换] live2dManager 未初始化，尝试重新初始化...');
+                    try {
+                        await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
+                        console.log('[猫娘切换] live2dManager 重新初始化成功');
+                    } catch (initError) {
+                        console.error('[猫娘切换] 重新初始化失败:', initError);
+                    }
+                }
+                
+                // 再次检查是否已初始化
+                if (window.live2dManager && window.live2dManager.pixi_app) {
                     const currentModel = window.live2dManager.getCurrentModel();
                     const currentModelPath = currentModel ? (currentModel.url || '') : '';
                     const newModelPath = modelData.model_info.path;
@@ -5427,6 +5625,9 @@ function init_app() {
                             window.LanLan1.emotionMapping = window.live2dManager.getEmotionMapping();
                         }
 
+                        // 确保模型和对话框可见
+                        restoreModelAndDialogVisibility();
+                        
                         console.log('[猫娘切换] Live2D 模型已重新加载完成');
                     } else {
                         console.error('[猫娘切换] 无法获取模型配置，状态:', modelConfigRes.status);
@@ -5439,43 +5640,62 @@ function init_app() {
                 try {
                     console.log('[猫娘切换] 尝试回退到默认模型 mao_pro');
 
-                    if (window.live2dManager && window.live2dManager.pixi_app) {
-                        // 查找mao_pro模型
-                        const modelsResponse = await fetch('/api/live2d/models');
-                        if (modelsResponse.ok) {
-                            const models = await modelsResponse.json();
-                            const maoProModel = models.find(m => m.name === 'mao_pro');
+                    if (window.live2dManager) {
+                        // 如果pixi_app不存在，尝试重新初始化
+                        if (!window.live2dManager.pixi_app) {
+                            console.warn('[猫娘切换] live2dManager 未初始化，尝试重新初始化...');
+                            try {
+                                await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
+                                console.log('[猫娘切换] live2dManager 重新初始化成功');
+                            } catch (initError) {
+                                console.error('[猫娘切换] 重新初始化失败:', initError);
+                            }
+                        }
+                        
+                        // 再次检查是否已初始化
+                        if (window.live2dManager.pixi_app) {
+                            // 查找mao_pro模型
+                            const modelsResponse = await fetch('/api/live2d/models');
+                            if (modelsResponse.ok) {
+                                const models = await modelsResponse.json();
+                                const maoProModel = models.find(m => m.name === 'mao_pro');
 
-                            if (maoProModel) {
-                                console.log('[猫娘切换] 找到默认模型 mao_pro，路径:', maoProModel.path);
+                                if (maoProModel) {
+                                    console.log('[猫娘切换] 找到默认模型 mao_pro，路径:', maoProModel.path);
 
-                                // 获取模型配置
-                                const modelConfigRes = await fetch(maoProModel.path);
-                                if (modelConfigRes.ok) {
-                                    const modelConfig = await modelConfigRes.json();
-                                    modelConfig.url = maoProModel.path;
+                                    // 获取模型配置
+                                    const modelConfigRes = await fetch(maoProModel.path);
+                                    if (modelConfigRes.ok) {
+                                        const modelConfig = await modelConfigRes.json();
+                                        modelConfig.url = maoProModel.path;
 
-                                    // 加载默认模型
-                                    await window.live2dManager.loadModel(modelConfig, {
-                                        isMobile: window.innerWidth <= 768
-                                    });
+                                        // 加载默认模型
+                                        await window.live2dManager.loadModel(modelConfig, {
+                                            isMobile: window.innerWidth <= 768
+                                        });
 
-                                    // 更新全局引用
-                                    if (window.LanLan1) {
-                                        window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
-                                        window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
-                                        window.LanLan1.emotionMapping = window.live2dManager.getEmotionMapping();
+                                        // 更新全局引用
+                                        if (window.LanLan1) {
+                                            window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
+                                            window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
+                                            window.LanLan1.emotionMapping = window.live2dManager.getEmotionMapping();
+                                        }
+                                        
+                                        // 确保模型和对话框可见
+                                        restoreModelAndDialogVisibility();
+
+                                        console.log('[猫娘切换] 已成功回退到默认模型 mao_pro');
+                                    } else {
+                                        console.error('[猫娘切换] 无法获取默认模型配置，状态:', modelConfigRes.status);
                                     }
-
-                                    console.log('[猫娘切换] 已成功回退到默认模型 mao_pro');
                                 } else {
-                                    console.error('[猫娘切换] 无法获取默认模型配置，状态:', modelConfigRes.status);
+                                    console.error('[猫娘切换] 未找到默认模型 mao_pro');
                                 }
                             } else {
-                                console.error('[猫娘切换] 未找到默认模型 mao_pro');
+                                console.error('[猫娘切换] 无法获取模型列表');
                             }
                         } else {
-                            console.error('[猫娘切换] 无法获取模型列表');
+                            console.error('[猫娘切换] live2dManager 未初始化，无法加载默认模型');
                         }
                     } else {
                         console.error('[猫娘切换] live2dManager 未初始化，无法加载默认模型');
