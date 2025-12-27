@@ -26,35 +26,7 @@ from plugin.settings import (
     RESULT_CONSUMER_SLEEP_INTERVAL,
 )
 from plugin.api.exceptions import PluginExecutionError
-
-
-def _format_log_text(value: Any) -> str:
-    s = "" if value is None else str(value)
-
-    try:
-        max_len = int(os.getenv("NEKO_PLUGIN_LOG_CONTENT_MAX", "200"))
-    except Exception:
-        max_len = 200
-    if max_len <= 0:
-        max_len = 200
-
-    truncated = False
-    if len(s) > max_len:
-        s = s[:max_len]
-        truncated = True
-
-    try:
-        wrap = int(os.getenv("NEKO_PLUGIN_LOG_WRAP", "0"))
-    except Exception:
-        wrap = 0
-
-    if wrap and wrap > 0:
-        s = "\n".join(s[i : i + wrap] for i in range(0, len(s), wrap))
-
-    if truncated:
-        s = s + "...(truncated)"
-
-    return s
+from plugin.utils.logging import format_log_text as _format_log_text
 
 
 @dataclass
@@ -413,7 +385,7 @@ class PluginCommunicationResourceManager:
             except Exception as e:
                 # 其他未知异常，记录详细信息
                 if not self._shutdown_event.is_set():
-                    self.logger.exception(f"Unexpected error consuming results for plugin {self.plugin_id}: {e}")
+                    self.logger.exception(f"Unexpected error consuming results for plugin {self.plugin_id}")
                 # 短暂休眠避免 CPU 占用过高
                 await asyncio.sleep(RESULT_CONSUMER_SLEEP_INTERVAL)
     
@@ -495,7 +467,7 @@ class PluginCommunicationResourceManager:
                     self.logger.error(f"Queue error forwarding message from plugin {self.plugin_id}: {e}")
                 except Exception as e:
                     self.logger.exception(
-                        f"Unexpected error forwarding message from plugin {self.plugin_id}: {e}"
+                        f"Unexpected error forwarding message from plugin {self.plugin_id}"
                     )
             except Empty:
                 # 队列为空，继续等待
@@ -508,7 +480,7 @@ class PluginCommunicationResourceManager:
             except Exception as e:
                 # 其他未知异常
                 if not self._shutdown_event.is_set():
-                    self.logger.exception(f"Unexpected error consuming messages for plugin {self.plugin_id}: {e}")
+                    self.logger.exception(f"Unexpected error consuming messages for plugin {self.plugin_id}")
                 # 短暂休眠避免 CPU 占用过高
                 await asyncio.sleep(MESSAGE_CONSUMER_SLEEP_INTERVAL)
 

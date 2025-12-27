@@ -25,6 +25,7 @@ from plugin.api.exceptions import (
 )
 from plugin.server.error_handler import handle_plugin_error
 from plugin.server.utils import now_iso
+from plugin.utils.logging import format_log_text as _format_log_text
 from plugin.settings import (
     PLUGIN_EXECUTION_TIMEOUT,
     MESSAGE_QUEUE_DEFAULT_MAX_COUNT,
@@ -33,36 +34,6 @@ from plugin.sdk.errors import ErrorCode
 from plugin.sdk.responses import fail, is_envelope
 
 logger = logging.getLogger("user_plugin_server")
-
-
-def _format_log_text(value: Any) -> str:
-    s = "" if value is None else str(value)
-
-    try:
-        max_len = int(os.getenv("NEKO_PLUGIN_LOG_CONTENT_MAX", "200"))
-    except Exception:
-        max_len = 200
-    if max_len <= 0:
-        max_len = 200
-
-    truncated = False
-    if len(s) > max_len:
-        s = s[:max_len]
-        truncated = True
-
-    try:
-        wrap = int(os.getenv("NEKO_PLUGIN_LOG_WRAP", "0"))
-    except Exception:
-        wrap = 0
-
-    if wrap and wrap > 0:
-        # Hard-wrap to avoid giant single-line log entries.
-        s = "\n".join(s[i : i + wrap] for i in range(0, len(s), wrap))
-
-    if truncated:
-        s = s + "...(truncated)"
-
-    return s
 
 
 def build_plugin_list() -> List[Dict[str, Any]]:

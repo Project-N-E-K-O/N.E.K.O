@@ -195,14 +195,14 @@ class PluginRuntimeState:
         with self._bus_store_lock:
             self._deleted_message_ids.add(message_id)
             removed = False
-            for idx, rec in enumerate(list(self._message_store)):
+            # 重建 deque，排除要删除的记录
+            new_store = deque(maxlen=self._message_store.maxlen)
+            for rec in self._message_store:
                 if isinstance(rec, dict) and rec.get("message_id") == message_id:
-                    try:
-                        del self._message_store[idx]
-                        removed = True
-                        break
-                    except Exception:
-                        break
+                    removed = True
+                else:
+                    new_store.append(rec)
+            self._message_store = new_store
             if removed:
                 try:
                     self.bus_change_hub.emit("messages", "del", {"message_id": message_id})
