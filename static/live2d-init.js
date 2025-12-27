@@ -20,134 +20,147 @@ async function initLive2DModel() {
     if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
         await window.pageConfigReady;
     }
-    
+
+    // 检查是否在model_manager页面，如果是则跳过自动模型加载，但仍初始化Live2D管理器
+    const isModelManagerPage = window.location.pathname.includes('model_manager') ||
+                              document.querySelector('#model-select') !== null ||
+                              document.querySelector('#live2dModelSelect') !== null;
+
     // 获取模型路径
     const targetModelPath = (typeof cubism4Model !== 'undefined' ? cubism4Model : (window.cubism4Model || ''));
-    
-    if (!targetModelPath) {
-        console.log('未设置模型路径，跳过Live2D初始化');
+
+    if (!targetModelPath && !isModelManagerPage) {
+        console.log('未设置模型路径，且不在模型管理页面，跳过Live2D初始化');
         return;
     }
     
     try {
-        console.log('开始初始化Live2D模型，路径:', targetModelPath);
-        
-        // 初始化 PIXI 应用
+        // 初始化 PIXI 应用（在模型管理界面也需要初始化，以便手动加载模型）
         await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
-        
-        // 加载用户偏好
-        const preferences = await window.live2dManager.loadUserPreferences();
-        console.log('加载到的偏好设置数量:', preferences.length);
-        
-        // 根据模型路径找到对应的偏好设置（使用多种匹配方式）
-        let modelPreferences = null;
-        if (preferences && preferences.length > 0) {
-            console.log('所有偏好设置的路径:', preferences.map(p => p?.model_path).filter(Boolean));
-            
-            // 首先尝试精确匹配
-            modelPreferences = preferences.find(p => p && p.model_path === targetModelPath);
-            
-            // 如果精确匹配失败，尝试文件名匹配
-            if (!modelPreferences) {
-                const targetFileName = targetModelPath.split('/').pop() || '';
-                console.log('尝试文件名匹配，目标文件名:', targetFileName);
-                modelPreferences = preferences.find(p => {
-                    if (!p || !p.model_path) return false;
-                    const prefFileName = p.model_path.split('/').pop() || '';
-                    if (targetFileName && prefFileName && targetFileName === prefFileName) {
-                        console.log('文件名匹配成功:', p.model_path);
-                        return true;
-                    }
-                    return false;
-                });
-            }
-            
-            // 如果还是没找到，尝试部分匹配（通过模型名称）
-            if (!modelPreferences) {
-                const targetPathParts = targetModelPath.split('/').filter(p => p);
-                const modelName = targetPathParts[targetPathParts.length - 2] || targetPathParts[targetPathParts.length - 1]?.replace('.model3.json', '');
-                console.log('尝试模型名称匹配，模型名称:', modelName);
-                if (modelName) {
+
+        // 如果不在模型管理界面且有模型路径，才继续加载模型
+        if (!isModelManagerPage && targetModelPath) {
+            console.log('开始初始化Live2D模型，路径:', targetModelPath);
+
+            // 加载用户偏好
+            const preferences = await window.live2dManager.loadUserPreferences();
+            console.log('加载到的偏好设置数量:', preferences.length);
+
+            // 根据模型路径找到对应的偏好设置（使用多种匹配方式）
+            let modelPreferences = null;
+            if (preferences && preferences.length > 0) {
+                console.log('所有偏好设置的路径:', preferences.map(p => p?.model_path).filter(Boolean));
+
+                // 首先尝试精确匹配
+                modelPreferences = preferences.find(p => p && p.model_path === targetModelPath);
+
+                // 如果精确匹配失败，尝试文件名匹配
+                if (!modelPreferences) {
+                    const targetFileName = targetModelPath.split('/').pop() || '';
+                    console.log('尝试文件名匹配，目标文件名:', targetFileName);
                     modelPreferences = preferences.find(p => {
                         if (!p || !p.model_path) return false;
-                        if (p.model_path.includes(modelName)) {
-                            console.log('模型名称匹配成功:', p.model_path);
+                        const prefFileName = p.model_path.split('/').pop() || '';
+                        if (targetFileName && prefFileName && targetFileName === prefFileName) {
+                            console.log('文件名匹配成功:', p.model_path);
                             return true;
                         }
                         return false;
                     });
                 }
-            }
-            
-            // 如果还是没找到，尝试部分路径匹配
-            if (!modelPreferences) {
-                console.log('尝试部分路径匹配...');
-                const targetPathParts = targetModelPath.split('/').filter(p => p);
-                modelPreferences = preferences.find(p => {
-                    if (!p || !p.model_path) return false;
-                    const prefPathParts = p.model_path.split('/').filter(p => p);
-                    // 检查是否有足够的共同部分
-                    const commonParts = targetPathParts.filter(part => prefPathParts.includes(part));
-                    if (commonParts.length >= 2) {
-                        console.log('部分路径匹配成功:', p.model_path, '共同部分:', commonParts);
-                        return true;
+
+                // 如果还是没找到，尝试部分匹配（通过模型名称）
+                if (!modelPreferences) {
+                    const targetPathParts = targetModelPath.split('/').filter(p => p);
+                    const modelName = targetPathParts[targetPathParts.length - 2] || targetPathParts[targetPathParts.length - 1]?.replace('.model3.json', '');
+                    console.log('尝试模型名称匹配，模型名称:', modelName);
+                    if (modelName) {
+                        modelPreferences = preferences.find(p => {
+                            if (!p || !p.model_path) return false;
+                            if (p.model_path.includes(modelName)) {
+                                console.log('模型名称匹配成功:', p.model_path);
+                                return true;
+                            }
+                            return false;
+                        });
                     }
-                    return false;
-                });
-            }
+                }
             
-            if (modelPreferences && modelPreferences.parameters) {
-                console.log('找到模型偏好设置，参数数量:', Object.keys(modelPreferences.parameters).length);
-            }
-            
-            // 检查是否有保存的显示器信息（多屏幕位置恢复）
-            if (modelPreferences && modelPreferences.display && 
-                window.electronScreen && window.electronScreen.moveWindowToDisplay) {
-                const savedDisplay = modelPreferences.display;
-                if (Number.isFinite(savedDisplay.screenX) && Number.isFinite(savedDisplay.screenY)) {
-                    console.log('恢复窗口到保存的显示器位置:', savedDisplay);
-                    try {
-                        const result = await window.electronScreen.moveWindowToDisplay(
-                            savedDisplay.screenX + 10,  // 在保存的屏幕坐标中心点附近
-                            savedDisplay.screenY + 10
-                        );
-                        if (result && result.success) {
-                            console.log('窗口位置恢复成功:', result);
-                        } else if (result && result.sameDisplay) {
-                            console.log('窗口已在正确的显示器上');
-                        } else {
-                            console.warn('窗口移动失败:', result);
+                // 如果还是没找到，尝试部分路径匹配
+                if (!modelPreferences) {
+                    console.log('尝试部分路径匹配...');
+                    const targetPathParts = targetModelPath.split('/').filter(p => p);
+                    modelPreferences = preferences.find(p => {
+                        if (!p || !p.model_path) return false;
+                        const prefPathParts = p.model_path.split('/').filter(p => p);
+                        // 检查是否有足够的共同部分
+                        const commonParts = targetPathParts.filter(part => prefPathParts.includes(part));
+                        if (commonParts.length >= 2) {
+                            console.log('部分路径匹配成功:', p.model_path, '共同部分:', commonParts);
+                            return true;
                         }
-                    } catch (error) {
-                        console.warn('恢复窗口位置失败:', error);
+                        return false;
+                    });
+                }
+
+                if (modelPreferences && modelPreferences.parameters) {
+                    console.log('找到模型偏好设置，参数数量:', Object.keys(modelPreferences.parameters).length);
+                }
+
+                // 检查是否有保存的显示器信息（多屏幕位置恢复）
+                if (modelPreferences && modelPreferences.display &&
+                    window.electronScreen && window.electronScreen.moveWindowToDisplay) {
+                    const savedDisplay = modelPreferences.display;
+                    if (Number.isFinite(savedDisplay.screenX) && Number.isFinite(savedDisplay.screenY)) {
+                        console.log('恢复窗口到保存的显示器位置:', savedDisplay);
+                        try {
+                            const result = await window.electronScreen.moveWindowToDisplay(
+                                savedDisplay.screenX + 10,  // 在保存的屏幕坐标中心点附近
+                                savedDisplay.screenY + 10
+                            );
+                            if (result && result.success) {
+                                console.log('窗口位置恢复成功:', result);
+                            } else if (result && result.sameDisplay) {
+                                console.log('窗口已在正确的显示器上');
+                            } else {
+                                console.warn('窗口移动失败:', result);
+                            }
+                        } catch (error) {
+                            console.warn('恢复窗口位置失败:', error);
+                        }
                     }
                 }
             }
         }
-        
-        // 加载模型
-        await window.live2dManager.loadModel(targetModelPath, {
-            preferences: modelPreferences,
-            isMobile: window.innerWidth <= 768
-        });
-        
-        // 确保参数在常驻表情设置后再次应用（防止被覆盖）
-        if (modelPreferences && modelPreferences.parameters) {
-            const model = window.live2dManager.getCurrentModel();
-            if (model && model.internalModel && model.internalModel.coreModel) {
-                // 延迟一点确保常驻表情已经设置完成
-                setTimeout(() => {
-                    window.live2dManager.applyModelParameters(model, modelPreferences.parameters);
-                }, 300);
+
+        // 只有在非模型管理界面且有模型路径时才自动加载模型
+        if (!isModelManagerPage && targetModelPath) {
+            // 加载模型
+            await window.live2dManager.loadModel(targetModelPath, {
+                preferences: modelPreferences,
+                isMobile: window.innerWidth <= 768
+            });
+
+            // 确保参数在常驻表情设置后再次应用（防止被覆盖）
+            if (modelPreferences && modelPreferences.parameters) {
+                const model = window.live2dManager.getCurrentModel();
+                if (model && model.internalModel && model.internalModel.coreModel) {
+                    // 延迟一点确保常驻表情已经设置完成
+                    setTimeout(() => {
+                        window.live2dManager.applyModelParameters(model, modelPreferences.parameters);
+                    }, 300);
+                }
             }
+
+            // 设置全局引用（兼容性）
+            window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
+            window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
+            window.LanLan1.emotionMapping = window.live2dManager.getEmotionMapping();
+
+            console.log('✓ Live2D 管理器自动初始化完成');
+        } else if (isModelManagerPage) {
+            console.log('✓ Live2D 管理器在模型管理界面初始化完成（等待手动加载模型）');
         }
-
-        // 设置全局引用（兼容性）
-        window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
-        window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
-        window.LanLan1.emotionMapping = window.live2dManager.getEmotionMapping();
-
-        console.log('✓ Live2D 管理器自动初始化完成');
     } catch (error) {
         console.error('Live2D 管理器自动初始化失败:', error);
         console.error('错误堆栈:', error.stack);
