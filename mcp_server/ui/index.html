@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP Server Dashboard</title>
+    <link rel="stylesheet" href="/ui/styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🚀 MCP Server Dashboard</h1>
+            <div class="status-indicator">
+                <span id="statusDot" class="status-dot"></span>
+                <span id="statusText">连接中...</span>
+            </div>
+        </header>
+
+        <div class="dashboard">
+            <!-- 服务器信息卡片 -->
+            <div class="card">
+                <h2>📊 服务器信息</h2>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <label>服务器名称:</label>
+                        <span id="serverName">-</span>
+                    </div>
+                    <div class="info-item">
+                        <label>版本:</label>
+                        <span id="serverVersion">-</span>
+                    </div>
+                    <div class="info-item">
+                        <label>协议:</label>
+                        <span id="protocol">-</span>
+                    </div>
+                    <div class="info-item">
+                        <label>最后更新:</label>
+                        <span id="lastUpdate">-</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 统计信息卡片 -->
+            <div class="card">
+                <h2>📈 统计信息</h2>
+                <div class="stats-grid">
+                    <div class="stat-item">
+                        <div class="stat-value" id="totalTools">0</div>
+                        <div class="stat-label">工具总数</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="localTools">0</div>
+                        <div class="stat-label">本地工具</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="remoteTools">0</div>
+                        <div class="stat-label">远程工具</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="connectedServers">0</div>
+                        <div class="stat-label">已连接服务器</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 本地工具卡片 -->
+            <div class="card">
+                <h2>🔧 本地工具</h2>
+                <div id="localToolsList" class="tools-list">
+                    <p class="empty-message">加载中...</p>
+                </div>
+            </div>
+
+            <!-- 远程工具卡片 -->
+            <div class="card">
+                <h2>🌐 远程工具</h2>
+                <div id="remoteToolsList" class="tools-list">
+                    <p class="empty-message">加载中...</p>
+                </div>
+            </div>
+
+            <!-- 连接的服务器卡片 -->
+            <div class="card">
+                <h2>🔗 连接的服务器</h2>
+                <div id="connectedServersList" class="servers-list">
+                    <p class="empty-message">加载中...</p>
+                </div>
+            </div>
+
+            <!-- 配置的远程服务器卡片 -->
+            <div class="card">
+                <h2>⚙️ 配置的远程服务器</h2>
+                <div id="configuredServersList" class="servers-list">
+                    <p class="empty-message">加载中...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- 服务器管理卡片 -->
+        <div class="card">
+            <h2>⚙️ 服务器管理</h2>
+            <div class="server-management">
+                <div class="management-buttons">
+                    <button id="reconnectBtn" class="btn-primary">🔄 重新连接所有服务器</button>
+                    <button id="addServerBtn" class="btn-secondary">➕ 添加服务器</button>
+                    <button id="importRemoteBtn" class="btn-secondary">📥 导入 Remote 配置</button>
+                </div>
+                <div id="serverConfigList" class="servers-list">
+                    <p class="empty-message">加载中...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- 添加服务器对话框 -->
+        <div id="addServerModal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>添加 MCP 服务器</h2>
+                    <button class="modal-close" id="closeModalBtn">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label for="serverTypeSelect">服务器类型:</label>
+                        <select id="serverTypeSelect" class="form-input">
+                            <option value="http">HTTP 服务器</option>
+                            <option value="stdio">Stdio 服务器（命令行）</option>
+                        </select>
+                    </div>
+                    
+                    <!-- HTTP 服务器配置 -->
+                    <div id="httpServerConfig" class="server-config-section">
+                        <div class="form-group">
+                            <label for="serverUrlInput">服务器 URL:</label>
+                            <input type="text" id="serverUrlInput" placeholder="http://localhost:3283" class="form-input">
+                            <small class="form-hint">例如: http://localhost:3283 或 https://mcp.example.com/mcp</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="apiKeyInput">API Key (可选):</label>
+                            <input type="text" id="apiKeyInput" placeholder="Bearer token" class="form-input">
+                            <small class="form-hint">如果需要认证，请输入 API Key</small>
+                        </div>
+                    </div>
+                    
+                    <!-- Stdio 服务器配置 -->
+                    <div id="stdioServerConfig" class="server-config-section" style="display: none;">
+                        <div class="form-group">
+                            <label for="commandInput">命令:</label>
+                            <input type="text" id="commandInput" placeholder="npx" class="form-input">
+                            <small class="form-hint">例如: npx, node, python, cmd 等</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="argsInput">参数 (每行一个):</label>
+                            <textarea id="argsInput" class="form-textarea" rows="4" placeholder="bing-cn-mcp"></textarea>
+                            <small class="form-hint">每行一个参数，例如: bing-cn-mcp</small>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button id="cancelBtn" class="btn-secondary">取消</button>
+                    <button id="confirmAddBtn" class="btn-primary">添加</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 导入 Remote 配置对话框 -->
+        <div id="importRemoteModal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>导入 Remote MCP 配置</h2>
+                    <button class="modal-close" id="closeImportModalBtn">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label for="remoteConfigInput">Remote 配置 JSON:</label>
+                        <textarea id="remoteConfigInput" class="form-textarea" rows="12" placeholder='{
+  "mcpServers": {
+    "http-server": {
+      "type": "streamable_http",
+      "url": "https://mcp.api-inference.modelscope.net/xxx/mcp"
+    },
+    "stdio-server": {
+      "command": "npx",
+      "args": ["bing-cn-mcp"]
+    }
+  }
+}'></textarea>
+                        <small class="form-hint">粘贴您的 Remote MCP 服务配置 JSON（支持 HTTP 和 stdio 两种类型）</small>
+                    </div>
+                    <div id="importResult" class="import-result" style="display: none;"></div>
+                </div>
+                <div class="modal-footer">
+                    <button id="cancelImportBtn" class="btn-secondary">取消</button>
+                    <button id="confirmImportBtn" class="btn-primary">导入</button>
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            <button id="refreshBtn" class="btn-primary">🔄 刷新</button>
+            <button id="autoRefreshBtn" class="btn-secondary">⏸️ 自动刷新: 关闭</button>
+            <span class="update-time">最后更新: <span id="updateTime">-</span></span>
+        </footer>
+    </div>
+
+    <script src="/ui/app.js"></script>
+</body>
+</html>
+

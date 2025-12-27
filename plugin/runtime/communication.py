@@ -1,13 +1,15 @@
 """
 插件进程间通信资源管理器
 
-负责管理插件进程间的通信资源，包括队列、Future、后台任务等。
+负责管理插件进程间的通信资源,包括队列、Future、后台任务等。
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import uuid
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from queue import Empty
@@ -24,6 +26,7 @@ from plugin.settings import (
     RESULT_CONSUMER_SLEEP_INTERVAL,
 )
 from plugin.api.exceptions import PluginExecutionError
+from plugin.utils.logging import format_log_text as _format_log_text
 
 
 @dataclass
@@ -52,6 +55,7 @@ class PluginCommunicationResourceManager:
     _shutdown_event: Optional[asyncio.Event] = None
     _executor: Optional[ThreadPoolExecutor] = None
     _message_target_queue: Optional[asyncio.Queue] = None  # 主进程的消息队列
+    _background_tasks: set[asyncio.Task] = field(default_factory=set)
     
     def __post_init__(self):
         """初始化异步资源"""
@@ -126,10 +130,21 @@ class PluginCommunicationResourceManager:
         
         # 关闭线程池
         if self._executor:
-            self._executor.shutdown(wait=True)
+            # 必须等待线程退出, 否则非 daemon 线程会阻止主进程退出.
+            # 这里投递到 executor 的 queue.get/put 都带超时(QUEUE_GET_TIMEOUT), 因此可在可控时间内退出.
+            self._executor.shutdown(wait=True, cancel_futures=True)
             self._executor = None
         
         self.logger.debug(f"Communication resources for plugin {self.plugin_id} shutdown complete")
+    
+    def get_pending_requests_count(self) -> int:
+        """
+        获取待处理请求数量(公共方法)
+        
+        Returns:
+            待处理的请求数量
+        """
+        return len(self._pending_futures)
     
     def _cleanup_pending_futures(self) -> None:
         """清理所有待处理的 Future"""
@@ -140,7 +155,62 @@ class PluginCommunicationResourceManager:
         self._pending_futures.clear()
         if count > 0:
             self.logger.debug(f"Cleaned up {count} pending futures for plugin {self.plugin_id}")
-    
+
+    async def _send_command_and_wait(
+        self,
+        req_id: str,
+        msg: dict,
+        timeout: float,
+        error_context: str
+    ) -> Any:
+        """
+        通用的命令发送和等待逻辑
+        """
+        future = asyncio.Future()
+        self._pending_futures[req_id] = future
+
+        # multiprocessing.Queue.put 可能在子进程异常/管道阻塞时卡住。
+        # 这里必须避免在事件循环线程中执行阻塞 put。
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(
+                self._executor,
+                lambda: self.cmd_queue.put(msg, timeout=QUEUE_GET_TIMEOUT),
+            )
+        except Exception as e:
+            self._pending_futures.pop(req_id, None)
+            raise RuntimeError(
+                f"Failed to send command to plugin {self.plugin_id} ({error_context}): {e}"
+            ) from e
+        
+        try:
+            result = await asyncio.wait_for(future, timeout=timeout)
+            if result["success"]:
+                return result["data"]
+            else:
+                raise PluginExecutionError(self.plugin_id, error_context, result.get("error", "Unknown error"))
+        except asyncio.TimeoutError:
+            self.logger.error(
+                f"Plugin {self.plugin_id} {error_context} timed out after {timeout}s, req_id={req_id}"
+            )
+            # 超时后不立即清理 Future, 给响应一些时间到达
+            # 延迟清理, 避免响应到达时找不到 Future
+            async def cleanup_after_delay():
+                await asyncio.sleep(2.0)  # 给响应2秒时间到达
+                if req_id in self._pending_futures:
+                    future = self._pending_futures.get(req_id)
+                    if future and future.done():
+                        self.logger.debug(
+                            f"Cleaning up completed Future for req_id={req_id} after timeout"
+                        )
+                    self._pending_futures.pop(req_id, None)
+            
+            cleanup_task = asyncio.create_task(cleanup_after_delay())
+            self._background_tasks.add(cleanup_task)
+            cleanup_task.add_done_callback(self._background_tasks.discard)
+            
+            raise TimeoutError("%s execution timed out after %ss" % (error_context, timeout)) from None
+
     async def trigger(self, entry_id: str, args: dict, timeout: float = PLUGIN_TRIGGER_TIMEOUT) -> Any:
         """
         发送触发命令并等待结果
@@ -148,7 +218,7 @@ class PluginCommunicationResourceManager:
         Args:
             entry_id: 入口 ID
             args: 参数
-            timeout: 超时时间（秒）
+            timeout: 超时时间(秒)
         
         Returns:
             插件返回的结果
@@ -158,38 +228,90 @@ class PluginCommunicationResourceManager:
             Exception: 如果插件执行出错
         """
         req_id = str(uuid.uuid4())
-        future = asyncio.Future()
-        self._pending_futures[req_id] = future
         
-        try:
-            # 发送命令
-            self.cmd_queue.put({
-                "type": "TRIGGER",
-                "req_id": req_id,
-                "entry_id": entry_id,
-                "args": args
-            })
-            
-            # 等待结果（带超时）
-            try:
-                result = await asyncio.wait_for(future, timeout=timeout)
-                if result["success"]:
-                    return result["data"]
-                else:
-                    raise PluginExecutionError(self.plugin_id, entry_id, result.get("error", "Unknown error"))
-            except asyncio.TimeoutError:
-                self.logger.error(
-                    f"Plugin {self.plugin_id} entry {entry_id} timed out after {timeout}s"
-                )
-                raise TimeoutError(f"Plugin execution timed out after {timeout}s") from None
-        finally:
-            # 清理 Future（无论成功还是失败）
-            self._pending_futures.pop(req_id, None)
+        # 关键日志：记录发送触发命令
+        self.logger.info(
+            "[CommManager] Sending TRIGGER command: plugin_id=%s, entry_id=%s, req_id=%s",
+            self.plugin_id,
+            entry_id,
+            req_id,
+        )
+        # 详细参数信息使用 DEBUG
+        self.logger.debug(
+            "[CommManager] Args: type=%s, keys=%s, content=%s",
+            type(args),
+            list(args.keys()) if isinstance(args, dict) else "N/A",
+            args,
+        )
+        
+        # 构建命令消息
+        trigger_msg = {
+            "type": "TRIGGER",
+            "req_id": req_id,
+            "entry_id": entry_id,
+            "args": args
+        }
+        self.logger.debug(
+            "[CommManager] TRIGGER message: %s",
+            trigger_msg,
+        )
+        
+        # 发送命令并等待结果
+        return await self._send_command_and_wait(req_id, trigger_msg, timeout, f"entry {entry_id}")
+    
+    async def trigger_custom_event(
+        self, 
+        event_type: str, 
+        event_id: str, 
+        args: dict, 
+        timeout: float = PLUGIN_TRIGGER_TIMEOUT
+    ) -> Any:
+        """
+        触发自定义事件执行
+        
+        Args:
+            event_type: 自定义事件类型(例如 "file_change", "user_action")
+            event_id: 事件ID
+            args: 参数字典
+            timeout: 超时时间(秒)
+        
+        Returns:
+            事件处理器返回的结果
+        
+        Raises:
+            TimeoutError: 如果超时
+            PluginExecutionError: 如果事件执行出错
+        """
+        req_id = str(uuid.uuid4())
+        
+        self.logger.info(
+            "[CommManager] Sending TRIGGER_CUSTOM command: plugin_id=%s, event_type=%s, event_id=%s, req_id=%s",
+            self.plugin_id,
+            event_type,
+            event_id,
+            req_id,
+        )
+        
+        # 构建命令消息
+        trigger_msg = {
+            "type": "TRIGGER_CUSTOM",
+            "req_id": req_id,
+            "event_type": event_type,
+            "event_id": event_id,
+            "args": args
+        }
+        
+        # 发送命令并等待结果
+        return await self._send_command_and_wait(req_id, trigger_msg, timeout, f"custom event {event_type}.{event_id}")
     
     async def send_stop_command(self) -> None:
         """发送停止命令到插件进程"""
         try:
-            self.cmd_queue.put({"type": "STOP"}, timeout=QUEUE_GET_TIMEOUT)
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                self._executor,
+                lambda: self.cmd_queue.put({"type": "STOP"}, timeout=QUEUE_GET_TIMEOUT),
+            )
             self.logger.debug(f"Sent STOP command to plugin {self.plugin_id}")
         except Exception as e:
             self.logger.warning(f"Failed to send STOP command to plugin {self.plugin_id}: {e}")
@@ -206,26 +328,50 @@ class PluginCommunicationResourceManager:
         while not self._shutdown_event.is_set():
             try:
                 # 使用 executor 在后台线程中阻塞读取队列
+                # QUEUE_GET_TIMEOUT 是 1.0 秒，超时后会继续循环
                 res = await loop.run_in_executor(
                     self._executor,
                     lambda: self.res_queue.get(timeout=QUEUE_GET_TIMEOUT)
                 )
+                # 收到响应后立即处理，不延迟
                 
                 req_id = res.get("req_id")
                 if not req_id:
                     self.logger.warning(f"Received result without req_id from plugin {self.plugin_id}")
                     continue
                 
-                future = self._pending_futures.pop(req_id, None)
+                # 记录收到响应的时间
+                self.logger.debug(
+                    f"Received result for req_id {req_id} from plugin {self.plugin_id}, "
+                    f"success={res.get('success')}"
+                )
+                
+                future = self._pending_futures.get(req_id)
                 if future:
                     if not future.done():
+                        # Future 还未完成，设置结果
+                        self.logger.debug(
+                            f"Setting result for req_id {req_id}, Future is not done yet"
+                        )
                         if res.get("success"):
                             future.set_result(res)
                         else:
                             future.set_exception(Exception(res.get("error", "Unknown error")))
+                        # 设置结果后，从字典中移除
+                        self._pending_futures.pop(req_id, None)
+                        self.logger.debug(f"Result set and Future removed for req_id {req_id}")
+                    else:
+                        # Future 已经完成（可能因为超时），忽略延迟到达的响应
+                        self.logger.warning(
+                            f"Received delayed result for req_id {req_id} from plugin {self.plugin_id}, "
+                            f"but Future is already done (likely timed out). Ignoring."
+                        )
+                        # 清理已完成的 Future
+                        self._pending_futures.pop(req_id, None)
                 else:
                     self.logger.warning(
-                        f"Received result for unknown req_id {req_id} from plugin {self.plugin_id}"
+                        f"Received result for unknown req_id {req_id} from plugin {self.plugin_id}. "
+                        f"Available req_ids: {list(self._pending_futures.keys())[:5]}"
                     )
                     
             except Empty:
@@ -239,7 +385,7 @@ class PluginCommunicationResourceManager:
             except Exception as e:
                 # 其他未知异常，记录详细信息
                 if not self._shutdown_event.is_set():
-                    self.logger.exception(f"Unexpected error consuming results for plugin {self.plugin_id}: {e}")
+                    self.logger.exception(f"Unexpected error consuming results for plugin {self.plugin_id}")
                 # 短暂休眠避免 CPU 占用过高
                 await asyncio.sleep(RESULT_CONSUMER_SLEEP_INTERVAL)
     
@@ -291,21 +437,45 @@ class PluginCommunicationResourceManager:
                 # 转发消息到主进程的消息队列
                 try:
                     if self._message_target_queue:
+                        if isinstance(msg, dict) and not msg.get("_bus_stored"):
+                            try:
+                                from plugin.core.state import state
+
+                                msg = dict(msg)
+                                if not isinstance(msg.get("message_id"), str) or not msg.get("message_id"):
+                                    msg["message_id"] = str(uuid.uuid4())
+                                if not isinstance(msg.get("time"), str) or not msg.get("time"):
+                                    msg["time"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                                msg["_bus_stored"] = True
+                                state.append_message_record(msg)
+                            except Exception as e:
+                                try:
+                                    self.logger.debug(
+                                        "Failed to store message to bus for plugin %s: %s",
+                                        self.plugin_id,
+                                        e,
+                                    )
+                                except Exception:
+                                    pass
+
                         await self._message_target_queue.put(msg)
                         self.logger.info(
                             f"[MESSAGE FORWARD] Plugin: {self.plugin_id} | "
                             f"Source: {msg.get('source', 'unknown')} | "
                             f"Priority: {msg.get('priority', 0)} | "
                             f"Description: {msg.get('description', '')} | "
-                            f"Content: {str(msg.get('content', ''))[:100]}"
+                            f"Content: {_format_log_text(msg.get('content', ''))}"
                         )
                 except asyncio.QueueFull:
-                    self.logger.warning(f"Main message queue is full, dropping message from plugin {self.plugin_id}")
+                    self.logger.warning(
+                        f"Main message queue is full, dropping message from plugin {self.plugin_id}"
+                    )
                 except (AttributeError, RuntimeError) as e:
                     self.logger.error(f"Queue error forwarding message from plugin {self.plugin_id}: {e}")
                 except Exception as e:
-                    self.logger.exception(f"Unexpected error forwarding message from plugin {self.plugin_id}: {e}")
-                    
+                    self.logger.exception(
+                        f"Unexpected error forwarding message from plugin {self.plugin_id}"
+                    )
             except Empty:
                 # 队列为空，继续等待
                 continue
@@ -317,7 +487,7 @@ class PluginCommunicationResourceManager:
             except Exception as e:
                 # 其他未知异常
                 if not self._shutdown_event.is_set():
-                    self.logger.exception(f"Unexpected error consuming messages for plugin {self.plugin_id}: {e}")
+                    self.logger.exception(f"Unexpected error consuming messages for plugin {self.plugin_id}")
                 # 短暂休眠避免 CPU 占用过高
                 await asyncio.sleep(MESSAGE_CONSUMER_SLEEP_INTERVAL)
 

@@ -14,13 +14,12 @@ from utils.config_manager import get_config_manager
 from pydantic import BaseModel
 import re
 import asyncio
-import logging
 import argparse
 from utils.frontend_utils import get_timestamp
 
 # Setup logger
 from utils.logger_config import setup_logging
-logger, log_config = setup_logging(service_name="Memory", log_level=logging.INFO)
+logger, log_config = setup_logging(service_name="Memory", log_level="INFO")
 
 class HistoryRequest(BaseModel):
     input_history: str
@@ -360,4 +359,4 @@ if __name__ == "__main__":
         shutdown_monitor.start()
     
     # 启动服务器
-    uvicorn.run(app, host="127.0.0.1", port=MEMORY_SERVER_PORT)
+    uvicorn.run(app, host="127.0.0.1", port=MEMORY_SERVER_PORT, log_config=None)

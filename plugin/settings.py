@@ -39,6 +39,9 @@ PLUGIN_CONFIG_ROOT = get_plugin_config_root()
 # 事件队列最大容量
 EVENT_QUEUE_MAX = 1000
 
+# 生命周期队列最大容量
+LIFECYCLE_QUEUE_MAX = 1000
+
 # 消息队列最大容量
 MESSAGE_QUEUE_MAX = 1000
 
@@ -53,6 +56,13 @@ PLUGIN_TRIGGER_TIMEOUT = 10.0
 
 # 插件关闭超时（shutdown）
 PLUGIN_SHUTDOWN_TIMEOUT = 5.0
+
+# 插件全局关闭超时（秒）
+_shutdown_total_timeout_str = os.getenv("PLUGIN_SHUTDOWN_TOTAL_TIMEOUT", "30")
+try:
+    PLUGIN_SHUTDOWN_TOTAL_TIMEOUT = int(_shutdown_total_timeout_str)
+except ValueError:
+    PLUGIN_SHUTDOWN_TOTAL_TIMEOUT = 30  # 默认值
 
 # 队列操作超时（queue.get）
 QUEUE_GET_TIMEOUT = 1.0
@@ -110,11 +120,9 @@ RESULT_CONSUMER_SLEEP_INTERVAL = 0.1
 
 # ========== 插件Logger配置 ==========
 
-# 插件文件日志默认配置
-import logging
-
-# 默认日志级别
-PLUGIN_LOG_LEVEL = logging.INFO
+# 插件文件日志默认配置（使用loguru）
+# 默认日志级别（字符串格式，loguru使用）
+PLUGIN_LOG_LEVEL = "INFO"
 
 # 单个日志文件最大大小（字节），默认5MB
 PLUGIN_LOG_MAX_BYTES = 5 * 1024 * 1024
@@ -124,6 +132,17 @@ PLUGIN_LOG_BACKUP_COUNT = 10
 
 # 最多保留的日志文件总数（包括当前和备份），默认20个
 PLUGIN_LOG_MAX_FILES = 20
+
+
+# ========== 插件加载配置 ==========
+
+# 是否启用依赖检查（默认：True）
+# 如果设置为 False，将跳过所有插件依赖检查，允许加载不满足依赖的插件
+PLUGIN_ENABLE_DEPENDENCY_CHECK = os.getenv("PLUGIN_ENABLE_DEPENDENCY_CHECK", "false").lower() in ("true", "1", "yes")
+
+# 是否启用 ID 冲突检查（默认：True）
+# 如果设置为 False，将跳过所有插件 ID 冲突检查，允许使用相同 ID 的插件（可能导致不可预期行为）
+PLUGIN_ENABLE_ID_CONFLICT_CHECK = os.getenv("PLUGIN_ENABLE_ID_CONFLICT_CHECK", "false").lower() in ("true", "1", "yes")
 
 
 # ========== 配置验证 ==========
@@ -163,6 +182,11 @@ def validate_config() -> None:
     if PLUGIN_SHUTDOWN_TIMEOUT > 300:
         raise ValueError("PLUGIN_SHUTDOWN_TIMEOUT is unreasonably large (max: 300s)")
     
+    if PLUGIN_SHUTDOWN_TOTAL_TIMEOUT <= 0:
+        raise ValueError("PLUGIN_SHUTDOWN_TOTAL_TIMEOUT must be positive")
+    if PLUGIN_SHUTDOWN_TOTAL_TIMEOUT > 300:
+        raise ValueError("PLUGIN_SHUTDOWN_TOTAL_TIMEOUT is unreasonably large (max: 300s)")
+    
     if COMMUNICATION_THREAD_POOL_MAX_WORKERS <= 0:
         raise ValueError("COMMUNICATION_THREAD_POOL_MAX_WORKERS must be positive")
     if COMMUNICATION_THREAD_POOL_MAX_WORKERS > 100:
@@ -198,6 +222,7 @@ __all__ = [
     "PLUGIN_EXECUTION_TIMEOUT",
     "PLUGIN_TRIGGER_TIMEOUT",
     "PLUGIN_SHUTDOWN_TIMEOUT",
+    "PLUGIN_SHUTDOWN_TOTAL_TIMEOUT",
     "QUEUE_GET_TIMEOUT",
     "STATUS_CONSUMER_SHUTDOWN_TIMEOUT",
     "PROCESS_SHUTDOWN_TIMEOUT",

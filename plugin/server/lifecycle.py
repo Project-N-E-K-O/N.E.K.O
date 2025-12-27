@@ -4,24 +4,34 @@
 处理服务器启动和关闭时的插件加载、资源初始化等。
 """
 import asyncio
+import atexit
 import logging
+import os
+import time
 from pathlib import Path
+
+from loguru import logger
 
 from plugin.core.state import state
 from plugin.runtime.registry import load_plugins_from_toml
 from plugin.runtime.host import PluginProcessHost
 from plugin.runtime.status import status_manager
+from plugin.server.metrics_service import metrics_collector
+from plugin.server.plugin_router import plugin_router
+from plugin.server.bus_subscriptions import bus_subscription_manager
+from plugin.server.auth import generate_admin_code, set_admin_code
+from plugin.server.services import _enqueue_lifecycle
+from plugin.server.utils import now_iso
 from plugin.settings import (
     PLUGIN_CONFIG_ROOT,
     PLUGIN_SHUTDOWN_TIMEOUT,
+    PLUGIN_SHUTDOWN_TOTAL_TIMEOUT,
 )
 
-logger = logging.getLogger("user_plugin_server")
 
-
-def _factory(pid: str, entry: str, config_path: Path) -> PluginProcessHost:
+def _factory(plugin_id: str, entry: str, config_path: Path) -> PluginProcessHost:
     """插件进程宿主工厂函数"""
-    return PluginProcessHost(plugin_id=pid, entry_point=entry, config_path=config_path)
+    return PluginProcessHost(plugin_id=plugin_id, entry_point=entry, config_path=config_path)
 
 
 async def startup() -> None:
@@ -32,55 +42,291 @@ async def startup() -> None:
     2. 启动插件的通信资源
     3. 启动状态消费任务
     """
+    # 确保插件响应映射在主进程中提前初始化，避免子进程各自创建新的 Manager 字典
+    _ = state.plugin_response_map  # 预初始化共享响应映射
+    
+    # 清理旧的状态（防止重启时残留）
+    _enqueue_lifecycle({"type": "server_startup_begin", "plugin_id": "server", "time": now_iso()})
+    with state.plugin_hosts_lock:
+        # 关闭所有旧的插件进程
+        for plugin_id, host in list(state.plugin_hosts.items()):
+            try:
+                if hasattr(host, 'process') and host.process and host.process.is_alive():
+                    logger.debug(f"Cleaning up old plugin process: {plugin_id}")
+                    host.process.terminate()
+                    host.process.join(timeout=1.0)
+            except Exception as e:
+                logger.debug(f"Error cleaning up old plugin {plugin_id}: {e}")
+        state.plugin_hosts.clear()
+    
+    with state.plugins_lock:
+        state.plugins.clear()
+    
+    with state.event_handlers_lock:
+        state.event_handlers.clear()
+    
+    logger.debug("Cleared old plugin state")
+    
     # 加载插件
     load_plugins_from_toml(PLUGIN_CONFIG_ROOT, logger, _factory)
+
+    with state.plugin_hosts_lock:
+        for pid in list(state.plugin_hosts.keys()):
+            _enqueue_lifecycle({"type": "plugin_loaded", "plugin_id": pid, "time": now_iso()})
+    
+    # 立即检查 plugin_hosts 状态（诊断日志，使用 debug 级别）
+    with state.plugin_hosts_lock:
+        plugin_hosts_after_load = dict(state.plugin_hosts)
+        logger.debug(
+            "Plugin hosts immediately after load_plugins_from_toml: {} plugins, keys: {}",
+            len(plugin_hosts_after_load),
+            list(plugin_hosts_after_load.keys())
+        )
+    
     with state.plugins_lock:
         plugin_keys = list(state.plugins.keys())
-    logger.info("Plugin registry after startup: %s", plugin_keys)
+    logger.debug("Plugin registry after startup: {}", plugin_keys)
+    
+    # 再次检查 plugin_hosts（可能在 register_plugin 调用后发生变化）
+    with state.plugin_hosts_lock:
+        plugin_hosts_after_plugins = dict(state.plugin_hosts)
+        logger.debug(
+            "Plugin hosts after plugins registry: {} plugins, keys: {}",
+            len(plugin_hosts_after_plugins),
+            list(plugin_hosts_after_plugins.keys())
+        )
+        if len(plugin_hosts_after_load) != len(plugin_hosts_after_plugins):
+            logger.warning(
+                "Plugin hosts count changed from {} to {} after plugins registry! "
+                "Lost plugins: {}, Gained plugins: {}",
+                len(plugin_hosts_after_load),
+                len(plugin_hosts_after_plugins),
+                set(plugin_hosts_after_load.keys()) - set(plugin_hosts_after_plugins.keys()),
+                set(plugin_hosts_after_plugins.keys()) - set(plugin_hosts_after_load.keys())
+            )
     
     # 启动诊断：列出插件实例和公共方法
     _log_startup_diagnostics()
     
+    # 启动插件间通信路由器
+    await plugin_router.start()
+    logger.info("Plugin router started")
+
+    await bus_subscription_manager.start()
+    logger.info("Bus subscription manager started")
+    _enqueue_lifecycle({"type": "server_startup_ready", "plugin_id": "server", "time": now_iso()})
+    
     # 启动所有插件的通信资源管理器
-    for plugin_id, host in state.plugin_hosts.items():
+    with state.plugin_hosts_lock:
+        plugin_hosts_copy = dict(state.plugin_hosts)
+        logger.info("Found {} plugins in plugin_hosts: {}", len(plugin_hosts_copy), list(plugin_hosts_copy.keys()))
+    
+    if not plugin_hosts_copy:
+        logger.warning(
+            "No plugins found in plugin_hosts after loading. "
+            "Plugins may need to be started manually via POST /plugin/{{plugin_id}}/start"
+        )
+    
+    for plugin_id, host in plugin_hosts_copy.items():
         try:
             await host.start(message_target_queue=state.message_queue)
-            logger.debug(f"Started communication resources for plugin {plugin_id}")
+            logger.debug("Started communication resources for plugin {}", plugin_id)
         except Exception as e:
-            logger.exception(f"Failed to start communication resources for plugin {plugin_id}: {e}")
+            logger.exception("Failed to start communication resources for plugin {}: {}", plugin_id, e)
     
     # 启动状态消费任务
     await status_manager.start_status_consumer(
         plugin_hosts_getter=lambda: state.plugin_hosts
     )
     logger.info("Status consumer started")
+    
+    # 启动性能指标收集器
+    # 注意：需要在锁保护下获取 plugin_hosts
+    def get_plugin_hosts():
+        with state.plugin_hosts_lock:
+            return dict(state.plugin_hosts)  # 返回副本，避免长时间持有锁
+    
+    await metrics_collector.start(
+        plugin_hosts_getter=get_plugin_hosts
+    )
+    logger.info("Metrics collector started")
+    
+    # 生成并设置管理员验证码
+    admin_code = generate_admin_code()
+    set_admin_code(admin_code)
+    # 在终端打印验证码（使用 print 确保输出到终端）
+    print("\n" + "=" * 60, flush=True)
+    print(f"🔐 管理员验证码: {admin_code}", flush=True)
+    print("=" * 60, flush=True)
+    print("请在请求头中添加: Authorization: Bearer <验证码>", flush=True)
+    print("=" * 60 + "\n", flush=True)
+    logger.info(f"Admin authentication code generated: {admin_code}")
+
+
+async def _shutdown_internal() -> None:
+    """内部关闭逻辑"""
+    t0 = time.time()
+    _enqueue_lifecycle({"type": "server_shutdown_begin", "plugin_id": "server", "time": now_iso()})
+    # 1. 停止插件间通信路由器
+    try:
+        step_t0 = time.time()
+        try:
+            await bus_subscription_manager.stop()
+        except Exception:
+            logger.exception("Error stopping bus subscription manager")
+        await plugin_router.stop()
+        logger.debug("Plugin router stopped (cost={:.3f}s)", time.time() - step_t0)
+    except Exception:
+        logger.exception("Error stopping plugin router")
+    
+    # 2. 停止性能指标收集器
+    try:
+        step_t0 = time.time()
+        await metrics_collector.stop()
+        logger.debug("Metrics collector stopped (cost={:.3f}s)", time.time() - step_t0)
+    except Exception:
+        logger.exception("Error stopping metrics collector")
+    
+    # 3. 关闭状态消费任务
+    try:
+        step_t0 = time.time()
+        await status_manager.shutdown_status_consumer(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
+        logger.debug("Status consumer stopped (cost={:.3f}s)", time.time() - step_t0)
+    except Exception:
+        logger.exception("Error shutting down status consumer")
+    
+    # 4. 关闭所有插件的资源
+    step_t0 = time.time()
+    shutdown_tasks = []
+    for plugin_id, host in state.plugin_hosts.items():
+        _enqueue_lifecycle({"type": "plugin_shutdown_requested", "plugin_id": plugin_id, "time": now_iso()})
+        shutdown_tasks.append(host.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT))
+    
+    # 并发关闭所有插件
+    if shutdown_tasks:
+        await asyncio.gather(*shutdown_tasks, return_exceptions=True)
+    logger.debug("Plugin hosts shutdown complete (cost={:.3f}s)", time.time() - step_t0)
+    
+    # 5. 清理插件间通信资源（队列和响应映射）
+    try:
+        step_t0 = time.time()
+        state.cleanup_plugin_comm_resources()
+        logger.debug("Plugin communication resources cleaned up (cost={:.3f}s)", time.time() - step_t0)
+    except Exception:
+        logger.exception("Error cleaning up plugin communication resources")
+
+    logger.debug("Shutdown internal completed (total_cost={:.3f}s)", time.time() - t0)
+    _enqueue_lifecycle({"type": "server_shutdown_complete", "plugin_id": "server", "time": now_iso()})
+
+def _log_shutdown_diagnostics() -> None:
+    """记录关闭时的诊断信息，用于排查超时问题"""
+    try:
+        # 记录当前插件状态
+        with state.plugin_hosts_lock:
+            plugin_hosts_snapshot = dict(state.plugin_hosts)
+        
+        if plugin_hosts_snapshot:
+            logger.error("Shutdown timeout diagnostics: {} plugin(s) still registered:", len(plugin_hosts_snapshot))
+            for plugin_id, host in plugin_hosts_snapshot.items():
+                try:
+                    is_alive = False
+                    exitcode = None
+                    if hasattr(host, 'process') and host.process:
+                        is_alive = host.process.is_alive()
+                        exitcode = host.process.exitcode
+                    
+                    logger.error(
+                        "  - Plugin '{}': process_alive={}, exitcode={}, host_type={}",
+                        plugin_id,
+                        is_alive,
+                        exitcode,
+                        type(host).__name__
+                    )
+                except Exception as e:
+                    logger.error("  - Plugin '{}': failed to get status: {}", plugin_id, e)
+        else:
+            logger.error("Shutdown timeout diagnostics: no plugins registered")
+        
+        # 记录当前运行的任务
+        try:
+            tasks = [t for t in asyncio.all_tasks() if not t.done()]
+            if tasks:
+                logger.error("Shutdown timeout diagnostics: {} task(s) still running:", len(tasks))
+                for task in tasks:
+                    logger.error(
+                        "  - Task '{}': done={}, cancelled={}, exception={}",
+                        task.get_name(),
+                        task.done(),
+                        task.cancelled(),
+                        task.exception() if task.done() else None
+                    )
+            else:
+                logger.error("Shutdown timeout diagnostics: no tasks running")
+        except Exception as e:
+            logger.error("Shutdown timeout diagnostics: failed to enumerate tasks: {}", e)
+    except Exception as e:
+        logger.error("Shutdown timeout diagnostics: failed to collect diagnostics: {}", e, exc_info=True)
+
+
+def _final_log_flush() -> None:
+    """进程退出前的最后日志刷新"""
+    try:
+        # 强制刷新 loguru 的所有日志处理器
+        logger.info("Final log flush before process exit")
+        # loguru 会自动处理，但我们可以显式调用
+        import sys
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception as e:
+        # 最后的尝试：直接写到 stderr
+        try:
+            import sys
+            print(f"Failed to flush logs: {e}", file=sys.stderr, flush=True)
+        except:
+            pass  # 真的没办法了喵
+
+
+# 注册 atexit 处理器，确保进程退出时刷新日志
+atexit.register(_final_log_flush)
 
 
 async def shutdown() -> None:
     """
     服务器关闭时的清理
     
-    1. 关闭状态消费任务
-    2. 关闭所有插件的资源
+    增加超时保护，防止关闭过程无限挂起
     """
     logger.info("Shutting down all plugins...")
     
-    # 关闭状态消费任务
     try:
-        await status_manager.shutdown_status_consumer(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
+        # 给整个关闭过程设置超时
+        await asyncio.wait_for(_shutdown_internal(), timeout=PLUGIN_SHUTDOWN_TOTAL_TIMEOUT)
+        logger.info("All plugins have been gracefully shutdown.")
+    except asyncio.TimeoutError:
+        logger.error(
+            "Plugin shutdown process timed out ({}s), forcing cleanup",
+            PLUGIN_SHUTDOWN_TOTAL_TIMEOUT
+        )
+        
+        # 记录详细的诊断信息
+        _log_shutdown_diagnostics()
+        
+        # 尝试最后的清理
+        try:
+            state.cleanup_plugin_comm_resources()
+            logger.debug("Plugin communication resources cleaned up during forced shutdown")
+        except Exception as e:
+            logger.debug("Failed to cleanup plugin comm resources during forced shutdown: {}", e)
+        
+        # 强制刷新日志
+        _final_log_flush()
+        
+        # 强制退出，防止进程卡死
+        os._exit(1)
     except Exception:
-        logger.exception("Error shutting down status consumer")
-    
-    # 关闭所有插件的资源
-    shutdown_tasks = []
-    for plugin_id, host in state.plugin_hosts.items():
-        shutdown_tasks.append(host.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT))
-    
-    # 并发关闭所有插件
-    if shutdown_tasks:
-        await asyncio.gather(*shutdown_tasks, return_exceptions=True)
-    
-    logger.info("All plugins have been gracefully shutdown.")
+        logger.exception("Unexpected error during shutdown")
+        # 即使出错也尝试刷新日志
+        _final_log_flush()
 
 
 def _log_startup_diagnostics() -> None:

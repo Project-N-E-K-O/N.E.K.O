@@ -5,7 +5,6 @@ import mimetypes
 mimetypes.add_type("application/javascript", ".js")
 import asyncio
 import uuid
-import logging
 from typing import Dict, Any, Optional
 from datetime import datetime
 import time
@@ -28,7 +27,7 @@ app = FastAPI(title="N.E.K.O Tool Server")
 
 # Configure logging
 from utils.logger_config import setup_logging, ThrottledLogger
-logger, log_config = setup_logging(service_name="Agent", log_level=logging.INFO)
+logger, log_config = setup_logging(service_name="Agent", log_level="INFO")
 
 
 class Modules:
@@ -516,6 +515,48 @@ async def startup():
     asyncio.create_task(_computer_use_scheduler_loop())
     
     logger.info("[Agent] ✅ Agent server started with simplified task executor")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    """服务器关闭时清理所有 AsyncClient 实例"""
+    logger.info("[Agent] 正在清理 AsyncClient 资源...")
+    
+    async def _close_router(name: str, module, attr: str):
+        """辅助函数：清理单个 router（带超时保护）"""
+        if module and hasattr(module, attr):
+            try:
+                router = getattr(module, attr)
+                # 添加超时保护，防止清理过程挂起
+                await asyncio.wait_for(router.aclose(), timeout=3.0)
+                logger.debug(f"[Agent] ✅ {name}.{attr} 已清理")
+            except asyncio.TimeoutError:
+                logger.warning(f"[Agent] ⚠️ {name}.{attr} 清理超时，强制跳过")
+            except asyncio.CancelledError:
+                # 正常关闭流程中的取消
+                logger.debug(f"[Agent] {name}.{attr} 清理时被取消（正常关闭）")
+            except RuntimeError as e:
+                # RuntimeError 可能包含事件循环已关闭等正常关闭情况
+                logger.debug(f"[Agent] {name}.{attr} 清理时遇到 RuntimeError（可能是正常关闭）: {e}")
+            except Exception as e:
+                logger.warning(f"[Agent] ⚠️ 清理 {name}.{attr} 时出现意外错误: {e}")
+    
+    # 并行清理所有 router，提高关闭速度
+    try:
+        # 为整个清理过程添加总超时（5秒），确保服务器能在合理时间内完成关闭
+        await asyncio.wait_for(
+            asyncio.gather(
+                _close_router("Processor", Modules.processor, "router"),
+                _close_router("TaskPlanner", Modules.planner, "router"),
+                _close_router("DirectTaskExecutor", Modules.task_executor, "router"),
+                return_exceptions=True  # 即使某个清理失败，也继续其他清理
+            ),
+            timeout=5.0
+        )
+    except asyncio.TimeoutError:
+        logger.warning("[Agent] ⚠️ 整体清理过程超时，强制完成关闭")
+    
+    logger.info("[Agent] ✅ AsyncClient 资源清理完成")
 
 
 @app.get("/health")
@@ -1077,11 +1118,12 @@ async def admin_control(payload: Dict[str, Any]):
 
 if __name__ == "__main__":
     import uvicorn
+    import logging  # 仍需要用于uvicorn的过滤器
     
     # 使用统一的速率限制日志过滤器
     from utils.logger_config import create_agent_server_filter
     
-    # Add filter to uvicorn access logger
+    # Add filter to uvicorn access logger (uvicorn仍使用标准logging)
     logging.getLogger("uvicorn.access").addFilter(create_agent_server_filter())
     
-    uvicorn.run(app, host="127.0.0.1", port=TOOL_SERVER_PORT)
+    uvicorn.run(app, host="127.0.0.1", port=TOOL_SERVER_PORT, log_config=None)

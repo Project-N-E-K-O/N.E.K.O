@@ -6,6 +6,7 @@ N.E.K.O. 统一启动器
 import sys
 import os
 import io
+import signal
 
 # 强制 UTF-8 编码
 if sys.platform == 'win32':
@@ -164,7 +165,7 @@ def run_agent_server(ready_event: Event):
         # Agent Server 不需要等待，立即通知就绪
         ready_event.set()
         
-        uvicorn.run(agent_server.app, host="127.0.0.1", port=TOOL_SERVER_PORT, log_level="error")
+        uvicorn.run(agent_server.app, host="127.0.0.1", port=TOOL_SERVER_PORT, log_level="error", log_config=None)
     except Exception as e:
         print(f"Agent Server error: {e}")
         import traceback
@@ -401,14 +402,65 @@ def main():
                 break
         
     except KeyboardInterrupt:
-        print("\n\n收到中断信号，正在关闭...", flush=True)
+        print("\n\n收到中断信号，等待子进程退出...", flush=True)
+        # 子进程已经收到了 SIGINT，给它们一点时间自己退出
+        start_wait = time.time()
+        while time.time() - start_wait < 3:
+            all_dead = True
+            for server in SERVERS:
+                if server.get('process') and server['process'].is_alive():
+                    all_dead = False
+                    break
+            if all_dead:
+                break
+            time.sleep(0.1)
+            
     except Exception as e:
         print(f"\n发生错误: {e}", flush=True)
     finally:
+        print("\n正在关闭所有进程...", flush=True)
+        
+        # 尝试优雅关闭
         cleanup_servers()
-        print("\n所有服务器已关闭", flush=True)
-        print("再见！\n", flush=True)
+        
+        # 等待一段时间，确认进程是否真的无法终止
+        print("\n等待进程清理完成...", flush=True)
+        time.sleep(2)
+        
+        # 检查是否还有存活的进程
+        has_alive = any(
+            server.get('process') and server['process'].is_alive()
+            for server in SERVERS
+        )
+        
+        if has_alive:
+            print("\n检测到进程未能正常退出，尝试强制终止...", flush=True)
+            
+            try:
+                if hasattr(os, 'killpg'):
+                    pgid = os.getpgrp()
+                    # 先尝试 SIGTERM 允许清理
+                    os.killpg(pgid, signal.SIGTERM)
+                    time.sleep(1)
+                    # 如果还活着，再使用 SIGKILL
+                    os.killpg(pgid, signal.SIGKILL)
+                else:
+                    # Windows: 使用 taskkill 强制杀死进程树
+                    import subprocess
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(os.getpid())], 
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception as e:
+                # 强制终止失败，忽略错误（进程可能已经退出）
+                print(f"强制终止进程组时出错（可能进程已退出）: {e}", flush=True)
+        
+        print("\n清理完成", flush=True)
+        # 如果还有残留进程，使用非零退出码
+        # 注意：如果 has_alive 为 True，sys.exit(1) 会终止程序，不会执行 return 0
+        # 如果 has_alive 为 False，所有进程正常退出，继续执行 return 0
+        if has_alive:
+            sys.exit(1)
     
+    # 所有进程正常退出，返回成功退出码
     return 0
 
 if __name__ == "__main__":

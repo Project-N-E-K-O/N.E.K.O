@@ -5,6 +5,7 @@
 """
 import asyncio
 import logging
+import os
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -19,12 +20,18 @@ from plugin.api.models import (
 from plugin.api.exceptions import (
     PluginError,
     PluginTimeoutError,
+    PluginExecutionError,
+    PluginCommunicationError,
 )
+from plugin.server.error_handler import handle_plugin_error
 from plugin.server.utils import now_iso
+from plugin.utils.logging import format_log_text as _format_log_text
 from plugin.settings import (
     PLUGIN_EXECUTION_TIMEOUT,
     MESSAGE_QUEUE_DEFAULT_MAX_COUNT,
 )
+from plugin.sdk.errors import ErrorCode
+from plugin.sdk.responses import fail, is_envelope
 
 logger = logging.getLogger("user_plugin_server")
 
@@ -46,10 +53,25 @@ def build_plugin_list() -> List[Dict[str, Any]]:
     
     logger.info("加载插件列表成功")
     
+    # 获取运行状态（需要检查 plugin_hosts）
+    with state.plugin_hosts_lock:
+        running_plugins = set(state.plugin_hosts.keys())
+        # 创建 host 的副本以便后续检查（在锁外使用）
+        hosts_copy = dict(state.plugin_hosts)
+    
     for plugin_id, plugin_meta in plugins_copy.items():
         try:
             plugin_info = plugin_meta.copy()
             plugin_info["entries"] = []
+            
+            # 检查插件是否正在运行
+            is_running = False
+            if plugin_id in running_plugins:
+                host = hosts_copy.get(plugin_id)
+                if host and hasattr(host, 'is_alive'):
+                    is_running = host.is_alive()
+            
+            plugin_info["status"] = "running" if is_running else "stopped"
             
             # 处理每个插件的入口点
             seen = set()  # 用于去重 (event_type, id)
@@ -119,12 +141,22 @@ async def trigger_plugin(
     Raises:
         HTTPException: 如果插件不存在或执行失败
     """
+    # 关键日志：记录触发请求
     logger.info(
-        "[plugin_trigger] plugin_id=%s entry_id=%s task_id=%s args=%s",
-        plugin_id, entry_id, task_id, args
+        "[plugin_trigger] Processing trigger: plugin_id=%s, entry_id=%s, task_id=%s",
+        plugin_id, entry_id, task_id
+    )
+    
+    # 详细参数信息使用 DEBUG
+    logger.debug(
+        "[plugin_trigger] Args: type=%s, keys=%s, content=%s",
+        type(args),
+        list(args.keys()) if isinstance(args, dict) else "N/A",
+        args,
     )
     
     # 记录事件到队列
+    trace_id = str(uuid.uuid4())
     event = {
         "type": "plugin_triggered",
         "plugin_id": plugin_id,
@@ -133,59 +165,177 @@ async def trigger_plugin(
         "task_id": task_id,
         "client": client_host,
         "received_at": now_iso(),
+        "trace_id": trace_id,
     }
     _enqueue_event(event)
     
-    # 获取插件宿主
-    host = state.plugin_hosts.get(plugin_id)
+    # 首先检查插件是否已注册
+    with state.plugins_lock:
+        plugin_registered = plugin_id in state.plugins
+    
+    # 获取插件宿主（检查是否正在运行）
+    with state.plugin_hosts_lock:
+        host = state.plugin_hosts.get(plugin_id)
+        all_running_plugin_ids = list(state.plugin_hosts.keys())
+    
     if not host:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Plugin '{plugin_id}' is not running/loaded"
+        logger.debug(
+            "Plugin {} not found in plugin_hosts. Registered plugins: {}, Running plugins: {}",
+            plugin_id,
+            list(state.plugins.keys()) if state.plugins else [],
+            all_running_plugin_ids
+        )
+        # 插件未运行，检查是否已注册
+        if plugin_registered:
+            plugin_response = fail(
+                ErrorCode.NOT_READY,
+                f"Plugin '{plugin_id}' is registered but not running",
+                details={
+                    "hint": f"Start the plugin via POST /plugin/{plugin_id}/start",
+                    "running_plugins": all_running_plugin_ids,
+                },
+                retriable=True,
+                trace_id=trace_id,
+            )
+        else:
+            plugin_response = fail(
+                ErrorCode.NOT_FOUND,
+                f"Plugin '{plugin_id}' is not found/registered",
+                details={"known_plugins": list(state.plugins.keys()) if state.plugins else []},
+                trace_id=trace_id,
+            )
+
+        return PluginTriggerResponse(
+            success=False,
+            plugin_id=plugin_id,
+            executed_entry=entry_id,
+            args=args,
+            plugin_response=plugin_response,
+            received_at=event["received_at"],
+            plugin_forward_error=None,
         )
     
     # 检查进程健康状态
     try:
         health = host.health_check()
         if not health.alive:
-            raise HTTPException(
-                status_code=503,
-                detail=f"Plugin '{plugin_id}' process is not alive (status: {health.status})"
+            plugin_response = fail(
+                ErrorCode.NOT_READY,
+                f"Plugin '{plugin_id}' process is not alive (status: {health.status})",
+                details={"status": health.status, "pid": health.pid, "exitcode": health.exitcode},
+                retriable=True,
+                trace_id=trace_id,
+            )
+            return PluginTriggerResponse(
+                success=False,
+                plugin_id=plugin_id,
+                executed_entry=entry_id,
+                args=args,
+                plugin_response=plugin_response,
+                received_at=event["received_at"],
+                plugin_forward_error=None,
             )
     except (AttributeError, RuntimeError) as e:
         logger.error(f"Failed to check health for plugin {plugin_id}: {e}")
-        raise HTTPException(
-            status_code=503,
-            detail=f"Plugin '{plugin_id}' health check failed"
-        ) from e
+        plugin_response = fail(
+            ErrorCode.NOT_READY,
+            f"Plugin '{plugin_id}' health check failed",
+            details={"error": str(e)},
+            retriable=True,
+            trace_id=trace_id,
+        )
+        return PluginTriggerResponse(
+            success=False,
+            plugin_id=plugin_id,
+            executed_entry=entry_id,
+            args=args,
+            plugin_response=plugin_response,
+            received_at=event["received_at"],
+            plugin_forward_error=None,
+        )
     
     # 执行插件
     plugin_response: Any = None
-    plugin_error: Optional[Dict[str, Any]] = None
+    
+    logger.debug(
+        "[plugin_trigger] Calling host.trigger: entry_id=%s, args=%s",
+        entry_id,
+        args,
+    )
     
     try:
         plugin_response = await host.trigger(entry_id, args, timeout=PLUGIN_EXECUTION_TIMEOUT)
-    except TimeoutError as e:
-        plugin_error = {"error": "Plugin execution timed out"}
+        logger.debug(
+            "[plugin_trigger] Plugin response: %s",
+            str(plugin_response)[:500] if plugin_response else None,
+        )
+    except (TimeoutError, asyncio.TimeoutError) as e:
         logger.error(f"Plugin {plugin_id} entry {entry_id} timed out: {e}")
+        plugin_response = fail(
+            ErrorCode.TIMEOUT,
+            "Plugin execution timed out",
+            details={"plugin_id": plugin_id, "entry_id": entry_id},
+            retriable=True,
+            trace_id=trace_id,
+        )
     except PluginError as e:
         logger.warning(f"Plugin {plugin_id} entry {entry_id} error: {e}")
-        plugin_error = {"error": str(e)}
+        plugin_response = fail(
+            ErrorCode.INTERNAL,
+            str(e),
+            details={"plugin_id": plugin_id, "entry_id": entry_id, "type": type(e).__name__},
+            trace_id=trace_id,
+        )
     except (ConnectionError, OSError) as e:
         logger.error(f"Communication error with plugin {plugin_id}: {e}")
-        plugin_error = {"error": f"Communication error: {str(e)}"}
+        plugin_response = fail(
+            ErrorCode.NOT_READY,
+            "Communication error with plugin",
+            details={"plugin_id": plugin_id, "entry_id": entry_id, "error": str(e)},
+            retriable=True,
+            trace_id=trace_id,
+        )
+    except (ValueError, TypeError, AttributeError) as e:
+        logger.error(f"Invalid parameters for plugin {plugin_id} entry {entry_id}: {e}")
+        plugin_response = fail(
+            ErrorCode.VALIDATION_ERROR,
+            "Invalid request parameters",
+            details={"plugin_id": plugin_id, "entry_id": entry_id, "error": str(e)},
+            trace_id=trace_id,
+        )
     except Exception as e:
-        logger.exception(f"plugin_trigger: unexpected error invoking plugin {plugin_id} via IPC")
-        plugin_error = {"error": f"Unexpected error: {str(e)}"}
+        logger.exception(f"plugin_trigger: Unexpected error type invoking plugin {plugin_id} via IPC")
+        plugin_response = fail(
+            ErrorCode.INTERNAL,
+            "An internal error occurred",
+            details={"plugin_id": plugin_id, "entry_id": entry_id, "type": type(e).__name__},
+            trace_id=trace_id,
+        )
+
+    if not is_envelope(plugin_response):
+        plugin_response = fail(
+            ErrorCode.INVALID_RESPONSE,
+            "Plugin returned an invalid response shape (expected SDK envelope)",
+            details={
+                "plugin_id": plugin_id,
+                "entry_id": entry_id,
+                "type": type(plugin_response).__name__,
+            },
+            trace_id=trace_id,
+        )
+    else:
+        if plugin_response.get("trace_id") is None:
+            plugin_response = dict(plugin_response)
+            plugin_response["trace_id"] = trace_id
     
     return PluginTriggerResponse(
-        success=plugin_error is None,
+        success=bool(plugin_response.get("success")) if isinstance(plugin_response, dict) else False,
         plugin_id=plugin_id,
         executed_entry=entry_id,
         args=args,
         plugin_response=plugin_response,
         received_at=event["received_at"],
-        plugin_forward_error=plugin_error,
+        plugin_forward_error=None,
     )
 
 
@@ -207,77 +357,173 @@ def get_messages_from_queue(
     """
     if max_count is None:
         max_count = MESSAGE_QUEUE_DEFAULT_MAX_COUNT
-    
-    # 先把当前队列内容全部取出
-    remaining: List[Dict[str, Any]] = []
+
+    # Drain queue into store (queue is an ingestion channel; store is the authoritative history)
     while True:
         try:
             msg = state.message_queue.get_nowait()
-            remaining.append(msg)
         except asyncio.QueueEmpty:
             break
-    
-    # 在内存里按顺序过滤 + 构造返回
-    messages: List[Dict[str, Any]] = []
-    kept: List[Dict[str, Any]] = []
-    count = 0
-    
-    for msg in remaining:
-        if count < max_count:
-            # 过滤插件ID
-            if plugin_id and msg.get("plugin_id") != plugin_id:
-                kept.append(msg)
-                continue
-            
-            # 过滤优先级
-            if priority_min is not None:
-                msg_priority = msg.get("priority", 0)
-                if msg_priority < priority_min:
-                    kept.append(msg)
+
+        if not isinstance(msg, dict):
+            continue
+
+        # If message has been stored already by runtime forwarding path, skip re-appending.
+        if msg.get("_bus_stored") is True:
+            continue
+
+        # Ensure stable message_id
+        if not isinstance(msg.get("message_id"), str) or not msg.get("message_id"):
+            msg = dict(msg)
+            msg["message_id"] = str(uuid.uuid4())
+
+        # Normalize timestamp
+        if not isinstance(msg.get("time"), str) or not msg.get("time"):
+            msg = dict(msg)
+            msg["time"] = now_iso()
+
+        state.append_message_record(msg)
+
+    all_msgs = state.list_message_records()
+    filtered: List[Dict[str, Any]] = []
+    for msg in all_msgs:
+        if plugin_id and msg.get("plugin_id") != plugin_id:
+            continue
+        if priority_min is not None:
+            try:
+                if int(msg.get("priority", 0)) < int(priority_min):
                     continue
-            
-            # 命中的消息构建 PluginPushMessage
-            message_id = str(uuid.uuid4())
-            plugin_message = PluginPushMessage(
-                plugin_id=msg.get("plugin_id", ""),
-                source=msg.get("source", ""),
-                description=msg.get("description", ""),
-                priority=msg.get("priority", 0),
-                message_type=msg.get("message_type", "text"),
-                content=msg.get("content"),
-                binary_data=msg.get("binary_data"),
-                binary_url=msg.get("binary_url"),
-                metadata=msg.get("metadata", {}),
-                timestamp=msg.get("time", now_iso()),
-                message_id=message_id,
-            )
-            message_dict = plugin_message.model_dump()
-            messages.append(message_dict)
-            
-            # 服务器终端日志输出
-            content_str = msg.get("content") or ""
-            logger.info(
-                f"[MESSAGE] Plugin: {msg.get('plugin_id', 'unknown')} | "
-                f"Source: {msg.get('source', 'unknown')} | "
-                f"Priority: {msg.get('priority', 0)} | "
-                f"Description: {msg.get('description', '')} | "
-                f"Content: {content_str[:100]}"
-            )
-            
-            count += 1
-        else:
-            # 已达到最大数量，剩余消息保留
-            kept.append(msg)
-    
-    # 未消费的消息按原顺序放回队列
-    for msg in kept:
-        try:
-            state.message_queue.put_nowait(msg)
-        except asyncio.QueueFull:
-            logger.warning("Message queue is full when re-queueing filtered messages, dropping")
-            break
-    
+            except Exception:
+                continue
+        filtered.append(msg)
+
+    if len(filtered) > max_count:
+        filtered = filtered[-max_count:]
+
+    messages: List[Dict[str, Any]] = []
+    for msg in filtered:
+        plugin_message = PluginPushMessage(
+            plugin_id=msg.get("plugin_id", ""),
+            source=msg.get("source", ""),
+            description=msg.get("description", ""),
+            priority=msg.get("priority", 0),
+            message_type=msg.get("message_type", "text"),
+            content=msg.get("content"),
+            binary_data=msg.get("binary_data"),
+            binary_url=msg.get("binary_url"),
+            metadata=msg.get("metadata", {}),
+            timestamp=msg.get("time", now_iso()),
+            message_id=msg.get("message_id"),
+        )
+        messages.append(plugin_message.model_dump())
+
     return messages
+
+
+def get_events_from_queue(
+    plugin_id: Optional[str] = None,
+    max_count: int | None = None,
+) -> List[Dict[str, Any]]:
+    """从事件队列中获取事件。
+
+    Args:
+        plugin_id: 过滤特定插件（可选）
+        max_count: 最大数量（None 时使用默认值）
+
+    Returns:
+        事件列表（原始 dict）
+    """
+    if max_count is None:
+        max_count = MESSAGE_QUEUE_DEFAULT_MAX_COUNT
+
+    while True:
+        try:
+            ev = state.event_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+
+        if not isinstance(ev, dict):
+            continue
+
+        if not isinstance(ev.get("trace_id"), str) or not ev.get("trace_id"):
+            ev = dict(ev)
+            ev["trace_id"] = str(uuid.uuid4())
+
+        # Stable event_id alias
+        if not isinstance(ev.get("event_id"), str) or not ev.get("event_id"):
+            ev = dict(ev)
+            ev["event_id"] = ev.get("trace_id")
+
+        if not isinstance(ev.get("received_at"), str) or not ev.get("received_at"):
+            ev = dict(ev)
+            ev["received_at"] = now_iso()
+
+        state.append_event_record(ev)
+
+    all_events = state.list_event_records()
+    filtered: List[Dict[str, Any]] = []
+    for ev in all_events:
+        if plugin_id and ev.get("plugin_id") != plugin_id:
+            continue
+        filtered.append(ev)
+
+    if len(filtered) > max_count:
+        filtered = filtered[-max_count:]
+    return filtered
+
+
+def get_lifecycle_from_queue(
+    plugin_id: Optional[str] = None,
+    max_count: int | None = None,
+) -> List[Dict[str, Any]]:
+    if max_count is None:
+        max_count = MESSAGE_QUEUE_DEFAULT_MAX_COUNT
+
+    while True:
+        try:
+            ev = state.lifecycle_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+
+        if not isinstance(ev, dict):
+            continue
+
+        if not isinstance(ev.get("trace_id"), str) or not ev.get("trace_id"):
+            ev = dict(ev)
+            ev["trace_id"] = str(uuid.uuid4())
+
+        if not isinstance(ev.get("lifecycle_id"), str) or not ev.get("lifecycle_id"):
+            ev = dict(ev)
+            ev["lifecycle_id"] = ev.get("trace_id")
+
+        if not isinstance(ev.get("time"), str) or not ev.get("time"):
+            ev = dict(ev)
+            ev["time"] = now_iso()
+
+        state.append_lifecycle_record(ev)
+
+    all_events = state.list_lifecycle_records()
+    filtered: List[Dict[str, Any]] = []
+    for ev in all_events:
+        if plugin_id and ev.get("plugin_id") != plugin_id:
+            continue
+        filtered.append(ev)
+
+    if len(filtered) > max_count:
+        filtered = filtered[-max_count:]
+    return filtered
+
+
+def delete_message_from_store(message_id: str) -> bool:
+    return state.delete_message(message_id)
+
+
+def delete_event_from_store(event_id: str) -> bool:
+    return state.delete_event(event_id)
+
+
+def delete_lifecycle_from_store(lifecycle_id: str) -> bool:
+    return state.delete_lifecycle(lifecycle_id)
 
 
 def push_message_to_queue(
@@ -300,6 +546,7 @@ def push_message_to_queue(
     message_id = str(uuid.uuid4())
     message = {
         "type": "MESSAGE_PUSH",
+        "message_id": message_id,
         "plugin_id": plugin_id,
         "source": source,
         "description": description,
@@ -314,13 +561,14 @@ def push_message_to_queue(
     
     try:
         state.message_queue.put_nowait(message)
+        state.append_message_record(message)
         logger.info(
             f"[MESSAGE PUSH] Plugin: {plugin_id} | "
             f"Source: {source} | "
             f"Type: {message_type} | "
             f"Priority: {priority} | "
             f"Description: {description} | "
-            f"Content: {(content or '')[:100]}"
+            f"Content: {_format_log_text(content or '')}"
         )
     except asyncio.QueueFull:
         # 队列满时，尝试移除最旧的消息
@@ -340,22 +588,73 @@ def push_message_to_queue(
             status_code=503,
             detail="Message queue is not available"
         ) from e
+    except Exception as e:
+        logger.exception(f"Unexpected error in push_message_to_queue: {type(e).__name__}")
+        raise HTTPException(
+            status_code=503,
+            detail="Failed to enqueue message"
+        ) from e
     
     return message_id
 
 
 def _enqueue_event(event: Dict[str, Any]) -> None:
-    """将事件加入事件队列（非阻塞，失败不影响主流程）"""
+    """
+    将事件加入事件队列（非阻塞，失败不影响主流程）
+    
+    注意：此函数设计为静默失败，因为事件队列不是关键路径
+    """
     try:
         if state.event_queue:
             state.event_queue.put_nowait(event)
+        if isinstance(event, dict):
+            ev = dict(event)
+            if not isinstance(ev.get("trace_id"), str) or not ev.get("trace_id"):
+                ev["trace_id"] = str(uuid.uuid4())
+            if not isinstance(ev.get("event_id"), str) or not ev.get("event_id"):
+                ev["event_id"] = ev.get("trace_id")
+            if not isinstance(ev.get("received_at"), str) or not ev.get("received_at"):
+                ev["received_at"] = now_iso()
+            state.append_event_record(ev)
     except asyncio.QueueFull:
         try:
             state.event_queue.get_nowait()
             state.event_queue.put_nowait(event)
             logger.debug("Event queue was full, dropped oldest event")
         except (asyncio.QueueEmpty, AttributeError) as e:
-            logger.warning(f"Event queue operation failed after queue full: {e}")
+            logger.debug(f"Event queue operation failed after queue full: {e}")
+        except Exception as e:
+            logger.debug(f"Event queue cleanup failed: {type(e).__name__}")
     except (AttributeError, RuntimeError) as e:
-        logger.warning(f"Event queue error, continuing without queueing: {e}")
+        logger.debug(f"Event queue error, continuing without queueing: {e}")
+    except Exception as e:
+        # 静默失败，不影响主流程
+        logger.debug(f"Event queue unexpected error: {type(e).__name__}")
+
+
+def _enqueue_lifecycle(event: Dict[str, Any]) -> None:
+    try:
+        if state.lifecycle_queue:
+            state.lifecycle_queue.put_nowait(event)
+        if isinstance(event, dict):
+            ev = dict(event)
+            if not isinstance(ev.get("trace_id"), str) or not ev.get("trace_id"):
+                ev["trace_id"] = str(uuid.uuid4())
+            if not isinstance(ev.get("lifecycle_id"), str) or not ev.get("lifecycle_id"):
+                ev["lifecycle_id"] = ev.get("trace_id")
+            if not isinstance(ev.get("time"), str) or not ev.get("time"):
+                ev["time"] = now_iso()
+            state.append_lifecycle_record(ev)
+    except asyncio.QueueFull:
+        try:
+            state.lifecycle_queue.get_nowait()
+            state.lifecycle_queue.put_nowait(event)
+        except (asyncio.QueueEmpty, AttributeError):
+            pass
+        except Exception:
+            pass
+    except (AttributeError, RuntimeError):
+        pass
+    except Exception:
+        pass
 
