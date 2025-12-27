@@ -22,6 +22,7 @@ from plugin.settings import (
     PLUGIN_SHUTDOWN_TIMEOUT,
 )
 from plugin.sdk.version import SDK_VERSION
+from plugin.server.services import _enqueue_lifecycle
 
 
 def _get_plugin_config_path(plugin_id: str) -> Optional[Path]:
@@ -46,6 +47,11 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
     if plugin_id in state.plugin_hosts:
         host = state.plugin_hosts[plugin_id]
         if host.is_alive():
+            _enqueue_lifecycle({
+                "type": "plugin_start_skipped",
+                "plugin_id": plugin_id,
+                "time": str(asyncio.get_running_loop().time()),
+            })
             return {
                 "success": True,
                 "plugin_id": plugin_id,
@@ -102,6 +108,11 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
     
     # 创建并启动插件进程
     try:
+        _enqueue_lifecycle({
+            "type": "plugin_start_requested",
+            "plugin_id": plugin_id,
+            "time": str(asyncio.get_running_loop().time()),
+        })
         host = PluginProcessHost(
             plugin_id=plugin_id,
             entry_point=entry,
@@ -280,6 +291,11 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
             raise
         
         logger.info(f"Plugin {plugin_id} started successfully")
+        _enqueue_lifecycle({
+            "type": "plugin_started",
+            "plugin_id": plugin_id,
+            "time": str(asyncio.get_running_loop().time()),
+        })
         response = {
             "success": True,
             "plugin_id": plugin_id,
@@ -320,6 +336,11 @@ async def stop_plugin(plugin_id: str) -> Dict[str, Any]:
         )
     
     try:
+        _enqueue_lifecycle({
+            "type": "plugin_stop_requested",
+            "plugin_id": plugin_id,
+            "time": str(asyncio.get_running_loop().time()),
+        })
         # 停止插件
         await host.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
         
@@ -338,6 +359,11 @@ async def stop_plugin(plugin_id: str) -> Dict[str, Any]:
                 del state.event_handlers[key]
         
         logger.info(f"Plugin {plugin_id} stopped successfully")
+        _enqueue_lifecycle({
+            "type": "plugin_stopped",
+            "plugin_id": plugin_id,
+            "time": str(asyncio.get_running_loop().time()),
+        })
         return {
             "success": True,
             "plugin_id": plugin_id,
@@ -363,6 +389,11 @@ async def reload_plugin(plugin_id: str) -> Dict[str, Any]:
         操作结果
     """
     logger.info(f"Reloading plugin {plugin_id}")
+    _enqueue_lifecycle({
+        "type": "plugin_reload_requested",
+        "plugin_id": plugin_id,
+        "time": str(asyncio.get_running_loop().time()),
+    })
     
     # 1. 停止插件（如果正在运行）
     if plugin_id in state.plugin_hosts:
@@ -373,5 +404,11 @@ async def reload_plugin(plugin_id: str) -> Dict[str, Any]:
                 raise
     
     # 2. 重新启动插件
-    return await start_plugin(plugin_id)
+    result = await start_plugin(plugin_id)
+    _enqueue_lifecycle({
+        "type": "plugin_reloaded",
+        "plugin_id": plugin_id,
+        "time": str(asyncio.get_running_loop().time()),
+    })
+    return result
 

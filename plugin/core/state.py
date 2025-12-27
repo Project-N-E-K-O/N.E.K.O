@@ -11,7 +11,7 @@ from collections import deque
 from typing import Any, Deque, Dict, List, Optional
 
 from plugin.sdk.events import EventHandler
-from plugin.settings import EVENT_QUEUE_MAX, MESSAGE_QUEUE_MAX
+from plugin.settings import EVENT_QUEUE_MAX, LIFECYCLE_QUEUE_MAX, MESSAGE_QUEUE_MAX
 
 
 class PluginRuntimeState:
@@ -28,6 +28,7 @@ class PluginRuntimeState:
         self.event_handlers_lock = threading.Lock()  # 保护 event_handlers 字典的线程安全
         self.plugin_hosts_lock = threading.Lock()  # 保护 plugin_hosts 字典的线程安全
         self._event_queue: Optional[asyncio.Queue] = None
+        self._lifecycle_queue: Optional[asyncio.Queue] = None
         self._message_queue: Optional[asyncio.Queue] = None
         self._plugin_comm_queue: Optional[Any] = None
         self._plugin_response_map: Optional[Any] = None
@@ -45,6 +46,12 @@ class PluginRuntimeState:
         if self._event_queue is None:
             self._event_queue = asyncio.Queue(maxsize=EVENT_QUEUE_MAX)
         return self._event_queue
+
+    @property
+    def lifecycle_queue(self) -> asyncio.Queue:
+        if self._lifecycle_queue is None:
+            self._lifecycle_queue = asyncio.Queue(maxsize=LIFECYCLE_QUEUE_MAX)
+        return self._lifecycle_queue
 
     @property
     def message_queue(self) -> asyncio.Queue:

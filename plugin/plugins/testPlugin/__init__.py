@@ -195,6 +195,100 @@ class HelloPlugin(NekoPluginBase):
         except Exception:
             self.file_logger.exception("Messages debug failed")
 
+    def _startup_events_debug(self) -> None:
+        time.sleep(0.8)
+        try:
+            cfg = self._read_local_toml()
+            debug_cfg = cfg.get("debug") if isinstance(cfg.get("debug"), dict) else {}
+            ev_cfg = debug_cfg.get("events") if isinstance(debug_cfg.get("events"), dict) else {}
+            enabled = bool(ev_cfg.get("enable", False))
+            if not enabled:
+                return
+
+            delay_seconds = float(ev_cfg.get("delay_seconds", 1.0))
+            if delay_seconds > 0:
+                time.sleep(delay_seconds)
+
+            plugin_id = str(ev_cfg.get("plugin_id", "")).strip()
+            max_count = int(ev_cfg.get("max_count", 50))
+            timeout = float(ev_cfg.get("timeout", 5.0))
+            ev_type = str(ev_cfg.get("type", "")).strip()
+
+            ev_list = self.ctx.bus.events.get(
+                plugin_id=plugin_id or None,
+                max_count=max_count,
+                timeout=timeout,
+            )
+
+            filtered = ev_list
+            if ev_type:
+                filtered = filtered.filter(type=ev_type)
+            filtered = filtered.limit(10)
+
+            payload = {
+                "plugin_id": plugin_id or self.ctx.plugin_id,
+                "type": ev_type,
+                "count": len(ev_list),
+                "events": ev_list.dump(),
+                "filtered": filtered.dump(),
+            }
+            self.ctx.push_message(
+                source="testPlugin.debug.events",
+                message_type="text",
+                description="events bus debug result",
+                priority=1,
+                content=str(payload)[:2000] + ("...(truncated)" if len(str(payload)) > 2000 else ""),
+            )
+        except Exception:
+            self.file_logger.exception("Events debug failed")
+
+    def _startup_lifecycle_debug(self) -> None:
+        time.sleep(0.8)
+        try:
+            cfg = self._read_local_toml()
+            debug_cfg = cfg.get("debug") if isinstance(cfg.get("debug"), dict) else {}
+            lc_cfg = debug_cfg.get("lifecycle") if isinstance(debug_cfg.get("lifecycle"), dict) else {}
+            enabled = bool(lc_cfg.get("enable", False))
+            if not enabled:
+                return
+
+            delay_seconds = float(lc_cfg.get("delay_seconds", 1.0))
+            if delay_seconds > 0:
+                time.sleep(delay_seconds)
+
+            plugin_id = str(lc_cfg.get("plugin_id", "")).strip()
+            max_count = int(lc_cfg.get("max_count", 50))
+            timeout = float(lc_cfg.get("timeout", 5.0))
+            lc_type = str(lc_cfg.get("type", "")).strip()
+
+            lc_list = self.ctx.bus.lifecycle.get(
+                plugin_id=plugin_id or None,
+                max_count=max_count,
+                timeout=timeout,
+            )
+
+            filtered = lc_list
+            if lc_type:
+                filtered = filtered.filter(type=lc_type)
+            filtered = filtered.limit(10)
+
+            payload = {
+                "plugin_id": plugin_id or self.ctx.plugin_id,
+                "type": lc_type,
+                "count": len(lc_list),
+                "events": lc_list.dump(),
+                "filtered": filtered.dump(),
+            }
+            self.ctx.push_message(
+                source="testPlugin.debug.lifecycle",
+                message_type="text",
+                description="lifecycle bus debug result",
+                priority=1,
+                content=str(payload)[:2000] + ("...(truncated)" if len(str(payload)) > 2000 else ""),
+            )
+        except Exception:
+            self.file_logger.exception("Lifecycle debug failed")
+
     @lifecycle(id="startup")
     def startup(self, **_):
         cfg = self._read_local_toml()
@@ -203,13 +297,17 @@ class HelloPlugin(NekoPluginBase):
         config_cfg = debug_cfg.get("config") if isinstance(debug_cfg.get("config"), dict) else {}
         mem_cfg = debug_cfg.get("memory") if isinstance(debug_cfg.get("memory"), dict) else {}
         msg_cfg = debug_cfg.get("messages") if isinstance(debug_cfg.get("messages"), dict) else {}
+        ev_cfg = debug_cfg.get("events") if isinstance(debug_cfg.get("events"), dict) else {}
+        lc_cfg = debug_cfg.get("lifecycle") if isinstance(debug_cfg.get("lifecycle"), dict) else {}
 
         timer_enabled = bool(timer_cfg.get("enable")) if "enable" in timer_cfg else bool(debug_cfg.get("enable", False))
         config_enabled = bool(config_cfg.get("enable", False))
         memory_enabled = bool(mem_cfg.get("enable", False))
         messages_enabled = bool(msg_cfg.get("enable", False))
+        events_enabled = bool(ev_cfg.get("enable", False))
+        lifecycle_enabled = bool(lc_cfg.get("enable", False))
 
-        if not timer_enabled and not config_enabled and not memory_enabled and not messages_enabled:
+        if not timer_enabled and not config_enabled and not memory_enabled and not messages_enabled and not events_enabled and not lifecycle_enabled:
             self.file_logger.info("Debug disabled, skipping startup debug actions")
             return ok(data={"status": "disabled"})
 
@@ -221,6 +319,10 @@ class HelloPlugin(NekoPluginBase):
             threading.Thread(target=self._startup_memory_debug, daemon=True, name="testPlugin-debug-memory").start()
         if messages_enabled:
             threading.Thread(target=self._startup_messages_debug, daemon=True, name="testPlugin-debug-messages").start()
+        if events_enabled:
+            threading.Thread(target=self._startup_events_debug, daemon=True, name="testPlugin-debug-events").start()
+        if lifecycle_enabled:
+            threading.Thread(target=self._startup_lifecycle_debug, daemon=True, name="testPlugin-debug-lifecycle").start()
 
         return ok(
             data={
@@ -229,6 +331,8 @@ class HelloPlugin(NekoPluginBase):
                 "config": config_enabled,
                 "memory": memory_enabled,
                 "messages": messages_enabled,
+                "events": events_enabled,
+                "lifecycle": lifecycle_enabled,
             }
         )
 

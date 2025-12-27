@@ -128,6 +128,7 @@ class MemoryClient:
                 continue
 
             if not isinstance(response, dict):
+                time.sleep(check_interval)
                 continue
 
             if response.get("error"):

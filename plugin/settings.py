@@ -39,6 +39,9 @@ PLUGIN_CONFIG_ROOT = get_plugin_config_root()
 # 事件队列最大容量
 EVENT_QUEUE_MAX = 1000
 
+# 生命周期队列最大容量
+LIFECYCLE_QUEUE_MAX = 1000
+
 # 消息队列最大容量
 MESSAGE_QUEUE_MAX = 1000
 

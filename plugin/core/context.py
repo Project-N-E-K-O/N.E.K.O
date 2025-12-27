@@ -30,6 +30,8 @@ class _BusHub:
         self._ctx = ctx
         self._memory: Optional[Any] = None
         self._messages: Optional[Any] = None
+        self._events: Optional[Any] = None
+        self._lifecycle: Optional[Any] = None
 
     @property
     def memory(self) -> Any:
@@ -46,6 +48,22 @@ class _BusHub:
 
             self._messages = MessageClient(self._ctx)
         return self._messages
+
+    @property
+    def events(self) -> Any:
+        if self._events is None:
+            from plugin.sdk.bus.events import EventClient
+
+            self._events = EventClient(self._ctx)
+        return self._events
+
+    @property
+    def lifecycle(self) -> Any:
+        if self._lifecycle is None:
+            from plugin.sdk.bus.lifecycle import LifecycleClient
+
+            self._lifecycle = LifecycleClient(self._ctx)
+        return self._lifecycle
 
 
 @dataclass

@@ -40,3 +40,19 @@ max_count = 50
 priority_min = 0
 source = ""
 timeout = 5.0
+
+[debug.events]
+enable = false
+delay_seconds = 5.0
+plugin_id = "*"
+max_count = 50
+type = ""
+timeout = 5.0
+
+[debug.lifecycle]
+enable = false
+delay_seconds = 5.0
+plugin_id = "*"
+max_count = 50
+type = ""
+timeout = 5.0

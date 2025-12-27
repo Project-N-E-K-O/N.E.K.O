@@ -1151,6 +1151,105 @@ class MyPlugin(NekoPluginBase):
 - 通过 `ctx` 获取配置、查询插件、或触发插件互调等“同步等待”能力时，不建议在 handler（`startup`、`@plugin_entry`、`@custom_event`、`@timer_interval` 等）中直接调用。
 - 如果确实要在 handler 中使用，请在 `plugin.toml` 配置 `sync_call_in_handler` 为 `warn` 或 `reject`，并在代码中做降级/兜底。
 
+### 6.5 ctx.bus：标准化消息/记忆总线（Bus）
+
+`ctx.bus` 提供一组统一的“总线接口”，用于从主进程拉取不同类型的数据（例如 memory、messages）。
+
+它的目标是：
+- 用一致的数据结构返回（Record/List）。
+- 支持链式过滤（filter/where/limit）。
+- 支持直接 dump 成可序列化结构（便于返回给 API、写日志、push_message）。
+
+#### 6.5.1 BusList / BusRecord 的通用行为
+
+- `BusRecord`：单条记录对象，提供 `dump()`。
+- `BusList`：记录列表对象。
+  - 可迭代：`for x in list_obj: ...`
+  - 支持 `len(list_obj)`
+  - 支持 `dump()`：返回 `List[Dict[str, Any]]`
+  - 支持链式：`filter(...)` / `where(predicate)` / `limit(n)`
+
+#### 6.5.2 ctx.bus.memory：读取上下文记忆（Memory Bus）
+
+接口：
+
+```python
+memory_list = self.ctx.bus.memory.get(bucket_id="lanlan_name", limit=20, timeout=5.0)
+
+# 例：只看某类事件，再限制数量
+filtered = memory_list.filter(type="PLUGIN_TRIGGER").limit(10)
+
+return {
+    "count": len(memory_list),
+    "history": memory_list.dump(),
+    "filtered": filtered.dump(),
+}
+```
+
+#### 6.5.3 ctx.bus.messages：读取消息队列（Messages Bus）
+
+接口：
+
+```python
+msg_list = self.ctx.bus.messages.get(
+    plugin_id="web_interface",  # 可选；不填时默认只拉取当前插件的消息
+    max_count=50,
+    priority_min=None,
+    timeout=5.0,
+)
+
+# 例：按 source 精确过滤
+filtered = msg_list.filter(source="web_interface").limit(10)
+
+return {
+    "count": len(msg_list),
+    "messages": msg_list.dump(),
+    "filtered": filtered.dump(),
+}
+```
+
+`plugin_id` 的特别值：
+- 当你传 `plugin_id="*"` 时，表示拉取“所有插件”的消息（不按 plugin_id 过滤）。
+
+#### 6.5.4 filter 的规则（精确匹配 + 范围 + 正则）
+
+`BusList.filter(...)` 使用“所有条件同时满足（AND）”的方式筛选。
+
+已支持的字段：
+- 精确匹配：`kind`、`type`、`plugin_id`、`source`
+- 阈值/范围：`priority_min`、`since_ts`、`until_ts`
+- 正则匹配：`kind_re`、`type_re`、`plugin_id_re`、`source_re`、`content_re`
+
+示例：
+
+```python
+# source 包含 web（正则 search）
+lst = msg_list.filter(source_re="web")
+
+# type 是 url 或 text
+lst2 = msg_list.filter(type_re="^(url|text)$")
+
+# content 包含端口号
+lst3 = msg_list.filter(content_re=r"127\\.0\\.0\\.1:8888")
+```
+
+#### 6.5.5 使用 plugin.toml 开启延迟自检（testPlugin 示例）
+
+为了方便自动化测试，`testPlugin` 支持在 `plugin.toml` 中开启 `debug.messages`，在插件 startup 后延迟一段时间自动拉取一次 messages bus，并用 `ctx.push_message()` 把结果推送回主系统。
+
+示例（`plugin/plugins/testPlugin/plugin.toml`）：
+
+```toml
+[debug.messages]
+enable = true
+delay_seconds = 5.0
+plugin_id = "*"
+max_count = 50
+priority_min = 0
+source = ""
+timeout = 5.0
+```
+
 ---
 
 ## 第七章：完整示例

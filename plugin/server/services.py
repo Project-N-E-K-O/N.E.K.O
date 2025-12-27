@@ -459,6 +459,99 @@ def get_messages_from_queue(
     return messages
 
 
+def get_events_from_queue(
+    plugin_id: Optional[str] = None,
+    max_count: int | None = None,
+) -> List[Dict[str, Any]]:
+    """从事件队列中获取事件。
+
+    Args:
+        plugin_id: 过滤特定插件（可选）
+        max_count: 最大数量（None 时使用默认值）
+
+    Returns:
+        事件列表（原始 dict）
+    """
+    if max_count is None:
+        max_count = MESSAGE_QUEUE_DEFAULT_MAX_COUNT
+
+    remaining: List[Dict[str, Any]] = []
+    while True:
+        try:
+            ev = state.event_queue.get_nowait()
+            if isinstance(ev, dict):
+                remaining.append(ev)
+            else:
+                remaining.append({"type": "UNKNOWN", "raw": ev})
+        except asyncio.QueueEmpty:
+            break
+
+    events: List[Dict[str, Any]] = []
+    kept: List[Dict[str, Any]] = []
+    count = 0
+
+    for ev in remaining:
+        if count < max_count:
+            if plugin_id and ev.get("plugin_id") != plugin_id:
+                kept.append(ev)
+                continue
+            events.append(ev)
+            count += 1
+        else:
+            kept.append(ev)
+
+    for ev in kept:
+        try:
+            state.event_queue.put_nowait(ev)
+        except asyncio.QueueFull:
+            logger.warning("Event queue is full when re-queueing filtered events, dropping")
+            break
+
+    return events
+
+
+def get_lifecycle_from_queue(
+    plugin_id: Optional[str] = None,
+    max_count: int | None = None,
+) -> List[Dict[str, Any]]:
+    if max_count is None:
+        max_count = MESSAGE_QUEUE_DEFAULT_MAX_COUNT
+
+    remaining: List[Dict[str, Any]] = []
+    while True:
+        try:
+            ev = state.lifecycle_queue.get_nowait()
+            if isinstance(ev, dict):
+                remaining.append(ev)
+            else:
+                remaining.append({"type": "UNKNOWN", "raw": ev})
+        except asyncio.QueueEmpty:
+            break
+
+    events: List[Dict[str, Any]] = []
+    kept: List[Dict[str, Any]] = []
+    count = 0
+
+    for ev in remaining:
+        if count < max_count:
+            if plugin_id and ev.get("plugin_id") != plugin_id:
+                kept.append(ev)
+                continue
+            events.append(ev)
+            count += 1
+        else:
+            kept.append(ev)
+
+    for ev in kept:
+        try:
+            state.lifecycle_queue.put_nowait(ev)
+        except asyncio.QueueFull:
+            logger.warning("Lifecycle queue is full when re-queueing filtered events, dropping")
+            break
+
+    return events
+
+
 def push_message_to_queue(
     plugin_id: str,
     source: str,
@@ -552,4 +645,22 @@ def _enqueue_event(event: Dict[str, Any]) -> None:
     except Exception as e:
         # 静默失败，不影响主流程
         logger.debug(f"Event queue unexpected error: {type(e).__name__}")
+
+
+def _enqueue_lifecycle(event: Dict[str, Any]) -> None:
+    try:
+        if state.lifecycle_queue:
+            state.lifecycle_queue.put_nowait(event)
+    except asyncio.QueueFull:
+        try:
+            state.lifecycle_queue.get_nowait()
+            state.lifecycle_queue.put_nowait(event)
+        except (asyncio.QueueEmpty, AttributeError):
+            pass
+        except Exception:
+            pass
+    except (AttributeError, RuntimeError):
+        pass
+    except Exception:
+        pass
 
