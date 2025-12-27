@@ -619,8 +619,17 @@ class VRMCore {
             // 获取 VRM 实例
             const vrm = gltf.userData.vrm;
             if (!vrm) {
-                throw new Error('加载的模型不是有效的 VRM 格式');
+                console.error('[VRM] 加载失败: gltf.userData:', gltf.userData);
+                console.error('[VRM] 加载失败: gltf.scene:', gltf.scene);
+                throw new Error(`加载的模型不是有效的 VRM 格式。文件: ${modelUrl}`);
             }
+
+            console.log(`[VRM] 成功加载 VRM 模型: ${modelUrl}`);
+            console.log(`[VRM] VRM 版本信息:`, vrm.meta ? {
+                title: vrm.meta.title || vrm.meta.name,
+                version: vrm.meta.version,
+                author: vrm.meta.author || vrm.meta.authors
+            } : '无元数据');
             
             // 检测 VRM 模型版本（0.0 或 1.0）
             this.vrmVersion = this.detectVRMVersion(vrm);
@@ -638,26 +647,36 @@ class VRMCore {
             if (vrm.humanoid && vrm.humanoid.humanBones) {
                 // 获取头部骨骼位置（通常头部在模型前方）
                 const headBone = vrm.humanoid.humanBones.head?.node;
-                const chestBone = vrm.humanoid.humanBones.chest?.node || 
+                const chestBone = vrm.humanoid.humanBones.chest?.node ||
                                  vrm.humanoid.humanBones.spine?.node;
-                
+
                 if (headBone && chestBone) {
                     // 计算从胸部到头部的向量（应该指向前方）
                     const headWorldPos = new THREE.Vector3();
                     const chestWorldPos = new THREE.Vector3();
                     headBone.getWorldPosition(headWorldPos);
                     chestBone.getWorldPosition(chestWorldPos);
-                    
+
                     const forwardVec = new THREE.Vector3().subVectors(headWorldPos, chestWorldPos);
                     forwardVec.normalize();
-                    
+
                     // 如果forward向量指向Z轴正方向（远离相机），说明是背面，需要旋转
                     if (forwardVec.z > 0.3) {
                         needsRotation = true;
+                        console.log('[VRM] 检测到模型背对相机，将自动旋转180度');
                     }
+                } else {
+                    console.warn('[VRM] 无法检测模型朝向：缺少头部或胸部骨骼');
                 }
             }
-            
+
+            // 【调试】强制某些模型正面朝向（如果自动检测失败）
+            // 检查文件名是否包含特定标识
+            if (modelUrl.includes('yuivrm')) {
+                needsRotation = true;
+                console.log('[VRM] 检测到 yuivrm 模型，强制正面朝向');
+            }
+
             // 重置旋转并应用必要的旋转
             vrm.scene.rotation.set(0, needsRotation ? Math.PI : 0, 0);
             

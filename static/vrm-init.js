@@ -70,6 +70,7 @@ async function initVRMModel() {
     }
 
     try {
+        console.log(`[VRM Init] 开始加载 VRM 模型: ${targetModelPath}`);
         console.log('[VRM Init] 切换UI显示...');
         // 3. UI 切换逻辑 
         const vrmContainer = document.getElementById('vrm-container');
@@ -225,3 +226,41 @@ window.checkVRMStatus = function() {
     }
     console.log('[VRM Status Check] === 检查完成 ===');
 };
+
+// VRM 模型测试命令
+window.testVRMModels = {
+    loadSister: async () => {
+        console.log('[Test] 加载 sister1.0.vrm...');
+        try {
+            await window.vrmManager?.loadModel('/static/vrm/sister1.0.vrm');
+            console.log('[Test] sister1.0.vrm 加载成功');
+        } catch (error) {
+            console.error('[Test] sister1.0.vrm 加载失败:', error);
+        }
+    },
+
+    loadYui: async () => {
+        console.log('[Test] 加载 yuivrm (1).vrm...');
+        try {
+            await window.vrmManager?.loadModel('/static/vrm/yuivrm (1).vrm');
+            console.log('[Test] yuivrm (1).vrm 加载成功');
+        } catch (error) {
+            console.error('[Test] yuivrm (1).vrm 加载失败:', error);
+        }
+    },
+
+    listModels: () => {
+        console.log('=== 可用 VRM 模型 ===');
+        console.log('📁 /static/vrm/sister1.0.vrm');
+        console.log('📁 /static/vrm/yuivrm (1).vrm');
+        console.log('');
+        console.log('💡 使用方法:');
+        console.log('  testVRMModels.loadSister() - 加载 sister 模型');
+        console.log('  testVRMModels.loadYui() - 加载 yui 模型');
+        console.log('  testVRMModels.listModels() - 显示此帮助');
+    }
+};
+
+// 自动显示帮助
+console.log('[VRM Debug] 🎮 VRM 测试命令已加载:');
+console.log('  testVRMModels.listModels() - 查看可用命令');

@@ -52,16 +52,20 @@ class VRMManager {
 
             // 1. 先让 VRM 计算 (包括 LookAt, SpringBone 等)
             if (this.currentModel && this.currentModel.vrm) {
-                // 如果开启了物理，正常更新；否则传入 0 或跳过
+                // 如果开启了物理，正常更新；否则跳过 SpringBone 更新
                 if (this.enablePhysics) {
                     this.currentModel.vrm.update(delta);
                 } else {
-                    // 仅更新 LookAt 等必要组件，跳过物理? 
-                    // VRM 1.0 的 update 包含所有。
-                    // 为了防抖，我们这里传入极小的 delta 或者直接跳过
-                    // 但直接跳过会导致模型静止。
-                    // 策略：依然更新，但在 Animation 模块里我们已经用“后置更新”覆盖了骨骼
-                    this.currentModel.vrm.update(delta);
+                    // 【关键修复】当物理被禁用时，完全跳过 VRM 更新
+                    // 防止 SpringBone 与动画冲突导致手臂抽动
+                    // 仅更新必要的组件，但跳过物理计算
+                    if (this.currentModel.vrm.lookAt) {
+                        this.currentModel.vrm.lookAt.update(delta);
+                    }
+                    if (this.currentModel.vrm.expressionManager) {
+                        this.currentModel.vrm.expressionManager.update(delta);
+                    }
+                    // 故意跳过 springBoneManager.update() 来避免与动画冲突
                 }
             }
 

@@ -32,6 +32,12 @@ class VRMAnimation {
             // 强制接管时间增量，确保速度控制绝对准确
             const safeDelta = (delta <= 0 || delta > 0.1) ? 0.016 : delta;
             this.vrmaMixer.update(safeDelta * this.playbackSpeed);
+
+            // 【关键修复】强制更新骨骼矩阵，避免手臂抽动
+            const vrm = this.manager.currentModel?.vrm;
+            if (vrm?.scene) {
+                vrm.scene.updateMatrixWorld(true);
+            }
         }
         if (this.lipSyncActive && this.analyser) {
             this._updateLipSync(delta);
@@ -58,7 +64,10 @@ class VRMAnimation {
             console.log(`[VRM Animation] 加载: ${vrmaPath}`);
             
             // 物理防抖：暂时关闭 SpringBone
-            if (this.manager.toggleSpringBone) this.manager.toggleSpringBone(false); 
+            if (this.manager.toggleSpringBone) {
+                this.manager.toggleSpringBone(false);
+                console.log('[VRM Animation] SpringBone 已临时禁用');
+            } 
 
             // 清理旧 Mixer
             if (this.manager.animationMixer) {
@@ -85,6 +94,15 @@ class VRMAnimation {
             const newAction = this.vrmaMixer.clipAction(clip);
             newAction.setLoop(options.loop ? window.THREE.LoopRepeat : window.THREE.LoopOnce);
             newAction.clampWhenFinished = true;
+
+            // 【关键修复】强制设置旋转轨道的插值模式
+            // 对于四元数（旋转），使用球面线性插值可以避免关节抽动
+            clip.tracks.forEach(track => {
+                if (track.name.endsWith('.quaternion')) {
+                    // 设置为线性插值，但我们已经在 _ensureQuaternionContinuity 中处理了连续性
+                    track.setInterpolation(window.THREE.InterpolateLinear);
+                }
+            });
             
             // 设置速度 (优先使用传入参数，否则用默认)
             this.playbackSpeed = (options.timeScale !== undefined) ? options.timeScale : 1.0;
@@ -114,15 +132,32 @@ class VRMAnimation {
     }
 
     stopVRMAAnimation() {
-        if (this.manager.toggleSpringBone) this.manager.toggleSpringBone(true);
+        console.log('[VRM Animation] 停止动画播放');
         if (this.currentAction) {
             this.currentAction.fadeOut(0.5);
             setTimeout(() => {
                 if (this.vrmaMixer) this.vrmaMixer.stopAllAction();
                 this.currentAction = null;
+                this.vrmaIsPlaying = false;
+
+                // 【关键修复】延迟重新启用 SpringBone，避免立即冲突
+                setTimeout(() => {
+                    if (this.manager.toggleSpringBone) {
+                        this.manager.toggleSpringBone(true);
+                        console.log('[VRM Animation] SpringBone 已重新启用');
+                    }
+                }, 100);
+
             }, 500);
         } else {
             if (this.vrmaMixer) this.vrmaMixer.stopAllAction();
+            this.vrmaIsPlaying = false;
+
+            // 立即重新启用 SpringBone
+            if (this.manager.toggleSpringBone) {
+                this.manager.toggleSpringBone(true);
+                console.log('[VRM Animation] SpringBone 已重新启用');
+            }
         }
     }
 
@@ -205,11 +240,11 @@ class VRMAnimation {
         }
 
         originalClip.tracks.forEach((track) => {
-            if (track.name.toLowerCase().includes('expression') || track.name.toLowerCase().includes('blendshape')) return; 
+            if (track.name.toLowerCase().includes('expression') || track.name.toLowerCase().includes('blendshape')) return;
             const lastDotIndex = track.name.lastIndexOf('.');
-            const property = track.name.substring(lastDotIndex + 1); 
+            const property = track.name.substring(lastDotIndex + 1);
             let nodeName = track.name.substring(0, lastDotIndex);
-            
+
             if (property === 'scale') return; // 禁止缩放
 
             const targetEntry = validBoneMap.get(nodeName.toLowerCase());
@@ -220,7 +255,16 @@ class VRMAnimation {
 
                 const newTrack = track.clone();
                 newTrack.name = `${node.name}.${property}`;
+
+                // 【调试】记录映射的骨骼信息
+                if (this.debug && (type.includes('Arm') || type.includes('Hand'))) {
+                    console.log(`[VRM Animation] 映射手臂骨骼: ${nodeName} -> ${type} (${property})`);
+                }
+
                 tracks.push(newTrack);
+            } else if (this.debug && (nodeName.toLowerCase().includes('arm') || nodeName.toLowerCase().includes('hand'))) {
+                // 【调试】记录未映射的手臂相关骨骼
+                console.warn(`[VRM Animation] 未映射的手臂骨骼: ${nodeName} (${property})`);
             }
         });
 
