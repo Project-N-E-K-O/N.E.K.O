@@ -675,31 +675,6 @@
             }
         }
 
-        /* 设置面板相关样式 */
-        .settings-container {
-            margin-top: 15px;
-        }
-
-        #settings-panel {
-            border: 1px solid #ddd;
-            border-radius: 10px;
-            padding: 20px;
-            margin-top: 15px;
-            background-color: #fff;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-            transition: all 0.4s ease;
-            overflow: hidden;
-        }
-
-        #settings-panel h3 {
-            margin-top: 0;
-            color: #333;
-            font-size: 18px;
-            font-weight: 600;
-            margin-bottom: 20px;
-            border-bottom: 1px solid #eee;
-            padding-bottom: 10px;
-        }
 
         .status-published {
             background-color: #2ecc71;
@@ -2100,31 +2075,6 @@
                             <button class="btn btn-primary" onclick="scanLocalItems()" style="min-width: 160px;">
                                 <span data-i18n="steam.scanLocalItems">扫描本地物品</span>
                             </button>
-                            <button class="btn btn-primary" onclick="toggleSettingsPanel()" style="min-width: 180px;">
-                                <span id="settings-toggle-icon">⚙️</span> <span data-i18n="steam.configurePath">配置路径</span>
-                            </button>
-                        </div>
-                    </div>
-                    
-                    <!-- 路径配置区域 - 可折叠 -->
-                    <div class="settings-container">
-                        
-                        <div id="settings-panel" class="config-section" style="display: none;">
-                            <h3 data-i18n="steam.localModPathConfig">本地mod路径配置</h3>
-                            
-                            <div class="control-group">
-                                <div class="control-label" data-i18n="steam.localModFolder">本地mod文件夹路径</div>
-                                <input type="text" id="default-workshop-folder" class="control-input" data-i18n-placeholder="steam.localModFolder" placeholder="本地mod文件夹路径">
-                                <div class="help-text" data-i18n="steam.defaultPathHint">未指定扫描路径时将使用此默认路径</div>
-                                <div class="help-text success" data-i18n="steam.defaultPathExample">提示：默认路径通常在 我的文档/N.E.K.O/live2d</div>
-                            </div>
-                            
-
-                            
-                            <div class="button-group" style="gap: 10px;">
-                                <button class="btn btn-secondary" onclick="loadDefaultConfig()" data-i18n="steam.loadConfig">加载当前配置</button>
-                                <button class="btn btn-success" onclick="saveDefaultConfig()" data-i18n="steam.saveConfig">保存配置</button>
-                            </div>
                         </div>
                     </div>
                     
@@ -2185,7 +2135,6 @@
                             
                             <div class="control-group">
                                 <div class="control-label" data-i18n="steam.characterCardSetting">角色设定</div>
-                                <div style="color: #999; font-size: 12px; " data-i18n="steam.characterCardSettingEnglishOnly"></div>
                                 <textarea id="character-card-setting" class="control-input" style="white-space: pre-wrap; min-height: 100px; cursor: default; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;" readonly></textarea>
 
                             </div>
@@ -2210,15 +2159,14 @@
                                         <div id="voice-select" class="control-input" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; background-color: #f9f9f9; color: #333; cursor: default; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">
                                             未选择音色
                                         </div>
-                                        <div style="color: #888; font-size: 12px; margin-top: 5px;">如有音色文件请一起放入模型目录，文件名请使用数字和英文字母</div>
                                     </div>
                                 </div>
                             </div>
                             
                             <div class="control-group">
                                 <div class="control-label" data-i18n="steam.characterCardTags">角色卡标签</div>
-                                <div id="character-card-tags-wrapper" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px; border: 1px solid #ddd; border-radius: 4px; background-color: #f9f9f9; min-height: 38px; box-sizing: border-box;">
-                                    <div class="tags-container" id="character-card-tags-container" style="min-height: 22px;"></div>
+                                <div id="character-card-tags-wrapper" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px; border: 1px solid #ddd; border-radius: 4px; background-color: #f9f9f9; min-height: 40px; box-sizing: border-box;">
+                                    <div class="tags-container" id="character-card-tags-container"></div>
                                 </div>
                             </div>
                             
@@ -2293,9 +2241,6 @@
                             <div class="save-button-container">
                                 <button class="btn btn-primary" onclick="handleUploadToWorkshop()" style="flex: 1; padding: 12px 0; font-size: 16px;">
                                     🚀 <span data-i18n="steam.uploadToWorkshop">上传到创意工坊</span>
-                                </button>
-                                <button class="btn" style="flex: 1; padding: 12px 0; font-size: 16px; background-color: #e81123; color: white;" onclick="deleteCharacterCardModal()">
-                                    🗑️ 删除角色卡
                                 </button>
                             </div>
                         </div>
@@ -2570,121 +2515,6 @@
                 }
             }
         }
-
-        // 加载默认配置 - 优先使用 live2d_dir 作为默认值
-        function loadDefaultConfig() {
-            showMessage(window.t ? window.t('steam.loadingConfig') : '正在加载配置...', 'info');
-
-            // 先获取系统 live2d_dir 作为默认值
-            Promise.all([
-                fetch('/api/steam/workshop/config').then(r => r.json()),
-                fetch('/api/config/info').then(r => r.json()).catch(() => ({ live2d_dir: '' }))
-            ])
-                .then(([workshopData, configInfo]) => {
-                    if (workshopData.success) {
-                        // 优先使用用户配置的路径，否则使用 live2d_dir
-                        const live2dDir = configInfo.live2d_dir || '';
-                        const defaultFolder = workshopData.config.user_mod_folder ||
-                            workshopData.config.default_workshop_folder ||
-                            live2dDir;
-
-                        document.getElementById('default-workshop-folder').value = defaultFolder;
-
-                        showMessage(window.t ? window.t('steam.configLoadSuccess') : '配置加载成功', 'success');
-                    } else {
-                        showMessage(window.t ? window.t('steam.configLoadFailed', { error: workshopData.error || (window.t ? window.t('common.unknownError') : '未知错误') }) : `配置加载失败: ${workshopData.error || '未知错误'}`, 'error');
-                    }
-                })
-                .catch(error => {
-                    console.error('加载配置时出错:', error);
-                    showMessage(window.t ? window.t('steam.configLoadError', { error: error.message }) : `配置加载错误: ${error.message}`, 'error');
-                });
-        }
-
-        // 保存默认配置
-        function saveDefaultConfig() {
-            const defaultFolder = document.getElementById('default-workshop-folder').value.trim();
-
-            // 验证默认文件夹路径格式（如果提供了）
-            if (defaultFolder && defaultFolder.length < 3) {
-                showMessage(window.t ? window.t('steam.invalidFolderPath') : '无效的文件夹路径', 'error');
-                return;
-            }
-
-            showMessage(window.t ? window.t('steam.savingConfig') : '正在保存配置...', 'info');
-
-            fetch('/api/steam/workshop/config', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    user_mod_folder: defaultFolder
-                })
-            })
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error(`HTTP error! status: ${response.status}`);
-                    }
-                    return response.json();
-                })
-                .then(data => {
-                    if (data.success) {
-                        showMessage(window.t ? window.t('steam.configSaveSuccess') : '配置保存成功', 'success');
-                    } else {
-                        showMessage(window.t ? window.t('steam.configSaveFailed', { error: data.error || (window.t ? window.t('common.unknownError') : '未知错误') }) : `配置保存失败: ${data.error || '未知错误'}`, 'error');
-                    }
-                })
-                .catch(error => {
-                    console.error('保存配置时出错:', error);
-                    showMessage(window.t ? window.t('steam.configSaveError', { error: error.message }) : `配置保存错误: ${error.message}`, 'error');
-                });
-        }
-
-        // 切换设置面板的显示/隐藏
-        function toggleSettingsPanel() {
-            const panel = document.getElementById('settings-panel');
-            const icon = document.getElementById('settings-toggle-icon');
-            // 使用icon的父元素作为toggleButton，因为按钮的类已经更改
-            const toggleButton = icon.parentElement;
-
-            if (panel.style.display === 'none') {
-                // 显示面板，添加简单动画效果
-                panel.style.display = 'block';
-                // 更新翻译，确保新显示的元素都能正确翻译
-                if (window.updatePageTexts) {
-                    window.updatePageTexts();
-                }
-                panel.style.opacity = '0';
-                panel.style.transition = 'opacity 0.3s ease-in-out';
-
-                // 强制重绘
-                void panel.offsetWidth;
-
-                // 设置透明度为1，触发过渡动画
-                panel.style.opacity = '1';
-
-                // 更新按钮文字和图标
-                icon.textContent = '▼';
-                toggleButton.classList.remove('btn-secondary');
-                toggleButton.classList.add('btn-primary');
-            } else {
-                // 隐藏面板，添加简单动画效果
-                panel.style.opacity = '0';
-                panel.style.transition = 'opacity 0.3s ease-in-out';
-
-                // 动画结束后隐藏
-                setTimeout(() => {
-                    panel.style.display = 'none';
-                }, 300);
-
-                // 更新按钮文字和图标
-                icon.textContent = '⚙️';
-                toggleButton.classList.remove('btn-primary');
-                toggleButton.classList.add('btn-secondary');
-            }
-        }
-
 
 
         // 扫描本地物品 - 现在仅使用默认路径
@@ -4205,65 +4035,6 @@ function viewItemDetails(itemId) {
                         }
                         showMessage(statusMessage, 'success');
                         
-                        // 获取并删除与该物品相关的角色卡
-                        async function deleteRelatedCharacterCards() {
-                            try {
-                                // 首先获取所有已添加的角色卡
-                                const cardsResponse = await fetch('/api/characters/');
-                                if (!cardsResponse.ok) throw new Error('获取角色卡列表失败');
-                                
-                                const cards = await cardsResponse.json();
-                                let hasDeletionFailed = false;
-                                
-                                // 查找与当前物品名称相关的角色卡
-                                for (const cardName in cards.猫娘 || {}) {
-                                    const card = cards.猫娘[cardName];
-                                    // 检查角色卡名称是否包含物品名称
-                                    if (cardName.includes(itemName) || (card.名称 && card.名称.includes(itemName))) {
-                                        // 删除相关角色卡
-                                        const deleteUrl = `/api/characters/catgirl/${encodeURIComponent(cardName)}`;
-                                        const deleteResponse = await fetch(deleteUrl, {
-                                            method: 'DELETE',
-                                            headers: {
-                                                'Content-Type': 'application/json'
-                                            }
-                                        });
-                                        
-                                        if (deleteResponse.ok) {
-                                            console.log(`成功删除角色卡: ${cardName}`);
-                                        } else {
-                                            const deleteData = await deleteResponse.json();
-                                            console.error(`删除角色卡失败: ${cardName}, 错误: ${deleteData.error}`);
-                                            
-                                            // 检查是否是"当前正在使用的猫娘"错误
-                                            if (deleteData.error && deleteData.error.includes('当前正在使用的猫娘')) {
-                                                hasDeletionFailed = true;
-                                                showMessage(`无法删除角色卡 "${cardName}": ${deleteData.error}`, 'warning');
-                                            } else {
-                                                // 其他错误类型
-                                                showMessage(`删除角色卡 "${cardName}" 失败: ${deleteData.error || '未知错误'}`, 'error');
-                                            }
-                                        }
-                                    }
-                                }
-                                
-                                if (hasDeletionFailed) {
-                                    showMessage('部分角色卡删除失败，可能是因为它们正在被使用中', 'warning');
-                                }
-                            } catch (error) {
-                                console.error('处理角色卡删除时出错:', error);
-                                showMessage('删除角色卡时发生错误: ' + error.message, 'error');
-                            }
-                        }
-                        
-                        // 调用删除相关角色卡的函数
-                        deleteRelatedCharacterCards().then(() => {
-                            // 删除完成后重新加载角色卡列表
-                            setTimeout(() => {
-                                loadCharacterCards();
-                            }, 500);
-                        });
-                        
                         // 立即重新加载订阅列表
                         loadSubscriptions();
                         
@@ -4862,7 +4633,6 @@ function viewItemDetails(itemId) {
             showMessage('角色卡已加载', 'info');
         }
         
-        // 删除角色卡
         function handleUploadToWorkshop() {
             console.log('handleUploadToWorkshop函数被调用');
             // 收集角色卡参数
@@ -5004,11 +4774,34 @@ function viewItemDetails(itemId) {
                     }
                     if (contentFolder) contentFolder.value = result.modelFolderPath;
                     
-                    // 添加角色卡标签到上传标签
+                    // 添加角色卡标签到上传标签（只读模式，不提供编辑功能）
                     if (tagsContainer) {
                         tagsContainer.innerHTML = '';
                         characterCardTags.forEach(tag => {
-                            addTag(tag);
+                            // 创建只读标签（不包含删除按钮）
+                            const tagElement = document.createElement('div');
+                            tagElement.className = 'tag';
+                            tagElement.textContent = tag;
+                            tagsContainer.appendChild(tagElement);
+                        });
+                        
+                        // 禁用标签输入框，使其不可编辑
+                        const tagInput = document.getElementById('item-tags');
+                        if (tagInput) {
+                            tagInput.disabled = true;
+                            tagInput.style.opacity = '0.7';
+                            tagInput.style.cursor = 'not-allowed';
+                            tagInput.style.backgroundColor = '#f9f9f9';
+                            tagInput.placeholder = '标签已从角色卡自动填充，不可编辑';
+                        }
+                        
+                        // 移除所有标签的删除按钮（如果之前有添加）
+                        const allTags = tagsContainer.querySelectorAll('.tag');
+                        allTags.forEach(tagEl => {
+                            const removeBtn = tagEl.querySelector('.tag-remove');
+                            if (removeBtn) {
+                                removeBtn.remove();
+                            }
                         });
                     }
                     
@@ -5031,76 +4824,6 @@ function viewItemDetails(itemId) {
             });
         }
 
-        function deleteCharacterCard(cardId) {
-            // 使用自定义确认模态框替换默认的confirm
-            showConfirmModal('确定要删除这个角色卡吗？', () => {
-                console.log('正在删除角色卡，ID:', cardId);
-                
-                // 根据cardId找到对应的角色卡数据
-                const card = globalCharacterCards.find(c => c.id === cardId);
-                if (!card) {
-                    showMessage('未找到角色卡数据', 'error');
-                    return;
-                }
-                
-                // 检查是否有原始键名
-                if (!card.originalName) {
-                    showMessage('角色卡数据不完整，无法删除', 'error');
-                    return;
-                }
-                
-                showMessage('正在删除角色卡...', 'info');
-                
-                // 构建删除API的URL
-                const deleteUrl = `/api/characters/catgirl/${encodeURIComponent(card.originalName)}`;
-                
-                // 调用API删除角色卡
-                fetch(deleteUrl, {
-                    method: 'DELETE',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    }
-                })
-                .then(response => {
-                    if (!response.ok) {
-                        // 处理400和404错误
-                        return response.json().then(data => {
-                            throw new Error(data.error || `HTTP错误，状态码: ${response.status}`);
-                        });
-                    }
-                    return response.json();
-                })
-                .then(async result => {
-                    console.log('角色卡删除成功:', result);
-                    showMessage('角色卡已删除', 'success');
-                    
-                    // 删除后刷新列表（等待刷新完成）
-                    await loadCharacterCards();
-                    
-                    // 重置当前编辑状态，跳过确认对话框
-                    clearCharacterCardForm(true);
-                    
-                    // 刷新页面
-                    setTimeout(() => {
-                        window.location.reload();
-                    }, 1000);
-                })
-                .catch(error => {
-                    console.error('删除角色卡失败:', error);
-                    showMessage(`删除角色卡失败: ${error.message}`, 'error');
-                });
-            });
-        }
-        
-        // 从模态框中删除角色卡
-        function deleteCharacterCardModal() {
-            if (currentCharacterCardId) {
-                deleteCharacterCard(currentCharacterCardId);
-            } else {
-                showMessage('未选择要删除的角色卡', 'error');
-            }
-        }
-        
         // 从模态框中编辑角色卡
         function editCharacterCardModal() {
             if (currentCharacterCardId) {
@@ -6156,6 +5879,30 @@ function viewItemDetails(itemId) {
             // 隐藏Canvas，显示占位符
             document.getElementById('live2d-preview-canvas').style.display = 'none';
             document.querySelector('.preview-placeholder').style.display = 'flex';
+            
+            // 清空动作和表情相关选项及按钮
+            const motionSelect = document.getElementById('preview-motion-select');
+            const expressionSelect = document.getElementById('preview-expression-select');
+            const playMotionBtn = document.getElementById('preview-play-motion-btn');
+            const playExpressionBtn = document.getElementById('preview-play-expression-btn');
+            
+            if (motionSelect) {
+                motionSelect.innerHTML = '<option value="">选择动作</option>';
+                motionSelect.disabled = true;
+            }
+            
+            if (expressionSelect) {
+                expressionSelect.innerHTML = '<option value="">选择表情</option>';
+                expressionSelect.disabled = true;
+            }
+            
+            if (playMotionBtn) {
+                playMotionBtn.disabled = true;
+            }
+            
+            if (playExpressionBtn) {
+                playExpressionBtn.disabled = true;
+            }
         }
         
         // 添加标签（角色卡用）
