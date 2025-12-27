@@ -13,13 +13,19 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from queue import Empty
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from fastapi import FastAPI
 
 from plugin.api.exceptions import PluginEntryNotFoundError, PluginError
 from plugin.core.state import state
 from plugin.settings import EVENT_META_ATTR
+
+if TYPE_CHECKING:
+    from plugin.sdk.bus.events import EventClient
+    from plugin.sdk.bus.lifecycle import LifecycleClient
+    from plugin.sdk.bus.memory import MemoryClient
+    from plugin.sdk.bus.messages import MessageClient
 
 
 _IN_HANDLER: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_in_handler", default=None)
@@ -28,13 +34,13 @@ _IN_HANDLER: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plu
 class _BusHub:
     def __init__(self, ctx: "PluginContext"):
         self._ctx = ctx
-        self._memory: Optional[Any] = None
-        self._messages: Optional[Any] = None
-        self._events: Optional[Any] = None
-        self._lifecycle: Optional[Any] = None
+        self._memory: Optional["MemoryClient"] = None
+        self._messages: Optional["MessageClient"] = None
+        self._events: Optional["EventClient"] = None
+        self._lifecycle: Optional["LifecycleClient"] = None
 
     @property
-    def memory(self) -> Any:
+    def memory(self) -> "MemoryClient":
         if self._memory is None:
             from plugin.sdk.bus.memory import MemoryClient
 
@@ -42,7 +48,7 @@ class _BusHub:
         return self._memory
 
     @property
-    def messages(self) -> Any:
+    def messages(self) -> "MessageClient":
         if self._messages is None:
             from plugin.sdk.bus.messages import MessageClient
 
@@ -50,7 +56,7 @@ class _BusHub:
         return self._messages
 
     @property
-    def events(self) -> Any:
+    def events(self) -> "EventClient":
         if self._events is None:
             from plugin.sdk.bus.events import EventClient
 
@@ -58,7 +64,7 @@ class _BusHub:
         return self._events
 
     @property
-    def lifecycle(self) -> Any:
+    def lifecycle(self) -> "LifecycleClient":
         if self._lifecycle is None:
             from plugin.sdk.bus.lifecycle import LifecycleClient
 

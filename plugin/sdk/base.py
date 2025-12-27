@@ -5,7 +5,7 @@
 """
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import TYPE_CHECKING, Optional, Dict, Any, List
 from .events import EventHandler, EventMeta, EVENT_META_ATTR
 from .config import PluginConfig
 from .plugins import Plugins
@@ -18,6 +18,9 @@ from plugin.settings import (
     PLUGIN_LOG_BACKUP_COUNT,
     PLUGIN_LOG_MAX_FILES,
 )
+
+if TYPE_CHECKING:
+    from plugin.core.context import PluginContext
 
 
 @dataclass
@@ -37,8 +40,8 @@ class PluginMeta:
 class NekoPluginBase:
     """插件都继承这个基类."""
     
-    def __init__(self, ctx: Any):
-        self.ctx = ctx
+    def __init__(self, ctx: "PluginContext"):
+        self.ctx: "PluginContext" = ctx
         self._plugin_id = getattr(ctx, "plugin_id", "unknown")
         self.config = PluginConfig(ctx)
         self.plugins = Plugins(ctx)

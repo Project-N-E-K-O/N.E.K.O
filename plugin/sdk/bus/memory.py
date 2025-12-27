@@ -3,9 +3,12 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Sequence
+from typing import TYPE_CHECKING, Any, Dict, List, Sequence
 
 from plugin.core.state import state
+
+if TYPE_CHECKING:
+    from plugin.core.context import PluginContext
 
 from .types import BusList, BusRecord
 
@@ -87,7 +90,7 @@ class MemoryList(BusList[MemoryRecord]):
 
 @dataclass
 class MemoryClient:
-    ctx: Any
+    ctx: "PluginContext"
 
     def get(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> MemoryList:
         if hasattr(self.ctx, "_enforce_sync_call_policy"):

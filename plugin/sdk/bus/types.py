@@ -4,7 +4,29 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import re
 import time
-from typing import Any, Callable, Dict, Generic, Iterator, List, Optional, Sequence, Tuple, TypeVar, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Generic,
+    Final,
+    Literal,
+    Iterable,
+    List,
+    Optional,
+    Protocol,
+    Sequence,
+    Tuple,
+    TypeVar,
+    TYPE_CHECKING,
+    Union,
+)
+
+if TYPE_CHECKING:
+    from plugin.sdk.bus.events import EventList
+    from plugin.sdk.bus.lifecycle import LifecycleList
+    from plugin.sdk.bus.memory import MemoryList
+    from plugin.sdk.bus.messages import MessageList
 
 _WATCHER_REGISTRY: Dict[str, "BusListWatcher[Any]"] = {}
 _WATCHER_REGISTRY_LOCK = None
@@ -34,6 +56,57 @@ def dispatch_bus_change(*, sub_id: str, bus: str, op: str, delta: Optional[Dict[
 
 
 TRecord = TypeVar("TRecord", bound="BusRecord")
+BusChangeOp = Literal["add", "del", "change"]
+DedupeKey = Tuple[str, Any]
+
+
+class BusChange:
+    ADD: Final[BusChangeOp] = "add"
+    DEL: Final[BusChangeOp] = "del"
+    CHANGE: Final[BusChangeOp] = "change"
+
+
+class _MessageClientProto(Protocol):
+    def get(
+        self,
+        plugin_id: Optional[str] = None,
+        max_count: int = 50,
+        priority_min: Optional[int] = None,
+        timeout: float = 5.0,
+    ) -> "MessageList": ...
+
+
+class _EventClientProto(Protocol):
+    def get(
+        self,
+        plugin_id: Optional[str] = None,
+        max_count: int = 50,
+        timeout: float = 5.0,
+    ) -> "EventList": ...
+
+
+class _LifecycleClientProto(Protocol):
+    def get(
+        self,
+        plugin_id: Optional[str] = None,
+        max_count: int = 50,
+        timeout: float = 5.0,
+    ) -> "LifecycleList": ...
+
+
+class _MemoryClientProto(Protocol):
+    def get(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> "MemoryList": ...
+
+
+class BusHubProtocol(Protocol):
+    messages: _MessageClientProto
+    events: _EventClientProto
+    lifecycle: _LifecycleClientProto
+    memory: _MemoryClientProto
+
+
+class BusReplayContext(Protocol):
+    bus: BusHubProtocol
 
 
 def parse_iso_timestamp(value: Any) -> Optional[float]:
@@ -755,7 +828,7 @@ class BusList(Generic[TRecord]):
         plan = self._add_plan_unary("limit", {"n": nn})
         return self._construct(self._items[:nn], trace, plan)
 
-    def _replay_plan(self, ctx: Any, plan: TraceNode) -> "BusList[TRecord]":
+    def _replay_plan(self, ctx: BusReplayContext, plan: TraceNode) -> "BusList[TRecord]":
         if isinstance(plan, GetNode):
             bus = str(plan.params.get("bus") or "").strip()
             params = dict(plan.params.get("params") or {})
@@ -836,10 +909,10 @@ class BusList(Generic[TRecord]):
 
         raise NonReplayableTraceError(f"Unknown plan node type: {type(plan).__name__}")
 
-    def reload(self, ctx: Any) -> "BusList[TRecord]":
+    def reload(self, ctx: BusReplayContext) -> "BusList[TRecord]":
         return self.reload_with(ctx)
 
-    def reload_with(self, ctx: Any, *, inplace: bool = False) -> "BusList[TRecord]":
+    def reload_with(self, ctx: BusReplayContext, *, inplace: bool = False) -> "BusList[TRecord]":
         if self._plan is None:
             raise NonReplayableTraceError("reload is unavailable when fast_mode=True or plan is missing")
 
@@ -864,20 +937,20 @@ class BusList(Generic[TRecord]):
 
         return self
 
-    def watch(self, ctx: Any, *, bus: Optional[str] = None) -> "BusListWatcher[TRecord]":
+    def watch(self, ctx: BusReplayContext, *, bus: Optional[str] = None) -> "BusListWatcher[TRecord]":
         return BusListWatcher(self, ctx, bus=bus)
 
 
 @dataclass(frozen=True)
 class BusListDelta(Generic[TRecord]):
-    kind: str
+    kind: BusChangeOp
     added: Tuple[TRecord, ...]
-    removed: Tuple[Any, ...]
+    removed: Tuple[DedupeKey, ...]
     current: BusList[TRecord]
 
 
 class BusListWatcher(Generic[TRecord]):
-    def __init__(self, lst: BusList[TRecord], ctx: Any, *, bus: Optional[str] = None):
+    def __init__(self, lst: BusList[TRecord], ctx: BusReplayContext, *, bus: Optional[str] = None):
         self._list = lst
         self._ctx = ctx
 
@@ -896,10 +969,10 @@ class BusListWatcher(Generic[TRecord]):
         except Exception:
             self._lock = None
 
-        self._callbacks: List[Tuple[Callable[[BusListDelta[TRecord]], None], Tuple[str, ...]]] = []
+        self._callbacks: List[Tuple[Callable[[BusListDelta[TRecord]], None], Tuple[BusChangeOp, ...]]] = []
         self._unsub: Optional[Callable[[], None]] = None
         self._sub_id: Optional[str] = None
-        self._last_keys: set[Tuple[str, Any]] = {self._list._dedupe_key(x) for x in self._list.dump_records()}
+        self._last_keys: set[DedupeKey] = {self._list._dedupe_key(x) for x in self._list.dump_records()}
 
     def _infer_bus(self, plan: TraceNode) -> str:
         if isinstance(plan, GetNode):
@@ -911,11 +984,15 @@ class BusListWatcher(Generic[TRecord]):
             return self._infer_bus(plan.left)
         return ""
 
-    def subscribe(self, *, on: Union[str, Sequence[str]] = ("add",)) -> Callable[[Callable[[BusListDelta[TRecord]], None]], Callable[[BusListDelta[TRecord]], None]]:
+    def subscribe(
+        self,
+        *,
+        on: Union[BusChangeOp, Sequence[BusChangeOp]] = ("add",),
+    ) -> Callable[[Callable[[BusListDelta[TRecord]], None]], Callable[[BusListDelta[TRecord]], None]]:
         if isinstance(on, str):
-            rules = (on,)
+            rules: Tuple[BusChangeOp, ...] = (on,)
         else:
-            rules = tuple(str(x) for x in on)
+            rules = tuple(on)
 
         def _decorator(fn: Callable[[BusListDelta[TRecord]], None]) -> Callable[[BusListDelta[TRecord]], None]:
             if self._lock is not None:
@@ -1011,7 +1088,7 @@ class BusListWatcher(Generic[TRecord]):
     def _tick(self, op: str) -> None:
         refreshed = self._list.reload(self._ctx)
         new_items = refreshed.dump_records()
-        new_keys = {self._list._dedupe_key(x) for x in new_items}
+        new_keys: set[DedupeKey] = {self._list._dedupe_key(x) for x in new_items}
 
         added_items: List[TRecord] = []
         for x in new_items:
@@ -1019,9 +1096,9 @@ class BusListWatcher(Generic[TRecord]):
             if k not in self._last_keys:
                 added_items.append(x)
 
-        removed_keys = tuple(k for k in self._last_keys if k not in new_keys)
+        removed_keys: Tuple[DedupeKey, ...] = tuple(k for k in self._last_keys if k not in new_keys)
 
-        fired: List[str] = []
+        fired: List[BusChangeOp] = []
         if added_items:
             fired.append("add")
         if removed_keys:
@@ -1034,7 +1111,8 @@ class BusListWatcher(Generic[TRecord]):
             self._list = refreshed
             return
 
-        delta = BusListDelta(kind=op, added=tuple(added_items), removed=removed_keys, current=refreshed)
+        kind: BusChangeOp = op if op in ("add", "del", "change") else "change"
+        delta = BusListDelta(kind=kind, added=tuple(added_items), removed=removed_keys, current=refreshed)
 
         if self._lock is not None:
             with self._lock:
@@ -1054,8 +1132,8 @@ class BusListWatcher(Generic[TRecord]):
 
 
 def list_Subscription(
-    watcher: BusListWatcher[Any],
+    watcher: BusListWatcher[TRecord],
     *,
-    on: Union[str, Sequence[str]] = ("add",),
-) -> Callable[[Callable[[BusListDelta[Any]], None]], Callable[[BusListDelta[Any]], None]]:
+    on: Union[BusChangeOp, Sequence[BusChangeOp]] = ("add",),
+) -> Callable[[Callable[[BusListDelta[TRecord]], None]], Callable[[BusListDelta[TRecord]], None]]:
     return watcher.subscribe(on=on)

@@ -3,12 +3,13 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 
 from plugin.core.state import state
-
 from .types import BusList, BusOp, BusRecord, GetNode, parse_iso_timestamp
 
+if TYPE_CHECKING:
+    from plugin.core.context import PluginContext
 
 @dataclass(frozen=True)
 class EventRecord(BusRecord):
@@ -112,7 +113,7 @@ class EventList(BusList[EventRecord]):
 
 @dataclass
 class EventClient:
-    ctx: Any
+    ctx: "PluginContext"
 
     def get(
         self,
