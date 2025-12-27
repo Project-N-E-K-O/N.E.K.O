@@ -1,471 +1,150 @@
 /**
- * VRM Manager - 主管理器类，整合所有模块
- * 注意：此文件依赖于以下模块文件（需要按顺序加载）：
- * - vrm-core.js
- * - vrm-expression.js
- * - vrm-animation.js
- * - vrm-interaction.js
+ * VRM Manager - 智能修正版
+ * 修复了模块加载顺序不同步导致“有动画但不播放”的问题
  */
-
 class VRMManager {
     constructor() {
-        console.log('[VRM Manager] 开始初始化VRMManager...');
-
+        console.log('[VRM Manager] 初始化...');
+        
         // 核心属性
         this.scene = null;
         this.camera = null;
         this.renderer = null;
         this.currentModel = null;
         this.animationMixer = null;
-        this.clock = null;
-        this.container = null;
-        this.canvas = null;
-        this.controls = null;
-        this.isLocked = false; // 锁定状态，锁定时不响应拖拽和缩放
-        this._isInitialized = false; // 标记是否已初始化Three.js场景
-        this._animationFrameId = null; // 动画循环ID
-
-        console.log('[VRM Manager] 检查依赖模块...');
-
-        // 检查依赖的模块类是否已加载（如果未加载，给出警告但不抛出错误，避免影响Live2D）
-        if (typeof window.VRMCore === 'undefined') {
-            console.warn('[VRM Manager] VRMCore 未加载，请确保已加载 vrm-core.js');
-            // 不抛出错误，避免影响Live2D加载
-        } else {
-            console.log('[VRM Manager] VRMCore 已加载');
-        }
-        if (typeof window.VRMExpression === 'undefined') {
-            console.warn('VRMExpression 未加载，请确保已加载 vrm-expression.js');
-        }
-        if (typeof window.VRMAnimation === 'undefined') {
-            console.warn('VRMAnimation 未加载，请确保已加载 vrm-animation.js');
-        }
-        if (typeof window.VRMInteraction === 'undefined') {
-            console.warn('VRMInteraction 未加载，请确保已加载 vrm-interaction.js');
-        }
         
-        // 初始化模块（只有在模块类存在时才初始化）
-        if (typeof window.VRMCore !== 'undefined') {
+        // 时钟 (Three.js 可能还未加载，延后初始化)
+        this.clock = (typeof window.THREE !== 'undefined') ? new window.THREE.Clock() : null;
+        
+        this.container = null;
+        this._animationFrameId = null;
+        
+        // 初始尝试加载模块
+        this._initModules();
+    }
+
+    /**
+     * 初始化或重新扫描模块 (关键修复)
+     * 每次加载模型前都会检查一遍，防止因为加载顺序导致模块丢失
+     */
+    _initModules() {
+        // 1. 核心 Core
+        if (!this.core && typeof window.VRMCore !== 'undefined') {
             this.core = new window.VRMCore(this);
         }
-        if (typeof window.VRMExpression !== 'undefined') {
+        
+        // 2. 表情 Expression
+        if (!this.expression && typeof window.VRMExpression !== 'undefined') {
             this.expression = new window.VRMExpression(this);
         }
-        if (typeof window.VRMAnimation !== 'undefined') {
+        
+        // 3. 动画 Animation (这是之前丢失的!)
+        if (!this.animation && typeof window.VRMAnimation !== 'undefined') {
             this.animation = new window.VRMAnimation(this);
+            console.log('[VRM Manager] 成功连接 VRMAnimation 模块');
         }
-        if (typeof window.VRMInteraction !== 'undefined') {
+        
+        // 4. 交互 Interaction
+        if (!this.interaction && typeof window.VRMInteraction !== 'undefined') {
             this.interaction = new window.VRMInteraction(this);
         }
     }
 
-    /**
-     * 初始化Three.js场景
-     */
     async initThreeJS(canvasId, containerId) {
-        // 如果已经初始化过，跳过重复初始化
-        if (this._isInitialized && this.scene && this.camera && this.renderer) {
-            console.log('[VRM Manager] Three.js场景已初始化，跳过重复初始化');
-            return true;
-        }
-
-        // 确保core已初始化
-        if (!this.core) {
-            if (typeof window.VRMCore === 'undefined') {
-                throw new Error('VRMCore 未加载，请刷新页面重试');
-            }
-            // 初始化core
-            this.core = new window.VRMCore(this);
-        }
+        if (this.scene) return true;
+        
+        // 确保 Clock 存在
+        if (!this.clock && window.THREE) this.clock = new window.THREE.Clock();
+        
+        // 再次检查模块，以防万一
+        this._initModules();
+        if (!this.core) throw new Error("VRMCore 尚未加载，无法初始化 ThreeJS");
 
         await this.core.init(canvasId, containerId);
-        if (this.interaction) {
-            this.interaction.initDragAndZoom();
-        }
         
-        // 只有在没有运行动画循环时才启动
-        if (!this._animationFrameId) {
-            this.animate();
-        }
+        if (this.interaction) this.interaction.initDragAndZoom();
         
-        this._isInitialized = true;
-        console.log('Three.js场景初始化完成');
+        this.startAnimateLoop();
         return true;
     }
 
-    /**
-     * 处理窗口大小变化
-     */
-    onWindowResize() {
-        if (!this.container || !this.camera || !this.renderer) return;
-
-        const width = this.container.clientWidth;
-        const height = this.container.clientHeight;
-
-        this.camera.aspect = width / height;
-        this.camera.updateProjectionMatrix();
-        this.renderer.setSize(width, height);
-        
-        const pixelRatio = Math.min(window.devicePixelRatio, 2);
-        this.renderer.setPixelRatio(pixelRatio);
-    }
-
-    /**
-     * 渲染循环
-     */
-    animate() {
-        // 如果已经被dispose，停止循环
-        if (!this.renderer || !this.scene || !this.camera) {
-            this._animationFrameId = null;
-            return;
-        }
-
-        // 如果已经有动画循环在运行，不启动新的循环
-        if (this._animationFrameId !== null) {
-            return;
-        }
+    startAnimateLoop() {
+        if (this._animationFrameId) cancelAnimationFrame(this._animationFrameId);
 
         const animateLoop = () => {
-            // 如果已经被dispose，停止循环
-            if (!this.renderer || !this.scene || !this.camera) {
-                this._animationFrameId = null;
-                return;
-            }
+            if (!this.renderer) return;
 
             this._animationFrameId = requestAnimationFrame(animateLoop);
 
             const delta = this.clock ? this.clock.getDelta() : 0.016;
 
-            // 更新控制器
-            if (this.controls) {
-                this.controls.update();
+            // 1. 再次尝试获取动画模块 (防止 constructor 阶段丢失)
+            if (!this.animation && typeof window.VRMAnimation !== 'undefined') {
+                this.animation = new window.VRMAnimation(this);
             }
 
-            // 更新动画模块
+            // 2. 驱动动画 (核心驱动力)
             if (this.animation) {
                 this.animation.update(delta);
             }
 
-            // 更新VRM模型
+            // 3. 驱动物理 (头发/裙子)
             if (this.currentModel && this.currentModel.vrm) {
                 this.currentModel.vrm.update(delta);
             }
+            
+            // 4. 驱动控制器
+            if (this.controls) this.controls.update();
 
-            // 更新浮动按钮位置（如果按钮已显示）
-            if (this.interaction && typeof this.interaction.updateFloatingButtonsPosition === 'function') {
-                const buttonsContainer = document.getElementById('live2d-floating-buttons');
-                if (buttonsContainer && buttonsContainer.style.display === 'flex') {
-                    this.interaction.updateFloatingButtonsPosition();
-                }
-            }
-
-            // 渲染场景
-            if (this.renderer && this.scene && this.camera) {
-                this.renderer.render(this.scene, this.camera);
-            }
+            // 5. 渲染
+            this.renderer.render(this.scene, this.camera);
         };
 
-        // 启动动画循环
         this._animationFrameId = requestAnimationFrame(animateLoop);
     }
 
     /**
-     * 加载VRM模型
+     * 加载模型
      */
     async loadModel(modelUrl, options = {}) {
-        // 确保core已初始化
-        if (!this.core) {
-            if (typeof window.VRMCore === 'undefined') {
-                throw new Error('VRMCore 未加载，请刷新页面重试');
-            }
-            // 初始化core
-            this.core = new window.VRMCore(this);
-            console.log('[VRM Manager] 延迟初始化 VRMCore');
-        }
-        return await this.core.loadModel(modelUrl, options);
-    }
+        // 【关键】加载模型前，必须确保所有模块都已连接
+        this._initModules();
 
-    /**
-     * 移除当前模型
-     */
-    removeModel() {
-        if (this.currentModel && this.currentModel.scene) {
-            this.scene.remove(this.currentModel.scene);
-            
-            this.currentModel.scene.traverse((object) => {
-                if (object.geometry) object.geometry.dispose();
-                if (object.material) {
-                    if (Array.isArray(object.material)) {
-                        object.material.forEach(material => material.dispose());
-                    } else {
-                        object.material.dispose();
-                    }
-                }
-            });
-
-            this.currentModel = null;
-        }
-
-        if (this.animationMixer) {
-            this.animationMixer = null;
-        }
+        if (!this.core) this.core = new window.VRMCore(this);
         
-        // 清理动画模块
-        if (this.animation) {
-            this.animation.stopVRMAAnimation();
-            this.animation.stopLipSync();
-        }
-    }
-
-    /**
-     * 获取当前模型
-     */
-    getCurrentModel() {
-        return this.currentModel;
-    }
-
-    /**
-     * 清理所有资源
-     */
-    dispose() {
-        // 停止动画循环
-        if (this._animationFrameId) {
-            cancelAnimationFrame(this._animationFrameId);
-            this._animationFrameId = null;
-        }
-
-        // 重置初始化标志
-        this._isInitialized = false;
-
-        // 移除当前模型
-        this.removeModel();
-
-        // 清理动画模块
-        if (this.animation && typeof this.animation.dispose === 'function') {
-            this.animation.dispose();
-        }
-
-        // 清理交互模块
-        if (this.interaction && typeof this.interaction.dispose === 'function') {
-            this.interaction.dispose();
-        }
-
-        // 清理Three.js资源
-        if (this.scene) {
-            // 清理场景中的所有对象
-            while (this.scene.children.length > 0) {
-                const object = this.scene.children[0];
-                this.scene.remove(object);
-                
-                if (object.geometry) object.geometry.dispose();
-                if (object.material) {
-                    if (Array.isArray(object.material)) {
-                        object.material.forEach(material => material.dispose());
-                    } else {
-                        object.material.dispose();
-                    }
-                }
-            }
-            this.scene = null;
-        }
-
-        // 清理渲染器
-        if (this.renderer) {
-            this.renderer.dispose();
-            this.renderer = null;
-        }
-
-        // 清理控制器
-        if (this.controls && typeof this.controls.dispose === 'function') {
-            this.controls.dispose();
-            this.controls = null;
-        }
-
-        // 清理其他资源
-        this.camera = null;
-        this.clock = null;
-        this.animationMixer = null;
-        this.container = null;
-        this.canvas = null;
-    }
-
-    /**
-     * 设置模型位置
-     */
-    setModelPosition(x, y, z) {
-        if (this.currentModel && this.currentModel.scene) {
-            this.currentModel.scene.position.set(x, y, z);
-        }
-    }
-
-    /**
-     * 设置模型缩放
-     */
-    setModelScale(x, y, z) {
-        if (this.currentModel && this.currentModel.scene) {
-            this.currentModel.scene.scale.set(x, y, z);
-        }
-    }
-
-    /**
-     * 设置相机位置
-     */
-    setCameraPosition(x, y, z) {
-        if (this.camera) {
-            this.camera.position.set(x, y, z);
-            this.camera.lookAt(0, 1, 0);
-        }
-    }
-
-    /**
-     * 加载并播放VRM动画（VRMA文件）
-     * 兼容旧接口
-     */
-    async loadAndPlayAnimation(animationUrl, options = {}) {
-        // 确保animation已初始化
-        if (!this.animation) {
-            if (typeof window.VRMAnimation === 'undefined') {
-                throw new Error('VRMAnimation 未加载，请刷新页面重试');
-            }
-            // 初始化animation
-            this.animation = new window.VRMAnimation(this);
-            console.log('[VRM Manager] 延迟初始化 VRMAnimation');
-        }
-        return await this.animation.playVRMAAnimation(animationUrl, options);
-    }
-
-    /**
-     * 停止当前动画
-     * 兼容旧接口
-     */
-    stopAnimation() {
+        const result = await this.core.loadModel(modelUrl, options);
+        
+        // 强制停止之前的动画 (保持 T-Pose)
         if (this.animation) {
             this.animation.stopVRMAAnimation();
         }
+
+        // 确保循环开启
+        if (!this._animationFrameId) this.startAnimateLoop();
+        
+        console.log('[VRM Manager] 模型已加载 (T-Pose)');
+        return result;
     }
 
-    /**
-     * 暂停/恢复当前动画
-     * 兼容旧接口
-     */
-    pauseAnimation() {
+    // --- 代理方法 ---
+    async playVRMAAnimation(url, opts) {
+        // 播放前最后一次检查模块
+        if (!this.animation) this._initModules();
         if (this.animation) {
-            this.animation.pauseVRMAAnimation();
+            return this.animation.playVRMAAnimation(url, opts);
+        } else {
+            console.error('[VRM Manager] 无法播放：VRMAnimation 模块依然未加载');
         }
     }
 
-    /**
-     * 检查动画是否正在播放
-     */
-    isAnimationPlaying() {
-        return this.animation && this.animation.vrmaAction && 
-               this.animation.vrmaAction.isRunning() && 
-               !this.animation.vrmaAction.paused;
-    }
-
-    /**
-     * 获取当前动画信息
-     */
-    getAnimationInfo() {
-        if (!this.animation || !this.animation.vrmaAction) {
-            return null;
-        }
-
-        const clip = this.animation.vrmaAction.getClip();
-        return {
-            isPlaying: this.isAnimationPlaying(),
-            time: this.animation.vrmaAction.time,
-            duration: clip ? clip.duration : 0,
-            weight: this.animation.vrmaAction.getEffectiveWeight(),
-            loop: this.animation.vrmaAction.loop,
-            timeScale: this.animation.vrmaAction.timeScale,
-            paused: this.animation.vrmaAction.paused
-        };
-    }
-
-    /**
-     * 设置表情（委托给expression模块）
-     */
-    setExpression(expressionName, weight) {
-        // 确保expression已初始化
-        if (!this.expression) {
-            if (typeof window.VRMExpression === 'undefined') {
-                return false;
-            }
-            // 初始化expression
-            this.expression = new window.VRMExpression(this);
-            console.log('[VRM Manager] 延迟初始化 VRMExpression');
-        }
-        return this.expression.setExpression(expressionName, weight);
-    }
-
-    /**
-     * 获取所有可用表情（委托给expression模块）
-     */
-    getAvailableExpressions() {
-        // 确保expression已初始化
-        if (!this.expression) {
-            if (typeof window.VRMExpression === 'undefined') {
-                return [];
-            }
-            // 初始化expression
-            this.expression = new window.VRMExpression(this);
-            console.log('[VRM Manager] 延迟初始化 VRMExpression');
-        }
-        return this.expression.getAvailableExpressions();
-    }
-
-    /**
-     * 重置所有表情（委托给expression模块）
-     */
-    resetExpressions() {
-        if (this.expression) {
-            return this.expression.resetExpressions();
-        }
-    }
-
-    /**
-     * 启动口型同步（委托给animation模块）
-     */
-    startLipSync(analyser) {
-        // 确保animation已初始化
-        if (!this.animation) {
-            if (typeof window.VRMAnimation === 'undefined') {
-                return false;
-            }
-            // 初始化animation
-            this.animation = new window.VRMAnimation(this);
-            console.log('[VRM Manager] 延迟初始化 VRMAnimation');
-        }
-        return this.animation.startLipSync(analyser);
-    }
-
-    /**
-     * 停止口型同步（委托给animation模块）
-     */
-    stopLipSync() {
-        if (this.animation) {
-            return this.animation.stopLipSync();
-        }
-    }
-
-    /**
-     * 启用/禁用鼠标跟踪（委托给interaction模块）
-     */
-    enableMouseTracking(enabled) {
-        // 确保interaction已初始化
-        if (!this.interaction) {
-            if (typeof window.VRMInteraction === 'undefined') {
-                return false;
-            }
-            // 初始化interaction
-            this.interaction = new window.VRMInteraction(this);
-            console.log('[VRM Manager] 延迟初始化 VRMInteraction');
-        }
-        return this.interaction.enableMouseTracking(enabled);
-    }
+    stopAnimation() { if(this.animation) this.animation.stopVRMAAnimation(); }
+    onWindowResize() { this.core?.onWindowResize(); }
+    
+    // Getter/Setter 代理
+    getCurrentModel() { return this.currentModel; }
+    setModelPosition(x,y,z) { if(this.currentModel?.scene) this.currentModel.scene.position.set(x,y,z); }
+    setModelScale(x,y,z) { if(this.currentModel?.scene) this.currentModel.scene.scale.set(x,y,z); }
 }
 
-// 导出到全局
 window.VRMManager = VRMManager;
-console.log('[VRM Manager] VRMManager 已注册到全局对象');
+console.log('[VRM Manager] 智能修正版已加载 (自动重连模块)');

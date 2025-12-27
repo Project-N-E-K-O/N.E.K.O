@@ -58,16 +58,12 @@ class VRMInteraction {
 
         // 鼠标按下事件
         this.mouseDownHandler = (e) => {
-            if (this.checkLocked()) {
-                return;
-            }
-
-            // 检查锁定状态（同步Live2D管理器的锁定状态）
+            // 检查锁定状态
             if (this.checkLocked()) {
                 console.log('[VRM Interaction] 模型已锁定，忽略鼠标按下事件');
                 return;
             }
-            
+
             if (e.button === 0) { // 左键：平移（禁用旋转）
                 this.isDragging = true;
                 this.dragMode = 'pan';
@@ -87,7 +83,6 @@ class VRMInteraction {
 
         // 鼠标移动事件
         this.dragHandler = (e) => {
-
             // 如果锁定，停止拖拽
             if (this.checkLocked()) {
                 if (this.isDragging) {
@@ -117,37 +112,21 @@ class VRMInteraction {
                         .add(up.multiplyScalar(-deltaY * panSpeed))
                 );
 
-                
-                // 根据相机距离和轴向动态调整移动边界
-                const cameraDistance = this.manager.camera.position.distanceTo(new THREE.Vector3(0, 0, 0));
+                // 使用简化的边界检查，避免复杂的屏幕投影计算
+                let finalPosition = newPosition.clone();
 
-                // X轴（左右）：稍微严格一点，确保更多身体部分可见
-                const maxXDistance = Math.max(2.0, cameraDistance * 0.5);
-
-                // Y轴（上下）：使用更保守的限制，避免模型移出上下屏幕边缘
-                const maxYDistance = Math.max(1.5, cameraDistance * 0.4);
-
-                // Z轴：保持适中的限制
-                const maxZDistance = Math.max(2.0, cameraDistance * 0.6);
-
-                // 检查是否超出合理移动范围
-                let clamped = false;
-                if (Math.abs(newPosition.x) > maxXDistance) {
-                    newPosition.x = Math.max(-maxXDistance, Math.min(maxXDistance, newPosition.x));
-                    clamped = true;
-                }
-                if (Math.abs(newPosition.y) > maxYDistance) {
-                    newPosition.y = Math.max(-maxYDistance, Math.min(maxYDistance, newPosition.y));
-                    clamped = true;
-                }
-                if (Math.abs(newPosition.z) > maxZDistance) {
-                    newPosition.z = Math.max(-maxZDistance, Math.min(maxZDistance, newPosition.z));
-                    clamped = true;
+                // 简单的距离限制（从原点）
+                const maxDistance = 15.0; // 允许更大的移动范围
+                if (finalPosition.length() > maxDistance) {
+                    finalPosition.normalize().multiplyScalar(maxDistance);
                 }
 
+                // 轴向限制
+                finalPosition.x = Math.max(-10.0, Math.min(10.0, finalPosition.x));
+                finalPosition.y = Math.max(-8.0, Math.min(8.0, finalPosition.y));
+                finalPosition.z = Math.max(-10.0, Math.min(10.0, finalPosition.z));
 
-                // 最终的屏幕可见性检查
-                const finalPosition = this.ensureModelVisibility(newPosition);
+                // 应用最终位置
                 this.manager.currentModel.scene.position.copy(finalPosition);
 
                 // 模型移动时更新浮动按钮和锁图标位置
@@ -192,15 +171,7 @@ class VRMInteraction {
 
         // 滚轮缩放（使用 OrbitControls 的 zoom 功能）
         this.wheelHandler = (e) => {
-            // 如果锁定，阻止缩放
             if (this.checkLocked() || !this.manager.currentModel) {
-                e.preventDefault();
-                e.stopPropagation();
-                return;
-            }
-            
-            // 检查 camera 是否已初始化（controls 可选）
-            if (!this.manager.camera) {
                 e.preventDefault();
                 e.stopPropagation();
                 return;
@@ -209,69 +180,33 @@ class VRMInteraction {
             e.preventDefault();
             e.stopPropagation();
             
-            try {
-                const THREE = window.THREE;
-                if (!THREE) {
-                    console.warn('[VRM] THREE 未定义');
-                    return;
-                }
+            const THREE = window.THREE;
+            const delta = e.deltaY;
+            
+            // 修复缩放方向：delta > 0 为滚轮向下，应该远离模型
+            const zoomSpeed = 0.05;
+            const zoomFactor = delta > 0 ? (1 + zoomSpeed) : (1 - zoomSpeed); 
+
+            if (this.manager.currentModel.scene) {
+                const modelCenter = new THREE.Vector3();
+                this.manager.currentModel.scene.getWorldPosition(modelCenter);
+                const oldDistance = this.manager.camera.position.distanceTo(modelCenter);
                 
-                const delta = e.deltaY;
+                // 设置合理的缩放限制 [1.0, 5.0]
+                const clampedDistance = Math.max(1.0, Math.min(5.0, oldDistance * zoomFactor));
+
+                const direction = new THREE.Vector3()
+                    .subVectors(this.manager.camera.position, modelCenter)
+                    .normalize();
+
+                this.manager.camera.position.copy(modelCenter)
+                    .add(direction.multiplyScalar(clampedDistance));
                 
-                // 如果 controls 存在，使用 OrbitControls 的 zoom 方法
-                if (this.manager.controls && this.manager.controls.zoom && typeof this.manager.controls.zoom === 'function') {
-                    // 直接调用 OrbitControls 的 zoom 方法
-                    const zoomSpeed = 0.1;
-                    const zoomDelta = delta > 0 ? -zoomSpeed : zoomSpeed;
-                    this.manager.controls.zoom(zoomDelta);
+                if (this.manager.controls && this.manager.controls.update) {
                     this.manager.controls.update();
-                } else if (this.manager.controls && this.manager.controls.target) {
-                    // 手动实现缩放（使用 controls.target）
-                    const zoomSpeed = 0.05;
-                    const distance = this.manager.camera.position.distanceTo(this.manager.controls.target);
-                    const zoomFactor = delta > 0 ? (1 - zoomSpeed) : (1 + zoomSpeed);
-                    const newDistance = distance * zoomFactor;
-                    const minDistance = 0.5;
-                    const maxDistance = 10;
-                    const clampedDistance = Math.max(minDistance, Math.min(maxDistance, newDistance));
-                    
-                    const direction = new THREE.Vector3()
-                        .subVectors(this.manager.camera.position, this.manager.controls.target)
-                        .normalize();
-                    
-                    this.manager.camera.position.copy(this.manager.controls.target)
-                        .add(direction.multiplyScalar(clampedDistance));
-                    
-                    if (this.manager.controls.update) {
-                        this.manager.controls.update();
-                    }
-                } else {
-                    // 如果没有 controls，使用模型中心作为目标点
-                    if (this.manager.currentModel && this.manager.currentModel.scene) {
-                        const zoomSpeed = 0.05;
-                        const modelCenter = new THREE.Vector3();
-                        this.manager.currentModel.scene.getWorldPosition(modelCenter);
-                        const oldDistance = this.manager.camera.position.distanceTo(modelCenter);
-                        const zoomFactor = delta > 0 ? (1 + zoomSpeed) : (1 - zoomSpeed);
-                        const newDistance = oldDistance * zoomFactor;
-                        // 设置更合理的缩放限制：最小距离1.0（避免太近），最大距离5.0（避免太远）
-                        const clampedDistance = Math.max(1.0, Math.min(5.0, newDistance));
-
-
-                        const direction = new THREE.Vector3()
-                            .subVectors(this.manager.camera.position, modelCenter)
-                            .normalize();
-
-                        this.manager.camera.position.copy(modelCenter)
-                            .add(direction.multiplyScalar(clampedDistance));
-
-                    }
                 }
-            } catch (error) {
-                console.error('[VRM] 滚轮缩放出错:', error);
             }
         };
-
         // 中键点击事件（防止默认行为）
         this.auxClickHandler = (e) => {
             if (e.button === 1) {
@@ -309,8 +244,17 @@ class VRMInteraction {
     }
     
     /**
+     * 每帧更新（由 VRMManager 驱动）
+     */
+    update(delta) {
+        // 如果开启了鼠标跟踪（浮动按钮跟随），则更新位置
+        if (this.mouseTrackingEnabled) {
+            this.updateFloatingButtonsPosition();
+        }
+    }
+
+    /**
      * 设置锁定状态
-     * @param {boolean} locked - 是否锁定
      */
     setLocked(locked) {
         this.isLocked = locked;
@@ -318,23 +262,14 @@ class VRMInteraction {
             this.manager.isLocked = locked;
         }
         
-        // 更新 canvas 的 pointerEvents
-        if (this.manager && this.manager.renderer) {
-            const canvas = this.manager.renderer.domElement;
-            if (canvas) {
-                canvas.style.pointerEvents = locked ? 'none' : 'auto';
-            }
-        }
+        // ✅ 修复：不再修改 pointerEvents，改用逻辑拦截
+        // 这样锁定时虽然不能移动/缩放，但依然可以点中模型弹出菜单
         
-        // 如果正在拖拽，停止拖拽
         if (locked && this.isDragging) {
             this.isDragging = false;
             this.dragMode = null;
-            if (this.manager && this.manager.renderer) {
-                const canvas = this.manager.renderer.domElement;
-                if (canvas) {
-                    canvas.style.cursor = 'default';
-                }
+            if (this.manager.renderer) {
+                this.manager.renderer.domElement.style.cursor = 'grab';
             }
         }
     }
@@ -554,6 +489,11 @@ class VRMInteraction {
     enableMouseTracking(enabled) {
         this.mouseTrackingEnabled = enabled;
 
+        // 确保拖拽和缩放功能已初始化
+        if (enabled && (!this.mouseDownHandler || !this.dragHandler || !this.wheelHandler)) {
+            this.initDragAndZoom();
+        }
+
         if (enabled) {
             this.setupFloatingButtonsMouseTracking();
         } else {
@@ -740,6 +680,17 @@ class VRMInteraction {
     dispose() {
         this.enableMouseTracking(false);
         this.cleanupDragAndZoom();
+
+        // 清理所有可能的定时器
+        if (this._hideButtonsTimer) {
+            clearTimeout(this._hideButtonsTimer);
+            this._hideButtonsTimer = null;
+        }
+
+        // 重置状态
+        this.isDragging = false;
+        this.dragMode = null;
+        this.isLocked = false;
     }
 }
 

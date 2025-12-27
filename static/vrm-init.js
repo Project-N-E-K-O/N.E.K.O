@@ -6,248 +6,222 @@
 const VRM_STATIC_PATH = '/static/vrm';  // 项目目录下的 VRM 模型路径
 const VRM_USER_PATH = '/user_vrm';  // 用户文档目录下的 VRM 模型路径
 
+// 检查是否在模型管理页面（通过路径或特定元素判断）
+const isModelManagerPage = window.location.pathname.includes('model_manager') || document.querySelector('#vrm-model-select') !== null;
 // 创建全局 VRM 管理器实例（延迟创建，确保所有模块都已加载）
 window.vrmManager = null;
 
-// 延迟初始化函数（带最大重试次数限制）
-let initRetryCount = 0;
-const MAX_INIT_RETRIES = 50; // 最多重试50次（5秒）
 
 function initializeVRMManager() {
+    if (window.vrmManager) return;
+
     try {
-        // 如果已经创建了实例，不再重复创建
-        if (window.vrmManager) {
-            return;
-        }
-
-        // 检查所有必要的VRM模块是否都已加载
-        const requiredModules = ['VRMManager', 'VRMCore', 'VRMExpression', 'VRMAnimation', 'VRMInteraction'];
-        const missingModules = requiredModules.filter(module => typeof window[module] === 'undefined');
-
-        if (missingModules.length > 0) {
-            initRetryCount++;
-            if (initRetryCount >= MAX_INIT_RETRIES) {
-                console.warn(`[VRM Init] 达到最大重试次数(${MAX_INIT_RETRIES})，停止初始化。缺失模块: ${missingModules.join(', ')}`);
-                return;
-            }
-            // 如果还有模块未加载，延迟执行
-            setTimeout(initializeVRMManager, 100);
-            return;
-        }
-
-        // 所有模块都已加载，创建VRMManager实例
-        if (!window.vrmManager) {
+        // 检查核心类是否存在
+        if (typeof window.VRMManager !== 'undefined') {
             window.vrmManager = new VRMManager();
-            console.log('[VRM Init] VRMManager实例创建成功');
+            console.log('[VRM Init] VRMManager 实例已通过核心类创建');
         }
     } catch (error) {
-        console.warn('[VRM Init] VRMManager创建失败:', error);
-        window.vrmManager = null;
+        console.error('[VRM Init] 初始化失败:', error);
     }
 }
+
+// 替换掉原有的轮询，改用标准的事件监听
+window.addEventListener('vrm-modules-ready', () => {
+    console.log('[VRM Init] 检测到模块就绪事件，开始初始化...');
+    initializeVRMManager();
+
+    // 如果不是管理页面，尝试自动加载模型
+    if (!isModelManagerPage) {
+        console.log('[VRM Init] 非管理页面，准备自动加载VRM模型...');
+        console.log('[VRM Init] 当前window.vrmModel:', window.vrmModel);
+        console.log('[VRM Init] 当前window.lanlan_config:', window.lanlan_config);
+        initVRMModel();
+    } else {
+        console.log('[VRM Init] 管理页面，跳过自动加载');
+    }
+});
 
 // 启动延迟初始化
-initializeVRMManager();
-
-// 自动初始化函数（延迟执行，等待 vrmModel 设置）
+// 自动初始化函数
 async function initVRMModel() {
-    // 等待配置加载完成（如果存在）
+    console.log('[VRM Init] 开始自动初始化VRM模型...');
+
+    // 1. 等待配置加载完成
+    console.log('[VRM Init] 等待页面配置加载...');
     if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
         await window.pageConfigReady;
+        console.log('[VRM Init] 页面配置加载完成');
     }
 
-    // 获取模型路径
-    let targetModelPath = (typeof vrmModel !== 'undefined' ? vrmModel : (window.vrmModel || ''));
+    // 2. 获取并确定模型路径
+    let targetModelPath = window.vrmModel || (typeof vrmModel !== 'undefined' ? vrmModel : '');
+    console.log('[VRM Init] 检测到的VRM模型路径:', targetModelPath);
 
-    // 如果没有设置模型路径，使用默认模型
+    // 临时调试：强制使用默认VRM模型来测试加载功能
     if (!targetModelPath) {
-        targetModelPath = '/static/vrm/sister1.0.vrm';
-        window.vrmModel = targetModelPath;
+        console.log('[VRM Init] 未找到VRM模型路径，使用默认模型进行测试');
+        targetModelPath = '/static/vrm/sister1.0.vrm'; // 默认模型
     }
-    
-    // 检查 vrmManager 是否已初始化
+
     if (!window.vrmManager) {
+        console.warn('[VRM Init] VRM管理器未初始化，跳过加载');
         return;
     }
-    
+
     try {
-        
-        // 初始化 Three.js 场景
-        await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
-        
-        // 显示VRM容器，隐藏Live2D容器
+        console.log('[VRM Init] 切换UI显示...');
+        // 3. UI 切换逻辑 
         const vrmContainer = document.getElementById('vrm-container');
         const live2dContainer = document.getElementById('live2d-container');
-        if (vrmContainer) {
-            vrmContainer.style.display = 'block';
-        }
-        if (live2dContainer) {
-            live2dContainer.style.display = 'none';
-        }
         
-        // 确保模型URL正确（如果是相对路径，转换为绝对路径）
+        if (vrmContainer) vrmContainer.style.display = 'block';
+        if (live2dContainer) live2dContainer.style.display = 'none';
+
+        console.log('[VRM Init] 开始初始化Three.js场景...');
+        // 4. 初始化 Three.js 场景 
+        await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
+
+        // 5. 路径转换逻辑（直接处理，不再进行 HEAD 请求检测以提升速度）
         let modelUrl = targetModelPath;
-        
-        if (!modelUrl.startsWith('http://') && !modelUrl.startsWith('https://') && !modelUrl.startsWith('/')) {
-            if (modelUrl.endsWith('.vrm')) {
-                const filename = modelUrl.split('/').pop();
-                modelUrl = `${VRM_USER_PATH}/${filename}`;
-            } else {
-                modelUrl = `${VRM_USER_PATH}/${modelUrl}`;
-            }
+        if (!modelUrl.startsWith('http') && !modelUrl.startsWith('/')) {
+            modelUrl = `${VRM_USER_PATH}/${modelUrl}`;
         }
-        
-        // 如果路径是本地文件路径（包含盘符或反斜杠），尝试转换为HTTP路径
-        if (modelUrl.includes(':\\') || modelUrl.includes('\\')) {
-            const filename = modelUrl.split(/[\\/]/).pop();
-            modelUrl = `${VRM_STATIC_PATH}/${filename}`;
-        }
-        
-        // 在加载前验证文件是否存在
-        let fileExists = false;
-        try {
-            const response = await fetch(modelUrl, { method: 'HEAD' });
-            if (response.ok) {
-                fileExists = true;
-            } else {
-                if (modelUrl.startsWith(VRM_USER_PATH + '/')) {
-                    const filename = modelUrl.replace(VRM_USER_PATH + '/', '');
-                    const staticPath = `${VRM_STATIC_PATH}/${filename}`;
-                    try {
-                        const staticResponse = await fetch(staticPath, { method: 'HEAD' });
-                        if (staticResponse.ok) {
-                            modelUrl = staticPath;
-                            fileExists = true;
-                        }
-                    } catch (e) {
-                    }
-                }
-            }
-        } catch (fetchError) {
-        }
-        
-        // 加载模型
-        await window.vrmManager.loadModel(modelUrl, {
-            scale: { x: 1, y: 1, z: 1 }
-        });
-        
-        // 确保wait03动画播放（备用方案，如果loadModel中的自动播放失败）
-        setTimeout(async () => {
-            if (window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
-                if (!window.vrmManager.animation.vrmaIsPlaying) {
-                    try {
-                        await window.vrmManager.animation.playVRMAAnimation('/static/vrm/animation/wait03.vrma', {
-                            loop: true
-                        });
-                    } catch (error) {
-                    }
-                }
-            }
-        }, 2000);
+        modelUrl = modelUrl.replace(/\\/g, '/'); // 修正 Windows 风格路径
+
+        // 6. 执行加载
+        console.log('[VRM Init] 开始加载VRM模型:', modelUrl);
+        await window.vrmManager.loadModel(modelUrl);
+        console.log('[VRM Init] VRM模型加载完成');
 
     } catch (error) {
+        console.error('[VRM Init] 自动加载流程异常:', error);
+        console.error('[VRM Init] 错误详情:', error.stack);
     }
 }
 
-// 检查是否在model_manager页面，如果是则不自动加载模型
-const isModelManagerPage = window.location.pathname.includes('model_manager') ||
-                          document.querySelector('#vrmModelSelect') !== null;
+// 添加强制解锁函数
+window.forceUnlockVRM = function() {
+    if (window.vrmManager && window.vrmManager.interaction) {
+        console.log('[VRM Force Unlock] 执行逻辑解锁');
+        // 统一调用我们重构后的接口
+        window.vrmManager.interaction.setLocked(false);
 
-if (!isModelManagerPage) {
-    // 只在非model_manager页面自动初始化VRM模型
-    // 自动初始化（如果存在 vrmModel 变量且 vrmManager 已初始化）
-    // 如果 pageConfigReady 存在，等待它完成；否则立即执行
-    if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
-    window.pageConfigReady.then(() => {
-        // 检查是否有VRM模型路径和vrmManager
-        if (window.vrmManager) {
-            const targetModelPath = (typeof vrmModel !== 'undefined' ? vrmModel : (window.vrmModel || ''));
-            if (targetModelPath) {
-                initVRMModel();
-            }
+        // 清理可能残留的 CSS 样式（如果之前误操作过）
+        if (window.vrmManager.canvas) {
+            window.vrmManager.canvas.style.pointerEvents = 'auto';
         }
-    }).catch(() => {
-        // 即使配置加载失败，也尝试初始化（可能使用默认模型）
-        if (window.vrmManager) {
-            const targetModelPath = (typeof vrmModel !== 'undefined' ? vrmModel : (window.vrmModel || ''));
-            if (targetModelPath) {
-                initVRMModel();
-            }
-        }
-    });
-} else {
-    if (window.vrmManager) {
-        const targetModelPath = (typeof vrmModel !== 'undefined' ? vrmModel : (window.vrmModel || ''));
-        console.log('[VRM Init] 当前vrmModel状态:', targetModelPath);
-        if (targetModelPath) {
-            initVRMModel();
-        } else {
-            console.log('[VRM Init] vrmModel未设置，使用默认VRM模型');
-            // 使用项目中的默认VRM模型
-            window.vrmModel = '/static/vrm/sister1.0.vrm';
-            setTimeout(() => {
-                if (window.vrmManager) {
-                    initVRMModel();
-                }
-            }, 1000);
-        }
-    } else {
-        console.log('[VRM Init] vrmManager不存在，VRM模块可能未加载');
     }
-    }
-} else {
-    console.log('[VRM Init] 检测到model_manager页面，跳过自动VRM模型加载');
-}
+};
 
-// 添加调试函数
+// 手动触发主页VRM模型检查的函数
+window.checkAndLoadVRM = async function() {
+    console.log('[主页VRM检查] 开始手动检查VRM模型...');
+
+    try {
+        // 1. 获取当前角色名称
+        let currentLanlanName = window.lanlan_config?.lanlan_name;
+        console.log('[主页VRM检查] 当前角色:', currentLanlanName);
+
+        if (!currentLanlanName) {
+            console.log('[主页VRM检查] 未找到当前角色，跳过检查');
+            return;
+        }
+
+        // 2. 获取角色配置
+        const charResponse = await fetch('/api/characters');
+        if (!charResponse.ok) {
+            console.error('[主页VRM检查] 获取角色配置失败');
+            return;
+        }
+
+        const charactersData = await charResponse.json();
+        const catgirlConfig = charactersData['猫娘']?.[currentLanlanName];
+
+        if (!catgirlConfig) {
+            console.log('[主页VRM检查] 未找到角色配置');
+            return;
+        }
+
+        console.log('[主页VRM检查] 角色配置:', catgirlConfig);
+
+        const modelType = catgirlConfig.model_type || 'live2d';
+        console.log('[主页VRM检查] 模型类型:', modelType);
+
+        if (modelType !== 'vrm') {
+            console.log('[主页VRM检查] 模型类型不是VRM，跳过加载');
+            return;
+        }
+
+        // 3. 获取VRM路径
+        const newModelPath = catgirlConfig.vrm || '';
+        console.log('[主页VRM检查] VRM路径:', newModelPath);
+
+        if (!newModelPath) {
+            console.log('[主页VRM检查] VRM路径为空，跳过加载');
+            return;
+        }
+
+        // 4. 显示VRM容器
+        const live2dContainer = document.getElementById('live2d-container');
+        const vrmContainer = document.getElementById('vrm-container');
+        if (live2dContainer) live2dContainer.style.display = 'none';
+        if (vrmContainer) {
+            vrmContainer.style.display = 'block';
+            console.log('[主页VRM检查] VRM容器已显示');
+        }
+
+        // 5. 检查VRM管理器
+        if (!window.vrmManager) {
+            console.error('[主页VRM检查] VRM管理器不存在');
+            return;
+        }
+
+        // 6. 路径转换
+        let modelUrl = newModelPath;
+        console.log('[主页VRM检查] 原始VRM路径:', modelUrl);
+
+        // 处理Windows绝对路径，转换为Web路径
+        if (modelUrl.includes('\\') || modelUrl.includes(':')) {
+            const filename = modelUrl.split(/[\\/]/).pop();
+            if (filename) {
+                modelUrl = `/static/vrm/${filename}`;
+                console.log('[主页VRM检查] 转换为Web路径:', modelUrl);
+            }
+        } else if (!modelUrl.startsWith('http') && !modelUrl.startsWith('/')) {
+            const VRM_USER_PATH = '/user_vrm';
+            modelUrl = `${VRM_USER_PATH}/${modelUrl}`;
+        }
+        modelUrl = modelUrl.replace(/\\/g, '/');
+
+        // 7. 初始化Three.js场景
+        if (!window.vrmManager._isInitialized || !window.vrmManager.scene || !window.vrmManager.camera || !window.vrmManager.renderer) {
+            console.log('[主页VRM检查] 初始化Three.js场景...');
+            await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
+        }
+
+        // 8. 加载VRM模型
+        console.log('[主页VRM检查] 开始加载VRM模型:', modelUrl);
+        await window.vrmManager.loadModel(modelUrl);
+        console.log('[主页VRM检查] VRM模型加载成功');
+
+    } catch (error) {
+        console.error('[主页VRM检查] VRM检查和加载失败:', error);
+        console.error('[主页VRM检查] 错误详情:', error.stack);
+    }
+};
+
+
+// 调试函数，方便排查交互失效问题
 window.checkVRMStatus = function() {
     console.log('[VRM Status Check] === VRM 状态检查 ===');
     console.log('window.vrmManager:', !!window.vrmManager);
     if (window.vrmManager) {
-        console.log('currentModel:', !!window.vrmManager.currentModel);
-        console.log('scene:', !!window.vrmManager.scene);
-        console.log('camera:', !!window.vrmManager.camera);
-        console.log('renderer:', !!window.vrmManager.renderer);
-        console.log('isLocked:', window.vrmManager.isLocked);
-        console.log('interaction:', !!window.vrmManager.interaction);
-        console.log('canvas:', !!window.vrmManager.canvas);
-        if (window.vrmManager.canvas) {
-            const computedStyle = window.getComputedStyle(window.vrmManager.canvas);
-            console.log('canvas.pointerEvents:', window.vrmManager.canvas.style.pointerEvents);
-            console.log('canvas.computedPointerEvents:', computedStyle.pointerEvents);
-            console.log('canvas.display:', window.vrmManager.canvas.style.display);
-            console.log('canvas.visibility:', window.vrmManager.canvas.style.visibility);
-            console.log('canvas.zIndex:', window.vrmManager.canvas.style.zIndex);
-            console.log('canvas.position:', window.vrmManager.canvas.style.position);
-            const rect = window.vrmManager.canvas.getBoundingClientRect();
-            console.log('canvas.rect:', { left: rect.left, top: rect.top, width: rect.width, height: rect.height });
-        }
+        console.log('当前模型:', !!window.vrmManager.currentModel);
+        console.log('锁定状态:', window.vrmManager.isLocked);
         if (window.vrmManager.interaction) {
-            console.log('interaction.isLocked:', window.vrmManager.interaction.isLocked);
+            console.log('交互模块状态:', window.vrmManager.interaction.mouseTrackingEnabled ? '已启用' : '已禁用');
         }
     }
     console.log('[VRM Status Check] === 检查完成 ===');
 };
-
-// 添加强制解锁函数
-window.forceUnlockVRM = function() {
-    if (window.vrmManager) {
-        console.log('[VRM Force Unlock] 强制解锁VRM');
-        window.vrmManager.isLocked = false;
-        if (window.vrmManager.canvas) {
-            window.vrmManager.canvas.style.setProperty('pointer-events', 'auto', 'important');
-            console.log('[VRM Force Unlock] Canvas pointer-events设置为auto');
-        }
-        if (window.vrmManager.container) {
-            window.vrmManager.container.style.setProperty('pointer-events', 'auto', 'important');
-            console.log('[VRM Force Unlock] Container pointer-events设置为auto');
-        }
-        if (window.vrmManager.interaction) {
-            window.vrmManager.interaction.setLocked(false);
-        }
-        console.log('[VRM Force Unlock] 解锁完成');
-    } else {
-        console.log('[VRM Force Unlock] vrmManager不存在');
-    }
-};
-

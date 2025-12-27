@@ -306,7 +306,7 @@
             opacity: 1;
             overflow: hidden;
             visibility: visible;
-            transition: all 1s ease-in-out, height 0ms 1s, width 0ms 1s, visibility 0ms 1s;
+            transition: all 1s ease-in-out;
         }
 
         #vrm-container.minimized {
@@ -318,7 +318,7 @@
         #vrm-canvas {
             right: 0;
             bottom: 0;
-            pointer-events: none;
+            pointer-events: auto;
             display: block;
             opacity: 1;
             visibility: visible;
@@ -1410,6 +1410,7 @@
         <canvas id="vrm-canvas"></canvas>
     </div>
 
+
     <script>
         // 页面配置 - 从 URL 或 API 获取
         let lanlan_config = {
@@ -1643,45 +1644,64 @@
                 }
                 
                 const modelType = catgirlConfig.model_type || 'live2d';
+                // 根据模型类型获取正确的路径字段
                 let newModelPath = '';
-                
                 if (modelType === 'vrm') {
-                    // VRM模型：直接使用vrm字段中的路径
-                    const vrmPath = catgirlConfig.vrm || '';
-                    if (vrmPath) {
-                        // 如果是本地路径，转换为HTTP URL
-                        if (vrmPath.includes(':') || (!vrmPath.startsWith('/') && !vrmPath.startsWith('http'))) {
-                            const filename = vrmPath.split(/[\\/]/).pop();
-                            newModelPath = `/user_vrm/${filename}`;
-                        } else {
-                            newModelPath = vrmPath;
-                        }
-                        console.log('VRM模型路径:', newModelPath);
-                    } else {
-                        console.warn(`角色 ${currentLanlanName} 的VRM模型路径为空`);
-                        return;
-                    }
+                    newModelPath = catgirlConfig.vrm || '';
                 } else {
-                    // Live2D模型：使用原有逻辑
-                    const newModelName = catgirlConfig.live2d || 'mao_pro';
-                    console.log('Live2D模型名称: ', newModelName);
+                    newModelPath = catgirlConfig.live2d || '';
+                }
 
-                    // 3. 获取所有可用模型列表
-                    const modelsResponse = await fetch('/api/live2d/models');
-                    if (!modelsResponse.ok) {
-                        console.warn('获取模型列表失败，跳过模型检查');
-                        return;
-                    }
-                    const models = await modelsResponse.json();
+                if (modelType === 'vrm') {
+                    console.log('[主页] 检测到VRM模型类型，准备加载VRM模型');
+                    console.log('[主页] VRM路径:', newModelPath);
+                    console.log('[主页] VRM管理器存在:', !!window.vrmManager);
 
-                    // 4. 根据模型名称查找对应的模型路径
-                    const modelInfo = models.find(m => m.name === newModelName);
-                    if (!modelInfo) {
-                        console.warn(`未找到模型 ${newModelName}，跳过模型检查`);
-                        return;
+                    // 隐藏 Live2D，显示 VRM
+                    const live2dContainer = document.getElementById('live2d-container');
+                    const vrmContainer = document.getElementById('vrm-container');
+                    if (live2dContainer) live2dContainer.style.display = 'none';
+                    if (vrmContainer) {
+                        vrmContainer.style.display = 'block';
+                        console.log('[主页] VRM容器已显示');
                     }
-                    newModelPath = modelInfo.path;
-                    console.log('Live2D模型路径: ', newModelPath);
+
+                    if (window.vrmManager && newModelPath) {
+                        // 路径转换逻辑（处理各种路径格式）
+                        let modelUrl = newModelPath;
+                        console.log('[主页] 原始VRM路径:', modelUrl);
+
+                        // 处理Windows绝对路径，转换为Web路径
+                        if (modelUrl.includes('\\') || modelUrl.includes(':')) {
+                            // 如果是Windows路径或包含驱动器号，提取文件名并转换为Web路径
+                            const filename = modelUrl.split(/[\\/]/).pop();
+                            if (filename) {
+                                modelUrl = `/static/vrm/${filename}`;
+                                console.log('[主页] 转换为Web路径:', modelUrl);
+                            }
+                        } else if (!modelUrl.startsWith('http') && !modelUrl.startsWith('/')) {
+                            // 如果是相对路径，添加用户VRM路径前缀
+                            const VRM_USER_PATH = '/user_vrm';
+                            modelUrl = `${VRM_USER_PATH}/${modelUrl}`;
+                        }
+                        modelUrl = modelUrl.replace(/\\/g, '/'); // 修正 Windows 风格路径
+
+                        // 确保Three.js场景已初始化
+                        if (!window.vrmManager._isInitialized || !window.vrmManager.scene || !window.vrmManager.camera || !window.vrmManager.renderer) {
+                            console.log('[主页] VRM场景未初始化，开始初始化...');
+                            await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
+                        }
+                        console.log('[主页] 加载VRM模型:', modelUrl, '(原始路径:', newModelPath, ')');
+                        try {
+                            await window.vrmManager.loadModel(modelUrl);
+                            console.log('[主页] VRM模型加载成功');
+                        } catch (error) {
+                            console.error('[主页] VRM模型加载失败:', error);
+                            console.error('[主页] 错误详情:', error.stack);
+                        }
+                    } else {
+                        console.warn('[主页] VRM管理器未准备或模型路径为空:', { vrmManager: !!window.vrmManager, newModelPath });
+                    }
                 }
 
                 // 5. 检查当前加载的模型路径（优先使用 _lastLoadedModelPath）
@@ -1754,6 +1774,7 @@
                     console.log(`模型类型: ${modelType}`);
 
                     if (modelType === 'vrm') {
+                        console.log('[主页] 重新加载VRM模型，路径:', newModelPath);
                         // VRM模型：重新加载VRM模型
                         if (window.vrmManager) {
                             // 隐藏Live2D容器，显示VRM容器
@@ -1762,9 +1783,40 @@
                             if (live2dContainer) live2dContainer.style.display = 'none';
                             if (vrmContainer) vrmContainer.style.display = 'block';
                             
+                            // 确保Three.js场景已初始化
+                            if (!window.vrmManager._isInitialized || !window.vrmManager.scene || !window.vrmManager.camera || !window.vrmManager.renderer) {
+                                console.log('[主页] VRM场景未初始化，开始初始化...');
+                                await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
+                            }
+                            
+                            // 路径转换逻辑（处理各种路径格式）
+                            let modelUrl = newModelPath;
+                            console.log('[主页] 重新加载原始VRM路径:', modelUrl);
+
+                            // 处理Windows绝对路径，转换为Web路径
+                            if (modelUrl.includes('\\') || modelUrl.includes(':')) {
+                                // 如果是Windows路径或包含驱动器号，提取文件名并转换为Web路径
+                                const filename = modelUrl.split(/[\\/]/).pop();
+                                if (filename) {
+                                    modelUrl = `/static/vrm/${filename}`;
+                                    console.log('[主页] 重新加载转换为Web路径:', modelUrl);
+                                }
+                            } else if (!modelUrl.startsWith('http') && !modelUrl.startsWith('/')) {
+                                // 如果是相对路径，添加用户VRM路径前缀
+                                const VRM_USER_PATH = '/user_vrm';
+                                modelUrl = `${VRM_USER_PATH}/${modelUrl}`;
+                            }
+                            modelUrl = modelUrl.replace(/\\/g, '/'); // 修正 Windows 风格路径
+
                             // 加载VRM模型
-                            await window.vrmManager.loadModel(newModelPath);
-                            console.log('VRM模型已重新加载');
+                            console.log('[主页] 重新加载VRM模型:', modelUrl, '(原始路径:', newModelPath, ')');
+                            try {
+                                await window.vrmManager.loadModel(modelUrl);
+                                console.log('[主页] VRM模型重新加载成功');
+                            } catch (error) {
+                                console.error('[主页] VRM模型重新加载失败:', error);
+                                console.error('[主页] 错误详情:', error.stack);
+                            }
                         } else {
                             console.warn('VRM管理器未初始化，无法加载VRM模型');
                         }
@@ -2056,8 +2108,14 @@
     <!-- 将 THREE 挂载到 window 对象，以便非模块脚本可以使用 -->
     <script type="module">
         import * as THREE from 'three';
+        // 导入 GLTFLoader（注意路径要和 importmap 对应）
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
         window.THREE = THREE;
-        console.log('[Three.js] ES 模块已加载并挂载到 window.THREE');
+        // 手动将 GLTFLoader 挂载到 window.THREE 对象上
+        window.THREE.GLTFLoader = GLTFLoader;
+
+        console.log('[Three.js] ES 模块已加载并挂载到 window.THREE (含 GLTFLoader)');
     </script>
     <!-- i18next 已在 head 中加载，这里不再需要 -->
     <!-- OGG OPUS WASM 解码器 (@wasm-audio-decoders/ogg-opus-decoder) -->
@@ -2108,8 +2166,25 @@
                 // 加载所有 live2d 模块
                 await loadScriptsSequentially(live2dModules);
 
+                // 等待Three.js加载完成
+                console.log('[主页] 等待Three.js加载完成...');
+                if (typeof window.THREE === 'undefined') {
+                    await new Promise(resolve => {
+                        const checkThree = () => {
+                            if (typeof window.THREE !== 'undefined') {
+                                console.log('[主页] Three.js加载完成');
+                                resolve();
+                            } else {
+                                setTimeout(checkThree, 100);
+                            }
+                        };
+                        checkThree();
+                    });
+                }
+
                 // 加载VRM模块（按顺序加载，失败不影响Live2D）
                 try {
+                    console.log('[主页] 开始加载VRM模块...');
                     const vrmModules = [
                         '/static/vrm-core.js',
                         '/static/vrm-expression.js',
@@ -2117,12 +2192,16 @@
                         '/static/vrm-interaction.js',
                         '/static/vrm-manager.js'
                     ];
-                    
+
                     for (const moduleSrc of vrmModules) {
+                        console.log(`[主页] 加载VRM模块: ${moduleSrc}`);
                         const script = document.createElement('script');
                         script.src = moduleSrc;
                         await new Promise((resolve, reject) => {
-                            script.onload = resolve;
+                            script.onload = () => {
+                                console.log(`[主页] VRM模块加载成功: ${moduleSrc}`);
+                                resolve();
+                            };
                             script.onerror = (error) => {
                                 console.warn(`VRM模块加载失败（不影响Live2D）: ${moduleSrc}`, error);
                                 resolve(); // 即使失败也继续，不中断流程
@@ -2132,19 +2211,27 @@
                     }
 
                     // 加载VRM初始化脚本
+                    console.log('[主页] 加载VRM初始化脚本...');
                     const vrmInitScript = document.createElement('script');
                     vrmInitScript.src = '/static/vrm-init.js';
                     await new Promise((resolve, reject) => {
-                        vrmInitScript.onload = resolve;
+                        vrmInitScript.onload = () => {
+                            console.log('[主页] VRM初始化脚本加载成功');
+                            resolve();
+                        };
                         vrmInitScript.onerror = (error) => {
                             console.warn('VRM初始化脚本加载失败（不影响Live2D）:', error);
                             resolve(); // 即使失败也继续
                         };
                         document.body.appendChild(vrmInitScript);
                     });
+                    console.log('[主页] VRM模块加载完成');
+                    // 【新增】手动触发 vrm-init.js 正在等待的启动事件
+                    window.dispatchEvent(new Event('vrm-modules-ready'));
                 } catch (vrmError) {
                     console.warn('VRM模块加载过程中出错（不影响Live2D）:', vrmError);
                 }
+
 
                 // 等待 live2d 模块加载完成后再加载 app.js
                 const appScript = document.createElement('script');

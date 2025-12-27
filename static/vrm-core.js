@@ -583,19 +583,9 @@ class VRMCore {
         }
 
         try {
-            // 动态导入 GLTFLoader 和 VRMLoaderPlugin（参考 vrm.js）
-            let GLTFLoader, VRMLoaderPlugin;
-            
-            // 使用 ES 模块导入（与动画模块保持一致）
-            try {
-                const loaderModule = await import('three/addons/loaders/GLTFLoader.js');
-                GLTFLoader = loaderModule.GLTFLoader;
-
-                const vrmModule = await import('@pixiv/three-vrm');
-                VRMLoaderPlugin = vrmModule.VRMLoaderPlugin;
-            } catch (e) {
-                throw new Error(`无法加载必要的VRM模块: ${e.message}`);
-            }
+            // 使用全局THREE对象（避免动态import问题）
+            const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
+            const VRMLoaderPlugin = (await import('@pixiv/three-vrm')).VRMLoaderPlugin;
 
             const loader = new GLTFLoader();
             loader.register((parser) => new VRMLoaderPlugin(parser));
@@ -762,29 +752,7 @@ class VRMCore {
                 this.manager.animation.updateMouthExpressionMapping();
             }
 
-            // 自动播放wait03动画（循环播放）
-            // 延迟一点确保所有资源都已准备好
-            setTimeout(async () => {
-                if (this.manager.animation && typeof this.manager.animation.playVRMAAnimation === 'function') {
-                    try {
-                        const animationPath = '/static/vrm/animation/wait03.vrma';
-                        await this.manager.animation.playVRMAAnimation(animationPath, {
-                            loop: true,
-                            fadeIn: 0.5,
-                            fadeOut: 0.5
-                        });
-                    } catch (error) {
-                        setTimeout(async () => {
-                            try {
-                                await this.manager.animation.playVRMAAnimation('/static/vrm/animation/wait03.vrma', {
-                                    loop: true
-                                });
-                            } catch (retryError) {
-                            }
-                        }, 1000);
-                    }
-                }
-            }, 500);
+            
 
             // 设置锁按钮（在模型加载完成后）
             this.setupLockIcon();
