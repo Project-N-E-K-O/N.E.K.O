@@ -32,7 +32,8 @@ class HelloPlugin(NekoPluginBase):
             with config_path.open("rb") as f:
                 data = tomllib.load(f)
             return data if isinstance(data, dict) else {}
-        except Exception:
+        except Exception as e:
+            self.file_logger.warning("Failed to read local TOML config: {}", e)
             return {}
 
     def _start_debug_timer(self) -> None:
@@ -213,20 +214,28 @@ class HelloPlugin(NekoPluginBase):
                     if str(getattr(x, "content", "")).strip().lstrip("-").isdigit()
                 ]
 
-            set_a = seed.where(lambda r: _as_int(r) in (1, 2, 3))
-            set_b = seed.where(lambda r: _as_int(r) in (2, 3, 4))
+            # Use replayable predicates (required for reload): no lambda/closure.
+            set_a = seed.where_in("content", ["1", "2", "3"])
+            set_b = seed.where_in("content", ["2", "3", "4"])
 
             union_ab = set_a + set_b
             inter_ab = set_a & set_b
 
-            union_sorted = union_ab.sort(key=_as_int, reverse=False)
-            inter_sorted = inter_ab.sort(key=_as_int, reverse=False)
+            # Use replayable sort (required for reload): avoid sort(key=callable).
+            union_sorted = union_ab.sort(by="content", reverse=False)
+            inter_sorted = inter_ab.sort(by="content", reverse=False)
 
             seed_nums = _nums(seed)
             a_nums = _nums(set_a)
             b_nums = _nums(set_b)
             u_nums = _nums(union_sorted)
             i_nums = _nums(inter_sorted)
+
+            self.file_logger.info("[messages_debug.trace] union explain={}", union_ab.explain())
+            self.file_logger.info("[messages_debug.trace] union tree={}", union_ab.trace_tree_dump())
+
+            self.file_logger.info("[messages_debug.trace] intersection explain={}", inter_ab.explain())
+            self.file_logger.info("[messages_debug.trace] intersection tree={}", inter_ab.trace_tree_dump())
 
             # Use ctx-provided logger to avoid stdout spam.
             self.file_logger.info(

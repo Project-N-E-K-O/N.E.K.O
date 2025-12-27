@@ -682,12 +682,11 @@ def _resolve_plugin_id_conflict(
                     existing_entry_point = existing_info.get("entry_point")
                     
                     # 检查插件是否只在 plugin_hosts 中（不在 plugins 中）
-                    # 这种情况通常表示插件刚刚注册到 plugin_hosts，但还没有注册到 plugins
-                    # 这是自检测的情况，应该允许继续
+                    # 注意：按统一顺序获取锁以避免死锁（先 plugins_lock，后 plugin_hosts_lock）
                     with state.plugins_lock:
                         not_in_plugins = plugin_id not in state.plugins
-                    with state.plugin_hosts_lock:
-                        in_hosts = plugin_id in state.plugin_hosts
+                        with state.plugin_hosts_lock:
+                            in_hosts = plugin_id in state.plugin_hosts
                     
                     # 如果插件在 plugin_hosts 中但不在 plugins 中，且 config_path 相同
                     # 这很可能是自检测的情况（register_plugin 检测到刚注册的插件）

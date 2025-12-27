@@ -3,34 +3,11 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
 from plugin.core.state import state
 
-from .types import BusList, BusRecord
-
-
-def _iso_to_ts(value: Any) -> Optional[float]:
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    if not isinstance(value, str):
-        return None
-    s = value.strip()
-    if not s:
-        return None
-    try:
-        if s.endswith("Z"):
-            dt = datetime.fromisoformat(s[:-1]).replace(tzinfo=timezone.utc)
-        else:
-            dt = datetime.fromisoformat(s)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-        return dt.timestamp()
-    except Exception:
-        return None
+from .types import BusList, BusOp, BusRecord, GetNode, parse_iso_timestamp
 
 
 @dataclass(frozen=True)
@@ -45,7 +22,7 @@ class LifecycleRecord(BusRecord):
         typ = payload.get("type")
         typ = str(typ) if typ is not None else "lifecycle"
 
-        ts = _iso_to_ts(payload.get("timestamp") or payload.get("time") or payload.get("at"))
+        ts = parse_iso_timestamp(payload.get("timestamp") or payload.get("time") or payload.get("at"))
 
         plugin_id = payload.get("plugin_id")
         plugin_id = str(plugin_id) if plugin_id is not None else None
@@ -95,36 +72,35 @@ class LifecycleRecord(BusRecord):
 
 
 class LifecycleList(BusList[LifecycleRecord]):
-    def __init__(self, items: Sequence[LifecycleRecord], *, plugin_id: Optional[str] = None):
-        super().__init__(items)
+    def __init__(
+        self,
+        items: Sequence[LifecycleRecord],
+        *,
+        plugin_id: Optional[str] = None,
+        trace: Optional[Sequence[BusOp]] = None,
+        plan: Optional[Any] = None,
+        fast_mode: bool = False,
+    ):
+        super().__init__(items, trace=trace, plan=plan, fast_mode=fast_mode)
         self.plugin_id = plugin_id
-
-    def filter(self, *args: Any, **kwargs: Any) -> "LifecycleList":
-        filtered = super().filter(*args, **kwargs)
-        return LifecycleList(filtered.dump_records(), plugin_id=self.plugin_id)
-
-    def where(self, predicate: Any) -> "LifecycleList":
-        filtered = super().where(predicate)
-        return LifecycleList(filtered.dump_records(), plugin_id=self.plugin_id)
-
-    def limit(self, n: int) -> "LifecycleList":
-        limited = super().limit(n)
-        return LifecycleList(limited.dump_records(), plugin_id=self.plugin_id)
 
     def merge(self, other: "LifecycleList") -> "LifecycleList":
         merged = super().merge(other)
         pid = self.plugin_id if self.plugin_id == other.plugin_id else "*"
-        return LifecycleList(merged.dump_records(), plugin_id=pid)
+        if getattr(merged, "plugin_id", None) == pid:
+            return merged
+        return LifecycleList(
+            merged.dump_records(),
+            plugin_id=pid,
+            trace=merged.trace,
+            plan=getattr(merged, "_plan", None),
+            fast_mode=merged.fast_mode,
+        )
 
     def __add__(self, other: "LifecycleList") -> "LifecycleList":
         return self.merge(other)
 
-    def sort(self, **kwargs: Any) -> "LifecycleList":
-        sorted_list = super().sort(**kwargs)
-        return LifecycleList(sorted_list.dump_records(), plugin_id=self.plugin_id)
 
-    def sorted(self, **kwargs: Any) -> "LifecycleList":
-        return self.sort(**kwargs)
 
 
 @dataclass
@@ -208,7 +184,14 @@ class LifecycleClient:
         else:
             effective_plugin_id = pid_norm if pid_norm else getattr(self.ctx, "plugin_id", None)
 
-        return LifecycleList(records, plugin_id=effective_plugin_id)
+        get_params = {
+            "plugin_id": plugin_id,
+            "max_count": max_count,
+            "timeout": timeout,
+        }
+        trace = [BusOp(name="get", params=dict(get_params), at=time.time())]
+        plan = GetNode(op="get", params={"bus": "lifecycle", "params": dict(get_params)}, at=time.time())
+        return LifecycleList(records, plugin_id=effective_plugin_id, trace=trace, plan=plan)
 
     def delete(self, lifecycle_id: str, timeout: float = 5.0) -> bool:
         if hasattr(self.ctx, "_enforce_sync_call_policy"):

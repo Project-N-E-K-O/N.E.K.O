@@ -3,34 +3,11 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
 from plugin.core.state import state
 
-from .types import BusList, BusRecord
-
-
-def _iso_to_ts(value: Any) -> Optional[float]:
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    if not isinstance(value, str):
-        return None
-    s = value.strip()
-    if not s:
-        return None
-    try:
-        if s.endswith("Z"):
-            dt = datetime.fromisoformat(s[:-1]).replace(tzinfo=timezone.utc)
-        else:
-            dt = datetime.fromisoformat(s)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-        return dt.timestamp()
-    except Exception:
-        return None
+from .types import BusList, BusOp, BusRecord, GetNode, parse_iso_timestamp
 
 
 @dataclass(frozen=True)
@@ -46,7 +23,7 @@ class EventRecord(BusRecord):
         ev_type = payload.get("type")
         ev_type = str(ev_type) if ev_type is not None else "EVENT"
 
-        ts = _iso_to_ts(payload.get("timestamp") or payload.get("received_at") or payload.get("time"))
+        ts = parse_iso_timestamp(payload.get("timestamp") or payload.get("received_at") or payload.get("time"))
 
         plugin_id = payload.get("plugin_id")
         plugin_id = str(plugin_id) if plugin_id is not None else None
@@ -103,36 +80,34 @@ class EventRecord(BusRecord):
 
 
 class EventList(BusList[EventRecord]):
-    def __init__(self, items: Sequence[EventRecord], *, plugin_id: Optional[str] = None):
-        super().__init__(items)
+    def __init__(
+        self,
+        items: Sequence[EventRecord],
+        *,
+        plugin_id: Optional[str] = None,
+        trace: Optional[Sequence[BusOp]] = None,
+        plan: Optional[Any] = None,
+        fast_mode: bool = False,
+    ):
+        super().__init__(items, trace=trace, plan=plan, fast_mode=fast_mode)
         self.plugin_id = plugin_id
-
-    def filter(self, *args: Any, **kwargs: Any) -> "EventList":
-        filtered = super().filter(*args, **kwargs)
-        return EventList(filtered.dump_records(), plugin_id=self.plugin_id)
-
-    def where(self, predicate: Any) -> "EventList":
-        filtered = super().where(predicate)
-        return EventList(filtered.dump_records(), plugin_id=self.plugin_id)
-
-    def limit(self, n: int) -> "EventList":
-        limited = super().limit(n)
-        return EventList(limited.dump_records(), plugin_id=self.plugin_id)
 
     def merge(self, other: "EventList") -> "EventList":
         merged = super().merge(other)
         pid = self.plugin_id if self.plugin_id == other.plugin_id else "*"
-        return EventList(merged.dump_records(), plugin_id=pid)
+        if getattr(merged, "plugin_id", None) == pid:
+            return merged
+        return EventList(
+            merged.dump_records(),
+            plugin_id=pid,
+            trace=merged.trace,
+            plan=getattr(merged, "_plan", None),
+            fast_mode=merged.fast_mode,
+        )
 
     def __add__(self, other: "EventList") -> "EventList":
         return self.merge(other)
 
-    def sort(self, **kwargs: Any) -> "EventList":
-        sorted_list = super().sort(**kwargs)
-        return EventList(sorted_list.dump_records(), plugin_id=self.plugin_id)
-
-    def sorted(self, **kwargs: Any) -> "EventList":
-        return self.sort(**kwargs)
 
 
 @dataclass
@@ -216,7 +191,14 @@ class EventClient:
         else:
             effective_plugin_id = pid_norm if pid_norm else getattr(self.ctx, "plugin_id", None)
 
-        return EventList(records, plugin_id=effective_plugin_id)
+        get_params = {
+            "plugin_id": plugin_id,
+            "max_count": max_count,
+            "timeout": timeout,
+        }
+        trace = [BusOp(name="get", params=dict(get_params), at=time.time())]
+        plan = GetNode(op="get", params={"bus": "events", "params": dict(get_params)}, at=time.time())
+        return EventList(records, plugin_id=effective_plugin_id, trace=trace, plan=plan)
 
     def delete(self, event_id: str, timeout: float = 5.0) -> bool:
         if hasattr(self.ctx, "_enforce_sync_call_policy"):

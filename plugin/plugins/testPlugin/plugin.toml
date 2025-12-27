@@ -33,8 +33,8 @@ query = "hello"
 timeout = 5.0
 
 [debug.messages]
-enable = false
-delay_seconds = 5.0
+enable = true
+delay_seconds = 2.0
 plugin_id = "*"
 max_count = 50
 priority_min = 0

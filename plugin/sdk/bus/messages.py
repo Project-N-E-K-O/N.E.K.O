@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from plugin.core.state import state
 
-from .types import BusList, BusRecord
+from .types import BusList, BusOp, BusRecord, GetNode
 
 
 @dataclass(frozen=True)
@@ -81,36 +81,35 @@ class MessageRecord(BusRecord):
 
 
 class MessageList(BusList[MessageRecord]):
-    def __init__(self, items: Sequence[MessageRecord], *, plugin_id: Optional[str] = None):
-        super().__init__(items)
+    def __init__(
+        self,
+        items: Sequence[MessageRecord],
+        *,
+        plugin_id: Optional[str] = None,
+        trace: Optional[Sequence[BusOp]] = None,
+        plan: Optional[Any] = None,
+        fast_mode: bool = False,
+    ):
+        super().__init__(items, trace=trace, plan=plan, fast_mode=fast_mode)
         self.plugin_id = plugin_id
-
-    def filter(self, *args: Any, **kwargs: Any) -> "MessageList":
-        filtered = super().filter(*args, **kwargs)
-        return MessageList(filtered.dump_records(), plugin_id=self.plugin_id)
-
-    def where(self, predicate: Any) -> "MessageList":
-        filtered = super().where(predicate)
-        return MessageList(filtered.dump_records(), plugin_id=self.plugin_id)
-
-    def limit(self, n: int) -> "MessageList":
-        limited = super().limit(n)
-        return MessageList(limited.dump_records(), plugin_id=self.plugin_id)
 
     def merge(self, other: "MessageList") -> "MessageList":
         merged = super().merge(other)
         pid = self.plugin_id if self.plugin_id == other.plugin_id else "*"
-        return MessageList(merged.dump_records(), plugin_id=pid)
+        if getattr(merged, "plugin_id", None) == pid:
+            return merged
+        return MessageList(
+            merged.dump_records(),
+            plugin_id=pid,
+            trace=merged.trace,
+            plan=getattr(merged, "_plan", None),
+            fast_mode=merged.fast_mode,
+        )
 
     def __add__(self, other: "MessageList") -> "MessageList":
         return self.merge(other)
 
-    def sort(self, **kwargs: Any) -> "MessageList":
-        sorted_list = super().sort(**kwargs)
-        return MessageList(sorted_list.dump_records(), plugin_id=self.plugin_id)
 
-    def sorted(self, **kwargs: Any) -> "MessageList":
-        return self.sort(**kwargs)
 
 
 @dataclass
@@ -205,11 +204,19 @@ class MessageClient:
             else:
                 records.append(MessageRecord.from_raw({"content": item}))
 
+        get_params = {
+            "plugin_id": pid_norm,
+            "max_count": max_count,
+            "priority_min": priority_min,
+            "timeout": timeout,
+        }
+        trace = [BusOp(name="get", params=dict(get_params), at=time.time())]
+        plan = GetNode(op="get", params={"bus": "messages", "params": dict(get_params)}, at=time.time())
         if pid_norm == "*":
             effective_plugin_id = "*"
         else:
             effective_plugin_id = pid_norm if pid_norm else getattr(self.ctx, "plugin_id", None)
-        return MessageList(records, plugin_id=effective_plugin_id)
+        return MessageList(records, plugin_id=effective_plugin_id, trace=trace, plan=plan)
 
     def delete(self, message_id: str, timeout: float = 5.0) -> bool:
         if hasattr(self.ctx, "_enforce_sync_call_policy"):
