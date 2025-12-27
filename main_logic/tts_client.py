@@ -786,19 +786,30 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             time.sleep(0.01)
             continue
             
-        # 发送文本到 TTS
         try:
             synthesizer.streaming_call(tts_text)
-        except Exception as e:
-            print("TTS Call Error: ", e)
+        except Exception:
             if synthesizer is not None:
                 try:
                     synthesizer.close()
                 except Exception:
                     pass
-            synthesizer = None
-            current_speech_id = None
-            continue
+                synthesizer = None
+
+            try:
+                callback.construct_start_time = time.time()
+                synthesizer = SpeechSynthesizer(
+                    model="cosyvoice-v3-plus",
+                    voice=voice_id,
+                    speech_rate=1.1,
+                    format=AudioFormat.OGG_OPUS_48KHZ_MONO_64KBPS,
+                    callback=callback,
+                )
+                synthesizer.streaming_call(tts_text)
+            except Exception as reconnect_error:
+                print(f"TTS Reconnect Error: {reconnect_error}")
+                synthesizer = None
+                current_speech_id = None
 
 
 def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):

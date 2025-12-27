@@ -67,6 +67,7 @@ Live2DManager.prototype.createPopup = function (buttonId) {
 Live2DManager.prototype._createSettingsPopupContent = function (popup) {
     // 先添加 Focus 模式、主动搭话和自主视觉开关（在最上面）
     const settingsToggles = [
+        { id: 'merge-messages', label: window.t ? window.t('settings.toggles.mergeMessages') : '合并消息', labelKey: 'settings.toggles.mergeMessages' },
         { id: 'focus-mode', label: window.t ? window.t('settings.toggles.allowInterrupt') : '允许打断', labelKey: 'settings.toggles.allowInterrupt', storageKey: 'focusModeEnabled', inverted: true }, // inverted表示值与focusModeEnabled相反
         { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled' },
         { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '自主视觉', labelKey: 'settings.toggles.proactiveVision', storageKey: 'proactiveVisionEnabled' }
@@ -332,7 +333,11 @@ Live2DManager.prototype._createSettingsToggleItem = function (toggle, popup) {
     });
 
     // 从 window 获取当前状态（如果 app.js 已经初始化）
-    if (toggle.id === 'focus-mode' && typeof window.focusModeEnabled !== 'undefined') {
+    if (toggle.id === 'merge-messages') {
+        if (typeof window.mergeMessagesEnabled !== 'undefined') {
+            checkbox.checked = window.mergeMessagesEnabled;
+        }
+    } else if (toggle.id === 'focus-mode' && typeof window.focusModeEnabled !== 'undefined') {
         // inverted: 允许打断 = !focusModeEnabled（focusModeEnabled为true表示关闭打断）
         checkbox.checked = toggle.inverted ? !window.focusModeEnabled : window.focusModeEnabled;
     } else if (toggle.id === 'proactive-chat' && typeof window.proactiveChatEnabled !== 'undefined') {
@@ -432,7 +437,14 @@ Live2DManager.prototype._createSettingsToggleItem = function (toggle, popup) {
         updateStyle();
 
         // 同步到 app.js 中的对应开关（这样会触发 app.js 的完整逻辑）
-        if (toggle.id === 'focus-mode') {
+        if (toggle.id === 'merge-messages') {
+            window.mergeMessagesEnabled = isChecked;
+
+            // 保存到localStorage
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
+            }
+        } else if (toggle.id === 'focus-mode') {
             // inverted: "允许打断"的值需要取反后赋给 focusModeEnabled
             // 勾选"允许打断" = focusModeEnabled为false（允许打断）
             // 取消勾选"允许打断" = focusModeEnabled为true（focus模式，AI说话时静音麦克风）
