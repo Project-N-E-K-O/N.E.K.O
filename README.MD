@@ -89,7 +89,7 @@ QQ群：1022939659
 
 ### 1. 使用 docker-compose 部署 (目前唯一docker部署方案)
 
-#### docker-compose.yml （目前仅有amd64架构镜像）
+#### docker-compose.yml （全架构Dockeer镜像！！！）
 ```yaml
 version: '3.8'
 
