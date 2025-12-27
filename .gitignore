@@ -92,3 +92,7 @@ version_info.txt
 !SteamworksPy64.dll
 
 start_servers.bat
+
+# --- CosyVoice Ignore Rules ---
+local_server/cosyvoice_server/CosyVoice/pretrained_models/
+local_server/cosyvoice_server/CosyVoice/third_party/Matcha_TTS/
