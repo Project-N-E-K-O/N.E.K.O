@@ -5,6 +5,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Sequence
 
+from plugin.core.state import state
+
 from .types import BusList, BusRecord
 
 
@@ -120,8 +122,6 @@ class MemoryClient:
         check_interval = 0.01
         history: List[Any] = []
         while time.time() - start_time < timeout:
-            from plugin.core.state import state
-
             response = state.get_plugin_response(request_id)
             if response is None:
                 time.sleep(check_interval)
@@ -145,8 +145,6 @@ class MemoryClient:
         else:
             orphan_response = None
             try:
-                from plugin.core.state import state
-
                 orphan_response = state.get_plugin_response(request_id)
             except Exception:
                 orphan_response = None

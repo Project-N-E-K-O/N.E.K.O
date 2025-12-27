@@ -88,8 +88,8 @@ class HelloPlugin(NekoPluginBase):
                 burst_size,
                 max_count,
             )
-        except Exception as e:
-            self.file_logger.exception("Failed to start debug timer: {}", e)
+        except Exception:
+            self.file_logger.exception("Failed to start debug timer")
 
     def _startup_config_debug(self) -> None:
         time.sleep(0.8)
@@ -114,8 +114,8 @@ class HelloPlugin(NekoPluginBase):
                 priority=1,
                 content=str(result)[:2000] + ("...(truncated)" if len(str(result)) > 2000 else ""),
             )
-        except Exception as e:
-            self.file_logger.exception("Config debug failed: {}", e)
+        except Exception:
+            self.file_logger.exception("Config debug failed")
 
     def _startup_memory_debug(self) -> None:
         time.sleep(0.8)
@@ -143,8 +143,8 @@ class HelloPlugin(NekoPluginBase):
                 priority=1,
                 content=str(result),
             )
-        except Exception as e:
-            self.file_logger.exception("Memory debug failed: {}", e)
+        except Exception:
+            self.file_logger.exception("Memory debug failed")
 
     def _startup_messages_debug(self) -> None:
         time.sleep(0.8)
@@ -192,8 +192,8 @@ class HelloPlugin(NekoPluginBase):
                 priority=1,
                 content=str(payload)[:2000] + ("...(truncated)" if len(str(payload)) > 2000 else ""),
             )
-        except Exception as e:
-            self.file_logger.exception("Messages debug failed: {}", e)
+        except Exception:
+            self.file_logger.exception("Messages debug failed")
 
     @lifecycle(id="startup")
     def startup(self, **_):
@@ -359,58 +359,6 @@ class HelloPlugin(NekoPluginBase):
                 "query": query,
                 "count": len(memory_list),
                 "history": memory_list.dump(),
-                "filtered": filtered.dump(),
-            }
-        )
-
-    @plugin_entry(
-        id="messages_debug",
-        name="Messages Debug",
-        description="Debug message bus: query ctx.bus.messages for pushed messages",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "plugin_id": {"type": "string", "description": "Target plugin_id (optional)", "default": ""},
-                "max_count": {"type": "integer", "description": "Max messages to fetch", "default": 50},
-                "priority_min": {"type": "integer", "description": "Min priority (optional)", "default": 0},
-                "timeout": {"type": "number", "description": "Timeout seconds", "default": 5.0},
-                "source": {"type": "string", "description": "Filter by source (optional)", "default": ""},
-            },
-            "required": [],
-        },
-    )
-    def messages_debug(
-        self,
-        plugin_id: str = "",
-        max_count: int = 50,
-        priority_min: int = 0,
-        timeout: float = 5.0,
-        source: str = "",
-        **_,
-    ):
-        pid = str(plugin_id).strip() if plugin_id is not None else ""
-        pri = int(priority_min) if priority_min is not None else 0
-        pri_opt = pri if pri > 0 else None
-
-        msg_list = self.ctx.bus.messages.get(
-            plugin_id=pid or None,
-            max_count=int(max_count),
-            priority_min=pri_opt,
-            timeout=float(timeout),
-        )
-
-        src = str(source).strip() if source is not None else ""
-        filtered = msg_list
-        if src:
-            filtered = filtered.filter(source=src)
-
-        filtered = filtered.limit(10)
-
-        return ok(
-            data={
-                "plugin_id": pid or self.ctx.plugin_id,
-                "count": len(msg_list),
-                "messages": msg_list.dump(),
                 "filtered": filtered.dump(),
             }
         )

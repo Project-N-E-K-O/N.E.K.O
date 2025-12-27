@@ -3,7 +3,6 @@
 
 提供插件运行时上下文，包括状态更新和消息推送功能。
 """
-import asyncio
 import contextlib
 import contextvars
 import inspect
@@ -193,6 +192,85 @@ class PluginContext:
         except Exception as e:
             # 其他未知异常
             self.logger.exception(f"Unexpected error pushing message for plugin {self.plugin_id}: {e}")
+
+    def _send_request_and_wait(
+        self,
+        *,
+        method_name: str,
+        request_type: str,
+        request_data: Dict[str, Any],
+        timeout: float,
+        wrap_result: bool = True,
+        send_log_template: Optional[str] = None,
+        error_log_template: Optional[str] = None,
+        warn_on_orphan_response: bool = False,
+        orphan_warning_template: Optional[str] = None,
+    ) -> Any:
+        self._enforce_sync_call_policy(method_name)
+        if self._plugin_comm_queue is None:
+            raise RuntimeError(
+                f"Plugin communication queue not available for plugin {self.plugin_id}. "
+                "This method can only be called from within a plugin process."
+            )
+
+        request_id = str(uuid.uuid4())
+        request: Dict[str, Any] = {
+            "type": request_type,
+            "from_plugin": self.plugin_id,
+            "request_id": request_id,
+            "timeout": timeout,
+            **(request_data or {}),
+        }
+
+        try:
+            self._plugin_comm_queue.put(request, timeout=timeout)
+            if send_log_template:
+                self.logger.debug(
+                    send_log_template.format(
+                        request_id=request_id,
+                        from_plugin=self.plugin_id,
+                        **(request_data or {}),
+                    )
+                )
+        except Exception as e:
+            if error_log_template:
+                self.logger.error(error_log_template.format(error=e))
+            raise RuntimeError(f"Failed to send {request_type} request: {e}") from e
+
+        start_time = time.time()
+        check_interval = 0.01
+        while time.time() - start_time < timeout:
+            response = state.get_plugin_response(request_id)
+            if response is None:
+                time.sleep(check_interval)
+                continue
+            if not isinstance(response, dict):
+                time.sleep(check_interval)
+                continue
+
+            if response.get("error"):
+                raise RuntimeError(str(response.get("error")))
+
+            result = response.get("result")
+            if wrap_result:
+                return result if isinstance(result, dict) else {"result": result}
+            return result
+
+        orphan_response = None
+        try:
+            orphan_response = state.get_plugin_response(request_id)
+        except Exception:
+            orphan_response = None
+        if warn_on_orphan_response and orphan_response is not None:
+            if orphan_warning_template:
+                self.logger.warning(
+                    orphan_warning_template.format(
+                        request_id=request_id,
+                        from_plugin=self.plugin_id,
+                        **(request_data or {}),
+                    )
+                )
+        raise TimeoutError(f"{request_type} timed out after {timeout}s")
     
     def trigger_plugin_event(
         self,
@@ -223,314 +301,105 @@ class PluginContext:
             TimeoutError: 如果超时
             Exception: 如果事件执行失败
         """
-        # NOTE:
-        # 这是一个“同步等待结果”的跨插件调用接口。
-        # 它会在当前插件进程的单线程命令循环中阻塞等待响应，因此存在架构性限制。
-        # _enforce_sync_call_policy() 的意义是尽量避免在不安全的上下文（例如处理器/命令循环内部）调用，
-        # 否则会导致命令循环无法继续处理新消息/新命令，从而出现死锁或超时。
-        self._enforce_sync_call_policy("trigger_plugin_event")
-        if self._plugin_comm_queue is None:
-            raise RuntimeError(
-                f"Plugin communication queue not available for plugin {self.plugin_id}. "
-                "This method can only be called from within a plugin process."
-            )
-        
-        request_id = str(uuid.uuid4())
-        request = {
-            "type": "PLUGIN_TO_PLUGIN",
-            "from_plugin": self.plugin_id,
-            "to_plugin": target_plugin_id,
-            "event_type": event_type,
-            "event_id": event_id,
-            "args": args,
-            "request_id": request_id,
-            "timeout": timeout,
-        }
-        
-        # 发送请求到主进程的通信队列（multiprocessing.Queue，同步操作）
         try:
-            self._plugin_comm_queue.put(request, timeout=timeout)
-            self.logger.debug(
-                f"[PluginContext] Sent plugin communication request: {self.plugin_id} -> {target_plugin_id}, "
-                f"event={event_type}.{event_id}, req_id={request_id}"
+            return self._send_request_and_wait(
+                method_name="trigger_plugin_event",
+                request_type="PLUGIN_TO_PLUGIN",
+                request_data={
+                    "to_plugin": target_plugin_id,
+                    "event_type": event_type,
+                    "event_id": event_id,
+                    "args": args,
+                },
+                timeout=timeout,
+                wrap_result=False,
+                send_log_template=(
+                    "[PluginContext] Sent plugin communication request: {from_plugin} -> {to_plugin}, "
+                    "event={event_type}.{event_id}, req_id={request_id}"
+                ),
+                error_log_template="Failed to send plugin communication request: {error}",
+                warn_on_orphan_response=True,
+                orphan_warning_template=(
+                    "[PluginContext] Timeout reached, but response was found (likely delayed). "
+                    "Cleaned up orphan response for req_id={request_id}"
+                ),
             )
-        except Exception as e:
-            self.logger.error(f"Failed to send plugin communication request: {e}")
-            raise RuntimeError(f"Failed to send plugin communication request: {e}") from e
-        
-        # 等待响应（同步等待，因为这是在插件进程的单线程中）
-        # 主进程会将响应存储在响应映射中，通过 request_id 直接查询
-        # 
-        # 注意：这个等待会阻塞命令循环。如果命令循环正在处理一个命令，
-        # 而该命令内部调用了 trigger_plugin_event，那么命令循环无法处理
-        # 新的命令（包括响应命令），可能导致死锁或超时。
-        # 
-        # 根本原因：asyncio.run() 阻塞了命令循环，导致无法处理新命令
-        # 这里的风险并不是“轮询”本身，而是“同步阻塞”。
-        # 即使主进程已经把响应写入了共享状态，插件侧也需要持续运行命令循环
-        # 才能正常处理其他消息；一旦在处理器内调用本方法，就会把循环卡住。
-        start_time = time.time()
-        check_interval = 0.01  # 检查间隔（10ms），平衡响应速度和 CPU 占用
-        
-        while time.time() - start_time < timeout:
-            # 从响应映射中查询响应（避免共享队列的竞态条件）
-            # 通过 request_id 做 key，避免在同一条共享队列上多消费者竞争“拿错响应”。
-            # get_plugin_response() 通常是一次性读取（例如 pop）语义：
-            # 读到了就立刻消费掉，避免后续重复处理。
-            response = state.get_plugin_response(request_id)
-            
-            if response is not None:
-                if not isinstance(response, dict):
-                    self.logger.error(f"Invalid response type: {type(response)}")
-                    continue
-                # 找到我们的响应
-                if response.get("error"):
-                    error_msg = response.get("error")
-                    self.logger.error(
-                        f"[PluginContext] Plugin communication error: {error_msg}"
-                    )
-                    raise RuntimeError(error_msg)
-                else:
-                    result = response.get("result")
-                    self.logger.debug(
-                        f"[PluginContext] Received plugin communication response: "
-                        f"req_id={request_id}, result={result}"
-                    )
-                    return result
-            
-            # 等待一段时间后再次检查
-            # 注意：这个等待会阻塞命令循环，这是架构限制
-            # 问题的根本原因是 asyncio.run() 阻塞了命令循环
-            # 我们无法在等待期间处理命令，因为无法将 req_id 映射回 request_id
-            time.sleep(check_interval)
-        
-        # 超时：清理可能存在的响应（防止后续干扰）
-        # 尝试获取并丢弃响应（如果存在），避免成为孤儿响应
-        # NOTE:
-        # 这里的“清理”只能处理“超时发生前已经到达且还未被消费”的响应。
-        # 如果响应在超时之后才到达，那么本次调用已经抛出 TimeoutError，
-        # 调用者无法再拿到该响应；这段逻辑更多用于减少状态残留/日志提示，
-        # 并不能从根本上保证“不丢响应”。
-        orphan_response = state.get_plugin_response(request_id)
-        if orphan_response is not None:
-            self.logger.warning(
-                f"[PluginContext] Timeout reached, but response was found (likely delayed). "
-                f"Cleaned up orphan response for req_id={request_id}"
+        except TimeoutError:
+            raise TimeoutError(
+                f"Plugin {target_plugin_id} event {event_type}.{event_id} timed out after {timeout}s"
             )
-        
-        # 抛出超时异常
-        raise TimeoutError(
-            f"Plugin {target_plugin_id} event {event_type}.{event_id} timed out after {timeout}s"
-        )
 
     def query_plugins(self, filters: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
-        # NOTE:
-        # 这些“查询/配置/内存调用”方法共享同一套请求-响应模式：
-        # 1) 发送 request 到主进程的 _plugin_comm_queue
-        # 2) 通过 request_id 在 state 响应映射中轮询等待结果
-        # 该实现简单但重复度很高（DRY 问题）；任何逻辑调整都需要同步修改多处。
-        self._enforce_sync_call_policy("query_plugins")
-        if self._plugin_comm_queue is None:
-            raise RuntimeError(
-                f"Plugin communication queue not available for plugin {self.plugin_id}. "
-                "This method can only be called from within a plugin process."
-            )
-
-        request_id = str(uuid.uuid4())
-        request = {
-            "type": "PLUGIN_QUERY",
-            "from_plugin": self.plugin_id,
-            "request_id": request_id,
-            "filters": filters or {},
-            "timeout": timeout,
-        }
-
         try:
-            self._plugin_comm_queue.put(request, timeout=timeout)
-            self.logger.debug(
-                f"[PluginContext] Sent plugin query request: from={self.plugin_id}, req_id={request_id}"
+            return self._send_request_and_wait(
+                method_name="query_plugins",
+                request_type="PLUGIN_QUERY",
+                request_data={"filters": filters or {}},
+                timeout=timeout,
+                wrap_result=True,
+                send_log_template="[PluginContext] Sent plugin query request: from={from_plugin}, req_id={request_id}",
+                error_log_template="Failed to send plugin query request: {error}",
             )
-        except Exception as e:
-            self.logger.error(f"Failed to send plugin query request: {e}")
-            raise RuntimeError(f"Failed to send plugin query request: {e}") from e
-
-        start_time = time.time()
-        check_interval = 0.01
-        while time.time() - start_time < timeout:
-            # NOTE:
-            # 这里是同步轮询等待，会阻塞插件进程的单线程命令循环。
-            # 如果在处理器/命令循环内部调用该方法，可能导致循环无法继续处理新命令，
-            # 从而造成死锁或超时（与 trigger_plugin_event 同类风险）。
-            # 使用 state.get_plugin_response(request_id) 是为了避免共享队列多消费者竞争。
-            response = state.get_plugin_response(request_id)
-            if response is not None:
-                if response.get("error"):
-                    error_msg = response.get("error")
-                    self.logger.error(f"[PluginContext] Plugin query error: {error_msg}")
-                    raise RuntimeError(error_msg)
-                result = response.get("result")
-                return result if isinstance(result, dict) else {"result": result}
-            time.sleep(check_interval)
-
-        # NOTE:
-        # 超时后尝试消费一次可能已到达的响应，避免后续残留成为“孤儿响应”。
-        # 但如果响应在 TimeoutError 抛出之后才到达，调用者仍无法拿到结果。
-        _ = state.get_plugin_response(request_id)
-        raise TimeoutError(f"Plugin query timed out after {timeout}s")
+        except TimeoutError:
+            raise TimeoutError(f"Plugin query timed out after {timeout}s")
 
     def get_own_config(self, timeout: float = 5.0) -> Dict[str, Any]:
-        # NOTE: 与 query_plugins 相同的请求-响应轮询模式与同步阻塞风险。
-        self._enforce_sync_call_policy("get_own_config")
-        if self._plugin_comm_queue is None:
-            raise RuntimeError(
-                f"Plugin communication queue not available for plugin {self.plugin_id}. "
-                "This method can only be called from within a plugin process."
-            )
-
-        request_id = str(uuid.uuid4())
-        request = {
-            "type": "PLUGIN_CONFIG_GET",
-            "from_plugin": self.plugin_id,
-            "plugin_id": self.plugin_id,
-            "request_id": request_id,
-            "timeout": timeout,
-        }
-
         try:
-            self._plugin_comm_queue.put(request, timeout=timeout)
-        except Exception as e:
-            raise RuntimeError(f"Failed to send plugin config get request: {e}") from e
-
-        start_time = time.time()
-        check_interval = 0.01
-        while time.time() - start_time < timeout:
-            # 同步轮询等待响应（阻塞命令循环）；参见 query_plugins 中的说明。
-            response = state.get_plugin_response(request_id)
-            if response is not None:
-                if response.get("error"):
-                    raise RuntimeError(str(response.get("error")))
-                result = response.get("result")
-                return result if isinstance(result, dict) else {"result": result}
-            time.sleep(check_interval)
-
-        # 超时清理：消费残留响应（如果已到达）。
-        _ = state.get_plugin_response(request_id)
-        raise TimeoutError(f"Plugin config get timed out after {timeout}s")
+            return self._send_request_and_wait(
+                method_name="get_own_config",
+                request_type="PLUGIN_CONFIG_GET",
+                request_data={"plugin_id": self.plugin_id},
+                timeout=timeout,
+                wrap_result=True,
+                error_log_template=None,
+            )
+        except TimeoutError:
+            raise TimeoutError(f"Plugin config get timed out after {timeout}s")
 
     def get_system_config(self, timeout: float = 5.0) -> Dict[str, Any]:
-        # NOTE: 与 query_plugins 相同的请求-响应轮询模式与同步阻塞风险。
-        self._enforce_sync_call_policy("get_system_config")
-        if self._plugin_comm_queue is None:
-            raise RuntimeError(
-                f"Plugin communication queue not available for plugin {self.plugin_id}. "
-                "This method can only be called from within a plugin process."
-            )
-
-        request_id = str(uuid.uuid4())
-        request = {
-            "type": "PLUGIN_SYSTEM_CONFIG_GET",
-            "from_plugin": self.plugin_id,
-            "request_id": request_id,
-            "timeout": timeout,
-        }
-
         try:
-            self._plugin_comm_queue.put(request, timeout=timeout)
-        except Exception as e:
-            raise RuntimeError(f"Failed to send system config get request: {e}") from e
-
-        start_time = time.time()
-        check_interval = 0.01
-        while time.time() - start_time < timeout:
-            response = state.get_plugin_response(request_id)
-            if response is not None:
-                if response.get("error"):
-                    raise RuntimeError(str(response.get("error")))
-                result = response.get("result")
-                return result if isinstance(result, dict) else {"result": result}
-            time.sleep(check_interval)
-
-        # 超时清理：消费残留响应（如果已到达）。
-        _ = state.get_plugin_response(request_id)
-        raise TimeoutError(f"System config get timed out after {timeout}s")
+            return self._send_request_and_wait(
+                method_name="get_system_config",
+                request_type="PLUGIN_SYSTEM_CONFIG_GET",
+                request_data={},
+                timeout=timeout,
+                wrap_result=True,
+                error_log_template=None,
+            )
+        except TimeoutError:
+            raise TimeoutError(f"System config get timed out after {timeout}s")
 
     def query_memory(self, lanlan_name: str, query: str, timeout: float = 5.0) -> Dict[str, Any]:
-        # NOTE: 与 query_plugins 相同的请求-响应轮询模式与同步阻塞风险。
-        self._enforce_sync_call_policy("query_memory")
-        if self._plugin_comm_queue is None:
-            raise RuntimeError(
-                f"Plugin communication queue not available for plugin {self.plugin_id}. "
-                "This method can only be called from within a plugin process."
-            )
-
-        request_id = str(uuid.uuid4())
-        request = {
-            "type": "MEMORY_QUERY",
-            "from_plugin": self.plugin_id,
-            "request_id": request_id,
-            "lanlan_name": lanlan_name,
-            "query": query,
-            "timeout": timeout,
-        }
-
         try:
-            self._plugin_comm_queue.put(request, timeout=timeout)
-        except Exception as e:
-            raise RuntimeError(f"Failed to send memory query request: {e}") from e
-
-        start_time = time.time()
-        check_interval = 0.01
-        while time.time() - start_time < timeout:
-            response = state.get_plugin_response(request_id)
-            if response is not None:
-                if response.get("error"):
-                    raise RuntimeError(str(response.get("error")))
-                result = response.get("result")
-                return result if isinstance(result, dict) else {"result": result}
-            time.sleep(check_interval)
-
-        # 超时清理：消费残留响应（如果已到达）。
-        _ = state.get_plugin_response(request_id)
-        raise TimeoutError(f"Memory query timed out after {timeout}s")
+            return self._send_request_and_wait(
+                method_name="query_memory",
+                request_type="MEMORY_QUERY",
+                request_data={
+                    "lanlan_name": lanlan_name,
+                    "query": query,
+                },
+                timeout=timeout,
+                wrap_result=True,
+                error_log_template=None,
+            )
+        except TimeoutError:
+            raise TimeoutError(f"Memory query timed out after {timeout}s")
 
     def update_own_config(self, updates: Dict[str, Any], timeout: float = 10.0) -> Dict[str, Any]:
-        # NOTE: 与 query_plugins 相同的请求-响应轮询模式与同步阻塞风险。
-        self._enforce_sync_call_policy("update_own_config")
-        if self._plugin_comm_queue is None:
-            raise RuntimeError(
-                f"Plugin communication queue not available for plugin {self.plugin_id}. "
-                "This method can only be called from within a plugin process."
-            )
         if not isinstance(updates, dict):
             raise TypeError("updates must be a dict")
-
-        request_id = str(uuid.uuid4())
-        request = {
-            "type": "PLUGIN_CONFIG_UPDATE",
-            "from_plugin": self.plugin_id,
-            "plugin_id": self.plugin_id,
-            "updates": updates,
-            "request_id": request_id,
-            "timeout": timeout,
-        }
-
         try:
-            self._plugin_comm_queue.put(request, timeout=timeout)
-        except Exception as e:
-            raise RuntimeError(f"Failed to send plugin config update request: {e}") from e
-
-        start_time = time.time()
-        check_interval = 0.01
-        while time.time() - start_time < timeout:
-            response = state.get_plugin_response(request_id)
-            if response is not None:
-                if response.get("error"):
-                    raise RuntimeError(str(response.get("error")))
-                result = response.get("result")
-                return result if isinstance(result, dict) else {"result": result}
-            time.sleep(check_interval)
-
-        # 超时清理：消费残留响应（如果已到达）。
-        _ = state.get_plugin_response(request_id)
-        raise TimeoutError(f"Plugin config update timed out after {timeout}s")
+            return self._send_request_and_wait(
+                method_name="update_own_config",
+                request_type="PLUGIN_CONFIG_UPDATE",
+                request_data={
+                    "plugin_id": self.plugin_id,
+                    "updates": updates,
+                },
+                timeout=timeout,
+                wrap_result=True,
+                error_log_template=None,
+            )
+        except TimeoutError:
+            raise TimeoutError(f"Plugin config update timed out after {timeout}s")
 

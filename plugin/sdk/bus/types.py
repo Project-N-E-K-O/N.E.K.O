@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Generic, Iterable, Iterator, List, Optional, Sequence, TypeVar
+import re
+from typing import Any, Callable, Dict, Generic, Iterator, List, Optional, Sequence, TypeVar
 
 
 TRecord = TypeVar("TRecord", bound="BusRecord")
@@ -13,6 +14,11 @@ class BusFilter:
     type: Optional[str] = None
     plugin_id: Optional[str] = None
     source: Optional[str] = None
+    kind_re: Optional[str] = None
+    type_re: Optional[str] = None
+    plugin_id_re: Optional[str] = None
+    source_re: Optional[str] = None
+    content_re: Optional[str] = None
     priority_min: Optional[int] = None
     since_ts: Optional[float] = None
     until_ts: Optional[float] = None
@@ -58,6 +64,12 @@ class BusList(Generic[TRecord]):
     def __len__(self) -> int:
         return len(self._items)
 
+    def count(self) -> int:
+        return len(self._items)
+
+    def size(self) -> int:
+        return len(self._items)
+
     def __getitem__(self, idx: int) -> TRecord:
         return self._items[idx]
 
@@ -71,6 +83,16 @@ class BusList(Generic[TRecord]):
         if flt is None:
             flt = BusFilter(**kwargs)
 
+        def _re_ok(pattern: Optional[str], value: Optional[str]) -> bool:
+            if pattern is None:
+                return True
+            if value is None:
+                return False
+            try:
+                return re.search(pattern, value) is not None
+            except re.error:
+                return False
+
         def _match(x: BusRecord) -> bool:
             if flt.kind is not None and x.kind != flt.kind:
                 return False
@@ -79,6 +101,16 @@ class BusList(Generic[TRecord]):
             if flt.plugin_id is not None and x.plugin_id != flt.plugin_id:
                 return False
             if flt.source is not None and x.source != flt.source:
+                return False
+            if not _re_ok(flt.kind_re, x.kind):
+                return False
+            if not _re_ok(flt.type_re, x.type):
+                return False
+            if not _re_ok(flt.plugin_id_re, x.plugin_id):
+                return False
+            if not _re_ok(flt.source_re, x.source):
+                return False
+            if not _re_ok(flt.content_re, x.content):
                 return False
             if flt.priority_min is not None and int(x.priority) < int(flt.priority_min):
                 return False

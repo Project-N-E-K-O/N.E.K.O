@@ -35,7 +35,7 @@ class MessageRecord(BusRecord):
         priority = payload.get("priority", 0)
         try:
             priority = int(priority)
-        except Exception:
+        except (ValueError, TypeError):
             priority = 0
 
         content = payload.get("content")
@@ -148,7 +148,7 @@ class MessageClient:
         check_interval = 0.01
         messages: List[Any] = []
         while time.time() - start_time < timeout:
-            # NOTE: 同步轮询等待响应；每次循环 sleep 一小段时间以避免占满 CPU。
+            # NOTE: 同步轮询等待响应; 每次循环 sleep 一小段时间以避免占满 CPU。
             response = state.get_plugin_response(req_id)
             if response is None:
                 time.sleep(check_interval)
@@ -168,6 +168,19 @@ class MessageClient:
                 messages = []
             break
         else:
+            orphan_response = None
+            try:
+                orphan_response = state.get_plugin_response(req_id)
+            except Exception:
+                orphan_response = None
+            if orphan_response is not None and hasattr(self.ctx, "logger"):
+                try:
+                    self.ctx.logger.warning(
+                        f"[PluginContext] Timeout reached, but response was found (likely delayed). "
+                        f"Cleaned up orphan response for req_id={req_id}"
+                    )
+                except Exception:
+                    pass
             raise TimeoutError(f"MESSAGE_GET timed out after {timeout}s")
 
         records: List[MessageRecord] = []
