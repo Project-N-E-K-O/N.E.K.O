@@ -1126,13 +1126,16 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             return ws
 
         async def send_text_to_server(ws_conn, text):
+            nonlocal ws
             payload = {
                 "header": {"action": "run-task", "task_id": str(uuid.uuid4())},
                 "payload": {"input": {"text": text}}
             }
             try:
                 if ws_conn is None:
-                    await ensure_connection()
+                    # await ensure_connection()
+                    ws_conn = await ensure_connection()
+                    ws = ws_conn # 同步更新外层ws
                 await ws_conn.send(json.dumps(payload))
                 logger.info(f"发送合成片段: {text}")
             except Exception as e:
