@@ -5,6 +5,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 
+from plugin.core.state import state
+
 from .types import BusList, BusRecord
 
 
@@ -146,13 +148,13 @@ class MessageClient:
         check_interval = 0.01
         messages: List[Any] = []
         while time.time() - start_time < timeout:
-            from plugin.core.state import state
-
+            # NOTE: 同步轮询等待响应；每次循环 sleep 一小段时间以避免占满 CPU。
             response = state.get_plugin_response(req_id)
             if response is None:
                 time.sleep(check_interval)
                 continue
             if not isinstance(response, dict):
+                time.sleep(check_interval)
                 continue
             if response.get("error"):
                 raise RuntimeError(str(response.get("error")))

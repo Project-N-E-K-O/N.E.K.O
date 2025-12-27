@@ -19,6 +19,7 @@ from typing import Any, Dict, Optional
 from fastapi import FastAPI
 
 from plugin.api.exceptions import PluginEntryNotFoundError, PluginError
+from plugin.core.state import state
 from plugin.settings import EVENT_META_ATTR
 
 
@@ -222,6 +223,11 @@ class PluginContext:
             TimeoutError: 如果超时
             Exception: 如果事件执行失败
         """
+        # NOTE:
+        # 这是一个“同步等待结果”的跨插件调用接口。
+        # 它会在当前插件进程的单线程命令循环中阻塞等待响应，因此存在架构性限制。
+        # _enforce_sync_call_policy() 的意义是尽量避免在不安全的上下文（例如处理器/命令循环内部）调用，
+        # 否则会导致命令循环无法继续处理新消息/新命令，从而出现死锁或超时。
         self._enforce_sync_call_policy("trigger_plugin_event")
         if self._plugin_comm_queue is None:
             raise RuntimeError(
@@ -260,12 +266,17 @@ class PluginContext:
         # 新的命令（包括响应命令），可能导致死锁或超时。
         # 
         # 根本原因：asyncio.run() 阻塞了命令循环，导致无法处理新命令
+        # 这里的风险并不是“轮询”本身，而是“同步阻塞”。
+        # 即使主进程已经把响应写入了共享状态，插件侧也需要持续运行命令循环
+        # 才能正常处理其他消息；一旦在处理器内调用本方法，就会把循环卡住。
         start_time = time.time()
         check_interval = 0.01  # 检查间隔（10ms），平衡响应速度和 CPU 占用
         
         while time.time() - start_time < timeout:
             # 从响应映射中查询响应（避免共享队列的竞态条件）
-            from plugin.core.state import state
+            # 通过 request_id 做 key，避免在同一条共享队列上多消费者竞争“拿错响应”。
+            # get_plugin_response() 通常是一次性读取（例如 pop）语义：
+            # 读到了就立刻消费掉，避免后续重复处理。
             response = state.get_plugin_response(request_id)
             
             if response is not None:
@@ -294,8 +305,12 @@ class PluginContext:
             time.sleep(check_interval)
         
         # 超时：清理可能存在的响应（防止后续干扰）
-        from plugin.core.state import state
         # 尝试获取并丢弃响应（如果存在），避免成为孤儿响应
+        # NOTE:
+        # 这里的“清理”只能处理“超时发生前已经到达且还未被消费”的响应。
+        # 如果响应在超时之后才到达，那么本次调用已经抛出 TimeoutError，
+        # 调用者无法再拿到该响应；这段逻辑更多用于减少状态残留/日志提示，
+        # 并不能从根本上保证“不丢响应”。
         orphan_response = state.get_plugin_response(request_id)
         if orphan_response is not None:
             self.logger.warning(
@@ -309,6 +324,11 @@ class PluginContext:
         )
 
     def query_plugins(self, filters: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
+        # NOTE:
+        # 这些“查询/配置/内存调用”方法共享同一套请求-响应模式：
+        # 1) 发送 request 到主进程的 _plugin_comm_queue
+        # 2) 通过 request_id 在 state 响应映射中轮询等待结果
+        # 该实现简单但重复度很高（DRY 问题）；任何逻辑调整都需要同步修改多处。
         self._enforce_sync_call_policy("query_plugins")
         if self._plugin_comm_queue is None:
             raise RuntimeError(
@@ -337,7 +357,11 @@ class PluginContext:
         start_time = time.time()
         check_interval = 0.01
         while time.time() - start_time < timeout:
-            from plugin.core.state import state
+            # NOTE:
+            # 这里是同步轮询等待，会阻塞插件进程的单线程命令循环。
+            # 如果在处理器/命令循环内部调用该方法，可能导致循环无法继续处理新命令，
+            # 从而造成死锁或超时（与 trigger_plugin_event 同类风险）。
+            # 使用 state.get_plugin_response(request_id) 是为了避免共享队列多消费者竞争。
             response = state.get_plugin_response(request_id)
             if response is not None:
                 if response.get("error"):
@@ -348,11 +372,14 @@ class PluginContext:
                 return result if isinstance(result, dict) else {"result": result}
             time.sleep(check_interval)
 
-        from plugin.core.state import state
+        # NOTE:
+        # 超时后尝试消费一次可能已到达的响应，避免后续残留成为“孤儿响应”。
+        # 但如果响应在 TimeoutError 抛出之后才到达，调用者仍无法拿到结果。
         _ = state.get_plugin_response(request_id)
         raise TimeoutError(f"Plugin query timed out after {timeout}s")
 
     def get_own_config(self, timeout: float = 5.0) -> Dict[str, Any]:
+        # NOTE: 与 query_plugins 相同的请求-响应轮询模式与同步阻塞风险。
         self._enforce_sync_call_policy("get_own_config")
         if self._plugin_comm_queue is None:
             raise RuntimeError(
@@ -377,7 +404,7 @@ class PluginContext:
         start_time = time.time()
         check_interval = 0.01
         while time.time() - start_time < timeout:
-            from plugin.core.state import state
+            # 同步轮询等待响应（阻塞命令循环）；参见 query_plugins 中的说明。
             response = state.get_plugin_response(request_id)
             if response is not None:
                 if response.get("error"):
@@ -386,11 +413,12 @@ class PluginContext:
                 return result if isinstance(result, dict) else {"result": result}
             time.sleep(check_interval)
 
-        from plugin.core.state import state
+        # 超时清理：消费残留响应（如果已到达）。
         _ = state.get_plugin_response(request_id)
         raise TimeoutError(f"Plugin config get timed out after {timeout}s")
 
     def get_system_config(self, timeout: float = 5.0) -> Dict[str, Any]:
+        # NOTE: 与 query_plugins 相同的请求-响应轮询模式与同步阻塞风险。
         self._enforce_sync_call_policy("get_system_config")
         if self._plugin_comm_queue is None:
             raise RuntimeError(
@@ -414,7 +442,6 @@ class PluginContext:
         start_time = time.time()
         check_interval = 0.01
         while time.time() - start_time < timeout:
-            from plugin.core.state import state
             response = state.get_plugin_response(request_id)
             if response is not None:
                 if response.get("error"):
@@ -423,11 +450,12 @@ class PluginContext:
                 return result if isinstance(result, dict) else {"result": result}
             time.sleep(check_interval)
 
-        from plugin.core.state import state
+        # 超时清理：消费残留响应（如果已到达）。
         _ = state.get_plugin_response(request_id)
         raise TimeoutError(f"System config get timed out after {timeout}s")
 
     def query_memory(self, lanlan_name: str, query: str, timeout: float = 5.0) -> Dict[str, Any]:
+        # NOTE: 与 query_plugins 相同的请求-响应轮询模式与同步阻塞风险。
         self._enforce_sync_call_policy("query_memory")
         if self._plugin_comm_queue is None:
             raise RuntimeError(
@@ -453,7 +481,6 @@ class PluginContext:
         start_time = time.time()
         check_interval = 0.01
         while time.time() - start_time < timeout:
-            from plugin.core.state import state
             response = state.get_plugin_response(request_id)
             if response is not None:
                 if response.get("error"):
@@ -462,11 +489,12 @@ class PluginContext:
                 return result if isinstance(result, dict) else {"result": result}
             time.sleep(check_interval)
 
-        from plugin.core.state import state
+        # 超时清理：消费残留响应（如果已到达）。
         _ = state.get_plugin_response(request_id)
         raise TimeoutError(f"Memory query timed out after {timeout}s")
 
     def update_own_config(self, updates: Dict[str, Any], timeout: float = 10.0) -> Dict[str, Any]:
+        # NOTE: 与 query_plugins 相同的请求-响应轮询模式与同步阻塞风险。
         self._enforce_sync_call_policy("update_own_config")
         if self._plugin_comm_queue is None:
             raise RuntimeError(
@@ -494,7 +522,6 @@ class PluginContext:
         start_time = time.time()
         check_interval = 0.01
         while time.time() - start_time < timeout:
-            from plugin.core.state import state
             response = state.get_plugin_response(request_id)
             if response is not None:
                 if response.get("error"):
@@ -503,7 +530,7 @@ class PluginContext:
                 return result if isinstance(result, dict) else {"result": result}
             time.sleep(check_interval)
 
-        from plugin.core.state import state
+        # 超时清理：消费残留响应（如果已到达）。
         _ = state.get_plugin_response(request_id)
         raise TimeoutError(f"Plugin config update timed out after {timeout}s")
 
