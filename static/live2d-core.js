@@ -113,9 +113,16 @@ class Live2DManager {
 
     // 初始化 PIXI 应用
     async initPIXI(canvasId, containerId, options = {}) {
-        if (this.isInitialized) {
+        // 如果已经初始化但pixi_app丢失了，允许重新初始化
+        if (this.isInitialized && this.pixi_app) {
             console.warn('Live2D 管理器已经初始化');
             return this.pixi_app;
+        }
+        
+        // 如果pixi_app丢失了，重置初始化状态
+        if (this.isInitialized && !this.pixi_app) {
+            console.warn('Live2D 管理器已初始化但pixi_app丢失，重新初始化...');
+            this.isInitialized = false;
         }
 
         const defaultOptions = {
