@@ -386,76 +386,62 @@ def get_messages_from_queue(
     """
     if max_count is None:
         max_count = MESSAGE_QUEUE_DEFAULT_MAX_COUNT
-    
-    # 先把当前队列内容全部取出
-    remaining: List[Dict[str, Any]] = []
+
+    # Drain queue into store (queue is an ingestion channel; store is the authoritative history)
     while True:
         try:
             msg = state.message_queue.get_nowait()
-            remaining.append(msg)
         except asyncio.QueueEmpty:
             break
-    
-    # 在内存里按顺序过滤 + 构造返回
-    messages: List[Dict[str, Any]] = []
-    kept: List[Dict[str, Any]] = []
-    count = 0
-    
-    for msg in remaining:
-        if count < max_count:
-            # 过滤插件ID
-            if plugin_id and msg.get("plugin_id") != plugin_id:
-                kept.append(msg)
-                continue
-            
-            # 过滤优先级
-            if priority_min is not None:
-                msg_priority = msg.get("priority", 0)
-                if msg_priority < priority_min:
-                    kept.append(msg)
+
+        if not isinstance(msg, dict):
+            continue
+
+        # Ensure stable message_id
+        if not isinstance(msg.get("message_id"), str) or not msg.get("message_id"):
+            msg = dict(msg)
+            msg["message_id"] = str(uuid.uuid4())
+
+        # Normalize timestamp
+        if not isinstance(msg.get("time"), str) or not msg.get("time"):
+            msg = dict(msg)
+            msg["time"] = now_iso()
+
+        state.append_message_record(msg)
+
+    all_msgs = state.list_message_records()
+    filtered: List[Dict[str, Any]] = []
+    for msg in all_msgs:
+        if plugin_id and msg.get("plugin_id") != plugin_id:
+            continue
+        if priority_min is not None:
+            try:
+                if int(msg.get("priority", 0)) < int(priority_min):
                     continue
-            
-            # 命中的消息构建 PluginPushMessage
-            message_id = str(uuid.uuid4())
-            plugin_message = PluginPushMessage(
-                plugin_id=msg.get("plugin_id", ""),
-                source=msg.get("source", ""),
-                description=msg.get("description", ""),
-                priority=msg.get("priority", 0),
-                message_type=msg.get("message_type", "text"),
-                content=msg.get("content"),
-                binary_data=msg.get("binary_data"),
-                binary_url=msg.get("binary_url"),
-                metadata=msg.get("metadata", {}),
-                timestamp=msg.get("time", now_iso()),
-                message_id=message_id,
-            )
-            message_dict = plugin_message.model_dump()
-            messages.append(message_dict)
-            
-            # 服务器终端日志输出
-            content_str = _format_log_text(msg.get("content") or "")
-            logger.info(
-                f"[MESSAGE] Plugin: {msg.get('plugin_id', 'unknown')} | "
-                f"Source: {msg.get('source', 'unknown')} | "
-                f"Priority: {msg.get('priority', 0)} | "
-                f"Description: {msg.get('description', '')} | "
-                f"Content: {content_str}"
-            )
-            
-            count += 1
-        else:
-            # 已达到最大数量，剩余消息保留
-            kept.append(msg)
-    
-    # 未消费的消息按原顺序放回队列
-    for msg in kept:
-        try:
-            state.message_queue.put_nowait(msg)
-        except asyncio.QueueFull:
-            logger.warning("Message queue is full when re-queueing filtered messages, dropping")
-            break
-    
+            except Exception:
+                continue
+        filtered.append(msg)
+
+    if len(filtered) > max_count:
+        filtered = filtered[-max_count:]
+
+    messages: List[Dict[str, Any]] = []
+    for msg in filtered:
+        plugin_message = PluginPushMessage(
+            plugin_id=msg.get("plugin_id", ""),
+            source=msg.get("source", ""),
+            description=msg.get("description", ""),
+            priority=msg.get("priority", 0),
+            message_type=msg.get("message_type", "text"),
+            content=msg.get("content"),
+            binary_data=msg.get("binary_data"),
+            binary_url=msg.get("binary_url"),
+            metadata=msg.get("metadata", {}),
+            timestamp=msg.get("time", now_iso()),
+            message_id=msg.get("message_id"),
+        )
+        messages.append(plugin_message.model_dump())
+
     return messages
 
 
@@ -475,39 +461,40 @@ def get_events_from_queue(
     if max_count is None:
         max_count = MESSAGE_QUEUE_DEFAULT_MAX_COUNT
 
-    remaining: List[Dict[str, Any]] = []
     while True:
         try:
             ev = state.event_queue.get_nowait()
-            if isinstance(ev, dict):
-                remaining.append(ev)
-            else:
-                remaining.append({"type": "UNKNOWN", "raw": ev})
         except asyncio.QueueEmpty:
             break
 
-    events: List[Dict[str, Any]] = []
-    kept: List[Dict[str, Any]] = []
-    count = 0
+        if not isinstance(ev, dict):
+            continue
 
-    for ev in remaining:
-        if count < max_count:
-            if plugin_id and ev.get("plugin_id") != plugin_id:
-                kept.append(ev)
-                continue
-            events.append(ev)
-            count += 1
-        else:
-            kept.append(ev)
+        if not isinstance(ev.get("trace_id"), str) or not ev.get("trace_id"):
+            ev = dict(ev)
+            ev["trace_id"] = str(uuid.uuid4())
 
-    for ev in kept:
-        try:
-            state.event_queue.put_nowait(ev)
-        except asyncio.QueueFull:
-            logger.warning("Event queue is full when re-queueing filtered events, dropping")
-            break
+        # Stable event_id alias
+        if not isinstance(ev.get("event_id"), str) or not ev.get("event_id"):
+            ev = dict(ev)
+            ev["event_id"] = ev.get("trace_id")
 
-    return events
+        if not isinstance(ev.get("received_at"), str) or not ev.get("received_at"):
+            ev = dict(ev)
+            ev["received_at"] = now_iso()
+
+        state.append_event_record(ev)
+
+    all_events = state.list_event_records()
+    filtered: List[Dict[str, Any]] = []
+    for ev in all_events:
+        if plugin_id and ev.get("plugin_id") != plugin_id:
+            continue
+        filtered.append(ev)
+
+    if len(filtered) > max_count:
+        filtered = filtered[-max_count:]
+    return filtered
 
 
 def get_lifecycle_from_queue(
@@ -517,39 +504,51 @@ def get_lifecycle_from_queue(
     if max_count is None:
         max_count = MESSAGE_QUEUE_DEFAULT_MAX_COUNT
 
-    remaining: List[Dict[str, Any]] = []
     while True:
         try:
             ev = state.lifecycle_queue.get_nowait()
-            if isinstance(ev, dict):
-                remaining.append(ev)
-            else:
-                remaining.append({"type": "UNKNOWN", "raw": ev})
         except asyncio.QueueEmpty:
             break
 
-    events: List[Dict[str, Any]] = []
-    kept: List[Dict[str, Any]] = []
-    count = 0
+        if not isinstance(ev, dict):
+            continue
 
-    for ev in remaining:
-        if count < max_count:
-            if plugin_id and ev.get("plugin_id") != plugin_id:
-                kept.append(ev)
-                continue
-            events.append(ev)
-            count += 1
-        else:
-            kept.append(ev)
+        if not isinstance(ev.get("trace_id"), str) or not ev.get("trace_id"):
+            ev = dict(ev)
+            ev["trace_id"] = str(uuid.uuid4())
 
-    for ev in kept:
-        try:
-            state.lifecycle_queue.put_nowait(ev)
-        except asyncio.QueueFull:
-            logger.warning("Lifecycle queue is full when re-queueing filtered events, dropping")
-            break
+        if not isinstance(ev.get("lifecycle_id"), str) or not ev.get("lifecycle_id"):
+            ev = dict(ev)
+            ev["lifecycle_id"] = ev.get("trace_id")
 
-    return events
+        if not isinstance(ev.get("time"), str) or not ev.get("time"):
+            ev = dict(ev)
+            ev["time"] = now_iso()
+
+        state.append_lifecycle_record(ev)
+
+    all_events = state.list_lifecycle_records()
+    filtered: List[Dict[str, Any]] = []
+    for ev in all_events:
+        if plugin_id and ev.get("plugin_id") != plugin_id:
+            continue
+        filtered.append(ev)
+
+    if len(filtered) > max_count:
+        filtered = filtered[-max_count:]
+    return filtered
+
+
+def delete_message_from_store(message_id: str) -> bool:
+    return state.delete_message(message_id)
+
+
+def delete_event_from_store(event_id: str) -> bool:
+    return state.delete_event(event_id)
+
+
+def delete_lifecycle_from_store(lifecycle_id: str) -> bool:
+    return state.delete_lifecycle(lifecycle_id)
 
 
 def push_message_to_queue(
@@ -572,6 +571,7 @@ def push_message_to_queue(
     message_id = str(uuid.uuid4())
     message = {
         "type": "MESSAGE_PUSH",
+        "message_id": message_id,
         "plugin_id": plugin_id,
         "source": source,
         "description": description,
@@ -586,6 +586,7 @@ def push_message_to_queue(
     
     try:
         state.message_queue.put_nowait(message)
+        state.append_message_record(message)
         logger.info(
             f"[MESSAGE PUSH] Plugin: {plugin_id} | "
             f"Source: {source} | "
@@ -631,6 +632,15 @@ def _enqueue_event(event: Dict[str, Any]) -> None:
     try:
         if state.event_queue:
             state.event_queue.put_nowait(event)
+        if isinstance(event, dict):
+            ev = dict(event)
+            if not isinstance(ev.get("trace_id"), str) or not ev.get("trace_id"):
+                ev["trace_id"] = str(uuid.uuid4())
+            if not isinstance(ev.get("event_id"), str) or not ev.get("event_id"):
+                ev["event_id"] = ev.get("trace_id")
+            if not isinstance(ev.get("received_at"), str) or not ev.get("received_at"):
+                ev["received_at"] = now_iso()
+            state.append_event_record(ev)
     except asyncio.QueueFull:
         try:
             state.event_queue.get_nowait()
@@ -651,6 +661,15 @@ def _enqueue_lifecycle(event: Dict[str, Any]) -> None:
     try:
         if state.lifecycle_queue:
             state.lifecycle_queue.put_nowait(event)
+        if isinstance(event, dict):
+            ev = dict(event)
+            if not isinstance(ev.get("trace_id"), str) or not ev.get("trace_id"):
+                ev["trace_id"] = str(uuid.uuid4())
+            if not isinstance(ev.get("lifecycle_id"), str) or not ev.get("lifecycle_id"):
+                ev["lifecycle_id"] = ev.get("trace_id")
+            if not isinstance(ev.get("time"), str) or not ev.get("time"):
+                ev["time"] = now_iso()
+            state.append_lifecycle_record(ev)
     except asyncio.QueueFull:
         try:
             state.lifecycle_queue.get_nowait()

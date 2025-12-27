@@ -97,6 +97,21 @@ class MessageList(BusList[MessageRecord]):
         limited = super().limit(n)
         return MessageList(limited.dump_records(), plugin_id=self.plugin_id)
 
+    def merge(self, other: "MessageList") -> "MessageList":
+        merged = super().merge(other)
+        pid = self.plugin_id if self.plugin_id == other.plugin_id else "*"
+        return MessageList(merged.dump_records(), plugin_id=pid)
+
+    def __add__(self, other: "MessageList") -> "MessageList":
+        return self.merge(other)
+
+    def sort(self, **kwargs: Any) -> "MessageList":
+        sorted_list = super().sort(**kwargs)
+        return MessageList(sorted_list.dump_records(), plugin_id=self.plugin_id)
+
+    def sorted(self, **kwargs: Any) -> "MessageList":
+        return self.sort(**kwargs)
+
 
 @dataclass
 class MessageClient:
@@ -195,3 +210,53 @@ class MessageClient:
         else:
             effective_plugin_id = pid_norm if pid_norm else getattr(self.ctx, "plugin_id", None)
         return MessageList(records, plugin_id=effective_plugin_id)
+
+    def delete(self, message_id: str, timeout: float = 5.0) -> bool:
+        if hasattr(self.ctx, "_enforce_sync_call_policy"):
+            self.ctx._enforce_sync_call_policy("bus.messages.delete")
+
+        plugin_comm_queue = getattr(self.ctx, "_plugin_comm_queue", None)
+        if plugin_comm_queue is None:
+            raise RuntimeError(
+                f"Plugin communication queue not available for plugin {getattr(self.ctx, 'plugin_id', 'unknown')}. "
+                "This method can only be called from within a plugin process."
+            )
+
+        mid = str(message_id).strip() if message_id is not None else ""
+        if not mid:
+            raise ValueError("message_id is required")
+
+        req_id = str(uuid.uuid4())
+        request = {
+            "type": "MESSAGE_DEL",
+            "from_plugin": getattr(self.ctx, "plugin_id", ""),
+            "request_id": req_id,
+            "message_id": mid,
+            "timeout": float(timeout),
+        }
+
+        try:
+            plugin_comm_queue.put(request, timeout=timeout)
+        except Exception as e:
+            raise RuntimeError(f"Failed to send MESSAGE_DEL request: {e}") from e
+
+        start_time = time.time()
+        check_interval = 0.01
+        while time.time() - start_time < timeout:
+            response = state.get_plugin_response(req_id)
+            if response is None:
+                time.sleep(check_interval)
+                continue
+            if not isinstance(response, dict):
+                time.sleep(check_interval)
+                continue
+            if response.get("error"):
+                raise RuntimeError(str(response.get("error")))
+
+            result = response.get("result")
+            if isinstance(result, dict):
+                return bool(result.get("deleted"))
+            return False
+
+        _ = state.get_plugin_response(req_id)
+        raise TimeoutError(f"MESSAGE_DEL timed out after {timeout}s")

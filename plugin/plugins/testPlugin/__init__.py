@@ -167,6 +167,25 @@ class HelloPlugin(NekoPluginBase):
             source = str(msg_cfg.get("source", "")).strip()
 
             pri_opt = priority_min if priority_min > 0 else None
+
+            sent_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            seed_source = "testPlugin.simple.seed"
+            for n in (1, 2, 3, 4):
+                self.ctx.push_message(
+                    source=seed_source,
+                    message_type="text",
+                    description=f"seed number {n}",
+                    priority=n,
+                    content=str(n),
+                    metadata={
+                        "seed": True,
+                        "n": n,
+                        "sent_at": sent_at,
+                    },
+                )
+
+            time.sleep(float(msg_cfg.get("seed_settle_seconds", 0.1)))
+
             msg_list = self.ctx.bus.messages.get(
                 plugin_id=plugin_id or None,
                 max_count=max_count,
@@ -179,18 +198,49 @@ class HelloPlugin(NekoPluginBase):
                 filtered = filtered.filter(source=source)
             filtered = filtered.limit(10)
 
-            payload = {
-                "plugin_id": plugin_id or self.ctx.plugin_id,
-                "count": len(msg_list),
-                "messages": msg_list.dump(),
-                "filtered": filtered.dump(),
-            }
-            self.ctx.push_message(
-                source="testPlugin.debug.messages",
-                message_type="text",
-                description="messages bus debug result",
-                priority=1,
-                content=str(payload)[:2000] + ("...(truncated)" if len(str(payload)) > 2000 else ""),
+            seed = msg_list.filter(source=seed_source, strict=False)
+
+            def _as_int(rec) -> int:
+                try:
+                    return int(str(getattr(rec, "content", "")).strip())
+                except Exception:
+                    return 0
+
+            def _nums(lst) -> list[int]:
+                return [
+                    _as_int(x)
+                    for x in lst.dump_records()
+                    if str(getattr(x, "content", "")).strip().lstrip("-").isdigit()
+                ]
+
+            set_a = seed.where(lambda r: _as_int(r) in (1, 2, 3))
+            set_b = seed.where(lambda r: _as_int(r) in (2, 3, 4))
+
+            union_ab = set_a + set_b
+            inter_ab = set_a & set_b
+
+            union_sorted = union_ab.sort(key=_as_int, reverse=False)
+            inter_sorted = inter_ab.sort(key=_as_int, reverse=False)
+
+            seed_nums = _nums(seed)
+            a_nums = _nums(set_a)
+            b_nums = _nums(set_b)
+            u_nums = _nums(union_sorted)
+            i_nums = _nums(inter_sorted)
+
+            # Use ctx-provided logger to avoid stdout spam.
+            self.file_logger.info(
+                "[messages_debug] seed={}({}) A={}({}) B={}({}) U={}({}) I={}({})",
+                seed_nums,
+                len(seed),
+                a_nums,
+                len(set_a),
+                b_nums,
+                len(set_b),
+                u_nums,
+                len(union_ab),
+                i_nums,
+                len(inter_ab),
             )
         except Exception:
             self.file_logger.exception("Messages debug failed")

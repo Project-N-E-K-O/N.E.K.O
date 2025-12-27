@@ -8,7 +8,7 @@ import logging
 import threading
 import time
 from collections import deque
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional, Set
 
 from plugin.sdk.events import EventHandler
 from plugin.settings import EVENT_QUEUE_MAX, LIFECYCLE_QUEUE_MAX, MESSAGE_QUEUE_MAX
@@ -35,6 +35,14 @@ class PluginRuntimeState:
         self._plugin_response_map_manager: Optional[Any] = None
         # 保护跨进程通信资源懒加载的锁
         self._plugin_comm_lock = threading.Lock()
+
+        self._bus_store_lock = threading.Lock()
+        self._message_store: Deque[Dict[str, Any]] = deque(maxlen=MESSAGE_QUEUE_MAX)
+        self._event_store: Deque[Dict[str, Any]] = deque(maxlen=EVENT_QUEUE_MAX)
+        self._lifecycle_store: Deque[Dict[str, Any]] = deque(maxlen=LIFECYCLE_QUEUE_MAX)
+        self._deleted_message_ids: Set[str] = set()
+        self._deleted_event_ids: Set[str] = set()
+        self._deleted_lifecycle_ids: Set[str] = set()
 
         self._user_context_lock = threading.Lock()
         self._user_context_store: Dict[str, Deque[Dict[str, Any]]] = {}
@@ -82,6 +90,95 @@ class PluginRuntimeState:
                         self._plugin_response_map_manager = multiprocessing.Manager()
                     self._plugin_response_map = self._plugin_response_map_manager.dict()
         return self._plugin_response_map
+
+    def append_message_record(self, record: Dict[str, Any]) -> None:
+        if not isinstance(record, dict):
+            return
+        mid = record.get("message_id")
+        if isinstance(mid, str) and mid in self._deleted_message_ids:
+            return
+        with self._bus_store_lock:
+            self._message_store.append(record)
+
+    def append_event_record(self, record: Dict[str, Any]) -> None:
+        if not isinstance(record, dict):
+            return
+        eid = record.get("event_id") or record.get("trace_id")
+        if isinstance(eid, str) and eid in self._deleted_event_ids:
+            return
+        with self._bus_store_lock:
+            self._event_store.append(record)
+
+    def append_lifecycle_record(self, record: Dict[str, Any]) -> None:
+        if not isinstance(record, dict):
+            return
+        lid = record.get("lifecycle_id") or record.get("trace_id")
+        if isinstance(lid, str) and lid in self._deleted_lifecycle_ids:
+            return
+        with self._bus_store_lock:
+            self._lifecycle_store.append(record)
+
+    def list_message_records(self) -> List[Dict[str, Any]]:
+        with self._bus_store_lock:
+            return list(self._message_store)
+
+    def list_event_records(self) -> List[Dict[str, Any]]:
+        with self._bus_store_lock:
+            return list(self._event_store)
+
+    def list_lifecycle_records(self) -> List[Dict[str, Any]]:
+        with self._bus_store_lock:
+            return list(self._lifecycle_store)
+
+    def delete_message(self, message_id: str) -> bool:
+        if not isinstance(message_id, str) or not message_id:
+            return False
+        with self._bus_store_lock:
+            self._deleted_message_ids.add(message_id)
+            removed = False
+            for idx, rec in enumerate(list(self._message_store)):
+                if isinstance(rec, dict) and rec.get("message_id") == message_id:
+                    try:
+                        del self._message_store[idx]
+                        removed = True
+                        break
+                    except Exception:
+                        break
+            return removed
+
+    def delete_event(self, event_id: str) -> bool:
+        if not isinstance(event_id, str) or not event_id:
+            return False
+        with self._bus_store_lock:
+            self._deleted_event_ids.add(event_id)
+            removed = False
+            for idx, rec in enumerate(list(self._event_store)):
+                rid = rec.get("event_id") or rec.get("trace_id") if isinstance(rec, dict) else None
+                if rid == event_id:
+                    try:
+                        del self._event_store[idx]
+                        removed = True
+                        break
+                    except Exception:
+                        break
+            return removed
+
+    def delete_lifecycle(self, lifecycle_id: str) -> bool:
+        if not isinstance(lifecycle_id, str) or not lifecycle_id:
+            return False
+        with self._bus_store_lock:
+            self._deleted_lifecycle_ids.add(lifecycle_id)
+            removed = False
+            for idx, rec in enumerate(list(self._lifecycle_store)):
+                rid = rec.get("lifecycle_id") or rec.get("trace_id") if isinstance(rec, dict) else None
+                if rid == lifecycle_id:
+                    try:
+                        del self._lifecycle_store[idx]
+                        removed = True
+                        break
+                    except Exception:
+                        break
+            return removed
     
     def set_plugin_response(self, request_id: str, response: Dict[str, Any], timeout: float = 10.0) -> None:
         """
