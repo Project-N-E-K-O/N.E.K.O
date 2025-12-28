@@ -87,11 +87,12 @@ class MessageList(BusList[MessageRecord]):
         items: Sequence[MessageRecord],
         *,
         plugin_id: Optional[str] = None,
+        ctx: Optional[Any] = None,
         trace: Optional[Sequence[BusOp]] = None,
         plan: Optional[Any] = None,
         fast_mode: bool = False,
     ):
-        super().__init__(items, trace=trace, plan=plan, fast_mode=fast_mode)
+        super().__init__(items, ctx=ctx, trace=trace, plan=plan, fast_mode=fast_mode)
         self.plugin_id = plugin_id
 
     def merge(self, other: "MessageList") -> "MessageList":
@@ -102,6 +103,7 @@ class MessageList(BusList[MessageRecord]):
         return MessageList(
             merged.dump_records(),
             plugin_id=pid,
+            ctx=getattr(merged, "_ctx", None),
             trace=merged.trace,
             plan=getattr(merged, "_plan", None),
             fast_mode=merged.fast_mode,
@@ -217,7 +219,7 @@ class MessageClient:
             effective_plugin_id = "*"
         else:
             effective_plugin_id = pid_norm if pid_norm else getattr(self.ctx, "plugin_id", None)
-        return MessageList(records, plugin_id=effective_plugin_id, trace=trace, plan=plan)
+        return MessageList(records, plugin_id=effective_plugin_id, ctx=self.ctx, trace=trace, plan=plan)
 
     def delete(self, message_id: str, timeout: float = 5.0) -> bool:
         if hasattr(self.ctx, "_enforce_sync_call_policy"):

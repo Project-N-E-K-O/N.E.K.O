@@ -260,13 +260,12 @@ class HelloPlugin(NekoPluginBase):
                 priority_min=pri_opt,
                 timeout=timeout,
             ).filter(source=watch_source, strict=True)
-
             watcher = watch_list.watch(self.ctx).start()
             try:
                 self.file_logger.info("[messages_watch] watcher started: source={}", watch_source)
             except Exception:
                 pass
-
+            @watcher.subscribe(on="delete")
             @watcher.subscribe(on="add")
             def _on_new_message(delta) -> None:
                 try:

@@ -78,11 +78,12 @@ class LifecycleList(BusList[LifecycleRecord]):
         items: Sequence[LifecycleRecord],
         *,
         plugin_id: Optional[str] = None,
+        ctx: Optional[Any] = None,
         trace: Optional[Sequence[BusOp]] = None,
         plan: Optional[Any] = None,
         fast_mode: bool = False,
     ):
-        super().__init__(items, trace=trace, plan=plan, fast_mode=fast_mode)
+        super().__init__(items, ctx=ctx, trace=trace, plan=plan, fast_mode=fast_mode)
         self.plugin_id = plugin_id
 
     def merge(self, other: "LifecycleList") -> "LifecycleList":
@@ -93,6 +94,7 @@ class LifecycleList(BusList[LifecycleRecord]):
         return LifecycleList(
             merged.dump_records(),
             plugin_id=pid,
+            ctx=getattr(merged, "_ctx", None),
             trace=merged.trace,
             plan=getattr(merged, "_plan", None),
             fast_mode=merged.fast_mode,
@@ -186,13 +188,17 @@ class LifecycleClient:
             effective_plugin_id = pid_norm if pid_norm else getattr(self.ctx, "plugin_id", None)
 
         get_params = {
-            "plugin_id": plugin_id,
+            "plugin_id": pid_norm,
             "max_count": max_count,
             "timeout": timeout,
         }
         trace = [BusOp(name="get", params=dict(get_params), at=time.time())]
         plan = GetNode(op="get", params={"bus": "lifecycle", "params": dict(get_params)}, at=time.time())
-        return LifecycleList(records, plugin_id=effective_plugin_id, trace=trace, plan=plan)
+        if pid_norm == "*":
+            effective_plugin_id = "*"
+        else:
+            effective_plugin_id = pid_norm if pid_norm else getattr(self.ctx, "plugin_id", None)
+        return LifecycleList(records, plugin_id=effective_plugin_id, ctx=self.ctx, trace=trace, plan=plan)
 
     def delete(self, lifecycle_id: str, timeout: float = 5.0) -> bool:
         if hasattr(self.ctx, "_enforce_sync_call_policy"):
