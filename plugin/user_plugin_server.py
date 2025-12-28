@@ -9,7 +9,12 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 import asyncio
+import sys
 from pathlib import Path
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 from fastapi import FastAPI, HTTPException, Request, Query, Body, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,7 +24,18 @@ from pydantic import BaseModel
 from config import USER_PLUGIN_SERVER_PORT
 
 # 配置服务器日志
-from utils.logger_config import setup_logging
+try:
+    from utils.logger_config import setup_logging
+except ModuleNotFoundError:
+    import importlib.util
+
+    _logger_config_path = _PROJECT_ROOT / "utils" / "logger_config.py"
+    _spec = importlib.util.spec_from_file_location("utils.logger_config", _logger_config_path)
+    if _spec is None or _spec.loader is None:
+        raise
+    _mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    setup_logging = getattr(_mod, "setup_logging")
 server_logger, server_log_config = setup_logging(service_name="PluginServer", log_level="INFO")
 
 from plugin.core.state import state

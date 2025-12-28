@@ -103,11 +103,11 @@ class BusSubscriptionManager:
             }
 
             try:
-                await host.trigger_custom_event(
-                    event_type="bus",
-                    event_id="change",
-                    args=args,
-                    timeout=float(info.get("timeout", 5.0)),
+                await host.push_bus_change(
+                    sub_id=str(args.get("sub_id") or ""),
+                    bus=str(args.get("bus") or ""),
+                    op=str(args.get("op") or ""),
+                    delta=args.get("delta") if isinstance(args.get("delta"), dict) else None,
                 )
             except Exception:
                 continue

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import inspect
 import re
 import time
 from typing import (
@@ -974,6 +975,68 @@ class BusListWatcher(Generic[TRecord]):
         self._sub_id: Optional[str] = None
         self._last_keys: set[DedupeKey] = {self._list._dedupe_key(x) for x in self._list.dump_records()}
 
+    def _make_injected_callback(self, fn: Callable[..., None]) -> Callable[[BusListDelta[TRecord]], None]:
+        try:
+            sig = inspect.signature(fn)
+        except Exception:
+            return fn  # type: ignore[return-value]
+
+        params = list(sig.parameters.values())
+        if len(params) == 1 and params[0].kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            return fn  # type: ignore[return-value]
+
+        def _dump_record(rec: Any) -> Any:
+            if hasattr(rec, "dump") and callable(getattr(rec, "dump")):
+                try:
+                    return rec.dump()
+                except Exception:
+                    return rec
+            return rec
+
+        def _wrapped(delta: BusListDelta[TRecord]) -> None:
+            try:
+                added = delta.added
+                removed = delta.removed
+                current = delta.current
+                mapping: Dict[str, Any] = {
+                    "delta": delta,
+                    "d": delta,
+                    "list": current,
+                    "current": current,
+                    "buslist": current,
+                    "added": added,
+                    "removed": removed,
+                    "length": len(added),
+                    "len": len(added),
+                    "count": len(added),
+                    "kind": delta.kind,
+                    "op": delta.kind,
+                    "quickdump": tuple(_dump_record(x) for x in added),
+                }
+
+                kwargs: Dict[str, Any] = {}
+                for p in params:
+                    if p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+                        continue
+                    if p.name in mapping:
+                        kwargs[p.name] = mapping[p.name]
+                    elif p.default is inspect._empty:
+                        # Unknown required parameter name: fallback to delta-only call.
+                        fn(delta)
+                        return
+
+                if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params):
+                    fn(**kwargs)
+                else:
+                    fn(**kwargs)
+            except Exception:
+                fn(delta)
+
+        return _wrapped
+
     def _infer_bus(self, plan: TraceNode) -> str:
         if isinstance(plan, GetNode):
             return str(plan.params.get("bus") or "").strip()
@@ -988,18 +1051,19 @@ class BusListWatcher(Generic[TRecord]):
         self,
         *,
         on: Union[BusChangeOp, Sequence[BusChangeOp]] = ("add",),
-    ) -> Callable[[Callable[[BusListDelta[TRecord]], None]], Callable[[BusListDelta[TRecord]], None]]:
+    ) -> Callable[[Callable[..., None]], Callable[..., None]]:
         if isinstance(on, str):
             rules: Tuple[BusChangeOp, ...] = (on,)
         else:
             rules = tuple(on)
 
-        def _decorator(fn: Callable[[BusListDelta[TRecord]], None]) -> Callable[[BusListDelta[TRecord]], None]:
+        def _decorator(fn: Callable[..., None]) -> Callable[..., None]:
+            wrapped = self._make_injected_callback(fn)
             if self._lock is not None:
                 with self._lock:
-                    self._callbacks.append((fn, rules))
+                    self._callbacks.append((wrapped, rules))
             else:
-                self._callbacks.append((fn, rules))
+                self._callbacks.append((wrapped, rules))
             return fn
 
         return _decorator

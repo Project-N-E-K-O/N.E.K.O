@@ -303,6 +303,28 @@ class PluginCommunicationResourceManager:
         
         # 发送命令并等待结果
         return await self._send_command_and_wait(req_id, trigger_msg, timeout, f"custom event {event_type}.{event_id}")
+
+    async def push_bus_change(self, *, sub_id: str, bus: str, op: str, delta: Dict[str, Any] | None = None) -> None:
+        """Push a bus change notification to plugin process.
+
+        This is an internal channel for watcher delivery. It is fire-and-forget and does not wait for a response.
+        """
+        msg = {
+            "type": "BUS_CHANGE",
+            "sub_id": str(sub_id),
+            "bus": str(bus),
+            "op": str(op),
+            "delta": dict(delta or {}),
+        }
+
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(
+                self._executor,
+                lambda: self.cmd_queue.put(msg, timeout=QUEUE_GET_TIMEOUT),
+            )
+        except Exception as e:
+            raise RuntimeError(f"Failed to push BUS_CHANGE to plugin {self.plugin_id}: {e}") from e
     
     async def send_stop_command(self) -> None:
         """发送停止命令到插件进程"""

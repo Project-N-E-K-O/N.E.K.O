@@ -296,26 +296,6 @@ class HelloPlugin(NekoPluginBase):
         except Exception:
             self.file_logger.exception("Messages debug failed")
 
-    @custom_event(event_type="bus", id="change", trigger_method="command")
-    def _on_bus_change(self, sub_id: str, bus: str, op: str, delta: Dict[str, Any] | None = None) -> None:
-        try:
-            from plugin.sdk.bus.types import dispatch_bus_change
-
-            try:
-                self.file_logger.info(
-                    "[bus_change.recv] sub_id={} bus={} op={} has_delta={}",
-                    sub_id,
-                    bus,
-                    op,
-                    bool(delta),
-                )
-            except Exception:
-                pass
-
-            dispatch_bus_change(sub_id=sub_id, bus=bus, op=op, delta=delta)
-        except Exception:
-            return
-
     def _startup_events_debug(self) -> None:
         time.sleep(0.8)
         try:

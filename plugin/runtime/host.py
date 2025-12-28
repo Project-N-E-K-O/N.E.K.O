@@ -272,6 +272,20 @@ def _plugin_process_runner(
             if msg["type"] == "STOP":
                 break
 
+            if msg["type"] == "BUS_CHANGE":
+                try:
+                    from plugin.sdk.bus.types import dispatch_bus_change
+
+                    dispatch_bus_change(
+                        sub_id=str(msg.get("sub_id") or ""),
+                        bus=str(msg.get("bus") or ""),
+                        op=str(msg.get("op") or ""),
+                        delta=msg.get("delta") if isinstance(msg.get("delta"), dict) else None,
+                    )
+                except Exception:
+                    pass
+                continue
+
             if msg["type"] == "TRIGGER_CUSTOM":
                 # 触发自定义事件（通过命令队列）
                 event_type = msg.get("event_type")
@@ -523,7 +537,7 @@ def _plugin_process_runner(
         raise  # 重新抛出，让进程退出
 
 
-class PluginProcessHost:
+class PluginHost:
     """
     插件进程宿主
     
@@ -705,6 +719,9 @@ class PluginProcessHost:
         """
         self.logger.info("[PluginHost] Trigger custom event: plugin_id=%s, event_type=%s, event_id=%s" % (self.plugin_id, event_type, event_id))
         return await self.comm_manager.trigger_custom_event(event_type, event_id, args, timeout)
+
+    async def push_bus_change(self, *, sub_id: str, bus: str, op: str, delta: Dict[str, Any] | None = None) -> None:
+        await self.comm_manager.push_bus_change(sub_id=sub_id, bus=bus, op=op, delta=delta)
     
     def is_alive(self) -> bool:
         """检查进程是否存活"""
@@ -771,6 +788,10 @@ class PluginProcessHost:
             self.logger.info(f"Plugin {self.plugin_id} process shutdown successfully")
             return True
             
-        except Exception as e:
-            self.logger.exception(f"Error shutting down plugin {self.plugin_id}: {e}")
+        except Exception:
+            self.logger.exception("Error while shutting down plugin %s", self.plugin_id)
             return False
+
+
+# Backwards-compatible alias
+PluginProcessHost = PluginHost
