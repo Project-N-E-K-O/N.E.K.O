@@ -1651,7 +1651,8 @@
 
                     await window.live2dManager.loadModel(newModelPath, {
                         preferences: modelPreferences,
-                        isMobile: window.innerWidth <= 768
+                        isMobile: window.innerWidth <= 768,
+                        skipCloseWindows: true  // 从设置窗口返回时不关闭其他窗口
                     });
 
                     // 更新全局引用

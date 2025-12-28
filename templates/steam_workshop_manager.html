@@ -6184,7 +6184,8 @@ function viewItemDetails(itemId) {
                 await live2dPreviewManager.loadModel(modelConfig, {
                     loadEmotionMapping: true,
                     dragEnabled: true,
-                    wheelEnabled: true
+                    wheelEnabled: true,
+                    skipCloseWindows: true  // 创意工坊页面不需要关闭其他窗口
                 });
                 
                 // 设置当前预览模型引用，用于播放动作和表情

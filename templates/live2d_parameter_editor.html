@@ -654,11 +654,27 @@
             }
         }
 
+        // 检测是否在 iframe 中运行（参数编辑器模态框模式）
+        const isInIframe = window.self !== window.top;
+
         // 返回L2D设置界面
         backToMainBtn.addEventListener('click', () => {
             // 在跳转前发送消息通知主页
             sendMessageToMainPage('reload_model_parameters');
-            // 延迟一点确保消息发送
+            
+            // 如果是在 iframe 中（模态框模式），通知父页面关闭模态框
+            if (isInIframe) {
+                try {
+                    // 尝试通知父页面关闭模态框
+                    window.parent.postMessage({ action: 'closeParameterEditorModal' }, '*');
+                    return; // 不执行后续的页面跳转
+                } catch (e) {
+                    console.log('无法通知父页面关闭模态框:', e);
+                    // 如果通知失败，继续执行正常的页面跳转逻辑
+                }
+            }
+            
+            // 非 iframe 模式或通知失败时，延迟一点确保消息发送后跳转
             setTimeout(() => {
                 // 获取当前URL参数，保留lanlan_name等参数
                 const urlParams = new URLSearchParams(window.location.search);
@@ -798,7 +814,8 @@
                     loadEmotionMapping: false,
                     dragEnabled: true,
                     wheelEnabled: true,
-                    preferences: modelPreferences
+                    preferences: modelPreferences,
+                    skipCloseWindows: true  // 参数编辑器页面不需要关闭其他窗口
                 });
 
                 live2dModel = window.live2dManager.getCurrentModel();

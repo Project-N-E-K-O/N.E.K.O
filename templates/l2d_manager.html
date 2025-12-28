@@ -277,11 +277,10 @@
         </div>
 
         <div class="control-group">
-            <a href="/live2d_parameter_editor" class="btn btn-secondary"
-                style="width:100%; text-decoration: none; display: block; text-align: center;"
-                data-i18n="live2d.parameterEditor.title">
+            <button id="parameter-editor-btn" class="btn btn-secondary"
+                style="width:100%;" data-i18n="live2d.parameterEditor.title">
                 <span>🎨 参数编辑器</span>
-            </a>
+            </button>
         </div>
 
 
@@ -544,21 +543,36 @@
                 return lanlanName;
             }
 
-            // 动态设置参数编辑器链接，传递 lanlan_name 参数
-            (async function updateParameterEditorLink() {
-                try {
-                    const paramEditorLink = document.querySelector('a[href="/live2d_parameter_editor"]');
-                    if (paramEditorLink) {
+            // 参数编辑器按钮点击事件
+            const parameterEditorBtn = document.getElementById('parameter-editor-btn');
+            if (parameterEditorBtn) {
+                parameterEditorBtn.addEventListener('click', async () => {
+                    try {
                         const lanlanName = await getLanlanName();
+                        let targetUrl = '/live2d_parameter_editor';
                         if (lanlanName) {
-                            paramEditorLink.href = `/live2d_parameter_editor?lanlan_name=${encodeURIComponent(lanlanName)}`;
-                            console.log('参数编辑器链接已更新，角色:', lanlanName);
+                            targetUrl += `?lanlan_name=${encodeURIComponent(lanlanName)}`;
+                        }
+                        console.log('打开参数编辑器，URL:', targetUrl, '弹出窗口模式:', isPopupWindow);
+                        
+                        // 如果是弹出窗口模式，使用模态框打开参数编辑器，避免触发父窗口的关闭检测
+                        if (isPopupWindow) {
+                            openParameterEditorModal(targetUrl);
+                        } else {
+                            // 非弹出窗口模式，直接导航
+                            window.location.href = targetUrl;
+                        }
+                    } catch (error) {
+                        console.error('打开参数编辑器失败:', error);
+                        // 即使出错也尝试打开
+                        if (isPopupWindow) {
+                            openParameterEditorModal('/live2d_parameter_editor');
+                        } else {
+                            window.location.href = '/live2d_parameter_editor';
                         }
                     }
-                } catch (error) {
-                    console.error('更新参数编辑器链接失败:', error);
-                }
-            })();
+                });
+            }
 
             // 保存模型设置到角色的函数
             async function saveModelToCharacter(modelName, itemId = null) {
@@ -717,7 +731,8 @@
                         loadEmotionMapping: true,
                         dragEnabled: true,
                         wheelEnabled: true,
-                        preferences: modelPreferences
+                        preferences: modelPreferences,
+                        skipCloseWindows: true  // l2d_manager 页面不需要关闭其他窗口
                     });
                     live2dModel = l2dManager.getCurrentModel();
 
@@ -1168,13 +1183,75 @@
 
                 const closeModal = () => {
                     modal.remove();
+                    // 关闭情感配置管理器后重新加载当前模型
+                    // 直接调用 loadModel 而不是触发 change 事件，避免设置 hasUnsavedChanges
                     if (currentModelInfo) {
-                        modelSelect.value = currentModelInfo.name;
-                        modelSelect.dispatchEvent(new Event('change'));
+                        loadModel(currentModelInfo.name, currentModelInfo, currentModelInfo.item_id);
                     }
                 };
 
                 closeButton.onclick = closeModal;
+                header.appendChild(title);
+                header.appendChild(closeButton);
+                iframeContainer.appendChild(header);
+                iframeContainer.appendChild(iframe);
+                modal.appendChild(iframeContainer);
+                document.body.appendChild(modal);
+            }
+
+            // 参数编辑器专用模态框（全屏样式）
+            function openParameterEditorModal(url) {
+                const modal = document.createElement('div');
+                modal.style.cssText = `position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 10000; display: flex; justify-content: center; align-items: center;`;
+
+                const iframeContainer = document.createElement('div');
+                iframeContainer.style.cssText = `background: white; border-radius: 15px; width: 98%; height: 98%; max-width: 1800px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); display: flex; flex-direction: column; overflow: hidden;`;
+
+                const header = document.createElement('div');
+                header.style.cssText = `padding: 12px 20px; background: #f1f3f5; border-bottom: 1px solid #dee2e6; display: flex; justify-content: space-between; align-items: center;`;
+
+                const title = document.createElement('h3');
+                title.textContent = t('live2d.parameterEditor.title', '🎨 参数编辑器');
+                title.style.cssText = 'margin: 0;';
+
+                const closeButton = document.createElement('button');
+                closeButton.textContent = '×';
+                closeButton.style.cssText = `background: none; border: none; font-size: 24px; cursor: pointer; color: #666;`;
+                closeButton.onmouseover = () => closeButton.style.color = '#000';
+                closeButton.onmouseout = () => closeButton.style.color = '#666';
+
+                const iframe = document.createElement('iframe');
+                iframe.src = url;
+                iframe.style.cssText = 'width: 100%; height: 100%; border: none; flex: 1;';
+
+                const closeModal = () => {
+                    // 移除 postMessage 监听器
+                    window.removeEventListener('message', messageHandler);
+                    modal.remove();
+                    // 关闭参数编辑器后重新加载当前模型以应用新参数
+                    // 直接调用 loadModel 而不是触发 change 事件，避免设置 hasUnsavedChanges
+                    if (currentModelInfo) {
+                        loadModel(currentModelInfo.name, currentModelInfo, currentModelInfo.item_id);
+                    }
+                };
+
+                // 监听来自 iframe 的关闭模态框消息
+                const messageHandler = (event) => {
+                    if (event.data && event.data.action === 'closeParameterEditorModal') {
+                        closeModal();
+                    }
+                };
+                window.addEventListener('message', messageHandler);
+
+                closeButton.onclick = closeModal;
+                
+                // 点击背景关闭
+                modal.onclick = (e) => {
+                    if (e.target === modal) {
+                        closeModal();
+                    }
+                };
+
                 header.appendChild(title);
                 header.appendChild(closeButton);
                 iframeContainer.appendChild(header);
