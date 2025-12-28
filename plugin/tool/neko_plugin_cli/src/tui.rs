@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use arboard::Clipboard;
 use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use regex::Regex;
 use crossterm::execute;
 use crossterm::terminal::{Clear, ClearType};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
@@ -59,6 +60,10 @@ fn load_pack_list(app: &mut App) -> Result<()> {
     app.pack_items = ids;
     app.pack_selected = vec![true; app.pack_items.len()];
     app.pack_cursor = 0;
+    app.pack_filter.clear();
+    app.pack_filter_re = None;
+    app.pack_filter_invalid = false;
+    app.editing_pack_filter = false;
     Ok(())
 }
 
@@ -196,6 +201,154 @@ fn toggle_pack_cursor(app: &mut App) {
     app.pack_selected[app.pack_cursor] = !app.pack_selected[app.pack_cursor];
 }
 
+fn grid_start_index(total: usize, cols: usize, rows: usize, cursor_pos: usize) -> usize {
+    if total == 0 || cols == 0 || rows == 0 {
+        return 0;
+    }
+    let page_size = cols * rows;
+    if total <= page_size {
+        return 0;
+    }
+    let page = cursor_pos / page_size;
+    let start = page * page_size;
+    if start >= total {
+        total.saturating_sub(page_size)
+    } else {
+        start
+    }
+}
+
+fn pack_filtered_indices(app: &App) -> Vec<usize> {
+    if app.pack_items.is_empty() {
+        return Vec::new();
+    }
+
+    let use_filter = !app.pack_filter.is_empty() && !app.pack_filter_invalid;
+    let mut out = Vec::new();
+
+    for (idx, id) in app.pack_items.iter().enumerate() {
+        if use_filter {
+            if let Some(re) = &app.pack_filter_re {
+                if !re.is_match(id) {
+                    continue;
+                }
+            }
+        }
+        out.push(idx);
+    }
+
+    out
+}
+
+fn recompile_pack_filter(app: &mut App) {
+    if app.pack_filter.is_empty() {
+        app.pack_filter_re = None;
+        app.pack_filter_invalid = false;
+        return;
+    }
+
+    match Regex::new(&app.pack_filter) {
+        Ok(re) => {
+            app.pack_filter_re = Some(re);
+            app.pack_filter_invalid = false;
+        }
+        Err(_) => {
+            app.pack_filter_re = None;
+            app.pack_filter_invalid = true;
+        }
+    }
+
+    // Ensure cursor points to a visible item when filter changes.
+    let filtered = pack_filtered_indices(app);
+    if let Some(&first) = filtered.first() {
+        if !filtered.contains(&app.pack_cursor) {
+            app.pack_cursor = first;
+        }
+    }
+}
+
+fn move_pack_cursor_by(app: &mut App, delta: isize) {
+    let filtered = pack_filtered_indices(app);
+    if filtered.is_empty() {
+        return;
+    }
+
+    let current_pos = filtered
+        .iter()
+        .position(|&idx| idx == app.pack_cursor)
+        .unwrap_or(0);
+
+    let len = filtered.len() as isize;
+    let mut new_pos = current_pos as isize + delta;
+    if new_pos < 0 {
+        new_pos = 0;
+    } else if new_pos >= len {
+        new_pos = len - 1;
+    }
+
+    app.pack_cursor = filtered[new_pos as usize];
+}
+
+fn pack_grid_cols(app: &App) -> usize {
+    if app.pack_items.is_empty() {
+        return 1;
+    }
+
+    // Approximate right-pane inner width using current terminal size and the same
+    // layout as draw()/draw_exec: left column is fixed width 22, right fills rest.
+    let (term_w, _term_h) = crossterm::terminal::size().unwrap_or((80, 24));
+    let body_width = term_w;
+    let right_width = body_width.saturating_sub(22);
+    let inner_width = right_width.saturating_sub(2).max(1);
+
+    let max_label_len = app
+        .pack_items
+        .iter()
+        .map(|s| s.len())
+        .max()
+        .unwrap_or(0);
+
+    let mut cell_width = (max_label_len + 4) as u16; // "[x] " + name
+    if cell_width < 10 {
+        cell_width = 10;
+    }
+    if cell_width > inner_width {
+        cell_width = inner_width;
+    }
+    let col_width = if cell_width + 1 <= inner_width {
+        cell_width + 1
+    } else {
+        cell_width
+    };
+
+    let cols = (inner_width / col_width).max(1);
+    cols as usize
+}
+
+fn move_pack_cursor_2d(app: &mut App, dx: isize, dy: isize) {
+    let filtered = pack_filtered_indices(app);
+    if filtered.is_empty() {
+        return;
+    }
+
+    let cols = pack_grid_cols(app).max(1) as isize;
+    let len = filtered.len() as isize;
+
+    let current_pos = filtered
+        .iter()
+        .position(|&idx| idx == app.pack_cursor)
+        .unwrap_or(0) as isize;
+
+    let mut new_pos = current_pos + dy * cols + dx;
+    if new_pos < 0 {
+        new_pos = 0;
+    } else if new_pos >= len {
+        new_pos = len - 1;
+    }
+
+    app.pack_cursor = filtered[new_pos as usize];
+}
+
 fn selected_pack_ids(app: &App) -> Vec<String> {
     if app.pack_items.is_empty() {
         return Vec::new();
@@ -215,59 +368,135 @@ fn selected_pack_ids(app: &App) -> Vec<String> {
 }
 
 fn draw_pack_select(f: &mut Frame<'_>, app: &App, area: Rect, highlight: bool) {
-    let mut items: Vec<ListItem> = Vec::new();
-
-    let total = app.pack_items.len();
-    if total == 0 {
-        let p = Paragraph::new("(no packable plugins)")
-            .block(Block::default().borders(Borders::ALL).title("Pack Select / 打包选择"));
-        f.render_widget(p, area);
-        return;
-    }
-
-    // Approximate visible rows inside the bordered list
-    let capacity = area
-        .height
-        .saturating_sub(2) // top/bottom borders
-        .max(1) as usize;
-    let cursor = app.pack_cursor.min(total.saturating_sub(1));
-    let start = if total <= capacity {
-        0
-    } else if cursor < capacity {
-        0
-    } else if cursor >= total - capacity {
-        total - capacity
-    } else {
-        cursor + 1 - capacity
-    };
-
-    for (i, id) in app
-        .pack_items
-        .iter()
-        .enumerate()
-        .skip(start)
-        .take(capacity)
-    {
-        let checked = *app.pack_selected.get(i).unwrap_or(&false);
-        let mark = if checked { "[x]" } else { "[ ]" };
-        let line = format!("{} {}", mark, id);
-        let style = if i == app.pack_cursor {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-        };
-        items.push(ListItem::new(Line::from(Span::styled(line, style))));
-    }
-
-    let title = "Pack Select / 打包选择  (↑↓ move, Space toggle, a all, x none)";
+    let title = "Pack Select / 打包选择  (↑↓ move, Space toggle, a all, x none, / filter regex)";
     let border_style = if highlight {
         Style::default().fg(Color::Green)
     } else {
         Style::default()
     };
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).border_style(border_style).title(title));
-    f.render_widget(list, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style)
+        .title(title);
+    f.render_widget(block.clone(), area);
+
+    let inner = block.inner(area);
+    if inner.height == 0 {
+        return;
+    }
+
+    // Split inner area into plugin grid (top) and filter bar (bottom).
+    let v = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+    let list_area = v[0];
+    let filter_area = v[1];
+
+    // Prepare filtered indices
+    let filtered = pack_filtered_indices(app);
+    let total_filtered = filtered.len();
+
+    // Render plugin grid
+    if total_filtered == 0 {
+        let msg = if app.pack_filter.is_empty() {
+            "(no packable plugins)".to_string()
+        } else if app.pack_filter_invalid {
+            "(regex invalid, press Esc or edit filter)".to_string()
+        } else {
+            "(no plugin matched filter)".to_string()
+        };
+        let p = Paragraph::new(msg);
+        f.render_widget(p, list_area);
+    } else {
+        let inner_width = list_area.width.max(1);
+        // Use the longest name across ALL plugins to keep column width stable,
+        // regardless of current filter.
+        let max_label_len = app
+            .pack_items
+            .iter()
+            .map(|s| s.len())
+            .max()
+            .unwrap_or(0);
+
+        // Base cell content width: mark + space + name (+ padding)
+        let mut cell_width = (max_label_len + 4) as u16; // "[x] " + name
+        if cell_width < 10 {
+            cell_width = 10;
+        }
+        if cell_width > inner_width {
+            cell_width = inner_width;
+        }
+        // Reserve 1 extra column as horizontal gap between cells when possible.
+        let col_width = if cell_width + 1 <= inner_width {
+            cell_width + 1
+        } else {
+            cell_width
+        };
+        let cols = (inner_width / col_width).max(1) as usize;
+        let rows_cap = list_area.height.max(1) as usize;
+
+        // Locate cursor in filtered list
+        let cursor_pos = filtered
+            .iter()
+            .position(|&idx| idx == app.pack_cursor)
+            .unwrap_or(0)
+            .min(total_filtered.saturating_sub(1));
+
+        // Compute start index so that cursor stays within visible grid when possible.
+        let start_index = grid_start_index(total_filtered, cols, rows_cap, cursor_pos);
+
+        let mut lines: Vec<Line> = Vec::new();
+        for row in 0..rows_cap {
+            let mut spans: Vec<Span> = Vec::new();
+            for col in 0..cols {
+                let idx = start_index + row * cols + col;
+                if idx >= total_filtered {
+                    break;
+                }
+                let abs_idx = filtered[idx];
+                let checked = *app.pack_selected.get(abs_idx).unwrap_or(&false);
+                let mark = if checked { "[x]" } else { "[ ]" };
+                let label = &app.pack_items[abs_idx];
+                let raw = format!("{} {}", mark, label);
+                let cell_text = if raw.len() > cell_width as usize {
+                    // Truncate and add ellipsis when needed.
+                    let take = cell_width.saturating_sub(1) as usize;
+                    let mut s: String = raw.chars().take(take).collect();
+                    s.push('…');
+                    s
+                } else {
+                    format!("{raw:<width$}", width = cell_width as usize)
+                };
+                let mut style = Style::default();
+                if abs_idx == app.pack_cursor {
+                    style = style.fg(Color::Yellow).add_modifier(Modifier::BOLD);
+                }
+                spans.push(Span::styled(cell_text, style));
+                // Explicit one-space gap to visually separate columns when col_width > cell_width
+                if col_width > cell_width {
+                    spans.push(Span::raw(" "));
+                }
+            }
+            lines.push(Line::from(spans));
+        }
+
+        let p = Paragraph::new(lines).wrap(Wrap { trim: true });
+        f.render_widget(p, list_area);
+    }
+
+    // Render filter bar at bottom
+    let mut label = String::from("Filter (regex): ");
+    label.push_str(&app.pack_filter);
+    let mut style = Style::default();
+    if app.pack_filter_invalid {
+        style = style.fg(Color::Red);
+    } else if app.editing_pack_filter {
+        style = style.fg(Color::Cyan);
+    }
+    let filter_line = Line::from(Span::styled(label, style));
+    let filter_p = Paragraph::new(filter_line);
+    f.render_widget(filter_p, filter_area);
 }
 
 fn draw_path_panel(f: &mut Frame<'_>, app: &App, area: Rect, highlight: bool) {
@@ -561,6 +790,7 @@ struct App {
     mode_cursor: usize,
     last_home_click: Option<(Instant, usize)>,
     last_quit_key: Option<(Instant, char)>,
+    last_back_click: Option<Instant>,
     cmd: CmdKind,
     args: CmdArgs,
     running: bool,
@@ -573,6 +803,10 @@ struct App {
     pack_items: Vec<String>,
     pack_selected: Vec<bool>,
     pack_cursor: usize,
+    pack_filter: String,
+    pack_filter_re: Option<Regex>,
+    pack_filter_invalid: bool,
+    editing_pack_filter: bool,
 
     path_entries: Vec<PathEntry>,
     path_cursor: usize,
@@ -607,6 +841,7 @@ pub fn run(repo_root: Option<PathBuf>) -> Result<()> {
         mode_cursor: 0,
         last_home_click: None,
         last_quit_key: None,
+        last_back_click: None,
         cmd: CmdKind::Info,
         args: CmdArgs {
             root: repo_root.clone(),
@@ -622,6 +857,10 @@ pub fn run(repo_root: Option<PathBuf>) -> Result<()> {
         pack_items: Vec::new(),
         pack_selected: Vec::new(),
         pack_cursor: 0,
+        pack_filter: String::new(),
+        pack_filter_re: None,
+        pack_filter_invalid: false,
+        editing_pack_filter: false,
 
         path_entries: Vec::new(),
         path_cursor: 0,
@@ -656,7 +895,43 @@ pub fn run(repo_root: Option<PathBuf>) -> Result<()> {
                                 Constraint::Length(3),
                             ])
                             .split(root);
+                        let header = chunks[0];
                         let body = chunks[1];
+
+                        // Header right-side Back button: single click behaves like Esc (Exec->Home),
+                        // double click within 2 seconds on Home exits TUI.
+                        if matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) {
+                            // Treat the rightmost 8 columns of the header as the Back button area.
+                            let back_width: u16 = 8;
+                            let back_x = header
+                                .x
+                                .saturating_add(header.width.saturating_sub(back_width));
+                            let back_rect = Rect::new(back_x, header.y, back_width, header.height);
+
+                            if point_in_rect(m.column, m.row, back_rect) {
+                                let now = Instant::now();
+                                match app.screen {
+                                    Screen::Exec => {
+                                        // Same effect as Esc: go back to Home, but do not quit.
+                                        app.screen = Screen::Home;
+                                        app.focus = false;
+                                        app.tab_selected = 0;
+                                        app.tab_active = 0;
+                                        app.last_back_click = Some(now);
+                                    }
+                                    Screen::Home => {
+                                        if let Some(last_t) = app.last_back_click {
+                                            if now.duration_since(last_t) <= Duration::from_secs(2) {
+                                                break;
+                                            }
+                                        }
+                                        app.last_back_click = Some(now);
+                                    }
+                                }
+                                continue;
+                            }
+                        }
+
                         handle_mouse(&mut app, m, body);
                     }
                 }
@@ -772,9 +1047,15 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         return Ok(false);
     }
 
-    // Esc: back from Exec to Home (no quit)
+    // Esc: if editing Pack Select filter, cancel editing first; otherwise back from Exec to Home (no quit)
     if matches!(code, KeyCode::Esc) {
         if matches!(app.screen, Screen::Exec) {
+            let tabs = available_tabs(app);
+            let active_tab = tabs.get(app.tab_active).copied().unwrap_or(Tab::Run);
+            if matches!(active_tab, Tab::Select) && matches!(app.cmd, CmdKind::Pack) && app.editing_pack_filter {
+                app.editing_pack_filter = false;
+                return Ok(false);
+            }
             app.screen = Screen::Home;
         }
         return Ok(false);
@@ -818,9 +1099,29 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
             let active_tab = tabs.get(app.tab_active).copied().unwrap_or(Tab::Run);
             let focusable = matches!(active_tab, Tab::Select | Tab::Mode | Tab::Path);
 
+            // When editing Pack Select filter, intercept keys for text editing.
+            if matches!(active_tab, Tab::Select) && matches!(app.cmd, CmdKind::Pack) && app.editing_pack_filter {
+                match code {
+                    KeyCode::Enter => {
+                        recompile_pack_filter(app);
+                        app.editing_pack_filter = false;
+                    }
+                    KeyCode::Backspace => {
+                        app.pack_filter.pop();
+                        recompile_pack_filter(app);
+                    }
+                    KeyCode::Char(c) => {
+                        app.pack_filter.push(c);
+                        recompile_pack_filter(app);
+                    }
+                    _ => {}
+                }
+                return Ok(false);
+            }
+
             match code {
-                // Enter/Right enters focus for focusable tabs. Left/Enter exits focus.
-                KeyCode::Enter | KeyCode::Right => {
+                // Enter/Right enters focus for focusable tabs when not already focused.
+                KeyCode::Enter | KeyCode::Right if !app.focus => {
                     if focusable {
                         app.focus = true;
                         match active_tab {
@@ -835,7 +1136,12 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                         }
                     }
                 }
-                KeyCode::Left => {
+                // Left exits focus for Mode/Path/other, but NOT for Pack Select grid (there Left/Right are used for 2D navigation).
+                KeyCode::Left
+                    if app.focus
+                        && !matches!(active_tab, Tab::Select)
+                        && !matches!(app.cmd, CmdKind::Pack) =>
+                {
                     app.focus = false;
                 }
 
@@ -849,14 +1155,32 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                     app.tab_active = app.tab_selected;
                 }
 
-                // Focused Select: Up/Down move, Space toggles.
+                // Focused Select: 2D navigation within filtered grid using arrow keys, Space toggles.
                 KeyCode::Up if app.focus && matches!(active_tab, Tab::Select) && matches!(app.cmd, CmdKind::Pack) => {
-                    app.pack_cursor = app.pack_cursor.saturating_sub(1);
+                    move_pack_cursor_2d(app, 0, -1);
                 }
                 KeyCode::Down if app.focus && matches!(active_tab, Tab::Select) && matches!(app.cmd, CmdKind::Pack) => {
-                    if !app.pack_items.is_empty() {
-                        app.pack_cursor = (app.pack_cursor + 1).min(app.pack_items.len() - 1);
+                    move_pack_cursor_2d(app, 0, 1);
+                }
+                KeyCode::Left if app.focus && matches!(active_tab, Tab::Select) && matches!(app.cmd, CmdKind::Pack) => {
+                    // In Pack Select grid: if not at the leftmost column, move left; if already in
+                    // the leftmost column of the current grid, exit focus back to the left tab bar.
+                    let filtered = pack_filtered_indices(app);
+                    if filtered.is_empty() {
+                        return Ok(false);
                     }
+                    let cols = pack_grid_cols(app).max(1);
+                    if let Some(pos) = filtered.iter().position(|&idx| idx == app.pack_cursor) {
+                        let col = pos % cols;
+                        if col == 0 {
+                            app.focus = false;
+                        } else {
+                            move_pack_cursor_2d(app, -1, 0);
+                        }
+                    }
+                }
+                KeyCode::Right if app.focus && matches!(active_tab, Tab::Select) && matches!(app.cmd, CmdKind::Pack) => {
+                    move_pack_cursor_2d(app, 1, 0);
                 }
                 KeyCode::Char(' ') if app.focus && matches!(active_tab, Tab::Select) && matches!(app.cmd, CmdKind::Pack) => {
                     toggle_pack_cursor(app);
@@ -870,6 +1194,9 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                     for v in &mut app.pack_selected {
                         *v = false;
                     }
+                }
+                KeyCode::Char('/') if matches!(active_tab, Tab::Select) && matches!(app.cmd, CmdKind::Pack) => {
+                    app.editing_pack_filter = true;
                 }
 
                 // Focused Mode: Up/Down move, Space toggles current option.
@@ -1032,14 +1359,14 @@ fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect) {
 
                     match active_tab {
                         Tab::Select if matches!(app.cmd, CmdKind::Pack) => {
-                            let len = app.pack_items.len();
-                            if len == 0 {
+                            let filtered = pack_filtered_indices(app);
+                            if filtered.is_empty() {
                                 return;
                             }
                             if scroll_up {
-                                app.pack_cursor = app.pack_cursor.saturating_sub(1);
-                            } else if app.pack_cursor + 1 < len {
-                                app.pack_cursor += 1;
+                                move_pack_cursor_by(app, -1);
+                            } else {
+                                move_pack_cursor_by(app, 1);
                             }
                         }
                         Tab::Mode => {
@@ -1112,33 +1439,86 @@ fn handle_mouse(app: &mut App, m: MouseEvent, area: Rect) {
 
                     match active_tab {
                         Tab::Select if matches!(app.cmd, CmdKind::Pack) => {
-                            let total = app.pack_items.len();
-                            if total == 0 {
+                            let filtered = pack_filtered_indices(app);
+                            let total_filtered = filtered.len();
+                            if total_filtered == 0 {
                                 return;
                             }
-                            let inner_y0 = right.y.saturating_add(1); // border
-                            if m.row < inner_y0 {
+
+                            // Rebuild inner and split into list + filter, same as draw_pack_select
+                            let inner = Rect::new(
+                                right.x.saturating_add(1),
+                                right.y.saturating_add(1),
+                                right.width.saturating_sub(2),
+                                right.height.saturating_sub(2),
+                            );
+                            if inner.height == 0 || inner.width == 0 {
                                 return;
                             }
-                            let row_off = (m.row - inner_y0) as usize;
-                            let capacity = right.height.saturating_sub(2).max(1) as usize;
-                            let cursor = app.pack_cursor.min(total.saturating_sub(1));
-                            let start = if total <= capacity {
-                                0
-                            } else if cursor < capacity {
-                                0
-                            } else if cursor >= total - capacity {
-                                total - capacity
+                            let v = Layout::default()
+                                .direction(Direction::Vertical)
+                                .constraints([Constraint::Min(1), Constraint::Length(1)])
+                                .split(inner);
+                            let list_area = v[0];
+                            let filter_area = v[1];
+
+                            // Click on filter bar enters filter editing mode
+                            if point_in_rect(m.column, m.row, filter_area) {
+                                app.editing_pack_filter = true;
+                                app.focus = false;
+                                return;
+                            }
+
+                            if !point_in_rect(m.column, m.row, list_area) {
+                                return;
+                            }
+
+                            let inner_width = list_area.width.max(1);
+                            // Same global max as in draw_pack_select so layout and hit-testing match.
+                            let max_label_len = app
+                                .pack_items
+                                .iter()
+                                .map(|s| s.len())
+                                .max()
+                                .unwrap_or(0);
+
+                            let mut cell_width = (max_label_len + 4) as u16; // "[x] " + name
+                            if cell_width < 10 {
+                                cell_width = 10;
+                            }
+                            if cell_width > inner_width {
+                                cell_width = inner_width;
+                            }
+                            let col_width = if cell_width + 1 <= inner_width {
+                                cell_width + 1
                             } else {
-                                cursor + 1 - capacity
+                                cell_width
                             };
-                            let idx = start.saturating_add(row_off);
-                            if idx < total {
-                                app.pack_cursor = idx;
-                                app.focus = true;
-                                // Single click toggles selection, same as pressing Space
-                                toggle_pack_cursor(app);
+                            let cols = (inner_width / col_width).max(1) as usize;
+                            let rows_cap = list_area.height.max(1) as usize;
+
+                            let cursor_pos = filtered
+                                .iter()
+                                .position(|&idx| idx == app.pack_cursor)
+                                .unwrap_or(0)
+                                .min(total_filtered.saturating_sub(1));
+                            let start_index = grid_start_index(total_filtered, cols, rows_cap, cursor_pos);
+
+                            let row = (m.row - list_area.y) as usize;
+                            let col = ((m.column - list_area.x) / col_width) as usize;
+                            if row >= rows_cap || col >= cols {
+                                return;
                             }
+
+                            let idx = start_index + row * cols + col;
+                            if idx >= total_filtered {
+                                return;
+                            }
+                            let abs_idx = filtered[idx];
+                            app.pack_cursor = abs_idx;
+                            app.focus = true;
+                            // Single click toggles selection, same as pressing Space
+                            toggle_pack_cursor(app);
                         }
                         Tab::Mode => {
                             let total = mode_items_len(app);
@@ -1439,14 +1819,35 @@ fn draw(f: &mut Frame<'_>, app: &App) {
     };
 
     let help_hint = if app.show_help { " [q: close help]" } else { " (q: help)" };
+    let header_block = Block::default().borders(Borders::ALL);
+    // Draw outer header border first
+    f.render_widget(header_block.clone(), chunks[0]);
 
-    let header = Paragraph::new(Line::from(vec![
-        Span::styled("N.E.K.O ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+    // Inside header, split horizontally: left for title/help, right for Back button label.
+    let header_inner = header_block.inner(chunks[0]);
+    let header_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(8)])
+        .split(header_inner);
+
+    let header_left = Paragraph::new(Line::from(vec![
+        Span::styled(
+            "N.E.K.O ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw("/ "),
         Span::raw(format!("{}{}", title, help_hint)),
-    ]))
-    .block(Block::default().borders(Borders::ALL));
-    f.render_widget(header, chunks[0]);
+    ]));
+    f.render_widget(header_left, header_cols[0]);
+
+    // Visible Back button at top-right to match mouse Back area
+    let back_label = Paragraph::new(Line::from(Span::styled(
+        "[Back]",
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+    )));
+    f.render_widget(back_label, header_cols[1]);
 
     if app.show_help {
         draw_help(f, chunks[1]);
