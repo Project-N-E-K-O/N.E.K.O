@@ -2,6 +2,7 @@ import React from "react";
 import { useState, useEffect, useRef } from "react";
 import { BaseModal } from "./BaseModal";
 import type { BaseModalProps } from "./BaseModal";
+import { useT, tOrDefault } from "../i18n";
 
 export interface PromptDialogProps extends Omit<BaseModalProps, "children"> {
   message: string;
@@ -80,16 +81,16 @@ export function PromptDialog({
   };
 
   // 获取按钮文本（支持国际化）
+  const t = useT();
+
   const getOkText = () => {
     if (okText) return okText;
-    const t = typeof window !== "undefined" ? (window as any).t : undefined;
-    return typeof t === "function" ? String(t("common.ok")) : "确定";
+    return tOrDefault(t, "common.ok", "确定");
   };
 
   const getCancelText = () => {
     if (cancelText) return cancelText;
-    const t = typeof window !== "undefined" ? (window as any).t : undefined;
-    return typeof t === "function" ? String(t("common.cancel")) : "取消";
+    return tOrDefault(t, "common.cancel", "取消");
   };
 
   return (

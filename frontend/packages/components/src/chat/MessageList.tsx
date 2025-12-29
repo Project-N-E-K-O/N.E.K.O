@@ -10,30 +10,42 @@ const containerStyle = {
   padding: 16,
   overflowY: "auto" as const,
   flex: 1,
+  background: "rgba(249, 249, 249, 0.7)", // Fluent Design Content Background
+  display: "flex",
+  flexDirection: "column" as const,
+  gap: 12,
 };
 
 const messageWrapperStyle = (isUser: boolean): CSSProperties => ({
-  marginBottom: 12,
-  textAlign: isUser ? "right" : "left",
+  // marginBottom: 12, // handled by gap
+  display: "flex",
+  justifyContent: isUser ? "flex-end" : "flex-start",
 });
 
 const userBubbleStyle = {
-  display: "inline-block",
-  padding: "8px 12px",
-  borderRadius: 8,
-  background: "#0052a3", // WCAG AA 对比度 OK
+  padding: "10px 14px",
+  borderRadius: 12,
+  borderBottomRightRadius: 4,
+  background: "#44b7fe",
   color: "#fff",
-  maxWidth: "70%",
+  maxWidth: "80%",
+  wordWrap: "break-word" as const,
+  lineHeight: 1.5,
+  fontSize: "0.95rem",
   whiteSpace: "pre-wrap" as const,
+  boxShadow: "0 1px 2px rgba(0,0,0,0.1)", // Slight shadow for depth
 };
 
 const assistantBubbleStyle = {
-  display: "inline-block",
-  padding: "8px 12px",
-  borderRadius: 8,
-  background: "rgba(0,0,0,0.06)",
-  color: "#000",
-  maxWidth: "70%",
+  padding: "10px 14px",
+  borderRadius: 12,
+  borderBottomLeftRadius: 4,
+  background: "rgba(68, 183, 254, 0.12)",
+  color: "#333",
+  maxWidth: "80%",
+  wordWrap: "break-word" as const,
+  lineHeight: 1.5,
+  fontSize: "0.95rem",
   whiteSpace: "pre-wrap" as const,
 };
 
