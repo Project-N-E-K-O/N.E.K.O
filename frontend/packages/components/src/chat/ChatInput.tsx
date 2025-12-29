@@ -69,22 +69,24 @@ export default function ChatInput({ onSend, onTakePhoto }: Props) {
         >
           {tOrDefault(t, "chat.send", "Send")}
         </button>
-        <button
-          onClick={onTakePhoto}
-          style={{
-            background: "rgba(255,255,255,0.8)",
-            border: "1px solid #44b7fe",
-            color: "#44b7fe",
-            borderRadius: 6,
-            padding: "4px 8px",
-            cursor: "pointer",
-            fontSize: "0.8rem",
-            fontWeight: 500,
-            whiteSpace: "nowrap",
-          }}
-        >
-          {tOrDefault(t, "chat.take_photo", "Take Photo")}
-        </button>
+        {onTakePhoto && (
+          <button
+            onClick={onTakePhoto}
+            style={{
+              background: "rgba(255,255,255,0.8)",
+              border: "1px solid #44b7fe",
+              color: "#44b7fe",
+              borderRadius: 6,
+              padding: "4px 8px",
+              cursor: "pointer",
+              fontSize: "0.8rem",
+              fontWeight: 500,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {tOrDefault(t, "chat.take_photo", "Take Photo")}
+          </button>
+        )}
       </div>
     </div>
   );
