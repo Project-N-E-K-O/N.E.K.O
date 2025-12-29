@@ -15,7 +15,7 @@ class VRMExpression {
         this.blinkWeight = 0.0; 
 
         // --- 情绪配置 ---
-        this.autoChangeMood = true; 
+        this.autoChangeMood = false; 
         this.moodTimer = 0;
         this.nextMoodTime = 5.0; 
         this.currentMood = 'neutral'; 
@@ -52,9 +52,78 @@ class VRMExpression {
      */
     update(delta) {
         if (!this.manager.currentModel || !this.manager.currentModel.vrm || !this.manager.currentModel.vrm.expressionManager) return;
+        
         const expressionManager = this.manager.currentModel.vrm.expressionManager;
-    }
+        
+        // 1. 更新眨眼逻辑 (计算 blinkWeight)
+        this._updateBlink(delta);
 
+        // 2. 更新情绪切换逻辑 (如果有自动切换的话)
+        this._updateMoodLogic(delta);
+
+        // 3. 【关键】计算并应用所有权重
+        this._updateWeights(delta, expressionManager);
+    }
+    /**
+     * 【核心修复】统一获取表情名称列表
+     * 自动判断 expressions 是 Map、Object 还是 Array，解决显示 0-13 的问题
+     */
+    _getExpressionNames(expressionManager) {
+        if (!expressionManager) return [];
+        
+        const exprs = expressionManager.expressions;
+
+        // 1. 如果是 Map (VRM 1.0 标准)，转为数组
+        if (exprs instanceof Map) {
+            return Array.from(exprs.keys());
+        }
+
+        // 2. 如果是 Array (某些加载器版本)，提取内部的 name 属性
+        if (Array.isArray(exprs)) {
+            return exprs.map(e => e.expressionName || e.name || e.presetName).filter(n => n);
+        }
+
+        // 3. 如果是普通 Object (VRM 0.0)，直接取键名
+        if (typeof exprs === 'object') {
+            return Object.keys(exprs);
+        }
+
+        // 4. 备用方案：检查内部属性 _expressionMap
+        if (expressionManager._expressionMap) {
+            return Object.keys(expressionManager._expressionMap);
+        }
+
+        return [];
+    }
+    /**
+     * 【修改】获取模型支持的所有表情名称列表
+     * 保留眨眼 (blink)，但过滤掉口型 (aa, ih) 和视线 (look)
+     */
+    getExpressionList() {
+        if (!this.manager.currentModel || !this.manager.currentModel.vrm || !this.manager.currentModel.vrm.expressionManager) {
+            return [];
+        }
+        const manager = this.manager.currentModel.vrm.expressionManager;
+        
+        // 获取所有表情名
+        const allExpressions = this._getExpressionNames(manager);
+
+        // 定义需要排除的关键词
+        // 【注意】这里删除了 'blink'，这样你就能在列表里看到眨眼了
+        const excludeKeywords = [
+            'look',        // 视线控制通常不需要手动预览
+            'aa', 'ih', 'ou', 'ee', 'oh', // 口型通常由麦克风控制
+            'neutral'      // 中立状态
+        ];
+
+        // 执行过滤
+        const filtered = allExpressions.filter(name => {
+            const lowerName = name.toLowerCase();
+            return !excludeKeywords.some(keyword => lowerName.includes(keyword));
+        });
+
+        return filtered.sort();
+    }
     _printAvailableExpressions(manager) {
         let names = [];
         if (manager.expressions) names = Object.keys(manager.expressions);
@@ -106,70 +175,66 @@ class VRMExpression {
     }
 
     _updateWeights(delta, expressionManager) {
-        const lerpSpeed = 3.0 * delta; 
+        // 提高响应速度
+        const lerpSpeed = 15.0 * delta; 
 
-        // 获取模型实际支持的所有表情名
-        let modelExpressionNames = [];
-        if (expressionManager.expressions) modelExpressionNames = Object.keys(expressionManager.expressions);
-        else if (expressionManager._expressionMap) modelExpressionNames = Object.keys(expressionManager._expressionMap);
+        // 1. 获取所有表情名
+        const modelExpressionNames = this._getExpressionNames(expressionManager);
 
-        // 获取当前心情对应的候选词列表 (例如 happy -> ['happy', 'joy', 'fun'])
-        const targetCandidateNames = this.moodMap[this.currentMood] || [];
+        // 2. 获取当前目标表情 (例如 "angry" 或 "blinkLeft")
+        const targetName = this.currentMood;
+        
+        // 判断当前用户是不是正在手动测试眨眼
+        const isUserTestingBlink = targetName.toLowerCase().includes('blink');
 
+        // 3. 遍历每一个表情进行设置
         modelExpressionNames.forEach(name => {
             let targetWeight = 0.0;
             const lowerName = name.toLowerCase();
 
-            // 1. 眨眼控制
-            if (lowerName.includes('blink')) {
-                // 如果是左/右眼单独控制，统一应用 blinkWeight
+            // --- A. 判断是否为选中项 (最高优先级) ---
+            // 只要名字对得上（忽略大小写），就认为是选中了
+            // 例如：用户选 "angry"，当前遍历到 "Angry"，匹配成功！
+            if (name === targetName || lowerName === targetName.toLowerCase()) {
+                targetWeight = 1.0;
+            } 
+            // --- B. 处理自动眨眼 (次优先级) ---
+            // 条件：
+            // 1. 当前表情是眨眼类 (blink)
+            // 2. 用户【没有】在手动测试眨眼 (防止手动 blinkLeft 时被自动 blink 覆盖)
+            // 3. 该表情【不是】选中的那个 (否则会在上面 A 步被设为 1.0)
+            else if (lowerName.includes('blink') && !isUserTestingBlink) {
                 expressionManager.setValue(name, this.blinkWeight);
-                return; 
+                return; // 眨眼由定时器控制，处理完直接跳过后续插值
+            }
+            // --- C. 其他情况归零 ---
+            else {
+                targetWeight = 0.0;
             }
 
-            // 2. 排除项 (口型等)
-            if (this.excludeExpressions.some(ex => lowerName === ex || lowerName.includes(ex))) {
-                return;
-            }
-
-            // 3. 情绪控制
-            // 检查当前表情名(name) 是否存在于当前心情的候选列表(targetCandidateNames) 中
-            // 例如：如果心情是 happy，候选是 [joy, fun]，如果当前 name 是 joy，则命中
-            const isMatch = targetCandidateNames.some(candidate => lowerName === candidate.toLowerCase());
-
-            if (isMatch) {
-                targetWeight = 0.5; // 目标权重 (太高容易穿模，0.5 比较自然)
-                if (lowerName === 'neutral') targetWeight = 0.0; // neutral 特殊处理
-            }
-
-            // 4. 平滑过渡
+            // --- D. 执行插值和应用 ---
             if (this.currentWeights[name] === undefined) this.currentWeights[name] = 0.0;
             
             const diff = targetWeight - this.currentWeights[name];
-            if (Math.abs(diff) < 0.005) {
+            
+            // 优化：微小差距直接到位
+            if (Math.abs(diff) < 0.01) {
                 this.currentWeights[name] = targetWeight;
             } else {
                 this.currentWeights[name] += diff * lerpSpeed;
             }
 
-            // 5. 应用
+            // 最终设置
             expressionManager.setValue(name, this.currentWeights[name]);
         });
     }
 
-    setBaseExpression(name, weight = 0.5) {
-        // 手动设置时，尝试反向查找最接近的情绪 key
-        for (const [moodKey, candidates] of Object.entries(this.moodMap)) {
-            if (candidates.includes(name) || moodKey === name) {
-                this.currentMood = moodKey;
-                this.moodTimer = 0;
-                console.log(`[VRM Expression] 手动触发心情: ${moodKey}`);
-                return;
-            }
-        }
-        // 如果找不到，就强制作为一种新情绪
-        this.currentMood = name;
-        this.moodMap[name] = [name]; // 临时注册
+    setBaseExpression(name) {
+        console.log(`[VRM Expression] 手动设置表情: ${name}`);
+        // 彻底关闭自动切换，防止干扰
+        this.autoChangeMood = false;
+        this.currentMood = name || 'neutral';
+          
     }
 }
 

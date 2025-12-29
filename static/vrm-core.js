@@ -182,6 +182,12 @@ class VRMCore {
      * 检测 VRM 模型版本
      */
     detectVRMVersion(vrm) {
+        console.log('检测版本依据:', {
+            vrmVersion: vrm.meta?.vrmVersion, 
+            metaVersion: vrm.meta?.metaVersion,
+            boneCount: Object.keys(vrm.humanoid?.humanBones || {}).length
+        });
+
         try {
             if (vrm.meta) {
                 if (vrm.meta.vrmVersion || vrm.meta.metaVersion) {

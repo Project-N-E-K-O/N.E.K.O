@@ -300,6 +300,22 @@
                 </div>
             </div>
         </div>
+        <div class="control-group" id="vrm-expression-group" style="display:none;">
+            <label class="control-label" data-i18n="live2d.vrmExpression">VRM 表情预览:</label>
+            <div class="action-group">
+                <select id="vrm-expression-select" class="control-select" disabled>
+                    <option value="">加载模型后可见</option>
+                </select>
+                <button id="trigger-vrm-expression-btn" class="btn btn-primary btn-icon" disabled>
+                    <img src="/static/icons/play_icon.png" alt="播放">
+                    <span>播放</span>
+                </button>
+                <button id="reset-vrm-expression-btn" class="btn btn-secondary" disabled>
+                    <span data-i18n="common.reset">恢复自动</span>
+                    <span data-i18n="common.reset">重置表情</span>
+                </button>
+            </div>
+        </div>
 
 
         <div class="control-group">
@@ -647,6 +663,10 @@
             const live2dModelGroup = document.getElementById('live2d-model-group');
             const vrmModelGroup = document.getElementById('vrm-model-group');
             const vrmAnimationGroup = document.getElementById('vrm-animation-group');
+            const vrmExpressionGroup = document.getElementById('vrm-expression-group');
+            const vrmExpressionSelect = document.getElementById('vrm-expression-select');
+            const triggerVrmExpressionBtn = document.getElementById('trigger-vrm-expression-btn');
+            const resetVrmExpressionBtn = document.getElementById('reset-vrm-expression-btn');
             const live2dContainer = document.getElementById('live2d-container');
             const vrmContainer = document.getElementById('vrm-container');
             const motionSelect = document.getElementById('motion-select');
@@ -936,6 +956,7 @@
                     if (live2dModelGroup) live2dModelGroup.style.display = 'flex';
                     if (vrmModelGroup) vrmModelGroup.style.display = 'none';
                     if (live2dContainer) live2dContainer.style.display = 'block';
+                    if(vrmExpressionGroup) vrmExpressionGroup.style.display = 'none';
                     if (vrmContainer) {
                         vrmContainer.classList.add('hidden');
                         vrmContainer.style.display = 'none';
@@ -975,6 +996,7 @@
                 } else { // VRM
                     if (live2dModelGroup) live2dModelGroup.style.display = 'none';
                     if (vrmModelGroup) vrmModelGroup.style.display = 'flex';
+                    if(vrmExpressionGroup) vrmExpressionGroup.style.display = 'flex';
                     if (live2dContainer) live2dContainer.style.display = 'none';
                     if (vrmContainer) {
                         vrmContainer.classList.remove('hidden');
@@ -1219,7 +1241,8 @@
                         // 【修改】调用智能检测函数
                         fixVRMModel();
                         
-                        
+                        // 在这里加载表情
+                        loadVRMExpressions();
                         // 加载新模型时重置动作列表状态，允许重新加载动作
                         animationsLoaded = false;
                         // 主动加载动作列表，解开下拉菜单的锁定状态
@@ -1238,7 +1261,7 @@
                 });
             }
 
-            // 加载 VRM 动作列表
+            
             // 加载 VRM 动作列表
             async function loadVRMAnimations(autoPlaySaved = false) {
                 try {
@@ -1276,7 +1299,6 @@
             }
 
             // VRM 动作选择事件 - 首次点击时加载动作列表
-
             if (vrmAnimationSelect) {
                 vrmAnimationSelect.addEventListener('focus', async () => {
                     // 首次获得焦点时加载动作列表
@@ -1352,6 +1374,56 @@
                     // 如果正在播放动画，更新速度
                     if (vrmManager && vrmManager.vrmaAction) {
                         vrmManager.vrmaAction.timeScale = speed;
+                    }
+                });
+            }
+            // 加载 VRM 表情列表
+            function loadVRMExpressions() {
+                if (!vrmExpressionSelect || !vrmManager || !vrmManager.expression) return;
+                
+                const expressions = vrmManager.expression.getExpressionList();
+                
+                vrmExpressionSelect.innerHTML = '<option value="">选择表情预览</option>';
+                
+                if (expressions.length > 0) {
+                    expressions.forEach(name => {
+                        const opt = document.createElement('option');
+                        opt.value = name;
+                        opt.textContent = name;
+                        vrmExpressionSelect.appendChild(opt);
+                    });
+                    vrmExpressionSelect.disabled = false;
+                    if (resetVrmExpressionBtn) resetVrmExpressionBtn.disabled = false;
+                    // 【新增】启用播放按钮
+                    if (triggerVrmExpressionBtn) triggerVrmExpressionBtn.disabled = false;
+                } else {
+                    vrmExpressionSelect.innerHTML = '<option value="">无可用表情</option>';
+                    vrmExpressionSelect.disabled = true;
+                }
+            }
+            // 【新增】播放按钮点击事件
+            if (triggerVrmExpressionBtn) {
+                triggerVrmExpressionBtn.addEventListener('click', () => {
+                    const name = vrmExpressionSelect.value;
+                    if (!name) {
+                        showStatus('请先选择一个表情');
+                        return;
+                    }
+                    if (vrmManager && vrmManager.expression) {
+                        // 调用设置表情的方法
+                        vrmManager.expression.setBaseExpression(name);
+                        showStatus(`正在播放表情: ${name}`);
+                    }
+                });
+            }
+
+            // 表情重置事件
+            if (resetVrmExpressionBtn) {
+                resetVrmExpressionBtn.addEventListener('click', () => {
+                    if (vrmManager && vrmManager.expression) {
+                        // 传 'neutral' 会在内部触发恢复自动模式
+                        vrmManager.expression.setBaseExpression('neutral');
+                        vrmExpressionSelect.value = '';
                     }
                 });
             }

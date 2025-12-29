@@ -125,7 +125,11 @@ class VRMManager {
         if (!this.animation) this._initModules();
         if (this.animation) return this.animation.playVRMAAnimation(url, opts);
     }
-
+    
+    
+    stopVRMAAnimation() {
+        if (this.animation) this.animation.stopVRMAAnimation();
+    }
     stopAnimation() { 
         if(this.animation) this.animation.stopVRMAAnimation(); 
     }
