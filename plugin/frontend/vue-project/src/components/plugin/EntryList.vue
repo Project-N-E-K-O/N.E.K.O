@@ -6,20 +6,78 @@
       <el-table-column prop="description" :label="$t('plugins.entryDescription')" />
       <el-table-column :label="$t('plugins.actions')" width="120">
         <template #default="{ row }">
-          <el-button type="primary" size="small" @click="handleExecute(row)">
+          <el-button type="primary" size="small" @click="openExecuteDialog(row)">
             {{ $t('plugins.trigger') }}
           </el-button>
         </template>
       </el-table-column>
     </el-table>
+
+    <el-dialog v-model="dialogVisible" :title="$t('plugins.trigger')">
+      <div v-if="currentEntry">
+        <p>
+          {{ $t('plugins.entryName') }}: {{ currentEntry.name }}
+        </p>
+        <p>
+          {{ $t('plugins.entryDescription') }}: {{ currentEntry.description || '-' }}
+        </p>
+
+        <!-- 当有 input_schema 时，按 schema 生成表单字段 -->
+        <el-form v-if="hasSchema" label-position="top">
+          <el-form-item
+            v-for="(fieldSchema, key) in currentEntry.input_schema.properties"
+            :key="key as string"
+            :label="fieldSchema.description || (key as string)"
+          >
+            <el-input
+              v-if="!fieldSchema.type || fieldSchema.type === 'string'"
+              v-model="formModel[key as string]"
+            />
+            <el-input-number
+              v-else-if="fieldSchema.type === 'number' || fieldSchema.type === 'integer'"
+              v-model="formModel[key as string]"
+            />
+            <el-switch
+              v-else-if="fieldSchema.type === 'boolean'"
+              v-model="formModel[key as string]"
+            />
+            <el-input
+              v-else
+              v-model="formModel[key as string]"
+            />
+          </el-form-item>
+        </el-form>
+
+        <!-- 无 schema 时退回到 JSON 文本输入 -->
+        <el-form v-else label-position="top">
+          <el-form-item label="Args (JSON)">
+            <el-input
+              v-model="argsText"
+              type="textarea"
+              :rows="6"
+              placeholder="{ }"
+            />
+          </el-form-item>
+        </el-form>
+      </div>
+
+      <template #footer>
+        <el-button @click="dialogVisible = false">{{ $t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="submitting" @click="handleExecute">
+          {{ $t('plugins.trigger') }}
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
+import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import EmptyState from '@/components/common/EmptyState.vue'
 import type { PluginEntry } from '@/types/api'
+import { triggerPlugin } from '@/api/plugins'
 
 interface Props {
   entries: PluginEntry[]
@@ -29,8 +87,87 @@ interface Props {
 const props = defineProps<Props>()
 const { t } = useI18n()
 
-function handleExecute(entry: PluginEntry) {
-  ElMessage.info(`${t('plugins.trigger')} ${t('plugins.entryPoint')}: ${entry.name}`)
+const dialogVisible = ref(false)
+const currentEntry = ref<PluginEntry | null>(null)
+const argsText = ref<string>('{}')
+const submitting = ref(false)
+const formModel = ref<Record<string, any>>({})
+
+const hasSchema = computed(() => {
+  const entry = currentEntry.value as any
+  const schema = entry?.input_schema
+  return !!(schema && typeof schema === 'object' && schema.properties && typeof schema.properties === 'object')
+})
+
+function initFormModelFromSchema(entry: PluginEntry) {
+  const schema: any = entry.input_schema || {}
+  const props = schema.properties || {}
+  const initial: Record<string, any> = {}
+  for (const key in props) {
+    if (!Object.prototype.hasOwnProperty.call(props, key)) continue
+    const field = props[key] || {}
+    if ('default' in field) {
+      initial[key] = field.default
+    } else {
+      switch (field.type) {
+        case 'number':
+        case 'integer':
+          initial[key] = 0
+          break
+        case 'boolean':
+          initial[key] = false
+          break
+        default:
+          initial[key] = ''
+      }
+    }
+  }
+  formModel.value = initial
+}
+
+function openExecuteDialog(entry: PluginEntry) {
+  currentEntry.value = entry
+  argsText.value = '{}'
+  if (entry.input_schema && (entry as any).input_schema.properties) {
+    initFormModelFromSchema(entry)
+  } else {
+    formModel.value = {}
+  }
+  dialogVisible.value = true
+}
+
+async function handleExecute() {
+  if (!currentEntry.value) return
+
+  let parsedArgs: Record<string, any> = {}
+  if (hasSchema.value) {
+    parsedArgs = { ...formModel.value }
+  } else {
+    const raw = argsText.value?.trim()
+    if (raw) {
+      try {
+        parsedArgs = JSON.parse(raw)
+      } catch (e) {
+        ElMessage.error('Invalid JSON args')
+        return
+      }
+    }
+  }
+
+  submitting.value = true
+  try {
+    await triggerPlugin({
+      plugin_id: props.pluginId,
+      entry_id: currentEntry.value.id,
+      args: parsedArgs,
+    } as any)
+    ElMessage.success(t('plugins.trigger') + ' OK')
+    dialogVisible.value = false
+  } catch (e: any) {
+    ElMessage.error(e?.message || 'Trigger failed')
+  } finally {
+    submitting.value = false
+  }
   // TODO: 打开执行对话框
 }
 </script>

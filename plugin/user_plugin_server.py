@@ -310,7 +310,7 @@ async def plugin_trigger(payload: PluginTriggerRequest, request: Request):
         
         # 关键日志：记录接收到的请求
         logger.info(
-            "[plugin_trigger] Received trigger request: plugin_id=%s, entry_id=%s, task_id=%s",
+            "[plugin_trigger] Received trigger request: plugin_id={}, entry_id={}, task_id={}",
             payload.plugin_id,
             payload.entry_id,
             payload.task_id,
@@ -338,7 +338,7 @@ async def plugin_trigger(payload: PluginTriggerRequest, request: Request):
             args_preview = args_preview[:500] + "...(truncated)"
         
         logger.debug(
-            "[plugin_trigger] Request args: type=%s, keys=%s, preview=%s",
+            "[plugin_trigger] Request args: type={}, keys={}, preview={}",
             type(payload.args),
             list(payload.args.keys()) if isinstance(payload.args, dict) else "N/A",
             args_preview,

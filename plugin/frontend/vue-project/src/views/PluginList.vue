@@ -17,14 +17,39 @@
             </el-button>
           </div>
         </div>
+
+        <div class="filter-bar" @mouseenter="filterVisible = true">
+          <template v-if="filterVisible">
+            <el-input
+              v-model="filterText"
+              clearable
+              class="filter-input"
+              placeholder="过滤插件 (支持正则, 匹配 ID/名称/描述)"
+            />
+            <el-switch
+              v-model="useRegex"
+              class="filter-switch"
+              active-text="Regex"
+              inactive-text="Text"
+            />
+            <el-radio-group v-model="filterMode" size="small" class="filter-mode">
+              <el-radio-button label="whitelist">白名单</el-radio-button>
+              <el-radio-button label="blacklist">黑名单</el-radio-button>
+            </el-radio-group>
+            <span v-if="regexError" class="filter-error">无效的正则表达式</span>
+          </template>
+          <template v-else>
+            <span class="filter-placeholder">悬停以显示过滤选项…</span>
+          </template>
+        </div>
       </template>
 
-      <LoadingSpinner v-if="loading && plugins.length === 0" :loading="true" :text="$t('common.loading')" />
-      <EmptyState v-else-if="plugins.length === 0" :description="$t('plugins.noPlugins')" />
+      <LoadingSpinner v-if="loading && rawPlugins.length === 0" :loading="true" :text="$t('common.loading')" />
+      <EmptyState v-else-if="rawPlugins.length === 0" :description="$t('plugins.noPlugins')" />
       
       <TransitionGroup v-else name="list" tag="div" class="plugin-grid">
         <div
-          v-for="plugin in plugins"
+          v-for="plugin in filteredPlugins"
           :key="plugin.id"
           class="plugin-item"
         >
@@ -54,7 +79,50 @@ const router = useRouter()
 const pluginStore = usePluginStore()
 const metricsStore = useMetricsStore()
 
-const plugins = computed(() => pluginStore.pluginsWithStatus)
+const rawPlugins = computed(() => pluginStore.pluginsWithStatus)
+const filterVisible = ref(false)
+const filterText = ref('')
+const useRegex = ref(false)
+const filterMode = ref<'whitelist' | 'blacklist'>('whitelist')
+const regexError = ref(false)
+const filteredPlugins = computed(() => {
+  const list = rawPlugins.value || []
+  const text = filterText.value.trim()
+  if (!text) {
+    regexError.value = false
+    return list
+  }
+
+  if (useRegex.value) {
+    try {
+      const re = new RegExp(text, 'i')
+      regexError.value = false
+      return list.filter((p) => {
+        const id = p.id || ''
+        const name = p.name || ''
+        const desc = p.description || ''
+        return re.test(id) || re.test(name) || re.test(desc)
+      })
+    } catch {
+      regexError.value = true
+      return list
+    }
+  }
+
+  regexError.value = false
+  const lower = text.toLowerCase()
+  const match = (p: any) => {
+    const id = (p.id || '').toLowerCase()
+    const name = (p.name || '').toLowerCase()
+    const desc = (p.description || '').toLowerCase()
+    return id.includes(lower) || name.includes(lower) || desc.includes(lower)
+  }
+
+  if (filterMode.value === 'blacklist') {
+    return list.filter((p) => !match(p))
+  }
+  return list.filter((p) => match(p))
+})
 const loading = computed(() => pluginStore.loading)
 const showMetrics = ref(false)
 let metricsRefreshTimer: number | null = null

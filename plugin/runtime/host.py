@@ -354,8 +354,10 @@ def _plugin_process_runner(
                     else:
                         # 执行自定义事件
                         logger.debug(
-                            "[Plugin Process] Executing custom event %s.%s, req_id=%s",
-                            event_type, event_id, req_id
+                            "[Plugin Process] Executing custom event {}.{}, req_id={}",
+                            event_type,
+                            event_id,
+                            req_id,
                         )
                         if asyncio.iscoroutinefunction(method):
                             logger.debug("[Plugin Process] Custom event is async, running in thread to avoid blocking command loop")
@@ -408,16 +410,17 @@ def _plugin_process_runner(
                 
                 # 发送响应到结果队列
                 logger.debug(
-                    "[Plugin Process] Sending response for req_id=%s, success=%s",
-                    req_id, ret_payload.get("success")
+                    "[Plugin Process] Sending response for req_id={}, success={}",
+                    req_id,
+                    ret_payload.get("success"),
                 )
                 try:
                     # multiprocessing.Queue.put() 默认会阻塞直到有空间
                     # 使用 timeout 避免无限阻塞，但通常不会阻塞
                     res_queue.put(ret_payload, timeout=10.0)
                     logger.debug(
-                        "[Plugin Process] Response sent successfully for req_id=%s",
-                        req_id
+                        "[Plugin Process] Response sent successfully for req_id={}",
+                        req_id,
                     )
                 except Exception:
                     logger.exception(
@@ -434,14 +437,14 @@ def _plugin_process_runner(
                 
                 # 关键日志：记录接收到的触发消息
                 logger.info(
-                    "[Plugin Process] Received TRIGGER: plugin_id=%s, entry_id=%s, req_id=%s",
+                    "[Plugin Process] Received TRIGGER: plugin_id={}, entry_id={}, req_id={}",
                     plugin_id,
                     entry_id,
                     req_id,
                 )
                 # 详细参数信息使用 DEBUG
                 logger.debug(
-                    "[Plugin Process] Args: type=%s, keys=%s, content=%s",
+                    "[Plugin Process] Args: type={}, keys={}, content={}",
                     type(args),
                     list(args.keys()) if isinstance(args, dict) else "N/A",
                     args,
@@ -460,7 +463,7 @@ def _plugin_process_runner(
                     method_name = getattr(method, "__name__", entry_id)
                     # 关键日志：记录开始执行
                     logger.info(
-                        "[Plugin Process] Executing entry '%s' using method '%s'",
+                        "[Plugin Process] Executing entry '{}' using method '{}'",
                         entry_id,
                         method_name,
                     )
@@ -470,7 +473,7 @@ def _plugin_process_runner(
                         sig = inspect.signature(method)
                         params = list(sig.parameters.keys())
                         logger.debug(
-                            "[Plugin Process] Method signature: params=%s, args_keys=%s",
+                            "[Plugin Process] Method signature: params={}, args_keys={}",
                             params,
                             list(args.keys()) if isinstance(args, dict) else "N/A",
                         )
@@ -516,13 +519,13 @@ def _plugin_process_runner(
                         logger.debug("[Plugin Process] Method is sync, calling directly")
                         try:
                             logger.debug(
-                                "[Plugin Process] Calling method with args: %s",
+                                "[Plugin Process] Calling method with args: {}",
                                 args,
                             )
                             with ctx._handler_scope(f"plugin_entry.{entry_id}"):
                                 res = method(**args)
                             logger.debug(
-                                "[Plugin Process] Method call succeeded, result type: %s",
+                                "[Plugin Process] Method call succeeded, result type: {}",
                                 type(res),
                             )
                         except TypeError:
@@ -530,8 +533,10 @@ def _plugin_process_runner(
                             sig = inspect.signature(method)
                             params = list(sig.parameters.keys())
                             logger.exception(
-                                "[Plugin Process] Invalid call to entry %s, params=%s, args_keys=%s",
-                                entry_id, params, list(args.keys()) if isinstance(args, dict) else "N/A"
+                                "[Plugin Process] Invalid call to entry {}, params={}, args_keys={}",
+                                entry_id,
+                                params,
+                                list(args.keys()) if isinstance(args, dict) else "N/A",
                             )
                             raise
                     
@@ -721,13 +726,13 @@ class PluginHost:
         """
         # 关键日志：记录触发请求
         self.logger.info(
-            "[PluginHost] Trigger called: plugin_id=%s, entry_id=%s",
+            "[PluginHost] Trigger called: plugin_id={}, entry_id={}",
             self.plugin_id,
             entry_id,
         )
         # 详细参数信息使用 DEBUG
         self.logger.debug(
-            "[PluginHost] Args: type=%s, keys=%s, content=%s",
+            "[PluginHost] Args: type={}, keys={}, content={}",
             type(args),
             list(args.keys()) if isinstance(args, dict) else "N/A",
             args,
@@ -758,7 +763,12 @@ class PluginHost:
         Raises:
             PluginError: 如果事件不存在或执行失败
         """
-        self.logger.info("[PluginHost] Trigger custom event: plugin_id=%s, event_type=%s, event_id=%s" % (self.plugin_id, event_type, event_id))
+        self.logger.info(
+            "[PluginHost] Trigger custom event: plugin_id={}, event_type={}, event_id={}",
+            self.plugin_id,
+            event_type,
+            event_id,
+        )
         return await self.comm_manager.trigger_custom_event(event_type, event_id, args, timeout)
 
     async def push_bus_change(self, *, sub_id: str, bus: str, op: str, delta: Dict[str, Any] | None = None) -> None:
@@ -830,7 +840,7 @@ class PluginHost:
             return True
             
         except Exception:
-            self.logger.exception("Error while shutting down plugin %s", self.plugin_id)
+            self.logger.exception("Error while shutting down plugin {}", self.plugin_id)
             return False
 
 
