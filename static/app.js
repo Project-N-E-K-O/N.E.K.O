@@ -5599,6 +5599,7 @@ function init_app() {
                     try {
                         await window.vrmManager.loadModel(modelPath);
                         console.log('[猫娘切换] VRM模型已加载完成');
+                        
                     } catch (loadError) {
                         // 如果加载失败且路径是 /static/vrm/，尝试 /user_vrm/
                         if (modelPath.startsWith('/static/vrm/') && (loadError.message.includes('404') || loadError.message.includes('Not Found'))) {

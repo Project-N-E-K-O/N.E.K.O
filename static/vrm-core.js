@@ -424,8 +424,21 @@ class VRMCore {
             if (object.material) {
                 const materials = Array.isArray(object.material) ? object.material : [object.material];
                 materials.forEach(material => {
-                    material.castShadow = false;
-                    material.receiveShadow = false;
+                    // 1. 全局开启阴影 (衣服、头发)
+                    material.castShadow = true;
+                    material.receiveShadow = true;
+                    
+                    // 2. 🔍 智能检测脸部
+                    // 如果材质名称或物体名称包含 "Face"、"Skin"、"Body" 等关键词
+                    const name = (object.name + (material.name || '')).toLowerCase();
+                    if (name.includes('face') || name.includes('skin') || name.includes('head')) {
+                        // ❌ 脸部不接收阴影 (防止出现奇怪的鼻影或黑脸)
+                        // 这样脸永远是白净的，但头发还是会投射影子到脖子上
+                        material.receiveShadow = false; 
+                        
+                        // 可选：稍微增加一点自发光，确保肤色通透
+                        //if (material.emissiveIntensity !== undefined) material.emissiveIntensity = 0.1;
+                    }
                 });
             }
         });
@@ -479,8 +492,8 @@ class VRMCore {
             width = window.innerWidth;
             height = window.innerHeight;
         }
-        
-        this.manager.camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 2000);
+        //使用 30 度长焦视角，减少透视畸变，让角色更修长好看
+        this.manager.camera = new THREE.PerspectiveCamera(30, width / height, 0.1, 2000);
         // 调整相机位置，从正面看模型，提供更好的面部透视
         this.manager.camera.position.set(0, 1.1, 1.5);
         this.manager.camera.lookAt(0, 0.9, 0);
@@ -500,11 +513,14 @@ class VRMCore {
         });
         this.manager.renderer.setSize(width, height);
         this.applyPerformanceSettings();
-        this.manager.renderer.shadowMap.enabled = false;
+        // 开启高质量软阴影 
+        this.manager.renderer.shadowMap.enabled = true; // 开启阴影
+        this.manager.renderer.shadowMap.type = THREE.PCFSoftShadowMap; // ✅ 使用柔和阴影
         this.manager.renderer.outputEncoding = THREE.sRGBEncoding;
-        this.manager.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-        this.manager.renderer.toneMappingExposure = 1.2; // 提高曝光度，使模型更亮
-        this.manager.renderer.useLegacyLights = false;
+        
+        //  Linear (最稳妥的方案)
+        this.manager.renderer.toneMapping = THREE.LinearToneMapping; 
+        this.manager.renderer.toneMappingExposure = 1.0;
 
         // 确保容器和 canvas 可以接收事件
         const canvas = this.manager.renderer.domElement;
@@ -536,39 +552,49 @@ class VRMCore {
         }
 
         // 添加灯光 - 增强亮度和立体感
-        // 环境光：提供基础照明，增加强度使模型更亮
-        const ambientIntensity = this.performanceMode === 'low' ? 0.8 : 0.7;
-        const ambientLight = new THREE.AmbientLight(0xffffff, ambientIntensity);
+        // 1. 先把相机添加到场景中 
+        this.manager.scene.add(this.manager.camera);
+
+        // 2. 环境光 (Ambient): 稍微调暗，保证阴影部分有颜色但足够深
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.1);
         this.manager.scene.add(ambientLight);
 
-        // 主方向光：从斜上方照射，提供主要照明，增强强度
-        const directionalLight1 = new THREE.DirectionalLight(0xffffff, 1.5);
-        directionalLight1.position.set(1, 2, 1.5);
-        directionalLight1.castShadow = false;
-        this.manager.scene.add(directionalLight1);
+        // 3. 建立“跟随灯光组”
+        const camLightGroup = new THREE.Group();
 
-        // 中等和高性能模式：添加轮廓光和补光，增强强度
-        if (this.performanceMode !== 'low') {
-            // 轮廓光：从侧后方照射，增强轮廓立体感，增加强度
-            const rimLight = new THREE.DirectionalLight(0xffffff, 0.9);
-            rimLight.position.set(-2, 1, -1);
-            rimLight.castShadow = false;
-            this.manager.scene.add(rimLight);
 
-            // 高性能模式：添加柔和的补光，增强强度
-            if (this.performanceMode === 'high') {
-                const fillLight = new THREE.DirectionalLight(0xffffff, 0.6);
-                fillLight.position.set(0, -1, 1);
-                fillLight.castShadow = false;
-                this.manager.scene.add(fillLight);
-            }
-        }
+        // 4. 主光源 : 负责产生主要阴影和亮度
+        const mainLight = new THREE.DirectionalLight(0xffffff, 0.1);
+        mainLight.position.set(-1, 1, 1); // 相对相机的位置
+        mainLight.castShadow = true;
+        // 优化阴影参数，去除锯齿
+        mainLight.shadow.mapSize.width = 2048;
+        mainLight.shadow.mapSize.height = 2048;
+        mainLight.shadow.bias = -0.0001;
+        // 限制阴影范围，聚焦角色
+        mainLight.shadow.camera.near = 0.1;
+        mainLight.shadow.camera.far = 20;
+        mainLight.shadow.camera.left = -2;
+        mainLight.shadow.camera.right = 2;
+        mainLight.shadow.camera.top = 2;
+        mainLight.shadow.camera.bottom = -2;
 
-        // 添加柔和的顶部光源，提供整体照明，增强强度
-        const topLight = new THREE.DirectionalLight(0xffffff, 1.0);
-        topLight.position.set(0, 3, 0);
-        topLight.castShadow = false;
-        this.manager.scene.add(topLight);
+        this.manager.scene.add(mainLight);
+
+
+        // 补光 (Fill Light): 位于相机右侧，柔和化阴影
+        const fillLight = new THREE.DirectionalLight(0xffffff, 0.2);
+        fillLight.position.set(1, 0, 1); // 相对相机
+        fillLight.castShadow = false;
+        camLightGroup.add(fillLight);
+
+        // 将灯光组挂载到相机上！
+        this.manager.camera.add(camLightGroup);
+        // 5. 轮廓光 (Rim Light): 依然固定在场景里 (世界坐标)
+        // 从背后打光，勾勒头发边缘，增加通透感
+        const rimLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        rimLight.position.set(0, 5, -5); // 从正后上方
+        this.manager.scene.add(rimLight);
 
         window.addEventListener('resize', () => this.manager.onWindowResize());
     }
@@ -727,6 +753,7 @@ class VRMCore {
             this.manager.camera.lookAt(0, center.y, 0);
             
             // 添加到场景
+            
             this.manager.scene.add(vrm.scene);
 
             // 优化材质设置（根据性能模式）

@@ -1,5 +1,5 @@
 /**
- * VRM Manager - 物理控制版
+ * VRM Manager - 物理控制版 (修复更新顺序)
  */
 class VRMManager {
     constructor() {
@@ -14,7 +14,7 @@ class VRMManager {
         this.clock = (typeof window.THREE !== 'undefined') ? new window.THREE.Clock() : null;
         this.container = null;
         this._animationFrameId = null;
-        this.enablePhysics = true; // 新增：物理开关
+        this.enablePhysics = true; 
         
         this._initModules();
     }
@@ -50,38 +50,47 @@ class VRMManager {
 
             if (!this.animation && typeof window.VRMAnimation !== 'undefined') this._initModules();
 
-            // 1. 先让 VRM 计算 (包括 LookAt, SpringBone 等)
             if (this.currentModel && this.currentModel.vrm) {
-                // 如果开启了物理，正常更新；否则跳过 SpringBone 更新
+                
+                // 1. 【关键修复】先计算表情权重
+                // 必须在 vrm.update 之前设置好 blendShape 的值
+                if (this.expression) {
+                    this.expression.update(delta);
+                }
+
+                // 2. 确保 LookAt 看着相机
+                if (this.currentModel.vrm.lookAt) {
+                    this.currentModel.vrm.lookAt.target = this.camera;
+                }
+                
+                // 3. 执行 VRM 物理和渲染更新
                 if (this.enablePhysics) {
                     this.currentModel.vrm.update(delta);
                 } else {
-                    // 【关键修复】当物理被禁用时，完全跳过 VRM 更新
-                    // 防止 SpringBone 与动画冲突导致手臂抽动
-                    // 仅更新必要的组件，但跳过物理计算
+                    // 物理禁用时的保底更新
                     if (this.currentModel.vrm.lookAt) {
                         this.currentModel.vrm.lookAt.update(delta);
                     }
                     if (this.currentModel.vrm.expressionManager) {
                         this.currentModel.vrm.expressionManager.update(delta);
                     }
-                    // 故意跳过 springBoneManager.update() 来避免与动画冲突
                 }
             }
 
-            // 2. 强行覆盖动画 (这是解决 T-Pose 重置的关键)
+            // 4. 动画 Mixer 更新
             if (this.animation) {
                 this.animation.update(delta);
             }
             
+            // 5. 控制器更新
             if (this.controls) this.controls.update();
+            
             this.renderer.render(this.scene, this.camera);
         };
 
         this._animationFrameId = requestAnimationFrame(animateLoop);
     }
 
-    // --- 新增：物理开关 ---
     toggleSpringBone(enable) {
         this.enablePhysics = enable;
         console.log(`[VRM Manager] 物理系统已${enable ? '开启' : '关闭'}`);
@@ -90,9 +99,25 @@ class VRMManager {
     async loadModel(modelUrl, options = {}) {
         this._initModules();
         if (!this.core) this.core = new window.VRMCore(this);
+        
         const result = await this.core.loadModel(modelUrl, options);
-        if (this.animation) this.animation.stopVRMAAnimation();
+        
         if (!this._animationFrameId) this.startAnimateLoop();
+
+        const DEFAULT_LOOP_ANIMATION = '/static/vrm/animation/wait03.vrma';
+        
+        if (options.autoPlay !== false && this.animation) {
+            console.log('[VRM Manager] 模型加载完成，自动播放默认循环动作...');
+            this.playVRMAAnimation(DEFAULT_LOOP_ANIMATION, { loop: true }).catch(err => {
+                console.warn('[VRM Manager] 自动播放默认动作失败:', err);
+            });
+        }
+        
+        // 设置初始表情
+        if (this.expression) {
+            this.expression.pickRandomMood(); 
+        }
+
         return result;
     }
 
@@ -101,12 +126,26 @@ class VRMManager {
         if (this.animation) return this.animation.playVRMAAnimation(url, opts);
     }
 
-    stopAnimation() { if(this.animation) this.animation.stopVRMAAnimation(); }
-    onWindowResize() { this.core?.onWindowResize(); }
-    getCurrentModel() { return this.currentModel; }
-    setModelPosition(x,y,z) { if(this.currentModel?.scene) this.currentModel.scene.position.set(x,y,z); }
-    setModelScale(x,y,z) { if(this.currentModel?.scene) this.currentModel.scene.scale.set(x,y,z); }
+    stopAnimation() { 
+        if(this.animation) this.animation.stopVRMAAnimation(); 
+    }
+    onWindowResize() { 
+        if (this.camera && this.renderer) {
+            this.camera.aspect = window.innerWidth / window.innerHeight;
+            this.camera.updateProjectionMatrix();
+            this.renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+    }
+    getCurrentModel() { 
+        return this.currentModel; 
+    }
+    setModelPosition(x,y,z) { 
+        if(this.currentModel?.scene) this.currentModel.scene.position.set(x,y,z); 
+    }
+    setModelScale(x,y,z) { 
+        if(this.currentModel?.scene) this.currentModel.scene.scale.set(x,y,z); 
+    }
 }
 
 window.VRMManager = VRMManager;
-console.log('[VRM Manager] 物理控制版已加载');
+console.log('[VRM Manager] 顺序修复版已加载');

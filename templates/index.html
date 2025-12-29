@@ -1813,6 +1813,15 @@
                             try {
                                 await window.vrmManager.loadModel(modelUrl);
                                 console.log('[主页] VRM模型重新加载成功');
+                                // 切换模型后立即播放循环动作 
+                                
+                                const IDLE_ANIMATION_PATH = '/static/vrm/animation/wait03.vrma'; 
+                                
+                                if (window.vrmManager.animation) {
+                                    console.log('[主页] 切换模型完成，播放待机动作...');
+                                    window.vrmManager.playVRMAAnimation(IDLE_ANIMATION_PATH, { loop: true });
+                                }
+                                
                             } catch (error) {
                                 console.error('[主页] VRM模型重新加载失败:', error);
                                 console.error('[主页] 错误详情:', error.stack);

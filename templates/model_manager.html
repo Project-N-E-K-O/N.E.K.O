@@ -440,6 +440,56 @@
     </script>
 
     <script>
+        // ==================== 【纯净版：只修朝向，不动骨骼】 ====================
+        function fixVRMModel() {
+            console.log("🔧 [模型检查] 正在运行...");
+
+            const mgr = window.vrmManager;
+            if (!mgr) return;
+
+            // 1. 获取 VRM 实例
+            const wrapper = mgr.currentModel;
+            if (!wrapper) return;
+            const vrm = wrapper.vrm || wrapper;
+
+            if (!vrm.humanoid || !vrm.scene) {
+                console.warn("⚠️ [模型检查] 非标准 VRM，跳过。");
+                return;
+            }
+
+            // 【重要改动】删除了之前的 resetPose 代码
+            // 因为模型加载默认就是 T-Pose，强制重置反而会导致手举高（Surrender Pose）
+            console.log("✅ [骨骼检查] 保持默认姿态 (Trust Original Pose)");
+
+            // 2. 朝向修正逻辑 (这个是安全的，保留)
+            try {
+                const scene = vrm.scene;
+                const humanoid = vrm.humanoid;
+
+                scene.updateMatrixWorld(true);
+                const foot = humanoid.getNormalizedBoneNode('leftFoot');
+                const toes = humanoid.getNormalizedBoneNode('leftToes');
+
+                if (foot && toes) {
+                    const footPos = new THREE.Vector3();
+                    const toesPos = new THREE.Vector3();
+                    foot.getWorldPosition(footPos);
+                    toes.getWorldPosition(toesPos);
+
+                    // 如果脚尖 Z < 脚跟 Z，说明背对屏幕
+                    if (toesPos.z < footPos.z - 0.001) {
+                        console.log("🔄 [朝向修正] 检测到背对屏幕 -> 旋转 180 度");
+                        scene.rotation.y = Math.PI;
+                    } else {
+                        console.log("✨ [朝向检测] 朝向正确 -> 保持原样");
+                        scene.rotation.y = 0;
+                    }
+                }
+            } catch (e) {
+                console.error("❌ [检查出错]", e);
+            }
+        }
+        // ====================================================================
         // 用于页面间通信的事件处理
         function sendMessageToMainPage(action) {
             try {
@@ -466,7 +516,9 @@
                 console.error('发送消息给主页面失败:', e);
             }
         }
-
+        
+    
+        
         // 全局变量：跟踪未保存的更改
         window.hasUnsavedChanges = false;
         // 统一路径处理器，防止多处硬编码
@@ -745,11 +797,8 @@
             const savedModelType = localStorage.getItem('modelType') || 'live2d';
             await switchModelDisplay(savedModelType);
 
-            // 不再自动加载模型，只有用户手动选择时才加载
-            // await loadCurrentCharacterModel();
 
             // 如果已自动加载了一个模型，确保在下拉框中选中它
-            // 这是双重保险：防止 loadCurrentCharacterModel() 内部设置失败
             if (currentModelInfo && currentModelInfo.name) {
                 const exists = availableModels.some(m => m.name === currentModelInfo.name);
                 if (exists && modelSelect.value !== currentModelInfo.name) {
@@ -1164,10 +1213,13 @@
                         }
                         
                         // 使用 URL 加载模型，而不是本地文件路径（浏览器不允许加载 file:// 路径）
-                        await vrmManager.loadModel(modelUrl);
-
-                        // VRM动作已改为自动循环播放，模型加载时会自动启动
-
+                        // 传入 { autoPlay: false } 让模型保持 T-Pose 静止
+                        await vrmManager.loadModel(modelUrl, { autoPlay: false });
+                        
+                        // 【修改】调用智能检测函数
+                        fixVRMModel();
+                        
+                        
                         // 加载新模型时重置动作列表状态，允许重新加载动作
                         animationsLoaded = false;
                         // 主动加载动作列表，解开下拉菜单的锁定状态
@@ -2124,7 +2176,64 @@
                     currentEmotionMapping = { motions: {}, expressions: {} };
                 }
             }
+        
+            // 智能检测并修正 VRM 模型朝向
+            // 【强力调试版】智能检测并修正 VRM 模型朝向
+            function autoCorrectVRMOrientation(vrm) {
+                console.log("【调试开始】准备检测模型朝向...");
+                console.log("【调试】传入的 vrm 对象是:", vrm);
 
+                // 1. 检查对象是否存在
+                if (!vrm) {
+                    console.error("【调试失败】传入的 vrm 是空的 (null/undefined)！无法检测。");
+                    // 尝试去 vrmManager 里找一下备用的
+                    if (window.vrmManager && window.vrmManager.model) {
+                        console.log("【调试】尝试使用 window.vrmManager.model 替补...");
+                        vrm = window.vrmManager.model;
+                    } else {
+                        return; 
+                    }
+                }
+
+                // 2. 检查 Humanoid 组件
+                if (!vrm.humanoid) {
+                    console.error("【调试失败】模型存在，但没有 Humanoid (人形骨骼) 组件！");
+                    return;
+                }
+
+                try {
+                    const humanoid = vrm.humanoid;
+                    const scene = vrm.scene;
+
+                    console.log("【调试】正在强制刷新骨骼矩阵...");
+                    scene.updateMatrixWorld(true);
+                    
+                    const footNode = humanoid.getNormalizedBoneNode('leftFoot');
+                    const toesNode = humanoid.getNormalizedBoneNode('leftToes');
+
+                    if (footNode && toesNode) {
+                        const footPos = new THREE.Vector3();
+                        const toesPos = new THREE.Vector3();
+
+                        footNode.getWorldPosition(footPos);
+                        toesNode.getWorldPosition(toesPos);
+
+                        console.log(`【VRM Check】数据读取成功 -> 脚跟Z: ${footPos.z.toFixed(4)}, 脚尖Z: ${toesPos.z.toFixed(4)}`);
+
+                        if (toesPos.z < footPos.z - 0.001) {
+                            console.log('【VRM Check】判定结果：背对屏幕 -> 🔄 执行旋转 180 度');
+                            scene.rotation.y = Math.PI; 
+                        } else {
+                            console.log('【VRM Check】判定结果：正对屏幕 -> ✅ 保持原样');
+                            scene.rotation.y = 0; 
+                        }
+                    } else {
+                        console.warn('【VRM Check】⚠️ 未找到脚部骨骼 (leftFoot 或 leftToes 缺失)，无法判断。');
+                    }
+                } catch (e) {
+                    console.error('【VRM Check】❌ 检测过程发生异常:', e);
+                }
+            }
             // 加载当前角色模型的函数
             async function loadCurrentCharacterModel() {
                 try {
@@ -2184,12 +2293,17 @@
                                 const filename = vrmModelPath.split(/[/\\]/).pop();
                                 modelUrl = `/user_vrm/${filename}`;
                             }
-                            await vrmManager.loadModel(modelUrl);
-                            // 保持 T-Pose 
-                            if (vrmManager.animation) {
-                                vrmManager.stopAnimation(); 
+                            // 传入 { autoPlay: false }
+                            await vrmManager.loadModel(modelUrl, { autoPlay: false });
+                            
+                            // 调用工具函数，自动修正朝向
+                            fixVRMModel();
+                            
+                            if (vrmManager.currentVrm) {
+                                autoCorrectVRMOrientation(vrmManager.currentVrm);
                             }
                             console.log('模型加载完成，已重置为 T-Pose 等待指令');
+                            
                         } else {
                             // 如果 vrmManager 还未初始化，触发 change 事件来加载模型
                             if (vrmModelSelect) {

@@ -80,9 +80,15 @@ class VRMAnimation {
             const gltf = await new Promise((resolve, reject) => loader.load(vrmaPath, resolve, undefined, reject));
             const originalClip = gltf.animations[0];
 
-            if (!this.vrmaMixer) {
-                this.vrmaMixer = new window.THREE.AnimationMixer(vrm.scene);
+            // 针对【当前模型】创建新的 Mixer
+            if (this.vrmaMixer) {
+                this.vrmaMixer.stopAllAction();
+                this.vrmaMixer.uncacheRoot(this.vrmaMixer.getRoot()); // 清理旧绑定
+                this.vrmaMixer = null;
             }
+            
+            // 创建绑定到【当前新模型】(vrm.scene) 的混合器
+            this.vrmaMixer = new window.THREE.AnimationMixer(vrm.scene);
 
             // 1. 严格映射重定向
             let clip = this._strictRetargetClip(originalClip, vrm);
@@ -116,7 +122,7 @@ class VRMAnimation {
             } else {
                 newAction.reset().fadeIn(fadeDuration).play();
             }
-
+            
             this.currentAction = newAction;
             this.vrmaIsPlaying = true;
             
@@ -240,7 +246,8 @@ class VRMAnimation {
         }
 
         originalClip.tracks.forEach((track) => {
-            if (track.name.toLowerCase().includes('expression') || track.name.toLowerCase().includes('blendshape')) return;
+            //允许动作文件控制表情
+            //if (track.name.toLowerCase().includes('expression') || track.name.toLowerCase().includes('blendshape')) return;
             const lastDotIndex = track.name.lastIndexOf('.');
             const property = track.name.substring(lastDotIndex + 1);
             let nodeName = track.name.substring(0, lastDotIndex);
@@ -301,7 +308,7 @@ class VRMAnimation {
         this.manager.scene.add(this.skeletonHelper);
     }
 
-    // ... 口型同步代码 (保持不变) ...
+    //口型同步代码
     startLipSync(analyser) {
         this.analyser = analyser;
         this.lipSyncActive = true;

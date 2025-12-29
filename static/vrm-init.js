@@ -61,7 +61,7 @@ async function initVRMModel() {
     // 临时调试：强制使用默认VRM模型来测试加载功能
     if (!targetModelPath) {
         console.log('[VRM Init] 未找到VRM模型路径，使用默认模型进行测试');
-        targetModelPath = '/static/vrm/sister1.0.vrm'; // 默认模型
+        targetModelPath = '/static/vrm/avatarc.vrm'; // 默认模型
     }
 
     if (!window.vrmManager) {
@@ -94,6 +94,7 @@ async function initVRMModel() {
         console.log('[VRM Init] 开始加载VRM模型:', modelUrl);
         await window.vrmManager.loadModel(modelUrl);
         console.log('[VRM Init] VRM模型加载完成');
+        
 
     } catch (error) {
         console.error('[VRM Init] 自动加载流程异常:', error);
@@ -205,7 +206,7 @@ window.checkAndLoadVRM = async function() {
         console.log('[主页VRM检查] 开始加载VRM模型:', modelUrl);
         await window.vrmManager.loadModel(modelUrl);
         console.log('[主页VRM检查] VRM模型加载成功');
-
+        
     } catch (error) {
         console.error('[主页VRM检查] VRM检查和加载失败:', error);
         console.error('[主页VRM检查] 错误详情:', error.stack);
@@ -227,39 +228,6 @@ window.checkVRMStatus = function() {
     console.log('[VRM Status Check] === 检查完成 ===');
 };
 
-// VRM 模型测试命令
-window.testVRMModels = {
-    loadSister: async () => {
-        console.log('[Test] 加载 sister1.0.vrm...');
-        try {
-            await window.vrmManager?.loadModel('/static/vrm/sister1.0.vrm');
-            console.log('[Test] sister1.0.vrm 加载成功');
-        } catch (error) {
-            console.error('[Test] sister1.0.vrm 加载失败:', error);
-        }
-    },
-
-    loadYui: async () => {
-        console.log('[Test] 加载 yuivrm (1).vrm...');
-        try {
-            await window.vrmManager?.loadModel('/static/vrm/yuivrm (1).vrm');
-            console.log('[Test] yuivrm (1).vrm 加载成功');
-        } catch (error) {
-            console.error('[Test] yuivrm (1).vrm 加载失败:', error);
-        }
-    },
-
-    listModels: () => {
-        console.log('=== 可用 VRM 模型 ===');
-        console.log('📁 /static/vrm/sister1.0.vrm');
-        console.log('📁 /static/vrm/yuivrm (1).vrm');
-        console.log('');
-        console.log('💡 使用方法:');
-        console.log('  testVRMModels.loadSister() - 加载 sister 模型');
-        console.log('  testVRMModels.loadYui() - 加载 yui 模型');
-        console.log('  testVRMModels.listModels() - 显示此帮助');
-    }
-};
 
 // 自动显示帮助
 console.log('[VRM Debug] 🎮 VRM 测试命令已加载:');

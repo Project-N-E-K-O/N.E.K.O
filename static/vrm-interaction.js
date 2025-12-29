@@ -25,7 +25,19 @@ class VRMInteraction {
         // 鼠标跟踪相关
         this.mouseTrackingEnabled = false;
         this.mouseMoveHandler = null;
+
+        // LookAt 视线追踪初始化 
+        const THREE = window.THREE;
+        // 1. 创建一个看不见的 3D 物体，作为眼睛盯着的目标
+        this.lookAtTarget = new THREE.Object3D();
+        
+        // 2. 存储鼠标在屏幕上的归一化坐标 (x, y 都在 -1 到 1 之间)
+        this.mouseNDC = new THREE.Vector2(0, 0);
+        
+        // 3. 标记鼠标是否在画面内
+        this.isMouseOnScreen = false;
     }
+    
     
     /**
      * 初始化拖拽和缩放功能
@@ -52,6 +64,10 @@ class VRMInteraction {
         
         const canvas = this.manager.renderer.domElement;
         const THREE = window.THREE;
+        // 将隐形目标加入场景
+        if (this.manager.scene) {
+            this.manager.scene.add(this.lookAtTarget);
+        }
 
         // 先清理旧的事件监听器（如果存在），避免重复绑定
         this.cleanupDragAndZoom();
@@ -162,18 +178,23 @@ class VRMInteraction {
                 this.dragMode = null;
                 canvas.style.cursor = 'grab';
             }
-        };
 
+            // 鼠标离开时，让目标回归中心，这样角色会看回正前方
+            this.isMouseOnScreen = false;
+            this.mouseNDC.set(0, 0);
+        };
+        
         // 鼠标进入画布
         this.mouseEnterHandler = () => {
             canvas.style.cursor = 'grab';
+            this.isMouseOnScreen = true; 
         };
 
         // 滚轮缩放（使用 OrbitControls 的 zoom 功能）
+        // 滚轮缩放
         this.wheelHandler = (e) => {
+            // 1. 检查锁定状态
             if (this.checkLocked() || !this.manager.currentModel) {
-                e.preventDefault();
-                e.stopPropagation();
                 return;
             }
             
@@ -183,24 +204,39 @@ class VRMInteraction {
             const THREE = window.THREE;
             const delta = e.deltaY;
             
-            // 修复缩放方向：delta > 0 为滚轮向下，应该远离模型
+            // 2. 缩放系数
             const zoomSpeed = 0.05;
             const zoomFactor = delta > 0 ? (1 + zoomSpeed) : (1 - zoomSpeed); 
 
-            if (this.manager.currentModel.scene) {
+            if (this.manager.currentModel.scene && this.manager.camera) {
                 const modelCenter = new THREE.Vector3();
-                this.manager.currentModel.scene.getWorldPosition(modelCenter);
+                
+                // 获取目标中心点
+                if (this.manager.controls) {
+                    modelCenter.copy(this.manager.controls.target);
+                } else {
+                    this.manager.currentModel.scene.getWorldPosition(modelCenter);
+                    modelCenter.y += 1.0; // 简单估算中心点高度
+                }
+
                 const oldDistance = this.manager.camera.position.distanceTo(modelCenter);
                 
-                // 设置合理的缩放限制 [1.0, 5.0]
-                const clampedDistance = Math.max(1.0, Math.min(5.0, oldDistance * zoomFactor));
+                // 使用固定的缩放范围 
+                // 不再计算模型大小，直接写死范围，简单稳定
+                const minDist = 0.5;  // 最近 0.5 米
+                const maxDist = 20.0; // 最远 20 米 (足够大多数情况使用了)
 
+                let newDistance = oldDistance * zoomFactor;
+                newDistance = Math.max(minDist, Math.min(maxDist, newDistance));
+                
+
+                // 应用新位置
                 const direction = new THREE.Vector3()
                     .subVectors(this.manager.camera.position, modelCenter)
                     .normalize();
 
                 this.manager.camera.position.copy(modelCenter)
-                    .add(direction.multiplyScalar(clampedDistance));
+                    .add(direction.multiplyScalar(newDistance));
                 
                 if (this.manager.controls && this.manager.controls.update) {
                     this.manager.controls.update();
@@ -226,7 +262,16 @@ class VRMInteraction {
         // 绑定滚轮事件 - 使用捕获阶段确保优先处理
         canvas.addEventListener('wheel', this.wheelHandler, { passive: false, capture: true });
         canvas.addEventListener('auxclick', this.auxClickHandler);
-
+        
+        //监听鼠标移动以更新视线坐标 
+        this.mouseMoveTracker = (event) => {
+            // 计算归一化设备坐标 (NDC)
+            // 屏幕左上角是 (-1, 1)，右下角是 (1, -1)
+            this.mouseNDC.x = (event.clientX / window.innerWidth) * 2 - 1;
+            this.mouseNDC.y = -(event.clientY / window.innerHeight) * 2 + 1;
+        };
+        window.addEventListener('mousemove', this.mouseMoveTracker);
+        
 
         
     }
@@ -247,9 +292,34 @@ class VRMInteraction {
      * 每帧更新（由 VRMManager 驱动）
      */
     update(delta) {
-        // 如果开启了鼠标跟踪（浮动按钮跟随），则更新位置
+        // 原有逻辑：如果开启了鼠标跟踪（浮动按钮跟随），则更新位置
         if (this.mouseTrackingEnabled) {
             this.updateFloatingButtonsPosition();
+        }
+
+        // 计算视线目标 
+        // 只有当相机和目标对象都存在时才计算
+        if (this.manager.camera && this.lookAtTarget) {
+            const camera = this.manager.camera;
+            const THREE = window.THREE;
+            
+            // 1. 创建一个向量，Z=0.5 代表在相机前方
+            // 使用我们之前在 mousemove 中计算好的 mouseNDC 坐标
+            const vector = new THREE.Vector3(this.mouseNDC.x, this.mouseNDC.y, 0.5);
+            
+            // 2. 核心数学：将 2D 屏幕坐标“反投影”回 3D 世界坐标
+            vector.unproject(camera);
+            
+            // 3. 计算从相机指向该点的方向
+            const dir = vector.sub(camera.position).normalize();
+            
+            // 4. 让目标停留在相机前方 10 米远的地方
+            const distance = 10.0; 
+            const targetPos = camera.position.clone().add(dir.multiplyScalar(distance));
+            
+            // 5. 使用 lerp (线性插值) 让目标球平滑移动，而不是瞬移
+            // 5.0 * delta 是移动速度，数值越大跟得越紧
+            this.lookAtTarget.position.lerp(targetPos, 5.0 * delta);
         }
     }
 
