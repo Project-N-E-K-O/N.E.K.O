@@ -1361,12 +1361,26 @@
             align-items: center;
             padding: 20px;
             box-sizing: border-box;
+            outline: none;
+            border: none;
+        }
+        
+        .modal:focus {
+            outline: none;
+        }
+        
+        .modal:focus-within {
+            outline: none;
+        }
+        
+        .modal[style*="display: flex"], .modal.show {
+            display: flex !important;
         }
 
         .modal-content {
             background: #fff;
             border-radius: 12px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
             width: 100%;
             max-width: 800px;
             max-height: 85vh;
@@ -1374,6 +1388,18 @@
             display: flex;
             flex-direction: column;
             animation: modalFadeIn 0.3s ease-out;
+            outline: none !important;
+            border: none !important;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15) !important;
+        }
+        
+        .modal-content:focus {
+            outline: none !important;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15) !important;
+        }
+        
+        .modal-content:focus-visible {
+            outline: none !important;
         }
 
         @keyframes modalFadeIn {
@@ -1429,6 +1455,15 @@
             padding: 8px;
             overflow-y: auto;
             flex: 1;
+        }
+        
+        /* 上传modal样式修复 */
+        #uploadToWorkshopModal .modal-body {
+            white-space: normal;
+        }
+        
+        #uploadToWorkshopModal .control-group {
+            white-space: normal;
         }
 
         .modal-footer {
@@ -1982,74 +2017,6 @@
             </div>
             <!-- 本地内容标签页 -->
             <div id="local-items-content" class="tab-content" style="display: none;">
-                <!-- 上传表单区域 - 默认隐藏 -->
-                <div class="section-card upload-section" style="display: none;">
-                    <div class="section-header">
-                        <h2 data-i18n="steam.uploadToWorkshop">上传到创意工坊</h2>
-                    </div>
-                    
-                    <div id="message-area"></div>
-                    
-                    <div class="control-group">
-                        <div class="control-label" data-i18n="steam.title">标题 *</div>
-                        <input type="text" id="item-title" class="control-input" placeholder="输入您的创作标题">
-                    </div>
-                    
-                    <div class="control-group">
-                        <div class="control-label" data-i18n="steam.description">描述</div>
-                        <textarea id="item-description" class="control-input" placeholder="详细描述您的创作内容..." data-i18n-placeholder="steam.descriptionPlaceholder"></textarea>
-                    </div>
-                    
-                    <div class="control-group">
-                        <div class="control-label" data-i18n="steam.contentFolderPath">内容文件夹路径 *</div>
-                        <input type="text" id="content-folder" class="control-input" placeholder="从本地物品中获取的内容文件夹路径" readonly>
-                    </div>
-                    
-                    <div class="control-group">
-                        <div class="control-label" data-i18n="steam.previewImagePath">预览图片路径 *</div>
-                        <div style="display: flex; gap: 8px; align-items: center;">
-                            <input type="text" id="preview-image" class="control-input" placeholder="从本地物品中获取的预览图片路径">
-                            <input type="file" id="preview-image-file" accept="image/*" style="display: none;">
-                            <button class="btn btn-secondary" onclick="selectPreviewImage()" data-i18n="common.selectFile">选择文件</button>
-                        </div>
-                        <div class="control-hint" id="preview-image-size-hint" style="color: #333; font-size: 14px;" data-i18n="steam.previewImageSizeHint">提示：预览图片大小需要小于1MB</div>
-                    </div>
-                    
-                    <div class="control-group">
-                        <div class="control-label" data-i18n="steam.tags">标签</div>
-                        <input type="text" id="item-tags" class="control-input" placeholder="输入标签，按空格添加" data-i18n-placeholder="steam.tagsPlaceholderSpace">
-                        <div id="tags-container" class="tags-container"></div>
-                    </div>
-                    
-                    <div class="control-group">
-                        <div class="control-label" data-i18n="steam.visibility">可见性</div>
-                        <select id="visibility" class="control-select">
-                            <option value="public" data-i18n="steam.visibilityPublic">公开</option>
-                              <option value="friends" data-i18n="steam.visibilityFriends">仅好友可见</option>
-                              <option value="private" data-i18n="steam.visibilityPrivate">私有</option>
-                        </select>
-                    </div>
-                    
-                    <div class="control-group">
-                        <div class="checkbox-container">
-                            <input type="checkbox" id="allow-comments" class="control-checkbox" checked>
-                            <label for="allow-comments" class="checkbox-label" data-i18n="steam.allowComments">允许评论</label>
-                        </div>
-                    </div>
-                    
-                    <div class="control-group">
-                        <button class="btn btn-primary" onclick="uploadItem()">
-                            <span data-i18n="steam.uploadToWorkshop">上传到创意工坊</span>
-                        </button>
-                        <button class="btn btn-secondary" onclick="toggleUploadSection()">
-                            <span data-i18n="steam.hideUploadSection">隐藏上传区</span>
-                        </button>
-                        <div class="help-text" style="margin-top: 10px; font-size: 12px; color: #666;">
-                            点击"上传"即表示您同意 Steam 创意工坊服务条款，包括创意工坊法律协议：
-                            <a href="https://steamcommunity.com/sharedfiles/workshoplegalagreement" target="_blank" style="color: #44b7fe;">https://steamcommunity.com/sharedfiles/workshoplegalagreement</a>
-                        </div>
-                    </div>
-                </div>
                 
                 <div class="section-card">
                     <div class="section-header">
@@ -2280,6 +2247,77 @@
         </div>
     </div>
 
+    <!-- 上传到创意工坊模态框 -->
+    <div id="uploadToWorkshopModal" class="modal" onclick="closeUploadModalOnOutsideClick(event)" style="display: none;">
+        <div class="modal-content" onclick="event.stopPropagation()" style="max-width: 900px;">
+            <div class="modal-header">
+                <h3 class="modal-title" data-i18n="steam.uploadToWorkshop">上传到创意工坊</h3>
+                <button class="modal-close" onclick="closeUploadModal()">&times;</button>
+            </div>
+            <div class="modal-body" style="padding: 20px;">
+                <div id="message-area"></div>
+                
+                <div class="control-group">
+                    <div class="control-label" data-i18n="steam.title">标题 *</div>
+                    <input type="text" id="item-title" class="control-input" placeholder="输入您的创作标题">
+                </div>
+                
+                <div class="control-group">
+                    <div class="control-label" data-i18n="steam.description">描述</div>
+                    <textarea id="item-description" class="control-input" placeholder="详细描述您的创作内容..." data-i18n-placeholder="steam.descriptionPlaceholder"></textarea>
+                </div>
+                
+                <div class="control-group">
+                    <div class="control-label" data-i18n="steam.contentFolderPath">内容文件夹路径 *</div>
+                    <input type="text" id="content-folder" class="control-input" placeholder="从本地物品中获取的内容文件夹路径" readonly>
+                </div>
+                
+                <div class="control-group">
+                    <div class="control-label" data-i18n="steam.previewImagePath">预览图片路径 *</div>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <input type="text" id="preview-image" class="control-input" placeholder="从本地物品中获取的预览图片路径">
+                        <input type="file" id="preview-image-file" accept="image/*" style="display: none;">
+                        <button class="btn btn-secondary" onclick="selectPreviewImage()" data-i18n="common.selectFile">选择文件</button>
+                    </div>
+                    <div class="control-hint" id="preview-image-size-hint" style="color: #333; font-size: 14px;" data-i18n="steam.previewImageSizeHint">提示：预览图片大小需要小于1MB</div>
+                </div>
+                
+                <div class="control-group">
+                    <div class="control-label" data-i18n="steam.tags">标签</div>
+                    <input type="text" id="item-tags" class="control-input" placeholder="输入标签，按空格添加" data-i18n-placeholder="steam.tagsPlaceholderSpace">
+                    <div id="tags-container" class="tags-container"></div>
+                </div>
+                
+                <div class="control-group">
+                    <div class="control-label" data-i18n="steam.visibility">可见性</div>
+                    <select id="visibility" class="control-select">
+                        <option value="public" data-i18n="steam.visibilityPublic">公开</option>
+                        <option value="friends" data-i18n="steam.visibilityFriends">仅好友可见</option>
+                        <option value="private" data-i18n="steam.visibilityPrivate">私有</option>
+                    </select>
+                </div>
+                
+                <div class="control-group">
+                    <div class="checkbox-container">
+                        <input type="checkbox" id="allow-comments" class="control-checkbox" checked>
+                        <label for="allow-comments" class="checkbox-label" data-i18n="steam.allowComments">允许评论</label>
+                    </div>
+                </div>
+                
+                <div class="help-text" style="margin-top: 10px; font-size: 12px; color: #666;">
+                    点击"上传"即表示您同意 Steam 创意工坊服务条款，包括创意工坊法律协议：
+                    <a href="https://steamcommunity.com/sharedfiles/workshoplegalagreement" target="_blank" style="color: #44b7fe;">https://steamcommunity.com/sharedfiles/workshoplegalagreement</a>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" onclick="uploadItem()">
+                    <span data-i18n="steam.uploadToWorkshop">上传到创意工坊</span>
+                </button>
+                <button class="btn btn-secondary" onclick="closeUploadModal()" data-i18n="steam.close">关闭</button>
+            </div>
+        </div>
+    </div>
+
 
 
     <script>
@@ -2291,38 +2329,101 @@
             }
         }
         
-        // 上传区域切换功能
-        function toggleUploadSection() {
-            // 查找上传表单区域
-            console.log('toggleUploadSection函数被调用');
-            const uploadFormSection = document.querySelector('.upload-section');
-            console.log('找到的上传表单区域:', uploadFormSection);
-            if (uploadFormSection) {
-                // 切换上传表单的显示/隐藏
-                console.log('当前上传表单区域的display样式:', uploadFormSection.style.display);
-                if (uploadFormSection.style.display === 'none' || uploadFormSection.style.display === '') {
-                    uploadFormSection.style.display = 'block';
-                    // 滚动到上传表单区域
-                    uploadFormSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                    // 手动更新选择文件按钮的翻译
-                    const selectFileButton = document.querySelector('button[data-i18n="common.selectFile"]');
-                    console.log('找到的选择文件按钮:', selectFileButton);
-                    if (selectFileButton && window.t) {
-                        const translatedText = window.t('common.selectFile');
-                        console.log('common.selectFile的翻译:', translatedText);
-                        selectFileButton.textContent = translatedText;
+        // 检查当前模型是否为默认模型（mao_pro）
+        function isDefaultModel() {
+            const modelSelect = document.getElementById('model-select');
+            if (!modelSelect) return false;
+            const currentModel = modelSelect.value;
+            return currentModel === 'mao_pro';
+        }
+        
+        // 更新模型显示和上传按钮状态
+        function updateModelDisplayAndUploadState() {
+            const modelSelect = document.getElementById('model-select');
+            if (!modelSelect) return;
+            
+            const isDefault = isDefaultModel();
+            const selectedOption = modelSelect.options[modelSelect.selectedIndex];
+            
+            // 如果当前模型是默认模型，显示"默认"
+            if (isDefault && selectedOption) {
+                // 保存原始文本，以便后续恢复
+                if (!selectedOption.dataset.originalText) {
+                    selectedOption.dataset.originalText = selectedOption.textContent;
+                }
+                selectedOption.textContent = '默认';
+            } else if (selectedOption && selectedOption.dataset.originalText) {
+                // 恢复原始文本
+                selectedOption.textContent = selectedOption.dataset.originalText;
+            }
+            
+            // 更新上传按钮状态
+            const uploadButtons = [
+                document.querySelector('button[onclick="handleUploadToWorkshop()"]'),
+                document.querySelector('#uploadToWorkshopModal .btn-primary[onclick="uploadItem()"]')
+            ];
+            
+            uploadButtons.forEach(btn => {
+                if (btn) {
+                    if (isDefault) {
+                        btn.disabled = true;
+                        btn.style.opacity = '0.5';
+                        btn.style.cursor = 'not-allowed';
+                        btn.title = '默认模型无法上传到创意工坊';
+                    } else {
+                        btn.disabled = false;
+                        btn.style.opacity = '';
+                        btn.style.cursor = '';
+                        btn.title = '';
                     }
-                    // 更新翻译，确保新显示的元素都能正确翻译
+                }
+            });
+        }
+        
+        // 上传区域切换功能 - 改为显示modal
+        function toggleUploadSection() {
+            console.log('toggleUploadSection函数被调用');
+            
+            // 检查是否为默认模型
+            if (isDefaultModel()) {
+                showMessage('默认模型无法上传到创意工坊', 'error');
+                return;
+            }
+            
+            const uploadModal = document.getElementById('uploadToWorkshopModal');
+            if (uploadModal) {
+                const isHidden = uploadModal.style.display === 'none' || uploadModal.style.display === '';
+                if (isHidden) {
+                    // 显示modal
+                    uploadModal.style.display = 'flex';
+                    // 更新翻译
                     if (window.updatePageTexts) {
                         window.updatePageTexts();
                     }
-                    console.log('上传表单区域已显示');
+                    console.log('上传modal已显示');
                 } else {
-                    uploadFormSection.style.display = 'none';
-                    console.log('上传表单区域已隐藏');
+                    // 隐藏modal
+                    uploadModal.style.display = 'none';
+                    console.log('上传modal已隐藏');
                 }
             } else {
-                console.log('未找到上传表单区域');
+                console.log('未找到上传modal');
+            }
+        }
+        
+        // 关闭上传modal
+        function closeUploadModal() {
+            const uploadModal = document.getElementById('uploadToWorkshopModal');
+            if (uploadModal) {
+                uploadModal.style.display = 'none';
+            }
+        }
+        
+        // 点击modal外部关闭
+        function closeUploadModalOnOutsideClick(event) {
+            const modal = document.getElementById('uploadToWorkshopModal');
+            if (event.target === modal) {
+                closeUploadModal();
             }
         }
         
@@ -2457,10 +2558,10 @@
             
 
                 
-                // 确保上传表单区域初始隐藏
-                const uploadFormSection = document.querySelector('.upload-section');
-                if (uploadFormSection) {
-                    uploadFormSection.style.display = 'none';
+                // 确保上传modal初始隐藏
+                const uploadModal = document.getElementById('uploadToWorkshopModal');
+                if (uploadModal) {
+                    uploadModal.style.display = 'none';
                 }
             
             // 如果切换到角色卡页面，自动执行模型扫描
@@ -3307,6 +3408,11 @@ console.log('准备显示成功提示:', successMessage);
 
         // 上传物品功能
         function uploadItem() {
+            // 检查是否为默认模型
+            if (isDefaultModel()) {
+                showMessage('默认模型无法上传到创意工坊', 'error');
+                return;
+            }
             // 获取路径
             let contentFolder = document.getElementById('content-folder').value.trim();
             let previewImage = document.getElementById('preview-image').value.trim();
@@ -3376,7 +3482,7 @@ console.log('准备显示成功提示:', successMessage);
             };
 
             // 获取上传按钮并禁用
-            const uploadButton = document.querySelector('.upload-section button.button');
+            const uploadButton = document.querySelector('#uploadToWorkshopModal button.btn-primary');
             let originalText = '';
             if (uploadButton) {
                 originalText = uploadButton.textContent || '';
@@ -3477,7 +3583,7 @@ console.log('准备显示成功提示:', successMessage);
                             actionMessage.innerHTML = `
                             <span>${window.t ? window.t('steam.operationComplete') : 'Operation complete, you can:'}</span>
                             <button class="button button-sm" onclick="document.getElementById('item-title').focus()">${window.t ? window.t('steam.continueUpload') : 'Continue Uploading'}</button>
-                            <button class="button button-sm" onclick="toggleUploadSection()">${window.t ? window.t('steam.hideUploadSection') : 'Hide Upload Section'}</button>
+                            <button class="button button-sm" onclick="closeUploadModal()">${window.t ? window.t('steam.hideUploadSection') : 'Hide Upload Section'}</button>
                             <span class="message-close" onclick="this.parentElement.remove()">×</span>
                         `;
                             messageArea.appendChild(actionMessage);
@@ -4581,6 +4687,8 @@ function viewItemDetails(itemId) {
         
         // 更新模型选择
         modelSelect.value = live2d;
+        // 更新模型显示和上传按钮状态
+        updateModelDisplayAndUploadState();
         
         // 更新音色显示
         if (voiceId && window.availableVoices && window.availableVoices[voiceId]) {
@@ -4635,6 +4743,13 @@ function viewItemDetails(itemId) {
         
         function handleUploadToWorkshop() {
             console.log('handleUploadToWorkshop函数被调用');
+            
+            // 检查是否为默认模型
+            if (isDefaultModel()) {
+                showMessage('默认模型无法上传到创意工坊', 'error');
+                return;
+            }
+            
             // 收集角色卡参数
             const name = document.getElementById('character-card-name').value;
             const gender = document.getElementById('character-card-gender').value;
@@ -4915,6 +5030,9 @@ function viewItemDetails(itemId) {
                     console.log('没有可用的模型选项');
                 }
             }
+            
+            // 更新模型显示和上传按钮状态
+            updateModelDisplayAndUploadState();
             
             // 手动触发change事件以加载Live2D模型
             // 这是必要的，因为程序化设置value不会触发change事件
@@ -5396,6 +5514,9 @@ function viewItemDetails(itemId) {
             
             // 添加模型选择事件监听
             modelSelect.addEventListener('change', () => {
+                // 更新模型显示和上传按钮状态
+                updateModelDisplayAndUploadState();
+                
                 const selectedModelName = modelSelect.value;
                 if (selectedModelName) {
                     // 从全局模型列表中查找对应的modelInfo
