@@ -304,16 +304,37 @@
     <script src="/static/live2d-init.js"></script>
 
     <script>
+        // ===== 跨页面通信系统 =====
+        const CHANNEL_NAME = 'neko_page_channel';
+        let l2dBroadcastChannel = null;
+
+        // 初始化 BroadcastChannel（如果支持）
+        try {
+            if (typeof BroadcastChannel !== 'undefined') {
+                l2dBroadcastChannel = new BroadcastChannel(CHANNEL_NAME);
+                console.log('[CrossPageComm] l2d_manager BroadcastChannel 已初始化');
+            }
+        } catch (e) {
+            console.log('[CrossPageComm] BroadcastChannel 不可用，将使用 localStorage 后备方案');
+        }
+
         // 用于页面间通信的事件处理
         function sendMessageToMainPage(action) {
             try {
-                // 使用localStorage事件机制发送消息给主页面
                 const message = {
                     action: action,
                     timestamp: Date.now()
                 };
+
+                // 优先使用 BroadcastChannel
+                if (l2dBroadcastChannel) {
+                    l2dBroadcastChannel.postMessage(message);
+                    console.log('[CrossPageComm] 通过 BroadcastChannel 发送消息:', action);
+                }
+
+                // 同时使用 localStorage 作为后备
                 localStorage.setItem('nekopage_message', JSON.stringify(message));
-                localStorage.removeItem('nekopage_message'); // 立即移除以允许重复发送相同消息
+                localStorage.removeItem('nekopage_message');
             } catch (e) {
                 console.log('发送消息给主页面失败:', e);
             }

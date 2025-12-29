@@ -1484,26 +1484,90 @@
             window.activeMenuCount = Math.max(0, window.activeMenuCount - 1);
         };
 
-        // 页面间通信：监听来自模型设置页面的消息
+        // ===== 跨页面通信系统 =====
+        const CHANNEL_NAME = 'neko_page_channel';
+        let mainPageBroadcastChannel = null;
+
+        // 初始化 BroadcastChannel（如果支持）
+        try {
+            if (typeof BroadcastChannel !== 'undefined') {
+                mainPageBroadcastChannel = new BroadcastChannel(CHANNEL_NAME);
+                mainPageBroadcastChannel.onmessage = async (event) => {
+                    if (event.data && event.data.action) {
+                        console.log('[CrossPageComm] 通过 BroadcastChannel 收到消息:', event.data.action);
+                        await handleCrossPageAction(event.data);
+                    }
+                };
+                console.log('[CrossPageComm] 主页 BroadcastChannel 已初始化');
+            }
+        } catch (e) {
+            console.log('[CrossPageComm] 主页 BroadcastChannel 不可用');
+        }
+
+        /**
+         * 发送确认消息
+         * @param {string} messageId - 要确认的消息 ID
+         */
+        function sendAcknowledgment(messageId) {
+            if (!messageId) return;
+
+            const ackData = { type: 'ack', messageId: messageId, timestamp: Date.now() };
+
+            // 通过 BroadcastChannel 发送确认
+            if (mainPageBroadcastChannel) {
+                try {
+                    mainPageBroadcastChannel.postMessage(ackData);
+                    console.log('[CrossPageComm] 通过 BroadcastChannel 发送确认:', messageId);
+                } catch (e) {
+                    console.log('[CrossPageComm] BroadcastChannel 发送确认失败:', e);
+                }
+            }
+
+            // 同时通过 localStorage 发送确认（后备方案）
+            try {
+                localStorage.setItem('nekopage_ack', JSON.stringify(ackData));
+                localStorage.removeItem('nekopage_ack');
+            } catch (e) {
+                console.log('[CrossPageComm] localStorage 发送确认失败:', e);
+            }
+        }
+
+        /**
+         * 处理跨页面动作
+         * @param {Object} message - 消息对象
+         */
+        async function handleCrossPageAction(message) {
+            const { action, messageId } = message;
+
+            switch (action) {
+                case 'hide_main_ui':
+                    console.log('接收到隐藏主界面命令');
+                    hideMainUI();
+                    break;
+                case 'show_main_ui':
+                    console.log('接收到显示主界面命令');
+                    await showMainUI();
+                    break;
+                case 'reload_model_parameters':
+                    console.log('接收到重新加载模型参数命令');
+                    await reloadModelParameters();
+                    break;
+            }
+
+            // 发送确认消息
+            if (messageId) {
+                sendAcknowledgment(messageId);
+            }
+        }
+
+        // 页面间通信：监听来自模型设置页面的消息（localStorage 后备方案）
         async function handlePageMessage(event) {
             if (event.key === 'nekopage_message') {
                 try {
                     const message = JSON.parse(event.newValue);
                     if (message && message.action) {
-                        switch (message.action) {
-                            case 'hide_main_ui':
-                                console.log('接收到隐藏主界面命令');
-                                hideMainUI();
-                                break;
-                            case 'show_main_ui':
-                                console.log('接收到显示主界面命令');
-                                await showMainUI();
-                                break;
-                            case 'reload_model_parameters':
-                                console.log('接收到重新加载模型参数命令');
-                                await reloadModelParameters();
-                                break;
-                        }
+                        console.log('[CrossPageComm] 通过 localStorage 收到消息:', message.action);
+                        await handleCrossPageAction(message);
                     }
                 } catch (e) {
                     console.log('解析页面消息失败:', e);
