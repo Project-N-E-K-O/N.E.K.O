@@ -22,14 +22,15 @@ from fastapi.responses import JSONResponse, Response
 from openai import AsyncOpenAI
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import SystemMessage, HumanMessage
 import httpx
 
 from .shared_state import get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
 from config import get_extra_body, MEMORY_SERVER_PORT
-from config.prompts_sys import emotion_analysis_prompt, proactive_chat_prompt, proactive_chat_prompt_screenshot, proactive_chat_prompt_window_search
+from config.prompts_sys import emotion_analysis_prompt, proactive_chat_prompt, proactive_chat_prompt_screenshot, proactive_chat_prompt_window_search, proactive_chat_rewrite_prompt
 from utils.workshop_utils import get_workshop_path
 from utils.screenshot_utils import analyze_screenshot_from_data_url
+from utils.language_utils import detect_language, translate_text, normalize_language_code
 
 router = APIRouter(prefix="/api", tags=["system"])
 logger = logging.getLogger("Main")
@@ -783,7 +784,7 @@ async def proactive_chat(request: Request):
                 screenshot_content=screenshot_content,
                 memory_context=memory_context
             )
-            logger.info(f"[{lanlan_name}] 使用图片主动对话提示词")
+            logger.info(f"[{lanlan_name}] 使用图片进行主动对话")
         elif use_window_search:
             # 窗口搜索模板：基于当前活跃窗口和百度搜索结果让AI决定是否主动发起对话
             system_prompt = proactive_chat_prompt_window_search.format(
@@ -792,7 +793,7 @@ async def proactive_chat(request: Request):
                 window_context=formatted_window_content,
                 memory_context=memory_context
             )
-            logger.info(f"[{lanlan_name}] 使用窗口搜索主动对话提示词")
+            logger.info(f"[{lanlan_name}] 使用窗口搜索进行主动对话")
         else:
             # 首页推荐模板：基于首页信息流让AI决定是否主动发起对话
             system_prompt = proactive_chat_prompt.format(
@@ -801,7 +802,7 @@ async def proactive_chat(request: Request):
                 trending_content=formatted_content,
                 memory_context=memory_context
             )
-            logger.info(f"[{lanlan_name}] 使用首页推荐主动对话提示词")
+            logger.info(f"[{lanlan_name}] 使用首页推荐进行主动对话")
 
         # 4. 直接使用langchain ChatOpenAI获取AI回复（不创建临时session）
         try:
@@ -828,7 +829,8 @@ async def proactive_chat(request: Request):
                 api_key=correction_api_key,
                 temperature=1.,
                 max_completion_tokens=500,
-                streaming=False  # 不需要流式，直接获取完整响应
+                streaming=False,  # 不需要流式，直接获取完整响应
+                extra_body=get_extra_body(correction_model)
             )
             
             # 发送请求获取AI决策 - Retry策略：重试2次，间隔1秒、2秒
@@ -841,7 +843,7 @@ async def proactive_chat(request: Request):
             for attempt in range(max_retries):
                 try:
                     response = await asyncio.wait_for(
-                        llm.ainvoke([SystemMessage(content=system_prompt)]),
+                        llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content="========请开始========")]),
                         timeout=10.0
                     )
                     response_text = response.content.strip()
@@ -879,8 +881,17 @@ async def proactive_chat(request: Request):
                     response_text = response_text[last_match.end():].strip()
                     logger.info(f"[{lanlan_name}] 截取'主动搭话'后的内容: {response_text[:50]}...")
 
+            # 5. 判断AI是否选择搭话
+            if "[PASS]" in response_text:
+                return JSONResponse({
+                    "success": True,
+                    "action": "pass",
+                    "message": "AI选择暂时不搭话"
+                })
+
             # --- 新增验证：在继续输出前严格执行响应内容规则 ---
             # 1) 字数限制：按150英文词（空格拆分）或中文字来计算，超过则放弃输出
+            text_length = 200
             try:
                 # 计算混合长度：中文字符计1，英文单词计1
                 def count_words_and_chars(text):
@@ -896,35 +907,49 @@ async def proactive_chat(request: Request):
                     return count
                 
                 text_length = count_words_and_chars(response_text)
-                if text_length > 150:
-                    logger.warning(f"[{lanlan_name}] AI回复超过长度限制（{text_length}词/字），已放弃输出")
-                    return JSONResponse({
-                        "success": True,
-                        "action": "pass",
-                        "message": "AI回复超过长度限制，已放弃输出"
-                    })
             except Exception:
                 logger.exception(f"[{lanlan_name}] 在检查回复长度时发生错误")
 
-            # 2) 特殊字符检测：若包含 '|' 则截断内容并终止输出流程（仅保留'|'前的内容）
-            if '|' in response_text:
-                logger.warning(f"[{lanlan_name}] AI回复包含禁止字符 '|'，将截断内容并继续（仅保留'|'之前的部分）")
-                response_text = response_text.split('|', 1)[0].strip()
-                # 若截断后为空，则放弃输出
-                if not response_text:
+            if text_length > 100 or response_text.find("|") != -1 or response_text.find("｜") != -1:
+                            # --- 使用改写模型清洁输出 ---
+                try:
+                    # 使用相同的correction模型进行改写
+                    rewrite_llm = ChatOpenAI(
+                        model=correction_model,
+                        base_url=correction_base_url,
+                        api_key=correction_api_key,
+                        temperature=0.3,  # 降低温度以获得更稳定的改写结果
+                        max_completion_tokens=500,
+                        streaming=False,
+                        extra_body=get_extra_body(correction_model)
+                    )
+                    
+                    # 构造改写提示
+                    rewrite_prompt = proactive_chat_rewrite_prompt.format(raw_output=response_text)
+                    
+                    # 调用改写模型
+                    rewrite_response = await asyncio.wait_for(
+                        rewrite_llm.ainvoke([SystemMessage(content=rewrite_prompt), HumanMessage(content="========请开始========")]),
+                        timeout=6.0
+                    )
+                    response_text = rewrite_response.content.strip()
+                    logger.debug(f"[{lanlan_name}] 改写后内容: {response_text[:100]}...")
+
+                    if "主动搭话" in response_text or '|' in response_text or "｜" in response_text or '[PASS]' in response_text or count_words_and_chars(response_text) > 100:
+                        logger.warning(f"[{lanlan_name}] AI回复经二次改写后仍失败，放弃主动搭话。")
+                        return JSONResponse({
+                            "success": True,
+                            "action": "pass",
+                            "message": "AI回复改写失败，已放弃输出"
+                        })
+
+                except Exception as e:
+                    logger.warning(f"[{lanlan_name}] 改写模型调用失败，错误提示: {e}")
                     return JSONResponse({
                         "success": True,
                         "action": "pass",
-                        "message": "AI回复被截断后为空，已放弃输出"
+                        "message": "AI回复改写失败，已放弃输出"
                     })
-
-            # 5. 判断AI是否选择搭话
-            if "[PASS]" in response_text or not response_text:
-                return JSONResponse({
-                    "success": True,
-                    "action": "pass",
-                    "message": "AI选择暂时不搭话"
-                })
             
             # 6. AI选择搭话，需要通过session manager处理
             # 首先检查是否有真实的websocket连接
@@ -1015,9 +1040,20 @@ async def proactive_chat(request: Request):
                 await mgr.handle_text_data(chunk, is_first_chunk=(i == 0))
                 await asyncio.sleep(0.15)  # 小延迟模拟流式
             
-            # 调用response完成回调
-            if hasattr(mgr, 'handle_response_complete'):
-                await mgr.handle_response_complete()
+            # 发送TTS结束信号，触发TTS的commit（对于Qwen TTS的server_commit模式尤为重要）
+            if mgr.use_tts and mgr.tts_thread and mgr.tts_thread.is_alive():
+                try:
+                    mgr.tts_request_queue.put((None, None))
+                except Exception as e:
+                    logger.warning(f"[{lanlan_name}] 发送TTS结束信号失败: {e}")
+            
+            # 发送turn end信号（不调用handle_response_complete以避免触发热重置）
+            mgr.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+            try:
+                if mgr.websocket and hasattr(mgr.websocket, 'client_state') and mgr.websocket.client_state == mgr.websocket.client_state.CONNECTED:
+                    await mgr.websocket.send_json({'type': 'system', 'data': 'turn end'})
+            except Exception as e:
+                logger.warning(f"[{lanlan_name}] 发送turn end失败: {e}")
             
             return JSONResponse({
                 "success": True,
@@ -1047,5 +1083,99 @@ async def proactive_chat(request: Request):
             "error": "服务器内部错误",
             "detail": str(e)
         }, status_code=500)
+
+
+@router.post('/translate')
+async def translate_text_api(request: Request):
+    """
+    翻译文本API（供前端字幕模块使用）
+    
+    请求格式:
+    {
+        "text": "要翻译的文本",
+        "target_lang": "目标语言代码 ('zh', 'en', 'ja')",
+        "source_lang": "源语言代码 (可选，为null时自动检测)"
+    }
+    
+    响应格式:
+    {
+        "success": true/false,
+        "translated_text": "翻译后的文本",
+        "source_lang": "检测到的源语言代码",
+        "target_lang": "目标语言代码"
+    }
+    """
+    try:
+        data = await request.json()
+        text = data.get('text', '').strip()
+        target_lang = data.get('target_lang', 'zh')
+        source_lang = data.get('source_lang')
+        
+        if not text:
+            return {
+                "success": False,
+                "error": "文本不能为空",
+                "translated_text": "",
+                "source_lang": "unknown",
+                "target_lang": target_lang
+            }
+        
+        # 归一化目标语言代码（复用公共函数）
+        target_lang_normalized = normalize_language_code(target_lang, format='short')
+        
+        # 检测源语言（如果未提供）
+        if source_lang is None:
+            detected_source_lang = detect_language(text)
+        else:
+            # 归一化源语言代码（复用公共函数）
+            detected_source_lang = normalize_language_code(source_lang, format='short')
+        
+        # 如果源语言和目标语言相同，不需要翻译
+        if detected_source_lang == target_lang_normalized or detected_source_lang == 'unknown':
+            return {
+                "success": True,
+                "translated_text": text,
+                "source_lang": detected_source_lang,
+                "target_lang": target_lang_normalized
+            }
+        
+        # 检查是否跳过 Google 翻译（前端传递的会话级失败标记）
+        skip_google = data.get('skip_google', False)
+        
+        # 调用翻译服务
+        try:
+            translated, google_failed = await translate_text(
+                text, 
+                target_lang_normalized, 
+                detected_source_lang,
+                skip_google=skip_google
+            )
+            return {
+                "success": True,
+                "translated_text": translated,
+                "source_lang": detected_source_lang,
+                "target_lang": target_lang_normalized,
+                "google_failed": google_failed  # 告诉前端 Google 翻译是否失败
+            }
+        except Exception as e:
+            logger.error(f"翻译失败: {e}")
+            # 翻译失败时返回原文
+            return {
+                "success": False,
+                "error": str(e),
+                "translated_text": text,
+                "source_lang": detected_source_lang,
+                "target_lang": target_lang_normalized
+            }
+            
+    except Exception as e:
+        logger.error(f"翻译API处理失败: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "translated_text": "",
+            "source_lang": "unknown",
+            "target_lang": "zh"
+        }
 
 

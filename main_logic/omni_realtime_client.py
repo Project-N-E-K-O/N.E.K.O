@@ -113,6 +113,7 @@ class OmniRealtimeClient:
         self._skip_until_next_response = False
         # Track image recognition per turn
         self._image_recognized_this_turn = False
+        self._image_sent_this_turn = False
         self._image_being_analyzed = False
         self._image_description = "[实时屏幕截图或相机画面正在分析中。先不要瞎编内容，可以稍等片刻。在此期间不要用搜索功能应付。等收到画面分析结果后再描述画面。]"
         
@@ -133,7 +134,7 @@ class OmniRealtimeClient:
         self._audio_processor = AudioProcessor(
             input_sample_rate=48000,
             output_sample_rate=16000,
-            noise_reduce_enabled=True,  # RNNoise with auto-reset enabled
+            noise_reduce_enabled=False,  # RNNoise with auto-reset enabled
             on_silence_reset=self._on_silence_reset  # 静音重置时发送 input_audio_buffer.clear
         )
         
@@ -160,6 +161,34 @@ class OmniRealtimeClient:
         
         # Native image input rate limiting
         self._last_native_image_time = 0.0  # 上次原生图片输入时间戳
+        
+        # 防止log刷屏机制（当websocket关闭后）
+        self._last_ws_none_warning_time = 0.0  # 上次websocket为None警告的时间戳
+        self._ws_none_warning_interval = 5.0  # websocket为None警告的最小间隔（秒）
+        
+        # Image processing lock
+        self._image_lock = asyncio.Lock()
+        
+        # Audio processing lock to ensure sequential processing in thread pool
+        self._audio_processing_lock = asyncio.Lock()
+
+    async def process_audio_chunk_async(self, audio_chunk: bytes) -> bytes:
+        """
+        Asynchronously process audio chunk using RNNoise in a separate thread.
+        This prevents blocking the main event loop during heavy calculation.
+        """
+        if self._audio_processor is None:
+            return audio_chunk
+
+        async with self._audio_processing_lock:
+            # Use run_in_executor to offload heavy processing
+            # None = use default ThreadPoolExecutor
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(
+                None, 
+                self._audio_processor.process_chunk, 
+                audio_chunk
+            )
 
     async def _check_silence_timeout(self):
         """定期检查是否超过静默超时时间，如果是则触发超时回调"""
@@ -200,9 +229,8 @@ class OmniRealtimeClient:
             logger.error(f"静默检测任务出错: {e}")
     
     def _on_silence_reset(self):
-        """当音频处理器检测到2秒静音并重置缓存时调用。标记待发送clear事件。"""
+        """当音频处理器检测到4秒静音并重置缓存时调用。标记待发送clear事件。"""
         self._silence_reset_pending = True
-        logger.info("🔇 RNNoise检测到2秒静音，待发送 input_audio_buffer.clear")
     
     async def clear_audio_buffer(self):
         """发送 input_audio_buffer.clear 事件清空服务端缓存。"""
@@ -210,7 +238,7 @@ class OmniRealtimeClient:
             "type": "input_audio_buffer.clear"
         }
         await self.send_event(clear_event)
-        logger.info("📤 已发送 input_audio_buffer.clear 事件")
+        logger.debug("📤 已发送 input_audio_buffer.clear 事件")
 
     async def connect(self, instructions: str, native_audio=True) -> None:
         """Establish WebSocket connection with the Realtime API."""
@@ -357,27 +385,33 @@ class OmniRealtimeClient:
                 self._is_throttled = False
                 logger.info("🔄 Backpressure throttle ended, resuming sends")
         
+        # 检查websocket是否有效
+        if not self.ws:
+            return
+        
         event['event_id'] = "event_" + str(int(time.time() * 1000))
-        if self.ws:
-            async with self._send_semaphore:  # 限制并发发送数量
-                try:
-                    await self.ws.send(json.dumps(event))
-                except Exception as e:
-                    error_msg = str(e)
-                    logger.warning(f"⚠️ 发送事件失败: {error_msg}")
-                    
-                    # 检测致命错误：Response timeout 或 1011 错误码
-                    if 'Response timeout' in error_msg or '1011' in error_msg:
-                        if not self._fatal_error_occurred:
-                            self._fatal_error_occurred = True
-                            logger.error("💥 检测到致命错误 (Response timeout / 1011)，立即中断语音对话")
-                            if self.on_connection_error:
-                                asyncio.create_task(self.on_connection_error("💥 连接超时 (Response timeout)，语音对话已中断。"))
-                            # 尝试关闭连接
-                            asyncio.create_task(self.close())
-                        return  # 不再抛出异常，直接返回
-                    
-                    raise
+        async with self._send_semaphore:  # 限制并发发送数量
+            try:
+                if not self.ws:
+                    return
+                await self.ws.send(json.dumps(event))
+            except Exception as e:
+                error_msg = str(e)
+                if '1000' not in error_msg:
+                    logger.warning(f"⚠️ 发送 {event.get('type', '未知')} 事件失败: {error_msg}")
+                
+                # 检测致命错误：Response timeout 或 1011 错误码
+                if 'Response timeout' in error_msg or '1011' in error_msg:
+                    if not self._fatal_error_occurred:
+                        self._fatal_error_occurred = True
+                        logger.error("💥 检测到致命错误 (Response timeout / 1011)，立即中断语音对话")
+                        if self.on_connection_error:
+                            asyncio.create_task(self.on_connection_error("💥 连接超时 (Response timeout)，语音对话已中断。"))
+                        # 尝试关闭连接
+                        asyncio.create_task(self.close())
+                    return  # 不再抛出异常，直接返回
+                
+                raise
 
     async def update_session(self, config: Dict[str, Any]) -> None:
         """Update session configuration."""
@@ -394,6 +428,10 @@ class OmniRealtimeClient:
         - 48kHz from PC: Apply RNNoise then downsample to 16kHz
         - 16kHz from mobile: Pass through directly (no RNNoise)
         """
+        # 检查是否已发生致命错误，如果是则直接返回
+        if self._fatal_error_occurred:
+            return
+        
         # Detect input sample rate based on chunk size
         # 48kHz: 480 samples (10ms) = 960 bytes
         # 16kHz: 512 samples (~32ms) = 1024 bytes
@@ -403,12 +441,14 @@ class OmniRealtimeClient:
         
         # Apply RNNoise noise reduction only for 48kHz input (PC)
         if is_48khz and self._audio_processor is not None:
-            audio_chunk = self._audio_processor.process_chunk(audio_chunk)
+            # Use async wrapper to avoid blocking main loop
+            audio_chunk = await self.process_audio_chunk_async(audio_chunk)
+            
             # Skip if RNNoise is buffering (returns empty)
             if len(audio_chunk) == 0:
                 return
             
-            # 检查是否有待发送的静音重置事件（2秒静音触发）
+            # 检查是否有待发送的静音重置事件（4秒静音触发）
             if self._silence_reset_pending:
                 self._silence_reset_pending = False
                 await self.clear_audio_buffer()
@@ -424,8 +464,6 @@ class OmniRealtimeClient:
     async def _analyze_image_with_vision_model(self, image_b64: str) -> str:
         """Use VISION_MODEL to analyze image and return description."""
         try:
-            self._image_being_analyzed = True
-            
             # 使用统一的视觉分析函数
             from utils.screenshot_utils import analyze_image_with_vision_model
             
@@ -437,16 +475,19 @@ class OmniRealtimeClient:
             if description:
                 self._image_description = f"[实时屏幕截图或相机画面]: {description}"
                 logger.info("✅ Image analysis complete.")
-                self._image_being_analyzed = False
+                self._image_recognized_this_turn = True
                 return description
             else:
                 logger.warning("VISION_MODEL not configured or analysis failed")
-                self._image_being_analyzed = False
+                self._image_description = "[实时屏幕截图或相机画面]: 画面分析失败或暂时无法识别。"
+                self._image_recognized_this_turn = True
                 return ""
             
         except Exception as e:
             logger.error(f"Error analyzing image with vision model: {e}")
+            self.image_recognized_this_turn = True
             self._image_being_analyzed = False
+            self._image_description = f"[实时屏幕截图或相机画面]: 分析出错: {str(e)}"
             # 检测内容审查错误并发送中文提示到前端（不关闭session）
             error_str = str(e)
             if 'censorship' in error_str:
@@ -502,29 +543,43 @@ class OmniRealtimeClient:
                 else:
                     # Model does not support video streaming, use VISION_MODEL to analyze
                     # Only recognize one image per conversation turn
-                    if not self._image_recognized_this_turn:
-                        text_event = {
-                            "type": "conversation.item.create",
-                            "item": {
-                                "type": "message",
-                                "role": "user",
-                                "content": [
-                                    {
-                                        "type": "input_text",
-                                        "text": self._image_description
+                    async with self._image_lock:
+                        if not self._image_recognized_this_turn:
+                            if not self._image_being_analyzed:
+                                self._image_being_analyzed = True
+                                text_event = {
+                                    "type": "conversation.item.create",
+                                    "item": {
+                                        "type": "message",
+                                        "role": "user",
+                                        "content": [
+                                            {
+                                                "type": "input_text",
+                                                "text": self._image_description
+                                            }
+                                        ]
                                     }
-                                ]
-                            }
-                        }
-                        logger.info(f"✅ Image description injected into conversation context: {self._image_description[:100]}...")
-                        await self.send_event(text_event)
-                        self._image_recognized_this_turn = True
-                    
-                    if self._image_being_analyzed:
-                        return
-                    
-                    logger.info(f"⚠️ Model {self.model} does not support video streaming, using VISION_MODEL")
-                    await self._analyze_image_with_vision_model(image_b64)
+                                }
+                                logger.info("Sending image description before recognition.")
+                                await self.send_event(text_event)
+                                await self._analyze_image_with_vision_model(image_b64)
+                        elif not self._image_sent_this_turn:
+                            self._image_sent_this_turn = True
+                            text_event = {
+                                    "type": "conversation.item.create",
+                                    "item": {
+                                        "type": "message",
+                                        "role": "user",
+                                        "content": [
+                                            {
+                                                "type": "input_text",
+                                                "text": self._image_description
+                                            }
+                                        ]
+                                    }
+                                }
+                            logger.info("Sending image description after recognition.")
+                            await self.send_event(text_event)
                     return
                     
                 await self.send_event(append_event)
@@ -557,7 +612,6 @@ class OmniRealtimeClient:
                     ]
                 }
             }
-            logger.info(f"Adding conversation item: {item_event}")
             await self.send_event(item_event)
             
             # 然后调用 response.create，不带 instructions（避免替换 session instructions）
@@ -679,14 +733,16 @@ class OmniRealtimeClient:
                     self._skip_until_next_response = False
                     # 响应完成，检测重复度
                     if self._current_response_transcript:
-                        logger.info(f"OmniRealtimeClient: response.done - 当前转录: '{self._current_response_transcript[:50]}...'")
+                        # 不使用logger.info，避免日志文件泄露实际对话内容
+                        print(f"OmniRealtimeClient: response.done - 当前转录: '{self._current_response_transcript[:50]}...'")
                         await self._check_repetition(self._current_response_transcript)
                         self._current_response_transcript = ""
                     else:
-                        logger.info("OmniRealtimeClient: response.done - 没有转录文本")
+                        print("OmniRealtimeClient: response.done - 没有转录文本")
                     # 确保 buffer 被清空
                     self._output_transcript_buffer = ""
                     self._image_recognized_this_turn = False
+                    self._image_sent_this_turn = False
                     if self.on_response_done:
                         await self.on_response_done()
                 elif event_type == "response.created":
@@ -788,15 +844,21 @@ class OmniRealtimeClient:
             finally:
                 self._silence_check_task = None
         
+        # 保存 debug 音频（RNNoise 处理前后的对比音频）
+        if self._audio_processor is not None:
+            try:
+                self._audio_processor.save_debug_audio()
+            except Exception as e:
+                logger.error(f"Error saving debug audio: {e}")
+        
         if self.ws:
             try:
                 # 尝试关闭websocket连接
                 await self.ws.close()
-            except websockets.exceptions.ConnectionClosedOK:
-                logger.warning("OmniRealtimeClient: WebSocket connection already closed (OK).")
-            except websockets.exceptions.ConnectionClosedError as e:
-                logger.error(f"OmniRealtimeClient: WebSocket connection closed with error: {e}")
             except Exception as e:
-                logger.error(f"OmniRealtimeClient: Error closing WebSocket connection: {e}")
+                logger.error(f"Error closing websocket: {e}")
             finally:
-                self.ws = None
+                self.ws = None  # 清空引用，防止后续误用
+                logger.info("WebSocket connection closed")
+        else:
+            logger.warning("WebSocket connection is already closed or None")

@@ -18,6 +18,7 @@ from .shared_state import get_config_manager, get_steamworks, get_session_manage
 from .characters_router import get_current_live2d_model
 from utils.preferences import load_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top
 
+
 router = APIRouter(prefix="/api/config", tags=["config"])
 logger = logging.getLogger("Main")
 
@@ -119,18 +120,11 @@ async def set_preferred_model(request: Request):
 @router.get("/steam_language")
 async def get_steam_language():
     """获取 Steam 客户端的语言设置，用于前端 i18n 初始化"""
-    steamworks = get_steamworks()
-    
-    # Steam 语言代码到 i18n 语言代码的映射
-    # 参考: https://partner.steamgames.com/doc/store/localization/languages
-    STEAM_TO_I18N_MAP = {
-        'schinese': 'zh-CN',      # 简体中文
-        'tchinese': 'zh-CN',      # 繁体中文（映射到简体中文，因为目前只支持 zh-CN）
-        'english': 'en',          # 英文
-        # 其他语言默认映射到英文
-    }
+    from utils.language_utils import normalize_language_code
     
     try:
+        steamworks = get_steamworks()
+        
         if steamworks is None:
             return {
                 "success": False,
@@ -145,8 +139,9 @@ async def get_steam_language():
         if isinstance(steam_language, bytes):
             steam_language = steam_language.decode('utf-8')
         
-        # 映射到 i18n 语言代码
-        i18n_language = STEAM_TO_I18N_MAP.get(steam_language, 'en')  # 默认英文
+        # 使用 language_utils 的归一化函数，统一映射逻辑
+        # format='full' 返回 'zh-CN', 'en', 'ja' 格式（用于前端 i18n）
+        i18n_language = normalize_language_code(steam_language, format='full')
         logger.info(f"[i18n] Steam 语言映射: '{steam_language}' -> '{i18n_language}'")
         
         return {
@@ -162,6 +157,34 @@ async def get_steam_language():
             "error": str(e),
             "steam_language": None,
             "i18n_language": None
+        }
+
+
+@router.get("/user_language")
+async def get_user_language_api():
+    """
+    获取用户语言设置（供前端字幕模块使用）
+    
+    优先级：Steam设置 > 系统设置
+    返回归一化的语言代码（'zh', 'en', 'ja'）
+    """
+    from utils.language_utils import get_global_language
+    
+    try:
+        # 使用 language_utils 的全局语言管理，自动处理 Steam/系统语言优先级
+        language = get_global_language()
+        
+        return {
+            "success": True,
+            "language": language
+        }
+        
+    except Exception as e:
+        logger.error(f"获取用户语言设置失败: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "language": "zh"  # 默认中文
         }
 
 
@@ -433,6 +456,5 @@ async def get_api_providers_config():
             "core_api_providers": [],
             "assist_api_providers": [],
         }
-
 
 

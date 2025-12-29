@@ -20,8 +20,17 @@ import logging
 from typing import Optional
 import soxr
 import time
+import os
+import wave
 
 logger = logging.getLogger(__name__)
+
+# ============== DEBUG 音频存储功能 ==============
+# 设置为 True 可以将 RNNoise 处理前后的音频存储到文件中
+# 用于对比降噪效果
+DEBUG_SAVE_AUDIO = False
+DEBUG_AUDIO_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "debug_audio")
+# ===============================================
 
 # Lazy import pyrnnoise
 _RNNoise = None
@@ -76,12 +85,13 @@ class AudioProcessor:
     API_SAMPLE_RATE = 16000      # API expects 16kHz
     
     # Reset denoiser if no speech detected for this many seconds
-    RESET_TIMEOUT_SECONDS = 2.0
+    RESET_TIMEOUT_SECONDS = 4.0
     
     # AGC Configuration
     AGC_TARGET_LEVEL = 0.25        # Target RMS level (0.0-1.0), raised for easier VAD trigger
-    AGC_MAX_GAIN = 12.0             # Maximum gain multiplier, raised for quieter mics
+    AGC_MAX_GAIN = 20.0            # Maximum gain multiplier (safe with noise floor protection)
     AGC_MIN_GAIN = 0.25            # Minimum gain multiplier
+    AGC_NOISE_FLOOR = 0.015        # RMS below this = silence/noise, don't increase gain
     AGC_ATTACK_TIME = 0.01         # Attack time in seconds (fast response to peaks)
     AGC_RELEASE_TIME = 0.4         # Release time in seconds (slow return to normal)
     
@@ -103,7 +113,7 @@ class AudioProcessor:
         self.noise_reduce_enabled = noise_reduce_enabled
         self.agc_enabled = agc_enabled
         self.limiter_enabled = limiter_enabled
-        # 静音重置回调：当检测到2秒静音并重置状态时调用
+        # 静音重置回调：当检测到4秒静音并重置状态时调用
         self.on_silence_reset = on_silence_reset
         
         # Initialize RNNoise denoiser
@@ -122,6 +132,13 @@ class AudioProcessor:
         self._agc_gain = 1.0
         self._agc_attack_coeff = np.exp(-1.0 / (self.AGC_ATTACK_TIME * self.RNNOISE_SAMPLE_RATE))
         self._agc_release_coeff = np.exp(-1.0 / (self.AGC_RELEASE_TIME * self.RNNOISE_SAMPLE_RATE))
+        
+        # Debug audio buffers - 累积存储完整音频
+        self._debug_audio_before: list[np.ndarray] = []
+        self._debug_audio_after: list[np.ndarray] = []
+        if DEBUG_SAVE_AUDIO:
+            os.makedirs(DEBUG_AUDIO_DIR, exist_ok=True)
+            logger.info(f"🔧 DEBUG: 音频录制已启用，文件将保存到 {DEBUG_AUDIO_DIR}")
         
         logger.info(f"🎤 AudioProcessor initialized: input={input_sample_rate}Hz, "
                    f"output={output_sample_rate}Hz, rnnoise={self._denoiser is not None}, "
@@ -180,9 +197,18 @@ class AudioProcessor:
         
         # Apply RNNoise if available (processes int16, returns int16)
         if self._denoiser is not None and self.noise_reduce_enabled:
+            # DEBUG: 记录 RNNoise 处理前的音频
+            if DEBUG_SAVE_AUDIO:
+                self._debug_audio_before.append(audio_int16.copy())
+            
             processed = self._process_with_rnnoise(audio_int16)
             if len(processed) == 0:
                 return b''  # Buffering
+            
+            # DEBUG: 记录 RNNoise 处理后的音频
+            if DEBUG_SAVE_AUDIO:
+                self._debug_audio_after.append(processed.copy())
+            
             audio_int16 = processed
         
         # Apply AGC (Automatic Gain Control) after RNNoise
@@ -204,7 +230,6 @@ class AudioProcessor:
                 quality='HQ'
             )
             audio_int16 = (audio_float * 32768.0).clip(-32768, 32767).astype(np.int16)
-        
         return audio_int16.tobytes()
     
     def _process_with_rnnoise(self, audio: np.ndarray) -> np.ndarray:
@@ -219,8 +244,8 @@ class AudioProcessor:
         # Add to frame buffer (int16)
         self._frame_buffer = np.concatenate([self._frame_buffer, audio])
         
-        # Limit buffer size to prevent memory issues (max 1 second of audio)
-        max_buffer_samples = self.RNNOISE_SAMPLE_RATE
+        # Limit buffer size to prevent memory issues (max 1 seconds of audio)
+        max_buffer_samples = 1 * self.RNNOISE_SAMPLE_RATE
         if len(self._frame_buffer) > max_buffer_samples:
             self._frame_buffer = self._frame_buffer[-max_buffer_samples:]
         
@@ -240,7 +265,7 @@ class AudioProcessor:
                     self._last_speech_prob = prob
                     
                     # Track last time speech was detected
-                    if prob > 0.5:
+                    if prob > 0.2:
                         self._last_speech_time = time.time()
                     
                     output_frames.append(denoised_frame.flatten())
@@ -277,6 +302,48 @@ class AudioProcessor:
     def request_reset(self) -> None:
         """Request a reset on the next process_chunk call."""
         self._needs_reset = True
+    
+    def save_debug_audio(self) -> None:
+        """
+        将累积的 debug 音频保存到 WAV 文件。
+        保存两个文件：
+        - debug_audio_before.wav: RNNoise 处理前的原始音频
+        - debug_audio_after.wav: RNNoise 处理后的降噪音频
+        
+        调用此方法后会清空 debug 缓冲区。
+        """
+        if not DEBUG_SAVE_AUDIO:
+            return
+        
+        if not self._debug_audio_before and not self._debug_audio_after:
+            logger.warning("⚠️ 没有可保存的 debug 音频数据")
+            return
+        
+        # 合并所有音频片段
+        if self._debug_audio_before:
+            audio_before = np.concatenate(self._debug_audio_before)
+            before_path = os.path.join(DEBUG_AUDIO_DIR, "debug_audio_before.wav")
+            self._save_wav(before_path, audio_before, self.RNNOISE_SAMPLE_RATE)
+            logger.info(f"💾 已保存处理前音频: {before_path} ({len(audio_before)/self.RNNOISE_SAMPLE_RATE:.2f}秒)")
+        
+        if self._debug_audio_after:
+            audio_after = np.concatenate(self._debug_audio_after)
+            after_path = os.path.join(DEBUG_AUDIO_DIR, "debug_audio_after.wav")
+            self._save_wav(after_path, audio_after, self.RNNOISE_SAMPLE_RATE)
+            logger.info(f"💾 已保存处理后音频: {after_path} ({len(audio_after)/self.RNNOISE_SAMPLE_RATE:.2f}秒)")
+        
+        # 清空缓冲区
+        self._debug_audio_before.clear()
+        self._debug_audio_after.clear()
+        logger.info("🔧 DEBUG: 音频已保存，缓冲区已清空")
+    
+    def _save_wav(self, filepath: str, audio: np.ndarray, sample_rate: int) -> None:
+        """将 int16 音频数据保存为 WAV 文件。"""
+        with wave.open(filepath, 'wb') as wf:
+            wf.setnchannels(1)  # mono
+            wf.setsampwidth(2)  # 16-bit = 2 bytes
+            wf.setframerate(sample_rate)
+            wf.writeframes(audio.tobytes())
     
     @property
     def speech_probability(self) -> float:
@@ -320,12 +387,15 @@ class AudioProcessor:
         # Calculate RMS of the current chunk
         rms = np.sqrt(np.mean(audio_float ** 2) + 1e-10)
         
-        # Calculate desired gain
-        if rms > 1e-6:  # Only adjust if there's actual audio
+        # Calculate desired gain with noise floor protection
+        if rms > self.AGC_NOISE_FLOOR:
+            # Real signal detected - calculate normal gain
             desired_gain = self.AGC_TARGET_LEVEL / rms
             desired_gain = np.clip(desired_gain, self.AGC_MIN_GAIN, self.AGC_MAX_GAIN)
         else:
-            desired_gain = self._agc_gain  # Maintain current gain during silence
+            # Below noise floor: don't increase gain to avoid amplifying background noise
+            # Only allow gain to stay same or decrease, cap at 1.0
+            desired_gain = min(self._agc_gain, 1.0)
         
         # Smooth gain changes using attack/release coefficients
         if desired_gain < self._agc_gain:

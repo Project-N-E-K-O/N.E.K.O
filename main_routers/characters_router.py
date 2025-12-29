@@ -13,6 +13,7 @@ import io
 import os
 import logging
 import asyncio
+import copy
 from datetime import datetime
 import pathlib
 import wave
@@ -25,16 +26,98 @@ from dashscope.audio.tts_v2 import VoiceEnrollmentService
 
 from .shared_state import get_config_manager, get_session_manager, get_initialize_character_data
 from utils.frontend_utils import find_models, find_model_directory
+from utils.language_utils import normalize_language_code
 from config import MEMORY_SERVER_PORT, TFLINK_UPLOAD_URL
 
 router = APIRouter(prefix="/api/characters", tags=["characters"])
 logger = logging.getLogger("Main")
 
 
+async def send_reload_page_notice(session, message_text: str = "语音已更新，页面即将刷新"):
+    """
+    发送页面刷新通知给前端（通过 WebSocket）
+    
+    Args:
+        session: LLMSessionManager 实例
+        message_text: 要发送的消息文本（会被自动翻译）
+    
+    Returns:
+        bool: 是否成功发送
+    """
+    if not session or not session.websocket:
+        return False
+    
+    # 检查 WebSocket 连接状态
+    if not hasattr(session.websocket, 'client_state') or session.websocket.client_state != session.websocket.client_state.CONNECTED:
+        return False
+    
+    try:
+        # 翻译消息
+        translated_message = await session.translate_if_needed(message_text)
+        await session.websocket.send_text(json.dumps({
+            "type": "reload_page",
+            "message": translated_message
+        }))
+        logger.info(f"已通知前端刷新页面: {translated_message}")
+        return True
+    except Exception as e:
+        logger.warning(f"通知前端刷新页面失败: {e}")
+        return False
+
+
 @router.get('/')
-async def get_characters():
+async def get_characters(request: Request):
+    """获取角色数据，支持根据用户语言自动翻译人设"""
     _config_manager = get_config_manager()
-    return JSONResponse(content=_config_manager.load_characters())
+    # 创建深拷贝，避免修改原始配置数据
+    characters_data = copy.deepcopy(_config_manager.load_characters())
+    
+    # 尝试从请求参数或请求头获取用户语言
+    user_language = request.query_params.get('language')
+    if not user_language:
+        accept_lang = request.headers.get('Accept-Language', 'zh-CN')
+        # Accept-Language 可能包含多个语言，取第一个
+        user_language = accept_lang.split(',')[0].split(';')[0].strip()
+    # 使用公共函数归一化语言代码
+    user_language = normalize_language_code(user_language, format='full')
+    
+    # 如果语言是中文，不需要翻译
+    if user_language == 'zh-CN':
+        return JSONResponse(content=characters_data)
+    
+    # 需要翻译：翻译人设数据（在深拷贝上进行，不影响原始配置）
+    try:
+        from utils.translation_service import get_translation_service
+        translation_service = get_translation_service(_config_manager)
+        
+        # 翻译主人数据
+        if '主人' in characters_data and isinstance(characters_data['主人'], dict):
+            characters_data['主人'] = await translation_service.translate_dict(
+                characters_data['主人'],
+                user_language,
+                fields_to_translate=['档案名', '昵称']
+            )
+        
+        # 翻译猫娘数据（并行翻译以提升性能）
+        if '猫娘' in characters_data and isinstance(characters_data['猫娘'], dict):
+            async def translate_catgirl(name, data):
+                if isinstance(data, dict):
+                    return name, await translation_service.translate_dict(
+                        data, user_language,
+                        fields_to_translate=['档案名', '昵称', '性别']  # 注意：不翻译 system_prompt
+                    )
+                return name, data
+            
+            results = await asyncio.gather(*[
+                translate_catgirl(name, data)
+                for name, data in characters_data['猫娘'].items()
+            ])
+            characters_data['猫娘'] = dict(results)
+        
+        return JSONResponse(content=characters_data)
+    except Exception as e:
+        logger.error(f"翻译人设数据失败: {e}，返回原始数据")
+        return JSONResponse(content=characters_data)
 
 
 @router.get('/current_live2d_model')
@@ -270,15 +353,7 @@ async def update_catgirl_voice_id(name: str, request: Request):
             logger.info(f"检测到 {name} 的voice_id已更新，准备刷新...")
             
             # 1. 先发送刷新消息（WebSocket还连着）
-            if session_manager[name].websocket:
-                try:
-                    await session_manager[name].websocket.send_text(json.dumps({
-                        "type": "reload_page",
-                        "message": "语音已更新，页面即将刷新"
-                    }))
-                    logger.info(f"已通知 {name} 的前端刷新页面")
-                except Exception as e:
-                    logger.warning(f"通知前端刷新页面失败: {e}")
+            await send_reload_page_notice(session_manager[name])
             
             # 2. 立刻关闭session（这会断开WebSocket）
             try:
@@ -559,7 +634,6 @@ async def add_catgirl(request: Request):
     
     # 通知记忆服务器重新加载配置
     try:
-        import httpx
         async with httpx.AsyncClient() as client:
             resp = await client.post(f"http://localhost:{MEMORY_SERVER_PORT}/reload", timeout=5.0)
             if resp.status_code == 200:
@@ -637,15 +711,7 @@ async def update_catgirl(name: str, request: Request):
             logger.info(f"检测到 {name} 的voice_id已变更（{old_voice_id} -> {new_voice_id}），准备刷新...")
             
             # 1. 先发送刷新消息（WebSocket还连着）
-            if session_manager[name].websocket:
-                try:
-                    await session_manager[name].websocket.send_text(json.dumps({
-                        "type": "reload_page",
-                        "message": "语音已更新，页面即将刷新"
-                    }))
-                    logger.info(f"已通知 {name} 的前端刷新页面")
-                except Exception as e:
-                    logger.warning(f"通知前端刷新页面失败: {e}")
+            await send_reload_page_notice(session_manager[name])
             
             # 2. 立刻关闭session（这会断开WebSocket）
             try:

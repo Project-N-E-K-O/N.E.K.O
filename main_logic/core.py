@@ -20,6 +20,7 @@ from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.tts_client import get_tts_worker
 from config import MEMORY_SERVER_PORT
 from utils.config_manager import get_config_manager
+from utils.language_utils import normalize_language_code
 from threading import Thread
 from queue import Queue
 from uuid import uuid4
@@ -134,8 +135,24 @@ class LLMSessionManager:
         self.pending_input_data = []  # 待处理的输入数据: [message_dict, ...]
         self.input_cache_lock = asyncio.Lock()  # 保护输入缓存的锁
         
+        # 热切换音频缓存机制：确保热切换期间的用户输入语音不丢失
+        self.hot_swap_audio_cache = []  # 热切换期间缓存的音频数据: [bytes, ...]
+        self.hot_swap_cache_lock = asyncio.Lock()  # 保护热切换音频缓存的锁
+        self.is_flushing_hot_swap_cache = False  # 是否正在推送热切换缓存（推送期间新音频继续缓存）
+        self.HOT_SWAP_FLUSH_CHUNK_MULTIPLIER = 5  # 热切换后发送的chunk大小倍数(节流)
+        
         # 用户活动时间戳：用于主动搭话检测最近是否有用户输入
         self.last_user_activity_time = None  # float timestamp or None
+        
+        # 用户语言设置（从前端获取）
+        self.user_language = 'zh-CN'  # 默认中文
+        # 翻译服务（延迟初始化）
+        self._translation_service = None
+        
+        # 防止log刷屏机制
+        self.session_closed_by_server = False  # Session被服务器关闭的标志
+        self.last_audio_send_error_time = 0.0  # 上次音频发送错误的时间戳
+        self.audio_error_log_interval = 2.0  # 音频错误log间隔（秒）
 
     async def handle_new_message(self):
         """处理新模型输出：清空TTS队列并通知前端"""
@@ -159,6 +176,12 @@ class LLMSessionManager:
             self.tts_pending_chunks.clear()
         
         await self.send_user_activity()
+        
+        # 立即生成新的 speech_id，确保新回复不会使用被打断的 ID
+        # 这样即使 handle_input_transcript 先于 handle_new_message 执行，
+        # 新回复的 audio_chunk 也不会被错误丢弃
+        async with self.lock:
+            self.current_speech_id = str(uuid4())
 
     async def handle_text_data(self, text: str, is_first_chunk: bool = False):
         """文本回调：处理文本显示和TTS（用于文本模式）"""
@@ -342,10 +365,11 @@ class LLMSessionManager:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 # 去掉情绪标签
                 text = self.emotion_pattern.sub('', text)
+                
 
                 message = {
                     "type": "gemini_response",
-                    "text": text,
+                    "text": text,  
                     "isNewMessage": is_first_chunk  # 标记是否是新消息的第一个chunk
                 }
                 await self.websocket.send_json(message)
@@ -353,6 +377,7 @@ class LLMSessionManager:
                 if hasattr(self, 'is_preparing_new_session') and self.is_preparing_new_session:
                     if not hasattr(self, 'message_cache_for_new_session'):
                         self.message_cache_for_new_session = []
+                    # 注意：缓存使用原始文本，不翻译（用于记忆等内部处理）
                     if len(self.message_cache_for_new_session) == 0 or self.message_cache_for_new_session[-1]['role']==self.master_name:
                         self.message_cache_for_new_session.append(
                             {"role": self.lanlan_name, "text": text})
@@ -369,6 +394,44 @@ class LLMSessionManager:
         try:
             logger.warning(f"[{self.lanlan_name}] 检测到长时间无语音输入，自动关闭session")
             
+            # 清空热切换音频缓存的最后4秒数据（静默期间的音频主要是噪音）
+            async with self.hot_swap_cache_lock:
+                if self.hot_swap_audio_cache:
+                    # 计算4秒的字节数
+                    # 缓存的是处理后的16kHz音频：16000 samples/s × 2 bytes = 32000 bytes/s
+                    # 4秒 = 128000 bytes，稍微少扣掉一点
+                    SILENCE_DURATION_BYTES = 120000
+                    
+                    # 计算当前缓存的总字节数
+                    total_bytes = sum(len(chunk) for chunk in self.hot_swap_audio_cache)
+                    
+                    if total_bytes > SILENCE_DURATION_BYTES:
+                        # 从缓存末尾删除最后4秒的数据
+                        bytes_to_remove = SILENCE_DURATION_BYTES
+                        removed_bytes = 0
+                        
+                        while bytes_to_remove > 0 and self.hot_swap_audio_cache:
+                            last_chunk = self.hot_swap_audio_cache[-1]
+                            chunk_size = len(last_chunk)
+                            
+                            if chunk_size <= bytes_to_remove:
+                                # 整个chunk都要删除
+                                self.hot_swap_audio_cache.pop()
+                                bytes_to_remove -= chunk_size
+                                removed_bytes += chunk_size
+                            else:
+                                # 只删除chunk的一部分
+                                keep_size = chunk_size - bytes_to_remove
+                                self.hot_swap_audio_cache[-1] = last_chunk[:keep_size]
+                                removed_bytes += bytes_to_remove
+                                bytes_to_remove = 0
+                        
+                        logger.info(f"🗑️ 静默超时：已清空音频缓存的最后 {removed_bytes} 字节（约{removed_bytes/32000:.1f}秒）")
+                    else:
+                        # 如果缓存总量不足4秒，全部清空
+                        logger.info(f"🗑️ 静默超时：缓存总量不足4秒，全部清空（{total_bytes} 字节）")
+                        self.hot_swap_audio_cache.clear()
+            
             # 向前端发送特殊消息，告知自动闭麦但不关闭live2d
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 await self.websocket.send_json({
@@ -383,6 +446,9 @@ class LLMSessionManager:
             logger.error(f"处理静默超时时出错: {e}")
     
     async def handle_connection_error(self, message=None):
+        # 标记session已被服务器关闭，停止接收音频输入
+        self.session_closed_by_server = True
+        
         if message:
             if '欠费' in message:
                 await self.send_status("💥 智谱API触发欠费bug。请考虑充值1元。")
@@ -430,8 +496,14 @@ class LLMSessionManager:
         # Stop any listener specifically for the pending session (if different from main listener structure)
         # The _listen_for_pending_session_response tasks are short-lived and managed by their callers.
         if self.pending_session:
-            await self.pending_session.close()
-        self.pending_session = None  # Managed by connector's __aexit__
+            try:
+                logger.info("🧹 清理pending_session资源...")
+                await self.pending_session.close()
+                logger.info("✅ Pending session已关闭")
+            except Exception as e:
+                logger.error(f"💥 清理pending_session时出错: {e}")
+            finally:
+                self.pending_session = None  # 即使close失败也要清除引用
 
     def _init_renew_status(self):
         self._reset_preparation_state(True)
@@ -478,6 +550,77 @@ class LLMSessionManager:
             # 清空缓存
             self.pending_input_data.clear()
     
+    async def _flush_hot_swap_audio_cache(self):
+        """热切换完成后，循环推送缓存的音频数据到新session，直到缓存稳定为空"""
+        # 设置标志，让新的音频继续缓存而不是直接发送
+        self.is_flushing_hot_swap_cache = True
+        
+        try:
+            # 检查session是否可用
+            if not self.session or not self.is_active:
+                logger.warning("⚠️ 热切换音频缓存刷新时session不可用，丢弃缓存")
+                async with self.hot_swap_cache_lock:
+                    self.hot_swap_audio_cache.clear()
+                return
+            
+            # 检查session类型
+            if not isinstance(self.session, OmniRealtimeClient):
+                logger.warning("⚠️ 热切换音频缓存仅适用于语音模式，当前session类型不匹配")
+                async with self.hot_swap_cache_lock:
+                    self.hot_swap_audio_cache.clear()
+                return
+            
+            max_iterations = 20  # 最多迭代20次，防止无限循环
+            iteration = 0
+            total_chunks_sent = 0
+            
+            logger.info("🔄 开始循环推送热切换音频缓存...")
+            
+            while iteration < max_iterations:
+                # 检查并取出当前缓存
+                async with self.hot_swap_cache_lock:
+                    cache_len = len(self.hot_swap_audio_cache)
+                    
+                    if cache_len == 0:
+                        break
+                    else:
+                        audio_chunks = self.hot_swap_audio_cache.copy()
+                        self.hot_swap_audio_cache.clear()
+                
+                # 如果有缓存，合并并发送
+                if cache_len > 0:
+                    logger.info(f"🔄 推送第{iteration+1}批音频缓存: {cache_len} 个chunk")
+                    
+                    # 合并小chunk成大chunk（节流）
+                    combined_audio = b''.join(audio_chunks)
+                    
+                    # 计算每个大chunk的大小（16kHz，约10ms = 160 samples = 320 bytes）
+                    original_chunk_size = 320  # 16kHz: 160 samples × 2 bytes
+                    large_chunk_size = original_chunk_size * self.HOT_SWAP_FLUSH_CHUNK_MULTIPLIER
+                    
+                    # 分批发送
+                    for i in range(0, len(combined_audio), large_chunk_size):
+                        chunk = combined_audio[i:i + large_chunk_size]
+                        try:
+                            await self.session.stream_audio(chunk)
+                            await asyncio.sleep(0.025)
+                            total_chunks_sent += 1
+                        except Exception as e:
+                            logger.error(f"💥 推送音频缓存失败: {e}")
+                            return  # 推送失败，放弃
+                
+                iteration += 1
+                
+            if iteration >= max_iterations:
+                logger.warning(f"⚠️ 达到最大迭代次数({max_iterations})，停止推送")
+            
+            logger.info(f"✅ 热切换音频缓存推送完成，共推送约 {total_chunks_sent} 个大chunk，迭代 {iteration} 次")
+            
+        finally:
+            # 无论如何都要清除flag，恢复正常音频输入
+            self.is_flushing_hot_swap_cache = False
+
+    
     def normalize_text(self, text): # 对文本进行基本预处理
         text = text.strip()
         text = text.replace("\n", "")
@@ -497,6 +640,9 @@ class LLMSessionManager:
         return text
 
     async def start_session(self, websocket: WebSocket, new=False, input_mode='audio'):
+        # 重置防刷屏标志
+        self.session_closed_by_server = False
+        self.last_audio_send_error_time = 0.0
         # 检查是否正在启动中
         if self.is_starting_session:
             logger.warning("⚠️ Session正在启动中，忽略重复请求")
@@ -868,10 +1014,12 @@ class LLMSessionManager:
             self.is_starting_session = False
 
     async def send_user_activity(self):
+        """发送用户活动信号，附带被打断的 speech_id 用于精确打断控制"""
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 message = {
-                    "type": "user_activity"
+                    "type": "user_activity",
+                    "interrupted_speech_id": self.current_speech_id  # 告诉前端应丢弃哪个 speech_id
                 }
                 await self.websocket.send_json(message)
         except WebSocketDisconnect:
@@ -906,8 +1054,6 @@ class LLMSessionManager:
             self.voice_id = lanlan_basic_config_updated.get(self.lanlan_name, {}).get('voice_id', '')
             if old_voice_id != self.voice_id:
                 logger.info(f"🔄 热切换准备: voice_id已更新: '{old_voice_id}' -> '{self.voice_id}'")
-            
-            logger.info(f"🔄 热切换准备: 已重新加载配置, voice_id={self.voice_id}")
             
             # 根据input_mode创建对应类型的pending session
             if self.input_mode == 'text':
@@ -966,7 +1112,13 @@ class LLMSessionManager:
             await self._cleanup_pending_session_resources()
             # Do not set warmed_up_event here if cancelled.
         except Exception as e:
-            logger.error(f"💥 BG Prep Stage 1: Error: {e}")
+            # 记录HTTP详细错误信息（如503等）
+            error_detail = str(e)
+            if hasattr(e, 'status_code'):
+                error_detail = f"HTTP {e.status_code}: {e}"
+            if hasattr(e, 'body'):
+                error_detail += f" | Body: {e.body}"
+            logger.error(f"💥 BG Prep Stage 1: Error: {error_detail}")
             await self._cleanup_pending_session_resources()
             # Do not set warmed_up_event on error.
         finally:
@@ -1004,9 +1156,26 @@ class LLMSessionManager:
         logger.info("Final Swap Sequence: Starting...")
         if not self.pending_session:
             logger.error("💥 Final Swap Sequence: Pending session not found. Aborting swap.")
-            self._reset_preparation_state(clear_main_cache=False)  # Reset flags, keep cache for next attempt
+            self._reset_preparation_state(clear_main_cache=True)  # Reset all flags and cache for clean restart
             self.is_hot_swap_imminent = False
             return
+        
+        # 检查pending_session的websocket是否有效
+        if isinstance(self.pending_session, OmniRealtimeClient):
+            if not hasattr(self.pending_session, 'ws') or not self.pending_session.ws:
+                logger.error("💥 Final Swap Sequence: Pending session的WebSocket已关闭，放弃swap操作")
+                await self._cleanup_pending_session_resources()
+                self._reset_preparation_state(clear_main_cache=True)
+                self.is_hot_swap_imminent = False
+                return
+            
+            # 检查是否发生致命错误
+            if hasattr(self.pending_session, '_fatal_error_occurred') and self.pending_session._fatal_error_occurred:
+                logger.error("💥 Final Swap Sequence: Pending session已发生致命错误，放弃swap操作")
+                await self._cleanup_pending_session_resources()
+                self._reset_preparation_state(clear_main_cache=True)
+                self.is_hot_swap_imminent = False
+                return
 
         try:
             incremental_cache = self.message_cache_for_new_session[self.initial_cache_snapshot_len:]
@@ -1014,7 +1183,8 @@ class LLMSessionManager:
             if incremental_cache:
                 final_prime_text = self._convert_cache_to_str(incremental_cache)
             else:  # Ensure session cycles a turn even if no incremental cache
-                logger.info(f"🔄 No incremental cache found. 缓存长度: {len(self.message_cache_for_new_session)}, 快照长度: {self.initial_cache_snapshot_len}")
+                final_prime_text = ""  # Initialize to empty string to prevent NameError
+                logger.debug(f"🔄 No incremental cache found. 缓存长度: {len(self.message_cache_for_new_session)}, 快照长度: {self.initial_cache_snapshot_len}")
 
             # 若存在需要植入的额外提示，则指示模型忽略上一条消息，并在下一次响应中统一向用户补充这些提示
             if self.pending_extra_replies and len(self.pending_extra_replies) > 0:
@@ -1031,14 +1201,24 @@ class LLMSessionManager:
                 self.pending_extra_replies.clear()
                 try:
                     await self.pending_session.create_response(final_prime_text, skipped=False)
-                except web_exceptions.ConnectionClosed as e:
-                    logger.warning(f"⚠️ Final Swap Sequence: pending_session连接已关闭，跳过create_response: {e}")
+                except (web_exceptions.ConnectionClosed, AttributeError) as e:
+                    # pending_session 连接已关闭或websocket为None，放弃整个 swap 操作
+                    logger.error(f"💥 Final Swap Sequence: pending_session不可用，放弃swap操作: {e}")
+                    await self._cleanup_pending_session_resources()
+                    self._reset_preparation_state(clear_main_cache=True)
+                    self.is_hot_swap_imminent = False
+                    return
             else:
                 final_prime_text += f"========以上为前情概要。现在请{self.lanlan_name}准备，即将开始用语音与{self.master_name}继续对话。========\n"
                 try:
                     await self.pending_session.create_response(final_prime_text, skipped=True)
-                except web_exceptions.ConnectionClosed as e:
-                    logger.warning(f"⚠️ Final Swap Sequence: pending_session连接已关闭，跳过create_response: {e}")
+                except (web_exceptions.ConnectionClosed, AttributeError) as e:
+                    # pending_session 连接已关闭或websocket为None，放弃整个 swap 操作
+                    logger.error(f"💥 Final Swap Sequence: pending_session不可用，放弃swap操作: {e}")
+                    await self._cleanup_pending_session_resources()
+                    self._reset_preparation_state(clear_main_cache=True)
+                    self.is_hot_swap_imminent = False
+                    return
 
             print(final_prime_text) #只在控制台显示，不输出到日志文件
 
@@ -1051,73 +1231,87 @@ class LLMSessionManager:
             old_main_session = self.session
             old_main_message_handler_task = self.message_handler_task
             
-            # 先停止旧session的消息处理任务
-            if old_main_message_handler_task and not old_main_message_handler_task.done():
-                logger.info("Final Swap Sequence: Cancelling old message handler task...")
-                old_main_message_handler_task.cancel()
-                try:
-                    await asyncio.wait_for(old_main_message_handler_task, timeout=2.0)
-                except asyncio.TimeoutError:
-                    logger.warning("Final Swap Sequence: Warning: Old message handler task cancellation timeout.")
-                except asyncio.CancelledError:
-                    pass
-                except Exception as e:
-                    logger.error(f"💥 Final Swap Sequence: Error cancelling old message handler: {e}")
-            
             # 执行session切换
-            logger.info("Final Swap Sequence: Swapping sessions...")
+            # 热切换完成后，立即将缓存的音频数据发送到新session
+            await self._flush_hot_swap_audio_cache()
             self.session = self.pending_session
             self.session_start_time = datetime.now()
+            
+            # !!CRITICAL!! 立即清除pending_session引用，防止异常处理器误关闭新session
+            # 此时self.session和self.pending_session指向同一对象（新session）
+            # 如果在此之后发生异常，_cleanup_pending_session_resources()会关闭pending_session
+            # 导致新session的websocket被关闭，引发 'NoneType' object has no attribute 'send' 错误
+            self.pending_session = None
 
             # Start the main listener for the NEWLY PROMOTED self.session
             if self.session and hasattr(self.session, 'handle_messages'):
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
+            
+            # 验证新session的WebSocket是否仍然有效（可能在swap过程中被服务器断开）
+            if isinstance(self.session, OmniRealtimeClient):
+                if not self.session.ws:
+                    logger.error("💥 Final Swap Sequence: 新session的WebSocket在swap后已失效，热切换失败")
+                    # 不强制回滚，让系统通过现有错误处理机制自动重建session
+                    # 注意：此时旧session已关闭，无法回滚
 
-            # 关闭旧session
+            # 关闭旧session - 必须先关闭WebSocket再取消task
+            # 因为handle_messages使用 async for message in self.ws，只有关闭ws才能让循环退出
             if old_main_session:
-                logger.info("Final Swap Sequence: Closing old session...")
                 try:
+                    # 先关闭WebSocket，让async for循环自然退出
                     await old_main_session.close()
-                    logger.info("Final Swap Sequence: Old session closed successfully.")
                 except Exception as e:
                     logger.error(f"💥 Final Swap Sequence: Error closing old session: {e}")
+            
+            # 然后取消和等待旧session的消息处理任务完成
+            if old_main_message_handler_task and not old_main_message_handler_task.done():
+                old_main_message_handler_task.cancel()
+                try:
+                    await asyncio.wait_for(old_main_message_handler_task, timeout=2.0)
+                    logger.info("Final Swap Sequence: Old message handler task stopped")
+                except asyncio.TimeoutError:
+                    logger.warning("Final Swap Sequence: Old message handler task cancellation timeout (should not happen now)")
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    logger.error(f"💥 Final Swap Sequence: Error during old message handler cleanup: {e}")
 
         
             # Reset all preparation states and clear the *main* cache now that it's fully transferred
-            self.pending_session = None
+            # pending_session已在swap后立即清除，这里只需要重置其他状态
             self._reset_preparation_state(
                 clear_main_cache=True, from_final_swap=True)  # This will clear pending_*, is_preparing_new_session, etc. and self.message_cache_for_new_session
-            logger.info("Final Swap Sequence: Hot swap completed successfully.")
+            logger.info("✅ 热切换完成")
+            
 
         except asyncio.CancelledError:
             logger.info("Final Swap Sequence: Task cancelled.")
             # If cancelled mid-swap, state could be inconsistent. Prioritize cleaning pending.
+            self.is_hot_swap_imminent = False  # Reset flag immediately
             await self._cleanup_pending_session_resources()
-            self._reset_preparation_state(clear_main_cache=False)  # Don't clear cache if swap didn't complete
+            self._reset_preparation_state(clear_main_cache=True)  # Clear all state for clean restart after cancellation
             # The old main session listener might have been cancelled, needs robust restart if still active
             if self.is_active and self.session and hasattr(self.session, 'handle_messages') and (not self.message_handler_task or self.message_handler_task.done()):
-                logger.info(
-                    "Final Swap Sequence: Task cancelled, ensuring main listener is running for potentially old session.")
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
 
         except Exception as e:
             logger.error(f"💥 Final Swap Sequence: Error: {e}")
+            self.is_hot_swap_imminent = False  # Reset flag immediately
             await self.send_status(f"内部更新切换失败: {e}.")
             await self._cleanup_pending_session_resources()
-            self._reset_preparation_state(clear_main_cache=False)
+            self._reset_preparation_state(clear_main_cache=True)  # Clear all state for clean restart after error
             if self.is_active and self.session and hasattr(self.session, 'handle_messages') and (not self.message_handler_task or self.message_handler_task.done()):
                 self.message_handler_task = asyncio.create_task(self.session.handle_messages())
         finally:
             self.is_hot_swap_imminent = False  # Always reset this flag
             if self.final_swap_task and self.final_swap_task.done():
                 self.final_swap_task = None
-            logger.info("Final Swap Sequence: Routine finished.")
 
     async def disconnected_by_server(self):
         await self.send_status(f"{self.lanlan_name}失联了，即将重启！")
         self.sync_message_queue.put({'type': 'system', 'data': 'API server disconnected'})
         await self.cleanup()
-
+    
     async def stream_data(self, message: dict):  # 向Core API发送Media数据
         input_type = message.get("input_type")
         
@@ -1154,6 +1348,12 @@ class LLMSessionManager:
         """内部方法：实际处理stream_data的逻辑"""
         data = message.get("data")
         input_type = message.get("input_type")
+        
+        # 检查session是否发生致命错误（如1011错误、Response timeout）
+        if self.session and isinstance(self.session, OmniRealtimeClient):
+            if hasattr(self.session, '_fatal_error_occurred') and self.session._fatal_error_occurred:
+                logger.warning("⚠️ Session已发生致命错误，忽略新的输入数据")
+                return
         
         # 如果正在启动session，这不应该发生（因为stream_data已经检查过了）
         if self.is_starting_session:
@@ -1265,7 +1465,67 @@ class LLMSessionManager:
                 try:
                     if isinstance(data, list):
                         audio_bytes = struct.pack(f'<{len(data)}h', *data)
-                        await self.session.stream_audio(audio_bytes)
+                        
+                        # 🔧 音频预处理：RNNoise降噪 + 降采样到16kHz（在缓存之前）
+                        # 检查是否为48kHz输入（480 samples = 960 bytes per 10ms chunk）
+                        num_samples = len(audio_bytes) // 2
+                        is_48khz = (num_samples == 480)
+                        
+                        processed_audio = audio_bytes  # 默认使用原始音频
+                        if is_48khz and isinstance(self.session, OmniRealtimeClient):
+                            # 使用session的AudioProcessor处理音频
+                            if hasattr(self.session, '_audio_processor') and self.session._audio_processor:
+                                try:
+                                    # Use async wrapper to avoid blocking main loop
+                                    if hasattr(self.session, 'process_audio_chunk_async'):
+                                        processed_audio = await self.session.process_audio_chunk_async(audio_bytes)
+                                    else:
+                                        # Fallback (should not happen if client updated)
+                                        processed_audio = self.session._audio_processor.process_chunk(audio_bytes)
+                                        
+                                    # RNNoise可能返回空字节（缓冲中），跳过
+                                    if len(processed_audio) == 0:
+                                        return
+                                    
+                                    # 检查是否有待发送的静音重置事件（4秒静音触发）
+                                    if hasattr(self.session, '_silence_reset_pending') and self.session._silence_reset_pending:
+                                        self.session._silence_reset_pending = False
+                                        await self.session.clear_audio_buffer()
+                                except Exception as e:
+                                    logger.error(f"💥 音频预处理失败: {e}")
+                                    return
+                        
+                        # 热切换期间或推送缓存期间，缓存处理后的音频（16kHz，已降噪）
+                        if self.is_hot_swap_imminent or self.is_flushing_hot_swap_cache:
+                            async with self.hot_swap_cache_lock:
+                                self.hot_swap_audio_cache.append(processed_audio)
+                                if len(self.hot_swap_audio_cache) == 1:
+                                    logger.info("🔄 热切换进行中，开始缓存处理后的音频（16kHz）...")
+                            return
+                        
+                        # 检查session是否被服务器关闭（防刷屏）
+                        if self.session_closed_by_server:
+                            return  # 静默拒绝，不记录log
+                        
+                        # 再次检查session状态（防止在处理过程中session被关闭）
+                        if not self.session or not hasattr(self.session, 'ws') or not self.session.ws:
+                            # 限流log：2秒内只记录一次
+                            current_time = asyncio.get_event_loop().time()
+                            if current_time - self.last_audio_send_error_time > self.audio_error_log_interval:
+                                logger.warning("⚠️ Session已关闭，跳过音频数据发送")
+                                self.last_audio_send_error_time = current_time
+                            return
+                        
+                        # 检查致命错误状态
+                        if hasattr(self.session, '_fatal_error_occurred') and self.session._fatal_error_occurred:
+                            current_time = asyncio.get_event_loop().time()
+                            if current_time - self.last_audio_send_error_time > self.audio_error_log_interval:
+                                logger.warning("⚠️ Session已发生致命错误，跳过音频数据发送")
+                                self.last_audio_send_error_time = current_time
+                            return
+                        
+                        # 发送音频到session（stream_audio会检测是否48kHz，16kHz不会再处理）
+                        await self.session.stream_audio(processed_audio)
                     else:
                         logger.error(f"💥 Stream: Invalid audio data type: {type(data)}")
                         return
@@ -1274,9 +1534,27 @@ class LLMSessionManager:
                     logger.error(f"💥 Stream: Struct packing error (audio): {se}")
                     return
                 except web_exceptions.ConnectionClosedOK:
+                    self.session_closed_by_server = True  # 标记连接已关闭
+                    return
+                except AttributeError as ae:
+                    # 捕获 'NoneType' object has no attribute 'send' 等错误
+                    self.session_closed_by_server = True
+                    current_time = asyncio.get_event_loop().time()
+                    if current_time - self.last_audio_send_error_time > self.audio_error_log_interval:
+                        logger.error(f"💥 Stream: Session已关闭或不可用: {ae}")
+                        self.last_audio_send_error_time = current_time
                     return
                 except Exception as e:
-                    logger.error(f"💥 Stream: Error processing audio data: {e}")
+                    # 检测连接关闭错误
+                    error_str = str(e)
+                    if 'no close frame' in error_str or 'Connection closed' in error_str:
+                        self.session_closed_by_server = True
+                    
+                    # 限流log
+                    current_time = asyncio.get_event_loop().time()
+                    if current_time - self.last_audio_send_error_time > self.audio_error_log_interval:
+                        logger.error(f"💥 Stream: Error processing audio data: {e}")
+                        self.last_audio_send_error_time = current_time
                     return
 
             elif input_type in ['screen', 'camera']:
@@ -1311,9 +1589,9 @@ class LLMSessionManager:
         except web_exceptions.ConnectionClosedError as e:
             logger.error(f"💥 Stream: Error sending data to session: {e}")
             if '1011' in str(e):
-                print("💥 备注：检测到1011错误。该错误表示API服务器异常。请首先检查自己的麦克风是否有声音。")
+                self.send_status("💥 备注：检测到1011错误。该错误表示API服务器异常。请首先检查自己的麦克风是否有声音。")
             if '1007' in str(e):
-                print("💥 备注：检测到1007错误。该错误大概率是欠费导致。")
+                self.send_status("💥 备注：检测到1007错误。该错误大概率是欠费导致。")
             await self.disconnected_by_server()
             return
         except Exception as e:
@@ -1412,14 +1690,75 @@ class LLMSessionManager:
             # 如果没有设置websocket_lock（旧代码路径），直接清理
             self.websocket = None
 
-    async def send_status(self, message: str): # 向前端发送status message
+    def _get_translation_service(self):
+        """获取翻译服务实例（延迟初始化）"""
+        if self._translation_service is None:
+            from utils.translation_service import get_translation_service
+            self._translation_service = get_translation_service(self._config_manager)
+        return self._translation_service
+    
+    def set_user_language(self, language: str):
+        """
+        设置用户语言（复用 normalize_language_code 进行归一化）
+        
+        支持的归一化规则：
+        - 'zh', 'zh-CN', 'zh-TW' 等以 'zh' 开头的 → 'zh-CN'
+        - 'en', 'en-US', 'en-GB' 等以 'en' 开头的 → 'en'
+        - 'ja', 'ja-JP' 等以 'ja' 开头的 → 'ja'
+        - 其他语言暂不支持，保持默认 'zh-CN'
+        """
+        if not language:
+            logger.warning(f"语言参数为空，保持当前语言: {self.user_language}")
+            return
+
+        # 使用公共函数进行语言代码归一化
+        normalized_lang = normalize_language_code(language, format='full')
+
+        self.user_language = normalized_lang
+        if normalized_lang != language:
+            logger.info(f"用户语言已归一化: {language} → {normalized_lang}")
+        else:
+            logger.info(f"用户语言已设置为: {normalized_lang}")
+    
+    async def translate_if_needed(self, text: str) -> str:
+        """
+        如果需要，翻译文本（公开方法，供外部模块使用）
+        
+        Args:
+            text: 要翻译的文本
+            
+        Returns:
+            str: 翻译后的文本（如果不需要翻译则返回原文）
+        """
+        if not text or self.user_language == 'zh-CN':
+            # 默认语言是中文，不需要翻译
+            return text
+        
         try:
+            translation_service = self._get_translation_service()
+            translated = await translation_service.translate_text(text, self.user_language)
+            return translated
+        except Exception as e:
+            logger.error(f"翻译失败: {e}，返回原文")
+            return text
+    
+    async def send_status(self, message: str): # 向前端发送status message
+        """
+        发送状态消息（已纳入翻译通道）
+        
+        注意：status 消息会被翻译后发送到 WebSocket 和同步队列（sync_message_queue）
+        如果下游监控服务依赖中文关键字，建议改为基于 type/code 等机器字段进行判断
+        """
+        try:
+            # 根据用户语言翻译消息
+            translated_message = await self.translate_if_needed(message)
+            
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                data = json.dumps({"type": "status", "message": message})
+                data = json.dumps({"type": "status", "message": translated_message})
                 await self.websocket.send_text(data)
 
-                # 同步到同步服务器
-                self.sync_message_queue.put({'type': 'json', 'data': {"type": "status", "message": message}})
+                # 同步到同步服务器（使用翻译后的消息）
+                self.sync_message_queue.put({'type': 'json', 'data': {"type": "status", "message": translated_message}})
         except WebSocketDisconnect:
             pass
         except Exception as e:
@@ -1490,8 +1829,15 @@ class LLMSessionManager:
 
 
     async def send_speech(self, tts_audio):
+        """发送语音数据到前端，先发送 speech_id 头信息用于精确打断控制"""
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                # 先发送 audio_chunk 头信息，包含 speech_id
+                await self.websocket.send_json({
+                    "type": "audio_chunk",
+                    "speech_id": self.current_speech_id
+                })
+                # 然后发送二进制音频数据
                 await self.websocket.send_bytes(tts_audio)
 
                 # 同步到同步服务器

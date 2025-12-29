@@ -467,6 +467,9 @@
             let live2dModel = null;
             let currentEmotionMapping = null; // { motions: {...}, expressions: {...} }
 
+            // 创建独立的 Live2DManager 实例，避免与主页面冲突
+            const l2dManager = new Live2DManager();
+
             const showStatus = (msg, duration = 0) => {
                 statusDiv.textContent = msg;
                 if (duration > 0) {
@@ -478,7 +481,7 @@
                 }
             };
 
-            await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
+            await l2dManager.initPIXI('live2d-canvas', 'live2d-container');
             showStatus(t('live2d.pixiInitialized', 'PIXI 初始化完成'));
 
             // 先加载模型列表
@@ -541,6 +544,22 @@
                 return lanlanName;
             }
 
+            // 动态设置参数编辑器链接，传递 lanlan_name 参数
+            (async function updateParameterEditorLink() {
+                try {
+                    const paramEditorLink = document.querySelector('a[href="/live2d_parameter_editor"]');
+                    if (paramEditorLink) {
+                        const lanlanName = await getLanlanName();
+                        if (lanlanName) {
+                            paramEditorLink.href = `/live2d_parameter_editor?lanlan_name=${encodeURIComponent(lanlanName)}`;
+                            console.log('参数编辑器链接已更新，角色:', lanlanName);
+                        }
+                    }
+                } catch (error) {
+                    console.error('更新参数编辑器链接失败:', error);
+                }
+            })();
+
             // 保存模型设置到角色的函数
             async function saveModelToCharacter(modelName, itemId = null) {
                 try {
@@ -594,15 +613,16 @@
                 if (!modelName) return;
 
                 currentModelInfo = availableModels.find(m => m.name === modelName);
-                if (currentModelInfo) {
-                    // 设置item_id，确保从dataset中获取
-                    currentModelInfo.item_id = modelId || currentModelInfo.item_id;
-                }
                 if (!currentModelInfo) return;
 
                 // 获取选中的option元素，从中获取item_id
                 const selectedOption = e.target[e.target.selectedIndex];
                 const modelSteamId = selectedOption ? selectedOption.dataset.itemId : currentModelInfo.item_id;
+                
+                // 更新currentModelInfo的item_id（如果从option获取到了）
+                if (modelSteamId && modelSteamId !== 'undefined') {
+                    currentModelInfo.item_id = modelSteamId;
+                }
 
                 await loadModel(modelName, currentModelInfo, modelSteamId);
 
@@ -686,20 +706,20 @@
                     }));
 
                     // 5. Load preferences
-                    const preferences = await window.live2dManager.loadUserPreferences();
+                    const preferences = await l2dManager.loadUserPreferences();
                     console.log('加载的偏好设置:', preferences);
                     console.log('当前模型路径:', modelInfo.path);
                     const modelPreferences = preferences.find(p => p && p.model_path === modelInfo.path) || null;
                     console.log('匹配的模型偏好:', modelPreferences);
 
                     // 6. Load model FROM THE MODIFIED OBJECT
-                    await window.live2dManager.loadModel(modelConfig, {
+                    await l2dManager.loadModel(modelConfig, {
                         loadEmotionMapping: true,
                         dragEnabled: true,
                         wheelEnabled: true,
                         preferences: modelPreferences
                     });
-                    live2dModel = window.live2dManager.getCurrentModel();
+                    live2dModel = l2dManager.getCurrentModel();
 
                     // 添加模型交互监听器，跟踪位置和缩放变化
                     if (live2dModel && live2dModel.internalModel) {
@@ -789,7 +809,7 @@
                 console.log('保存设置 - 当前缩放:', { x: live2dModel.scale.x, y: live2dModel.scale.y });
 
                 // 保存位置和缩放
-                const positionSuccess = await window.live2dManager.saveUserPreferences(
+                const positionSuccess = await l2dManager.saveUserPreferences(
                     currentModelInfo.path,
                     { x: live2dModel.x, y: live2dModel.y },
                     { x: live2dModel.scale.x, y: live2dModel.scale.y }

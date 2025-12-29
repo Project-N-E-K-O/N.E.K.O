@@ -513,6 +513,7 @@
             color: #333;
             margin-right: auto;
             border-bottom-left-radius: 4px;
+            white-space: pre-wrap; /* 保留换行，配合 textContent 使用避免 XSS 风险 */
         }
 
         @keyframes fadeIn {
@@ -559,6 +560,155 @@
         /* 语音模式下隐藏文本输入区 */
         #text-input-area.hidden {
             display: none;
+        }
+
+        /* 字幕提示框样式（放在输入框区域中，与输入框对齐） */
+        .subtitle-prompt-message {
+            width: 100%;
+            background: linear-gradient(135deg, rgba(68, 183, 254, 0.08) 0%, rgba(68, 183, 254, 0.12) 100%);
+            border: 1px solid rgba(68, 183, 254, 0.2);
+            border-radius: 8px;
+            padding: 0;
+            margin-top: 8px;
+            box-shadow: 0 2px 8px rgba(68, 183, 254, 0.1);
+            box-sizing: border-box;
+        }
+
+        .subtitle-prompt-content {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            padding: 8px 16px;
+        }
+
+        .subtitle-toggle-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-shrink: 0;
+            cursor: pointer;
+        }
+
+        .subtitle-toggle-indicator {
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            border: 2px solid #ccc;
+            background-color: transparent;
+            cursor: pointer;
+            flex-shrink: 0;
+            transition: all 0.2s ease;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .subtitle-toggle-indicator::after {
+            content: '✓';
+            color: #fff;
+            font-size: 12px;
+            font-weight: bold;
+            line-height: 1;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+            pointer-events: none;
+            user-select: none;
+        }
+
+        .subtitle-toggle-indicator.active {
+            border-color: #44b7fe;
+            background-color: #44b7fe;
+        }
+
+        .subtitle-toggle-indicator.active::after {
+            opacity: 1;
+        }
+
+        .subtitle-toggle-label {
+            font-size: 15px;
+            color: #333;
+            user-select: none;
+            cursor: pointer;
+            font-weight: 500;
+        }
+
+        /* 语音模式下的字幕提示框样式（放在 chat-container 底部） */
+        .subtitle-prompt-message.voice-mode {
+            width: auto;
+            margin: 8px 12px;
+            pointer-events: auto;
+        }
+
+        /* 最小化时隐藏字幕提示框 */
+        #chat-container.minimized .subtitle-prompt-message {
+            display: none !important;
+        }
+
+
+        /* 字幕显示区域样式（参考Xiao8项目优化，性能优化版本） */
+        #subtitle-display {
+            position: fixed;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 99998;
+            max-width: 85%;
+            min-width: 320px;
+            padding: 20px 28px;
+            background: linear-gradient(135deg, rgba(68, 183, 254, 0.95) 0%, rgba(68, 183, 254, 0.9) 50%, rgba(100, 200, 255, 0.95) 100%);
+            color: #fff;
+            border-radius: 20px;
+            font-size: 19px;
+            font-weight: 500;
+            line-height: 1.7;
+            text-align: center;
+            word-wrap: break-word;
+            white-space: pre-wrap;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+            pointer-events: none;
+            /* 简化为2层shadow以提升性能 */
+            box-shadow: 0 8px 32px rgba(68, 183, 254, 0.4), 
+                        0 0 0 1px rgba(255, 255, 255, 0.3) inset;
+            border: 2px solid rgba(255, 255, 255, 0.4);
+            /* 简化为单层text-shadow */
+            text-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+        }
+
+        #subtitle-display.hidden {
+            display: none;
+        }
+
+        #subtitle-display.show {
+            opacity: 1;
+            visibility: visible;
+            transform: translateX(-50%) translateY(0);
+            animation: subtitleFadeIn 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+        }
+
+        @keyframes subtitleFadeIn {
+            0% {
+                opacity: 0;
+                transform: translateX(-50%) translateY(20px) scale(0.95);
+            }
+            100% {
+                opacity: 1;
+                transform: translateX(-50%) translateY(0) scale(1);
+            }
+        }
+
+        /* 移动端优化：禁用backdrop-filter以提升性能，调整位置避免重叠 */
+        @media only screen and (max-width: 768px) {
+            #subtitle-display {
+                bottom: 80px; /* 避免与输入框重叠 */
+                min-width: 280px;
+                max-width: 90%;
+                font-size: 17px;
+                padding: 16px 20px;
+            }
         }
 
         /* 截图缩略图容器 - 横向滚动布局 */
@@ -1209,7 +1359,10 @@
                 </div>
             </div>
         </div>
+        <!-- 字幕提示框现在通过JavaScript动态创建为系统消息，不再需要静态HTML -->
     </div>
+    <!-- 字幕显示区域 -->
+    <div id="subtitle-display" class="hidden"></div>
     <div id="live2d-container">
         <canvas id="live2d-canvas"></canvas>
     </div>

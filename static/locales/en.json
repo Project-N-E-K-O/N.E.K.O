@@ -510,7 +510,7 @@
     "selectMotion": "Select Motion",
     "selectExpression": "Select Expression",
     "selectPersistentExpression": "Select Persistent Expression",
-    "noMotionFiles": "This model has no motion files",
+    "noMotionFiles": "No motion files",
     "emotionConfig": "Emotion Configuration",
     "saveSettings": "Save Settings",
     "persistentExpression": "Persistent Expression (expression only):",
@@ -543,7 +543,7 @@
     "pixiInitialized": "PIXI initialized",
     "noModelsFound": "No available models found",
     "loadingModel": "Loading model: {{model}}...",
-    "noMotionFilesStatus": "This model has no motion files",
+    "noMotionFilesStatus": "No motion files",
     "playingMotion": "Playing motion: {{motion}}",
     "playMotionFailed": "Failed to play motion: {{motion}}",
     "motionFileNotExists": "Motion file does not exist",
@@ -717,6 +717,7 @@
     "saveFailed": "Save failed",
     "saveError": "An error occurred while saving: {{error}}",
     "fillProfileNameFirst": "Please fill in the catgirl profile name first, then set the Live2D model",
+    "createCharacterFirst": "Please click the \"Confirm New Character\" button to create the character first, then set the Live2D model",
     "allowPopups": "Please allow popups!",
     "enterNewProfileName": "Please enter the new catgirl profile name",
     "renameCatgirlTitle": "Rename Catgirl",
@@ -861,6 +862,7 @@
     },
     "toggles": {
       "allowInterrupt": "Allow Interrupt",
+      "mergeMessages": "Merge Messages",
       "proactiveChat": "Proactive Chat",
       "proactiveVision": "Autonomous Vision",
       "agentMaster": "Agent Master Switch",
@@ -878,7 +880,8 @@
     }
   },
   "subtitle": {
-    "title": "Live Subtitle"
+    "title": "Live Subtitle",
+    "enable": "Enable Subtitle Translation"
   },
   "viewer": {
     "title": "Viewer - Project N.E.K.O."

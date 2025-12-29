@@ -1114,6 +1114,15 @@
                         await showAlert(window.t ? window.t('character.fillProfileNameFirst') : '请先填写猫娘档案名，然后再设置Live2D模型');
                         return;
                     }
+                    
+                    // 如果是新建角色，检查角色是否已经创建
+                    if (isNew) {
+                        if (!characterData['猫娘'] || !characterData['猫娘'][catgirlName]) {
+                            await showAlert(window.t ? window.t('character.createCharacterFirst') : '请先点击"确认新猫娘"按钮创建角色，然后再设置Live2D模型');
+                            return;
+                        }
+                    }
+                    
                     const url = `/l2d?lanlan_name=${encodeURIComponent(catgirlName)}`;
 
                     // 检查是否已有该URL的窗口打开
@@ -1261,7 +1270,7 @@
                     const response = await fetch('/api/characters/voices');
                     const data = await response.json();
                     const select = form.querySelector('select[name="voice_id"]');
-                    if (select) {
+                    if (select && data && data.voices) {
                         // 清空现有选项并使用 DOM API 创建
                         while (select.firstChild) select.removeChild(select.firstChild);
                         const voiceNotSetText = window.t ? window.t('character.voiceNotSet') : '未指定音色';
@@ -1363,7 +1372,19 @@
                     if (!response.ok) {
                         const errorText = await response.text();
                         console.error('API请求失败:', response.status, errorText);
-                        await showAlert(window.t ? window.t('character.saveFailedWithError', { error: errorText }) : '保存失败: ' + errorText);
+                        
+                        // 尝试解析JSON错误消息
+                        let errorMessage = errorText;
+                        try {
+                            const errorJson = JSON.parse(errorText);
+                            if (errorJson.error) {
+                                errorMessage = errorJson.error;
+                            }
+                        } catch (e) {
+                            // 如果不是JSON格式，保持原错误文本
+                        }
+                        
+                        await showAlert(window.t ? window.t('character.saveFailedWithError', { error: errorMessage }) : '保存失败: ' + errorMessage);
                         return;
                     }
 

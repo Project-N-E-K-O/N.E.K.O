@@ -44,11 +44,13 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         # 通知前端切换到正确的角色
         if current_catgirl:
             try:
-                await websocket.send_text(json.dumps({
+                # 注意：此时还没有session_manager，无法获取用户语言，使用默认语言
+                message = {
                     "type": "catgirl_switched",
                     "new_catgirl": current_catgirl,
                     "old_catgirl": lanlan_name
-                }))
+                }
+                await websocket.send_text(json.dumps(message))
                 logger.info(f"已通知前端切换到正确的角色: {current_catgirl}")
                 # 等待一下让客户端有时间处理消息，避免 onclose 在 onmessage 之前触发
                 await asyncio.sleep(0.5)
@@ -77,11 +79,18 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 await websocket.close()
                 break
             if session_id[lanlan_name] != this_session_id:
-                await session_manager[lanlan_name].send_status(f"切换至另一个终端...")
+                await session_manager[lanlan_name].send_status("切换至另一个终端...")
                 await websocket.close()
                 break
             message = json.loads(data)
             action = message.get("action")
+            
+            # 处理语言设置（可以在任何消息中携带）
+            if "language" in message:
+                user_language = message.get("language")
+                session_manager[lanlan_name].set_user_language(user_language)
+                logger.info(f"收到用户语言设置: {user_language}")
+            
             # logger.debug(f"WebSocket received action: {action}") # Optional debug log
 
             if action == "start_session":
@@ -123,7 +132,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         try:
             if lanlan_name in session_manager:
                 await session_manager[lanlan_name].send_status(f"Server error: {e}")
-        except:
+        except: # noqa
             pass
     finally:
         logger.info(f"Cleaning up WebSocket resources: {websocket.client}")

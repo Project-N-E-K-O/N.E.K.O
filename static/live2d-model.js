@@ -41,6 +41,12 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
 
         // 移除由 HTML 锁图标或交互注册的监听，避免访问已销毁的显示对象
         try {
+            // 清理鼠标跟踪监听器
+            if (this._mouseTrackingListener) {
+                window.removeEventListener('pointermove', this._mouseTrackingListener);
+                this._mouseTrackingListener = null;
+            }
+            
             // 先移除锁图标的 ticker 回调
             if (this._lockIconTicker && this.pixi_app && this.pixi_app.ticker) {
                 this.pixi_app.ticker.remove(this._lockIconTicker);
@@ -147,6 +153,8 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
         // 设置交互性
         if (options.dragEnabled !== false) {
             this.setupDragAndDrop(model);
+            // 启用窗口大小改变时的自动吸附检测
+            this.setupResizeSnapDetection();
         }
 
         // 设置滚轮缩放
@@ -309,6 +317,8 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
                 // 设置交互性
                 if (options.dragEnabled !== false) {
                     this.setupDragAndDrop(model);
+                    // 启用窗口大小改变时的自动吸附检测
+                    this.setupResizeSnapDetection();
                 }
 
                 // 设置滚轮缩放
