@@ -22,7 +22,7 @@ from fastapi.responses import JSONResponse, Response
 from openai import AsyncOpenAI
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import SystemMessage, HumanMessage
 import httpx
 
 from .shared_state import get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
@@ -784,7 +784,7 @@ async def proactive_chat(request: Request):
                 screenshot_content=screenshot_content,
                 memory_context=memory_context
             )
-            logger.info(f"[{lanlan_name}] 使用图片主动对话提示词")
+            logger.info(f"[{lanlan_name}] 使用图片进行主动对话")
         elif use_window_search:
             # 窗口搜索模板：基于当前活跃窗口和百度搜索结果让AI决定是否主动发起对话
             system_prompt = proactive_chat_prompt_window_search.format(
@@ -793,7 +793,7 @@ async def proactive_chat(request: Request):
                 window_context=formatted_window_content,
                 memory_context=memory_context
             )
-            logger.info(f"[{lanlan_name}] 使用窗口搜索主动对话提示词")
+            logger.info(f"[{lanlan_name}] 使用窗口搜索进行主动对话")
         else:
             # 首页推荐模板：基于首页信息流让AI决定是否主动发起对话
             system_prompt = proactive_chat_prompt.format(
@@ -802,7 +802,7 @@ async def proactive_chat(request: Request):
                 trending_content=formatted_content,
                 memory_context=memory_context
             )
-            logger.info(f"[{lanlan_name}] 使用首页推荐主动对话提示词")
+            logger.info(f"[{lanlan_name}] 使用首页推荐进行主动对话")
 
         # 4. 直接使用langchain ChatOpenAI获取AI回复（不创建临时session）
         try:
@@ -829,7 +829,8 @@ async def proactive_chat(request: Request):
                 api_key=correction_api_key,
                 temperature=1.,
                 max_completion_tokens=500,
-                streaming=False  # 不需要流式，直接获取完整响应
+                streaming=False,  # 不需要流式，直接获取完整响应
+                extra_body=get_extra_body(correction_model)
             )
             
             # 发送请求获取AI决策 - Retry策略：重试2次，间隔1秒、2秒
@@ -842,7 +843,7 @@ async def proactive_chat(request: Request):
             for attempt in range(max_retries):
                 try:
                     response = await asyncio.wait_for(
-                        llm.ainvoke([SystemMessage(content=system_prompt)]),
+                        llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content="========请开始========")]),
                         timeout=10.0
                     )
                     response_text = response.content.strip()
@@ -909,7 +910,7 @@ async def proactive_chat(request: Request):
             except Exception:
                 logger.exception(f"[{lanlan_name}] 在检查回复长度时发生错误")
 
-            if text_length > 100 or response_text.find("|") != -1:
+            if text_length > 100 or response_text.find("|") != -1 or response_text.find("｜") != -1:
                             # --- 使用改写模型清洁输出 ---
                 try:
                     # 使用相同的correction模型进行改写
@@ -919,7 +920,8 @@ async def proactive_chat(request: Request):
                         api_key=correction_api_key,
                         temperature=0.3,  # 降低温度以获得更稳定的改写结果
                         max_completion_tokens=500,
-                        streaming=False
+                        streaming=False,
+                        extra_body=get_extra_body(correction_model)
                     )
                     
                     # 构造改写提示
@@ -927,13 +929,13 @@ async def proactive_chat(request: Request):
                     
                     # 调用改写模型
                     rewrite_response = await asyncio.wait_for(
-                        rewrite_llm.ainvoke([SystemMessage(content=rewrite_prompt)]),
+                        rewrite_llm.ainvoke([SystemMessage(content=rewrite_prompt), HumanMessage(content="========请开始========")]),
                         timeout=6.0
                     )
                     response_text = rewrite_response.content.strip()
                     logger.debug(f"[{lanlan_name}] 改写后内容: {response_text[:100]}...")
 
-                    if "主动搭话" in response_text or '|' in response_text or '[PASS]' in response_text or count_words_and_chars(response_text) > 100:
+                    if "主动搭话" in response_text or '|' in response_text or "｜" in response_text or '[PASS]' in response_text or count_words_and_chars(response_text) > 100:
                         logger.warning(f"[{lanlan_name}] AI回复经二次改写后仍失败，放弃主动搭话。")
                         return JSONResponse({
                             "success": True,
@@ -1037,6 +1039,13 @@ async def proactive_chat(request: Request):
                 
                 await mgr.handle_text_data(chunk, is_first_chunk=(i == 0))
                 await asyncio.sleep(0.15)  # 小延迟模拟流式
+            
+            # 发送TTS结束信号，触发TTS的commit（对于Qwen TTS的server_commit模式尤为重要）
+            if mgr.use_tts and mgr.tts_thread and mgr.tts_thread.is_alive():
+                try:
+                    mgr.tts_request_queue.put((None, None))
+                except Exception as e:
+                    logger.warning(f"[{lanlan_name}] 发送TTS结束信号失败: {e}")
             
             # 发送turn end信号（不调用handle_response_complete以避免触发热重置）
             mgr.sync_message_queue.put({'type': 'system', 'data': 'turn end'})

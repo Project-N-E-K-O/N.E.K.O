@@ -634,7 +634,6 @@ async def add_catgirl(request: Request):
     
     # 通知记忆服务器重新加载配置
     try:
-        import httpx
         async with httpx.AsyncClient() as client:
             resp = await client.post(f"http://localhost:{MEMORY_SERVER_PORT}/reload", timeout=5.0)
             if resp.status_code == 200:
