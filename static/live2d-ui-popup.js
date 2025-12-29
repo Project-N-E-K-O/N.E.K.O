@@ -678,11 +678,18 @@ Live2DManager.prototype._createSettingsMenuItems = function (popup) {
                     if (newWindow) {
                         this._openSettingsWindows[finalUrl] = newWindow;
 
-                        // 监听窗口关闭事件，清除引用
+                        // 监听窗口关闭事件，清除引用并触发模型重新加载
                         const checkClosed = setInterval(() => {
                             if (newWindow.closed) {
                                 delete this._openSettingsWindows[finalUrl];
                                 clearInterval(checkClosed);
+                                
+                                // 窗口关闭后触发主窗口的模型重新加载
+                                // 这是为了处理设置窗口可能修改了模型配置的情况
+                                if (window.showMainUI) {
+                                    console.log('[LivedUI] 设置窗口已关闭，触发模型检查和重新加载');
+                                    window.showMainUI();
+                                }
                             }
                         }, 500);
                     }

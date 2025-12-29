@@ -1666,6 +1666,25 @@
                 // 5. 检查当前加载的模型路径（优先使用 _lastLoadedModelPath）
                 const currentModel = window.live2dManager?.getCurrentModel();
                 let currentModelPath = '';
+                
+                // 检查模型是否处于有效状态（可能因窗口关闭导致模型失效）
+                let modelMayBeInvalid = false;
+                if (currentModel) {
+                    // 检查模型是否完整可用
+                    if (!currentModel.internalModel || !currentModel.internalModel.coreModel) {
+                        console.log('检测到模型可能损坏或未完全加载');
+                        modelMayBeInvalid = true;
+                    }
+                    // 检查模型是否在舞台上
+                    if (!currentModel.parent) {
+                        console.log('检测到模型未在舞台上显示');
+                        modelMayBeInvalid = true;
+                    }
+                } else {
+                    console.log('当前没有加载的模型');
+                    modelMayBeInvalid = true;
+                }
+                
                 if (window.live2dManager?._lastLoadedModelPath) {
                     currentModelPath = window.live2dManager._lastLoadedModelPath;
                 } else if (currentModel && currentModel.url) {
@@ -1683,8 +1702,11 @@
 
                 // 7. 比较模型路径，判断是否需要完全重新加载模型（使用更准确的路径比较）
                 let needReload = false;
-                if (!currentModelPath) {
+                if (!currentModelPath || modelMayBeInvalid) {
                     needReload = true;
+                    if (modelMayBeInvalid) {
+                        console.log('模型可能损坏，强制重新加载');
+                    }
                 } else {
                     // 标准化路径进行比较
                     const normalizePath = (path) => {
