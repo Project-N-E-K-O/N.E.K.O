@@ -2069,6 +2069,7 @@
                 <div class="section-card">
                     <div class="section-header" style="display: flex; justify-content: space-between; align-items: center;">
                          <h2 data-i18n="steam.characterCardsList">角色卡列表</h2>
+                         <button class="btn btn-primary" onclick="loadCharacterCards()" data-i18n="steam.refresh">刷新角色卡</button>
                       </div>
                     
                     <div id="character-cards-list" class="cards-container">
@@ -2198,12 +2199,12 @@
                             
                             <h3 data-i18n="steam.cardInfoPreview">角色卡信息</h3>
                             <div id="card-info-preview" style="padding: 12px; border: 1px solid #eaeaea; border-radius: 4px; background-color: #f8f8f8;">
-                                <div id="preview-card-name" style="color: #555; margin-bottom: 8px;"><strong data-i18n="steam.characterCardName">角色卡名称:</strong> <span style="font-weight: normal;">null</span></div>
-                                <div id="preview-card-gender" style="color: #555; margin-bottom: 8px;"><strong data-i18n="steam.characterCardGender">性别:</strong> <span style="font-weight: normal;">null</span></div>
-                                <div id="preview-card-age" style="color: #555; margin-bottom: 8px;"><strong data-i18n="steam.characterCardAge">年龄:</strong> <span style="font-weight: normal;">null</span></div>
-                                <div id="preview-card-description" style="color: #555; margin-bottom: 8px;"><strong data-i18n="steam.characterCardDescription">角色卡描述:</strong> <span style="font-weight: normal;">null</span></div>
-                                <div id="preview-card-setting" style="color: #555; margin-bottom: 8px; font-style: italic;"><strong data-i18n="steam.characterCardSetting">角色设定:</strong> <span style="font-weight: normal;">null</span></div>
-                                <div id="preview-card-voice" style="color: #555; margin-bottom: 8px;"><strong data-i18n="steam.characterCardVoice">角色音色:</strong> <span style="font-weight: normal;">null</span></div>
+                                <div id="preview-card-name" style="color: #555; margin-bottom: 8px;"><strong data-i18n="steam.characterCardName">角色卡名称:</strong> <span style="font-weight: normal;">-</span></div>
+                                <div id="preview-card-gender" style="color: #555; margin-bottom: 8px;"><strong data-i18n="steam.characterCardGender">性别:</strong> <span style="font-weight: normal;">-</span></div>
+                                <div id="preview-card-age" style="color: #555; margin-bottom: 8px;"><strong data-i18n="steam.characterCardAge">年龄:</strong> <span style="font-weight: normal;">-</span></div>
+                                <div id="preview-card-description" style="color: #555; margin-bottom: 8px;"><strong data-i18n="steam.characterCardDescription">角色卡描述:</strong> <span style="font-weight: normal;">-</span></div>
+                                <div id="preview-card-setting" style="color: #555; margin-bottom: 8px; font-style: italic;"><strong data-i18n="steam.characterCardSetting">角色设定:</strong> <span style="font-weight: normal;">-</span></div>
+                                <div id="preview-card-voice" style="color: #555; margin-bottom: 8px;"><strong data-i18n="steam.characterCardVoice">角色音色:</strong> <span style="font-weight: normal;">-</span></div>
                             </div>
                             
                             <hr class="fluent-divider">
@@ -4899,6 +4900,13 @@ function viewItemDetails(itemId) {
             
             // 将角色卡列表保存到全局变量（已使用window.characterCards，这里保持兼容）
             globalCharacterCards = window.characterCards || [];
+            
+            // 显示刷新成功消息
+            if (window.characterCards && window.characterCards.length > 0) {
+                showMessage(`已刷新角色卡列表，共 ${window.characterCards.length} 个角色卡`, 'success');
+            } else {
+                showMessage('已刷新角色卡列表，暂无角色卡', 'info');
+            }
     }
     
     // 展开角色卡区域并填充数据
@@ -4920,8 +4928,9 @@ function viewItemDetails(itemId) {
         let live2d = rawData['live2d'] || (rawData['model'] && rawData['model']['name']);
         const modelSelect = document.getElementById('model-select');
         
-        // 确保live2d值存在于模型选择器中，并且不是mao_pro
-        if (!live2d || live2d === 'mao_pro' || !Array.from(modelSelect.options).some(option => option.value === live2d)) {
+        // 确保live2d值存在于模型选择器中
+        // 如果模型是mao_pro，保留它但不自动选中
+        if (!live2d || !Array.from(modelSelect.options).some(option => option.value === live2d)) {
             // 使用第一个可用的模型作为默认值（排除mao_pro）
             const validModels = availableModels.filter(model => model.name !== 'mao_pro');
             if (validModels.length > 0) {
@@ -4933,6 +4942,16 @@ function viewItemDetails(itemId) {
             } else {
                 live2d = '';
             }
+        }
+        
+        // 如果模型是mao_pro，不自动选中，但保留在列表中
+        if (live2d === 'mao_pro') {
+            // 不设置modelSelect.value，保持未选中状态
+            // 但确保mao_pro选项存在于列表中
+            console.log('检测到默认模型mao_pro，不自动选中');
+        } else if (live2d) {
+            // 非mao_pro模型，正常选中
+            modelSelect.value = live2d;
         }
         
         // 处理音色默认值
@@ -4947,8 +4966,15 @@ function viewItemDetails(itemId) {
         document.getElementById('character-card-description').value = description;
         document.getElementById('character-card-setting').value = systemPrompt;
         
-        // 更新模型选择
-        modelSelect.value = live2d;
+        // 更新模型选择（如果模型是mao_pro，不自动选中）
+        if (live2d === 'mao_pro') {
+            // 不设置modelSelect.value，保持未选中状态
+            // 但确保mao_pro选项存在于列表中
+            console.log('检测到默认模型mao_pro，不自动选中');
+        } else if (live2d) {
+            // 非mao_pro模型，正常选中
+            modelSelect.value = live2d;
+        }
         // 更新模型显示和上传按钮状态
         updateModelDisplayAndUploadState();
         
@@ -5443,30 +5469,47 @@ function viewItemDetails(itemId) {
             // 确保modelName存在于模型选择器中
             let foundOption = false;
             if (modelName) {
-                // 尝试直接通过value匹配
-                const option = modelSelect.querySelector(`option[value="${modelName}"]`);
-                if (option) {
-                    modelSelect.value = modelName;
-                    foundOption = true;
+                // 如果模型是mao_pro，不自动选中，但保留在列表中
+                if (modelName === 'mao_pro') {
+                    // 检查mao_pro选项是否存在
+                    const maoProOption = modelSelect.querySelector(`option[value="mao_pro"]`);
+                    if (maoProOption) {
+                        foundOption = true; // 标记为已找到，但不选中
+                        console.log('检测到默认模型mao_pro，不自动选中');
+                    }
                 } else {
-                    // 如果直接匹配失败，尝试通过文本内容匹配
-                    for (let i = 0; i < modelSelect.options.length; i++) {
-                        if (modelSelect.options[i].textContent === modelName) {
-                            modelSelect.selectedIndex = i;
-                            foundOption = true;
-                            break;
+                    // 尝试直接通过value匹配
+                    const option = modelSelect.querySelector(`option[value="${modelName}"]`);
+                    if (option) {
+                        modelSelect.value = modelName;
+                        foundOption = true;
+                    } else {
+                        // 如果直接匹配失败，尝试通过文本内容匹配
+                        for (let i = 0; i < modelSelect.options.length; i++) {
+                            if (modelSelect.options[i].textContent === modelName) {
+                                modelSelect.selectedIndex = i;
+                                foundOption = true;
+                                break;
+                            }
                         }
                     }
                 }
             }
             
-            // 如果没有找到匹配的模型，使用第一个可用的模型作为默认值
+            // 如果没有找到匹配的模型，使用第一个可用的非mao_pro模型作为默认值
             if (!foundOption) {
-                if (modelSelect.options.length > 1) { // 跳过默认的"选择模型"选项
-                    modelSelect.selectedIndex = 1;
-                    modelName = modelSelect.value;
-                    console.log('使用第一个可用模型作为默认值:', modelName);
-                } else {
+                // 跳过默认的"选择模型"选项和mao_pro
+                for (let i = 1; i < modelSelect.options.length; i++) {
+                    const option = modelSelect.options[i];
+                    if (option.value !== 'mao_pro') {
+                        modelSelect.selectedIndex = i;
+                        modelName = modelSelect.value;
+                        console.log('使用第一个可用模型作为默认值:', modelName);
+                        foundOption = true;
+                        break;
+                    }
+                }
+                if (!foundOption) {
                     console.log('没有可用的模型选项');
                 }
             }
@@ -5546,11 +5589,9 @@ function viewItemDetails(itemId) {
                 return response.json();
             })
             .then(models => {
-                // 过滤掉默认模型mao_pro
-                const filteredModels = models.filter(model => model.name !== 'mao_pro');
-                
-                // 存储过滤后的模型列表到全局变量
-                availableModels = filteredModels;
+                // 不过滤mao_pro，保留所有模型
+                // 存储所有模型列表到全局变量
+                availableModels = models;
                 
                 // 清空下拉列表
                 modelSelect.innerHTML = '';
@@ -5560,34 +5601,50 @@ function viewItemDetails(itemId) {
                 defaultOption.value = '';
                 defaultOption.textContent = window.t ? window.t('steam.selectModel') : '选择模型';
                 defaultOption.disabled = true;
-                // 只有当没有当前选中值时，才默认选中这个选项
+                // 只有当没有当前选中值时，或者当前选中的是mao_pro时，才默认选中这个选项
                 defaultOption.selected = !currentSelectedValue || currentSelectedValue === 'mao_pro';
                 modelSelect.appendChild(defaultOption);
                 
                 // 标记是否找到了当前选中的模型
                 let foundCurrentSelected = false;
                 
-                // 添加扫描到的模型（排除mao_pro）
-                filteredModels.forEach(model => {
+                // 添加扫描到的模型（包括mao_pro）
+                models.forEach(model => {
                     const option = document.createElement('option');
                     option.value = model.name;
-                    option.textContent = model.name;
+                    // 如果是mao_pro，显示为"默认"
+                    if (model.name === 'mao_pro') {
+                        option.textContent = '默认';
+                        option.dataset.isDefault = 'true';
+                    } else {
+                        option.textContent = model.name;
+                    }
                     
-                    // 如果当前选项与之前选中的值匹配，则选中它（但排除mao_pro）
-                    if (model.name === currentSelectedValue && model.name !== 'mao_pro') {
-                        option.selected = true;
-                        foundCurrentSelected = true;
+                    // 如果当前选项与之前选中的值匹配，则选中它
+                    // 但如果之前选中的是mao_pro，不自动选中（保持未选中状态）
+                    if (model.name === currentSelectedValue) {
+                        if (model.name === 'mao_pro') {
+                            // mao_pro不自动选中，但保留在列表中
+                            foundCurrentSelected = true; // 标记为已找到，但不选中
+                        } else {
+                            option.selected = true;
+                            foundCurrentSelected = true;
+                        }
                     }
                     
                     modelSelect.appendChild(option);
                 });
                 
-                // 如果之前选中的是mao_pro或没有选中，自动选择第一个可用模型
-                if (!foundCurrentSelected && filteredModels.length > 0) {
-                    const firstOption = modelSelect.querySelector(`option[value="${filteredModels[0].name}"]`);
-                    if (firstOption) {
-                        firstOption.selected = true;
-                        foundCurrentSelected = true;
+                // 如果之前选中的是mao_pro，不自动选择其他模型（保持未选中状态）
+                // 如果没有选中且不是mao_pro，自动选择第一个非mao_pro的模型
+                if (!foundCurrentSelected && currentSelectedValue !== 'mao_pro') {
+                    const nonDefaultModels = models.filter(model => model.name !== 'mao_pro');
+                    if (nonDefaultModels.length > 0) {
+                        const firstOption = modelSelect.querySelector(`option[value="${nonDefaultModels[0].name}"]`);
+                        if (firstOption) {
+                            firstOption.selected = true;
+                            foundCurrentSelected = true;
+                        }
                     }
                 }
                 
@@ -6045,8 +6102,9 @@ function viewItemDetails(itemId) {
                     modelJsonUrl = modelInfo.path;
                     console.log('使用用户mod模型路径:', modelJsonUrl);
                 } else if (finalSteamId && finalSteamId !== 'undefined') {
-                    // 如果提供了finalSteamId但没有model_config_url，使用原来的方式构建URL（兼容模式）
-                    modelJsonUrl = `/workshop/${finalSteamId}/${modelName}.model3.json`;
+                    // 如果提供了finalSteamId但没有model_config_url，使用兼容模式构建URL
+                    // 注意：上传后的目录结构是 workshop/{item_id}/{model_name}/{model_name}.model3.json
+                    modelJsonUrl = `/workshop/${finalSteamId}/${modelName}/${modelName}.model3.json`;
                     console.log('兼容模式 - 构建的模型URL(带steam_id):', modelJsonUrl);
                 } else {
                     // 否则使用原来的路径
@@ -6321,12 +6379,12 @@ function viewItemDetails(itemId) {
             const settingText = previewSetting.querySelector('span');
             const voiceText = previewVoice.querySelector('span');
             
-            if (nameText) nameText.textContent = name || 'null';
-            if (genderText) genderText.textContent = gender || 'null';
-            if (ageText) ageText.textContent = age || 'null';
-            if (descriptionText) descriptionText.textContent = description || 'null';
-            if (settingText) settingText.textContent = setting || 'null';
-            if (voiceText) voiceText.textContent = voice || 'null';
+            if (nameText) nameText.textContent = name || '-';
+            if (genderText) genderText.textContent = gender || '-';
+            if (ageText) ageText.textContent = age || '-';
+            if (descriptionText) descriptionText.textContent = description || '-';
+            if (settingText) settingText.textContent = setting || '-';
+            if (voiceText) voiceText.textContent = voice || '-';
         }
         
         // 更新标签预览

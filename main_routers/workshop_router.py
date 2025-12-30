@@ -21,7 +21,7 @@ from urllib.parse import quote, unquote
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from .shared_state import get_steamworks, get_config_manager
+from .shared_state import get_steamworks, get_config_manager, get_initialize_character_data
 from utils.workshop_utils import (
     ensure_workshop_folder_exists,
     get_workshop_path,
@@ -815,48 +815,225 @@ async def unsubscribe_workshop_item(request: Request):
                 "message": "提供的物品ID不是有效的数字"
             }, status_code=400)
         
-        # 定义一个简单的回调函数来处理取消订阅的结果
-        def unsubscribe_callback(result):
-            # 记录取消订阅的结果
-            if result.result == 1:  # k_EResultOK
-                logger.info(f"取消订阅成功回调: {item_id_int}")
-                # 取消订阅成功后，删除相关的角色卡
+        # 定义一个内部删除函数，可以在回调或备用方案中使用
+        def perform_cleanup(item_id: int):
+            """执行清理操作：删除文件夹和角色卡"""
+            try:
+                import shutil
+                
+                # 获取steamworks实例（在函数内部获取，确保可用）
+                current_steamworks = get_steamworks()
+                
+                # 首先尝试使用Steamworks API获取实际安装路径
+                item_path = None
                 try:
+                    if current_steamworks:
+                        install_info = current_steamworks.Workshop.GetItemInstallInfo(item_id)
+                        logger.debug(f"GetItemInstallInfo返回: {install_info}, 类型: {type(install_info)}")
+                        
+                        if isinstance(install_info, dict):
+                            folder_path = install_info.get('folder', '')
+                            if folder_path:
+                                item_path = str(folder_path)
+                                logger.info(f"从GetItemInstallInfo获取到安装路径: {item_path}")
+                        elif isinstance(install_info, tuple) and len(install_info) >= 2:
+                            folder = install_info[1]
+                            if folder:
+                                item_path = str(folder)
+                                logger.info(f"从GetItemInstallInfo(元组)获取到安装路径: {item_path}")
+                except Exception as e:
+                    logger.warning(f"通过GetItemInstallInfo获取路径失败: {e}，尝试使用find_workshop_item_by_id")
+                
+                # 如果GetItemInstallInfo失败，回退到使用find_workshop_item_by_id
+                if not item_path:
                     from utils.frontend_utils import find_workshop_item_by_id
-                    import json
-                    
-                    # 查找创意工坊物品文件夹
-                    item_path, _ = find_workshop_item_by_id(str(item_id_int))
-                    logger.info(f"找到创意工坊物品路径: {item_path}")
-                    
-                    # 扫描文件夹及其子文件夹，查找所有.chara.json文件
-                    chara_files = []
-                    for root, _, files in os.walk(item_path):
+                    item_path, _ = find_workshop_item_by_id(str(item_id))
+                    logger.info(f"通过find_workshop_item_by_id找到路径: {item_path}")
+                
+                # 检查路径是否存在
+                if not item_path:
+                    logger.error(f"无法获取物品 {item_id} 的安装路径")
+                    return False
+                
+                # 规范化路径
+                item_path = os.path.abspath(os.path.normpath(item_path))
+                logger.info(f"规范化后的物品路径: {item_path}")
+                
+                # 检查路径是否存在
+                if not os.path.exists(item_path):
+                    logger.warning(f"创意工坊物品路径不存在: {item_path}")
+                    return False
+                
+                if not os.path.isdir(item_path):
+                    logger.warning(f"物品路径不是目录: {item_path}")
+                    return False
+                
+                # 扫描文件夹及其子文件夹，查找所有.chara.json文件
+                chara_files = []
+                chara_names = []  # 存储找到的角色卡名称
+                logger.info(f"开始扫描文件夹: {item_path}")
+                
+                try:
+                    for root, dirs, files in os.walk(item_path):
+                        logger.debug(f"扫描目录: {root}, 文件数: {len(files)}")
                         for file in files:
                             if file.endswith('.chara.json'):
-                                chara_files.append(os.path.join(root, file))
-                    
-                    # 解析.chara.json文件，获取角色卡名称并记录日志
-                    for chara_file_path in chara_files:
-                        try:
-                            with open(chara_file_path, 'r', encoding='utf-8') as f:
-                                chara_data = json.load(f)
-                            
-                            # 获取角色卡名称，兼容中英文字段名
-                            chara_name = chara_data.get('档案名') or chara_data.get('name')
-                            if chara_name:
-                                logger.info(f"找到角色卡: {chara_name}，将在前端删除")
-                            else:
-                                logger.warning(f"角色卡文件 {chara_file_path} 缺少名称字段")
-                        except Exception as e:
-                            logger.error(f"处理角色卡文件 {chara_file_path} 时出错: {e}")
+                                chara_file_path = os.path.join(root, file)
+                                chara_files.append(chara_file_path)
+                                logger.info(f"找到角色卡文件: {chara_file_path}")
                 except Exception as e:
-                    logger.error(f"删除角色卡时出错: {e}")
+                    logger.error(f"扫描文件夹时出错: {e}")
+                
+                logger.info(f"共找到 {len(chara_files)} 个角色卡文件")
+                
+                # 解析.chara.json文件，获取角色卡名称
+                for chara_file_path in chara_files:
+                    try:
+                        with open(chara_file_path, 'r', encoding='utf-8') as f:
+                            chara_data = json.load(f)
+                        
+                        # 获取角色卡名称，兼容中英文字段名
+                        chara_name = chara_data.get('档案名') or chara_data.get('name')
+                        if chara_name:
+                            chara_names.append(chara_name)
+                            logger.info(f"解析角色卡文件成功: {chara_file_path} -> {chara_name}")
+                        else:
+                            logger.warning(f"角色卡文件 {chara_file_path} 缺少名称字段，数据: {chara_data}")
+                    except Exception as e:
+                        logger.error(f"处理角色卡文件 {chara_file_path} 时出错: {e}", exc_info=True)
+                
+                logger.info(f"共解析出 {len(chara_names)} 个角色卡名称: {chara_names}")
+                
+                # 从characters.json中删除角色卡
+                if chara_names:
+                    config_mgr = get_config_manager()
+                    characters = config_mgr.load_characters()
+                    
+                    # 确保'猫娘'键存在
+                    if '猫娘' not in characters:
+                        characters['猫娘'] = {}
+                    
+                    # 删除每个找到的角色卡
+                    deleted_count = 0
+                    for chara_name in chara_names:
+                        if chara_name in characters.get('猫娘', {}):
+                            # 检查是否是当前正在使用的猫娘
+                            current_catgirl = characters.get('当前猫娘', '')
+                            if chara_name == current_catgirl:
+                                logger.warning(f"不能删除当前正在使用的猫娘: {chara_name}，跳过删除")
+                                continue
+                            
+                            del characters['猫娘'][chara_name]
+                            deleted_count += 1
+                            logger.info(f"已从characters.json中删除角色卡: {chara_name}")
+                    
+                    if deleted_count > 0:
+                        # 保存更新后的characters.json
+                        config_mgr.save_characters(characters)
+                        logger.info(f"已保存更新后的characters.json，删除了 {deleted_count} 个角色卡")
+                        
+                        # 重新加载配置
+                        try:
+                            initialize_character_data = get_initialize_character_data()
+                            if initialize_character_data:
+                                # 尝试获取事件循环并安全地调用异步函数
+                                try:
+                                    loop = asyncio.get_event_loop()
+                                    if loop.is_running():
+                                        # 如果事件循环正在运行，使用create_task
+                                        loop.create_task(initialize_character_data())
+                                    else:
+                                        # 如果事件循环未运行，使用run_until_complete
+                                        loop.run_until_complete(initialize_character_data())
+                                    logger.info("已重新加载角色配置")
+                                except RuntimeError:
+                                    # 如果没有事件循环，尝试创建新的
+                                    try:
+                                        asyncio.run(initialize_character_data())
+                                        logger.info("已重新加载角色配置")
+                                    except Exception as e:
+                                        logger.warning(f"无法重新加载角色配置（可能不在事件循环中）: {e}")
+                        except Exception as e:
+                            logger.error(f"重新加载角色配置时出错: {e}")
+                
+                # 删除订阅文件夹
+                try:
+                    logger.info(f"准备删除订阅文件夹: {item_path}")
+                    if os.path.exists(item_path) and os.path.isdir(item_path):
+                        # 再次确认路径存在
+                        logger.info(f"确认文件夹存在，开始删除: {item_path}")
+                        shutil.rmtree(item_path, ignore_errors=True)
+                        
+                        # 验证删除是否成功
+                        if os.path.exists(item_path):
+                            logger.warning(f"删除后文件夹仍存在: {item_path}，可能被占用或权限不足")
+                        else:
+                            logger.info(f"✅ 成功删除订阅文件夹: {item_path}")
+                    else:
+                        logger.warning(f"订阅文件夹不存在或不是目录: {item_path} (存在: {os.path.exists(item_path)}, 是目录: {os.path.isdir(item_path) if os.path.exists(item_path) else False})")
+                except Exception as e:
+                    logger.error(f"删除订阅文件夹时出错: {e}", exc_info=True)
+                    
+            except Exception as e:
+                logger.error(f"执行清理操作时出错: {e}", exc_info=True)
+                return False
+            return True
+        
+        # 定义一个简单的回调函数来处理取消订阅的结果
+        def unsubscribe_callback(result):
+            # 记录取消订阅的结果（添加详细日志）
+            callback_item_id = getattr(result, 'publishedFileId', getattr(result, 'published_file_id', None))
+            logger.info(f"取消订阅回调被触发: 期望item_id={item_id_int}, 回调item_id={callback_item_id}, result.result={result.result}")
+            
+            # 检查result对象的结构（用于调试）
+            logger.debug(f"回调result对象类型: {type(result)}, 属性: {dir(result)}")
+            
+            # 验证item_id是否匹配（防止其他取消订阅操作触发此回调）
+            if callback_item_id and int(callback_item_id) != item_id_int:
+                logger.warning(f"回调item_id不匹配: 期望{item_id_int}, 实际{callback_item_id}，跳过处理")
+                return
+            
+            # 记录取消订阅的结果
+            if result.result == 1:  # k_EResultOK
+                logger.info(f"取消订阅成功回调: {item_id_int}，开始执行删除操作")
+                # 调用统一的清理函数
+                perform_cleanup(item_id_int)
             else:
                 logger.warning(f"取消订阅失败回调: {item_id_int}, 错误代码: {result.result}")
         
         # 调用Steamworks的UnsubscribeItem方法，并提供回调函数
-        steamworks.Workshop.UnsubscribeItem(item_id_int, callback=unsubscribe_callback)
+        # 使用override_callback=True确保回调被正确设置
+        try:
+            steamworks.Workshop.UnsubscribeItem(item_id_int, callback=unsubscribe_callback, override_callback=True)
+            logger.info(f"取消订阅请求已发送: {item_id_int}，等待回调...")
+            
+            # 设置一个延迟的后备清理机制（如果回调在5秒内没有触发）
+            def delayed_cleanup():
+                import time
+                time.sleep(5)  # 等待5秒
+                logger.info(f"延迟清理检查: 如果回调未触发，执行备用清理...")
+                # 注意：这里不能直接调用，因为无法知道回调是否已执行
+                # 更好的方法是检查文件夹是否还存在
+                try:
+                    install_info = steamworks.Workshop.GetItemInstallInfo(item_id_int)
+                    if install_info:  # 如果还能获取到安装信息，说明可能还没删除
+                        logger.warning(f"5秒后仍能获取安装信息，可能回调未触发，执行备用清理")
+                        perform_cleanup(item_id_int)
+                except:
+                    pass  # 如果获取失败，可能已经删除了
+            
+            # 在后台线程中启动延迟清理（可选）
+            import threading
+            cleanup_thread = threading.Thread(target=delayed_cleanup, daemon=True)
+            cleanup_thread.start()
+            
+        except Exception as e:
+            logger.error(f"调用UnsubscribeItem失败: {e}")
+            # 如果设置回调失败，直接执行删除操作
+            logger.warning(f"回调设置失败，立即执行删除操作...")
+            perform_cleanup(item_id_int)
+            raise
+        
         # 由于回调是异步的，我们返回请求已被接受处理的状态
         logger.info(f"取消订阅请求已被接受，正在处理: {item_id_int}")
         return {
