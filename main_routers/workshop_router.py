@@ -43,10 +43,44 @@ def get_workshop_meta_path(character_card_name: str) -> str:
     
     Returns:
         str: .workshop_meta.json 文件的完整路径
+    
+    Raises:
+        ValueError: 如果 character_card_name 包含路径遍历字符
     """
+    # 防路径穿越:只允许角色卡名称,不允许携带路径或上级目录喵
+    if not character_card_name:
+        raise ValueError("角色卡名称不能为空")
+    
+    # 使用 basename 提取纯名称，去除任何路径组件
+    safe_name = os.path.basename(character_card_name)
+    
+    # 验证：检查是否包含路径分隔符、.. 或与原始输入不一致
+    if (safe_name != character_card_name or 
+        ".." in safe_name or 
+        os.path.sep in safe_name or 
+        "/" in safe_name or 
+        "\\" in safe_name):
+        logger.warning(f"检测到非法角色卡名称尝试: {character_card_name}")
+        raise ValueError(f"非法角色卡名称: 不能包含路径分隔符或目录遍历字符")
+    
     config_mgr = get_config_manager()
     chara_dir = config_mgr.chara_dir
-    meta_file_path = os.path.join(chara_dir, f"{character_card_name}.workshop_meta.json")
+    
+    # 构建文件路径
+    meta_file_path = os.path.join(chara_dir, f"{safe_name}.workshop_meta.json")
+    
+    # 额外安全检查：验证最终路径确实在 chara_dir 内
+    try:
+        real_meta_path = os.path.realpath(meta_file_path)
+        real_chara_dir = os.path.realpath(chara_dir)
+        # 使用 commonpath 确保路径在基础目录内
+        if os.path.commonpath([real_meta_path, real_chara_dir]) != real_chara_dir:
+            logger.warning(f"路径遍历尝试被阻止: {character_card_name} -> {meta_file_path}")
+            raise ValueError("路径验证失败: 目标路径不在允许的目录内")
+    except (ValueError, OSError) as e:
+        logger.warning(f"路径验证失败: {e}")
+        raise ValueError("路径验证失败")
+    
     return meta_file_path
 
 
@@ -58,9 +92,14 @@ def read_workshop_meta(character_card_name: str) -> dict:
         character_card_name: 角色卡名称（不含 .chara.json 后缀）
     
     Returns:
-        dict: 元数据字典，如果文件不存在则返回 None
+        dict: 元数据字典，如果文件不存在或验证失败则返回 None
     """
-    meta_file_path = get_workshop_meta_path(character_card_name)
+    try:
+        meta_file_path = get_workshop_meta_path(character_card_name)
+    except ValueError as e:
+        logger.warning(f"角色卡名称验证失败: {e}")
+        return None
+    
     if os.path.exists(meta_file_path):
         try:
             with open(meta_file_path, 'r', encoding='utf-8') as f:
@@ -79,8 +118,15 @@ def write_workshop_meta(character_card_name: str, workshop_item_id: str, content
         character_card_name: 角色卡名称（不含 .chara.json 后缀）
         workshop_item_id: Workshop 物品 ID
         content_hash: 内容哈希值（可选）
+    
+    Raises:
+        ValueError: 如果角色卡名称验证失败
     """
-    meta_file_path = get_workshop_meta_path(character_card_name)
+    try:
+        meta_file_path = get_workshop_meta_path(character_card_name)
+    except ValueError as e:
+        logger.error(f"写入 .workshop_meta.json 失败: 角色卡名称验证失败 - {e}")
+        raise
     
     # 读取现有数据（如果存在）
     existing_meta = read_workshop_meta(character_card_name) or {}
