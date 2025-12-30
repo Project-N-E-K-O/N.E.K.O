@@ -2187,6 +2187,29 @@
                 // 等待配置加载完成
                 await window.pageConfigReady;
 
+                // ✅ 先加载共享基础组件（UI Component Factory 和 UI Controller）
+                console.log('[主页] 加载共享 UI 组件...');
+                const sharedUIModules = [
+                    '/static/ui-component-factory.js',
+                    '/static/ui-controller.js'
+                ];
+                for (const moduleSrc of sharedUIModules) {
+                    await new Promise((resolve, reject) => {
+                        const script = document.createElement('script');
+                        script.src = moduleSrc;
+                        script.onload = () => {
+                            console.log(`[主页] 共享组件加载成功: ${moduleSrc}`);
+                            resolve();
+                        };
+                        script.onerror = (error) => {
+                            console.error(`共享组件加载失败: ${moduleSrc}`, error);
+                            reject(error);
+                        };
+                        document.body.appendChild(script);
+                    });
+                }
+                console.log('[主页] 共享 UI 组件加载完成');
+
                 // 动态加载 live2d 模块（按顺序加载拆分后的文件）
                 const live2dModules = [
                     '/static/live2d-core.js',

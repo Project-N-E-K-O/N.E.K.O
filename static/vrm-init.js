@@ -28,47 +28,33 @@ function initializeVRMManager() {
 
 // 替换掉原有的轮询，改用标准的事件监听
 window.addEventListener('vrm-modules-ready', () => {
-    console.log('[VRM Init] 检测到模块就绪事件，开始初始化...');
     initializeVRMManager();
 
     // 如果不是管理页面，尝试自动加载模型
     if (!isModelManagerPage) {
-        console.log('[VRM Init] 非管理页面，准备自动加载VRM模型...');
-        console.log('[VRM Init] 当前window.vrmModel:', window.vrmModel);
-        console.log('[VRM Init] 当前window.lanlan_config:', window.lanlan_config);
         initVRMModel();
-    } else {
-        console.log('[VRM Init] 管理页面，跳过自动加载');
     }
 });
 
 // 启动延迟初始化
 // 自动初始化函数
 async function initVRMModel() {
-    console.log('[VRM Init] 开始自动初始化VRM模型...');
-
     // 1. 等待配置加载完成
-    console.log('[VRM Init] 等待页面配置加载...');
     if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
         await window.pageConfigReady;
-        console.log('[VRM Init] 页面配置加载完成');
     }
 
     // 2. 获取并确定模型路径
     let targetModelPath = window.vrmModel || (typeof vrmModel !== 'undefined' ? vrmModel : '');
-    console.log('[VRM Init] 检测到的VRM模型路径:', targetModelPath);
 
-    // 【修改】如果未指定路径，使用默认模型保底
+    // 如果未指定路径，使用默认模型保底
     if (!targetModelPath) {
-        
         if (window.cubism4Model) {
-            console.log('[VRM Init] 检测到当前是 Live2D 模式，跳过 VRM 默认加载');
-            return; 
+            return; // Live2D 模式，跳过 VRM 默认加载
         }
 
-        console.log('[VRM Init] 未指定VRM模型路径，将加载默认模型...');
-        // 这里使用一个你确定存在的模型路径（根据你之前的日志，sister1.0.vrm 是存在的）
-        targetModelPath = '/static/vrm/sister1.0.vrm'; 
+        // 使用默认模型路径
+        targetModelPath = '/static/vrm/sister1.0.vrm';
     }
     if (!window.vrmManager) {
         console.warn('[VRM Init] VRM管理器未初始化，跳过加载');
@@ -76,30 +62,35 @@ async function initVRMModel() {
     }
 
     try {
-        console.log(`[VRM Init] 开始加载 VRM 模型: ${targetModelPath}`);
-        console.log('[VRM Init] 切换UI显示...');
-        // 3. UI 切换逻辑 
+        // UI 切换逻辑 - 智能视觉切换
         const vrmContainer = document.getElementById('vrm-container');
-        const live2dContainer = document.getElementById('live2d-container');
-        
         if (vrmContainer) vrmContainer.style.display = 'block';
-        if (live2dContainer) live2dContainer.style.display = 'none';
 
-        console.log('[VRM Init] 开始初始化Three.js场景...');
-        // 4. 初始化 Three.js 场景 
+        // 只隐藏Live2D的浮动按钮，保持功能面板可用
+        const live2dFloatingButtons = document.getElementById('live2d-floating-buttons');
+        if (live2dFloatingButtons) {
+            live2dFloatingButtons.style.display = 'none';
+        }
+
+        // 隐藏Live2D锁图标（如果存在）
+        const live2dLockIcon = document.getElementById('live2d-lock-icon');
+        if (live2dLockIcon) {
+            live2dLockIcon.style.display = 'none';
+        }
+
+        // 初始化 Three.js 场景
         await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
 
-        // 5. 路径转换逻辑（直接处理，不再进行 HEAD 请求检测以提升速度）
+        // 路径转换逻辑
         let modelUrl = targetModelPath;
         if (!modelUrl.startsWith('http') && !modelUrl.startsWith('/')) {
             modelUrl = `${VRM_USER_PATH}/${modelUrl}`;
         }
         modelUrl = modelUrl.replace(/\\/g, '/'); // 修正 Windows 风格路径
 
-        // 6. 执行加载
-        console.log('[VRM Init] 开始加载VRM模型:', modelUrl);
+        // 执行加载
         await window.vrmManager.loadModel(modelUrl);
-        console.log('[VRM Init] VRM模型加载完成');
+        console.log(`[VRM] 模型加载成功: ${targetModelPath}`);
         
 
     } catch (error) {
@@ -111,11 +102,9 @@ async function initVRMModel() {
 // 添加强制解锁函数
 window.forceUnlockVRM = function() {
     if (window.vrmManager && window.vrmManager.interaction) {
-        console.log('[VRM Force Unlock] 执行逻辑解锁');
-        // 统一调用我们重构后的接口
         window.vrmManager.interaction.setLocked(false);
 
-        // 清理可能残留的 CSS 样式（如果之前误操作过）
+        // 清理可能残留的 CSS 样式
         if (window.vrmManager.canvas) {
             window.vrmManager.canvas.style.pointerEvents = 'auto';
         }
@@ -124,22 +113,17 @@ window.forceUnlockVRM = function() {
 
 // 手动触发主页VRM模型检查的函数
 window.checkAndLoadVRM = async function() {
-    console.log('[主页VRM检查] 开始手动检查VRM模型...');
-
     try {
         // 1. 获取当前角色名称
         let currentLanlanName = window.lanlan_config?.lanlan_name;
-        console.log('[主页VRM检查] 当前角色:', currentLanlanName);
-
         if (!currentLanlanName) {
-            console.log('[主页VRM检查] 未找到当前角色，跳过检查');
             return;
         }
 
         // 2. 获取角色配置
         const charResponse = await fetch('/api/characters');
         if (!charResponse.ok) {
-            console.error('[主页VRM检查] 获取角色配置失败');
+            console.error('[VRM] 获取角色配置失败');
             return;
         }
 
@@ -147,47 +131,46 @@ window.checkAndLoadVRM = async function() {
         const catgirlConfig = charactersData['猫娘']?.[currentLanlanName];
 
         if (!catgirlConfig) {
-            console.log('[主页VRM检查] 未找到角色配置');
             return;
         }
 
-        console.log('[主页VRM检查] 角色配置:', catgirlConfig);
-
         const modelType = catgirlConfig.model_type || 'live2d';
-        console.log('[主页VRM检查] 模型类型:', modelType);
-
         if (modelType !== 'vrm') {
-            console.log('[主页VRM检查] 模型类型不是VRM，跳过加载');
             return;
         }
 
         // 3. 获取VRM路径
         const newModelPath = catgirlConfig.vrm || '';
-        console.log('[主页VRM检查] VRM路径:', newModelPath);
-
         if (!newModelPath) {
-            console.log('[主页VRM检查] VRM路径为空，跳过加载');
             return;
         }
 
-        // 4. 显示VRM容器
-        const live2dContainer = document.getElementById('live2d-container');
+        // 4. 显示VRM容器，智能视觉切换
         const vrmContainer = document.getElementById('vrm-container');
-        if (live2dContainer) live2dContainer.style.display = 'none';
         if (vrmContainer) {
             vrmContainer.style.display = 'block';
-            console.log('[主页VRM检查] VRM容器已显示');
+        }
+
+        // 只隐藏Live2D的浮动按钮，保持功能面板可用
+        const live2dFloatingButtons = document.getElementById('live2d-floating-buttons');
+        if (live2dFloatingButtons) {
+            live2dFloatingButtons.style.display = 'none';
+        }
+
+        // 隐藏Live2D锁图标（如果存在）
+        const live2dLockIcon = document.getElementById('live2d-lock-icon');
+        if (live2dLockIcon) {
+            live2dLockIcon.style.display = 'none';
         }
 
         // 5. 检查VRM管理器
         if (!window.vrmManager) {
-            console.error('[主页VRM检查] VRM管理器不存在');
+            console.error('[VRM] VRM管理器不存在');
             return;
         }
 
         // 6. 路径转换
         let modelUrl = newModelPath;
-        console.log('[主页VRM检查] 原始VRM路径:', modelUrl);
 
         // 处理Windows绝对路径，转换为Web路径
         if (modelUrl.includes('\\') || modelUrl.includes(':')) {
@@ -204,14 +187,12 @@ window.checkAndLoadVRM = async function() {
 
         // 7. 初始化Three.js场景
         if (!window.vrmManager._isInitialized || !window.vrmManager.scene || !window.vrmManager.camera || !window.vrmManager.renderer) {
-            console.log('[主页VRM检查] 初始化Three.js场景...');
             await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
         }
 
         // 8. 加载VRM模型
-        console.log('[主页VRM检查] 开始加载VRM模型:', modelUrl);
         await window.vrmManager.loadModel(modelUrl);
-        console.log('[主页VRM检查] VRM模型加载成功');
+        console.log(`[VRM] 模型加载成功: ${newModelPath}`);
         
     } catch (error) {
         console.error('[主页VRM检查] VRM检查和加载失败:', error);
@@ -222,19 +203,16 @@ window.checkAndLoadVRM = async function() {
 
 // 调试函数，方便排查交互失效问题
 window.checkVRMStatus = function() {
-    console.log('[VRM Status Check] === VRM 状态检查 ===');
-    console.log('window.vrmManager:', !!window.vrmManager);
+    console.log('[VRM] === 状态检查 ===');
+    console.log('管理器:', !!window.vrmManager);
     if (window.vrmManager) {
         console.log('当前模型:', !!window.vrmManager.currentModel);
         console.log('锁定状态:', window.vrmManager.isLocked);
         if (window.vrmManager.interaction) {
-            console.log('交互模块状态:', window.vrmManager.interaction.mouseTrackingEnabled ? '已启用' : '已禁用');
+            console.log('交互模块:', window.vrmManager.interaction.mouseTrackingEnabled ? '已启用' : '已禁用');
         }
     }
-    console.log('[VRM Status Check] === 检查完成 ===');
+    console.log('[VRM] === 检查完成 ===');
 };
 
-
-// 自动显示帮助
-console.log('[VRM Debug] 🎮 VRM 测试命令已加载:');
-console.log('  testVRMModels.listModels() - 查看可用命令');
+// VRM 系统初始化完成

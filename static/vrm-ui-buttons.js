@@ -33,7 +33,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
     // 2. 按钮配置 (和 Live2D 保持一致)
     const iconVersion = '?v=' + Date.now();
     const buttonConfigs = [
-        { id: 'mic', emoji: '🎤', toggle: true, iconOff: '/static/icons/mic_icon_off.png'+iconVersion, iconOn: '/static/icons/mic_icon_on.png'+iconVersion },
+        { id: 'mic', emoji: '🎤', hasPopup: true, toggle: true, separatePopupTrigger: true, iconOff: '/static/icons/mic_icon_off.png'+iconVersion, iconOn: '/static/icons/mic_icon_on.png'+iconVersion },
         { id: 'screen', emoji: '🖥️', toggle: true, iconOff: '/static/icons/screen_icon_off.png'+iconVersion, iconOn: '/static/icons/screen_icon_on.png'+iconVersion },
         { id: 'agent', emoji: '🔨', popupToggle: true, iconOff: '/static/icons/Agent_off.png'+iconVersion, iconOn: '/static/icons/Agent_on.png'+iconVersion },
         { id: 'settings', emoji: '⚙️', popupToggle: true, iconOff: '/static/icons/set_off.png'+iconVersion, iconOn: '/static/icons/set_on.png'+iconVersion },
@@ -69,22 +69,139 @@ VRMManager.prototype.setupFloatingButtons = function () {
             Object.assign(imgOn.style, {width:'100%', height:'100%', position:'absolute', opacity:'0', transition:'opacity 0.3s'});
             btn.appendChild(imgOff); btn.appendChild(imgOn);
 
+            // ✅ 使用新架构：通过 UIController 统一管理面板
             btn.addEventListener('click', (e) => {
-                e.stopPropagation(); 
+                e.stopPropagation();
                 e.preventDefault();
 
-                const isActive = btn.dataset.active === 'true';
-                btn.dataset.active = (!isActive).toString();
-                imgOff.style.opacity = !isActive ? '0' : '1';
-                imgOn.style.opacity = !isActive ? '1' : '0';
-                
-                console.log(`[VRM UI] 点击了按钮: ${config.id}, 激活状态: ${!isActive}`); // 加个日志方便调试
+                const currentActive = btn.dataset.active === 'true';
+                let targetActive = !currentActive; // 默认取反
 
-                if(config.toggle) window.dispatchEvent(new CustomEvent(`live2d-${config.id}-toggle`, {detail:{active:!isActive}}));
-                else window.dispatchEvent(new CustomEvent(`live2d-${config.id}-click`));
+                // ✅ 使用 UIController 统一接口（底层逻辑互通）
+                if (config.id === 'settings') {
+                    if (window.UIController) {
+                        targetActive = window.UIController.toggleSettings();
+                    } else {
+                        console.error('[VRM UI] UIController 未加载');
+                    }
+                }
+                else if (config.id === 'agent') {
+                    if (window.UIController) {
+                        targetActive = window.UIController.toggleAgent();
+                    } else {
+                        console.error('[VRM UI] UIController 未加载');
+                    }
+                }
+                else if (config.id === 'mic') {
+                    if (window.UIController) {
+                        targetActive = window.UIController.toggleMic(targetActive);
+                    }
+                }
+                else if (config.id === 'screen') {
+                    if (window.UIController) {
+                        targetActive = window.UIController.toggleScreen(targetActive);
+                    }
+                }
+
+                // 更新图标状态
+                btn.dataset.active = targetActive.toString();
+                imgOff.style.opacity = targetActive ? '0' : '1';
+                imgOn.style.opacity = targetActive ? '1' : '0';
+
+                // 保持原有的事件发送（向后兼容）
+                if(config.toggle) {
+                    window.dispatchEvent(new CustomEvent(`live2d-${config.id}-toggle`, {detail:{active:targetActive}}));
+                } else {
+                    window.dispatchEvent(new CustomEvent(`live2d-${config.id}-click`));
+                }
             });
         }
+
+        // 先添加按钮到包装器
         btnWrapper.appendChild(btn);
+
+        // ✅ 如果有弹出框且需要独立的触发器（仅麦克风）
+        if (config.hasPopup && config.separatePopupTrigger && window.UIComponentFactory) {
+            const popup = window.UIComponentFactory.createPopup(config.id, this);
+
+            // 创建三角按钮（用于触发弹出框）
+            const triggerBtn = document.createElement('div');
+            triggerBtn.innerText = '▶';
+            Object.assign(triggerBtn.style, {
+                width: '24px',
+                height: '24px',
+                borderRadius: '50%',
+                background: 'rgba(255, 255, 255, 0.65)',
+                backdropFilter: 'saturate(180%) blur(20px)',
+                border: '1px solid rgba(255, 255, 255, 0.18)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: '13px',
+                color: '#44b7fe',
+                cursor: 'pointer',
+                userSelect: 'none',
+                boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04), 0 4px 8px rgba(0, 0, 0, 0.08)',
+                transition: 'all 0.1s ease',
+                pointerEvents: 'auto',
+                marginLeft: '-10px'
+            });
+
+            // 阻止事件传播
+            ['pointerdown','pointermove','pointerup','mousedown','mousemove','mouseup','touchstart','touchmove','touchend'].forEach(evt =>
+                triggerBtn.addEventListener(evt, e => e.stopPropagation(), true)
+            );
+
+            // 悬停效果
+            triggerBtn.addEventListener('mouseenter', () => {
+                triggerBtn.style.transform = 'scale(1.05)';
+                triggerBtn.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.08), 0 8px 16px rgba(0, 0, 0, 0.08)';
+                triggerBtn.style.background = 'rgba(255, 255, 255, 0.8)';
+            });
+            triggerBtn.addEventListener('mouseleave', () => {
+                triggerBtn.style.transform = 'scale(1)';
+                triggerBtn.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.04), 0 4px 8px rgba(0, 0, 0, 0.08)';
+                triggerBtn.style.background = 'rgba(255, 255, 255, 0.65)';
+            });
+
+            // 点击打开麦克风列表
+            triggerBtn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+
+                // 如果是麦克风弹出框，先加载麦克风列表
+                if (config.id === 'mic' && window.renderFloatingMicList) {
+                    await window.renderFloatingMicList();
+                }
+
+                // 使用 UIController 显示弹出框
+                if (window.UIController) {
+                    window.UIController.showPopup(config.id, popup);
+                }
+            });
+
+            // 创建包装器用于三角按钮和弹出框
+            const triggerWrapper = document.createElement('div');
+            triggerWrapper.style.position = 'relative';
+
+            // 阻止包装器事件传播
+            ['pointerdown','pointermove','pointerup','mousedown','mousemove','mouseup','touchstart','touchmove','touchend'].forEach(evt =>
+                triggerWrapper.addEventListener(evt, e => e.stopPropagation(), true)
+            );
+
+            triggerWrapper.appendChild(triggerBtn);
+            triggerWrapper.appendChild(popup);
+            btnWrapper.appendChild(triggerWrapper);
+
+            console.log(`[VRM UI] 已创建 ${config.id} 麦克风触发器和弹出面板`);
+        }
+        // ✅ 如果配置了 popupToggle，创建弹出面板
+        else if (config.popupToggle && window.UIComponentFactory) {
+            const popup = window.UIComponentFactory.createPopup(config.id, this);
+            btnWrapper.appendChild(popup);
+            console.log(`[VRM UI] 已创建 ${config.id} 弹出面板`);
+        }
+
+        // 将包装器添加到容器
         buttonsContainer.appendChild(btnWrapper);
     });
 
