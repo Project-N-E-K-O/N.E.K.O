@@ -1591,6 +1591,11 @@ async def prepare_workshop_upload(request: Request):
             if safe_chara_name.endswith('.chara.json'):
                 character_card_name = safe_chara_name[:-11]  # 去掉 .chara.json 后缀
         
+        # TODO: 临时阻止重复上传，直到实现创意工坊作者验证机制
+        # 未来需要支持：
+        # 1. 验证当前用户是否是原上传者
+        # 2. 允许原作者更新已上传的内容
+
         # 检查是否已存在workshop_meta.json文件（防止重复上传）
         if character_card_name:
             meta_data = read_workshop_meta(character_card_name)
