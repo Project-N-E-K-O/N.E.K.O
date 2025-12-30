@@ -1465,6 +1465,15 @@
         #uploadToWorkshopModal .control-group {
             white-space: normal;
         }
+        
+        /* 重复上传modal样式修复 */
+        #duplicateUploadModal .modal-body {
+            white-space: normal;
+        }
+        
+        #duplicateUploadModal .modal-body p {
+            white-space: normal;
+        }
 
         .modal-footer {
             display: flex;
@@ -2078,31 +2087,31 @@
                       </div>
 
                     <div class="character-card-layout" id="character-card-layout">
-                        <!-- 左侧显示区域（只读） -->
+
                         <div class="character-card-inputs">
                             <div class="control-group">
                                 <div class="control-label" data-i18n="steam.characterCardName">角色名称</div>
-                                <input type="text" id="character-card-name" class="control-input" readonly style="cursor: default; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">
+                                <input type="text" id="character-card-name" class="control-input">
                             </div>
                             
                             <div class="control-group">
                                 <div class="control-label" data-i18n="steam.characterCardGender">性别</div>
-                                <input type="text" id="character-card-gender" class="control-input" readonly style="cursor: default; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">
+                                <input type="text" id="character-card-gender" class="control-input">
                             </div>
                             
                             <div class="control-group">
                                 <div class="control-label" data-i18n="steam.characterCardAge">年龄</div>
-                                <input type="text" id="character-card-age" class="control-input" readonly style="cursor: default; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">
+                                <input type="text" id="character-card-age" class="control-input">
                             </div>
                             
                             <div class="control-group">
                                 <div class="control-label" data-i18n="steam.characterCardDescription">描述</div>
-                                <textarea id="character-card-description" class="control-input" style="white-space: pre-wrap; min-height: 100px; cursor: default; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;" readonly></textarea>
+                                <textarea id="character-card-description" class="control-input" style="white-space: pre-wrap; min-height: 100px;"></textarea>
                             </div>
                             
                             <div class="control-group">
                                 <div class="control-label" data-i18n="steam.characterCardSetting">角色设定</div>
-                                <textarea id="character-card-setting" class="control-input" style="white-space: pre-wrap; min-height: 100px; cursor: default; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;" readonly></textarea>
+                                <textarea id="character-card-setting"  class="control-input" style="white-space: pre-wrap; min-height: 100px; cursor: default;" readonly></textarea>
 
                             </div>
                             
@@ -2111,7 +2120,7 @@
                                 <div id="character-card-model-selection">
                                     <!-- 模型选择区域 -->
                                     <div style="display: flex; gap: 8px; margin-bottom: 10px;">
-                                        <select id="model-select" class="control-input" style="width: 100%; padding-right: 25px; cursor: default; opacity: 0.7; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;" disabled>
+                                        <select id="model-select" class="control-input" style="width: 100%; padding-right: 25px;">
                                             <option value="">未选择模型</option>
                                         </select>
                                     </div>
@@ -2132,6 +2141,7 @@
                             
                             <div class="control-group">
                                 <div class="control-label" data-i18n="steam.characterCardTags">角色卡标签</div>
+                                <input type="text" id="character-card-tag-input" class="control-input" placeholder="输入标签，按空格添加" data-i18n-placeholder="steam.tagsPlaceholderSpace">
                                 <div id="character-card-tags-wrapper" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px; border: 1px solid #ddd; border-radius: 4px; background-color: #f9f9f9; min-height: 40px; box-sizing: border-box;">
                                     <div class="tags-container" id="character-card-tags-container"></div>
                                 </div>
@@ -2188,12 +2198,12 @@
                             
                             <h3 data-i18n="steam.cardInfoPreview">角色卡信息</h3>
                             <div id="card-info-preview" style="padding: 12px; border: 1px solid #eaeaea; border-radius: 4px; background-color: #f8f8f8;">
-                                <div id="preview-card-name" style="color: #555; margin-bottom: 8px;"><strong data-i18n="steam.characterCardName">角色卡名称:</strong> <span style="font-weight: normal;">-</span></div>
-                                <div id="preview-card-gender" style="color: #555; margin-bottom: 8px;"><strong data-i18n="steam.characterCardGender">性别:</strong> <span style="font-weight: normal;">-</span></div>
-                                <div id="preview-card-age" style="color: #555; margin-bottom: 8px;"><strong data-i18n="steam.characterCardAge">年龄:</strong> <span style="font-weight: normal;">-</span></div>
-                                <div id="preview-card-description" style="color: #555; margin-bottom: 8px;"><strong data-i18n="steam.characterCardDescription">角色卡描述:</strong> <span style="font-weight: normal;">-</span></div>
-                                <div id="preview-card-setting" style="color: #555; margin-bottom: 8px; font-style: italic;"><strong data-i18n="steam.characterCardSetting">角色设定:</strong> <span style="font-weight: normal;">-</span></div>
-                                <div id="preview-card-voice" style="color: #555; margin-bottom: 8px;"><strong data-i18n="steam.characterCardVoice">角色音色:</strong> <span style="font-weight: normal;">-</span></div>
+                                <div id="preview-card-name" style="color: #555; margin-bottom: 8px;"><strong data-i18n="steam.characterCardName">角色卡名称:</strong> <span style="font-weight: normal;">null</span></div>
+                                <div id="preview-card-gender" style="color: #555; margin-bottom: 8px;"><strong data-i18n="steam.characterCardGender">性别:</strong> <span style="font-weight: normal;">null</span></div>
+                                <div id="preview-card-age" style="color: #555; margin-bottom: 8px;"><strong data-i18n="steam.characterCardAge">年龄:</strong> <span style="font-weight: normal;">null</span></div>
+                                <div id="preview-card-description" style="color: #555; margin-bottom: 8px;"><strong data-i18n="steam.characterCardDescription">角色卡描述:</strong> <span style="font-weight: normal;">null</span></div>
+                                <div id="preview-card-setting" style="color: #555; margin-bottom: 8px; font-style: italic;"><strong data-i18n="steam.characterCardSetting">角色设定:</strong> <span style="font-weight: normal;">null</span></div>
+                                <div id="preview-card-voice" style="color: #555; margin-bottom: 8px;"><strong data-i18n="steam.characterCardVoice">角色音色:</strong> <span style="font-weight: normal;">null</span></div>
                             </div>
                             
                             <hr class="fluent-divider">
@@ -2259,12 +2269,12 @@
                 
                 <div class="control-group">
                     <div class="control-label" data-i18n="steam.title">标题 *</div>
-                    <input type="text" id="item-title" class="control-input" placeholder="输入您的创作标题">
+                    <input type="text" id="item-title" class="control-input" placeholder="输入您的创作标题" readonly style="cursor: default; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">
                 </div>
                 
                 <div class="control-group">
                     <div class="control-label" data-i18n="steam.description">描述</div>
-                    <textarea id="item-description" class="control-input" placeholder="详细描述您的创作内容..." data-i18n-placeholder="steam.descriptionPlaceholder"></textarea>
+                    <textarea id="item-description" class="control-input" placeholder="详细描述您的创作内容..." data-i18n-placeholder="steam.descriptionPlaceholder" readonly style="cursor: default; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;"></textarea>
                 </div>
                 
                 <div class="control-group">
@@ -2284,7 +2294,7 @@
                 
                 <div class="control-group">
                     <div class="control-label" data-i18n="steam.tags">标签</div>
-                    <input type="text" id="item-tags" class="control-input" placeholder="输入标签，按空格添加" data-i18n-placeholder="steam.tagsPlaceholderSpace">
+                    <input type="text" id="item-tags" class="control-input" placeholder="输入标签，按空格添加" data-i18n-placeholder="steam.tagsPlaceholderSpace" readonly style="cursor: default; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">
                     <div id="tags-container" class="tags-container"></div>
                 </div>
                 
@@ -2318,7 +2328,57 @@
         </div>
     </div>
 
+    <!-- 保存角色卡确认模态框 -->
+    <div id="saveCharacterCardModal" class="modal" onclick="closeSaveConfirmModalOnOutsideClick(event)" style="display: none;">
+        <div class="modal-content" onclick="event.stopPropagation()" style="max-width: 500px;">
+            <div class="modal-header">
+                <h3 class="modal-title">保存角色卡</h3>
+                <button class="modal-close" onclick="closeSaveConfirmModal()">&times;</button>
+            </div>
+            <div class="modal-body" style="padding: 20px;">
+                <p>是否要将当前填写的角色卡信息保存到角色卡文件中？</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" onclick="confirmSaveCharacterCard()">保存并继续</button>
+                <button class="btn btn-secondary" onclick="skipSaveAndContinue()">跳过保存</button>
+                <button class="btn btn-secondary" onclick="closeSaveConfirmModal()">取消</button>
+            </div>
+        </div>
+    </div>
 
+    <!-- 取消上传确认模态框 -->
+    <div id="cancelUploadModal" class="modal" onclick="closeCancelUploadModalOnOutsideClick(event)" style="display: none;">
+        <div class="modal-content" onclick="event.stopPropagation()" style="max-width: 500px;">
+            <div class="modal-header">
+                <h3 class="modal-title">取消上传</h3>
+                <button class="modal-close" onclick="closeCancelUploadModal()">&times;</button>
+            </div>
+            <div class="modal-body" style="padding: 20px;">
+                <p>确定要取消上传吗？取消后将删除临时文件。</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" onclick="confirmCancelUpload()">确定取消</button>
+                <button class="btn btn-secondary" onclick="closeCancelUploadModal()">继续上传</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 重复上传提示模态框 -->
+    <div id="duplicateUploadModal" class="modal" onclick="closeDuplicateUploadModalOnOutsideClick(event)" style="display: none;">
+        <div class="modal-content" onclick="event.stopPropagation()" style="max-width: 500px;">
+            <div class="modal-header">
+                <h3 class="modal-title">角色卡已上传</h3>
+                <button class="modal-close" onclick="closeDuplicateUploadModal()">&times;</button>
+            </div>
+            <div class="modal-body" style="padding: 20px;">
+                <p id="duplicate-upload-message"></p>
+                <p style="margin-top: 15px; color: #666; font-size: 14px;">如有需要请创建新的角色卡</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" onclick="closeDuplicateUploadModal()">确定</button>
+            </div>
+        </div>
+    </div>
 
     <script>
         // 点击模态框外部关闭
@@ -2402,8 +2462,8 @@
                     }
                     console.log('上传modal已显示');
                 } else {
-                    // 隐藏modal
-                    uploadModal.style.display = 'none';
+                    // 隐藏modal时调用closeUploadModal以处理临时文件
+                    closeUploadModal();
                     console.log('上传modal已隐藏');
                 }
             } else {
@@ -2412,10 +2472,145 @@
         }
         
         // 关闭上传modal
-        function closeUploadModal() {
+        // 保存角色卡确认modal相关函数
+        let pendingUploadData = null; // 存储待上传的数据
+        
+        function openSaveConfirmModal() {
+            const modal = document.getElementById('saveCharacterCardModal');
+            if (modal) {
+                modal.style.display = 'flex';
+            }
+        }
+        
+        function closeSaveConfirmModal() {
+            const modal = document.getElementById('saveCharacterCardModal');
+            if (modal) {
+                modal.style.display = 'none';
+            }
+            // 清除待上传数据
+            pendingUploadData = null;
+        }
+        
+        function closeSaveConfirmModalOnOutsideClick(event) {
+            const modal = document.getElementById('saveCharacterCardModal');
+            if (event.target === modal) {
+                closeSaveConfirmModal();
+            }
+        }
+        
+        async function confirmSaveCharacterCard() {
+            console.log('confirmSaveCharacterCard被调用');
+            // 先保存数据，再关闭modal
+            const uploadData = pendingUploadData;
+            closeSaveConfirmModal();
+            if (uploadData) {
+                console.log('pendingUploadData存在，开始执行保存并上传:', uploadData);
+                try {
+                    await performSaveAndUpload(uploadData);
+                } catch (error) {
+                    console.error('confirmSaveCharacterCard执行出错:', error);
+                    showMessage(`保存并上传出错: ${error.message}`, 'error');
+                }
+            } else {
+                console.error('pendingUploadData为null或undefined');
+                showMessage('上传数据丢失，请重新点击上传按钮', 'error');
+            }
+        }
+        
+        async function skipSaveAndContinue() {
+            // 先保存数据，再关闭modal
+            const uploadData = pendingUploadData;
+            closeSaveConfirmModal();
+            if (uploadData) {
+                try {
+                    await performUpload(uploadData);
+                } catch (error) {
+                    console.error('skipSaveAndContinue执行出错:', error);
+                    showMessage(`上传出错: ${error.message}`, 'error');
+                }
+            } else {
+                console.error('pendingUploadData为null或undefined');
+                showMessage('上传数据丢失，请重新点击上传按钮', 'error');
+            }
+        }
+        
+        // 重复上传提示modal相关函数
+        function openDuplicateUploadModal(message) {
+            const modal = document.getElementById('duplicateUploadModal');
+            const messageElement = document.getElementById('duplicate-upload-message');
+            if (modal && messageElement) {
+                messageElement.textContent = message || '该角色卡已经上传到创意工坊';
+                modal.style.display = 'flex';
+            }
+        }
+        
+        function closeDuplicateUploadModal() {
+            const modal = document.getElementById('duplicateUploadModal');
+            if (modal) {
+                modal.style.display = 'none';
+            }
+        }
+        
+        function closeDuplicateUploadModalOnOutsideClick(event) {
+            const modal = document.getElementById('duplicateUploadModal');
+            if (event.target === modal) {
+                closeDuplicateUploadModal();
+            }
+        }
+        
+        // 取消上传确认modal相关函数
+        function openCancelUploadModal() {
+            const modal = document.getElementById('cancelUploadModal');
+            if (modal) {
+                modal.style.display = 'flex';
+            }
+        }
+        
+        function closeCancelUploadModal() {
+            const modal = document.getElementById('cancelUploadModal');
+            if (modal) {
+                modal.style.display = 'none';
+            }
+        }
+        
+        function closeCancelUploadModalOnOutsideClick(event) {
+            const modal = document.getElementById('cancelUploadModal');
+            if (event.target === modal) {
+                closeCancelUploadModal();
+            }
+        }
+        
+        function confirmCancelUpload() {
+            // 用户确认，删除临时文件
+            if (currentUploadTempFolder) {
+                cleanupTempFolder(currentUploadTempFolder, true);
+            }
+            // 清除临时目录路径和上传状态
+            currentUploadTempFolder = null;
+            isUploadCompleted = false;
+            // 关闭取消上传modal
+            closeCancelUploadModal();
+            // 关闭上传modal
             const uploadModal = document.getElementById('uploadToWorkshopModal');
             if (uploadModal) {
                 uploadModal.style.display = 'none';
+            }
+        }
+        
+        function closeUploadModal() {
+            // 检查是否有临时文件且未上传
+            if (currentUploadTempFolder && !isUploadCompleted) {
+                // 显示取消上传确认modal
+                openCancelUploadModal();
+            } else {
+                // 没有临时文件或已上传，直接关闭
+                const uploadModal = document.getElementById('uploadToWorkshopModal');
+                if (uploadModal) {
+                    uploadModal.style.display = 'none';
+                }
+                // 重置状态
+                currentUploadTempFolder = null;
+                isUploadCompleted = false;
             }
         }
         
@@ -2965,22 +3160,44 @@ console.log('准备显示成功提示:', successMessage);
         const tagsContainer = document.getElementById('tags-container');
         
         // 监听输入事件，当输入空格时添加标签
-        tagInput.addEventListener('input', (e) => {
-            if (e.target.value.endsWith(' ') && e.target.value.trim() !== '') {
-                e.preventDefault();
-                addTag(e.target.value.trim());
-                e.target.value = '';
-            }
-        });
+        if (tagInput) {
+            tagInput.addEventListener('input', (e) => {
+                if (e.target.value.endsWith(' ') && e.target.value.trim() !== '') {
+                    e.preventDefault();
+                    addTag(e.target.value.trim());
+                    e.target.value = '';
+                }
+            });
+            
+            // 兼容回车键添加标签
+            tagInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter' && e.target.value.trim() !== '') {
+                    e.preventDefault();
+                    addTag(e.target.value.trim());
+                    e.target.value = '';
+                }
+            });
+        }
         
-        // 兼容回车键添加标签
-        tagInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter' && e.target.value.trim() !== '') {
-                e.preventDefault();
-                addTag(e.target.value.trim());
-                e.target.value = '';
-            }
-        });
+        // 角色卡标签输入框事件监听
+        const characterCardTagInput = document.getElementById('character-card-tag-input');
+        if (characterCardTagInput) {
+            characterCardTagInput.addEventListener('input', (e) => {
+                if (e.target.value.endsWith(' ') && e.target.value.trim() !== '') {
+                    e.preventDefault();
+                    addTag(e.target.value.trim(), 'character-card');
+                    e.target.value = '';
+                }
+            });
+            
+            characterCardTagInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter' && e.target.value.trim() !== '') {
+                    e.preventDefault();
+                    addTag(e.target.value.trim(), 'character-card');
+                    e.target.value = '';
+                }
+            });
+        }
         
         function addTag(tagText, type = '') {
             // 根据type参数获取对应的标签容器元素
@@ -3016,8 +3233,18 @@ console.log('准备显示成功提示:', successMessage);
 
             const tagElement = document.createElement('div');
             tagElement.className = 'tag';
-            tagElement.innerHTML = `${tagText}<span class="tag-remove" onclick="removeTag(this)">×</span>`;
+            // 根据type决定是否显示删除按钮
+            if (type === 'character-card') {
+                tagElement.innerHTML = `${tagText}<span class="tag-remove" onclick="removeTag(this, 'character-card')">×</span>`;
+            } else {
+                tagElement.innerHTML = `${tagText}<span class="tag-remove" onclick="removeTag(this)">×</span>`;
+            }
             tagsContainer.appendChild(tagElement);
+            
+            // 更新标签预览（如果是角色卡标签）
+            if (type === 'character-card') {
+                updateTagsPreview();
+            }
         }
         
         function removeTag(tagElement, type = '') {
@@ -3470,6 +3697,9 @@ console.log('准备显示成功提示:', successMessage);
                 }
             }
 
+            // 获取角色卡名称（用于更新 .workshop_meta.json）
+            const characterCardName = document.getElementById('character-card-name')?.value.trim() || '';
+            
             // 准备上传数据
             const uploadData = {
                 title: title,
@@ -3478,7 +3708,8 @@ console.log('准备显示成功提示:', successMessage);
                 preview_image: previewImage,
                 visibility: visibility,
                 tags: tags,
-                allow_comments: allowComments
+                allow_comments: allowComments,
+                character_card_name: characterCardName  // 传递角色卡名称，用于更新 .workshop_meta.json
             };
 
             // 获取上传按钮并禁用
@@ -3521,11 +3752,20 @@ console.log('准备显示成功提示:', successMessage);
                     }
 
                     if (data.success) {
+                        // 标记上传已完成
+                        isUploadCompleted = true;
+                        
                         showMessage(window.t ? window.t('steam.uploadSuccess') : '上传成功！', 'success', 5000);
 
                         // 显示物品ID
                         if (data.published_file_id) {
                             showMessage(window.t ? window.t('steam.itemId', { id: data.published_file_id }) : `物品ID: ${data.published_file_id}`, 'success', 5000);
+                            
+                            // 上传成功后，自动删除临时目录
+                            if (currentUploadTempFolder) {
+                                console.log('上传成功，自动删除临时目录:', currentUploadTempFolder);
+                                cleanupTempFolder(currentUploadTempFolder, true);
+                            }
 
                             // 使用Steam overlay打开物品页面
                             try {
@@ -3542,6 +3782,20 @@ console.log('准备显示成功提示:', successMessage);
                             } catch (e) {
                                 console.error('无法打开Steam overlay:', e);
                             }
+                            
+                            // 延迟关闭modal并跳转到角色卡页面
+                            setTimeout(() => {
+                                // 关闭上传modal
+                                const uploadModal = document.getElementById('uploadToWorkshopModal');
+                                if (uploadModal) {
+                                    uploadModal.style.display = 'none';
+                                }
+                                // 重置状态
+                                currentUploadTempFolder = null;
+                                isUploadCompleted = false;
+                                // 跳转到角色卡页面
+                                switchTab('character-cards-content');
+                            }, 2000); // 2秒后关闭并跳转
                         }
 
                         // 如果需要接受协议
@@ -3589,6 +3843,8 @@ console.log('准备显示成功提示:', successMessage);
                             messageArea.appendChild(actionMessage);
                         }, 1000);
                     } else {
+                        // 上传失败，重置上传完成标志
+                        isUploadCompleted = false;
                         showMessage(window.t ? window.t('steam.uploadError', { error: data.error || (window.t ? window.t('common.unknownError') : '未知错误') }) : `上传失败: ${data.error || '未知错误'}`, 'error', 8000);
                         if (data.message) {
                             showMessage(window.t ? window.t('steam.uploadWarning', { message: data.message }) : `警告: ${data.message}`, 'warning', 8000);
@@ -3613,6 +3869,9 @@ console.log('准备显示成功提示:', successMessage);
                 })
                 .catch(error => {
                     console.error('上传失败:', error);
+                    
+                    // 上传失败，重置上传完成标志
+                    isUploadCompleted = false;
 
                     // 恢复按钮状态
                     if (uploadButton) {
@@ -4499,8 +4758,8 @@ function viewItemDetails(itemId) {
             // 调用scanModels()获取可用模型列表
             await scanModels();
 
-            // 转换角色数据为角色卡格式
-            const characterCards = [];
+            // 转换角色数据为角色卡格式（定义为全局变量，供其他函数使用）
+            window.characterCards = [];
             let idCounter = 1;
 
             // 只处理猫娘数据，忽略其他角色类型（包括主人）
@@ -4523,7 +4782,7 @@ function viewItemDetails(itemId) {
                     tags = data['关键词'];
                 }
 
-                characterCards.push({
+                window.characterCards.push({
                     id: idCounter++,
                     name: name,
                     description: description,
@@ -4540,7 +4799,7 @@ function viewItemDetails(itemId) {
                     const data = await response.json();
                     if (data.success) {
                         for (const card of data.character_cards) {
-                            characterCards.push({
+                            window.characterCards.push({
                                 id: idCounter++,
                                 name: card.name,
                                 description: card.description,
@@ -4582,7 +4841,7 @@ function viewItemDetails(itemId) {
                                         const jsonData = await fileResponse.json();
                                         // 检查是否包含"type": "character_settings"
                                         if (jsonData && jsonData.type === 'character_settings') {
-                                            characterCards.push({
+                                            window.characterCards.push({
                                                 id: idCounter++,
                                                 name: jsonData.name || `${model.name}_settings`,
                                                 description: jsonData.description || '角色设置文件',
@@ -4607,9 +4866,9 @@ function viewItemDetails(itemId) {
                 // 清空列表
                 characterCardsList.innerHTML = '';
                 
-                if (characterCards.length > 0) {
+                if (window.characterCards && window.characterCards.length > 0) {
                     // 创建角色卡卡片
-                    characterCards.forEach(card => {
+                    window.characterCards.forEach(card => {
                         const cardElement = document.createElement('div');
                         cardElement.className = 'card fluent-card';
                         cardElement.innerHTML = `
@@ -4638,8 +4897,8 @@ function viewItemDetails(itemId) {
                 }
             }
             
-            // 将角色卡列表保存到全局变量
-            globalCharacterCards = characterCards;
+            // 将角色卡列表保存到全局变量（已使用window.characterCards，这里保持兼容）
+            globalCharacterCards = window.characterCards || [];
     }
     
     // 展开角色卡区域并填充数据
@@ -4651,20 +4910,24 @@ function viewItemDetails(itemId) {
         const rawData = card.rawData || card || {};
         
         // 提取所需信息，同时兼容中英文字段名称
-            const nickname = rawData['昵称'] || rawData['档案名'] || rawData['name'] || card.name || '暂无昵称';
-            const gender = rawData['性别'] || rawData['gender'] || '未知';
-            const age = rawData['年龄'] || rawData['age'] || '未知';
-            const description = rawData['描述'] || rawData['description'] || card.description || '暂无描述';
+            const nickname = rawData['昵称'] || rawData['档案名'] || rawData['name'] || card.name || '';
+            const gender = rawData['性别'] || rawData['gender'] || '';
+            const age = rawData['年龄'] || rawData['age'] || '';
+            const description = rawData['描述'] || rawData['description'] || card.description || '';
             const systemPrompt = rawData['设定'] || rawData['system_prompt'] || rawData['prompt_setting'] || '';
         
         // 处理模型默认值
         let live2d = rawData['live2d'] || (rawData['model'] && rawData['model']['name']);
         const modelSelect = document.getElementById('model-select');
         
-        // 确保live2d值存在于模型选择器中
-        if (!live2d || !Array.from(modelSelect.options).some(option => option.value === live2d)) {
-            // 使用第一个可用的模型作为默认值
-            if (availableModels.length > 0) {
+        // 确保live2d值存在于模型选择器中，并且不是mao_pro
+        if (!live2d || live2d === 'mao_pro' || !Array.from(modelSelect.options).some(option => option.value === live2d)) {
+            // 使用第一个可用的模型作为默认值（排除mao_pro）
+            const validModels = availableModels.filter(model => model.name !== 'mao_pro');
+            if (validModels.length > 0) {
+                live2d = validModels[0].name;
+                console.log('使用第一个可用模型作为默认值:', live2d);
+            } else if (availableModels.length > 0) {
                 live2d = availableModels[0].name;
                 console.log('使用第一个可用模型作为默认值:', live2d);
             } else {
@@ -4678,8 +4941,7 @@ function viewItemDetails(itemId) {
         
         // 填充角色卡区域数据
         document.getElementById('character-card-name').value = nickname;
-        // 所有输入框均为只读模式
-        document.getElementById('character-card-name').readOnly = true;
+        // 允许用户编辑所有输入框
         document.getElementById('character-card-gender').value = gender;
         document.getElementById('character-card-age').value = age;
         document.getElementById('character-card-description').value = description;
@@ -4741,77 +5003,105 @@ function viewItemDetails(itemId) {
             showMessage('角色卡已加载', 'info');
         }
         
-        function handleUploadToWorkshop() {
+        // 存储临时上传目录路径，供上传时使用
+        let currentUploadTempFolder = null;
+        // 标记是否已上传成功
+        let isUploadCompleted = false;
+        
+        // 清理临时目录
+        function cleanupTempFolder(tempFolder, shouldDelete) {
+            if (shouldDelete) {
+                // 调用API删除临时目录
+                fetch('/api/steam/workshop/cleanup-temp-folder', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        temp_folder: tempFolder
+                    })
+                })
+                .then(response => {
+                    console.log('删除临时目录API响应状态:', response.status);
+                    if (!response.ok) {
+                        return response.json().then(data => {
+                            throw new Error(data.error || `HTTP错误，状态码: ${response.status}`);
+                        });
+                    }
+                    return response.json();
+                })
+                .then(result => {
+                    if (result.success) {
+                        console.log('临时目录已成功删除');
+                        showMessage('临时目录已删除', 'success');
+                    } else {
+                        console.error('删除临时目录失败:', result.error);
+                        showMessage(`删除临时目录失败: ${result.error}`, 'error');
+                    }
+                    // 清除临时目录路径和上传状态
+                    currentUploadTempFolder = null;
+                    isUploadCompleted = false;
+                })
+                .catch(error => {
+                    console.error('删除临时目录失败:', error);
+                    showMessage(`删除临时目录失败: ${error.message}`, 'error');
+                    // 即使删除失败，也清除临时目录路径和上传状态
+                    currentUploadTempFolder = null;
+                    isUploadCompleted = false;
+                });
+            } else {
+                showMessage('临时目录已保留', 'info');
+                // 清除临时目录路径和上传状态
+                currentUploadTempFolder = null;
+                isUploadCompleted = false;
+            }
+        }
+        
+        async function handleUploadToWorkshop() {
             console.log('handleUploadToWorkshop函数被调用');
             
-            // 检查是否为默认模型
-            if (isDefaultModel()) {
-                showMessage('默认模型无法上传到创意工坊', 'error');
-                return;
-            }
-            
-            // 收集角色卡参数
-            const name = document.getElementById('character-card-name').value;
-            const gender = document.getElementById('character-card-gender').value;
-            const age = document.getElementById('character-card-age').value;
-            const description = document.getElementById('character-card-description').value;
-            const setting = document.getElementById('character-card-setting').value;
+            try {
+                // 检查是否为默认模型
+                if (isDefaultModel()) {
+                    showMessage('默认模型无法上传到创意工坊', 'error');
+                    return;
+                }
+                
+                // 收集角色卡参数
+            const name = document.getElementById('character-card-name').value.trim();
+            const gender = document.getElementById('character-card-gender').value.trim();
+            const age = document.getElementById('character-card-age').value.trim();
+            const description = document.getElementById('character-card-description').value.trim();
+            const setting = document.getElementById('character-card-setting').value.trim();
             let selectedModelName = document.getElementById('model-select').value;
             const selectedVoicePrefix = document.getElementById('voice-select').textContent.trim();
             
+            // 验证必填字段
+            const missingFields = [];
             if (!name) {
-                showMessage('请输入角色卡名称', 'error');
+                missingFields.push('角色卡名称');
+            }
+            if (!gender) {
+                missingFields.push('性别');
+            }
+            if (!age) {
+                missingFields.push('年龄');
+            }
+            if (!description) {
+                missingFields.push('角色卡描述');
+            }
+            
+            // 如果有未填写的必填字段，阻止上传并提示
+            if (missingFields.length > 0) {
+                const fieldsList = missingFields.join('、');
+                showMessage(`请先填写以下必填字段：${fieldsList}`, 'error');
                 return;
             }
             
-            // 设置默认模型
-            if (!selectedModelName) {
-                if (availableModels.length > 0) {
-                    selectedModelName = availableModels[0].name;
-                } else {
-                    showMessage('没有可用的模型', 'error');
-                    return;
-                }
-            }
-            
-            // 获取选中的音色信息
-            let voiceId = null;
-            if (selectedVoicePrefix && window.availableVoices) {
-                Object.entries(window.availableVoices).forEach(([id, voiceData]) => {
-                    if (voiceData.prefix === selectedVoicePrefix || id === selectedVoicePrefix) {
-                        voiceId = id;
-                    }
-                });
-            }
-            
-            if (!voiceId && window.availableVoices) {
-                voiceId = Object.keys(window.availableVoices)[0] || null;
-            }
-            
-            // 获取当前语言
+            // 获取当前语言（需要在保存前获取）
             const currentLanguage = typeof i18next !== 'undefined' ? i18next.language : 'zh-CN';
             
-            // 构建猫娘数据对象
-            const catgirlData = {};
-            
-            if (currentLanguage === 'zh-CN') {
-                catgirlData['档案名'] = name;
-                catgirlData['性别'] = gender;
-                catgirlData['年龄'] = age;
-                catgirlData['描述'] = description;
-            } else {
-                catgirlData['name'] = name;
-                catgirlData['gender'] = gender;
-                catgirlData['age'] = age;
-                catgirlData['description'] = description;
-            }
-            
-            catgirlData.live2d = selectedModelName;
-            catgirlData.system_prompt = setting;
-            
-
-            
-            // 获取角色卡标签
+            // 获取角色卡标签（需要在保存前获取）
             const characterCardTags = [];
             const tagElements = document.querySelectorAll('#character-card-tags-container .tag');
             if (tagElements && tagElements.length > 0) {
@@ -4823,57 +5113,206 @@ function viewItemDetails(itemId) {
                 });
             }
             
+            // 在上传前，先保存角色卡数据到文件
+            // 构建完整的角色卡数据对象
+            const fullCharaData = {};
+            
+            // 构建基础数据
             if (currentLanguage === 'zh-CN') {
-                catgirlData['关键词'] = characterCardTags;
+                fullCharaData['档案名'] = name;
+                fullCharaData['性别'] = gender;
+                fullCharaData['年龄'] = age;
+                fullCharaData['描述'] = description;
+                if (setting) {
+                    fullCharaData['设定'] = setting;
+                }
             } else {
-                catgirlData['tags'] = characterCardTags;
+                fullCharaData['name'] = name;
+                fullCharaData['gender'] = gender;
+                fullCharaData['age'] = age;
+                fullCharaData['description'] = description;
+                if (setting) {
+                    fullCharaData['system_prompt'] = setting;
+                }
             }
             
-            // 获取当前选中模型的文件夹路径
-            const selectedModelInfo = availableModels.find(model => model.name === selectedModelName);
-            if (!selectedModelInfo) {
-                showMessage('未找到选中的模型信息', 'error');
-                return;
+            fullCharaData.live2d = selectedModelName;
+            
+            // 获取音色ID（如果有）
+            const voiceSelect = document.getElementById('voice-select');
+            if (voiceSelect && voiceSelect.textContent.trim() !== '未选择音色') {
+                // 尝试从availableVoices中查找对应的voice_id
+                const voicePrefix = voiceSelect.textContent.trim();
+                if (window.availableVoices) {
+                    for (const [voiceId, voiceData] of Object.entries(window.availableVoices)) {
+                        if (voiceData.prefix === voicePrefix) {
+                            fullCharaData['voice_id'] = voiceId;
+                            break;
+                        }
+                    }
+                }
             }
             
-            // 从模型路径中提取文件夹路径（假设模型路径格式为：models/xxx/xxx.model3.json）
-            const modelPath = selectedModelInfo.path;
-            const modelFolderPath = modelPath.substring(0, modelPath.lastIndexOf('/'));
+            // 添加标签
+            if (currentLanguage === 'zh-CN') {
+                fullCharaData['关键词'] = characterCardTags;
+            } else {
+                fullCharaData['tags'] = characterCardTags;
+            }
             
-            // 构建保存角色卡的文件名和路径
+            // 如果有当前角色卡的原始数据，保留其他字段
+            if (currentCharacterCardId && window.characterCards) {
+                // 尝试从已加载的角色卡列表中获取原始数据
+                const currentCard = window.characterCards.find(card => card.id === currentCharacterCardId);
+                if (currentCard && currentCard.rawData) {
+                    // 合并原始数据，但优先使用新数据
+                    Object.keys(currentCard.rawData).forEach(key => {
+                        if (!fullCharaData.hasOwnProperty(key)) {
+                            fullCharaData[key] = currentCard.rawData[key];
+                        }
+                    });
+                }
+            }
+            
+            // 设置默认模型（排除mao_pro）
+            if (!selectedModelName || selectedModelName === 'mao_pro') {
+                const validModels = availableModels.filter(model => model.name !== 'mao_pro');
+                if (validModels.length > 0) {
+                    selectedModelName = validModels[0].name;
+                    // 更新模型选择器
+                    const modelSelect = document.getElementById('model-select');
+                    if (modelSelect) {
+                        modelSelect.value = selectedModelName;
+                        updateModelDisplayAndUploadState();
+                    }
+                } else if (availableModels.length > 0) {
+                    selectedModelName = availableModels[0].name;
+                    // 更新模型选择器
+                    const modelSelect = document.getElementById('model-select');
+                    if (modelSelect) {
+                        modelSelect.value = selectedModelName;
+                        updateModelDisplayAndUploadState();
+                    }
+                } else {
+                    showMessage('没有可用的模型', 'error');
+                    return;
+                }
+            }
+            
+            // 构建猫娘数据对象（用于上传，使用已保存的完整数据）
+            const catgirlData = Object.assign({}, fullCharaData);
+            
+            // 构建角色卡文件名
             const charaFileName = `${name}.chara.json`;
-            const charaFilePath = `${modelFolderPath}/${charaFileName}`;
             
-            // 显示保存状态
-            showMessage('正在保存角色卡到模型文件夹...', 'info');
+            // 存储待上传的数据
+            pendingUploadData = {
+                fullCharaData: fullCharaData,
+                catgirlData: catgirlData,
+                name: name,
+                selectedModelName: selectedModelName,
+                charaFileName: charaFileName,
+                characterCardTags: characterCardTags
+            };
             
-            // 调用API保存角色卡到模型文件夹
-            console.log('开始调用API保存角色卡');
-            fetch('/api/characters/catgirl/save-to-model-folder', {
+            // 显示保存确认modal
+            openSaveConfirmModal();
+            } catch (error) {
+                console.error('handleUploadToWorkshop执行出错:', error);
+                showMessage(`上传准备出错: ${error.message}`, 'error');
+            }
+        }
+        
+        // 执行保存并上传
+        async function performSaveAndUpload(data) {
+            console.log('performSaveAndUpload被调用，数据:', data);
+            // 保存角色卡到文件
+            showMessage('正在保存角色卡...', 'info');
+            try {
+                const saveResponse = await fetch('/api/characters/character-card/save', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        charaData: data.fullCharaData,
+                        character_card_name: data.name
+                    })
+                });
+                
+                const saveResult = await saveResponse.json();
+                if (saveResult.success) {
+                    showMessage('角色卡已保存', 'success');
+                    // 更新当前角色卡ID（如果文件名改变了）
+                    if (currentCharacterCardId !== data.name) {
+                        currentCharacterCardId = data.name;
+                    }
+                } else {
+                    console.warn('保存角色卡失败:', saveResult.error);
+                    showMessage(`保存角色卡失败: ${saveResult.error}`, 'warning');
+                    // 即使保存失败，也继续上传流程
+                }
+            } catch (saveError) {
+                console.error('保存角色卡时出错:', saveError);
+                showMessage(`保存角色卡时出错: ${saveError.message}`, 'warning');
+                // 即使保存失败，也继续上传流程
+            }
+            
+            // 继续上传流程
+            await performUpload(data);
+        }
+        
+        // 执行上传（不保存）
+        async function performUpload(data) {
+            console.log('performUpload被调用，数据:', data);
+            // 显示准备上传状态
+            showMessage('正在准备上传...', 'info');
+            
+            try {
+                // 步骤1: 调用API创建临时目录并复制文件
+                console.log('开始调用API准备上传');
+            fetch('/api/steam/workshop/prepare-upload', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
-                    charaData: catgirlData,
-                    modelName: selectedModelName,
-                    fileName: charaFileName
+                    charaData: data.catgirlData,
+                    modelName: data.selectedModelName,
+                    fileName: data.charaFileName,
+                    character_card_name: data.name  // 传递角色卡名称，用于读取 .workshop_meta.json
                 })
             })
             .then(response => {
-                console.log('API响应:', response);
+                console.log('准备上传API响应:', response);
                 if (!response.ok) {
-                    throw new Error(`HTTP错误，状态码: ${response.status}`);
+                    return response.json().then(data => {
+                        // 如果是已上传的错误，显示modal提示
+                        if (data.error && (data.error.includes('已上传') || data.error.includes('已存在'))) {
+                            const errorMessage = data.message || data.error;
+                            // 显示错误消息
+                            showMessage(errorMessage, 'error', 10000);
+                            // 显示modal提示
+                            openDuplicateUploadModal(errorMessage);
+                            throw new Error(errorMessage);
+                        }
+                        throw new Error(data.error || `HTTP错误，状态码: ${response.status}`);
+                    });
                 }
                 return response.json();
             })
             .then(result => {
-                console.log('API响应数据:', result);
+                console.log('准备上传API响应数据:', result);
                 if (result.success) {
-                    console.log('角色卡保存到模型文件夹成功:', result);
-                    showMessage('角色卡已保存到模型文件夹', 'success');
+                    console.log('上传准备成功:', result);
+                    showMessage('上传准备完成', 'success');
                     
-                    // 填充上传表单，使用后端返回的实际文件系统路径
+                    // 保存临时目录路径
+                    currentUploadTempFolder = result.temp_folder;
+                    // 重置上传完成标志
+                    isUploadCompleted = false;
+                    
+                    // 步骤2: 填充上传表单并打开填写信息窗口
                     console.log('开始填充上传表单');
                     const itemTitle = document.getElementById('item-title');
                     const itemDescription = document.getElementById('item-description');
@@ -4882,61 +5321,64 @@ function viewItemDetails(itemId) {
                     
                     console.log('找到的表单元素:', { itemTitle, itemDescription, contentFolder, tagsContainer });
                     
-                    if (itemTitle) itemTitle.value = name;
-                    if (itemDescription) {
-                        itemDescription.value = description;
-                        console.log('设置的完整描述内容:', description);
-                    }
-                    if (contentFolder) contentFolder.value = result.modelFolderPath;
+                    // 从data中获取名称和描述
+                    const cardName = data.name || '';
+                    const cardDescription = data.catgirlData?.['描述'] || data.catgirlData?.['description'] || '';
                     
-                    // 添加角色卡标签到上传标签（只读模式，不提供编辑功能）
+                    if (itemTitle) itemTitle.value = cardName;
+                    if (itemDescription) {
+                        itemDescription.value = cardDescription;
+                        console.log('设置的完整描述内容:', cardDescription);
+                    }
+                    // 使用临时目录路径
+                    if (contentFolder) contentFolder.value = result.temp_folder;
+                    
+                    // 添加角色卡标签到上传标签（允许用户编辑）
                     if (tagsContainer) {
                         tagsContainer.innerHTML = '';
-                        characterCardTags.forEach(tag => {
-                            // 创建只读标签（不包含删除按钮）
-                            const tagElement = document.createElement('div');
-                            tagElement.className = 'tag';
-                            tagElement.textContent = tag;
-                            tagsContainer.appendChild(tagElement);
+                        // 从角色卡标签容器中读取当前标签
+                        const characterCardTagElements = document.querySelectorAll('#character-card-tags-container .tag');
+                        const currentCharacterCardTags = Array.from(characterCardTagElements).map(tag => 
+                            tag.textContent.replace('×', '').trim()
+                        ).filter(tag => tag);
+                        
+                        // 如果有角色卡标签，使用它们；否则使用传入的标签
+                        const tagsToAdd = currentCharacterCardTags.length > 0 ? currentCharacterCardTags : (data.characterCardTags || []);
+                        tagsToAdd.forEach(tag => {
+                            // 使用addTag函数，会自动添加删除按钮，允许用户编辑
+                            addTag(tag);
                         });
                         
-                        // 禁用标签输入框，使其不可编辑
+                        // 确保标签输入框可编辑
                         const tagInput = document.getElementById('item-tags');
                         if (tagInput) {
-                            tagInput.disabled = true;
-                            tagInput.style.opacity = '0.7';
-                            tagInput.style.cursor = 'not-allowed';
-                            tagInput.style.backgroundColor = '#f9f9f9';
-                            tagInput.placeholder = '标签已从角色卡自动填充，不可编辑';
+                            tagInput.disabled = false;
+                            tagInput.style.opacity = '';
+                            tagInput.style.cursor = '';
+                            tagInput.style.backgroundColor = '';
+                            tagInput.placeholder = '输入标签，按空格添加';
                         }
-                        
-                        // 移除所有标签的删除按钮（如果之前有添加）
-                        const allTags = tagsContainer.querySelectorAll('.tag');
-                        allTags.forEach(tagEl => {
-                            const removeBtn = tagEl.querySelector('.tag-remove');
-                            if (removeBtn) {
-                                removeBtn.remove();
-                            }
-                        });
                     }
                     
+                    // 步骤3: 打开填写信息窗口（modal）
+                    console.log('打开上传信息填写窗口');
+                    // 先确保本地物品标签页可见
+                    switchTab('local-items-content');
+                    // 然后显示上传表单区域
+                    toggleUploadSection();
                 } else {
-                    console.log('API返回失败:', result.error);
-                    showMessage(`保存角色卡到模型文件夹失败: ${result.error || '未知错误'}`, 'error');
+                    console.log('准备上传API返回失败:', result.error);
+                    showMessage(`准备上传失败: ${result.error || '未知错误'}`, 'error');
                 }
             })
             .catch(error => {
-                console.error('保存角色卡到模型文件夹失败:', error);
-                showMessage(`保存角色卡到模型文件夹失败: ${error.message}`, 'error');
-            })
-            .finally(() => {
-                // 无论API调用是否成功，都切换到上传区域
-                console.log('调用toggleUploadSection函数');
-                // 先确保本地物品标签页可见
-                switchTab('local-items-content');
-                // 然后显示上传表单区域
-                toggleUploadSection();
+                console.error('准备上传失败:', error);
+                showMessage(`准备上传失败: ${error.message}`, 'error');
             });
+            } catch (error) {
+                console.error('performUpload执行出错:', error);
+                showMessage(`上传执行出错: ${error.message}`, 'error');
+            }
         }
 
         // 从模态框中编辑角色卡
@@ -4969,10 +5411,8 @@ function viewItemDetails(itemId) {
             const characterCardLayout = document.getElementById('character-card-layout');
             characterCardLayout.style.display = 'flex';
             
-            // 将角色卡数据填充到表单字段中
+            // 将角色卡数据填充到表单字段中（允许用户编辑）
             document.getElementById('character-card-name').value = card.name || '';
-            // 所有输入框均为只读模式
-            document.getElementById('character-card-name').readOnly = true;
             document.getElementById('character-card-gender').value = card.rawData.性别 || '';
             document.getElementById('character-card-age').value = card.rawData.年龄 || '';
             document.getElementById('character-card-description').value = card.description || '';
@@ -5078,24 +5518,7 @@ function viewItemDetails(itemId) {
                 });
             }
             
-            // 标签仅从后端读取，不提供自动添加功能
-            // const currentVoiceValue = voiceSelect.value;
-            // if (currentVoiceValue) {
-            //     const tagsContainer = document.getElementById('character-card-tags-container');
-            //     const existingTags = Array.from(tagsContainer.querySelectorAll('.tag'));
-            //     let hasVoiceTag = false;
-            //     
-            //     existingTags.forEach(tag => {
-            //         const tagText = tag.textContent.replace('×', '').trim();
-            //         if (tagText === 'Voice' || tagText === '语音') {
-            //             hasVoiceTag = true;
-            //         }
-            //     });
-            //     
-            //     if (!hasVoiceTag) {
-            //         addCharacterCardTag('character-card', 'Voice');
-            //     }
-            // }
+
             
             
             // 更新预览区域
@@ -5123,8 +5546,11 @@ function viewItemDetails(itemId) {
                 return response.json();
             })
             .then(models => {
-                // 存储模型列表到全局变量
-                availableModels = models;
+                // 过滤掉默认模型mao_pro
+                const filteredModels = models.filter(model => model.name !== 'mao_pro');
+                
+                // 存储过滤后的模型列表到全局变量
+                availableModels = filteredModels;
                 
                 // 清空下拉列表
                 modelSelect.innerHTML = '';
@@ -5135,26 +5561,35 @@ function viewItemDetails(itemId) {
                 defaultOption.textContent = window.t ? window.t('steam.selectModel') : '选择模型';
                 defaultOption.disabled = true;
                 // 只有当没有当前选中值时，才默认选中这个选项
-                defaultOption.selected = !currentSelectedValue;
+                defaultOption.selected = !currentSelectedValue || currentSelectedValue === 'mao_pro';
                 modelSelect.appendChild(defaultOption);
                 
                 // 标记是否找到了当前选中的模型
                 let foundCurrentSelected = false;
                 
-                // 添加扫描到的模型
-                models.forEach(model => {
+                // 添加扫描到的模型（排除mao_pro）
+                filteredModels.forEach(model => {
                     const option = document.createElement('option');
                     option.value = model.name;
                     option.textContent = model.name;
                     
-                    // 如果当前选项与之前选中的值匹配，则选中它
-                    if (model.name === currentSelectedValue) {
+                    // 如果当前选项与之前选中的值匹配，则选中它（但排除mao_pro）
+                    if (model.name === currentSelectedValue && model.name !== 'mao_pro') {
                         option.selected = true;
                         foundCurrentSelected = true;
                     }
                     
                     modelSelect.appendChild(option);
                 });
+                
+                // 如果之前选中的是mao_pro或没有选中，自动选择第一个可用模型
+                if (!foundCurrentSelected && filteredModels.length > 0) {
+                    const firstOption = modelSelect.querySelector(`option[value="${filteredModels[0].name}"]`);
+                    if (firstOption) {
+                        firstOption.selected = true;
+                        foundCurrentSelected = true;
+                    }
+                }
                 
                 // 如果找到了当前选中的模型，并且live2dPreviewManager存在，则确保预览区域显示模型而不是占位符
                     if (foundCurrentSelected && live2dPreviewManager) {
@@ -5830,9 +6265,7 @@ function viewItemDetails(itemId) {
         function clearCharacterCardForm(skipConfirm = false) {
             const clearAction = function() {
                 document.getElementById('character-card-name').value = '';
-                // 所有输入框保持只读模式
-                document.getElementById('character-card-name').readOnly = true;
-                // 重置状态
+                // 重置状态（允许用户编辑）
                 currentCharacterCardId = null;
                 document.getElementById('character-card-gender').value = '未知';
                 document.getElementById('character-card-age').value = '';
@@ -5888,12 +6321,12 @@ function viewItemDetails(itemId) {
             const settingText = previewSetting.querySelector('span');
             const voiceText = previewVoice.querySelector('span');
             
-            if (nameText) nameText.textContent = name || '-';
-            if (genderText) genderText.textContent = gender || '-';
-            if (ageText) ageText.textContent = age || '-';
-            if (descriptionText) descriptionText.textContent = description || '-';
-            if (settingText) settingText.textContent = setting || '-';
-            if (voiceText) voiceText.textContent = voice || '-';
+            if (nameText) nameText.textContent = name || 'null';
+            if (genderText) genderText.textContent = gender || 'null';
+            if (ageText) ageText.textContent = age || 'null';
+            if (descriptionText) descriptionText.textContent = description || 'null';
+            if (settingText) settingText.textContent = setting || 'null';
+            if (voiceText) voiceText.textContent = voice || 'null';
         }
         
         // 更新标签预览

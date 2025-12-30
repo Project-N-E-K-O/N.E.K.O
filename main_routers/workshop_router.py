@@ -21,16 +21,122 @@ from urllib.parse import quote, unquote
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from .shared_state import get_steamworks
+from .shared_state import get_steamworks, get_config_manager
 from utils.workshop_utils import (
     ensure_workshop_folder_exists,
     get_workshop_path,
 )
+import hashlib
 
 router = APIRouter(prefix="/api/steam/workshop", tags=["workshop"])
 # 全局互斥锁，用于序列化创意工坊发布操作，防止并发回调混乱
 publish_lock = threading.Lock()
 logger = logging.getLogger("Main")
+
+
+def get_workshop_meta_path(character_card_name: str) -> str:
+    """
+    获取角色卡的 .workshop_meta.json 文件路径
+    
+    Args:
+        character_card_name: 角色卡名称（不含 .chara.json 后缀）
+    
+    Returns:
+        str: .workshop_meta.json 文件的完整路径
+    """
+    config_mgr = get_config_manager()
+    chara_dir = config_mgr.chara_dir
+    meta_file_path = os.path.join(chara_dir, f"{character_card_name}.workshop_meta.json")
+    return meta_file_path
+
+
+def read_workshop_meta(character_card_name: str) -> dict:
+    """
+    读取角色卡的 .workshop_meta.json 文件
+    
+    Args:
+        character_card_name: 角色卡名称（不含 .chara.json 后缀）
+    
+    Returns:
+        dict: 元数据字典，如果文件不存在则返回 None
+    """
+    meta_file_path = get_workshop_meta_path(character_card_name)
+    if os.path.exists(meta_file_path):
+        try:
+            with open(meta_file_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"读取 .workshop_meta.json 失败: {e}")
+            return None
+    return None
+
+
+def write_workshop_meta(character_card_name: str, workshop_item_id: str, content_hash: str = None):
+    """
+    写入或更新角色卡的 .workshop_meta.json 文件
+    
+    Args:
+        character_card_name: 角色卡名称（不含 .chara.json 后缀）
+        workshop_item_id: Workshop 物品 ID
+        content_hash: 内容哈希值（可选）
+    """
+    meta_file_path = get_workshop_meta_path(character_card_name)
+    
+    # 读取现有数据（如果存在）
+    existing_meta = read_workshop_meta(character_card_name) or {}
+    
+    # 更新数据
+    now = datetime.utcnow().isoformat() + 'Z'
+    if 'created_at' not in existing_meta:
+        existing_meta['created_at'] = now
+    existing_meta['workshop_item_id'] = str(workshop_item_id)
+    existing_meta['last_update'] = now
+    if content_hash:
+        existing_meta['content_hash'] = content_hash
+    
+    # 写入文件
+    try:
+        with open(meta_file_path, 'w', encoding='utf-8') as f:
+            json.dump(existing_meta, f, ensure_ascii=False, indent=2)
+        logger.info(f"已更新 .workshop_meta.json: {meta_file_path}")
+    except Exception as e:
+        logger.error(f"写入 .workshop_meta.json 失败: {e}")
+
+
+def calculate_content_hash(content_folder: str) -> str:
+    """
+    计算内容文件夹的哈希值
+    
+    Args:
+        content_folder: 内容文件夹路径
+    
+    Returns:
+        str: SHA256 哈希值（格式：sha256:xxxx）
+    """
+    sha256_hash = hashlib.sha256()
+    
+    # 收集所有文件路径并排序（确保一致性）
+    file_paths = []
+    for root, dirs, files in os.walk(content_folder):
+        # 排除 .workshop_meta.json 文件（如果存在）
+        if '.workshop_meta.json' in files:
+            files.remove('.workshop_meta.json')
+        for file in files:
+            file_path = os.path.join(root, file)
+            file_paths.append(file_path)
+    
+    file_paths.sort()
+    
+    # 计算所有文件的哈希值
+    for file_path in file_paths:
+        try:
+            with open(file_path, 'rb') as f:
+                for chunk in iter(lambda: f.read(4096), b''):
+                    sha256_hash.update(chunk)
+        except Exception as e:
+            logger.warning(f"计算文件哈希时出错 {file_path}: {e}")
+    
+    return f"sha256:{sha256_hash.hexdigest()}"
 
 def get_folder_size(folder_path):
     """获取文件夹大小（字节）"""
@@ -1215,6 +1321,169 @@ async def list_audio_files(directory: str):
         return JSONResponse(content={"success": False, "error": f"列出音频文件失败: {str(e)}"}, status_code=500)
 
 
+@router.post('/prepare-upload')
+async def prepare_workshop_upload(request: Request):
+    """
+    准备上传到创意工坊：创建临时目录并复制角色卡和模型文件
+    返回临时目录路径，供后续上传使用
+    """
+    try:
+        import shutil
+        import tempfile
+        import uuid
+        from utils.frontend_utils import find_model_directory
+        
+        data = await request.json()
+        chara_data = data.get('charaData')
+        model_name = data.get('modelName')
+        chara_file_name = data.get('fileName', 'character.chara.json')
+        character_card_name = data.get('character_card_name')  # 新增：角色卡名称
+        
+        if not chara_data or not model_name:
+            return JSONResponse({
+                "success": False,
+                "error": "缺少必要参数"
+            }, status_code=400)
+        
+        # 如果没有传递 character_card_name，尝试从文件名提取
+        if not character_card_name and chara_file_name:
+            if chara_file_name.endswith('.chara.json'):
+                character_card_name = chara_file_name[:-11]  # 去掉 .chara.json 后缀
+        
+        # 检查是否已存在workshop_meta.json文件（防止重复上传）
+        if character_card_name:
+            meta_data = read_workshop_meta(character_card_name)
+            if meta_data and meta_data.get('workshop_item_id'):
+                workshop_item_id = meta_data.get('workshop_item_id')
+                logger.warning(f"检测到已存在的 Workshop 物品 ID: {workshop_item_id}，阻止重复上传")
+                # 返回错误，提示用户该角色卡已上传过
+                return JSONResponse({
+                    "success": False,
+                    "error": "该角色卡已上传到创意工坊",
+                    "workshop_item_id": workshop_item_id,
+                    "message": f"角色卡 '{character_card_name}' 已经上传过（物品ID: {workshop_item_id}）。如需更新，请使用更新功能。"
+                }, status_code=400)
+        
+        # 获取workshop基础路径
+        base_workshop_path = get_workshop_path()
+        workshop_export_dir = os.path.join(base_workshop_path, 'WorkshopExport')
+        
+        # 确保WorkshopExport目录存在
+        os.makedirs(workshop_export_dir, exist_ok=True)
+        
+        # 创建临时目录 item_xxx
+        item_id = str(uuid.uuid4())[:8]  # 使用UUID的前8位作为item标识
+        temp_item_dir = os.path.join(workshop_export_dir, f'item_{item_id}')
+        os.makedirs(temp_item_dir, exist_ok=True)
+        
+        logger.info(f"创建临时上传目录: {temp_item_dir}")
+        
+        # 1. 复制角色卡JSON到临时目录
+        chara_file_path = os.path.join(temp_item_dir, chara_file_name)
+        with open(chara_file_path, 'w', encoding='utf-8') as f:
+            json.dump(chara_data, f, ensure_ascii=False, indent=2)
+        logger.info(f"角色卡已复制到临时目录: {chara_file_path}")
+        
+        # 2. 查找模型目录并复制模型文件
+        model_dir, _ = find_model_directory(model_name)
+        if not os.path.exists(model_dir):
+            # 清理临时目录
+            shutil.rmtree(temp_item_dir, ignore_errors=True)
+            return JSONResponse({
+                "success": False,
+                "error": f"模型目录不存在: {model_dir}"
+            }, status_code=404)
+        
+        # 复制整个模型目录到临时目录
+        model_dest_dir = os.path.join(temp_item_dir, model_name)
+        shutil.copytree(model_dir, model_dest_dir, dirs_exist_ok=True)
+        logger.info(f"模型文件已复制到临时目录: {model_dest_dir}")
+        
+        # 读取 .workshop_meta.json（如果存在）
+        workshop_item_id = None
+        if character_card_name:
+            meta_data = read_workshop_meta(character_card_name)
+            if meta_data and meta_data.get('workshop_item_id'):
+                workshop_item_id = meta_data.get('workshop_item_id')
+                logger.info(f"检测到已存在的 Workshop 物品 ID: {workshop_item_id}")
+        
+        return JSONResponse({
+            "success": True,
+            "temp_folder": temp_item_dir,
+            "item_id": item_id,
+            "workshop_item_id": workshop_item_id,  # 如果存在，返回已存在的物品ID
+            "message": "上传准备完成"
+        })
+        
+    except Exception as e:
+        logger.error(f"准备上传失败: {e}")
+        return JSONResponse({
+            "success": False,
+            "error": str(e)
+        }, status_code=500)
+
+
+@router.post('/cleanup-temp-folder')
+async def cleanup_temp_folder(request: Request):
+    """
+    清理临时上传目录
+    """
+    try:
+        import shutil
+        data = await request.json()
+        temp_folder = data.get('temp_folder')
+        
+        if not temp_folder:
+            return JSONResponse({
+                "success": False,
+                "error": "缺少临时目录路径"
+            }, status_code=400)
+        
+        # 安全检查：确保临时目录在WorkshopExport下
+        base_workshop_path = get_workshop_path()
+        workshop_export_dir = os.path.join(base_workshop_path, 'WorkshopExport')
+        
+        # 规范化路径（使用realpath处理符号链接和相对路径）
+        temp_folder = os.path.realpath(os.path.normpath(temp_folder))
+        workshop_export_dir = os.path.realpath(os.path.normpath(workshop_export_dir))
+        
+        # 验证临时目录在WorkshopExport下（使用commonpath更可靠）
+        try:
+            common_path = os.path.commonpath([temp_folder, workshop_export_dir])
+            if common_path != workshop_export_dir:
+                return JSONResponse({
+                    "success": False,
+                    "error": f"临时目录路径不在允许的范围内。临时目录: {temp_folder}, 允许路径: {workshop_export_dir}"
+                }, status_code=403)
+        except ValueError:
+            # 如果路径不在同一驱动器上，commonpath会抛出ValueError
+            return JSONResponse({
+                "success": False,
+                "error": "临时目录路径不在允许的范围内（路径验证失败）"
+            }, status_code=403)
+        
+        # 删除临时目录
+        if os.path.exists(temp_folder):
+            shutil.rmtree(temp_folder, ignore_errors=True)
+            logger.info(f"临时目录已删除: {temp_folder}")
+            return JSONResponse({
+                "success": True,
+                "message": "临时目录已删除"
+            })
+        else:
+            return JSONResponse({
+                "success": False,
+                "error": "临时目录不存在"
+            }, status_code=404)
+            
+    except Exception as e:
+        logger.error(f"清理临时目录失败: {e}")
+        return JSONResponse({
+            "success": False,
+            "error": str(e)
+        }, status_code=500)
+
+
 @router.post('/publish')
 async def publish_to_workshop(request: Request):
     steamworks = get_steamworks()
@@ -1245,6 +1514,7 @@ async def publish_to_workshop(request: Request):
         description = data.get('description', '')
         tags = data.get('tags', [])
         change_note = data.get('change_note', '初始发布')
+        character_card_name = data.get('character_card_name')  # 新增：角色卡名称
         
         # 规范化路径处理 - 改进版，确保在所有情况下都能正确处理路径
         content_folder = unquote(content_folder)
@@ -1386,11 +1656,24 @@ async def publish_to_workshop(request: Request):
             None, 
             lambda: _publish_workshop_item(
                 steamworks, title, description, content_folder, 
-                preview_image, visibility, tags, change_note
+                preview_image, visibility, tags, change_note, character_card_name
             )
         )
         
         logger.info(f"成功发布创意工坊物品，ID: {published_file_id}")
+        
+        # 上传成功后，更新 .workshop_meta.json
+        if character_card_name and published_file_id:
+            try:
+                # 计算内容哈希
+                content_hash = calculate_content_hash(content_folder)
+                # 写入元数据文件
+                write_workshop_meta(character_card_name, published_file_id, content_hash)
+                logger.info(f"已更新角色卡 {character_card_name} 的 .workshop_meta.json")
+            except Exception as e:
+                logger.error(f"更新 .workshop_meta.json 失败: {e}")
+                # 不阻止成功响应，只记录错误
+        
         return JSONResponse(content={
             "success": True,
             "published_file_id": published_file_id,
@@ -1411,7 +1694,7 @@ async def publish_to_workshop(request: Request):
         logger.error(f"发布到创意工坊失败: {e}")
         return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
 
-def _publish_workshop_item(steamworks, title, description, content_folder, preview_image, visibility, tags, change_note):
+def _publish_workshop_item(steamworks, title, description, content_folder, preview_image, visibility, tags, change_note, character_card_name=None):
     """
     在单独的线程中执行Steam创意工坊发布操作
     """
@@ -1420,26 +1703,37 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
             # 在函数内部添加导入语句，确保枚举在函数作用域内可用
             from steamworks.enums import EWorkshopFileType, ERemoteStoragePublishedFileVisibility, EItemUpdateStatus
     
-            # 检查是否存在现有的上传标记文件
+            # 优先从 .workshop_meta.json 读取物品ID
             item_id = None
-            try:
-                if os.path.exists(content_folder) and os.path.isdir(content_folder):
-                    # 查找以steam_workshop_id_开头的txt文件
-                    import glob
-                    marker_files = glob.glob(os.path.join(content_folder, "steam_workshop_id_*.txt"))
-                    
-                    if marker_files:
-                        # 使用第一个找到的标记文件
-                        marker_file = marker_files[0]
+            if character_card_name:
+                try:
+                    meta_data = read_workshop_meta(character_card_name)
+                    if meta_data and meta_data.get('workshop_item_id'):
+                        item_id = int(meta_data.get('workshop_item_id'))
+                        logger.info(f"从 .workshop_meta.json 读取到物品ID: {item_id}")
+                except Exception as e:
+                    logger.warning(f"从 .workshop_meta.json 读取物品ID失败: {e}")
+            
+            # 如果 .workshop_meta.json 中没有，尝试从旧标记文件读取（向后兼容）
+            if item_id is None:
+                try:
+                    if os.path.exists(content_folder) and os.path.isdir(content_folder):
+                        # 查找以steam_workshop_id_开头的txt文件
+                        import glob
+                        marker_files = glob.glob(os.path.join(content_folder, "steam_workshop_id_*.txt"))
                         
-                        # 从文件名中提取物品ID
-                        import re
-                        match = re.search(r'steam_workshop_id_([0-9]+)\.txt', marker_file)
-                        if match:
-                            item_id = int(match.group(1))
-                            logger.info(f"检测到物品已上传，找到标记文件: {marker_file}，物品ID: {item_id}")
-            except Exception as e:
-                logger.error(f"检查上传标记文件时出错: {e}")
+                        if marker_files:
+                            # 使用第一个找到的标记文件
+                            marker_file = marker_files[0]
+                            
+                            # 从文件名中提取物品ID
+                            import re
+                            match = re.search(r'steam_workshop_id_([0-9]+)\.txt', marker_file)
+                            if match:
+                                item_id = int(match.group(1))
+                                logger.info(f"检测到物品已上传，找到标记文件: {marker_file}，物品ID: {item_id}")
+                except Exception as e:
+                    logger.error(f"检查上传标记文件时出错: {e}")
             # 即使检查失败，也继续尝试上传，不阻止功能
         
             try:
