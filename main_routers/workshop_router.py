@@ -1073,8 +1073,9 @@ async def unsubscribe_workshop_item(request: Request):
                     if install_info:  # 如果还能获取到安装信息，说明可能还没删除
                         logger.warning(f"5秒后仍能获取安装信息，可能回调未触发，执行备用清理")
                         perform_cleanup(item_id_int)
-                except:
-                    pass  # 如果获取失败，可能已经删除了
+                except Exception as e:
+                    # 如果获取失败，可能已经删除了，这是正常情况，记录调试信息即可
+                    logger.debug(f"延迟清理检查时获取安装信息失败（可能已删除）: {e}")
             
             # 在后台线程中启动延迟清理（可选）
             import threading
