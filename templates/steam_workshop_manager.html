@@ -2122,7 +2122,7 @@
                                     <!-- 模型选择区域 -->
                                     <div style="display: flex; gap: 8px; margin-bottom: 10px;">
                                         <select id="model-select" class="control-input" style="width: 100%; padding-right: 25px;">
-                                            <option value="">未选择模型</option>
+                                            <option value="" data-i18n="steam.noModelSelected">未选择模型</option>
                                         </select>
                                     </div>
                                 </div>
@@ -2165,7 +2165,7 @@
                                     <!-- 防止点击的覆盖层 -->
                                     <div id="live2d-preview-overlay" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 100; pointer-events: auto;"></div>
                                     <!-- 刷新按钮 -->
-                                    <button id="live2d-refresh-btn" style="position: absolute; top: 10px; right: 10px; z-index: 101; width: 30px; height: 30px; border: none; border-radius: 50%; background-color: rgba(0, 0, 0, 0.5); color: white; cursor: pointer; display: flex; justify-content: center; align-items: center; font-size: 16px; pointer-events: auto;" title="刷新Live2D预览" onclick="refreshLive2DPreview()">
+                                    <button id="live2d-refresh-btn" style="position: absolute; top: 10px; right: 10px; z-index: 101; width: 30px; height: 30px; border: none; border-radius: 50%; background-color: rgba(0, 0, 0, 0.5); color: white; cursor: pointer; display: flex; justify-content: center; align-items: center; font-size: 16px; pointer-events: auto;" data-i18n-title="steam.refreshLive2DPreview" title="刷新Live2D预览" onclick="refreshLive2DPreview()">
                                         ↻
                                     </button>
                                 </div>
@@ -2270,7 +2270,7 @@
                 
                 <div class="control-group">
                     <div class="control-label" data-i18n="steam.title">标题 *</div>
-                    <input type="text" id="item-title" class="control-input" placeholder="输入您的创作标题" readonly style="cursor: default; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">
+                    <input type="text" id="item-title" class="control-input" placeholder="输入您的创作标题" data-i18n-placeholder="steam.titlePlaceholder" readonly style="cursor: default; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none;">
                 </div>
                 
                 <div class="control-group">
@@ -2280,13 +2280,13 @@
                 
                 <div class="control-group">
                     <div class="control-label" data-i18n="steam.contentFolderPath">内容文件夹路径 *</div>
-                    <input type="text" id="content-folder" class="control-input" placeholder="从本地物品中获取的内容文件夹路径" readonly>
+                    <input type="text" id="content-folder" class="control-input" placeholder="从本地物品中获取的内容文件夹路径" data-i18n-placeholder="steam.contentFolderPlaceholder" readonly>
                 </div>
                 
                 <div class="control-group">
                     <div class="control-label" data-i18n="steam.previewImagePath">预览图片路径 *</div>
                     <div style="display: flex; gap: 8px; align-items: center;">
-                        <input type="text" id="preview-image" class="control-input" placeholder="从本地物品中获取的预览图片路径">
+                        <input type="text" id="preview-image" class="control-input" placeholder="从本地物品中获取的预览图片路径" data-i18n-placeholder="steam.previewImagePlaceholder">
                         <input type="file" id="preview-image-file" accept="image/*" style="display: none;">
                         <button class="btn btn-secondary" onclick="selectPreviewImage()" data-i18n="common.selectFile">选择文件</button>
                     </div>
@@ -2315,7 +2315,7 @@
                     </div>
                 </div>
                 
-                <div class="help-text" style="margin-top: 10px; font-size: 12px; color: #666;">
+                <div class="help-text" style="margin-top: 10px; font-size: 12px; color: #666;" data-i18n="steam.workshopAgreementText">
                     点击"上传"即表示您同意 Steam 创意工坊服务条款，包括创意工坊法律协议：
                     <a href="https://steamcommunity.com/sharedfiles/workshoplegalagreement" target="_blank" style="color: #44b7fe;">https://steamcommunity.com/sharedfiles/workshoplegalagreement</a>
                 </div>
@@ -2333,16 +2333,16 @@
     <div id="saveCharacterCardModal" class="modal" onclick="closeSaveConfirmModalOnOutsideClick(event)" style="display: none;">
         <div class="modal-content" onclick="event.stopPropagation()" style="max-width: 500px;">
             <div class="modal-header">
-                <h3 class="modal-title">保存角色卡</h3>
+                <h3 class="modal-title" data-i18n="steam.saveCharacterCard">保存角色卡</h3>
                 <button class="modal-close" onclick="closeSaveConfirmModal()">&times;</button>
             </div>
             <div class="modal-body" style="padding: 20px;">
-                <p>是否要将当前填写的角色卡信息保存到角色卡文件中？</p>
+                <p data-i18n="steam.saveCharacterCardConfirm">是否要将当前填写的角色卡信息保存到角色卡文件中？</p>
             </div>
             <div class="modal-footer">
-                <button class="btn btn-primary" onclick="confirmSaveCharacterCard()">保存并继续</button>
-                <button class="btn btn-secondary" onclick="skipSaveAndContinue()">跳过保存</button>
-                <button class="btn btn-secondary" onclick="closeSaveConfirmModal()">取消</button>
+                <button class="btn btn-primary" onclick="confirmSaveCharacterCard()" data-i18n="steam.saveAndContinue">保存并继续</button>
+                <button class="btn btn-secondary" onclick="skipSaveAndContinue()" data-i18n="steam.skipSave">跳过保存</button>
+                <button class="btn btn-secondary" onclick="closeSaveConfirmModal()" data-i18n="common.cancel">取消</button>
             </div>
         </div>
     </div>
@@ -2351,15 +2351,15 @@
     <div id="cancelUploadModal" class="modal" onclick="closeCancelUploadModalOnOutsideClick(event)" style="display: none;">
         <div class="modal-content" onclick="event.stopPropagation()" style="max-width: 500px;">
             <div class="modal-header">
-                <h3 class="modal-title">取消上传</h3>
+                <h3 class="modal-title" data-i18n="steam.cancelUpload">取消上传</h3>
                 <button class="modal-close" onclick="closeCancelUploadModal()">&times;</button>
             </div>
             <div class="modal-body" style="padding: 20px;">
-                <p>确定要取消上传吗？取消后将删除临时文件。</p>
+                <p data-i18n="steam.cancelUploadConfirm">确定要取消上传吗？取消后将删除临时文件。</p>
             </div>
             <div class="modal-footer">
-                <button class="btn btn-primary" onclick="confirmCancelUpload()">确定取消</button>
-                <button class="btn btn-secondary" onclick="closeCancelUploadModal()">继续上传</button>
+                <button class="btn btn-primary" onclick="confirmCancelUpload()" data-i18n="steam.confirmCancel">确定取消</button>
+                <button class="btn btn-secondary" onclick="closeCancelUploadModal()" data-i18n="steam.continueUpload">继续上传</button>
             </div>
         </div>
     </div>
@@ -2368,15 +2368,15 @@
     <div id="duplicateUploadModal" class="modal" onclick="closeDuplicateUploadModalOnOutsideClick(event)" style="display: none;">
         <div class="modal-content" onclick="event.stopPropagation()" style="max-width: 500px;">
             <div class="modal-header">
-                <h3 class="modal-title">角色卡已上传</h3>
+                <h3 class="modal-title" data-i18n="steam.characterCardAlreadyUploaded">角色卡已上传</h3>
                 <button class="modal-close" onclick="closeDuplicateUploadModal()">&times;</button>
             </div>
             <div class="modal-body" style="padding: 20px;">
                 <p id="duplicate-upload-message"></p>
-                <p style="margin-top: 15px; color: #666; font-size: 14px;">如有需要请创建新的角色卡</p>
+                <p style="margin-top: 15px; color: #666; font-size: 14px;" data-i18n="steam.createNewCharacterCardHint">如有需要请创建新的角色卡</p>
             </div>
             <div class="modal-footer">
-                <button class="btn btn-primary" onclick="closeDuplicateUploadModal()">确定</button>
+                <button class="btn btn-primary" onclick="closeDuplicateUploadModal()" data-i18n="common.confirm">确定</button>
             </div>
         </div>
     </div>
@@ -2412,7 +2412,7 @@
                 if (!selectedOption.dataset.originalText) {
                     selectedOption.dataset.originalText = selectedOption.textContent;
                 }
-                selectedOption.textContent = '默认';
+                selectedOption.textContent = window.t ? window.t('steam.default') : '默认';
             } else if (selectedOption && selectedOption.dataset.originalText) {
                 // 恢复原始文本
                 selectedOption.textContent = selectedOption.dataset.originalText;
@@ -2430,7 +2430,7 @@
                         btn.disabled = true;
                         btn.style.opacity = '0.5';
                         btn.style.cursor = 'not-allowed';
-                        btn.title = '默认模型无法上传到创意工坊';
+                        btn.title = window.t ? window.t('steam.defaultModelCannotUpload') : '默认模型无法上传到创意工坊';
                     } else {
                         btn.disabled = false;
                         btn.style.opacity = '';
@@ -2447,7 +2447,7 @@
             
             // 检查是否为默认模型
             if (isDefaultModel()) {
-                showMessage('默认模型无法上传到创意工坊', 'error');
+                showMessage(window.t ? window.t('steam.defaultModelCannotUpload') : '默认模型无法上传到创意工坊', 'error');
                 return;
             }
             
@@ -2510,11 +2510,11 @@
                     await performSaveAndUpload(uploadData);
                 } catch (error) {
                     console.error('confirmSaveCharacterCard执行出错:', error);
-                    showMessage(`保存并上传出错: ${error.message}`, 'error');
+                    showMessage(window.t ? window.t('steam.saveAndUploadError', { error: error.message }) : `保存并上传出错: ${error.message}`, 'error');
                 }
             } else {
                 console.error('pendingUploadData为null或undefined');
-                showMessage('上传数据丢失，请重新点击上传按钮', 'error');
+                showMessage(window.t ? window.t('steam.uploadDataLost') : '上传数据丢失，请重新点击上传按钮', 'error');
             }
         }
         
@@ -2527,11 +2527,11 @@
                     await performUpload(uploadData);
                 } catch (error) {
                     console.error('skipSaveAndContinue执行出错:', error);
-                    showMessage(`上传出错: ${error.message}`, 'error');
+                    showMessage(window.t ? window.t('steam.uploadError', { error: error.message }) : `上传出错: ${error.message}`, 'error');
                 }
             } else {
                 console.error('pendingUploadData为null或undefined');
-                showMessage('上传数据丢失，请重新点击上传按钮', 'error');
+                showMessage(window.t ? window.t('steam.uploadDataLost') : '上传数据丢失，请重新点击上传按钮', 'error');
             }
         }
         
@@ -2540,7 +2540,7 @@
             const modal = document.getElementById('duplicateUploadModal');
             const messageElement = document.getElementById('duplicate-upload-message');
             if (modal && messageElement) {
-                messageElement.textContent = message || '该角色卡已经上传到创意工坊';
+                messageElement.textContent = message || (window.t ? window.t('steam.characterCardAlreadyUploadedMessage') : '该角色卡已经上传到创意工坊');
                 modal.style.display = 'flex';
             }
         }
@@ -3284,7 +3284,7 @@ console.log('准备显示成功提示:', successMessage);
             // 取消按钮
             const cancelButton = document.createElement('button');
             cancelButton.className = 'btn btn-secondary';
-            cancelButton.textContent = '取消';
+            cancelButton.textContent = window.t ? window.t('common.cancel') : '取消';
             cancelButton.onclick = () => {
                 modalOverlay.remove();
                 if (cancelCallback) cancelCallback();
@@ -3293,7 +3293,7 @@ console.log('准备显示成功提示:', successMessage);
             // 确认按钮
             const confirmButton = document.createElement('button');
             confirmButton.className = 'btn btn-danger';
-            confirmButton.textContent = '确认';
+            confirmButton.textContent = window.t ? window.t('common.confirm') : '确认';
             confirmButton.onclick = () => {
                 modalOverlay.remove();
                 if (confirmCallback) confirmCallback();
@@ -3638,7 +3638,7 @@ console.log('准备显示成功提示:', successMessage);
         function uploadItem() {
             // 检查是否为默认模型
             if (isDefaultModel()) {
-                showMessage('默认模型无法上传到创意工坊', 'error');
+                showMessage(window.t ? window.t('steam.defaultModelCannotUpload') : '默认模型无法上传到创意工坊', 'error');
                 return;
             }
             // 获取路径
@@ -3855,7 +3855,7 @@ console.log('准备显示成功提示:', successMessage);
                         setTimeout(() => {
                             const retryButton = document.createElement('button');
                             retryButton.className = 'button button-sm';
-                            retryButton.textContent = '重试上传';
+                            retryButton.textContent = window.t ? window.t('steam.retryUpload') : '重试上传';
                             retryButton.onclick = uploadItem;
 
                             const messageArea = document.getElementById('message-area');
@@ -3995,7 +3995,7 @@ console.log('准备显示成功提示:', successMessage);
                     state: item.state || {},
                     // 添加安装路径信息
                     installedFolder: item.installedFolder || '',
-                    description: item.description || '暂无描述',
+                    description: item.description || (window.t ? window.t('steam.noDescription') : '暂无描述'),
                     timeAdded: item.timeAdded || 0,
                     fileSize: item.fileSizeOnDisk || item.fileSize || 0
                 };
@@ -4254,7 +4254,7 @@ console.log('准备显示成功提示:', successMessage);
         // 查看物品详情
 function viewItemDetails(itemId) {
     // 显示加载消息
-    showMessage(`正在加载物品ID: ${itemId} 的详细信息...`, 'success');
+    showMessage(window.t ? window.t('steam.loadingItemDetailsById', { id: itemId }) : `正在加载物品ID: ${itemId} 的详细信息...`, 'success');
     
     // 调用后端API获取物品详情
     fetch(`/api/steam/workshop/item/${itemId}`)
@@ -4747,7 +4747,7 @@ function viewItemDetails(itemId) {
             if (characterCardsList) {
                 characterCardsList.innerHTML = `
                     <div class="loading-state">
-                        <p>正在加载角色卡...</p>
+                        <p data-i18n="steam.loadingCharacterCards">正在加载角色卡...</p>
                     </div>
                 `;
             }
@@ -4768,7 +4768,7 @@ function viewItemDetails(itemId) {
             for (const [name, data] of Object.entries(catgirls)) {
                 // 兼容实际的数据结构 - 使用可用字段创建角色卡
                 // 只从description或角色卡描述字段获取描述信息
-                let description = '暂无描述';
+                let description = window.t ? window.t('steam.noDescription') : '暂无描述';
                 if (data['description']) {
                     description = data['description'];
                 } else if (data['描述']) {
@@ -4903,9 +4903,9 @@ function viewItemDetails(itemId) {
             
             // 显示刷新成功消息
             if (window.characterCards && window.characterCards.length > 0) {
-                showMessage(`已刷新角色卡列表，共 ${window.characterCards.length} 个角色卡`, 'success');
+                showMessage(window.t ? window.t('steam.characterCardsRefreshed', { count: window.characterCards.length }) : `已刷新角色卡列表，共 ${window.characterCards.length} 个角色卡`, 'success');
             } else {
-                showMessage('已刷新角色卡列表，暂无角色卡', 'info');
+                showMessage(window.t ? window.t('steam.characterCardsRefreshedEmpty') : '已刷新角色卡列表，暂无角色卡', 'info');
             }
     }
     
@@ -4985,7 +4985,7 @@ function viewItemDetails(itemId) {
         } else if (voiceId) {
             voiceSelect.textContent = voiceId;
         } else {
-            voiceSelect.textContent = '未选择音色';
+            voiceSelect.textContent = window.t ? window.t('steam.noVoiceSelected') : '未选择音色';
         }
         
         // 更新标签
@@ -5089,7 +5089,7 @@ function viewItemDetails(itemId) {
             try {
                 // 检查是否为默认模型
                 if (isDefaultModel()) {
-                    showMessage('默认模型无法上传到创意工坊', 'error');
+                    showMessage(window.t ? window.t('steam.defaultModelCannotUpload') : '默认模型无法上传到创意工坊', 'error');
                     return;
                 }
                 
@@ -5105,22 +5105,22 @@ function viewItemDetails(itemId) {
             // 验证必填字段
             const missingFields = [];
             if (!name) {
-                missingFields.push('角色卡名称');
+                missingFields.push(window.t ? window.t('steam.characterCardName') : '角色卡名称');
             }
             if (!gender) {
-                missingFields.push('性别');
+                missingFields.push(window.t ? window.t('steam.characterCardGender') : '性别');
             }
             if (!age) {
-                missingFields.push('年龄');
+                missingFields.push(window.t ? window.t('steam.characterCardAge') : '年龄');
             }
             if (!description) {
-                missingFields.push('角色卡描述');
+                missingFields.push(window.t ? window.t('steam.characterCardDescription') : '角色卡描述');
             }
             
             // 如果有未填写的必填字段，阻止上传并提示
             if (missingFields.length > 0) {
-                const fieldsList = missingFields.join('、');
-                showMessage(`请先填写以下必填字段：${fieldsList}`, 'error');
+                const fieldsList = missingFields.join(window.t ? window.t('common.fieldSeparator') || '、' : '、');
+                showMessage(window.t ? window.t('steam.requiredFieldsMissing', { fields: fieldsList }) : `请先填写以下必填字段：${fieldsList}`, 'error');
                 return;
             }
             
@@ -5166,7 +5166,7 @@ function viewItemDetails(itemId) {
             
             // 获取音色ID（如果有）
             const voiceSelect = document.getElementById('voice-select');
-            if (voiceSelect && voiceSelect.textContent.trim() !== '未选择音色') {
+            if (voiceSelect && voiceSelect.textContent.trim() !== (window.t ? window.t('steam.noVoiceSelected') : '未选择音色')) {
                 // 尝试从availableVoices中查找对应的voice_id
                 const voicePrefix = voiceSelect.textContent.trim();
                 if (window.availableVoices) {
@@ -5245,7 +5245,7 @@ function viewItemDetails(itemId) {
             openSaveConfirmModal();
             } catch (error) {
                 console.error('handleUploadToWorkshop执行出错:', error);
-                showMessage(`上传准备出错: ${error.message}`, 'error');
+                showMessage(window.t ? window.t('steam.prepareUploadError', { error: error.message }) : `上传准备出错: ${error.message}`, 'error');
             }
         }
         
@@ -5253,7 +5253,7 @@ function viewItemDetails(itemId) {
         async function performSaveAndUpload(data) {
             console.log('performSaveAndUpload被调用，数据:', data);
             // 保存角色卡到文件
-            showMessage('正在保存角色卡...', 'info');
+            showMessage(window.t ? window.t('steam.savingCharacterCard') : '正在保存角色卡...', 'info');
             try {
                 const saveResponse = await fetch('/api/characters/character-card/save', {
                     method: 'POST',
@@ -5292,7 +5292,7 @@ function viewItemDetails(itemId) {
         async function performUpload(data) {
             console.log('performUpload被调用，数据:', data);
             // 显示准备上传状态
-            showMessage('正在准备上传...', 'info');
+            showMessage(window.t ? window.t('steam.preparingUpload') : '正在准备上传...', 'info');
             
             try {
                 // 步骤1: 调用API创建临时目录并复制文件
@@ -5546,7 +5546,7 @@ function viewItemDetails(itemId) {
                     voiceSelect.textContent = voiceValue;
                 }
             } else {
-                voiceSelect.textContent = '未选择音色';
+                voiceSelect.textContent = window.t ? window.t('steam.noVoiceSelected') : '未选择音色';
             }
             
             // 加载标签（仅显示，不提供删除功能）
@@ -6977,7 +6977,7 @@ function viewItemDetails(itemId) {
                     tagElement.className = 'tag';
                     tagElement.innerHTML = `
                         <span>${tag}</span>
-                        <button class="tag-remove" onclick="removeNotesTag(${index})" title="删除标签">
+                        <button class="tag-remove" onclick="removeNotesTag(${index})" data-i18n-title="steam.removeTag" title="删除标签">
                             <span>×</span>
                         </button>
                     `;
