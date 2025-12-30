@@ -1522,10 +1522,19 @@ async def prepare_workshop_upload(request: Request):
                 "error": "缺少必要参数"
             }, status_code=400)
         
+        # 防路径穿越:只允许文件名,不允许携带路径或上级目录喵
+        safe_chara_name = os.path.basename(chara_file_name)
+        if safe_chara_name != chara_file_name or ".." in safe_chara_name or safe_chara_name.startswith(("/", "\\")):
+            logger.warning(f"检测到非法文件名尝试: {chara_file_name}")
+            return JSONResponse({
+                "success": False,
+                "error": "非法文件名"
+            }, status_code=400)
+        
         # 如果没有传递 character_card_name，尝试从文件名提取
-        if not character_card_name and chara_file_name:
-            if chara_file_name.endswith('.chara.json'):
-                character_card_name = chara_file_name[:-11]  # 去掉 .chara.json 后缀
+        if not character_card_name and safe_chara_name:
+            if safe_chara_name.endswith('.chara.json'):
+                character_card_name = safe_chara_name[:-11]  # 去掉 .chara.json 后缀
         
         # 检查是否已存在workshop_meta.json文件（防止重复上传）
         if character_card_name:
@@ -1555,8 +1564,8 @@ async def prepare_workshop_upload(request: Request):
         
         logger.info(f"创建临时上传目录: {temp_item_dir}")
         
-        # 1. 复制角色卡JSON到临时目录
-        chara_file_path = os.path.join(temp_item_dir, chara_file_name)
+        # 1. 复制角色卡JSON到临时目录(已验证为安全文件名)喵
+        chara_file_path = os.path.join(temp_item_dir, safe_chara_name)
         with open(chara_file_path, 'w', encoding='utf-8') as f:
             json.dump(chara_data, f, ensure_ascii=False, indent=2)
         logger.info(f"角色卡已复制到临时目录: {chara_file_path}")

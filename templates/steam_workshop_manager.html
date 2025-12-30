@@ -2596,6 +2596,8 @@
             if (uploadModal) {
                 uploadModal.style.display = 'none';
             }
+            // 刷新页面
+            window.location.reload();
         }
         
         function closeUploadModal() {
@@ -2612,6 +2614,8 @@
                 // 重置状态
                 currentUploadTempFolder = null;
                 isUploadCompleted = false;
+                // 刷新页面
+                window.location.reload();
             }
         }
         
