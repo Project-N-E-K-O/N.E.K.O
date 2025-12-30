@@ -1595,7 +1595,7 @@ async def prepare_workshop_upload(request: Request):
             meta_data = read_workshop_meta(character_card_name)
             if meta_data and meta_data.get('workshop_item_id'):
                 workshop_item_id = meta_data.get('workshop_item_id')
-                logger.warning(f"检测到已存在的 Workshop 物品 ID: {workshop_item_id}，阻止重复上传")
+
                 # 返回错误，提示用户该角色卡已上传过
                 return JSONResponse({
                     "success": False,
