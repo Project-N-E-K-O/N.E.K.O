@@ -941,7 +941,15 @@ async def unsubscribe_workshop_item(request: Request):
                                     loop = asyncio.get_event_loop()
                                     if loop.is_running():
                                         # 如果事件循环正在运行，使用create_task
-                                        loop.create_task(initialize_character_data())
+                                        # 保存任务引用以防止被垃圾回收器提前回收
+                                        task = loop.create_task(initialize_character_data())
+                                        # 可选：添加错误处理回调
+                                        def task_done_callback(t):
+                                            try:
+                                                t.result()  # 获取任务结果，如果有异常会抛出
+                                            except Exception as e:
+                                                logger.error(f"重新加载角色配置时出错: {e}")
+                                        task.add_done_callback(task_done_callback)
                                     else:
                                         # 如果事件循环未运行，使用run_until_complete
                                         loop.run_until_complete(initialize_character_data())
