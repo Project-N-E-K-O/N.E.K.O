@@ -301,7 +301,7 @@
             </div>
         </div>
         <div class="control-group" id="vrm-expression-group" style="display:none;">
-            <label class="control-label" data-i18n="live2d.vrmExpression">VRM 表情预览:</label>
+            <label class="control-label">VRM表情配置:</label>
             <div class="action-group">
                 <select id="vrm-expression-select" class="control-select" disabled>
                     <option value="">加载模型后可见</option>
@@ -882,22 +882,20 @@
                     // 根据当前模型类型保存不同的数据
                     if (currentModelType === 'vrm') {
                         // VRM 模式：保存 vrm 路径和 model_type
-                        saveData.vrm = modelName; // modelName 实际上是 VRM 模型路径
+                        saveData.vrm = modelName; 
                         saveData.model_type = 'vrm';
-                        // 如果有动作路径，也保存它
+                        saveData.live2d = ""; 
                         if (vrmAnimation) {
                             saveData.vrm_animation = vrmAnimation;
-                            console.log('保存 VRM 动作设置:', vrmAnimation);
                         }
-                        console.log('保存 VRM 模型设置:', modelName);
                     } else {
                         // Live2D 模式：保存 live2d 模型名称
                         saveData.live2d = modelName;
                         saveData.model_type = 'live2d';
-                        // 如果有item_id，也保存它
+                        saveData.vrm = null;
+                        saveData.vrm_animation = "";
                         if (itemId && itemId !== 'undefined') {
                             saveData.item_id = itemId;
-                            console.log('保存模型设置时同时保存item_id:', itemId);
                         }
                     }
 
@@ -963,7 +961,10 @@
                     }
                     // 显示 Live2D 特有的控件
                     document.querySelectorAll('.control-group').forEach(group => {
-                        if (group.id !== 'live2d-model-group' && group.id !== 'vrm-model-group') {
+                        if (group.id !== 'live2d-model-group' && 
+                            group.id !== 'vrm-model-group' && 
+                            group.id !== 'vrm-expression-group' && 
+                            group.id !== 'vrm-animation-group') {
                             group.style.display = 'flex';
                         }
                     });

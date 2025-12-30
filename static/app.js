@@ -2167,13 +2167,29 @@ function init_app() {
         }
     }
 
-    // 应用情感到Live2D模型
+    // 应用情感到 Live2D 或 VRM 模型
     function applyEmotion(emotion) {
+        console.log('应用情感:', emotion);
+
+        // 1. Live2D
         if (window.LanLan1 && window.LanLan1.setEmotion) {
-            console.log('调用window.LanLan1.setEmotion:', emotion);
             window.LanLan1.setEmotion(emotion);
-        } else {
-            console.warn('情感功能未初始化');
+        }
+
+        // 2. VRM
+        if (window.vrmManager && window.vrmManager.expression) {
+            // 复用 vrm-expression.js 中的 setMood 方法
+            if (typeof window.vrmManager.expression.setMood === 'function') {
+                window.vrmManager.expression.setMood(emotion);
+            } else if (window.vrmManager.currentModel?.vrm?.expressionManager) {
+                // 兜底：直接尝试设置表情权重 (VRM 1.0)
+                const mgr = window.vrmManager.currentModel.vrm.expressionManager;
+                // 先重置所有表情
+                if (mgr.setValue) {
+                    ['happy', 'sad', 'angry', 'relaxed', 'surprised', 'neutral'].forEach(e => mgr.setValue(e, 0));
+                    mgr.setValue(emotion, 1.0);
+                }
+            }
         }
     }
 
@@ -2457,8 +2473,12 @@ function init_app() {
                     source.connect(audioPlayerContext.destination);
                 }
 
-                if (hasAnalyser && !lipSyncActive && window.LanLan1 && window.LanLan1.live2dModel) {
-                    startLipSync(window.LanLan1.live2dModel, globalAnalyser);
+                // 同时支持 Live2D 和 VRM 的口型启动条件
+                const hasLive2D = window.LanLan1 && window.LanLan1.live2dModel;
+                const hasVRM = window.vrmManager && window.vrmManager.currentModel;
+                
+                if (hasAnalyser && !lipSyncActive && (hasLive2D || hasVRM)) {
+                    startLipSync(null, globalAnalyser); 
                     lipSyncActive = true;
                 }
 
@@ -2640,6 +2660,19 @@ function init_app() {
     }
 
     function startLipSync(model, analyser) {
+        // 1. VRM 口型控制 - 优先使用 VRMAnimation 模块
+        let useVRMAnimation = false;
+        if (window.vrmManager && window.vrmManager.animation && window.vrmManager.currentModel) {
+            try {
+                window.vrmManager.animation.startLipSync(analyser);
+                useVRMAnimation = true;
+                console.log('[VRM LipSync] 使用VRMAnimation模块进行口型同步');
+            } catch (e) {
+                console.warn('[VRM LipSync] VRMAnimation模块启动失败，使用备用方案:', e);
+            }
+        }
+
+        // 2. Live2D 口型控制 + VRM备用方案（如果VRMAnimation不可用）
         const dataArray = new Uint8Array(analyser.fftSize);
 
         function animate() {
@@ -2653,9 +2686,38 @@ function init_app() {
             const rms = Math.sqrt(sum / dataArray.length);
             // 这里可以调整映射关系
             const mouthOpen = Math.min(1, rms * 8); // 放大到 0~1
-            // 通过统一通道设置嘴巴开合，屏蔽 motion 对嘴巴的控制
+
+            // 1. Live2D 口型控制
             if (window.LanLan1 && typeof window.LanLan1.setMouth === 'function') {
                 window.LanLan1.setMouth(mouthOpen);
+            }
+
+            // 2. VRM 口型控制 - 仅在VRMAnimation不可用时使用备用方案
+            if (!useVRMAnimation && window.vrmManager && window.vrmManager.currentModel) {
+                const vrm = window.vrmManager.currentModel.vrm;
+                if (vrm && vrm.expressionManager) {
+                    let mouthName = 'aa'; // 默认值
+
+                    // 尝试从 vrm-animation 模块获取准确的映射名称 (最稳妥)
+                    if (window.vrmManager.animation &&
+                        window.vrmManager.animation.mouthExpressions &&
+                        window.vrmManager.animation.mouthExpressions.aa) {
+                        mouthName = window.vrmManager.animation.mouthExpressions.aa;
+                    }
+
+                    // 应用口型
+                    // 某些旧模型可能不支持 'aa'，这里做一个简单的容错尝试
+                    try {
+                        vrm.expressionManager.setValue(mouthName, mouthOpen);
+
+                        // 如果默认是 'aa' 但模型没反应，尝试 'a' (VRM 0.0 标准)
+                        if (mouthName === 'aa' && !vrm.expressionManager.getExpression('aa')) {
+                             vrm.expressionManager.setValue('a', mouthOpen);
+                        }
+                    } catch (e) {
+                        // 忽略设置失败的错误，防止刷屏
+                    }
+                }
             }
 
             animationFrameId = requestAnimationFrame(animate);
@@ -2666,11 +2728,36 @@ function init_app() {
 
     function stopLipSync(model) {
         cancelAnimationFrame(animationFrameId);
+
+        // 1. 停止 VRMAnimation 模块的口型同步
+        if (window.vrmManager && window.vrmManager.animation) {
+            try {
+                window.vrmManager.animation.stopLipSync();
+                console.log('[VRM LipSync] 已停止VRMAnimation模块的口型同步');
+            } catch (e) {
+                console.warn('[VRM LipSync] VRMAnimation模块停止失败:', e);
+            }
+        }
+
+        // 2. 重置 Live2D
         if (window.LanLan1 && typeof window.LanLan1.setMouth === 'function') {
             window.LanLan1.setMouth(0);
         } else if (model && model.internalModel && model.internalModel.coreModel) {
-            // 兜底
             try { model.internalModel.coreModel.setParameterValueById("ParamMouthOpenY", 0); } catch (_) { }
+        }
+
+        // 3. 重置 VRM（备用方案）
+        if (window.vrmManager && window.vrmManager.currentModel) {
+            const vrm = window.vrmManager.currentModel.vrm;
+            if (vrm && vrm.expressionManager) {
+                try {
+                    vrm.expressionManager.setValue('aa', 0);
+                    // 同时尝试重置其他可能被设置的嘴部表情
+                    vrm.expressionManager.setValue('a', 0);
+                } catch (e) {
+                    // 忽略重置失败的错误
+                }
+            }
         }
     }
 

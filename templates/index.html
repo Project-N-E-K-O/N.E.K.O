@@ -1410,6 +1410,55 @@
         <canvas id="vrm-canvas"></canvas>
     </div>
 
+    <div id="settings-panel" style="display: none;">
+        <div class="settings-header">
+            <span>⚙️ 系统设置</span>
+            <button class="close-btn" onclick="document.querySelector('#live2d-btn-settings').click()">×</button>
+        </div>
+        <div class="settings-content">
+            <p>在这里添加你的设置选项...</p>
+            <div style="margin-top: 10px;">
+                <label><input type="checkbox"> 开启自动眨眼</label>
+            </div>
+            <div style="margin-top: 10px;">
+                <label>音量: <input type="range"></label>
+            </div>
+        </div>
+    </div>
+
+    <style>
+        #settings-panel {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 320px;
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.5);
+            z-index: 100000;
+            overflow: hidden;
+            animation: fadeIn 0.3s ease;
+        }
+        .settings-header {
+            padding: 12px 16px;
+            background: rgba(0, 0, 0, 0.03);
+            border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-weight: bold;
+            color: #333;
+        }
+        .close-btn {
+            background: none; border: none; font-size: 20px; cursor: pointer; color: #666;
+        }
+        .close-btn:hover { color: #000; }
+        .settings-content { padding: 20px; color: #444; }
+    </style>
 
     <script>
         // 页面配置 - 从 URL 或 API 获取
@@ -2199,7 +2248,8 @@
                         '/static/vrm-expression.js',
                         '/static/vrm-animation.js',
                         '/static/vrm-interaction.js',
-                        '/static/vrm-manager.js'
+                        '/static/vrm-manager.js',
+                        '/static/vrm-ui-buttons.js'
                     ];
 
                     for (const moduleSrc of vrmModules) {
@@ -2335,6 +2385,20 @@
                 }, 100); // 100ms 延迟确保所有初始化完成
             });
         })();
+    </script>
+    <script>
+        // 监听来自 vrm-ui-buttons.js 的广播信号
+        window.addEventListener('live2d-settings-toggle', (e) => {
+            console.log('[主页] 收到设置开关信号:', e.detail.active);
+            
+            const panel = document.getElementById('settings-panel');
+            if (panel) {
+                // 根据信号状态显示或隐藏面板
+                panel.style.display = e.detail.active ? 'block' : 'none';
+            } else {
+                console.error('错误：找不到 id="settings-panel" 的元素！');
+            }
+        });
     </script>
 </body>
 

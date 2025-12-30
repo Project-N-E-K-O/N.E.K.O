@@ -37,7 +37,7 @@ async function initLive2DModel() {
     try {
         // 初始化 PIXI 应用（在模型管理界面也需要初始化，以便手动加载模型）
         await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
-
+        let modelPreferences = null;
         // 如果不在模型管理界面且有模型路径，才继续加载模型
         if (!isModelManagerPage && targetModelPath) {
             console.log('开始初始化Live2D模型，路径:', targetModelPath);
@@ -47,7 +47,6 @@ async function initLive2DModel() {
             console.log('加载到的偏好设置数量:', preferences.length);
 
             // 根据模型路径找到对应的偏好设置（使用多种匹配方式）
-            let modelPreferences = null;
             if (preferences && preferences.length > 0) {
                 console.log('所有偏好设置的路径:', preferences.map(p => p?.model_path).filter(Boolean));
 

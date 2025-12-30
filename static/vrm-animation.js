@@ -318,15 +318,23 @@ class VRMAnimation {
 
     //口型同步代码
     startLipSync(analyser) {
+        console.log('[VRM LipSync] 启动口型同步, analyser:', analyser);
         this.analyser = analyser;
         this.lipSyncActive = true;
         this.updateMouthExpressionMapping();
-        if (this.analyser) this.frequencyData = new Uint8Array(this.analyser.frequencyBinCount);
+        if (this.analyser) {
+            this.frequencyData = new Uint8Array(this.analyser.frequencyBinCount);
+            console.log(`[VRM LipSync] 初始化完成, 频率数据长度: ${this.frequencyData.length}, 嘴巴表情映射:`, this.mouthExpressions);
+        } else {
+            console.warn('[VRM LipSync] analyser为空，无法启动口型同步');
+        }
     }
     stopLipSync() {
+        console.log('[VRM LipSync] 停止口型同步');
         this.lipSyncActive = false;
         this.resetMouthExpressions();
         this.analyser = null;
+        this.currentMouthWeight = 0;
     }
     updateMouthExpressionMapping() {
         const vrm = this.manager.currentModel?.vrm;
@@ -346,14 +354,45 @@ class VRMAnimation {
     }
     _updateLipSync(delta) {
         if (!this.manager.currentModel?.vrm?.expressionManager) return;
+
+        // 获取频率数据进行音频分析
         this.analyser.getByteFrequencyData(this.frequencyData);
-        let volume = 0;
-        for(let i = 0; i < this.frequencyData.length; i++) volume += this.frequencyData[i];
-        volume /= this.frequencyData.length;
-        const targetWeight = Math.min(1.0, (volume / 50) * 1.5);
-        this.currentMouthWeight += (targetWeight - this.currentMouthWeight) * (15.0 * delta);
+
+        // 计算低频能量 (人声主要在低频段)
+        let lowFreqEnergy = 0;
+        let midFreqEnergy = 0;
+        const lowEnd = Math.floor(this.frequencyData.length * 0.1); // 前10%为低频
+        const midEnd = Math.floor(this.frequencyData.length * 0.3); // 前30%为中频
+
+        for(let i = 0; i < lowEnd; i++) lowFreqEnergy += this.frequencyData[i];
+        for(let i = lowEnd; i < midEnd; i++) midFreqEnergy += this.frequencyData[i];
+
+        lowFreqEnergy /= lowEnd;
+        midFreqEnergy /= (midEnd - lowEnd);
+
+        // 使用低频能量作为嘴巴开合的主要指标 (人声能量主要集中在低频)
+        const volume = Math.max(lowFreqEnergy, midFreqEnergy * 0.5);
+        const targetWeight = Math.min(1.0, volume / 128.0); // 0-255范围，128为中等音量
+
+        // 平滑插值
+        this.currentMouthWeight += (targetWeight - this.currentMouthWeight) * (12.0 * delta);
+
+        // 确保嘴巴有最小开合度，避免完全闭合
+        const finalWeight = Math.max(this.currentMouthWeight, targetWeight > 0.05 ? 0.02 : 0);
+
+        // 获取嘴巴张开表情名称
         const mouthOpenName = this.mouthExpressions.aa || 'aa';
-        if (mouthOpenName) this.manager.currentModel.vrm.expressionManager.setValue(mouthOpenName, this.currentMouthWeight);
+
+        // 调试输出 (只在变化明显时输出，避免刷屏)
+        if (Math.abs(targetWeight - this.currentMouthWeight) > 0.1) {
+            console.log(`[VRM LipSync] 音量: ${volume.toFixed(1)}, 目标权重: ${targetWeight.toFixed(3)}, 当前权重: ${this.currentMouthWeight.toFixed(3)}, 表情: ${mouthOpenName}`);
+        }
+
+        try {
+            this.manager.currentModel.vrm.expressionManager.setValue(mouthOpenName, finalWeight);
+        } catch (e) {
+            console.warn(`[VRM LipSync] 设置表情失败: ${mouthOpenName}`, e);
+        }
     }
 
     dispose() {

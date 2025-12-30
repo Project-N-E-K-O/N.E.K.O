@@ -954,7 +954,7 @@
             form.appendChild(baseRow);
             // 渲染自定义项
             Object.keys(cat).forEach(k => {
-                if (!["live2d", "voice_id", "system_prompt", "档案名"].includes(k)) {
+                if (!["live2d", "voice_id", "vrm","model_type","system_prompt", "档案名"].includes(k)) {
                     const row = document.createElement('div');
                     row.className = 'field-row custom-row';
                     const deleteFieldText = window.t ? window.t('character.deleteField') : '删除设定';

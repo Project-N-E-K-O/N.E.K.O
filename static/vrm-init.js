@@ -60,6 +60,12 @@ async function initVRMModel() {
 
     // 【修改】如果未指定路径，使用默认模型保底
     if (!targetModelPath) {
+        
+        if (window.cubism4Model) {
+            console.log('[VRM Init] 检测到当前是 Live2D 模式，跳过 VRM 默认加载');
+            return; 
+        }
+
         console.log('[VRM Init] 未指定VRM模型路径，将加载默认模型...');
         // 这里使用一个你确定存在的模型路径（根据你之前的日志，sister1.0.vrm 是存在的）
         targetModelPath = '/static/vrm/sister1.0.vrm'; 

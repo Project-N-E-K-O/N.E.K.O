@@ -39,6 +39,8 @@ class VRMManager {
         return true;
     }
 
+    // ... 在 VRMManager 类中 ...
+
     startAnimateLoop() {
         if (this._animationFrameId) cancelAnimationFrame(this._animationFrameId);
 
@@ -51,33 +53,29 @@ class VRMManager {
             if (!this.animation && typeof window.VRMAnimation !== 'undefined') this._initModules();
 
             if (this.currentModel && this.currentModel.vrm) {
-                
-                // 1. 【关键修复】先计算表情权重
-                // 必须在 vrm.update 之前设置好 blendShape 的值
+                // 1. 表情更新
                 if (this.expression) {
                     this.expression.update(delta);
                 }
 
-                // 2. 确保 LookAt 看着相机
+                // 2. 视线更新
                 if (this.currentModel.vrm.lookAt) {
                     this.currentModel.vrm.lookAt.target = this.camera;
                 }
                 
-                // 3. 执行 VRM 物理和渲染更新
+                // 3. 物理更新
                 if (this.enablePhysics) {
                     this.currentModel.vrm.update(delta);
                 } else {
-                    // 物理禁用时的保底更新
-                    if (this.currentModel.vrm.lookAt) {
-                        this.currentModel.vrm.lookAt.update(delta);
-                    }
-                    if (this.currentModel.vrm.expressionManager) {
-                        this.currentModel.vrm.expressionManager.update(delta);
-                    }
+                    if (this.currentModel.vrm.lookAt) this.currentModel.vrm.lookAt.update(delta);
+                    if (this.currentModel.vrm.expressionManager) this.currentModel.vrm.expressionManager.update(delta);
                 }
+
+                
+                
             }
 
-            // 4. 动画 Mixer 更新
+            // 4. 动画更新
             if (this.animation) {
                 this.animation.update(delta);
             }
@@ -115,9 +113,12 @@ class VRMManager {
         
         // 设置初始表情
         if (this.expression) {
-            this.expression.pickRandomMood(); 
+            this.expression.setMood('neutral'); 
         }
-
+        // 初始化 VRM 专属 UI
+        if (this.setupFloatingButtons) {
+            this.setupFloatingButtons();
+        }
         return result;
     }
 

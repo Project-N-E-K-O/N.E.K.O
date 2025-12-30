@@ -25,7 +25,7 @@ class VRMExpression {
         this.moodMap = {
             'neutral': ['neutral'],
             // 开心类：兼容 VRM1.0(happy), VRM0.0(joy, fun), 其他(smile, warau)
-            'happy': ['happy', 'joy', 'fun', 'smile', 'joy_01', 'a'], 
+            'happy': ['happy', 'joy', 'fun', 'smile', 'joy_01'], 
             // 放松类：
             'relaxed': ['relaxed', 'joy', 'fun', 'content'],
             // 惊讶类：
@@ -46,7 +46,22 @@ class VRMExpression {
         this.currentWeights = {}; 
         this._hasPrintedDebug = false; // 防止日志刷屏
     }
+    /**
+     * 【新增】手动设置当前情绪
+     * @param {string} moodName - 情绪名称 (如 'neutral', 'happy')
+     */
+    setMood(moodName) {
+        // 检查情绪是否存在于映射表中
+        if (this.moodMap && this.moodMap[moodName]) {
+            this.currentMood = moodName;
+            this.moodTimer = 0; // 重置自动切换计时器，避免马上被切走
+            console.log(`[VRM Expression] 情绪切换为: ${moodName}`);
+        } else {
+            console.warn(`[VRM Expression] 未知情绪: ${moodName}，忽略切换`);
+        }
+    }
 
+    // ... 下面是原有的 update(delta) ...
     /**
      * 临时测试版 update：每秒切换一个表情，帮你找数字
      */
