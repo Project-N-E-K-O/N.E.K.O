@@ -206,7 +206,7 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
 
     const buttonConfigs = [
         { id: 'mic', emoji: '🎤', title: window.t ? window.t('buttons.voiceControl') : '语音控制', titleKey: 'buttons.voiceControl', hasPopup: true, toggle: true, separatePopupTrigger: true, iconOff: '/static/icons/mic_icon_off.png' + iconVersion, iconOn: '/static/icons/mic_icon_on.png' + iconVersion },
-        { id: 'screen', emoji: '🖥️', title: window.t ? window.t('buttons.screenShare') : '屏幕分享', titleKey: 'buttons.screenShare', hasPopup: false, toggle: true, iconOff: '/static/icons/screen_icon_off.png' + iconVersion, iconOn: '/static/icons/screen_icon_on.png' + iconVersion },
+        { id: 'screen', emoji: '🖥️', title: window.t ? window.t('buttons.screenShare') : '屏幕分享', titleKey: 'buttons.screenShare', hasPopup: true, toggle: true, separatePopupTrigger: true, iconOff: '/static/icons/screen_icon_off.png' + iconVersion, iconOn: '/static/icons/screen_icon_on.png' + iconVersion },
         { id: 'agent', emoji: '🔨', title: window.t ? window.t('buttons.agentTools') : 'Agent工具', titleKey: 'buttons.agentTools', hasPopup: true, popupToggle: true, exclusive: 'settings', iconOff: '/static/icons/Agent_off.png' + iconVersion, iconOn: '/static/icons/Agent_on.png' + iconVersion },
         { id: 'settings', emoji: '⚙️', title: window.t ? window.t('buttons.settings') : '设置', titleKey: 'buttons.settings', hasPopup: true, popupToggle: true, exclusive: 'agent', iconOff: '/static/icons/set_off.png' + iconVersion, iconOn: '/static/icons/set_on.png' + iconVersion },
         { id: 'goodbye', emoji: '💤', title: window.t ? window.t('buttons.leave') : '请她离开', titleKey: 'buttons.leave', hasPopup: false, iconOff: '/static/icons/rest_off.png' + iconVersion, iconOn: '/static/icons/rest_on.png' + iconVersion }
@@ -347,6 +347,17 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
             btn.style.transform = 'scale(1.05)';  // 更微妙的缩放
             btn.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.08), 0 8px 16px rgba(0, 0, 0, 0.08)';
             btn.style.background = 'rgba(255, 255, 255, 0.8)';  // 悬停时更亮
+            
+            // 检查是否有单独的弹窗触发器且弹窗已打开（此时不应该切换图标）
+            if (config.separatePopupTrigger) {
+                const popup = document.getElementById(`live2d-popup-${config.id}`);
+                const isPopupVisible = popup && popup.style.display === 'flex' && popup.style.opacity === '1';
+                if (isPopupVisible) {
+                    // 弹窗已打开，不改变图标状态
+                    return;
+                }
+            }
+            
             // 淡出off图标，淡入on图标
             if (imgOff && imgOn) {
                 imgOff.style.opacity = '0';
@@ -360,8 +371,14 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
             const isActive = btn.dataset.active === 'true';
             const popup = document.getElementById(`live2d-popup-${config.id}`);
             const isPopupVisible = popup && popup.style.display === 'flex' && popup.style.opacity === '1';
+            
+            // 对于有单独弹窗触发器的按钮，弹窗状态不应该影响母按钮的图标
+            // 只有按钮自己的 active 状态才应该决定图标显示
+            const shouldShowOnIcon = config.separatePopupTrigger 
+                ? isActive  // separatePopupTrigger: 只看按钮的 active 状态
+                : (isActive || isPopupVisible);  // 普通按钮: active 或弹窗打开都显示 on
 
-            if (isActive || isPopupVisible) {
+            if (shouldShowOnIcon) {
                 // 激活状态：稍亮的背景
                 btn.style.background = 'rgba(255, 255, 255, 0.75)';
             } else {
@@ -369,9 +386,8 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
             }
 
             // 根据按钮激活状态决定显示哪个图标
-            // 如果按钮已激活，保持显示on图标；否则显示off图标
             if (imgOff && imgOn) {
-                if (isActive || isPopupVisible) {
+                if (shouldShowOnIcon) {
                     // 激活状态：保持on图标
                     imgOff.style.opacity = '0';
                     imgOn.style.opacity = '1';
@@ -565,9 +581,17 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
                 triggerBtn.addEventListener('click', async (e) => {
                     e.stopPropagation();
 
-                    // 如果是麦克风弹出框，先加载麦克风列表
-                    if (config.id === 'mic' && window.renderFloatingMicList) {
+                    // 检查弹出框是否已经显示（如果已显示，showPopup会关闭它，不需要重新加载）
+                    const isPopupVisible = popup.style.display === 'flex' && popup.style.opacity === '1';
+
+                    // 如果是麦克风弹出框且弹窗未显示，先加载麦克风列表
+                    if (config.id === 'mic' && window.renderFloatingMicList && !isPopupVisible) {
                         await window.renderFloatingMicList();
+                    }
+                    
+                    // 如果是屏幕分享弹出框且弹窗未显示，先加载屏幕源列表
+                    if (config.id === 'screen' && window.renderFloatingScreenSourceList && !isPopupVisible) {
+                        await window.renderFloatingScreenSourceList();
                     }
 
                     this.showPopup(config.id, popup);

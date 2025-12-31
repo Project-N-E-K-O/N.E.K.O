@@ -277,11 +277,10 @@
         </div>
 
         <div class="control-group">
-            <a href="/live2d_parameter_editor" class="btn btn-secondary"
-                style="width:100%; text-decoration: none; display: block; text-align: center;"
-                data-i18n="live2d.parameterEditor.title">
+            <button id="parameter-editor-btn" class="btn btn-secondary"
+                style="width:100%;" data-i18n="live2d.parameterEditor.title">
                 <span>🎨 参数编辑器</span>
-            </a>
+            </button>
         </div>
 
 
@@ -305,16 +304,37 @@
     <script src="/static/live2d-init.js"></script>
 
     <script>
+        // ===== 跨页面通信系统 =====
+        const CHANNEL_NAME = 'neko_page_channel';
+        let l2dBroadcastChannel = null;
+
+        // 初始化 BroadcastChannel（如果支持）
+        try {
+            if (typeof BroadcastChannel !== 'undefined') {
+                l2dBroadcastChannel = new BroadcastChannel(CHANNEL_NAME);
+                console.log('[CrossPageComm] l2d_manager BroadcastChannel 已初始化');
+            }
+        } catch (e) {
+            console.log('[CrossPageComm] BroadcastChannel 不可用，将使用 localStorage 后备方案');
+        }
+
         // 用于页面间通信的事件处理
         function sendMessageToMainPage(action) {
             try {
-                // 使用localStorage事件机制发送消息给主页面
                 const message = {
                     action: action,
                     timestamp: Date.now()
                 };
+
+                // 优先使用 BroadcastChannel
+                if (l2dBroadcastChannel) {
+                    l2dBroadcastChannel.postMessage(message);
+                    console.log('[CrossPageComm] 通过 BroadcastChannel 发送消息:', action);
+                }
+
+                // 同时使用 localStorage 作为后备
                 localStorage.setItem('nekopage_message', JSON.stringify(message));
-                localStorage.removeItem('nekopage_message'); // 立即移除以允许重复发送相同消息
+                localStorage.removeItem('nekopage_message');
             } catch (e) {
                 console.log('发送消息给主页面失败:', e);
             }
@@ -544,21 +564,27 @@
                 return lanlanName;
             }
 
-            // 动态设置参数编辑器链接，传递 lanlan_name 参数
-            (async function updateParameterEditorLink() {
-                try {
-                    const paramEditorLink = document.querySelector('a[href="/live2d_parameter_editor"]');
-                    if (paramEditorLink) {
+            // 参数编辑器按钮点击事件 - 始终使用页面跳转模式
+            const parameterEditorBtn = document.getElementById('parameter-editor-btn');
+            if (parameterEditorBtn) {
+                parameterEditorBtn.addEventListener('click', async () => {
+                    try {
                         const lanlanName = await getLanlanName();
+                        let targetUrl = '/live2d_parameter_editor';
                         if (lanlanName) {
-                            paramEditorLink.href = `/live2d_parameter_editor?lanlan_name=${encodeURIComponent(lanlanName)}`;
-                            console.log('参数编辑器链接已更新，角色:', lanlanName);
+                            targetUrl += `?lanlan_name=${encodeURIComponent(lanlanName)}`;
                         }
+                        console.log('打开参数编辑器，URL:', targetUrl);
+                        
+                        // 始终使用页面跳转模式打开参数编辑器
+                        window.location.href = targetUrl;
+                    } catch (error) {
+                        console.error('打开参数编辑器失败:', error);
+                        // 即使出错也尝试打开
+                        window.location.href = '/live2d_parameter_editor';
                     }
-                } catch (error) {
-                    console.error('更新参数编辑器链接失败:', error);
-                }
-            })();
+                });
+            }
 
             // 保存模型设置到角色的函数
             async function saveModelToCharacter(modelName, itemId = null) {
@@ -717,7 +743,8 @@
                         loadEmotionMapping: true,
                         dragEnabled: true,
                         wheelEnabled: true,
-                        preferences: modelPreferences
+                        preferences: modelPreferences,
+                        skipCloseWindows: true  // l2d_manager 页面不需要关闭其他窗口
                     });
                     live2dModel = l2dManager.getCurrentModel();
 
@@ -1156,25 +1183,36 @@
 
                 const title = document.createElement('h3');
                 title.textContent = t('emotion.manager', '情感配置管理器');
-                title.style.cssText = 'margin: 0;';
+                title.style.cssText = 'margin: 0; font-size: 16px; color: #333;';
 
                 const closeButton = document.createElement('button');
                 closeButton.textContent = '×';
-                closeButton.style.cssText = `background: none; border: none; font-size: 24px; cursor: pointer;`;
+                closeButton.style.cssText = `background: none; border: none; font-size: 28px; cursor: pointer; color: #666; line-height: 1; padding: 0 5px; transition: color 0.2s;`;
+                closeButton.onmouseover = () => closeButton.style.color = '#000';
+                closeButton.onmouseout = () => closeButton.style.color = '#666';
 
                 const iframe = document.createElement('iframe');
                 iframe.src = url;
-                iframe.style.cssText = 'width: 100%; height: 100%; border: none;';
+                iframe.style.cssText = 'width: 100%; flex: 1; border: none;';
 
                 const closeModal = () => {
                     modal.remove();
+                    // 关闭情感配置管理器后重新加载当前模型
+                    // 直接调用 loadModel 而不是触发 change 事件，避免设置 hasUnsavedChanges
                     if (currentModelInfo) {
-                        modelSelect.value = currentModelInfo.name;
-                        modelSelect.dispatchEvent(new Event('change'));
+                        loadModel(currentModelInfo.name, currentModelInfo, currentModelInfo.item_id);
                     }
                 };
 
                 closeButton.onclick = closeModal;
+                
+                // 点击遮罩层关闭模态框
+                modal.onclick = (e) => {
+                    if (e.target === modal) {
+                        closeModal();
+                    }
+                };
+                
                 header.appendChild(title);
                 header.appendChild(closeButton);
                 iframeContainer.appendChild(header);

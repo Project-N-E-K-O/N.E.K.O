@@ -1087,6 +1087,12 @@ function init_app() {
             // 开始录音前添加录音状态类到两个按钮
             micButton.classList.add('recording');
 
+            // 隐藏文本输入区（仅非移动端），确保语音/文本互斥
+            const textInputArea = document.getElementById('text-input-area');
+            if (textInputArea && !isMobile()) {
+                textInputArea.classList.add('hidden');
+            }
+
             if (!audioPlayerContext) {
                 audioPlayerContext = new (window.AudioContext || window.webkitAudioContext)();
             }
@@ -1147,12 +1153,20 @@ function init_app() {
             if (!micButton.classList.contains('active')) {
                 micButton.classList.add('active');
             }
+            syncFloatingMicButtonState(true);
 
             // 开始录音时，停止主动搭话定时器
             stopProactiveChatSchedule();
         } catch (err) {
             console.error('获取麦克风权限失败:', err);
             showStatusToast(window.t ? window.t('app.micAccessDenied') : '无法访问麦克风', 4000);
+            
+            // 失败时恢复文本输入区
+            const textInputArea = document.getElementById('text-input-area');
+            if (textInputArea) {
+                textInputArea.classList.remove('hidden');
+            }
+
             // 失败时移除录音状态类
             micButton.classList.remove('recording');
             // 移除active类
@@ -1267,13 +1281,33 @@ function init_app() {
                 } else {
 
                     // Desktop/laptop: capture the user's chosen screen / window / tab.
-                    screenCaptureStream = await navigator.mediaDevices.getDisplayMedia({
-                        video: {
-                            cursor: 'always',
-                            frameRate: 1,
-                        },
-                        audio: false,
-                    });
+                    // 检查是否有选中的特定屏幕源（仅Electron环境）
+                    const selectedSourceId = window.getSelectedScreenSourceId ? window.getSelectedScreenSourceId() : null;
+                    
+                    if (selectedSourceId && window.electronDesktopCapturer) {
+                        // 在Electron中使用选中的特定屏幕/窗口源
+                        // 使用 chromeMediaSourceId 约束来指定源
+                        screenCaptureStream = await navigator.mediaDevices.getUserMedia({
+                            audio: false,
+                            video: {
+                                mandatory: {
+                                    chromeMediaSource: 'desktop',
+                                    chromeMediaSourceId: selectedSourceId,
+                                    maxFrameRate: 1
+                                }
+                            }
+                        });
+                        console.log('[屏幕分享] 使用选中的屏幕源:', selectedSourceId);
+                    } else {
+                        // 使用标准的getDisplayMedia（显示系统选择器）
+                        screenCaptureStream = await navigator.mediaDevices.getDisplayMedia({
+                            video: {
+                                cursor: 'always',
+                                frameRate: 1,
+                            },
+                            audio: false,
+                        });
+                    }
                 }
             }
             startScreenVideoStreaming(screenCaptureStream, isMobile() ? 'camera' : 'screen');
@@ -1286,6 +1320,7 @@ function init_app() {
 
             // 添加active类以保持激活状态的颜色
             screenButton.classList.add('active');
+            syncFloatingScreenButtonState(true);
 
             // 手动开始屏幕共享时，重置/停止语音期间的主动视觉定时，避免双重触发
             try {
@@ -2924,28 +2959,53 @@ function init_app() {
     // ========== 连接浮动按钮到原有功能 ==========
 
     // 麦克风按钮（toggle模式）
+    // 麦克风按钮（toggle模式）
     window.addEventListener('live2d-mic-toggle', async (e) => {
         if (e.detail.active) {
-            // 想要开启语音：如果 micButton 已经有 active 类，说明正在处理中或已激活，直接返回
-            if (micButton.classList.contains('active')) {
+            // 想要开启语音：如果已经在录音，直接返回
+            if (window.isRecording) {
                 return;
             }
             // 开始语音
-            micButton.click(); // 触发原有的麦克风按钮点击
+            if (typeof startMicCapture === 'function') {
+                await startMicCapture();
+            } else {
+                console.error('startMicCapture function not found');
+            }
         } else {
-            // 想要关闭语音：允许执行，即使 micButton 有 active 类（因为这是正常的退出操作）
-            muteButton.click(); // 触发原有的停止按钮点击
+            // 想要关闭语音
+            // 如果已经停止录音，直接返回
+            if (!window.isRecording) {
+                return;
+            }
+            // 关闭语音
+            if (typeof stopMicCapture === 'function') {
+                await stopMicCapture();
+            } else {
+                console.error('stopMicCapture function not found');
+            }
         }
     });
 
     // 屏幕分享按钮（toggle模式）
+    // 屏幕分享按钮（toggle模式）
     window.addEventListener('live2d-screen-toggle', async (e) => {
         if (e.detail.active) {
             // 开启屏幕分享
-            screenButton.click();
+            // screenButton不存在，直接调用函数
+            if (typeof startScreenSharing === 'function') {
+                await startScreenSharing();
+            } else {
+                console.error('startScreenSharing function not found');
+            }
         } else {
             // 关闭屏幕分享
-            stopButton.click();
+            // stopButton会停止整个会话（包括语音），这里只应该停止屏幕分享
+            if (typeof stopScreenSharing === 'function') {
+                await stopScreenSharing();
+            } else {
+                console.error('stopScreenSharing function not found');
+            }
         }
     });
 
@@ -4967,6 +5027,283 @@ function init_app() {
     setTimeout(() => {
         window.renderFloatingMicList();
     }, 1500);
+
+    // ===== 屏幕源选择功能（仅Electron环境） =====
+    // 当前选中的屏幕源ID
+    let selectedScreenSourceId = null;
+
+    // 选择屏幕源
+    async function selectScreenSource(sourceId, sourceName) {
+        selectedScreenSourceId = sourceId;
+        
+        // 更新UI选中状态
+        updateScreenSourceListSelection();
+        
+        // 显示选择提示
+        showStatusToast(window.t ? window.t('app.screenSource.selected', { source: sourceName }) : `已选择 ${sourceName}`, 3000);
+        
+        console.log('[屏幕源] 已选择:', sourceName, '(ID:', sourceId, ')');
+        
+        // 智能刷新：如果当前正在屏幕分享中，自动重启以应用新的屏幕源
+        // 检查屏幕分享状态：stopButton 可用表示正在分享
+        const stopBtn = document.getElementById('stopButton');
+        const isScreenSharingActive = stopBtn && !stopBtn.disabled;
+        
+        if (isScreenSharingActive && window.switchScreenSharing) {
+            console.log('[屏幕源] 检测到正在屏幕分享中，将自动重启以应用新源');
+            // 先停止当前分享
+            await stopScreenSharing();
+            // 等待一小段时间
+            await new Promise(resolve => setTimeout(resolve, 300));
+            // 重新开始分享（使用新选择的源）
+            await startScreenSharing();
+        }
+    }
+
+    // 更新屏幕源列表的选中状态
+    function updateScreenSourceListSelection() {
+        const screenPopup = document.getElementById('live2d-popup-screen');
+        if (!screenPopup) return;
+
+        const options = screenPopup.querySelectorAll('.screen-source-option');
+        options.forEach(option => {
+            const sourceId = option.dataset.sourceId;
+            const isSelected = sourceId === selectedScreenSourceId;
+
+            if (isSelected) {
+                option.classList.add('selected');
+                option.style.background = '#e6f0ff';
+                option.style.borderColor = '#4f8cff';
+            } else {
+                option.classList.remove('selected');
+                option.style.background = 'transparent';
+                option.style.borderColor = 'transparent';
+            }
+        });
+    }
+
+    // 为浮动弹出框渲染屏幕源列表（仅Electron环境）
+    window.renderFloatingScreenSourceList = async () => {
+        const screenPopup = document.getElementById('live2d-popup-screen');
+        if (!screenPopup) {
+            console.warn('[屏幕源] 弹出框不存在');
+            return false;
+        }
+
+        // 检查是否在Electron环境
+        if (!window.electronDesktopCapturer || !window.electronDesktopCapturer.getSources) {
+            screenPopup.innerHTML = '';
+            const notAvailableItem = document.createElement('div');
+            notAvailableItem.textContent = window.t ? window.t('app.screenSource.notAvailable') : '仅在桌面版可用';
+            notAvailableItem.style.padding = '12px';
+            notAvailableItem.style.color = '#666';
+            notAvailableItem.style.fontSize = '13px';
+            notAvailableItem.style.textAlign = 'center';
+            screenPopup.appendChild(notAvailableItem);
+            return false;
+        }
+
+        try {
+            // 显示加载中
+            screenPopup.innerHTML = '';
+            const loadingItem = document.createElement('div');
+            loadingItem.textContent = window.t ? window.t('app.screenSource.loading') : '加载中...';
+            loadingItem.style.padding = '12px';
+            loadingItem.style.color = '#666';
+            loadingItem.style.fontSize = '13px';
+            loadingItem.style.textAlign = 'center';
+            screenPopup.appendChild(loadingItem);
+
+            // 获取屏幕源
+            const sources = await window.electronDesktopCapturer.getSources({
+                types: ['window', 'screen'],
+                thumbnailSize: { width: 160, height: 100 }
+            });
+
+            screenPopup.innerHTML = '';
+
+            if (!sources || sources.length === 0) {
+                const noSourcesItem = document.createElement('div');
+                noSourcesItem.textContent = window.t ? window.t('app.screenSource.noSources') : '没有可用的屏幕源';
+                noSourcesItem.style.padding = '12px';
+                noSourcesItem.style.color = '#666';
+                noSourcesItem.style.fontSize = '13px';
+                noSourcesItem.style.textAlign = 'center';
+                screenPopup.appendChild(noSourcesItem);
+                return false;
+            }
+
+            // 分组：屏幕和窗口
+            const screens = sources.filter(s => s.id.startsWith('screen:'));
+            const windows = sources.filter(s => s.id.startsWith('window:'));
+
+            // 创建网格容器的辅助函数
+            function createGridContainer() {
+                const grid = document.createElement('div');
+                Object.assign(grid.style, {
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(4, 1fr)',
+                    gap: '6px',
+                    padding: '4px',
+                    width: '100%',
+                    boxSizing: 'border-box'
+                });
+                return grid;
+            }
+
+            // 创建屏幕源选项元素（网格样式：垂直布局，名字在下）
+            function createSourceOption(source) {
+                const option = document.createElement('div');
+                option.className = 'screen-source-option';
+                option.dataset.sourceId = source.id;
+                Object.assign(option.style, {
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    padding: '4px',
+                    cursor: 'pointer',
+                    borderRadius: '6px',
+                    border: '2px solid transparent',
+                    transition: 'all 0.2s ease',
+                    background: 'transparent',
+                    boxSizing: 'border-box',
+                    minWidth: '0'  // 允许收缩
+                });
+
+                if (selectedScreenSourceId === source.id) {
+                    option.classList.add('selected');
+                    option.style.background = '#e6f0ff';
+                    option.style.borderColor = '#4f8cff';
+                }
+
+                // 缩略图
+                if (source.thumbnail) {
+                    const thumb = document.createElement('img');
+                    thumb.src = source.thumbnail;
+                    Object.assign(thumb.style, {
+                        width: '100%',
+                        maxWidth: '90px',
+                        height: '56px',
+                        objectFit: 'cover',
+                        borderRadius: '4px',
+                        border: '1px solid #ddd',
+                        marginBottom: '4px'
+                    });
+                    option.appendChild(thumb);
+                } else {
+                    // 无缩略图时显示图标
+                    const iconPlaceholder = document.createElement('div');
+                    iconPlaceholder.textContent = source.id.startsWith('screen:') ? '🖥️' : '🪟';
+                    Object.assign(iconPlaceholder.style, {
+                        width: '100%',
+                        maxWidth: '90px',
+                        height: '56px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '24px',
+                        background: '#f5f5f5',
+                        borderRadius: '4px',
+                        marginBottom: '4px'
+                    });
+                    option.appendChild(iconPlaceholder);
+                }
+
+                // 名称（在缩略图下方，允许多行）
+                const label = document.createElement('span');
+                label.textContent = source.name;
+                Object.assign(label.style, {
+                    fontSize: '10px',
+                    color: '#333',
+                    width: '100%',
+                    textAlign: 'center',
+                    lineHeight: '1.3',
+                    wordBreak: 'break-word',
+                    display: '-webkit-box',
+                    WebkitLineClamp: '2',
+                    WebkitBoxOrient: 'vertical',
+                    overflow: 'hidden',
+                    height: '26px'
+                });
+                option.appendChild(label);
+
+                option.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    await selectScreenSource(source.id, source.name);
+                });
+
+                option.addEventListener('mouseenter', () => {
+                    if (!option.classList.contains('selected')) {
+                        option.style.background = 'rgba(79, 140, 255, 0.1)';
+                    }
+                });
+                option.addEventListener('mouseleave', () => {
+                    if (!option.classList.contains('selected')) {
+                        option.style.background = 'transparent';
+                    }
+                });
+
+                return option;
+            }
+
+            // 添加屏幕列表（网格布局）
+            if (screens.length > 0) {
+                const screenLabel = document.createElement('div');
+                screenLabel.textContent = window.t ? window.t('app.screenSource.screens') : '屏幕';
+                Object.assign(screenLabel.style, {
+                    padding: '4px 8px',
+                    fontSize: '11px',
+                    color: '#555',
+                    fontWeight: '600',
+                    textTransform: 'uppercase'
+                });
+                screenPopup.appendChild(screenLabel);
+
+                const screenGrid = createGridContainer();
+                screens.forEach(source => {
+                    screenGrid.appendChild(createSourceOption(source));
+                });
+                screenPopup.appendChild(screenGrid);
+            }
+
+            // 添加窗口列表（网格布局）
+            if (windows.length > 0) {
+                const windowLabel = document.createElement('div');
+                windowLabel.textContent = window.t ? window.t('app.screenSource.windows') : '窗口';
+                Object.assign(windowLabel.style, {
+                    padding: '4px 8px',
+                    fontSize: '11px',
+                    color: '#555',
+                    fontWeight: '600',
+                    textTransform: 'uppercase',
+                    marginTop: '8px'
+                });
+                screenPopup.appendChild(windowLabel);
+
+                const windowGrid = createGridContainer();
+                windows.forEach(source => {
+                    windowGrid.appendChild(createSourceOption(source));
+                });
+                screenPopup.appendChild(windowGrid);
+            }
+
+            return true;
+        } catch (error) {
+            console.error('[屏幕源] 获取屏幕源失败:', error);
+            screenPopup.innerHTML = '';
+            const errorItem = document.createElement('div');
+            errorItem.textContent = window.t ? window.t('app.screenSource.loadFailed') : '获取屏幕源失败';
+            errorItem.style.padding = '12px';
+            errorItem.style.color = '#dc3545';
+            errorItem.style.fontSize = '13px';
+            errorItem.style.textAlign = 'center';
+            screenPopup.appendChild(errorItem);
+            return false;
+        }
+    };
+
+    // 暴露选中的屏幕源ID给其他模块使用
+    window.getSelectedScreenSourceId = () => selectedScreenSourceId;
 
     // 主动搭话定时触发功能
     function scheduleProactiveChat() {

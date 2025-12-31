@@ -394,8 +394,8 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
             });
         });
 
-        // 设置、agent、麦克风弹出框不自动隐藏，其他的1秒后隐藏
-        if (buttonId !== 'settings' && buttonId !== 'agent' && buttonId !== 'mic') {
+        // 设置、agent、麦克风、屏幕源弹出框不自动隐藏，其他的1秒后隐藏
+        if (buttonId !== 'settings' && buttonId !== 'agent' && buttonId !== 'mic' && buttonId !== 'screen') {
             this._popupTimers[buttonId] = setTimeout(() => {
                 popup.style.opacity = '0';
                 popup.style.transform = popup.style.right === '100%' ? 'translateX(10px)' : 'translateX(-10px)';
