@@ -390,3 +390,56 @@ const observer = new MutationObserver((mutations) => {
 if (chatContentWrapper) {
     observer.observe(chatContentWrapper, {childList: true, subtree: true});
 }
+
+// ========== Electron 全局快捷键接口 ==========
+// 以下接口供 Electron 主进程通过 IPC 调用，用于全局快捷键功能
+
+/**
+ * 切换语音会话状态（开始/结束）
+ * Electron 调用此接口来触发语音按钮的切换
+ */
+window.toggleVoiceSession = function() {
+    // 获取浮动按钮的当前状态
+    const micButton = window.live2dManager?._floatingButtons?.mic?.button;
+    const isActive = micButton?.dataset.active === 'true';
+    
+    // 派发切换事件
+    const event = new CustomEvent('live2d-mic-toggle', {
+        detail: { active: !isActive }
+    });
+    window.dispatchEvent(event);
+    
+    console.log('[Electron Shortcut] toggleVoiceSession:', !isActive ? 'start' : 'stop');
+};
+
+/**
+ * 切换屏幕分享状态（开始/结束）
+ * Electron 调用此接口来触发屏幕分享按钮的切换
+ */
+window.toggleScreenShare = function() {
+    // 获取浮动按钮的当前状态
+    const screenBtn = window.live2dManager?._floatingButtons?.screen?.button;
+    const isActive = screenBtn?.dataset.active === 'true';
+    
+    // 派发切换事件
+    const event = new CustomEvent('live2d-screen-toggle', {
+        detail: { active: !isActive }
+    });
+    window.dispatchEvent(event);
+    
+    console.log('[Electron Shortcut] toggleScreenShare:', !isActive ? 'start' : 'stop');
+};
+
+/**
+ * 触发截图功能
+ * Electron 调用此接口来触发截图按钮点击
+ */
+window.triggerScreenshot = function() {
+    const screenshotButton = document.getElementById('screenshotButton');
+    if (screenshotButton && !screenshotButton.disabled) {
+        screenshotButton.click();
+        console.log('[Electron Shortcut] triggerScreenshot: triggered');
+    } else {
+        console.log('[Electron Shortcut] triggerScreenshot: button disabled or not found');
+    }
+};
