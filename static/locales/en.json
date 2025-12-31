@@ -816,7 +816,16 @@
     "connectingToServer": "Connecting to server...",
     "readyToSpeak": "Ready to speak!",
     "screenShareRequiresVoice": "Screen sharing is only available during voice calls",
-    "repetitionDetected": "High repetition detected in conversation. It is recommended to end the conversation and let {{name}} rest for a while."
+    "repetitionDetected": "High repetition detected in conversation. It is recommended to end the conversation and let {{name}} rest for a while.",
+    "screenSource": {
+      "notAvailable": "Screen source selection is only available in desktop version",
+      "loading": "Loading...",
+      "noSources": "No screen sources available",
+      "loadFailed": "Failed to load screen sources",
+      "screens": "Screens",
+      "windows": "Windows",
+      "selected": "Selected {{source}}"
+    }
   },
   "buttons": {
     "voiceControl": "Voice Control",

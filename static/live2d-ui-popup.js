@@ -52,6 +52,14 @@ Live2DManager.prototype.createPopup = function (buttonId) {
         // 麦克风选择列表（将从页面中获取）
         popup.id = 'live2d-popup-mic';
         popup.setAttribute('data-legacy-id', 'live2d-mic-popup');
+    } else if (buttonId === 'screen') {
+        // 屏幕/窗口源选择列表（将从Electron获取）
+        popup.id = 'live2d-popup-screen';
+        // 为屏幕源弹出框设置尺寸，允许纵向滚动但禁止横向滚动
+        popup.style.width = '420px';
+        popup.style.maxHeight = '400px';
+        popup.style.overflowX = 'hidden';
+        popup.style.overflowY = 'auto';
     } else if (buttonId === 'agent') {
         // Agent工具开关组
         this._createAgentPopupContent(popup);

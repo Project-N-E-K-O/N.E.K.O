@@ -816,7 +816,16 @@
     "connectingToServer": "正在连接服务器...",
     "readyToSpeak": "可以说话了！",
     "screenShareRequiresVoice": "屏幕分享仅用于音视频通话",
-    "repetitionDetected": "检测到高重复度对话。建议您终止对话，让{{name}}休息片刻。"
+    "repetitionDetected": "检测到高重复度对话。建议您终止对话，让{{name}}休息片刻。",
+    "screenSource": {
+      "notAvailable": "屏幕源选择仅在桌面版可用",
+      "loading": "加载中...",
+      "noSources": "没有可用的屏幕源",
+      "loadFailed": "获取屏幕源失败",
+      "screens": "屏幕",
+      "windows": "窗口",
+      "selected": "已选择 {{source}}"
+    }
   },
   "buttons": {
     "voiceControl": "语音控制",
