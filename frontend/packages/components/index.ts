@@ -4,6 +4,9 @@ export type { ButtonProps, ButtonVariant, ButtonSize } from "./src/Button";
 export { default as StatusToast } from "./src/StatusToast";
 export type { StatusToastHandle } from "./src/StatusToast";
 
+export { QrMessageBox } from "./src/QrMessageBox";
+export type { QrMessageBoxProps } from "./src/QrMessageBox";
+
 export { default as Modal } from "./src/Modal";
 export type { ModalHandle } from "./src/Modal";
 export { AlertDialog } from "./src/Modal/AlertDialog";

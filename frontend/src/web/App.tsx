@@ -1,7 +1,7 @@
 import "./styles.css";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
-import { Button, StatusToast, Modal, useT, tOrDefault } from "@project_neko/components";
+import { BaseModal, Button, StatusToast, Modal, useT, tOrDefault } from "@project_neko/components";
 import type { StatusToastHandle, ModalHandle } from "@project_neko/components";
 import { createRequestClient, WebTokenStorage } from "@project_neko/request";
 import { ChatContainer } from "@project_neko/components";
@@ -44,6 +44,10 @@ function App({ language, onChangeLanguage }: AppProps) {
   const t = useT();
   const toastRef = useRef<StatusToastHandle | null>(null);
   const modalRef = useRef<ModalHandle | null>(null);
+  const [isQrModalOpen, setIsQrModalOpen] = useState(false);
+  const [qrImageUrl, setQrImageUrl] = useState<string | null>(null);
+  const [qrLoading, setQrLoading] = useState(false);
+  const [qrError, setQrError] = useState<string | null>(null);
 
   useEffect(() => {
     const getLang = () => {
@@ -68,6 +72,94 @@ function App({ language, onChangeLanguage }: AppProps) {
     window.addEventListener("localechange", onLocaleChange);
     return () => window.removeEventListener("localechange", onLocaleChange);
   }, []);
+
+  useEffect(() => {
+    if (!isQrModalOpen) {
+      setQrLoading(false);
+      setQrError(null);
+      if (qrImageUrl && qrImageUrl.startsWith("blob:")) {
+        try {
+          URL.revokeObjectURL(qrImageUrl);
+        } catch (_e) {
+          // ignore
+        }
+      }
+      setQrImageUrl(null);
+      return;
+    }
+
+    const abortController = new AbortController();
+    let activeObjectUrl: string | null = null;
+
+    const run = async () => {
+      setQrLoading(true);
+      setQrError(null);
+      if (qrImageUrl && qrImageUrl.startsWith("blob:")) {
+        try {
+          URL.revokeObjectURL(qrImageUrl);
+        } catch (_e) {
+          // ignore
+        }
+      }
+      setQrImageUrl(null);
+
+      try {
+        const res = await fetch(`${API_BASE}/getipqrcode`, {
+          method: "POST",
+          signal: abortController.signal,
+          headers: {
+            Accept: "image/*,application/json",
+          },
+        });
+
+        if (!res.ok) {
+          throw new Error(`status=${res.status}`);
+        }
+
+        const contentType = (res.headers.get("content-type") || "").toLowerCase();
+
+        if (contentType.startsWith("image/")) {
+          const blob = await res.blob();
+          activeObjectUrl = URL.createObjectURL(blob);
+          setQrImageUrl(activeObjectUrl);
+          return;
+        }
+
+        // fallback: try JSON payload: { url } | { imageUrl } | { dataUrl } | { base64 }
+        const data: any = await res.json();
+        const url = data?.imageUrl || data?.url || data?.dataUrl;
+        if (typeof url === "string" && url) {
+          setQrImageUrl(url);
+          return;
+        }
+        const base64 = data?.base64;
+        if (typeof base64 === "string" && base64) {
+          setQrImageUrl(`data:image/png;base64,${base64}`);
+          return;
+        }
+
+        throw new Error("invalid_payload");
+      } catch (e: any) {
+        if (abortController.signal.aborted) return;
+        setQrError(String(e?.message || e || "error"));
+      } finally {
+        if (!abortController.signal.aborted) setQrLoading(false);
+      }
+    };
+
+    run();
+
+    return () => {
+      abortController.abort();
+      if (activeObjectUrl) {
+        try {
+          URL.revokeObjectURL(activeObjectUrl);
+        } catch (_e) {
+          // ignore
+        }
+      }
+    };
+  }, [isQrModalOpen]);
 
   const handleClick = useCallback(async () => {
     try {
@@ -167,6 +259,9 @@ function App({ language, onChangeLanguage }: AppProps) {
               <Button variant="secondary" onClick={handleToast}>
                 {tOrDefault(t, "webapp.actions.showToast", "显示 StatusToast")}
               </Button>
+              <Button variant="secondary" onClick={() => setIsQrModalOpen(true)}>
+                {tOrDefault(t, "webapp.actions.showQrDrawer", "显示二维码")}
+              </Button>
               <Button variant="primary" onClick={handleAlert}>
                 {tOrDefault(t, "webapp.actions.modalAlert", "Modal Alert")}
               </Button>
@@ -184,6 +279,35 @@ function App({ language, onChangeLanguage }: AppProps) {
           </div>
         </section>
       </main>
+
+      <BaseModal
+        isOpen={isQrModalOpen}
+        onClose={() => setIsQrModalOpen(false)}
+        title={tOrDefault(t, "webapp.qrDrawer.title", "二维码")}
+      >
+        <div className="modal-body">
+          {qrLoading && tOrDefault(t, "webapp.qrDrawer.loading", "加载中…")}
+          {!qrLoading && qrError && tOrDefault(t, "webapp.qrDrawer.error", "二维码加载失败")}
+          {!qrLoading && !qrError && !qrImageUrl &&
+            tOrDefault(t, "webapp.qrDrawer.placeholder", "二维码区域（待接入）")}
+          {!qrLoading && !qrError && qrImageUrl && (
+            <img
+              style={{ display: "block", maxWidth: "100%", maxHeight: "60vh", objectFit: "contain" }}
+              src={qrImageUrl}
+              alt={tOrDefault(t, "webapp.qrDrawer.title", "二维码")}
+            />
+          )}
+        </div>
+        <div className="modal-footer">
+          <button
+            className="modal-btn modal-btn-secondary"
+            onClick={() => setIsQrModalOpen(false)}
+            type="button"
+          >
+            {tOrDefault(t, "common.close", "关闭")}
+          </button>
+        </div>
+      </BaseModal>
     </>
   );
 }

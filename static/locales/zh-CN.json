@@ -46,6 +46,7 @@
     "actions": {
       "requestPageConfig": "请求 page_config",
       "showToast": "显示 StatusToast",
+      "showQrDrawer": "显示二维码",
       "modalAlert": "Modal Alert",
       "modalConfirm": "Modal Confirm",
       "modalPrompt": "Modal Prompt"
@@ -66,6 +67,12 @@
     },
     "errors": {
       "requestFailed": "请求失败"
+    },
+    "qrDrawer": {
+      "title": "服务器 IP 二维码",
+      "placeholder": "二维码区域（待接入）",
+      "loading": "加载中…",
+      "error": "二维码加载失败"
     }
   },
   "steam": {
