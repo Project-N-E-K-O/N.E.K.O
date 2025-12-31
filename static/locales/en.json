@@ -24,7 +24,8 @@
     "prevPage": "Previous Page",
     "nextPage": "Next Page",
     "selectFile": "Select File",
-    "fieldSeparator": ", "
+    "fieldSeparator": ", ",
+    "tryAgainLater": "Please try again later"
   },
   "steam": {
     "characterCards": "Character Cards",
@@ -125,7 +126,7 @@
     "previewImageMissing": "Preview image file does not exist, please check the path",
     "uploadReady": "Preparing to upload {{itemName}}",
     "pageDescription": "Through this page, you can browse, subscribe to, download and manage Live2D models and sounds from the Steam Workshop",
-    "voiceNote": "Note: Sound and characteristics sharing features will be added soon.",
+    "voiceNote": "If you have voice samples, please go to the Live2D settings page to register them manually.",
     "manageLocalItems": "Manage Local Items",
     "searchLocalItems": "Search local items...",
     "scanLocalItems": "Scan Local Items",
@@ -201,6 +202,9 @@
     "searchPlaceholder": "Search subscribed content...",
     "newCharacter": "New Character",
     "tagExists": "This tag already exists",
+    "tagTooLong": "Tag length cannot exceed 30 characters",
+    "tagLimitReached": "Maximum 4 tags allowed",
+    "noCharacterCards": "No character cards available",
     "loadingConfig": "Loading configuration...",
     "configLoadSuccess": "Configuration loaded successfully",
     "configLoadFailed": "Failed to load configuration: {{error}}",
@@ -245,7 +249,6 @@
     "previewImageUploadError": "Upload error: {{error}}",
     "previewImageTooLarge": "Preview image must be smaller than 1MB",
     "uploadToWorkshopBtn": "Upload to Workshop",
-    "uploadAgreementText": "By clicking \"Upload\" you agree to the Steam Workshop Terms of Service, including the Workshop Legal Agreement:",
     "saveCharacterCard": "Save Character Card",
     "saveCharacterCardConfirm": "Do you want to save the current character card information to the character card file?",
     "saveAndContinue": "Save and Continue",

@@ -24,7 +24,8 @@
     "prevPage": "上一页",
     "nextPage": "下一页",
     "selectFile": "选择文件",
-    "fieldSeparator": "、"
+    "fieldSeparator": "、",
+    "tryAgainLater": "请稍后重试"
   },
   "steam": {
     "characterCards": "角色卡",
@@ -101,7 +102,7 @@
     "previewImageMissing": "预览图片文件不存在，请检查路径",
     "uploadReady": "准备上传 {{itemName}}",
     "pageDescription": "通过此页面，您可以浏览、订阅、下载和管理Steam创意工坊中的Live2D模型和声音",
-    "voiceNote": "注意：声音以及角色卡分享功能将很快更新。",
+    "voiceNote": "如有语音音色请前往live2d设置页面手动注册",
     "manageLocalItems": "管理本地物品",
     "searchLocalItems": "搜索本地物品...",
     "scanLocalItems": "扫描本地物品",
@@ -201,6 +202,9 @@
     "searchPlaceholder": "搜索订阅内容...",
     "newCharacter": "新角色",
     "tagExists": "该标签已存在",
+    "tagTooLong": "标签长度不能超过30个字符",
+    "tagLimitReached": "最多只能添加4个标签",
+    "noCharacterCards": "暂无角色卡",
     "loadingConfig": "正在加载配置...",
     "configLoadSuccess": "配置加载成功",
     "configLoadFailed": "配置加载失败: {{error}}",
@@ -245,7 +249,6 @@
     "previewImageUploadError": "上传错误: {{error}}",
     "previewImageTooLarge": "预览图片大小必须小于1MB",
     "uploadToWorkshopBtn": "上传到创意工坊",
-    "uploadAgreementText": "点击\"上传\"即表示您同意 Steam 创意工坊服务条款，包括创意工坊法律协议：",
     "saveCharacterCard": "保存角色卡",
     "saveCharacterCardConfirm": "是否要将当前填写的角色卡信息保存到角色卡文件中？",
     "saveAndContinue": "保存并继续",

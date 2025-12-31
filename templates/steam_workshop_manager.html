@@ -3594,7 +3594,7 @@ console.log('准备显示成功提示:', successMessage);
                 if (/^[a-zA-Z]:\\/.test(contentFolder) || /^\//.test(contentFolder) || /^\.\.?[\\\/]/.test(contentFolder)) {
                     document.getElementById('content-folder').classList.remove('error');
                 } else {
-                    errorMessages.push(window.t ? window.t('invalidFolderFormat') : '内容文件夹路径格式不正确');
+                    errorMessages.push(window.t ? window.t('steam.invalidFolderFormat') : '内容文件夹路径格式不正确');
                     document.getElementById('content-folder').classList.add('error');
                     isValid = false;
                 }
@@ -3764,7 +3764,7 @@ console.log('准备显示成功提示:', successMessage);
 
                         // 显示物品ID
                         if (data.published_file_id) {
-                            showMessage(window.t ? window.t('steam.itemId', { id: data.published_file_id }) : `物品ID: ${data.published_file_id}`, 'success', 5000);
+                            showMessage(window.t ? window.t('steam.itemIdDisplay', { itemId: data.published_file_id }) : `物品ID: ${data.published_file_id}`, 'success', 5000);
                             
                             // 上传成功后，自动删除临时目录
                             if (currentUploadTempFolder) {
@@ -5618,7 +5618,7 @@ function viewItemDetails(itemId) {
                     option.value = model.name;
                     // 如果是mao_pro，显示为"默认"
                     if (model.name === 'mao_pro') {
-                        option.textContent = '默认';
+                        option.textContent = window.t ? window.t('steam.default') : '默认';
                         option.dataset.isDefault = 'true';
                     } else {
                         option.textContent = model.name;
@@ -6504,12 +6504,12 @@ function viewItemDetails(itemId) {
             const playExpressionBtn = document.getElementById('preview-play-expression-btn');
             
             if (motionSelect) {
-                motionSelect.innerHTML = '<option value="">选择动作</option>';
+                motionSelect.innerHTML = '<option value="">' + (window.t ? window.t('live2d.selectMotion') : '选择动作') + '</option>';
                 motionSelect.disabled = true;
             }
             
             if (expressionSelect) {
-                expressionSelect.innerHTML = '<option value="">选择表情</option>';
+                expressionSelect.innerHTML = '<option value="">' + (window.t ? window.t('live2d.selectExpression') : '选择表情') + '</option>';
                 expressionSelect.disabled = true;
             }
             
