@@ -17,11 +17,11 @@ conflicts = [
 ]
 
 [load_test]
-enable = false
-duration_seconds = 10.0
-auto_start = true
-log_summary = true
-worker_threads = 16
+enable = false # 是否启用测试
+duration_seconds = 10.0 # 测试时长
+auto_start = true # 自动开始测试,当enable为true时生效
+log_summary = true # 是否打印测试总结
+worker_threads = 16 # 工作线程数
 
 [load_test.push_messages]
 enable = false

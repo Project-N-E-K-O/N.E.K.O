@@ -160,7 +160,7 @@ async def startup() -> None:
     print("=" * 60, flush=True)
     print("请在请求头中添加: Authorization: Bearer <验证码>", flush=True)
     print("=" * 60 + "\n", flush=True)
-    logger.info(f"Admin authentication code generated: {admin_code}")
+    logger.info("Admin authentication code generated and displayed in terminal")  
 
 
 async def _shutdown_internal() -> None:
