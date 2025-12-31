@@ -244,13 +244,15 @@ class VRMCore {
         lockIcon.id = 'vrm-lock-icon';
         Object.assign(lockIcon.style, {
             position: 'fixed',
-            zIndex: '99999',
-            width: '32px',
+            zIndex: '99', // 确保在最上层
+            width: '32px', // 增大点击区域
             height: '32px',
             cursor: 'pointer',
             userSelect: 'none',
             pointerEvents: 'auto',
-            display: 'block'
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
         });
 
         // 添加版本号防止缓存
@@ -270,8 +272,8 @@ class VRMCore {
         imgLocked.alt = 'Locked';
         Object.assign(imgLocked.style, {
             position: 'absolute',
-            width: '32px',
-            height: '32px',
+            width: '28px',
+            height: '28px',
             objectFit: 'contain',
             pointerEvents: 'none',
             opacity: this.manager.isLocked ? '1' : '0',
@@ -284,8 +286,8 @@ class VRMCore {
         imgUnlocked.alt = 'Unlocked';
         Object.assign(imgUnlocked.style, {
             position: 'absolute',
-            width: '32px',
-            height: '32px',
+            width: '28px',
+            height: '28px',
             objectFit: 'contain',
             pointerEvents: 'none',
             opacity: this.manager.isLocked ? '0' : '1',
@@ -304,11 +306,35 @@ class VRMCore {
             unlocked: imgUnlocked
         };
 
-        // 点击事件
+        // 点击事件 - 使用 mousedown 和 touchstart，提高响应速度
+        const handleLockToggle = (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+
+            // 添加视觉反馈：点击时缩小
+            lockIcon.style.transform = 'scale(0.9)';
+            setTimeout(() => {
+                lockIcon.style.transform = 'scale(1)';
+            }, 150);
+
+            this.setLocked(!this.manager.isLocked);
+        };
+
+        lockIcon.addEventListener('mousedown', handleLockToggle);
+        lockIcon.addEventListener('touchstart', handleLockToggle);
+
+        // 阻止 click 和 touchend 事件冒泡（防止双重触发）
         lockIcon.addEventListener('click', (e) => {
             e.stopPropagation();
-            this.setLocked(!this.manager.isLocked);
+            e.preventDefault();
         });
+        lockIcon.addEventListener('touchend', (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+        });
+
+        // 添加过渡动画
+        lockIcon.style.transition = 'transform 0.15s ease';
 
         // 确保默认状态为解锁（可以移动和缩放）
         this.setLocked(false);
@@ -334,9 +360,11 @@ class VRMCore {
                 const modelTop = rect.top + rect.height * 0.2;
                 const modelBottom = rect.top + rect.height * 0.8;
 
-                // 计算锁图标目标位置（右下角）
-                const targetX = modelRight * 0.7 + modelLeft * 0.3;
-                const targetY = modelTop * 0.3 + modelBottom * 0.7;
+                // 计算锁图标目标位置（脚部左侧）
+                // 水平：在模型左侧
+                const targetX = modelLeft + (modelRight - modelLeft) * 0.8;  // 20%位置（靠左）
+                // 垂直：在模型中上部
+                const targetY = modelTop + (modelBottom - modelTop) * 0.5;  // 50%位置（中间偏上）
 
                 // 边界限制
                 lockIcon.style.left = `${Math.max(0, Math.min(targetX, screenWidth - 40))}px`;
@@ -392,6 +420,9 @@ class VRMCore {
             if (locked) {
                 // 锁定时隐藏浮动按钮
                 buttonsContainer.style.display = 'none';
+            } else {
+                // 解锁时不自动显示，保持原有的鼠标悬停逻辑
+                // buttonsContainer.style.display 会由鼠标悬停事件控制
             }
         }
     }

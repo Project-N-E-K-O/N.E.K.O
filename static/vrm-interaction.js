@@ -496,7 +496,7 @@ class VRMInteraction {
         
         // 辅助函数：显示按钮并更新位置
         const showButtons = () => {
-            if (this.checkLocked()) return; 
+            if (this.checkLocked()) return;
 
             if (window.live2dManager) {
                 window.live2dManager.isFocusing = true;
@@ -505,7 +505,14 @@ class VRMInteraction {
             // 更新按钮位置
             this.updateFloatingButtonsPosition();
 
-            buttonsContainer.style.display = 'flex';
+            // 浮动按钮始终显示，不需要控制
+            // buttonsContainer.style.display = 'flex';
+
+            // 【只控制锁图标】鼠标靠近时显示锁图标
+            const lockIcon = document.getElementById('vrm-lock-icon');
+            if (lockIcon) {
+                lockIcon.style.display = 'block';
+            }
 
             if (this._hideButtonsTimer) {
                 clearTimeout(this._hideButtonsTimer);
@@ -516,36 +523,58 @@ class VRMInteraction {
         // 辅助函数：启动隐藏定时器
         const startHideTimer = (delay = 1000) => {
             if (this.checkLocked()) return;
-            
+
             if (this._hideButtonsTimer) {
                 clearTimeout(this._hideButtonsTimer);
                 this._hideButtonsTimer = null;
             }
-            
+
             this._hideButtonsTimer = setTimeout(() => {
-                if (this._isMouseOverButtons) {
+                // 【新增】检查鼠标是否在锁图标上
+                const lockIcon = document.getElementById('vrm-lock-icon');
+                let isMouseOverLock = false;
+                if (lockIcon && lockIcon.style.display === 'block') {
+                    const lockRect = lockIcon.getBoundingClientRect();
+                    const mouseX = this._lastMouseX || 0;
+                    const mouseY = this._lastMouseY || 0;
+                    isMouseOverLock = mouseX >= lockRect.left && mouseX <= lockRect.right &&
+                                     mouseY >= lockRect.top && mouseY <= lockRect.bottom;
+                }
+
+                if (this._isMouseOverButtons || isMouseOverLock) {
                     this._hideButtonsTimer = null;
                     startHideTimer(delay);
                     return;
                 }
-                
+
                 const canvas = this.manager.renderer.domElement;
                 const rect = canvas.getBoundingClientRect();
                 const mouseX = this._lastMouseX || 0;
                 const mouseY = this._lastMouseY || 0;
                 const isInCanvas = mouseX >= rect.left && mouseX <= rect.right &&
                                    mouseY >= rect.top && mouseY <= rect.bottom;
-                
+
                 if (isInCanvas) {
                     this._hideButtonsTimer = null;
                     startHideTimer(delay);
                     return;
                 }
-                
+
                 if (window.live2dManager) {
                     window.live2dManager.isFocusing = false;
                 }
-                buttonsContainer.style.display = 'none';
+
+                // 浮动按钮始终显示，不需要隐藏
+                // buttonsContainer.style.display = 'none';
+
+                // 【只控制锁图标】鼠标离开时隐藏锁图标
+                if (lockIcon) {
+                    // 【新增】检查是否有点击保护标记，如果有则不隐藏
+                    if (!lockIcon.dataset.clickProtection) {
+                        lockIcon.style.display = 'none';
+                    }
+                }
+
                 this._hideButtonsTimer = null;
             }, delay);
         };
@@ -556,27 +585,37 @@ class VRMInteraction {
         const onPointerMove = (event) => {
             if (!this.manager.currentModel || !this.manager.currentModel.vrm) return;
             if (this.checkLocked()) return;
-            
+
             const canvas = this.manager.renderer.domElement;
             const rect = canvas.getBoundingClientRect();
             const mouseX = event.clientX;
             const mouseY = event.clientY;
-            
+
             this._lastMouseX = mouseX;
             this._lastMouseY = mouseY;
-            
+
             const isInCanvas = mouseX >= rect.left && mouseX <= rect.right &&
                                mouseY >= rect.top && mouseY <= rect.bottom;
-            
+
             let isOverButtons = false;
             if (buttonsContainer.style.display === 'flex') {
                 const buttonsRect = buttonsContainer.getBoundingClientRect();
                 isOverButtons = mouseX >= buttonsRect.left && mouseX <= buttonsRect.right &&
                                 mouseY >= buttonsRect.top && mouseY <= buttonsRect.bottom;
             }
-            this._isMouseOverButtons = isOverButtons;
-            
-            if (isInCanvas || isOverButtons) {
+
+            // 【新增】检查鼠标是否在锁图标上
+            let isOverLock = false;
+            const lockIcon = document.getElementById('vrm-lock-icon');
+            if (lockIcon && lockIcon.style.display === 'block') {
+                const lockRect = lockIcon.getBoundingClientRect();
+                isOverLock = mouseX >= lockRect.left && mouseX <= lockRect.right &&
+                             mouseY >= lockRect.top && mouseY <= lockRect.bottom;
+            }
+
+            this._isMouseOverButtons = isOverButtons || isOverLock;
+
+            if (isInCanvas || isOverButtons || isOverLock) {
                 showButtons();
             } else {
                 startHideTimer();

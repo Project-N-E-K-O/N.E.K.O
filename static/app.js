@@ -5862,6 +5862,13 @@ function init_app() {
             else if (modelType === 'live2d' && window.vrmManager && window.vrmManager.currentModel) {
                 console.log('[猫娘切换] 清理旧的VRM模型');
                 try {
+                    // 清理VRM UI元素（浮动按钮、锁图标、返回按钮）
+                    if (typeof window.vrmManager.cleanupUI === 'function') {
+                        window.vrmManager.cleanupUI();
+                        console.log('[猫娘切换] VRM UI已清理');
+                    }
+
+                    // 清理VRM模型
                     if (typeof window.vrmManager.removeModel === 'function') {
                         window.vrmManager.removeModel();
                     } else if (window.vrmManager.currentModel && window.vrmManager.currentModel.scene) {
@@ -6139,6 +6146,42 @@ function init_app() {
                             isMobile: window.innerWidth <= 768
                         });
 
+                        // 确保锁图标被创建（解决热切换时锁图标不显示的问题）
+                        // 强制清除所有可能存在的锁图标（包括VRM和Live2D）
+                        console.log('[猫娘切换] 开始清理所有旧的锁图标...');
+                        document.querySelectorAll('#vrm-lock-icon').forEach(el => {
+                            console.log('[猫娘切换] 移除VRM锁:', el);
+                            el.remove();
+                        });
+                        document.querySelectorAll('#live2d-lock-icon').forEach(el => {
+                            console.log('[猫娘切换] 移除旧的Live2D锁:', el);
+                            el.remove();
+                        });
+
+                        // 再次确认VRM模式标志已清除
+                        if (window.lanlan_config && window.lanlan_config.vrm_model) {
+                            console.log('[猫娘切换] 清除VRM模式标志');
+                            window.lanlan_config.vrm_model = null;
+                        }
+
+                        // 添加短暂延迟确保DOM清理完成
+                        await new Promise(resolve => setTimeout(resolve, 100));
+
+                        const currentModel = window.live2dManager.getCurrentModel();
+                        if (currentModel && typeof window.live2dManager.setupHTMLLockIcon === 'function') {
+                            console.log('[猫娘切换] 准备创建Live2D锁图标，当前模型:', currentModel);
+                            window.live2dManager.setupHTMLLockIcon(currentModel);
+                            console.log('[猫娘切换] Live2D锁图标创建完成');
+
+                            // 验证锁是否真的被创建
+                            const lockIcon = document.getElementById('live2d-lock-icon');
+                            if (lockIcon) {
+                                console.log('[猫娘切换] ✓ 验证成功：锁图标已在DOM中');
+                            } else {
+                                console.error('[猫娘切换] ✗ 警告：锁图标创建失败，未在DOM中找到');
+                            }
+                        }
+
                         // 更新全局引用
                         if (window.LanLan1) {
                             window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
@@ -6177,6 +6220,42 @@ function init_app() {
                                     await window.live2dManager.loadModel(modelConfig, {
                                         isMobile: window.innerWidth <= 768
                                     });
+
+                                    // 确保锁图标被创建（解决热切换时锁图标不显示的问题）
+                                    // 强制清除所有可能存在的锁图标（包括VRM和Live2D）
+                                    console.log('[猫娘切换] 开始清理所有旧的锁图标（默认模型）...');
+                                    document.querySelectorAll('#vrm-lock-icon').forEach(el => {
+                                        console.log('[猫娘切换] 移除VRM锁:', el);
+                                        el.remove();
+                                    });
+                                    document.querySelectorAll('#live2d-lock-icon').forEach(el => {
+                                        console.log('[猫娘切换] 移除旧的Live2D锁:', el);
+                                        el.remove();
+                                    });
+
+                                    // 再次确认VRM模式标志已清除
+                                    if (window.lanlan_config && window.lanlan_config.vrm_model) {
+                                        console.log('[猫娘切换] 清除VRM模式标志');
+                                        window.lanlan_config.vrm_model = null;
+                                    }
+
+                                    // 添加短暂延迟确保DOM清理完成
+                                    await new Promise(resolve => setTimeout(resolve, 100));
+
+                                    const currentModel = window.live2dManager.getCurrentModel();
+                                    if (currentModel && typeof window.live2dManager.setupHTMLLockIcon === 'function') {
+                                        console.log('[猫娘切换] 准备创建Live2D锁图标（默认模型），当前模型:', currentModel);
+                                        window.live2dManager.setupHTMLLockIcon(currentModel);
+                                        console.log('[猫娘切换] Live2D锁图标创建完成（默认模型）');
+
+                                        // 验证锁是否真的被创建
+                                        const lockIcon = document.getElementById('live2d-lock-icon');
+                                        if (lockIcon) {
+                                            console.log('[猫娘切换] ✓ 验证成功：锁图标已在DOM中（默认模型）');
+                                        } else {
+                                            console.error('[猫娘切换] ✗ 警告：锁图标创建失败，未在DOM中找到（默认模型）');
+                                        }
+                                    }
 
                                     // 更新全局引用
                                     if (window.LanLan1) {

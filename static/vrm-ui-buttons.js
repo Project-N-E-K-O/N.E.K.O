@@ -408,10 +408,9 @@ VRMManager.prototype.setupFloatingButtons = function () {
     // 为"请她回来"按钮添加拖动功能
     this.setupVRMReturnButtonDrag(returnButtonContainer);
 
-    // --- 4. 锁图标处理 
-    
-    // 先删掉所有已存在的锁，不管是 Live2D 的还是 VRM 的
-    document.querySelectorAll('#live2d-lock-icon').forEach(el => el.remove());
+    // --- 4. 锁图标处理
+
+    // 只删除VRM的锁（不删除Live2D的锁）
     document.querySelectorAll('#vrm-lock-icon').forEach(el => el.remove());
 
     const lockIcon = document.createElement('div');
@@ -423,9 +422,9 @@ VRMManager.prototype.setupFloatingButtons = function () {
 
     // 【修改点】加大尺寸到 44px，更容易点
     Object.assign(lockIcon.style, {
-        position: 'fixed', zIndex: '99999', 
+        position: 'fixed', zIndex: '99999',
         width: '44px', height: '44px',
-        cursor: 'pointer', display: 'block', 
+        cursor: 'pointer', display: 'none',  // 【修改】初始隐藏，鼠标靠近时显示
         backgroundImage: 'url(/static/icons/unlocked_icon.png)',
         backgroundSize: 'contain', backgroundRepeat: 'no-repeat', backgroundPosition: 'center',
         pointerEvents: 'auto', transition: 'transform 0.1s'
@@ -434,13 +433,13 @@ VRMManager.prototype.setupFloatingButtons = function () {
     // 【修改点】点击锁的逻辑 - 必须控制 pointerEvents
     const toggleLock = (e) => {
         if(e) { e.preventDefault(); e.stopPropagation(); }
-        
+
         this.interaction.isLocked = !this.interaction.isLocked;
-        
+
         // 换图
-        lockIcon.style.backgroundImage = this.interaction.isLocked ? 
+        lockIcon.style.backgroundImage = this.interaction.isLocked ?
             'url(/static/icons/locked_icon.png)' : 'url(/static/icons/unlocked_icon.png)';
-        
+
         // 点击反馈
         lockIcon.style.transform = 'scale(0.9)';
         setTimeout(() => lockIcon.style.transform = 'scale(1)', 100);
@@ -452,10 +451,17 @@ VRMManager.prototype.setupFloatingButtons = function () {
             // 解锁 = auto (鼠标能点到模型，可以拖动)
             vrmCanvas.style.pointerEvents = this.interaction.isLocked ? 'none' : 'auto';
         }
+
+        // 【新增】点击后保持锁图标显示一段时间，避免立即隐藏导致无法连续点击
+        lockIcon.style.display = 'block';
+        lockIcon.dataset.clickProtection = 'true';
+        setTimeout(() => {
+            delete lockIcon.dataset.clickProtection;
+        }, 500);
     };
 
-    // 使用 touchstart 提高移动端灵敏度
-    lockIcon.addEventListener('click', toggleLock);
+    // 【改进】使用 mousedown 代替 click，更灵敏
+    lockIcon.addEventListener('mousedown', toggleLock);
     lockIcon.addEventListener('touchstart', toggleLock, {passive:false});
 
     // 启动循环更新位置
@@ -497,20 +503,21 @@ VRMManager.prototype._startUIUpdateLoop = function() {
                 const screenX = (btnPos.x * 0.5 + 0.5) * width;
                 const screenY = (-(btnPos.y * 0.5) + 0.5) * height;
                 buttonsContainer.style.left = `${screenX}px`;
-                buttonsContainer.style.top = `${screenY - 100}px`; 
-                buttonsContainer.style.display = 'flex'; 
+                buttonsContainer.style.top = `${screenY - 100}px`;
+                buttonsContainer.style.display = 'flex';  // 浮动按钮始终显示
             }
 
             // 更新锁位置
             if (lockIcon) {
                 const lockPos = vec.clone();
-                lockPos.x += 0.35; lockPos.y -= 0.8; 
+                lockPos.x += 0.1; lockPos.y -= 0.55;  // 右侧偏下（脚部右侧）
                 lockPos.project(this.camera);
                 const lX = (lockPos.x * 0.5 + 0.5) * width;
                 const lY = (-(lockPos.y * 0.5) + 0.5) * height;
                 lockIcon.style.left = `${lX}px`;
                 lockIcon.style.top = `${lY}px`;
-                lockIcon.style.display = 'block';
+                // 【保留注释】不强制显示锁，由鼠标跟踪控制
+                // lockIcon.style.display = 'block';
             }
         }
         requestAnimationFrame(update);
@@ -646,4 +653,34 @@ VRMManager.prototype.setupVRMReturnButtonDrag = function (returnButtonContainer)
             isClick = false;
         }
     });
+};
+
+/**
+ * 清理VRM UI元素（切换到Live2D时调用）
+ */
+VRMManager.prototype.cleanupUI = function() {
+    // 移除VRM浮动按钮
+    const vrmButtons = document.getElementById('vrm-floating-buttons');
+    if (vrmButtons) {
+        vrmButtons.remove();
+    }
+
+    // 移除VRM锁图标
+    document.querySelectorAll('#vrm-lock-icon').forEach(el => el.remove());
+
+    // 移除VRM返回按钮
+    const vrmReturnBtn = document.getElementById('vrm-return-button-container');
+    if (vrmReturnBtn) {
+        vrmReturnBtn.remove();
+    }
+
+    // 清除VRM模式标记，让Live2D锁图标可以正常创建
+    if (window.lanlan_config) {
+        window.lanlan_config.vrm_model = null;
+    }
+
+    // 清理引用
+    this._vrmLockIcon = null;
+    this._vrmFloatingButtons = null;
+    this._returnButtonContainer = null;
 };
