@@ -592,16 +592,139 @@
         const statusDiv = document.getElementById('status');
         const backToMainBtn = document.getElementById('backToMainBtn');
 
-        // 发送消息给主页
+        // ===== 跨页面通信系统 =====
+        // 使用 BroadcastChannel（如果可用）或 localStorage 作为后备
+        const CHANNEL_NAME = 'neko_page_channel';
+        const MESSAGE_TIMEOUT = 2000; // 最大等待时间（毫秒）
+        let broadcastChannel = null;
+
+        // 初始化 BroadcastChannel（如果支持）
+        try {
+            if (typeof BroadcastChannel !== 'undefined') {
+                broadcastChannel = new BroadcastChannel(CHANNEL_NAME);
+                console.log('[CrossPageComm] BroadcastChannel 已初始化');
+            }
+        } catch (e) {
+            console.log('[CrossPageComm] BroadcastChannel 不可用，将使用 localStorage 后备方案');
+        }
+
+        /**
+         * 发送消息给主页并等待确认
+         * @param {string} action - 要执行的动作
+         * @returns {Promise<boolean>} - 返回是否成功收到确认
+         */
+        function sendMessageWithAck(action) {
+            return new Promise((resolve) => {
+                const messageId = `${action}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+                const message = {
+                    action: action,
+                    messageId: messageId,
+                    timestamp: Date.now()
+                };
+
+                let resolved = false;
+                let timeoutId = null;
+
+                const cleanup = () => {
+                    if (timeoutId) {
+                        clearTimeout(timeoutId);
+                        timeoutId = null;
+                    }
+                    // 清理监听器
+                    if (broadcastChannel) {
+                        broadcastChannel.onmessage = null;
+                    }
+                    window.removeEventListener('storage', storageHandler);
+                };
+
+                const handleAck = (ackMessageId) => {
+                    if (!resolved && ackMessageId === messageId) {
+                        resolved = true;
+                        cleanup();
+                        console.log('[CrossPageComm] 收到确认消息:', messageId);
+                        resolve(true);
+                    }
+                };
+
+                // BroadcastChannel 确认监听
+                if (broadcastChannel) {
+                    broadcastChannel.onmessage = (event) => {
+                        if (event.data && event.data.type === 'ack' && event.data.messageId) {
+                            handleAck(event.data.messageId);
+                        }
+                    };
+                }
+
+                // localStorage 确认监听（后备方案）
+                const storageHandler = (event) => {
+                    if (event.key === 'nekopage_ack') {
+                        try {
+                            const ackData = JSON.parse(event.newValue);
+                            if (ackData && ackData.messageId) {
+                                handleAck(ackData.messageId);
+                            }
+                        } catch (e) {
+                            // 忽略解析错误
+                        }
+                    }
+                };
+                window.addEventListener('storage', storageHandler);
+
+                // 超时后备：即使没有收到确认也继续
+                timeoutId = setTimeout(() => {
+                    if (!resolved) {
+                        resolved = true;
+                        cleanup();
+                        console.log('[CrossPageComm] 等待确认超时，继续执行');
+                        resolve(false);
+                    }
+                }, MESSAGE_TIMEOUT);
+
+                // 发送消息
+                try {
+                    // 优先使用 BroadcastChannel
+                    if (broadcastChannel) {
+                        broadcastChannel.postMessage(message);
+                        console.log('[CrossPageComm] 通过 BroadcastChannel 发送消息:', action);
+                    }
+
+                    // 同时使用 localStorage 作为后备（确保兼容性）
+                    localStorage.setItem('nekopage_message', JSON.stringify(message));
+                    localStorage.removeItem('nekopage_message');
+
+                    // 同窗口触发 storage 事件
+                    window.dispatchEvent(new StorageEvent('storage', {
+                        key: 'nekopage_message',
+                        newValue: JSON.stringify(message)
+                    }));
+                } catch (e) {
+                    console.log('[CrossPageComm] 发送消息失败:', e);
+                    // 发送失败，短暂延迟后继续
+                    if (!resolved) {
+                        resolved = true;
+                        cleanup();
+                        resolve(false);
+                    }
+                }
+            });
+        }
+
+        // 保留原有的简单发送函数（用于不需要确认的场景）
         function sendMessageToMainPage(action) {
             try {
                 const message = {
                     action: action,
                     timestamp: Date.now()
                 };
+                
+                // 优先使用 BroadcastChannel
+                if (broadcastChannel) {
+                    broadcastChannel.postMessage(message);
+                }
+                
+                // 同时使用 localStorage
                 localStorage.setItem('nekopage_message', JSON.stringify(message));
                 localStorage.removeItem('nekopage_message');
-                // 如果是同窗口，直接触发storage事件
                 window.dispatchEvent(new StorageEvent('storage', {
                     key: 'nekopage_message',
                     newValue: JSON.stringify(message)
@@ -655,20 +778,21 @@
         }
 
         // 返回L2D设置界面
-        backToMainBtn.addEventListener('click', () => {
-            // 在跳转前发送消息通知主页
-            sendMessageToMainPage('reload_model_parameters');
-            // 延迟一点确保消息发送
-            setTimeout(() => {
-                // 获取当前URL参数，保留lanlan_name等参数
-                const urlParams = new URLSearchParams(window.location.search);
-                const lanlanName = urlParams.get('lanlan_name');
-                let targetUrl = '/l2d';
-                if (lanlanName) {
-                    targetUrl += `?lanlan_name=${encodeURIComponent(lanlanName)}`;
-                }
-                window.location.href = targetUrl;
-            }, 100);
+        backToMainBtn.addEventListener('click', async () => {
+            // 构建目标 URL
+            const urlParams = new URLSearchParams(window.location.search);
+            const lanlanName = urlParams.get('lanlan_name');
+            let targetUrl = '/l2d';
+            if (lanlanName) {
+                targetUrl += `?lanlan_name=${encodeURIComponent(lanlanName)}`;
+            }
+
+            // 使用确认机制发送消息，等待主页确认后再跳转
+            const ackReceived = await sendMessageWithAck('reload_model_parameters');
+            console.log('[Navigation] 消息确认状态:', ackReceived ? '已确认' : '超时/未确认');
+            
+            // 无论是否收到确认都执行跳转（超时后自动继续）
+            window.location.href = targetUrl;
         });
 
         // 加载模型列表
@@ -798,7 +922,8 @@
                     loadEmotionMapping: false,
                     dragEnabled: true,
                     wheelEnabled: true,
-                    preferences: modelPreferences
+                    preferences: modelPreferences,
+                    skipCloseWindows: true  // 参数编辑器页面不需要关闭其他窗口
                 });
 
                 live2dModel = window.live2dManager.getCurrentModel();

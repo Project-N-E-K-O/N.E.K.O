@@ -1484,26 +1484,127 @@
             window.activeMenuCount = Math.max(0, window.activeMenuCount - 1);
         };
 
-        // 页面间通信：监听来自模型设置页面的消息
+        // ===== 跨页面通信系统 =====
+        const CHANNEL_NAME = 'neko_page_channel';
+        let mainPageBroadcastChannel = null;
+
+        // 初始化 BroadcastChannel（如果支持）
+        try {
+            if (typeof BroadcastChannel !== 'undefined') {
+                mainPageBroadcastChannel = new BroadcastChannel(CHANNEL_NAME);
+                mainPageBroadcastChannel.onmessage = async (event) => {
+                    if (event.data && event.data.action) {
+                        console.log('[CrossPageComm] 通过 BroadcastChannel 收到消息:', event.data.action);
+                        await handleCrossPageAction(event.data);
+                    }
+                };
+                console.log('[CrossPageComm] 主页 BroadcastChannel 已初始化');
+            }
+        } catch (e) {
+            console.log('[CrossPageComm] 主页 BroadcastChannel 不可用');
+        }
+
+        /**
+         * 发送确认消息
+         * @param {string} messageId - 要确认的消息 ID
+         * @param {boolean} success - 操作是否成功
+         * @param {string} [error] - 错误消息（仅当 success 为 false 时）
+         */
+        function sendAcknowledgment(messageId, success = true, error = null) {
+            if (!messageId) return;
+
+            const ackData = { 
+                type: 'ack', 
+                messageId: messageId, 
+                success: success,
+                error: error,
+                timestamp: Date.now() 
+            };
+
+            // 通过 BroadcastChannel 发送确认
+            if (mainPageBroadcastChannel) {
+                try {
+                    mainPageBroadcastChannel.postMessage(ackData);
+                    console.log('[CrossPageComm] 通过 BroadcastChannel 发送确认:', messageId, success ? '成功' : '失败');
+                } catch (e) {
+                    console.log('[CrossPageComm] BroadcastChannel 发送确认失败:', e);
+                }
+            }
+
+            // 同时通过 localStorage 发送确认（后备方案）
+            try {
+                localStorage.setItem('nekopage_ack', JSON.stringify(ackData));
+                localStorage.removeItem('nekopage_ack');
+            } catch (e) {
+                console.log('[CrossPageComm] localStorage 发送确认失败:', e);
+            }
+        }
+
+        /**
+         * 处理跨页面动作
+         * @param {Object} message - 消息对象
+         */
+        async function handleCrossPageAction(message) {
+            // 验证消息格式
+            if (!message || typeof message !== 'object') {
+                console.warn('[CrossPageComm] 收到无效消息: 消息不是对象');
+                return;
+            }
+
+            const { action, messageId } = message;
+
+            // 验证 action 字段
+            if (!action || typeof action !== 'string') {
+                console.warn('[CrossPageComm] 收到无效消息: action 缺失或不是字符串', message);
+                if (messageId) {
+                    sendAcknowledgment(messageId, false, 'Invalid action: action must be a non-empty string');
+                }
+                return;
+            }
+
+            try {
+                switch (action) {
+                    case 'hide_main_ui':
+                        console.log('接收到隐藏主界面命令');
+                        hideMainUI();
+                        break;
+                    case 'show_main_ui':
+                        console.log('接收到显示主界面命令');
+                        await showMainUI();
+                        break;
+                    case 'reload_model_parameters':
+                        console.log('接收到重新加载模型参数命令');
+                        await reloadModelParameters();
+                        break;
+                    default:
+                        console.warn('[CrossPageComm] 收到未知动作:', action);
+                        if (messageId) {
+                            sendAcknowledgment(messageId, false, `Unknown action: ${action}`);
+                        }
+                        return; // 未知动作不发送成功确认
+                }
+
+                // 操作成功完成后发送确认消息
+                if (messageId) {
+                    sendAcknowledgment(messageId, true);
+                }
+            } catch (error) {
+                console.error('[CrossPageComm] 执行动作失败:', action, error);
+                // 操作失败时发送错误确认
+                if (messageId) {
+                    sendAcknowledgment(messageId, false, error.message || 'Action execution failed');
+                }
+            }
+        }
+
+        // 页面间通信：监听来自模型设置页面的消息（localStorage 后备方案）
         async function handlePageMessage(event) {
             if (event.key === 'nekopage_message') {
                 try {
                     const message = JSON.parse(event.newValue);
                     if (message && message.action) {
-                        switch (message.action) {
-                            case 'hide_main_ui':
-                                console.log('接收到隐藏主界面命令');
-                                hideMainUI();
-                                break;
-                            case 'show_main_ui':
-                                console.log('接收到显示主界面命令');
-                                await showMainUI();
-                                break;
-                            case 'reload_model_parameters':
-                                console.log('接收到重新加载模型参数命令');
-                                await reloadModelParameters();
-                                break;
-                        }
+                        console.log('[CrossPageComm] 通过 localStorage 收到消息:', message.action);
+                        await handleCrossPageAction(message);
                     }
                 } catch (e) {
                     console.log('解析页面消息失败:', e);
@@ -1602,6 +1703,25 @@
                 // 5. 检查当前加载的模型路径（优先使用 _lastLoadedModelPath）
                 const currentModel = window.live2dManager?.getCurrentModel();
                 let currentModelPath = '';
+                
+                // 检查模型是否处于有效状态（可能因窗口关闭导致模型失效）
+                let modelMayBeInvalid = false;
+                if (currentModel) {
+                    // 检查模型是否完整可用
+                    if (!currentModel.internalModel || !currentModel.internalModel.coreModel) {
+                        console.log('检测到模型可能损坏或未完全加载');
+                        modelMayBeInvalid = true;
+                    }
+                    // 检查模型是否在舞台上
+                    if (!currentModel.parent) {
+                        console.log('检测到模型未在舞台上显示');
+                        modelMayBeInvalid = true;
+                    }
+                } else {
+                    console.log('当前没有加载的模型');
+                    modelMayBeInvalid = true;
+                }
+                
                 if (window.live2dManager?._lastLoadedModelPath) {
                     currentModelPath = window.live2dManager._lastLoadedModelPath;
                 } else if (currentModel && currentModel.url) {
@@ -1619,8 +1739,11 @@
 
                 // 7. 比较模型路径，判断是否需要完全重新加载模型（使用更准确的路径比较）
                 let needReload = false;
-                if (!currentModelPath) {
+                if (!currentModelPath || modelMayBeInvalid) {
                     needReload = true;
+                    if (modelMayBeInvalid) {
+                        console.log('模型可能损坏，强制重新加载');
+                    }
                 } else {
                     // 标准化路径进行比较
                     const normalizePath = (path) => {
@@ -1651,7 +1774,8 @@
 
                     await window.live2dManager.loadModel(newModelPath, {
                         preferences: modelPreferences,
-                        isMobile: window.innerWidth <= 768
+                        isMobile: window.innerWidth <= 768,
+                        skipCloseWindows: true  // 从设置窗口返回时不关闭其他窗口
                     });
 
                     // 更新全局引用
