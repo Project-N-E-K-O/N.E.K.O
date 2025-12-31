@@ -470,7 +470,7 @@ Live2DManager.prototype.setupTouchZoom = function(model) {
 
 // 启用鼠标跟踪以检测与模型的接近度
 Live2DManager.prototype.enableMouseTracking = function(model, options = {}) {
-    const { threshold = 70 } = options;
+    const { threshold = 70, HoverFadethreshold = 5 } = options;
     
     // 使用实例属性保存定时器，便于在其他地方访问
     if (this._hideButtonsTimer) {
@@ -531,6 +531,15 @@ Live2DManager.prototype.enableMouseTracking = function(model, options = {}) {
         }, delay);
     };
 
+    const live2dContainer = document.getElementById('live2d-container');
+    let lockedHoverFadeActive = false;
+    const setLockedHoverFade = (shouldFade) => {
+        if (!live2dContainer) return;
+        if (lockedHoverFadeActive === shouldFade) return;
+        lockedHoverFadeActive = shouldFade;
+        live2dContainer.classList.toggle('locked-hover-fade', shouldFade);
+    };
+
     // 方法1：监听 PIXI 模型的 pointerover/pointerout 事件（适用于 Electron 透明窗口）
     model.on('pointerover', () => {
         showButtons();
@@ -545,11 +554,13 @@ Live2DManager.prototype.enableMouseTracking = function(model, options = {}) {
     const onPointerMove = (event) => {
         // 检查模型是否存在，防止切换模型时出现错误
         if (!model) {
+            setLockedHoverFade(false);
             return;
         }
         
         // 检查模型是否已被销毁或不在舞台上
         if (model.destroyed || !model.parent || !this.pixi_app || !this.pixi_app.stage) {
+            setLockedHoverFade(false);
             return;
         }
         
@@ -577,6 +588,7 @@ Live2DManager.prototype.enableMouseTracking = function(model, options = {}) {
             if (returnButtonContainer) {
                 returnButtonContainer.style.display = 'block';
             }
+            setLockedHoverFade(false);
             return;
         }
 
@@ -586,6 +598,8 @@ Live2DManager.prototype.enableMouseTracking = function(model, options = {}) {
             const dx = Math.max(bounds.left - pointer.x, 0, pointer.x - bounds.right);
             const dy = Math.max(bounds.top - pointer.y, 0, pointer.y - bounds.bottom);
             const distance = Math.sqrt(dx * dx + dy * dy);
+            const shouldFade = this.isLocked && distance < HoverFadethreshold;
+            setLockedHoverFade(shouldFade);
 
             if (distance < threshold) {
                 showButtons();
