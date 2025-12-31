@@ -243,8 +243,7 @@ export function createRealtimeClient(options: RealtimeClientOptions): RealtimeCl
     // 仅在 idle/closed 时才允许显式 connect，避免重复连接/打断现有心跳。
     if (state !== "idle" && state !== "closed") return;
 
-    // 兜底：防止极短时间内重复 connect（例如多处同时触发）
-    if (state === "connecting" && nowMs() - lastConnectAt < 250) return;
+    // connectInternal 内部也会忽略重复连接尝试（CONNECTING/OPEN）。
     connectInternal();
   };
 
