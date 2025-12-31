@@ -1087,6 +1087,12 @@ function init_app() {
             // 开始录音前添加录音状态类到两个按钮
             micButton.classList.add('recording');
 
+            // 隐藏文本输入区（仅非移动端），确保语音/文本互斥
+            const textInputArea = document.getElementById('text-input-area');
+            if (textInputArea && !isMobile()) {
+                textInputArea.classList.add('hidden');
+            }
+
             if (!audioPlayerContext) {
                 audioPlayerContext = new (window.AudioContext || window.webkitAudioContext)();
             }
@@ -1147,12 +1153,20 @@ function init_app() {
             if (!micButton.classList.contains('active')) {
                 micButton.classList.add('active');
             }
+            syncFloatingMicButtonState(true);
 
             // 开始录音时，停止主动搭话定时器
             stopProactiveChatSchedule();
         } catch (err) {
             console.error('获取麦克风权限失败:', err);
             showStatusToast(window.t ? window.t('app.micAccessDenied') : '无法访问麦克风', 4000);
+            
+            // 失败时恢复文本输入区
+            const textInputArea = document.getElementById('text-input-area');
+            if (textInputArea) {
+                textInputArea.classList.remove('hidden');
+            }
+
             // 失败时移除录音状态类
             micButton.classList.remove('recording');
             // 移除active类
@@ -1306,6 +1320,7 @@ function init_app() {
 
             // 添加active类以保持激活状态的颜色
             screenButton.classList.add('active');
+            syncFloatingScreenButtonState(true);
 
             // 手动开始屏幕共享时，重置/停止语音期间的主动视觉定时，避免双重触发
             try {
@@ -2944,28 +2959,53 @@ function init_app() {
     // ========== 连接浮动按钮到原有功能 ==========
 
     // 麦克风按钮（toggle模式）
+    // 麦克风按钮（toggle模式）
     window.addEventListener('live2d-mic-toggle', async (e) => {
         if (e.detail.active) {
-            // 想要开启语音：如果 micButton 已经有 active 类，说明正在处理中或已激活，直接返回
-            if (micButton.classList.contains('active')) {
+            // 想要开启语音：如果已经在录音，直接返回
+            if (window.isRecording) {
                 return;
             }
             // 开始语音
-            micButton.click(); // 触发原有的麦克风按钮点击
+            if (typeof startMicCapture === 'function') {
+                await startMicCapture();
+            } else {
+                console.error('startMicCapture function not found');
+            }
         } else {
-            // 想要关闭语音：允许执行，即使 micButton 有 active 类（因为这是正常的退出操作）
-            muteButton.click(); // 触发原有的停止按钮点击
+            // 想要关闭语音
+            // 如果已经停止录音，直接返回
+            if (!window.isRecording) {
+                return;
+            }
+            // 关闭语音
+            if (typeof stopMicCapture === 'function') {
+                await stopMicCapture();
+            } else {
+                console.error('stopMicCapture function not found');
+            }
         }
     });
 
     // 屏幕分享按钮（toggle模式）
+    // 屏幕分享按钮（toggle模式）
     window.addEventListener('live2d-screen-toggle', async (e) => {
         if (e.detail.active) {
             // 开启屏幕分享
-            screenButton.click();
+            // screenButton不存在，直接调用函数
+            if (typeof startScreenSharing === 'function') {
+                await startScreenSharing();
+            } else {
+                console.error('startScreenSharing function not found');
+            }
         } else {
             // 关闭屏幕分享
-            stopButton.click();
+            // stopButton会停止整个会话（包括语音），这里只应该停止屏幕分享
+            if (typeof stopScreenSharing === 'function') {
+                await stopScreenSharing();
+            } else {
+                console.error('stopScreenSharing function not found');
+            }
         }
     });
 

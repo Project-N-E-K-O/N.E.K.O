@@ -420,6 +420,20 @@ window.toggleScreenShare = function() {
     // 获取浮动按钮的当前状态
     const screenBtn = window.live2dManager?._floatingButtons?.screen?.button;
     const isActive = screenBtn?.dataset.active === 'true';
+    const isRecording = window.isRecording || false;
+    
+    // 屏幕分享仅在语音会话中有效
+    // 如果尝试开启屏幕分享但语音会话未开启，显示提示并阻止操作
+    if (!isActive && !isRecording) {
+        console.log('[Electron Shortcut] toggleScreenShare: blocked - voice session not active');
+        if (typeof window.showStatusToast === 'function') {
+            window.showStatusToast(
+                window.t ? window.t('app.screenShareRequiresVoice') : '屏幕分享仅用于音视频通话',
+                3000
+            );
+        }
+        return;
+    }
     
     // 派发切换事件
     const event = new CustomEvent('live2d-screen-toggle', {
@@ -435,6 +449,12 @@ window.toggleScreenShare = function() {
  * Electron 调用此接口来触发截图按钮点击
  */
 window.triggerScreenshot = function() {
+    // 语音会话中禁止截图（文本框处于禁用态时意味着用户处于语音会话中）
+    if (window.isRecording) {
+        console.log('[Electron Shortcut] triggerScreenshot: blocked - in voice session');
+        return;
+    }
+    
     const screenshotButton = document.getElementById('screenshotButton');
     if (screenshotButton && !screenshotButton.disabled) {
         screenshotButton.click();
