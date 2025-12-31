@@ -1,10 +1,12 @@
 import "./styles.css";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import { Button, StatusToast, Modal, useT, tOrDefault } from "@project_neko/components";
 import type { StatusToastHandle, ModalHandle } from "@project_neko/components";
 import { createRequestClient, WebTokenStorage } from "@project_neko/request";
 import { ChatContainer } from "@project_neko/components";
+import { buildWebSocketUrlFromBase, createRealtimeClient } from "@project_neko/realtime";
+import type { RealtimeClient, RealtimeConnectionState } from "@project_neko/realtime";
 
 const trimTrailingSlash = (url?: string) => (url ? url.replace(/\/+$/, "") : "");
 
@@ -16,6 +18,11 @@ const API_BASE = trimTrailingSlash(
 const STATIC_BASE = trimTrailingSlash(
   (import.meta as any).env?.VITE_STATIC_SERVER_URL ||
   (typeof window !== "undefined" ? (window as any).STATIC_SERVER_URL : "") ||
+  API_BASE
+);
+const WEBSOCKET_BASE = trimTrailingSlash(
+  (import.meta as any).env?.VITE_WEBSOCKET_URL ||
+  (typeof window !== "undefined" ? (window as any).WEBSOCKET_URL : "") ||
   API_BASE
 );
 
@@ -44,6 +51,102 @@ function App({ language, onChangeLanguage }: AppProps) {
   const t = useT();
   const toastRef = useRef<StatusToastHandle | null>(null);
   const modalRef = useRef<ModalHandle | null>(null);
+
+  const realtimeRef = useRef<RealtimeClient | null>(null);
+  const realtimeOffRef = useRef<(() => void)[]>([]);
+  const [realtimeState, setRealtimeState] = useState<RealtimeConnectionState>("idle");
+  const isChatting = realtimeState === "connecting" || realtimeState === "open" || realtimeState === "reconnecting";
+
+  const cleanupRealtime = useCallback((args?: { disconnect?: boolean }) => {
+    for (const off of realtimeOffRef.current) {
+      try {
+        off();
+      } catch (_e) {
+        // ignore
+      }
+    }
+    realtimeOffRef.current = [];
+
+    const client = realtimeRef.current;
+    if (args?.disconnect && client) {
+      try {
+        client.disconnect({ code: 1000, reason: "user_stop_chat" });
+      } catch (_e) {
+        // ignore
+      }
+    }
+    if (args?.disconnect) {
+      realtimeRef.current = null;
+    }
+  }, []);
+
+  const getLanlanName = useCallback(() => {
+    try {
+      const w: any = typeof window !== "undefined" ? (window as any) : undefined;
+      const name = w?.lanlan_config?.lanlan_name;
+      return typeof name === "string" && name.trim() ? name.trim() : "test";
+    } catch (_e) {
+      return "test";
+    }
+  }, []);
+
+  const buildWsUrl = useCallback((path: string) => {
+    const w: any = typeof window !== "undefined" ? (window as any) : undefined;
+    if (w && typeof w.buildWebSocketUrl === "function") {
+      return w.buildWebSocketUrl(path);
+    }
+    return buildWebSocketUrlFromBase(WEBSOCKET_BASE, path);
+  }, []);
+
+  const handleStartChat = useCallback(() => {
+    const lanlanName = getLanlanName();
+    const path = `/ws/${encodeURIComponent(lanlanName)}`;
+
+    // 已有 client：直接触发 connect（避免重复绑定监听）
+    if (realtimeRef.current) {
+      realtimeRef.current.connect();
+      return;
+    }
+
+    const client = createRealtimeClient({
+      path,
+      buildUrl: buildWsUrl,
+      heartbeat: { intervalMs: 30_000, payload: { action: "ping" } },
+      reconnect: { enabled: true },
+    });
+    realtimeRef.current = client;
+    setRealtimeState(client.getState());
+
+    realtimeOffRef.current = [
+      client.on("state", ({ state }) => setRealtimeState(state)),
+      client.on("open", () => {
+        toastRef.current?.show(tOrDefault(t, "webapp.toast.chatConnected", "聊天 WebSocket 已连接"), 2000);
+      }),
+      client.on("close", () => {
+        toastRef.current?.show(tOrDefault(t, "webapp.toast.chatDisconnected", "聊天 WebSocket 已断开"), 2000);
+      }),
+      client.on("error", ({ event }) => {
+        console.warn("[webapp] realtime error:", event);
+      }),
+      client.on("json", ({ json }) => {
+        // 这里先做最小接入：把消息打到控制台，后续可把协议对接到 ChatContainer 的数据流
+        console.log("[webapp] realtime json:", json);
+      }),
+    ];
+
+    client.connect();
+  }, [buildWsUrl, getLanlanName, t]);
+
+  const handleStopChat = useCallback(() => {
+    cleanupRealtime({ disconnect: true });
+    setRealtimeState("closed");
+  }, [cleanupRealtime]);
+
+  useEffect(() => {
+    return () => {
+      cleanupRealtime({ disconnect: true });
+    };
+  }, [cleanupRealtime]);
 
   useEffect(() => {
     const getLang = () => {
@@ -177,9 +280,20 @@ function App({ language, onChangeLanguage }: AppProps) {
                 {tOrDefault(t, "webapp.actions.modalPrompt", "Modal Prompt")}
               </Button>
             </div>
+            <div className="card__actions">
+              {isChatting ? (
+                <Button variant="primary" onClick={handleStopChat}>
+                  {tOrDefault(t, "webapp.actions.stopChat", "🎤 停止聊天")}
+                </Button>
+              ) : (
+                <Button variant="primary" onClick={handleStartChat}>
+                  {tOrDefault(t, "webapp.actions.startChat", "🎤 开始聊天")}
+                </Button>
+              )}
+            </div>
           </div>
           {/* 👇 新增：聊天系统 React 迁移 Demo */}
-          <div style={{ marginTop: 24, height: 600 }}>
+          <div className="chatDemo">
             <ChatContainer />
           </div>
         </section>

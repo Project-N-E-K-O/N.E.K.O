@@ -87,3 +87,8 @@ ol {
   flex-wrap: wrap;
 }
 
+.chatDemo {
+  margin-top: 24px;
+  height: 600px;
+}
+
