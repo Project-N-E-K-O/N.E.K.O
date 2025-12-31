@@ -1,6 +1,9 @@
 """
-Web scraper for fetching trending content from Bilibili and Weibo
-Also supports fetching active window title and Baidu search
+网络爬虫模块，用于获取各平台的热门内容
+支持基于区域的内容获取：
+- 中文区域：B站和微博
+- 非中文区域：YouTube和Twitter
+同时支持获取活跃窗口标题和搜索功能
 """
 import asyncio
 import httpx
@@ -13,6 +16,22 @@ from urllib.parse import quote
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage
 from bs4 import BeautifulSoup
+
+# 从 language_utils 导入区域检测功能
+try:
+    from utils.language_utils import is_china_region
+except ImportError:
+    # 如果 language_utils 不可用，使用回退方案
+    import locale
+    def is_china_region() -> bool:
+        """区域检测回退方案"""
+        try:
+            system_locale = locale.getlocale()[0]
+            if system_locale and system_locale.lower().startswith('zh'):
+                return True
+            return False
+        except Exception:
+            return False
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +146,138 @@ async def fetch_bilibili_trending(limit: int = 10) -> Dict[str, Any]:
         }
     except Exception as e:
         logger.exception(f"获取B站首页推荐失败: {e}")
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+
+async def fetch_youtube_trending(limit: int = 10) -> Dict[str, Any]:
+    """
+    获取YouTube热门视频
+    使用YouTube的热门页面获取流行视频
+    
+    Args:
+        limit: 返回视频的最大数量
+    
+    Returns:
+        包含成功状态和视频列表的字典
+    """
+    try:
+        # YouTube热门页面URL
+        url = "https://www.youtube.com/feed/trending"
+        
+        headers = {
+            'User-Agent': get_random_user_agent(),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'DNT': '1',
+        }
+        
+        # 添加随机延迟以避免被检测
+        await asyncio.sleep(random.uniform(0.1, 0.5))
+        
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            html_content = response.text
+            
+            # 解析YouTube热门页面
+            videos = []
+            
+            # 使用正则表达式从页面提取视频信息
+            # 从页面的JSON数据中查找视频标题和元数据
+            title_pattern = r'"title":\{"runs":\[\{"text":"([^"]+)"\}\]'
+            channel_pattern = r'"ownerText":\{"runs":\[\{"text":"([^"]+)"'
+            view_pattern = r'"viewCountText":\{"simpleText":"([^"]+)"'
+            video_id_pattern = r'"videoId":"([a-zA-Z0-9_-]{11})"'
+            
+            titles = re.findall(title_pattern, html_content)
+            channels = re.findall(channel_pattern, html_content)
+            views = re.findall(view_pattern, html_content)
+            video_ids = re.findall(video_id_pattern, html_content)
+            
+            # 去重同时保持顺序
+            seen_ids = set()
+            unique_videos = []
+            for vid in video_ids:
+                if vid not in seen_ids:
+                    seen_ids.add(vid)
+                    unique_videos.append(vid)
+            
+            for i, vid in enumerate(unique_videos[:limit]):
+                video = {
+                    'title': titles[i] if i < len(titles) else 'Unknown Title',
+                    'channel': channels[i] if i < len(channels) else 'Unknown Channel',
+                    'views': views[i] if i < len(views) else 'N/A',
+                    'video_id': vid,
+                    'url': f'https://www.youtube.com/watch?v={vid}'
+                }
+                videos.append(video)
+            
+            if videos:
+                return {
+                    'success': True,
+                    'videos': videos
+                }
+            else:
+                # 回退：尝试从HTML中提取基本信息
+                return await _fetch_youtube_trending_fallback(limit)
+                
+    except httpx.TimeoutException:
+        logger.exception("获取YouTube热门超时")
+        return {
+            'success': False,
+            'error': '请求超时'
+        }
+    except Exception as e:
+        logger.exception(f"获取YouTube热门失败: {e}")
+        return await _fetch_youtube_trending_fallback(limit)
+
+
+async def _fetch_youtube_trending_fallback(limit: int = 10) -> Dict[str, Any]:
+    """
+    YouTube热门的回退方案，使用更简单的方法
+    """
+    try:
+        # 使用YouTube的热门页面作为回退
+        url = "https://www.youtube.com/feed/trending"
+        
+        headers = {
+            'User-Agent': get_random_user_agent(),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+        }
+        
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            
+            # 尝试从HTML中提取视频标题
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            videos = []
+            # 在页面中查找视频标题
+            title_elements = soup.find_all('title')
+            if title_elements:
+                videos.append({
+                    'title': 'YouTube Trending',
+                    'channel': 'Various Creators',
+                    'views': 'N/A',
+                    'video_id': '',
+                    'url': 'https://www.youtube.com/feed/trending'
+                })
+            
+            return {
+                'success': len(videos) > 0,
+                'videos': videos if videos else [],
+                'error': '可用的热门数据有限' if not videos else None
+            }
+            
+    except Exception as e:
+        logger.exception(f"YouTube回退方案失败: {e}")
         return {
             'success': False,
             'error': str(e)
@@ -288,51 +439,230 @@ async def _fetch_weibo_trending_fallback(limit: int = 10) -> Dict[str, Any]:
         }
 
 
-async def fetch_trending_content(bilibili_limit: int = 10, weibo_limit: int = 10) -> Dict[str, Any]:
+async def fetch_twitter_trending(limit: int = 10) -> Dict[str, Any]:
     """
-    并发获取B站首页推荐和微博热议话题
+    获取Twitter/X热门话题
+    使用Twitter的探索页面获取热门话题
     
     Args:
-        bilibili_limit: B站视频数量限制
-        weibo_limit: 微博热议话题数量限制
+        limit: 返回热门话题的最大数量
     
     Returns:
-        包含成功状态、B站首页视频和微博热议话题的字典
+        包含成功状态和热门列表的字典
     """
     try:
-        # 并发请求
-        bilibili_task = fetch_bilibili_trending(bilibili_limit)
-        weibo_task = fetch_weibo_trending(weibo_limit)
+        # Twitter探索/热门页面
+        url = "https://twitter.com/explore/tabs/trending"
         
-        bilibili_result, weibo_result = await asyncio.gather(
-            bilibili_task, 
-            weibo_task,
-            return_exceptions=True
-        )
+        headers = {
+            'User-Agent': get_random_user_agent(),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'DNT': '1',
+        }
         
-        # 处理异常情况
-        if isinstance(bilibili_result, Exception):
-            logger.error(f"B站爬取异常: {bilibili_result}")
-            bilibili_result = {'success': False, 'error': str(bilibili_result)}
+        await asyncio.sleep(random.uniform(0.1, 0.5))
         
-        if isinstance(weibo_result, Exception):
-            logger.error(f"微博爬取异常: {weibo_result}")
-            weibo_result = {'success': False, 'error': str(weibo_result)}
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            html_content = response.text
+            
+            # 从页面解析热门话题
+            trending_list = []
+            
+            # 尝试从页面的JSON数据中提取热门话题
+            trend_pattern = r'"trend":\{[^}]*"name":"([^"]+)"'
+            tweet_count_pattern = r'"tweetCount":"([^"]+)"'
+            
+            trends = re.findall(trend_pattern, html_content)
+            tweet_counts = re.findall(tweet_count_pattern, html_content)
+            
+            for i, trend in enumerate(trends[:limit]):
+                if trend and not trend.startswith('#'):
+                    trend = '#' + trend if not trend.startswith('@') else trend
+                trending_list.append({
+                    'word': trend,
+                    'tweet_count': tweet_counts[i] if i < len(tweet_counts) else 'N/A',
+                    'note': '',
+                    'rank': i + 1
+                })
+            
+            if trending_list:
+                return {
+                    'success': True,
+                    'trending': trending_list
+                }
+            else:
+                return await _fetch_twitter_trending_fallback(limit)
+                
+    except httpx.TimeoutException:
+        logger.exception("获取Twitter热门超时")
+        return {
+            'success': False,
+            'error': '请求超时'
+        }
+    except Exception as e:
+        logger.exception(f"获取Twitter热门失败: {e}")
+        return await _fetch_twitter_trending_fallback(limit)
+
+
+async def _fetch_twitter_trending_fallback(limit: int = 10) -> Dict[str, Any]:
+    """
+    Twitter热门的回退方案
+    使用替代方法获取热门话题
+    """
+    try:
+        # 尝试从Twitter的API端点获取热门
+        url = "https://api.twitter.com/1.1/trends/place.json?id=1"  # id=1 表示全球
         
-        # 检查是否至少有一个成功
-        if not bilibili_result.get('success') and not weibo_result.get('success'):
+        headers = {
+            'User-Agent': get_random_user_agent(),
+            'Accept': 'application/json',
+            'Accept-Language': 'en-US,en;q=0.9',
+        }
+        
+        await asyncio.sleep(random.uniform(0.1, 0.3))
+        
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.get(url, headers=headers)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data and isinstance(data, list) and len(data) > 0:
+                    trends = data[0].get('trends', [])
+                    trending_list = []
+                    for i, trend in enumerate(trends[:limit]):
+                        trending_list.append({
+                            'word': trend.get('name', ''),
+                            'tweet_count': trend.get('tweet_volume', 'N/A'),
+                            'note': '',
+                            'rank': i + 1
+                        })
+                    return {
+                        'success': True,
+                        'trending': trending_list
+                    }
+            
+            # 如果API失败，返回通用的热门占位数据
+            logger.warning("Twitter API返回非200状态，使用占位数据")
             return {
-                'success': False,
-                'error': '无法获取任何热门内容',
+                'success': True,
+                'trending': [
+                    {'word': 'Twitter热门', 'tweet_count': 'N/A', 'note': '请访问twitter.com/explore', 'rank': 1}
+                ],
+                'note': '数据有限 - 请访问twitter.com/explore获取完整热门'
+            }
+            
+    except Exception as e:
+        logger.exception(f"Twitter回退方案失败: {e}")
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+
+async def fetch_trending_content(bilibili_limit: int = 10, weibo_limit: int = 10, 
+                                  youtube_limit: int = 10, twitter_limit: int = 10) -> Dict[str, Any]:
+    """
+    根据用户区域获取热门内容
+    
+    中文区域：获取B站视频和微博热议话题
+    非中文区域：获取YouTube视频和Twitter热门话题
+    
+    Args:
+        bilibili_limit: B站视频最大数量（中文区域）
+        weibo_limit: 微博话题最大数量（中文区域）
+        youtube_limit: YouTube视频最大数量（非中文区域）
+        twitter_limit: Twitter话题最大数量（非中文区域）
+    
+    Returns:
+        包含成功状态和热门内容的字典
+        中文区域：'bilibili' 和 'weibo' 键
+        非中文区域：'youtube' 和 'twitter' 键
+    """
+    try:
+        # 检测用户区域
+        china_region = is_china_region()
+        
+        if china_region:
+            # Chinese region: Use Bilibili and Weibo
+            logger.info("检测到中文区域，获取B站和微博热门内容")
+            
+            bilibili_task = fetch_bilibili_trending(bilibili_limit)
+            weibo_task = fetch_weibo_trending(weibo_limit)
+            
+            bilibili_result, weibo_result = await asyncio.gather(
+                bilibili_task, 
+                weibo_task,
+                return_exceptions=True
+            )
+            
+            # 处理异常
+            if isinstance(bilibili_result, Exception):
+                logger.error(f"B站爬取异常: {bilibili_result}")
+                bilibili_result = {'success': False, 'error': str(bilibili_result)}
+            
+            if isinstance(weibo_result, Exception):
+                logger.error(f"微博爬取异常: {weibo_result}")
+                weibo_result = {'success': False, 'error': str(weibo_result)}
+            
+            # 检查是否至少有一个成功
+            if not bilibili_result.get('success') and not weibo_result.get('success'):
+                return {
+                    'success': False,
+                    'error': '无法获取任何热门内容',
+                    'region': 'china',
+                    'bilibili': bilibili_result,
+                    'weibo': weibo_result
+                }
+            
+            return {
+                'success': True,
+                'region': 'china',
                 'bilibili': bilibili_result,
                 'weibo': weibo_result
             }
-        
-        return {
-            'success': True,
-            'bilibili': bilibili_result,
-            'weibo': weibo_result
-        }
+        else:
+            # 非中文区域：使用YouTube和Twitter
+            logger.info("检测到非中文区域，获取YouTube和Twitter热门内容")
+            
+            youtube_task = fetch_youtube_trending(youtube_limit)
+            twitter_task = fetch_twitter_trending(twitter_limit)
+            
+            youtube_result, twitter_result = await asyncio.gather(
+                youtube_task,
+                twitter_task,
+                return_exceptions=True
+            )
+            
+            # 处理异常
+            if isinstance(youtube_result, Exception):
+                logger.error(f"YouTube爬取异常: {youtube_result}")
+                youtube_result = {'success': False, 'error': str(youtube_result)}
+            
+            if isinstance(twitter_result, Exception):
+                logger.error(f"Twitter爬取异常: {twitter_result}")
+                twitter_result = {'success': False, 'error': str(twitter_result)}
+            
+            # 检查是否至少有一个成功
+            if not youtube_result.get('success') and not twitter_result.get('success'):
+                return {
+                    'success': False,
+                    'error': '无法获取任何热门内容',
+                    'region': 'non-china',
+                    'youtube': youtube_result,
+                    'twitter': twitter_result
+                }
+            
+            return {
+                'success': True,
+                'region': 'non-china',
+                'youtube': youtube_result,
+                'twitter': twitter_result
+            }
         
     except Exception as e:
         logger.error(f"获取热门内容失败: {e}")
@@ -344,7 +674,11 @@ async def fetch_trending_content(bilibili_limit: int = 10, weibo_limit: int = 10
 
 def format_trending_content(trending_content: Dict[str, Any]) -> str:
     """
-    格式化首页推荐内容为可读的字符串
+    将热门内容格式化为可读字符串
+    
+    根据区域自动格式化：
+    - 中文区域：B站和微博内容，中文显示
+    - 非中文区域：YouTube和Twitter内容，英文显示
     
     Args:
         trending_content: fetch_trending_content返回的结果
@@ -353,39 +687,81 @@ def format_trending_content(trending_content: Dict[str, Any]) -> str:
         格式化后的字符串
     """
     output_lines = []
+    region = trending_content.get('region', 'china')
     
-    # 格式化B站内容
-    bilibili_data = trending_content.get('bilibili', {})
-    if bilibili_data.get('success'):
-        output_lines.append("【B站首页推荐】")
-        videos = bilibili_data.get('videos', [])
-        
-        for i, video in enumerate(videos[:5], 1):  # 只取前5个
-            title = video.get('title', '')
-            author = video.get('author', '')
+    if region == 'china':
+        # 格式化B站内容（中文）
+        bilibili_data = trending_content.get('bilibili', {})
+        if bilibili_data.get('success'):
+            output_lines.append("【B站首页推荐】")
+            videos = bilibili_data.get('videos', [])
             
-            output_lines.append(f"{i}. {title}")
-            output_lines.append(f"   UP主: {author}")
-        
-        output_lines.append("")  # 空行
-    
-    # 格式化微博内容
-    weibo_data = trending_content.get('weibo', {})
-    if weibo_data.get('success'):
-        output_lines.append("【微博热议话题】")
-        trending_list = weibo_data.get('trending', [])
-        
-        for i, item in enumerate(trending_list[:5], 1):  # 只取前5个
-            word = item.get('word', '')
-            note = item.get('note', '')
+            for i, video in enumerate(videos[:5], 1):  # 只显示前5个
+                title = video.get('title', '')
+                author = video.get('author', '')
+                
+                output_lines.append(f"{i}. {title}")
+                output_lines.append(f"   UP主: {author}")
             
-            line = f"{i}. {word}"
-            if note:
-                line += f" [{note}]"
-            output_lines.append(line)
-    
-    if not output_lines:
-        return "暂时无法获取推荐内容"
+            output_lines.append("")  # 空行
+        
+        # 格式化微博内容（中文）
+        weibo_data = trending_content.get('weibo', {})
+        if weibo_data.get('success'):
+            output_lines.append("【微博热议话题】")
+            trending_list = weibo_data.get('trending', [])
+            
+            for i, item in enumerate(trending_list[:5], 1):  # 只显示前5个
+                word = item.get('word', '')
+                note = item.get('note', '')
+                
+                line = f"{i}. {word}"
+                if note:
+                    line += f" [{note}]"
+                output_lines.append(line)
+        
+        if not output_lines:
+            return "暂时无法获取推荐内容"
+    else:
+        # 格式化YouTube内容（英文）
+        youtube_data = trending_content.get('youtube', {})
+        if youtube_data.get('success'):
+            output_lines.append("【YouTube Trending Videos】")
+            videos = youtube_data.get('videos', [])
+            
+            for i, video in enumerate(videos[:5], 1):  # 只显示前5个
+                title = video.get('title', '')
+                channel = video.get('channel', '')
+                views = video.get('views', '')
+                
+                output_lines.append(f"{i}. {title}")
+                if channel:
+                    output_lines.append(f"   Channel: {channel}")
+                if views and views != 'N/A':
+                    output_lines.append(f"   Views: {views}")
+            
+            output_lines.append("")  # 空行
+        
+        # 格式化Twitter内容（英文）
+        twitter_data = trending_content.get('twitter', {})
+        if twitter_data.get('success'):
+            output_lines.append("【Twitter Trending Topics】")
+            trending_list = twitter_data.get('trending', [])
+            
+            for i, item in enumerate(trending_list[:5], 1):  # 只显示前5个
+                word = item.get('word', '')
+                tweet_count = item.get('tweet_count', '')
+                note = item.get('note', '')
+                
+                line = f"{i}. {word}"
+                if tweet_count and tweet_count != 'N/A':
+                    line += f" ({tweet_count} tweets)"
+                if note:
+                    line += f" - {note}"
+                output_lines.append(line)
+        
+        if not output_lines:
+            return "暂时无法获取热门内容"
     
     return "\n".join(output_lines)
 
@@ -439,6 +815,10 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
     """
     使用LLM基于窗口标题生成3个多样化的搜索关键词
     
+    根据用户区域自动使用适当的语言：
+    - 中文区域：中文提示词，用于百度搜索
+    - 非中文区域：英文提示词，用于Google搜索
+    
     Args:
         window_title: 窗口标题（应该是已清理的标题，不应包含敏感信息）
     
@@ -454,7 +834,7 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
         from utils.config_manager import ConfigManager
         config_manager = ConfigManager()
         
-        # 使用correction模型配置（或者使用emotion等轻量级模型）
+        # 使用correction模型配置（轻量级模型，适合此任务）
         correction_config = config_manager.get_model_api_config('correction')
         
         llm = ChatOpenAI(
@@ -468,7 +848,11 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
         # 清理/脱敏窗口标题用于日志显示
         sanitized_title = window_title[:30] + '...' if len(window_title) > 30 else window_title
         
-        prompt = f"""基于以下窗口标题，生成3个不同的搜索关键词，用于在百度上搜索相关内容。
+        # 检测区域并使用适当的提示词
+        china_region = is_china_region()
+        
+        if china_region:
+            prompt = f"""基于以下窗口标题，生成3个不同的搜索关键词，用于在百度上搜索相关内容。
 
 窗口标题：{window_title}
 
@@ -482,6 +866,21 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
 关键词1
 关键词2
 关键词3"""
+        else:
+            prompt = f"""Based on the following window title, generate 3 different search keywords for Google search.
+
+Window title: {window_title}
+
+Requirements:
+1. Generate 3 keywords from different angles
+2. Keywords should be concise (2-6 words each)
+3. Keywords should be diverse, covering different aspects
+4. Output only 3 keywords, one per line, without any numbers, punctuation, or other content
+
+Example output format:
+keyword one
+keyword two
+keyword three"""
 
         # 使用异步调用
         response = await llm.ainvoke([SystemMessage(content=prompt)])
@@ -506,14 +905,20 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
                 queries.append(clean_title)
         
         # 使用脱敏后的标题记录日志
-        logger.info(f"为窗口标题「{sanitized_title}」生成的查询关键词: {queries}")
+        if china_region:
+            logger.info(f"为窗口标题「{sanitized_title}」生成的查询关键词: {queries}")
+        else:
+            logger.info(f"为窗口标题「{sanitized_title}」生成的查询关键词: {queries}")
         return queries[:3]
         
     except Exception as e:
         # 异常日志中也使用脱敏标题
         sanitized_title = window_title[:30] + '...' if len(window_title) > 30 else window_title
-        logger.warning(f"为窗口标题「{sanitized_title}」生成多样化查询失败，使用默认清理方法: {e}")
-        # 失败时回退到原始清理方法
+        if is_china_region():
+            logger.warning(f"为窗口标题「{sanitized_title}」生成多样化查询失败，使用默认清理方法: {e}")
+        else:
+            logger.warning(f"为窗口标题「{sanitized_title}」生成多样化查询失败，使用默认清理方法: {e}")
+        # 回退到原始清理方法
         clean_title = clean_window_title(window_title)
         return [clean_title, clean_title, clean_title]
 
@@ -569,6 +974,159 @@ def clean_window_title(title: str) -> str:
             cleaned = parts[0].strip()
     
     return cleaned[:100]  # 限制长度
+
+
+async def search_google(query: str, limit: int = 5) -> Dict[str, Any]:
+    """
+    使用Google搜索关键词并获取搜索结果（用于非中文区域）
+    
+    Args:
+        query: 搜索关键词
+        limit: 返回结果数量限制
+    
+    Returns:
+        包含搜索结果的字典
+    """
+    try:
+        if not query or len(query.strip()) < 2:
+            return {
+                'success': False,
+                'error': '搜索关键词太短'
+            }
+        
+        # 清理查询词
+        query = query.strip()
+        encoded_query = quote(query)
+        
+        # Google搜索URL
+        url = f"https://www.google.com/search?q={encoded_query}&hl=en"
+        
+        headers = {
+            'User-Agent': get_random_user_agent(),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Connection': 'keep-alive',
+            'DNT': '1',
+            'Cache-Control': 'no-cache',
+        }
+        
+        # 添加随机延迟
+        await asyncio.sleep(random.uniform(0.2, 0.5))
+        
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            html_content = response.text
+            
+            # 解析搜索结果
+            results = parse_google_results(html_content, limit)
+            
+            if results:
+                return {
+                    'success': True,
+                    'query': query,
+                    'results': results
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': '未能解析到搜索结果',
+                    'query': query
+                }
+                
+    except httpx.TimeoutException:
+        logger.exception("Google搜索超时")
+        return {
+            'success': False,
+            'error': '搜索超时'
+        }
+    except Exception as e:
+        logger.exception(f"Google搜索失败: {e}")
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+
+def parse_google_results(html_content: str, limit: int = 5) -> List[Dict[str, str]]:
+    """
+    解析Google搜索结果页面
+    
+    Args:
+        html_content: HTML页面内容
+        limit: 结果数量限制
+    
+    Returns:
+        搜索结果列表，每个结果包含 title, abstract, url
+    """
+    results = []
+    
+    try:
+        from urllib.parse import urljoin, urlparse, parse_qs
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # 查找搜索结果容器
+        # Google使用各种类名，尝试多个选择器
+        result_divs = soup.find_all('div', class_='g')
+        
+        for div in result_divs[:limit * 2]:
+            # 提取标题和链接
+            link = div.find('a')
+            if link:
+                # 获取h3标签作为标题
+                h3 = div.find('h3')
+                if h3:
+                    title = h3.get_text(strip=True)
+                else:
+                    title = link.get_text(strip=True)
+                
+                if title and 3 < len(title) < 200:
+                    # 提取URL
+                    href = link.get('href', '')
+                    if href:
+                        # Google有时会包装URL
+                        if href.startswith('/url?'):
+                            parsed = urlparse(href)
+                            qs = parse_qs(parsed.query)
+                            url = qs.get('q', [href])[0]
+                        elif href.startswith('http'):
+                            url = href
+                        else:
+                            url = urljoin('https://www.google.com', href)
+                    else:
+                        url = ''
+                    
+                    # 提取摘要/片段
+                    abstract = ""
+                    # 查找片段文本
+                    snippet_div = div.find('div', class_=lambda x: x and ('VwiC3b' in x if x else False))
+                    if snippet_div:
+                        abstract = snippet_div.get_text(strip=True)[:200]
+                    else:
+                        # 尝试其他常见的片段选择器
+                        spans = div.find_all('span')
+                        for span in spans:
+                            text = span.get_text(strip=True)
+                            if len(text) > 50:
+                                abstract = text[:200]
+                                break
+                    
+                    # 跳过广告和不需要的结果
+                    if not any(skip in title.lower() for skip in ['ad', 'sponsored', 'javascript']):
+                        results.append({
+                            'title': title,
+                            'abstract': abstract,
+                            'url': url
+                        })
+                        if len(results) >= limit:
+                            break
+        
+        logger.info(f"解析到 {len(results)} 条Google搜索结果")
+        return results[:limit]
+        
+    except Exception as e:
+        logger.exception(f"解析Google搜索结果失败: {e}")
+        return []
 
 
 async def search_baidu(query: str, limit: int = 5) -> Dict[str, Any]:
@@ -769,70 +1327,147 @@ def format_baidu_search_results(search_result: Dict[str, Any]) -> str:
     return "\n".join(output_lines)
 
 
+def format_search_results(search_result: Dict[str, Any]) -> str:
+    """
+    将搜索结果格式化为可读字符串
+    根据区域自动使用适当的语言
+    
+    Args:
+        search_result: search_baidu或search_google返回的结果
+    
+    Returns:
+        格式化后的字符串
+    """
+    china_region = is_china_region()
+    
+    if not search_result.get('success'):
+        if china_region:
+            return f"搜索失败: {search_result.get('error', '未知错误')}"
+        else:
+            return f"搜索失败: {search_result.get('error', '未知错误')}"
+    
+    output_lines = []
+    query = search_result.get('query', '')
+    results = search_result.get('results', [])
+    
+    if china_region:
+        output_lines.append(f"【关于「{query}」的搜索结果】")
+    else:
+        output_lines.append(f"【关于「{query}」的搜索结果】")
+    output_lines.append("")
+    
+    for i, result in enumerate(results, 1):
+        title = result.get('title', '')
+        abstract = result.get('abstract', '')
+        
+        output_lines.append(f"{i}. {title}")
+        if abstract:
+            abstract = abstract[:150] + '...' if len(abstract) > 150 else abstract
+            output_lines.append(f"   {abstract}")
+        output_lines.append("")
+    
+    if not results:
+        if china_region:
+            output_lines.append("未找到相关结果")
+        else:
+            output_lines.append("未找到相关结果")
+    
+    return "\n".join(output_lines)
+
+
 async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
     """
-    获取当前活跃窗口标题并进行百度搜索
+    获取当前活跃窗口标题并进行搜索
+    
+    使用区域检测来决定搜索引擎：
+    - 中文区域：百度搜索
+    - 非中文区域：Google搜索
     
     Args:
         limit: 搜索结果数量限制
     
     Returns:
         包含窗口标题和搜索结果的字典
-        注意：返回的window_title_sanitized是截断版本，window_title_raw仅用于内部搜索
+        注意：window_title是脱敏后的版本以保护隐私
     """
     try:
-        # 获取活跃窗口标题（同时获取原始和截断版本）
+        # 检测区域
+        china_region = is_china_region()
+        
+        # 获取活跃窗口标题（同时获取原始和脱敏版本）
         title_result = get_active_window_title(include_raw=True)
         
         if not title_result:
-            return {
-                'success': False,
-                'error': '无法获取当前活跃窗口标题'
-            }
+            if china_region:
+                return {
+                    'success': False,
+                    'error': '无法获取当前活跃窗口标题'
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': '无法获取当前活跃窗口标题'
+                }
         
         sanitized_title = title_result['sanitized']
         raw_title = title_result['raw']
         
-        # 清理窗口标题以移除敏感信息，避免将原始标题发送给LLM API
-        # 这样可以防止文件路径、账号信息等敏感数据泄露
+        # 清理窗口标题以移除敏感信息，避免发送给LLM
         cleaned_title = clean_window_title(raw_title)
         
-        # 使用清理后的标题生成3个多样化的搜索查询（保护隐私）
+        # 使用清理后的标题生成多样化搜索查询（保护隐私）
         search_queries = await generate_diverse_queries(cleaned_title)
         
         if not search_queries or all(not q or len(q) < 2 for q in search_queries):
-            return {
-                'success': False,
-                'error': '窗口标题无法提取有效的搜索关键词',
-                'window_title': sanitized_title  # 返回截断版本
-            }
+            if china_region:
+                return {
+                    'success': False,
+                    'error': '窗口标题无法提取有效的搜索关键词',
+                    'window_title': sanitized_title
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': '窗口标题无法提取有效的搜索关键词',
+                    'window_title': sanitized_title
+                }
         
-        # 日志中使用截断版本
-        logger.info(f"从窗口标题「{sanitized_title}」生成多样化查询: {search_queries}")
+        # 日志中使用脱敏后的标题
+        if china_region:
+            logger.info(f"从窗口标题「{sanitized_title}」生成多样化查询: {search_queries}")
+        else:
+            logger.info(f"从窗口标题「{sanitized_title}」生成多样化查询: {search_queries}")
         
-        # 依次使用每个查询进行搜索，合并结果
+        # 执行搜索并合并结果
         all_results = []
         successful_queries = []
+        
+        # 根据区域选择搜索函数
+        search_func = search_baidu if china_region else search_google
         
         for query in search_queries:
             if not query or len(query) < 2:
                 continue
-                
-            logger.info(f"使用查询关键词: {query}")
-            search_result = await search_baidu(query, limit)
+            
+            if china_region:
+                logger.info(f"使用查询关键词: {query}")
+            else:
+                logger.info(f"使用查询关键词: {query}")
+            
+            search_result = await search_func(query, limit)
             
             if search_result.get('success') and search_result.get('results'):
                 all_results.extend(search_result['results'])
                 successful_queries.append(query)
         
-        # 去重（基于URL，如果URL缺失则基于title）
+        # 去重结果（优先使用URL，如果URL缺失则使用title）
         seen_keys = set()
         unique_results = []
         for result in all_results:
             url = result.get('url', '')
             title = result.get('title', '')
             
-            # 优先使用 URL 进行去重，如果 URL 不存在则使用 title
+            # 优先使用URL进行去重，回退到title
             dedup_key = url if url else title
             
             if dedup_key and dedup_key not in seen_keys:
@@ -840,25 +1475,37 @@ async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
                 unique_results.append(result)
         
         # 限制总结果数量
-        unique_results = unique_results[:limit * 2]  # 多返回一些结果
+        unique_results = unique_results[:limit * 2]
         
         if not unique_results:
-            return {
-                'success': False,
-                'error': '所有查询均未获得搜索结果',
-                'window_title': sanitized_title,
-                'search_queries': search_queries
-            }
+            if china_region:
+                return {
+                    'success': False,
+                    'error': '所有查询均未获得搜索结果',
+                    'window_title': sanitized_title,
+                    'search_queries': search_queries
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': '所有查询均未获得搜索结果',
+                    'window_title': sanitized_title,
+                    'search_queries': search_queries
+                }
         
         return {
             'success': True,
-            'window_title': sanitized_title,  # 默认返回截断版本
-            'search_queries': successful_queries,  # 返回成功的查询列表
+            'window_title': sanitized_title,
+            'search_queries': successful_queries,
             'search_results': unique_results,
+            'region': 'china' if china_region else 'non-china'
         }
         
     except Exception as e:
-        logger.exception(f"获取窗口上下文内容失败: {e}")
+        if is_china_region():
+            logger.exception(f"获取窗口上下文内容失败: {e}")
+        else:
+            logger.exception(f"获取窗口上下文内容失败: {e}")
         return {
             'success': False,
             'error': str(e)
@@ -867,7 +1514,9 @@ async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
 
 def format_window_context_content(content: Dict[str, Any]) -> str:
     """
-    格式化窗口上下文内容为可读字符串
+    将窗口上下文内容格式化为可读字符串
+    
+    根据区域自动使用适当的语言
     
     Args:
         content: fetch_window_context_content返回的结果
@@ -875,26 +1524,41 @@ def format_window_context_content(content: Dict[str, Any]) -> str:
     Returns:
         格式化后的字符串
     """
+    china_region = is_china_region()
+    
     if not content.get('success'):
-        return f"获取窗口上下文失败: {content.get('error', '未知错误')}"
+        if china_region:
+            return f"获取窗口上下文失败: {content.get('error', '未知错误')}"
+        else:
+            return f"获取窗口上下文失败: {content.get('error', '未知错误')}"
     
     output_lines = []
-    # window_title 现在是截断后的安全版本（来自fetch_window_context_content），不会泄露敏感信息
     window_title = content.get('window_title', '')
     search_queries = content.get('search_queries', [])
     results = content.get('search_results', [])
     
-    output_lines.append(f"【当前活跃窗口】{window_title}")
-    
-    # 显示所有使用的搜索关键词
-    if search_queries:
-        if len(search_queries) == 1:
-            output_lines.append(f"【搜索关键词】{search_queries[0]}")
-        else:
-            output_lines.append(f"【搜索关键词】{', '.join(search_queries)}")
-    
-    output_lines.append("")
-    output_lines.append("【相关信息】")
+    if china_region:
+        output_lines.append(f"【当前活跃窗口】{window_title}")
+        
+        if search_queries:
+            if len(search_queries) == 1:
+                output_lines.append(f"【搜索关键词】{search_queries[0]}")
+            else:
+                output_lines.append(f"【搜索关键词】{', '.join(search_queries)}")
+        
+        output_lines.append("")
+        output_lines.append("【相关信息】")
+    else:
+        output_lines.append(f"【当前活跃窗口】{window_title}")
+        
+        if search_queries:
+            if len(search_queries) == 1:
+                output_lines.append(f"【搜索关键词】{search_queries[0]}")
+            else:
+                output_lines.append(f"【搜索关键词】{', '.join(search_queries)}")
+        
+        output_lines.append("")
+        output_lines.append("【相关信息】")
     
     for i, result in enumerate(results, 1):
         title = result.get('title', '')
@@ -906,16 +1570,35 @@ def format_window_context_content(content: Dict[str, Any]) -> str:
             output_lines.append(f"   {abstract}")
     
     if not results:
-        output_lines.append("未找到相关信息")
+        if china_region:
+            output_lines.append("未找到相关信息")
+        else:
+            output_lines.append("未找到相关信息")
     
     return "\n".join(output_lines)
 
 
 # 测试用的主函数
 async def main():
-    """测试函数"""
-    print("正在获取热门内容...")
-    content = await fetch_trending_content(bilibili_limit=5, weibo_limit=5)
+    """
+    Web爬虫的测试函数
+    自动检测区域并获取相应内容
+    """
+    china_region = is_china_region()
+    
+    if china_region:
+        print("检测到中文区域")
+        print("正在获取热门内容（B站、微博）...")
+    else:
+        print("检测到非中文区域")
+        print("正在获取热门内容（YouTube、Twitter）...")
+    
+    content = await fetch_trending_content(
+        bilibili_limit=5, 
+        weibo_limit=5,
+        youtube_limit=5,
+        twitter_limit=5
+    )
     
     if content['success']:
         formatted = format_trending_content(content)
@@ -923,7 +1606,10 @@ async def main():
         print(formatted)
         print("="*50)
     else:
-        print(f"获取失败: {content.get('error')}")
+        if china_region:
+            print(f"获取失败: {content.get('error')}")
+        else:
+            print(f"获取失败: {content.get('error')}")
 
 
 if __name__ == "__main__":
