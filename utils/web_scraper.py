@@ -560,17 +560,48 @@ async def _fetch_twitter_trending_fallback(limit: int = 10) -> Dict[str, Any]:
     Twitter热门的回退方案
     使用第三方服务获取热门话题，因为Twitter官方API需要OAuth认证
     """
-    # 第三方热门话题API列表（按优先级排序）
+    
+    def _parse_trends24(soup: BeautifulSoup, limit: int) -> List[Dict[str, Any]]:
+        """解析Trends24页面"""
+        trending_list = []
+        trend_cards = soup.select('.trend-card__list li a')
+        for i, item in enumerate(trend_cards[:limit]):
+            trend_text = item.get_text(strip=True)
+            if trend_text:
+                trending_list.append({
+                    'word': trend_text,
+                    'tweet_count': 'N/A',
+                    'note': '',
+                    'rank': i + 1
+                })
+        return trending_list
+    
+    def _parse_getdaytrends(soup: BeautifulSoup, limit: int) -> List[Dict[str, Any]]:
+        """解析GetDayTrends页面"""
+        trending_list = []
+        trend_items = soup.select('table.table tr td a')
+        for i, item in enumerate(trend_items[:limit]):
+            trend_text = item.get_text(strip=True)
+            if trend_text:
+                trending_list.append({
+                    'word': trend_text,
+                    'tweet_count': 'N/A',
+                    'note': '',
+                    'rank': i + 1
+                })
+        return trending_list
+    
+    # 第三方热门话题源列表（按优先级排序）
     fallback_sources = [
         {
             'name': 'Trends24',
             'url': 'https://trends24.in/',
-            'parser': '_parse_trends24'
+            'parser': _parse_trends24
         },
         {
             'name': 'GetDayTrends',
             'url': 'https://getdaytrends.com/',
-            'parser': '_parse_getdaytrends'
+            'parser': _parse_getdaytrends
         }
     ]
     
@@ -580,73 +611,28 @@ async def _fetch_twitter_trending_fallback(limit: int = 10) -> Dict[str, Any]:
         'Accept-Language': 'en-US,en;q=0.9',
     }
     
-    # 尝试从 Trends24 获取
-    try:
-        await asyncio.sleep(random.uniform(0.1, 0.3))
-        
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            response = await client.get('https://trends24.in/', headers=headers)
+    # 按优先级遍历所有数据源
+    for source in fallback_sources:
+        try:
+            await asyncio.sleep(random.uniform(0.1, 0.3))
             
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.text, 'html.parser')
-                trending_list = []
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                response = await client.get(source['url'], headers=headers)
                 
-                # Trends24 在 .trend-card 中显示热门话题
-                trend_cards = soup.select('.trend-card__list li a')
-                
-                for i, item in enumerate(trend_cards[:limit]):
-                    trend_text = item.get_text(strip=True)
-                    if trend_text:
-                        trending_list.append({
-                            'word': trend_text,
-                            'tweet_count': 'N/A',
-                            'note': '',
-                            'rank': i + 1
-                        })
-                
-                if trending_list:
-                    logger.info(f"从Trends24获取到{len(trending_list)}条Twitter热门")
-                    return {
-                        'success': True,
-                        'trending': trending_list,
-                        'source': 'trends24'
-                    }
-    except Exception as e:
-        logger.warning(f"Trends24获取失败: {e}")
-    
-    # 尝试从 GetDayTrends 获取
-    try:
-        await asyncio.sleep(random.uniform(0.1, 0.3))
-        
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            response = await client.get('https://getdaytrends.com/', headers=headers)
-            
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.text, 'html.parser')
-                trending_list = []
-                
-                # GetDayTrends 在表格中显示热门话题
-                trend_items = soup.select('table.table tr td a')
-                
-                for i, item in enumerate(trend_items[:limit]):
-                    trend_text = item.get_text(strip=True)
-                    if trend_text:
-                        trending_list.append({
-                            'word': trend_text,
-                            'tweet_count': 'N/A',
-                            'note': '',
-                            'rank': i + 1
-                        })
-                
-                if trending_list:
-                    logger.info(f"从GetDayTrends获取到{len(trending_list)}条Twitter热门")
-                    return {
-                        'success': True,
-                        'trending': trending_list,
-                        'source': 'getdaytrends'
-                    }
-    except Exception as e:
-        logger.warning(f"GetDayTrends获取失败: {e}")
+                if response.status_code == 200:
+                    soup = BeautifulSoup(response.text, 'html.parser')
+                    trending_list = source['parser'](soup, limit)
+                    
+                    if trending_list:
+                        logger.info(f"从{source['name']}获取到{len(trending_list)}条Twitter热门")
+                        return {
+                            'success': True,
+                            'trending': trending_list,
+                            'source': source['name'].lower().replace(' ', '')
+                        }
+        except Exception as e:
+            logger.warning(f"{source['name']}获取失败: {e}")
+            continue
     
     # 所有第三方源都失败，返回提示信息
     logger.warning("所有Twitter热门数据源均不可用")
