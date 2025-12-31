@@ -1292,3 +1292,55 @@ async def save_catgirl_to_model_folder(request: Request):
         logger.error(f"保存角色卡到模型文件夹失败: {e}")
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
+
+@router.post('/character-card/save')
+async def save_character_card(request: Request):
+    """保存角色卡到characters.json文件"""
+    try:
+        data = await request.json()
+        chara_data = data.get('charaData')
+        character_card_name = data.get('character_card_name')
+        
+        if not chara_data or not character_card_name:
+            return JSONResponse({"success": False, "error": "缺少必要参数"}, status_code=400)
+        
+        # 获取config_manager实例
+        _config_manager = get_config_manager()
+        
+        # 加载现有的characters.json
+        characters = _config_manager.load_characters()
+        
+        # 确保'猫娘'键存在
+        if '猫娘' not in characters:
+            characters['猫娘'] = {}
+        
+        # 获取角色卡名称（档案名）
+        # 兼容中英文字段名
+        chara_name = chara_data.get('档案名') or chara_data.get('name') or character_card_name
+        
+        # 创建猫娘数据，只保存非空字段
+        catgirl_data = {}
+        for k, v in chara_data.items():
+            if k != '档案名' and k != 'name':
+                # voice_id 特殊处理：空字符串表示删除该字段
+                if k == 'voice_id' and v == '':
+                    continue  # 不添加该字段，相当于删除
+                elif v:  # 只保存非空字段
+                    catgirl_data[k] = v
+        
+        # 更新或创建猫娘数据
+        characters['猫娘'][chara_name] = catgirl_data
+        
+        # 保存到characters.json
+        _config_manager.save_characters(characters)
+        
+        # 自动重新加载配置
+        initialize_character_data = get_initialize_character_data()
+        if initialize_character_data:
+            await initialize_character_data()
+        
+        logger.info(f"角色卡已成功保存到characters.json: {chara_name}")
+        return {"success": True, "character_card_name": chara_name}
+    except Exception as e:
+        logger.error(f"保存角色卡到characters.json失败: {e}")
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
