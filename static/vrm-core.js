@@ -556,15 +556,16 @@ class VRMCore {
         this.manager.scene.add(this.manager.camera);
 
         // 2. 环境光 (Ambient): 稍微调暗，保证阴影部分有颜色但足够深
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.1);
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.08);  // 从0.1降到0.08
         this.manager.scene.add(ambientLight);
+        this.manager.ambientLight = ambientLight; // 保存引用供UI控制
 
-        // 3. 建立“跟随灯光组”
+        // 3. 建立"跟随灯光组"
         const camLightGroup = new THREE.Group();
 
 
         // 4. 主光源 : 负责产生主要阴影和亮度
-        const mainLight = new THREE.DirectionalLight(0xffffff, 0.1);
+        const mainLight = new THREE.DirectionalLight(0xffffff, 0.06);  // 从0.1降到0.06，减少脸部亮度
         mainLight.position.set(-1, 1, 1); // 相对相机的位置
         mainLight.castShadow = true;
         // 优化阴影参数，去除锯齿
@@ -580,13 +581,15 @@ class VRMCore {
         mainLight.shadow.camera.bottom = -2;
 
         this.manager.scene.add(mainLight);
+        this.manager.mainLight = mainLight; // 保存引用供UI控制
 
 
         // 补光 (Fill Light): 位于相机右侧，柔和化阴影
-        const fillLight = new THREE.DirectionalLight(0xffffff, 0.2);
+        const fillLight = new THREE.DirectionalLight(0xffffff, 0.12);  // 从0.2降到0.12，减少正面补光
         fillLight.position.set(1, 0, 1); // 相对相机
         fillLight.castShadow = false;
         camLightGroup.add(fillLight);
+        this.manager.fillLight = fillLight; // 保存引用供UI控制
 
         // 将灯光组挂载到相机上！
         this.manager.camera.add(camLightGroup);
@@ -595,6 +598,7 @@ class VRMCore {
         const rimLight = new THREE.DirectionalLight(0xffffff, 0.8);
         rimLight.position.set(0, 5, -5); // 从正后上方
         this.manager.scene.add(rimLight);
+        this.manager.rimLight = rimLight; // 保存引用供UI控制
 
         window.addEventListener('resize', () => this.manager.onWindowResize());
     }

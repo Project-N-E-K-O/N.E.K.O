@@ -22,7 +22,7 @@ class VRMExpression {
 
         // --- 自动回到 neutral 配置 ---
         this.autoReturnToNeutral = true; // 是否自动回到 neutral
-        this.neutralReturnDelay = 5000; // 多少毫秒后回到 neutral (默认5秒)
+        this.neutralReturnDelay = 3000; // 多少毫秒后回到 neutral (从5秒改为3秒，更快恢复)
         this.neutralReturnTimer = null; // 回到 neutral 的定时器 
         
         // 【关键】情绪映射表：把一种情绪映射到多种可能的 VRM 表情名上

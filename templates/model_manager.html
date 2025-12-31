@@ -224,6 +224,52 @@
             background: #fff;
         }
 
+        /* 打光控制样式 */
+        .lighting-control {
+            margin-bottom: 12px;
+        }
+
+        .lighting-control label {
+            display: block;
+            font-size: 13px;
+            color: #555;
+            margin-bottom: 6px;
+        }
+
+        .lighting-control input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            height: 6px;
+            background: #ddd;
+            border-radius: 3px;
+            outline: none;
+        }
+
+        .lighting-control input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            background: #44b7fe;
+            border-radius: 50%;
+            cursor: pointer;
+        }
+
+        .lighting-control input[type="range"]::-moz-range-thumb {
+            width: 16px;
+            height: 16px;
+            background: #44b7fe;
+            border-radius: 50%;
+            cursor: pointer;
+            border: none;
+        }
+
+        .lighting-control span {
+            font-size: 13px;
+            color: #666;
+            text-align: right;
+        }
+
         #status {
             margin-top: 10px;
             color: #4f8cff;
@@ -360,6 +406,49 @@
                 <button id="emotion-manager-btn" class="btn btn-primary btn-icon" disabled style="flex:1;">
                     <img src="/static/icons/emotion_config_icon.png" alt="情感配置" data-i18n-alt="live2d.emotionConfig">
                     <span data-i18n="live2d.emotionConfig">情感配置</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- VRM 打光设置 -->
+        <div class="control-group" id="vrm-lighting-group" style="display:none;">
+            <label class="control-label">💡 VRM打光设置:</label>
+
+            <div class="lighting-control">
+                <label for="ambient-light-slider">环境光强度:</label>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <input type="range" id="ambient-light-slider" min="0" max="0.3" step="0.01" value="0.08" style="flex: 1;">
+                    <span id="ambient-light-value" style="min-width: 40px;">0.08</span>
+                </div>
+            </div>
+
+            <div class="lighting-control">
+                <label for="main-light-slider">主光源强度:</label>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <input type="range" id="main-light-slider" min="0" max="2.5" step="0.01" value="0.06" style="flex: 1;">
+                    <span id="main-light-value" style="min-width: 40px;">0.06</span>
+                </div>
+            </div>
+
+            <div class="lighting-control">
+                <label for="fill-light-slider">补光强度:</label>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <input type="range" id="fill-light-slider" min="0" max="0.5" step="0.01" value="0.12" style="flex: 1;">
+                    <span id="fill-light-value" style="min-width: 40px;">0.12</span>
+                </div>
+            </div>
+
+            <div class="lighting-control">
+                <label for="rim-light-slider">轮廓光强度:</label>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <input type="range" id="rim-light-slider" min="0" max="1.5" step="0.05" value="0.8" style="flex: 1;">
+                    <span id="rim-light-value" style="min-width: 40px;">0.8</span>
+                </div>
+            </div>
+
+            <div style="display: flex; gap: 10px; margin-top: 10px;">
+                <button id="reset-lighting-btn" class="btn btn-secondary" style="flex: 1;">
+                    <span>🔄 重置默认</span>
                 </button>
             </div>
         </div>
@@ -989,7 +1078,10 @@
                     
                     // 隐藏 VRM 动作预览组
                     if (vrmAnimationGroup) vrmAnimationGroup.style.display = 'none';
-                    
+                    // 隐藏 VRM 打光设置组
+                    const vrmLightingGroup = document.getElementById('vrm-lighting-group');
+                    if (vrmLightingGroup) vrmLightingGroup.style.display = 'none';
+
                     if (!window.live2dManager.pixi_app) {
                         await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
                         showStatus(t('live2d.pixiInitialized', 'PIXI 初始化完成'));
@@ -1020,6 +1112,9 @@
                     if (saveSettingsGroup) saveSettingsGroup.style.display = 'flex';
                     // 显示 VRM 动作预览组
                     if (vrmAnimationGroup) vrmAnimationGroup.style.display = 'flex';
+                    // 显示 VRM 打光设置组
+                    const vrmLightingGroup = document.getElementById('vrm-lighting-group');
+                    if (vrmLightingGroup) vrmLightingGroup.style.display = 'flex';
                     // 更新上传按钮提示文本（VRM模式）
                     if (uploadBtn) {
                         uploadBtn.setAttribute('data-i18n', 'live2d.selectVRMFile');
@@ -1429,6 +1524,96 @@
                 });
             }
 
+            // VRM 打光控制
+            const ambientLightSlider = document.getElementById('ambient-light-slider');
+            const mainLightSlider = document.getElementById('main-light-slider');
+            const fillLightSlider = document.getElementById('fill-light-slider');
+            const rimLightSlider = document.getElementById('rim-light-slider');
+            const ambientLightValue = document.getElementById('ambient-light-value');
+            const mainLightValue = document.getElementById('main-light-value');
+            const fillLightValue = document.getElementById('fill-light-value');
+            const rimLightValue = document.getElementById('rim-light-value');
+            const resetLightingBtn = document.getElementById('reset-lighting-btn');
+
+            // 环境光滑块
+            if (ambientLightSlider && ambientLightValue) {
+                ambientLightSlider.addEventListener('input', (e) => {
+                    const value = parseFloat(e.target.value);
+                    ambientLightValue.textContent = value.toFixed(2);
+                    if (vrmManager && vrmManager.ambientLight) {
+                        vrmManager.ambientLight.intensity = value;
+                    }
+                });
+            }
+
+            // 主光源滑块
+            if (mainLightSlider && mainLightValue) {
+                mainLightSlider.addEventListener('input', (e) => {
+                    const value = parseFloat(e.target.value);
+                    mainLightValue.textContent = value.toFixed(2);
+                    if (vrmManager && vrmManager.mainLight) {
+                        vrmManager.mainLight.intensity = value;
+                    }
+                });
+            }
+
+            // 补光滑块
+            if (fillLightSlider && fillLightValue) {
+                fillLightSlider.addEventListener('input', (e) => {
+                    const value = parseFloat(e.target.value);
+                    fillLightValue.textContent = value.toFixed(2);
+                    if (vrmManager && vrmManager.fillLight) {
+                        vrmManager.fillLight.intensity = value;
+                    }
+                });
+            }
+
+            // 轮廓光滑块
+            if (rimLightSlider && rimLightValue) {
+                rimLightSlider.addEventListener('input', (e) => {
+                    const value = parseFloat(e.target.value);
+                    rimLightValue.textContent = value.toFixed(2);
+                    if (vrmManager && vrmManager.rimLight) {
+                        vrmManager.rimLight.intensity = value;
+                    }
+                });
+            }
+
+            // 重置打光按钮
+            if (resetLightingBtn) {
+                resetLightingBtn.addEventListener('click', () => {
+                    // 重置为默认值
+                    if (ambientLightSlider) {
+                        ambientLightSlider.value = 0.08;
+                        ambientLightValue.textContent = '0.08';
+                        if (vrmManager && vrmManager.ambientLight) {
+                            vrmManager.ambientLight.intensity = 0.08;
+                        }
+                    }
+                    if (mainLightSlider) {
+                        mainLightSlider.value = 0.06;
+                        mainLightValue.textContent = '0.06';
+                        if (vrmManager && vrmManager.mainLight) {
+                            vrmManager.mainLight.intensity = 0.06;
+                        }
+                    }
+                    if (fillLightSlider) {
+                        fillLightSlider.value = 0.12;
+                        fillLightValue.textContent = '0.12';
+                        if (vrmManager && vrmManager.fillLight) {
+                            vrmManager.fillLight.intensity = 0.12;
+                        }
+                    }
+                    if (rimLightSlider) {
+                        rimLightSlider.value = 0.8;
+                        rimLightValue.textContent = '0.8';
+                        if (vrmManager && vrmManager.rimLight) {
+                            vrmManager.rimLight.intensity = 0.8;
+                        }
+                    }
+                    showStatus(t('live2d.lightingReset', '打光设置已重置为默认值', {}), 2000);
+                });
+            }
 
             // 初始化时加载 VRM 模型列表
             await loadVRMModels();
