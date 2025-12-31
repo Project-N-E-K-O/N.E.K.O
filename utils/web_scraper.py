@@ -1609,7 +1609,7 @@ def format_window_context_content(content: Dict[str, Any]) -> str:
         if china_region:
             return f"获取窗口上下文失败: {content.get('error', '未知错误')}"
         else:
-            return f"获取窗口上下文失败: {content.get('error', '未知错误')}"
+            return f"Failed to fetch window context: {content.get('error', 'Unknown error')}"
     
     output_lines = []
     window_title = content.get('window_title', '')
@@ -1628,16 +1628,16 @@ def format_window_context_content(content: Dict[str, Any]) -> str:
         output_lines.append("")
         output_lines.append("【相关信息】")
     else:
-        output_lines.append(f"【当前活跃窗口】{window_title}")
+        output_lines.append(f"【Active Window】{window_title}")
         
         if search_queries:
             if len(search_queries) == 1:
-                output_lines.append(f"【搜索关键词】{search_queries[0]}")
+                output_lines.append(f"【Search Keywords】{search_queries[0]}")
             else:
-                output_lines.append(f"【搜索关键词】{', '.join(search_queries)}")
+                output_lines.append(f"【Search Keywords】{', '.join(search_queries)}")
         
         output_lines.append("")
-        output_lines.append("【相关信息】")
+        output_lines.append("【Related Information】")
     
     for i, result in enumerate(results, 1):
         title = result.get('title', '')
@@ -1652,7 +1652,7 @@ def format_window_context_content(content: Dict[str, Any]) -> str:
         if china_region:
             output_lines.append("未找到相关信息")
         else:
-            output_lines.append("未找到相关信息")
+            output_lines.append("No related information found")
     
     return "\n".join(output_lines)
 
