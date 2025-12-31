@@ -24,11 +24,57 @@ except ImportError:
     # 如果 language_utils 不可用，使用回退方案
     import locale
     def is_china_region() -> bool:
-        """区域检测回退方案"""
-        try:
-            system_locale = locale.getlocale()[0]
-            if system_locale and system_locale.lower().startswith('zh'):
+        """
+        区域检测回退方案
+        
+        仅对中国大陆地区返回True（zh_cn及其变体）
+        港澳台地区（zh_tw, zh_hk）返回False
+        """
+        # 中国大陆地区的locale标识符
+        mainland_china_locales = {'zh_cn', 'chinese_china', 'chinese_simplified_china'}
+        
+        def normalize_locale(loc: str) -> str:
+            """标准化locale字符串：小写、替换连字符、去除编码"""
+            if not loc:
+                return ''
+            # 小写化
+            loc = loc.lower()
+            # 替换连字符为下划线
+            loc = loc.replace('-', '_')
+            # 去除编码部分（如 .UTF-8）
+            if '.' in loc:
+                loc = loc.split('.')[0]
+            return loc
+        
+        def check_locale(loc: str) -> bool:
+            """检查标准化后的locale是否为中国大陆"""
+            normalized = normalize_locale(loc)
+            if not normalized:
+                return False
+            # 精确匹配或以 zh_cn 开头（处理 zh_cn.utf8 等情况）
+            if normalized in mainland_china_locales:
                 return True
+            if normalized.startswith('zh_cn'):
+                return True
+            return False
+        
+        try:
+            # 尝试 locale.getlocale()
+            try:
+                system_locale = locale.getlocale()[0]
+                if system_locale and check_locale(system_locale):
+                    return True
+            except Exception:
+                pass
+            
+            # 尝试 locale.getdefaultlocale()（已弃用但仍可用于回退）
+            try:
+                default_locale = locale.getdefaultlocale()[0]
+                if default_locale and check_locale(default_locale):
+                    return True
+            except Exception:
+                pass
+            
             return False
         except Exception:
             return False
@@ -199,19 +245,19 @@ async def fetch_youtube_trending(limit: int = 10) -> Dict[str, Any]:
             views = re.findall(view_pattern, html_content)
             video_ids = re.findall(video_id_pattern, html_content)
             
-            # 去重同时保持顺序
+            # 去重同时保持顺序，记录每个video_id首次出现的原始索引
             seen_ids = set()
-            unique_videos = []
-            for vid in video_ids:
+            unique_videos = []  # 存储 (video_id, original_index) 元组
+            for original_idx, vid in enumerate(video_ids):
                 if vid not in seen_ids:
                     seen_ids.add(vid)
-                    unique_videos.append(vid)
+                    unique_videos.append((vid, original_idx))
             
-            for i, vid in enumerate(unique_videos[:limit]):
+            for vid, orig_idx in unique_videos[:limit]:
                 video = {
-                    'title': titles[i] if i < len(titles) else 'Unknown Title',
-                    'channel': channels[i] if i < len(channels) else 'Unknown Channel',
-                    'views': views[i] if i < len(views) else 'N/A',
+                    'title': titles[orig_idx] if orig_idx < len(titles) else 'Unknown Title',
+                    'channel': channels[orig_idx] if orig_idx < len(channels) else 'Unknown Channel',
+                    'views': views[orig_idx] if orig_idx < len(views) else 'N/A',
                     'video_id': vid,
                     'url': f'https://www.youtube.com/watch?v={vid}'
                 }
@@ -512,56 +558,103 @@ async def fetch_twitter_trending(limit: int = 10) -> Dict[str, Any]:
 async def _fetch_twitter_trending_fallback(limit: int = 10) -> Dict[str, Any]:
     """
     Twitter热门的回退方案
-    使用替代方法获取热门话题
+    使用第三方服务获取热门话题，因为Twitter官方API需要OAuth认证
     """
-    try:
-        # 尝试从Twitter的API端点获取热门
-        url = "https://api.twitter.com/1.1/trends/place.json?id=1"  # id=1 表示全球
-        
-        headers = {
-            'User-Agent': get_random_user_agent(),
-            'Accept': 'application/json',
-            'Accept-Language': 'en-US,en;q=0.9',
+    # 第三方热门话题API列表（按优先级排序）
+    fallback_sources = [
+        {
+            'name': 'Trends24',
+            'url': 'https://trends24.in/',
+            'parser': '_parse_trends24'
+        },
+        {
+            'name': 'GetDayTrends',
+            'url': 'https://getdaytrends.com/',
+            'parser': '_parse_getdaytrends'
         }
-        
+    ]
+    
+    headers = {
+        'User-Agent': get_random_user_agent(),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+    }
+    
+    # 尝试从 Trends24 获取
+    try:
         await asyncio.sleep(random.uniform(0.1, 0.3))
         
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            response = await client.get(url, headers=headers)
+            response = await client.get('https://trends24.in/', headers=headers)
             
             if response.status_code == 200:
-                data = response.json()
-                if data and isinstance(data, list) and len(data) > 0:
-                    trends = data[0].get('trends', [])
-                    trending_list = []
-                    for i, trend in enumerate(trends[:limit]):
+                soup = BeautifulSoup(response.text, 'html.parser')
+                trending_list = []
+                
+                # Trends24 在 .trend-card 中显示热门话题
+                trend_cards = soup.select('.trend-card__list li a')
+                
+                for i, item in enumerate(trend_cards[:limit]):
+                    trend_text = item.get_text(strip=True)
+                    if trend_text:
                         trending_list.append({
-                            'word': trend.get('name', ''),
-                            'tweet_count': trend.get('tweet_volume', 'N/A'),
+                            'word': trend_text,
+                            'tweet_count': 'N/A',
                             'note': '',
                             'rank': i + 1
                         })
+                
+                if trending_list:
+                    logger.info(f"从Trends24获取到{len(trending_list)}条Twitter热门")
                     return {
                         'success': True,
-                        'trending': trending_list
+                        'trending': trending_list,
+                        'source': 'trends24'
                     }
-            
-            # 如果API失败，返回通用的热门占位数据
-            logger.warning("Twitter API返回非200状态，使用占位数据")
-            return {
-                'success': True,
-                'trending': [
-                    {'word': 'Twitter热门', 'tweet_count': 'N/A', 'note': '请访问twitter.com/explore', 'rank': 1}
-                ],
-                'note': '数据有限 - 请访问twitter.com/explore获取完整热门'
-            }
-            
     except Exception as e:
-        logger.exception(f"Twitter回退方案失败: {e}")
-        return {
-            'success': False,
-            'error': str(e)
-        }
+        logger.warning(f"Trends24获取失败: {e}")
+    
+    # 尝试从 GetDayTrends 获取
+    try:
+        await asyncio.sleep(random.uniform(0.1, 0.3))
+        
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.get('https://getdaytrends.com/', headers=headers)
+            
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                trending_list = []
+                
+                # GetDayTrends 在表格中显示热门话题
+                trend_items = soup.select('table.table tr td a')
+                
+                for i, item in enumerate(trend_items[:limit]):
+                    trend_text = item.get_text(strip=True)
+                    if trend_text:
+                        trending_list.append({
+                            'word': trend_text,
+                            'tweet_count': 'N/A',
+                            'note': '',
+                            'rank': i + 1
+                        })
+                
+                if trending_list:
+                    logger.info(f"从GetDayTrends获取到{len(trending_list)}条Twitter热门")
+                    return {
+                        'success': True,
+                        'trending': trending_list,
+                        'source': 'getdaytrends'
+                    }
+    except Exception as e:
+        logger.warning(f"GetDayTrends获取失败: {e}")
+    
+    # 所有第三方源都失败，返回提示信息
+    logger.warning("所有Twitter热门数据源均不可用")
+    return {
+        'success': False,
+        'error': 'Twitter热门数据暂时无法获取，请稍后重试或访问 twitter.com/explore',
+        'trending': []
+    }
 
 
 async def fetch_trending_content(bilibili_limit: int = 10, weibo_limit: int = 10, 
@@ -1344,7 +1437,7 @@ def format_search_results(search_result: Dict[str, Any]) -> str:
         if china_region:
             return f"搜索失败: {search_result.get('error', '未知错误')}"
         else:
-            return f"搜索失败: {search_result.get('error', '未知错误')}"
+            return f"Search failed: {search_result.get('error', 'Unknown error')}"
     
     output_lines = []
     query = search_result.get('query', '')
@@ -1353,7 +1446,7 @@ def format_search_results(search_result: Dict[str, Any]) -> str:
     if china_region:
         output_lines.append(f"【关于「{query}」的搜索结果】")
     else:
-        output_lines.append(f"【关于「{query}」的搜索结果】")
+        output_lines.append(f"【Search results for「{query}」】")
     output_lines.append("")
     
     for i, result in enumerate(results, 1):
@@ -1370,7 +1463,7 @@ def format_search_results(search_result: Dict[str, Any]) -> str:
         if china_region:
             output_lines.append("未找到相关结果")
         else:
-            output_lines.append("未找到相关结果")
+            output_lines.append("No results found")
     
     return "\n".join(output_lines)
 
