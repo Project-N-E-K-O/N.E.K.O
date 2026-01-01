@@ -397,94 +397,91 @@ Live2DManager.prototype.setupDragAndDrop = function(model) {
     let isDragging = false;
     let dragStartPos = new PIXI.Point();
 
-    // 初始化缓存管理器和防抖器
-    const cacheManager = new ButtonCacheManager();
-    const debouncer = new AdaptiveDebouncer();
+    // 初始化或复用缓存管理器和防抖器，避免重复创建导致的泄漏
+    if (!this._buttonCacheManager) {
+        this._buttonCacheManager = new ButtonCacheManager();
+    }
+    if (!this._adaptiveDebouncer) {
+        this._adaptiveDebouncer = new AdaptiveDebouncer();
+    }
+    const cacheManager = this._buttonCacheManager;
+    const debouncer = this._adaptiveDebouncer;
 
-    // 智能事件传播管理 - 在拖动过程中临时禁用按钮事件拦截
-    window.enableButtonEventPropagation = () => {
-        const elements = cacheManager.getElements();
-        
-        // 统一禁用所有相关元素
-        const disableElement = (element) => {
-            if (element) {
-                const currentValue = element.style.pointerEvents || '';
-                element.setAttribute('data-prev-pointer-events', currentValue);
-                element.style.pointerEvents = 'none';
-            }
-        };
-        
-        // 禁用所有按钮元素
-        elements.buttons.forEach(disableElement);
-        elements.wrappers.forEach(disableElement);
-        elements.triggerBtns.forEach(disableElement);
-        
-        // 禁用弹窗元素的事件拦截
-        elements.popups.forEach(popup => {
-            if (popup) {
-                const prevPointerEvents = popup.style.pointerEvents || '';
-                popup.setAttribute('data-prev-pointer-events', prevPointerEvents);
-                popup.style.pointerEvents = 'none';
-                popup.setAttribute('data-drag-disabled', 'true');
-            }
-        });
-    };
+    // 智能事件传播管理 - 只包装一次全局函数，先捕获现有实现作为备份
+    if (!this._buttonPropagationWrapped) {
+        const originalEnableButtonEventPropagation = window.enableButtonEventPropagation || (function(){});
+        const originalDisableButtonEventPropagation = window.disableButtonEventPropagation || (function(){});
 
-    // 恢复按钮事件拦截
-    window.disableButtonEventPropagation = () => {
-        const elements = cacheManager.getElements();
-        
-        // 统一恢复所有相关元素
-        const enableElement = (element) => {
-            if (element) {
-                const prevValue = element.getAttribute('data-prev-pointer-events');
-                element.style.pointerEvents = prevValue || '';
-                element.removeAttribute('data-prev-pointer-events');
-            }
-        };
-        
-        // 恢复所有按钮元素
-        elements.buttons.forEach(enableElement);
-        elements.wrappers.forEach(enableElement);
-        elements.triggerBtns.forEach(enableElement);
-        
-        // 恢复弹窗元素的事件拦截
-        elements.popups.forEach(popup => {
-            if (popup) {
-                const prevValue = popup.getAttribute('data-prev-pointer-events');
-                popup.style.pointerEvents = prevValue || '';
-                popup.removeAttribute('data-prev-pointer-events');
-                popup.removeAttribute('data-drag-disabled');
-            }
-        });
-    };
-
-    // 状态跟踪
-    let isCurrentlyDisabled = false;
-
-    // 原始函数备份
-    const originalEnableButtonEventPropagation = window.enableButtonEventPropagation;
-    const originalDisableButtonEventPropagation = window.disableButtonEventPropagation;
-
-    // 优化后的函数 - 使用自适应防抖器
-    window.enableButtonEventPropagation = () => {
-        debouncer.clear();
-        
-        if (!isCurrentlyDisabled) {
-            originalEnableButtonEventPropagation();
-            isCurrentlyDisabled = true;
-        }
-    };
-
-    window.disableButtonEventPropagation = () => {
-        if (isCurrentlyDisabled) {
-            // 使用自适应防抖延迟恢复
-            debouncer.debounce(() => {
-                originalDisableButtonEventPropagation();
-                isCurrentlyDisabled = false;
+        // 实际执行禁用/恢复的内部函数（只操作 DOM）
+        const doDisablePropagation = () => {
+            const elements = cacheManager.getElements();
+            const disableElement = (element) => {
+                if (element) {
+                    const currentValue = element.style.pointerEvents || '';
+                    element.setAttribute('data-prev-pointer-events', currentValue);
+                    element.style.pointerEvents = 'none';
+                }
+            };
+            elements.buttons.forEach(disableElement);
+            elements.wrappers.forEach(disableElement);
+            elements.triggerBtns.forEach(disableElement);
+            elements.popups.forEach(popup => {
+                if (popup) {
+                    const prevPointerEvents = popup.style.pointerEvents || '';
+                    popup.setAttribute('data-prev-pointer-events', prevPointerEvents);
+                    popup.style.pointerEvents = 'none';
+                    popup.setAttribute('data-drag-disabled', 'true');
+                }
             });
-        }
-    };
+        };
+
+        const doEnablePropagation = () => {
+            const elements = cacheManager.getElements();
+            const enableElement = (element) => {
+                if (element) {
+                    const prevValue = element.getAttribute('data-prev-pointer-events');
+                    element.style.pointerEvents = prevValue || '';
+                    element.removeAttribute('data-prev-pointer-events');
+                }
+            };
+            elements.buttons.forEach(enableElement);
+            elements.wrappers.forEach(enableElement);
+            elements.triggerBtns.forEach(enableElement);
+            elements.popups.forEach(popup => {
+                if (popup) {
+                    const prevValue = popup.getAttribute('data-prev-pointer-events');
+                    popup.style.pointerEvents = prevValue || '';
+                    popup.removeAttribute('data-prev-pointer-events');
+                    popup.removeAttribute('data-drag-disabled');
+                }
+            });
+        };
+
+        // 状态跟踪，保存在实例上以便跨调用保持一致
+        this._isButtonsCurrentlyDisabled = this._isButtonsCurrentlyDisabled || false;
+
+        // 包装并安装到全局：清除防抖并在首次禁用时执行 DOM 禁用
+        window.enableButtonEventPropagation = () => {
+            debouncer.clear();
+            if (!this._isButtonsCurrentlyDisabled) {
+                try { doDisablePropagation(); } catch (e) { console.warn('doDisablePropagation error', e); }
+                try { originalEnableButtonEventPropagation(); } catch (e) { /* ignore */ }
+                this._isButtonsCurrentlyDisabled = true;
+            }
+        };
+
+        window.disableButtonEventPropagation = () => {
+            if (this._isButtonsCurrentlyDisabled) {
+                debouncer.debounce(() => {
+                    try { doEnablePropagation(); } catch (e) { console.warn('doEnablePropagation error', e); }
+                    try { originalDisableButtonEventPropagation(); } catch (e) { /* ignore */ }
+                    this._isButtonsCurrentlyDisabled = false;
+                });
+            }
+        };
+
+        this._buttonPropagationWrapped = true;
+    }
 
     // 拖拽结束处理函数（会在多个地方调用）
     const handleDragEnd = async () => {
@@ -578,6 +575,25 @@ Live2DManager.prototype.setupDragAndDrop = function(model) {
     window.addEventListener('pointerup', handleDragEnd, { capture: true });
     window.addEventListener('pointercancel', onDragEnd);
     window.addEventListener('pointermove', onDragMove);
+};
+
+// 清理并释放与按钮缓存/防抖器相关的资源，供切换模型或销毁时调用
+Live2DManager.prototype._cleanupButtonCache = function() {
+    try {
+        if (this._buttonCacheManager) {
+            try { this._buttonCacheManager.destroy(); } catch (e) { /* ignore */ }
+            this._buttonCacheManager = null;
+        }
+        if (this._adaptiveDebouncer) {
+            try { this._adaptiveDebouncer.clear(); } catch (e) { /* ignore */ }
+            this._adaptiveDebouncer = null;
+        }
+        // 如果我们曾经包装过全局 enable/disable，保留包装标志，但不强行还原全局实现。
+        this._buttonPropagationWrapped = false;
+        this._isButtonsCurrentlyDisabled = false;
+    } catch (e) {
+        console.warn('清理按钮缓存时出错', e);
+    }
 };
 
 // 设置滚轮缩放

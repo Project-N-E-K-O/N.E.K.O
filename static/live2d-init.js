@@ -4,6 +4,12 @@
 
 // 创建全局 Live2D 管理器实例
 window.live2dManager = new Live2DManager();
+// 通知其他模块管理器已创建并可访问（供延迟注册使用）
+try {
+    window.dispatchEvent(new Event('live2d-manager-ready'));
+} catch (e) {
+    console.warn('派发 live2d-manager-ready 事件失败:', e);
+}
 
 // 兼容性：保持原有的全局变量和函数
 window.LanLan1 = window.LanLan1 || {};
