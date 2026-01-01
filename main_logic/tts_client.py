@@ -1132,7 +1132,12 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
 
         # 1. 初始连接 (先连上再发 ready 信号，防止死锁)
         try:
-            await ensure_connection()
+            ws = ensure_connection()
+            if ws is None:
+                logger.error("❌ [LocalTTS] 初始连接失败: ws is None")
+                logger.error("请确保 model_server.py 已运行且端口正确")
+                response_queue.put(("__ready__", False))
+                return
             response_queue.put(("__ready__", True))
         except Exception as e:
             logger.error(f"❌ [LocalTTS] 初始连接失败: {e}")
@@ -1171,6 +1176,15 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                     await send_json(ws, {
                         "header": {"action": "finish-task", "task_id": current_task_id}
                     })
+                    # optional: 关闭连接并清理接收任务
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
+                    ws = None
+                    if receive_task and not receive_task.done():
+                        receive_task.cancel()
+                current_task_id = None
                 continue
 
 
