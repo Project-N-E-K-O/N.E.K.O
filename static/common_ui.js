@@ -181,6 +181,11 @@ if (toggleBtn) {
         chatContainer.style.cursor = 'grabbing';
         if (chatHeader) chatHeader.style.cursor = 'grabbing';
         
+        // 拖拽开始时禁用按钮事件拦截
+        if (typeof window.enableButtonEventPropagation === 'function') {
+            window.enableButtonEventPropagation();
+        }
+        
         // 阻止默认行为（除非明确跳过）
         if (!skipPreventDefault) {
             e.preventDefault();
@@ -230,6 +235,11 @@ if (toggleBtn) {
             dragStartedFromToggleBtn = false;
             chatContainer.style.cursor = '';
             if (chatHeader) chatHeader.style.cursor = '';
+            
+            // 拖拽结束时恢复按钮事件拦截
+            if (typeof window.disableButtonEventPropagation === 'function') {
+                window.disableButtonEventPropagation();
+            }
             
             console.log('[Drag End] Moved:', didMove, 'FromToggleBtn:', fromToggleBtn);
             

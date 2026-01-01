@@ -34,7 +34,12 @@ Live2DManager.prototype.createPopup = function (buttonId) {
     });
 
     // 阻止弹出菜单上的指针事件传播到window，避免触发live2d拖拽
+    // 但允许在拖动过程中事件传播，以便正确检测拖动结束
     const stopEventPropagation = (e) => {
+        // 检查弹窗是否处于拖动禁用状态（由enableButtonEventPropagation设置）
+        if (popup.hasAttribute('data-drag-disabled')) {
+            return; // 允许事件传播，以便拖动操作能够正确结束
+        }
         e.stopPropagation();
     };
     popup.addEventListener('pointerdown', stopEventPropagation, true);

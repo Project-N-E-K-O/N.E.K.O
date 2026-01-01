@@ -232,81 +232,250 @@ Live2DManager.prototype._checkAndPerformSnap = async function(model) {
     return animated;
 };
 
-// 设置拖拽功能
-Live2DManager.prototype.setupDragAndDrop = function(model) {
-    model.interactive = true;
-    // 移除 stage.hitArea = screen，避免阻挡背景点击
-    // this.pixi_app.stage.interactive = true;
-    // this.pixi_app.stage.hitArea = this.pixi_app.screen;
-
-    let isDragging = false;
-    let dragStartPos = new PIXI.Point();
-
-    // 智能事件传播管理 - 在拖动过程中临时禁用按钮事件拦截
-    const enableButtonEventPropagation = () => {
-        // 收集所有按钮元素
-        const buttons = document.querySelectorAll('.live2d-floating-btn, [id^="live2d-btn-"]');
-        buttons.forEach(btn => {
-            if (btn) {
-                // 保存当前的pointerEvents值
-                const currentValue = btn.style.pointerEvents || '';
-                btn.setAttribute('data-prev-pointer-events', currentValue);
-                btn.style.pointerEvents = 'none';
-            }
-        });
+// 缓存管理器类
+class ButtonCacheManager {
+    constructor() {
+        this.cache = {
+            buttons: null,
+            wrappers: null,
+            triggerBtns: null,
+            popups: null
+        };
+        this.selectors = [
+            '.live2d-floating-btn',
+            '[id^="live2d-btn-"]', 
+            '.live2d-return-btn',
+            '.live2d-trigger-btn',
+            '.live2d-popup'
+        ];
+        this.observer = null;
+        this.initObserver();
         
-        // 收集并处理所有按钮包装器元素
+        // 添加模型移动监听
+        this.setupModelMoveListener();
+        
+        // 保存当前实例到全局，方便其他代码访问
+        if (!window.buttonCacheManager) {
+            window.buttonCacheManager = this;
+        }
+    }
+    
+    // 监听模型移动事件，更新缓存
+    setupModelMoveListener() {
+        if (window.live2dManager) {
+            const originalSavePosition = window.live2dManager._savePositionAfterInteraction;
+            if (originalSavePosition) {
+                window.live2dManager._savePositionAfterInteraction = async function() {
+                    await originalSavePosition.apply(this, arguments);
+                    // 模型位置变化后强制更新缓存
+                    if (window.buttonCacheManager) {
+                        window.buttonCacheManager.clearCache();
+                        window.buttonCacheManager.updateCache();
+                    }
+                };
+            }
+        }
+    }
+
+    getElements() {
+        if (!this.cache.buttons) {
+            this.updateCache();
+        }
+        return this.cache;
+    }
+
+    updateCache() {
+        this.cache.buttons = document.querySelectorAll(this.selectors.join(','));
+        
+        // 缓存按钮包装器
         const wrappers = new Set();
-        buttons.forEach(btn => {
+        this.cache.buttons.forEach(btn => {
             if (btn && btn.parentElement) {
                 wrappers.add(btn.parentElement);
             }
         });
+        this.cache.wrappers = Array.from(wrappers);
         
-        wrappers.forEach(wrapper => {
-            const currentValue = wrapper.style.pointerEvents || '';
-            wrapper.setAttribute('data-prev-pointer-events', currentValue);
-            wrapper.style.pointerEvents = 'none';
-        });
-    };
+        // 缓存三角按钮和弹窗
+        this.cache.triggerBtns = document.querySelectorAll('.live2d-trigger-btn');
+        this.cache.popups = document.querySelectorAll('.live2d-popup');
+    }
 
-    const disableButtonEventPropagation = () => {
-        const elementsToRestore = document.querySelectorAll('[data-prev-pointer-events]');
-        elementsToRestore.forEach(element => {
+    clearCache() {
+        this.cache.buttons = null;
+        this.cache.wrappers = null;
+        this.cache.triggerBtns = null;
+        this.cache.popups = null;
+    }
+
+    initObserver() {
+        this.observer = new MutationObserver((mutations) => {
+            // 只在与按钮相关的DOM变化时清除缓存
+            const shouldClearCache = mutations.some(mutation => {
+                return Array.from(mutation.addedNodes).some(node => 
+                    node.nodeType === 1 && node.matches && 
+                    (node.matches(this.selectors.join(', ')) ||
+                     node.querySelector(this.selectors.join(', ')))
+                );
+            });
+            
+            if (shouldClearCache) {
+                this.clearCache();
+            }
+        });
+        this.observer.observe(document.body, { childList: true, subtree: true });
+    }
+
+    destroy() {
+        if (this.observer) {
+            this.observer.disconnect();
+            this.observer = null;
+        }
+        this.clearCache();
+    }
+}
+
+// 自适应防抖器类
+class AdaptiveDebouncer {
+    constructor() {
+        this.lastCallTime = 0;
+        this.averageInterval = 0;
+        this.callCount = 0;
+        this.timeoutId = null;
+    }
+
+    debounce(callback, minDelay = 30, maxDelay = 100) {
+        const now = performance.now();
+        const interval = now - this.lastCallTime;
+        
+        // 计算平均调用间隔
+        if (this.callCount > 0) {
+            this.averageInterval = (this.averageInterval * this.callCount + interval) / (this.callCount + 1);
+        }
+        this.callCount++;
+        this.lastCallTime = now;
+        
+        // 自适应延迟：频繁操作时使用较短延迟，不频繁时使用较长延迟
+        const adaptiveDelay = Math.min(maxDelay, Math.max(minDelay, this.averageInterval * 0.8));
+        
+        if (this.timeoutId) {
+            clearTimeout(this.timeoutId);
+        }
+        
+        this.timeoutId = setTimeout(() => {
+            callback();
+            this.timeoutId = null;
+        }, adaptiveDelay);
+        
+        return this.timeoutId;
+    }
+
+    clear() {
+        if (this.timeoutId) {
+            clearTimeout(this.timeoutId);
+            this.timeoutId = null;
+        }
+    }
+}
+
+// 设置拖拽功能
+Live2DManager.prototype.setupDragAndDrop = function(model) {
+    model.interactive = true;
+
+    let isDragging = false;
+    let dragStartPos = new PIXI.Point();
+
+    // 初始化缓存管理器和防抖器
+    const cacheManager = new ButtonCacheManager();
+    const debouncer = new AdaptiveDebouncer();
+
+    // 智能事件传播管理 - 在拖动过程中临时禁用按钮事件拦截
+    window.enableButtonEventPropagation = () => {
+        const elements = cacheManager.getElements();
+        
+        // 统一禁用所有相关元素
+        const disableElement = (element) => {
             if (element) {
-                const prevValue = element.getAttribute('data-prev-pointer-events');
-                if (prevValue === '') {
-                    element.style.pointerEvents = '';
-                } else {
-                    element.style.pointerEvents = prevValue;
-                }
-                element.removeAttribute('data-prev-pointer-events');
+                const currentValue = element.style.pointerEvents || '';
+                element.setAttribute('data-prev-pointer-events', currentValue);
+                element.style.pointerEvents = 'none';
+            }
+        };
+        
+        // 禁用所有按钮元素
+        elements.buttons.forEach(disableElement);
+        elements.wrappers.forEach(disableElement);
+        elements.triggerBtns.forEach(disableElement);
+        
+        // 禁用弹窗元素的事件拦截
+        elements.popups.forEach(popup => {
+            if (popup) {
+                const prevPointerEvents = popup.style.pointerEvents || '';
+                popup.setAttribute('data-prev-pointer-events', prevPointerEvents);
+                popup.style.pointerEvents = 'none';
+                popup.setAttribute('data-drag-disabled', 'true');
             }
         });
     };
 
-    model.on('pointerdown', (event) => {
-        if (this.isLocked) return;
+    // 恢复按钮事件拦截
+    window.disableButtonEventPropagation = () => {
+        const elements = cacheManager.getElements();
         
-        // 检测是否为触摸事件，且是多点触摸（双指缩放）
-        const originalEvent = event.data.originalEvent;
-        if (originalEvent && originalEvent.touches && originalEvent.touches.length > 1) {
-            // 多点触摸时不启动拖拽
-            return;
-        }
+        // 统一恢复所有相关元素
+        const enableElement = (element) => {
+            if (element) {
+                const prevValue = element.getAttribute('data-prev-pointer-events');
+                element.style.pointerEvents = prevValue || '';
+                element.removeAttribute('data-prev-pointer-events');
+            }
+        };
         
-        isDragging = true;
-        this.isFocusing = false; // 拖拽时禁用聚焦
-        const globalPos = event.data.global;
-        dragStartPos.x = globalPos.x - model.x;
-        dragStartPos.y = globalPos.y - model.y;
-        document.getElementById('live2d-canvas').style.cursor = 'grabbing';
+        // 恢复所有按钮元素
+        elements.buttons.forEach(enableElement);
+        elements.wrappers.forEach(enableElement);
+        elements.triggerBtns.forEach(enableElement);
         
-        // 开始拖动时，临时禁用按钮的事件拦截
-        enableButtonEventPropagation();
-    });
+        // 恢复弹窗元素的事件拦截
+        elements.popups.forEach(popup => {
+            if (popup) {
+                const prevValue = popup.getAttribute('data-prev-pointer-events');
+                popup.style.pointerEvents = prevValue || '';
+                popup.removeAttribute('data-prev-pointer-events');
+                popup.removeAttribute('data-drag-disabled');
+            }
+        });
+    };
 
-    const onDragEnd = async () => {
+    // 状态跟踪
+    let isCurrentlyDisabled = false;
+
+    // 原始函数备份
+    const originalEnableButtonEventPropagation = window.enableButtonEventPropagation;
+    const originalDisableButtonEventPropagation = window.disableButtonEventPropagation;
+
+    // 优化后的函数 - 使用自适应防抖器
+    window.enableButtonEventPropagation = () => {
+        debouncer.clear();
+        
+        if (!isCurrentlyDisabled) {
+            originalEnableButtonEventPropagation();
+            isCurrentlyDisabled = true;
+        }
+    };
+
+    window.disableButtonEventPropagation = () => {
+        if (isCurrentlyDisabled) {
+            // 使用自适应防抖延迟恢复
+            debouncer.debounce(() => {
+                originalDisableButtonEventPropagation();
+                isCurrentlyDisabled = false;
+            });
+        }
+    };
+
+    // 拖拽结束处理函数（会在多个地方调用）
+    const handleDragEnd = async () => {
         if (isDragging) {
             isDragging = false;
             document.getElementById('live2d-canvas').style.cursor = 'grab';
@@ -331,6 +500,29 @@ Live2DManager.prototype.setupDragAndDrop = function(model) {
             }
         }
     };
+
+    model.on('pointerdown', (event) => {
+        if (this.isLocked) return;
+        
+        // 检测是否为触摸事件，且是多点触摸（双指缩放）
+        const originalEvent = event.data.originalEvent;
+        if (originalEvent && originalEvent.touches && originalEvent.touches.length > 1) {
+            // 多点触摸时不启动拖拽
+            return;
+        }
+        
+        isDragging = true;
+        this.isFocusing = false; // 拖拽时禁用聚焦
+        const globalPos = event.data.global;
+        dragStartPos.x = globalPos.x - model.x;
+        dragStartPos.y = globalPos.y - model.y;
+        document.getElementById('live2d-canvas').style.cursor = 'grabbing';
+        
+        // 开始拖动时，临时禁用按钮的事件拦截
+        enableButtonEventPropagation();
+    });
+
+    const onDragEnd = handleDragEnd;
 
     const onDragMove = (event) => {
         if (isDragging) {
@@ -357,16 +549,21 @@ Live2DManager.prototype.setupDragAndDrop = function(model) {
         window.removeEventListener('pointerup', this._dragEndListener);
         window.removeEventListener('pointercancel', this._dragEndListener);
     }
+    if (this._dragEndCaptureListener) {
+        window.removeEventListener('pointerup', this._dragEndCaptureListener, { capture: true });
+    }
     if (this._dragMoveListener) {
         window.removeEventListener('pointermove', this._dragMoveListener);
     }
 
     // 保存新的监听器引用
     this._dragEndListener = onDragEnd;
+    this._dragEndCaptureListener = handleDragEnd;
     this._dragMoveListener = onDragMove;
 
     // 使用 window 监听拖拽结束和移动，确保即使移出 canvas 也能响应
-    window.addEventListener('pointerup', onDragEnd);
+    // 使用捕获阶段监听器，确保即使按钮阻止了事件传播也能捕获到 pointerup
+    window.addEventListener('pointerup', handleDragEnd, { capture: true });
     window.addEventListener('pointercancel', onDragEnd);
     window.addEventListener('pointermove', onDragMove);
 };
@@ -467,6 +664,99 @@ Live2DManager.prototype.setupTouchZoom = function(model) {
     view.lastTouchMoveListener = onTouchMove;
     view.lastTouchEndListener = onTouchEnd;
 };
+
+// ===== 事件委托优化 =====
+// 全局事件委托处理，减少单个事件监听器数量
+(function() {
+    // 性能监控类
+    class PerformanceMonitor {
+        constructor() {
+            this.metrics = {
+                domQueries: 0,
+                cacheHits: 0,
+                eventHandlers: 0,
+                delegatedEvents: 0
+            };
+            this.startTime = performance.now();
+        }
+        
+        recordDomQuery() {
+            this.metrics.domQueries++;
+        }
+        
+        recordCacheHit() {
+            this.metrics.cacheHits++;
+        }
+        
+        recordEvent() {
+            this.metrics.eventHandlers++;
+        }
+        
+        recordDelegatedEvent() {
+            this.metrics.delegatedEvents++;
+        }
+        
+        getStats() {
+            const duration = performance.now() - this.startTime;
+            return {
+                ...this.metrics,
+                duration: Math.round(duration),
+                cacheHitRate: this.metrics.domQueries > 0 ? 
+                    ((this.metrics.cacheHits / this.metrics.domQueries) * 100).toFixed(2) + '%' : '0%',
+                delegationRate: this.metrics.eventHandlers > 0 ?
+                    ((this.metrics.delegatedEvents / this.metrics.eventHandlers) * 100).toFixed(2) + '%' : '0%'
+            };
+        }
+        
+        logStats() {
+            const stats = this.getStats();
+            console.log('[Live2D Performance]', stats);
+        }
+    }
+    
+    // 创建全局性能监控器
+    window.live2dPerformanceMonitor = new PerformanceMonitor();
+    
+    // 事件委托处理函数
+    const handleDelegatedClick = (e) => {
+        const target = e.target;
+        
+        // 检查是否是Live2D按钮
+        if (target.matches('.live2d-floating-btn, [id^="live2d-btn-"], .live2d-trigger-btn')) {
+            window.live2dPerformanceMonitor.recordDelegatedEvent();
+            e.stopPropagation();
+            
+            // 根据按钮类型执行相应操作
+            if (target.id === 'live2d-btn-screen') {
+                // 屏幕截图功能
+                if (window.takeScreenshot) {
+                    window.takeScreenshot();
+                }
+            } else if (target.id === 'live2d-btn-mic') {
+                // 麦克风功能
+                if (window.toggleMic) {
+                    window.toggleMic();
+                }
+            } else if (target.id === 'live2d-btn-settings') {
+                // 设置功能
+                if (window.live2dManager && window.live2dManager.toggleSettings) {
+                    window.live2dManager.toggleSettings();
+                }
+            } else if (target.classList.contains('live2d-trigger-btn')) {
+                // 三角触发按钮
+                const popupId = target.getAttribute('data-popup-id');
+                if (popupId && window.live2dManager && window.live2dManager.togglePopup) {
+                    window.live2dManager.togglePopup(popupId);
+                }
+            }
+        }
+    };
+    
+    // 添加全局事件委托监听器
+    document.addEventListener('pointerdown', handleDelegatedClick, { capture: true });
+    
+    console.log('[Live2D] 事件委托优化已启用');
+})();
 
 // 启用鼠标跟踪以检测与模型的接近度
 Live2DManager.prototype.enableMouseTracking = function(model, options = {}) {
