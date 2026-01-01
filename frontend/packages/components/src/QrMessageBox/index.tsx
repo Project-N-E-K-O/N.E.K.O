@@ -76,10 +76,9 @@ export function QrMessageBox({
         )}
         {imageUrl && (
           <img
-            className={
-              "qr-message-box__image" +
-              (status !== "loaded" ? " qr-message-box__image--hidden" : "")
-            }
+            className={`qr-message-box__image${
+              status !== "loaded" ? " qr-message-box__image--hidden" : ""
+            }`}
             src={imageUrl}
             alt={altText}
             onLoad={handleImageLoad}

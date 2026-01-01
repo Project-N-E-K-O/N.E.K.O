@@ -57,6 +57,7 @@ function App({ language, onChangeLanguage }: AppProps) {
   const [qrImageUrl, setQrImageUrl] = useState<string | null>(null);
   const [qrLoading, setQrLoading] = useState(false);
   const [qrError, setQrError] = useState<string | null>(null);
+  const qrObjectUrlRef = useRef<string | null>(null);
 
   const realtimeRef = useRef<RealtimeClient | null>(null);
   const realtimeOffRef = useRef<(() => void)[]>([]);
@@ -266,12 +267,13 @@ function App({ language, onChangeLanguage }: AppProps) {
     if (!isQrModalOpen) {
       setQrLoading(false);
       setQrError(null);
-      if (qrImageUrl && qrImageUrl.startsWith("blob:")) {
+      if (qrObjectUrlRef.current) {
         try {
-          URL.revokeObjectURL(qrImageUrl);
+          URL.revokeObjectURL(qrObjectUrlRef.current);
         } catch (_e) {
           // ignore
         }
+        qrObjectUrlRef.current = null;
       }
       setQrImageUrl(null);
       return;
@@ -283,14 +285,7 @@ function App({ language, onChangeLanguage }: AppProps) {
     const run = async () => {
       setQrLoading(true);
       setQrError(null);
-      if (qrImageUrl && qrImageUrl.startsWith("blob:")) {
-        try {
-          URL.revokeObjectURL(qrImageUrl);
-        } catch (_e) {
-          // ignore
-        }
-      }
-      setQrImageUrl(null);
+      // 注意：这里不要依赖/清空 qrImageUrl，否则会因依赖变化造成循环触发与 UI 抖动。
 
       try {
         const res = await fetch(`${API_BASE}/getipqrcode`, {
@@ -310,6 +305,7 @@ function App({ language, onChangeLanguage }: AppProps) {
         if (contentType.startsWith("image/")) {
           const blob = await res.blob();
           activeObjectUrl = URL.createObjectURL(blob);
+          qrObjectUrlRef.current = activeObjectUrl;
           setQrImageUrl(activeObjectUrl);
           return;
         }
@@ -346,9 +342,12 @@ function App({ language, onChangeLanguage }: AppProps) {
         } catch (_e) {
           // ignore
         }
+        if (qrObjectUrlRef.current === activeObjectUrl) {
+          qrObjectUrlRef.current = null;
+        }
       }
     };
-  }, [isQrModalOpen, qrImageUrl, t]);
+  }, [isQrModalOpen, t]);
 
   const handleClick = useCallback(async () => {
     try {
