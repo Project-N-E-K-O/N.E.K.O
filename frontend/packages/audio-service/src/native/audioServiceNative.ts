@@ -66,7 +66,7 @@ export function createNativeAudioService(args: {
 
     ampSub = PCMStream.addListener("onAmplitudeUpdate", (event: any) => {
       const amp = typeof event?.amplitude === "number" ? event.amplitude : 0;
-      emitter.emit("outputAmplitude", { amplitude: Math.max(0, Math.min(1, amp)) });
+      emitter.emit("inputAmplitude", { amplitude: Math.max(0, Math.min(1, amp)) });
     });
 
     playbackStopSub = PCMStream.addListener("onPlaybackStop", () => {

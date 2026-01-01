@@ -19,6 +19,7 @@ class AudioProcessor extends AudioWorkletProcessor {
     this.targetSampleRate = processorOptions.targetSampleRate || 48000;
     this.resampleRatio = this.targetSampleRate / this.originalSampleRate;
     this.needsResampling = this.resampleRatio !== 1.0;
+    this._hasReportedError = false;
 
     // 旧版约定：
     // - 48kHz: 480 samples (10ms)
@@ -30,34 +31,62 @@ class AudioProcessor extends AudioWorkletProcessor {
   }
 
   process(inputs) {
-    const input = inputs[0] && inputs[0][0];
-    if (!input || input.length === 0) return true;
+    try {
+      const input = inputs[0] && inputs[0][0];
+      if (!input || input.length === 0) return true;
 
-    if (this.needsResampling) {
-      // concat Float32 -> Array
-      for (let i = 0; i < input.length; i++) this.tempBuffer.push(input[i]);
+      if (this.needsResampling) {
+        // concat Float32 -> Array
+        for (let i = 0; i < input.length; i++) this.tempBuffer.push(input[i]);
 
-      const requiredSamples = Math.ceil(this.bufferSize / this.resampleRatio);
-      if (this.tempBuffer.length >= requiredSamples) {
-        const samplesNeeded = Math.min(requiredSamples, this.tempBuffer.length);
-        const samplesToProcess = this.tempBuffer.slice(0, samplesNeeded);
-        this.tempBuffer = this.tempBuffer.slice(samplesNeeded);
+        const requiredSamples = Math.ceil(this.bufferSize / this.resampleRatio);
+        if (this.tempBuffer.length >= requiredSamples) {
+          const samplesNeeded = Math.min(requiredSamples, this.tempBuffer.length);
+          const samplesToProcess = this.tempBuffer.slice(0, samplesNeeded);
+          this.tempBuffer = this.tempBuffer.slice(samplesNeeded);
 
-        const resampledData = this.resampleAudio(samplesToProcess);
-        const pcmData = this.floatToPcm16(resampledData);
-        this.port.postMessage(pcmData);
-      }
-    } else {
-      for (let i = 0; i < input.length; i++) {
-        this.buffer[this.bufferIndex++] = input[i];
-        if (this.bufferIndex >= this.bufferSize) {
-          const pcmData = this.floatToPcm16(this.buffer);
+          const resampledData = this.resampleAudio(samplesToProcess);
+          const pcmData = this.floatToPcm16(resampledData);
           this.port.postMessage(pcmData);
-          this.bufferIndex = 0;
+        }
+      } else {
+        for (let i = 0; i < input.length; i++) {
+          this.buffer[this.bufferIndex++] = input[i];
+          if (this.bufferIndex >= this.bufferSize) {
+            const pcmData = this.floatToPcm16(this.buffer);
+            this.port.postMessage(pcmData);
+            this.bufferIndex = 0;
+          }
         }
       }
+      return true;
+    } catch (error) {
+      // AudioWorklet 在独立线程中运行：异常若不处理可能导致音频链路中断且难以排查。
+      // 这里捕获后通过 port 回传到主线程，保持 worklet 持续运行。
+      if (!this._hasReportedError) {
+        this._hasReportedError = true;
+        let name = "";
+        let message = "AudioWorklet process error";
+        let stack = "";
+        try {
+          if (error && typeof error === "object") {
+            name = (error && error.name) ? String(error.name) : "";
+            message = (error && error.message) ? String(error.message) : String(error);
+            stack = (error && error.stack) ? String(error.stack) : "";
+          } else {
+            message = String(error);
+          }
+        } catch (_e) {
+          // ignore
+        }
+        try {
+          this.port.postMessage({ type: "error", name, message, stack });
+        } catch (_e) {
+          // ignore
+        }
+      }
+      return true;
     }
-    return true;
   }
 
   floatToPcm16(floatData) {
@@ -69,6 +98,9 @@ class AudioProcessor extends AudioWorkletProcessor {
     return pcmData;
   }
 
+  // Linear interpolation: performance-first for AudioWorklet real-time thread (no heavy deps).
+  // Downsampling (e.g. 48k→16k) may introduce aliasing/distortion; acceptable for voice calls.
+  // For higher-quality resampling (sinc/filters), handle outside the worklet (e.g. server-side).
   resampleAudio(audioData) {
     const inputLength = audioData.length;
     const outputLength = Math.floor(inputLength * this.resampleRatio);

@@ -1,5 +1,7 @@
 import type { OggOpusStreamDecoder } from "../types";
 
+const DEFAULT_SAMPLE_RATE = 48000;
+
 type GlobalDecoderModule = {
   OggOpusDecoder: new () => {
     ready: Promise<void>;
@@ -45,8 +47,8 @@ export function createGlobalOggOpusDecoder(): OggOpusStreamDecoder {
     decode: async (chunk) => {
       const d = await ensure();
       const { channelData, sampleRate } = await d.decode(chunk);
-      if (channelData && channelData[0] && channelData[0].length > 0) {
-        return { float32Data: channelData[0], sampleRate: sampleRate || 48000 };
+      if (channelData && channelData.length > 0 && channelData[0] && channelData[0].length > 0) {
+        return { float32Data: channelData[0], sampleRate: sampleRate || DEFAULT_SAMPLE_RATE };
       }
       return null;
     },
