@@ -223,6 +223,15 @@
    transition: background 0.2s ease;
  }
 
+ .live2d-right-toolbar__row[data-disabled="true"] {
+   opacity: 0.5;
+   cursor: default;
+ }
+
+ .live2d-right-toolbar__row[data-disabled="true"]:hover {
+   background: transparent;
+ }
+
  .live2d-right-toolbar__row:hover {
    background: rgba(68, 183, 254, 0.08);
  }

@@ -6,9 +6,7 @@ import type {
   StatusToastHandle,
   ModalHandle,
   Live2DSettingsToggleId,
-  Live2DAgentToggleId,
   Live2DSettingsState,
-  Live2DAgentState,
   Live2DRightToolbarPanel,
   Live2DSettingsMenuId,
 } from "@project_neko/components";
@@ -18,6 +16,7 @@ import { buildWebSocketUrlFromBase, createRealtimeClient } from "@project_neko/r
 import type { RealtimeClient, RealtimeConnectionState } from "@project_neko/realtime";
 import { createWebAudioService } from "@project_neko/audio-service/web";
 import type { AudioServiceState } from "@project_neko/audio-service/web";
+import { useLive2DAgentBackend } from "./useLive2DAgentBackend";
 
 const trimTrailingSlash = (url?: string) => (url ? url.replace(/\/+$/, "") : "");
 
@@ -73,21 +72,16 @@ function App({ language, onChangeLanguage }: AppProps) {
     proactiveChat: false,
     proactiveVision: false,
   });
-  const [toolbarAgent, setToolbarAgent] = useState<Live2DAgentState>({
-    statusText: tOrDefault(t, "settings.toggles.checking", "查询中..."),
-    master: false,
-    keyboard: false,
-    mcp: false,
-    userPlugin: false,
-    disabled: {},
+
+  const { agent: toolbarAgent, onAgentChange: handleToolbarAgentChange } = useLive2DAgentBackend({
+    apiBase: API_BASE,
+    t,
+    toastRef,
+    openPanel: toolbarOpenPanel,
   });
 
   const handleToolbarSettingsChange = useCallback((id: Live2DSettingsToggleId, next: boolean) => {
     setToolbarSettings((prev: Live2DSettingsState) => ({ ...prev, [id]: next }));
-  }, []);
-
-  const handleToolbarAgentChange = useCallback((id: Live2DAgentToggleId, next: boolean) => {
-    setToolbarAgent((prev: Live2DAgentState) => ({ ...prev, [id]: next }));
   }, []);
 
   const handleSettingsMenuClick = useCallback((id: Live2DSettingsMenuId) => {

@@ -297,7 +297,7 @@ export function Live2DRightToolbar({
                 role="menu"
               >
                 {settingsToggleRows.map((x) => (
-                  <label key={x.id} className="live2d-right-toolbar__row">
+                  <label key={x.id} className="live2d-right-toolbar__row" data-disabled="false">
                     <input
                       type="checkbox"
                       className="live2d-right-toolbar__checkbox"
@@ -418,6 +418,7 @@ export function Live2DRightToolbar({
                   <label
                     key={x.id}
                     className="live2d-right-toolbar__row"
+                    data-disabled={x.disabled ? "true" : "false"}
                     title={x.disabled ? tOrDefault(t, "settings.toggles.checking", "查询中...") : undefined}
                   >
                     <input
