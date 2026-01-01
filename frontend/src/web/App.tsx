@@ -1,7 +1,7 @@
 import "./styles.css";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
-import { Button, StatusToast, Modal, useT, tOrDefault } from "@project_neko/components";
+import { Button, StatusToast, Modal, Live2DRightToolbar, useT, tOrDefault } from "@project_neko/components";
 import type { StatusToastHandle, ModalHandle } from "@project_neko/components";
 import { createRequestClient, WebTokenStorage } from "@project_neko/request";
 import { ChatContainer } from "@project_neko/components";
@@ -346,6 +346,7 @@ function App({ language, onChangeLanguage }: AppProps) {
     <>
       <StatusToast ref={toastRef} staticBaseUrl={STATIC_BASE} />
       <Modal ref={modalRef} />
+      <Live2DRightToolbar visible />
       <main className="app">
         <header className="app__header">
           <div className="app__headerRow">
