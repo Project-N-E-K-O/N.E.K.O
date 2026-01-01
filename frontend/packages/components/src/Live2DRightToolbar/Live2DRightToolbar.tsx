@@ -4,24 +4,61 @@ import "./Live2DRightToolbar.css";
 
 export type Live2DRightToolbarButtonId = "mic" | "screen" | "agent" | "settings" | "goodbye" | "return";
 
+export type Live2DRightToolbarPanel = "agent" | "settings" | null;
+
+export type Live2DSettingsToggleId = "mergeMessages" | "allowInterrupt" | "proactiveChat" | "proactiveVision";
+export type Live2DAgentToggleId = "master" | "keyboard" | "mcp" | "userPlugin";
+
+export interface Live2DSettingsState {
+  mergeMessages: boolean;
+  allowInterrupt: boolean;
+  proactiveChat: boolean;
+  proactiveVision: boolean;
+}
+
+export interface Live2DAgentState {
+  statusText?: string;
+  master: boolean;
+  keyboard: boolean;
+  mcp: boolean;
+  userPlugin: boolean;
+  disabled?: Partial<Record<Live2DAgentToggleId, boolean>>;
+}
+
+export type Live2DSettingsMenuId =
+  | "live2dSettings"
+  | "apiKeys"
+  | "characterManage"
+  | "voiceClone"
+  | "memoryBrowser"
+  | "steamWorkshop";
+
 export interface Live2DRightToolbarProps {
   visible?: boolean;
   right?: number;
   bottom?: number;
   top?: number;
   isMobile?: boolean;
-  initialActive?: Partial<Record<Exclude<Live2DRightToolbarButtonId, "return">, boolean>>;
-  onActiveChange?: (state: {
-    mic: boolean;
-    screen: boolean;
-    goodbye: boolean;
-  }) => void;
-  dispatchToWindow?: boolean;
-}
 
-function dispatchLive2DEvent(name: string, detail?: any) {
-  if (typeof window === "undefined") return;
-  window.dispatchEvent(new CustomEvent(name, { detail }));
+  micEnabled: boolean;
+  screenEnabled: boolean;
+  goodbyeMode: boolean;
+
+  openPanel: Live2DRightToolbarPanel;
+  onOpenPanelChange: (panel: Live2DRightToolbarPanel) => void;
+
+  settings: Live2DSettingsState;
+  onSettingsChange: (id: Live2DSettingsToggleId, next: boolean) => void;
+
+  agent: Live2DAgentState;
+  onAgentChange: (id: Live2DAgentToggleId, next: boolean) => void;
+
+  onToggleMic: (next: boolean) => void;
+  onToggleScreen: (next: boolean) => void;
+  onGoodbye: () => void;
+  onReturn: () => void;
+
+  onSettingsMenuClick?: (id: Live2DSettingsMenuId) => void;
 }
 
 export function Live2DRightToolbar({
@@ -30,20 +67,26 @@ export function Live2DRightToolbar({
   bottom,
   top,
   isMobile,
-  initialActive,
-  onActiveChange,
-  dispatchToWindow = true,
+  micEnabled,
+  screenEnabled,
+  goodbyeMode,
+  openPanel,
+  onOpenPanelChange,
+  settings,
+  onSettingsChange,
+  agent,
+  onAgentChange,
+  onToggleMic,
+  onToggleScreen,
+  onGoodbye,
+  onReturn,
+  onSettingsMenuClick,
 }: Live2DRightToolbarProps) {
   const t = useT();
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const [openPanel, setOpenPanel] = useState<"agent" | "settings" | null>(null);
-  const [closingPanel, setClosingPanel] = useState<"agent" | "settings" | null>(null);
+  const [closingPanel, setClosingPanel] = useState<Exclude<Live2DRightToolbarPanel, null> | null>(null);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const PANEL_ANIM_MS = 240;
-
-  const [micActive, setMicActive] = useState(Boolean(initialActive?.mic));
-  const [screenActive, setScreenActive] = useState(Boolean(initialActive?.screen));
-  const [goodbyeMode, setGoodbyeMode] = useState(Boolean(initialActive?.goodbye));
 
   const containerStyle = useMemo<React.CSSProperties>(() => {
     const style: React.CSSProperties = {
@@ -59,50 +102,10 @@ export function Live2DRightToolbar({
     return style;
   }, [right, top, bottom]);
 
-  const emitActiveChange = useCallback(
-    (next: { mic: boolean; screen: boolean; goodbye: boolean }) => {
-      onActiveChange?.(next);
-    },
-    [onActiveChange]
-  );
-
-  const handleToggle = useCallback(
-    (id: "mic" | "screen") => {
-      if (id === "mic") {
-        setMicActive((prev) => {
-          const next = !prev;
-          emitActiveChange({ mic: next, screen: screenActive, goodbye: goodbyeMode });
-          if (dispatchToWindow) dispatchLive2DEvent("live2d-mic-toggle", { active: next });
-          return next;
-        });
-        return;
-      }
-
-      if (id === "screen") {
-        setScreenActive((prev) => {
-          const next = !prev;
-          emitActiveChange({ mic: micActive, screen: next, goodbye: goodbyeMode });
-          if (dispatchToWindow) dispatchLive2DEvent("live2d-screen-toggle", { active: next });
-          return next;
-        });
-      }
-    },
-    [dispatchToWindow, emitActiveChange, goodbyeMode, micActive, screenActive]
-  );
-
-  const handleClick = useCallback(
-    (id: "agent" | "settings") => {
-      if (!dispatchToWindow) return;
-      if (id === "agent") dispatchLive2DEvent("live2d-agent-click");
-      if (id === "settings") dispatchLive2DEvent("live2d-settings-click");
-    },
-    [dispatchToWindow]
-  );
-
   const startClose = useCallback(
-    (panel: "agent" | "settings", reason?: "outside" | "toggle") => {
+    (panel: Exclude<Live2DRightToolbarPanel, null>) => {
       setClosingPanel(panel);
-      setOpenPanel(null);
+      onOpenPanelChange(null);
 
       if (closeTimerRef.current) {
         clearTimeout(closeTimerRef.current);
@@ -111,49 +114,31 @@ export function Live2DRightToolbar({
         setClosingPanel((prev) => (prev === panel ? null : prev));
         closeTimerRef.current = null;
       }, PANEL_ANIM_MS);
-
-      if (panel === "agent" && dispatchToWindow) {
-        dispatchLive2DEvent("live2d-agent-popup-closed", { reason });
-      }
     },
-    [PANEL_ANIM_MS, dispatchToWindow]
-  );
-
-  const startOpen = useCallback(
-    (panel: "agent" | "settings") => {
-      // 切换到新 panel 前，让旧 panel 走退出动画
-      if (openPanel && openPanel !== panel) {
-        startClose(openPanel, "toggle");
-      }
-
-      // 兼容旧逻辑：agent 面板打开事件
-      if (panel === "agent" && dispatchToWindow) {
-        dispatchLive2DEvent("live2d-agent-popup-opening");
-      }
-
-      setOpenPanel(panel);
-    },
-    [dispatchToWindow, openPanel, startClose]
-  );
-
-  const closePanels = useCallback(
-    (reason?: "outside" | "toggle") => {
-      if (!openPanel) return;
-      startClose(openPanel, reason);
-    },
-    [openPanel, startClose]
+    [PANEL_ANIM_MS, onOpenPanelChange]
   );
 
   const togglePanel = useCallback(
-    (panel: "agent" | "settings") => {
+    (panel: Exclude<Live2DRightToolbarPanel, null>) => {
       if (openPanel === panel) {
-        startClose(panel, "toggle");
+        startClose(panel);
         return;
       }
-      startOpen(panel);
+
+      // 切换：先关掉旧 panel（播放退出动画），再打开新 panel
+      if (openPanel) {
+        startClose(openPanel);
+      }
+      onOpenPanelChange(panel);
     },
-    [openPanel, startClose, startOpen]
+    [onOpenPanelChange, openPanel, startClose]
   );
+
+  // 如果外部把 openPanel 置空，内部也触发退出动画
+  useEffect(() => {
+    if (openPanel === null) return;
+    // 当 openPanel 改变为另一个值时，关闭动画由 togglePanel 负责
+  }, [openPanel]);
 
   useEffect(() => {
     return () => {
@@ -171,23 +156,11 @@ export function Live2DRightToolbar({
       if (!openPanel) return;
       const target = e.target as Node | null;
       if (target && root.contains(target)) return;
-      closePanels("outside");
+      startClose(openPanel);
     };
     document.addEventListener("mousedown", onPointerDown);
     return () => document.removeEventListener("mousedown", onPointerDown);
-  }, [closePanels, openPanel]);
-
-  const handleGoodbye = useCallback(() => {
-    setGoodbyeMode(true);
-    emitActiveChange({ mic: micActive, screen: screenActive, goodbye: true });
-    if (dispatchToWindow) dispatchLive2DEvent("live2d-goodbye-click");
-  }, [dispatchToWindow, emitActiveChange, micActive, screenActive]);
-
-  const handleReturn = useCallback(() => {
-    setGoodbyeMode(false);
-    emitActiveChange({ mic: micActive, screen: screenActive, goodbye: false });
-    if (dispatchToWindow) dispatchLive2DEvent("live2d-return-click");
-  }, [dispatchToWindow, emitActiveChange, micActive, screenActive]);
+  }, [openPanel, startClose]);
 
   const buttons = useMemo(
     () =>
@@ -196,27 +169,24 @@ export function Live2DRightToolbar({
           id: "mic" as const,
           title: tOrDefault(t, "buttons.voiceControl", "语音控制"),
           hidden: false,
-          active: micActive,
-          onClick: () => handleToggle("mic"),
+          active: micEnabled,
+          onClick: () => onToggleMic(!micEnabled),
           icon: "/static/icons/mic_icon_off.png",
         },
         {
           id: "screen" as const,
           title: tOrDefault(t, "buttons.screenShare", "屏幕分享"),
           hidden: false,
-          active: screenActive,
-          onClick: () => handleToggle("screen"),
+          active: screenEnabled,
+          onClick: () => onToggleScreen(!screenEnabled),
           icon: "/static/icons/screen_icon_off.png",
         },
         {
           id: "agent" as const,
           title: tOrDefault(t, "buttons.agentTools", "Agent工具"),
           hidden: Boolean(isMobile),
-          active: false,
-          onClick: () => {
-            handleClick("agent");
-            togglePanel("agent");
-          },
+          active: openPanel === "agent",
+          onClick: () => togglePanel("agent"),
           icon: "/static/icons/Agent_off.png",
           hasPanel: true,
         },
@@ -224,11 +194,8 @@ export function Live2DRightToolbar({
           id: "settings" as const,
           title: tOrDefault(t, "buttons.settings", "设置"),
           hidden: false,
-          active: false,
-          onClick: () => {
-            handleClick("settings");
-            togglePanel("settings");
-          },
+          active: openPanel === "settings",
+          onClick: () => togglePanel("settings"),
           icon: "/static/icons/set_off.png",
           hasPanel: true,
         },
@@ -237,135 +204,68 @@ export function Live2DRightToolbar({
           title: tOrDefault(t, "buttons.leave", "请她离开"),
           hidden: Boolean(isMobile),
           active: goodbyeMode,
-          onClick: handleGoodbye,
+          onClick: onGoodbye,
           icon: "/static/icons/rest_off.png",
           hasPanel: false,
         },
       ].filter((b) => !b.hidden),
-    [goodbyeMode, handleClick, handleGoodbye, handleToggle, isMobile, micActive, screenActive, t, togglePanel]
+    [goodbyeMode, isMobile, micEnabled, onGoodbye, onToggleMic, onToggleScreen, openPanel, screenEnabled, t, togglePanel]
   );
 
-  const settingsToggles = useMemo(
+  const settingsToggleRows = useMemo(
     () => [
       {
-        id: "merge-messages",
+        id: "mergeMessages" as const,
         label: tOrDefault(t, "settings.toggles.mergeMessages", "合并消息"),
+        checked: settings.mergeMessages,
       },
       {
-        id: "focus-mode",
+        id: "allowInterrupt" as const,
         label: tOrDefault(t, "settings.toggles.allowInterrupt", "允许打断"),
+        checked: settings.allowInterrupt,
       },
       {
-        id: "proactive-chat",
+        id: "proactiveChat" as const,
         label: tOrDefault(t, "settings.toggles.proactiveChat", "主动搭话"),
+        checked: settings.proactiveChat,
       },
       {
-        id: "proactive-vision",
+        id: "proactiveVision" as const,
         label: tOrDefault(t, "settings.toggles.proactiveVision", "自主视觉"),
+        checked: settings.proactiveVision,
       },
     ],
-    [t]
+    [settings, t]
   );
 
-  const agentToggles = useMemo(
+  const agentToggleRows = useMemo(
     () => [
       {
-        id: "agent-master",
+        id: "master" as const,
         label: tOrDefault(t, "settings.toggles.agentMaster", "Agent总开关"),
+        checked: agent.master,
+        disabled: Boolean(agent.disabled?.master),
       },
       {
-        id: "agent-keyboard",
+        id: "keyboard" as const,
         label: tOrDefault(t, "settings.toggles.keyboardControl", "键鼠控制"),
+        checked: agent.keyboard,
+        disabled: Boolean(agent.disabled?.keyboard),
       },
       {
-        id: "agent-mcp",
+        id: "mcp" as const,
         label: tOrDefault(t, "settings.toggles.mcpTools", "MCP工具"),
+        checked: agent.mcp,
+        disabled: Boolean(agent.disabled?.mcp),
       },
       {
-        id: "agent-user-plugin",
+        id: "userPlugin" as const,
         label: tOrDefault(t, "settings.toggles.userPlugin", "用户插件"),
+        checked: agent.userPlugin,
+        disabled: Boolean(agent.disabled?.userPlugin),
       },
     ],
-    [t]
-  );
-
-  const handleSettingsToggleChange = useCallback((id: string, checked: boolean) => {
-    if (typeof window === "undefined") return;
-
-    // 对齐旧逻辑：这些开关直接写 window 全局并保存
-    if (id === "merge-messages") {
-      (window as any).mergeMessagesEnabled = checked;
-      if (typeof (window as any).saveNEKOSettings === "function") (window as any).saveNEKOSettings();
-      return;
-    }
-    if (id === "focus-mode") {
-      // 旧逻辑 inverted: 允许打断 = !focusModeEnabled
-      (window as any).focusModeEnabled = !checked;
-      if (typeof (window as any).saveNEKOSettings === "function") (window as any).saveNEKOSettings();
-      return;
-    }
-    if (id === "proactive-chat") {
-      (window as any).proactiveChatEnabled = checked;
-      if (typeof (window as any).saveNEKOSettings === "function") (window as any).saveNEKOSettings();
-      if (checked && typeof (window as any).resetProactiveChatBackoff === "function") {
-        (window as any).resetProactiveChatBackoff();
-      }
-      if (!checked && typeof (window as any).stopProactiveChatSchedule === "function") {
-        (window as any).stopProactiveChatSchedule();
-      }
-      return;
-    }
-    if (id === "proactive-vision") {
-      (window as any).proactiveVisionEnabled = checked;
-      if (typeof (window as any).saveNEKOSettings === "function") (window as any).saveNEKOSettings();
-      if (checked) {
-        if (typeof (window as any).resetProactiveChatBackoff === "function") {
-          (window as any).resetProactiveChatBackoff();
-        }
-        if (typeof (window as any).isRecording !== "undefined" && (window as any).isRecording) {
-          if (typeof (window as any).startProactiveVisionDuringSpeech === "function") {
-            (window as any).startProactiveVisionDuringSpeech();
-          }
-        }
-      } else {
-        if (typeof (window as any).stopProactiveChatSchedule === "function") {
-          if (!(window as any).proactiveChatEnabled) {
-            (window as any).stopProactiveChatSchedule();
-          }
-        }
-        if (typeof (window as any).stopProactiveVisionDuringSpeech === "function") {
-          (window as any).stopProactiveVisionDuringSpeech();
-        }
-      }
-    }
-  }, []);
-
-  const openSettingsUrl = useCallback(
-    (url: string, opts?: { withLanlanName?: boolean; asLocation?: boolean }) => {
-      if (typeof window === "undefined") return;
-      let finalUrl = url;
-      if (opts?.withLanlanName) {
-        const lanlanName = ((window as any).lanlan_config && (window as any).lanlan_config.lanlan_name) || "";
-        const sep = url.includes("?") ? "&" : "?";
-        finalUrl = `${url}${sep}lanlan_name=${encodeURIComponent(lanlanName)}`;
-      }
-
-      // 兼容旧互斥：打开前关闭旧窗口引用
-      if (typeof (window as any).closeAllSettingsWindows === "function") {
-        (window as any).closeAllSettingsWindows();
-      }
-
-      if (opts?.asLocation) {
-        window.location.href = finalUrl;
-        return;
-      }
-      window.open(
-        finalUrl,
-        "_blank",
-        "width=1000,height=800,menubar=no,toolbar=no,location=no,status=no"
-      );
-    },
-    []
+    [agent, t]
   );
 
   if (!visible) return null;
@@ -377,7 +277,7 @@ export function Live2DRightToolbar({
           type="button"
           className="live2d-right-toolbar__button live2d-right-toolbar__return"
           title={tOrDefault(t, "buttons.return", "请她回来")}
-          onClick={handleReturn}
+          onClick={onReturn}
         >
           <img className="live2d-right-toolbar__icon" src="/static/icons/rest_off.png" alt="return" />
         </button>
@@ -388,11 +288,7 @@ export function Live2DRightToolbar({
               type="button"
               className="live2d-right-toolbar__button"
               title={b.title}
-              data-active={
-                b.active || (openPanel === "agent" && b.id === "agent") || (openPanel === "settings" && b.id === "settings")
-                  ? "true"
-                  : "false"
-              }
+              data-active={b.active ? "true" : "false"}
               onClick={b.onClick}
             >
               <img className="live2d-right-toolbar__icon" src={b.icon} alt={b.id} />
@@ -406,25 +302,13 @@ export function Live2DRightToolbar({
                 }`}
                 role="menu"
               >
-                {settingsToggles.map((x) => (
+                {settingsToggleRows.map((x) => (
                   <label key={x.id} className="live2d-right-toolbar__row">
                     <input
-                      id={`live2d-${x.id}`}
                       type="checkbox"
                       className="live2d-right-toolbar__checkbox"
-                      defaultChecked={(() => {
-                        try {
-                          const w: any = window as any;
-                          if (x.id === "merge-messages") return Boolean(w.mergeMessagesEnabled);
-                          if (x.id === "focus-mode") return !Boolean(w.focusModeEnabled);
-                          if (x.id === "proactive-chat") return Boolean(w.proactiveChatEnabled);
-                          if (x.id === "proactive-vision") return Boolean(w.proactiveVisionEnabled);
-                          return false;
-                        } catch (_e) {
-                          return false;
-                        }
-                      })()}
-                      onChange={(e) => handleSettingsToggleChange(x.id, e.target.checked)}
+                      checked={x.checked}
+                      onChange={(e) => onSettingsChange(x.id, e.target.checked)}
                     />
                     <span className="live2d-right-toolbar__indicator" aria-hidden="true">
                       <span className="live2d-right-toolbar__checkmark">✓</span>
@@ -439,7 +323,7 @@ export function Live2DRightToolbar({
                     <button
                       type="button"
                       className="live2d-right-toolbar__menuItem"
-                      onClick={() => openSettingsUrl("/l2d", { withLanlanName: true, asLocation: true })}
+                      onClick={() => onSettingsMenuClick?.("live2dSettings")}
                     >
                       <span className="live2d-right-toolbar__menuItemContent">
                         <img
@@ -453,7 +337,7 @@ export function Live2DRightToolbar({
                     <button
                       type="button"
                       className="live2d-right-toolbar__menuItem"
-                      onClick={() => openSettingsUrl("/api_key")}
+                      onClick={() => onSettingsMenuClick?.("apiKeys")}
                     >
                       <span className="live2d-right-toolbar__menuItemContent">
                         <img
@@ -467,7 +351,7 @@ export function Live2DRightToolbar({
                     <button
                       type="button"
                       className="live2d-right-toolbar__menuItem"
-                      onClick={() => openSettingsUrl("/chara_manager")}
+                      onClick={() => onSettingsMenuClick?.("characterManage")}
                     >
                       <span className="live2d-right-toolbar__menuItemContent">
                         <img
@@ -481,7 +365,7 @@ export function Live2DRightToolbar({
                     <button
                       type="button"
                       className="live2d-right-toolbar__menuItem"
-                      onClick={() => openSettingsUrl("/voice_clone", { withLanlanName: true })}
+                      onClick={() => onSettingsMenuClick?.("voiceClone")}
                     >
                       <span className="live2d-right-toolbar__menuItemContent">
                         <img
@@ -495,7 +379,7 @@ export function Live2DRightToolbar({
                     <button
                       type="button"
                       className="live2d-right-toolbar__menuItem"
-                      onClick={() => openSettingsUrl("/memory_browser")}
+                      onClick={() => onSettingsMenuClick?.("memoryBrowser")}
                     >
                       <span className="live2d-right-toolbar__menuItemContent">
                         <img
@@ -509,7 +393,7 @@ export function Live2DRightToolbar({
                     <button
                       type="button"
                       className="live2d-right-toolbar__menuItem"
-                      onClick={() => openSettingsUrl("/steam_workshop_manager")}
+                      onClick={() => onSettingsMenuClick?.("steamWorkshop")}
                     >
                       <span className="live2d-right-toolbar__menuItemContent">
                         <img
@@ -534,17 +418,20 @@ export function Live2DRightToolbar({
                 role="menu"
               >
                 <div id="live2d-agent-status" className="live2d-right-toolbar__status">
-                  {tOrDefault(t, "settings.toggles.checking", "查询中...")}
+                  {agent.statusText || tOrDefault(t, "settings.toggles.checking", "查询中...")}
                 </div>
-                {agentToggles.map((x) => (
-                  <label key={x.id} className="live2d-right-toolbar__row" title={tOrDefault(t, "settings.toggles.checking", "查询中...")}
+                {agentToggleRows.map((x) => (
+                  <label
+                    key={x.id}
+                    className="live2d-right-toolbar__row"
+                    title={x.disabled ? tOrDefault(t, "settings.toggles.checking", "查询中...") : undefined}
                   >
                     <input
-                      id={`live2d-${x.id}`}
                       type="checkbox"
                       className="live2d-right-toolbar__checkbox"
-                      disabled
-                      title={tOrDefault(t, "settings.toggles.checking", "查询中...")}
+                      checked={x.checked}
+                      disabled={x.disabled}
+                      onChange={(e) => onAgentChange(x.id, e.target.checked)}
                     />
                     <span className="live2d-right-toolbar__indicator" aria-hidden="true">
                       <span className="live2d-right-toolbar__checkmark">✓</span>

@@ -2,7 +2,16 @@ import "./styles.css";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import { Button, StatusToast, Modal, Live2DRightToolbar, useT, tOrDefault } from "@project_neko/components";
-import type { StatusToastHandle, ModalHandle } from "@project_neko/components";
+import type {
+  StatusToastHandle,
+  ModalHandle,
+  Live2DSettingsToggleId,
+  Live2DAgentToggleId,
+  Live2DSettingsState,
+  Live2DAgentState,
+  Live2DRightToolbarPanel,
+  Live2DSettingsMenuId,
+} from "@project_neko/components";
 import { createRequestClient, WebTokenStorage } from "@project_neko/request";
 import { ChatContainer } from "@project_neko/components";
 import { buildWebSocketUrlFromBase, createRealtimeClient } from "@project_neko/realtime";
@@ -53,6 +62,76 @@ function App({ language, onChangeLanguage }: AppProps) {
   const t = useT();
   const toastRef = useRef<StatusToastHandle | null>(null);
   const modalRef = useRef<ModalHandle | null>(null);
+
+  const [toolbarGoodbyeMode, setToolbarGoodbyeMode] = useState(false);
+  const [toolbarMicEnabled, setToolbarMicEnabled] = useState(false);
+  const [toolbarScreenEnabled, setToolbarScreenEnabled] = useState(false);
+  const [toolbarOpenPanel, setToolbarOpenPanel] = useState<Live2DRightToolbarPanel>(null);
+  const [toolbarSettings, setToolbarSettings] = useState<Live2DSettingsState>({
+    mergeMessages: true,
+    allowInterrupt: true,
+    proactiveChat: false,
+    proactiveVision: false,
+  });
+  const [toolbarAgent, setToolbarAgent] = useState<Live2DAgentState>({
+    statusText: tOrDefault(t, "settings.toggles.checking", "查询中..."),
+    master: false,
+    keyboard: false,
+    mcp: false,
+    userPlugin: false,
+    disabled: {},
+  });
+
+  const handleToolbarSettingsChange = useCallback((id: Live2DSettingsToggleId, next: boolean) => {
+    setToolbarSettings((prev: Live2DSettingsState) => {
+      switch (id) {
+        case "mergeMessages":
+          return { ...prev, mergeMessages: next };
+        case "allowInterrupt":
+          return { ...prev, allowInterrupt: next };
+        case "proactiveChat":
+          return { ...prev, proactiveChat: next };
+        case "proactiveVision":
+          return { ...prev, proactiveVision: next };
+        default:
+          return prev;
+      }
+    });
+  }, []);
+
+  const handleToolbarAgentChange = useCallback((id: Live2DAgentToggleId, next: boolean) => {
+    setToolbarAgent((prev: Live2DAgentState) => {
+      switch (id) {
+        case "master":
+          return { ...prev, master: next };
+        case "keyboard":
+          return { ...prev, keyboard: next };
+        case "mcp":
+          return { ...prev, mcp: next };
+        case "userPlugin":
+          return { ...prev, userPlugin: next };
+        default:
+          return prev;
+      }
+    });
+  }, []);
+
+  const handleSettingsMenuClick = useCallback((id: Live2DSettingsMenuId) => {
+    const map: Record<Live2DSettingsMenuId, string> = {
+      live2dSettings: "/l2d",
+      apiKeys: "/api_key",
+      characterManage: "/chara_manager",
+      voiceClone: "/voice_clone",
+      memoryBrowser: "/memory_browser",
+      steamWorkshop: "/steam_workshop_manager",
+    };
+    const url = map[id];
+    try {
+      window.open(url, "_blank");
+    } catch (_e) {
+      window.location.href = url;
+    }
+  }, []);
 
   const realtimeRef = useRef<RealtimeClient | null>(null);
   const realtimeOffRef = useRef<(() => void)[]>([]);
@@ -346,7 +425,32 @@ function App({ language, onChangeLanguage }: AppProps) {
     <>
       <StatusToast ref={toastRef} staticBaseUrl={STATIC_BASE} />
       <Modal ref={modalRef} />
-      <Live2DRightToolbar visible />
+      <Live2DRightToolbar
+        visible
+        micEnabled={toolbarMicEnabled}
+        screenEnabled={toolbarScreenEnabled}
+        goodbyeMode={toolbarGoodbyeMode}
+        openPanel={toolbarOpenPanel}
+        onOpenPanelChange={setToolbarOpenPanel}
+        settings={toolbarSettings}
+        onSettingsChange={handleToolbarSettingsChange}
+        agent={toolbarAgent}
+        onAgentChange={handleToolbarAgentChange}
+        onToggleMic={(next) => {
+          setToolbarMicEnabled(next);
+        }}
+        onToggleScreen={(next) => {
+          setToolbarScreenEnabled(next);
+        }}
+        onGoodbye={() => {
+          setToolbarGoodbyeMode(true);
+          setToolbarOpenPanel(null);
+        }}
+        onReturn={() => {
+          setToolbarGoodbyeMode(false);
+        }}
+        onSettingsMenuClick={handleSettingsMenuClick}
+      />
       <main className="app">
         <header className="app__header">
           <div className="app__headerRow">
