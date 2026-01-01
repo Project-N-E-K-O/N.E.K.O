@@ -18,6 +18,7 @@
   background: rgba(255, 255, 255, 0.65);
   backdrop-filter: saturate(180%) blur(20px);
   border: 1px solid rgba(255, 255, 255, 0.18);
+  outline: none;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04), 0 4px 8px rgba(0, 0, 0, 0.08);
   transition: transform 0.1s ease, box-shadow 0.15s ease, background 0.15s ease, border-color 0.15s ease;
   display: flex;
@@ -45,6 +46,14 @@
     0 8px 16px rgba(0, 0, 0, 0.08),
     0 0 0 3px rgba(68, 183, 254, 0.35);
   background: rgba(68, 183, 254, 0.95);
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+.live2d-right-toolbar__button:focus-visible {
+  box-shadow:
+    0 4px 8px rgba(0, 0, 0, 0.08),
+    0 8px 16px rgba(0, 0, 0, 0.08),
+    0 0 0 3px rgba(68, 183, 254, 0.35);
   border-color: rgba(255, 255, 255, 0.35);
 }
 
@@ -89,6 +98,7 @@
    background: rgba(255, 255, 255, 0.65);
    backdrop-filter: saturate(180%) blur(20px);
    border: 1px solid rgba(255, 255, 255, 0.18);
+   outline: none;
    display: flex;
    align-items: center;
    justify-content: center;
@@ -105,6 +115,11 @@
    transform: scale(1.05);
    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.08), 0 8px 16px rgba(0, 0, 0, 0.08);
    background: rgba(255, 255, 255, 0.8);
+ }
+
+ .live2d-right-toolbar__panelTrigger:focus-visible {
+   box-shadow: 0 4px 8px rgba(0, 0, 0, 0.08), 0 8px 16px rgba(0, 0, 0, 0.08), 0 0 0 3px rgba(68, 183, 254, 0.25);
+   border-color: rgba(255, 255, 255, 0.35);
  }
 
  .live2d-right-toolbar__panelTrigger[data-active="true"] {
@@ -280,7 +295,12 @@
    font-size: 14px;
    font-family: inherit;
    color: #333;
+   outline: none;
    transition: background 0.2s ease;
+ }
+
+ .live2d-right-toolbar__menuItem:focus-visible {
+   background: rgba(68, 183, 254, 0.1);
  }
 
  .live2d-right-toolbar__menuItemContent {
