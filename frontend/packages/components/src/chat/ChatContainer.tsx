@@ -1,8 +1,7 @@
-import React, { useState } from "react";
-import type { ChatMessage } from "./types";
+import React, { useState, useRef } from "react";
+import type { ChatMessage, PendingScreenshot } from "./types";
 import MessageList from "./MessageList";
 import ChatInput from "./ChatInput";
-
 import { useT, tOrDefault } from "../i18n";
 
 /** 生成跨环境安全的 id */
@@ -10,8 +9,6 @@ function generateId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
   }
-
-  // fallback：RFC4122 v4-ish
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
     const r = (Math.random() * 16) | 0;
     const v = c === "x" ? r : (r & 0x3) | 0x8;
@@ -21,6 +18,7 @@ function generateId(): string {
 
 export default function ChatContainer() {
   const t = useT();
+
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: "sys-1",
@@ -30,22 +28,67 @@ export default function ChatContainer() {
     },
   ]);
 
-  function handleSend(text: string) {
-    const userMsg: ChatMessage = {
-      id: generateId(),
-      role: "user",
-      content: text,
-      createdAt: Date.now(),
-    };
+  const [pendingScreenshots, setPendingScreenshots] =
+    useState<PendingScreenshot[]>([]);
 
-    const botMsg: ChatMessage = {
-      id: generateId(),
-      role: "assistant",
-      content: `${tOrDefault(t, "chat.response_prefix", "你刚刚说的是：")}${text}`,
-      createdAt: Date.now(),
-    };
+  // 聊天区域 ref（保留，不再用于截图）
+  const messageAreaRef = useRef<HTMLDivElement>(null);
 
-    setMessages((prev) => [...prev, userMsg, botMsg]);
+  function handleSendText(text: string) {
+    if (!text.trim() && pendingScreenshots.length === 0) return;
+
+    const newMessages: ChatMessage[] = [];
+
+    // 先发送 pending 图片
+    pendingScreenshots.forEach((p) => {
+      newMessages.push({
+        id: generateId(),
+        role: "user",
+        image: p.base64,
+        createdAt: Date.now(),
+      });
+    });
+
+    // 再发送文本
+    if (text.trim()) {
+      newMessages.push({
+        id: generateId(),
+        role: "user",
+        content: text,
+        createdAt: Date.now(),
+      });
+    }
+
+    setMessages((prev) => [...prev, ...newMessages]);
+    setPendingScreenshots([]);
+  }
+
+  // 📸 Take Photo → Chrome 屏幕分享 → 进入 pending
+  async function handleScreenshot() {
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: true,
+      audio: false,
+    });
+
+    const video = document.createElement("video");
+    video.srcObject = stream;
+    await video.play();
+
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    const ctx = canvas.getContext("2d")!;
+    ctx.drawImage(video, 0, 0);
+
+    const base64 = canvas.toDataURL("image/png");
+
+    stream.getTracks().forEach((t) => t.stop());
+
+    setPendingScreenshots((prev) => [
+      ...prev,
+      { id: generateId(), base64 },
+    ]);
   }
 
   return (
@@ -54,19 +97,17 @@ export default function ChatContainer() {
         display: "flex",
         flexDirection: "column",
         width: "100%",
-        maxWidth: 400, // Match template width or keep flexible? Template is 400px fixed usually, but let's stick to max-width
-        height: 500, // Match template height
+        maxWidth: 400,
+        height: 500,
         margin: "0 auto",
-
-        // Fluent Design Acrylic 材质
         background: "rgba(255, 255, 255, 0.65)",
         backdropFilter: "saturate(180%) blur(20px)",
         WebkitBackdropFilter: "saturate(180%) blur(20px)",
         borderRadius: 8,
         border: "1px solid rgba(255, 255, 255, 0.18)",
-        boxShadow: "0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.04)",
+        boxShadow:
+          "0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.04)",
         overflow: "hidden",
-        position: "relative", // Ensure context for absolute positioning if needed
       }}
     >
       {/* Header */}
@@ -78,16 +119,24 @@ export default function ChatContainer() {
           display: "flex",
           alignItems: "center",
           padding: "0 16px",
-          flexShrink: 0,
         }}
       >
-        <span style={{ fontSize: "0.875rem", fontWeight: 600, color: "rgba(0, 0, 0, 0.9)" }}>
+        <span style={{ fontSize: "0.875rem", fontWeight: 600 }}>
           {tOrDefault(t, "chat.title", "💬 Chat")}
         </span>
       </div>
 
-      <MessageList messages={messages} />
-      <ChatInput onSend={handleSend} />
+      {/* 聊天区 */}
+      <div ref={messageAreaRef} style={{ flex: 1, overflowY: "auto" }}>
+        <MessageList messages={messages} />
+      </div>
+
+      <ChatInput
+        onSend={handleSendText}
+        onTakePhoto={handleScreenshot}
+        pendingScreenshots={pendingScreenshots}
+        setPendingScreenshots={setPendingScreenshots}
+      />
     </div>
   );
 }
