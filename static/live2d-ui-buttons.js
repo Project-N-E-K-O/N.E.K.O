@@ -532,6 +532,7 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
 
                 // 创建三角按钮（用于触发弹出框）- Fluent Design
                 const triggerBtn = document.createElement('div');
+                triggerBtn.className = 'live2d-trigger-btn';
                 triggerBtn.innerText = '▶';
                 Object.assign(triggerBtn.style, {
                     width: '24px',
@@ -763,6 +764,13 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
             const screenWidth = window.innerWidth;
             const screenHeight = window.innerHeight;
             
+            // 验证边界数据的有效性
+            if (!bounds || !Number.isFinite(bounds.left) || !Number.isFinite(bounds.right) || 
+                !Number.isFinite(bounds.top) || !Number.isFinite(bounds.bottom)) {
+                console.warn('Live2D模型边界数据无效，跳过按钮定位');
+                return;
+            }
+            
             // 计算模型中心点
             const modelCenterX = (bounds.left + bounds.right) / 2;
             const modelCenterY = (bounds.top + bounds.bottom) / 2;
@@ -805,6 +813,14 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
 
             buttonsContainer.style.left = `${boundedX}px`;
             buttonsContainer.style.top = `${boundedY}px`;
+            
+            // 强制更新按钮的pointer-events状态
+            buttonsContainer.style.pointerEvents = 'none';
+            const buttons = buttonsContainer.querySelectorAll('.live2d-floating-btn, .live2d-trigger-btn');
+            buttons.forEach(btn => {
+                btn.style.pointerEvents = 'auto';
+            });
+            
             // 不要在这里设置 display，让鼠标检测逻辑来控制显示/隐藏
         } catch (_) {
             // 忽略单帧异常
