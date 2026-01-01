@@ -115,7 +115,7 @@ export function Live2DRightToolbar({
         closeTimerRef.current = null;
       }, PANEL_ANIM_MS);
     },
-    [PANEL_ANIM_MS, onOpenPanelChange]
+    [onOpenPanelChange]
   );
 
   const togglePanel = useCallback(
@@ -134,12 +134,6 @@ export function Live2DRightToolbar({
     [onOpenPanelChange, openPanel, startClose]
   );
 
-  // 如果外部把 openPanel 置空，内部也触发退出动画
-  useEffect(() => {
-    if (openPanel === null) return;
-    // 当 openPanel 改变为另一个值时，关闭动画由 togglePanel 负责
-  }, [openPanel]);
-
   useEffect(() => {
     return () => {
       if (closeTimerRef.current) {
@@ -150,7 +144,7 @@ export function Live2DRightToolbar({
   }, []);
 
   useEffect(() => {
-    const onPointerDown = (e: MouseEvent) => {
+    const onPointerDown = (e: PointerEvent) => {
       const root = rootRef.current;
       if (!root) return;
       if (!openPanel) return;
@@ -158,8 +152,8 @@ export function Live2DRightToolbar({
       if (target && root.contains(target)) return;
       startClose(openPanel);
     };
-    document.addEventListener("mousedown", onPointerDown);
-    return () => document.removeEventListener("mousedown", onPointerDown);
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [openPanel, startClose]);
 
   const buttons = useMemo(

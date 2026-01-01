@@ -83,37 +83,11 @@ function App({ language, onChangeLanguage }: AppProps) {
   });
 
   const handleToolbarSettingsChange = useCallback((id: Live2DSettingsToggleId, next: boolean) => {
-    setToolbarSettings((prev: Live2DSettingsState) => {
-      switch (id) {
-        case "mergeMessages":
-          return { ...prev, mergeMessages: next };
-        case "allowInterrupt":
-          return { ...prev, allowInterrupt: next };
-        case "proactiveChat":
-          return { ...prev, proactiveChat: next };
-        case "proactiveVision":
-          return { ...prev, proactiveVision: next };
-        default:
-          return prev;
-      }
-    });
+    setToolbarSettings((prev: Live2DSettingsState) => ({ ...prev, [id]: next }));
   }, []);
 
   const handleToolbarAgentChange = useCallback((id: Live2DAgentToggleId, next: boolean) => {
-    setToolbarAgent((prev: Live2DAgentState) => {
-      switch (id) {
-        case "master":
-          return { ...prev, master: next };
-        case "keyboard":
-          return { ...prev, keyboard: next };
-        case "mcp":
-          return { ...prev, mcp: next };
-        case "userPlugin":
-          return { ...prev, userPlugin: next };
-        default:
-          return prev;
-      }
-    });
+    setToolbarAgent((prev: Live2DAgentState) => ({ ...prev, [id]: next }));
   }, []);
 
   const handleSettingsMenuClick = useCallback((id: Live2DSettingsMenuId) => {
@@ -126,9 +100,8 @@ function App({ language, onChangeLanguage }: AppProps) {
       steamWorkshop: "/steam_workshop_manager",
     };
     const url = map[id];
-    try {
-      window.open(url, "_blank");
-    } catch (_e) {
+    const newWindow = window.open(url, "_blank");
+    if (!newWindow) {
       window.location.href = url;
     }
   }, []);

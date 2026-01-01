@@ -83,13 +83,13 @@
   height: 84%;
 }
 
- .live2d-right-toolbar__item {
-   position: relative;
-   display: flex;
-   align-items: center;
-   gap: 8px;
-   pointer-events: none;
- }
+.live2d-right-toolbar__item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
 
  .live2d-right-toolbar__panelTrigger {
    width: 24px;
@@ -221,11 +221,6 @@
    cursor: pointer;
    user-select: none;
    transition: background 0.2s ease;
- }
-
- .live2d-right-toolbar__checkbox:checked + .live2d-right-toolbar__indicator {
-   background-color: #44b7fe;
-   border-color: #44b7fe;
  }
 
  .live2d-right-toolbar__row:hover {
