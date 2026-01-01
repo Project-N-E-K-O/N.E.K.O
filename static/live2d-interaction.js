@@ -244,8 +244,8 @@ Live2DManager.prototype.setupDragAndDrop = function(model) {
 
     // 智能事件传播管理 - 在拖动过程中临时禁用按钮事件拦截
     const enableButtonEventPropagation = () => {
-        // 收集所有按钮元素
-        const buttons = document.querySelectorAll('.live2d-floating-btn, [id^="live2d-btn-"]');
+        // 收集所有按钮元素（包括浮动按钮和三角触发按钮）
+        const buttons = document.querySelectorAll('.live2d-floating-btn, .live2d-trigger-btn, [id^="live2d-btn-"]');
         buttons.forEach(btn => {
             if (btn) {
                 // 保存当前的pointerEvents值
@@ -255,7 +255,7 @@ Live2DManager.prototype.setupDragAndDrop = function(model) {
             }
         });
         
-        // 收集并处理所有按钮包装器元素
+        // 收集并处理所有按钮包装器元素（包括三角按钮的包装器）
         const wrappers = new Set();
         buttons.forEach(btn => {
             if (btn && btn.parentElement) {

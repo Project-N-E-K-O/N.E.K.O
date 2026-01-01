@@ -532,6 +532,7 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
 
                 // 创建三角按钮（用于触发弹出框）- Fluent Design
                 const triggerBtn = document.createElement('div');
+                triggerBtn.className = 'live2d-trigger-btn';
                 triggerBtn.innerText = '▶';
                 Object.assign(triggerBtn.style, {
                     width: '24px',
