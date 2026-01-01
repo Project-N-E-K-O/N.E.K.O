@@ -1132,7 +1132,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
 
         # 1. 初始连接 (先连上再发 ready 信号，防止死锁)
         try:
-            ws = ensure_connection()
+            ws = await ensure_connection()
             if ws is None:
                 logger.error("❌ [LocalTTS] 初始连接失败: ws is None")
                 logger.error("请确保 model_server.py 已运行且端口正确")
@@ -1205,7 +1205,11 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                 except Exception as e:
                     logger.error(f"发送文本失败: {e}")
                     # 标记 ws 为空，让下次 ensure_connection 触发重连
-                    await ws.close()
+                try:
+                   await ws.close()
+                except Exception:
+                    pass
+                finally:
                     ws = None
 
     try:
