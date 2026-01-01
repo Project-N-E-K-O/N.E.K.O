@@ -251,27 +251,42 @@ class ButtonCacheManager {
         this.observer = null;
         this.initObserver();
         
-        // 添加模型移动监听
-        this.setupModelMoveListener();
+        // 延迟注册模型位置保存监听器：如果 live2dManager 尚未就绪，监听全局事件
+        this._positionSavedHandler = null;
+        this._managerReadyHandler = null;
+        this._positionSavedListenerRegistered = false;
+        this.initModelListener();
     }
     
-    // 监听模型移动事件，更新缓存
-    setupModelMoveListener() {
+    // 初始化 model listener：在 live2dManager 就绪时注册位置保存事件监听器
+    initModelListener() {
+        // 如果已经存在 live2dManager，立即注册
         if (window.live2dManager) {
-            // 监听模型位置变化
-            const originalSavePosition = window.live2dManager._savePositionAfterInteraction;
-            if (originalSavePosition) {
-                window.live2dManager._savePositionAfterInteraction = async function() {
-                    await originalSavePosition.apply(this, arguments);
-                    // 模型位置变化后强制更新缓存
-                    if (window.live2dPerformanceMonitor && 
-                        window.live2dPerformanceMonitor.cacheManager) {
-                        window.live2dPerformanceMonitor.cacheManager.clearCache();
-                        window.live2dPerformanceMonitor.cacheManager.updateCache();
-                    }
-                };
-            }
+            this.registerPositionSavedListener();
+            return;
         }
+
+        // 否则，监听一次性的 "live2d-manager-ready" 事件
+        this._managerReadyHandler = () => {
+            this.registerPositionSavedListener();
+            if (this._managerReadyHandler) {
+                window.removeEventListener('live2d-manager-ready', this._managerReadyHandler);
+                this._managerReadyHandler = null;
+            }
+        };
+        window.addEventListener('live2d-manager-ready', this._managerReadyHandler);
+    }
+
+    // 注册当 Live2D 管理器保存位置后派发的事件监听器
+    registerPositionSavedListener() {
+        if (this._positionSavedListenerRegistered) return;
+        this._positionSavedHandler = (evt) => {
+            // 当模型位置被持久化时，更新/清理缓存
+            this.clearCache();
+            this.updateCache();
+        };
+        window.addEventListener('live2d-position-saved', this._positionSavedHandler);
+        this._positionSavedListenerRegistered = true;
     }
 
     getElements() {
@@ -717,57 +732,34 @@ Live2DManager.prototype.setupTouchZoom = function(model) {
     // 事件委托处理函数
     const handleDelegatedClick = (e) => {
         const target = e.target;
-        
-        // 检查是否是Live2D按钮
+
+        // 检查是否是 Live2D 按钮
         if (target.matches('.live2d-floating-btn, [id^="live2d-btn-"], .live2d-trigger-btn')) {
             window.live2dPerformanceMonitor.recordDelegatedEvent();
-            
+
             // 检查按钮是否可见且可交互
             const isButtonVisible = target.offsetParent !== null && 
                                    target.style.display !== 'none' && 
                                    target.style.opacity !== '0';
-            
+
             if (!isButtonVisible) {
                 return; // 按钮不可见，不处理事件
             }
-            
+
             // 检查按钮是否被禁用
             if (target.disabled || target.style.pointerEvents === 'none') {
                 return; // 按钮被禁用，不处理事件
             }
-            
-            e.stopPropagation();
-            
-            // 根据按钮类型执行相应操作
-            if (target.id === 'live2d-btn-screen') {
-                // 屏幕截图功能
-                if (window.takeScreenshot) {
-                    window.takeScreenshot();
-                }
-            } else if (target.id === 'live2d-btn-mic') {
-                // 麦克风功能
-                if (window.toggleMic) {
-                    window.toggleMic();
-                }
-            } else if (target.id === 'live2d-btn-settings') {
-                // 设置功能
-                if (window.live2dManager && window.live2dManager.toggleSettings) {
-                    window.live2dManager.toggleSettings();
-                }
-            } else if (target.classList.contains('live2d-trigger-btn')) {
-                // 三角触发按钮
-                const popupId = target.getAttribute('data-popup-id');
-                if (popupId && window.live2dManager && window.live2dManager.togglePopup) {
-                    window.live2dManager.togglePopup(popupId);
-                }
-            }
+
+            // 注意：不要阻止传播或直接调用硬编码 API。
+            // 允许原始的按钮 click 处理器（或自定义事件）继续运行。
         }
     };
-    
-    // 添加全局事件委托监听器
-    document.addEventListener('pointerdown', handleDelegatedClick, { capture: true });
-    
-    console.log('[Live2D] 事件委托优化已启用');
+
+    // 添加全局事件委托监听器：使用 click（不使用捕获）以避免与已有处理器冲突
+    document.addEventListener('click', handleDelegatedClick, false);
+
+    console.log('[Live2D] 事件委托优化已启用 (click 委托)');
 })();
 
 // 启用鼠标跟踪以检测与模型的接近度
@@ -1019,6 +1011,12 @@ Live2DManager.prototype._savePositionAfterInteraction = async function() {
         .then(success => {
             if (success) {
                 console.debug('模型位置和缩放已自动保存');
+                try {
+                    const detail = { path: this._lastLoadedModelPath, position, scale, displayInfo };
+                    window.dispatchEvent(new CustomEvent('live2d-position-saved', { detail }));
+                } catch (e) {
+                    console.warn('派发 live2d-position-saved 事件失败:', e);
+                }
             } else {
                 console.warn('自动保存位置失败');
             }
