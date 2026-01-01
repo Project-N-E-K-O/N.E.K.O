@@ -26,4 +26,5 @@ __all__ = [
     'websocket_router',
     'agent_router',
     'system_router',
+    'ip_qrcode_router',
 ]

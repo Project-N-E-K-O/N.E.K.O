@@ -70,7 +70,7 @@
     },
     "qrDrawer": {
       "title": "Server IP QR",
-      "placeholder": "QR area (to be wired)",
+      "placeholder": "Generating QR code...",
       "loading": "Loading…",
       "error": "Failed to load QR"
     }

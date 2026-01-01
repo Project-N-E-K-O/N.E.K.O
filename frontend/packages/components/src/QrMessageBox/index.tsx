@@ -5,7 +5,7 @@ import "./QrMessageBox.css";
 export interface QrMessageBoxProps {
   title?: string;
   description?: string;
-  imageUrl: string;
+  imageUrl?: string;
   visible?: boolean;
   onClose?: () => void;
 }
@@ -44,10 +44,10 @@ export function QrMessageBox({
     setStatus("error");
   };
 
-  const loadingText = tOrDefault(t, "qr_message_box.loading", "加载中…");
-  const errorText = tOrDefault(t, "qr_message_box.error", "图片加载失败");
+  const loadingText = tOrDefault(t, "webapp.qrDrawer.loading", "加载中…");
+  const errorText = tOrDefault(t, "webapp.qrDrawer.error", "二维码加载失败");
   const closeLabel = tOrDefault(t, "common.close", "关闭");
-  const altText = title || tOrDefault(t, "qr_message_box.alt", "二维码");
+  const altText = title || tOrDefault(t, "webapp.qrDrawer.title", "二维码");
 
   return (
     <div className="qr-message-box">

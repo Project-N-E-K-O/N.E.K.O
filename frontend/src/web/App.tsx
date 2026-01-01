@@ -113,7 +113,7 @@ function App({ language, onChangeLanguage }: AppProps) {
         });
 
         if (!res.ok) {
-          throw new Error(`status=${res.status}`);
+          throw new Error(tOrDefault(t, "webapp.qrDrawer.fetchError", `獲取失敗: ${res.status}`));
         }
 
         const contentType = (res.headers.get("content-type") || "").toLowerCase();
@@ -138,10 +138,10 @@ function App({ language, onChangeLanguage }: AppProps) {
           return;
         }
 
-        throw new Error("invalid_payload");
+        throw new Error(tOrDefault(t, "webapp.qrDrawer.invalidPayload", "返回數據格式無效"));
       } catch (e: any) {
         if (abortController.signal.aborted) return;
-        setQrError(String(e?.message || e || "error"));
+        setQrError(e?.message || tOrDefault(t, "webapp.qrDrawer.unknownError", "未知錯誤"));
       } finally {
         if (!abortController.signal.aborted) setQrLoading(false);
       }
@@ -159,7 +159,7 @@ function App({ language, onChangeLanguage }: AppProps) {
         }
       }
     };
-  }, [isQrModalOpen]);
+  }, [isQrModalOpen, qrImageUrl, t]);
 
   const handleClick = useCallback(async () => {
     try {
@@ -299,13 +299,9 @@ function App({ language, onChangeLanguage }: AppProps) {
           )}
         </div>
         <div className="modal-footer">
-          <button
-            className="modal-btn modal-btn-secondary"
-            onClick={() => setIsQrModalOpen(false)}
-            type="button"
-          >
+          <Button variant="secondary" onClick={() => setIsQrModalOpen(false)}>
             {tOrDefault(t, "common.close", "关闭")}
-          </button>
+          </Button>
         </div>
       </BaseModal>
     </>
