@@ -79,6 +79,24 @@
   height: 0;
 }
 
+.qr-image {
+  display: block;
+  max-width: 100%;
+  max-height: 60vh;
+  object-fit: contain;
+}
+
+.qr-error {
+  color: #b91c1c;
+}
+
+.qr-error-detail {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #6b7280;
+  word-break: break-word;
+}
+
 @media (max-width: 600px) {
   .qr-message-box {
     max-width: 100%;

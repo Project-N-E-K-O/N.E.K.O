@@ -97,6 +97,7 @@ def _build_access_url(ip: str) -> str:
     return f"http://{ip}:{MAIN_SERVER_PORT}"
 
 
+@router.get("/getipqrcode")
 @router.post("/getipqrcode")
 async def get_ip_qrcode():
     """Return a QR code (PNG) for opening the web UI on another device."""

@@ -50,7 +50,7 @@ export function QrMessageBox({
 
       try {
         const res = await fetch(`${apiBase}${endpoint}`, {
-          method: "POST",
+          method: "GET",
           signal: abortController.signal,
           headers: {
             Accept: "image/*,application/json",
@@ -61,29 +61,11 @@ export function QrMessageBox({
           throw new Error(tOrDefault(t, "webapp.qrDrawer.fetchError", `獲取失敗: ${res.status}`));
         }
 
-        const contentType = (res.headers.get("content-type") || "").toLowerCase();
-
-        if (contentType.startsWith("image/")) {
-          const blob = await res.blob();
-          activeObjectUrl = URL.createObjectURL(blob);
-          qrObjectUrlRef.current = activeObjectUrl;
-          setQrImageUrl(activeObjectUrl);
-          return;
-        }
-
-        const data: any = await res.json();
-        const url = data?.imageUrl || data?.url || data?.dataUrl;
-        if (typeof url === "string" && url) {
-          setQrImageUrl(url);
-          return;
-        }
-        const base64 = data?.base64;
-        if (typeof base64 === "string" && base64) {
-          setQrImageUrl(`data:image/png;base64,${base64}`);
-          return;
-        }
-
-        throw new Error(tOrDefault(t, "webapp.qrDrawer.invalidPayload", "返回數據格式無效"));
+        const blob = await res.blob();
+        activeObjectUrl = URL.createObjectURL(blob);
+        qrObjectUrlRef.current = activeObjectUrl;
+        setQrImageUrl(activeObjectUrl);
+        return;
       } catch (e: any) {
         if (abortController.signal.aborted) return;
         setQrError(e?.message || tOrDefault(t, "webapp.qrDrawer.unknownError", "未知錯誤"));
@@ -113,14 +95,19 @@ export function QrMessageBox({
 
   return (
     <BaseModal isOpen={isOpen} onClose={onClose} title={modalTitle}>
-      <div className="modal-body">
+      <div className="modal-body" aria-live="polite" aria-atomic="true">
         {qrLoading && tOrDefault(t, "webapp.qrDrawer.loading", "加载中…")}
-        {!qrLoading && qrError && tOrDefault(t, "webapp.qrDrawer.error", "二维码加载失败")}
+        {!qrLoading && qrError && (
+          <div className="qr-error">
+            {tOrDefault(t, "webapp.qrDrawer.error", "二维码加载失败")}
+            <div className="qr-error-detail">{qrError}</div>
+          </div>
+        )}
         {!qrLoading && !qrError && !qrImageUrl &&
           tOrDefault(t, "webapp.qrDrawer.placeholder", "二维码区域（待接入）")}
         {!qrLoading && !qrError && qrImageUrl && (
           <img
-            style={{ display: "block", maxWidth: "100%", maxHeight: "60vh", objectFit: "contain" }}
+            className="qr-image"
             src={qrImageUrl}
             alt={modalTitle}
           />
