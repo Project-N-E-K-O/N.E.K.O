@@ -1,8 +1,21 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 import socket
 from io import BytesIO
+from typing import Any, cast
+
+try:
+    import qrcode as _qrcode
+    from qrcode.constants import ERROR_CORRECT_M
+
+    _ERROR_CORRECT_M: Any | None = ERROR_CORRECT_M
+    _QRCODE_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _qrcode = None
+    _ERROR_CORRECT_M = None
+    _QRCODE_AVAILABLE = False
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, Response
@@ -10,6 +23,7 @@ from fastapi.responses import JSONResponse, Response
 from config import MAIN_SERVER_PORT
 
 router = APIRouter(tags=["ip_qrcode"])
+logger = logging.getLogger(__name__)
 
 
 def _get_preferred_lan_ip() -> str | None:
@@ -60,7 +74,7 @@ def _get_preferred_lan_ip() -> str | None:
             if isinstance(addr, ipaddress.IPv4Address):
                 candidates.add(addr)
         except Exception:
-            pass
+            logger.warning("Failed to probe LAN IP via %s", probe, exc_info=True)
 
     try:
         host = socket.gethostname()
@@ -71,9 +85,10 @@ def _get_preferred_lan_ip() -> str | None:
                 if isinstance(addr, ipaddress.IPv4Address):
                     candidates.add(addr)
             except Exception:
+                logger.warning("Failed to parse hostname IP %s", ip, exc_info=True)
                 continue
     except Exception:
-        pass
+        logger.warning("Failed to resolve hostname IPs", exc_info=True)
 
     valid: list[ipaddress.IPv4Address] = []
     for addr in candidates:
@@ -98,9 +113,18 @@ def _build_access_url(ip: str) -> str:
 
 
 @router.get("/getipqrcode")
-@router.post("/getipqrcode")
 async def get_ip_qrcode():
     """Return a QR code (PNG) for opening the web UI on another device."""
+
+    if not _QRCODE_AVAILABLE:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "success": False,
+                "error": "qrcode_unavailable",
+                "message": "QR 码生成库未安装",
+            },
+        )
 
     ip = _get_preferred_lan_ip()
     if not ip:
@@ -116,12 +140,11 @@ async def get_ip_qrcode():
     url = _build_access_url(ip)
 
     try:
-        import qrcode
-        from qrcode.constants import ERROR_CORRECT_M
-
-        qr = qrcode.QRCode(
+        assert _qrcode is not None
+        assert _ERROR_CORRECT_M is not None
+        qr = _qrcode.QRCode(
             version=None,
-            error_correction=ERROR_CORRECT_M,
+            error_correction=cast(Any, _ERROR_CORRECT_M),
             box_size=10,
             border=2,
         )
@@ -134,12 +157,12 @@ async def get_ip_qrcode():
         png_bytes = buf.getvalue()
         return Response(content=png_bytes, media_type="image/png")
     except Exception as e:
+        logger.exception("QR code generation failed: %s", e)
         return JSONResponse(
             status_code=500,
             content={
                 "success": False,
                 "error": "qrcode_generate_failed",
                 "message": str(e),
-                "url": url,
             },
         )
