@@ -20,7 +20,11 @@
       "@project_neko/request": ["packages/request/index.ts"],
       "@project_neko/request/*": ["packages/request/src/*"],
       "@project_neko/realtime": ["packages/realtime/index.ts"],
-      "@project_neko/realtime/*": ["packages/realtime/src/*"]
+      "@project_neko/realtime/*": ["packages/realtime/src/*"],
+      "@project_neko/audio-service": ["packages/audio-service/index.ts"],
+      "@project_neko/audio-service/*": ["packages/audio-service/src/*"],
+      "@project_neko/audio-service/web": ["packages/audio-service/index.web.ts"],
+      "@project_neko/audio-service/native": ["packages/audio-service/index.native.ts"]
     }
   },
   "include": ["src/**/*", "packages/**/*", "vite.common.config.ts", "vite.web.config.ts", "src/types/**/*"]

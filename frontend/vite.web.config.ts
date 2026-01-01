@@ -14,12 +14,16 @@ export default defineConfig(({ mode }) => {
     // 已有静态资源直接放在 ../static，由上层静态服务器提供，这里不再复制到 bundles，避免重复打包
     publicDir: false,
     resolve: {
-      alias: {
-        "@project_neko/components": path.resolve(__dirname, "packages/components/index.ts"),
-        "@project_neko/common": path.resolve(__dirname, "packages/common/index.ts"),
-        "@project_neko/request": path.resolve(__dirname, "packages/request/index.ts"),
-        "@project_neko/realtime": path.resolve(__dirname, "packages/realtime/index.ts")
-      }
+      // 注意：alias 匹配有先后顺序；更具体的路径必须放在更泛的路径之前，
+      // 否则 "@project_neko/audio-service" 可能会先匹配 "@project_neko/audio-service/web" 导致解析到 index.ts/web（不存在）。
+      alias: [
+        { find: "@project_neko/audio-service/web", replacement: path.resolve(__dirname, "packages/audio-service/index.web.ts") },
+        { find: "@project_neko/audio-service", replacement: path.resolve(__dirname, "packages/audio-service/index.ts") },
+        { find: "@project_neko/components", replacement: path.resolve(__dirname, "packages/components/index.ts") },
+        { find: "@project_neko/common", replacement: path.resolve(__dirname, "packages/common/index.ts") },
+        { find: "@project_neko/request", replacement: path.resolve(__dirname, "packages/request/index.ts") },
+        { find: "@project_neko/realtime", replacement: path.resolve(__dirname, "packages/realtime/index.ts") },
+      ],
     },
     server: {
       fs: {

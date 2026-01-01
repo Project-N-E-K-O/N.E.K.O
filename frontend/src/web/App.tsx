@@ -5,6 +5,10 @@ import { BaseModal, Button, StatusToast, Modal, useT, tOrDefault } from "@projec
 import type { StatusToastHandle, ModalHandle } from "@project_neko/components";
 import { createRequestClient, WebTokenStorage } from "@project_neko/request";
 import { ChatContainer } from "@project_neko/components";
+import { buildWebSocketUrlFromBase, createRealtimeClient } from "@project_neko/realtime";
+import type { RealtimeClient, RealtimeConnectionState } from "@project_neko/realtime";
+import { createWebAudioService } from "@project_neko/audio-service/web";
+import type { AudioServiceState } from "@project_neko/audio-service/web";
 
 const trimTrailingSlash = (url?: string) => (url ? url.replace(/\/+$/, "") : "");
 
@@ -16,6 +20,11 @@ const API_BASE = trimTrailingSlash(
 const STATIC_BASE = trimTrailingSlash(
   (import.meta as any).env?.VITE_STATIC_SERVER_URL ||
   (typeof window !== "undefined" ? (window as any).STATIC_SERVER_URL : "") ||
+  API_BASE
+);
+const WEBSOCKET_BASE = trimTrailingSlash(
+  (import.meta as any).env?.VITE_WEBSOCKET_URL ||
+  (typeof window !== "undefined" ? (window as any).WEBSOCKET_URL : "") ||
   API_BASE
 );
 
@@ -48,6 +57,186 @@ function App({ language, onChangeLanguage }: AppProps) {
   const [qrImageUrl, setQrImageUrl] = useState<string | null>(null);
   const [qrLoading, setQrLoading] = useState(false);
   const [qrError, setQrError] = useState<string | null>(null);
+
+  const realtimeRef = useRef<RealtimeClient | null>(null);
+  const realtimeOffRef = useRef<(() => void)[]>([]);
+  const [realtimeState, setRealtimeState] = useState<RealtimeConnectionState>("idle");
+  const isChatting = realtimeState === "connecting" || realtimeState === "open" || realtimeState === "reconnecting";
+
+  const audioRef = useRef<ReturnType<typeof createWebAudioService> | null>(null);
+  const audioOffRef = useRef<(() => void)[]>([]);
+  const [audioState, setAudioState] = useState<AudioServiceState>("idle");
+  const [focusModeEnabled, setFocusModeEnabled] = useState(false);
+  const [outputAmp, setOutputAmp] = useState(0);
+  const [inputAmp, setInputAmp] = useState(0);
+
+  const cleanupRealtime = useCallback((args?: { disconnect?: boolean }) => {
+    for (const off of realtimeOffRef.current) {
+      try {
+        off();
+      } catch (_e) {
+        // ignore
+      }
+    }
+    realtimeOffRef.current = [];
+
+    const client = realtimeRef.current;
+    if (args?.disconnect && client) {
+      try {
+        client.disconnect({ code: 1000, reason: "user_stop_chat" });
+      } catch (_e) {
+        // ignore
+      }
+    }
+    if (args?.disconnect) {
+      realtimeRef.current = null;
+    }
+  }, []);
+
+  const cleanupAudio = useCallback(() => {
+    for (const off of audioOffRef.current) {
+      try {
+        off();
+      } catch (_e) {
+        // ignore
+      }
+    }
+    audioOffRef.current = [];
+
+    const svc = audioRef.current;
+    if (svc) {
+      try {
+        svc.detach();
+      } catch (_e) {
+        // ignore
+      }
+    }
+    audioRef.current = null;
+    setAudioState("idle");
+    setOutputAmp(0);
+    setInputAmp(0);
+  }, []);
+
+  const getLanlanName = useCallback(() => {
+    try {
+      const w: any = typeof window !== "undefined" ? (window as any) : undefined;
+      const name = w?.lanlan_config?.lanlan_name;
+      return typeof name === "string" && name.trim() ? name.trim() : "test";
+    } catch (_e) {
+      return "test";
+    }
+  }, []);
+
+  const buildWsUrl = useCallback((path: string) => {
+    const w: any = typeof window !== "undefined" ? (window as any) : undefined;
+    if (w && typeof w.buildWebSocketUrl === "function") {
+      return w.buildWebSocketUrl(path);
+    }
+    return buildWebSocketUrlFromBase(WEBSOCKET_BASE, path);
+  }, []);
+
+  const getIsMobile = useCallback(() => {
+    try {
+      if (typeof navigator === "undefined") return false;
+      return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    } catch (_e) {
+      return false;
+    }
+  }, []);
+
+  const ensureAudioService = useCallback(() => {
+    const client = realtimeRef.current;
+    if (!client) throw new Error("Realtime client not initialized");
+
+    if (audioRef.current) return audioRef.current;
+
+    const svc = createWebAudioService({
+      client: client as any,
+      isMobile: getIsMobile(),
+      focusModeEnabled,
+      decoder: "global",
+    });
+
+    audioRef.current = svc;
+    setAudioState(svc.getState());
+    audioOffRef.current = [
+      svc.on("state", ({ state }) => setAudioState(state)),
+      svc.on("outputAmplitude", ({ amplitude }) => setOutputAmp(amplitude)),
+      svc.on("inputAmplitude", ({ amplitude }) => setInputAmp(amplitude)),
+    ];
+
+    // 与 WS 生命周期解耦：只要创建过就 attach（内部只绑定监听一次）
+    svc.attach();
+    return svc;
+  }, [focusModeEnabled, getIsMobile]);
+
+  const handleStartChat = useCallback(() => {
+    const lanlanName = getLanlanName();
+    const path = `/ws/${encodeURIComponent(lanlanName)}`;
+
+    // 已有 client：直接触发 connect（避免重复绑定监听）
+    if (realtimeRef.current) {
+      realtimeRef.current.connect();
+      return;
+    }
+
+    const client = createRealtimeClient({
+      path,
+      buildUrl: buildWsUrl,
+      heartbeat: { intervalMs: 30_000, payload: { action: "ping" } },
+      reconnect: { enabled: true },
+    });
+    realtimeRef.current = client;
+    setRealtimeState(client.getState());
+
+    realtimeOffRef.current = [
+      client.on("state", ({ state }) => setRealtimeState(state)),
+      client.on("open", () => {
+        toastRef.current?.show(tOrDefault(t, "webapp.toast.chatConnected", "聊天 WebSocket 已连接"), 2000);
+        // WS 打开后就绪 audio service（只创建一次）
+        try {
+          ensureAudioService();
+        } catch (_e) {
+          // ignore
+        }
+      }),
+      client.on("close", () => {
+        toastRef.current?.show(tOrDefault(t, "webapp.toast.chatDisconnected", "聊天 WebSocket 已断开"), 2000);
+      }),
+      client.on("error", ({ event }) => {
+        console.warn("[webapp] realtime error:", event);
+      }),
+      client.on("json", ({ json }) => {
+        // 这里先做最小接入：把消息打到控制台，后续可把协议对接到 ChatContainer 的数据流
+        console.log("[webapp] realtime json:", json);
+      }),
+    ];
+
+    client.connect();
+  }, [buildWsUrl, ensureAudioService, getLanlanName, t]);
+
+  const handleStopChat = useCallback(() => {
+    cleanupAudio();
+    cleanupRealtime({ disconnect: true });
+    setRealtimeState("closed");
+  }, [cleanupAudio, cleanupRealtime]);
+
+  useEffect(() => {
+    return () => {
+      cleanupAudio();
+      cleanupRealtime({ disconnect: true });
+    };
+  }, [cleanupAudio, cleanupRealtime]);
+
+  useEffect(() => {
+    // focusMode 状态同步到 audio service（若已创建）
+    if (!audioRef.current) return;
+    try {
+      audioRef.current.setFocusMode(focusModeEnabled);
+    } catch (_e) {
+      // ignore
+    }
+  }, [focusModeEnabled]);
 
   useEffect(() => {
     const getLang = () => {
@@ -209,6 +398,42 @@ function App({ language, onChangeLanguage }: AppProps) {
     }
   }, [t]);
 
+  const handleStartVoiceSession = useCallback(async () => {
+    try {
+      if (!realtimeRef.current) {
+        toastRef.current?.show("请先连接聊天 WebSocket", 2500);
+        return;
+      }
+      const svc = ensureAudioService();
+      await svc.startVoiceSession({ timeoutMs: 10_000, targetSampleRate: getIsMobile() ? 16000 : 48000 });
+      toastRef.current?.show("语音会话已启动", 2000);
+    } catch (e: any) {
+      console.error("[webapp] startVoiceSession failed:", e);
+      toastRef.current?.show(`启动语音失败：${e?.message || e}`, 3500);
+    }
+  }, [ensureAudioService, getIsMobile]);
+
+  const handleStopVoiceSession = useCallback(async () => {
+    try {
+      const svc = audioRef.current;
+      if (!svc) return;
+      await svc.stopVoiceSession();
+      toastRef.current?.show("语音会话已停止", 1500);
+    } catch (e: any) {
+      console.error("[webapp] stopVoiceSession failed:", e);
+      toastRef.current?.show(`停止语音失败：${e?.message || e}`, 3500);
+    }
+  }, []);
+
+  const handleInterruptPlayback = useCallback(() => {
+    try {
+      audioRef.current?.stopPlayback();
+      toastRef.current?.show("已打断播放", 1200);
+    } catch (_e) {
+      // ignore
+    }
+  }, []);
+
   return (
     <>
       <StatusToast ref={toastRef} staticBaseUrl={STATIC_BASE} />
@@ -272,9 +497,45 @@ function App({ language, onChangeLanguage }: AppProps) {
                 {tOrDefault(t, "webapp.actions.modalPrompt", "Modal Prompt")}
               </Button>
             </div>
+            <div className="card__actions">
+              {isChatting ? (
+                <Button variant="primary" onClick={handleStopChat}>
+                  {tOrDefault(t, "webapp.actions.stopChat", "🎤 停止聊天")}
+                </Button>
+              ) : (
+                <Button variant="primary" onClick={handleStartChat}>
+                  {tOrDefault(t, "webapp.actions.startChat", "🎤 开始聊天")}
+                </Button>
+              )}
+            </div>
+            <div className="card__actions">
+              <Button variant="primary" onClick={handleStartVoiceSession} disabled={realtimeState !== "open"}>
+                开始语音会话
+              </Button>
+              <Button variant="secondary" onClick={handleStopVoiceSession}>
+                停止语音会话
+              </Button>
+              <Button variant="danger" onClick={handleInterruptPlayback}>
+                打断播放
+              </Button>
+            </div>
+            <div className="card__actions">
+              <label className="langSwitch__label" htmlFor="focus-mode-toggle">
+                Focus mode（播放中不回传麦克风）
+              </label>
+              <input
+                id="focus-mode-toggle"
+                type="checkbox"
+                checked={focusModeEnabled}
+                onChange={(e: ChangeEvent<HTMLInputElement>) => setFocusModeEnabled(e.target.checked)}
+              />
+              <span style={{ marginLeft: 12 }}>
+                WS: {realtimeState} / Audio: {audioState} / outAmp: {outputAmp.toFixed(2)} / inAmp: {inputAmp.toFixed(2)}
+              </span>
+            </div>
           </div>
           {/* 👇 新增：聊天系统 React 迁移 Demo */}
-          <div style={{ marginTop: 24, height: 600 }}>
+          <div className="chatDemo">
             <ChatContainer />
           </div>
         </section>
