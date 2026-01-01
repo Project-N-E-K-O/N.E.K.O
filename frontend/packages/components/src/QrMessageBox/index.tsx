@@ -1,92 +1,137 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useT, tOrDefault } from "../i18n";
+import { BaseModal } from "../Modal/BaseModal";
+import { Button } from "../Button";
 import "./QrMessageBox.css";
 
 export interface QrMessageBoxProps {
+  apiBase: string;
+  isOpen: boolean;
+  onClose: () => void;
   title?: string;
-  description?: string;
-  imageUrl?: string;
-  visible?: boolean;
-  onClose?: () => void;
+  endpoint?: string;
 }
 
-type LoadStatus = "idle" | "loading" | "loaded" | "error";
-
 export function QrMessageBox({
-  title,
-  description,
-  imageUrl,
-  visible = true,
+  apiBase,
+  isOpen,
   onClose,
+  title,
+  endpoint = "/getipqrcode",
 }: QrMessageBoxProps) {
   const t = useT();
-  const [status, setStatus] = useState<LoadStatus>("idle");
+  const [qrImageUrl, setQrImageUrl] = useState<string | null>(null);
+  const [qrLoading, setQrLoading] = useState(false);
+  const [qrError, setQrError] = useState<string | null>(null);
+  const qrObjectUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!visible) {
-      setStatus("idle");
+    if (!isOpen) {
+      setQrLoading(false);
+      setQrError(null);
+      if (qrObjectUrlRef.current) {
+        try {
+          URL.revokeObjectURL(qrObjectUrlRef.current);
+        } catch (_e) {
+          // ignore
+        }
+        qrObjectUrlRef.current = null;
+      }
+      setQrImageUrl(null);
       return;
     }
-    if (imageUrl) {
-      setStatus("loading");
-    } else {
-      setStatus("error");
-    }
-  }, [imageUrl, visible]);
 
-  if (!visible) return null;
+    const abortController = new AbortController();
+    let activeObjectUrl: string | null = null;
 
-  const handleImageLoad = () => {
-    setStatus("loaded");
-  };
+    const run = async () => {
+      setQrLoading(true);
+      setQrError(null);
 
-  const handleImageError = () => {
-    setStatus("error");
-  };
+      try {
+        const res = await fetch(`${apiBase}${endpoint}`, {
+          method: "POST",
+          signal: abortController.signal,
+          headers: {
+            Accept: "image/*,application/json",
+          },
+        });
 
-  const loadingText = tOrDefault(t, "webapp.qrDrawer.loading", "加载中…");
-  const errorText = tOrDefault(t, "webapp.qrDrawer.error", "二维码加载失败");
-  const closeLabel = tOrDefault(t, "common.close", "关闭");
-  const altText = title || tOrDefault(t, "webapp.qrDrawer.title", "二维码");
+        if (!res.ok) {
+          throw new Error(tOrDefault(t, "webapp.qrDrawer.fetchError", `獲取失敗: ${res.status}`));
+        }
+
+        const contentType = (res.headers.get("content-type") || "").toLowerCase();
+
+        if (contentType.startsWith("image/")) {
+          const blob = await res.blob();
+          activeObjectUrl = URL.createObjectURL(blob);
+          qrObjectUrlRef.current = activeObjectUrl;
+          setQrImageUrl(activeObjectUrl);
+          return;
+        }
+
+        const data: any = await res.json();
+        const url = data?.imageUrl || data?.url || data?.dataUrl;
+        if (typeof url === "string" && url) {
+          setQrImageUrl(url);
+          return;
+        }
+        const base64 = data?.base64;
+        if (typeof base64 === "string" && base64) {
+          setQrImageUrl(`data:image/png;base64,${base64}`);
+          return;
+        }
+
+        throw new Error(tOrDefault(t, "webapp.qrDrawer.invalidPayload", "返回數據格式無效"));
+      } catch (e: any) {
+        if (abortController.signal.aborted) return;
+        setQrError(e?.message || tOrDefault(t, "webapp.qrDrawer.unknownError", "未知錯誤"));
+      } finally {
+        if (!abortController.signal.aborted) setQrLoading(false);
+      }
+    };
+
+    run();
+
+    return () => {
+      abortController.abort();
+      if (activeObjectUrl) {
+        try {
+          URL.revokeObjectURL(activeObjectUrl);
+        } catch (_e) {
+          // ignore
+        }
+        if (qrObjectUrlRef.current === activeObjectUrl) {
+          qrObjectUrlRef.current = null;
+        }
+      }
+    };
+  }, [apiBase, endpoint, isOpen, t]);
+
+  const modalTitle = title || tOrDefault(t, "webapp.qrDrawer.title", "二维码");
 
   return (
-    <div className="qr-message-box">
-      <div className="qr-message-box__header">
-        {title && <h3 className="qr-message-box__title">{title}</h3>}
-        {onClose && (
-          <button
-            type="button"
-            className="qr-message-box__close"
-            aria-label={closeLabel}
-            onClick={onClose}
-          >
-            ×
-          </button>
-        )}
-      </div>
-      {description && <p className="qr-message-box__description">{description}</p>}
-      <div className="qr-message-box__content">
-        {status === "loading" && (
-          <div className="qr-message-box__placeholder">{loadingText}</div>
-        )}
-        {status === "error" && (
-          <div className="qr-message-box__placeholder qr-message-box__placeholder--error">
-            {errorText}
-          </div>
-        )}
-        {imageUrl && (
+    <BaseModal isOpen={isOpen} onClose={onClose} title={modalTitle}>
+      <div className="modal-body">
+        {qrLoading && tOrDefault(t, "webapp.qrDrawer.loading", "加载中…")}
+        {!qrLoading && qrError && tOrDefault(t, "webapp.qrDrawer.error", "二维码加载失败")}
+        {!qrLoading && !qrError && !qrImageUrl &&
+          tOrDefault(t, "webapp.qrDrawer.placeholder", "二维码区域（待接入）")}
+        {!qrLoading && !qrError && qrImageUrl && (
           <img
-            className={`qr-message-box__image${
-              status !== "loaded" ? " qr-message-box__image--hidden" : ""
-            }`}
-            src={imageUrl}
-            alt={altText}
-            onLoad={handleImageLoad}
-            onError={handleImageError}
+            style={{ display: "block", maxWidth: "100%", maxHeight: "60vh", objectFit: "contain" }}
+            src={qrImageUrl}
+            alt={modalTitle}
           />
         )}
       </div>
-    </div>
+      <div className="modal-footer">
+        <Button variant="secondary" onClick={onClose}>
+          {tOrDefault(t, "common.close", "关闭")}
+        </Button>
+      </div>
+    </BaseModal>
   );
 }
 
