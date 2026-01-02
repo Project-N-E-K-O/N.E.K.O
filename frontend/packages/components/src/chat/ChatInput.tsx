@@ -11,6 +11,8 @@ interface Props {
   >;
 }
 
+const MAX_SCREENSHOTS = 5;
+
 export default function ChatInput({
   onSend,
   onTakePhoto,
@@ -24,6 +26,21 @@ export default function ChatInput({
     onSend(value);
     setValue("");
   }
+
+  async function handleTakePhoto() {
+    if (pendingScreenshots && pendingScreenshots.length >= MAX_SCREENSHOTS) {
+      alert(
+        tOrDefault(
+          t,
+          "chat.screenshot.maxReached",
+          `最多只能添加 ${MAX_SCREENSHOTS} 张截图`
+        )
+      );
+      return;
+    }
+    onTakePhoto?.();
+  }
+
 
   return (
     <div
@@ -48,9 +65,17 @@ export default function ChatInput({
               marginBottom: 4,
             }}
           >
-            <span>📸 Pending Screenshots ({pendingScreenshots.length})</span>
+
+            <span>
+              {tOrDefault(
+                t,
+                "chat.screenshot.pending",
+                `📸 待发送截图 (${pendingScreenshots.length})`
+              )}
+            </span>
             <button
               onClick={() => setPendingScreenshots?.([])}
+              aria-label={tOrDefault(t, "chat.screenshot.clearAll", "清除所有截图")}
               style={{
                 background: "#ff4d4f",
                 color: "#fff",
@@ -60,7 +85,8 @@ export default function ChatInput({
                 cursor: "pointer",
               }}
             >
-              Clear All
+
+              {tOrDefault(t, "chat.screenshot.clearAll", "清除全部")}
             </button>
           </div>
 
@@ -69,7 +95,13 @@ export default function ChatInput({
               <div key={p.id} style={{ position: "relative" }}>
                 <img
                   src={p.base64}
-                  style={{ width: 60, borderRadius: 6 }}
+                  alt={tOrDefault(t, "chat.screenshot.preview", "截图预览")}
+                  style={{
+                    width: 60,
+                    height: 60,
+                    objectFit: "cover",
+                    borderRadius: 6,
+                  }}
                 />
                 <button
                   onClick={() =>
@@ -77,6 +109,7 @@ export default function ChatInput({
                       prev.filter((x) => x.id !== p.id)
                     )
                   }
+                  aria-label={tOrDefault(t, "chat.screenshot.remove", "删除此截图")}
                   style={{
                     position: "absolute",
                     top: -6,
@@ -89,6 +122,7 @@ export default function ChatInput({
                     color: "#fff",
                     cursor: "pointer",
                     fontSize: 10,
+                    lineHeight: "16px",
                   }}
                 >
                   ×
@@ -163,7 +197,7 @@ export default function ChatInput({
                 fontSize: "0.8rem",
               }}
             >
-              Screenshot
+              {tOrDefault(t, "chat.screenshot.button", "截图")}
             </button>
           )}
         </div>

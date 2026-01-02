@@ -38,6 +38,7 @@ export default function ChatContainer() {
     if (!text.trim() && pendingScreenshots.length === 0) return;
 
     const newMessages: ChatMessage[] = [];
+    let timestamp = Date.now();
 
     // 先发送 pending 图片
     pendingScreenshots.forEach((p) => {
@@ -45,7 +46,7 @@ export default function ChatContainer() {
         id: generateId(),
         role: "user",
         image: p.base64,
-        createdAt: Date.now(),
+        createdAt: timestamp++,
       });
     });
 
@@ -55,7 +56,7 @@ export default function ChatContainer() {
         id: generateId(),
         role: "user",
         content: text,
-        createdAt: Date.now(),
+        createdAt: timestamp,
       });
     }
 
@@ -65,30 +66,73 @@ export default function ChatContainer() {
 
   // 📸 Take Photo → Chrome 屏幕分享 → 进入 pending
   async function handleScreenshot() {
-    const stream = await navigator.mediaDevices.getDisplayMedia({
-      video: true,
-      audio: false,
-    });
+    // 检查浏览器支持
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      alert(tOrDefault(t, "chat.screenshot.unsupported", "您的浏览器不支持截图功能"));
+      return;
+    }
 
+    let stream: MediaStream | null = null;
     const video = document.createElement("video");
-    video.srcObject = stream;
-    await video.play();
 
-    const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    try {
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: false,
+      });
+      video.srcObject = stream;
+      await video.play();
 
-    const ctx = canvas.getContext("2d")!;
-    ctx.drawImage(video, 0, 0);
+      let canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
 
-    const base64 = canvas.toDataURL("image/png");
 
-    stream.getTracks().forEach((t) => t.stop());
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        throw new Error("Failed to get canvas context");
+      }
 
-    setPendingScreenshots((prev) => [
-      ...prev,
-      { id: generateId(), base64 },
-    ]);
+      ctx.drawImage(video, 0, 0);
+
+      // 限制图片大小以避免内存问题
+      const maxWidth = 1920;
+      if (canvas.width > maxWidth) {
+        const scale = maxWidth / canvas.width;
+        const resized = document.createElement("canvas");
+        resized.width = maxWidth;
+        resized.height = canvas.height * scale;
+        const resizedCtx = resized.getContext("2d");
+        if (resizedCtx) {
+          resizedCtx.drawImage(canvas, 0, 0, resized.width, resized.height);
+          canvas = resized;
+        }
+      }
+      const base64 = canvas.toDataURL("image/png");
+
+      setPendingScreenshots((prev) => [
+        ...prev,
+        { id: generateId(), base64 },
+      ]);
+    } catch (error) {
+      console.error("Screenshot failed:", error);
+      // 用户取消不需要提示
+      if (error instanceof Error && error.name !== "NotAllowedError") {
+        alert(
+          tOrDefault(
+            t,
+            "chat.screenshot.error",
+            "截图失败，请重试"
+          )
+        );
+      }
+    } finally {
+      // 清理资源
+      if (stream) {
+        stream.getTracks().forEach((track) => track.stop());
+      }
+      video.srcObject = null;
+    }
   }
 
   return (

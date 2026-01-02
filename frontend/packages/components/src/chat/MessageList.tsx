@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from "react";
 import type { ChatMessage } from "./types";
+import { useT, tOrDefault } from "../i18n";
 import type { CSSProperties } from "react";
 
 interface Props {
@@ -40,6 +41,7 @@ const assistantBubbleStyle: CSSProperties = {
 };
 
 export default function MessageList({ messages }: Props) {
+  const t = useT();
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -55,17 +57,31 @@ export default function MessageList({ messages }: Props) {
           <div key={msg.id} style={messageWrapperStyle(isUser)}>
             <div style={isUser ? userBubbleStyle : assistantBubbleStyle}>
               {msg.image ? (
-                <img
-                  src={msg.image}
-                  alt="screenshot"
-                  style={{
-                    maxWidth: "100%",
-                    borderRadius: 8,
-                    display: "block",
-                  }}
-                />
-              ) : (
+                <div>
+                  <img
+                    src={msg.image}
+                    alt={tOrDefault(t, "chat.message.screenshot", "截图")}
+                    style={{
+                      maxWidth: "100%",
+                      borderRadius: 8,
+                      display: "block",
+                    }}
+                    onError={(e) => {
+                      e.currentTarget.style.display = "none";
+                      e.currentTarget.parentElement!.innerHTML =
+                        tOrDefault(t, "chat.message.imageError", "图片加载失败");
+                    }}
+                  />
+                  {msg.content && (
+                    <div style={{ marginTop: 8 }}>{msg.content}</div>
+                  )}
+                </div>
+              ) : msg.content ? (
                 msg.content
+              ) : (
+                <span style={{ opacity: 0.5 }}>
+                  {tOrDefault(t, "chat.message.empty", "空消息")}
+                </span>
               )}
             </div>
           </div>
