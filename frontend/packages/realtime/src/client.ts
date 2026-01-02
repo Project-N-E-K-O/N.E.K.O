@@ -186,12 +186,14 @@ export function createRealtimeClient(options: RealtimeClientOptions): RealtimeCl
   };
 
   const connectInternal = () => {
-    clearTimers();
-    manualClose = false;
-
     if (socket && (socket.readyState === 0 /* CONNECTING */ || socket.readyState === 1 /* OPEN */)) {
       return;
     }
+
+    // 仅当确实要发起新连接时再清理计时器/重置手动关闭标记；
+    // 否则外部误调用 connect() 可能会打断已建立连接的心跳等逻辑。
+    clearTimers();
+    manualClose = false;
 
     const url = resolveUrl(options);
     const ctor = resolveWebSocketCtor(options.webSocketCtor);
@@ -237,8 +239,11 @@ export function createRealtimeClient(options: RealtimeClientOptions): RealtimeCl
   };
 
   const connect = () => {
-    // 防止极短时间内重复 connect（例如多处同时触发）
-    if (state === "connecting" && nowMs() - lastConnectAt < 250) return;
+    // 上层可能会在 client 已经 open/connecting/reconnecting 时重复调用 connect()。
+    // 仅在 idle/closed 时才允许显式 connect，避免重复连接/打断现有心跳。
+    if (state !== "idle" && state !== "closed") return;
+
+    // connectInternal 内部也会忽略重复连接尝试（CONNECTING/OPEN）。
     connectInternal();
   };
 

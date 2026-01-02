@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import Demo from "./Demo";
 import { I18nProvider } from "@project_neko/components";
 import type { TFunction } from "@project_neko/components";
 import { initWebappI18n } from "./i18n";
@@ -29,9 +30,19 @@ ReactDOM.createRoot(rootEl).render(
   </React.StrictMode>
 );
 
+type WebappRoute = "app" | "demo";
+
+function parseHashRoute(hash: string): WebappRoute {
+  const raw = (hash || "").trim();
+  // 支持 `/#demo` 与 `/#/demo` 两种写法
+  if (raw === "#demo" || raw === "#/demo") return "demo";
+  return "app";
+}
+
 function Root() {
   const [t, setT] = React.useState<TFunction>(() => (key: string) => key);
   const [language, setLanguage] = React.useState<"zh-CN" | "en">("zh-CN");
+  const [route, setRoute] = React.useState<WebappRoute>(() => parseHashRoute(window.location.hash));
 
   React.useEffect(() => {
     let cancelled = false;
@@ -44,6 +55,12 @@ function Root() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  React.useEffect(() => {
+    const onHashChange = () => setRoute(parseHashRoute(window.location.hash));
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
 
   const handleChangeLanguage = React.useCallback(async (lng: "zh-CN" | "en") => {
@@ -78,7 +95,11 @@ function Root() {
 
   return (
     <I18nProvider t={t}>
-      <App language={language} onChangeLanguage={handleChangeLanguage} />
+      {route === "demo" ? (
+        <Demo language={language} onChangeLanguage={handleChangeLanguage} />
+      ) : (
+        <App language={language} onChangeLanguage={handleChangeLanguage} />
+      )}
     </I18nProvider>
   );
 }

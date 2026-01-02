@@ -1,10 +1,15 @@
 import "./styles.css";
-import { useCallback, useEffect, useRef } from "react";
-import type { ChangeEvent } from "react";
-import { Button, StatusToast, Modal, useT, tOrDefault } from "@project_neko/components";
-import type { StatusToastHandle, ModalHandle } from "@project_neko/components";
-import { createRequestClient, WebTokenStorage } from "@project_neko/request";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { StatusToast, Live2DRightToolbar, useT } from "@project_neko/components";
+import type {
+  StatusToastHandle,
+  Live2DSettingsToggleId,
+  Live2DSettingsState,
+  Live2DRightToolbarPanel,
+  Live2DSettingsMenuId,
+} from "@project_neko/components";
 import { ChatContainer } from "@project_neko/components";
+import { useLive2DAgentBackend } from "./useLive2DAgentBackend";
 
 const trimTrailingSlash = (url?: string) => (url ? url.replace(/\/+$/, "") : "");
 
@@ -19,17 +24,6 @@ const STATIC_BASE = trimTrailingSlash(
   API_BASE
 );
 
-// 创建一个简单的请求客户端；若无需鉴权，可忽略 token，默认存储在 localStorage
-const request = createRequestClient({
-  baseURL: API_BASE,
-  storage: new WebTokenStorage(),
-  refreshApi: async () => {
-    // 示例中不做刷新，实际可按需实现
-    throw new Error("refreshApi not implemented");
-  },
-  returnDataOnly: true
-});
-
 /**
  * Root React component demonstrating API requests and interactive UI controls.
  *
@@ -40,150 +34,106 @@ export interface AppProps {
   onChangeLanguage: (lng: "zh-CN" | "en") => void;
 }
 
-function App({ language, onChangeLanguage }: AppProps) {
+function App(_props: AppProps) {
   const t = useT();
   const toastRef = useRef<StatusToastHandle | null>(null);
-  const modalRef = useRef<ModalHandle | null>(null);
 
-  useEffect(() => {
-    const getLang = () => {
-      try {
-        const w: any = typeof window !== "undefined" ? (window as any) : undefined;
-        return (
-          w?.i18n?.language ||
-          (typeof localStorage !== "undefined" ? localStorage.getItem("i18nextLng") : null) ||
-          (typeof navigator !== "undefined" ? navigator.language : null) ||
-          "unknown"
-        );
-      } catch (_e) {
-        return "unknown";
-      }
-    };
+  const [isMobile, setIsMobile] = useState(false);
 
-    console.log("[webapp] 当前 i18n 语言:", getLang());
+  const [toolbarGoodbyeMode, setToolbarGoodbyeMode] = useState(false);
+  const [toolbarMicEnabled, setToolbarMicEnabled] = useState(false);
+  const [toolbarScreenEnabled, setToolbarScreenEnabled] = useState(false);
+  const [toolbarOpenPanel, setToolbarOpenPanel] = useState<Live2DRightToolbarPanel>(null);
+  const [toolbarSettings, setToolbarSettings] = useState<Live2DSettingsState>({
+    mergeMessages: true,
+    allowInterrupt: true,
+    proactiveChat: false,
+    proactiveVision: false,
+  });
 
-    const onLocaleChange = () => {
-      console.log("[webapp] i18n 语言已更新:", getLang());
-    };
-    window.addEventListener("localechange", onLocaleChange);
-    return () => window.removeEventListener("localechange", onLocaleChange);
+  const { agent: toolbarAgent, onAgentChange: handleToolbarAgentChange } = useLive2DAgentBackend({
+    apiBase: API_BASE,
+    t,
+    toastRef,
+    openPanel: toolbarOpenPanel,
+  });
+
+  const handleToolbarSettingsChange = useCallback((id: Live2DSettingsToggleId, next: boolean) => {
+    setToolbarSettings((prev: Live2DSettingsState) => ({ ...prev, [id]: next }));
   }, []);
 
-  const handleClick = useCallback(async () => {
-    try {
-      const data = await request.get("/api/config/page_config", {
-        params: { lanlan_name: "test" }
-      });
-      // 将返回结果展示在控制台或弹窗
-      console.log("page_config:", data);
-    } catch (err: any) {
-      console.error(tOrDefault(t, "webapp.errors.requestFailed", "请求失败"), err);
+  const handleSettingsMenuClick = useCallback((id: Live2DSettingsMenuId) => {
+    const map: Record<Live2DSettingsMenuId, string> = {
+      live2dSettings: "/l2d",
+      apiKeys: "/api_key",
+      characterManage: "/chara_manager",
+      voiceClone: "/voice_clone",
+      memoryBrowser: "/memory_browser",
+      steamWorkshop: "/steam_workshop_manager",
+    };
+    const url = map[id];
+    const newWindow = window.open(url, "_blank");
+    if (!newWindow) {
+      window.location.href = url;
     }
-  }, [t]);
+  }, []);
 
-  const handleToast = useCallback(() => {
-    toastRef.current?.show(
-      tOrDefault(t, "webapp.toast.apiSuccess", "接口调用成功（示例 toast）"),
-      2500
-    );
-  }, [t]);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
 
-  const handleAlert = useCallback(async () => {
-    await modalRef.current?.alert(
-      tOrDefault(t, "webapp.modal.alertMessage", "这是一条 Alert 弹窗"),
-      tOrDefault(t, "webapp.modal.alertTitle", "提示")
-    );
-  }, [t]);
+    const mq = window.matchMedia?.("(max-width: 768px)");
+    if (!mq) return;
 
-  const handleConfirm = useCallback(async () => {
-    const ok =
-      (await modalRef.current?.confirm(tOrDefault(t, "webapp.modal.confirmMessage", "确认要执行该操作吗？"), tOrDefault(t, "webapp.modal.confirmTitle", "确认"), {
-        okText: tOrDefault(t, "webapp.modal.okText", "好的"),
-        cancelText: tOrDefault(t, "webapp.modal.cancelText", "再想想"),
-        danger: false,
-      })) ?? false;
-    if (ok) {
-      toastRef.current?.show(tOrDefault(t, "webapp.toast.confirmed", "确认已执行"), 2000);
+    const update = () => setIsMobile(mq.matches);
+    update();
+
+    // Safari <= 13 兼容
+    if ("addEventListener" in mq) {
+      mq.addEventListener("change", update);
+      return () => mq.removeEventListener("change", update);
     }
-  }, [t]);
 
-  const handlePrompt = useCallback(async () => {
-    const name = await modalRef.current?.prompt(tOrDefault(t, "webapp.modal.promptMessage", "请输入昵称："), "Neko");
-    if (name) {
-      toastRef.current?.show(
-        tOrDefault(t, "webapp.toast.hello", `你好，${name}!`, { name }),
-        2500
-      );
-    }
-  }, [t]);
+    // @ts-expect-error legacy API
+    mq.addListener(update);
+    // @ts-expect-error legacy API
+    return () => mq.removeListener(update);
+  }, []);
 
   return (
     <>
       <StatusToast ref={toastRef} staticBaseUrl={STATIC_BASE} />
-      <Modal ref={modalRef} />
-      <main className="app">
-        <header className="app__header">
-          <div className="app__headerRow">
-            <div className="app__headerText">
-              <h1>{tOrDefault(t, "webapp.header.title", "N.E.K.O 前端主页")}</h1>
-              <p>{tOrDefault(t, "webapp.header.subtitle", "单页应用，无路由 / 无 SSR")}</p>
-            </div>
-            <div className="langSwitch">
-              <label className="langSwitch__label" htmlFor="lang-select">
-                {tOrDefault(t, "webapp.language.label", "语言")}
-              </label>
-              <select
-                id="lang-select"
-                className="langSwitch__select"
-                value={language}
-                onChange={(e: ChangeEvent<HTMLSelectElement>) =>
-                  onChangeLanguage(e.target.value as "zh-CN" | "en")
-                }
-              >
-                <option value="zh-CN">{tOrDefault(t, "webapp.language.zhCN", "中文")}</option>
-                <option value="en">{tOrDefault(t, "webapp.language.en", "English")}</option>
-              </select>
-            </div>
-          </div>
-        </header>
-        <section className="app__content">
-          <div className="card">
-            <h2>{tOrDefault(t, "webapp.card.title", "开始使用")}</h2>
-            <ol>
-              <li>{tOrDefault(t, "webapp.card.step1", "在此处挂载你的组件或业务入口。")}</li>
-              <li>
-                {tOrDefault(t, "webapp.card.step2Prefix", "如需调用接口，可在 ")}
-                <code>@project_neko/request</code>
-                {tOrDefault(t, "webapp.card.step2Suffix", " 基础上封装请求。")}
-              </li>
-              <li>
-                {tOrDefault(t, "webapp.card.step3Prefix", "构建产物输出到 ")}
-                <code>frontend/dist/webapp</code>
-                {tOrDefault(t, "webapp.card.step3Suffix", "（用于开发/调试），模板按需引用即可。")}
-              </li>
-            </ol>
-            <div className="card__actions">
-              <Button onClick={handleClick}>{tOrDefault(t, "webapp.actions.requestPageConfig", "请求 page_config")}</Button>
-              <Button variant="secondary" onClick={handleToast}>
-                {tOrDefault(t, "webapp.actions.showToast", "显示 StatusToast")}
-              </Button>
-              <Button variant="primary" onClick={handleAlert}>
-                {tOrDefault(t, "webapp.actions.modalAlert", "Modal Alert")}
-              </Button>
-              <Button variant="success" onClick={handleConfirm}>
-                {tOrDefault(t, "webapp.actions.modalConfirm", "Modal Confirm")}
-              </Button>
-              <Button variant="danger" onClick={handlePrompt}>
-                {tOrDefault(t, "webapp.actions.modalPrompt", "Modal Prompt")}
-              </Button>
-            </div>
-          </div>
-          {/* 👇 新增：聊天系统 React 迁移 Demo */}
-          <div style={{ marginTop: 24, height: 600 }}>
-            <ChatContainer />
-          </div>
-        </section>
-      </main>
+      <Live2DRightToolbar
+        visible
+        isMobile={isMobile}
+        right={isMobile ? 12 : 24}
+        top={isMobile ? 12 : 24}
+        micEnabled={toolbarMicEnabled}
+        screenEnabled={toolbarScreenEnabled}
+        goodbyeMode={toolbarGoodbyeMode}
+        openPanel={toolbarOpenPanel}
+        onOpenPanelChange={setToolbarOpenPanel}
+        settings={toolbarSettings}
+        onSettingsChange={handleToolbarSettingsChange}
+        agent={toolbarAgent}
+        onAgentChange={handleToolbarAgentChange}
+        onToggleMic={(next) => {
+          setToolbarMicEnabled(next);
+        }}
+        onToggleScreen={(next) => {
+          setToolbarScreenEnabled(next);
+        }}
+        onGoodbye={() => {
+          setToolbarGoodbyeMode(true);
+          setToolbarOpenPanel(null);
+        }}
+        onReturn={() => {
+          setToolbarGoodbyeMode(false);
+        }}
+        onSettingsMenuClick={handleSettingsMenuClick}
+      />
+      <div className="chatDemo">
+        <ChatContainer />
+      </div>
     </>
   );
 }

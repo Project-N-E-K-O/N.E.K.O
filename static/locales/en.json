@@ -46,6 +46,7 @@
     "actions": {
       "requestPageConfig": "Request page_config",
       "showToast": "Show StatusToast",
+      "showQrDrawer": "Show QR",
       "modalAlert": "Modal Alert",
       "modalConfirm": "Modal Confirm",
       "modalPrompt": "Modal Prompt"
@@ -66,6 +67,12 @@
     },
     "errors": {
       "requestFailed": "Request failed"
+    },
+    "qrDrawer": {
+      "title": "Server IP QR",
+      "placeholder": "Generating QR code...",
+      "loading": "Loading…",
+      "error": "Failed to load QR"
     }
   },
   "steam": {

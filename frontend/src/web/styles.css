@@ -14,6 +14,12 @@ body {
   margin: 0;
 }
 
+html,
+body,
+#root {
+  height: 100%;
+}
+
 .app {
   max-width: 960px;
   margin: 0 auto;
@@ -85,5 +91,28 @@ ol {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.chatDemo {
+  /* 全屏覆盖：让 ChatContainer 贴底显示 */
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+
+  /* 安全区 + 轻微边距（避免贴边/被手势条遮挡） */
+  padding-top: calc(12px + env(safe-area-inset-top));
+  padding-right: calc(12px + env(safe-area-inset-right));
+  padding-bottom: calc(12px + env(safe-area-inset-bottom));
+  padding-left: calc(12px + env(safe-area-inset-left));
+
+  /* 默认不拦截底层点击；仅 ChatContainer 自身可交互 */
+  pointer-events: none;
+}
+
+.chatDemo > * {
+  pointer-events: auto;
 }
 

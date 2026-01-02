@@ -4,6 +4,9 @@ export type { ButtonProps, ButtonVariant, ButtonSize } from "./src/Button";
 export { default as StatusToast } from "./src/StatusToast";
 export type { StatusToastHandle } from "./src/StatusToast";
 
+export { QrMessageBox } from "./src/QrMessageBox";
+export type { QrMessageBoxProps } from "./src/QrMessageBox";
+
 export { default as Modal } from "./src/Modal";
 export type { ModalHandle } from "./src/Modal";
 export { AlertDialog } from "./src/Modal/AlertDialog";
@@ -15,6 +18,7 @@ export type { AlertDialogProps } from "./src/Modal/AlertDialog";
 export type { ConfirmDialogProps } from "./src/Modal/ConfirmDialog";
 export type { PromptDialogProps } from "./src/Modal/PromptDialog";
 
+export * from "./src/Live2DRightToolbar";
 
 export * from "./src/chat";
 

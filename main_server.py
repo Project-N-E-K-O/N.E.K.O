@@ -52,6 +52,7 @@ from utils.workshop_utils import ( # noqa
 )
 # 导入创意工坊路由中的函数
 from main_routers.workshop_router import get_subscribed_workshop_items # noqa
+from main_routers.ip_qrcode_router import router as ip_qrcode_router
 
 # 确定 templates 目录位置（使用 _get_app_root）
 template_dir = _get_app_root()
@@ -441,6 +442,7 @@ app.include_router(memory_router)
 app.include_router(websocket_router)
 app.include_router(agent_router)
 app.include_router(system_router)
+app.include_router(ip_qrcode_router)
 app.include_router(pages_router)  # Mount last for catch-all routes
 
 # 后台预加载任务
