@@ -1064,7 +1064,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
         response_queue.put(("__ready__", False)) # 发送失败失败信号,
         return
 
-    async def receive_loop(ws, resampler, response_queue):
+    async def receive_loop(ws, resampler, response_queue, task_complete_event):
         """独立接收任务，处理音频流和状态信息"""
         try:
             async for message in ws:
@@ -1082,18 +1082,28 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                         action = msg_json.get("header", {}).get("action")
                         if action == "task-failed":
                             logger.error(f"本地合成报错: {msg_json}")
+                        elif action == "task-finished":
+                            # 任务完成，通知主循环可以继续
+                            task_complete_event.set()
+                            logger.debug("收到 task-finished 消息")
                     except Exception as e:
                         logger.debug(f'解析状态消息失败：{e}')
 
         except websockets.exceptions.ConnectionClosed:
             logger.info("本地 WebSocket 连接断开")
+            # 连接关闭时也设置事件，避免主循环阻塞
+            if task_complete_event:
+                task_complete_event.set()
         except Exception as e:
             logger.error(f"接收循环异常: {e}")
+            if task_complete_event:
+                task_complete_event.set()
 
     async def async_worker():
         ws = None
         receive_task = None
         current_speech_id = None
+        task_complete_event = None  # 用于等待任务完成
         # 使用流式重采样器
         resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
 
@@ -1108,7 +1118,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                 pass
 
         async def ensure_connection():
-            nonlocal ws, receive_task
+            nonlocal ws, receive_task, task_complete_event
             # 关键修复：如果连接正常，直接返回，不重复连接
             if ws and not ws.closed:
                 return ws
@@ -1118,10 +1128,17 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                 ws = await websockets.connect(WS_URL, ping_interval=None)
                 logger.info("✅ [LocalTTS] 连接成功")
 
+                # 创建新的任务完成事件
+                task_complete_event = asyncio.Event()
+                
                 # 重连后重启接收任务
                 if receive_task and not receive_task.done():
                     receive_task.cancel()
-                receive_task = asyncio.create_task(receive_loop(ws, resampler, response_queue))
+                    try:
+                        await receive_task
+                    except asyncio.CancelledError:
+                        pass
+                receive_task = asyncio.create_task(receive_loop(ws, resampler, response_queue, task_complete_event))
                 return ws
             except Exception as e:
                 logger.error(f"连接失败: {e}")
@@ -1157,11 +1174,35 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
 
             # 状态切换：如果 speech_id 变了，说明是新的一句话
             if sid != current_speech_id:
-                # 如果上一句还没说完，给服务器发一个结束信号
+                # 如果上一句还没说完，给服务器发一个结束信号并等待完成
                 if ws and current_speech_id is not None:
+                    if task_complete_event:
+                        task_complete_event.clear()
                     await send_json(ws, {
                         "header": {"action": "finish-task", "task_id": current_task_id}
                     })
+                    # 等待服务器完成当前任务（服务器收到 finish-task 后会关闭连接）
+                    # 设置超时避免无限等待
+                    try:
+                        if task_complete_event:
+                            await asyncio.wait_for(task_complete_event.wait(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        logger.warning("等待任务完成超时")
+                    
+                    # 关闭旧连接，下次会重新连接
+                    try:
+                        if ws and not ws.closed:
+                            await ws.close()
+                    except Exception:
+                        pass
+                    ws = None
+                    if receive_task and not receive_task.done():
+                        receive_task.cancel()
+                        try:
+                            await receive_task
+                        except asyncio.CancelledError:
+                            pass
+                    receive_task = None
 
                 # 更新状态
                 current_speech_id = sid
@@ -1171,18 +1212,34 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             # 停止信号处理
             if sid is None:
                 if ws:
+                    if task_complete_event:
+                        task_complete_event.clear()
                     await send_json(ws, {
                         "header": {"action": "finish-task", "task_id": current_task_id}
                     })
-                    # optional: 关闭连接并清理接收任务
+                    # 等待服务器完成当前任务
                     try:
-                        await ws.close()
+                        if task_complete_event:
+                            await asyncio.wait_for(task_complete_event.wait(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        logger.warning("等待任务完成超时")
+                    
+                    # 关闭连接并清理接收任务
+                    try:
+                        if ws and not ws.closed:
+                            await ws.close()
                     except Exception:
                         pass
                     ws = None
                     if receive_task and not receive_task.done():
                         receive_task.cancel()
+                        try:
+                            await receive_task
+                        except asyncio.CancelledError:
+                            pass
+                    receive_task = None
                 current_task_id = None
+                task_complete_event = None
                 continue
 
 
@@ -1204,11 +1261,16 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                     logger.error(f"发送文本失败: {e}")
                     # 标记 ws 为空，让下次 ensure_connection 触发重连
                     try:
-                       await ws.close()
+                        if ws and not ws.closed:
+                            await ws.close()
                     except Exception:
                         pass
                     finally:
                         ws = None
+                        if receive_task and not receive_task.done():
+                            receive_task.cancel()
+                        receive_task = None
+                        task_complete_event = None
 
     try:
         asyncio.run(async_worker())
