@@ -1,8 +1,9 @@
 import "./styles.css";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { StatusToast, Live2DRightToolbar, useT } from "@project_neko/components";
+import { StatusToast, Live2DRightToolbar, useT, Modal } from "@project_neko/components";
 import type {
   StatusToastHandle,
+  ModalHandle,
   Live2DSettingsToggleId,
   Live2DSettingsState,
   Live2DRightToolbarPanel,
@@ -10,6 +11,7 @@ import type {
 } from "@project_neko/components";
 import { ChatContainer } from "@project_neko/components";
 import { useLive2DAgentBackend } from "./useLive2DAgentBackend";
+import { Live2DStage } from "./Live2DStage";
 
 const trimTrailingSlash = (url?: string) => (url ? url.replace(/\/+$/, "") : "");
 
@@ -37,6 +39,7 @@ export interface AppProps {
 function App(_props: AppProps) {
   const t = useT();
   const toastRef = useRef<StatusToastHandle | null>(null);
+  const modalRef = useRef<ModalHandle | null>(null);
 
   const [isMobile, setIsMobile] = useState(false);
 
@@ -102,6 +105,8 @@ function App(_props: AppProps) {
   return (
     <>
       <StatusToast ref={toastRef} staticBaseUrl={STATIC_BASE} />
+      <Modal ref={modalRef} />
+      <Live2DStage staticBaseUrl={STATIC_BASE} modelUri="/static/mao_pro/mao_pro.model3.json" />
       <Live2DRightToolbar
         visible
         isMobile={isMobile}

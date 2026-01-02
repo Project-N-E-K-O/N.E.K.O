@@ -19,6 +19,8 @@ export default defineConfig(({ mode }) => {
       alias: [
         { find: "@project_neko/audio-service/web", replacement: path.resolve(__dirname, "packages/audio-service/index.web.ts") },
         { find: "@project_neko/audio-service", replacement: path.resolve(__dirname, "packages/audio-service/index.ts") },
+        { find: "@project_neko/live2d-service/web", replacement: path.resolve(__dirname, "packages/live2d-service/index.web.ts") },
+        { find: "@project_neko/live2d-service", replacement: path.resolve(__dirname, "packages/live2d-service/index.ts") },
         { find: "@project_neko/components", replacement: path.resolve(__dirname, "packages/components/index.ts") },
         { find: "@project_neko/common", replacement: path.resolve(__dirname, "packages/common/index.ts") },
         { find: "@project_neko/request", replacement: path.resolve(__dirname, "packages/request/index.ts") },
