@@ -81,7 +81,7 @@ export function QrMessageBox({
         activeObjectUrl = URL.createObjectURL(blob);
         qrObjectUrlRef.current = activeObjectUrl;
         setQrImageUrl(activeObjectUrl);
-        setAccessUrl(res.headers.get("x-neko-access-url"));
+        setAccessUrl(res.headers.get("X-Neko-Access-Url"));
         return;
       } catch (e: any) {
         if (abortController.signal.aborted) return;

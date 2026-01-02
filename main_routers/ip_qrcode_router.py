@@ -112,8 +112,9 @@ def _get_ipv4_candidates_from_ifaddr_with_iface_flags() -> tuple[set[ipaddress.I
     try:
         assert _ifaddr is not None
         for adapter in _ifaddr.get_adapters():
-            iface_name = getattr(adapter, "nice_name", "") or ""
-            iface_is_docker_like = bool(_DOCKER_LIKE_IFACE_RE.search(iface_name))
+            raw_iface_name = getattr(adapter, "nice_name", None) or getattr(adapter, "name", None)
+            iface_name = (str(raw_iface_name) if raw_iface_name is not None else str(adapter)).strip()
+            iface_is_docker_like = bool(iface_name and _DOCKER_LIKE_IFACE_RE.search(iface_name))
             for ip in adapter.ips:
                 if isinstance(ip.ip, str):
                     try:
