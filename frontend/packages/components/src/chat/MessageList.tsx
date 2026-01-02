@@ -68,8 +68,12 @@ export default function MessageList({ messages }: Props) {
                     }}
                     onError={(e) => {
                       e.currentTarget.style.display = "none";
-                      e.currentTarget.parentElement!.innerHTML =
-                        tOrDefault(t, "chat.message.imageError", "图片加载失败");
+                      const parent = e.currentTarget.parentElement;
+                      if (parent) {
+                        const errorSpan = document.createElement("span");
+                        errorSpan.textContent = tOrDefault(t, "chat.message.imageError", "图片加载失败");
+                        parent.appendChild(errorSpan);
+                      }
                     }}
                   />
                   {msg.content && (
