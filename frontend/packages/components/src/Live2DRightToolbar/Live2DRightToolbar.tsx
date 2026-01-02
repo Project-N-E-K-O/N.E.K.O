@@ -302,7 +302,7 @@ export function Live2DRightToolbar({
                       type="checkbox"
                       className="live2d-right-toolbar__checkbox"
                       checked={x.checked}
-                      onChange={(e) => onSettingsChange(x.id, e.target.checked)}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => onSettingsChange(x.id, e.target.checked)}
                     />
                     <span className="live2d-right-toolbar__indicator" aria-hidden="true">
                       <span className="live2d-right-toolbar__checkmark">✓</span>
@@ -426,7 +426,7 @@ export function Live2DRightToolbar({
                       className="live2d-right-toolbar__checkbox"
                       checked={x.checked}
                       disabled={x.disabled}
-                      onChange={(e) => onAgentChange(x.id, e.target.checked)}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => onAgentChange(x.id, e.target.checked)}
                     />
                     <span className="live2d-right-toolbar__indicator" aria-hidden="true">
                       <span className="live2d-right-toolbar__checkmark">✓</span>
