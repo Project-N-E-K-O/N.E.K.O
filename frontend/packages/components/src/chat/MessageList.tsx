@@ -1,97 +1,108 @@
-import React, { useEffect, useRef } from "react";
+import React from "react";
 import type { ChatMessage } from "./types";
 import { useT, tOrDefault } from "../i18n";
-import type { CSSProperties } from "react";
+
+/**
+ * 图片组件：使用 state 处理加载失败
+ * - 不直接操作 DOM
+ * - 不使用 parentElement / innerHTML
+ * - 完全符合 React idiomatic 写法
+ */
+function ImageWithFallback({
+  src,
+  alt,
+  fallback,
+}: {
+  src: string;
+  alt: string;
+  fallback: string;
+}) {
+  const [hasError, setHasError] = React.useState(false);
+
+  if (hasError) {
+    return (
+      <span style={{ opacity: 0.6 }}>
+        {fallback}
+      </span>
+    );
+  }
+
+  return (
+    <img
+      src={src}
+      alt={alt}
+      style={{
+        maxWidth: "100%",
+        borderRadius: 8,
+        display: "block",
+      }}
+      onError={() => setHasError(true)}
+    />
+  );
+}
 
 interface Props {
   messages: ChatMessage[];
 }
 
-const containerStyle = {
-  padding: 16,
-  overflowY: "auto" as const,
-  flex: 1,
-  background: "rgba(249, 249, 249, 0.7)",
-  display: "flex",
-  flexDirection: "column" as const,
-  gap: 12,
-};
-
-const messageWrapperStyle = (isUser: boolean): CSSProperties => ({
-  display: "flex",
-  justifyContent: isUser ? "flex-end" : "flex-start",
-});
-
-const userBubbleStyle: CSSProperties = {
-  padding: "10px 14px",
-  borderRadius: 12,
-  borderBottomRightRadius: 4,
-  background: "#44b7fe",
-  color: "#fff",
-  maxWidth: "80%",
-};
-
-const assistantBubbleStyle: CSSProperties = {
-  padding: "10px 14px",
-  borderRadius: 12,
-  borderBottomLeftRadius: 4,
-  background: "rgba(68, 183, 254, 0.12)",
-  color: "#333",
-  maxWidth: "80%",
-};
-
 export default function MessageList({ messages }: Props) {
   const t = useT();
-  const endRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
 
   return (
-    <div style={containerStyle}>
-      {messages.map((msg) => {
-        const isUser = msg.role === "user";
+    <div
+      style={{
+        padding: 12,
+        display: "flex",
+        flexDirection: "column",
+        gap: 12,
+      }}
+    >
+      {messages.map((msg) => (
+        <div
+          key={msg.id}
+          style={{
+            alignSelf: msg.role === "user" ? "flex-end" : "flex-start",
+            maxWidth: "80%",
+            background:
+              msg.role === "user"
+                ? "rgba(68, 183, 254, 0.15)"
+                : "rgba(0, 0, 0, 0.05)",
+            borderRadius: 8,
+            padding: 8,
+            wordBreak: "break-word",
+          }}
+        >
+          {msg.image ? (
+            <div>
+              <ImageWithFallback
+                src={msg.image}
+                alt={tOrDefault(
+                  t,
+                  "chat.message.screenshot",
+                  "截图"
+                )}
+                fallback={tOrDefault(
+                  t,
+                  "chat.message.imageError",
+                  "图片加载失败"
+                )}
+              />
 
-        return (
-          <div key={msg.id} style={messageWrapperStyle(isUser)}>
-            <div style={isUser ? userBubbleStyle : assistantBubbleStyle}>
-              {msg.image ? (
-                <div>
-                  <img
-                    src={msg.image}
-                    alt={tOrDefault(t, "chat.message.screenshot", "截图")}
-                    style={{
-                      maxWidth: "100%",
-                      borderRadius: 8,
-                      display: "block",
-                    }}
-                    onError={(e) => {
-                      e.currentTarget.style.display = "none";
-                      const parent = e.currentTarget.parentElement;
-                      if (parent) {
-                        const errorSpan = document.createElement("span");
-                        errorSpan.textContent = tOrDefault(t, "chat.message.imageError", "图片加载失败");
-                        parent.appendChild(errorSpan);
-                      }
-                    }}
-                  />
-                  {msg.content && (
-                    <div style={{ marginTop: 8 }}>{msg.content}</div>
-                  )}
+              {msg.content && (
+                <div style={{ marginTop: 8 }}>
+                  {msg.content}
                 </div>
-              ) : msg.content ? (
-                msg.content
-              ) : (
-                <span style={{ opacity: 0.5 }}>
-                  {tOrDefault(t, "chat.message.empty", "空消息")}
-                </span>
               )}
             </div>
-          </div>
-        );
-      })}
-      <div ref={endRef} />
+          ) : msg.content ? (
+            msg.content
+          ) : (
+            <span style={{ opacity: 0.5 }}>
+              {tOrDefault(t, "chat.message.empty", "空消息")}
+            </span>
+          )}
+        </div>
+      ))}
     </div>
   );
 }
