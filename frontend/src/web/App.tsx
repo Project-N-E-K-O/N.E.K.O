@@ -1,14 +1,22 @@
 import "./styles.css";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
-import { Button, StatusToast, Modal, useT, tOrDefault, QrMessageBox } from "@project_neko/components";
-import type { StatusToastHandle, ModalHandle } from "@project_neko/components";
+import { Button, StatusToast, Modal, Live2DRightToolbar, useT, tOrDefault, tOrDefault, QrMessageBox} from "@project_neko/components";
+import type {
+  StatusToastHandle,
+  ModalHandle,
+  Live2DSettingsToggleId,
+  Live2DSettingsState,
+  Live2DRightToolbarPanel,
+  Live2DSettingsMenuId,
+} from "@project_neko/components";
 import { createRequestClient, WebTokenStorage } from "@project_neko/request";
 import { ChatContainer } from "@project_neko/components";
 import { buildWebSocketUrlFromBase, createRealtimeClient } from "@project_neko/realtime";
 import type { RealtimeClient, RealtimeConnectionState } from "@project_neko/realtime";
 import { createWebAudioService } from "@project_neko/audio-service/web";
 import type { AudioServiceState } from "@project_neko/audio-service/web";
+import { useLive2DAgentBackend } from "./useLive2DAgentBackend";
 
 const trimTrailingSlash = (url?: string) => (url ? url.replace(/\/+$/, "") : "");
 
@@ -54,6 +62,44 @@ function App({ language, onChangeLanguage }: AppProps) {
   const toastRef = useRef<StatusToastHandle | null>(null);
   const modalRef = useRef<ModalHandle | null>(null);
   const [isQrModalOpen, setIsQrModalOpen] = useState(false);
+
+  const [toolbarGoodbyeMode, setToolbarGoodbyeMode] = useState(false);
+  const [toolbarMicEnabled, setToolbarMicEnabled] = useState(false);
+  const [toolbarScreenEnabled, setToolbarScreenEnabled] = useState(false);
+  const [toolbarOpenPanel, setToolbarOpenPanel] = useState<Live2DRightToolbarPanel>(null);
+  const [toolbarSettings, setToolbarSettings] = useState<Live2DSettingsState>({
+    mergeMessages: true,
+    allowInterrupt: true,
+    proactiveChat: false,
+    proactiveVision: false,
+  });
+
+  const { agent: toolbarAgent, onAgentChange: handleToolbarAgentChange } = useLive2DAgentBackend({
+    apiBase: API_BASE,
+    t,
+    toastRef,
+    openPanel: toolbarOpenPanel,
+  });
+
+  const handleToolbarSettingsChange = useCallback((id: Live2DSettingsToggleId, next: boolean) => {
+    setToolbarSettings((prev: Live2DSettingsState) => ({ ...prev, [id]: next }));
+  }, []);
+
+  const handleSettingsMenuClick = useCallback((id: Live2DSettingsMenuId) => {
+    const map: Record<Live2DSettingsMenuId, string> = {
+      live2dSettings: "/l2d",
+      apiKeys: "/api_key",
+      characterManage: "/chara_manager",
+      voiceClone: "/voice_clone",
+      memoryBrowser: "/memory_browser",
+      steamWorkshop: "/steam_workshop_manager",
+    };
+    const url = map[id];
+    const newWindow = window.open(url, "_blank");
+    if (!newWindow) {
+      window.location.href = url;
+    }
+  }, []);
 
   const realtimeRef = useRef<RealtimeClient | null>(null);
   const realtimeOffRef = useRef<(() => void)[]>([]);
@@ -347,6 +393,32 @@ function App({ language, onChangeLanguage }: AppProps) {
     <>
       <StatusToast ref={toastRef} staticBaseUrl={STATIC_BASE} />
       <Modal ref={modalRef} />
+      <Live2DRightToolbar
+        visible
+        micEnabled={toolbarMicEnabled}
+        screenEnabled={toolbarScreenEnabled}
+        goodbyeMode={toolbarGoodbyeMode}
+        openPanel={toolbarOpenPanel}
+        onOpenPanelChange={setToolbarOpenPanel}
+        settings={toolbarSettings}
+        onSettingsChange={handleToolbarSettingsChange}
+        agent={toolbarAgent}
+        onAgentChange={handleToolbarAgentChange}
+        onToggleMic={(next) => {
+          setToolbarMicEnabled(next);
+        }}
+        onToggleScreen={(next) => {
+          setToolbarScreenEnabled(next);
+        }}
+        onGoodbye={() => {
+          setToolbarGoodbyeMode(true);
+          setToolbarOpenPanel(null);
+        }}
+        onReturn={() => {
+          setToolbarGoodbyeMode(false);
+        }}
+        onSettingsMenuClick={handleSettingsMenuClick}
+      />
       <main className="app">
         <header className="app__header">
           <div className="app__headerRow">
