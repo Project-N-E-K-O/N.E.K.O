@@ -94,6 +94,16 @@ export interface Live2DAdapter {
   capabilities?: Live2DCapabilities;
 
   /**
+   * 平台运行时访问口（可选）：
+   * - Web: 可暴露 Pixi/Live2DModel 的 bounds/parameters 等能力
+   * - Native: 可暴露 Cubism 参数读写、bounds 等能力
+   *
+   * 该接口用于实现“旧版 Live2DManager 等级”的功能（参数编辑、吸附等），
+   * 但不要求所有 adapter 实现。
+   */
+  getRuntime?: () => import("./runtime").Live2DRuntime | null;
+
+  /**
    * service 会把事件 sink 注入到 adapter，adapter 收到平台事件后应调用 sink 上报。
    * （例如 RN view 的 onTap/onModelLoaded；Web 的 hit-test/tap 等）
    */

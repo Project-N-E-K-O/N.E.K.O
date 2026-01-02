@@ -18,3 +18,16 @@ export type {
 export { createLive2DService } from "./src/service";
 export { TinyEmitter } from "./src/emitter";
 
+export type { Live2DRuntime, Live2DParametersRuntime, TransformSnapshot, Rect } from "./src/runtime";
+
+export type {
+  Live2DManager,
+  Live2DPreferencesRepository,
+  Live2DPreferencesSnapshot,
+  EmotionMapping,
+  EmotionMappingProvider,
+  Live2DInteractionOptions,
+} from "./src/manager";
+
+export { createLive2DManager } from "./src/manager";
+

@@ -12,6 +12,8 @@ import type {
 import { ChatContainer } from "@project_neko/components";
 import { useLive2DAgentBackend } from "./useLive2DAgentBackend";
 import { Live2DStage } from "./Live2DStage";
+import type { Live2DManager } from "@project_neko/live2d-service";
+import { createLive2DPreferencesRepository } from "./live2dPreferences";
 
 const trimTrailingSlash = (url?: string) => (url ? url.replace(/\/+$/, "") : "");
 
@@ -40,6 +42,8 @@ function App(_props: AppProps) {
   const t = useT();
   const toastRef = useRef<StatusToastHandle | null>(null);
   const modalRef = useRef<ModalHandle | null>(null);
+  const live2dManagerRef = useRef<Live2DManager | null>(null);
+  const live2dPrefsRepoRef = useRef(createLive2DPreferencesRepository(API_BASE));
 
   const [isMobile, setIsMobile] = useState(false);
 
@@ -106,7 +110,14 @@ function App(_props: AppProps) {
     <>
       <StatusToast ref={toastRef} staticBaseUrl={STATIC_BASE} />
       <Modal ref={modalRef} />
-      <Live2DStage staticBaseUrl={STATIC_BASE} modelUri="/static/mao_pro/mao_pro.model3.json" />
+      <Live2DStage
+        staticBaseUrl={STATIC_BASE}
+        modelUri="/static/mao_pro/mao_pro.model3.json"
+        preferences={live2dPrefsRepoRef.current}
+        onReady={(mgr) => {
+          live2dManagerRef.current = mgr;
+        }}
+      />
       <Live2DRightToolbar
         visible
         isMobile={isMobile}
@@ -123,6 +134,16 @@ function App(_props: AppProps) {
         onAgentChange={handleToolbarAgentChange}
         onToggleMic={(next) => {
           setToolbarMicEnabled(next);
+          // 迁移期：先用最小语义对齐（Mic 打开时仅示例写入口型；实际应由 audio-service 振幅驱动）
+          try {
+            if (next) {
+              live2dManagerRef.current?.setMouth(0.2);
+            } else {
+              live2dManagerRef.current?.setMouth(0);
+            }
+          } catch {
+            // ignore
+          }
         }}
         onToggleScreen={(next) => {
           setToolbarScreenEnabled(next);

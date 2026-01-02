@@ -1,4 +1,5 @@
 import type { ExpressionRef, Live2DAdapter, Live2DCapabilities, Live2DEventSink, ModelRef, MotionRef, Transform, Vec2 } from "../types";
+import type { Live2DRuntime, Rect, TransformSnapshot } from "../runtime";
 
 type AnyRecord = Record<string, any>;
 
@@ -71,6 +72,9 @@ function clamp01(v: number): number {
   if (!Number.isFinite(v)) return 0;
   return Math.max(0, Math.min(1, v));
 }
+
+const LIP_SYNC_PARAMS = ["ParamMouthOpenY", "ParamMouthForm", "ParamMouthOpen", "ParamA", "ParamI", "ParamU", "ParamE", "ParamO"];
+const VISIBILITY_PARAMS = ["ParamOpacity", "ParamVisibility"];
 
 function setModelScale(model: any, scale: number | Vec2) {
   if (!model || !model.scale) return;
@@ -191,8 +195,8 @@ export function createPixiLive2DAdapter(options: PixiLive2DAdapterOptions): Live
     expressions: true,
     mouth: true,
     transform: true,
-    // parameters: 暂不对外承诺（后续加入叠加层/常驻表情等再打开）
-    parameters: false,
+    // parameters: 通过 runtime 提供 best-effort 的参数读写能力（用于对齐 legacy Live2DManager）
+    parameters: true,
   };
 
   const canvasEl = resolveCanvas(options.canvas);
@@ -216,6 +220,18 @@ export function createPixiLive2DAdapter(options: PixiLive2DAdapterOptions): Live
   let sink: Live2DEventSink | null = null;
   let app: any | null = null;
   let model: any | null = null;
+  let mouthValue01 = 0;
+
+  // parameter override layer (legacy alignment)
+  let uninstallOverrideLayer: (() => void) | null = null;
+  let getOverrideState:
+    | null
+    | (() => {
+        mouthValue: number;
+        mode: "off" | "override" | "additive";
+        savedParameters: Record<string, number> | null;
+        persistentParameters: Record<string, number> | null;
+      }) = null;
 
   const ensureApp = () => {
     if (app) return app;
@@ -261,6 +277,396 @@ export function createPixiLive2DAdapter(options: PixiLive2DAdapterOptions): Live
       sink = nextSink;
     },
 
+    getRuntime(): Live2DRuntime | null {
+      const rt: Live2DRuntime = {
+        getTransformSnapshot(): TransformSnapshot | null {
+          if (!model) return null;
+          const sx = Number(model.scale?.x);
+          const sy = Number(model.scale?.y);
+          return {
+            position: { x: Number(model.x) || 0, y: Number(model.y) || 0 },
+            scale: {
+              x: Number.isFinite(sx) ? sx : 1,
+              y: Number.isFinite(sy) ? sy : 1,
+            },
+          };
+        },
+        async setTransform(t: Transform) {
+          return await adapter.setTransform?.(t);
+        },
+        getBounds(): Rect | null {
+          if (!model) return null;
+          try {
+            const b = model.getBounds?.();
+            if (!b) return null;
+            const left = Number(b.left) || 0;
+            const top = Number(b.top) || 0;
+            const right = Number(b.right) || 0;
+            const bottom = Number(b.bottom) || 0;
+            return {
+              left,
+              top,
+              right,
+              bottom,
+              width: Number(b.width) || Math.max(0, right - left),
+              height: Number(b.height) || Math.max(0, bottom - top),
+            };
+          } catch {
+            return null;
+          }
+        },
+        parameters: {
+          setParameterValueById(id: string, value: number, weight?: number) {
+            if (!model) return;
+            const core = getCoreModel(model);
+            if (!core) return;
+            const v = Number(value);
+            if (!Number.isFinite(v)) return;
+            const w = typeof weight === "number" && Number.isFinite(weight) ? weight : 1;
+
+            try {
+              if (typeof core.setParameterValueById === "function") {
+                core.setParameterValueById(id, v, w);
+                return;
+              }
+            } catch {
+              // ignore
+            }
+
+            try {
+              if (typeof core.getParameterIndex === "function" && typeof core.setParameterValueByIndex === "function") {
+                const idx = core.getParameterIndex(id);
+                if (typeof idx === "number" && idx >= 0) {
+                  core.setParameterValueByIndex(idx, v);
+                }
+              }
+            } catch {
+              // ignore
+            }
+          },
+          getParameterValueById(id: string) {
+            if (!model) return null;
+            const core = getCoreModel(model);
+            if (!core) return null;
+            try {
+              if (typeof core.getParameterIndex === "function" && typeof core.getParameterValueByIndex === "function") {
+                const idx = core.getParameterIndex(id);
+                if (typeof idx === "number" && idx >= 0) {
+                  const v = core.getParameterValueByIndex(idx);
+                  return typeof v === "number" && Number.isFinite(v) ? v : null;
+                }
+              }
+            } catch {
+              // ignore
+            }
+            return null;
+          },
+          getParameterDefaultValueById(id: string) {
+            if (!model) return null;
+            const core = getCoreModel(model);
+            if (!core) return null;
+            try {
+              if (typeof core.getParameterIndex === "function" && typeof core.getParameterDefaultValueByIndex === "function") {
+                const idx = core.getParameterIndex(id);
+                if (typeof idx === "number" && idx >= 0) {
+                  const v = core.getParameterDefaultValueByIndex(idx);
+                  return typeof v === "number" && Number.isFinite(v) ? v : null;
+                }
+              }
+            } catch {
+              // ignore
+            }
+            return null;
+          },
+          getParameterCount() {
+            if (!model) return null;
+            const core = getCoreModel(model);
+            if (!core) return null;
+            try {
+              if (typeof core.getParameterCount === "function") {
+                const n = core.getParameterCount();
+                return typeof n === "number" && Number.isFinite(n) ? n : null;
+              }
+            } catch {
+              // ignore
+            }
+            return null;
+          },
+          getParameterIds() {
+            if (!model) return [];
+            const core = getCoreModel(model);
+            if (!core) return [];
+            try {
+              const n = typeof core.getParameterCount === "function" ? core.getParameterCount() : 0;
+              if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) return [];
+
+              const ids: string[] = [];
+              for (let i = 0; i < n; i++) {
+                try {
+                  if (typeof core.getParameterId === "function") {
+                    const id = core.getParameterId(i);
+                    if (typeof id === "string" && id) {
+                      ids.push(id);
+                      continue;
+                    }
+                  }
+                } catch {
+                  // ignore
+                }
+                ids.push(`param_${i}`);
+              }
+              return ids;
+            } catch {
+              return [];
+            }
+          },
+          installOverrideLayer(nextGetState) {
+            // 卸载旧层（若存在）
+            try {
+              uninstallOverrideLayer?.();
+            } catch {
+              // ignore
+            }
+            uninstallOverrideLayer = null;
+            getOverrideState = nextGetState;
+
+            // 注意：这里不强制要求 model 已加载；加载后会自动生效（闭包里读取 model/core）
+            const applyLayerOnce = (core: any) => {
+              const s = getOverrideState?.();
+              if (!s) return;
+
+              const mode = s.mode || "off";
+              if (mode === "off") {
+                // 仍可写入口型，避免 motion 覆盖
+              }
+
+              // 1) saved parameters
+              const saved = s.savedParameters || null;
+              if (saved && (mode === "override" || mode === "additive")) {
+                const persistent = s.persistentParameters || null;
+                const persistentIds = new Set(Object.keys(persistent || {}));
+
+                for (const [id, userValueRaw] of Object.entries(saved)) {
+                  if (!id) continue;
+                  if (LIP_SYNC_PARAMS.includes(id)) continue;
+                  if (VISIBILITY_PARAMS.includes(id)) continue;
+                  if (persistentIds.has(id)) continue;
+
+                  const userValue = Number(userValueRaw);
+                  if (!Number.isFinite(userValue)) continue;
+
+                  try {
+                    // 尽可能用 byId API（带 weight）
+                    if (typeof core.setParameterValueById === "function") {
+                      if (mode === "override") {
+                        core.setParameterValueById(id, userValue, 1);
+                      } else {
+                        // additive：按 default 计算 offset，叠加在当前值上
+                        const idx = core.getParameterIndex?.(id);
+                        if (typeof idx === "number" && idx >= 0 && typeof core.getParameterDefaultValueByIndex === "function") {
+                          const cur = typeof core.getParameterValueByIndex === "function" ? core.getParameterValueByIndex(idx) : 0;
+                          const def = core.getParameterDefaultValueByIndex(idx);
+                          const offset = Number(userValue) - Number(def || 0);
+                          core.setParameterValueById(id, Number(cur || 0) + offset, 1);
+                        } else {
+                          core.setParameterValueById(id, userValue, 1);
+                        }
+                      }
+                      continue;
+                    }
+                  } catch {
+                    // ignore
+                  }
+
+                  // fallback: byIndex
+                  try {
+                    if (typeof core.getParameterIndex === "function" && typeof core.setParameterValueByIndex === "function") {
+                      const idx = core.getParameterIndex(id);
+                      if (typeof idx === "number" && idx >= 0) {
+                        if (mode === "override") {
+                          core.setParameterValueByIndex(idx, userValue);
+                        } else {
+                          const cur = typeof core.getParameterValueByIndex === "function" ? core.getParameterValueByIndex(idx) : 0;
+                          const def = typeof core.getParameterDefaultValueByIndex === "function" ? core.getParameterDefaultValueByIndex(idx) : 0;
+                          const offset = Number(userValue) - Number(def || 0);
+                          core.setParameterValueByIndex(idx, Number(cur || 0) + offset);
+                        }
+                      }
+                    }
+                  } catch {
+                    // ignore
+                  }
+                }
+              }
+
+              // 2) mouth (priority high)
+              const mouth = clamp01(Number(s.mouthValue));
+              for (const id of ["ParamMouthOpenY", "ParamO"]) {
+                try {
+                  if (typeof core.setParameterValueById === "function") {
+                    core.setParameterValueById(id, mouth, 1);
+                  } else if (typeof core.getParameterIndex === "function" && typeof core.setParameterValueByIndex === "function") {
+                    const idx = core.getParameterIndex(id);
+                    if (typeof idx === "number" && idx >= 0) core.setParameterValueByIndex(idx, mouth);
+                  }
+                } catch {
+                  // ignore
+                }
+              }
+
+              // 3) persistent parameters (priority highest; skip lipsync)
+              const persistent = s.persistentParameters || null;
+              if (persistent) {
+                for (const [id, vRaw] of Object.entries(persistent)) {
+                  if (!id) continue;
+                  if (LIP_SYNC_PARAMS.includes(id)) continue;
+                  const v = Number(vRaw);
+                  if (!Number.isFinite(v)) continue;
+                  try {
+                    if (typeof core.setParameterValueById === "function") {
+                      core.setParameterValueById(id, v, 1);
+                    } else if (typeof core.getParameterIndex === "function" && typeof core.setParameterValueByIndex === "function") {
+                      const idx = core.getParameterIndex(id);
+                      if (typeof idx === "number" && idx >= 0) core.setParameterValueByIndex(idx, v);
+                    }
+                  } catch {
+                    // ignore
+                  }
+                }
+              }
+            };
+
+            const install = () => {
+              if (!model) return;
+              const internal = model?.internalModel;
+              const core = internal?.coreModel;
+              const motionManager = internal?.motionManager;
+              if (!core) return;
+
+              const origMotionUpdate = typeof motionManager?.update === "function" ? motionManager.update.bind(motionManager) : null;
+              const origCoreUpdate = typeof core.update === "function" ? core.update.bind(core) : null;
+
+              if (origMotionUpdate && motionManager) {
+                motionManager.update = (...args: any[]) => {
+                  // 记录 update 前的参数值（用于 motion 是否在控制该参数的判断）
+                  const pre: Record<string, number> = {};
+                  try {
+                    const s = getOverrideState?.();
+                    const saved = s?.savedParameters || null;
+                    const mode = s?.mode || "off";
+                    if (saved && mode === "additive" && typeof core.getParameterIndex === "function" && typeof core.getParameterValueByIndex === "function") {
+                      for (const id of Object.keys(saved)) {
+                        if (!id) continue;
+                        const idx = core.getParameterIndex(id);
+                        if (typeof idx === "number" && idx >= 0) {
+                          const v = core.getParameterValueByIndex(idx);
+                          if (typeof v === "number" && Number.isFinite(v)) pre[id] = v;
+                        }
+                      }
+                    }
+                  } catch {
+                    // ignore
+                  }
+
+                  try {
+                    origMotionUpdate(...args);
+                  } catch {
+                    // ignore (best-effort)
+                  }
+
+                  // 动作更新后：应用叠加层（核心逻辑）
+                  try {
+                    const s = getOverrideState?.();
+                    const mode = s?.mode || "off";
+                    if (mode === "additive") {
+                      const saved = s?.savedParameters || null;
+                      const persistent = s?.persistentParameters || null;
+                      const persistentIds = new Set(Object.keys(persistent || {}));
+
+                      if (saved && typeof core.getParameterIndex === "function" && typeof core.getParameterValueByIndex === "function") {
+                        for (const [id, userValueRaw] of Object.entries(saved)) {
+                          if (!id) continue;
+                          if (LIP_SYNC_PARAMS.includes(id)) continue;
+                          if (VISIBILITY_PARAMS.includes(id)) continue;
+                          if (persistentIds.has(id)) continue;
+                          const userValue = Number(userValueRaw);
+                          if (!Number.isFinite(userValue)) continue;
+
+                          const idx = core.getParameterIndex(id);
+                          if (typeof idx !== "number" || idx < 0) continue;
+
+                          const currentVal = core.getParameterValueByIndex(idx);
+                          const prevVal = pre[id] ?? currentVal;
+                          const def =
+                            typeof core.getParameterDefaultValueByIndex === "function"
+                              ? core.getParameterDefaultValueByIndex(idx)
+                              : 0;
+                          const offset = userValue - Number(def || 0);
+
+                          // legacy 策略：Motion 若在控制该参数 -> 叠加 offset；否则强制 userValue
+                          if (Math.abs(Number(currentVal) - Number(prevVal)) > 0.001) {
+                            core.setParameterValueByIndex(idx, Number(currentVal || 0) + offset);
+                          } else {
+                            core.setParameterValueByIndex(idx, userValue);
+                          }
+                        }
+                      }
+                    } else if (mode === "override") {
+                      // override 模式：直接设值（交给 applyLayerOnce）
+                    }
+
+                    applyLayerOnce(core);
+                  } catch {
+                    // ignore
+                  }
+                };
+              }
+
+              if (origCoreUpdate) {
+                core.update = (...args: any[]) => {
+                  try {
+                    applyLayerOnce(core);
+                  } catch {
+                    // ignore
+                  }
+                  try {
+                    return origCoreUpdate(...args);
+                  } catch {
+                    return;
+                  }
+                };
+              }
+
+              uninstallOverrideLayer = () => {
+                try {
+                  if (origMotionUpdate && motionManager) motionManager.update = origMotionUpdate;
+                } catch {
+                  // ignore
+                }
+                try {
+                  if (origCoreUpdate) core.update = origCoreUpdate;
+                } catch {
+                  // ignore
+                }
+              };
+            };
+
+            // 立即尝试安装；若此时 model 还未加载，会在 loadModel 后再由外层触发一次
+            install();
+          },
+          uninstallOverrideLayer() {
+            try {
+              uninstallOverrideLayer?.();
+            } finally {
+              uninstallOverrideLayer = null;
+              getOverrideState = null;
+            }
+          },
+        },
+      };
+      return rt;
+    },
+
     async loadModel(modelRef: ModelRef) {
       const pixiApp = ensureApp();
       // 强制一次初始 resize，避免 renderer.width/height 为 0 导致布局计算跑偏
@@ -301,6 +707,14 @@ export function createPixiLive2DAdapter(options: PixiLive2DAdapterOptions): Live
 
       // 默认布局（非常关键）：不设置 x/y/scale 时，模型可能完全在可视区之外
       applyDefaultLayout(model, pixiApp, containerEl);
+
+      // 若上层已安装参数覆盖层，这里在模型就绪后再尝试一次（best-effort）
+      try {
+        const rt = adapter.getRuntime?.();
+        rt?.parameters?.installOverrideLayer?.(getOverrideState as any);
+      } catch {
+        // ignore
+      }
     },
 
     async unloadModel() {
@@ -339,9 +753,10 @@ export function createPixiLive2DAdapter(options: PixiLive2DAdapterOptions): Live
     },
 
     setMouthValue(value: number) {
+      mouthValue01 = clamp01(value);
       if (!model) return;
       const core = getCoreModel(model);
-      setMouthCoreParams(core, clamp01(value));
+      setMouthCoreParams(core, mouthValue01);
     },
 
     async setTransform(transform: Transform) {
@@ -351,6 +766,13 @@ export function createPixiLive2DAdapter(options: PixiLive2DAdapterOptions): Live
     },
 
     dispose() {
+      try {
+        uninstallOverrideLayer?.();
+      } catch {
+        // ignore
+      }
+      uninstallOverrideLayer = null;
+      getOverrideState = null;
       detachModel();
       if (app) {
         try {

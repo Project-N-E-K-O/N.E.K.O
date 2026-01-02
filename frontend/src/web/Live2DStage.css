@@ -1,17 +1,14 @@
 .live2dStage {
   position: fixed;
-  right: 16px;
-  bottom: 16px;
-  width: 360px;
-  height: 520px;
-  border-radius: 16px;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  border-radius: 0;
   overflow: hidden;
-  /* 保证不被全屏 Chat 覆盖，但仍低于右侧工具栏（99999） */
-  z-index: 9000;
-  background: rgba(0, 0, 0, 0.15);
-  -webkit-backdrop-filter: blur(10px);
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  /* 全屏 Live2D 作为底层背景：需要低于 Chat（避免遮挡），仍低于右侧工具栏（99999） */
+  z-index: 1;
+  background: transparent;
 }
 
 .live2dStage__container {
@@ -39,12 +36,43 @@
   pointer-events: none;
 }
 
+.live2dStage__lockButton {
+  position: absolute;
+  left: 12px;
+  top: 44px;
+  z-index: 6;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  cursor: pointer;
+  padding: 0;
+}
+
+.live2dStage__lockButton:hover {
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.live2dStage__lockButton:active {
+  transform: translateY(1px);
+}
+
+.live2dStage__lockIcon {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
 @media (max-width: 768px) {
   .live2dStage {
-    width: 220px;
-    height: 320px;
-    right: 10px;
-    bottom: 10px;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
   }
 }
 
