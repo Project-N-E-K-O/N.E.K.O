@@ -31,8 +31,6 @@ export default function ChatContainer() {
   const [pendingScreenshots, setPendingScreenshots] =
     useState<PendingScreenshot[]>([]);
 
-  // 聊天区域 ref（保留，不再用于截图）
-  const messageAreaRef = useRef<HTMLDivElement>(null);
 
   function handleSendText(text: string) {
     if (!text.trim() && pendingScreenshots.length === 0) return;
@@ -171,7 +169,7 @@ export default function ChatContainer() {
       </div>
 
       {/* 聊天区 */}
-      <div ref={messageAreaRef} style={{ flex: 1, overflowY: "auto" }}>
+      <div style={{ flex: 1, overflowY: "auto" }}>
         <MessageList messages={messages} />
       </div>
 
