@@ -237,7 +237,6 @@ export function createLive2DManager(adapter: Live2DAdapter, options?: CreateLive
         // 复用 service.setTransform（adapter 内部解释具体坐标系）
         try {
           await service.loadModel({ uri: modelUri, source: "url" }, optionsForAdapter);
-        } finally {
           const position = pref?.position;
           const scale = pref?.scale;
           if (position || scale) {
@@ -246,6 +245,9 @@ export function createLive2DManager(adapter: Live2DAdapter, options?: CreateLive
               scale: scale ? { x: scale.x, y: scale.y } : undefined,
             });
           }
+        } catch (err) {
+          // 重要：loadModel 失败必须向上抛出，不能吞掉；且不要在失败时 setTransform
+          throw err;
         }
       } else {
         await service.loadModel({ uri: modelUri, source: "url" }, optionsForAdapter);

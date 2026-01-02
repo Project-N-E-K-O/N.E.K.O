@@ -14,16 +14,45 @@ function loadScriptOnce({ id, src }: ScriptSpec): Promise<void> {
   if (existing) return existing;
 
   const promise = new Promise<void>((resolve, reject) => {
+    const isScriptDefinitelyLoaded = (scriptEl: HTMLScriptElement) => {
+      if ((scriptEl as any)._nekoLoaded) return true;
+      const rs = (scriptEl as any).readyState as string | undefined;
+      if (rs === "loaded" || rs === "complete") return true;
+      try {
+        const entries = performance?.getEntriesByName?.(scriptEl.src) ?? [];
+        return entries.length > 0;
+      } catch {
+        return false;
+      }
+    };
+
     // 已经存在对应 id 的脚本标签：认为加载过（或正在加载）
     const el = document.getElementById(id) as HTMLScriptElement | null;
     if (el) {
       // 若脚本已加载完成，直接 resolve；否则等事件
-      if ((el as any)._nekoLoaded) {
+      if (isScriptDefinitelyLoaded(el)) {
+        (el as any)._nekoLoaded = true;
         resolve();
         return;
       }
-      el.addEventListener("load", () => resolve(), { once: true });
-      el.addEventListener("error", () => reject(new Error(`script load failed: ${src}`)), { once: true });
+
+      const onLoad = () => {
+        (el as any)._nekoLoaded = true;
+        resolve();
+      };
+      const onError = () => reject(new Error(`script load failed: ${src}`));
+
+      // 先挂监听，再复查一次，避免 getElementById 与 addEventListener 之间的竞态
+      el.addEventListener("load", onLoad, { once: true });
+      el.addEventListener("error", onError, { once: true });
+
+      if (isScriptDefinitelyLoaded(el)) {
+        (el as any)._nekoLoaded = true;
+        el.removeEventListener("load", onLoad);
+        el.removeEventListener("error", onError);
+        resolve();
+        return;
+      }
       return;
     }
 

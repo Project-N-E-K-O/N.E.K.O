@@ -45,6 +45,10 @@ function App(_props: AppProps) {
   const live2dManagerRef = useRef<Live2DManager | null>(null);
   const live2dPrefsRepoRef = useRef(createLive2DPreferencesRepository(API_BASE));
 
+  const handleLive2DReady = useCallback((mgr: Live2DManager) => {
+    live2dManagerRef.current = mgr;
+  }, []);
+
   const [isMobile, setIsMobile] = useState(false);
 
   const [toolbarGoodbyeMode, setToolbarGoodbyeMode] = useState(false);
@@ -114,9 +118,7 @@ function App(_props: AppProps) {
         staticBaseUrl={STATIC_BASE}
         modelUri="/static/mao_pro/mao_pro.model3.json"
         preferences={live2dPrefsRepoRef.current}
-        onReady={(mgr) => {
-          live2dManagerRef.current = mgr;
-        }}
+        onReady={handleLive2DReady}
       />
       <Live2DRightToolbar
         visible
