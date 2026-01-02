@@ -109,6 +109,7 @@ export function Live2DStage({ staticBaseUrl, modelUri, preferences, emotionMappi
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
   const managerRef = React.useRef<Live2DManager | null>(null);
   const offRef = React.useRef<(() => void) | null>(null);
+  const onReadyRef = React.useRef<Live2DStageProps["onReady"]>(onReady);
   const [status, setStatus] = React.useState<"idle" | "loading" | "ready" | "error">("idle");
   const [locked, setLocked] = React.useState(false);
   const lockedRef = React.useRef(false);
@@ -141,6 +142,13 @@ export function Live2DStage({ staticBaseUrl, modelUri, preferences, emotionMappi
       return next;
     });
   }, []);
+
+  // 避免把 onReady 放进初始化 effect 的依赖数组：
+  // 父组件若每次 render 都创建新函数，会导致 Live2D 反复 dispose + 重建。
+  // 这里用 ref 持有最新 onReady，以便 boot() 在需要时调用到“最新”的回调实现。
+  React.useEffect(() => {
+    onReadyRef.current = onReady;
+  }, [onReady]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -181,7 +189,7 @@ export function Live2DStage({ staticBaseUrl, modelUri, preferences, emotionMappi
 
       const manager = createLive2DManager(adapter, { preferences, emotionMappingProvider });
       managerRef.current = manager;
-      onReady?.(manager);
+      onReadyRef.current?.(manager);
 
       offRef.current?.();
       offRef.current = manager.on("stateChanged", ({ next }) => {
@@ -214,7 +222,7 @@ export function Live2DStage({ staticBaseUrl, modelUri, preferences, emotionMappi
         mgr.dispose().catch(() => {});
       }
     };
-  }, [modelUri, staticBaseUrl, preferences, emotionMappingProvider, onReady]);
+  }, [modelUri, staticBaseUrl, preferences, emotionMappingProvider]);
 
   // Web 交互层（拖拽 / 滚轮缩放）：宿主实现，映射到 manager.setTransform + savePreferences
   React.useEffect(() => {
