@@ -221,13 +221,19 @@ export function createPixiLive2DAdapter(options: PixiLive2DAdapterOptions): Live
     if (app) return app;
 
     // 参考 static/live2d-core.js 的初始化策略：透明背景 + resizeTo container
+    const safeAppOptions: Record<string, unknown> = { ...(options.appOptions ?? {}) };
+    // PIXI v7+ 已弃用 `transparent`，并且不允许用户通过 appOptions 重新引入该配置。
+    if ("transparent" in safeAppOptions) {
+      delete (safeAppOptions as any).transparent;
+    }
+
     app = new PIXI.Application({
       view: canvasEl,
       resizeTo: containerEl,
       autoStart: true,
-      transparent: true,
+      ...(safeAppOptions ?? {}),
+      // 显式覆盖：确保透明背景（alpha=0）
       backgroundAlpha: 0,
-      ...(options.appOptions ?? {}),
     });
     return app;
   };

@@ -8,9 +8,10 @@
   overflow: hidden;
   /* 保证不被全屏 Chat 覆盖，但仍低于右侧工具栏（99999） */
   z-index: 9000;
-  background: rgba(0, 0, 0, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(0, 0, 0, 0.15);
+  -webkit-backdrop-filter: blur(10px);
   backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
 }
 
 .live2dStage__container {
