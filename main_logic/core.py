@@ -668,6 +668,14 @@ class LLMSessionManager:
         _,_,_,lanlan_basic_config_updated,_,_,_,_,_,_ = self._config_manager.get_character_data()
         old_voice_id = self.voice_id
         self.voice_id = lanlan_basic_config_updated.get(self.lanlan_name, {}).get('voice_id', '')
+        
+        # 如果角色没有设置 voice_id，尝试使用自定义API配置的 TTS_VOICE_ID 作为回退
+        if not self.voice_id:
+            core_config = self._config_manager.get_core_config()
+            if core_config.get('ENABLE_CUSTOM_API') and core_config.get('TTS_VOICE_ID'):
+                self.voice_id = core_config.get('TTS_VOICE_ID')
+                logger.info(f"🔄 使用自定义TTS回退音色: '{self.voice_id}'")
+        
         if old_voice_id != self.voice_id:
             logger.info(f"🔄 voice_id已更新: '{old_voice_id}' -> '{self.voice_id}'")
         
@@ -1052,6 +1060,14 @@ class LLMSessionManager:
             _,_,_,lanlan_basic_config_updated,_,_,_,_,_,_ = self._config_manager.get_character_data()
             old_voice_id = self.voice_id
             self.voice_id = lanlan_basic_config_updated.get(self.lanlan_name, {}).get('voice_id', '')
+            
+            # 如果角色没有设置 voice_id，尝试使用自定义API配置的 TTS_VOICE_ID 作为回退
+            if not self.voice_id:
+                core_config = self._config_manager.get_core_config()
+                if core_config.get('ENABLE_CUSTOM_API') and core_config.get('TTS_VOICE_ID'):
+                    self.voice_id = core_config.get('TTS_VOICE_ID')
+                    logger.info(f"🔄 热切换准备: 使用自定义TTS回退音色: '{self.voice_id}'")
+            
             if old_voice_id != self.voice_id:
                 logger.info(f"🔄 热切换准备: voice_id已更新: '{old_voice_id}' -> '{self.voice_id}'")
             

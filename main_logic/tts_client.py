@@ -13,7 +13,6 @@ import io
 import wave
 import aiohttp
 import asyncio
-import uuid
 from functools import partial
 from utils.config_manager import get_config_manager
 logger = logging.getLogger(__name__)
@@ -1048,230 +1047,200 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False):
 
 def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_id):
     """
-    本地 CosyVoice WebSocket Worker
-    适配 model_server.py 定义的 /api/v1/ws/cosyvoice 接口
+    本地 CosyVoice WebSocket Worker（OpenAI 兼容 bistream 版本）
+    适配 openai_server.py 定义的 /v1/audio/speech/stream 接口
+    
+    协议流程：
+    1. 连接后发送 config: {"voice": ..., "speed": ...}
+    2. 发送文本: {"text": ...}
+    3. 发送结束信号: {"event": "end"}
+    4. 接收 bytes 音频数据（16-bit PCM, 22050Hz）
+    
+    特性：
+    - 双工流：发送和接收独立运行，互不阻塞
+    - 打断支持：speech_id 变化时关闭旧连接，打断旧语音
+    - 非阻塞：异步架构，不会卡住主循环
     """
+
     cm = get_config_manager()
     tts_config = cm.get_model_api_config('tts_custom')
 
-    #如果你调用了user
-    user_url = tts_config.get('base_url','')
-    if user_url :
-        ws_base = user_url.replace('https://', 'wss://').replace('http://', 'ws://').rstrip('/')
-        WS_URL = f'{ws_base}/api/v1/ws/cosyvoice'
-    else:
-        logger.error('本地cosyvoice未配置url, 请在设置中填写正确的端口')
-        response_queue.put(("__ready__", False)) # 发送失败失败信号,
+    ws_base = tts_config.get('base_url', '')
+    if (ws_base and not ws_base.startswith('ws://') and not ws_base.startswith('wss://')) or not ws_base:
+        if ws_base:
+            logger.error(f'本地cosyvoice URL协议无效: {ws_base}，需要 ws/wss 协议')
+        else:
+            logger.error('本地cosyvoice未配置url, 请在设置中填写正确的端口')
+        response_queue.put(("__ready__", True))
+        # 模仿 dummy_tts：持续清空队列但不生成音频
+        while True:
+            try:
+                sid, _ = request_queue.get()
+                if sid is None:
+                    continue
+            except Exception:
+                break
         return
-
-    async def receive_loop(ws, resampler, response_queue, task_complete_event):
-        """独立接收任务，处理音频流和状态信息"""
+    
+    # OpenAI 兼容端点
+    WS_URL = f'{ws_base}/v1/audio/speech/stream'
+    
+    # 从 voice_id 解析 voice 和 speed（格式：voice 或 voice:speed）
+    voice_name = voice_id or "中文女"
+    speech_speed = 1.0
+    if voice_id and ':' in voice_id:
+        parts = voice_id.split(':', 1)
+        voice_name = parts[0]
         try:
-            async for message in ws:
-                if isinstance(message, bytes):
-                    # 接收 PCM -> 重采样 -> 输出
-                    audio_array = np.frombuffer(message, dtype=np.int16)
-                    # 重采样 24k -> 48k 并发送
-                    resampled_bytes = _resample_audio(audio_array, 24000, 48000, resampler)
-                    response_queue.put(resampled_bytes)
-
-                # 如果是 str，说明是 JSON 状态信息 (task-started, task-finished)
-                elif isinstance(message, str):
-                    try:
-                        msg_json = json.loads(message)
-                        action = msg_json.get("header", {}).get("action")
-                        if action == "task-failed":
-                            logger.error(f"本地合成报错: {msg_json}")
-                        elif action == "task-finished":
-                            # 任务完成，通知主循环可以继续
-                            task_complete_event.set()
-                            logger.debug("收到 task-finished 消息")
-                    except Exception as e:
-                        logger.debug(f'解析状态消息失败：{e}')
-
-        except websockets.exceptions.ConnectionClosed:
-            logger.info("本地 WebSocket 连接断开")
-            # 连接关闭时也设置事件，避免主循环阻塞
-            if task_complete_event:
-                task_complete_event.set()
-        except Exception as e:
-            logger.error(f"接收循环异常: {e}")
-            if task_complete_event:
-                task_complete_event.set()
+            speech_speed = float(parts[1])
+        except ValueError:
+            pass
+    
+    # 服务器返回的采样率（22050Hz）
+    SRC_RATE = 22050
 
     async def async_worker():
         ws = None
         receive_task = None
         current_speech_id = None
-        task_complete_event = None  # 用于等待任务完成
-        # 使用流式重采样器
-        resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
+        
+        resampler = soxr.ResampleStream(SRC_RATE, 48000, 1, dtype='float32')
 
-        # 任务ID，用于服务端区分不同的句子流
-        current_task_id = str(uuid.uuid4())
-
-        # --- 1. 补全缺失的 send_json 函数 ---
-        async def send_json(ws_conn, payload):
+        async def receive_loop(ws_conn):
+            """独立接收任务，处理音频流"""
             try:
-                await ws_conn.send(json.dumps(payload))
+                async for message in ws_conn:
+                    if isinstance(message, bytes):
+                        # 服务器返回 16-bit PCM @ 22050Hz
+                        audio_array = np.frombuffer(message, dtype=np.int16)
+                        resampled_bytes = _resample_audio(audio_array, SRC_RATE, 48000, resampler)
+                        response_queue.put(resampled_bytes)
+            except websockets.exceptions.ConnectionClosed:
+                logger.debug("本地 WebSocket 连接已关闭")
+            except asyncio.CancelledError:
+                pass
             except Exception as e:
-                logger.debug(f'发送 JSON 信息失败：{e}')
+                logger.error(f"接收循环异常: {e}")
 
-        async def ensure_connection():
-            nonlocal ws, receive_task, task_complete_event
-            # 关键修复：如果连接正常，直接返回，不重复连接
-            if ws and not ws.closed:
-                return ws
+        async def send_texts_and_end(ws_conn, texts: list[str]):
+            """发送多个文本后发送结束信号"""
+            try:
+                for text in texts:
+                    if text and text.strip():
+                        await ws_conn.send(json.dumps({"text": text}))
+                        logger.debug(f"发送合成片段: {text}")
+                # 发送结束信号
+                await ws_conn.send(json.dumps({"event": "end"}))
+                logger.debug("发送结束信号")
+            except Exception as e:
+                logger.error(f"发送文本到服务器失败: {e}")
 
+        async def create_connection():
+            """创建新连接并发送配置"""
+            nonlocal ws, receive_task, resampler
+            
+            # 清理旧连接
+            if receive_task and not receive_task.done():
+                receive_task.cancel()
+                try:
+                    await receive_task
+                except asyncio.CancelledError:
+                    pass
+            if ws:
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+            
+            # 重置 resampler
+            resampler = soxr.ResampleStream(SRC_RATE, 48000, 1, dtype='float32')
+            
             logger.info(f"🔄 [LocalTTS] 正在连接: {WS_URL}")
-            try:
-                ws = await websockets.connect(WS_URL, ping_interval=None)
-                logger.info("✅ [LocalTTS] 连接成功")
+            ws = await websockets.connect(WS_URL, ping_interval=None)
+            logger.info("✅ [LocalTTS] 连接成功")
+            
+            # 发送配置
+            config = {
+                "voice": voice_name,
+                "speed": speech_speed,
+            }
+            await ws.send(json.dumps(config))
+            logger.debug(f"发送配置: {config}")
+            
+            # 启动接收任务
+            receive_task = asyncio.create_task(receive_loop(ws))
+            return ws
 
-                # 创建新的任务完成事件
-                task_complete_event = asyncio.Event()
-                
-                # 重连后重启接收任务
-                if receive_task and not receive_task.done():
-                    receive_task.cancel()
-                    try:
-                        await receive_task
-                    except asyncio.CancelledError:
-                        pass
-                receive_task = asyncio.create_task(receive_loop(ws, resampler, response_queue, task_complete_event))
-                return ws
-            except Exception as e:
-                logger.error(f"连接失败: {e}")
-                ws = None
-                return None
-
-        # 1. 初始连接 (先连上再发 ready 信号，防止死锁)
+        # 初始连接
         try:
-            ws = await ensure_connection()
-            if ws is None:
-                logger.error("❌ [LocalTTS] 初始连接失败: ws is None")
-                logger.error("请确保 model_server.py 已运行且端口正确")
-                response_queue.put(("__ready__", False))
-                return
+            await create_connection()
             response_queue.put(("__ready__", True))
         except Exception as e:
             logger.error(f"❌ [LocalTTS] 初始连接失败: {e}")
-            logger.error("请确保 model_server.py 已运行且端口正确")
+            logger.error("请确保服务器已运行且端口正确")
             response_queue.put(("__ready__", False))
             return
 
+        # 累积当前 speech_id 的文本
+        text_buffer: list[str] = []
+        
         # 主循环
+        loop = asyncio.get_running_loop()
         while True:
-
-            # 1. 获取请求 (非阻塞获取以便处理连接状态)
             try:
-                # 在 loop 中运行 request_queue.get 以便支持打断
-                loop = asyncio.get_running_loop()
                 sid, tts_text = await loop.run_in_executor(None, request_queue.get)
             except Exception as e:
-                logger.error(f'队列获取异常{e}')
+                logger.error(f'队列获取异常: {e}')
                 break
 
-            # 状态切换：如果 speech_id 变了，说明是新的一句话
-            if sid != current_speech_id:
-                # 如果上一句还没说完，给服务器发一个结束信号并等待完成
-                if ws and current_speech_id is not None:
-                    if task_complete_event:
-                        task_complete_event.clear()
-                    await send_json(ws, {
-                        "header": {"action": "finish-task", "task_id": current_task_id}
-                    })
-                    # 等待服务器完成当前任务（服务器收到 finish-task 后会关闭连接）
-                    # 设置超时避免无限等待
-                    try:
-                        if task_complete_event:
-                            await asyncio.wait_for(task_complete_event.wait(), timeout=5.0)
-                    except asyncio.TimeoutError:
-                        logger.warning("等待任务完成超时")
-                    
-                    # 关闭旧连接，下次会重新连接
-                    try:
-                        if ws and not ws.closed:
-                            await ws.close()
-                    except Exception:
-                        pass
-                    ws = None
-                    if receive_task and not receive_task.done():
-                        receive_task.cancel()
-                        try:
-                            await receive_task
-                        except asyncio.CancelledError:
-                            pass
-                    receive_task = None
-
-                # 更新状态
+            # speech_id 变化 -> 打断旧语音，建立新连接
+            if sid != current_speech_id and sid is not None:
+                # 如果有未发送的文本，先发送
+                if text_buffer and ws:
+                    await send_texts_and_end(ws, text_buffer)
+                    text_buffer = []
+                
                 current_speech_id = sid
-                current_task_id = str(uuid.uuid4()) # 生成新 task_id
-                resampler.clear() # 清空重采样缓冲区
-
-            # 停止信号处理
-            if sid is None:
-                if ws:
-                    if task_complete_event:
-                        task_complete_event.clear()
-                    await send_json(ws, {
-                        "header": {"action": "finish-task", "task_id": current_task_id}
-                    })
-                    # 等待服务器完成当前任务
-                    try:
-                        if task_complete_event:
-                            await asyncio.wait_for(task_complete_event.wait(), timeout=5.0)
-                    except asyncio.TimeoutError:
-                        logger.warning("等待任务完成超时")
-                    
-                    # 关闭连接并清理接收任务
-                    try:
-                        if ws and not ws.closed:
-                            await ws.close()
-                    except Exception:
-                        pass
+                try:
+                    await create_connection()
+                except Exception as e:
+                    logger.error(f"重连失败: {e}")
                     ws = None
-                    if receive_task and not receive_task.done():
-                        receive_task.cancel()
-                        try:
-                            await receive_task
-                        except asyncio.CancelledError:
-                            pass
-                    receive_task = None
-                current_task_id = None
-                task_complete_event = None
-                continue
+                    continue
 
+            if sid is None:
+                # 终止信号：发送累积的文本并结束
+                if text_buffer and ws:
+                    await send_texts_and_end(ws, text_buffer)
+                    text_buffer = []
+                current_speech_id = None
+                continue
 
             if not tts_text or not tts_text.strip():
                 continue
 
-            # ========================================================
-            # 🚀 关键修改：直接发送，移除所有标点判断和缓冲
-            # ========================================================
-            ws = await ensure_connection()
+            # 累积文本
+            text_buffer.append(tts_text)
+            
+            # 同时发送（bistream 模式允许边发边收）
             if ws:
-                payload = {
-                    "header": {"action": "run-task", "task_id": current_task_id},
-                    "payload": {"input": {"text": tts_text}}
-                }
                 try:
-                    await ws.send(json.dumps(payload))
+                    await ws.send(json.dumps({"text": tts_text}))
+                    logger.debug(f"发送合成片段: {tts_text}")
                 except Exception as e:
-                    logger.error(f"发送文本失败: {e}")
-                    # 标记 ws 为空，让下次 ensure_connection 触发重连
-                    try:
-                        if ws and not ws.closed:
-                            await ws.close()
-                    except Exception:
-                        pass
-                    finally:
-                        ws = None
-                        if receive_task and not receive_task.done():
-                            receive_task.cancel()
-                        receive_task = None
-                        task_complete_event = None
+                    logger.error(f"发送失败: {e}")
+                    ws = None
 
+        # 清理
+        if receive_task and not receive_task.done():
+            receive_task.cancel()
+        if ws:
+            try:
+                await ws.close()
+            except Exception:
+                pass
+
+    # 运行 Asyncio 循环
     try:
         asyncio.run(async_worker())
     except Exception as e:

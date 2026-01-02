@@ -236,7 +236,7 @@ class ConfigManager:
             # 先确保父目录（docs_dir）存在
             if not self.docs_dir.exists():
                 print(f"Warning: Documents directory does not exist: {self.docs_dir}", file=sys.stderr)
-                print(f"Warning: Attempting to create documents directory...", file=sys.stderr)
+                print("Warning: Attempting to create documents directory...", file=sys.stderr)
                 try:
                     # 尝试创建父目录（可能需要创建多级）
                     dirs_to_create = []
@@ -358,7 +358,7 @@ class ConfigManager:
         """
         # 确保目录存在
         if not self.ensure_config_directory():
-            print(f"Warning: Cannot create config directory, using project config", file=sys.stderr)
+            print("Warning: Cannot create config directory, using project config", file=sys.stderr)
             return
         
         # 显示项目配置目录位置（调试用）
@@ -795,6 +795,18 @@ class ConfigManager:
             if core_cfg.get('visionModelId') is not None:
                 # 将 core_cfg 中的 visionModelId 映射到内部的 VISION_MODEL（模型ID）
                 config['VISION_MODEL'] = core_cfg.get('visionModelId', '') or config.get('VISION_MODEL', '')
+            
+            # TTS 自定义配置映射
+            if core_cfg.get('ttsModelApiKey') is not None:
+                config['TTS_MODEL_API_KEY'] = core_cfg.get('ttsModelApiKey', '') or config.get('TTS_MODEL_API_KEY', '')
+            if core_cfg.get('ttsModelUrl') is not None:
+                config['TTS_MODEL_URL'] = core_cfg.get('ttsModelUrl', '') or config.get('TTS_MODEL_URL', '')
+            if core_cfg.get('ttsModelId') is not None:
+                config['TTS_MODEL'] = core_cfg.get('ttsModelId', '') or config.get('TTS_MODEL', '')
+            
+            # TTS Voice ID 作为角色 voice_id 的回退
+            if core_cfg.get('ttsVoiceId') is not None:
+                config['TTS_VOICE_ID'] = core_cfg.get('ttsVoiceId', '')
 
         return config
 
@@ -888,7 +900,7 @@ class ConfigManager:
             custom_key = core_config.get(mapping['custom_key'], '')
             
             # 自定义配置完整时使用自定义配置
-            if custom_model and custom_url and custom_key:
+            if custom_model and custom_url:
                 return {
                     'model': custom_model,
                     'api_key': custom_key,

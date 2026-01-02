@@ -94,5 +94,4 @@ version_info.txt
 start_servers.bat
 
 # --- CosyVoice Ignore Rules ---
-local_server/cosyvoice_server/CosyVoice/pretrained_models/
-local_server/cosyvoice_server/CosyVoice/third_party/Matcha_TTS/
+local_server/cosyvoice_server/*wav
