@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState } from "react";
 import type { ChatMessage, PendingScreenshot } from "./types";
 import MessageList from "./MessageList";
 import ChatInput from "./ChatInput";
