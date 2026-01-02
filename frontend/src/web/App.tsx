@@ -1,7 +1,7 @@
 import "./styles.css";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
-import { Button, StatusToast, Modal, Live2DRightToolbar, useT, tOrDefault, tOrDefault, QrMessageBox} from "@project_neko/components";
+import { Button, StatusToast, Modal, Live2DRightToolbar, useT, tOrDefault, QrMessageBox} from "@project_neko/components";
 import type {
   StatusToastHandle,
   ModalHandle,
