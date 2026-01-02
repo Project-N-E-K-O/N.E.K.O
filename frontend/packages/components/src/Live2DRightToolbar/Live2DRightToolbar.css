@@ -130,9 +130,10 @@
 
  .live2d-right-toolbar__panel {
    position: absolute;
-   left: 100%;
+   right: 100%;
+   left: auto;
    top: 0;
-   margin-left: 14px;
+   margin-right: 14px;
    z-index: 100000;
    background: rgba(255, 255, 255, 0.65);
    backdrop-filter: saturate(180%) blur(20px);
