@@ -1,7 +1,7 @@
 import "./styles.css";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
-import { Button, StatusToast, Modal, Live2DRightToolbar, useT, tOrDefault } from "@project_neko/components";
+import { Button, StatusToast, Modal, Live2DRightToolbar, useT, tOrDefault, tOrDefault, QrMessageBox} from "@project_neko/components";
 import type {
   StatusToastHandle,
   ModalHandle,
@@ -61,6 +61,7 @@ function App({ language, onChangeLanguage }: AppProps) {
   const t = useT();
   const toastRef = useRef<StatusToastHandle | null>(null);
   const modalRef = useRef<ModalHandle | null>(null);
+  const [isQrModalOpen, setIsQrModalOpen] = useState(false);
 
   const [toolbarGoodbyeMode, setToolbarGoodbyeMode] = useState(false);
   const [toolbarMicEnabled, setToolbarMicEnabled] = useState(false);
@@ -464,6 +465,9 @@ function App({ language, onChangeLanguage }: AppProps) {
               <Button variant="secondary" onClick={handleToast}>
                 {tOrDefault(t, "webapp.actions.showToast", "显示 StatusToast")}
               </Button>
+              <Button variant="secondary" onClick={() => setIsQrModalOpen(true)}>
+                {tOrDefault(t, "webapp.actions.showQrDrawer", "显示二维码")}
+              </Button>
               <Button variant="primary" onClick={handleAlert}>
                 {tOrDefault(t, "webapp.actions.modalAlert", "Modal Alert")}
               </Button>
@@ -517,6 +521,13 @@ function App({ language, onChangeLanguage }: AppProps) {
           </div>
         </section>
       </main>
+
+      <QrMessageBox
+        apiBase={API_BASE}
+        isOpen={isQrModalOpen}
+        onClose={() => setIsQrModalOpen(false)}
+        title={tOrDefault(t, "webapp.qrDrawer.title", "二维码")}
+      />
     </>
   );
 }

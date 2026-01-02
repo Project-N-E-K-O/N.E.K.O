@@ -14,6 +14,7 @@ from .pages_router import router as pages_router
 from .websocket_router import router as websocket_router
 from .agent_router import router as agent_router
 from .system_router import router as system_router
+from .ip_qrcode_router import router as ip_qrcode_router
 
 __all__ = [
     'config_router',
@@ -25,4 +26,5 @@ __all__ = [
     'websocket_router',
     'agent_router',
     'system_router',
+    'ip_qrcode_router',
 ]

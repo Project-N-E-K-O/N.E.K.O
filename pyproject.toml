@@ -22,6 +22,7 @@ dependencies = [
   "dashscope==1.25.4",
   "python-multipart",
   "pillow",
+  "qrcode",
   "pyautogui",
   "backoff",
   "toml",
