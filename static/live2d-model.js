@@ -8,93 +8,123 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
         throw new Error('PIXI 应用未初始化，请先调用 initPIXI()');
     }
 
-    // 移除当前模型
-    if (this.currentModel) {
-        // 关闭所有已打开的设置窗口（防御性检查）
-        // 可通过 options.skipCloseWindows 跳过此操作（例如从设置窗口返回时重新加载模型）
-        if (window.closeAllSettingsWindows && !options.skipCloseWindows) {
-            window.closeAllSettingsWindows();
-        }
-        // 清除保存参数的定时器
-        if (this._savedParamsTimer) {
-            clearInterval(this._savedParamsTimer);
-            this._savedParamsTimer = null;
-        }
-        
-        // 先清空常驻表情记录和初始参数
-        this.teardownPersistentExpressions();
-        this.initialParameters = {};
-
-        // 还原 coreModel.update 覆盖
-        try {
-            const coreModel = this.currentModel.internalModel && this.currentModel.internalModel.coreModel;
-            if (coreModel && this._mouthOverrideInstalled && typeof this._origCoreModelUpdate === 'function') {
-                coreModel.update = this._origCoreModelUpdate;
-            }
-        } catch (_) {}
-        this._mouthOverrideInstalled = false;
-        this._origCoreModelUpdate = null;
-        // 同时移除 mouthTicker（若曾启用过 ticker 模式）
-        if (this._mouthTicker && this.pixi_app && this.pixi_app.ticker) {
-            try { this.pixi_app.ticker.remove(this._mouthTicker); } catch (_) {}
-            this._mouthTicker = null;
-        }
-
-        // 移除由 HTML 锁图标或交互注册的监听，避免访问已销毁的显示对象
-        try {
-            // 清理鼠标跟踪监听器
-            if (this._mouseTrackingListener) {
-                window.removeEventListener('pointermove', this._mouseTrackingListener);
-                this._mouseTrackingListener = null;
-            }
-            
-            // 先移除锁图标的 ticker 回调
-            if (this._lockIconTicker && this.pixi_app && this.pixi_app.ticker) {
-                this.pixi_app.ticker.remove(this._lockIconTicker);
-            }
-            this._lockIconTicker = null;
-            // 移除锁图标元素
-            if (this._lockIconElement && this._lockIconElement.parentNode) {
-                this._lockIconElement.parentNode.removeChild(this._lockIconElement);
-            }
-            this._lockIconElement = null;
-            
-            // 清理浮动按钮系统
-            if (this._floatingButtonsTicker && this.pixi_app && this.pixi_app.ticker) {
-                this.pixi_app.ticker.remove(this._floatingButtonsTicker);
-            }
-            this._floatingButtonsTicker = null;
-            if (this._floatingButtonsContainer && this._floatingButtonsContainer.parentNode) {
-                this._floatingButtonsContainer.parentNode.removeChild(this._floatingButtonsContainer);
-            }
-            this._floatingButtonsContainer = null;
-            this._floatingButtons = {};
-            // 清理"请她回来"按钮容器
-            if (this._returnButtonContainer && this._returnButtonContainer.parentNode) {
-                this._returnButtonContainer.parentNode.removeChild(this._returnButtonContainer);
-            }
-            this._returnButtonContainer = null;
-            // 清理所有弹出框定时器
-            Object.values(this._popupTimers).forEach(timer => clearTimeout(timer));
-            this._popupTimers = {};
-            
-            // 暂停 ticker，期间做销毁，随后恢复
-            this.pixi_app.ticker && this.pixi_app.ticker.stop();
-        } catch (_) {}
-        try {
-            this.pixi_app.stage.removeAllListeners && this.pixi_app.stage.removeAllListeners();
-        } catch (_) {}
-        try {
-            this.currentModel.removeAllListeners && this.currentModel.removeAllListeners();
-        } catch (_) {}
-
-        // 从舞台移除并销毁旧模型
-        try { this.pixi_app.stage.removeChild(this.currentModel); } catch (_) {}
-        try { this.currentModel.destroy({ children: true }); } catch (_) {}
-        try { this.pixi_app.ticker && this.pixi_app.ticker.start(); } catch (_) {}
+    // 检查是否正在加载模型，防止并发加载导致重复模型叠加
+    if (this._isLoadingModel) {
+        console.warn('模型正在加载中，跳过重复加载请求:', modelPath);
+        return this.currentModel;
     }
+    
+    // 设置加载锁
+    this._isLoadingModel = true;
 
     try {
+        // 移除当前模型
+        if (this.currentModel) {
+            // 关闭所有已打开的设置窗口（防御性检查）
+            // 可通过 options.skipCloseWindows 跳过此操作（例如从设置窗口返回时重新加载模型）
+            if (window.closeAllSettingsWindows && !options.skipCloseWindows) {
+                window.closeAllSettingsWindows();
+            }
+            // 清除保存参数的定时器
+            if (this._savedParamsTimer) {
+                clearInterval(this._savedParamsTimer);
+                this._savedParamsTimer = null;
+            }
+            
+            // 先清空常驻表情记录和初始参数
+            this.teardownPersistentExpressions();
+            this.initialParameters = {};
+
+            // 还原 coreModel.update 覆盖
+            try {
+                const coreModel = this.currentModel.internalModel && this.currentModel.internalModel.coreModel;
+                if (coreModel && this._mouthOverrideInstalled && typeof this._origCoreModelUpdate === 'function') {
+                    coreModel.update = this._origCoreModelUpdate;
+                }
+            } catch (_) {}
+            this._mouthOverrideInstalled = false;
+            this._origCoreModelUpdate = null;
+            // 同时移除 mouthTicker（若曾启用过 ticker 模式）
+            if (this._mouthTicker && this.pixi_app && this.pixi_app.ticker) {
+                try { this.pixi_app.ticker.remove(this._mouthTicker); } catch (_) {}
+                this._mouthTicker = null;
+            }
+
+            // 移除由 HTML 锁图标或交互注册的监听，避免访问已销毁的显示对象
+            try {
+                // 清理鼠标跟踪监听器
+                if (this._mouseTrackingListener) {
+                    window.removeEventListener('pointermove', this._mouseTrackingListener);
+                    this._mouseTrackingListener = null;
+                }
+                
+                // 先移除锁图标的 ticker 回调
+                if (this._lockIconTicker && this.pixi_app && this.pixi_app.ticker) {
+                    this.pixi_app.ticker.remove(this._lockIconTicker);
+                }
+                this._lockIconTicker = null;
+                // 移除锁图标元素
+                if (this._lockIconElement && this._lockIconElement.parentNode) {
+                    this._lockIconElement.parentNode.removeChild(this._lockIconElement);
+                }
+                this._lockIconElement = null;
+                
+                // 清理浮动按钮系统
+                if (this._floatingButtonsTicker && this.pixi_app && this.pixi_app.ticker) {
+                    this.pixi_app.ticker.remove(this._floatingButtonsTicker);
+                }
+                this._floatingButtonsTicker = null;
+                if (this._floatingButtonsContainer && this._floatingButtonsContainer.parentNode) {
+                    this._floatingButtonsContainer.parentNode.removeChild(this._floatingButtonsContainer);
+                }
+                this._floatingButtonsContainer = null;
+                this._floatingButtons = {};
+                // 清理"请她回来"按钮容器
+                if (this._returnButtonContainer && this._returnButtonContainer.parentNode) {
+                    this._returnButtonContainer.parentNode.removeChild(this._returnButtonContainer);
+                }
+                this._returnButtonContainer = null;
+                // 清理所有弹出框定时器
+                Object.values(this._popupTimers).forEach(timer => clearTimeout(timer));
+                this._popupTimers = {};
+                
+                // 暂停 ticker，期间做销毁，随后恢复
+                this.pixi_app.ticker && this.pixi_app.ticker.stop();
+            } catch (_) {}
+            try {
+                this.pixi_app.stage.removeAllListeners && this.pixi_app.stage.removeAllListeners();
+            } catch (_) {}
+            try {
+                this.currentModel.removeAllListeners && this.currentModel.removeAllListeners();
+            } catch (_) {}
+
+            // 从舞台移除并销毁旧模型
+            try { this.pixi_app.stage.removeChild(this.currentModel); } catch (_) {}
+            try { this.currentModel.destroy({ children: true }); } catch (_) {}
+            try { this.pixi_app.ticker && this.pixi_app.ticker.start(); } catch (_) {}
+        }
+
+        // 防御性清理：确保舞台上没有残留的 Live2D 模型
+        // 这可以防止由于并发问题或其他原因导致的模型叠加
+        try {
+            const stage = this.pixi_app.stage;
+            const childrenToRemove = [];
+            for (let i = stage.children.length - 1; i >= 0; i--) {
+                const child = stage.children[i];
+                // 检查是否是 Live2D 模型（通过检查 internalModel 属性）
+                if (child && child.internalModel) {
+                    childrenToRemove.push(child);
+                }
+            }
+            for (const child of childrenToRemove) {
+                console.warn('发现舞台上残留的 Live2D 模型，正在清理...');
+                try { stage.removeChild(child); } catch (_) {}
+                try { child.destroy({ children: true }); } catch (_) {}
+            }
+        } catch (e) {
+            console.warn('清理舞台残留模型时出错:', e);
+        }
+
         const model = await Live2DModel.from(modelPath, { autoFocus: false });
         this.currentModel = model;
 
@@ -389,6 +419,9 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
             // 如果已经是默认模型，直接抛出错误
             throw error;
         }
+    } finally {
+        // 无论成功还是失败，都要释放加载锁
+        this._isLoadingModel = false;
     }
 };
 
