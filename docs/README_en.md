@@ -90,7 +90,7 @@ For *one-click package users*, simply run `N.E.K.O.exe` after extracting to star
 
 ### 1. Deploy using docker-compose (Currently the only Docker deployment method)
 
-#### docker-compose.yml (Currently only amd64 architecture images available)
+#### docker-compose.yml
 ```yaml
 version: '3.8'
 

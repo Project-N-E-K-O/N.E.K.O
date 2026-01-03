@@ -85,7 +85,7 @@ async function initLive2DModel() {
                 const targetPathParts = targetModelPath.split('/').filter(p => p);
                 modelPreferences = preferences.find(p => {
                     if (!p || !p.model_path) return false;
-                    const prefPathParts = p.model_path.split('/').filter(p => p);
+                    const prefPathParts = p.model_path.split('/').filter(part => part);
                     // 检查是否有足够的共同部分
                     const commonParts = targetPathParts.filter(part => prefPathParts.includes(part));
                     if (commonParts.length >= 2) {
