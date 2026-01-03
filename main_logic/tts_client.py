@@ -1020,9 +1020,8 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False):
     try:
         cm = get_config_manager()
         tts_config = cm.get_model_api_config('tts_custom')
-        user_url = tts_config.get('base_url')
-        # 只要base_url 这里填写了参数 那就确定使用本地服务
-        if user_url and ('http://' in user_url or 'https://' in user_url or 'ws://' in user_url or 'wss://' in user_url):
+        # 只有当 is_custom=True（即 ENABLE_CUSTOM_API=true 且用户明确配置了自定义 TTS）时才使用本地 worker
+        if tts_config.get('is_custom'):
             return local_cosyvoice_worker
     except Exception as e:
         logger.warning(f'TTS调度器检查报告:{e}')
@@ -1060,7 +1059,10 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
     - 双工流：发送和接收独立运行，互不阻塞
     - 打断支持：speech_id 变化时关闭旧连接，打断旧语音
     - 非阻塞：异步架构，不会卡住主循环
+    
+    注意：audio_api_key 参数未使用（本地模式不需要 API Key），保留是为了与其他 worker 保持统一签名
     """
+    _ = audio_api_key  # 本地模式不需要 API Key
 
     cm = get_config_manager()
     tts_config = cm.get_model_api_config('tts_custom')
@@ -1122,18 +1124,13 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             except Exception as e:
                 logger.error(f"接收循环异常: {e}")
 
-        async def send_texts_and_end(ws_conn, texts: list[str]):
-            """发送多个文本后发送结束信号"""
+        async def send_end_signal(ws_conn):
+            """发送结束信号（文本已在主循环中实时发送，此处只需发送 end）"""
             try:
-                for text in texts:
-                    if text and text.strip():
-                        await ws_conn.send(json.dumps({"text": text}))
-                        logger.debug(f"发送合成片段: {text}")
-                # 发送结束信号
                 await ws_conn.send(json.dumps({"event": "end"}))
                 logger.debug("发送结束信号")
             except Exception as e:
-                logger.error(f"发送文本到服务器失败: {e}")
+                logger.error(f"发送结束信号失败: {e}")
 
         async def create_connection():
             """创建新连接并发送配置"""
@@ -1181,9 +1178,6 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             response_queue.put(("__ready__", False))
             return
 
-        # 累积当前 speech_id 的文本
-        text_buffer: list[str] = []
-        
         # 主循环
         loop = asyncio.get_running_loop()
         while True:
@@ -1195,10 +1189,9 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
 
             # speech_id 变化 -> 打断旧语音，建立新连接
             if sid != current_speech_id and sid is not None:
-                # 如果有未发送的文本，先发送
-                if text_buffer and ws:
-                    await send_texts_and_end(ws, text_buffer)
-                    text_buffer = []
+                # 发送结束信号（文本已在实时流中发送过了）
+                if ws:
+                    await send_end_signal(ws)
                 
                 current_speech_id = sid
                 try:
@@ -1209,18 +1202,14 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                     continue
 
             if sid is None:
-                # 终止信号：发送累积的文本并结束
-                if text_buffer and ws:
-                    await send_texts_and_end(ws, text_buffer)
-                    text_buffer = []
+                # 终止信号：发送结束信号
+                if ws:
+                    await send_end_signal(ws)
                 current_speech_id = None
                 continue
 
             if not tts_text or not tts_text.strip():
                 continue
-
-            # 累积文本
-            text_buffer.append(tts_text)
             
             # 同时发送（bistream 模式允许边发边收）
             if ws:
@@ -1234,6 +1223,10 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
         # 清理
         if receive_task and not receive_task.done():
             receive_task.cancel()
+            try:
+                await receive_task
+            except asyncio.CancelledError:
+                pass
         if ws:
             try:
                 await ws.close()
