@@ -11,9 +11,10 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     }
 
     // 检查是否正在加载模型，防止并发加载导致重复模型叠加
+    // 如果已有加载操作正在进行，拒绝新的加载请求并明确返回错误
     if (this._isLoadingModel) {
         console.warn('模型正在加载中，跳过重复加载请求:', modelPath);
-        return this.currentModel;
+        return Promise.reject(new Error('Model is already loading. Please wait for the current operation to complete.'));
     }
     
     // 设置加载锁
