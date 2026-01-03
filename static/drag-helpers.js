@@ -15,6 +15,10 @@
         const buttons = document.querySelectorAll('.live2d-floating-btn, .live2d-trigger-btn, [id^="live2d-btn-"]');
         buttons.forEach(btn => {
             if (btn) {
+                // 如果已经保存过，说明正在拖拽中，跳过
+                if (btn.hasAttribute('data-prev-pointer-events')) {
+                    return;
+                }
                 // 保存当前的pointerEvents值
                 const currentValue = btn.style.pointerEvents || '';
                 btn.setAttribute('data-prev-pointer-events', currentValue);
