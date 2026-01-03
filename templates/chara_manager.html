@@ -1301,6 +1301,13 @@
 
             form.onsubmit = async function (e) {
                 e.preventDefault();
+                // 防止重复提交
+                if (form.dataset.submitting === 'true') {
+                    console.log('表单正在提交中，忽略重复提交');
+                    return;
+                }
+                form.dataset.submitting = 'true';
+
                 const fd = new FormData(form);
                 const data = {};
                 for (const [k, v] of fd.entries()) {
@@ -1312,6 +1319,7 @@
                     }
                 }
                 if (!data['档案名']) {
+                    form.dataset.submitting = 'false';
                     await showAlert(window.t ? window.t('character.profileNameRequired') : '档案名为必填项');
                     return;
                 }
@@ -1385,6 +1393,7 @@
                         }
                         
                         await showAlert(window.t ? window.t('character.saveFailedWithError', { error: errorMessage }) : '保存失败: ' + errorMessage);
+                        form.dataset.submitting = 'false';
                         return;
                     }
 
@@ -1392,6 +1401,7 @@
                     console.log('保存结果:', result);
 
                     if (result.success === false) {
+                        form.dataset.submitting = 'false';
                         await showAlert(result.error || (window.t ? window.t('character.saveFailed') : '保存失败'));
                         return;
                     }
