@@ -8,10 +8,10 @@
     'use strict';
 
     /**
-     * 启用按钮事件传播（禁用按钮的pointer-events）
+     * 禁用按钮的 pointer-events
      * 在拖动开始时调用，防止按钮拦截拖动事件
      */
-    function enableButtonEventPropagation() {
+    function disableButtonPointerEvents() {
         // 收集所有按钮元素（包括浮动按钮和三角触发按钮）
         const buttons = document.querySelectorAll('.live2d-floating-btn, .live2d-trigger-btn, [id^="live2d-btn-"]');
         buttons.forEach(btn => {
@@ -47,10 +47,10 @@
     }
 
     /**
-     * 禁用按钮事件传播（恢复按钮的pointer-events）
+     * 恢复按钮的 pointer-events
      * 在拖动结束时调用，恢复按钮的正常点击功能
      */
-    function disableButtonEventPropagation() {
+    function restoreButtonPointerEvents() {
         const elementsToRestore = document.querySelectorAll('[data-prev-pointer-events]');
         elementsToRestore.forEach(element => {
             if (element) {
@@ -67,8 +67,8 @@
 
     // 挂载到全局 window 对象，供其他脚本使用
     window.DragHelpers = {
-        enableButtonEventPropagation: enableButtonEventPropagation,
-        disableButtonEventPropagation: disableButtonEventPropagation
+        disableButtonPointerEvents: disableButtonPointerEvents,
+        restoreButtonPointerEvents: restoreButtonPointerEvents
     };
 })();
 

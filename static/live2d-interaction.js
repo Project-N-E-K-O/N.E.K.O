@@ -242,16 +242,16 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     let isDragging = false;
     let dragStartPos = new PIXI.Point();
 
-    // 使用 live2d-ui-drag.js 中的共享工具函数（按钮事件传播管理）
-    const enableButtonEventPropagation = () => {
+    // 使用 live2d-ui-drag.js 中的共享工具函数（按钮 pointer-events 管理）
+    const disableButtonPointerEvents = () => {
         if (window.DragHelpers) {
-            window.DragHelpers.enableButtonEventPropagation();
+            window.DragHelpers.disableButtonPointerEvents();
         }
     };
 
-    const disableButtonEventPropagation = () => {
+    const restoreButtonPointerEvents = () => {
         if (window.DragHelpers) {
-            window.DragHelpers.disableButtonEventPropagation();
+            window.DragHelpers.restoreButtonPointerEvents();
         }
     };
 
@@ -272,8 +272,8 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         dragStartPos.y = globalPos.y - model.y;
         document.getElementById('live2d-canvas').style.cursor = 'grabbing';
 
-        // 开始拖动时，临时禁用按钮的事件拦截
-        enableButtonEventPropagation();
+        // 开始拖动时，临时禁用按钮的 pointer-events
+        disableButtonPointerEvents();
     });
 
     const onDragEnd = async () => {
@@ -281,8 +281,8 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             isDragging = false;
             document.getElementById('live2d-canvas').style.cursor = 'grab';
 
-            // 拖拽结束后恢复按钮的事件拦截
-            disableButtonEventPropagation();
+            // 拖拽结束后恢复按钮的 pointer-events
+            restoreButtonPointerEvents();
 
             // 检测是否需要切换屏幕（多屏幕支持）
             // _checkAndSwitchDisplay returns true if a display switch occurred (and saved internally)
