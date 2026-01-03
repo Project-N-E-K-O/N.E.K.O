@@ -513,12 +513,11 @@ Live2DManager.prototype.installMouthOverride = function() {
             
             // 2. 写入常驻表情参数（跳过口型参数以避免覆盖lipsync）
             if (this.persistentExpressionParamsByName) {
-                const lipSyncParams = ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
                 for (const name in this.persistentExpressionParamsByName) {
                     const params = this.persistentExpressionParamsByName[name];
                     if (Array.isArray(params)) {
                         for (const p of params) {
-                            if (lipSyncParams.includes(p.Id)) continue;
+                            if (LIPSYNC_PARAMS.includes(p.Id)) continue;
                             try {
                                 coreModel.setParameterValueById(p.Id, p.Value);
                             } catch (_) {}
