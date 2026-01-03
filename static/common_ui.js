@@ -181,53 +181,15 @@ if (toggleBtn) {
         chatContainer.style.cursor = 'grabbing';
         if (chatHeader) chatHeader.style.cursor = 'grabbing';
         
-        // 开始拖动时，临时禁用按钮的事件拦截（与拖拽模型逻辑一致）
-        enableButtonEventPropagation();
+        // 开始拖动时，临时禁用按钮的事件拦截（使用共享工具模块）
+        if (window.DragHelpers) {
+            window.DragHelpers.enableButtonEventPropagation();
+        }
         
         // 阻止默认行为（除非明确跳过）
         if (!skipPreventDefault) {
             e.preventDefault();
         }
-    }
-
-    // 智能事件传播管理 - 在拖动过程中临时禁用按钮事件拦截（与 live2d-interaction.js 逻辑一致）
-    function enableButtonEventPropagation() {
-        const buttons = document.querySelectorAll('.live2d-floating-btn, .live2d-trigger-btn, [id^="live2d-btn-"]');
-        buttons.forEach(btn => {
-            if (btn) {
-                const currentValue = btn.style.pointerEvents || '';
-                btn.setAttribute('data-prev-pointer-events', currentValue);
-                btn.style.pointerEvents = 'none';
-            }
-        });
-        
-        const wrappers = new Set();
-        buttons.forEach(btn => {
-            if (btn && btn.parentElement) {
-                wrappers.add(btn.parentElement);
-            }
-        });
-        
-        wrappers.forEach(wrapper => {
-            const currentValue = wrapper.style.pointerEvents || '';
-            wrapper.setAttribute('data-prev-pointer-events', currentValue);
-            wrapper.style.pointerEvents = 'none';
-        });
-    }
-
-    function disableButtonEventPropagation() {
-        const elementsToRestore = document.querySelectorAll('[data-prev-pointer-events]');
-        elementsToRestore.forEach(element => {
-            if (element) {
-                const prevValue = element.getAttribute('data-prev-pointer-events');
-                if (prevValue === '') {
-                    element.style.pointerEvents = '';
-                } else {
-                    element.style.pointerEvents = prevValue;
-                }
-                element.removeAttribute('data-prev-pointer-events');
-            }
-        });
     }
 
     // 移动中
@@ -274,8 +236,10 @@ if (toggleBtn) {
             chatContainer.style.cursor = '';
             if (chatHeader) chatHeader.style.cursor = '';
             
-            // 拖拽结束后恢复按钮的事件拦截（与拖拽模型逻辑一致）
-            disableButtonEventPropagation();
+            // 拖拽结束后恢复按钮的事件拦截（使用共享工具模块）
+            if (window.DragHelpers) {
+                window.DragHelpers.disableButtonEventPropagation();
+            }
             
             console.log('[Drag End] Moved:', didMove, 'FromToggleBtn:', fromToggleBtn);
             
