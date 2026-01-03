@@ -245,6 +245,7 @@ async def get_core_config_api():
             "ttsModelUrl": core_cfg.get('ttsModelUrl', ''),
             "ttsModelId": core_cfg.get('ttsModelId', ''),
             "ttsModelApiKey": core_cfg.get('ttsModelApiKey', ''),
+            "ttsVoiceId": core_cfg.get('ttsVoiceId', ''),
             "success": True
         }
     except Exception as e:
@@ -378,6 +379,8 @@ async def update_core_config(request: Request):
             core_cfg['ttsModelId'] = data['ttsModelId']
         if 'ttsModelApiKey' in data:
             core_cfg['ttsModelApiKey'] = data['ttsModelApiKey']
+        if 'ttsVoiceId' in data:
+            core_cfg['ttsVoiceId'] = data['ttsVoiceId']
         
         with open(core_config_path, 'w', encoding='utf-8') as f:
             json.dump(core_cfg, f, indent=2, ensure_ascii=False)

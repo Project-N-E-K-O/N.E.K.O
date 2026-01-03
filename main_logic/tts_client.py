@@ -12,7 +12,9 @@ import websockets
 import io
 import wave
 import aiohttp
+import asyncio
 from functools import partial
+from utils.config_manager import get_config_manager
 logger = logging.getLogger(__name__)
 
 
@@ -1014,10 +1016,20 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False):
     Returns:
         对应的 TTS worker 函数
     """
+
+    try:
+        cm = get_config_manager()
+        tts_config = cm.get_model_api_config('tts_custom')
+        # 只有当 is_custom=True（即 ENABLE_CUSTOM_API=true 且用户明确配置了自定义 TTS）时才使用本地 worker
+        if tts_config.get('is_custom'):
+            return local_cosyvoice_worker
+    except Exception as e:
+        logger.warning(f'TTS调度器检查报告:{e}')
+
     # 如果有自定义音色，使用 CosyVoice（仅阿里云支持）
     if has_custom_voice:
         return cosyvoice_vc_tts_worker
-    
+
     # 没有自定义音色时，使用与 core_api 匹配的默认 TTS
     if core_api_type == 'qwen':
         return qwen_realtime_tts_worker
@@ -1030,3 +1042,199 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False):
     else:
         logger.error(f"{core_api_type}不支持原生TTS，请使用自定义语音")
         return dummy_tts_worker
+
+
+def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_id):
+    """
+    本地 CosyVoice WebSocket Worker（OpenAI 兼容 bistream 版本）
+    适配 openai_server.py 定义的 /v1/audio/speech/stream 接口
+    
+    协议流程：
+    1. 连接后发送 config: {"voice": ..., "speed": ...}
+    2. 发送文本: {"text": ...}
+    3. 发送结束信号: {"event": "end"}
+    4. 接收 bytes 音频数据（16-bit PCM, 22050Hz）
+    
+    特性：
+    - 双工流：发送和接收独立运行，互不阻塞
+    - 打断支持：speech_id 变化时关闭旧连接，打断旧语音
+    - 非阻塞：异步架构，不会卡住主循环
+    
+    注意：audio_api_key 参数未使用（本地模式不需要 API Key），保留是为了与其他 worker 保持统一签名
+    """
+    _ = audio_api_key  # 本地模式不需要 API Key
+
+    cm = get_config_manager()
+    tts_config = cm.get_model_api_config('tts_custom')
+
+    ws_base = tts_config.get('base_url', '')
+    if (ws_base and not ws_base.startswith('ws://') and not ws_base.startswith('wss://')) or not ws_base:
+        if ws_base:
+            logger.error(f'本地cosyvoice URL协议无效: {ws_base}，需要 ws/wss 协议')
+        else:
+            logger.error('本地cosyvoice未配置url, 请在设置中填写正确的端口')
+        response_queue.put(("__ready__", True))
+        # 模仿 dummy_tts：持续清空队列但不生成音频
+        while True:
+            try:
+                sid, _ = request_queue.get()
+                if sid is None:
+                    continue
+            except Exception:
+                break
+        return
+    
+    # OpenAI 兼容端点
+    WS_URL = f'{ws_base}/v1/audio/speech/stream'
+    
+    # 从 voice_id 解析 voice 和 speed（格式：voice 或 voice:speed）
+    voice_name = voice_id or "中文女"
+    speech_speed = 1.0
+    if voice_id and ':' in voice_id:
+        parts = voice_id.split(':', 1)
+        voice_name = parts[0]
+        try:
+            speech_speed = float(parts[1])
+        except ValueError:
+            pass
+    
+    # 服务器返回的采样率（22050Hz）
+    SRC_RATE = 22050
+
+    async def async_worker():
+        ws = None
+        receive_task = None
+        current_speech_id = None
+        
+        resampler = soxr.ResampleStream(SRC_RATE, 48000, 1, dtype='float32')
+
+        async def receive_loop(ws_conn):
+            """独立接收任务，处理音频流"""
+            try:
+                async for message in ws_conn:
+                    if isinstance(message, bytes):
+                        # 服务器返回 16-bit PCM @ 22050Hz
+                        audio_array = np.frombuffer(message, dtype=np.int16)
+                        resampled_bytes = _resample_audio(audio_array, SRC_RATE, 48000, resampler)
+                        response_queue.put(resampled_bytes)
+            except websockets.exceptions.ConnectionClosed:
+                logger.debug("本地 WebSocket 连接已关闭")
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.error(f"接收循环异常: {e}")
+
+        async def send_end_signal(ws_conn):
+            """发送结束信号（文本已在主循环中实时发送，此处只需发送 end）"""
+            try:
+                await ws_conn.send(json.dumps({"event": "end"}))
+                logger.debug("发送结束信号")
+            except Exception as e:
+                logger.error(f"发送结束信号失败: {e}")
+
+        async def create_connection():
+            """创建新连接并发送配置"""
+            nonlocal ws, receive_task, resampler
+            
+            # 清理旧连接
+            if receive_task and not receive_task.done():
+                receive_task.cancel()
+                try:
+                    await receive_task
+                except asyncio.CancelledError:
+                    pass
+            if ws:
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+            
+            # 重置 resampler
+            resampler = soxr.ResampleStream(SRC_RATE, 48000, 1, dtype='float32')
+            
+            logger.info(f"🔄 [LocalTTS] 正在连接: {WS_URL}")
+            ws = await websockets.connect(WS_URL, ping_interval=None)
+            logger.info("✅ [LocalTTS] 连接成功")
+            
+            # 发送配置
+            config = {
+                "voice": voice_name,
+                "speed": speech_speed,
+            }
+            await ws.send(json.dumps(config))
+            logger.debug(f"发送配置: {config}")
+            
+            # 启动接收任务
+            receive_task = asyncio.create_task(receive_loop(ws))
+            return ws
+
+        # 初始连接
+        try:
+            await create_connection()
+            response_queue.put(("__ready__", True))
+        except Exception as e:
+            logger.error(f"❌ [LocalTTS] 初始连接失败: {e}")
+            logger.error("请确保服务器已运行且端口正确")
+            response_queue.put(("__ready__", False))
+            return
+
+        # 主循环
+        loop = asyncio.get_running_loop()
+        while True:
+            try:
+                sid, tts_text = await loop.run_in_executor(None, request_queue.get)
+            except Exception as e:
+                logger.error(f'队列获取异常: {e}')
+                break
+
+            # speech_id 变化 -> 打断旧语音，建立新连接
+            if sid != current_speech_id and sid is not None:
+                # 发送结束信号（文本已在实时流中发送过了）
+                if ws:
+                    await send_end_signal(ws)
+                
+                current_speech_id = sid
+                try:
+                    await create_connection()
+                except Exception as e:
+                    logger.error(f"重连失败: {e}")
+                    ws = None
+                    continue
+
+            if sid is None:
+                # 终止信号：发送结束信号
+                if ws:
+                    await send_end_signal(ws)
+                current_speech_id = None
+                continue
+
+            if not tts_text or not tts_text.strip():
+                continue
+            
+            # 同时发送（bistream 模式允许边发边收）
+            if ws:
+                try:
+                    await ws.send(json.dumps({"text": tts_text}))
+                    logger.debug(f"发送合成片段: {tts_text}")
+                except Exception as e:
+                    logger.error(f"发送失败: {e}")
+                    ws = None
+
+        # 清理
+        if receive_task and not receive_task.done():
+            receive_task.cancel()
+            try:
+                await receive_task
+            except asyncio.CancelledError:
+                pass
+        if ws:
+            try:
+                await ws.close()
+            except Exception:
+                pass
+
+    # 运行 Asyncio 循环
+    try:
+        asyncio.run(async_worker())
+    except Exception as e:
+        logger.error(f"Local CosyVoice Worker 崩溃: {e}")
