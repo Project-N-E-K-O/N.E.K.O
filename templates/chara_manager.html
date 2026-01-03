@@ -1364,6 +1364,7 @@
                             window.t ? window.t('character.verificationFailed') : '验证失败'
                         );
                         if (!continueSave) {
+                            form.dataset.submitting = 'false';
                             return;
                         }
                     }
@@ -1393,7 +1394,6 @@
                         }
                         
                         await showAlert(window.t ? window.t('character.saveFailedWithError', { error: errorMessage }) : '保存失败: ' + errorMessage);
-                        form.dataset.submitting = 'false';
                         return;
                     }
 
@@ -1401,7 +1401,6 @@
                     console.log('保存结果:', result);
 
                     if (result.success === false) {
-                        form.dataset.submitting = 'false';
                         await showAlert(result.error || (window.t ? window.t('character.saveFailed') : '保存失败'));
                         return;
                     }
@@ -1424,6 +1423,8 @@
                 } catch (error) {
                     console.error('保存出错:', error);
                     await showAlert(window.t ? window.t('character.saveError', { error: error.message }) : '保存时发生错误: ' + error.message);
+                } finally {
+                    form.dataset.submitting = 'false';
                 }
             };
             // 绑定"修改名称"按钮事件
