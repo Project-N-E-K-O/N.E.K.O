@@ -215,10 +215,8 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     // 应用位置和缩放设置
     this.applyModelSettings(model, options);
     
-    // 应用保存的模型参数（如果有）
-    if (options.preferences && options.preferences.parameters && model.internalModel && model.internalModel.coreModel) {
-        this.applyModelParameters(model, options.preferences.parameters);
-    }
+    // 注意：用户偏好参数的应用延迟到模型目录参数加载完成后，
+    // 以确保正确的优先级顺序（模型目录参数 > 用户偏好参数）
 
     // 添加到舞台
     this.pixi_app.stage.addChild(model);
@@ -322,13 +320,12 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         console.log('已启用参数叠加模式');
     }
     
-    // 如果之前应用了保存的参数（从用户偏好），在常驻表情设置后再次应用（防止被覆盖）
-    // 但模型目录的parameters.json优先级更高，所以这里只作为备用
+    // 在模型目录参数加载完成后，应用用户偏好参数（如果有）
+    // 此时所有异步操作（常驻表情、模型目录参数）都已完成，
+    // 可以安全地应用用户偏好参数而不需要使用 setTimeout 延迟
     if (options.preferences && options.preferences.parameters && model.internalModel && model.internalModel.coreModel) {
-        // 延迟一点确保常驻表情已经设置完成，并且模型目录参数已经加载
-        setTimeout(() => {
-            this.applyModelParameters(model, options.preferences.parameters);
-        }, 600); // 在模型目录参数之后应用
+        this.applyModelParameters(model, options.preferences.parameters);
+        console.log('已应用用户偏好参数');
     }
 
     // 调用回调函数
