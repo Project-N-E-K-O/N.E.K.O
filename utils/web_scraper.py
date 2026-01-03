@@ -155,7 +155,7 @@ async def fetch_bilibili_trending(limit: int = 10) -> Dict[str, Any]:
         # 添加随机延迟，避免请求过快
         await asyncio.sleep(random.uniform(0.1, 0.5))
         
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
             response = await client.get(url, params=params, headers=headers)
             response.raise_for_status()
             data = response.json()
@@ -198,136 +198,97 @@ async def fetch_bilibili_trending(limit: int = 10) -> Dict[str, Any]:
         }
 
 
-async def fetch_youtube_trending(limit: int = 10) -> Dict[str, Any]:
+
+
+async def fetch_reddit_popular(limit: int = 10) -> Dict[str, Any]:
     """
-    获取YouTube热门视频
-    使用YouTube的热门页面获取流行视频
+    获取Reddit热门帖子
+    使用Reddit的JSON API获取r/popular的热门帖子
     
     Args:
-        limit: 返回视频的最大数量
+        limit: 返回帖子的最大数量
     
     Returns:
-        包含成功状态和视频列表的字典
+        包含成功状态和帖子列表的字典
     """
     try:
-        # YouTube热门页面URL
-        url = "https://www.youtube.com/feed/trending"
+        # Reddit的JSON API端点
+        url = f"https://www.reddit.com/r/popular/hot.json?limit={limit}"
         
         headers = {
             'User-Agent': get_random_user_agent(),
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'DNT': '1',
+            'Accept': 'application/json',
         }
         
-        # 添加随机延迟以避免被检测
         await asyncio.sleep(random.uniform(0.1, 0.5))
         
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
             response = await client.get(url, headers=headers)
             response.raise_for_status()
-            html_content = response.text
+            data = response.json()
             
-            # 解析YouTube热门页面
-            videos = []
+            posts = []
+            children = data.get('data', {}).get('children', [])
             
-            # 使用正则表达式从页面提取视频信息
-            # 从页面的JSON数据中查找视频标题和元数据
-            title_pattern = r'"title":\{"runs":\[\{"text":"([^"]+)"\}\]'
-            channel_pattern = r'"ownerText":\{"runs":\[\{"text":"([^"]+)"'
-            view_pattern = r'"viewCountText":\{"simpleText":"([^"]+)"'
-            video_id_pattern = r'"videoId":"([a-zA-Z0-9_-]{11})"'
-            
-            titles = re.findall(title_pattern, html_content)
-            channels = re.findall(channel_pattern, html_content)
-            views = re.findall(view_pattern, html_content)
-            video_ids = re.findall(video_id_pattern, html_content)
-            
-            # 去重同时保持顺序，记录每个video_id首次出现的原始索引
-            seen_ids = set()
-            unique_videos = []  # 存储 (video_id, original_index) 元组
-            for original_idx, vid in enumerate(video_ids):
-                if vid not in seen_ids:
-                    seen_ids.add(vid)
-                    unique_videos.append((vid, original_idx))
-            
-            for vid, orig_idx in unique_videos[:limit]:
-                video = {
-                    'title': titles[orig_idx] if orig_idx < len(titles) else 'Unknown Title',
-                    'channel': channels[orig_idx] if orig_idx < len(channels) else 'Unknown Channel',
-                    'views': views[orig_idx] if orig_idx < len(views) else 'N/A',
-                    'video_id': vid,
-                    'url': f'https://www.youtube.com/watch?v={vid}'
-                }
-                videos.append(video)
-            
-            if videos:
-                return {
-                    'success': True,
-                    'videos': videos
-                }
-            else:
-                # 回退：尝试从HTML中提取基本信息
-                return await _fetch_youtube_trending_fallback(limit)
+            for item in children[:limit]:
+                post_data = item.get('data', {})
                 
-    except httpx.TimeoutException:
-        logger.exception("获取YouTube热门超时")
-        return {
-            'success': False,
-            'error': '请求超时'
-        }
-    except Exception as e:
-        logger.exception(f"获取YouTube热门失败: {e}")
-        return await _fetch_youtube_trending_fallback(limit)
-
-
-async def _fetch_youtube_trending_fallback(limit: int = 10) -> Dict[str, Any]:
-    """
-    YouTube热门的回退方案，使用更简单的方法
-    """
-    try:
-        # 使用YouTube的热门页面作为回退
-        url = "https://www.youtube.com/feed/trending"
-        
-        headers = {
-            'User-Agent': get_random_user_agent(),
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-        }
-        
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            
-            # 尝试从HTML中提取视频标题
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            videos = []
-            # 在页面中查找视频标题
-            title_elements = soup.find_all('title')
-            if title_elements:
-                videos.append({
-                    'title': 'YouTube Trending',
-                    'channel': 'Various Creators',
-                    'views': 'N/A',
-                    'video_id': '',
-                    'url': 'https://www.youtube.com/feed/trending'
+                # 跳过NSFW内容
+                if post_data.get('over_18'):
+                    continue
+                
+                subreddit = post_data.get('subreddit', '')
+                title = post_data.get('title', '')
+                score = post_data.get('score', 0)
+                num_comments = post_data.get('num_comments', 0)
+                permalink = post_data.get('permalink', '')
+                
+                posts.append({
+                    'title': title,
+                    'subreddit': f"r/{subreddit}",
+                    'score': _format_score(score),
+                    'comments': _format_score(num_comments),
+                    'url': f"https://www.reddit.com{permalink}" if permalink else ''
                 })
             
-            return {
-                'success': len(videos) > 0,
-                'videos': videos if videos else [],
-                'error': '可用的热门数据有限' if not videos else None
-            }
-            
-    except Exception as e:
-        logger.exception(f"YouTube回退方案失败: {e}")
+            if posts:
+                logger.info(f"从Reddit获取到{len(posts)}条热门帖子")
+                return {
+                    'success': True,
+                    'posts': posts
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': 'Reddit返回空数据',
+                    'posts': []
+                }
+                
+    except httpx.TimeoutException:
+        logger.exception("获取Reddit热门超时")
         return {
             'success': False,
-            'error': str(e)
+            'error': '请求超时',
+            'posts': []
         }
+    except Exception as e:
+        logger.exception(f"获取Reddit热门失败: {e}")
+        return {
+            'success': False,
+            'error': str(e),
+            'posts': []
+        }
+
+
+def _format_score(count: int) -> str:
+    """格式化Reddit分数/评论数"""
+    if count >= 1_000_000:
+        return f"{count / 1_000_000:.1f}M"
+    elif count >= 1_000:
+        return f"{count / 1_000:.1f}K"
+    elif count > 0:
+        return str(count)
+    return "0"
 
 
 async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
@@ -356,7 +317,7 @@ async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
         # 添加随机延迟
         await asyncio.sleep(random.uniform(0.1, 0.5))
         
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
             response = await client.get(url, headers=headers)
             response.raise_for_status()
             
@@ -440,7 +401,7 @@ async def _fetch_weibo_trending_fallback(limit: int = 10) -> Dict[str, Any]:
         
         await asyncio.sleep(random.uniform(0.1, 0.5))
         
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
             response = await client.get(url, headers=headers)
             response.raise_for_status()
             data = response.json()
@@ -511,7 +472,7 @@ async def fetch_twitter_trending(limit: int = 10) -> Dict[str, Any]:
         
         await asyncio.sleep(random.uniform(0.1, 0.5))
         
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
             response = await client.get(url, headers=headers)
             response.raise_for_status()
             html_content = response.text
@@ -616,7 +577,7 @@ async def _fetch_twitter_trending_fallback(limit: int = 10) -> Dict[str, Any]:
         try:
             await asyncio.sleep(random.uniform(0.1, 0.3))
             
-            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
                 response = await client.get(source['url'], headers=headers)
                 
                 if response.status_code == 200:
@@ -644,23 +605,23 @@ async def _fetch_twitter_trending_fallback(limit: int = 10) -> Dict[str, Any]:
 
 
 async def fetch_trending_content(bilibili_limit: int = 10, weibo_limit: int = 10, 
-                                  youtube_limit: int = 10, twitter_limit: int = 10) -> Dict[str, Any]:
+                                  reddit_limit: int = 10, twitter_limit: int = 10) -> Dict[str, Any]:
     """
     根据用户区域获取热门内容
     
     中文区域：获取B站视频和微博热议话题
-    非中文区域：获取YouTube视频和Twitter热门话题
+    非中文区域：获取Reddit热门帖子和Twitter热门话题
     
     Args:
         bilibili_limit: B站视频最大数量（中文区域）
         weibo_limit: 微博话题最大数量（中文区域）
-        youtube_limit: YouTube视频最大数量（非中文区域）
+        reddit_limit: Reddit帖子最大数量（非中文区域）
         twitter_limit: Twitter话题最大数量（非中文区域）
     
     Returns:
         包含成功状态和热门内容的字典
         中文区域：'bilibili' 和 'weibo' 键
-        非中文区域：'youtube' 和 'twitter' 键
+        非中文区域：'reddit' 和 'twitter' 键
     """
     try:
         # 检测用户区域
@@ -705,41 +666,41 @@ async def fetch_trending_content(bilibili_limit: int = 10, weibo_limit: int = 10
                 'weibo': weibo_result
             }
         else:
-            # 非中文区域：使用YouTube和Twitter
-            logger.info("检测到非中文区域，获取YouTube和Twitter热门内容")
+            # 非中文区域：使用Reddit和Twitter
+            logger.info("检测到非中文区域，获取Reddit和Twitter热门内容")
             
-            youtube_task = fetch_youtube_trending(youtube_limit)
+            reddit_task = fetch_reddit_popular(reddit_limit)
             twitter_task = fetch_twitter_trending(twitter_limit)
             
-            youtube_result, twitter_result = await asyncio.gather(
-                youtube_task,
+            reddit_result, twitter_result = await asyncio.gather(
+                reddit_task,
                 twitter_task,
                 return_exceptions=True
             )
             
             # 处理异常
-            if isinstance(youtube_result, Exception):
-                logger.error(f"YouTube爬取异常: {youtube_result}")
-                youtube_result = {'success': False, 'error': str(youtube_result)}
+            if isinstance(reddit_result, Exception):
+                logger.error(f"Reddit爬取异常: {reddit_result}")
+                reddit_result = {'success': False, 'error': str(reddit_result)}
             
             if isinstance(twitter_result, Exception):
                 logger.error(f"Twitter爬取异常: {twitter_result}")
                 twitter_result = {'success': False, 'error': str(twitter_result)}
             
             # 检查是否至少有一个成功
-            if not youtube_result.get('success') and not twitter_result.get('success'):
+            if not reddit_result.get('success') and not twitter_result.get('success'):
                 return {
                     'success': False,
                     'error': '无法获取任何热门内容',
                     'region': 'non-china',
-                    'youtube': youtube_result,
+                    'reddit': reddit_result,
                     'twitter': twitter_result
                 }
             
             return {
                 'success': True,
                 'region': 'non-china',
-                'youtube': youtube_result,
+                'reddit': reddit_result,
                 'twitter': twitter_result
             }
         
@@ -757,7 +718,7 @@ def format_trending_content(trending_content: Dict[str, Any]) -> str:
     
     根据区域自动格式化：
     - 中文区域：B站和微博内容，中文显示
-    - 非中文区域：YouTube和Twitter内容，英文显示
+    - 非中文区域：Reddit和Twitter内容，英文显示
     
     Args:
         trending_content: fetch_trending_content返回的结果
@@ -802,22 +763,20 @@ def format_trending_content(trending_content: Dict[str, Any]) -> str:
         if not output_lines:
             return "暂时无法获取推荐内容"
     else:
-        # 格式化YouTube内容（英文）
-        youtube_data = trending_content.get('youtube', {})
-        if youtube_data.get('success'):
-            output_lines.append("【YouTube Trending Videos】")
-            videos = youtube_data.get('videos', [])
+        # 格式化Reddit内容（英文）
+        reddit_data = trending_content.get('reddit', {})
+        if reddit_data.get('success'):
+            output_lines.append("【Reddit Hot Posts】")
+            posts = reddit_data.get('posts', [])
             
-            for i, video in enumerate(videos[:5], 1):  # 只显示前5个
-                title = video.get('title', '')
-                channel = video.get('channel', '')
-                views = video.get('views', '')
+            for i, post in enumerate(posts[:5], 1):  # 只显示前5个
+                title = post.get('title', '')
+                subreddit = post.get('subreddit', '')
+                score = post.get('score', '')
                 
                 output_lines.append(f"{i}. {title}")
-                if channel:
-                    output_lines.append(f"   Channel: {channel}")
-                if views and views != 'N/A':
-                    output_lines.append(f"   Views: {views}")
+                if subreddit:
+                    output_lines.append(f"   {subreddit} | {score} upvotes")
             
             output_lines.append("")  # 空行
         
@@ -920,7 +879,7 @@ async def generate_diverse_queries(window_title: str) -> List[str]:
             model=correction_config['model'],
             base_url=correction_config['base_url'],
             api_key=correction_config['api_key'],
-            temperature=0.8,  # 提高temperature以获得更多样化的结果
+            temperature=1.0,  # 提高temperature以获得更多样化的结果
             timeout=10.0
         )
         
@@ -1092,7 +1051,7 @@ async def search_google(query: str, limit: int = 5) -> Dict[str, Any]:
         # 添加随机延迟
         await asyncio.sleep(random.uniform(0.2, 0.5))
         
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
             response = await client.get(url, headers=headers)
             response.raise_for_status()
             html_content = response.text
@@ -1246,7 +1205,7 @@ async def search_baidu(query: str, limit: int = 5) -> Dict[str, Any]:
         # 添加随机延迟
         await asyncio.sleep(random.uniform(0.2, 0.5))
         
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
             response = await client.get(url, headers=headers)
             response.raise_for_status()
             html_content = response.text

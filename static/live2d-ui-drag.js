@@ -1,7 +1,79 @@
 /**
  * Live2D UI Drag - 拖拽和弹出框管理
- * 包含弹出框管理、容器拖拽、显示弹出框、折叠功能
+ * 包含弹出框管理、容器拖拽、显示弹出框、折叠功能、按钮事件传播管理
  */
+
+// ===== 拖拽辅助工具 - 按钮事件传播管理 =====
+(function() {
+    'use strict';
+
+    /**
+     * 禁用按钮的 pointer-events
+     * 在拖动开始时调用，防止按钮拦截拖动事件
+     */
+    function disableButtonPointerEvents() {
+        // 收集所有按钮元素（包括浮动按钮和三角触发按钮）
+        const buttons = document.querySelectorAll('.live2d-floating-btn, .live2d-trigger-btn, [id^="live2d-btn-"]');
+        buttons.forEach(btn => {
+            if (btn) {
+                // 如果已经保存过，说明正在拖拽中，跳过
+                if (btn.hasAttribute('data-prev-pointer-events')) {
+                    return;
+                }
+                // 保存当前的pointerEvents值
+                const currentValue = btn.style.pointerEvents || '';
+                btn.setAttribute('data-prev-pointer-events', currentValue);
+                btn.style.pointerEvents = 'none';
+            }
+        });
+        
+        // 收集并处理所有按钮包装器元素（包括三角按钮的包装器）
+        const wrappers = new Set();
+        buttons.forEach(btn => {
+            if (btn && btn.parentElement) {
+                // 排除返回按钮和其容器，避免破坏其拖拽行为
+                if (btn.id === 'live2d-btn-return' || 
+                    (btn.parentElement && btn.parentElement.id === 'live2d-return-button-container')) {
+                    return;
+                }
+                wrappers.add(btn.parentElement);
+            }
+        });
+        
+        wrappers.forEach(wrapper => {
+            const currentValue = wrapper.style.pointerEvents || '';
+            wrapper.setAttribute('data-prev-pointer-events', currentValue);
+            wrapper.style.pointerEvents = 'none';
+        });
+    }
+
+    /**
+     * 恢复按钮的 pointer-events
+     * 在拖动结束时调用，恢复按钮的正常点击功能
+     */
+    function restoreButtonPointerEvents() {
+        const elementsToRestore = document.querySelectorAll('[data-prev-pointer-events]');
+        elementsToRestore.forEach(element => {
+            if (element) {
+                const prevValue = element.getAttribute('data-prev-pointer-events');
+                if (prevValue === '') {
+                    element.style.pointerEvents = '';
+                } else {
+                    element.style.pointerEvents = prevValue;
+                }
+                element.removeAttribute('data-prev-pointer-events');
+            }
+        });
+    }
+
+    // 挂载到全局 window 对象，供其他脚本使用
+    window.DragHelpers = {
+        disableButtonPointerEvents: disableButtonPointerEvents,
+        restoreButtonPointerEvents: restoreButtonPointerEvents
+    };
+})();
+
+// ===== 弹出框管理 =====
 
 // 关闭指定按钮对应的弹出框，并恢复按钮状态
 Live2DManager.prototype.closePopupById = function (buttonId) {

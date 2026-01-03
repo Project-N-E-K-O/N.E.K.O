@@ -324,6 +324,13 @@ class Live2DManager {
             container.style.pointerEvents = locked ? 'none' : 'auto';
         }
 
+        if (!locked) {
+            const live2dContainer = document.getElementById('live2d-container');
+            if (live2dContainer) {
+                live2dContainer.classList.remove('locked-hover-fade');
+            }
+        }
+
         // 4. 控制浮动按钮显示（可选）
         if (updateFloatingButtons) {
             const floatingButtons = document.getElementById('live2d-floating-buttons');
