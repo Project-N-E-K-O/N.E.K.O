@@ -81,6 +81,11 @@ export default function ChatContainer() {
       video.srcObject = stream;
       await video.play();
 
+      // 确保视频尺寸有效
+      if (video.videoWidth === 0 || video.videoHeight === 0) {
+        throw new Error("Invalid video dimensions");
+      }
+
       let canvas = document.createElement("canvas");
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;

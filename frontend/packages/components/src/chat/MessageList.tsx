@@ -19,6 +19,11 @@ function ImageWithFallback({
 }) {
   const [hasError, setHasError] = React.useState(false);
 
+  // 当 src 变化时重置错误状态
+  React.useEffect(() => {
+    setHasError(false);
+  }, [src]);
+
   if (hasError) {
     return (
       <span style={{ opacity: 0.6 }}>
