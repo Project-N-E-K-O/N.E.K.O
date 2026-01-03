@@ -20,33 +20,33 @@ async function initLive2DModel() {
     if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
         await window.pageConfigReady;
     }
-    
+
     // 获取模型路径
     const targetModelPath = (typeof cubism4Model !== 'undefined' ? cubism4Model : (window.cubism4Model || ''));
-    
+
     if (!targetModelPath) {
         console.log('未设置模型路径，跳过Live2D初始化');
         return;
     }
-    
+
     try {
         console.log('开始初始化Live2D模型，路径:', targetModelPath);
-        
+
         // 初始化 PIXI 应用
         await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
-        
+
         // 加载用户偏好
         const preferences = await window.live2dManager.loadUserPreferences();
         console.log('加载到的偏好设置数量:', preferences.length);
-        
+
         // 根据模型路径找到对应的偏好设置（使用多种匹配方式）
         let modelPreferences = null;
         if (preferences && preferences.length > 0) {
             console.log('所有偏好设置的路径:', preferences.map(p => p?.model_path).filter(Boolean));
-            
+
             // 首先尝试精确匹配
             modelPreferences = preferences.find(p => p && p.model_path === targetModelPath);
-            
+
             // 如果精确匹配失败，尝试文件名匹配
             if (!modelPreferences) {
                 const targetFileName = targetModelPath.split('/').pop() || '';
@@ -61,7 +61,7 @@ async function initLive2DModel() {
                     return false;
                 });
             }
-            
+
             // 如果还是没找到，尝试部分匹配（通过模型名称）
             if (!modelPreferences) {
                 const targetPathParts = targetModelPath.split('/').filter(p => p);
@@ -78,7 +78,7 @@ async function initLive2DModel() {
                     });
                 }
             }
-            
+
             // 如果还是没找到，尝试部分路径匹配
             if (!modelPreferences) {
                 console.log('尝试部分路径匹配...');
@@ -95,13 +95,13 @@ async function initLive2DModel() {
                     return false;
                 });
             }
-            
+
             if (modelPreferences && modelPreferences.parameters) {
                 console.log('找到模型偏好设置，参数数量:', Object.keys(modelPreferences.parameters).length);
             }
-            
+
             // 检查是否有保存的显示器信息（多屏幕位置恢复）
-            if (modelPreferences && modelPreferences.display && 
+            if (modelPreferences && modelPreferences.display &&
                 window.electronScreen && window.electronScreen.moveWindowToDisplay) {
                 const savedDisplay = modelPreferences.display;
                 if (Number.isFinite(savedDisplay.screenX) && Number.isFinite(savedDisplay.screenY)) {
@@ -124,13 +124,13 @@ async function initLive2DModel() {
                 }
             }
         }
-        
+
         // 加载模型
         await window.live2dManager.loadModel(targetModelPath, {
             preferences: modelPreferences,
             isMobile: window.innerWidth <= 768
         });
-        
+
         // 确保参数在常驻表情设置后再次应用（防止被覆盖）
         if (modelPreferences && modelPreferences.parameters) {
             const model = window.live2dManager.getCurrentModel();
@@ -146,6 +146,9 @@ async function initLive2DModel() {
         window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
         window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
         window.LanLan1.emotionMapping = window.live2dManager.getEmotionMapping();
+
+        // 设置页面卸载时的自动清理（确保资源正确释放）
+        window.live2dManager.setupUnloadCleanup();
 
         console.log('✓ Live2D 管理器自动初始化完成');
     } catch (error) {
