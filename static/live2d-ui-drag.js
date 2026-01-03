@@ -31,8 +31,9 @@
         const wrappers = new Set();
         buttons.forEach(btn => {
             if (btn && btn.parentElement) {
-                // 排除返回按钮和 returnButtonContainer，避免破坏其拖拽行为
-                if (btn.id === 'live2d-btn-return' || btn.parentElement.id === 'returnButtonContainer') {
+                // 排除返回按钮和其容器，避免破坏其拖拽行为
+                if (btn.id === 'live2d-btn-return' || 
+                    (btn.parentElement && btn.parentElement.id === 'live2d-return-button-container')) {
                     return;
                 }
                 wrappers.add(btn.parentElement);
