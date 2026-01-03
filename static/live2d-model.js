@@ -2,8 +2,7 @@
  * Live2D Model - 模型加载、口型同步相关功能
  */
 
-// 口型同步参数列表常量
-const LIPSYNC_PARAMS = ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
+import { LIPSYNC_PARAMS } from './live2d-constants.js';
 
 // 加载模型
 Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
