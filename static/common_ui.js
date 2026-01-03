@@ -181,7 +181,7 @@ if (toggleBtn) {
         chatContainer.style.cursor = 'grabbing';
         if (chatHeader) chatHeader.style.cursor = 'grabbing';
         
-        // 开始拖动时，临时禁用按钮的事件拦截（使用共享工具模块）
+        // 开始拖动时，临时禁用按钮的事件拦截（使用 live2d-ui-drag.js 中的共享工具函数）
         if (window.DragHelpers) {
             window.DragHelpers.enableButtonEventPropagation();
         }
@@ -236,7 +236,7 @@ if (toggleBtn) {
             chatContainer.style.cursor = '';
             if (chatHeader) chatHeader.style.cursor = '';
             
-            // 拖拽结束后恢复按钮的事件拦截（使用共享工具模块）
+            // 拖拽结束后恢复按钮的事件拦截（使用 live2d-ui-drag.js 中的共享工具函数）
             if (window.DragHelpers) {
                 window.DragHelpers.disableButtonEventPropagation();
             }

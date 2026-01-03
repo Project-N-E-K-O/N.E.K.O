@@ -242,7 +242,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     let isDragging = false;
     let dragStartPos = new PIXI.Point();
 
-    // 使用共享工具模块中的按钮事件传播管理函数
+    // 使用 live2d-ui-drag.js 中的共享工具函数（按钮事件传播管理）
     const enableButtonEventPropagation = () => {
         if (window.DragHelpers) {
             window.DragHelpers.enableButtonEventPropagation();
