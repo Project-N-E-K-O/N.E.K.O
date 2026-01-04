@@ -3024,7 +3024,7 @@ function init_app() {
         if (window.live2dManager) {
             window.live2dManager._goodbyeClicked = true;
         }
-        // 【新增】为VRM管理器也设置标志位
+        // 为VRM管理器也设置标志位
         if (window.vrmManager) {
             window.vrmManager._goodbyeClicked = true;
         }
@@ -3039,7 +3039,7 @@ function init_app() {
             popup.style.setProperty('opacity', '0', 'important');
             popup.style.setProperty('pointer-events', 'none', 'important');
         });
-        // 【新增】关闭VRM的弹窗
+        // 关闭VRM的弹窗
         const allVrmPopups = document.querySelectorAll('[id^="vrm-popup-"]');
         allVrmPopups.forEach(popup => {
             popup.style.setProperty('display', 'none', 'important');
@@ -3056,11 +3056,11 @@ function init_app() {
         }
         console.log('[App] 已关闭所有弹窗，Live2D数量:', allLive2dPopups.length, 'VRM数量:', allVrmPopups.length);
 
-        // 【改进】使用统一的状态管理方法重置所有浮动按钮
+        // 使用统一的状态管理方法重置所有浮动按钮
         if (window.live2dManager && typeof window.live2dManager.resetAllButtons === 'function') {
             window.live2dManager.resetAllButtons();
         }
-        // 【新增】重置VRM的浮动按钮状态
+        // 重置VRM的浮动按钮状态
         if (window.vrmManager && window.vrmManager._floatingButtons) {
             Object.keys(window.vrmManager._floatingButtons).forEach(btnId => {
                 const btnData = window.vrmManager._floatingButtons[btnId];
@@ -3078,7 +3078,7 @@ function init_app() {
         if (window.live2dManager && typeof window.live2dManager.setLocked === 'function') {
             window.live2dManager.setLocked(true, { updateFloatingButtons: false });
         }
-        // 【新增】设置VRM的锁定状态
+        // 设置VRM的锁定状态
         if (window.vrmManager && window.vrmManager.core && typeof window.vrmManager.core.setLocked === 'function') {
             window.vrmManager.core.setLocked(true);
         }

@@ -964,4 +964,3 @@ def open_model_directory(model_name: str):
     except Exception as e:
         logger.error(f"打开模型目录失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
-

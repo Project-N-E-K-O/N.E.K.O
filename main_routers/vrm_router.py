@@ -19,11 +19,11 @@ from .shared_state import get_config_manager
 router = APIRouter(prefix="/api/model/vrm", tags=["vrm"])
 logger = logging.getLogger("Main")
 
-# VRM 模型路径常量（与 main_server.py 中的挂载点保持一致）
-VRM_USER_PATH = "/user_vrm"  # 用户文档目录下的 VRM 模型路径
-VRM_STATIC_PATH = "/static/vrm"# 项目静态目录基准路径
-VRM_STATIC_ANIMATION_PATH = "/static/vrm/animation"  # 项目目录下的 VRM 动画路径（与前端代码保持一致）
-VRM_MODELS_ANIMATION_PATH = "/models/vrm/animations"  # 项目目录下的 VRM 动画路径
+# VRM 模型路径常量
+VRM_USER_PATH = "/user_vrm"  
+VRM_STATIC_PATH = "/static/vrm"
+VRM_STATIC_ANIMATION_PATH = "/static/vrm/animation" 
+VRM_MODELS_ANIMATION_PATH = "/models/vrm/animations"  
 
 
 @router.post('/upload')
@@ -94,10 +94,10 @@ def get_vrm_models():
                     "name": vrm_file.stem,
                     "filename": vrm_file.name,
                     "path": str(vrm_file),
-                    "url": f"/static/vrm/{vrm_file.name}",  # 项目目录下的VRM文件
+                    "url": f"/static/vrm/{vrm_file.name}", 
                     "type": "vrm",
                     "size": vrm_file.stat().st_size if vrm_file.exists() else 0,
-                    "location": "project"  # 标记来源
+                    "location": "project"  
                 })
 
         # 2. 搜索用户目录下的VRM文件 (user_vrm/)
@@ -108,10 +108,10 @@ def get_vrm_models():
                     "name": vrm_file.stem,
                     "filename": vrm_file.name,
                     "path": str(vrm_file),
-                    "url": f"{VRM_USER_PATH}/{vrm_file.name}",  # 用户目录下的VRM文件
+                    "url": f"{VRM_USER_PATH}/{vrm_file.name}",  
                     "type": "vrm",
                     "size": vrm_file.stat().st_size if vrm_file.exists() else 0,
-                    "location": "user"  # 标记来源
+                    "location": "user"  
                 })
 
         return JSONResponse(content={
@@ -156,13 +156,10 @@ def get_vrm_animations():
                     # static/vrm/animation 目录 -> /static/vrm/animation/
                     url_prefix = "/static/vrm/animation"
                 elif anim_dir == models_animations_dir:
-                    # models/vrm/animations 目录 -> /models/vrm/animations/
                     url_prefix = VRM_MODELS_ANIMATION_PATH
                 elif anim_dir == config_mgr.vrm_animation_dir:
-                    # 用户目录下的vrm/animation -> /user_vrm/animation/
                     url_prefix = "/user_vrm/animation"
                 else:
-                    # 其他目录默认使用 /user_vrm/animation/
                     url_prefix = "/user_vrm/animation"
 
                 # 查找.vrma文件

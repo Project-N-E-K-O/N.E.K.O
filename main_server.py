@@ -378,8 +378,6 @@ if _IS_MAIN_PROCESS:
     # 挂载项目目录下的static/vrm（作为备用，如果文件在项目目录中）
     project_vrm_path = os.path.join(static_dir, 'vrm')
     if os.path.exists(project_vrm_path) and os.path.isdir(project_vrm_path):
-        # 注意：由于 /static 已经挂载，文件可以通过 /static/vrm/ 访问
-        # 但为了兼容性，我们也检查这个路径是否存在
         logger.info(f"项目VRM目录存在: {project_vrm_path} (可通过 /static/vrm/ 访问)")
     
     # 挂载VRM动画目录（static/vrm/animation）

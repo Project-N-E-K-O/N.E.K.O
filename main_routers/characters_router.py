@@ -280,7 +280,6 @@ async def update_catgirl_l2d(name: str, request: Request):
         logger.debug(f"vrm_model: {vrm_model}, live2d_model: {live2d_model}")
         
         # 根据model_type检查相应的模型字段
-        # 确保model_type是字符串并转换为小写进行比较
         model_type_str = str(model_type).lower() if model_type else 'live2d'
         if model_type_str == 'vrm':
             if not vrm_model:
