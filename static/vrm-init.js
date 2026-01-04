@@ -121,24 +121,57 @@ async function initVRMModel() {
     }
 
     try {
-        // UI 切换逻辑 - 智能视觉切换
+        // 【关键修复】UI 切换逻辑 - 智能视觉切换
         const vrmContainer = document.getElementById('vrm-container');
         if (vrmContainer) vrmContainer.style.display = 'block';
 
-        // 【关键修复】删除Live2D的浮动按钮和锁图标，而不是只隐藏
+        // 隐藏Live2D容器
+        const live2dContainer = document.getElementById('live2d-container');
+        if (live2dContainer) live2dContainer.style.display = 'none';
+
+        // 清理Live2D的浮动按钮和锁图标
         const live2dFloatingButtons = document.getElementById('live2d-floating-buttons');
         if (live2dFloatingButtons) {
             live2dFloatingButtons.remove();
+            console.log('[VRM Init] 已清理Live2D浮动按钮');
         }
 
         const live2dLockIcon = document.getElementById('live2d-lock-icon');
         if (live2dLockIcon) {
             live2dLockIcon.remove();
+            console.log('[VRM Init] 已清理Live2D锁图标');
         }
 
         const live2dReturnBtn = document.getElementById('live2d-return-button-container');
         if (live2dReturnBtn) {
             live2dReturnBtn.remove();
+            console.log('[VRM Init] 已清理Live2D回来按钮');
+        }
+
+        // 清理Live2D管理器和PIXI应用
+        if (window.live2dManager) {
+            try {
+                // 清理当前模型
+                if (window.live2dManager.currentModel) {
+                    if (typeof window.live2dManager.currentModel.destroy === 'function') {
+                        window.live2dManager.currentModel.destroy();
+                    }
+                    window.live2dManager.currentModel = null;
+                    console.log('[VRM Init] 已清理Live2D模型');
+                }
+                // 清理PIXI应用
+                if (window.live2dManager.pixi_app) {
+                    // 停止渲染循环
+                    window.live2dManager.pixi_app.ticker.stop();
+                    // 清理舞台
+                    if (window.live2dManager.pixi_app.stage) {
+                        window.live2dManager.pixi_app.stage.removeChildren();
+                    }
+                    console.log('[VRM Init] 已清理PIXI应用');
+                }
+            } catch (cleanupError) {
+                console.warn('[VRM Init] Live2D清理时出现警告:', cleanupError);
+            }
         }
 
         // 初始化 Three.js 场景

@@ -693,7 +693,10 @@ class VRMCore {
             this.manager.camera.position.set(0, cameraY, cameraZ);
             this.manager.camera.lookAt(0, center.y, 0);
             
-            // 添加到场景
+            // 添加到场景 - 确保场景已初始化
+            if (!this.manager.scene) {
+                throw new Error('场景未初始化。请先调用 initThreeJS() 初始化场景。');
+            }
             
             this.manager.scene.add(vrm.scene);
 

@@ -1,8 +1,18 @@
 /**
  * Live2D Model - 模型加载、口型同步相关功能
  */
-
-import { LIPSYNC_PARAMS } from './live2d-constants.js';
+// 口型同步参数列表常量
+// 这些参数用于控制模型的嘴部动作，在处理表情和常驻表情时需要跳过，以避免覆盖实时的口型同步
+const LIPSYNC_PARAMS = [
+    'ParamMouthOpenY',
+    'ParamMouthForm',
+    'ParamMouthOpen',
+    'ParamA',
+    'ParamI',
+    'ParamU',
+    'ParamE',
+    'ParamO'
+];
 
 // 加载模型
 Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {

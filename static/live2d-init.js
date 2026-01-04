@@ -88,6 +88,57 @@ async function initLive2DModel() {
     try {
         console.log('开始初始化Live2D模型，路径:', targetModelPath);
 
+        // 【关键修复】在初始化Live2D前，清理VRM相关资源
+        // UI 切换逻辑 - 智能视觉切换
+        const vrmContainer = document.getElementById('vrm-container');
+        if (vrmContainer) vrmContainer.style.display = 'none';
+
+        // 清理VRM的浮动按钮
+        const vrmFloatingButtons = document.getElementById('vrm-floating-buttons');
+        if (vrmFloatingButtons) {
+            vrmFloatingButtons.remove();
+            console.log('[Live2D Init] 已清理VRM浮动按钮');
+        }
+
+        const vrmReturnBtn = document.getElementById('vrm-return-button-container');
+        if (vrmReturnBtn) {
+            vrmReturnBtn.remove();
+            console.log('[Live2D Init] 已清理VRM回来按钮');
+        }
+
+        // 清理VRM管理器和Three.js场景
+        if (window.vrmManager) {
+            try {
+                // 如果VRM管理器有清理方法，调用它
+                if (typeof window.vrmManager.dispose === 'function') {
+                    window.vrmManager.dispose();
+                    console.log('[Live2D Init] 已清理VRM管理器');
+                }
+                // 清理Three.js渲染器
+                if (window.vrmManager.renderer) {
+                    window.vrmManager.renderer.dispose();
+                    window.vrmManager.renderer = null;
+                    console.log('[Live2D Init] 已清理Three.js渲染器');
+                }
+                // 清理场景
+                if (window.vrmManager.scene) {
+                    window.vrmManager.scene.clear();
+                    window.vrmManager.scene = null;
+                    console.log('[Live2D Init] 已清理Three.js场景');
+                }
+                // 重置当前模型引用
+                window.vrmManager.currentModel = null;
+                // 重置VRM初始化标志
+                window._isVRMInitializing = false;
+            } catch (cleanupError) {
+                console.warn('[Live2D Init] VRM清理时出现警告:', cleanupError);
+            }
+        }
+
+        // 确保Live2D容器可见
+        const live2dContainer = document.getElementById('live2d-container');
+        if (live2dContainer) live2dContainer.style.display = 'block';
+
         // 初始化 PIXI 应用
         await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
         let modelPreferences = null;

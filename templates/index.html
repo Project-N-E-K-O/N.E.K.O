@@ -1820,6 +1820,23 @@
                         console.log('[主页] VRM容器已显示');
                     }
 
+                    // 清理 Live2D 的 UI 元素（锁图标、浮动按钮等）
+                    const live2dLockIcon = document.getElementById('live2d-lock-icon');
+                    if (live2dLockIcon) {
+                        live2dLockIcon.remove();
+                        console.log('[主页] 已清理 Live2D 锁图标');
+                    }
+                    const live2dFloatingButtons = document.getElementById('live2d-floating-buttons');
+                    if (live2dFloatingButtons) {
+                        live2dFloatingButtons.remove();
+                        console.log('[主页] 已清理 Live2D 浮动按钮');
+                    }
+                    const live2dReturnBtn = document.getElementById('live2d-return-button-container');
+                    if (live2dReturnBtn) {
+                        live2dReturnBtn.remove();
+                        console.log('[主页] 已清理 Live2D 返回按钮');
+                    }
+
                     if (window.vrmManager && newModelPath) {
                         // 路径转换逻辑（处理各种路径格式）
                         let modelUrl = newModelPath;

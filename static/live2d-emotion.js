@@ -2,8 +2,16 @@
  * Live2D Emotion - 情感/表情/动作相关功能
  */
 
-import { LIPSYNC_PARAMS } from './live2d-constants.js';
-
+const LIPSYNC_PARAMS = [
+    'ParamMouthOpenY',
+    'ParamMouthForm',
+    'ParamMouthOpen',
+    'ParamA',
+    'ParamI',
+    'ParamU',
+    'ParamE',
+    'ParamO'
+];
 // 记录模型的初始参数（用于expression重置，跳过位置参数）
 Live2DManager.prototype.recordInitialParameters = function() {
     if (!this.currentModel || !this.currentModel.internalModel || !this.currentModel.internalModel.coreModel) {

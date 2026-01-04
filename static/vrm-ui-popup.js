@@ -1,12 +1,11 @@
 /**
- * VRM UI Popup - 弹出框组件（与Live2D保持一致的交互逻辑）
- * 包含弹出框创建、设置菜单、开关项组件
+ * VRM UI Popup - 弹出框组件（功能同步修复版）
  */
 
-// 创建弹出框（与Live2D逻辑完全一致，仅ID前缀不同）
+// 创建弹出框
 VRMManager.prototype.createPopup = function (buttonId) {
     const popup = document.createElement('div');
-    popup.id = `vrm-popup-${buttonId}`;  // VRM专用ID
+    popup.id = `vrm-popup-${buttonId}`;
     popup.className = 'vrm-popup';
 
     Object.assign(popup.style, {
@@ -14,13 +13,13 @@ VRMManager.prototype.createPopup = function (buttonId) {
         left: '100%',
         top: '0',
         marginLeft: '8px',
-        zIndex: '100000',  // 确保弹出菜单置顶，不被任何元素遮挡
-        background: 'rgba(255, 255, 255, 0.65)',  // Fluent Acrylic
-        backdropFilter: 'saturate(180%) blur(20px)',  // Fluent 标准模糊
-        border: '1px solid rgba(255, 255, 255, 0.18)',  // 微妙高光边框
-        borderRadius: '8px',  // Fluent 标准圆角
+        zIndex: '100000',
+        background: 'rgba(255, 255, 255, 0.65)',
+        backdropFilter: 'saturate(180%) blur(20px)',
+        border: '1px solid rgba(255, 255, 255, 0.18)',
+        borderRadius: '8px',
         padding: '8px',
-        boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.04)',  // Fluent 多层阴影
+        boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.04)',
         display: 'none',
         flexDirection: 'column',
         gap: '6px',
@@ -30,87 +29,45 @@ VRMManager.prototype.createPopup = function (buttonId) {
         pointerEvents: 'auto',
         opacity: '0',
         transform: 'translateX(-10px)',
-        transition: 'opacity 0.2s cubic-bezier(0.1, 0.9, 0.2, 1), transform 0.2s cubic-bezier(0.1, 0.9, 0.2, 1)'  // Fluent 动画曲线
+        transition: 'opacity 0.2s cubic-bezier(0.1, 0.9, 0.2, 1), transform 0.2s cubic-bezier(0.1, 0.9, 0.2, 1)'
     });
 
-    // 阻止弹出菜单上的指针事件传播，避免触发VRM拖拽
-    const stopEventPropagation = (e) => {
-        e.stopPropagation();
-    };
-    popup.addEventListener('pointerdown', stopEventPropagation, true);
-    popup.addEventListener('pointermove', stopEventPropagation, true);
-    popup.addEventListener('pointerup', stopEventPropagation, true);
-    popup.addEventListener('mousedown', stopEventPropagation, true);
-    popup.addEventListener('mousemove', stopEventPropagation, true);
-    popup.addEventListener('mouseup', stopEventPropagation, true);
-    popup.addEventListener('touchstart', stopEventPropagation, true);
-    popup.addEventListener('touchmove', stopEventPropagation, true);
-    popup.addEventListener('touchend', stopEventPropagation, true);
+    const stopEventPropagation = (e) => { e.stopPropagation(); };
+    ['pointerdown','pointermove','pointerup','mousedown','mousemove','mouseup','touchstart','touchmove','touchend'].forEach(evt => {
+        popup.addEventListener(evt, stopEventPropagation, true);
+    });
 
-    // 根据不同按钮创建不同的弹出内容
     if (buttonId === 'mic') {
-        // 麦克风选择列表（将从页面中获取）
         popup.id = 'vrm-popup-mic';
         popup.setAttribute('data-legacy-id', 'vrm-mic-popup');
     } else if (buttonId === 'agent') {
-        // Agent工具开关组
         this._createAgentPopupContent(popup);
     } else if (buttonId === 'settings') {
-        // 设置菜单
+        // 设置菜单移除高度限制和滚动条，让所有内容直接展示
+        popup.style.maxHeight = 'none';
+        popup.style.overflowY = 'visible';
         this._createSettingsPopupContent(popup);
     }
 
     return popup;
 };
 
-// 创建Agent弹出框内容（与Live2D完全一致，仅ID前缀不同）
+// 创建Agent弹出框内容
 VRMManager.prototype._createAgentPopupContent = function (popup) {
-    // 添加状态显示栏 - Fluent Design
     const statusDiv = document.createElement('div');
-    statusDiv.id = 'vrm-agent-status';  // VRM专用ID
+    statusDiv.id = 'vrm-agent-status';
     Object.assign(statusDiv.style, {
-        fontSize: '12px',
-        color: '#44b7fe',
-        padding: '6px 8px',
-        borderRadius: '4px',
-        background: 'rgba(68, 183, 254, 0.05)',
-        marginBottom: '8px',
-        minHeight: '20px',
-        textAlign: 'center'
+        fontSize: '12px', color: '#44b7fe', padding: '6px 8px', borderRadius: '4px',
+        background: 'rgba(68, 183, 254, 0.05)', marginBottom: '8px', minHeight: '20px', textAlign: 'center'
     });
     statusDiv.textContent = window.t ? window.t('settings.toggles.checking') : '查询中...';
     popup.appendChild(statusDiv);
 
-    // 所有 agent 开关默认禁用
     const agentToggles = [
-        {
-            id: 'agent-master',
-            label: window.t ? window.t('settings.toggles.agentMaster') : 'Agent总开关',
-            labelKey: 'settings.toggles.agentMaster',
-            initialDisabled: true,
-            initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
-        },
-        {
-            id: 'agent-keyboard',
-            label: window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制',
-            labelKey: 'settings.toggles.keyboardControl',
-            initialDisabled: true,
-            initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
-        },
-        {
-            id: 'agent-mcp',
-            label: window.t ? window.t('settings.toggles.mcpTools') : 'MCP工具',
-            labelKey: 'settings.toggles.mcpTools',
-            initialDisabled: true,
-            initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
-        },
-        {
-            id: 'agent-user-plugin',
-            label: window.t ? window.t('settings.toggles.userPlugin') : '用户插件',
-            labelKey: 'settings.toggles.userPlugin',
-            initialDisabled: true,
-            initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...'
-        }
+        { id: 'agent-master', label: window.t ? window.t('settings.toggles.agentMaster') : 'Agent总开关', labelKey: 'settings.toggles.agentMaster', initialDisabled: true },
+        { id: 'agent-keyboard', label: window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制', labelKey: 'settings.toggles.keyboardControl', initialDisabled: true },
+        { id: 'agent-mcp', label: window.t ? window.t('settings.toggles.mcpTools') : 'MCP工具', labelKey: 'settings.toggles.mcpTools', initialDisabled: true },
+        { id: 'agent-user-plugin', label: window.t ? window.t('settings.toggles.userPlugin') : '用户插件', labelKey: 'settings.toggles.userPlugin', initialDisabled: true }
     ];
 
     agentToggles.forEach(toggle => {
@@ -119,11 +76,12 @@ VRMManager.prototype._createAgentPopupContent = function (popup) {
     });
 };
 
-// 创建设置弹出框内容（与Live2D完全一致）
+// 创建设置弹出框内容
 VRMManager.prototype._createSettingsPopupContent = function (popup) {
-    // 先添加 Focus 模式、主动搭话和自主视觉开关（在最上面）
+    // 先添加 Focus 模式、主动搭话和自主视觉开关（在最上面），与Live2D保持一致
     const settingsToggles = [
-        { id: 'focus-mode', label: window.t ? window.t('settings.toggles.allowInterrupt') : '允许打断', labelKey: 'settings.toggles.allowInterrupt', storageKey: 'focusModeEnabled', inverted: true },
+        { id: 'merge-messages', label: window.t ? window.t('settings.toggles.mergeMessages') : '合并消息', labelKey: 'settings.toggles.mergeMessages' },
+        { id: 'focus-mode', label: window.t ? window.t('settings.toggles.allowInterrupt') : '允许打断', labelKey: 'settings.toggles.allowInterrupt', storageKey: 'focusModeEnabled', inverted: true }, // inverted表示值与focusModeEnabled相反
         { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled' },
         { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '自主视觉', labelKey: 'settings.toggles.proactiveVision', storageKey: 'proactiveVisionEnabled' }
     ];
@@ -133,8 +91,9 @@ VRMManager.prototype._createSettingsPopupContent = function (popup) {
         popup.appendChild(toggleItem);
     });
 
-    // 手机仅保留两个开关；桌面端追加导航菜单
-    if (window.isMobileWidth && !window.isMobileWidth()) {
+    // 手机仅保留开关；桌面端追加导航菜单
+    const isMobileWidth = () => window.innerWidth <= 768;
+    if (!isMobileWidth()) {
         // 添加分隔线
         const separator = document.createElement('div');
         Object.assign(separator.style, {
@@ -149,221 +108,104 @@ VRMManager.prototype._createSettingsPopupContent = function (popup) {
     }
 };
 
-// 创建Agent开关项（与Live2D完全一致，仅ID前缀不同）
+// 创建Agent开关项
 VRMManager.prototype._createToggleItem = function (toggle, popup) {
     const toggleItem = document.createElement('div');
     Object.assign(toggleItem.style, {
-        display: 'flex',
-        alignItems: 'center',
-        gap: '8px',
-        padding: '6px 8px',
-        cursor: 'pointer',
-        borderRadius: '6px',
-        transition: 'background 0.2s ease, opacity 0.2s ease',
-        fontSize: '13px',
-        whiteSpace: 'nowrap',
-        opacity: toggle.initialDisabled ? '0.5' : '1'
+        display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 8px', cursor: 'pointer',
+        borderRadius: '6px', transition: 'background 0.2s ease, opacity 0.2s ease', fontSize: '13px',
+        whiteSpace: 'nowrap', opacity: toggle.initialDisabled ? '0.5' : '1'
     });
 
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
-    checkbox.id = `vrm-${toggle.id}`;  // VRM专用ID
-    Object.assign(checkbox.style, {
-        display: 'none'
-    });
+    checkbox.id = `vrm-${toggle.id}`;
+    checkbox.style.display = 'none';
 
     if (toggle.initialDisabled) {
         checkbox.disabled = true;
-        checkbox.title = toggle.initialTitle || (window.t ? window.t('settings.toggles.checking') : '查询中...');
+        checkbox.title = window.t ? window.t('settings.toggles.checking') : '查询中...';
         toggleItem.style.cursor = 'default';
     }
 
-    // 创建自定义圆形指示器
     const indicator = document.createElement('div');
     Object.assign(indicator.style, {
-        width: '20px',
-        height: '20px',
-        borderRadius: '50%',
-        border: '2px solid #ccc',
-        backgroundColor: 'transparent',
-        cursor: 'pointer',
-        flexShrink: '0',
-        transition: 'all 0.2s ease',
-        position: 'relative',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center'
+        width: '20px', height: '20px', borderRadius: '50%', border: '2px solid #ccc',
+        backgroundColor: 'transparent', cursor: 'pointer', flexShrink: '0', transition: 'all 0.2s ease',
+        position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center'
     });
 
     const checkmark = document.createElement('div');
     checkmark.innerHTML = '✓';
     Object.assign(checkmark.style, {
-        color: '#fff',
-        fontSize: '13px',
-        fontWeight: 'bold',
-        lineHeight: '1',
-        opacity: '0',
-        transition: 'opacity 0.2s ease',
-        pointerEvents: 'none',
-        userSelect: 'none'
+        color: '#fff', fontSize: '13px', fontWeight: 'bold', lineHeight: '1', opacity: '0',
+        transition: 'opacity 0.2s ease', pointerEvents: 'none', userSelect: 'none'
     });
     indicator.appendChild(checkmark);
 
     const label = document.createElement('label');
     label.innerText = toggle.label;
-    if (toggle.labelKey) {
-        label.setAttribute('data-i18n', toggle.labelKey);
-    }
+    if (toggle.labelKey) label.setAttribute('data-i18n', toggle.labelKey);
     label.htmlFor = `vrm-${toggle.id}`;
-    label.style.cursor = 'pointer';
-    label.style.userSelect = 'none';
-    label.style.fontSize = '13px';
-    label.style.color = '#333';
-
-    const updateLabelText = () => {
-        if (toggle.labelKey && window.t) {
-            label.innerText = window.t(toggle.labelKey);
-        }
-    };
-
-    const updateTitle = () => {
-        const title = checkbox.title || '';
-        label.title = toggleItem.title = title;
-    };
+    Object.assign(label.style, { cursor: 'pointer', userSelect: 'none', fontSize: '13px', color: '#333' });
 
     const updateStyle = () => {
         if (checkbox.checked) {
-            indicator.style.backgroundColor = '#44b7fe';
-            indicator.style.borderColor = '#44b7fe';
-            checkmark.style.opacity = '1';
+            indicator.style.backgroundColor = '#44b7fe'; indicator.style.borderColor = '#44b7fe'; checkmark.style.opacity = '1';
         } else {
-            indicator.style.backgroundColor = 'transparent';
-            indicator.style.borderColor = '#ccc';
-            checkmark.style.opacity = '0';
+            indicator.style.backgroundColor = 'transparent'; indicator.style.borderColor = '#ccc'; checkmark.style.opacity = '0';
         }
     };
-
-    const updateDisabledStyle = () => {
-        const disabled = checkbox.disabled;
-        const cursor = disabled ? 'default' : 'pointer';
-        [toggleItem, label, indicator].forEach(el => el.style.cursor = cursor);
-        toggleItem.style.opacity = disabled ? '0.5' : '1';
-    };
-
-    const disabledObserver = new MutationObserver(() => {
-        updateDisabledStyle();
-        if (checkbox.hasAttribute('title')) updateTitle();
-    });
-    disabledObserver.observe(checkbox, { attributes: true, attributeFilter: ['disabled', 'title'] });
 
     checkbox.addEventListener('change', updateStyle);
-
     updateStyle();
-    updateDisabledStyle();
-    updateTitle();
 
-    toggleItem.appendChild(checkbox);
-    toggleItem.appendChild(indicator);
-    toggleItem.appendChild(label);
-
-    checkbox._updateStyle = updateStyle;
-    if (toggle.labelKey) {
-        toggleItem._updateLabelText = updateLabelText;
-    }
-
+    toggleItem.appendChild(checkbox); toggleItem.appendChild(indicator); toggleItem.appendChild(label);
+    
+    // 鼠标悬停
     toggleItem.addEventListener('mouseenter', () => {
-        if (checkbox.disabled && checkbox.title?.includes('不可用')) {
-            const statusEl = document.getElementById('vrm-agent-status');
-            if (statusEl) statusEl.textContent = checkbox.title;
-        } else if (!checkbox.disabled) {
-            toggleItem.style.background = 'rgba(68, 183, 254, 0.1)';
-        }
+        if (!checkbox.disabled) toggleItem.style.background = 'rgba(68, 183, 254, 0.1)';
     });
-    toggleItem.addEventListener('mouseleave', () => {
-        toggleItem.style.background = 'transparent';
-    });
+    toggleItem.addEventListener('mouseleave', () => toggleItem.style.background = 'transparent');
 
-    const handleToggle = (event) => {
+    const handleToggle = (e) => {
         if (checkbox.disabled) return;
-
         if (checkbox._processing) {
-            const elapsed = Date.now() - (checkbox._processingTime || 0);
-            if (elapsed < 500) {
-                console.log('[VRM] Agent开关正在处理中，忽略重复点击:', toggle.id, '已过', elapsed, 'ms');
-                event?.preventDefault();
-                event?.stopPropagation();
-                return;
-            }
-            console.log('[VRM] Agent开关上次操作可能超时，允许新操作:', toggle.id);
+            if (Date.now() - (checkbox._processingTime || 0) < 500) { e?.preventDefault(); return; }
         }
-
-        checkbox._processing = true;
-        checkbox._processingEvent = event;
-        checkbox._processingTime = Date.now();
-
-        const newChecked = !checkbox.checked;
-        checkbox.checked = newChecked;
+        checkbox._processing = true; checkbox._processingTime = Date.now();
+        checkbox.checked = !checkbox.checked;
         checkbox.dispatchEvent(new Event('change', { bubbles: true }));
         updateStyle();
-
-        setTimeout(() => {
-            if (checkbox._processing && Date.now() - checkbox._processingTime > 5000) {
-                console.log('[VRM] Agent开关备用清除机制触发:', toggle.id);
-                checkbox._processing = false;
-                checkbox._processingEvent = null;
-                checkbox._processingTime = null;
-            }
-        }, 5500);
-
-        event?.preventDefault();
-        event?.stopPropagation();
+        setTimeout(() => checkbox._processing = false, 5500);
+        e?.preventDefault(); e?.stopPropagation();
     };
 
-    toggleItem.addEventListener('click', (e) => {
-        if (e.target !== checkbox && e.target !== indicator && e.target !== label) {
-            handleToggle(e);
-        }
-    });
-
-    indicator.addEventListener('click', (e) => {
-        e.stopPropagation();
-        handleToggle(e);
-    });
-
-    label.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        handleToggle(e);
-    });
+    [toggleItem, indicator, label].forEach(el => el.addEventListener('click', (e) => {
+        if (e.target !== checkbox) handleToggle(e);
+    }));
 
     return toggleItem;
 };
 
-// 创建设置开关项（与Live2D完全一致，仅ID前缀不同）
+// 创建设置开关项
 VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
     const toggleItem = document.createElement('div');
     Object.assign(toggleItem.style, {
-        display: 'flex',
-        alignItems: 'center',
-        gap: '8px',
-        padding: '8px 12px',
-        cursor: 'pointer',
-        borderRadius: '6px',
-        transition: 'background 0.2s ease',
-        fontSize: '13px',
-        whiteSpace: 'nowrap',
+        display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', cursor: 'pointer',
+        borderRadius: '6px', transition: 'background 0.2s ease', fontSize: '13px', whiteSpace: 'nowrap',
         borderBottom: '1px solid rgba(0,0,0,0.05)'
     });
 
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
-    checkbox.id = `vrm-${toggle.id}`;  // VRM专用ID
-    Object.assign(checkbox.style, {
-        display: 'none'
-    });
+    checkbox.id = `vrm-${toggle.id}`;
+    checkbox.style.display = 'none';
 
-    // 从 window 获取当前状态
-    if (toggle.id === 'focus-mode' && typeof window.focusModeEnabled !== 'undefined') {
+    // 初始化状态
+    if (toggle.id === 'merge-messages' && typeof window.mergeMessagesEnabled !== 'undefined') {
+        checkbox.checked = window.mergeMessagesEnabled;
+    } else if (toggle.id === 'focus-mode' && typeof window.focusModeEnabled !== 'undefined') {
         checkbox.checked = toggle.inverted ? !window.focusModeEnabled : window.focusModeEnabled;
     } else if (toggle.id === 'proactive-chat' && typeof window.proactiveChatEnabled !== 'undefined') {
         checkbox.checked = window.proactiveChatEnabled;
@@ -373,162 +215,78 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
 
     const indicator = document.createElement('div');
     Object.assign(indicator.style, {
-        width: '20px',
-        height: '20px',
-        borderRadius: '50%',
-        border: '2px solid #ccc',
-        backgroundColor: 'transparent',
-        cursor: 'pointer',
-        flexShrink: '0',
-        transition: 'all 0.2s ease',
-        position: 'relative',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center'
+        width: '20px', height: '20px', borderRadius: '50%', border: '2px solid #ccc',
+        backgroundColor: 'transparent', cursor: 'pointer', flexShrink: '0', transition: 'all 0.2s ease',
+        position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center'
     });
 
     const checkmark = document.createElement('div');
     checkmark.innerHTML = '✓';
     Object.assign(checkmark.style, {
-        color: '#fff',
-        fontSize: '13px',
-        fontWeight: 'bold',
-        lineHeight: '1',
-        opacity: '0',
-        transition: 'opacity 0.2s ease',
-        pointerEvents: 'none',
-        userSelect: 'none'
+        color: '#fff', fontSize: '13px', fontWeight: 'bold', lineHeight: '1', opacity: '0',
+        transition: 'opacity 0.2s ease', pointerEvents: 'none', userSelect: 'none'
     });
     indicator.appendChild(checkmark);
 
     const label = document.createElement('label');
     label.innerText = toggle.label;
+    if (toggle.labelKey) label.setAttribute('data-i18n', toggle.labelKey);
     label.htmlFor = `vrm-${toggle.id}`;
-    if (toggle.labelKey) {
-        label.setAttribute('data-i18n', toggle.labelKey);
-    }
-    label.style.cursor = 'pointer';
-    label.style.userSelect = 'none';
-    label.style.fontSize = '13px';
-    label.style.color = '#333';
-    label.style.display = 'flex';
-    label.style.alignItems = 'center';
-    label.style.lineHeight = '1';
-    label.style.height = '20px';
+    Object.assign(label.style, { cursor: 'pointer', userSelect: 'none', fontSize: '13px', color: '#333', display: 'flex', alignItems: 'center', height: '20px' });
 
     const updateStyle = () => {
         if (checkbox.checked) {
-            indicator.style.backgroundColor = '#44b7fe';
-            indicator.style.borderColor = '#44b7fe';
-            checkmark.style.opacity = '1';
+            indicator.style.backgroundColor = '#44b7fe'; indicator.style.borderColor = '#44b7fe'; checkmark.style.opacity = '1';
             toggleItem.style.background = 'rgba(68, 183, 254, 0.1)';
         } else {
-            indicator.style.backgroundColor = 'transparent';
-            indicator.style.borderColor = '#ccc';
-            checkmark.style.opacity = '0';
+            indicator.style.backgroundColor = 'transparent'; indicator.style.borderColor = '#ccc'; checkmark.style.opacity = '0';
             toggleItem.style.background = 'transparent';
         }
     };
-
     updateStyle();
 
-    toggleItem.appendChild(checkbox);
-    toggleItem.appendChild(indicator);
-    toggleItem.appendChild(label);
+    toggleItem.appendChild(checkbox); toggleItem.appendChild(indicator); toggleItem.appendChild(label);
 
-    toggleItem.addEventListener('mouseenter', () => {
-        if (checkbox.checked) {
-            toggleItem.style.background = 'rgba(68, 183, 254, 0.15)';
-        } else {
-            toggleItem.style.background = 'rgba(68, 183, 254, 0.08)';
-        }
-    });
-    toggleItem.addEventListener('mouseleave', () => {
-        updateStyle();
-    });
+    toggleItem.addEventListener('mouseenter', () => { if(checkbox.checked) toggleItem.style.background = 'rgba(68, 183, 254, 0.15)'; else toggleItem.style.background = 'rgba(68, 183, 254, 0.08)'; });
+    toggleItem.addEventListener('mouseleave', updateStyle);
 
+    // 🔥【新增】合并消息的处理逻辑
     const handleToggleChange = (isChecked) => {
         updateStyle();
-
-        if (toggle.id === 'focus-mode') {
-            const actualValue = toggle.inverted ? !isChecked : isChecked;
-            window.focusModeEnabled = actualValue;
-            if (typeof window.saveNEKOSettings === 'function') {
+        if (typeof window.saveNEKOSettings === 'function') {
+            if (toggle.id === 'merge-messages') {
+                window.mergeMessagesEnabled = isChecked;
                 window.saveNEKOSettings();
-            }
-        } else if (toggle.id === 'proactive-chat') {
-            window.proactiveChatEnabled = isChecked;
-            if (typeof window.saveNEKOSettings === 'function') {
+            } else if (toggle.id === 'focus-mode') {
+                window.focusModeEnabled = toggle.inverted ? !isChecked : isChecked;
                 window.saveNEKOSettings();
-            }
-            if (isChecked && typeof window.resetProactiveChatBackoff === 'function') {
-                window.resetProactiveChatBackoff();
-            } else if (!isChecked && typeof window.stopProactiveChatSchedule === 'function') {
-                window.stopProactiveChatSchedule();
-            }
-            console.log(`主动搭话已${isChecked ? '开启' : '关闭'}`);
-        } else if (toggle.id === 'proactive-vision') {
-            window.proactiveVisionEnabled = isChecked;
-            if (typeof window.saveNEKOSettings === 'function') {
+            } else if (toggle.id === 'proactive-chat') {
+                window.proactiveChatEnabled = isChecked;
                 window.saveNEKOSettings();
-            }
-            if (isChecked) {
-                if (typeof window.resetProactiveChatBackoff === 'function') {
-                    window.resetProactiveChatBackoff();
-                }
-                if (typeof window.isRecording !== 'undefined' && window.isRecording) {
-                    if (typeof window.startProactiveVisionDuringSpeech === 'function') {
-                        window.startProactiveVisionDuringSpeech();
-                    }
-                }
-            } else {
-                if (typeof window.stopProactiveChatSchedule === 'function') {
-                    if (!window.proactiveChatEnabled) {
-                        window.stopProactiveChatSchedule();
-                    }
-                }
-                if (typeof window.stopProactiveVisionDuringSpeech === 'function') {
-                    window.stopProactiveVisionDuringSpeech();
+                isChecked ? (window.resetProactiveChatBackoff && window.resetProactiveChatBackoff()) : (window.stopProactiveChatSchedule && window.stopProactiveChatSchedule());
+            } else if (toggle.id === 'proactive-vision') {
+                window.proactiveVisionEnabled = isChecked;
+                window.saveNEKOSettings();
+                if (isChecked) {
+                    window.resetProactiveChatBackoff && window.resetProactiveChatBackoff();
+                    if (window.isRecording && window.startProactiveVisionDuringSpeech) window.startProactiveVisionDuringSpeech();
+                } else {
+                    if (!window.proactiveChatEnabled && window.stopProactiveChatSchedule) window.stopProactiveChatSchedule();
+                    window.stopProactiveVisionDuringSpeech && window.stopProactiveVisionDuringSpeech();
                 }
             }
-            console.log(`主动视觉已${isChecked ? '开启' : '关闭'}`);
         }
     };
 
-    checkbox.addEventListener('change', (e) => {
-        e.stopPropagation();
-        handleToggleChange(checkbox.checked);
-    });
-
-    toggleItem.addEventListener('click', (e) => {
-        if (e.target !== checkbox && e.target !== indicator) {
-            e.preventDefault();
-            e.stopPropagation();
-            const newChecked = !checkbox.checked;
-            checkbox.checked = newChecked;
-            handleToggleChange(newChecked);
-        }
-    });
-
-    indicator.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const newChecked = !checkbox.checked;
-        checkbox.checked = newChecked;
-        handleToggleChange(newChecked);
-    });
-
-    label.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const newChecked = !checkbox.checked;
-        checkbox.checked = newChecked;
-        handleToggleChange(newChecked);
-    });
+    checkbox.addEventListener('change', (e) => { e.stopPropagation(); handleToggleChange(checkbox.checked); });
+    [toggleItem, indicator, label].forEach(el => el.addEventListener('click', (e) => {
+        if(e.target !== checkbox) { e.preventDefault(); e.stopPropagation(); checkbox.checked = !checkbox.checked; handleToggleChange(checkbox.checked); }
+    }));
 
     return toggleItem;
 };
 
-// 创建设置菜单项（与Live2D完全一致）
+// 创建设置菜单项 (保持与Live2D一致)
 VRMManager.prototype._createSettingsMenuItems = function (popup) {
     const settingsItems = [
         { id: 'vrm-manage', label: window.t ? window.t('settings.menu.modelSettings') : '模型管理', labelKey: 'settings.menu.modelSettings', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', urlBase: '/model_manager' },
@@ -541,63 +299,20 @@ VRMManager.prototype._createSettingsMenuItems = function (popup) {
 
     settingsItems.forEach(item => {
         const menuItem = document.createElement('div');
-        Object.assign(menuItem.style, {
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            padding: '8px 12px',
-            cursor: 'pointer',
-            borderRadius: '6px',
-            transition: 'background 0.2s ease',
-            fontSize: '13px',
-            whiteSpace: 'nowrap',
-            color: '#333'
-        });
+        Object.assign(menuItem.style, { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', cursor: 'pointer', borderRadius: '6px', transition: 'background 0.2s ease', fontSize: '13px', whiteSpace: 'nowrap', color: '#333' });
 
         if (item.icon) {
-            const iconImg = document.createElement('img');
-            iconImg.src = item.icon;
-            iconImg.alt = item.label;
-            Object.assign(iconImg.style, {
-                width: '24px',
-                height: '24px',
-                objectFit: 'contain',
-                flexShrink: '0'
-            });
+            const iconImg = document.createElement('img'); iconImg.src = item.icon; iconImg.alt = item.label;
+            Object.assign(iconImg.style, { width: '24px', height: '24px', objectFit: 'contain', flexShrink: '0' });
             menuItem.appendChild(iconImg);
         }
-
-        const labelText = document.createElement('span');
-        labelText.textContent = item.label;
-        if (item.labelKey) {
-            labelText.setAttribute('data-i18n', item.labelKey);
-        }
-        Object.assign(labelText.style, {
-            display: 'flex',
-            alignItems: 'center',
-            lineHeight: '1',
-            height: '24px'
-        });
+        const labelText = document.createElement('span'); labelText.textContent = item.label;
+        if (item.labelKey) labelText.setAttribute('data-i18n', item.labelKey);
+        Object.assign(labelText.style, { display: 'flex', alignItems: 'center', lineHeight: '1', height: '24px' });
         menuItem.appendChild(labelText);
 
-        if (item.labelKey) {
-            const updateLabelText = () => {
-                if (window.t) {
-                    labelText.textContent = window.t(item.labelKey);
-                    if (item.icon && menuItem.querySelector('img')) {
-                        menuItem.querySelector('img').alt = window.t(item.labelKey);
-                    }
-                }
-            };
-            menuItem._updateLabelText = updateLabelText;
-        }
-
-        menuItem.addEventListener('mouseenter', () => {
-            menuItem.style.background = 'rgba(68, 183, 254, 0.1)';
-        });
-        menuItem.addEventListener('mouseleave', () => {
-            menuItem.style.background = 'transparent';
-        });
+        menuItem.addEventListener('mouseenter', () => menuItem.style.background = 'rgba(68, 183, 254, 0.1)');
+        menuItem.addEventListener('mouseleave', () => menuItem.style.background = 'transparent');
 
         menuItem.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -607,299 +322,410 @@ VRMManager.prototype._createSettingsMenuItems = function (popup) {
                 if (item.id === 'vrm-manage' && item.urlBase) {
                     const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                     finalUrl = `${item.urlBase}?lanlan_name=${encodeURIComponent(lanlanName)}`;
-                    if (window.closeAllSettingsWindows) {
-                        window.closeAllSettingsWindows();
-                    }
+                    if (window.closeAllSettingsWindows) window.closeAllSettingsWindows();
                     window.location.href = finalUrl;
                 } else if (item.id === 'voice-clone' && item.url) {
                     const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                     finalUrl = `${item.url}?lanlan_name=${encodeURIComponent(lanlanName)}`;
-
-                    if (this._openSettingsWindows[finalUrl]) {
-                        const existingWindow = this._openSettingsWindows[finalUrl];
-                        if (existingWindow && !existingWindow.closed) {
-                            existingWindow.focus();
-                            return;
-                        } else {
-                            delete this._openSettingsWindows[finalUrl];
-                        }
+                    if (this._openSettingsWindows[finalUrl] && !this._openSettingsWindows[finalUrl].closed) {
+                        this._openSettingsWindows[finalUrl].focus(); return;
                     }
-
                     this.closeAllSettingsWindows();
-
-                    const newWindow = window.open(finalUrl, '_blank', 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no');
-                    if (newWindow) {
-                        this._openSettingsWindows[finalUrl] = newWindow;
-                    }
+                    this._openSettingsWindows[finalUrl] = window.open(finalUrl, '_blank', 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no');
                 } else {
-                    if (this._openSettingsWindows[finalUrl]) {
-                        const existingWindow = this._openSettingsWindows[finalUrl];
-                        if (existingWindow && !existingWindow.closed) {
-                            existingWindow.focus();
-                            return;
-                        } else {
-                            delete this._openSettingsWindows[finalUrl];
-                        }
+                    if (this._openSettingsWindows[finalUrl] && !this._openSettingsWindows[finalUrl].closed) {
+                        this._openSettingsWindows[finalUrl].focus(); return;
                     }
-
                     this.closeAllSettingsWindows();
-
                     const newWindow = window.open(finalUrl, '_blank', 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no');
-                    if (newWindow) {
+                    if(newWindow) {
                         this._openSettingsWindows[finalUrl] = newWindow;
-
-                        const checkClosed = setInterval(() => {
-                            if (newWindow.closed) {
-                                delete this._openSettingsWindows[finalUrl];
-                                clearInterval(checkClosed);
-                            }
-                        }, 500);
+                        const checkClosed = setInterval(() => { if(newWindow.closed) { delete this._openSettingsWindows[finalUrl]; clearInterval(checkClosed); } }, 500);
                     }
                 }
             }
         });
-
         popup.appendChild(menuItem);
     });
 };
 
-// 关闭指定按钮对应的弹出框，并恢复按钮状态（与Live2D完全一致，仅ID前缀不同）
+// 辅助方法：关闭弹窗
 VRMManager.prototype.closePopupById = function (buttonId) {
     if (!buttonId) return false;
-    this._floatingButtons = this._floatingButtons || {};
-    this._popupTimers = this._popupTimers || {};
-    const popup = document.getElementById(`vrm-popup-${buttonId}`);  // VRM专用ID
-    if (!popup || popup.style.display !== 'flex') {
-        return false;
-    }
+    const popup = document.getElementById(`vrm-popup-${buttonId}`);
+    if (!popup || popup.style.display !== 'flex') return false;
 
-    // 如果是 agent 弹窗关闭，派发关闭事件（使用live2d-*事件名保持兼容）
-    if (buttonId === 'agent') {
-        window.dispatchEvent(new CustomEvent('live2d-agent-popup-closed'));
-    }
+    if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('live2d-agent-popup-closed'));
 
-    popup.style.opacity = '0';
-    popup.style.transform = 'translateX(-10px)';
-    setTimeout(() => {
-        popup.style.display = 'none';
-    }, 200);
+    popup.style.opacity = '0'; popup.style.transform = 'translateX(-10px)';
+    setTimeout(() => popup.style.display = 'none', 200);
 
-    const buttonEntry = this._floatingButtons[buttonId];
+    const buttonEntry = this._floatingButtons && this._floatingButtons[buttonId];
     if (buttonEntry && buttonEntry.button) {
         buttonEntry.button.dataset.active = 'false';
         buttonEntry.button.style.background = 'rgba(255, 255, 255, 0.65)';
-
         if (buttonEntry.imgOff && buttonEntry.imgOn) {
-            buttonEntry.imgOff.style.opacity = '1';
-            buttonEntry.imgOn.style.opacity = '0';
+            buttonEntry.imgOff.style.opacity = '1'; buttonEntry.imgOn.style.opacity = '0';
         }
     }
-
-    if (this._popupTimers[buttonId]) {
-        clearTimeout(this._popupTimers[buttonId]);
-        this._popupTimers[buttonId] = null;
-    }
-
     return true;
 };
 
-// 关闭除当前按钮之外的所有弹出框（与Live2D完全一致，仅ID前缀不同）
+// 辅助方法：关闭其他弹窗
 VRMManager.prototype.closeAllPopupsExcept = function (currentButtonId) {
-    const popups = document.querySelectorAll('[id^="vrm-popup-"]');  // VRM专用ID
-    popups.forEach(popup => {
+    document.querySelectorAll('[id^="vrm-popup-"]').forEach(popup => {
         const popupId = popup.id.replace('vrm-popup-', '');
-        if (popupId !== currentButtonId && popup.style.display === 'flex') {
-            this.closePopupById(popupId);
-        }
+        if (popupId !== currentButtonId && popup.style.display === 'flex') this.closePopupById(popupId);
     });
 };
 
-// 关闭所有通过 window.open 打开的设置窗口（与Live2D完全一致）
+// 辅助方法：关闭设置窗口
 VRMManager.prototype.closeAllSettingsWindows = function (exceptUrl = null) {
     if (!this._openSettingsWindows) return;
     Object.keys(this._openSettingsWindows).forEach(url => {
         if (exceptUrl && url === exceptUrl) return;
-        const winRef = this._openSettingsWindows[url];
-        try {
-            if (winRef && !winRef.closed) {
-                winRef.close();
-            }
-        } catch (_) {
-            // 忽略跨域导致的 close 异常
-        }
+        try { if (this._openSettingsWindows[url] && !this._openSettingsWindows[url].closed) this._openSettingsWindows[url].close(); } catch (_) {}
         delete this._openSettingsWindows[url];
     });
 };
 
-// 显示弹出框（与Live2D完全一致，仅ID前缀不同）
+// 显示弹出框
 VRMManager.prototype.showPopup = function (buttonId, popup) {
-    // 🔥【新增】这行代码是关键！防止 _popupTimers 未定义导致的报错
-    this._popupTimers = this._popupTimers || {};
     const isVisible = popup.style.display === 'flex' && popup.style.opacity === '1';
-
-    if (this._popupTimers[buttonId]) {
-        clearTimeout(this._popupTimers[buttonId]);
-        this._popupTimers[buttonId] = null;
-    }
 
     // 如果是设置弹出框，每次显示时更新开关状态
     if (buttonId === 'settings') {
-        const focusCheckbox = popup.querySelector('#vrm-focus-mode');  // VRM专用ID
-        const proactiveChatCheckbox = popup.querySelector('#vrm-proactive-chat');  // VRM专用ID
-
         const updateCheckboxStyle = (checkbox) => {
             if (!checkbox) return;
             const toggleItem = checkbox.parentElement;
-            if (!toggleItem) return;
-
             const indicator = toggleItem.children[1];
-            if (!indicator) return;
-
             const checkmark = indicator.firstElementChild;
-
             if (checkbox.checked) {
-                indicator.style.backgroundColor = '#44b7fe';
-                indicator.style.borderColor = '#44b7fe';
-                if (checkmark) checkmark.style.opacity = '1';
-                toggleItem.style.background = 'rgba(68, 183, 254, 0.1)';
+                indicator.style.backgroundColor = '#44b7fe'; indicator.style.borderColor = '#44b7fe'; checkmark.style.opacity = '1'; toggleItem.style.background = 'rgba(68, 183, 254, 0.1)';
             } else {
-                indicator.style.backgroundColor = 'transparent';
-                indicator.style.borderColor = '#ccc';
-                if (checkmark) checkmark.style.opacity = '0';
-                toggleItem.style.background = 'transparent';
+                indicator.style.backgroundColor = 'transparent'; indicator.style.borderColor = '#ccc'; checkmark.style.opacity = '0'; toggleItem.style.background = 'transparent';
             }
         };
 
+        const mergeCheckbox = popup.querySelector('#vrm-merge-messages');
+        if (mergeCheckbox && typeof window.mergeMessagesEnabled !== 'undefined') {
+            mergeCheckbox.checked = window.mergeMessagesEnabled; updateCheckboxStyle(mergeCheckbox);
+        }
+
+        const focusCheckbox = popup.querySelector('#vrm-focus-mode');
         if (focusCheckbox && typeof window.focusModeEnabled !== 'undefined') {
-            const newChecked = !window.focusModeEnabled;
-            if (focusCheckbox.checked !== newChecked) {
-                focusCheckbox.checked = newChecked;
-                requestAnimationFrame(() => {
-                    updateCheckboxStyle(focusCheckbox);
-                });
-            } else {
-                requestAnimationFrame(() => {
-                    updateCheckboxStyle(focusCheckbox);
-                });
-            }
+            focusCheckbox.checked = !window.focusModeEnabled; updateCheckboxStyle(focusCheckbox);
         }
-
+        
+        const proactiveChatCheckbox = popup.querySelector('#vrm-proactive-chat');
         if (proactiveChatCheckbox && typeof window.proactiveChatEnabled !== 'undefined') {
-            const newChecked = window.proactiveChatEnabled;
-            if (proactiveChatCheckbox.checked !== newChecked) {
-                proactiveChatCheckbox.checked = newChecked;
-                requestAnimationFrame(() => {
-                    updateCheckboxStyle(proactiveChatCheckbox);
-                });
-            } else {
-                requestAnimationFrame(() => {
-                    updateCheckboxStyle(proactiveChatCheckbox);
-                });
-            }
+            proactiveChatCheckbox.checked = window.proactiveChatEnabled; updateCheckboxStyle(proactiveChatCheckbox);
         }
     }
 
-    // 如果是 agent 弹窗，触发服务器状态检查事件（使用live2d-*事件名保持兼容）
-    if (buttonId === 'agent' && !isVisible) {
-        window.dispatchEvent(new CustomEvent('live2d-agent-popup-opening'));
-    }
+    if (buttonId === 'agent' && !isVisible) window.dispatchEvent(new CustomEvent('live2d-agent-popup-opening'));
 
     if (isVisible) {
-        popup.style.opacity = '0';
-        popup.style.transform = 'translateX(-10px)';
-
-        if (buttonId === 'agent') {
-            window.dispatchEvent(new CustomEvent('live2d-agent-popup-closed'));
-        }
-
-        setTimeout(() => {
-            popup.style.display = 'none';
-            popup.style.left = '100%';
-            popup.style.right = 'auto';
-            popup.style.top = '0';
-            popup.style.marginLeft = '8px';
-            popup.style.marginRight = '0';
-            if (buttonId === 'settings' || buttonId === 'agent') {
-                popup.style.maxHeight = '200px';
-                popup.style.overflowY = 'auto';
-            }
-        }, 200);
+        popup.style.opacity = '0'; popup.style.transform = 'translateX(-10px)';
+        if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('live2d-agent-popup-closed'));
+        setTimeout(() => { popup.style.display = 'none'; popup.style.left = '100%'; popup.style.top = '0'; }, 200);
     } else {
         this.closeAllPopupsExcept(buttonId);
-
-        popup.style.display = 'flex';
-        popup.style.opacity = '0';
-        popup.style.visibility = 'visible';
-
-        if (buttonId === 'settings' || buttonId === 'agent') {
-            popup.style.maxHeight = 'none';
-            popup.style.overflowY = 'visible';
-        }
-
+        popup.style.display = 'flex'; popup.style.opacity = '0'; popup.style.visibility = 'visible';
+        
+        // 预加载图片
         const images = popup.querySelectorAll('img');
-        const imageLoadPromises = Array.from(images).map(img => {
-            if (img.complete) {
-                return Promise.resolve();
-            }
-            return new Promise(resolve => {
-                img.onload = resolve;
-                img.onerror = resolve;
-                setTimeout(resolve, 100);
-            });
-        });
-
-        Promise.all(imageLoadPromises).then(() => {
+        Promise.all(Array.from(images).map(img => img.complete ? Promise.resolve() : new Promise(r => { img.onload = img.onerror = r; setTimeout(r, 100); }))).then(() => {
             void popup.offsetHeight;
-
             requestAnimationFrame(() => {
                 const popupRect = popup.getBoundingClientRect();
                 const screenWidth = window.innerWidth;
                 const screenHeight = window.innerHeight;
-                const rightMargin = 20;
-                const bottomMargin = 60;
-
-                const popupRight = popupRect.right;
-                if (popupRight > screenWidth - rightMargin) {
-                    const button = document.getElementById(`vrm-btn-${buttonId}`);  // VRM专用ID
+                if (popupRect.right > screenWidth - 20) {
+                    const button = document.getElementById(`vrm-btn-${buttonId}`);
                     const buttonWidth = button ? button.offsetWidth : 48;
-                    const gap = 8;
-
-                    popup.style.left = 'auto';
-                    popup.style.right = '0';
-                    popup.style.marginLeft = '0';
-                    popup.style.marginRight = `${buttonWidth + gap}px`;
-                    popup.style.transform = 'translateX(10px)';
+                    popup.style.left = 'auto'; popup.style.right = '0'; popup.style.marginLeft = '0'; popup.style.marginRight = `${buttonWidth + 8}px`;
                 }
-
                 if (buttonId === 'settings' || buttonId === 'agent') {
-                    const popupBottom = popupRect.bottom;
-                    if (popupBottom > screenHeight - bottomMargin) {
-                        const overflow = popupBottom - (screenHeight - bottomMargin);
-                        const currentTop = parseInt(popup.style.top) || 0;
-                        const newTop = currentTop - overflow;
-                        popup.style.top = `${newTop}px`;
+                    if (popupRect.bottom > screenHeight - 60) {
+                        popup.style.top = `${parseInt(popup.style.top || 0) - (popupRect.bottom - (screenHeight - 60))}px`;
                     }
                 }
-
-                popup.style.visibility = 'visible';
-                popup.style.opacity = '1';
-                popup.style.transform = 'translateX(0)';
+                popup.style.visibility = 'visible'; popup.style.opacity = '1'; popup.style.transform = 'translateX(0)';
             });
         });
+    }
+};
+// 【新增】VRM 专用的麦克风列表渲染函数
+VRMManager.prototype.renderMicList = async function (popup) {
+    if (!popup) return;
+    popup.innerHTML = ''; // 清空现有内容
 
-        if (buttonId !== 'settings' && buttonId !== 'agent' && buttonId !== 'mic') {
-            this._popupTimers[buttonId] = setTimeout(() => {
-                popup.style.opacity = '0';
-                popup.style.transform = popup.style.right === '100%' ? 'translateX(10px)' : 'translateX(-10px)';
-                setTimeout(() => {
-                    popup.style.display = 'none';
-                    popup.style.left = '100%';
-                    popup.style.right = 'auto';
-                    popup.style.top = '0';
-                }, 200);
-                this._popupTimers[buttonId] = null;
-            }, 1000);
+    const t = window.t || ((k, opt) => k); // 简单的 i18n 兼容
+
+    try {
+        // 获取权限
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach(t => t.stop()); // 立即释放
+
+        // 获取设备列表
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const audioInputs = devices.filter(device => device.kind === 'audioinput');
+
+        if (audioInputs.length === 0) {
+            const noDev = document.createElement('div');
+            noDev.textContent = '未检测到麦克风';
+            Object.assign(noDev.style, { padding:'8px', fontSize:'13px', color:'#666' });
+            popup.appendChild(noDev);
+            return;
         }
+
+        // 渲染列表逻辑（复用 app.js 风格）
+        // 1. 默认设备
+        const addOption = (label, deviceId) => {
+            const btn = document.createElement('div');
+            btn.textContent = label;
+            // 简单样式
+            Object.assign(btn.style, {
+                padding: '8px 12px', cursor: 'pointer', fontSize: '13px',
+                borderRadius: '6px', transition: 'background 0.2s',
+                color: '#333'
+            });
+            
+            // 选中高亮逻辑（简单模拟）
+            btn.addEventListener('mouseenter', () => btn.style.background = 'rgba(68, 183, 254, 0.1)');
+            btn.addEventListener('mouseleave', () => btn.style.background = 'transparent');
+            
+            btn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                // 调用 app.js 里定义的全局函数来切换设备（如果存在）
+                // 因为 app.js 并没有把 selectMicrophone 暴露给 window，这里我们暂时无法直接调用
+                // 但通常我们会通过 fetch 发送给后端
+                if (deviceId) {
+                    try {
+                        await fetch('/api/characters/set_microphone', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ microphone_id: deviceId })
+                        });
+                        // 刷新页面或提示
+                        if (window.showStatusToast) window.showStatusToast('已切换麦克风 (下一次录音生效)', 2000);
+                    } catch(e) { console.error(e); }
+                }
+            });
+            popup.appendChild(btn);
+        };
+
+        // 添加列表
+        audioInputs.forEach((device, index) => {
+            addOption(device.label || `麦克风 ${index + 1}`, device.deviceId);
+        });
+
+    } catch (e) {
+        console.error('获取麦克风失败', e);
+        const errDiv = document.createElement('div');
+        errDiv.textContent = '无法访问麦克风';
+        popup.appendChild(errDiv);
+    }
+};
+
+// 【新增】VRM 专用的屏幕源列表渲染函数
+VRMManager.prototype.renderScreenSourceList = async function (popup) {
+    if (!popup) return;
+    popup.innerHTML = ''; // 清空现有内容
+
+    const t = window.t || ((k, opt) => k); // 简单的 i18n 兼容
+
+    // 检查是否在Electron环境
+    if (!window.electronDesktopCapturer || !window.electronDesktopCapturer.getSources) {
+        const notAvailableItem = document.createElement('div');
+        notAvailableItem.textContent = t('app.screenSource.notAvailable') || '仅在桌面版可用';
+        Object.assign(notAvailableItem.style, { padding:'12px', fontSize:'13px', color:'#666', textAlign:'center' });
+        popup.appendChild(notAvailableItem);
+        return;
+    }
+
+    try {
+        // 显示加载中
+        const loadingItem = document.createElement('div');
+        loadingItem.textContent = t('app.screenSource.loading') || '加载中...';
+        Object.assign(loadingItem.style, { padding:'12px', fontSize:'13px', color:'#666', textAlign:'center' });
+        popup.appendChild(loadingItem);
+
+        // 获取屏幕源
+        const sources = await window.electronDesktopCapturer.getSources({
+            types: ['window', 'screen'],
+            thumbnailSize: { width: 160, height: 100 }
+        });
+
+        popup.innerHTML = '';
+
+        if (!sources || sources.length === 0) {
+            const noSourcesItem = document.createElement('div');
+            noSourcesItem.textContent = t('app.screenSource.noSources') || '没有可用的屏幕源';
+            Object.assign(noSourcesItem.style, { padding:'12px', fontSize:'13px', color:'#666', textAlign:'center' });
+            popup.appendChild(noSourcesItem);
+            return;
+        }
+
+        // 分组：屏幕和窗口
+        const screens = sources.filter(s => s.id.startsWith('screen:'));
+        const windows = sources.filter(s => s.id.startsWith('window:'));
+
+        // 创建网格容器
+        const createGridContainer = () => {
+            const grid = document.createElement('div');
+            Object.assign(grid.style, {
+                display: 'grid',
+                gridTemplateColumns: 'repeat(4, 1fr)',
+                gap: '6px',
+                padding: '4px',
+                width: '100%',
+                boxSizing: 'border-box'
+            });
+            return grid;
+        };
+
+        // 创建屏幕源选项元素
+        const createSourceOption = (source) => {
+            const option = document.createElement('div');
+            option.className = 'screen-source-option';
+            option.dataset.sourceId = source.id;
+            Object.assign(option.style, {
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                padding: '4px',
+                cursor: 'pointer',
+                borderRadius: '6px',
+                border: '2px solid transparent',
+                transition: 'all 0.2s ease',
+                background: 'transparent',
+                boxSizing: 'border-box',
+                minWidth: '0'
+            });
+
+            // 缩略图
+            if (source.thumbnail) {
+                const thumb = document.createElement('img');
+                thumb.src = source.thumbnail;
+                Object.assign(thumb.style, {
+                    width: '100%',
+                    maxWidth: '90px',
+                    height: '56px',
+                    objectFit: 'cover',
+                    borderRadius: '4px',
+                    border: '1px solid #ddd',
+                    marginBottom: '4px'
+                });
+                option.appendChild(thumb);
+            } else {
+                const iconPlaceholder = document.createElement('div');
+                iconPlaceholder.textContent = source.id.startsWith('screen:') ? '🖥️' : '🪟';
+                Object.assign(iconPlaceholder.style, {
+                    width: '100%',
+                    maxWidth: '90px',
+                    height: '56px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '24px',
+                    background: '#f5f5f5',
+                    borderRadius: '4px',
+                    marginBottom: '4px'
+                });
+                option.appendChild(iconPlaceholder);
+            }
+
+            // 名称
+            const label = document.createElement('span');
+            label.textContent = source.name;
+            Object.assign(label.style, {
+                fontSize: '10px',
+                color: '#333',
+                width: '100%',
+                textAlign: 'center',
+                lineHeight: '1.3',
+                wordBreak: 'break-word',
+                display: '-webkit-box',
+                WebkitLineClamp: '2',
+                WebkitBoxOrient: 'vertical',
+                overflow: 'hidden',
+                height: '26px'
+            });
+            option.appendChild(label);
+
+            // 悬停效果
+            option.addEventListener('mouseenter', () => {
+                option.style.background = 'rgba(68, 183, 254, 0.1)';
+            });
+            option.addEventListener('mouseleave', () => {
+                option.style.background = 'transparent';
+            });
+
+            option.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                // 调用全局的屏幕源选择函数（app.js中定义）
+                if (window.selectScreenSource) {
+                    await window.selectScreenSource(source.id, source.name);
+                } else {
+                    console.warn('[VRM] window.selectScreenSource 未定义');
+                }
+            });
+
+            return option;
+        };
+
+        // 渲染屏幕列表
+        if (screens.length > 0) {
+            const screenTitle = document.createElement('div');
+            screenTitle.textContent = t('app.screenSource.screens') || '屏幕';
+            Object.assign(screenTitle.style, {
+                padding: '6px 8px',
+                fontSize: '11px',
+                fontWeight: '600',
+                color: '#666',
+                borderBottom: '1px solid #eee',
+                marginBottom: '4px'
+            });
+            popup.appendChild(screenTitle);
+
+            const screenGrid = createGridContainer();
+            screens.forEach(source => {
+                screenGrid.appendChild(createSourceOption(source));
+            });
+            popup.appendChild(screenGrid);
+        }
+
+        // 渲染窗口列表
+        if (windows.length > 0) {
+            const windowTitle = document.createElement('div');
+            windowTitle.textContent = t('app.screenSource.windows') || '窗口';
+            Object.assign(windowTitle.style, {
+                padding: '6px 8px',
+                fontSize: '11px',
+                fontWeight: '600',
+                color: '#666',
+                borderBottom: '1px solid #eee',
+                marginTop: windows.length > 0 && screens.length > 0 ? '8px' : '0',
+                marginBottom: '4px'
+            });
+            popup.appendChild(windowTitle);
+
+            const windowGrid = createGridContainer();
+            windows.forEach(source => {
+                windowGrid.appendChild(createSourceOption(source));
+            });
+            popup.appendChild(windowGrid);
+        }
+
+    } catch (e) {
+        console.error('[VRM] 获取屏幕源失败', e);
+        popup.innerHTML = '';
+        const errDiv = document.createElement('div');
+        errDiv.textContent = '获取屏幕源失败';
+        Object.assign(errDiv.style, { padding:'12px', fontSize:'13px', color:'#dc3545', textAlign:'center' });
+        popup.appendChild(errDiv);
     }
 };
 

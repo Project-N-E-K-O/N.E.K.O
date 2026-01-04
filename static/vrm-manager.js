@@ -103,16 +103,42 @@ class VRMManager {
         this._initModules();
         if (!this.core) this.core = new window.VRMCore(this);
         
+        // 确保场景已初始化
+        if (!this.scene || !this.camera || !this.renderer) {
+            // 尝试自动检测 canvas 和 container
+            const canvasId = options.canvasId || 'vrm-canvas';
+            const containerId = options.containerId || 'vrm-container';
+            
+            // 检查元素是否存在
+            const canvas = document.getElementById(canvasId);
+            const container = document.getElementById(containerId);
+            
+            if (canvas && container) {
+                console.log(`[VRM Manager] 场景未初始化，自动初始化场景 (canvas: ${canvasId}, container: ${containerId})`);
+                await this.initThreeJS(canvasId, containerId);
+            } else {
+                throw new Error(`无法加载模型：场景未初始化。请先调用 initThreeJS('${canvasId}', '${containerId}') 或确保这些元素存在于页面中。`);
+            }
+        }
+        
         const result = await this.core.loadModel(modelUrl, options);
         
         if (!this._animationFrameId) this.startAnimateLoop();
 
         const DEFAULT_LOOP_ANIMATION = '/static/vrm/animation/wait03.vrma';
 
+        // 确保动画模块已初始化
+        if (!this.animation) {
+            this._initModules();
+        }
+
         if (options.autoPlay !== false && this.animation) {
-            this.playVRMAAnimation(DEFAULT_LOOP_ANIMATION, { loop: true }).catch(err => {
-                console.warn('[VRM Manager] 自动播放默认动作失败:', err);
-            });
+            // 延迟播放，确保模型完全加载
+            setTimeout(() => {
+                this.playVRMAAnimation(DEFAULT_LOOP_ANIMATION, { loop: true }).catch(err => {
+                    console.warn('[VRM Manager] 自动播放默认动作失败:', err);
+                });
+            }, 100);
         }
         
         // 设置初始表情
