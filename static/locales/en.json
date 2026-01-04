@@ -719,6 +719,8 @@
     "saveError": "An error occurred while saving: {{error}}",
     "fillProfileNameFirst": "Please fill in the catgirl profile name first, then set the Live2D model",
     "createCharacterFirst": "Please click the \"Confirm New Character\" button to create the character first, then set the Live2D model",
+    "fillProfileNameFirstForVoice": "Please fill in the catgirl profile name first, then register the voice",
+    "createCharacterFirstForVoice": "Please click the \"Confirm New Character\" button to create the character first, then register the voice",
     "allowPopups": "Please allow popups!",
     "enterNewProfileName": "Please enter the new catgirl profile name",
     "renameCatgirlTitle": "Rename Catgirl",

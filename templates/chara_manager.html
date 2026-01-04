@@ -1034,7 +1034,23 @@
             registerVoiceBtn.type = 'button';
             registerVoiceBtn.className = 'btn sm';
             registerVoiceBtn.textContent = window.t ? window.t('character.registerNewVoice') : '注册新声音';
-            registerVoiceBtn.addEventListener('click', function () { openVoiceClone(key || ''); });
+            registerVoiceBtn.addEventListener('click', async function () {
+                const catgirlName = form.querySelector('[name="档案名"]').value;
+                if (!catgirlName) {
+                    await showAlert(window.t ? window.t('character.fillProfileNameFirstForVoice') : '请先填写猫娘档案名，然后再注册音色');
+                    return;
+                }
+                
+                // 如果是新建角色，检查角色是否已经创建
+                if (isNew) {
+                    if (!characterData['猫娘'] || !characterData['猫娘'][catgirlName]) {
+                        await showAlert(window.t ? window.t('character.createCharacterFirstForVoice') : '请先点击"确认新猫娘"按钮创建角色，然后再注册音色');
+                        return;
+                    }
+                }
+                
+                openVoiceClone(catgirlName);
+            });
             voiceRow.appendChild(registerVoiceBtn);
             foldContent.appendChild(voiceRow);
 
