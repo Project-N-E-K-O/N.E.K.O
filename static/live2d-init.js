@@ -88,7 +88,7 @@ async function initLive2DModel() {
     try {
         console.log('开始初始化Live2D模型，路径:', targetModelPath);
 
-        // 【关键修复】在初始化Live2D前，清理VRM相关资源
+        // 在初始化Live2D前，清理VRM相关资源
         // UI 切换逻辑 - 智能视觉切换
         const vrmContainer = document.getElementById('vrm-container');
         if (vrmContainer) vrmContainer.style.display = 'none';
@@ -154,12 +154,15 @@ async function initLive2DModel() {
             if (preferences && preferences.length > 0) {
                 console.log('所有偏好设置的路径:', preferences.map(p => p?.model_path).filter(Boolean));
 
+                // 【优化】预先计算路径相关变量，避免重复计算
+                const targetFileName = targetModelPath.split('/').pop() || '';
+                const targetPathParts = targetModelPath.split('/').filter(p => p);
+
                 // 首先尝试精确匹配
                 modelPreferences = preferences.find(p => p && p.model_path === targetModelPath);
 
                 // 如果精确匹配失败，尝试文件名匹配
                 if (!modelPreferences) {
-                    const targetFileName = targetModelPath.split('/').pop() || '';
                     console.log('尝试文件名匹配，目标文件名:', targetFileName);
                     modelPreferences = preferences.find(p => {
                         if (!p || !p.model_path) return false;
@@ -174,7 +177,6 @@ async function initLive2DModel() {
 
                 // 如果还是没找到，尝试部分匹配（通过模型名称）
                 if (!modelPreferences) {
-                    const targetPathParts = targetModelPath.split('/').filter(p => p);
                     const modelName = targetPathParts[targetPathParts.length - 2] || targetPathParts[targetPathParts.length - 1]?.replace('.model3.json', '');
                     console.log('尝试模型名称匹配，模型名称:', modelName);
                     if (modelName) {
@@ -188,11 +190,10 @@ async function initLive2DModel() {
                         });
                     }
                 }
-            
+
                 // 如果还是没找到，尝试部分路径匹配
                 if (!modelPreferences) {
                     console.log('尝试部分路径匹配...');
-                    const targetPathParts = targetModelPath.split('/').filter(p => p);
                     modelPreferences = preferences.find(p => {
                         if (!p || !p.model_path) return false;
                         const prefPathParts = p.model_path.split('/').filter(p => p);
