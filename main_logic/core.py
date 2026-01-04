@@ -668,6 +668,14 @@ class LLMSessionManager:
         _,_,_,lanlan_basic_config_updated,_,_,_,_,_,_ = self._config_manager.get_character_data()
         old_voice_id = self.voice_id
         self.voice_id = lanlan_basic_config_updated.get(self.lanlan_name, {}).get('voice_id', '')
+        
+        # 如果角色没有设置 voice_id，尝试使用自定义API配置的 TTS_VOICE_ID 作为回退
+        if not self.voice_id:
+            core_config = self._config_manager.get_core_config()
+            if core_config.get('ENABLE_CUSTOM_API') and core_config.get('TTS_VOICE_ID'):
+                self.voice_id = core_config.get('TTS_VOICE_ID')
+                logger.info(f"🔄 使用自定义TTS回退音色: '{self.voice_id}'")
+        
         if old_voice_id != self.voice_id:
             logger.info(f"🔄 voice_id已更新: '{old_voice_id}' -> '{self.voice_id}'")
         
@@ -688,14 +696,23 @@ class LLMSessionManager:
             # 注意：不清空 pending_input_data，因为可能已有数据在缓存中
         
         # 根据 input_mode 设置 use_tts
+        # 检查是否有自定义 TTS 配置（URL 存在即表示配置了自定义 TTS）
+        core_config = self._config_manager.get_core_config()
+        has_custom_tts_config = (
+            core_config.get('ENABLE_CUSTOM_API') and 
+            core_config.get('TTS_MODEL_URL')
+        )
+        
         if input_mode == 'text':
             # 文本模式总是需要 TTS（使用默认或自定义音色）
             self.use_tts = True
-        elif self.voice_id:
-            # 语音模式下有自定义音色时使用 TTS
+        elif self.voice_id or has_custom_tts_config:
+            # 语音模式下：有自定义音色 或 配置了自定义TTS时，使用外部TTS
             self.use_tts = True
+            if has_custom_tts_config and not self.voice_id:
+                logger.info("🔊 语音模式：检测到自定义TTS配置，将使用自定义TTS覆盖原生语音")
         else:
-            # 语音模式下无自定义音色，使用 realtime API 原生语音
+            # 语音模式下无自定义音色且无自定义TTS配置，使用 realtime API 原生语音
             self.use_tts = False
         
         async with self.lock:
@@ -729,17 +746,23 @@ class LLMSessionManager:
             
             # 启动TTS线程
             if self.tts_thread is None or not self.tts_thread.is_alive():
+                # 判断是否使用自定义 TTS：有 voice_id 或 配置了自定义 TTS URL
+                core_config = self._config_manager.get_core_config()
+                has_custom_tts = bool(self.voice_id) or (
+                    core_config.get('ENABLE_CUSTOM_API') and 
+                    core_config.get('TTS_MODEL_URL')
+                )
+                
                 # 使用工厂函数获取合适的 TTS worker
-                has_custom_voice = bool(self.voice_id)
                 tts_worker = get_tts_worker(
                     core_api_type=self.core_api_type,
-                    has_custom_voice=has_custom_voice
+                    has_custom_voice=has_custom_tts
                 )
                 
                 self.tts_request_queue = Queue()  # TTS request (线程队列)
                 self.tts_response_queue = Queue()  # TTS response (线程队列)
-                # 根据是否有自定义音色选择 TTS API 配置
-                if has_custom_voice:
+                # 根据是否有自定义音色/TTS配置选择 TTS API 配置
+                if has_custom_tts:
                     tts_config = self._config_manager.get_model_api_config('tts_custom')
                 else:
                     tts_config = self._config_manager.get_model_api_config('tts_default')
@@ -751,7 +774,7 @@ class LLMSessionManager:
                 self.tts_thread.start()
                 
                 # 等待TTS进程发送就绪信号（最多等待8秒）
-                tts_type = "自定义音色(CosyVoice)" if has_custom_voice else f"{self.core_api_type}默认TTS"
+                tts_type = "自定义TTS" if has_custom_tts else f"{self.core_api_type}默认TTS"
                 logger.info(f"🎤 TTS进程已启动，等待就绪... (使用: {tts_type})")
                 
                 tts_ready = False
@@ -1052,6 +1075,14 @@ class LLMSessionManager:
             _,_,_,lanlan_basic_config_updated,_,_,_,_,_,_ = self._config_manager.get_character_data()
             old_voice_id = self.voice_id
             self.voice_id = lanlan_basic_config_updated.get(self.lanlan_name, {}).get('voice_id', '')
+            
+            # 如果角色没有设置 voice_id，尝试使用自定义API配置的 TTS_VOICE_ID 作为回退
+            if not self.voice_id:
+                core_config = self._config_manager.get_core_config()
+                if core_config.get('ENABLE_CUSTOM_API') and core_config.get('TTS_VOICE_ID'):
+                    self.voice_id = core_config.get('TTS_VOICE_ID')
+                    logger.info(f"🔄 热切换准备: 使用自定义TTS回退音色: '{self.voice_id}'")
+            
             if old_voice_id != self.voice_id:
                 logger.info(f"🔄 热切换准备: voice_id已更新: '{old_voice_id}' -> '{self.voice_id}'")
             

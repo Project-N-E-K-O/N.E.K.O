@@ -1305,67 +1305,74 @@
 
             form.onsubmit = async function (e) {
                 e.preventDefault();
-                const fd = new FormData(form);
-                const data = {};
-                for (const [k, v] of fd.entries()) {
-                    // 特殊处理voice_id字段，即使为空也要包含
-                    if (k === 'voice_id') {
-                        data[k] = v;
-                    } else if (k && v) {
-                        data[k] = v;
-                    }
-                }
-                if (!data['档案名']) {
-                    await showAlert(window.t ? window.t('character.profileNameRequired') : '档案名为必填项');
+                // 防止重复提交
+                if (form.dataset.submitting === 'true') {
+                    console.log('表单正在提交中，忽略重复提交');
                     return;
                 }
-
-                // 验证Live2D模型文件存在性
-                if (data['live2d'] && data['live2d'].trim() !== '') {
-                    try {
-                        const response = await fetch(`/api/characters/catgirl/l2d/${encodeURIComponent(data['档案名'])}`);
-                        const modelInfo = await response.json();
-
-                        if (!modelInfo.valid) {
-                            const confirmFallback = await showConfirm(
-                                window.t ? window.t('character.live2dModelError', { name: data['档案名'], path: data['live2d'] }) : `猫娘"${data['档案名']}"的Live2D模型文件不存在或已损坏。\n\n当前模型路径: ${data['live2d']}\n\n是否回退到默认模型(mao_pro)？\n\n点击"确定"使用默认模型，点击"取消"保持当前设置。`,
-                                window.t ? window.t('character.live2dModelErrorTitle') : 'Live2D模型异常'
-                            );
-
-                            if (confirmFallback) {
-                                // 回退到默认模型
-                                const fallbackResponse = await fetch(`/api/characters/catgirl/l2d/${encodeURIComponent(data['档案名'])}`, {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ fallback_to_default: true })
-                                });
-                                const fallbackResult = await fallbackResponse.json();
-
-                                if (fallbackResult.success) {
-                                    await showAlert(window.t ? window.t('character.fallbackToDefaultModel', { path: fallbackResult.model_path }) : `已回退到默认模型: ${fallbackResult.model_path}`);
-                                    // 更新表单中的live2d字段
-                                    data['live2d'] = fallbackResult.model_path;
-                                } else {
-                                    await showAlert(window.t ? window.t('character.fallbackFailed') : '回退到默认模型失败，请检查模型设置');
-                                }
-                            } else {
-                                // 用户选择保持当前设置，继续保存
-                                console.warn(`用户选择保持无效的Live2D模型设置: ${data['live2d']}`);
-                            }
-                        }
-                    } catch (error) {
-                        console.error('验证Live2D模型失败:', error);
-                        const continueSave = await showConfirm(
-                            window.t ? window.t('character.cannotVerifyLive2d') : `无法验证Live2D模型文件存在性。\n\n是否继续保存？\n\n点击"确定"继续保存，点击"取消"中止保存。`,
-                            window.t ? window.t('character.verificationFailed') : '验证失败'
-                        );
-                        if (!continueSave) {
-                            return;
-                        }
-                    }
-                }
+                form.dataset.submitting = 'true';
 
                 try {
+                    const fd = new FormData(form);
+                    const data = {};
+                    for (const [k, v] of fd.entries()) {
+                        // 特殊处理voice_id字段，即使为空也要包含
+                        if (k === 'voice_id') {
+                            data[k] = v;
+                        } else if (k && v) {
+                            data[k] = v;
+                        }
+                    }
+                    if (!data['档案名']) {
+                        await showAlert(window.t ? window.t('character.profileNameRequired') : '档案名为必填项');
+                        return;
+                    }
+
+                    // 验证Live2D模型文件存在性
+                    if (data['live2d'] && data['live2d'].trim() !== '') {
+                        try {
+                            const response = await fetch(`/api/characters/catgirl/l2d/${encodeURIComponent(data['档案名'])}`);
+                            const modelInfo = await response.json();
+
+                            if (!modelInfo.valid) {
+                                const confirmFallback = await showConfirm(
+                                    window.t ? window.t('character.live2dModelError', { name: data['档案名'], path: data['live2d'] }) : `猫娘"${data['档案名']}"的Live2D模型文件不存在或已损坏。\n\n当前模型路径: ${data['live2d']}\n\n是否回退到默认模型(mao_pro)？\n\n点击"确定"使用默认模型，点击"取消"保持当前设置。`,
+                                    window.t ? window.t('character.live2dModelErrorTitle') : 'Live2D模型异常'
+                                );
+
+                                if (confirmFallback) {
+                                    // 回退到默认模型
+                                    const fallbackResponse = await fetch(`/api/characters/catgirl/l2d/${encodeURIComponent(data['档案名'])}`, {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ fallback_to_default: true })
+                                    });
+                                    const fallbackResult = await fallbackResponse.json();
+
+                                    if (fallbackResult.success) {
+                                        await showAlert(window.t ? window.t('character.fallbackToDefaultModel', { path: fallbackResult.model_path }) : `已回退到默认模型: ${fallbackResult.model_path}`);
+                                        // 更新表单中的live2d字段
+                                        data['live2d'] = fallbackResult.model_path;
+                                    } else {
+                                        await showAlert(window.t ? window.t('character.fallbackFailed') : '回退到默认模型失败，请检查模型设置');
+                                    }
+                                } else {
+                                    // 用户选择保持当前设置，继续保存
+                                    console.warn(`用户选择保持无效的Live2D模型设置: ${data['live2d']}`);
+                                }
+                            }
+                        } catch (error) {
+                            console.error('验证Live2D模型失败:', error);
+                            const continueSave = await showConfirm(
+                                window.t ? window.t('character.cannotVerifyLive2d') : `无法验证Live2D模型文件存在性。\n\n是否继续保存？\n\n点击"确定"继续保存，点击"取消"中止保存。`,
+                                window.t ? window.t('character.verificationFailed') : '验证失败'
+                            );
+                            if (!continueSave) {
+                                return;
+                            }
+                        }
+                    }
+
                     console.log('提交数据:', data);
                     const response = await fetch('/api/characters/catgirl' + (isNew ? '' : '/' + encodeURIComponent(key)), {
                         method: isNew ? 'POST' : 'PUT',
@@ -1418,6 +1425,8 @@
                 } catch (error) {
                     console.error('保存出错:', error);
                     await showAlert(window.t ? window.t('character.saveError', { error: error.message }) : '保存时发生错误: ' + error.message);
+                } finally {
+                    form.dataset.submitting = 'false';
                 }
             };
             // 绑定"修改名称"按钮事件

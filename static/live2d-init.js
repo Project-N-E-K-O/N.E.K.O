@@ -84,9 +84,11 @@ async function initLive2DModel() {
         console.log('未设置模型路径，且不在模型管理页面，跳过Live2D初始化');
         return;
     }
-    
+
     try {
-        // 初始化 PIXI 应用（在模型管理界面也需要初始化，以便手动加载模型）
+        console.log('开始初始化Live2D模型，路径:', targetModelPath);
+
+        // 初始化 PIXI 应用
         await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
         let modelPreferences = null;
         // 如果不在模型管理界面且有模型路径，才继续加载模型
@@ -202,10 +204,13 @@ async function initLive2DModel() {
                 }
             }
 
-            // 设置全局引用（兼容性）
-            window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
-            window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
-            window.LanLan1.emotionMapping = window.live2dManager.getEmotionMapping();
+        // 设置全局引用（兼容性）
+        window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
+        window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
+        window.LanLan1.emotionMapping = window.live2dManager.getEmotionMapping();
+
+        // 设置页面卸载时的自动清理（确保资源正确释放）
+        window.live2dManager.setupUnloadCleanup();
 
             console.log('✓ Live2D 管理器自动初始化完成');
         } else if (isModelManagerPage) {

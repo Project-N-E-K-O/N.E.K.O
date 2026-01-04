@@ -704,20 +704,51 @@ def get_model_files_by_id(model_id: str):
         
         # 查找模型配置文件（model3.json）
         model_config_file = None
-        for file in os.listdir(model_dir):
-            if file.endswith('.model3.json'):
-                model_config_file = file
-                break
+        model_name_subdir = None  # 存储模型名称子目录（如果有）
+        actual_model_dir = model_dir  # 实际包含模型文件的目录
+        
+        # 首先检查model_dir本身是否包含模型文件
+        if os.path.exists(model_dir):
+            for file in os.listdir(model_dir):
+                if file.endswith('.model3.json'):
+                    model_config_file = file
+                    actual_model_dir = model_dir
+                    break
+        
+        # 如果model_dir本身没有模型文件，检查子目录（处理上传后的目录结构：workshop/{item_id}/{model_name}/）
+        if not model_config_file:
+            try:
+                for subdir in os.listdir(model_dir):
+                    subdir_path = os.path.join(model_dir, subdir)
+                    if os.path.isdir(subdir_path):
+                        for file in os.listdir(subdir_path):
+                            if file.endswith('.model3.json'):
+                                model_config_file = file
+                                model_name_subdir = subdir  # 保存模型名称子目录
+                                actual_model_dir = subdir_path  # 更新为实际的模型目录
+                                break
+                        if model_config_file:
+                            break
+            except Exception as e:
+                logger.warning(f"检查子目录时出错: {e}")
+        
+        # 更新model_dir为实际包含模型文件的目录（用于后续的文件搜索）
+        model_dir = actual_model_dir
         
         # 构建模型配置文件的URL
         model_config_url = None
         if model_config_file and url_prefix:
-            # 对于workshop模型，需要在URL中包含item_id
+            # 对于workshop模型，需要根据实际路径结构构建URL
             if url_prefix == '/workshop':
-                model_config_url = f"{url_prefix}/{model_id}/{model_config_file}"
+                if model_name_subdir:
+                    # 模型在子目录中：workshop/{item_id}/{model_name}/{model_name}.model3.json
+                    model_config_url = f"{url_prefix}/{model_id}/{model_name_subdir}/{model_config_file}"
+                else:
+                    # 模型直接在item目录中：workshop/{item_id}/{model_name}.model3.json
+                    model_config_url = f"{url_prefix}/{model_id}/{model_config_file}"
             else:
                 model_config_url = f"{url_prefix}/{model_config_file}"
-            logger.debug(f"为模型 {model_id} 构建的配置URL: {model_config_url}")
+            logger.debug(f"为模型 {model_id} 构建的配置URL: {model_config_url} (模型子目录: {model_name_subdir})")
         
         logger.info(f"文件统计: {len(motion_files)} 个动作文件, {len(expression_files)} 个表情文件")
         return {

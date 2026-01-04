@@ -891,6 +891,15 @@
                                                 data-i18n-placeholder="api.ttsModelApiKeyPlaceholder"
                                                 placeholder="请输入TTS模型的API Key" value="" style="max-width: 600px;">
                                         </div>
+                                        <div class="field-row">
+                                            <label for="ttsVoiceId">
+                                                <span data-i18n="api.ttsVoiceId">Voice ID</span>
+                                                <em data-i18n="api.ttsVoiceIdHint">（可选，角色未设置时的回退音色）</em>
+                                            </label>
+                                            <input type="text" id="ttsVoiceId"
+                                                data-i18n-placeholder="api.ttsVoiceIdPlaceholder"
+                                                placeholder="如：中文女、alloy" value="" style="max-width: 600px;">
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -1237,6 +1246,9 @@
                             if (typeof data.ttsModelApiKey === 'string' && document.getElementById('ttsModelApiKey')) {
                                 document.getElementById('ttsModelApiKey').value = data.ttsModelApiKey;
                             }
+                            if (typeof data.ttsVoiceId === 'string' && document.getElementById('ttsVoiceId')) {
+                                document.getElementById('ttsVoiceId').value = data.ttsVoiceId;
+                            }
 
                             // 加载MCPR_TOKEN
                             if (typeof data.mcpToken === 'string' && document.getElementById('mcpTokenInput')) {
@@ -1446,6 +1458,7 @@
                     const ttsModelUrl = document.getElementById('ttsModelUrl') ? document.getElementById('ttsModelUrl').value.trim() : '';
                     const ttsModelId = document.getElementById('ttsModelId') ? document.getElementById('ttsModelId').value.trim() : '';
                     const ttsModelApiKey = document.getElementById('ttsModelApiKey') ? document.getElementById('ttsModelApiKey').value.trim() : '';
+                    const ttsVoiceId = document.getElementById('ttsVoiceId') ? document.getElementById('ttsVoiceId').value.trim() : '';
 
                     const mcpToken = document.getElementById('mcpTokenInput') ? document.getElementById('mcpTokenInput').value.trim() : '';
 
@@ -1467,7 +1480,7 @@
                             emotionModelProvider, emotionModelUrl, emotionModelId, emotionModelApiKey,
                             visionModelProvider, visionModelUrl, visionModelId, visionModelApiKey,
                             omniModelProvider, omniModelUrl, omniModelId, omniModelApiKey,
-                            ttsModelProvider, ttsModelUrl, ttsModelId, ttsModelApiKey,
+                            ttsModelProvider, ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId,
                             mcpToken, enableCustomApi
                         };
                         showWarningModal();
@@ -1481,13 +1494,13 @@
                             emotionModelProvider, emotionModelUrl, emotionModelId, emotionModelApiKey,
                             visionModelProvider, visionModelUrl, visionModelId, visionModelApiKey,
                             omniModelProvider, omniModelUrl, omniModelId, omniModelApiKey,
-                            ttsModelProvider, ttsModelUrl, ttsModelId, ttsModelApiKey,
+                            ttsModelProvider, ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId,
                             mcpToken, enableCustomApi
                         });
                     }
                 });
 
-                async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, summaryModelProvider, summaryModelUrl, summaryModelId, summaryModelApiKey, correctionModelProvider, correctionModelUrl, correctionModelId, correctionModelApiKey, emotionModelProvider, emotionModelUrl, emotionModelId, emotionModelApiKey, visionModelProvider, visionModelUrl, visionModelId, visionModelApiKey, omniModelProvider, omniModelUrl, omniModelId, omniModelApiKey, ttsModelProvider, ttsModelUrl, ttsModelId, ttsModelApiKey, mcpToken, enableCustomApi }) {
+                async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, summaryModelProvider, summaryModelUrl, summaryModelId, summaryModelApiKey, correctionModelProvider, correctionModelUrl, correctionModelId, correctionModelApiKey, emotionModelProvider, emotionModelUrl, emotionModelId, emotionModelApiKey, visionModelProvider, visionModelUrl, visionModelId, visionModelApiKey, omniModelProvider, omniModelUrl, omniModelId, omniModelApiKey, ttsModelProvider, ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId, mcpToken, enableCustomApi }) {
                     // 统一处理免费版 API Key 的保存值：如果核心或辅助 API 为 free，则保存值应为 'free-access'
                     if (!enableCustomApi && (coreApi === 'free' || assistApi === 'free')) {
                         // 无论用户在 UI 中看到的是翻译文本还是空字符串，保存时都使用 'free-access'
@@ -1539,6 +1552,7 @@
                                 ttsModelUrl: ttsModelUrl || undefined,
                                 ttsModelId: ttsModelId || undefined,
                                 ttsModelApiKey: ttsModelApiKey || undefined,
+                                ttsVoiceId: ttsVoiceId || undefined,
                                 mcpToken: mcpToken || undefined,
                                 enableCustomApi: enableCustomApi || false
                             })

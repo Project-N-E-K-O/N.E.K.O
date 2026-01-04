@@ -2,28 +2,56 @@
  * Live2D Model - 模型加载、口型同步相关功能
  */
 
+import { LIPSYNC_PARAMS } from './live2d-constants.js';
+
 // 加载模型
 Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     if (!this.pixi_app) {
         throw new Error('PIXI 应用未初始化，请先调用 initPIXI()');
     }
 
-    // 移除当前模型
-    if (this.currentModel) {
-        // 关闭所有已打开的设置窗口（防御性检查）
-        if (window.closeAllSettingsWindows) {
-            window.closeAllSettingsWindows();
-        }
-        // 清除保存参数的定时器
-        if (this._savedParamsTimer) {
-            clearInterval(this._savedParamsTimer);
-            this._savedParamsTimer = null;
-        }
-        
-        // 先清空常驻表情记录和初始参数
-        this.teardownPersistentExpressions();
-        this.initialParameters = {};
+    // 检查是否正在加载模型，防止并发加载导致重复模型叠加
+    // 如果已有加载操作正在进行，拒绝新的加载请求并明确返回错误
+    if (this._isLoadingModel) {
+        console.warn('模型正在加载中，跳过重复加载请求:', modelPath);
+        return Promise.reject(new Error('Model is already loading. Please wait for the current operation to complete.'));
+    }
+    
+    // 设置加载锁
+    this._isLoadingModel = true;
 
+    try {
+        // 移除当前模型
+        if (this.currentModel) {
+            // 关闭所有已打开的设置窗口（防御性检查）
+            // 可通过 options.skipCloseWindows 跳过此操作（例如从设置窗口返回时重新加载模型）
+            if (window.closeAllSettingsWindows && !options.skipCloseWindows) {
+                window.closeAllSettingsWindows();
+            }
+            // 清除保存参数的定时器
+            if (this._savedParamsTimer) {
+                clearInterval(this._savedParamsTimer);
+                this._savedParamsTimer = null;
+            }
+            
+            // 先清空常驻表情记录和初始参数
+            this.teardownPersistentExpressions();
+            this.initialParameters = {};
+
+            // 还原 coreModel.update 覆盖
+            try {
+                const coreModel = this.currentModel.internalModel && this.currentModel.internalModel.coreModel;
+                if (coreModel && this._mouthOverrideInstalled && typeof this._origCoreModelUpdate === 'function') {
+                    coreModel.update = this._origCoreModelUpdate;
+                }
+            } catch (_) {}
+            this._mouthOverrideInstalled = false;
+            this._origCoreModelUpdate = null;
+            // 同时移除 mouthTicker（若曾启用过 ticker 模式）
+            if (this._mouthTicker && this.pixi_app && this.pixi_app.ticker) {
+                try { this.pixi_app.ticker.remove(this._mouthTicker); } catch (_) {}
+                this._mouthTicker = null;
+            }
         // 还原 coreModel.update 覆盖
         try {
             const coreModel = this.currentModel.internalModel && this.currentModel.internalModel.coreModel;
@@ -40,223 +68,86 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
             this._mouthTicker = null;
         }
 
-        // 移除由 HTML 锁图标或交互注册的监听，避免访问已销毁的显示对象
-        try {
-            // 先移除锁图标的 ticker 回调
-            if (this._lockIconTicker && this.pixi_app && this.pixi_app.ticker) {
-                this.pixi_app.ticker.remove(this._lockIconTicker);
-            }
-            this._lockIconTicker = null;
-            // 移除锁图标元素
-            if (this._lockIconElement && this._lockIconElement.parentNode) {
-                this._lockIconElement.parentNode.removeChild(this._lockIconElement);
-            }
-            this._lockIconElement = null;
-            
-            // 清理浮动按钮系统
-            if (this._floatingButtonsTicker && this.pixi_app && this.pixi_app.ticker) {
-                this.pixi_app.ticker.remove(this._floatingButtonsTicker);
-            }
-            this._floatingButtonsTicker = null;
-            if (this._floatingButtonsContainer && this._floatingButtonsContainer.parentNode) {
-                this._floatingButtonsContainer.parentNode.removeChild(this._floatingButtonsContainer);
-            }
-            this._floatingButtonsContainer = null;
-            this._floatingButtons = {};
-            // 清理"请她回来"按钮容器
-            if (this._returnButtonContainer && this._returnButtonContainer.parentNode) {
-                this._returnButtonContainer.parentNode.removeChild(this._returnButtonContainer);
-            }
-            this._returnButtonContainer = null;
-            // 清理所有弹出框定时器
-            Object.values(this._popupTimers).forEach(timer => clearTimeout(timer));
-            this._popupTimers = {};
-            
-            // 暂停 ticker，期间做销毁，随后恢复
-            this.pixi_app.ticker && this.pixi_app.ticker.stop();
-        } catch (_) {}
-        try {
-            this.pixi_app.stage.removeAllListeners && this.pixi_app.stage.removeAllListeners();
-        } catch (_) {}
-        try {
-            this.currentModel.removeAllListeners && this.currentModel.removeAllListeners();
-        } catch (_) {}
+            // 移除由 HTML 锁图标或交互注册的监听，避免访问已销毁的显示对象
+            try {
+                // 清理鼠标跟踪监听器
+                if (this._mouseTrackingListener) {
+                    window.removeEventListener('pointermove', this._mouseTrackingListener);
+                    this._mouseTrackingListener = null;
+                }
+                
+                // 先移除锁图标的 ticker 回调
+                if (this._lockIconTicker && this.pixi_app && this.pixi_app.ticker) {
+                    this.pixi_app.ticker.remove(this._lockIconTicker);
+                }
+                this._lockIconTicker = null;
+                // 移除锁图标元素
+                if (this._lockIconElement && this._lockIconElement.parentNode) {
+                    this._lockIconElement.parentNode.removeChild(this._lockIconElement);
+                }
+                this._lockIconElement = null;
+                
+                // 清理浮动按钮系统
+                if (this._floatingButtonsTicker && this.pixi_app && this.pixi_app.ticker) {
+                    this.pixi_app.ticker.remove(this._floatingButtonsTicker);
+                }
+                this._floatingButtonsTicker = null;
+                if (this._floatingButtonsContainer && this._floatingButtonsContainer.parentNode) {
+                    this._floatingButtonsContainer.parentNode.removeChild(this._floatingButtonsContainer);
+                }
+                this._floatingButtonsContainer = null;
+                this._floatingButtons = {};
+                // 清理"请她回来"按钮容器
+                if (this._returnButtonContainer && this._returnButtonContainer.parentNode) {
+                    this._returnButtonContainer.parentNode.removeChild(this._returnButtonContainer);
+                }
+                this._returnButtonContainer = null;
+                // 清理所有弹出框定时器
+                Object.values(this._popupTimers).forEach(timer => clearTimeout(timer));
+                this._popupTimers = {};
+                
+                // 暂停 ticker，期间做销毁，随后恢复
+                this.pixi_app.ticker && this.pixi_app.ticker.stop();
+            } catch (_) {}
+            try {
+                this.pixi_app.stage.removeAllListeners && this.pixi_app.stage.removeAllListeners();
+            } catch (_) {}
+            try {
+                this.currentModel.removeAllListeners && this.currentModel.removeAllListeners();
+            } catch (_) {}
 
-        // 从舞台移除并销毁旧模型
-        try { this.pixi_app.stage.removeChild(this.currentModel); } catch (_) {}
-        try { this.currentModel.destroy({ children: true }); } catch (_) {}
-        try { this.pixi_app.ticker && this.pixi_app.ticker.start(); } catch (_) {}
-    }
+            // 从舞台移除并销毁旧模型
+            try { this.pixi_app.stage.removeChild(this.currentModel); } catch (_) {}
+            try { this.currentModel.destroy({ children: true }); } catch (_) {}
+            try { this.pixi_app.ticker && this.pixi_app.ticker.start(); } catch (_) {}
+        }
 
-    try {
+        // 防御性清理：确保舞台上没有残留的 Live2D 模型
+        // 这可以防止由于并发问题或其他原因导致的模型叠加
+        try {
+            const stage = this.pixi_app.stage;
+            const childrenToRemove = [];
+            for (let i = stage.children.length - 1; i >= 0; i--) {
+                const child = stage.children[i];
+                // 检查是否是 Live2D 模型（通过检查 internalModel 属性）
+                if (child && child.internalModel) {
+                    childrenToRemove.push(child);
+                }
+            }
+            for (const child of childrenToRemove) {
+                console.warn('发现舞台上残留的 Live2D 模型，正在清理...');
+                try { stage.removeChild(child); } catch (_) {}
+                try { child.destroy({ children: true }); } catch (_) {}
+            }
+        } catch (e) {
+            console.warn('清理舞台残留模型时出错:', e);
+        }
+
         const model = await Live2DModel.from(modelPath, { autoFocus: false });
         this.currentModel = model;
 
-        // 解析模型目录名与根路径，供资源解析使用
-        try {
-            let urlString = null;
-            if (typeof modelPath === 'string') {
-                urlString = modelPath;
-            } else if (modelPath && typeof modelPath === 'object' && typeof modelPath.url === 'string') {
-                urlString = modelPath.url;
-            }
-
-            if (typeof urlString !== 'string') throw new TypeError('modelPath/url is not a string');
-
-            // 记录用于保存偏好的原始模型路径（供 beforeunload 使用）
-            try { this._lastLoadedModelPath = urlString; } catch (_) {}
-
-            const cleanPath = urlString.split('#')[0].split('?')[0];
-            const lastSlash = cleanPath.lastIndexOf('/');
-            const rootDir = lastSlash >= 0 ? cleanPath.substring(0, lastSlash) : '/static';
-            this.modelRootPath = rootDir; // e.g. /static/mao_pro or /static/some/deeper/dir
-            const parts = rootDir.split('/').filter(Boolean);
-            this.modelName = parts.length > 0 ? parts[parts.length - 1] : null;
-            console.log('模型根路径解析:', { modelUrl: urlString, modelName: this.modelName, modelRootPath: this.modelRootPath });
-        } catch (e) {
-            console.warn('解析模型根路径失败，将使用默认值', e);
-            this.modelRootPath = '/static';
-            this.modelName = null;
-        }
-
-        // 配置渲染纹理数量以支持更多蒙版
-        if (model.internalModel && model.internalModel.renderer && model.internalModel.renderer._clippingManager) {
-            model.internalModel.renderer._clippingManager._renderTextureCount = 3;
-            if (typeof model.internalModel.renderer._clippingManager.initialize === 'function') {
-                model.internalModel.renderer._clippingManager.initialize(
-                    model.internalModel.coreModel,
-                    model.internalModel.coreModel.getDrawableCount(),
-                    model.internalModel.coreModel.getDrawableMasks(),
-                    model.internalModel.coreModel.getDrawableMaskCounts(),
-                    3
-                );
-            }
-            console.log('渲染纹理数量已设置为3');
-        }
-
-        // 应用位置和缩放设置
-        this.applyModelSettings(model, options);
-        
-        // 应用保存的模型参数（如果有）
-        if (options.preferences && options.preferences.parameters && model.internalModel && model.internalModel.coreModel) {
-            this.applyModelParameters(model, options.preferences.parameters);
-        }
-
-        // 添加到舞台
-        this.pixi_app.stage.addChild(model);
-
-        // 设置交互性
-        if (options.dragEnabled !== false) {
-            this.setupDragAndDrop(model);
-        }
-
-        // 设置滚轮缩放
-        if (options.wheelEnabled !== false) {
-            this.setupWheelZoom(model);
-        }
-        
-        // 设置触摸缩放（双指捏合）
-        if (options.touchZoomEnabled !== false) {
-            this.setupTouchZoom(model);
-        }
-
-        // 启用鼠标跟踪
-        if (options.mouseTracking !== false) {
-            this.enableMouseTracking(model);
-        }
-
-        // 设置浮动按钮系统（在模型完全就绪后再绑定ticker回调）
-        this.setupFloatingButtons(model);
-        
-        // 设置原来的锁按钮
-        this.setupHTMLLockIcon(model);
-
-        // 先不安装口型覆盖，等参数加载完成后再安装（见下方）
-
-        // 加载 FileReferences 与 EmotionMapping
-        if (options.loadEmotionMapping !== false) {
-            const settings = model.internalModel && model.internalModel.settings && model.internalModel.settings.json;
-            if (settings) {
-                // 保存原始 FileReferences
-                this.fileReferences = settings.FileReferences || null;
-
-                // 优先使用顶层 EmotionMapping，否则从 FileReferences 推导
-                if (settings.EmotionMapping && (settings.EmotionMapping.expressions || settings.EmotionMapping.motions)) {
-                    this.emotionMapping = settings.EmotionMapping;
-                } else {
-                    this.emotionMapping = this.deriveEmotionMappingFromFileRefs(this.fileReferences || {});
-                }
-                console.log('已加载情绪映射:', this.emotionMapping);
-            } else {
-                console.warn('模型配置中未找到 settings.json，无法加载情绪映射');
-            }
-        }
-
-        // 设置常驻表情
-        try { await this.syncEmotionMappingWithServer({ replacePersistentOnly: true }); } catch(_) {}
-        await this.setupPersistentExpressions();
-
-        // 记录模型的初始参数（用于expression重置）
-        this.recordInitialParameters();
-        
-        // 加载并应用模型目录中的parameters.json文件（优先级最高）
-        // 先加载参数，然后再安装口型覆盖（这样coreModel.update就能访问到savedModelParameters）
-        if (this.modelName && model.internalModel && model.internalModel.coreModel) {
-            try {
-                const response = await fetch(`/api/live2d/load_model_parameters/${encodeURIComponent(this.modelName)}`);
-                const data = await response.json();
-                if (data.success && data.parameters && Object.keys(data.parameters).length > 0) {
-                    // 保存参数到实例变量，供定时器定期应用
-                    this.savedModelParameters = data.parameters;
-                    this._shouldApplySavedParams = true;
-                    
-                    // 立即应用一次
-                    this.applyModelParameters(model, data.parameters);
-                } else {
-                    // 如果没有参数文件，清空保存的参数
-                    this.savedModelParameters = null;
-                    this._shouldApplySavedParams = false;
-                }
-            } catch (error) {
-                console.error('加载模型参数失败:', error);
-                this.savedModelParameters = null;
-                this._shouldApplySavedParams = false;
-            }
-        } else {
-            this.savedModelParameters = null;
-            this._shouldApplySavedParams = false;
-        }
-        
-        // 重新安装口型覆盖（这也包括了用户保存参数的应用逻辑）
-        try {
-            this.installMouthOverride();
-        } catch (e) {
-            console.error('安装口型覆盖失败:', e);
-        }
-        
-        // 移除原本的 setInterval 定时器逻辑，改用 installMouthOverride 中的逐帧叠加逻辑
-        if (this.savedModelParameters && this._shouldApplySavedParams) {
-            // 清除之前的定时器（如果存在）
-            if (this._savedParamsTimer) {
-                clearInterval(this._savedParamsTimer);
-                this._savedParamsTimer = null;
-            }
-            console.log('已启用参数叠加模式');
-        }
-        
-        // 如果之前应用了保存的参数（从用户偏好），在常驻表情设置后再次应用（防止被覆盖）
-        // 但模型目录的parameters.json优先级更高，所以这里只作为备用
-        if (options.preferences && options.preferences.parameters && model.internalModel && model.internalModel.coreModel) {
-            // 延迟一点确保常驻表情已经设置完成，并且模型目录参数已经加载
-            setTimeout(() => {
-                this.applyModelParameters(model, options.preferences.parameters);
-            }, 600); // 在模型目录参数之后应用
-        }
-
-        // 调用回调函数
-        if (this.onModelLoaded) {
-            this.onModelLoaded(model, modelPath);
-        }
+        // 使用统一的模型配置方法
+        await this._configureLoadedModel(model, modelPath, options);
 
         return model;
     } catch (error) {
@@ -270,104 +161,8 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
                 const model = await Live2DModel.from(defaultModelPath, { autoFocus: false });
                 this.currentModel = model;
 
-                // 解析模型目录名与根路径，供资源解析使用
-                try {
-                    const cleanPath = defaultModelPath.split('#')[0].split('?')[0];
-                    const lastSlash = cleanPath.lastIndexOf('/');
-                    const rootDir = lastSlash >= 0 ? cleanPath.substring(0, lastSlash) : '/static';
-                    this.modelRootPath = rootDir;
-                    const parts = rootDir.split('/').filter(Boolean);
-                    this.modelName = parts.length > 0 ? parts[parts.length - 1] : null;
-                    console.log('回退模型根路径解析:', { modelUrl: defaultModelPath, modelName: this.modelName, modelRootPath: this.modelRootPath });
-                    try { this._lastLoadedModelPath = defaultModelPath; } catch (_) {}
-                } catch (e) {
-                    console.warn('解析回退模型根路径失败，将使用默认值', e);
-                    this.modelRootPath = '/static';
-                    this.modelName = null;
-                }
-
-                // 配置渲染纹理数量以支持更多蒙版
-                if (model.internalModel && model.internalModel.renderer && model.internalModel.renderer._clippingManager) {
-                    model.internalModel.renderer._clippingManager._renderTextureCount = 3;
-                    if (typeof model.internalModel.renderer._clippingManager.initialize === 'function') {
-                        model.internalModel.renderer._clippingManager.initialize(
-                            model.internalModel.coreModel,
-                            model.internalModel.coreModel.getDrawableCount(),
-                            model.internalModel.coreModel.getDrawableMasks(),
-                            model.internalModel.coreModel.getDrawableMaskCounts(),
-                            3
-                        );
-                    }
-                    console.log('回退模型渲染纹理数量已设置为3');
-                }
-
-                // 应用位置和缩放设置
-                this.applyModelSettings(model, options);
-
-                // 添加到舞台
-                this.pixi_app.stage.addChild(model);
-
-                // 设置交互性
-                if (options.dragEnabled !== false) {
-                    this.setupDragAndDrop(model);
-                }
-
-                // 设置滚轮缩放
-                if (options.wheelEnabled !== false) {
-                    this.setupWheelZoom(model);
-                }
-                
-                // 设置触摸缩放（双指捏合）
-                if (options.touchZoomEnabled !== false) {
-                    this.setupTouchZoom(model);
-                }
-
-                // 启用鼠标跟踪
-                if (options.mouseTracking !== false) {
-                    this.enableMouseTracking(model);
-                }
-
-                // 设置浮动按钮系统（在模型完全就绪后再绑定ticker回调）
-                this.setupFloatingButtons(model);
-                
-                // 设置原来的锁按钮
-                this.setupHTMLLockIcon(model);
-
-                // 安装口型覆盖逻辑（屏蔽 motion 对嘴巴的控制）
-                try {
-                    this.installMouthOverride();
-                    console.log('回退模型已安装口型覆盖');
-                } catch (e) {
-                    console.warn('回退模型安装口型覆盖失败:', e);
-                }
-
-                // 加载 FileReferences 与 EmotionMapping
-                if (options.loadEmotionMapping !== false) {
-                    const settings = model.internalModel && model.internalModel.settings && model.internalModel.settings.json;
-                    if (settings) {
-                        // 保存原始 FileReferences
-                        this.fileReferences = settings.FileReferences || null;
-
-                        // 优先使用顶层 EmotionMapping，否则从 FileReferences 推导
-                        if (settings.EmotionMapping && (settings.EmotionMapping.expressions || settings.EmotionMapping.motions)) {
-                            this.emotionMapping = settings.EmotionMapping;
-                        } else {
-                            this.emotionMapping = this.deriveEmotionMappingFromFileRefs(this.fileReferences || {});
-                        }
-                        console.log('回退模型已加载情绪映射:', this.emotionMapping);
-                    } else {
-                        console.warn('回退模型配置中未找到 settings.json，无法加载情绪映射');
-                    }
-                }
-
-                // 设置常驻表情
-                try { await this.syncEmotionMappingWithServer({ replacePersistentOnly: true }); } catch(_) {}
-                await this.setupPersistentExpressions();
-
-                // 调用回调函数
-                if (this.onModelLoaded) {
-                    this.onModelLoaded(model, defaultModelPath);
-                }
+                // 使用统一的模型配置方法
+                await this._configureLoadedModel(model, defaultModelPath, options);
 
                 console.log('成功回退到默认模型: mao_pro');
                 return model;
@@ -379,11 +174,180 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
             // 如果已经是默认模型，直接抛出错误
             throw error;
         }
+    } finally {
+        // 无论成功还是失败，都要释放加载锁
+        this._isLoadingModel = false;
     }
 };
 
 // 不再需要预解析嘴巴参数ID，保留占位以兼容旧代码调用
 Live2DManager.prototype.resolveMouthParameterId = function() { return null; };
+
+// 配置已加载的模型（私有方法，用于消除主路径和回退路径的重复代码）
+Live2DManager.prototype._configureLoadedModel = async function(model, modelPath, options) {
+    // 解析模型目录名与根路径，供资源解析使用
+    try {
+        let urlString = null;
+        if (typeof modelPath === 'string') {
+            urlString = modelPath;
+        } else if (modelPath && typeof modelPath === 'object' && typeof modelPath.url === 'string') {
+            urlString = modelPath.url;
+        }
+
+        if (typeof urlString !== 'string') throw new TypeError('modelPath/url is not a string');
+
+        // 记录用于保存偏好的原始模型路径（供 beforeunload 使用）
+        try { this._lastLoadedModelPath = urlString; } catch (_) {}
+
+        const cleanPath = urlString.split('#')[0].split('?')[0];
+        const lastSlash = cleanPath.lastIndexOf('/');
+        const rootDir = lastSlash >= 0 ? cleanPath.substring(0, lastSlash) : '/static';
+        this.modelRootPath = rootDir; // e.g. /static/mao_pro or /static/some/deeper/dir
+        const parts = rootDir.split('/').filter(Boolean);
+        this.modelName = parts.length > 0 ? parts[parts.length - 1] : null;
+        console.log('模型根路径解析:', { modelUrl: urlString, modelName: this.modelName, modelRootPath: this.modelRootPath });
+    } catch (e) {
+        console.warn('解析模型根路径失败，将使用默认值', e);
+        this.modelRootPath = '/static';
+        this.modelName = null;
+    }
+
+    // 配置渲染纹理数量以支持更多蒙版
+    if (model.internalModel && model.internalModel.renderer && model.internalModel.renderer._clippingManager) {
+        model.internalModel.renderer._clippingManager._renderTextureCount = 3;
+        if (typeof model.internalModel.renderer._clippingManager.initialize === 'function') {
+            model.internalModel.renderer._clippingManager.initialize(
+                model.internalModel.coreModel,
+                model.internalModel.coreModel.getDrawableCount(),
+                model.internalModel.coreModel.getDrawableMasks(),
+                model.internalModel.coreModel.getDrawableMaskCounts(),
+                3
+            );
+        }
+        console.log('渲染纹理数量已设置为3');
+    }
+
+    // 应用位置和缩放设置
+    this.applyModelSettings(model, options);
+    
+    // 注意：用户偏好参数的应用延迟到模型目录参数加载完成后，
+    // 以确保正确的优先级顺序（模型目录参数 > 用户偏好参数）
+
+    // 添加到舞台
+    this.pixi_app.stage.addChild(model);
+
+    // 设置交互性
+    if (options.dragEnabled !== false) {
+        this.setupDragAndDrop(model);
+        // 启用窗口大小改变时的自动吸附检测
+        this.setupResizeSnapDetection();
+    }
+
+    // 设置滚轮缩放
+    if (options.wheelEnabled !== false) {
+        this.setupWheelZoom(model);
+    }
+    
+    // 设置触摸缩放（双指捏合）
+    if (options.touchZoomEnabled !== false) {
+        this.setupTouchZoom(model);
+    }
+
+    // 启用鼠标跟踪
+    if (options.mouseTracking !== false) {
+        this.enableMouseTracking(model);
+    }
+
+    // 设置浮动按钮系统（在模型完全就绪后再绑定ticker回调）
+    this.setupFloatingButtons(model);
+    
+    // 设置原来的锁按钮
+    this.setupHTMLLockIcon(model);
+
+    // 加载 FileReferences 与 EmotionMapping
+    if (options.loadEmotionMapping !== false) {
+        const settings = model.internalModel && model.internalModel.settings && model.internalModel.settings.json;
+        if (settings) {
+            // 保存原始 FileReferences
+            this.fileReferences = settings.FileReferences || null;
+
+            // 优先使用顶层 EmotionMapping，否则从 FileReferences 推导
+            if (settings.EmotionMapping && (settings.EmotionMapping.expressions || settings.EmotionMapping.motions)) {
+                this.emotionMapping = settings.EmotionMapping;
+            } else {
+                this.emotionMapping = this.deriveEmotionMappingFromFileRefs(this.fileReferences || {});
+            }
+            console.log('已加载情绪映射:', this.emotionMapping);
+        } else {
+            console.warn('模型配置中未找到 settings.json，无法加载情绪映射');
+        }
+    }
+
+    // 设置常驻表情
+    try { await this.syncEmotionMappingWithServer({ replacePersistentOnly: true }); } catch(_) {}
+    await this.setupPersistentExpressions();
+
+    // 记录模型的初始参数（用于expression重置）
+    this.recordInitialParameters();
+    
+    // 加载并应用模型目录中的parameters.json文件（优先级最高）
+    // 先加载参数，然后再安装口型覆盖（这样coreModel.update就能访问到savedModelParameters）
+    if (this.modelName && model.internalModel && model.internalModel.coreModel) {
+        try {
+            const response = await fetch(`/api/live2d/load_model_parameters/${encodeURIComponent(this.modelName)}`);
+            const data = await response.json();
+            if (data.success && data.parameters && Object.keys(data.parameters).length > 0) {
+                // 保存参数到实例变量，供定时器定期应用
+                this.savedModelParameters = data.parameters;
+                this._shouldApplySavedParams = true;
+                
+                // 立即应用一次
+                this.applyModelParameters(model, data.parameters);
+            } else {
+                // 如果没有参数文件，清空保存的参数
+                this.savedModelParameters = null;
+                this._shouldApplySavedParams = false;
+            }
+        } catch (error) {
+            console.error('加载模型参数失败:', error);
+            this.savedModelParameters = null;
+            this._shouldApplySavedParams = false;
+        }
+    } else {
+        this.savedModelParameters = null;
+        this._shouldApplySavedParams = false;
+    }
+    
+    // 重新安装口型覆盖（这也包括了用户保存参数的应用逻辑）
+    try {
+        this.installMouthOverride();
+    } catch (e) {
+        console.error('安装口型覆盖失败:', e);
+    }
+    
+    // 移除原本的 setInterval 定时器逻辑，改用 installMouthOverride 中的逐帧叠加逻辑
+    if (this.savedModelParameters && this._shouldApplySavedParams) {
+        // 清除之前的定时器（如果存在）
+        if (this._savedParamsTimer) {
+            clearInterval(this._savedParamsTimer);
+            this._savedParamsTimer = null;
+        }
+        console.log('已启用参数叠加模式');
+    }
+    
+    // 在模型目录参数加载完成后，应用用户偏好参数（如果有）
+    // 此时所有异步操作（常驻表情、模型目录参数）都已完成，
+    // 可以安全地应用用户偏好参数而不需要使用 setTimeout 延迟
+    if (options.preferences && options.preferences.parameters && model.internalModel && model.internalModel.coreModel) {
+        this.applyModelParameters(model, options.preferences.parameters);
+        console.log('已应用用户偏好参数');
+    }
+
+    // 调用回调函数
+    if (this.onModelLoaded) {
+        this.onModelLoaded(model, modelPath);
+    }
+};
 
 // 安装覆盖：同时覆盖 motionManager.update 和 coreModel.update，双重保险
 // motionManager.update 会重置参数，所以在其后覆盖；coreModel.update 前再覆盖一次确保生效
@@ -412,8 +376,8 @@ Live2DManager.prototype.installMouthOverride = function() {
         this._origCoreModelUpdate = null;
     }
 
-    // 口型参数列表（这些参数不会被常驻表情覆盖）
-    const lipSyncParams = ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
+    // 口型参数列表（这些参数不会被常驻表情覆盖）- 使用文件顶部定义的 LIPSYNC_PARAMS 常量
+    const lipSyncParams = LIPSYNC_PARAMS;
     const visibilityParams = ['ParamOpacity', 'ParamVisibility'];
     
     // 缓存参数索引，避免每帧查询
@@ -588,12 +552,11 @@ Live2DManager.prototype.installMouthOverride = function() {
             
             // 2. 写入常驻表情参数（跳过口型参数以避免覆盖lipsync）
             if (this.persistentExpressionParamsByName) {
-                const lipSyncParams = ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
                 for (const name in this.persistentExpressionParamsByName) {
                     const params = this.persistentExpressionParamsByName[name];
                     if (Array.isArray(params)) {
                         for (const p of params) {
-                            if (lipSyncParams.includes(p.Id)) continue;
+                            if (LIPSYNC_PARAMS.includes(p.Id)) continue;
                             try {
                                 currentCoreModel.setParameterValueById(p.Id, p.Value);
                             } catch (_) {}
