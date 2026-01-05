@@ -4,7 +4,7 @@
 
 // ===== 自动吸附功能配置 =====
 const SNAP_CONFIG = {
-    // 吸附阈值：模型超出屏幕边界多少像素时触发吸附
+    // 吸附阈值：模型在屏幕内剩余的像素小于此值时触发吸附（即模型绝大部分超出屏幕）
     threshold: 50,
     // 吸附边距：吸附后距离屏幕边缘的最小距离
     margin: 5,
@@ -34,10 +34,14 @@ const EasingFunctions = {
 /**
  * 检测模型是否超出当前屏幕边界，并计算吸附目标位置
  * @param {PIXI.DisplayObject} model - Live2D 模型对象
+ * @param {Object} options - 可选参数
+ * @param {boolean} options.afterDisplaySwitch - 是否为屏幕切换后的吸附（使用更宽松的条件：超出即吸附）
  * @returns {Object|null} 返回吸附信息，如果不需要吸附则返回 null
  */
-Live2DManager.prototype._checkSnapRequired = async function (model) {
+Live2DManager.prototype._checkSnapRequired = async function (model, options = {}) {
     if (!model) return null;
+
+    const { afterDisplaySwitch = false } = options;
 
     try {
         const bounds = model.getBounds();
@@ -75,13 +79,43 @@ Live2DManager.prototype._checkSnapRequired = async function (model) {
         let overflowBottom = modelBottom - screenBottom; // 下边超出
 
         // 检查是否有任何边超出阈值
+        // 新逻辑：只有当模型在屏幕内剩余的部分小于 threshold 时才触发吸附
+        // 即模型绝大部分都超出屏幕时才吸附
         const threshold = SNAP_CONFIG.threshold;
         const margin = SNAP_CONFIG.margin;
 
-        const needsSnapLeft = overflowLeft > threshold;
-        const needsSnapRight = overflowRight > threshold;
-        const needsSnapTop = overflowTop > threshold;
-        const needsSnapBottom = overflowBottom > threshold;
+        // 计算模型在屏幕内剩余的像素数
+        // 水平方向：模型在屏幕内的宽度
+        const visibleLeft = Math.max(modelLeft, screenLeft);
+        const visibleRight = Math.min(modelRight, screenRight);
+        const visibleWidth = Math.max(0, visibleRight - visibleLeft);
+
+        // 垂直方向：模型在屏幕内的高度
+        const visibleTop = Math.max(modelTop, screenTop);
+        const visibleBottom = Math.min(modelBottom, screenBottom);
+        const visibleHeight = Math.max(0, visibleBottom - visibleTop);
+
+        // 判断是否需要吸附
+        // 屏幕切换后：只要超出边界就吸附（更宽松）
+        // 当前屏幕：屏幕内剩余的像素小于阈值时才吸附（即模型绝大部分超出屏幕）
+        let needsSnapLeft, needsSnapRight, needsSnapTop, needsSnapBottom;
+
+        if (afterDisplaySwitch) {
+            // 屏幕切换后，只要超出边界就吸附
+            needsSnapLeft = overflowLeft > margin;
+            needsSnapRight = overflowRight > margin;
+            needsSnapTop = overflowTop > margin;
+            needsSnapBottom = overflowBottom > margin;
+        } else {
+            // 当前屏幕：只有模型绝大部分超出（屏幕内剩余小于 threshold）才吸附
+            const needsSnapHorizontal = visibleWidth < threshold && (overflowLeft > 0 || overflowRight > 0);
+            const needsSnapVertical = visibleHeight < threshold && (overflowTop > 0 || overflowBottom > 0);
+
+            needsSnapLeft = overflowLeft > 0 && needsSnapHorizontal;
+            needsSnapRight = overflowRight > 0 && needsSnapHorizontal;
+            needsSnapTop = overflowTop > 0 && needsSnapVertical;
+            needsSnapBottom = overflowBottom > 0 && needsSnapVertical;
+        }
 
         if (!needsSnapLeft && !needsSnapRight && !needsSnapTop && !needsSnapBottom) {
             return null; // 不需要吸附
@@ -205,15 +239,17 @@ Live2DManager.prototype._performSnapAnimation = function (model, snapInfo) {
 /**
  * 检测并执行自动吸附（主入口函数）
  * @param {PIXI.DisplayObject} model - Live2D 模型对象
+ * @param {Object} options - 可选参数
+ * @param {boolean} options.afterDisplaySwitch - 是否为屏幕切换后的吸附（使用更宽松的条件）
  * @returns {Promise<boolean>} 是否执行了吸附
  */
-Live2DManager.prototype._checkAndPerformSnap = async function (model) {
+Live2DManager.prototype._checkAndPerformSnap = async function (model, options = {}) {
     // 如果正在执行吸附动画，跳过
     if (this._isSnapping) {
         return false;
     }
 
-    const snapInfo = await this._checkSnapRequired(model);
+    const snapInfo = await this._checkSnapRequired(model, options);
 
     if (!snapInfo) {
         return false;
@@ -880,7 +916,8 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function (model) {
                 await new Promise(resolve => requestAnimationFrame(resolve));
 
                 // 检测并执行自动吸附（切换到新屏幕后模型可能仍超出边界）
-                const snapped = await this._checkAndPerformSnap(model);
+                // 屏幕切换后使用更宽松的吸附条件（只要超出就吸附）
+                const snapped = await this._checkAndPerformSnap(model, { afterDisplaySwitch: true });
 
                 // 如果没有执行吸附，保存位置
                 if (!snapped) {
