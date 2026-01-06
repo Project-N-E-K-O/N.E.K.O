@@ -31,7 +31,21 @@ class VRMAnimation {
         if (this.vrmaIsPlaying && this.vrmaMixer) {
             // 强制接管时间增量，确保速度控制绝对准确
             const safeDelta = (delta <= 0 || delta > 0.1) ? 0.016 : delta;
-            this.vrmaMixer.update(safeDelta * this.playbackSpeed);
+            const updateDelta = safeDelta * this.playbackSpeed;
+            this.vrmaMixer.update(updateDelta);
+            
+            // 调试：每60帧输出一次状态（约1秒）
+            if (this._debugFrameCount === undefined) this._debugFrameCount = 0;
+            this._debugFrameCount++;
+            if (this._debugFrameCount % 60 === 0 && this.currentAction) {
+                console.log('[VRM Animation] Update 状态:', {
+                    delta: updateDelta,
+                    actionTime: this.currentAction.time,
+                    actionWeight: this.currentAction.weight,
+                    actionEnabled: this.currentAction.enabled,
+                    actionPaused: this.currentAction.paused
+                });
+            }
 
             // 必须在动画更新后立即更新矩阵，确保骨骼状态同步
             const vrm = this.manager.currentModel?.vrm;
