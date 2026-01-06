@@ -181,6 +181,11 @@ if (toggleBtn) {
         chatContainer.style.cursor = 'grabbing';
         if (chatHeader) chatHeader.style.cursor = 'grabbing';
         
+        // 开始拖动时，临时禁用按钮的 pointer-events（使用 live2d-ui-drag.js 中的共享工具函数）
+        if (window.DragHelpers) {
+            window.DragHelpers.disableButtonPointerEvents();
+        }
+        
         // 阻止默认行为（除非明确跳过）
         if (!skipPreventDefault) {
             e.preventDefault();
@@ -230,6 +235,11 @@ if (toggleBtn) {
             dragStartedFromToggleBtn = false;
             chatContainer.style.cursor = '';
             if (chatHeader) chatHeader.style.cursor = '';
+            
+            // 拖拽结束后恢复按钮的 pointer-events（使用 live2d-ui-drag.js 中的共享工具函数）
+            if (window.DragHelpers) {
+                window.DragHelpers.restoreButtonPointerEvents();
+            }
             
             console.log('[Drag End] Moved:', didMove, 'FromToggleBtn:', fromToggleBtn);
             

@@ -18,6 +18,19 @@ let isEmotionChanging = false; // 防止快速连续点击的标志
 // 全局：判断是否为移动端宽度
 const isMobileWidth = () => window.innerWidth <= 768;
 
+// 口型同步参数列表常量
+// 这些参数用于控制模型的嘴部动作，在处理表情和常驻表情时需要跳过，以避免覆盖实时的口型同步
+window.LIPSYNC_PARAMS = [
+    'ParamMouthOpenY',
+    'ParamMouthForm',
+    'ParamMouthOpen',
+    'ParamA',
+    'ParamI',
+    'ParamU',
+    'ParamE',
+    'ParamO'
+];
+
 // Live2D 管理器类
 class Live2DManager {
     constructor() {
@@ -40,6 +53,9 @@ class Live2DManager {
         this.savedModelParameters = null; // 保存的模型参数（从parameters.json加载），供定时器定期应用
         this._shouldApplySavedParams = false; // 是否应该应用保存的参数
         this._savedParamsTimer = null; // 保存参数应用的定时器
+        
+        // 模型加载锁，防止并发加载导致重复模型叠加
+        this._isLoadingModel = false;
 
         // 常驻表情：使用官方 expression 播放并在清理后自动重放
         this.persistentExpressionNames = [];
@@ -322,6 +338,13 @@ class Live2DManager {
         const container = document.getElementById('live2d-canvas');
         if (container) {
             container.style.pointerEvents = locked ? 'none' : 'auto';
+        }
+
+        if (!locked) {
+            const live2dContainer = document.getElementById('live2d-container');
+            if (live2dContainer) {
+                live2dContainer.classList.remove('locked-hover-fade');
+            }
         }
 
         // 4. 控制浮动按钮显示（可选）

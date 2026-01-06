@@ -1,5 +1,6 @@
 /**
  * Live2D Emotion - 情感/表情/动作相关功能
+ * 依赖: live2d-core.js (提供 Live2DManager 类和 window.LIPSYNC_PARAMS)
  */
 
 // 记录模型的初始参数（用于expression重置，跳过位置参数）
@@ -205,12 +206,11 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
         
         // 方法2: 回退到手动参数设置
         console.log('使用手动参数设置播放expression');
-        // 口型参数列表，手动设置时跳过以避免覆盖lipsync
-        const lipSyncParams = ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
+        // 口型参数列表，手动设置时跳过以避免覆盖lipsync（使用共享常量）
         if (expressionData.Parameters) {
             for (const param of expressionData.Parameters) {
                 // 跳过口型参数，避免覆盖lipsync
-                if (lipSyncParams.includes(param.Id)) {
+                if (window.LIPSYNC_PARAMS.includes(param.Id)) {
                     console.log(`跳过口型参数: ${param.Id}，避免覆盖lipsync`);
                     continue;
                 }
@@ -703,10 +703,9 @@ Live2DManager.prototype.applyPersistentExpressionsNative = async function() {
                 try {
                     const params = this.persistentExpressionParamsByName[name];
                     const core = this.currentModel.internalModel && this.currentModel.internalModel.coreModel;
-                    const lipSyncParams = ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
                     if (core) {
                         for (const p of params) {
-                            if (lipSyncParams.includes(p.Id)) continue;
+                            if (window.LIPSYNC_PARAMS.includes(p.Id)) continue;
                             try { core.setParameterValueById(p.Id, p.Value); } catch (_) {}
                         }
                     }
@@ -718,10 +717,9 @@ Live2DManager.prototype.applyPersistentExpressionsNative = async function() {
                 if (this.persistentExpressionParamsByName && Array.isArray(this.persistentExpressionParamsByName[name])) {
                     const params = this.persistentExpressionParamsByName[name];
                     const core = this.currentModel.internalModel && this.currentModel.internalModel.coreModel;
-                    const lipSyncParams = ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
                     if (core) {
                         for (const p of params) {
-                            if (lipSyncParams.includes(p.Id)) continue;
+                            if (window.LIPSYNC_PARAMS.includes(p.Id)) continue;
                             try { core.setParameterValueById(p.Id, p.Value); } catch (_) {}
                         }
                     }
