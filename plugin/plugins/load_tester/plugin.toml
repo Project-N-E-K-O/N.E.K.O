@@ -18,7 +18,7 @@ conflicts = [
 
 [load_test]
 enable = true # 是否启用测试
-duration_seconds = 10.0 # 测试时长
+duration_seconds = 5.0 # 测试时长
 auto_start = true # 自动开始测试,当enable为true时生效
 log_summary = true # 是否打印测试总结
 worker_threads = 1# 工作线程数

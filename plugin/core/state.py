@@ -8,7 +8,8 @@ import logging
 import threading
 import time
 from collections import deque
-from typing import Any, Callable, Deque, Dict, List, Optional, Set, Tuple
+import multiprocessing
+from typing import Any, Callable, Deque, Dict, List, Optional, Set, Tuple, cast
 
 from plugin.sdk.events import EventHandler
 from plugin.settings import EVENT_QUEUE_MAX, LIFECYCLE_QUEUE_MAX, MESSAGE_QUEUE_MAX
@@ -71,6 +72,8 @@ class PluginRuntimeState:
         self._plugin_comm_queue: Optional[Any] = None
         self._plugin_response_map: Optional[Any] = None
         self._plugin_response_map_manager: Optional[Any] = None
+        self._plugin_response_event_map: Optional[Any] = None
+        self._plugin_response_notify_event: Optional[Any] = None
         # 保护跨进程通信资源懒加载的锁
         self._plugin_comm_lock = threading.Lock()
 
@@ -126,7 +129,7 @@ class PluginRuntimeState:
         return self._plugin_comm_queue
     
     @property
-    def plugin_response_map(self):
+    def plugin_response_map(self) -> Any:
         """插件响应映射（跨进程共享字典）"""
         if self._plugin_response_map is None:
             with self._plugin_comm_lock:
@@ -136,7 +139,61 @@ class PluginRuntimeState:
                     if self._plugin_response_map_manager is None:
                         self._plugin_response_map_manager = multiprocessing.Manager()
                     self._plugin_response_map = self._plugin_response_map_manager.dict()
+                    # Ensure event map is created on the same Manager early, so forked plugin
+                    # processes inherit the same proxies and can wait on the same Events.
+                    if self._plugin_response_event_map is None:
+                        self._plugin_response_event_map = self._plugin_response_map_manager.dict()
         return self._plugin_response_map
+
+    @property
+    def plugin_response_event_map(self) -> Any:
+        """跨进程响应通知映射 request_id -> Event."""
+        if self._plugin_response_event_map is None:
+            # Prefer reusing the existing Manager created for plugin_response_map.
+            _ = self.plugin_response_map
+        return self._plugin_response_event_map
+
+    @property
+    def plugin_response_notify_event(self) -> Any:
+        """Single cross-process event used to wake waiters when any response arrives.
+
+        This avoids per-request Event creation which is expensive and can diverge across processes.
+        Important: on Linux (fork), this must be created in the parent before plugin processes start.
+        """
+        if self._plugin_response_notify_event is None:
+            with self._plugin_comm_lock:
+                if self._plugin_response_notify_event is None:
+                    # multiprocessing.Event is backed by a shared semaphore/pipe and works across fork.
+                    self._plugin_response_notify_event = multiprocessing.Event()
+        return self._plugin_response_notify_event
+
+    def _get_or_create_response_event(self, request_id: str):
+        rid = str(request_id)
+        # Force init of shared manager + maps (important: do not create a new Manager per process)
+        _ = self.plugin_response_map
+        try:
+            event_map = self.plugin_response_event_map
+            ev = event_map.get(rid)
+        except Exception:
+            ev = None
+        if ev is not None:
+            return ev
+        try:
+            mgr = self._plugin_response_map_manager
+            if mgr is None:
+                _ = self.plugin_response_event_map
+                mgr = self._plugin_response_map_manager
+            if mgr is None:
+                return None
+            ev = mgr.Event()
+            try:
+                event_map = self.plugin_response_event_map
+                event_map[rid] = ev
+            except Exception:
+                pass
+            return ev
+        except Exception:
+            return None
 
     def append_message_record(self, record: Dict[str, Any]) -> None:
         if not isinstance(record, dict):
@@ -290,10 +347,16 @@ class PluginRuntimeState:
         # 存储响应和过期时间（当前时间 + timeout + 缓冲时间）
         # 缓冲时间用于处理网络延迟等情况
         expire_time = time.time() + timeout + 1.0  # 额外1秒缓冲
-        self.plugin_response_map[request_id] = {
+        resp_map = self.plugin_response_map
+        resp_map[request_id] = {
             "response": response,
             "expire_time": expire_time
         }
+
+        try:
+            self.plugin_response_notify_event.set()
+        except Exception:
+            pass
     
     def get_plugin_response(self, request_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -307,7 +370,8 @@ class PluginRuntimeState:
         current_time = time.time()
         
         # 先查看响应是否存在（不删除）
-        response_data = self.plugin_response_map.get(request_id, None)
+        resp_map = self.plugin_response_map
+        response_data = resp_map.get(request_id, None)
         
         if response_data is None:
             return None
@@ -316,13 +380,60 @@ class PluginRuntimeState:
         expire_time = response_data.get("expire_time", 0)
         if current_time > expire_time:
             # 响应已过期，删除它
-            self.plugin_response_map.pop(request_id, None)
+            resp_map.pop(request_id, None)
             return None
         
         # 响应有效，删除并返回
-        self.plugin_response_map.pop(request_id, None)
+        resp_map.pop(request_id, None)
+        try:
+            event_map = self.plugin_response_event_map
+            event_map.pop(request_id, None)
+        except Exception:
+            pass
         # 返回实际的响应数据
         return response_data.get("response")
+
+    def wait_for_plugin_response(self, request_id: str, timeout: float) -> Optional[Dict[str, Any]]:
+        """Block until response arrives or timeout, then pop and return it.
+
+        This avoids client-side polling loops.
+        """
+        rid = str(request_id)
+        deadline = time.time() + max(0.0, float(timeout))
+        notify_ev = None
+        try:
+            notify_ev = self.plugin_response_notify_event
+        except Exception:
+            notify_ev = None
+
+        # Fast path: check once before waiting.
+        got = self.get_plugin_response(rid)
+        if got is not None:
+            return got
+
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return None
+            if notify_ev is None:
+                # Fallback to short sleep if notify event is unavailable.
+                time.sleep(min(0.01, remaining))
+            else:
+                try:
+                    notify_ev.wait(timeout=remaining)
+                except Exception:
+                    time.sleep(min(0.01, remaining))
+
+            # Clear to avoid spinning on a permanently-set event.
+            try:
+                if notify_ev is not None:
+                    notify_ev.clear()
+            except Exception:
+                pass
+
+            got = self.get_plugin_response(rid)
+            if got is not None:
+                return got
 
     def peek_plugin_response(self, request_id: str) -> Optional[Dict[str, Any]]:
         """获取但不删除插件响应（插件进程调用）
@@ -358,7 +469,8 @@ class PluginRuntimeState:
         # 找出所有过期的响应
         try:
             # 使用快照避免迭代时字典被修改导致 RuntimeError
-            for request_id, response_data in list(self.plugin_response_map.items()):
+            resp_map = self.plugin_response_map
+            for request_id, response_data in list(resp_map.items()):
                 expire_time = response_data.get("expire_time", 0)
                 if current_time > expire_time:
                     expired_ids.append(request_id)
@@ -368,12 +480,18 @@ class PluginRuntimeState:
             logger.debug(f"Error iterating expired responses: {e}")
         
         # 删除过期的响应
+        resp_map = self.plugin_response_map
         for request_id in expired_ids:
-            self.plugin_response_map.pop(request_id, None)
+            resp_map.pop(request_id, None)
+            try:
+                event_map = self.plugin_response_event_map
+                event_map.pop(request_id, None)
+            except Exception:
+                pass
         
         return len(expired_ids)
     
-    def cleanup_plugin_comm_resources(self) -> None:
+    def close_plugin_resources(self) -> None:
         """
         清理插件间通信资源（主进程关闭时调用）
         
@@ -400,20 +518,26 @@ class PluginRuntimeState:
                 # Manager 的 shutdown() 方法会关闭所有共享对象
                 self._plugin_response_map_manager.shutdown()
                 self._plugin_response_map = None
+                self._plugin_response_event_map = None
+                self._plugin_response_notify_event = None
                 self._plugin_response_map_manager = None
                 logger = logging.getLogger("user_plugin_server")
                 logger.debug("Plugin response map manager shut down")
             except Exception as e:
                 logger = logging.getLogger("user_plugin_server")
-                logger.warning(f"Error shutting down plugin response map manager: {e}")
+                logger.debug(f"Error shutting down plugin response map manager: {e}")
+
+    def cleanup_plugin_comm_resources(self) -> None:
+        """Backward-compatible alias for shutdown code paths."""
+        self.close_plugin_resources()
 
     def add_user_context_event(self, bucket_id: str, event: Dict[str, Any]) -> None:
         if not isinstance(bucket_id, str) or not bucket_id:
             bucket_id = "default"
 
         now = time.time()
-        payload = dict(event) if isinstance(event, dict) else {"event": event}
-        payload.setdefault("_ts", now)
+        payload: Dict[str, Any] = dict(event) if isinstance(event, dict) else {"event": event}
+        payload.setdefault("_ts", float(now))
 
         with self._user_context_lock:
             dq = self._user_context_store.get(bucket_id)

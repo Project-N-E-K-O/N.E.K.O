@@ -44,6 +44,7 @@ def _plugin_process_runner(
     res_queue: Queue,
     status_queue: Queue,
     message_queue: Queue,
+    stop_event: Any | None = None,
     plugin_comm_queue: Queue | None = None,
 ) -> None:
     """
@@ -74,6 +75,10 @@ def _plugin_process_runner(
             return p.parent.parent.parent.parent.resolve()
         except Exception:
             return p.parent.resolve()
+
+    # Preserve the process-level stop event passed from the parent. Do not reuse this name
+    # for other purposes, otherwise the out-of-band shutdown signal may stop working.
+    process_stop_event = stop_event
 
     project_root = _find_project_root(config_path)
     
@@ -247,6 +252,7 @@ def _plugin_process_runner(
                 stop_event.wait(interval_seconds)
 
         timer_events = events_by_type.get("timer", {})
+        timer_stop_events: list[threading.Event] = []
         for eid, fn in timer_events.items():
             meta = getattr(fn, EVENT_META_ATTR, None)
             if not meta or not getattr(meta, "auto_start", False):
@@ -255,10 +261,11 @@ def _plugin_process_runner(
             if mode == "interval":
                 seconds = getattr(meta, "extra", {}).get("seconds", 0)
                 if seconds > 0:
-                    stop_event = threading.Event()
+                    timer_stop_event = threading.Event()
+                    timer_stop_events.append(timer_stop_event)
                     t = threading.Thread(
                         target=_run_timer_interval,
-                        args=(fn, seconds, eid, stop_event),
+                        args=(fn, seconds, eid, timer_stop_event),
                         daemon=True,
                     )
                     t.start()
@@ -305,6 +312,12 @@ def _plugin_process_runner(
 
         # 命令循环
         while True:
+            try:
+                if process_stop_event is not None and process_stop_event.is_set():
+                    break
+            except Exception:
+                # stop_event is best-effort; never break command loop due to errors here
+                pass
             try:
                 msg = cmd_queue.get(timeout=QUEUE_GET_TIMEOUT)
             except Empty:
@@ -574,6 +587,29 @@ def _plugin_process_runner(
 
                 res_queue.put(ret_payload)
 
+        # 触发生命周期：shutdown（尽力而为），并停止所有定时任务
+        try:
+            for ev in timer_stop_events:
+                try:
+                    ev.set()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        shutdown_fn = lifecycle_events.get("shutdown")
+        if shutdown_fn:
+            try:
+                with ctx._handler_scope("lifecycle.shutdown"):
+                    if asyncio.iscoroutinefunction(shutdown_fn):
+                        asyncio.run(shutdown_fn())
+                    else:
+                        shutdown_fn()
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except Exception as e:
+                logger.exception("Error in lifecycle.shutdown: {}", e)
+
     except (KeyboardInterrupt, SystemExit):
         # 系统级中断，正常退出
         logger.info("Plugin process {} interrupted", plugin_id)
@@ -619,10 +655,34 @@ class PluginHost:
         # 创建并启动进程
         # 获取插件间通信队列（从 state 获取）
         plugin_comm_queue = state.plugin_comm_queue
+
+        self._process_stop_event: Any = multiprocessing.Event()
+
+        # Important: initialize shared response notification primitives in the parent
+        # BEFORE forking the plugin process, otherwise each child may create its own
+        # Event/Manager proxies and wait_for_plugin_response will never be woken.
+        try:
+            _ = state.plugin_response_map
+        except Exception:
+            pass
+        try:
+            _ = state.plugin_response_notify_event
+        except Exception:
+            pass
         
         self.process = multiprocessing.Process(
             target=_plugin_process_runner,
-            args=(plugin_id, entry_point, config_path, cmd_queue, res_queue, status_queue, message_queue, plugin_comm_queue),
+            args=(
+                plugin_id,
+                entry_point,
+                config_path,
+                cmd_queue,
+                res_queue,
+                status_queue,
+                message_queue,
+                self._process_stop_event,
+                plugin_comm_queue,
+            ),
             daemon=True,
         )
         self.process.start()
@@ -668,6 +728,13 @@ class PluginHost:
         3. 关闭进程
         """
         self.logger.info(f"Shutting down plugin {self.plugin_id}")
+
+        # Set out-of-band stop event first so the child can exit promptly even if cmd_queue is backlogged.
+        try:
+            if getattr(self, "_process_stop_event", None) is not None:
+                self._process_stop_event.set()
+        except Exception:
+            pass
         
         # 1. 发送停止命令
         await self.comm_manager.send_stop_command()
@@ -707,8 +774,9 @@ class PluginHost:
         if getattr(self, "comm_manager", None) is not None:
             try:
                 # 标记 shutdown event，后台协程会自行退出
-                if getattr(self.comm_manager, "_shutdown_event", None) is not None:
-                    self.comm_manager._shutdown_event.set()
+                _ev = getattr(self.comm_manager, "_shutdown_event", None)
+                if _ev is not None:
+                    _ev.set()
             except Exception:
                 # 保持同步关闭的"尽力而为"语义，不要让这里抛异常
                 pass

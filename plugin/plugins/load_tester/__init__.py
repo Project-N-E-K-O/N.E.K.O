@@ -776,9 +776,70 @@ class LoadTestPlugin(NekoPluginBase):
                 except Exception:
                     pass
         try:
-            self.logger.info("[load_tester] run_all_benchmarks finished: {}", results)
+            headers = ["test", "qps", "errors", "iterations", "elapsed_s", "extra"]
+            rows = []
+            for k, v in results.items():
+                if not isinstance(v, dict):
+                    rows.append([k, "-", "-", "-", "-", "-"])
+                    continue
+                qps = v.get("qps")
+                errors = v.get("errors")
+                iters = v.get("iterations")
+                elapsed = v.get("elapsed_seconds")
+                extra_parts = []
+                if "base_size" in v:
+                    extra_parts.append(f"base={v.get('base_size')}")
+                if "inplace" in v:
+                    extra_parts.append(f"inplace={v.get('inplace')}")
+                if "workers" in v:
+                    extra_parts.append(f"workers={v.get('workers')}")
+                if "error" in v:
+                    extra_parts.append(f"error={v.get('error')}")
+                extra = " ".join([p for p in extra_parts if p])
+
+                def _fmt_num(x: Any, kind: str) -> str:
+                    if x is None:
+                        return "-"
+                    try:
+                        if kind == "int":
+                            return str(int(x))
+                        if kind == "float1":
+                            return f"{float(x):.1f}"
+                        if kind == "float3":
+                            return f"{float(x):.3f}"
+                        return str(x)
+                    except Exception:
+                        return "-"
+
+                rows.append(
+                    [
+                        str(k),
+                        _fmt_num(qps, "float1"),
+                        _fmt_num(errors, "int"),
+                        _fmt_num(iters, "int"),
+                        _fmt_num(elapsed, "float3"),
+                        extra,
+                    ]
+                )
+
+            cols = list(zip(*([headers] + rows))) if rows else [headers]
+            widths = [max(len(str(x)) for x in col) for col in cols]
+
+            def _line(parts: list[str]) -> str:
+                return " | ".join(p.ljust(w) for p, w in zip(parts, widths))
+
+            sep = "-+-".join("-" * w for w in widths)
+            table = "\n".join([
+                _line(headers),
+                sep,
+                *[_line([str(c) for c in r]) for r in rows],
+            ])
+            self.logger.info("[load_tester] run_all_benchmarks summary:\n{}", table)
         except Exception:
-            pass
+            try:
+                self.logger.info("[load_tester] run_all_benchmarks finished: {}", results)
+            except Exception:
+                pass
         return ok(data={"tests": results, "enabled": True})
 
     @lifecycle(id="startup")

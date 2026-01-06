@@ -30,6 +30,9 @@ from plugin.api.exceptions import PluginExecutionError
 from plugin.utils.logging import format_log_text as _format_log_text
 
 
+_SHUTDOWN_SENTINEL: Dict[str, Any] = {"_type": "__shutdown__"}
+
+
 @dataclass
 class PluginCommunicationResourceManager:
     """
@@ -98,11 +101,26 @@ class PluginCommunicationResourceManager:
         
         # 停止结果消费和消息消费任务
         self._ensure_shutdown_event()
-        self._shutdown_event.set()
+        shutdown_event = self._shutdown_event
+        if shutdown_event is not None:
+            shutdown_event.set()
+
+        # 主动唤醒阻塞在 multiprocessing.Queue.get 的后台线程，避免 shutdown 卡在 queue.get 超时上。
+        # 注意：put 也可能阻塞，因此放到 executor 里并带超时。
+        try:
+            await asyncio.to_thread(self.res_queue.put, _SHUTDOWN_SENTINEL, True, QUEUE_GET_TIMEOUT)
+            await asyncio.to_thread(self.message_queue.put, _SHUTDOWN_SENTINEL, True, QUEUE_GET_TIMEOUT)
+        except Exception:
+            # shutdown 需要尽力而为：即使唤醒失败也继续走超时等待/取消逻辑
+            pass
+
+        # 给消费者一个很短的“自然退出”窗口，避免 shutdown 被拖慢。
+        # 之后直接 cancel，以确保在 timeout 内尽快结束。
+        graceful_wait = min(0.5, float(timeout)) if timeout is not None else 0.5
         
         if self._result_consumer_task and not self._result_consumer_task.done():
             try:
-                await asyncio.wait_for(self._result_consumer_task, timeout=timeout)
+                await asyncio.wait_for(self._result_consumer_task, timeout=graceful_wait)
             except asyncio.TimeoutError:
                 self.logger.warning(
                     f"Result consumer for plugin {self.plugin_id} didn't stop in time, cancelling"
@@ -115,7 +133,7 @@ class PluginCommunicationResourceManager:
         
         if self._message_consumer_task and not self._message_consumer_task.done():
             try:
-                await asyncio.wait_for(self._message_consumer_task, timeout=timeout)
+                await asyncio.wait_for(self._message_consumer_task, timeout=graceful_wait)
             except asyncio.TimeoutError:
                 self.logger.warning(
                     f"Message consumer for plugin {self.plugin_id} didn't stop in time, cancelling"
@@ -330,11 +348,20 @@ class PluginCommunicationResourceManager:
     async def send_stop_command(self) -> None:
         """发送停止命令到插件进程"""
         try:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(
-                self._executor,
-                lambda: self.cmd_queue.put({"type": "STOP"}, timeout=QUEUE_GET_TIMEOUT),
-            )
+            # cmd_queue 可能被高频消息挤满；并且本类内部 executor 可能被 queue.get 占满。
+            # STOP 投递用 asyncio.to_thread（默认线程池），避免被 self._executor 饥饿。
+            sent = False
+            for _ in range(10):
+                try:
+                    await asyncio.to_thread(self.cmd_queue.put, {"type": "STOP"}, True, 0.2)
+                    sent = True
+                    break
+                except Exception:
+                    await asyncio.sleep(0)
+
+            if not sent:
+                await asyncio.to_thread(self.cmd_queue.put, {"type": "STOP"}, True, QUEUE_GET_TIMEOUT)
+
             self.logger.debug(f"Sent STOP command to plugin {self.plugin_id}")
         except Exception as e:
             self.logger.warning(f"Failed to send STOP command to plugin {self.plugin_id}: {e}")
@@ -346,9 +373,12 @@ class PluginCommunicationResourceManager:
         这个任务会一直运行直到收到关闭信号
         """
         self._ensure_shutdown_event()
+        shutdown_event = self._shutdown_event
+        if shutdown_event is None:
+            return
         loop = asyncio.get_running_loop()
         
-        while not self._shutdown_event.is_set():
+        while not shutdown_event.is_set():
             try:
                 # 使用 executor 在后台线程中阻塞读取队列
                 # QUEUE_GET_TIMEOUT 是 1.0 秒，超时后会继续循环
@@ -357,6 +387,9 @@ class PluginCommunicationResourceManager:
                     lambda: self.res_queue.get(timeout=QUEUE_GET_TIMEOUT)
                 )
                 # 收到响应后立即处理，不延迟
+
+                if isinstance(res, dict) and res.get("_type") == "__shutdown__":
+                    break
                 
                 req_id = res.get("req_id")
                 if not req_id:
@@ -400,14 +433,16 @@ class PluginCommunicationResourceManager:
             except Empty:
                 # 队列为空，继续等待
                 continue
+            except asyncio.CancelledError:
+                break
             except (OSError, RuntimeError) as e:
                 # 系统级错误，记录并继续
-                if not self._shutdown_event.is_set():
+                if not shutdown_event.is_set():
                     self.logger.error(f"System error consuming results for plugin {self.plugin_id}: {e}")
                 await asyncio.sleep(RESULT_CONSUMER_SLEEP_INTERVAL)
             except Exception as e:
                 # 其他未知异常，记录详细信息
-                if not self._shutdown_event.is_set():
+                if not shutdown_event.is_set():
                     self.logger.exception(f"Unexpected error consuming results for plugin {self.plugin_id}")
                 # 短暂休眠避免 CPU 占用过高
                 await asyncio.sleep(RESULT_CONSUMER_SLEEP_INTERVAL)
@@ -447,19 +482,28 @@ class PluginCommunicationResourceManager:
             return
         
         self._ensure_shutdown_event()
+        shutdown_event = self._shutdown_event
+        if shutdown_event is None:
+            return
         loop = asyncio.get_running_loop()
         
-        while not self._shutdown_event.is_set():
+        while not shutdown_event.is_set():
             try:
                 # 使用 executor 在后台线程中阻塞读取队列
                 msg = await loop.run_in_executor(
                     self._executor,
                     lambda: self.message_queue.get(timeout=QUEUE_GET_TIMEOUT)
                 )
+
+                if isinstance(msg, dict) and msg.get("_type") == "__shutdown__":
+                    break
                 
                 # 转发消息到主进程的消息队列
                 try:
                     if self._message_target_queue:
+                        # shutdown 期间不要在主进程队列上阻塞等待，否则可能导致插件 shutdown 卡住。
+                        if shutdown_event.is_set():
+                            continue
                         if isinstance(msg, dict) and not msg.get("_bus_stored"):
                             try:
                                 from plugin.core.state import state
@@ -478,7 +522,12 @@ class PluginCommunicationResourceManager:
                                     exc_info=True,
                                 )
 
-                        await self._message_target_queue.put(msg)
+                        try:
+                            # 尽量快速转发；如果主进程已进入 shutdown 或队列不再消费，避免无限阻塞。
+                            await asyncio.wait_for(self._message_target_queue.put(msg), timeout=0.05)
+                        except asyncio.TimeoutError:
+                            # 主队列可能被阻塞/不再消费，直接丢弃以保证 shutdown 及时。
+                            continue
                         if PLUGIN_LOG_MESSAGE_FORWARD:
                             self.logger.info(
                             f"[MESSAGE FORWARD] Plugin: {self.plugin_id} | "
@@ -500,14 +549,16 @@ class PluginCommunicationResourceManager:
             except Empty:
                 # 队列为空，继续等待
                 continue
+            except asyncio.CancelledError:
+                break
             except (OSError, RuntimeError) as e:
                 # 系统级错误
-                if not self._shutdown_event.is_set():
+                if not shutdown_event.is_set():
                     self.logger.error(f"System error consuming messages for plugin {self.plugin_id}: {e}")
                 await asyncio.sleep(MESSAGE_CONSUMER_SLEEP_INTERVAL)
             except Exception as e:
                 # 其他未知异常
-                if not self._shutdown_event.is_set():
+                if not shutdown_event.is_set():
                     self.logger.exception(f"Unexpected error consuming messages for plugin {self.plugin_id}")
                 # 短暂休眠避免 CPU 占用过高
                 await asyncio.sleep(MESSAGE_CONSUMER_SLEEP_INTERVAL)

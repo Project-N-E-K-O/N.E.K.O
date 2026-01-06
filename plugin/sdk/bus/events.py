@@ -156,35 +156,26 @@ class EventClient:
         except Exception as e:
             raise RuntimeError(f"Failed to send EVENT_GET request: {e}") from e
 
-        start_time = time.time()
-        check_interval = max(0.0, float(BUS_SDK_POLL_INTERVAL_SECONDS))
-        events: List[Any] = []
-        while time.time() - start_time < timeout:
-            response = state.get_plugin_response(req_id)
-            if response is None:
-                time.sleep(check_interval)
-                continue
-            if not isinstance(response, dict):
-                time.sleep(check_interval)
-                continue
-            if response.get("error"):
-                raise RuntimeError(str(response.get("error")))
+        response = state.wait_for_plugin_response(req_id, timeout)
+        if response is None:
+            raise TimeoutError(f"EVENT_GET timed out after {timeout}s")
+        if not isinstance(response, dict):
+            raise RuntimeError("Invalid EVENT_GET response")
+        if response.get("error"):
+            raise RuntimeError(str(response.get("error")))
 
-            result = response.get("result")
-            if isinstance(result, dict):
-                evs = result.get("events")
-                if isinstance(evs, list):
-                    events = evs
-                else:
-                    events = []
-            elif isinstance(result, list):
-                events = result
+        events: List[Any] = []
+        result = response.get("result")
+        if isinstance(result, dict):
+            evs = result.get("events")
+            if isinstance(evs, list):
+                events = evs
             else:
                 events = []
-            break
+        elif isinstance(result, list):
+            events = result
         else:
-            _ = state.get_plugin_response(req_id)
-            raise TimeoutError(f"EVENT_GET timed out after {timeout}s")
+            events = []
 
         records: List[EventRecord] = []
         for item in events:
@@ -235,23 +226,15 @@ class EventClient:
         except Exception as e:
             raise RuntimeError(f"Failed to send EVENT_DEL request: {e}") from e
 
-        start_time = time.time()
-        check_interval = max(0.0, float(BUS_SDK_POLL_INTERVAL_SECONDS))
-        while time.time() - start_time < timeout:
-            response = state.get_plugin_response(req_id)
-            if response is None:
-                time.sleep(check_interval)
-                continue
-            if not isinstance(response, dict):
-                time.sleep(check_interval)
-                continue
-            if response.get("error"):
-                raise RuntimeError(str(response.get("error")))
+        response = state.wait_for_plugin_response(req_id, timeout)
+        if response is None:
+            raise TimeoutError(f"EVENT_DEL timed out after {timeout}s")
+        if not isinstance(response, dict):
+            raise RuntimeError("Invalid EVENT_DEL response")
+        if response.get("error"):
+            raise RuntimeError(str(response.get("error")))
 
-            result = response.get("result")
-            if isinstance(result, dict):
-                return bool(result.get("deleted"))
-            return False
-
-        _ = state.get_plugin_response(req_id)
-        raise TimeoutError(f"EVENT_DEL timed out after {timeout}s")
+        result = response.get("result")
+        if isinstance(result, dict):
+            return bool(result.get("deleted"))
+        return False

@@ -160,48 +160,39 @@ class MessageClient:
         except Exception as e:
             raise RuntimeError(f"Failed to send MESSAGE_GET request: {e}") from e
 
-        start_time = time.time()
-        check_interval = max(0.0, float(BUS_SDK_POLL_INTERVAL_SECONDS))
-        messages: List[Any] = []
-        while time.time() - start_time < timeout:
-            # NOTE: 同步轮询等待响应; 每次循环 sleep 一小段时间以避免占满 CPU。
-            response = state.get_plugin_response(req_id)
-            if response is None:
-                time.sleep(check_interval)
-                continue
-            if not isinstance(response, dict):
-                time.sleep(check_interval)
-                continue
-            if response.get("error"):
-                raise RuntimeError(str(response.get("error")))
-
-            result = response.get("result")
-            if isinstance(result, dict):
-                msgs = result.get("messages")
-                if isinstance(msgs, list):
-                    messages = msgs
-                else:
-                    messages = []
-            elif isinstance(result, list):
-                messages = result
-            else:
-                messages = []
-            break
-        else:
+        response = state.wait_for_plugin_response(req_id, timeout)
+        if response is None:
             orphan_response = None
             try:
-                orphan_response = state.get_plugin_response(req_id)
+                orphan_response = state.peek_plugin_response(req_id)
             except Exception:
                 orphan_response = None
             if PLUGIN_LOG_BUS_SDK_TIMEOUT_WARNINGS and orphan_response is not None and hasattr(self.ctx, "logger"):
                 try:
                     self.ctx.logger.warning(
                         f"[PluginContext] Timeout reached, but response was found (likely delayed). "
-                        f"Cleaned up orphan response for req_id={req_id}"
+                        f"Orphan response detected for req_id={req_id}"
                     )
                 except Exception:
                     pass
             raise TimeoutError(f"MESSAGE_GET timed out after {timeout}s")
+        if not isinstance(response, dict):
+            raise RuntimeError("Invalid MESSAGE_GET response")
+        if response.get("error"):
+            raise RuntimeError(str(response.get("error")))
+
+        messages: List[Any] = []
+        result = response.get("result")
+        if isinstance(result, dict):
+            msgs = result.get("messages")
+            if isinstance(msgs, list):
+                messages = msgs
+            else:
+                messages = []
+        elif isinstance(result, list):
+            messages = result
+        else:
+            messages = []
 
         records: List[MessageRecord] = []
         for item in messages:
@@ -253,31 +244,28 @@ class MessageClient:
         except Exception as e:
             raise RuntimeError(f"Failed to send MESSAGE_DEL request: {e}") from e
 
-        start_time = time.time()
-        check_interval = max(0.0, float(BUS_SDK_POLL_INTERVAL_SECONDS))
-        while time.time() - start_time < timeout:
-            response = state.get_plugin_response(req_id)
-            if response is None:
-                time.sleep(check_interval)
-                continue
-            if not isinstance(response, dict):
-                time.sleep(check_interval)
-                continue
-            if response.get("error"):
-                raise RuntimeError(str(response.get("error")))
-
-            result = response.get("result")
-            if isinstance(result, dict):
-                return bool(result.get("deleted"))
-            return False
-
-        orphan_response = state.get_plugin_response(req_id)
-        if PLUGIN_LOG_BUS_SDK_TIMEOUT_WARNINGS and orphan_response is not None and hasattr(self.ctx, "logger"):
+        response = state.wait_for_plugin_response(req_id, timeout)
+        if response is None:
+            orphan_response = None
             try:
-                self.ctx.logger.warning(
-                    f"[PluginContext] Timeout reached for MESSAGE_DEL, but response was found (likely delayed). "
-                    f"Cleaned up orphan response for req_id={req_id}"
-                )
+                orphan_response = state.peek_plugin_response(req_id)
             except Exception:
-                pass
-        raise TimeoutError(f"MESSAGE_DEL timed out after {timeout}s")
+                orphan_response = None
+            if PLUGIN_LOG_BUS_SDK_TIMEOUT_WARNINGS and orphan_response is not None and hasattr(self.ctx, "logger"):
+                try:
+                    self.ctx.logger.warning(
+                        f"[PluginContext] Timeout reached for MESSAGE_DEL, but response was found (likely delayed). "
+                        f"Orphan response detected for req_id={req_id}"
+                    )
+                except Exception:
+                    pass
+            raise TimeoutError(f"MESSAGE_DEL timed out after {timeout}s")
+        if not isinstance(response, dict):
+            raise RuntimeError("Invalid MESSAGE_DEL response")
+        if response.get("error"):
+            raise RuntimeError(str(response.get("error")))
+
+        result = response.get("result")
+        if isinstance(result, dict):
+            return bool(result.get("deleted"))
+        return False
