@@ -63,7 +63,9 @@ class VRMAnimation {
             try {
                 // 动态导入必要的模块
                 const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
-                const { VRMAnimationLoaderPlugin } = await import('@pixiv/three-vrm-animation');
+                // 直接使用完整路径，因为 vrm-animation.js 是普通脚本，importmap 可能无法正确解析
+                const animationModule = await import('/static/libs/three-vrm-animation.module.js');
+                const { VRMAnimationLoaderPlugin } = animationModule;
                 
                 // 创建加载器并注册官方插件
                 const loader = new GLTFLoader();
@@ -130,7 +132,8 @@ class VRMAnimation {
 
             // 使用官方库的 createVRMAnimationClip 创建动画 Clip
             // 这会自动处理骨骼重定向和四元数问题
-            const { createVRMAnimationClip } = await import('@pixiv/three-vrm-animation');
+            const animationModule = await import('/static/libs/three-vrm-animation.module.js');
+            const { createVRMAnimationClip } = animationModule;
             const clip = createVRMAnimationClip(vrmAnimation, vrm);
             
             if (!clip || !clip.tracks || clip.tracks.length === 0) {
