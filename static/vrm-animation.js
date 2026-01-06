@@ -165,7 +165,44 @@ class VRMAnimation {
                 name: clip.name,
                 duration: clip.duration,
                 tracksCount: clip.tracks.length,
-                sampleTracks: clip.tracks.slice(0, 5).map(t => t.name)
+                allTracks: clip.tracks.map(t => t.name),
+                sampleTracks: clip.tracks.slice(0, 10).map(t => ({
+                    name: t.name,
+                    timesLength: t.times?.length,
+                    valuesLength: t.values?.length
+                }))
+            });
+            
+            // 检查 tracks 是否真的绑定到了场景中的对象
+            const vrmScene = vrm.scene;
+            const trackTargets = clip.tracks.map(t => {
+                const trackName = t.name;
+                const lastDot = trackName.lastIndexOf('.');
+                const nodeName = trackName.substring(0, lastDot);
+                const property = trackName.substring(lastDot + 1);
+                
+                // 查找场景中是否有这个节点
+                let foundNode = null;
+                vrmScene.traverse((obj) => {
+                    if (obj.name === nodeName) {
+                        foundNode = obj;
+                    }
+                });
+                
+                return {
+                    trackName,
+                    nodeName,
+                    property,
+                    found: !!foundNode,
+                    nodeType: foundNode?.type
+                };
+            });
+            
+            console.log('[VRM Animation] Tracks 绑定检查:', {
+                totalTracks: trackTargets.length,
+                boundTracks: trackTargets.filter(t => t.found).length,
+                unboundTracks: trackTargets.filter(t => !t.found).slice(0, 10),
+                sampleBoundTracks: trackTargets.filter(t => t.found).slice(0, 10)
             });
 
             const newAction = this.vrmaMixer.clipAction(clip);
