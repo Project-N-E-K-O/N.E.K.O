@@ -138,13 +138,37 @@ class VRMAnimation {
             
             if (!clip || !clip.tracks || clip.tracks.length === 0) {
                 console.warn('[VRM Animation] 创建的动画 Clip 没有有效的轨道');
+                console.warn('[VRM Animation] Clip 信息:', { 
+                    name: clip?.name, 
+                    duration: clip?.duration, 
+                    tracksCount: clip?.tracks?.length,
+                    tracks: clip?.tracks?.map(t => t.name)
+                });
                 throw new Error('动画 Clip 创建失败：没有找到匹配的骨骼');
             }
+
+            console.log('[VRM Animation] 动画 Clip 创建成功:', {
+                name: clip.name,
+                duration: clip.duration,
+                tracksCount: clip.tracks.length,
+                sampleTracks: clip.tracks.slice(0, 5).map(t => t.name)
+            });
 
             const newAction = this.vrmaMixer.clipAction(clip);
             if (!newAction) {
                 throw new Error('无法创建动画动作');
             }
+            
+            // 确保 Action 已启用
+            newAction.enabled = true;
+            
+            console.log('[VRM Animation] Action 创建成功:', {
+                enabled: newAction.enabled,
+                paused: newAction.paused,
+                time: newAction.time,
+                timeScale: newAction.timeScale,
+                weight: newAction.weight
+            });
             
             newAction.setLoop(options.loop ? window.THREE.LoopRepeat : window.THREE.LoopOnce);
             newAction.clampWhenFinished = true;
@@ -162,6 +186,7 @@ class VRMAnimation {
                 if (this.currentAction) this.currentAction.stop();
                 
                 newAction.reset();
+                newAction.enabled = true; // 确保启用
                 newAction.play();
                 
                 // 强制 Mixer 立即计算第 0 帧的数据
@@ -179,6 +204,7 @@ class VRMAnimation {
                     if (vrm.scene) vrm.scene.updateMatrixWorld(true);
                     
                     this.currentAction.fadeOut(fadeDuration);
+                    newAction.enabled = true; // 确保启用
                     if (options.noReset) {
                         newAction.fadeIn(fadeDuration).play();
                     } else {
@@ -186,6 +212,7 @@ class VRMAnimation {
                     }
                 } else {
                     // 首次播放但非强制立即 (保留一点淡入)
+                    newAction.enabled = true; // 确保启用
                     newAction.reset().fadeIn(fadeDuration).play();
                 }
             }
@@ -196,7 +223,19 @@ class VRMAnimation {
             // 如果开启了调试，更新骨骼辅助线
             if (this.debug) this._updateSkeletonHelper();
 
-            console.log('[VRM Animation] 动画播放成功（使用官方库）');
+            // 立即更新一次，确保第一帧正确显示
+            this.vrmaMixer.update(0);
+            if (vrm.scene) {
+                vrm.scene.updateMatrixWorld(true);
+            }
+
+            console.log('[VRM Animation] 动画播放成功（使用官方库）', {
+                isPlaying: this.vrmaIsPlaying,
+                mixerExists: !!this.vrmaMixer,
+                actionEnabled: newAction.enabled,
+                actionPaused: newAction.paused,
+                actionWeight: newAction.weight
+            });
 
         } catch (error) {
             console.error('[VRM Animation] 播放失败:', error);
