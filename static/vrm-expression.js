@@ -235,25 +235,32 @@ class VRMExpression {
             }
 
             // 判断是否为选中项 (最高优先级)
-            // 直接名字匹配
-            let isMatch = (name === targetName || lowerName === targetNameLower);
-            // 如果没有直接匹配，检查映射表 (moodMap)
-            // 解决 pickRandomMood 选出 'happy' 但模型只有 'Joy' 的情况
-            if (!isMatch && this.moodMap[targetName]) {
-                const candidates = this.moodMap[targetName];
-                // 检查候选词里是否有当前这个 name
-                isMatch = candidates.some(candidate => candidate.toLowerCase() === lowerName);
-            }
+            // 注意：当 currentMood = 'neutral' 时，不应用任何表情，让模型保持默认状态
+            if (targetName === 'neutral') {
+                targetWeight = 0.0;
+            } else {
+                // 直接名字匹配
+                let isMatch = (name === targetName || lowerName === targetNameLower);
+                // 如果没有直接匹配，检查映射表 (moodMap)
+                // 解决 pickRandomMood 选出 'happy' 但模型只有 'Joy' 的情况
+                if (!isMatch && this.moodMap[targetName]) {
+                    const candidates = this.moodMap[targetName];
+                    // 检查候选词里是否有当前这个 name
+                    isMatch = candidates.some(candidate => candidate.toLowerCase() === lowerName);
+                }
 
-            if (isMatch) {
-                targetWeight = 1.0;
+                if (isMatch) {
+                    targetWeight = 1.0;
+                }
             }
+            
             // 处理自动眨眼 (次优先级)
             // 条件：
             // 1. 当前表情是 blink (双眼眨眼，不包括 blinkLeft/blinkRight)
             // 2. 用户没有在手动测试眨眼 (防止手动 blinkLeft 时被自动 blink 覆盖)
             // 3. 该表情不是选中的那个 (否则会在上面被设为 1.0)
-            else if (lowerName === 'blink' && !isUserTestingBlink) {
+            // 注意：眨眼是自然生理反应，不受情绪状态影响，neutral 时也允许眨眼
+            if (lowerName === 'blink' && !isUserTestingBlink) {
                 expressionManager.setValue(name, this.blinkWeight);
                 return; // 眨眼由定时器控制，处理完直接跳过后续插值
             }

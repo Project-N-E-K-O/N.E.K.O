@@ -548,7 +548,7 @@
     </script>
 
     <script>
-        // ==================== 【纯净版：只修朝向，不动骨骼】 ====================
+        // 修复 VRM 模型朝向
         function fixVRMModel() {
             console.log("🔧 [模型检查] 正在运行...");
 
@@ -597,7 +597,6 @@
                 console.error("❌ [检查出错]", e);
             }
         }
-        // ====================================================================
         // 用于页面间通信的事件处理
         function sendMessageToMainPage(action) {
             try {
@@ -2640,7 +2639,7 @@
                 document.body.appendChild(modal);
             }
 
-            // ===== 情绪映射加载 =====
+            // 情绪映射加载
             async function loadEmotionMappingForModel(modelName) {
                 currentEmotionMapping = null;
                 try {

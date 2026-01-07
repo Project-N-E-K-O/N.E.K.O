@@ -1,4 +1,4 @@
-// ==================== OGG OPUS 流式解码器 (WASM) ====================
+// OGG OPUS 流式解码器 (WASM)
 // 使用 @wasm-audio-decoders/ogg-opus-decoder
 // https://github.com/eshaz/wasm-audio-decoders/tree/main/src/ogg-opus-decoder
 // 库已在 index.html 中预加载，全局变量为 window["ogg-opus-decoder"]
@@ -56,7 +56,7 @@ async function decodeOggOpusChunk(uint8Array) {
     return null; // 数据不足，等待更多
 }
 
-// ==================== 全局窗口管理函数 ====================
+// 全局窗口管理函数
 // 关闭所有已打开的设置窗口（弹窗）
 window.closeAllSettingsWindows = function () {
     // 关闭 app.js 中跟踪的窗口
@@ -90,7 +90,7 @@ window.closeAllSettingsWindows = function () {
     }
 };
 
-// ==================== 应用初始化 ====================
+// 应用初始化
 function init_app() {
     const micButton = document.getElementById('micButton');
     const muteButton = document.getElementById('muteButton');
@@ -3077,7 +3077,7 @@ function init_app() {
     window.stopScreenSharing = stopScreenSharing;
     window.screen_share = startScreenSharing;
 
-    // ========== 连接浮动按钮到原有功能 ==========
+    // 连接浮动按钮到原有功能
 
     // 麦克风按钮（toggle模式）
     // 麦克风按钮（toggle模式）
@@ -3643,9 +3643,9 @@ function init_app() {
         console.log('[App] 请她回来完成，未自动开始会话，等待用户主动发起对话');
     });
 
-    // ========== Agent控制逻辑 ==========
+    // Agent控制逻辑
 
-    // ===== Agent弹窗状态机 =====
+    // Agent弹窗状态机
     // 状态定义：
     // - IDLE: 空闲状态，弹窗未打开
     // - CHECKING: 正在检查服务器状态（弹窗刚打开或用户操作后）
@@ -4935,7 +4935,7 @@ function init_app() {
         console.log('[App] Agent开关事件监听器绑定完成');
     };
 
-    // ========== Agent 任务 HUD 轮询逻辑 ==========
+    // Agent 任务 HUD 轮询逻辑
     let agentTaskPollingInterval = null;
     let agentTaskTimeUpdateInterval = null;
 
@@ -5065,7 +5065,7 @@ function init_app() {
             console.log('[App] Agent 任务 HUD 控制已绑定');
         }, 100);
     });
-    // ========== Agent 任务 HUD 轮询逻辑结束 ==========
+    // Agent 任务 HUD 轮询逻辑结束
 
     // 监听浮动按钮创建完成事件
     window.addEventListener('live2d-floating-buttons-ready', () => {
@@ -5304,7 +5304,7 @@ function init_app() {
         window.renderFloatingMicList();
     }, 1500);
 
-    // ===== 屏幕源选择功能（仅Electron环境） =====
+    // 屏幕源选择功能（仅Electron环境）
     // 当前选中的屏幕源ID
     let selectedScreenSourceId = null;
 
@@ -6067,9 +6067,7 @@ function init_app() {
         isSwitchingCatgirl = true;
 
         try {
-            // ============================================================
             // 0. 紧急制动：立即停止所有渲染循环
-            // ============================================================
             // 停止 Live2D Ticker
             if (window.live2dManager && window.live2dManager.pixi_app && window.live2dManager.pixi_app.ticker) {
                 console.log('[猫娘切换] 🛑 暂停 Live2D Ticker');
@@ -6082,9 +6080,7 @@ function init_app() {
                 window.vrmManager._animationFrameId = null;
             }
 
-            // ============================================================
             // 1. 获取新角色的配置（包括 model_type）
-            // ============================================================
             console.log('[猫娘切换] 1. 获取新角色配置...');
             const charResponse = await fetch('/api/characters');
             if (!charResponse.ok) {
@@ -6100,9 +6096,7 @@ function init_app() {
             const modelType = catgirlConfig.model_type || (catgirlConfig.vrm ? 'vrm' : 'live2d');
             console.log('[猫娘切换] 新角色模型类型:', modelType);
 
-            // ============================================================
             // 2. 清理旧模型资源（温和清理，保留基础设施）
-            // ============================================================
             console.log('[猫娘切换] 2. 清理旧模型资源...');
 
             // 清理 VRM 资源（参考 index.html 的清理逻辑）
@@ -6163,17 +6157,21 @@ function init_app() {
                     }
 
                     // 5. 清理场景中剩余的模型对象（但保留光照、相机和控制器）
+                    // 注意：vrm.scene 已经在上面（步骤3）从场景中移除了
+                    // 这里只需要清理可能残留的其他模型对象
                     if (window.vrmManager.scene) {
                         const childrenToRemove = [];
                         window.vrmManager.scene.children.forEach((child) => {
-                            // 只移除模型相关的对象，保留光照、相机
-                            if (!child.isLight && !child.isCamera && child.type !== 'Group') {
-                                // 检查是否是VRM模型场景
-                                if (child.userData && child.userData.vrm) {
-                                    childrenToRemove.push(child);
-                                } else if (child.type === 'Group' && child.children.length > 0) {
-                                    // 检查是否是模型组（通常模型是一个Group）
-                                    const hasMesh = child.children.some(c => c.isMesh || c.isSkinnedMesh);
+                            // 只移除模型相关的对象，保留光照、相机和控制器
+                            if (!child.isLight && !child.isCamera) {
+                                // 检查是否是VRM模型场景（通过检查是否有 SkinnedMesh）
+                                if (child.type === 'Group' || child.type === 'Object3D') {
+                                    let hasMesh = false;
+                                    child.traverse((obj) => {
+                                        if (obj.isSkinnedMesh || obj.isMesh) {
+                                            hasMesh = true;
+                                        }
+                                    });
                                     if (hasMesh) {
                                         childrenToRemove.push(child);
                                     }
@@ -6243,9 +6241,7 @@ function init_app() {
                 console.warn('[猫娘切换] Live2D 清理出错:', e);
             }
 
-            // ============================================================
             // 3. 准备新环境
-            // ============================================================
             showStatusToast(window.t ? window.t('app.switchingCatgirl', { name: newCatgirl }) : `正在切换到 ${newCatgirl}...`, 3000);
 
             // 清理连接与状态
@@ -6267,13 +6263,11 @@ function init_app() {
             connectWebSocket();
             document.title = `${newCatgirl} Terminal - Project N.E.K.O.`;
 
-            // ============================================================
             // 4. 根据模型类型加载相应的模型
-            // ============================================================
             console.log('[猫娘切换] 4. 加载新模型...');
 
             if (modelType === 'vrm') {
-                // ========== 加载 VRM 模型 ==========
+                // 加载 VRM 模型
                 console.log('[猫娘切换] 加载 VRM 模型...');
 
                 let vrmModelPath = catgirlConfig.vrm;
@@ -6364,7 +6358,7 @@ function init_app() {
                     window.LanLan1.currentModel = null;
                 }
 
-                // ========== 显示 VRM 容器 ==========
+                // 显示 VRM 容器
                 console.log('[猫娘切换] 显示 VRM 界面...');
 
                 const vrmContainer = document.getElementById('vrm-container');
@@ -6412,7 +6406,7 @@ function init_app() {
                 }, 300);
 
             } else {
-                // ========== 加载 Live2D 模型 ==========
+                // 加载 Live2D 模型
                 console.log('[猫娘切换] 加载 Live2D 模型...');
 
                 // 重置goodbyeClicked标志
@@ -6457,7 +6451,7 @@ function init_app() {
                     }
                 }
 
-                // ========== 显示 Live2D 容器 ==========
+                // 显示 Live2D 容器
                 console.log('[猫娘切换] 显示 Live2D 界面...');
 
                 if (typeof showLive2d === 'function') {
@@ -6597,7 +6591,7 @@ window.addEventListener('message', function (event) {
     }
 });
 
-// ==================== 字幕提示框功能 ====================
+// 字幕提示框功能
 
 // 归一化语言代码：将 BCP-47 格式（如 'zh-CN', 'en-US'）归一化为简单代码（'zh', 'en', 'ja'）
 // 与 detectLanguage() 返回的格式保持一致，避免误判

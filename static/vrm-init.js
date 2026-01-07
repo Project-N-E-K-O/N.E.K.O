@@ -53,7 +53,6 @@ window.addEventListener('vrm-modules-ready', () => {
     }
 });
 
-// 启动延迟初始化
 // 自动初始化函数
 async function initVRMModel() {
     // 防止重复进入：如果正在初始化或模型已加载，直接退出
@@ -180,7 +179,6 @@ async function initVRMModel() {
         // 页面加载时立即应用打光配置
         if (window.lanlan_config && window.lanlan_config.lighting && window.vrmManager) {
             const lighting = window.lanlan_config.lighting;
-            console.log('[VRM Init] 初始加载应用打光:', lighting);
             if (window.vrmManager.ambientLight) window.vrmManager.ambientLight.intensity = lighting.ambient;
             if (window.vrmManager.mainLight) window.vrmManager.mainLight.intensity = lighting.main;
             if (window.vrmManager.fillLight) window.vrmManager.fillLight.intensity = lighting.fill;

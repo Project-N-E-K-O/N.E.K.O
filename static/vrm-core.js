@@ -69,7 +69,6 @@ class VRMCore {
         return;
     }
 
-
     /**
      * 检测 VRM 模型版本
      */
@@ -105,212 +104,24 @@ class VRMCore {
     }
 
     /**
-     * 设置锁按钮（类似 Live2D）
-     */
-    setupLockIcon() {
-        if (!this.manager.canvas) {
-            return;
-        }
-
-        // 在 l2d_manager 等页面不显示
-        if (!document.getElementById('chat-container')) {
-            this.manager.isLocked = false;
-            this.manager.canvas.style.pointerEvents = 'auto';
-            return;
-        }
-
-        // 在观看模式下不显示锁图标，但允许交互
-        if (window.isViewerMode) {
-            this.manager.isLocked = false;
-            this.manager.canvas.style.pointerEvents = 'auto';
-            return;
-        }
-
-        // 检查锁图标是否已存在
-        let lockIcon = document.getElementById('vrm-lock-icon');
-        if (lockIcon) {
-            return; // 已存在，不重复创建
-        }
-
-        lockIcon = document.createElement('div');
-        lockIcon.id = 'vrm-lock-icon';
-        Object.assign(lockIcon.style, {
-            position: 'fixed',
-            zIndex: '99', // 确保在最上层
-            width: '32px', // 增大点击区域
-            height: '32px',
-            cursor: 'pointer',
-            userSelect: 'none',
-            pointerEvents: 'auto',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center'
-        });
-
-        // 添加版本号防止缓存
-        const iconVersion = '?v=' + Date.now();
-
-        // 创建图片容器
-        const imgContainer = document.createElement('div');
-        Object.assign(imgContainer.style, {
-            position: 'relative',
-            width: '32px',
-            height: '32px'
-        });
-
-        // 创建锁定状态图片
-        const imgLocked = document.createElement('img');
-        imgLocked.src = '/static/icons/locked_icon.png' + iconVersion;
-        imgLocked.alt = 'Locked';
-        Object.assign(imgLocked.style, {
-            position: 'absolute',
-            width: '28px',
-            height: '28px',
-            objectFit: 'contain',
-            pointerEvents: 'none',
-            opacity: this.manager.isLocked ? '1' : '0',
-            transition: 'opacity 0.3s ease'
-        });
-
-        // 创建解锁状态图片
-        const imgUnlocked = document.createElement('img');
-        imgUnlocked.src = '/static/icons/unlocked_icon.png' + iconVersion;
-        imgUnlocked.alt = 'Unlocked';
-        Object.assign(imgUnlocked.style, {
-            position: 'absolute',
-            width: '28px',
-            height: '28px',
-            objectFit: 'contain',
-            pointerEvents: 'none',
-            opacity: this.manager.isLocked ? '0' : '1',
-            transition: 'opacity 0.3s ease'
-        });
-
-        imgContainer.appendChild(imgLocked);
-        imgContainer.appendChild(imgUnlocked);
-        lockIcon.appendChild(imgContainer);
-        document.body.appendChild(lockIcon);
-
-        // 存储引用
-        this._lockIconElement = lockIcon;
-        this._lockIconImages = {
-            locked: imgLocked,
-            unlocked: imgUnlocked
-        };
-
-        // 点击事件 - 使用 mousedown 和 touchstart，提高响应速度
-        const handleLockToggle = (e) => {
-            e.stopPropagation();
-            e.preventDefault();
-
-            // 添加视觉反馈：点击时缩小
-            lockIcon.style.transform = 'scale(0.9)';
-            setTimeout(() => {
-                lockIcon.style.transform = 'scale(1)';
-            }, 150);
-
-            this.setLocked(!this.manager.isLocked);
-        };
-
-        lockIcon.addEventListener('mousedown', handleLockToggle);
-        lockIcon.addEventListener('touchstart', handleLockToggle);
-
-        // 阻止 click 和 touchend 事件冒泡（防止双重触发）
-        lockIcon.addEventListener('click', (e) => {
-            e.stopPropagation();
-            e.preventDefault();
-        });
-        lockIcon.addEventListener('touchend', (e) => {
-            e.stopPropagation();
-            e.preventDefault();
-        });
-
-        // 添加过渡动画
-        lockIcon.style.transition = 'transform 0.15s ease';
-
-        // 确保默认状态为解锁（可以移动和缩放）
-        this.setLocked(false);
-
-        // 持续更新图标位置（使用 requestAnimationFrame + Three.js投影）
-        const updateLockIconPosition = () => {
-            try {
-                if (!this.manager.currentModel || !this.manager.currentModel.vrm) {
-                    if (lockIcon) lockIcon.style.display = 'none';
-                    return;
-                }
-
-                const vrm = this.manager.currentModel.vrm;
-                const camera = this.manager.camera;
-                const renderer = this.manager.renderer;
-
-                if (!camera || !renderer) return;
-
-                const canvasRect = renderer.domElement.getBoundingClientRect();
-
-                // 获取胸部骨骼作为锁图标定位点（如果不存在则使用场景根）
-                let targetObj = vrm.scene;
-
-                if (vrm.humanoid) {
-                    // 优先使用胸部骨骼
-                    if (typeof vrm.humanoid.getNormalizedBoneNode === 'function') {
-                        const chest = vrm.humanoid.getNormalizedBoneNode('chest') ||
-                                     vrm.humanoid.getNormalizedBoneNode('spine');
-                        if (chest) targetObj = chest;
-                    }
-                    else if (typeof vrm.humanoid.getBoneNode === 'function') {
-                        const chest = vrm.humanoid.getBoneNode('chest') ||
-                                     vrm.humanoid.getBoneNode('spine');
-                        if (chest) targetObj = chest;
-                    }
-                }
-
-                // 强制更新世界矩阵，确保获取到最新位置
-                targetObj.updateWorldMatrix(true, false);
-
-                // 计算屏幕坐标（使用Three.js投影）
-                const targetWorldPos = new THREE.Vector3();
-                targetObj.getWorldPosition(targetWorldPos);
-
-                const worldVector = targetWorldPos.clone();
-                worldVector.project(camera);
-
-                const canvasX = (worldVector.x * 0.5 + 0.5) * canvasRect.width;
-                const canvasY = (-worldVector.y * 0.5 + 0.5) * canvasRect.height;
-
-                const screenX = canvasRect.left + canvasX;
-                const screenY = canvasRect.top + canvasY;
-
-                // 应用偏移（锁图标在模型右侧稍下方）
-                const iconX = screenX + 40;
-                const iconY = screenY + 20;
-
-                // 屏幕边缘限制
-                const clampedX = Math.max(0, Math.min(iconX, window.innerWidth - 40));
-                const clampedY = Math.max(0, Math.min(iconY, window.innerHeight - 40));
-
-                lockIcon.style.left = `${clampedX}px`;
-                lockIcon.style.top = `${clampedY}px`;
-            } catch (_) {
-                // 忽略单帧异常
-            }
-            requestAnimationFrame(updateLockIconPosition);
-        };
-        this._lockIconAnimationFrame = requestAnimationFrame(updateLockIconPosition);
-
-    }
-
-    /**
      * 设置锁定状态并同步更新 UI
      * @param {boolean} locked - 是否锁定
      */
     setLocked(locked) {
         this.manager.isLocked = locked;
 
-        // 更新锁图标样式
+        // 更新锁图标样式（兼容新旧两种锁图标系统）
         if (this._lockIconImages) {
+            // 旧系统：使用图片元素
             const { locked: imgLocked, unlocked: imgUnlocked } = this._lockIconImages;
             if (imgLocked) imgLocked.style.opacity = locked ? '1' : '0';
             if (imgUnlocked) imgUnlocked.style.opacity = locked ? '0' : '1';
+        } else {
+            // 新系统：使用背景图片
+            const lockIcon = document.getElementById('vrm-lock-icon');
+            if (lockIcon) {
+                lockIcon.style.backgroundImage = locked ? 'url(/static/icons/locked_icon.png)' : 'url(/static/icons/unlocked_icon.png)';
+            }
         }
 
         // 更新 canvas 的 pointerEvents
@@ -388,7 +199,6 @@ class VRMCore {
                         material.receiveShadow = false; 
                         
                         // 可选：稍微增加一点自发光，确保肤色通透
-                        //if (material.emissiveIntensity !== undefined) material.emissiveIntensity = 0.1;
                     }
                 });
             }
@@ -780,8 +590,7 @@ class VRMCore {
 
             
 
-            // 设置锁按钮（在模型加载完成后）
-            this.setupLockIcon();
+            // 锁图标由 setupFloatingButtons() 创建，不需要单独设置
 
             // 启用鼠标跟踪（用于控制浮动按钮显示/隐藏）
             if (this.manager.interaction && typeof this.manager.interaction.enableMouseTracking === 'function') {

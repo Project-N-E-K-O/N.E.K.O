@@ -443,7 +443,19 @@ VRMManager.prototype.setupFloatingButtons = function () {
 
     const toggleLock = (e) => {
         if(e) { e.preventDefault(); e.stopPropagation(); }
-        this.interaction.isLocked = !this.interaction.isLocked;
+        
+        // 使用 core.setLocked() 统一管理锁定状态
+        const newLockedState = !this.interaction.isLocked;
+        if (this.core && typeof this.core.setLocked === 'function') {
+            this.core.setLocked(newLockedState);
+        } else {
+            // 如果没有 core.setLocked，直接设置
+            this.interaction.isLocked = newLockedState;
+            const vrmCanvas = document.getElementById('vrm-canvas');
+            if (vrmCanvas) vrmCanvas.style.pointerEvents = newLockedState ? 'none' : 'auto';
+        }
+        
+        // 更新锁图标样式
         lockIcon.style.backgroundImage = this.interaction.isLocked ? 'url(/static/icons/locked_icon.png)' : 'url(/static/icons/unlocked_icon.png)';
         
         // 获取当前的基础缩放值（如果已设置）
@@ -458,8 +470,6 @@ VRMManager.prototype.setupFloatingButtons = function () {
             lockIcon.style.transform = `scale(${baseScale})`;
         }, 100);
         
-        const vrmCanvas = document.getElementById('vrm-canvas');
-        if (vrmCanvas) vrmCanvas.style.pointerEvents = this.interaction.isLocked ? 'none' : 'auto';
         lockIcon.style.display = 'block';
     };
 

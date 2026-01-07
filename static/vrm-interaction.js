@@ -94,14 +94,8 @@ class VRMInteraction {
                 // 使用边界限制
                 const finalPosition = this.clampModelPosition(newPosition);
 
-                // 应用位置
+                // 应用位置（按钮和锁图标位置由 _startUIUpdateLoop 自动更新）
                 this.manager.currentModel.scene.position.copy(finalPosition);
-
-                // 更新UI位置
-                this.updateFloatingButtonsPosition();
-                if (this.manager.core && typeof this.manager.core.updateLockIconPosition === 'function') {
-                    this.manager.core.updateLockIconPosition();
-                }
             }
 
             this.previousMousePosition = { x: e.clientX, y: e.clientY };
@@ -235,10 +229,7 @@ class VRMInteraction {
      * 每帧更新（由 VRMManager 驱动）
      */
     update(delta) {
-        // 1. 浮动按钮跟随
-        this.updateFloatingButtonsPosition();
-
-        // 2. 更新身体朝向
+        // 更新身体朝向（按钮位置由 _startUIUpdateLoop 处理）
         this._updateModelFacing(delta);
     }
 
@@ -382,100 +373,6 @@ class VRMInteraction {
         return correctedPos;
     }
     
-    /**
-     * 更新浮动按钮位置，使其跟随VRM模型
-     */
-    updateFloatingButtonsPosition() {
-        // 1. 获取容器 - 只查找VRM的按钮
-        const buttonsContainer = document.getElementById('vrm-floating-buttons');
-
-        // 只要容器存在就计算位置，不再检查 display === 'none'
-        // 这样确保菜单在显示出的那一瞬间，位置已经是正确的跟随位置了
-        if (!buttonsContainer) return;
-
-        if (!this.manager.currentModel || !this.manager.currentModel.vrm) return;
-
-        try {
-            const vrm = this.manager.currentModel.vrm;
-            const camera = this.manager.camera;
-            const renderer = this.manager.renderer;
-            
-            if (!camera || !renderer) return;
-
-            const canvasRect = renderer.domElement.getBoundingClientRect();
-            
-            let targetObj = vrm.scene; 
-            
-            if (vrm.humanoid) {
-                if (typeof vrm.humanoid.getNormalizedBoneNode === 'function') {
-                    const head = vrm.humanoid.getNormalizedBoneNode('head');
-                    if (head) targetObj = head;
-                } 
-                else if (typeof vrm.humanoid.getBoneNode === 'function') {
-                    const head = vrm.humanoid.getBoneNode('head');
-                    if (head) targetObj = head;
-                }
-            }
-
-            // 强制更新世界矩阵，确保获取到最新位置
-            targetObj.updateWorldMatrix(true, false);
-
-            // 计算屏幕坐标
-            const targetWorldPos = new THREE.Vector3();
-            targetObj.getWorldPosition(targetWorldPos);
-            
-            const worldVector = targetWorldPos.clone();
-            worldVector.project(camera);
-
-            const canvasX = (worldVector.x * 0.5 + 0.5) * canvasRect.width;
-            const canvasY = (-worldVector.y * 0.5 + 0.5) * canvasRect.height;
-
-            const screenX = canvasRect.left + canvasX;
-            const screenY = canvasRect.top + canvasY;
-
-            // 应用偏移
-            const buttonX = screenX - 80; 
-            const buttonY = screenY; 
-
-            // 获取按钮容器的实际尺寸（用于边界限制）
-            // 如果容器是隐藏的，使用 getBoundingClientRect 或回退到默认值
-            let containerWidth = buttonsContainer.offsetWidth;
-            let containerHeight = buttonsContainer.offsetHeight;
-            
-            // 如果尺寸为 0（可能是隐藏状态），尝试使用 getBoundingClientRect
-            if (containerWidth === 0 || containerHeight === 0) {
-                const rect = buttonsContainer.getBoundingClientRect();
-                if (rect.width > 0 && rect.height > 0) {
-                    containerWidth = rect.width;
-                    containerHeight = rect.height;
-                } else {
-                    // 回退到默认值（基于按钮配置：5个按钮，每个48px，间距12px）
-                    containerWidth = 48;  // 按钮宽度
-                    containerHeight = 48 * 5 + 12 * 4;  // 5个按钮 + 4个间距 = 288px
-                }
-            }
-
-            // 屏幕边缘限制（参考 Live2D 的实现）
-            const screenWidth = window.innerWidth;
-            const screenHeight = window.innerHeight;
-            const minMargin = 10;  // 最小边距
-            
-            // X轴边界限制：确保按钮容器不超出屏幕右边界
-            const maxX = screenWidth - containerWidth - minMargin;
-            const clampedX = Math.max(minMargin, Math.min(buttonX, maxX));
-            
-            // Y轴边界限制：确保按钮容器不超出屏幕上下边界
-            const minY = minMargin;
-            const maxY = screenHeight - containerHeight - minMargin;
-            const clampedY = Math.max(minY, Math.min(buttonY, maxY));
-
-            buttonsContainer.style.left = `${clampedX}px`;
-            buttonsContainer.style.top = `${clampedY}px`;
-
-        } catch (error) {
-            // 静默失败
-        }
-    }
 
     /**
      * 启用/禁用鼠标跟踪（用于控制浮动按钮显示/隐藏）
@@ -495,9 +392,6 @@ class VRMInteraction {
         }
     }
     
-    /**
-     * 设置浮动按钮的鼠标跟踪（类似 Live2D 的 enableMouseTracking）
-     */
     /**
      * 设置浮动按钮的鼠标跟踪
      */
@@ -529,14 +423,8 @@ class VRMInteraction {
                 window.live2dManager.isFocusing = true;
             }
 
-            // 显示浮动按钮
+            // 显示浮动按钮（位置由 _startUIUpdateLoop 自动更新）
             currentButtonsContainer.style.display = 'flex';
-            
-            // 更新按钮位置（显示后再更新，确保位置计算正确）
-            // 使用 requestAnimationFrame 确保 DOM 更新后再计算位置
-            requestAnimationFrame(() => {
-                this.updateFloatingButtonsPosition();
-            });
 
             // 鼠标靠近时显示锁图标
             const lockIcon = document.getElementById('vrm-lock-icon');
