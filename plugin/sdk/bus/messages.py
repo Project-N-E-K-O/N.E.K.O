@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import base64
 import time
 import uuid
 from dataclasses import dataclass
+from queue import Empty
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 
 from plugin.core.state import state
@@ -168,7 +170,49 @@ class MessageClient:
         except Exception as e:
             raise RuntimeError(f"Failed to send MESSAGE_GET request: {e}") from e
 
-        response = state.wait_for_plugin_response(req_id, timeout)
+        response = None
+        resp_q = getattr(self.ctx, "_response_queue", None)
+        pending = getattr(self.ctx, "_response_pending", None)
+        if pending is None:
+            try:
+                pending = {}
+                setattr(self.ctx, "_response_pending", pending)
+            except Exception:
+                pending = None
+        if pending is not None:
+            try:
+                cached = pending.pop(req_id, None)
+            except Exception:
+                cached = None
+            if isinstance(cached, dict):
+                response = cached
+        if response is None and resp_q is not None:
+            deadline = time.time() + max(0.0, float(timeout))
+            while True:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    break
+                try:
+                    item = resp_q.get(timeout=remaining)
+                except Empty:
+                    break
+                except Exception:
+                    break
+                if not isinstance(item, dict):
+                    continue
+                rid = item.get("request_id")
+                if rid == req_id:
+                    response = item
+                    break
+                if isinstance(rid, str) and pending is not None:
+                    try:
+                        if len(pending) > 1024:
+                            pending.clear()
+                        pending[rid] = item
+                    except Exception:
+                        pass
+        if response is None:
+            response = state.wait_for_plugin_response(req_id, timeout)
         if response is None:
             orphan_response = None
             try:

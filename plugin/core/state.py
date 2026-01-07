@@ -8,6 +8,7 @@ import logging
 import threading
 import time
 from collections import deque
+import itertools
 import multiprocessing
 from typing import Any, Callable, Deque, Dict, List, Optional, Set, Tuple, cast
 
@@ -76,6 +77,9 @@ class PluginRuntimeState:
         self._plugin_response_notify_event: Optional[Any] = None
         # 保护跨进程通信资源懒加载的锁
         self._plugin_comm_lock = threading.Lock()
+
+        self._plugin_response_queues: Dict[str, Any] = {}
+        self._plugin_response_queues_lock = threading.Lock()
 
         self._bus_store_lock = threading.Lock()
         self._message_store: Deque[Dict[str, Any]] = deque(maxlen=MESSAGE_QUEUE_MAX)
@@ -147,6 +151,27 @@ class PluginRuntimeState:
                     # 使用 multiprocessing.Queue 因为需要跨进程
                     self._plugin_comm_queue = multiprocessing.Queue()
         return self._plugin_comm_queue
+
+    def set_plugin_response_queue(self, plugin_id: str, q: Any) -> None:
+        pid = str(plugin_id).strip()
+        if not pid:
+            return
+        with self._plugin_response_queues_lock:
+            self._plugin_response_queues[pid] = q
+
+    def get_plugin_response_queue(self, plugin_id: str) -> Any:
+        pid = str(plugin_id).strip()
+        if not pid:
+            return None
+        with self._plugin_response_queues_lock:
+            return self._plugin_response_queues.get(pid)
+
+    def remove_plugin_response_queue(self, plugin_id: str) -> None:
+        pid = str(plugin_id).strip()
+        if not pid:
+            return
+        with self._plugin_response_queues_lock:
+            self._plugin_response_queues.pop(pid, None)
     
     @property
     def plugin_response_map(self) -> Any:
@@ -229,6 +254,30 @@ class PluginRuntimeState:
         except Exception:
             pass
 
+    def extend_message_records(self, records: List[Dict[str, Any]]) -> int:
+        if not isinstance(records, list) or not records:
+            return 0
+        kept: List[Dict[str, Any]] = []
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            mid = rec.get("message_id")
+            if isinstance(mid, str) and mid in self._deleted_message_ids:
+                continue
+            kept.append(rec)
+        if not kept:
+            return 0
+        with self._bus_store_lock:
+            for rec in kept:
+                self._message_store.append(rec)
+        for rec in kept:
+            try:
+                rev = self._bump_bus_rev("messages")
+                self.bus_change_hub.emit("messages", "add", {"record": dict(rec), "rev": rev})
+            except Exception:
+                pass
+        return len(kept)
+
     def append_event_record(self, record: Dict[str, Any]) -> None:
         if not isinstance(record, dict):
             return
@@ -242,6 +291,30 @@ class PluginRuntimeState:
             self.bus_change_hub.emit("events", "add", {"record": dict(record), "rev": rev})
         except Exception:
             pass
+
+    def extend_event_records(self, records: List[Dict[str, Any]]) -> int:
+        if not isinstance(records, list) or not records:
+            return 0
+        kept: List[Dict[str, Any]] = []
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            eid = rec.get("event_id") or rec.get("trace_id")
+            if isinstance(eid, str) and eid in self._deleted_event_ids:
+                continue
+            kept.append(rec)
+        if not kept:
+            return 0
+        with self._bus_store_lock:
+            for rec in kept:
+                self._event_store.append(rec)
+        for rec in kept:
+            try:
+                rev = self._bump_bus_rev("events")
+                self.bus_change_hub.emit("events", "add", {"record": dict(rec), "rev": rev})
+            except Exception:
+                pass
+        return len(kept)
 
     def append_lifecycle_record(self, record: Dict[str, Any]) -> None:
         if not isinstance(record, dict):
@@ -257,6 +330,30 @@ class PluginRuntimeState:
         except Exception:
             pass
 
+    def extend_lifecycle_records(self, records: List[Dict[str, Any]]) -> int:
+        if not isinstance(records, list) or not records:
+            return 0
+        kept: List[Dict[str, Any]] = []
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            lid = rec.get("lifecycle_id") or rec.get("trace_id")
+            if isinstance(lid, str) and lid in self._deleted_lifecycle_ids:
+                continue
+            kept.append(rec)
+        if not kept:
+            return 0
+        with self._bus_store_lock:
+            for rec in kept:
+                self._lifecycle_store.append(rec)
+        for rec in kept:
+            try:
+                rev = self._bump_bus_rev("lifecycle")
+                self.bus_change_hub.emit("lifecycle", "add", {"record": dict(rec), "rev": rev})
+            except Exception:
+                pass
+        return len(kept)
+
     def list_message_records(self) -> List[Dict[str, Any]]:
         with self._bus_store_lock:
             return list(self._message_store)
@@ -267,7 +364,10 @@ class PluginRuntimeState:
             return []
         with self._bus_store_lock:
             try:
-                return list(self._message_store)[-nn:]
+                # Avoid list(self._message_store) full copy; only materialize the last nn items.
+                tail_rev = list(itertools.islice(reversed(self._message_store), nn))
+                tail_rev.reverse()
+                return tail_rev
             except Exception:
                 return list(self._message_store)
 
@@ -290,7 +390,9 @@ class PluginRuntimeState:
             return []
         with self._bus_store_lock:
             try:
-                return list(self._event_store)[-nn:]
+                tail_rev = list(itertools.islice(reversed(self._event_store), nn))
+                tail_rev.reverse()
+                return tail_rev
             except Exception:
                 return list(self._event_store)
 
@@ -313,7 +415,9 @@ class PluginRuntimeState:
             return []
         with self._bus_store_lock:
             try:
-                return list(self._lifecycle_store)[-nn:]
+                tail_rev = list(itertools.islice(reversed(self._lifecycle_store), nn))
+                tail_rev.reverse()
+                return tail_rev
             except Exception:
                 return list(self._lifecycle_store)
 

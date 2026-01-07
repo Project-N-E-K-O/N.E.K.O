@@ -44,6 +44,7 @@ def _plugin_process_runner(
     res_queue: Queue,
     status_queue: Queue,
     message_queue: Queue,
+    response_queue: Queue,
     stop_event: Any | None = None,
     plugin_comm_queue: Queue | None = None,
 ) -> None:
@@ -180,6 +181,8 @@ def _plugin_process_runner(
             _plugin_comm_queue=plugin_comm_queue,
             _cmd_queue=cmd_queue,  # 传递命令队列，用于在等待期间处理命令
             _res_queue=res_queue,  # 传递结果队列，用于在等待期间处理响应
+            _response_queue=response_queue,
+            _response_pending={},
             _entry_map=None,  # 将在创建 instance 后设置（见下方第116行）
             _instance=None,  # 将在创建 instance 后设置（见下方第117行）
         )
@@ -661,10 +664,16 @@ class PluginHost:
         res_queue: Queue = multiprocessing.Queue()
         status_queue: Queue = multiprocessing.Queue()
         message_queue: Queue = multiprocessing.Queue()
+        response_queue: Queue = multiprocessing.Queue()
         
         # 创建并启动进程
         # 获取插件间通信队列（从 state 获取）
         plugin_comm_queue = state.plugin_comm_queue
+
+        try:
+            state.set_plugin_response_queue(plugin_id, response_queue)
+        except Exception:
+            pass
 
         self._process_stop_event: Any = multiprocessing.Event()
 
@@ -690,6 +699,7 @@ class PluginHost:
                 res_queue,
                 status_queue,
                 message_queue,
+                response_queue,
                 self._process_stop_event,
                 plugin_comm_queue,
             ),
@@ -718,6 +728,7 @@ class PluginHost:
         self.res_queue = res_queue
         self.status_queue = status_queue
         self.message_queue = message_queue
+        self.response_queue = response_queue
     
     async def start(self, message_target_queue=None) -> None:
         """
@@ -754,11 +765,16 @@ class PluginHost:
         
         # 3. 取消队列等待（防止 atexit 阻塞）
         # 必须在进程关闭前调用，告诉 multiprocessing 不要等待这些队列的后台线程
-        for q in [self.cmd_queue, self.res_queue, self.status_queue, self.message_queue]:
+        for q in [self.cmd_queue, self.res_queue, self.status_queue, self.message_queue, self.response_queue]:
             try:
                 q.cancel_join_thread()
             except Exception as e:
                 self.logger.debug("Failed to cancel queue join thread: {}", e)
+
+        try:
+            state.remove_plugin_response_queue(self.plugin_id)
+        except Exception:
+            pass
 
         # 4. 关闭进程
         success = await asyncio.to_thread(self._shutdown_process, timeout)
@@ -793,11 +809,16 @@ class PluginHost:
         
         # 关闭进程
         # 取消队列等待
-        for q in [self.cmd_queue, self.res_queue, self.status_queue, self.message_queue]:
+        for q in [self.cmd_queue, self.res_queue, self.status_queue, self.message_queue, self.response_queue]:
             try:
                 q.cancel_join_thread()
             except Exception as e:
                 self.logger.debug("Failed to cancel queue join thread: {}", e)
+
+        try:
+            state.remove_plugin_response_queue(self.plugin_id)
+        except Exception:
+            pass
                 
         self._shutdown_process(timeout=timeout)
     

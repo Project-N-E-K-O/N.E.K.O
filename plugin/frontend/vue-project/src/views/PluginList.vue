@@ -111,17 +111,12 @@ const filteredPlugins = computed(() => {
     } catch {
       regexError.value = true
       return list
-  const match = (p: typeof rawPlugins.value[number]) => {
-    const id = (p.id || '').toLowerCase()
-    const name = (p.name || '').toLowerCase()
-    const desc = (p.description || '').toLowerCase()
-    return id.includes(lower) || name.includes(lower) || desc.includes(lower)
-  }
+    }
   }
 
   regexError.value = false
   const lower = text.toLowerCase()
-   const match = (p: typeof rawPlugins.value[number]) => {  
+  const match = (p: typeof list[number]) => {
     const id = (p.id || '').toLowerCase()
     const name = (p.name || '').toLowerCase()
     const desc = (p.description || '').toLowerCase()
@@ -147,22 +142,16 @@ async function handleRefresh() {
 
 async function toggleMetrics() {
   if (!showMetrics.value) {
-    // 显示性能指标时，先获取数据，再切换显示状态
     try {
       await metricsStore.fetchAllMetrics()
       showMetrics.value = true
       startMetricsAutoRefresh()
     } catch (error) {
       console.error('Failed to fetch metrics:', error)
-function startMetricsAutoRefresh() {
-  stopMetricsAutoRefresh()
-  metricsRefreshTimer = window.setInterval(() => {
-    metricsStore.fetchAllMetrics().catch((error) => {
-      console.warn('Auto-refresh metrics failed:', error)
-      // 可选：在连续失败多次后停止自动刷新或提示用户
-    })
-  }, METRICS_REFRESH_INTERVAL)
-}
+      showMetrics.value = false
+      stopMetricsAutoRefresh()
+    }
+  } else {
     showMetrics.value = false
     stopMetricsAutoRefresh()
   }
@@ -171,10 +160,9 @@ function startMetricsAutoRefresh() {
 function startMetricsAutoRefresh() {
   stopMetricsAutoRefresh()
   metricsRefreshTimer = window.setInterval(() => {
-    metricsStore.fetchAllMetrics().catch((error) => {  
-      console.warn('Auto-refresh metrics failed:', error)  
-      // 可选：在连续失败多次后停止自动刷新或提示用户  
-    })  
+    metricsStore.fetchAllMetrics().catch((error) => {
+      console.warn('Auto-refresh metrics failed:', error)
+    })
   }, METRICS_REFRESH_INTERVAL)
 }
 

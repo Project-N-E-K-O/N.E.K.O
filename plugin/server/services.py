@@ -7,6 +7,7 @@ import asyncio
 import base64
 import logging
 import os
+import queue as _queue
 import re
 import uuid
 from datetime import datetime, timezone
@@ -38,6 +39,11 @@ from plugin.sdk.responses import fail, is_envelope
 logger = logging.getLogger("user_plugin_server")
 
 
+_BUS_INGESTION_ENABLED = os.getenv("NEKO_BUS_INGESTION_LOOP", "0").lower() in ("1", "true", "yes", "on")
+_bus_ingest_stop: Optional[asyncio.Event] = None
+_bus_ingest_task: Optional[asyncio.Task[None]] = None
+
+
 def _parse_iso_ts(value: Any) -> Optional[float]:
     if value is None:
         return None
@@ -61,6 +67,205 @@ def _parse_iso_ts(value: Any) -> Optional[float]:
         return dt.timestamp()
     except Exception:
         return None
+
+
+def _drain_bus_queue_once(q: Any, limit: int) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    if q is None:
+        return out
+    n = int(limit)
+    if n <= 0:
+        return out
+    for _ in range(n):
+        try:
+            item = q.get_nowait()
+        except (asyncio.QueueEmpty, _queue.Empty):
+            break
+        except Exception:
+            break
+        if isinstance(item, dict):
+            out.append(item)
+    return out
+
+
+def _ingest_normalize_and_store_message(msg: Dict[str, Any]) -> None:
+    if msg.get("_bus_stored") is True:
+        return
+    if not isinstance(msg.get("message_id"), str) or not msg.get("message_id"):
+        msg = dict(msg)
+        msg["message_id"] = str(uuid.uuid4())
+    if not isinstance(msg.get("time"), str) or not msg.get("time"):
+        msg = dict(msg)
+        msg["time"] = now_iso()
+    state.append_message_record(msg)
+
+
+def _ingest_normalize_message(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not isinstance(msg, dict):
+        return None
+    if msg.get("_bus_stored") is True:
+        return None
+    out = msg
+    if not isinstance(out.get("message_id"), str) or not out.get("message_id"):
+        out = dict(out)
+        out["message_id"] = str(uuid.uuid4())
+    if not isinstance(out.get("time"), str) or not out.get("time"):
+        if out is msg:
+            out = dict(out)
+        out["time"] = now_iso()
+    return out
+
+
+def _ingest_normalize_and_store_event(ev: Dict[str, Any]) -> None:
+    if not isinstance(ev.get("trace_id"), str) or not ev.get("trace_id"):
+        ev = dict(ev)
+        ev["trace_id"] = str(uuid.uuid4())
+    if not isinstance(ev.get("event_id"), str) or not ev.get("event_id"):
+        ev = dict(ev)
+        ev["event_id"] = ev.get("trace_id")
+    if not isinstance(ev.get("received_at"), str) or not ev.get("received_at"):
+        ev = dict(ev)
+        ev["received_at"] = now_iso()
+    state.append_event_record(ev)
+
+
+def _ingest_normalize_event(ev: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not isinstance(ev, dict):
+        return None
+    out = ev
+    if not isinstance(out.get("trace_id"), str) or not out.get("trace_id"):
+        out = dict(out)
+        out["trace_id"] = str(uuid.uuid4())
+    if not isinstance(out.get("event_id"), str) or not out.get("event_id"):
+        if out is ev:
+            out = dict(out)
+        out["event_id"] = out.get("trace_id")
+    if not isinstance(out.get("received_at"), str) or not out.get("received_at"):
+        if out is ev:
+            out = dict(out)
+        out["received_at"] = now_iso()
+    return out
+
+
+def _ingest_normalize_and_store_lifecycle(ev: Dict[str, Any]) -> None:
+    if not isinstance(ev.get("trace_id"), str) or not ev.get("trace_id"):
+        ev = dict(ev)
+        ev["trace_id"] = str(uuid.uuid4())
+    if not isinstance(ev.get("lifecycle_id"), str) or not ev.get("lifecycle_id"):
+        ev = dict(ev)
+        ev["lifecycle_id"] = ev.get("trace_id")
+    if not isinstance(ev.get("time"), str) or not ev.get("time"):
+        ev = dict(ev)
+        ev["time"] = now_iso()
+    state.append_lifecycle_record(ev)
+
+
+def _ingest_normalize_lifecycle(ev: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not isinstance(ev, dict):
+        return None
+    out = ev
+    if not isinstance(out.get("trace_id"), str) or not out.get("trace_id"):
+        out = dict(out)
+        out["trace_id"] = str(uuid.uuid4())
+    if not isinstance(out.get("lifecycle_id"), str) or not out.get("lifecycle_id"):
+        if out is ev:
+            out = dict(out)
+        out["lifecycle_id"] = out.get("trace_id")
+    if not isinstance(out.get("time"), str) or not out.get("time"):
+        if out is ev:
+            out = dict(out)
+        out["time"] = now_iso()
+    return out
+
+
+def _bus_ingest_flush_once(limit_per_queue: int = 4096) -> int:
+    drained = 0
+    msgs_raw = _drain_bus_queue_once(getattr(state, "message_queue", None), limit_per_queue)
+    if msgs_raw:
+        msgs: List[Dict[str, Any]] = []
+        for m in msgs_raw:
+            nm = _ingest_normalize_message(m)
+            if nm is not None:
+                msgs.append(nm)
+        if msgs:
+            try:
+                drained += int(getattr(state, "extend_message_records")(msgs))
+            except Exception:
+                for m in msgs:
+                    _ingest_normalize_and_store_message(m)
+                    drained += 1
+
+    evs_raw = _drain_bus_queue_once(getattr(state, "event_queue", None), limit_per_queue)
+    if evs_raw:
+        evs: List[Dict[str, Any]] = []
+        for e in evs_raw:
+            ne = _ingest_normalize_event(e)
+            if ne is not None:
+                evs.append(ne)
+        if evs:
+            try:
+                drained += int(getattr(state, "extend_event_records")(evs))
+            except Exception:
+                for e in evs:
+                    _ingest_normalize_and_store_event(e)
+                    drained += 1
+
+    lfs_raw = _drain_bus_queue_once(getattr(state, "lifecycle_queue", None), limit_per_queue)
+    if lfs_raw:
+        lfs: List[Dict[str, Any]] = []
+        for e in lfs_raw:
+            ne = _ingest_normalize_lifecycle(e)
+            if ne is not None:
+                lfs.append(ne)
+        if lfs:
+            try:
+                drained += int(getattr(state, "extend_lifecycle_records")(lfs))
+            except Exception:
+                for e in lfs:
+                    _ingest_normalize_and_store_lifecycle(e)
+                    drained += 1
+    return drained
+
+
+async def start_bus_ingestion_loop() -> None:
+    global _bus_ingest_stop, _bus_ingest_task
+    if not _BUS_INGESTION_ENABLED:
+        return
+    if _bus_ingest_task is not None and not _bus_ingest_task.done():
+        return
+    _bus_ingest_stop = asyncio.Event()
+
+    async def _loop() -> None:
+        assert _bus_ingest_stop is not None
+        while not _bus_ingest_stop.is_set():
+            drained = _bus_ingest_flush_once(limit_per_queue=256)
+            if drained > 0:
+                await asyncio.sleep(0.001)
+            else:
+                await asyncio.sleep(0.01)
+
+    _bus_ingest_task = asyncio.create_task(_loop(), name="bus-ingestion-loop")
+
+
+async def stop_bus_ingestion_loop() -> None:
+    global _bus_ingest_stop, _bus_ingest_task
+    if _bus_ingest_stop is not None:
+        try:
+            _bus_ingest_stop.set()
+        except Exception:
+            pass
+    if _bus_ingest_task is not None:
+        try:
+            await _bus_ingest_task
+        except Exception:
+            pass
+    _bus_ingest_stop = None
+    _bus_ingest_task = None
+    # Final flush to minimize loss on shutdown.
+    try:
+        _bus_ingest_flush_once(limit_per_queue=1000000)
+    except Exception:
+        pass
 
 
 def _b64_bytes(value: Any) -> Optional[str]:
@@ -400,31 +605,17 @@ def get_messages_from_queue(
     if max_count is None:
         max_count = MESSAGE_QUEUE_DEFAULT_MAX_COUNT
 
-    # Drain queue into store (queue is an ingestion channel; store is the authoritative history)
-    while True:
-        try:
-            msg = state.message_queue.get_nowait()
-        except asyncio.QueueEmpty:
-            break
+    if not _BUS_INGESTION_ENABLED:
+        # Drain queue into store (queue is an ingestion channel; store is the authoritative history)
+        while True:
+            try:
+                msg = state.message_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
 
-        if not isinstance(msg, dict):
-            continue
-
-        # If message has been stored already by runtime forwarding path, skip re-appending.
-        if msg.get("_bus_stored") is True:
-            continue
-
-        # Ensure stable message_id
-        if not isinstance(msg.get("message_id"), str) or not msg.get("message_id"):
-            msg = dict(msg)
-            msg["message_id"] = str(uuid.uuid4())
-
-        # Normalize timestamp
-        if not isinstance(msg.get("time"), str) or not msg.get("time"):
-            msg = dict(msg)
-            msg["time"] = now_iso()
-
-        state.append_message_record(msg)
+            if not isinstance(msg, dict):
+                continue
+            _ingest_normalize_and_store_message(msg)
 
     # Optimize common case: scan from the tail and expand window until we have enough matches.
     # Worst-case still falls back to full scan, preserving semantics.
@@ -518,54 +709,37 @@ def get_messages_from_queue(
                 return False
         return True
 
-    filtered: List[Dict[str, Any]] = []
-    window = max(int(max_count) * 8, 256)
-    if store_size > 0:
-        window = min(window, store_size)
-    while True:
-        try:
-            if store_size > 0 and window >= store_size:
-                all_msgs = state.list_message_records()
-            else:
-                all_msgs = state.list_message_records_tail(window)
-        except Exception:
-            all_msgs = state.list_message_records()
-
-        filtered = []
-        for msg in all_msgs:
-            if plugin_id and msg.get("plugin_id") != plugin_id:
-                continue
-            if source and msg.get("source") != source:
-                continue
-            if priority_min is not None:
-                try:
-                    if int(msg.get("priority", 0)) < int(priority_min):
-                        continue
-                except Exception:
+    # Fast path: iterate from the newest backwards and stop once we have max_count matches.
+    # This preserves semantics (return the most recent max_count matches) but avoids window-expansion rescans.
+    picked_rev: List[Dict[str, Any]] = []
+    try:
+        it = state.iter_message_records_reverse()
+    except Exception:
+        it = reversed(state.list_message_records())
+    for msg in it:
+        if plugin_id and msg.get("plugin_id") != plugin_id:
+            continue
+        if source and msg.get("source") != source:
+            continue
+        if priority_min is not None:
+            try:
+                if int(msg.get("priority", 0)) < int(priority_min):
                     continue
-            if since_ts is not None:
-                ts = _parse_iso_ts(msg.get("time"))
-                if ts is None or ts <= float(since_ts):
-                    continue
-            if not _match_message(msg):
+            except Exception:
                 continue
-            filtered.append(msg)
-
-        if len(filtered) >= int(max_count):
+        if since_ts is not None:
+            ts = _parse_iso_ts(msg.get("time"))
+            if ts is None or ts <= float(since_ts):
+                continue
+        if not _match_message(msg):
+            continue
+        picked_rev.append(msg)
+        if len(picked_rev) >= int(max_count):
             break
-        if store_size > 0 and window >= store_size:
-            break
-        if store_size == 0 and window >= 16384:
-            break
-        window = int(window * 2)
-        if store_size > 0:
-            window = min(window, store_size)
-
-    if len(filtered) > max_count:
-        filtered = filtered[-max_count:]
+    picked_rev.reverse()
 
     messages: List[Dict[str, Any]] = []
-    for msg in filtered:
+    for msg in picked_rev:
         # Keep response schema consistent with PluginPushMessage.model_dump()
         messages.append(
             {
@@ -605,29 +779,15 @@ def get_events_from_queue(
     if max_count is None:
         max_count = MESSAGE_QUEUE_DEFAULT_MAX_COUNT
 
-    while True:
-        try:
-            ev = state.event_queue.get_nowait()
-        except asyncio.QueueEmpty:
-            break
-
-        if not isinstance(ev, dict):
-            continue
-
-        if not isinstance(ev.get("trace_id"), str) or not ev.get("trace_id"):
-            ev = dict(ev)
-            ev["trace_id"] = str(uuid.uuid4())
-
-        # Stable event_id alias
-        if not isinstance(ev.get("event_id"), str) or not ev.get("event_id"):
-            ev = dict(ev)
-            ev["event_id"] = ev.get("trace_id")
-
-        if not isinstance(ev.get("received_at"), str) or not ev.get("received_at"):
-            ev = dict(ev)
-            ev["received_at"] = now_iso()
-
-        state.append_event_record(ev)
+    if not _BUS_INGESTION_ENABLED:
+        while True:
+            try:
+                ev = state.event_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if not isinstance(ev, dict):
+                continue
+            _ingest_normalize_and_store_event(ev)
 
     store_size = 0
     try:
@@ -704,44 +864,25 @@ def get_events_from_queue(
                 return False
         return True
 
-    filtered: List[Dict[str, Any]] = []
-    window = max(int(max_count) * 8, 256)
-    if store_size > 0:
-        window = min(window, store_size)
-    while True:
-        try:
-            if store_size > 0 and window >= store_size:
-                all_events = state.list_event_records()
-            else:
-                all_events = state.list_event_records_tail(window)
-        except Exception:
-            all_events = state.list_event_records()
-
-        filtered = []
-        for ev in all_events:
-            if plugin_id and ev.get("plugin_id") != plugin_id:
+    picked_rev: List[Dict[str, Any]] = []
+    try:
+        it = state.iter_event_records_reverse()
+    except Exception:
+        it = reversed(state.list_event_records())
+    for ev in it:
+        if plugin_id and ev.get("plugin_id") != plugin_id:
+            continue
+        if since_ts is not None:
+            ts = _parse_iso_ts(ev.get("received_at"))
+            if ts is None or ts <= float(since_ts):
                 continue
-            if since_ts is not None:
-                ts = _parse_iso_ts(ev.get("received_at"))
-                if ts is None or ts <= float(since_ts):
-                    continue
-            if not _match_event(ev):
-                continue
-            filtered.append(ev)
-
-        if len(filtered) >= int(max_count):
+        if not _match_event(ev):
+            continue
+        picked_rev.append(ev)
+        if len(picked_rev) >= int(max_count):
             break
-        if store_size > 0 and window >= store_size:
-            break
-        if store_size == 0 and window >= 16384:
-            break
-        window = int(window * 2)
-        if store_size > 0:
-            window = min(window, store_size)
-
-    if len(filtered) > max_count:
-        filtered = filtered[-max_count:]
-    return filtered
+    picked_rev.reverse()
+    return picked_rev
 
 
 def get_lifecycle_from_queue(
@@ -754,28 +895,15 @@ def get_lifecycle_from_queue(
     if max_count is None:
         max_count = MESSAGE_QUEUE_DEFAULT_MAX_COUNT
 
-    while True:
-        try:
-            ev = state.lifecycle_queue.get_nowait()
-        except asyncio.QueueEmpty:
-            break
-
-        if not isinstance(ev, dict):
-            continue
-
-        if not isinstance(ev.get("trace_id"), str) or not ev.get("trace_id"):
-            ev = dict(ev)
-            ev["trace_id"] = str(uuid.uuid4())
-
-        if not isinstance(ev.get("lifecycle_id"), str) or not ev.get("lifecycle_id"):
-            ev = dict(ev)
-            ev["lifecycle_id"] = ev.get("trace_id")
-
-        if not isinstance(ev.get("time"), str) or not ev.get("time"):
-            ev = dict(ev)
-            ev["time"] = now_iso()
-
-        state.append_lifecycle_record(ev)
+    if not _BUS_INGESTION_ENABLED:
+        while True:
+            try:
+                ev = state.lifecycle_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if not isinstance(ev, dict):
+                continue
+            _ingest_normalize_and_store_lifecycle(ev)
 
     store_size = 0
     try:
@@ -852,44 +980,25 @@ def get_lifecycle_from_queue(
                 return False
         return True
 
-    filtered: List[Dict[str, Any]] = []
-    window = max(int(max_count) * 8, 256)
-    if store_size > 0:
-        window = min(window, store_size)
-    while True:
-        try:
-            if store_size > 0 and window >= store_size:
-                all_events = state.list_lifecycle_records()
-            else:
-                all_events = state.list_lifecycle_records_tail(window)
-        except Exception:
-            all_events = state.list_lifecycle_records()
-
-        filtered = []
-        for ev in all_events:
-            if plugin_id and ev.get("plugin_id") != plugin_id:
+    picked_rev: List[Dict[str, Any]] = []
+    try:
+        it = state.iter_lifecycle_records_reverse()
+    except Exception:
+        it = reversed(state.list_lifecycle_records())
+    for ev in it:
+        if plugin_id and ev.get("plugin_id") != plugin_id:
+            continue
+        if since_ts is not None:
+            ts = _parse_iso_ts(ev.get("time"))
+            if ts is None or ts <= float(since_ts):
                 continue
-            if since_ts is not None:
-                ts = _parse_iso_ts(ev.get("time"))
-                if ts is None or ts <= float(since_ts):
-                    continue
-            if not _match_lifecycle(ev):
-                continue
-            filtered.append(ev)
-
-        if len(filtered) >= int(max_count):
+        if not _match_lifecycle(ev):
+            continue
+        picked_rev.append(ev)
+        if len(picked_rev) >= int(max_count):
             break
-        if store_size > 0 and window >= store_size:
-            break
-        if store_size == 0 and window >= 16384:
-            break
-        window = int(window * 2)
-        if store_size > 0:
-            window = min(window, store_size)
-
-    if len(filtered) > max_count:
-        filtered = filtered[-max_count:]
-    return filtered
+    picked_rev.reverse()
+    return picked_rev
 
 
 def delete_message_from_store(message_id: str) -> bool:

@@ -180,6 +180,17 @@ class PluginRouter:
         }
         
         try:
+            q = None
+            try:
+                q = state.get_plugin_response_queue(to_plugin)
+            except Exception:
+                q = None
+            if q is not None:
+                try:
+                    q.put(response, block=False)
+                    return
+                except Exception:
+                    pass
             # 将响应存储在响应映射中，插件进程通过 request_id 直接查询
             # 这样可以避免共享队列的竞态条件问题
             # 同时设置过期时间，防止超时后的响应干扰后续请求

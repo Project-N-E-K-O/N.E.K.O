@@ -1,6 +1,7 @@
 import time
 import threading
 import signal
+from collections import Counter
 from typing import Any, Dict, Optional, cast
 
 from plugin.sdk.base import NekoPluginBase
@@ -39,6 +40,8 @@ class LoadTestPlugin(NekoPluginBase):
         end_time = start + float(duration_seconds)
         count = 0
         errors = 0
+        err_types: Counter[str] = Counter()
+        err_samples: Dict[str, str] = {}
         while True:
             if self._stop_event.is_set():
                 break
@@ -50,6 +53,13 @@ class LoadTestPlugin(NekoPluginBase):
                 count += 1
             except Exception as e:  # pragma: no cover - defensive
                 errors += 1
+                tname = type(e).__name__
+                err_types[tname] += 1
+                if tname not in err_samples:
+                    try:
+                        err_samples[tname] = repr(e)
+                    except Exception:
+                        err_samples[tname] = "<repr_failed>"
                 try:
                     self.logger.warning("[load_tester] bench iteration failed: {}", e)
                 except Exception:
@@ -61,6 +71,8 @@ class LoadTestPlugin(NekoPluginBase):
             "errors": errors,
             "elapsed_seconds": elapsed,
             "qps": qps,
+            "error_types": dict(err_types),
+            "error_samples": err_samples,
         }
 
     def _bench_loop_concurrent(self, duration_seconds: float, workers: int, fn, *args, **kwargs) -> Dict[str, Any]:
@@ -73,6 +85,8 @@ class LoadTestPlugin(NekoPluginBase):
         count = 0
         errors = 0
         lock = threading.Lock()
+        err_types: Counter[str] = Counter()
+        err_samples: Dict[str, str] = {}
 
         def _worker() -> None:
             nonlocal count, errors
@@ -89,6 +103,13 @@ class LoadTestPlugin(NekoPluginBase):
                 except Exception as e:  # pragma: no cover - defensive
                     with lock:
                         errors += 1
+                        tname = type(e).__name__
+                        err_types[tname] += 1
+                        if tname not in err_samples:
+                            try:
+                                err_samples[tname] = repr(e)
+                            except Exception:
+                                err_samples[tname] = "<repr_failed>"
                     try:
                         self.logger.warning("[load_tester] bench iteration failed (concurrent): {}", e)
                     except Exception:
@@ -115,6 +136,8 @@ class LoadTestPlugin(NekoPluginBase):
             "elapsed_seconds": elapsed,
             "qps": qps,
             "workers": worker_count,
+            "error_types": dict(err_types),
+            "error_samples": err_samples,
         }
 
     def _get_load_test_section(self, section: Optional[str] = None) -> Dict[str, Any]:

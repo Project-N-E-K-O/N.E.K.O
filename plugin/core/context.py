@@ -91,6 +91,8 @@ class PluginContext:
     _plugin_comm_queue: Optional[Any] = None  # 插件间通信队列（主进程提供）
     _cmd_queue: Optional[Any] = None  # 命令队列（用于在等待期间处理命令）
     _res_queue: Optional[Any] = None  # 结果队列（用于在等待期间处理响应）
+    _response_queue: Optional[Any] = None
+    _response_pending: Optional[Dict[str, Any]] = None
     _entry_map: Optional[Dict[str, Any]] = None  # 入口映射（用于处理命令）
     _instance: Optional[Any] = None  # 插件实例（用于处理命令）
 
