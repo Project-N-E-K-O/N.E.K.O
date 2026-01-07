@@ -380,8 +380,7 @@ class VRMCore {
                     material.castShadow = true;
                     material.receiveShadow = true;
                     
-                    // 2. 🔍 智能检测脸部
-                    // 如果材质名称或物体名称包含 "Face"、"Skin"、"Body" 等关键词
+                    // 智能检测脸部：如果材质名称或物体名称包含 "Face"、"Skin"、"Body" 等关键词
                     const name = (object.name + (material.name || '')).toLowerCase();
                     if (name.includes('face') || name.includes('skin') || name.includes('head')) {
                         // ❌ 脸部不接收阴影 (防止出现奇怪的鼻影或黑脸)
@@ -467,7 +466,7 @@ class VRMCore {
         this.applyPerformanceSettings();
         // 开启高质量软阴影 
         this.manager.renderer.shadowMap.enabled = true; // 开启阴影
-        this.manager.renderer.shadowMap.type = THREE.PCFSoftShadowMap; // ✅ 使用柔和阴影
+        this.manager.renderer.shadowMap.type = THREE.PCFSoftShadowMap; // 使用柔和阴影
         this.manager.renderer.outputEncoding = THREE.sRGBEncoding;
         
         //  Linear (最稳妥的方案)
@@ -614,7 +613,7 @@ class VRMCore {
             const size = box.getSize(new THREE.Vector3());
             const center = box.getCenter(new THREE.Vector3());
 
-            // 【新增】获取保存的用户偏好设置
+            // 获取保存的用户偏好设置
             let preferences = null;
             try {
                 const preferencesResponse = await fetch('/api/config/preferences');
@@ -628,13 +627,12 @@ class VRMCore {
                 console.warn('[VRM] 获取用户偏好设置失败:', error);
             }
 
-            // 【修改】根据是否有保存的偏好设置来决定位置和缩放
+            // 根据是否有保存的偏好设置来决定位置和缩放
             if (preferences && preferences.position && preferences.scale) {
                 // 恢复保存的位置
                 const pos = preferences.position;
                 if (Number.isFinite(pos.x) && Number.isFinite(pos.y) && Number.isFinite(pos.z)) {
                     vrm.scene.position.set(pos.x, pos.y, pos.z);
-                    console.log('[VRM] 已恢复保存的模型位置:', pos);
                 } else {
                     // 如果保存的位置无效，使用默认居中位置
                     vrm.scene.position.set(-center.x, -center.y, -center.z);
@@ -645,7 +643,6 @@ class VRMCore {
                 if (Number.isFinite(scl.x) && Number.isFinite(scl.y) && Number.isFinite(scl.z) &&
                     scl.x > 0 && scl.y > 0 && scl.z > 0) {
                     vrm.scene.scale.set(scl.x, scl.y, scl.z);
-                    console.log('[VRM] 已恢复保存的模型缩放:', scl);
                 }
 
                 // 恢复保存的旋转（如果有）
@@ -653,7 +650,6 @@ class VRMCore {
                     const rot = preferences.rotation;
                     if (Number.isFinite(rot.x) && Number.isFinite(rot.y) && Number.isFinite(rot.z)) {
                         vrm.scene.rotation.set(rot.x, rot.y, rot.z);
-                        console.log('[VRM] 已恢复保存的模型旋转:', rot);
                     }
                 }
             } else {
@@ -661,7 +657,7 @@ class VRMCore {
                 vrm.scene.position.set(-center.x, -center.y, -center.z);
             }
 
-            // 【保留】如果没有保存的旋转，确保模型正面朝向相机
+            // 如果没有保存的旋转，确保模型正面朝向相机
             if (!preferences || !preferences.rotation) {
                 let needsRotation = false;
                 if (vrm.humanoid && vrm.humanoid.humanBones) {
@@ -693,7 +689,7 @@ class VRMCore {
                 vrm.scene.rotation.set(0, needsRotation ? Math.PI : 0, 0);
             }
 
-            // 【修改】只在没有保存的偏好设置时才计算和应用默认缩放
+            // 只在没有保存的偏好设置时才计算和应用默认缩放
             if (!preferences || !preferences.scale) {
                 // 设置模型初始缩放
                 if (options.scale) {

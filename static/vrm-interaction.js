@@ -151,7 +151,7 @@ class VRMInteraction {
                 }
 
                 const oldDistance = this.manager.camera.position.distanceTo(modelCenter);
-                const minDist = 2.0;  // 【修复】限制最小距离，防止放大后移动时只能看到腿
+                const minDist = 2.0;  // 限制最小距离，防止放大后移动时只能看到腿
                 const maxDist = 20.0; 
 
                 let newDistance = oldDistance * zoomFactor;
@@ -251,7 +251,7 @@ class VRMInteraction {
             this.manager.isLocked = locked;
         }
         
-        // ✅ 修复：不再修改 pointerEvents，改用逻辑拦截
+        // 不再修改 pointerEvents，改用逻辑拦截
         // 这样锁定时虽然不能移动/缩放，但依然可以点中模型弹出菜单
         
         if (locked && this.isDragging) {
@@ -355,7 +355,7 @@ class VRMInteraction {
             return position;
         }
 
-        // 4. 【核心数学】计算偏移量并反解
+        // 计算偏移量并反解
         // 计算当前深度下，屏幕视平面的物理尺寸
         const distance = camera.position.distanceTo(position);
         const vFov = camera.fov * Math.PI / 180;
@@ -389,7 +389,7 @@ class VRMInteraction {
         // 1. 获取容器 - 只查找VRM的按钮
         const buttonsContainer = document.getElementById('vrm-floating-buttons');
 
-        // 【修改】只要容器存在就计算位置，不再检查 display === 'none'
+        // 只要容器存在就计算位置，不再检查 display === 'none'
         // 这样确保菜单在显示出的那一瞬间，位置已经是正确的跟随位置了
         if (!buttonsContainer) return;
 
@@ -417,7 +417,7 @@ class VRMInteraction {
                 }
             }
 
-            // 【修改 2】强制更新世界矩阵，确保获取到最新位置（解决拖拽延迟问题）
+            // 强制更新世界矩阵，确保获取到最新位置
             targetObj.updateWorldMatrix(true, false);
 
             // 计算屏幕坐标
@@ -506,7 +506,7 @@ class VRMInteraction {
 
         const canvas = this.manager.renderer.domElement;
 
-        // 【修改】只查找 VRM 专用 ID
+        // 只查找 VRM 专用 ID
         let buttonsContainer = document.getElementById('vrm-floating-buttons');
 
         if (!buttonsContainer) return;
@@ -538,7 +538,7 @@ class VRMInteraction {
                 this.updateFloatingButtonsPosition();
             });
 
-            // 【只控制锁图标】鼠标靠近时显示锁图标
+            // 鼠标靠近时显示锁图标
             const lockIcon = document.getElementById('vrm-lock-icon');
             if (lockIcon) {
                 lockIcon.style.display = 'block';
@@ -560,7 +560,7 @@ class VRMInteraction {
             }
 
             this._hideButtonsTimer = setTimeout(() => {
-                // 【新增】检查鼠标是否在锁图标上
+                // 检查鼠标是否在锁图标上
                 const lockIcon = document.getElementById('vrm-lock-icon');
                 let isMouseOverLock = false;
                 if (lockIcon && lockIcon.style.display === 'block') {
@@ -658,9 +658,9 @@ class VRMInteraction {
                     currentButtonsContainer.style.display = 'none';
                 }
 
-                // 【只控制锁图标】鼠标离开时隐藏锁图标
+                // 鼠标离开时隐藏锁图标
                 if (lockIcon) {
-                    // 【新增】检查是否有点击保护标记，如果有则不隐藏
+                    // 检查是否有点击保护标记，如果有则不隐藏
                     if (!lockIcon.dataset.clickProtection) {
                         lockIcon.style.display = 'none';
                     }
@@ -836,13 +836,11 @@ class VRMInteraction {
      */
     async _savePositionAfterInteraction() {
         if (!this.manager.currentModel || !this.manager.currentModel.url) {
-            console.debug('[VRM] 无法保存位置：模型或路径未设置');
             return;
         }
 
         const scene = this.manager.currentModel.scene;
         if (!scene) {
-            console.debug('[VRM] 无法保存位置：场景未设置');
             return;
         }
 
@@ -911,9 +909,7 @@ class VRMInteraction {
                 rotation,
                 displayInfo
             ).then(success => {
-                if (success) {
-                    console.debug('[VRM] 模型位置和缩放已自动保存');
-                } else {
+                if (!success) {
                     console.warn('[VRM] 自动保存位置失败');
                 }
             }).catch(error => {

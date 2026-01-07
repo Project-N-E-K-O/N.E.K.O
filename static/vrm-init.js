@@ -24,7 +24,6 @@ async function fetchVRMConfig() {
             if (data.success && data.paths) {
                 // 更新全局配置
                 window.VRM_PATHS = data.paths;
-                console.log('[VRM Init] 路径配置已同步:', window.VRM_PATHS);
             }
         }
     } catch (error) {
@@ -59,7 +58,6 @@ window.addEventListener('vrm-modules-ready', () => {
 async function initVRMModel() {
     // 防止重复进入：如果正在初始化或模型已加载，直接退出
     if (window._isVRMInitializing) {
-        console.log('[VRM Init] 正在初始化中，跳过重复调用');
         return;
     }
     // 标记开始
@@ -76,7 +74,6 @@ async function initVRMModel() {
     try {
         const currentName = window.lanlan_config?.lanlan_name;
         if (currentName) {
-            console.log(`[VRM Init] 正在同步角色 ${currentName} 的详细数据...`);
             // 请求完整的角色列表
             const res = await fetch('/api/characters');
             if (res.ok) {
@@ -88,8 +85,6 @@ async function initVRMModel() {
                     window.lanlan_config.lighting = charData.lighting;
                     // 顺便把 VRM 路径也更新一下，防止主页存的是旧路径
                     if (charData.vrm) window.lanlan_config.vrm = charData.vrm;
-                    
-                    console.log('[VRM Init] 数据同步成功，当前光照:', charData.lighting);
                 }
             }
         }
@@ -121,7 +116,7 @@ async function initVRMModel() {
     }
 
     try {
-        // 【关键修复】UI 切换逻辑 - 智能视觉切换
+        // UI 切换逻辑
         const vrmContainer = document.getElementById('vrm-container');
         if (vrmContainer) vrmContainer.style.display = 'block';
 
@@ -133,19 +128,16 @@ async function initVRMModel() {
         const live2dFloatingButtons = document.getElementById('live2d-floating-buttons');
         if (live2dFloatingButtons) {
             live2dFloatingButtons.remove();
-            console.log('[VRM Init] 已清理Live2D浮动按钮');
         }
 
         const live2dLockIcon = document.getElementById('live2d-lock-icon');
         if (live2dLockIcon) {
             live2dLockIcon.remove();
-            console.log('[VRM Init] 已清理Live2D锁图标');
         }
 
         const live2dReturnBtn = document.getElementById('live2d-return-button-container');
         if (live2dReturnBtn) {
             live2dReturnBtn.remove();
-            console.log('[VRM Init] 已清理Live2D回来按钮');
         }
 
         // 清理Live2D管理器和PIXI应用
@@ -157,7 +149,6 @@ async function initVRMModel() {
                         window.live2dManager.currentModel.destroy();
                     }
                     window.live2dManager.currentModel = null;
-                    console.log('[VRM Init] 已清理Live2D模型');
                 }
                 // 清理PIXI应用
                 if (window.live2dManager.pixi_app) {
@@ -167,7 +158,6 @@ async function initVRMModel() {
                     if (window.live2dManager.pixi_app.stage) {
                         window.live2dManager.pixi_app.stage.removeChildren();
                     }
-                    console.log('[VRM Init] 已清理PIXI应用');
                 }
             } catch (cleanupError) {
                 console.warn('[VRM Init] Live2D清理时出现警告:', cleanupError);
@@ -262,7 +252,7 @@ window.checkAndLoadVRM = async function() {
             vrmContainer.style.display = 'block';
         }
 
-        // 【关键修复】删除Live2D的浮动按钮和锁图标，而不是只隐藏
+        // 删除Live2D的浮动按钮和锁图标，而不是只隐藏
         const live2dFloatingButtons = document.getElementById('live2d-floating-buttons');
         if (live2dFloatingButtons) {
             live2dFloatingButtons.remove();
@@ -308,18 +298,13 @@ window.checkAndLoadVRM = async function() {
         const needReload = !currentModelUrl || currentModelUrl !== modelUrl;
 
         if (needReload) {
-            console.log('[VRM Check] 模型路径变化，重新加载:', modelUrl);
             await window.vrmManager.loadModel(modelUrl);
-        } else {
-            console.log('[VRM Check] 模型路径未变化，跳过重新加载');
         }
-
         
         // 直接使用刚刚拉取的 catgirlConfig 中的 lighting
         const lighting = catgirlConfig.lighting;
         
         if (lighting && window.vrmManager) {
-            console.log('[VRM Check] 同步最新光照:', lighting);
             if (window.vrmManager.ambientLight) window.vrmManager.ambientLight.intensity = lighting.ambient;
             if (window.vrmManager.mainLight) window.vrmManager.mainLight.intensity = lighting.main;
             if (window.vrmManager.fillLight) window.vrmManager.fillLight.intensity = lighting.fill;
@@ -340,7 +325,6 @@ document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
         // 如果是在主页，且 VRM 检查函数存在
         if (!window.location.pathname.includes('model_manager') && window.checkAndLoadVRM) {
-            console.log('[VRM] 页面重新可见，触发数据同步...');
             window.checkAndLoadVRM();
         }
     }

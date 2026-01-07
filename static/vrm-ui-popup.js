@@ -250,7 +250,7 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
     toggleItem.addEventListener('mouseenter', () => { if(checkbox.checked) toggleItem.style.background = 'rgba(68, 183, 254, 0.15)'; else toggleItem.style.background = 'rgba(68, 183, 254, 0.08)'; });
     toggleItem.addEventListener('mouseleave', updateStyle);
 
-    // 🔥【新增】合并消息的处理逻辑
+    // 合并消息的处理逻辑
     const handleToggleChange = (isChecked) => {
         updateStyle();
         if (typeof window.saveNEKOSettings === 'function') {
@@ -466,7 +466,7 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
         });
     }
 };
-// 【新增】VRM 专用的麦克风列表渲染函数
+// VRM 专用的麦克风列表渲染函数
 VRMManager.prototype.renderMicList = async function (popup) {
     if (!popup) return;
     popup.innerHTML = ''; // 清空现有内容
@@ -539,7 +539,7 @@ VRMManager.prototype.renderMicList = async function (popup) {
     }
 };
 
-// 【新增】VRM 专用的屏幕源列表渲染函数
+// VRM 专用的屏幕源列表渲染函数
 VRMManager.prototype.renderScreenSourceList = async function (popup) {
     if (!popup) return;
     popup.innerHTML = ''; // 清空现有内容
@@ -738,5 +738,3 @@ VRMManager.prototype.renderScreenSourceList = async function (popup) {
         popup.appendChild(errDiv);
     }
 };
-
-console.log('[VRM] VRM UI Popup 模块已加载');

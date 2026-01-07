@@ -172,7 +172,7 @@ class VRMAnimation {
             // 使用第一个动画（通常只有一个）
             const vrmAnimation = vrmAnimations[0];
 
-            // 针对【当前模型】创建新的 Mixer
+            // 针对当前模型创建新的 Mixer
             if (this.vrmaMixer) {
                 this.vrmaMixer.stopAllAction();
                 this.vrmaMixer.uncacheRoot(this.vrmaMixer.getRoot());
@@ -221,8 +221,7 @@ class VRMAnimation {
             
             // 根据版本处理 tracks 名称
             if (vrmVersion === '1.0') {
-                // VRM 1.0：保留 Normalized_ 前缀，使用 normalized 节点
-                // 不需要修改 tracks，直接使用官方库创建的 normalized 节点名称
+                // VRM 1.0：使用 Normalized_ 前缀的 normalized 节点
             } else {
                 // VRM 0.x：去掉 Normalized_ 前缀，直接使用 raw bones
                 clip.tracks.forEach(track => {
@@ -284,7 +283,7 @@ class VRMAnimation {
                         newAction.reset().fadeIn(fadeDuration).play();
                     }
                 } else {
-                    // 首次播放但非强制立即 (保留一点淡入)
+                    // 首次播放但非强制立即，使用淡入效果
                     newAction.enabled = true; // 确保启用
                     newAction.reset().fadeIn(fadeDuration).play();
                 }
@@ -349,7 +348,7 @@ class VRMAnimation {
         }
     }
 
-    // --- 调试工具 ---
+    // 调试工具
     /**
      * 开启/关闭骨骼显示
      * 在浏览器控制台输入: vrmManager.animation.toggleDebug() 即可看到骨骼
@@ -377,7 +376,7 @@ class VRMAnimation {
         this.manager.scene.add(this.skeletonHelper);
     }
 
-    //口型同步代码（完全保留）
+    // 口型同步代码
     startLipSync(analyser) {
         this.analyser = analyser;
         this.lipSyncActive = true;

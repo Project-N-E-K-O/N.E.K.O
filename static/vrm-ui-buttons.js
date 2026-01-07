@@ -39,7 +39,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
         buttonsContainer.addEventListener(evt, stopContainerEvent);
     });
 
-    // --- 新增：响应式布局逻辑 ---
+    // 响应式布局逻辑
     // 确保 isMobileWidth 可用
     const isMobileWidth = () => window.innerWidth <= 768;
 
@@ -157,11 +157,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
                 }
             });
 
-            // ==========================================
-            // 🔥【修复】移植 Live2D 的安全点击逻辑
-            // ==========================================
             btn.addEventListener('click', (e) => {
-                console.log(`[VRM] 按钮被点击: ${config.id}`);
                 e.stopPropagation();
                 e.preventDefault();
 
@@ -171,7 +167,6 @@ VRMManager.prototype.setupFloatingButtons = function () {
                     // 检查是否正在启动中
                     const isMicStarting = window.isMicStarting || false;
                     if (isMicStarting) {
-                        console.log('[VRM] 麦克风正在启动中，忽略点击');
                         if (btn.dataset.active !== 'true') {
                             // 使用统一的状态管理方法
                             this.setButtonActive(config.id, true);
@@ -248,7 +243,6 @@ VRMManager.prototype.setupFloatingButtons = function () {
             ['pointerdown','mousedown','touchstart'].forEach(evt => triggerBtn.addEventListener(evt, stopTriggerEvent));
 
             triggerBtn.addEventListener('click', async (e) => {
-                console.log(`[VRM] 小三角被点击: ${config.id}`);
                 e.stopPropagation();
 
                 // 检查弹出框是否已经显示（如果已显示，showPopup会关闭它，不需要重新加载）
@@ -319,14 +313,8 @@ VRMManager.prototype.setupFloatingButtons = function () {
         buttonsContainer.appendChild(btnWrapper);
     });
 
-    console.log('[VRM] 所有浮动按钮已创建完成');
-    // ==========================================
-    // 🔥【新增】监听全局离开/回来事件
-    // ==========================================
-    
     // 监听 "请她离开" 事件 (由 app.js 触发)
     window.addEventListener('live2d-goodbye-click', () => {
-        console.log('[VRM] 收到离开信号，隐藏 UI');
         
         // 1. 隐藏主按钮组
         if (this._floatingButtonsContainer) {
@@ -357,7 +345,6 @@ VRMManager.prototype.setupFloatingButtons = function () {
 
     // 监听 "请她回来" 事件 (由 app.js 或 vrm 自身触发)
     const handleReturn = () => {
-        console.log('[VRM] 收到回来信号，恢复 UI');
         
         // 1. 隐藏"请她回来"按钮
         if (this._returnButtonContainer) {
@@ -378,7 +365,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
     // 同时监听两个可能的事件名，确保兼容性
     window.addEventListener('vrm-return-click', handleReturn);
     window.addEventListener('live2d-return-click', handleReturn);
-    // --- 4. 创建"请她回来"按钮 (保持原有逻辑) ---
+    // 创建"请她回来"按钮
     const returnButtonContainer = document.createElement('div');
     returnButtonContainer.id = 'vrm-return-button-container';
     Object.assign(returnButtonContainer.style, {
@@ -437,7 +424,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
     // 添加呼吸灯动画样式（与 Live2D 保持一致）
     this._addReturnButtonBreathingAnimation();
 
-    // --- 5. 锁图标处理 ---
+    // 锁图标处理
     document.querySelectorAll('#vrm-lock-icon').forEach(el => el.remove());
 
     const lockIcon = document.createElement('div');
@@ -524,7 +511,7 @@ VRMManager.prototype._startUIUpdateLoop = function() {
             return;
         }
 
-        // 🔥【关键修复】移动端跳过位置更新，使用 CSS 固定定位
+        // 移动端跳过位置更新，使用 CSS 固定定位
         if (isMobileWidth()) {
             requestAnimationFrame(update);
             return;
@@ -704,7 +691,6 @@ VRMManager.prototype._startUIUpdateLoop = function() {
             }
         } catch (error) {
             // 忽略单帧异常，继续更新循环
-            console.warn('[VRM UI Update] 更新异常:', error);
         }
         requestAnimationFrame(update);
     };

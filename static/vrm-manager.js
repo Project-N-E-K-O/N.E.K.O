@@ -132,7 +132,6 @@ class VRMManager {
             const container = document.getElementById(containerId);
             
             if (canvas && container) {
-                console.log(`[VRM Manager] 自动初始化场景`);
                 await this.initThreeJS(canvasId, containerId);
             } else {
                 throw new Error(`无法加载模型：场景未初始化。`);
@@ -209,7 +208,7 @@ class VRMManager {
             shadowMesh.rotation.x = -Math.PI / 2;  // 旋转到水平面
             shadowMesh.scale.set(shadowDiameter, shadowDiameter, 1);
             
-            // 7. 计算阴影位置（关键部分）
+            // 计算阴影位置
             let shadowX = 0;
             let shadowY = 0;
             let shadowZ = 0;
@@ -380,7 +379,6 @@ class VRMManager {
                 }
                 // 先让 3D 物体可见
                 this.currentModel.vrm.scene.visible = true;
-                console.log('[VRM Manager] 模型姿势已就绪，开始淡入显示...');
                 // 下一帧将画布透明度设为 1，触发 CSS 淡入动画
                 requestAnimationFrame(() => {
                     if (this.renderer && this.renderer.domElement) {
