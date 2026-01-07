@@ -437,9 +437,37 @@ class VRMInteraction {
             const buttonX = screenX - 80; 
             const buttonY = screenY; 
 
-            // 屏幕边缘限制
-            const clampedX = Math.max(10, Math.min(buttonX, window.innerWidth - 60));
-            const clampedY = Math.max(10, Math.min(buttonY, window.innerHeight - 200));
+            // 获取按钮容器的实际尺寸（用于边界限制）
+            // 如果容器是隐藏的，使用 getBoundingClientRect 或回退到默认值
+            let containerWidth = buttonsContainer.offsetWidth;
+            let containerHeight = buttonsContainer.offsetHeight;
+            
+            // 如果尺寸为 0（可能是隐藏状态），尝试使用 getBoundingClientRect
+            if (containerWidth === 0 || containerHeight === 0) {
+                const rect = buttonsContainer.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) {
+                    containerWidth = rect.width;
+                    containerHeight = rect.height;
+                } else {
+                    // 回退到默认值（基于按钮配置：5个按钮，每个48px，间距12px）
+                    containerWidth = 48;  // 按钮宽度
+                    containerHeight = 48 * 5 + 12 * 4;  // 5个按钮 + 4个间距 = 288px
+                }
+            }
+
+            // 屏幕边缘限制（参考 Live2D 的实现）
+            const screenWidth = window.innerWidth;
+            const screenHeight = window.innerHeight;
+            const minMargin = 10;  // 最小边距
+            
+            // X轴边界限制：确保按钮容器不超出屏幕右边界
+            const maxX = screenWidth - containerWidth - minMargin;
+            const clampedX = Math.max(minMargin, Math.min(buttonX, maxX));
+            
+            // Y轴边界限制：确保按钮容器不超出屏幕上下边界
+            const minY = minMargin;
+            const maxY = screenHeight - containerHeight - minMargin;
+            const clampedY = Math.max(minY, Math.min(buttonY, maxY));
 
             buttonsContainer.style.left = `${clampedX}px`;
             buttonsContainer.style.top = `${clampedY}px`;
@@ -493,15 +521,22 @@ class VRMInteraction {
         const showButtons = () => {
             if (this.checkLocked()) return;
 
+            // 重新获取按钮容器（防止引用失效）
+            const currentButtonsContainer = document.getElementById('vrm-floating-buttons');
+            if (!currentButtonsContainer) return;
+
             if (window.live2dManager) {
                 window.live2dManager.isFocusing = true;
             }
 
-            // 更新按钮位置
-            this.updateFloatingButtonsPosition();
-
             // 显示浮动按钮
-            buttonsContainer.style.display = 'flex';
+            currentButtonsContainer.style.display = 'flex';
+            
+            // 更新按钮位置（显示后再更新，确保位置计算正确）
+            // 使用 requestAnimationFrame 确保 DOM 更新后再计算位置
+            requestAnimationFrame(() => {
+                this.updateFloatingButtonsPosition();
+            });
 
             // 【只控制锁图标】鼠标靠近时显示锁图标
             const lockIcon = document.getElementById('vrm-lock-icon');
@@ -542,25 +577,86 @@ class VRMInteraction {
                     return;
                 }
 
-                const canvas = this.manager.renderer.domElement;
-                const rect = canvas.getBoundingClientRect();
-                const mouseX = this._lastMouseX || 0;
-                const mouseY = this._lastMouseY || 0;
-                const isInCanvas = mouseX >= rect.left && mouseX <= rect.right &&
-                                   mouseY >= rect.top && mouseY <= rect.bottom;
-
-                if (isInCanvas) {
-                    this._hideButtonsTimer = null;
-                    startHideTimer(delay);
-                    return;
+                // 检查鼠标是否仍在模型附近（使用与 onPointerMove 相同的距离检测逻辑）
+                try {
+                    const vrm = this.manager.currentModel?.vrm;
+                    const camera = this.manager.camera;
+                    const renderer = this.manager.renderer;
+                    
+                    if (vrm && camera && renderer) {
+                        const mouseX = this._lastMouseX || 0;
+                        const mouseY = this._lastMouseY || 0;
+                        
+                        // 计算模型在屏幕上的包围盒
+                        const box = new THREE.Box3().setFromObject(vrm.scene);
+                        const corners = [
+                            new THREE.Vector3(box.min.x, box.min.y, box.min.z),
+                            new THREE.Vector3(box.max.x, box.min.y, box.min.z),
+                            new THREE.Vector3(box.min.x, box.max.y, box.min.z),
+                            new THREE.Vector3(box.max.x, box.max.y, box.min.z),
+                            new THREE.Vector3(box.min.x, box.min.y, box.max.z),
+                            new THREE.Vector3(box.max.x, box.min.y, box.max.z),
+                            new THREE.Vector3(box.min.x, box.max.y, box.max.z),
+                            new THREE.Vector3(box.max.x, box.max.y, box.max.z),
+                        ];
+                        
+                        const canvasRect = renderer.domElement.getBoundingClientRect();
+                        let minX = Infinity, maxX = -Infinity;
+                        let minY = Infinity, maxY = -Infinity;
+                        
+                        corners.forEach(corner => {
+                            const worldPos = corner.clone();
+                            worldPos.project(camera);
+                            const screenX = (worldPos.x * 0.5 + 0.5) * canvasRect.width + canvasRect.left;
+                            const screenY = (-worldPos.y * 0.5 + 0.5) * canvasRect.height + canvasRect.top;
+                            minX = Math.min(minX, screenX);
+                            maxX = Math.max(maxX, screenX);
+                            minY = Math.min(minY, screenY);
+                            maxY = Math.max(maxY, screenY);
+                        });
+                        
+                        // 计算鼠标到模型包围盒的距离
+                        const dx = Math.max(minX - mouseX, 0, mouseX - maxX);
+                        const dy = Math.max(minY - mouseY, 0, mouseY - maxY);
+                        const distance = Math.sqrt(dx * dx + dy * dy);
+                        
+                        // 阈值：150px（与 onPointerMove 保持一致）
+                        const threshold = 150;
+                        
+                        if (distance < threshold) {
+                            // 鼠标仍在模型附近，重新启动定时器
+                            this._hideButtonsTimer = null;
+                            startHideTimer(delay);
+                            return;
+                        }
+                    }
+                } catch (error) {
+                    // 如果计算失败，使用简单的 canvas 检测作为后备
+                    const canvas = this.manager.renderer?.domElement;
+                    if (canvas) {
+                        const rect = canvas.getBoundingClientRect();
+                        const mouseX = this._lastMouseX || 0;
+                        const mouseY = this._lastMouseY || 0;
+                        const isInCanvas = mouseX >= rect.left && mouseX <= rect.right &&
+                                           mouseY >= rect.top && mouseY <= rect.bottom;
+                        if (isInCanvas) {
+                            this._hideButtonsTimer = null;
+                            startHideTimer(delay);
+                            return;
+                        }
+                    }
                 }
 
                 if (window.live2dManager) {
                     window.live2dManager.isFocusing = false;
                 }
 
-                // VRM浮动按钮始终显示，不自动隐藏（与Live2D行为一致）
-                // buttonsContainer.style.display = 'none';
+                // 隐藏浮动按钮（与 Live2D 行为一致）
+                // 重新获取按钮容器（防止引用失效）
+                const currentButtonsContainer = document.getElementById('vrm-floating-buttons');
+                if (currentButtonsContainer) {
+                    currentButtonsContainer.style.display = 'none';
+                }
 
                 // 【只控制锁图标】鼠标离开时隐藏锁图标
                 if (lockIcon) {
@@ -575,11 +671,15 @@ class VRMInteraction {
         };
         
         const onMouseEnter = () => showButtons();
-        const onMouseLeave = () => startHideTimer();
+        const onMouseLeave = () => {
+            // 不再隐藏按钮，保持一直显示
+            // 只更新位置（如果需要）
+        };
         
         const onPointerMove = (event) => {
             if (!this.manager.currentModel || !this.manager.currentModel.vrm) return;
             if (this.checkLocked()) return;
+            if (!this.manager.renderer || !this.manager.camera) return;
 
             const canvas = this.manager.renderer.domElement;
             const rect = canvas.getBoundingClientRect();
@@ -589,17 +689,17 @@ class VRMInteraction {
             this._lastMouseX = mouseX;
             this._lastMouseY = mouseY;
 
-            const isInCanvas = mouseX >= rect.left && mouseX <= rect.right &&
-                               mouseY >= rect.top && mouseY <= rect.bottom;
-
+            // 检查鼠标是否在按钮或锁图标上
+            // 重新获取按钮容器（防止引用失效）
+            const currentButtonsContainer = document.getElementById('vrm-floating-buttons');
             let isOverButtons = false;
-            if (buttonsContainer.style.display === 'flex') {
-                const buttonsRect = buttonsContainer.getBoundingClientRect();
+            if (currentButtonsContainer && currentButtonsContainer.style.display === 'flex') {
+                const buttonsRect = currentButtonsContainer.getBoundingClientRect();
                 isOverButtons = mouseX >= buttonsRect.left && mouseX <= buttonsRect.right &&
                                 mouseY >= buttonsRect.top && mouseY <= buttonsRect.bottom;
             }
 
-            // 【新增】检查鼠标是否在锁图标上
+            // 检查鼠标是否在锁图标上
             let isOverLock = false;
             const lockIcon = document.getElementById('vrm-lock-icon');
             if (lockIcon && lockIcon.style.display === 'block') {
@@ -610,10 +710,82 @@ class VRMInteraction {
 
             this._isMouseOverButtons = isOverButtons || isOverLock;
 
-            if (isInCanvas || isOverButtons || isOverLock) {
+            // 如果鼠标在按钮或锁图标上，直接显示
+            if (isOverButtons || isOverLock) {
                 showButtons();
-            } else {
-                startHideTimer();
+                return;
+            }
+
+            // 计算鼠标到模型的距离（屏幕空间，类似 Live2D 的实现）
+            try {
+                const vrm = this.manager.currentModel.vrm;
+                const camera = this.manager.camera;
+                const renderer = this.manager.renderer;
+                
+                if (!camera || !renderer) {
+                    startHideTimer();
+                    return;
+                }
+
+                // 计算模型在屏幕上的包围盒
+                const box = new THREE.Box3().setFromObject(vrm.scene);
+                const size = new THREE.Vector3();
+                box.getSize(size);
+                
+                // 获取模型的中心点和边界点
+                const center = new THREE.Vector3();
+                box.getCenter(center);
+                
+                // 将 3D 点投影到屏幕空间
+                const screenPoints = [];
+                const corners = [
+                    new THREE.Vector3(box.min.x, box.min.y, box.min.z),
+                    new THREE.Vector3(box.max.x, box.min.y, box.min.z),
+                    new THREE.Vector3(box.min.x, box.max.y, box.min.z),
+                    new THREE.Vector3(box.max.x, box.max.y, box.min.z),
+                    new THREE.Vector3(box.min.x, box.min.y, box.max.z),
+                    new THREE.Vector3(box.max.x, box.min.y, box.max.z),
+                    new THREE.Vector3(box.min.x, box.max.y, box.max.z),
+                    new THREE.Vector3(box.max.x, box.max.y, box.max.z),
+                ];
+                
+                const canvasRect = renderer.domElement.getBoundingClientRect();
+                let minX = Infinity, maxX = -Infinity;
+                let minY = Infinity, maxY = -Infinity;
+                
+                corners.forEach(corner => {
+                    const worldPos = corner.clone();
+                    worldPos.project(camera);
+                    const screenX = (worldPos.x * 0.5 + 0.5) * canvasRect.width + canvasRect.left;
+                    const screenY = (-worldPos.y * 0.5 + 0.5) * canvasRect.height + canvasRect.top;
+                    minX = Math.min(minX, screenX);
+                    maxX = Math.max(maxX, screenX);
+                    minY = Math.min(minY, screenY);
+                    maxY = Math.max(maxY, screenY);
+                });
+                
+                // 计算鼠标到模型包围盒的距离（类似 Live2D 的实现）
+                const dx = Math.max(minX - mouseX, 0, mouseX - maxX);
+                const dy = Math.max(minY - mouseY, 0, mouseY - maxY);
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                // 阈值：150px（与 Live2D 保持一致）
+                const threshold = 150;
+                
+                // 按钮一直显示，只更新位置
+                if (distance < threshold) {
+                    // 鼠标在模型附近，更新按钮位置
+                    showButtons();
+                }
+                // 不再隐藏按钮，保持一直显示
+            } catch (error) {
+                // 如果计算失败，使用简单的 canvas 检测作为后备
+                const isInCanvas = mouseX >= rect.left && mouseX <= rect.right &&
+                                   mouseY >= rect.top && mouseY <= rect.bottom;
+                if (isInCanvas) {
+                    showButtons();
+                }
+                // 不再隐藏按钮，保持一直显示
             }
         };
         
@@ -628,11 +800,7 @@ class VRMInteraction {
         if (this.manager.currentModel && !this.checkLocked()) {
             setTimeout(() => {
                 showButtons();
-                setTimeout(() => {
-                    if (!window.live2dManager || !window.live2dManager.isFocusing) {
-                        startHideTimer();
-                    }
-                }, 5000);
+                // 不再隐藏按钮，保持一直显示
             }, 100);
         }
     }

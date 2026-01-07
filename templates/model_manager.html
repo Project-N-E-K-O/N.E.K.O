@@ -1766,33 +1766,47 @@
 
             // 应用打光值到UI和场景
             function applyLightingValues(lighting) {
+                // 确保光照已经初始化，如果没有则等待一小段时间
+                if (!vrmManager?.ambientLight || !vrmManager?.mainLight || !vrmManager?.fillLight || !vrmManager?.rimLight) {
+                    // 如果光照未初始化，延迟重试
+                    setTimeout(() => {
+                        applyLightingValues(lighting);
+                    }, 100);
+                    return;
+                }
+                
                 if (ambientLightSlider && ambientLightValue) {
                     ambientLightSlider.value = lighting.ambient;
                     ambientLightValue.textContent = lighting.ambient.toFixed(2);
-                    if (vrmManager?.ambientLight) {
+                    if (vrmManager.ambientLight) {
                         vrmManager.ambientLight.intensity = lighting.ambient;
                     }
                 }
                 if (mainLightSlider && mainLightValue) {
                     mainLightSlider.value = lighting.main;
                     mainLightValue.textContent = lighting.main.toFixed(2);
-                    if (vrmManager?.mainLight) {
+                    if (vrmManager.mainLight) {
                         vrmManager.mainLight.intensity = lighting.main;
                     }
                 }
                 if (fillLightSlider && fillLightValue) {
                     fillLightSlider.value = lighting.fill;
                     fillLightValue.textContent = lighting.fill.toFixed(2);
-                    if (vrmManager?.fillLight) {
+                    if (vrmManager.fillLight) {
                         vrmManager.fillLight.intensity = lighting.fill;
                     }
                 }
                 if (rimLightSlider && rimLightValue) {
                     rimLightSlider.value = lighting.rim;
                     rimLightValue.textContent = lighting.rim.toFixed(2);
-                    if (vrmManager?.rimLight) {
+                    if (vrmManager.rimLight) {
                         vrmManager.rimLight.intensity = lighting.rim;
                     }
+                }
+                
+                // 强制渲染一次，确保光照立即生效
+                if (vrmManager?.renderer && vrmManager?.scene && vrmManager?.camera) {
+                    vrmManager.renderer.render(vrmManager.scene, vrmManager.camera);
                 }
             }
 

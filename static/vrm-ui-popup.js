@@ -360,13 +360,9 @@ VRMManager.prototype.closePopupById = function (buttonId) {
     popup.style.opacity = '0'; popup.style.transform = 'translateX(-10px)';
     setTimeout(() => popup.style.display = 'none', 200);
 
-    const buttonEntry = this._floatingButtons && this._floatingButtons[buttonId];
-    if (buttonEntry && buttonEntry.button) {
-        buttonEntry.button.dataset.active = 'false';
-        buttonEntry.button.style.background = 'rgba(255, 255, 255, 0.65)';
-        if (buttonEntry.imgOff && buttonEntry.imgOn) {
-            buttonEntry.imgOff.style.opacity = '1'; buttonEntry.imgOn.style.opacity = '0';
-        }
+    // 使用统一的状态管理方法更新按钮状态
+    if (typeof this.setButtonActive === 'function') {
+        this.setButtonActive(buttonId, false);
     }
     return true;
 };
@@ -391,7 +387,10 @@ VRMManager.prototype.closeAllSettingsWindows = function (exceptUrl = null) {
 
 // 显示弹出框
 VRMManager.prototype.showPopup = function (buttonId, popup) {
-    const isVisible = popup.style.display === 'flex' && popup.style.opacity === '1';
+    // 判断弹窗是否可见：display 是 'flex' 且 opacity 是 '1'（完全可见）
+    // 注意：在动画过程中，opacity 可能是 '0' 或其他值，只有完全可见时才认为是可见的
+    const isVisible = popup.style.display === 'flex' && 
+                     popup.style.opacity === '1';
 
     // 如果是设置弹出框，每次显示时更新开关状态
     if (buttonId === 'settings') {
@@ -428,10 +427,21 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
     if (isVisible) {
         popup.style.opacity = '0'; popup.style.transform = 'translateX(-10px)';
         if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('live2d-agent-popup-closed'));
+        
+        // 使用统一的状态管理方法更新按钮图标状态（弹窗关闭时，恢复为 off 图标）
+        if (typeof this.setButtonActive === 'function') {
+            this.setButtonActive(buttonId, false);
+        }
+        
         setTimeout(() => { popup.style.display = 'none'; popup.style.left = '100%'; popup.style.top = '0'; }, 200);
     } else {
         this.closeAllPopupsExcept(buttonId);
         popup.style.display = 'flex'; popup.style.opacity = '0'; popup.style.visibility = 'visible';
+        
+        // 使用统一的状态管理方法更新按钮图标状态（弹窗打开时，显示 on 图标）
+        if (typeof this.setButtonActive === 'function') {
+            this.setButtonActive(buttonId, true);
+        }
         
         // 预加载图片
         const images = popup.querySelectorAll('img');

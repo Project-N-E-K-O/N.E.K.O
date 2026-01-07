@@ -27,37 +27,65 @@ class VRMAnimation {
         this.frequencyData = null;
     }
 
+    /**
+     * 检测 VRM 版本
+     */
+    _detectVRMVersion(vrm) {
+        try {
+            if (vrm.meta) {
+                // 优先使用 metaVersion（更准确）
+                if (vrm.meta.metaVersion !== undefined && vrm.meta.metaVersion !== null) {
+                    const version = String(vrm.meta.metaVersion);
+                    // metaVersion 可能是 "0" 或 "1"（字符串）
+                    if (version === '1' || version === '1.0' || version.startsWith('1.')) {
+                        return '1.0';
+                    }
+                    if (version === '0' || version === '0.0' || version.startsWith('0.')) {
+                        return '0.0';
+                    }
+                }
+                // 兼容 vrmVersion
+                if (vrm.meta.vrmVersion) {
+                    const version = String(vrm.meta.vrmVersion);
+                    if (version.startsWith('1') || version.includes('1.0')) {
+                        return '1.0';
+                    }
+                }
+            }
+            // 默认返回 0.0（向后兼容）
+            return '0.0';
+        } catch (error) {
+            console.warn('[VRM Animation] 版本检测失败，默认使用 0.0:', error);
+            return '0.0';
+        }
+    }
+
     update(delta) {
         if (this.vrmaIsPlaying && this.vrmaMixer) {
             // 强制接管时间增量，确保速度控制绝对准确
             const safeDelta = (delta <= 0 || delta > 0.1) ? 0.016 : delta;
             const updateDelta = safeDelta * this.playbackSpeed;
             this.vrmaMixer.update(updateDelta);
-            
-            // 调试：每60帧输出一次状态（约1秒）
-            if (this._debugFrameCount === undefined) this._debugFrameCount = 0;
-            this._debugFrameCount++;
-            if (this._debugFrameCount % 60 === 0 && this.currentAction) {
-                console.log('[VRM Animation] Update 状态:', {
-                    delta: updateDelta,
-                    actionTime: this.currentAction.time,
-                    actionWeight: this.currentAction.weight,
-                    actionEnabled: this.currentAction.enabled,
-                    actionPaused: this.currentAction.paused
-                });
-            }
 
             // 必须在动画更新后立即更新矩阵，确保骨骼状态同步
             const vrm = this.manager.currentModel?.vrm;
             if (vrm?.scene) {
-                // 先更新所有骨骼的本地变换
+                // 对于 VRM 1.0，需要调用 humanoid.update() 将 normalized 骨骼同步到 raw 骨骼
+                if (vrm.humanoid && vrm.humanoid.autoUpdateHumanBones) {
+                    vrm.humanoid.update();
+                }
+                
+                // 更新所有骨骼的世界矩阵（AnimationMixer 已经更新了本地变换）
+                vrm.scene.updateMatrixWorld(true);
+                
+                // 确保所有 SkinnedMesh 的骨骼矩阵已更新
                 vrm.scene.traverse((object) => {
-                    if (object.isBone || object.type === 'Bone') {
-                        object.updateMatrix();
+                    if (object.isSkinnedMesh && object.skeleton) {
+                        // 更新 Skeleton 的 boneMatrices，确保 SkinnedMesh 使用最新的骨骼变换
+                        object.skeleton.update();
+                        
                     }
                 });
-                // 然后更新世界矩阵
-                vrm.scene.updateMatrixWorld(true);
             }
         }
         if (this.lipSyncActive && this.analyser) {
@@ -72,7 +100,6 @@ class VRMAnimation {
         if (this._loaderPromise) return this._loaderPromise;
         
         this._loaderPromise = (async () => {
-            console.log('[VRM Animation] 正在初始化加载器（使用官方库）...');
             
             try {
                 // 动态导入必要的模块
@@ -85,7 +112,6 @@ class VRMAnimation {
                 const loader = new GLTFLoader();
                 loader.register((parser) => new VRMAnimationLoaderPlugin(parser));
                 
-                console.log('[VRM Animation] 加载器初始化完成（官方库）');
                 return loader;
             } catch (error) {
                 console.error('[VRM Animation] 加载器初始化失败:', error);
@@ -110,16 +136,28 @@ class VRMAnimation {
                 this.manager.toggleSpringBone(false);
             }
 
-            // 清理旧 Mixer
+            // 清理旧 Mixer（确保完全清理）
             if (this.manager.animationMixer) {
                 this.manager.animationMixer.stopAllAction();
                 this.manager.animationMixer.uncacheRoot(vrm.scene);
                 this.manager.animationMixer = null;
             }
+            
+            // 确保清理旧的 vrmaMixer（如果存在且绑定的是旧模型）
+            if (this.vrmaMixer) {
+                const oldRoot = this.vrmaMixer.getRoot();
+                // 如果 mixer 的 root 不是当前模型的场景，说明是旧模型的 mixer
+                if (oldRoot !== vrm.scene && oldRoot !== vrm.humanoid?._normalizedHumanBones?.root) {
+                    this.vrmaMixer.stopAllAction();
+                    this.vrmaMixer.uncacheRoot(oldRoot);
+                    this.vrmaMixer = null;
+                    this.currentAction = null;
+                    this.vrmaIsPlaying = false;
+                }
+            }
 
             // 确保加载器已初始化
             const loader = await this._initLoader();
-            console.log('[VRM Animation] 正在加载动画:', vrmaPath);
 
             // 使用官方库加载 VRMA 文件
             const gltf = await loader.loadAsync(vrmaPath);
@@ -141,14 +179,34 @@ class VRMAnimation {
                 this.vrmaMixer = null;
             }
             
-            // 创建绑定到【当前新模型】(vrm.scene) 的混合器
-            this.vrmaMixer = new window.THREE.AnimationMixer(vrm.scene);
+            // 检测 VRM 版本（在创建 Mixer 之前）
+            const vrmVersion = this._detectVRMVersion(vrm);
+            
+            // 根据版本决定 Mixer 的 root
+            let mixerRoot = vrm.scene;
+            if (vrmVersion === '1.0') {
+                // VRM 1.0：确保 normalized 节点在场景中
+                const normalizedRoot = vrm.humanoid?._normalizedHumanBones?.root;
+                if (normalizedRoot) {
+                    // 检查是否已在场景中
+                    if (!vrm.scene.getObjectByName(normalizedRoot.name)) {
+                        vrm.scene.add(normalizedRoot);
+                    }
+                    // 确保 autoUpdateHumanBones 已启用
+                    if (vrm.humanoid.autoUpdateHumanBones !== true) {
+                        vrm.humanoid.autoUpdateHumanBones = true;
+                    }
+                }
+            }
+            
+            // 创建绑定到场景的混合器
+            this.vrmaMixer = new window.THREE.AnimationMixer(mixerRoot);
 
             // 使用官方库的 createVRMAnimationClip 创建动画 Clip
             // 这会自动处理骨骼重定向和四元数问题
             const animationModule = await import('/static/libs/three-vrm-animation.module.js');
             const { createVRMAnimationClip } = animationModule;
-            const clip = createVRMAnimationClip(vrmAnimation, vrm);
+            let clip = createVRMAnimationClip(vrmAnimation, vrm);
             
             if (!clip || !clip.tracks || clip.tracks.length === 0) {
                 console.warn('[VRM Animation] 创建的动画 Clip 没有有效的轨道');
@@ -160,50 +218,21 @@ class VRMAnimation {
                 });
                 throw new Error('动画 Clip 创建失败：没有找到匹配的骨骼');
             }
-
-            console.log('[VRM Animation] 动画 Clip 创建成功:', {
-                name: clip.name,
-                duration: clip.duration,
-                tracksCount: clip.tracks.length,
-                allTracks: clip.tracks.map(t => t.name),
-                sampleTracks: clip.tracks.slice(0, 10).map(t => ({
-                    name: t.name,
-                    timesLength: t.times?.length,
-                    valuesLength: t.values?.length
-                }))
-            });
             
-            // 检查 tracks 是否真的绑定到了场景中的对象
-            const vrmScene = vrm.scene;
-            const trackTargets = clip.tracks.map(t => {
-                const trackName = t.name;
-                const lastDot = trackName.lastIndexOf('.');
-                const nodeName = trackName.substring(0, lastDot);
-                const property = trackName.substring(lastDot + 1);
-                
-                // 查找场景中是否有这个节点
-                let foundNode = null;
-                vrmScene.traverse((obj) => {
-                    if (obj.name === nodeName) {
-                        foundNode = obj;
+            // 根据版本处理 tracks 名称
+            if (vrmVersion === '1.0') {
+                // VRM 1.0：保留 Normalized_ 前缀，使用 normalized 节点
+                // 不需要修改 tracks，直接使用官方库创建的 normalized 节点名称
+            } else {
+                // VRM 0.x：去掉 Normalized_ 前缀，直接使用 raw bones
+                clip.tracks.forEach(track => {
+                    if (track.name.startsWith('Normalized_')) {
+                        // 去掉 "Normalized_" 前缀
+                        const originalName = track.name.substring('Normalized_'.length);
+                        track.name = originalName;
                     }
                 });
-                
-                return {
-                    trackName,
-                    nodeName,
-                    property,
-                    found: !!foundNode,
-                    nodeType: foundNode?.type
-                };
-            });
-            
-            console.log('[VRM Animation] Tracks 绑定检查:', {
-                totalTracks: trackTargets.length,
-                boundTracks: trackTargets.filter(t => t.found).length,
-                unboundTracks: trackTargets.filter(t => !t.found).slice(0, 10),
-                sampleBoundTracks: trackTargets.filter(t => t.found).slice(0, 10)
-            });
+            }
 
             const newAction = this.vrmaMixer.clipAction(clip);
             if (!newAction) {
@@ -213,13 +242,6 @@ class VRMAnimation {
             // 确保 Action 已启用
             newAction.enabled = true;
             
-            console.log('[VRM Animation] Action 创建成功:', {
-                enabled: newAction.enabled,
-                paused: newAction.paused,
-                time: newAction.time,
-                timeScale: newAction.timeScale,
-                weight: newAction.weight
-            });
             
             newAction.setLoop(options.loop ? window.THREE.LoopRepeat : window.THREE.LoopOnce);
             newAction.clampWhenFinished = true;
@@ -278,15 +300,14 @@ class VRMAnimation {
             this.vrmaMixer.update(0);
             if (vrm.scene) {
                 vrm.scene.updateMatrixWorld(true);
+                // 确保 SkinnedMesh 的骨骼矩阵已更新
+                vrm.scene.traverse((object) => {
+                    if (object.isSkinnedMesh && object.skeleton) {
+                        object.skeleton.update();
+                    }
+                });
             }
 
-            console.log('[VRM Animation] 动画播放成功（使用官方库）', {
-                isPlaying: this.vrmaIsPlaying,
-                mixerExists: !!this.vrmaMixer,
-                actionEnabled: newAction.enabled,
-                actionPaused: newAction.paused,
-                actionWeight: newAction.weight
-            });
 
         } catch (error) {
             console.error('[VRM Animation] 播放失败:', error);
@@ -394,7 +415,6 @@ class VRMAnimation {
             if (match) this.mouthExpressions[vowel] = match;
         });
 
-        console.log('[VRM LipSync] 口型表情映射:', this.mouthExpressions);
     }
     resetMouthExpressions() {
         const vrm = this.manager.currentModel?.vrm;
@@ -411,7 +431,6 @@ class VRMAnimation {
             }
         });
 
-        console.log('[VRM LipSync] 已重置所有口型表情');
     }
     _updateLipSync(delta) {
         if (!this.manager.currentModel?.vrm?.expressionManager) return;
@@ -421,7 +440,6 @@ class VRMAnimation {
 
         // 检查数组是否存在，或者长度是否匹配
         if (!this.frequencyData || this.frequencyData.length !== this.analyser.frequencyBinCount) {
-            console.log('[VRM Animation] 自动修正口型同步数组长度');
             this.frequencyData = new Uint8Array(this.analyser.frequencyBinCount);
         }
         // 获取频率数据进行音频分析
@@ -459,8 +477,34 @@ class VRMAnimation {
         }
     }
 
+    /**
+     * 立即清理所有动画状态（用于角色切换）
+     */
+    reset() {
+        // 清理定时器
+        if (this._springBoneTimer) {
+            clearTimeout(this._springBoneTimer);
+            this._springBoneTimer = null;
+        }
+        
+        // 立即停止所有动画
+        if (this.vrmaMixer) {
+            this.vrmaMixer.stopAllAction();
+            // 清理 mixer 的 root
+            const root = this.vrmaMixer.getRoot();
+            if (root) {
+                this.vrmaMixer.uncacheRoot(root);
+            }
+            this.vrmaMixer = null;
+        }
+        
+        // 重置状态
+        this.currentAction = null;
+        this.vrmaIsPlaying = false;
+    }
+
     dispose() {
-        this.stopVRMAAnimation();
+        this.reset();
         this.stopLipSync();
         this.vrmaMixer = null;
         if (this.skeletonHelper) {

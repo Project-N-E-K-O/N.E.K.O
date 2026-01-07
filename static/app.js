@@ -3181,18 +3181,9 @@ function init_app() {
         if (window.live2dManager && typeof window.live2dManager.resetAllButtons === 'function') {
             window.live2dManager.resetAllButtons();
         }
-        // 重置VRM的浮动按钮状态
-        if (window.vrmManager && window.vrmManager._floatingButtons) {
-            Object.keys(window.vrmManager._floatingButtons).forEach(btnId => {
-                const btnData = window.vrmManager._floatingButtons[btnId];
-                if (btnData && btnData.button) {
-                    btnData.button.dataset.active = 'false';
-                    if (btnData.imgOff && btnData.imgOn) {
-                        btnData.imgOff.style.opacity = '1';
-                        btnData.imgOn.style.opacity = '0';
-                    }
-                }
-            });
+        // 重置VRM的浮动按钮状态（使用统一的状态管理方法）
+        if (window.vrmManager && typeof window.vrmManager.resetAllButtons === 'function') {
+            window.vrmManager.resetAllButtons();
         }
 
         // 【改进】使用统一的 setLocked 方法设置锁定状态（同时更新图标和 canvas）
@@ -6144,9 +6135,14 @@ function init_app() {
                         window.vrmManager._animationFrameId = null;
                     }
 
-                    // 2. 停止VRM动画
+                    // 2. 停止VRM动画并立即清理状态（用于角色切换）
                     if (window.vrmManager.animation) {
-                        window.vrmManager.animation.stopVRMAAnimation();
+                        // 立即重置动画状态，不等待淡出完成
+                        if (typeof window.vrmManager.animation.reset === 'function') {
+                            window.vrmManager.animation.reset();
+                        } else {
+                            window.vrmManager.animation.stopVRMAAnimation();
+                        }
                     }
 
                     // 3. 清理模型（从场景中移除，但不销毁scene）
@@ -6166,11 +6162,28 @@ function init_app() {
                         window.vrmManager.animationMixer = null;
                     }
 
-                    // 5. 清空场景（但不销毁scene本身）
+                    // 5. 清理场景中剩余的模型对象（但保留光照、相机和控制器）
                     if (window.vrmManager.scene) {
-                        while (window.vrmManager.scene.children.length > 0) {
-                            window.vrmManager.scene.remove(window.vrmManager.scene.children[0]);
-                        }
+                        const childrenToRemove = [];
+                        window.vrmManager.scene.children.forEach((child) => {
+                            // 只移除模型相关的对象，保留光照、相机
+                            if (!child.isLight && !child.isCamera && child.type !== 'Group') {
+                                // 检查是否是VRM模型场景
+                                if (child.userData && child.userData.vrm) {
+                                    childrenToRemove.push(child);
+                                } else if (child.type === 'Group' && child.children.length > 0) {
+                                    // 检查是否是模型组（通常模型是一个Group）
+                                    const hasMesh = child.children.some(c => c.isMesh || c.isSkinnedMesh);
+                                    if (hasMesh) {
+                                        childrenToRemove.push(child);
+                                    }
+                                }
+                            }
+                        });
+                        // 移除模型对象
+                        childrenToRemove.forEach(child => {
+                            window.vrmManager.scene.remove(child);
+                        });
                     }
 
                     // 6. 隐藏渲染器（但不销毁）
@@ -6311,6 +6324,40 @@ function init_app() {
 
                 // 加载 VRM 模型（不禁用阴影，使用默认设置）
                 await window.vrmManager.loadModel(modelUrl);
+
+                // 应用角色的光照配置
+                if (catgirlConfig.lighting && window.vrmManager) {
+                    const lighting = catgirlConfig.lighting;
+                    console.log('[猫娘切换] 应用角色光照配置:', lighting);
+                    
+                    // 确保光照已初始化，如果没有则等待
+                    const applyLighting = () => {
+                        if (window.vrmManager?.ambientLight && window.vrmManager?.mainLight && 
+                            window.vrmManager?.fillLight && window.vrmManager?.rimLight) {
+                            if (window.vrmManager.ambientLight) {
+                                window.vrmManager.ambientLight.intensity = lighting.ambient || 0.08;
+                            }
+                            if (window.vrmManager.mainLight) {
+                                window.vrmManager.mainLight.intensity = lighting.main || 0.06;
+                            }
+                            if (window.vrmManager.fillLight) {
+                                window.vrmManager.fillLight.intensity = lighting.fill || 0.12;
+                            }
+                            if (window.vrmManager.rimLight) {
+                                window.vrmManager.rimLight.intensity = lighting.rim || 0.8;
+                            }
+                            
+                            // 强制渲染一次，确保光照立即生效
+                            if (window.vrmManager.renderer && window.vrmManager.scene && window.vrmManager.camera) {
+                                window.vrmManager.renderer.render(window.vrmManager.scene, window.vrmManager.camera);
+                            }
+                        } else {
+                            // 光照未初始化，延迟重试
+                            setTimeout(applyLighting, 100);
+                        }
+                    };
+                    applyLighting();
+                }
 
                 if (window.LanLan1) {
                     window.LanLan1.live2dModel = null;

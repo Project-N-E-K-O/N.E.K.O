@@ -67,15 +67,31 @@ window.LanLan1.setMouth = function(value) {
 
 // 自动初始化函数（延迟执行，等待 cubism4Model 设置）
 async function initLive2DModel() {
+    // 检查是否在 VRM 模式下，如果是则跳过 Live2D 初始化
+    const isVRMMode = window.vrmManager && window.vrmManager.currentModel;
+    if (isVRMMode) {
+        console.log('[Live2D Init] 当前为 VRM 模式，跳过 Live2D 初始化');
+        return;
+    }
+
+    // 检查是否在 model_manager 页面且当前选择的是 VRM 模型
+    const isModelManagerPage = window.location.pathname.includes('model_manager');
+    if (isModelManagerPage) {
+        // 检查当前选择的模型类型
+        const vrmModelSelect = document.querySelector('#vrmModelSelect');
+        const live2dModelSelect = document.querySelector('#live2dModelSelect');
+        
+        // 如果 VRM 模型选择器存在且有选中值，且 Live2D 选择器没有选中值，说明当前是 VRM 模式
+        if (vrmModelSelect && vrmModelSelect.value && (!live2dModelSelect || !live2dModelSelect.value)) {
+            console.log('[Live2D Init] 模型管理页面当前选择的是 VRM 模型，跳过 Live2D 初始化');
+            return;
+        }
+    }
+
     // 等待配置加载完成（如果存在）
     if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
         await window.pageConfigReady;
     }
-
-    // 检查是否在model_manager页面，如果是则跳过自动模型加载，但仍初始化Live2D管理器
-    const isModelManagerPage = window.location.pathname.includes('model_manager') ||
-                              document.querySelector('#model-select') !== null ||
-                              document.querySelector('#live2dModelSelect') !== null;
 
     // 获取模型路径
     const targetModelPath = (typeof cubism4Model !== 'undefined' ? cubism4Model : (window.cubism4Model || ''));
@@ -140,6 +156,19 @@ async function initLive2DModel() {
         if (live2dContainer) live2dContainer.style.display = 'block';
 
         // 初始化 PIXI 应用
+        // 再次检查是否在 VRM 模式下（防止在异步操作期间切换到 VRM）
+        if (window.vrmManager && window.vrmManager.currentModel) {
+            console.log('[Live2D Init] 检测到 VRM 模式，取消 Live2D 初始化');
+            return;
+        }
+
+        // 检查 canvas 元素是否存在
+        const live2dCanvas = document.getElementById('live2d-canvas');
+        if (!live2dCanvas) {
+            console.log('[Live2D Init] 未找到 live2d-canvas 元素，可能当前为 VRM 模式，跳过初始化');
+            return;
+        }
+
         await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
         let modelPreferences = null;
         // 如果不在模型管理界面且有模型路径，才继续加载模型
