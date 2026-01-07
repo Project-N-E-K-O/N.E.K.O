@@ -625,6 +625,7 @@ def get_messages_from_queue(
     filter: Optional[Dict[str, Any]] = None,
     strict: bool = True,
     since_ts: Optional[float] = None,
+    raw: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     从消息队列中获取消息
@@ -772,6 +773,13 @@ def get_messages_from_queue(
         if len(picked_rev) >= int(max_count):
             break
     picked_rev.reverse()
+
+    if bool(raw):
+        out: List[Dict[str, Any]] = []
+        for msg in picked_rev:
+            if isinstance(msg, dict):
+                out.append(msg)
+        return out
 
     messages: List[Dict[str, Any]] = []
     for msg in picked_rev:

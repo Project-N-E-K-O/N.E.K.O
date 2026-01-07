@@ -261,24 +261,27 @@ class PluginContext:
                     except Exception:
                         self._push_batcher = batcher
 
-                with lock:
-                    self._push_seq = int(getattr(self, "_push_seq", 0)) + 1
-                    seq = int(self._push_seq)
-                item = {
-                    "seq": seq,
-                    "source": source,
-                    "message_type": message_type,
-                    "description": description,
-                    "priority": priority,
-                    "content": content,
-                    "binary_data": binary_data,
-                    "binary_url": binary_url,
-                    "metadata": metadata or {},
-                }
                 batcher = getattr(self, "_push_batcher", None)
                 if batcher is None:
                     raise RuntimeError("push batcher not initialized")
-                batcher.enqueue(item)
+
+                # IMPORTANT: seq allocation and enqueue must be atomic under the same lock.
+                # Otherwise, concurrent threads can enqueue out-of-order relative to seq.
+                with lock:
+                    self._push_seq = int(getattr(self, "_push_seq", 0)) + 1
+                    seq = int(self._push_seq)
+                    item = {
+                        "seq": seq,
+                        "source": source,
+                        "message_type": message_type,
+                        "description": description,
+                        "priority": priority,
+                        "content": content,
+                        "binary_data": binary_data,
+                        "binary_url": binary_url,
+                        "metadata": metadata or {},
+                    }
+                    batcher.enqueue(item)
                 return
 
             timeout_s = float(PLUGIN_ZMQ_MESSAGE_PUSH_SYNC_TIMEOUT)

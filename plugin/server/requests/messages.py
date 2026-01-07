@@ -32,6 +32,7 @@ async def handle_message_get(request: Dict[str, Any], send_response: SendRespons
     flt = request.get("filter", None)
     strict = request.get("strict", True)
     since_ts = request.get("since_ts", None)
+    raw = request.get("raw", False)
 
     try:
         messages = get_messages_from_queue(
@@ -42,6 +43,7 @@ async def handle_message_get(request: Dict[str, Any], send_response: SendRespons
             filter=dict(flt) if isinstance(flt, dict) else None,
             strict=bool(strict),
             since_ts=float(since_ts) if since_ts is not None else None,
+            raw=bool(raw),
         )
         send_response(from_plugin, request_id, {"plugin_id": plugin_id or "*", "messages": messages}, None, timeout=timeout)
     except Exception as e:

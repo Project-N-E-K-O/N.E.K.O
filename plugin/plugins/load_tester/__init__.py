@@ -213,6 +213,7 @@ class LoadTestPlugin(NekoPluginBase):
             plugin_id=pid_norm,
             max_count=int(max_count),
             timeout=float(timeout),
+            raw=True,
         )
         # Avoid returning large payload over HTTP.
         return ok(data={"count": len(res)})
@@ -243,6 +244,7 @@ class LoadTestPlugin(NekoPluginBase):
             plugin_id=None,
             max_count=int(max_count),
             timeout=float(timeout),
+            raw=True,
         )
         if len(base_list) == 0:
             for _i in range(10):
@@ -257,6 +259,7 @@ class LoadTestPlugin(NekoPluginBase):
                 plugin_id=None,
                 max_count=int(max_count),
                 timeout=float(timeout),
+                raw=True,
             )
 
         flt_kwargs: Dict[str, Any] = {}
@@ -465,6 +468,7 @@ class LoadTestPlugin(NekoPluginBase):
                 plugin_id=pid_norm,
                 max_count=int(max_count),
                 timeout=float(timeout),
+                raw=True,
             )
 
         if workers > 1:
@@ -717,6 +721,7 @@ class LoadTestPlugin(NekoPluginBase):
             plugin_id=None,
             max_count=int(max_count),
             timeout=float(timeout),
+            raw=True,
         )
 
         if len(base_list) == 0:

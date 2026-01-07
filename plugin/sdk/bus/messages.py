@@ -130,6 +130,7 @@ class MessageClient:
         strict: bool = True,
         since_ts: Optional[float] = None,
         timeout: float = 5.0,
+        raw: bool = False,
     ) -> MessageList:
         if hasattr(self.ctx, "_enforce_sync_call_policy"):
             self.ctx._enforce_sync_call_policy("bus.messages.get")
@@ -165,6 +166,7 @@ class MessageClient:
             "strict": bool(strict),
             "since_ts": float(since_ts) if since_ts is not None else None,
             "timeout": float(timeout),
+            "raw": bool(raw),
         }
 
         if zmq_client is not None:
