@@ -50,3 +50,6 @@ enable = true
 [load_test.buslist_reload]
 enable = true
 inplace = true
+
+[load_test.plugin_event_qps]
+enable = true

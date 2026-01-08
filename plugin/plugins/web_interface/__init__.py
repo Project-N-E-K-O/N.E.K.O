@@ -125,7 +125,7 @@ class WebInterfacePlugin(NekoPluginBase):
                 "url": f"http://{self.host}:{self.port}"
             })
             
-            # 推送消息
+            # 推送消息（使用 fast_mode=True 经过 ZeroMQ PUSH/PULL 批量通道，避免同步等待响应）
             self.ctx.push_message(
                 source="web_interface",
                 message_type="url",
@@ -136,7 +136,8 @@ class WebInterfacePlugin(NekoPluginBase):
                     "host": self.host,
                     "port": self.port,
                     "status": "started"
-                }
+                },
+                fast_mode=True,
             )
             
             self.logger.info(f"Web server started at http://{self.host}:{self.port}")

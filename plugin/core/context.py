@@ -214,7 +214,7 @@ class PluginContext:
                 # Fallback to safe defaults if settings import fails, but keep a clue in logs.
                 try:
                     self.logger.warning(
-                        "[PluginContext] Failed to import ZeroMQ push settings (%s); using defaults",
+                        "[PluginContext] Failed to import ZeroMQ push settings ({})",
                         e,
                     )
                 except Exception:
@@ -333,7 +333,7 @@ class PluginContext:
                         try:
                             self.logger.warning(
                                 "[PluginContext] ZeroMQ IPC failed for MESSAGE_PUSH; "
-                                "retrying attempt %d, last_error=%r (no fallback)",
+                                "retrying attempt {}, last_error={!r}",
                                 attempt,
                                 last_exc,
                             )

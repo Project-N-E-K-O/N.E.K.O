@@ -64,7 +64,19 @@ class ZmqIpcClient:
             return None
         try:
             sock.send_multipart([req_id.encode("utf-8"), _dumps(request)], flags=0)
-        except Exception:
+        except Exception as e:
+            try:
+                import logging
+
+                logging.getLogger("plugin.zmq.client").warning(
+                    "[ZmqIpcClient] send_multipart failed for plugin=%s req_id=%s error=%s: %s",
+                    self.plugin_id,
+                    req_id,
+                    type(e).__name__,
+                    str(e),
+                )
+            except Exception:
+                pass
             return None
 
         poller = zmq.Poller()
@@ -134,17 +146,48 @@ class ZmqIpcServer:
                 await _async_sleep(0.01)
                 continue
             if len(frames) < 3:
+                # 无法解析出完整的 [ident, req_id, payload] 帧，只能丢弃
                 continue
             ident = frames[0]
             try:
                 req_id = frames[1].decode("utf-8")
             except Exception:
+                # 连 request_id 都无法解析，客户端也无法匹配响应，只能丢弃
                 continue
             try:
                 request = _loads(frames[2])
-            except Exception:
+            except Exception as e:
+                # 解包失败时仍然返回一个结构化的错误响应，避免客户端一直超时拿不到任何响应
+                try:
+                    err_payload = {
+                        "request_id": req_id,
+                        "error": f"invalid ZMQ request payload: {type(e).__name__}",
+                        "result": None,
+                    }
+                    await self._sock.send_multipart([
+                        ident,
+                        req_id.encode("utf-8"),
+                        _dumps(err_payload),
+                    ])
+                except Exception:
+                    # 发送错误响应失败时静默忽略，避免影响后续循环
+                    pass
                 continue
             if not isinstance(request, dict):
+                # payload 解码成功但不是 dict，同样返回一个标准错误响应
+                try:
+                    err_payload = {
+                        "request_id": req_id,
+                        "error": "invalid ZMQ request payload type",
+                        "result": None,
+                    }
+                    await self._sock.send_multipart([
+                        ident,
+                        req_id.encode("utf-8"),
+                        _dumps(err_payload),
+                    ])
+                except Exception:
+                    pass
                 continue
 
             self._recv_count += 1

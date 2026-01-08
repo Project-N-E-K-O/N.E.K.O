@@ -269,6 +269,17 @@ class PluginRouter:
         from_plugin = request.get("from_plugin")
         request_id = request.get("request_id")
 
+        # 记录 ZeroMQ MESSAGE_PUSH 请求的入口，便于排查特定插件的 push 问题
+        try:
+            if str(request_type) == "MESSAGE_PUSH":
+                logger.warning(
+                    "[ZeroMQ IPC] handling MESSAGE_PUSH from=%s req_id=%s",
+                    str(from_plugin),
+                    str(request_id),
+                )
+        except Exception:
+            pass
+
         if not isinstance(from_plugin, str) or not from_plugin:
             return {"type": "PLUGIN_TO_PLUGIN_RESPONSE", "to_plugin": "", "request_id": str(request_id or ""), "result": None, "error": "missing from_plugin"}
         if not isinstance(request_id, str) or not request_id:
@@ -296,6 +307,16 @@ class PluginRouter:
             return {"type": "PLUGIN_TO_PLUGIN_RESPONSE", "to_plugin": from_plugin, "request_id": request_id, "result": None, "error": str(e)}
 
         if not out:
+            # 理论上 handler 总是会通过 _send_response 填充 out；如果没有，则记录一条日志帮助排查
+            try:
+                logger.warning(
+                    "[ZeroMQ IPC] no response generated for request_type=%s from=%s req_id=%s",
+                    str(request_type),
+                    str(from_plugin),
+                    str(request_id),
+                )
+            except Exception:
+                pass
             return {"type": "PLUGIN_TO_PLUGIN_RESPONSE", "to_plugin": from_plugin, "request_id": request_id, "result": None, "error": "no response"}
         return out
     

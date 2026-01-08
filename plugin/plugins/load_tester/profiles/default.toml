@@ -3,8 +3,8 @@
 
 [load_test]
 enable = true
-auto_start = true
+auto_start = false
 # Slightly longer duration and more worker threads for user profile
 # to demonstrate override without touching plugin metadata.
 duration_seconds = 5
-worker_threads = 2
+worker_threads = 1

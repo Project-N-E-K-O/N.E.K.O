@@ -829,6 +829,290 @@ class LoadTestPlugin(NekoPluginBase):
         return ok(data=stats)
 
     @plugin_entry(
+        id="bench_plugin_event_qps",
+        name="Bench Plugin Event QPS",
+        description=(
+            "Load test a target plugin custom event via ctx.trigger_plugin_event, "
+            "measuring target QPS vs achieved QPS and errors, plus latency stats."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "target_plugin_id": {"type": "string"},
+                "event_type": {"type": "string"},
+                "event_id": {"type": "string"},
+                "args": {"type": "object", "default": {}},
+                "duration_seconds": {"type": "number", "default": 5.0},
+                "qps_targets": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "default": [10.0, 50.0, 100.0],
+                },
+                "timeout": {"type": "number", "default": 2.0},
+            },
+            "required": ["target_plugin_id", "event_type", "event_id"],
+        },
+    )
+    def bench_plugin_event_qps(
+        self,
+        target_plugin_id: str,
+        event_type: str,
+        event_id: str,
+        args: Optional[Dict[str, Any]] = None,
+        duration_seconds: float = 5.0,
+        qps_targets: Optional[list[float]] = None,
+        timeout: float = 2.0,
+        **_: Any,
+    ):
+        if args is None:
+            args = {}
+
+        # Run the actual pressure test in a background worker thread so that
+        # sync plugin-to-plugin calls do not execute directly inside the
+        # command-loop handler context (avoids sync_call_in_handler warnings).
+        result_box: list[Dict[str, Any]] = []
+
+        def _run() -> None:
+            nonlocal args
+
+            # Ensure args is a plain dict for trigger_plugin_event type expectations
+            local_args: Dict[str, Any] = dict(args) if args else {}
+
+            # Normalize qps_targets
+            targets: list[float] = []
+            if isinstance(qps_targets, list):
+                for t in qps_targets:
+                    try:
+                        v = float(t)
+                    except Exception:
+                        continue
+                    if v > 0:
+                        targets.append(v)
+            if not targets:
+                targets = [10.0, 50.0, 100.0]
+
+            all_latencies_ms: list[float] = []
+            total_calls = 0
+            total_errors = 0
+            peak_qps = 0.0
+            table_rows: list[Dict[str, Any]] = []
+
+            for tq in targets:
+                interval = 1.0 / float(tq)
+                dur = float(duration_seconds)
+                start = time.perf_counter()
+                end_time = start + dur
+                calls = 0
+                errors = 0
+                latencies_ms: list[float] = []
+
+                while True:
+                    if self._stop_event.is_set():
+                        break
+                    now = time.perf_counter()
+                    if now >= end_time:
+                        break
+
+                    t0 = time.perf_counter()
+                    try:
+                        self.ctx.trigger_plugin_event(
+                            target_plugin_id=target_plugin_id,
+                            event_type=event_type,
+                            event_id=event_id,
+                            args=local_args,
+                            timeout=float(timeout),
+                        )
+                    except Exception as e:
+                        errors += 1
+                        try:
+                            self.logger.warning(
+                                "[load_tester] bench_plugin_event_qps call failed: {}", e
+                            )
+                        except Exception:
+                            pass
+                    dt_ms = (time.perf_counter() - t0) * 1000.0
+                    latencies_ms.append(float(dt_ms))
+                    calls += 1
+
+                    # Simple open-loop pacing towards target QPS
+                    now2 = time.perf_counter()
+                    sleep_for = interval - (now2 - now)
+                    if sleep_for > 0:
+                        try:
+                            time.sleep(sleep_for)
+                        except Exception:
+                            pass
+
+                elapsed = time.perf_counter() - start
+                achieved_qps = float(calls) / elapsed if elapsed > 0 else 0.0
+                peak_qps_local = achieved_qps
+
+                nonlocal_peak = peak_qps  # for mypy type hints; actual update below
+                del nonlocal_peak
+                if achieved_qps > peak_qps:
+                    peak_qps_val = achieved_qps
+                else:
+                    peak_qps_val = peak_qps
+
+                # Update outer aggregates
+                peak_qps_nonlocal = peak_qps_val
+                del peak_qps_nonlocal
+                # Simpler: recompute after loop; we keep track via list instead
+
+                total_calls += calls
+                total_errors += errors
+                all_latencies_ms.extend(latencies_ms)
+
+                error_rate = float(errors) / float(calls) if calls > 0 else 0.0
+
+                # Per-target latency stats (ms)
+                if latencies_ms:
+                    durs = sorted(latencies_ms)
+                    n = len(durs)
+                    avg = sum(durs) / float(n)
+
+                    def _pct(p: float) -> float:
+                        if not durs:
+                            return 0.0
+                        if len(durs) == 1:
+                            return float(durs[0])
+                        idx = round((float(p) / 100.0) * (len(durs) - 1))
+                        if idx < 0:
+                            idx = 0
+                        if idx >= len(durs):
+                            idx = len(durs) - 1
+                        return float(durs[idx])
+
+                    per_latency = {
+                        "latency_min_ms": float(durs[0]),
+                        "latency_max_ms": float(durs[-1]),
+                        "latency_avg_ms": float(avg),
+                        "latency_p50_ms": float(_pct(50.0)),
+                        "latency_p95_ms": float(_pct(95.0)),
+                        "latency_p99_ms": float(_pct(99.0)),
+                    }
+                else:
+                    per_latency = {}
+
+                table_rows.append(
+                    {
+                        "target_qps": float(tq),
+                        "achieved_qps": achieved_qps,
+                        "calls": int(calls),
+                        "errors": int(errors),
+                        "error_rate": error_rate,
+                        **per_latency,
+                    }
+                )
+
+            # Recompute peak_qps from table_rows to avoid nonlocal mutation complexity
+            if table_rows:
+                peak_qps_val = max(float(r.get("achieved_qps", 0.0)) for r in table_rows)
+            else:
+                peak_qps_val = 0.0
+
+            # Overall latency stats across all targets
+            if all_latencies_ms:
+                durs_all = sorted(all_latencies_ms)
+                n_all = len(durs_all)
+                avg_all = sum(durs_all) / float(n_all)
+
+                def _pct_all(p: float) -> float:
+                    if not durs_all:
+                        return 0.0
+                    if len(durs_all) == 1:
+                        return float(durs_all[0])
+                    idx = round((float(p) / 100.0) * (len(durs_all) - 1))
+                    if idx < 0:
+                        idx = 0
+                    if idx >= len(durs_all):
+                        idx = len(durs_all) - 1
+                    return float(durs_all[idx])
+
+                overall_latency: Dict[str, Any] = {
+                    "latency_samples": int(len(durs_all)),
+                    "latency_min_ms": float(durs_all[0]),
+                    "latency_max_ms": float(durs_all[-1]),
+                    "latency_avg_ms": float(avg_all),
+                    "latency_p50_ms": float(_pct_all(50.0)),
+                    "latency_p95_ms": float(_pct_all(95.0)),
+                    "latency_p99_ms": float(_pct_all(99.0)),
+                }
+            else:
+                overall_latency = {"latency_samples": 0}
+
+            result = {
+                "test": "bench_plugin_event_qps",
+                "target_plugin_id": target_plugin_id,
+                "event_type": event_type,
+                "event_id": event_id,
+                "timeout": float(timeout),
+                "duration_seconds_per_target": float(duration_seconds),
+                "qps_table": table_rows,
+                "peak_qps": float(peak_qps_val),
+                "total_calls": int(total_calls),
+                "total_errors": int(total_errors),
+                **overall_latency,
+            }
+
+            # Standalone summary log (do not integrate into run_all_benchmarks)
+            try:
+                headers = ["target_qps", "achieved_qps", "calls", "errors", "error_rate"]
+                rows = []
+                for row in table_rows:
+                    rows.append(
+                        [
+                            f"{row.get('target_qps', 0.0):.1f}",
+                            f"{row.get('achieved_qps', 0.0):.1f}",
+                            str(row.get("calls", 0)),
+                            str(row.get("errors", 0)),
+                            f"{row.get('error_rate', 0.0):.3f}",
+                        ]
+                    )
+
+                cols = list(zip(*[headers, *rows], strict=True)) if rows else [headers]
+                widths = [max(len(str(x)) for x in col) for col in cols]
+
+                def _line(parts: list[str]) -> str:
+                    return " | ".join(p.ljust(w) for p, w in zip(parts, widths, strict=True))
+
+                sep = "-+-".join("-" * w for w in widths)
+                table = "\n".join([
+                    _line(headers),
+                    sep,
+                    *[_line(r) for r in rows],
+                ])
+                self.logger.info("[load_tester] bench_plugin_event_qps summary:\n{}", table)
+            except Exception:
+                pass
+
+            result_box.append(result)
+
+        worker = threading.Thread(target=_run, daemon=True)
+        worker.start()
+        worker.join()
+
+        if not result_box:
+            # In case the worker failed very early; return an empty result shell
+            return ok(
+                data={
+                    "test": "bench_plugin_event_qps",
+                    "target_plugin_id": target_plugin_id,
+                    "event_type": event_type,
+                    "event_id": event_id,
+                    "timeout": float(timeout),
+                    "duration_seconds_per_target": float(duration_seconds),
+                    "qps_table": [],
+                    "peak_qps": 0.0,
+                    "total_calls": 0,
+                    "total_errors": 0,
+                    "latency_samples": 0,
+                }
+            )
+
+        return ok(data=result_box[0])
+
+    @plugin_entry(
         id="bench_buslist_reload",
         name="Bench BusList Reload",
         description="Measure QPS of BusList.reload() after filter and binary ops (+/-)",
