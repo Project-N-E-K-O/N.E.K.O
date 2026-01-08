@@ -197,8 +197,11 @@ class PluginContext:
         """
         zmq_client = getattr(self, "_zmq_ipc_client", None)
         if zmq_client is None and bool(fast_mode):
+            # ZeroMQ IPC 被显式关闭时，queue 是默认路径，这里仅以 debug 级别提示 fast_mode 已被忽略
             try:
-                self.logger.warning("[PluginContext] fast_mode requested but ZeroMQ IPC is disabled; falling back to queue")
+                self.logger.debug(
+                    "[PluginContext] fast_mode requested but ZeroMQ IPC is disabled; using queue-based push_message",
+                )
             except Exception:
                 pass
 

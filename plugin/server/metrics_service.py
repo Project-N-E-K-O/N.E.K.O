@@ -18,6 +18,8 @@ except ImportError:
 
 from loguru import logger
 
+from plugin.settings import PLUGIN_LOG_SERVER_DEBUG
+
 from plugin.core.state import state
 from plugin.server.utils import now_iso
 
@@ -90,11 +92,13 @@ class MetricsCollector:
                 
                 plugin_hosts = self._plugin_hosts_getter()
                 if not plugin_hosts:
-                    logger.debug("No plugin hosts available for metrics collection")
+                    if PLUGIN_LOG_SERVER_DEBUG:
+                        logger.debug("No plugin hosts available for metrics collection")
                     await asyncio.sleep(self.interval)
                     continue
                 
-                logger.debug(f"Collecting metrics for {len(plugin_hosts)} plugins: {list(plugin_hosts.keys())}")
+                if PLUGIN_LOG_SERVER_DEBUG:
+                    logger.debug(f"Collecting metrics for {len(plugin_hosts)} plugins: {list(plugin_hosts.keys())}")
                 for plugin_id, host in plugin_hosts.items():
                     try:
                         metrics = await self._collect_plugin_metrics(plugin_id, host)
@@ -106,16 +110,20 @@ class MetricsCollector:
                                 # 只保留最近 MAX_HISTORY_SIZE 条记录
                                 if len(self._metrics_history[plugin_id]) > self.MAX_HISTORY_SIZE:
                                     self._metrics_history[plugin_id].pop(0)
-                                logger.debug(f"Successfully collected and stored metrics for plugin {plugin_id}")
+                                if PLUGIN_LOG_SERVER_DEBUG:
+                                    logger.debug(f"Successfully collected and stored metrics for plugin {plugin_id}")
                         else:
                             # 记录为什么没有收集到指标
                             process = getattr(host, "process", None)
                             if not process:
-                                logger.debug(f"No process object for plugin {plugin_id}")
+                                if PLUGIN_LOG_SERVER_DEBUG:
+                                    logger.debug(f"No process object for plugin {plugin_id}")
                             elif not process.is_alive():
-                                logger.debug(f"Process for plugin {plugin_id} is not alive (pid: {process.pid if process else 'N/A'})")
+                                if PLUGIN_LOG_SERVER_DEBUG:
+                                    logger.debug(f"Process for plugin {plugin_id} is not alive (pid: {process.pid if process else 'N/A'})")
                             else:
-                                logger.debug(f"Failed to collect metrics for plugin {plugin_id} (process alive but collection returned None)")
+                                if PLUGIN_LOG_SERVER_DEBUG:
+                                    logger.debug(f"Failed to collect metrics for plugin {plugin_id} (process alive but collection returned None)")
                     except Exception as e:
                         logger.warning(f"Exception while collecting metrics for plugin {plugin_id}: {e}", exc_info=True)
                 
@@ -129,7 +137,8 @@ class MetricsCollector:
     async def _collect_plugin_metrics(self, plugin_id: str, host: Any) -> Optional[PluginMetrics]:
         """收集单个插件的性能指标"""
         if not PSUTIL_AVAILABLE:
-            logger.debug(f"psutil not available, cannot collect metrics for {plugin_id}")
+            if PLUGIN_LOG_SERVER_DEBUG:
+                logger.debug(f"psutil not available, cannot collect metrics for {plugin_id}")
             return None
         
         try:
@@ -140,7 +149,8 @@ class MetricsCollector:
                 return None
             
             if not process.is_alive():
-                logger.debug(f"Process for plugin {plugin_id} is not alive (pid: {process.pid})")
+                if PLUGIN_LOG_SERVER_DEBUG:
+                    logger.debug(f"Process for plugin {plugin_id} is not alive (pid: {process.pid})")
                 return None
             
             pid = process.pid
@@ -154,7 +164,8 @@ class MetricsCollector:
                 memory_percent = ps_process.memory_percent()
                 num_threads = ps_process.num_threads()
             except psutil.NoSuchProcess:
-                logger.debug(f"Process {pid} for plugin {plugin_id} no longer exists (NoSuchProcess)")
+                if PLUGIN_LOG_SERVER_DEBUG:
+                    logger.debug(f"Process {pid} for plugin {plugin_id} no longer exists (NoSuchProcess)")
                 return None
             except psutil.AccessDenied:
                 logger.warning(f"Access denied when collecting metrics for plugin {plugin_id} (pid: {pid})")
@@ -169,7 +180,8 @@ class MetricsCollector:
                     try:
                         pending_requests = comm_manager.get_pending_requests_count()
                     except Exception as e:
-                        logger.debug(f"Failed to get pending requests count for {plugin_id}: {e}")
+                        if PLUGIN_LOG_SERVER_DEBUG:
+                            logger.debug(f"Failed to get pending requests count for {plugin_id}: {e}")
                         pending_requests = 0
                 else:
                     # 向后兼容：如果方法不存在，使用防御性访问
