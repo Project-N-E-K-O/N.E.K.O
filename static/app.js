@@ -1034,20 +1034,29 @@ function init_app() {
             // 先显示选择提示
             showStatusToast(window.t ? window.t('app.deviceSelected', { device: deviceName }) : `已选择 ${deviceName}`, 3000);
             // 延迟重启录音，让用户看到选择提示
-            
-            // 只停止麦克风流，不关闭后端 session（修复：切换麦克风时避免 "Session not initialized" 错误）
-            if (stream) {
-                stream.getTracks().forEach(track => track.stop());
-                stream = null;
-            }
-            // 清理 AudioContext（但不要关闭，保持就绪状态）
-            if (audioContext && audioContext.state !== 'closed') {
-                audioContext.close();
-                audioContext = null;
+
+            // 防止并发切换导致状态混乱
+            if (window._isSwitchingMicDevice) return;
+            window._isSwitchingMicDevice = true;
+            try {
+                // 只停止本地麦克风采集，不关闭后端 session（避免 "Session not initialized"）
+                if (stream instanceof MediaStream) {
+                    stream.getTracks().forEach(track => track.stop());
+                    stream = null;
+                }
+
+                // 清理 AudioContext 本地资源
+                if (audioContext) {
+                    if (audioContext.state !== 'closed') {
+                        await audioContext.close().catch((e) => console.warn('AudioContext close 失败:', e));
+                    }
+                    audioContext = null;
+                }
                 workletNode = null;
+            } finally {
+                window._isSwitchingMicDevice = false;
             }
-            // 注意：不发送 pause_session给后端，保持 session 运行
-            
+
             // 等待一小段时间，确保选择提示显示出来
             await new Promise(resolve => setTimeout(resolve, 500));
             if (wasRecording) {
