@@ -1099,14 +1099,26 @@ function init_app() {
                 isRecording = false;
                 window.isRecording = false;
 
-                // 移除录音按钮的UI状态
-                const recordBtn = document.getElementById('recordButton');
-                if (recordBtn) {
-                    recordBtn.classList.remove('recording', 'active');
-                }
-                const stopRecordBtn = document.getElementById('stopRecordButton');
-                if (stopRecordBtn) {
-                    stopRecordBtn.classList.remove('recording', 'active');
+                // 重置所有按钮状态（参考 stopMicCapture 逻辑）
+                micButton.classList.remove('recording', 'active');
+                muteButton.classList.remove('recording', 'active');
+                screenButton.classList.remove('active');
+                if (stopButton) stopButton.classList.remove('recording', 'active');
+
+                // 同步浮动按钮状态
+                syncFloatingMicButtonState(false);
+                syncFloatingScreenButtonState(false);
+
+                // 启用/禁用按钮状态
+                micButton.disabled = false;
+                muteButton.disabled = true;
+                screenButton.disabled = true;
+                if (stopButton) stopButton.disabled = true;
+
+                // 显示文本输入区域
+                const textInputArea = document.getElementById('text-input-area');
+                if (textInputArea) {
+                    textInputArea.classList.remove('hidden');
                 }
 
                 // 清理资源
@@ -1130,6 +1142,12 @@ function init_app() {
                 // 通知后端
                 if (socket.readyState === WebSocket.OPEN) {
                     socket.send(JSON.stringify({ action: 'pause_session' }));
+                }
+
+                // 如果主动搭话/主动视觉已启用，重置并开始定时
+                if (proactiveChatEnabled || proactiveVisionEnabled) {
+                    lastUserInputTime = Date.now();
+                    resetProactiveChatBackoff();
                 }
 
                 window._isSwitchingMicDevice = false;
@@ -2621,7 +2639,10 @@ function init_app() {
 
     // 停止录屏
     function stopScreening() {
-        if (videoSenderInterval) clearInterval(videoSenderInterval);
+        if (videoSenderInterval) {
+            clearInterval(videoSenderInterval);
+            videoSenderInterval = null;
+        }
     }
 
     // 停止录音
