@@ -1034,7 +1034,20 @@ function init_app() {
             // 先显示选择提示
             showStatusToast(window.t ? window.t('app.deviceSelected', { device: deviceName }) : `已选择 ${deviceName}`, 3000);
             // 延迟重启录音，让用户看到选择提示
-            await stopMicCapture();
+            
+            // 只停止麦克风流，不关闭后端 session（修复：切换麦克风时避免 "Session not initialized" 错误）
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                stream = null;
+            }
+            // 清理 AudioContext（但不要关闭，保持就绪状态）
+            if (audioContext && audioContext.state !== 'closed') {
+                audioContext.close();
+                audioContext = null;
+                workletNode = null;
+            }
+            // 注意：不发送 pause_session给后端，保持 session 运行
+            
             // 等待一小段时间，确保选择提示显示出来
             await new Promise(resolve => setTimeout(resolve, 500));
             if (wasRecording) {
