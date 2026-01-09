@@ -19,6 +19,9 @@ function generateId(): string {
 export default function ChatContainer() {
   const t = useT();
 
+  /** 是否缩小 */
+  const [collapsed, setCollapsed] = useState(false);
+
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: "sys-1",
@@ -31,14 +34,12 @@ export default function ChatContainer() {
   const [pendingScreenshots, setPendingScreenshots] =
     useState<PendingScreenshot[]>([]);
 
-
   function handleSendText(text: string) {
     if (!text.trim() && pendingScreenshots.length === 0) return;
 
     const newMessages: ChatMessage[] = [];
     let timestamp = Date.now();
 
-    // 先发送 pending 图片
     pendingScreenshots.forEach((p) => {
       newMessages.push({
         id: generateId(),
@@ -48,7 +49,6 @@ export default function ChatContainer() {
       });
     });
 
-    // 再发送文本
     if (text.trim()) {
       newMessages.push({
         id: generateId(),
@@ -62,11 +62,9 @@ export default function ChatContainer() {
     setPendingScreenshots([]);
   }
 
-  // 📸 Take Photo → Chrome 屏幕分享 → 进入 pending
   async function handleScreenshot() {
-    // 检查浏览器支持
     if (!navigator.mediaDevices?.getDisplayMedia) {
-      alert(tOrDefault(t, "chat.screenshot.unsupported", "您的浏览器不支持截图功能"));
+      alert("您的浏览器不支持截图");
       return;
     }
 
@@ -81,63 +79,54 @@ export default function ChatContainer() {
       video.srcObject = stream;
       await video.play();
 
-      // 确保视频尺寸有效
-      if (video.videoWidth === 0 || video.videoHeight === 0) {
-        throw new Error("Invalid video dimensions");
-      }
-
-      let canvas = document.createElement("canvas");
+      const canvas = document.createElement("canvas");
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
 
-
       const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        throw new Error("Failed to get canvas context");
-      }
+      if (!ctx) return;
 
       ctx.drawImage(video, 0, 0);
-
-      // 限制图片大小以避免内存问题
-      const maxWidth = 1920;
-      if (canvas.width > maxWidth) {
-        const scale = maxWidth / canvas.width;
-        const resized = document.createElement("canvas");
-        resized.width = maxWidth;
-        resized.height = canvas.height * scale;
-        const resizedCtx = resized.getContext("2d");
-        if (resizedCtx) {
-          resizedCtx.drawImage(canvas, 0, 0, resized.width, resized.height);
-          canvas = resized;
-        }
-      }
       const base64 = canvas.toDataURL("image/png");
 
       setPendingScreenshots((prev) => [
         ...prev,
         { id: generateId(), base64 },
       ]);
-    } catch (error) {
-      console.error("Screenshot failed:", error);
-      // 用户取消不需要提示
-      if (error instanceof Error && error.name !== "NotAllowedError") {
-        alert(
-          tOrDefault(
-            t,
-            "chat.screenshot.error",
-            "截图失败，请重试"
-          )
-        );
-      }
     } finally {
-      // 清理资源
-      if (stream) {
-        stream.getTracks().forEach((track) => track.stop());
-      }
+      if (stream) stream.getTracks().forEach((t) => t.stop());
       video.srcObject = null;
     }
   }
 
+  /** ================= 缩小态：左下角圆形按钮 ================= */
+  if (collapsed) {
+    return (
+      <div
+        onClick={() => setCollapsed(false)}
+        style={{
+          position: "fixed",
+          left: 16,
+          bottom: 16,
+          width: 56,
+          height: 56,
+          borderRadius: "50%",
+          background: "#44b7fe",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: "pointer",
+          boxShadow: "0 8px 24px rgba(68,183,254,0.5)",
+          zIndex: 9999,
+        }}
+        aria-label="打开聊天"
+      >
+        <span style={{ color: "#fff", fontSize: 22 }}>💬</span>
+      </div>
+    );
+  }
+
+  /** ================= 展开态：自适应聊天框 ================= */
   return (
     <div
       style={{
@@ -145,15 +134,15 @@ export default function ChatContainer() {
         flexDirection: "column",
         width: "100%",
         maxWidth: 400,
-        height: 500,
+        height: 520,
         margin: "0 auto",
         background: "rgba(255, 255, 255, 0.65)",
         backdropFilter: "saturate(180%) blur(20px)",
         WebkitBackdropFilter: "saturate(180%) blur(20px)",
-        borderRadius: 8,
+        borderRadius: 12,
         border: "1px solid rgba(255, 255, 255, 0.18)",
         boxShadow:
-          "0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.04)",
+          "0 4px 12px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.12)",
         overflow: "hidden",
       }}
     >
@@ -161,19 +150,36 @@ export default function ChatContainer() {
       <div
         style={{
           height: 48,
-          background: "rgba(255, 255, 255, 0.5)",
-          borderBottom: "1px solid rgba(0, 0, 0, 0.06)",
           display: "flex",
           alignItems: "center",
-          padding: "0 16px",
+          justifyContent: "space-between",
+          padding: "0 12px 0 16px",
+          borderBottom: "1px solid rgba(0,0,0,0.06)",
+          background: "rgba(255,255,255,0.5)",
+          flexShrink: 0,
         }}
       >
-        <span style={{ fontSize: "0.875rem", fontWeight: 600 }}>
-          {tOrDefault(t, "chat.title", "💬 Chat")}
-        </span>
+        <span style={{ fontWeight: 600 }}>💬 Chat</span>
+
+        <button
+          onClick={() => setCollapsed(true)}
+          aria-label="最小化聊天"
+          style={{
+            width: 28,
+            height: 28,
+            borderRadius: "50%",
+            border: "none",
+            background: "#e6f4ff",
+            color: "#44b7fe",
+            cursor: "pointer",
+            fontSize: 16,
+            lineHeight: "28px",
+          }}
+        >
+          —
+        </button>
       </div>
 
-      {/* 聊天区 */}
       <div style={{ flex: 1, overflowY: "auto" }}>
         <MessageList messages={messages} />
       </div>
