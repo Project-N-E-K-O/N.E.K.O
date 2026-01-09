@@ -1035,6 +1035,10 @@ function init_app() {
             showStatusToast(window.t ? window.t('app.deviceSelected', { device: deviceName }) : `已选择 ${deviceName}`, 3000);
             // 延迟重启录音，让用户看到选择提示
 
+            // 保存需要恢复的状态
+            const shouldRestartProactiveVision = proactiveVisionEnabled && isRecording;
+            const shouldRestartScreening = videoSenderInterval !== undefined && videoSenderInterval !== null;
+
             // 防止并发切换导致状态混乱
             if (window._isSwitchingMicDevice) {
                 console.warn('设备切换中,请稍后再试');
@@ -1065,29 +1069,73 @@ function init_app() {
                     audioContext = null;
                 }
                 workletNode = null;
+
+                // 等待一小段时间，确保选择提示显示出来
+                await new Promise(resolve => setTimeout(resolve, 500));
+
+                if (wasRecording) {
+                    await startMicCapture();
+
+                    // 重启屏幕共享（如果之前正在共享）
+                    if (shouldRestartScreening) {
+                        if (typeof startScreenSharing === 'function') {
+                            try {
+                                await startScreenSharing();
+                            } catch (e) {
+                                console.warn('重启屏幕共享失败:', e);
+                            }
+                        }
+                    }
+                    // 重启主动视觉（如果之前已启用）
+                    if (shouldRestartProactiveVision) {
+                        startProactiveVisionDuringSpeech();
+                    }
+                }
             } catch (e) {
                 console.error('切换麦克风设备失败:', e);
                 showStatusToast(window.t ? window.t('app.deviceSwitchFailed') : '设备切换失败', 3000);
+
+                // 完整清理：重置状态
+                isRecording = false;
+                window.isRecording = false;
+
+                // 移除录音按钮的UI状态
+                const recordBtn = document.getElementById('recordButton');
+                if (recordBtn) {
+                    recordBtn.classList.remove('recording', 'active');
+                }
+                const stopRecordBtn = document.getElementById('stopRecordButton');
+                if (stopRecordBtn) {
+                    stopRecordBtn.classList.remove('recording', 'active');
+                }
+
+                // 清理资源
+                stopScreening();
+                stopSilenceDetection();
+                inputAnalyser = null;
+
+                if (stream instanceof MediaStream) {
+                    stream.getTracks().forEach(track => track.stop());
+                    stream = null;
+                }
+
+                if (audioContext) {
+                    if (audioContext.state !== 'closed') {
+                        await audioContext.close().catch((err) => console.warn('AudioContext close 失败:', err));
+                    }
+                    audioContext = null;
+                }
+                workletNode = null;
+
+                // 通知后端
+                if (socket.readyState === WebSocket.OPEN) {
+                    socket.send(JSON.stringify({ action: 'pause_session' }));
+                }
+
                 window._isSwitchingMicDevice = false;
                 return;
             } finally {
                 window._isSwitchingMicDevice = false;
-            }
-
-            // 等待一小段时间，确保选择提示显示出来
-            await new Promise(resolve => setTimeout(resolve, 500));
-
-            if (wasRecording) {
-                try {
-                    await startMicCapture();
-                } catch (startError) {
-                    console.error('重启麦克风失败:', startError);
-                    showStatusToast(window.t ? window.t('app.micRestartFailed') : '麦克风重启失败，请重试', 3000);
-                    // 清理失败状态，通知用户
-                    if (socket.readyState === WebSocket.OPEN) {
-                        socket.send(JSON.stringify({ action: 'pause_session' }));
-                    }
-                }
             }
         } else {
             // 如果不在录音，直接显示选择提示
