@@ -1036,15 +1036,27 @@ function init_app() {
             // 延迟重启录音，让用户看到选择提示
 
             // 防止并发切换导致状态混乱
-            if (window._isSwitchingMicDevice) return;
+            if (window._isSwitchingMicDevice) {
+                console.warn('设备切换中,请稍后再试');
+                showStatusToast(window.t ? window.t('app.deviceSwitching') : '设备切换中...', 2000);
+                return;
+            }
             window._isSwitchingMicDevice = true;
+
             try {
-                // 只停止本地麦克风采集，不关闭后端 session（避免 "Session not initialized"）
+                // 停止语音期间主动视觉定时
+                stopProactiveVisionDuringSpeech();
+                // 停止屏幕共享
+                stopScreening();
+                // 停止静音检测
+                stopSilenceDetection();
+                // 清理输入analyser
+                inputAnalyser = null;
+                // 停止所有轨道
                 if (stream instanceof MediaStream) {
                     stream.getTracks().forEach(track => track.stop());
                     stream = null;
                 }
-
                 // 清理 AudioContext 本地资源
                 if (audioContext) {
                     if (audioContext.state !== 'closed') {
@@ -1053,14 +1065,29 @@ function init_app() {
                     audioContext = null;
                 }
                 workletNode = null;
+            } catch (e) {
+                console.error('切换麦克风设备失败:', e);
+                showStatusToast(window.t ? window.t('app.deviceSwitchFailed') : '设备切换失败', 3000);
+                window._isSwitchingMicDevice = false;
+                return;
             } finally {
                 window._isSwitchingMicDevice = false;
             }
 
             // 等待一小段时间，确保选择提示显示出来
             await new Promise(resolve => setTimeout(resolve, 500));
+
             if (wasRecording) {
-                await startMicCapture();
+                try {
+                    await startMicCapture();
+                } catch (startError) {
+                    console.error('重启麦克风失败:', startError);
+                    showStatusToast(window.t ? window.t('app.micRestartFailed') : '麦克风重启失败，请重试', 3000);
+                    // 清理失败状态，通知用户
+                    if (socket.readyState === WebSocket.OPEN) {
+                        socket.send(JSON.stringify({ action: 'pause_session' }));
+                    }
+                }
             }
         } else {
             // 如果不在录音，直接显示选择提示
