@@ -16,6 +16,9 @@ conflicts = [
     ">=0.4.0",
 ]
 
+[plugin_runtime]
+auto_start = true
+
 [debug.timer]
 enable = false
 interval_seconds = 3

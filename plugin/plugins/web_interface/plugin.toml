@@ -19,6 +19,9 @@ untested = ">=0.3.0,<0.4.0"
 # 明确冲突的范围（命中即拒绝加载）
 conflicts = ["<0.1.0", ">=0.4.0"]
 
+[plugin_runtime]
+auto_start = true
+
 [[plugin.dependency]]
 id = "timer_service"
 recommended = ">=1.0.0,<2.0.0"

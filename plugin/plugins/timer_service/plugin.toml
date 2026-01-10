@@ -12,4 +12,6 @@ entry = "plugins.timer_service.main:TimerServicePlugin"
 [plugin.sdk]
 supported = ">=0.1.0"
 recommended = ">=0.1.0"
+[plugin_runtime]
+auto_start = true
 

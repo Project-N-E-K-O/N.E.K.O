@@ -1,10 +1,8 @@
-# User profile for load_tester plugin.
-# Only overrides a subset of [load_test] fields; other fields fall back to plugin.toml defaults.
-
 [load_test]
 enable = true
 auto_start = false
-# Slightly longer duration and more worker threads for user profile
-# to demonstrate override without touching plugin metadata.
 duration_seconds = 5
 worker_threads = 1
+
+[plugin_runtime]
+auto_start = false

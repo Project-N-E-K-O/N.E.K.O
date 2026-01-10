@@ -16,6 +16,9 @@ conflicts = [
     ">=0.4.0",
 ]
 
+[plugin_runtime]
+auto_start = true
+
 [load_test]
 enable = false
 duration_seconds = 10
