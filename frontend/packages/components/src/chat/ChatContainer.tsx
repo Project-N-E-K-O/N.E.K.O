@@ -26,7 +26,11 @@ export default function ChatContainer() {
     {
       id: "sys-1",
       role: "system",
-      content: tOrDefault(t, "chat.welcome", "欢迎来到 React 聊天系统（迁移 Demo）"),
+      content: tOrDefault(
+        t,
+        "chat.welcome",
+        "欢迎来到 React 聊天系统（迁移 Demo）"
+      ),
       createdAt: Date.now(),
     },
   ]);
@@ -64,7 +68,13 @@ export default function ChatContainer() {
 
   async function handleScreenshot() {
     if (!navigator.mediaDevices?.getDisplayMedia) {
-      alert("您的浏览器不支持截图");
+      alert(
+        tOrDefault(
+          t,
+          "chat.screenshot.unsupported",
+          "您的浏览器不支持截图"
+        )
+      );
       return;
     }
 
@@ -119,7 +129,7 @@ export default function ChatContainer() {
           boxShadow: "0 8px 24px rgba(68,183,254,0.5)",
           zIndex: 9999,
         }}
-        aria-label="打开聊天"
+        aria-label={tOrDefault(t, "chat.expand", "打开聊天")}
       >
         <span style={{ color: "#fff", fontSize: 22 }}>💬</span>
       </div>
@@ -163,7 +173,7 @@ export default function ChatContainer() {
 
         <button
           onClick={() => setCollapsed(true)}
-          aria-label="最小化聊天"
+          aria-label={tOrDefault(t, "chat.minimize", "最小化聊天")}
           style={{
             width: 28,
             height: 28,
