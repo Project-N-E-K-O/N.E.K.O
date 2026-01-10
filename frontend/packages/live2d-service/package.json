@@ -4,6 +4,9 @@
   "type": "module",
   "private": true,
   "description": "跨平台 Live2D Service：统一 Web(PixiJS+Cubism) / React Native(原生Cubism) / 旧 HTML/JS 的控制接口",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "main": "index.ts",
   "types": "index.ts",
   "react-native": "index.native.ts",
@@ -29,6 +32,9 @@
   ],
   "author": "",
   "license": "MIT",
-  "dependencies": {}
+  "dependencies": {},
+  "devDependencies": {
+    "vite": "^7.1.11"
+  }
 }
 

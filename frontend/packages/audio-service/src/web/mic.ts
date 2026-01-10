@@ -1,4 +1,4 @@
-import { TinyEmitter } from "../emitter";
+import { TinyEmitter } from "@project_neko/common";
 import type { AudioServiceEvents, RealtimeClientLike } from "../types";
 import { getAudioProcessorWorkletUrl } from "./workletModule";
 

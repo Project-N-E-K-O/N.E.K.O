@@ -1,4 +1,5 @@
-import { TinyEmitter } from "./emitter";
+import { TinyEmitter } from "@project_neko/common";
+import type { Unsubscribe } from "@project_neko/common";
 import type {
   RealtimeClientOptions,
   RealtimeConnectionState,

@@ -2,6 +2,13 @@
 
 本目录用于文档化 `@N.E.K.O/frontend/packages/*` 的 **多端（React Web / legacy HTML+JS / React Native）兼容设计**，以及以 `@N.E.K.O/frontend/packages` 为**源**，向 `@N.E.K.O.-RN/packages` **迁移/同步代码**的维护流程。
 
+### 最新更新（2026-01-10）
+
+- **类型导入修复** - 修复 `@project_neko/common` 的 `Unsubscribe` 类型导入错误 → [详情](./SUMMARY-type-import-fix.md)
+- **Chat 组件同步** - 从 N.E.K.O.-RN 同步 ChatContainer 和 ChatInput 组件 → [详情](./SYNC-chat-components-2026-01-10.md)
+- **TinyEmitter 重构** - 将事件发射器提取到 common 包 → [详情](./SUMMARY-tinyemitter-refactor.md)
+- **Metro/Vite 依赖修复** - 修复多端开发环境依赖问题 → [详情](./SUMMARY-metro-vite-dependency-fix.md)
+
 ### 文档归属与同步策略（与 N.E.K.O.-RN 的关系）
 
 - **公共部分（Single Source of Truth）**：统一维护在本目录（`@N.E.K.O/docs/frontend`）。

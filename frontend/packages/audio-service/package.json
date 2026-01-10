@@ -4,6 +4,9 @@
   "type": "module",
   "private": true,
   "description": "跨平台音频服务：麦克风输入 + 实时语音播放（WebAudio / React Native PCMStream 适配）",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "main": "index.ts",
   "types": "index.ts",
   "react-native": "index.native.ts",
@@ -30,6 +33,9 @@
   ],
   "author": "",
   "license": "MIT",
-  "dependencies": {}
+  "dependencies": {},
+  "devDependencies": {
+    "vite": "^7.1.11"
+  }
 }
 

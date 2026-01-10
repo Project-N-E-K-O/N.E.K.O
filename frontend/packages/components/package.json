@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "description": "可复用的 Web 组件库",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "main": "index.ts",
   "types": "index.ts",
   "scripts": {
@@ -19,6 +22,9 @@
   "peerDependencies": {
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "vite": "^7.1.11"
   }
 }
 

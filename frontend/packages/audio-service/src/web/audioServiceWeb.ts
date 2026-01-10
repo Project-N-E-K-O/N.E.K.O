@@ -1,4 +1,4 @@
-import { TinyEmitter } from "../emitter";
+import { TinyEmitter } from "@project_neko/common";
 import { SpeechInterruptController } from "../protocol";
 import type { AudioService, AudioServiceEvents, AudioServiceState, NekoWsIncomingJson, RealtimeClientLike } from "../types";
 import { WebAudioChunkPlayer } from "./player";
@@ -204,15 +204,21 @@ export function createWebAudioService(args: {
       // ignore
     }
 
-    await Promise.all([
-      sessionP,
-      mic.start({
-        microphoneDeviceId: opts?.microphoneDeviceId ?? null,
-        targetSampleRate,
-      }),
-    ]);
-
-    setState("recording");
+    try {
+      await Promise.all([
+        sessionP,
+        mic.start({
+          microphoneDeviceId: opts?.microphoneDeviceId ?? null,
+          targetSampleRate,
+        }),
+      ]);
+      setState("recording");
+    } catch (e) {
+      // 确保失败时清理麦克风资源（即使 mic.start 仍在进行中）
+      await mic.stop();
+      setState("error");
+      throw e;
+    }
   };
 
   const stopVoiceSession: AudioService["stopVoiceSession"] = async () => {

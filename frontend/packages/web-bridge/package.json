@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "description": "将 @project_neko 的组件与请求能力按需暴露到 window 的桥接层",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {
@@ -13,6 +16,9 @@
     "@project_neko/components": "0.1.0",
     "@project_neko/request": "0.1.0",
     "@project_neko/realtime": "0.1.0"
+  },
+  "devDependencies": {
+    "vite": "^7.1.11"
   }
 }
 

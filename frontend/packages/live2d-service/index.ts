@@ -16,7 +16,7 @@ export type {
 } from "./src/types";
 
 export { createLive2DService } from "./src/service";
-export { TinyEmitter } from "./src/emitter";
+
 
 export type { Live2DRuntime, Live2DParametersRuntime, TransformSnapshot, Rect } from "./src/runtime";
 

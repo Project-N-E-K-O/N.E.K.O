@@ -1,5 +1,5 @@
 import PCMStream from "react-native-pcm-stream";
-import { TinyEmitter } from "../emitter";
+import { TinyEmitter } from "@project_neko/common";
 import { SpeechInterruptController } from "../protocol";
 import type { AudioService, AudioServiceEvents, AudioServiceState, NekoWsIncomingJson, RealtimeClientLike } from "../types";
 
@@ -182,25 +182,27 @@ export function createNativeAudioService(args: {
     const timeoutMs = opts?.timeoutMs ?? 10_000;
     attachRecordingListeners();
 
-    // 先请求后端启动 session，再启动录音（也可以并行，但 native 端更倾向先确保会话就绪）
-    const sessionP = waitSessionStarted(timeoutMs);
     try {
-      args.client.sendJson({ action: "start_session", input_type: "audio" });
-    } catch (_e) {}
+      // 先请求后端启动 session，再启动录音（也可以并行，但 native 端更倾向先确保会话就绪）
+      const sessionP = waitSessionStarted(timeoutMs);
+      try {
+        args.client.sendJson({ action: "start_session", input_type: "audio" });
+      } catch (_e) {}
 
-    await sessionP;
+      await sessionP;
 
-    try {
+      // 让 PCMStream.startRecording 的错误传播到外部 catch（不在内部静默吞掉）
       PCMStream.startRecording(
         args.recordSampleRate ?? 48000,
         args.recordFrameSize ?? 1536,
         args.recordTargetRate ?? 16000
       );
-    } catch (_e) {
-      // ignore
-    }
 
-    setState("recording");
+      setState("recording");
+    } catch (e) {
+      setState("error");
+      throw e;
+    }
   };
 
   const stopVoiceSession: AudioService["stopVoiceSession"] = async () => {
