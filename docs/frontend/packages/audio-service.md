@@ -61,6 +61,80 @@
 
 #### Sync to N.E.K.O.-RN Notes
 
-- 该包当前尚未纳入 `N.E.K.O.-RN/scripts/sync-neko-packages.js` 默认 mapping（需要时再扩展）。
-- 若纳入同步，目标目录应视为生成物；RN 侧 `react-native-pcm-stream` 属于本仓库独立原生模块，不应被上游覆盖。
+- ✅ **已同步**：该包已通过 `sync-neko-packages.js` 同步到 N.E.K.O.-RN
+- **目标路径**：`N.E.K.O.-RN/packages/project-neko-audio-service/`
+- **Metro 配置**：已在 `metro.config.js` 的 `extraNodeModules` 中配置路径映射
+- **依赖声明**：`package.json` 中已显式声明 `vite` devDependency（修复日期：2026-01-10）
+- RN 侧 `react-native-pcm-stream` 属于本仓库独立原生模块，不应被上游覆盖。
+
+---
+
+#### Error Handling（错误处理规范）
+
+##### 状态机与错误状态
+
+- `AudioServiceState` 包含 `error` 状态，用于标识服务异常。
+- `startVoiceSession()` 在会话启动或设备初始化失败时，会：
+  1. 设置 `state = "error"`（触发 `state` 事件）
+  2. 抛出原始异常（包含详细错误信息）
+
+##### 常见失败场景
+
+- **Web 端**：
+  - 麦克风权限拒绝（`NotAllowedError`）
+  - 设备不可用（`NotFoundError`）
+  - AudioWorklet 加载失败
+  - getUserMedia 其他错误
+- **Native 端**：
+  - 录音权限拒绝
+  - PCMStream 模块未就绪
+  - 原生模块调用失败
+- **通用**：
+  - 会话启动超时（默认 10s）
+  - WebSocket 连接断开
+
+##### 处理建议
+
+1. **调用方职责**：捕获异常并根据 `error.message` 或 `error.name` 向用户展示友好提示。
+2. **状态监听**：监听 `state` 事件可实时更新 UI（例如显示"启动中" → "录音中" → "错误"）。
+3. **资源清理**：进入 `error` 状态后，建议调用 `detach()` 清理资源，或重新调用 `attach()` + `startVoiceSession()` 重试。
+
+##### 示例代码
+
+```typescript
+const audioService = createWebAudioService({ client: realtimeClient });
+
+// 监听状态变化
+audioService.on("state", ({ state }) => {
+  console.log("[audio] state:", state);
+  if (state === "error") {
+    // UI 显示错误提示
+  }
+});
+
+try {
+  await audioService.startVoiceSession({ timeoutMs: 10_000 });
+  console.log("[audio] 语音会话已启动");
+} catch (e: any) {
+  console.error("[audio] startVoiceSession failed:", e);
+  
+  // 根据错误类型给出友好提示
+  let message = "启动语音失败";
+  if (e?.name === "NotAllowedError") {
+    message = "麦克风权限被拒绝，请在浏览器设置中允许访问麦克风";
+  } else if (e?.name === "NotFoundError") {
+    message = "未检测到麦克风设备";
+  } else if (e?.message?.includes("timeout")) {
+    message = "会话启动超时，请检查网络连接";
+  } else if (e?.message) {
+    message = `启动失败：${e.message}`;
+  }
+  
+  // 显示 Toast 或 Alert
+  showToast(message, 3500);
+  
+  // 清理资源（可选，视业务逻辑决定是否重试）
+  audioService.detach();
+}
+```
 

@@ -17,12 +17,12 @@ export interface Live2DSettingsState {
 }
 
 export interface Live2DAgentState {
-  statusText?: string;
+  statusText: string;
   master: boolean;
   keyboard: boolean;
   mcp: boolean;
   userPlugin: boolean;
-  disabled?: Partial<Record<Live2DAgentToggleId, boolean>>;
+  disabled: Partial<Record<Live2DAgentToggleId, boolean>>;
 }
 
 export type Live2DSettingsMenuId =
@@ -238,25 +238,25 @@ export function Live2DRightToolbar({
         id: "master" as const,
         label: tOrDefault(t, "settings.toggles.agentMaster", "Agent总开关"),
         checked: agent.master,
-        disabled: Boolean(agent.disabled?.master),
+        disabled: Boolean(agent.disabled.master),
       },
       {
         id: "keyboard" as const,
         label: tOrDefault(t, "settings.toggles.keyboardControl", "键鼠控制"),
         checked: agent.keyboard,
-        disabled: Boolean(agent.disabled?.keyboard),
+        disabled: Boolean(agent.disabled.keyboard),
       },
       {
         id: "mcp" as const,
         label: tOrDefault(t, "settings.toggles.mcpTools", "MCP工具"),
         checked: agent.mcp,
-        disabled: Boolean(agent.disabled?.mcp),
+        disabled: Boolean(agent.disabled.mcp),
       },
       {
         id: "userPlugin" as const,
         label: tOrDefault(t, "settings.toggles.userPlugin", "用户插件"),
         checked: agent.userPlugin,
-        disabled: Boolean(agent.disabled?.userPlugin),
+        disabled: Boolean(agent.disabled.userPlugin),
       },
     ],
     [agent, t]
@@ -412,7 +412,7 @@ export function Live2DRightToolbar({
                 role="menu"
               >
                 <div id="live2d-agent-status" className="live2d-right-toolbar__status">
-                  {agent.statusText || tOrDefault(t, "settings.toggles.checking", "查询中...")}
+                  {agent.statusText}
                 </div>
                 {agentToggleRows.map((x) => (
                   <label

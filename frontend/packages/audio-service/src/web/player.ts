@@ -1,4 +1,4 @@
-import { TinyEmitter } from "../emitter";
+import { TinyEmitter } from "@project_neko/common";
 import type { AudioServiceEvents, OggOpusStreamDecoder } from "../types";
 
 function isOggOpus(arrayBuffer: ArrayBuffer): boolean {
