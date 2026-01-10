@@ -109,11 +109,13 @@ export default function ChatContainer() {
     }
   }
 
-  /** ================= 缩小态：左下角圆形按钮 ================= */
+  /** ================= 缩小态：左下角按钮（button，支持键盘） ================= */
   if (collapsed) {
     return (
-      <div
+      <button
+        type="button"
         onClick={() => setCollapsed(false)}
+        aria-label={tOrDefault(t, "chat.expand", "打开聊天")}
         style={{
           position: "fixed",
           left: 16,
@@ -128,15 +130,16 @@ export default function ChatContainer() {
           cursor: "pointer",
           boxShadow: "0 8px 24px rgba(68,183,254,0.5)",
           zIndex: 9999,
+          border: "none",
+          padding: 0,
         }}
-        aria-label={tOrDefault(t, "chat.expand", "打开聊天")}
       >
         <span style={{ color: "#fff", fontSize: 22 }}>💬</span>
-      </div>
+      </button>
     );
   }
 
-  /** ================= 展开态：自适应聊天框 ================= */
+  /** ================= 展开态：聊天框 ================= */
   return (
     <div
       style={{
@@ -169,9 +172,12 @@ export default function ChatContainer() {
           flexShrink: 0,
         }}
       >
-        <span style={{ fontWeight: 600 }}>💬 Chat</span>
+        <span style={{ fontWeight: 600 }}>
+          {tOrDefault(t, "chat.title", "💬 Chat")}
+        </span>
 
         <button
+          type="button"
           onClick={() => setCollapsed(true)}
           aria-label={tOrDefault(t, "chat.minimize", "最小化聊天")}
           style={{
