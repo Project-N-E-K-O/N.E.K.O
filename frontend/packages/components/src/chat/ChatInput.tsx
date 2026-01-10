@@ -4,7 +4,7 @@ import type { PendingScreenshot } from "./types";
 
 interface Props {
   onSend: (text: string) => void;
-  onTakePhoto?: () => void;
+  onTakePhoto?: () => Promise<void>;
   pendingScreenshots?: PendingScreenshot[];
   setPendingScreenshots?: React.Dispatch<
     React.SetStateAction<PendingScreenshot[]>
@@ -22,14 +22,17 @@ export default function ChatInput({
   const t = useT();
   const [value, setValue] = useState("");
 
-  function handleSend() {
+  async function handleSend() {
+    if (!value.trim() && (!pendingScreenshots || pendingScreenshots.length === 0))
+      return;
     onSend(value);
     setValue("");
   }
 
   async function handleTakePhoto() {
     if (pendingScreenshots && pendingScreenshots.length >= MAX_SCREENSHOTS) {
-      alert(
+      // TODO: replace with toast / notification
+      console.warn(
         tOrDefault(
           t,
           "chat.screenshot.maxReached",
@@ -38,8 +41,10 @@ export default function ChatInput({
       );
       return;
     }
-    onTakePhoto?.();
+
+    await onTakePhoto?.();
   }
+
 
 
   return (
@@ -65,7 +70,6 @@ export default function ChatInput({
               marginBottom: 4,
             }}
           >
-
             <span>
               {tOrDefault(
                 t,
@@ -73,9 +77,10 @@ export default function ChatInput({
                 `📸 待发送截图 (${pendingScreenshots.length})`
               )}
             </span>
+
             <button
               onClick={() => setPendingScreenshots?.([])}
-              aria-label={tOrDefault(t, "chat.screenshot.clearAll", "清除所有截图")}
+              aria-label={tOrDefault(t, "chat.screenshot.clearAll", "清除全部截图")}
               style={{
                 background: "#ff4d4f",
                 color: "#fff",
@@ -85,7 +90,6 @@ export default function ChatInput({
                 cursor: "pointer",
               }}
             >
-
               {tOrDefault(t, "chat.screenshot.clearAll", "清除全部")}
             </button>
           </div>
@@ -109,7 +113,7 @@ export default function ChatInput({
                       prev.filter((x) => x.id !== p.id)
                     )
                   }
-                  aria-label={tOrDefault(t, "chat.screenshot.remove", "删除此截图")}
+                  aria-label={tOrDefault(t, "chat.screenshot.remove", "删除截图")}
                   style={{
                     position: "absolute",
                     top: -6,
@@ -137,28 +141,32 @@ export default function ChatInput({
       <div
         style={{
           display: "flex",
-          alignItems: "center",
+          alignItems: "stretch", // ⭐关键：左右同高
           gap: 8,
         }}
       >
+        {/* Textarea */}
         <textarea
           value={value}
           onChange={(e) => setValue(e.target.value)}
+          aria-label={tOrDefault(t, "chat.input.label", "聊天输入框")}
           placeholder={tOrDefault(
             t,
             "chat.input.placeholder",
             "Text chat mode...Press Enter to send, Shift+Enter for new line"
           )}
-          rows={2}
           style={{
             flex: 1,
             resize: "none",
             border: "1px solid rgba(0,0,0,0.1)",
             borderRadius: 6,
-            padding: "8px 12px",
+            padding: "10px 12px",
             background: "rgba(255,255,255,0.8)",
             fontFamily: "inherit",
             fontSize: "0.9rem",
+            lineHeight: "1.4",
+            height: "100%",          // ⭐关键
+            boxSizing: "border-box", // ⭐关键
           }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -168,31 +176,39 @@ export default function ChatInput({
           }}
         />
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {/* Buttons */}
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+            minHeight: "4.5rem", // 更响应式
+          }}
+        >
           <button
             onClick={handleSend}
             style={{
+              flex: 1, // ⭐均分高度
               background: "#44b7fe",
               color: "white",
               border: "none",
               borderRadius: 6,
-              padding: "6px 16px",
               cursor: "pointer",
               fontSize: "0.9rem",
             }}
           >
-            {tOrDefault(t, "chat.send", "Send")}
+            {tOrDefault(t, "chat.send", "发送")}
           </button>
 
           {onTakePhoto && (
             <button
-              onClick={onTakePhoto}
+              onClick={handleTakePhoto}
               style={{
+                flex: 1, // ⭐均分高度
                 background: "rgba(255,255,255,0.8)",
                 border: "1px solid #44b7fe",
                 color: "#44b7fe",
                 borderRadius: 6,
-                padding: "4px 8px",
                 cursor: "pointer",
                 fontSize: "0.8rem",
               }}
