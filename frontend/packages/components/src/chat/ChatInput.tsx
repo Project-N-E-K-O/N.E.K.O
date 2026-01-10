@@ -4,7 +4,7 @@ import type { PendingScreenshot } from "./types";
 
 interface Props {
   onSend: (text: string) => void;
-  onTakePhoto?: () => void;
+  onTakePhoto?: () => Promise<void>;
   pendingScreenshots?: PendingScreenshot[];
   setPendingScreenshots?: React.Dispatch<
     React.SetStateAction<PendingScreenshot[]>
@@ -22,16 +22,16 @@ export default function ChatInput({
   const t = useT();
   const [value, setValue] = useState("");
 
-  function handleSend() {
+  async function handleSend() {
     if (!value.trim() && (!pendingScreenshots || pendingScreenshots.length === 0))
       return;
     onSend(value);
     setValue("");
   }
 
-  function handleTakePhoto() {
+  async function handleTakePhoto() {
     if (pendingScreenshots && pendingScreenshots.length >= MAX_SCREENSHOTS) {
-      // TODO: replace alert with toast / notification
+      // TODO: replace with toast / notification
       console.warn(
         tOrDefault(
           t,
@@ -41,7 +41,8 @@ export default function ChatInput({
       );
       return;
     }
-    onTakePhoto?.();
+
+    await onTakePhoto?.();
   }
 
 
