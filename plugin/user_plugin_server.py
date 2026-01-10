@@ -873,6 +873,13 @@ class ConfigTomlRenderRequest(BaseModel):
     config: dict
 
 
+class ProfileConfigUpsertRequest(BaseModel):
+    """Profile 配置创建/更新请求"""
+
+    config: dict
+    make_active: Optional[bool] = None
+
+
 def validate_config_updates(plugin_id: str, updates: dict) -> None:
     """
     验证配置更新的安全性
@@ -1160,6 +1167,159 @@ async def update_plugin_config_toml_endpoint(plugin_id: str, payload: ConfigToml
         raise
     except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
         raise handle_plugin_error(e, f"Failed to update TOML config for plugin {plugin_id}", 500) from e
+
+
+@app.get("/plugin/{plugin_id}/config/base")
+async def get_plugin_base_config_endpoint(plugin_id: str, _: str = require_admin):
+    """获取插件基础配置（直接来自 plugin.toml，不包含 profile 叠加）。
+
+    - GET /plugin/{plugin_id}/config/base
+    - 需要管理员验证码（Bearer Token）
+    """
+
+    try:
+        from plugin.server.config_service import load_plugin_base_config
+
+        return load_plugin_base_config(plugin_id)
+    except HTTPException:
+        raise
+    except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
+        raise handle_plugin_error(e, f"Failed to get base config for plugin {plugin_id}", 500) from e
+    except Exception as e:
+        logger.exception(f"Failed to get base config for plugin {plugin_id}: Unexpected error type")
+        raise handle_plugin_error(e, f"Failed to get base config for plugin {plugin_id}", 500) from e
+
+
+@app.get("/plugin/{plugin_id}/config/profiles")
+async def get_plugin_profiles_state_endpoint(plugin_id: str, _: str = require_admin):
+    """获取插件 profile 配置的整体状态（profiles.toml + 文件存在性）。
+
+    - GET /plugin/{plugin_id}/config/profiles
+    - 需要管理员验证码（Bearer Token）
+    """
+
+    try:
+        from plugin.server.config_service import get_plugin_profiles_state
+
+        return get_plugin_profiles_state(plugin_id)
+    except HTTPException:
+        raise
+    except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
+        raise handle_plugin_error(e, f"Failed to get profiles state for plugin {plugin_id}", 500) from e
+    except Exception as e:
+        logger.exception(f"Failed to get profiles state for plugin {plugin_id}: Unexpected error type")
+        raise handle_plugin_error(e, f"Failed to get profiles state for plugin {plugin_id}", 500) from e
+
+
+@app.get("/plugin/{plugin_id}/config/profiles/{profile_name}")
+async def get_plugin_profile_config_endpoint(plugin_id: str, profile_name: str, _: str = require_admin):
+    """获取指定 profile 的配置内容（单个 profile TOML 解析结果）。
+
+    - GET /plugin/{plugin_id}/config/profiles/{profile_name}
+    - 需要管理员验证码（Bearer Token）
+    """
+
+    try:
+        from plugin.server.config_service import get_plugin_profile_config
+
+        return get_plugin_profile_config(plugin_id, profile_name)
+    except HTTPException:
+        raise
+    except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
+        raise handle_plugin_error(e, f"Failed to get profile '{profile_name}' for plugin {plugin_id}", 500) from e
+    except Exception as e:
+        logger.exception(
+            "Failed to get profile '%s' for plugin %s: Unexpected error type",
+            profile_name,
+            plugin_id,
+        )
+        raise handle_plugin_error(e, f"Failed to get profile '{profile_name}' for plugin {plugin_id}", 500) from e
+
+
+@app.put("/plugin/{plugin_id}/config/profiles/{profile_name}")
+async def upsert_plugin_profile_config_endpoint(
+    plugin_id: str,
+    profile_name: str,
+    payload: ProfileConfigUpsertRequest,
+    _: str = require_admin,
+):
+    """创建或更新指定 profile 配置，并自动维护 profiles.toml。
+
+    - PUT /plugin/{plugin_id}/config/profiles/{profile_name}
+    - 需要管理员验证码（Bearer Token）
+    - 禁止在 profile 中定义顶层 [plugin] 段
+    """
+
+    try:
+        from plugin.server.config_service import upsert_plugin_profile_config
+
+        return upsert_plugin_profile_config(
+            plugin_id=plugin_id,
+            profile_name=profile_name,
+            config=payload.config,
+            make_active=payload.make_active,
+        )
+    except HTTPException:
+        raise
+    except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
+        raise handle_plugin_error(e, f"Failed to upsert profile '{profile_name}' for plugin {plugin_id}", 500) from e
+    except Exception as e:
+        logger.exception(
+            "Failed to upsert profile '%s' for plugin %s: Unexpected error type",
+            profile_name,
+            plugin_id,
+        )
+        raise handle_plugin_error(e, f"Failed to upsert profile '{profile_name}' for plugin {plugin_id}", 500) from e
+
+
+@app.delete("/plugin/{plugin_id}/config/profiles/{profile_name}")
+async def delete_plugin_profile_config_endpoint(plugin_id: str, profile_name: str, _: str = require_admin):
+    """删除指定 profile 的配置映射（不会强制删除 profile 文件本身）。
+
+    - DELETE /plugin/{plugin_id}/config/profiles/{profile_name}
+    - 需要管理员验证码（Bearer Token）
+    """
+
+    try:
+        from plugin.server.config_service import delete_plugin_profile_config
+
+        return delete_plugin_profile_config(plugin_id, profile_name)
+    except HTTPException:
+        raise
+    except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
+        raise handle_plugin_error(e, f"Failed to delete profile '{profile_name}' for plugin {plugin_id}", 500) from e
+    except Exception as e:
+        logger.exception(
+            "Failed to delete profile '%s' for plugin %s: Unexpected error type",
+            profile_name,
+            plugin_id,
+        )
+        raise handle_plugin_error(e, f"Failed to delete profile '{profile_name}' for plugin {plugin_id}", 500) from e
+
+
+@app.post("/plugin/{plugin_id}/config/profiles/{profile_name}/activate")
+async def set_plugin_active_profile_endpoint(plugin_id: str, profile_name: str, _: str = require_admin):
+    """设置当前激活的 profile（更新 profiles.toml 中的 active 字段）。
+
+    - POST /plugin/{plugin_id}/config/profiles/{profile_name}/activate
+    - 需要管理员验证码（Bearer Token）
+    """
+
+    try:
+        from plugin.server.config_service import set_plugin_active_profile
+
+        return set_plugin_active_profile(plugin_id, profile_name)
+    except HTTPException:
+        raise
+    except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
+        raise handle_plugin_error(e, f"Failed to set active profile '{profile_name}' for plugin {plugin_id}", 500) from e
+    except Exception as e:
+        logger.exception(
+            "Failed to set active profile '%s' for plugin %s: Unexpected error type",
+            profile_name,
+            plugin_id,
+        )
+        raise handle_plugin_error(e, f"Failed to set active profile '{profile_name}' for plugin {plugin_id}", 500) from e
     except Exception as e:
         logger.exception(f"Failed to update TOML config for plugin {plugin_id}: Unexpected error type")
         raise handle_plugin_error(e, f"Failed to update TOML config for plugin {plugin_id}", 500) from e

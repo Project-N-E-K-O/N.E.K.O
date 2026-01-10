@@ -16,12 +16,6 @@ conflicts = [
     ">=0.4.0",
 ]
 
-[plugin.config_profiles]
-active = "default"
-
-[plugin.config_profiles.files]
-default = "profiles/default.toml"
-
 [load_test]
 enable = false
 duration_seconds = 10

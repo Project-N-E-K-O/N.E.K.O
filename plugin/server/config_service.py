@@ -218,6 +218,37 @@ def load_plugin_config(plugin_id: str) -> Dict[str, Any]:
         ) from e
 
 
+def load_plugin_base_config(plugin_id: str) -> Dict[str, Any]:
+    if tomllib is None:
+        raise HTTPException(
+            status_code=500,
+            detail="TOML library not available"
+        )
+
+    config_path = get_plugin_config_path(plugin_id)
+
+    try:
+        with open(config_path, "rb") as f:
+            config_data = tomllib.load(f)
+
+        stat = config_path.stat()
+
+        return {
+            "plugin_id": plugin_id,
+            "config": config_data,
+            "last_modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            "config_path": str(config_path),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to load base config for plugin {plugin_id}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load base config: {str(e)}",
+        ) from e
+
+
 def load_plugin_config_toml(plugin_id: str) -> Dict[str, Any]:
     """加载插件配置(TOML 原文)"""
     config_path = get_plugin_config_path(plugin_id)
@@ -276,6 +307,61 @@ def _resolve_profile_path(path_str: str, base_dir: Path) -> Optional[Path]:
         return None
 
 
+def _load_profiles_cfg_from_file(
+    plugin_id: str,
+    config_path: Path,
+) -> Optional[Dict[str, Any]]:
+    base_dir = config_path.parent
+    profiles_path = base_dir / "profiles.toml"
+
+    if not profiles_path.exists():
+        return None
+
+    if tomllib is None:
+        logger.warning(
+            "Plugin %s: TOML library not available; cannot load profiles.toml",
+            plugin_id,
+        )
+        return None
+
+    try:
+        with profiles_path.open("rb") as pf:
+            data = tomllib.load(pf)
+    except Exception as e:
+        logger.warning(
+            "Plugin %s: failed to load profiles.toml from %s: %s; falling back to plugin.config_profiles",
+            plugin_id,
+            profiles_path,
+            e,
+        )
+        return None
+
+    if not isinstance(data, dict):
+        logger.warning(
+            "Plugin %s: profiles.toml at %s is not a TOML table at root; got %r; falling back to plugin.config_profiles",
+            plugin_id,
+            profiles_path,
+            type(data).__name__,
+        )
+        return None
+
+    profiles_cfg = data.get("config_profiles")
+    if not isinstance(profiles_cfg, dict):
+        logger.warning(
+            "Plugin %s: 'config_profiles' table not found or invalid in profiles.toml at %s; falling back to plugin.config_profiles",
+            plugin_id,
+            profiles_path,
+        )
+        return None
+
+    logger.info(
+        "Plugin %s: using profiles.toml at %s for config_profiles; plugin.toml [plugin.config_profiles] will be ignored",
+        plugin_id,
+        profiles_path,
+    )
+    return profiles_cfg
+
+
 def _apply_user_config_profiles(
     *, plugin_id: str, base_config: Dict[str, Any], config_path: Path
 ) -> Dict[str, Any]:
@@ -299,13 +385,19 @@ def _apply_user_config_profiles(
     if not isinstance(base_config, dict):
         return base_config
 
-    plugin_section = base_config.get("plugin")
-    if not isinstance(plugin_section, dict):
-        return base_config
+    profiles_cfg: Optional[Dict[str, Any]] = _load_profiles_cfg_from_file(
+        plugin_id,
+        config_path,
+    )
 
-    profiles_cfg = plugin_section.get("config_profiles")
-    if not isinstance(profiles_cfg, dict):
-        return base_config
+    if profiles_cfg is None:
+        plugin_section = base_config.get("plugin")
+        if not isinstance(plugin_section, dict):
+            return base_config
+
+        profiles_cfg = plugin_section.get("config_profiles")
+        if not isinstance(profiles_cfg, dict):
+            return base_config
 
     # 解析当前激活的 profile 名称，支持环境变量覆盖
     active_name: Optional[str] = None
@@ -418,6 +510,432 @@ def _apply_user_config_profiles(
     )
 
     return merged
+
+
+def get_plugin_profiles_state(plugin_id: str) -> Dict[str, Any]:
+    if tomllib is None:
+        raise HTTPException(status_code=500, detail="TOML library not available")
+
+    config_path = get_plugin_config_path(plugin_id)
+    base_dir = config_path.parent
+    profiles_path = base_dir / "profiles.toml"
+
+    profiles_cfg = _load_profiles_cfg_from_file(plugin_id, config_path)
+
+    active_name: Optional[str] = None
+    files_info: Dict[str, Any] = {}
+
+    if isinstance(profiles_cfg, dict):
+        raw_active = profiles_cfg.get("active")
+        if isinstance(raw_active, str):
+            active_name = raw_active.strip() or None
+
+        files_map = profiles_cfg.get("files")
+        if isinstance(files_map, dict):
+            for name, raw_path in files_map.items():
+                if not isinstance(name, str):
+                    continue
+                if not isinstance(raw_path, str):
+                    continue
+                resolved = _resolve_profile_path(raw_path, base_dir)
+                exists = bool(resolved and resolved.exists())
+                files_info[name] = {
+                    "path": raw_path,
+                    "resolved_path": str(resolved) if resolved is not None else None,
+                    "exists": exists,
+                }
+
+    return {
+        "plugin_id": plugin_id,
+        "profiles_path": str(profiles_path),
+        "profiles_exists": profiles_path.exists(),
+        "config_profiles": {
+            "active": active_name,
+            "files": files_info,
+        }
+        if profiles_cfg is not None
+        else None,
+    }
+
+
+def get_plugin_profile_config(plugin_id: str, profile_name: str) -> Dict[str, Any]:
+    if tomllib is None:
+        raise HTTPException(status_code=500, detail="TOML library not available")
+
+    if not profile_name:
+        raise HTTPException(status_code=400, detail="profile_name is required")
+
+    config_path = get_plugin_config_path(plugin_id)
+    base_dir = config_path.parent
+
+    profiles_cfg = _load_profiles_cfg_from_file(plugin_id, config_path)
+
+    raw_path: Optional[str] = None
+    if isinstance(profiles_cfg, dict):
+        files_map = profiles_cfg.get("files")
+        if isinstance(files_map, dict):
+            value = files_map.get(profile_name)
+            if isinstance(value, str) and value.strip():
+                raw_path = value
+
+    if raw_path is None:
+        raw_path = f"profiles/{profile_name}.toml"
+
+    profile_path = _resolve_profile_path(raw_path, base_dir)
+    resolved_str: Optional[str] = None
+    exists = False
+    cfg: Dict[str, Any] = {}
+
+    if profile_path is not None:
+        resolved_str = str(profile_path)
+        exists = profile_path.exists()
+        if exists:
+            try:
+                with profile_path.open("rb") as pf:
+                    data = tomllib.load(pf)
+                if isinstance(data, dict):
+                    cfg = data
+            except Exception as e:
+                logger.warning(
+                    "Plugin %s: failed to load profile %s at %s: %s",
+                    plugin_id,
+                    profile_name,
+                    profile_path,
+                    e,
+                )
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Failed to load profile '{profile_name}': {str(e)}",
+                ) from e
+
+    return {
+        "plugin_id": plugin_id,
+        "profile": {
+            "name": profile_name,
+            "path": raw_path,
+            "resolved_path": resolved_str,
+            "exists": exists,
+        },
+        "config": cfg,
+    }
+
+
+def upsert_plugin_profile_config(
+    plugin_id: str,
+    profile_name: str,
+    config: Dict[str, Any],
+    make_active: Optional[bool] = None,
+) -> Dict[str, Any]:
+    if tomllib is None or tomli_w is None:
+        raise HTTPException(status_code=500, detail="TOML library not available")
+
+    if not isinstance(config, dict):
+        raise HTTPException(status_code=400, detail="config must be an object")
+
+    if "plugin" in config:
+        raise HTTPException(
+            status_code=400,
+            detail="Profile config must not define top-level 'plugin' section.",
+        )
+
+    if not profile_name:
+        raise HTTPException(status_code=400, detail="profile_name is required")
+
+    with _config_update_locks_lock:
+        if plugin_id not in _config_update_locks:
+            _config_update_locks[plugin_id] = threading.Lock()
+        lock = _config_update_locks[plugin_id]
+
+    with lock:
+        config_path = get_plugin_config_path(plugin_id)
+        base_dir = config_path.parent
+        profiles_path = base_dir / "profiles.toml"
+
+        if profiles_path.exists():
+            try:
+                with profiles_path.open("rb") as pf:
+                    data = tomllib.load(pf)
+            except Exception as e:
+                logger.warning(
+                    "Plugin %s: failed to load profiles.toml from %s for write: %s",
+                    plugin_id,
+                    profiles_path,
+                    e,
+                )
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Failed to load profiles.toml: {str(e)}",
+                ) from e
+            if not isinstance(data, dict):
+                data = {}
+        else:
+            data = {}
+
+        profiles_cfg = data.get("config_profiles")
+        if not isinstance(profiles_cfg, dict):
+            profiles_cfg = {}
+
+        files_map = profiles_cfg.get("files")
+        if not isinstance(files_map, dict):
+            files_map = {}
+        profiles_cfg["files"] = files_map
+
+        raw_path = files_map.get(profile_name)
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            raw_path = f"profiles/{profile_name}.toml"
+            files_map[profile_name] = raw_path
+
+        if make_active or ("active" not in profiles_cfg or not profiles_cfg.get("active")):
+            profiles_cfg["active"] = profile_name
+
+        data["config_profiles"] = profiles_cfg
+
+        profile_path = _resolve_profile_path(raw_path, base_dir)
+        if profile_path is None:
+            raise HTTPException(status_code=400, detail="Invalid profile path")
+
+        try:
+            profile_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+        temp_fd_profile, temp_profile_path = tempfile.mkstemp(
+            suffix=".toml",
+            prefix=".profile_",
+            dir=str(profile_path.parent),
+        )
+        try:
+            with os.fdopen(temp_fd_profile, "wb") as temp_file:
+                tomli_w.dump(config, temp_file)
+                temp_file.flush()
+                os.fsync(temp_file.fileno())
+
+            os.replace(temp_profile_path, profile_path)
+        except Exception:
+            try:
+                if os.path.exists(temp_profile_path):
+                    os.unlink(temp_profile_path)
+            except Exception:
+                pass
+            raise
+
+        profiles_dir = profiles_path.parent
+        temp_fd_profiles, temp_profiles_path = tempfile.mkstemp(
+            suffix=".toml",
+            prefix=".profiles_",
+            dir=str(profiles_dir),
+        )
+        try:
+            with os.fdopen(temp_fd_profiles, "wb") as temp_file:
+                tomli_w.dump(data, temp_file)
+                temp_file.flush()
+                os.fsync(temp_file.fileno())
+
+            os.replace(temp_profiles_path, profiles_path)
+
+            try:
+                dir_fd = os.open(profiles_dir, os.O_DIRECTORY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except (AttributeError, OSError):
+                pass
+        except Exception:
+            try:
+                if os.path.exists(temp_profiles_path):
+                    os.unlink(temp_profiles_path)
+            except Exception:
+                pass
+            raise
+
+    return get_plugin_profile_config(plugin_id, profile_name)
+
+
+def delete_plugin_profile_config(plugin_id: str, profile_name: str) -> Dict[str, Any]:
+    if tomllib is None or tomli_w is None:
+        raise HTTPException(status_code=500, detail="TOML library not available")
+
+    if not profile_name:
+        raise HTTPException(status_code=400, detail="profile_name is required")
+
+    with _config_update_locks_lock:
+        if plugin_id not in _config_update_locks:
+            _config_update_locks[plugin_id] = threading.Lock()
+        lock = _config_update_locks[plugin_id]
+
+    with lock:
+        config_path = get_plugin_config_path(plugin_id)
+        base_dir = config_path.parent
+        profiles_path = base_dir / "profiles.toml"
+
+        if not profiles_path.exists():
+            return {
+                "plugin_id": plugin_id,
+                "profile": profile_name,
+                "removed": False,
+            }
+
+        try:
+            with profiles_path.open("rb") as pf:
+                data = tomllib.load(pf)
+        except Exception as e:
+            logger.warning(
+                "Plugin %s: failed to load profiles.toml from %s for delete: %s",
+                plugin_id,
+                profiles_path,
+                e,
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to load profiles.toml: {str(e)}",
+            ) from e
+
+        if not isinstance(data, dict):
+            data = {}
+
+        profiles_cfg = data.get("config_profiles")
+        if not isinstance(profiles_cfg, dict):
+            profiles_cfg = {}
+
+        files_map = profiles_cfg.get("files")
+        if not isinstance(files_map, dict):
+            files_map = {}
+        profiles_cfg["files"] = files_map
+
+        removed = False
+        raw_path: Optional[str] = None
+        if profile_name in files_map:
+            raw_path = files_map.pop(profile_name)
+            removed = True
+
+        active = profiles_cfg.get("active")
+        if isinstance(active, str) and active == profile_name:
+            profiles_cfg["active"] = None
+
+        data["config_profiles"] = profiles_cfg
+
+        profiles_dir = profiles_path.parent
+        temp_fd_profiles, temp_profiles_path = tempfile.mkstemp(
+            suffix=".toml",
+            prefix=".profiles_",
+            dir=str(profiles_dir),
+        )
+        try:
+            with os.fdopen(temp_fd_profiles, "wb") as temp_file:
+                tomli_w.dump(data, temp_file)
+                temp_file.flush()
+                os.fsync(temp_file.fileno())
+
+            os.replace(temp_profiles_path, profiles_path)
+
+            try:
+                dir_fd = os.open(profiles_dir, os.O_DIRECTORY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except (AttributeError, OSError):
+                pass
+        except Exception:
+            try:
+                if os.path.exists(temp_profiles_path):
+                    os.unlink(temp_profiles_path)
+            except Exception:
+                pass
+            raise
+
+    return {
+        "plugin_id": plugin_id,
+        "profile": profile_name,
+        "removed": removed,
+    }
+
+
+def set_plugin_active_profile(plugin_id: str, profile_name: str) -> Dict[str, Any]:
+    if tomllib is None or tomli_w is None:
+        raise HTTPException(status_code=500, detail="TOML library not available")
+
+    if not profile_name:
+        raise HTTPException(status_code=400, detail="profile_name is required")
+
+    with _config_update_locks_lock:
+        if plugin_id not in _config_update_locks:
+            _config_update_locks[plugin_id] = threading.Lock()
+        lock = _config_update_locks[plugin_id]
+
+    with lock:
+        config_path = get_plugin_config_path(plugin_id)
+        base_dir = config_path.parent
+        profiles_path = base_dir / "profiles.toml"
+
+        if not profiles_path.exists():
+            raise HTTPException(status_code=404, detail="profiles.toml not found")
+
+        try:
+            with profiles_path.open("rb") as pf:
+                data = tomllib.load(pf)
+        except Exception as e:
+            logger.warning(
+                "Plugin %s: failed to load profiles.toml from %s for set active: %s",
+                plugin_id,
+                profiles_path,
+                e,
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to load profiles.toml: {str(e)}",
+            ) from e
+
+        if not isinstance(data, dict):
+            data = {}
+
+        profiles_cfg = data.get("config_profiles")
+        if not isinstance(profiles_cfg, dict):
+            profiles_cfg = {}
+
+        files_map = profiles_cfg.get("files")
+        if not isinstance(files_map, dict):
+            files_map = {}
+        profiles_cfg["files"] = files_map
+
+        if profile_name not in files_map:
+            raise HTTPException(status_code=404, detail="profile not found in config_profiles.files")
+
+        profiles_cfg["active"] = profile_name
+        data["config_profiles"] = profiles_cfg
+
+        profiles_dir = profiles_path.parent
+        temp_fd_profiles, temp_profiles_path = tempfile.mkstemp(
+            suffix=".toml",
+            prefix=".profiles_",
+            dir=str(profiles_dir),
+        )
+        try:
+            with os.fdopen(temp_fd_profiles, "wb") as temp_file:
+                tomli_w.dump(data, temp_file)
+                temp_file.flush()
+                os.fsync(temp_file.fileno())
+
+            os.replace(temp_profiles_path, profiles_path)
+
+            try:
+                dir_fd = os.open(profiles_dir, os.O_DIRECTORY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except (AttributeError, OSError):
+                pass
+        except Exception:
+            try:
+                if os.path.exists(temp_profiles_path):
+                    os.unlink(temp_profiles_path)
+            except Exception:
+                pass
+            raise
+
+    return get_plugin_profiles_state(plugin_id)
 
 
 def replace_plugin_config(plugin_id: str, new_config: Dict[str, Any]) -> Dict[str, Any]:
