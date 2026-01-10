@@ -16,6 +16,11 @@
 
 ### 重要更新（2026-01-10）
 
+**类型导入修复（`@project_neko/common`）**：
+- 修复 `Unsubscribe` 类型导入导致的运行时错误
+- 使用 `import type` 明确区分类型导入和值导入
+- 详见：[类型导入修复文档](../FIX-type-import-from-common-2026-01-10.md)
+
 **Node.js 版本约束添加**：
 - 在所有相关 package.json 添加 `engines` 约束：`^20.19.0 || >=22.12.0`
 - 确保开发环境和 CI 使用与 Vite 7 兼容的 Node.js 版本
@@ -41,10 +46,20 @@
 
 ## 相关文档
 
+### 修复记录
+- [类型导入修复（@project_neko/common）](../FIX-type-import-from-common-2026-01-10.md)
 - [Node.js 版本约束添加](./engines-node-version-constraint.md)
-- [Audio Service 架构设计](./audio-service.md)
 - [Audio Service 错误处理修复](./audio-service-error-handling-fix.md)
 - [Metro 配置和 Vite 依赖修复总结](../SUMMARY-metro-vite-dependency-fix.md)
 - [Vite 安全漏洞修复（CVE-2025-62522）](./security-fix-vite-cve-2025-62522.md)
 - [Vite CVE 修复总结](./fix-summary-vite-cve.md)
+
+### 架构文档
+- [Audio Service 架构设计](./audio-service.md)
+- [Realtime/WebSocket 客户端](./realtime.md)
+- [通用工具库（Common）](./common.md)
+- [请求库（Request）](./request.md)
+- [组件库（Components）](./components.md)
+- [Live2D 服务](./live2d-service.md)
+- [Web-Only 边界说明](./web-only-boundaries.md)
 
