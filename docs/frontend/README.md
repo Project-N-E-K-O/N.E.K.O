@@ -17,4 +17,8 @@
 
 ### 目录导航
 
-- **Spec 规范（适合 Cursor 工作区）**：`./spec/README.md`\n  - Feature 模板：`./spec/template-feature-spec.md`\n  - Package 模板：`./spec/template-package-spec.md`\n- **Packages 文档（逐包说明）**：`./packages/README.md`\n
+- **Spec 规范（适合 Cursor 工作区）**：`./spec/README.md`
+  - Feature 模板：`./spec/template-feature-spec.md`
+  - Package 模板：`./spec/template-package-spec.md`
+- **Packages 文档（逐包说明）**：`./packages/README.md`
+
