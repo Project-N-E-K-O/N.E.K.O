@@ -29,9 +29,10 @@ export default function ChatInput({
     setValue("");
   }
 
-  async function handleTakePhoto() {
+  function handleTakePhoto() {
     if (pendingScreenshots && pendingScreenshots.length >= MAX_SCREENSHOTS) {
-      alert(
+      // TODO: replace alert with toast / notification
+      console.warn(
         tOrDefault(
           t,
           "chat.screenshot.maxReached",
@@ -42,6 +43,8 @@ export default function ChatInput({
     }
     onTakePhoto?.();
   }
+
+
 
   return (
     <div
@@ -109,6 +112,7 @@ export default function ChatInput({
                       prev.filter((x) => x.id !== p.id)
                     )
                   }
+                  aria-label={tOrDefault(t, "chat.screenshot.remove", "删除截图")}
                   style={{
                     position: "absolute",
                     top: -6,
