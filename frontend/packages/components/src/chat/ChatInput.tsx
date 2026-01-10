@@ -148,6 +148,7 @@ export default function ChatInput({
         <textarea
           value={value}
           onChange={(e) => setValue(e.target.value)}
+          aria-label={tOrDefault(t, "chat.input.label", "聊天输入框")}
           placeholder={tOrDefault(
             t,
             "chat.input.placeholder",
@@ -180,7 +181,7 @@ export default function ChatInput({
             display: "flex",
             flexDirection: "column",
             gap: 8,
-            minHeight: 72, // 或使用 minHeight: "4.5rem" 更响应式
+            minHeight: "4.5rem", // 更响应式
           }}
         >
           <button
