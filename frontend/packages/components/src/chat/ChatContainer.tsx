@@ -94,7 +94,10 @@ export default function ChatContainer() {
       canvas.height = video.videoHeight;
 
       const ctx = canvas.getContext("2d");
-      if (!ctx) return;
+      if (!ctx) {
+        alert(tOrDefault(t, "chat.screenshot.failed", "截图失败"));
+        return;
+      }
 
       ctx.drawImage(video, 0, 0);
       const base64 = canvas.toDataURL("image/png");
@@ -104,7 +107,7 @@ export default function ChatContainer() {
         { id: generateId(), base64 },
       ]);
     } finally {
-      if (stream) stream.getTracks().forEach((t) => t.stop());
+      if (stream) stream.getTracks().forEach((track) => track.stop());
       video.srcObject = null;
     }
   }

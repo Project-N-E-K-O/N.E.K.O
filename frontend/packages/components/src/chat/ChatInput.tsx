@@ -76,6 +76,7 @@ export default function ChatInput({
 
             <button
               onClick={() => setPendingScreenshots?.([])}
+              aria-label={tOrDefault(t, "chat.screenshot.remove", "删除此截图")}
               style={{
                 background: "#ff4d4f",
                 color: "#fff",
@@ -175,7 +176,7 @@ export default function ChatInput({
             display: "flex",
             flexDirection: "column",
             gap: 8,
-            height: 72, // ⭐定义“标准高度”
+            minHeight: 72, // 或使用 minHeight: "4.5rem" 更响应式
           }}
         >
           <button
