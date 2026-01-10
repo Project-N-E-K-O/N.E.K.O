@@ -6,3 +6,4 @@ worker_threads = 1
 
 [plugin_runtime]
 auto_start = false
+enabled = false

@@ -243,50 +243,6 @@ def _plugin_process_runner(
         ctx._entry_map = entry_map
         ctx._instance = instance
 
-        def _is_plugin_auto_start_enabled() -> bool:
-            """Determine whether this plugin should run auto-start timers/custom events.
-
-            Reads plugin_runtime.auto_start from the *effective* plugin config,
-            which already applies profiles and other overlays via the main process
-            PLUGIN_CONFIG_GET handler. Falls back to True on any error.
-            """
-
-            try:
-                cfg_resp = ctx.get_own_config(timeout=5.0)
-            except Exception as e:  # pragma: no cover - defensive, best-effort only
-                try:
-                    logger.warning(
-                        "Plugin {}: failed to load own config for auto_start check; defaulting to True: {}",
-                        plugin_id,
-                        e,
-                    )
-                except Exception:
-                    pass
-                return True
-
-            config_obj: Any = None
-            if isinstance(cfg_resp, dict):
-                config_obj = cfg_resp.get("config")
-            if not isinstance(config_obj, dict):
-                return True
-
-            runtime_cfg = config_obj.get("plugin_runtime")
-            if not isinstance(runtime_cfg, dict):
-                return True
-
-            val = runtime_cfg.get("auto_start")
-            if isinstance(val, bool):
-                return val
-            if isinstance(val, str):
-                v = val.strip().lower()
-                if v in ("1", "true", "yes", "on"):  # pragma: no cover - string forms
-                    return True
-                if v in ("0", "false", "no", "off"):
-                    return False
-
-            # Any other type or value: default to True to preserve current behaviour.
-            return True
-
         # 生命周期：startup
         lifecycle_events = events_by_type.get("lifecycle", {})
         startup_fn = lifecycle_events.get("startup")
@@ -305,9 +261,6 @@ def _plugin_process_runner(
                 logger.exception(error_msg)
                 # 记录错误但不中断进程启动
                 # 如果启动失败是致命的，可以在这里 raise PluginLifecycleError
-
-        # 读取是否允许本插件运行 auto_start 相关逻辑
-        auto_start_enabled = _is_plugin_auto_start_enabled()
 
         # 定时任务：timer auto_start interval
         def _run_timer_interval(fn, interval_seconds: int, fn_name: str, stop_event: threading.Event):
@@ -329,24 +282,23 @@ def _plugin_process_runner(
 
         timer_events = events_by_type.get("timer", {})
         timer_stop_events: list[threading.Event] = []
-        if auto_start_enabled:
-            for eid, fn in timer_events.items():
-                meta = getattr(fn, EVENT_META_ATTR, None)
-                if not meta or not getattr(meta, "auto_start", False):
-                    continue
-                mode = getattr(meta, "extra", {}).get("mode")
-                if mode == "interval":
-                    seconds = getattr(meta, "extra", {}).get("seconds", 0)
-                    if seconds > 0:
-                        timer_stop_event = threading.Event()
-                        timer_stop_events.append(timer_stop_event)
-                        t = threading.Thread(
-                            target=_run_timer_interval,
-                            args=(fn, seconds, eid, timer_stop_event),
-                            daemon=True,
-                        )
-                        t.start()
-                        logger.info("Started timer '{}' every {}s", eid, seconds)
+        for eid, fn in timer_events.items():
+            meta = getattr(fn, EVENT_META_ATTR, None)
+            if not meta or not getattr(meta, "auto_start", False):
+                continue
+            mode = getattr(meta, "extra", {}).get("mode")
+            if mode == "interval":
+                seconds = getattr(meta, "extra", {}).get("seconds", 0)
+                if seconds > 0:
+                    timer_stop_event = threading.Event()
+                    timer_stop_events.append(timer_stop_event)
+                    t = threading.Thread(
+                        target=_run_timer_interval,
+                        args=(fn, seconds, eid, timer_stop_event),
+                        daemon=True,
+                    )
+                    t.start()
+                    logger.info("Started timer '{}' every {}s", eid, seconds)
 
         # 处理自定义事件：自动启动
         def _run_custom_event_auto(fn, fn_name: str, event_type: str):
@@ -363,30 +315,29 @@ def _plugin_process_runner(
                 logger.exception("Custom event '{}' (type: {}) failed", fn_name, event_type)
 
         # 扫描所有自定义事件类型
-        if auto_start_enabled:
-            for event_type, events in events_by_type.items():
-                if event_type in ("plugin_entry", "lifecycle", "message", "timer"):
-                    continue  # 跳过标准类型
+        for event_type, events in events_by_type.items():
+            if event_type in ("plugin_entry", "lifecycle", "message", "timer"):
+                continue  # 跳过标准类型
+            
+            # 这是自定义事件类型
+            logger.info("Found custom event type: {} with {} handlers", event_type, len(events))
+            for eid, fn in events.items():
+                meta = getattr(fn, EVENT_META_ATTR, None)
+                if not meta:
+                    continue
                 
-                # 这是自定义事件类型
-                logger.info("Found custom event type: {} with {} handlers", event_type, len(events))
-                for eid, fn in events.items():
-                    meta = getattr(fn, EVENT_META_ATTR, None)
-                    if not meta:
-                        continue
-                    
-                    # 处理自动启动的自定义事件
-                    if getattr(meta, "auto_start", False):
-                        trigger_method = getattr(meta, "extra", {}).get("trigger_method", "auto")
-                        if trigger_method == "auto":
-                            # 在独立线程中启动
-                            t = threading.Thread(
-                                target=_run_custom_event_auto,
-                                args=(fn, eid, event_type),
-                                daemon=True,
-                            )
-                            t.start()
-                            logger.info("Started auto custom event '{}' (type: {})", eid, event_type)
+                # 处理自动启动的自定义事件
+                if getattr(meta, "auto_start", False):
+                    trigger_method = getattr(meta, "extra", {}).get("trigger_method", "auto")
+                    if trigger_method == "auto":
+                        # 在独立线程中启动
+                        t = threading.Thread(
+                            target=_run_custom_event_auto,
+                            args=(fn, eid, event_type),
+                            daemon=True,
+                        )
+                        t.start()
+                        logger.info("Started auto custom event '{}' (type: {})", eid, event_type)
 
         # 命令循环
         while True:

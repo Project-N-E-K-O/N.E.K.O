@@ -83,6 +83,26 @@ async def start_plugin(plugin_id: str) -> Dict[str, Any]:
         conf = tomllib.load(f)
     
     pdata = conf.get("plugin") or {}
+
+    # 检查 plugin_runtime.enabled：如果插件在配置中被禁用，则不允许手动启动。
+    runtime_cfg = conf.get("plugin_runtime")
+    enabled_val = True
+    if isinstance(runtime_cfg, dict):
+        v_enabled = runtime_cfg.get("enabled")
+        if isinstance(v_enabled, bool):
+            enabled_val = v_enabled
+        elif isinstance(v_enabled, str):
+            s = v_enabled.strip().lower()
+            if s in ("0", "false", "no", "off"):
+                enabled_val = False
+            elif s in ("1", "true", "yes", "on"):
+                enabled_val = True
+
+    if not enabled_val:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Plugin '{plugin_id}' is disabled by plugin_runtime.enabled and cannot be started",
+        )
     entry = pdata.get("entry")
     if not entry or ":" not in entry:
         raise HTTPException(

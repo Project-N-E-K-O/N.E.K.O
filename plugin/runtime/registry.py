@@ -1264,6 +1264,36 @@ def load_plugins_from_toml(
         sdk_conflicts_list = context["sdk_conflicts_list"]
         
         logger.info("Loading plugin: {}", pid)
+
+        # 运行时控制开关来自原始 plugin.toml：
+        # - enabled: 决定插件是否被启用（允许运行）。禁用插件仍然会注册元数据，
+        #   但不会在服务器启动时创建进程，也不允许通过 API 手动启动。
+        # - auto_start: 仅控制服务器启动时是否自动创建插件进程；不影响元数据注册，
+        #   也不阻止通过 API 手动启动。
+        runtime_cfg = conf.get("plugin_runtime")
+        enabled_val = True
+        auto_start_val = True
+        if isinstance(runtime_cfg, dict):
+            v_enabled = runtime_cfg.get("enabled")
+            v_auto = runtime_cfg.get("auto_start")
+
+            if isinstance(v_enabled, bool):
+                enabled_val = v_enabled
+            elif isinstance(v_enabled, str):
+                s = v_enabled.strip().lower()
+                if s in ("0", "false", "no", "off"):
+                    enabled_val = False
+                elif s in ("1", "true", "yes", "on"):
+                    enabled_val = True
+
+            if isinstance(v_auto, bool):
+                auto_start_val = v_auto
+            elif isinstance(v_auto, str):
+                s = v_auto.strip().lower()
+                if s in ("0", "false", "no", "off"):
+                    auto_start_val = False
+                elif s in ("1", "true", "yes", "on"):
+                    auto_start_val = True
         
         # 依赖检查（可通过配置禁用）
         from plugin.settings import PLUGIN_ENABLE_DEPENDENCY_CHECK
@@ -1448,61 +1478,63 @@ def load_plugins_from_toml(
             logger.exception("Unexpected error importing plugin class {} for plugin {}", entry, pid)
             continue
 
-        try:
-            logger.info("Plugin {}: creating process host...", pid)
-            host = process_host_factory(pid, entry, toml_path)
-            logger.info(
-                "Plugin {}: process host created successfully (pid: {}, alive: {})",
-                pid,
-                getattr(host.process, 'pid', 'N/A') if hasattr(host, 'process') and host.process else 'N/A',
-                host.process.is_alive() if hasattr(host, 'process') and host.process else False
-            )
-            
-            # 如果 ID 被重命名，更新 host 的 plugin_id（如果支持）
-            if pid != original_pid and hasattr(host, 'plugin_id'):
-                host.plugin_id = pid
-                logger.debug("Updated host plugin_id to '{}'", pid)
-            
-            with state.plugin_hosts_lock:
-                # 检查是否已经存在（防止重复注册）
-                if pid in state.plugin_hosts:
-                    existing_host = state.plugin_hosts[pid]
-                    existing_config = getattr(existing_host, 'config_path', None)
-                    if existing_config:
-                        try:
-                            if Path(existing_config).resolve() == toml_path.resolve():
-                                logger.warning(
-                                    "Plugin %s from %s is already registered in plugin_hosts, skipping duplicate registration",
-                                    pid, toml_path
-                                )
-                                continue
-                        except (OSError, RuntimeError):
-                            pass
-                # 注册 host
-                state.plugin_hosts[pid] = host
-                # 立即验证注册是否成功
-                registered_keys = list(state.plugin_hosts.keys())
+        host = None
+        if enabled_val and auto_start_val:
+            try:
+                logger.info("Plugin {}: creating process host...", pid)
+                host = process_host_factory(pid, entry, toml_path)
                 logger.info(
-                    "Plugin {}: registered in plugin_hosts. Current plugin_hosts keys: {}",
-                    pid, registered_keys
+                    "Plugin {}: process host created successfully (pid: {}, alive: {})",
+                    pid,
+                    getattr(host.process, 'pid', 'N/A') if hasattr(host, 'process') and host.process else 'N/A',
+                    host.process.is_alive() if hasattr(host, 'process') and host.process else False
                 )
-                # 在同一个锁内验证 host 是否还在（防止在注册后立即被其他代码移除）
-                if pid not in state.plugin_hosts:
-                    logger.error(
-                        "Plugin {} host was removed from plugin_hosts immediately after registration! "
-                        "This should not happen. Current plugin_hosts keys: {}. "
-                        "Re-registering host to continue...",
-                        pid, list(state.plugin_hosts.keys())
-                    )
-                    # 重新注册 host（可能是被意外清空了）
+                
+                # 如果 ID 被重命名，更新 host 的 plugin_id（如果支持）
+                if pid != original_pid and hasattr(host, 'plugin_id'):
+                    host.plugin_id = pid
+                    logger.debug("Updated host plugin_id to '{}'", pid)
+                
+                with state.plugin_hosts_lock:
+                    # 检查是否已经存在（防止重复注册）
+                    if pid in state.plugin_hosts:
+                        existing_host = state.plugin_hosts[pid]
+                        existing_config = getattr(existing_host, 'config_path', None)
+                        if existing_config:
+                            try:
+                                if Path(existing_config).resolve() == toml_path.resolve():
+                                    logger.warning(
+                                        "Plugin %s from %s is already registered in plugin_hosts, skipping duplicate registration",
+                                        pid, toml_path
+                                    )
+                                    continue
+                            except (OSError, RuntimeError):
+                                pass
+                    # 注册 host
                     state.plugin_hosts[pid] = host
-                    logger.info("Plugin {}: re-registered in plugin_hosts", pid)
-        except (OSError, RuntimeError) as e:
-            logger.error("Failed to start process for plugin {}: {}", pid, e, exc_info=True)
-            continue
-        except Exception:
-            logger.exception("Unexpected error starting process for plugin {}", pid)
-            continue
+                    # 立即验证注册是否成功
+                    registered_keys = list(state.plugin_hosts.keys())
+                    logger.info(
+                        "Plugin {}: registered in plugin_hosts. Current plugin_hosts keys: {}",
+                        pid, registered_keys
+                    )
+                    # 在同一个锁内验证 host 是否还在（防止在注册后立即被其他代码移除）
+                    if pid not in state.plugin_hosts:
+                        logger.error(
+                            "Plugin {} host was removed from plugin_hosts immediately after registration! "
+                            "This should not happen. Current plugin_hosts keys: {}. "
+                            "Re-registering host to continue...",
+                            pid, list(state.plugin_hosts.keys())
+                        )
+                        # 重新注册 host（可能是被意外清空了）
+                        state.plugin_hosts[pid] = host
+                        logger.info("Plugin {}: re-registered in plugin_hosts", pid)
+            except (OSError, RuntimeError) as e:
+                logger.error("Failed to start process for plugin {}: {}", pid, e, exc_info=True)
+                continue
+            except Exception:
+                logger.exception("Unexpected error starting process for plugin {}", pid)
+                continue
 
         scan_static_metadata(pid, cls, conf, pdata)
 

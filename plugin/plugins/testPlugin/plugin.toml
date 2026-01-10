@@ -17,6 +17,7 @@ conflicts = [
 ]
 
 [plugin_runtime]
+enabled = true
 auto_start = true
 
 [debug.timer]
