@@ -214,6 +214,8 @@ export function createWebAudioService(args: {
       ]);
       setState("recording");
     } catch (e) {
+      // 确保失败时清理麦克风资源（即使 mic.start 仍在进行中）
+      await mic.stop();
       setState("error");
       throw e;
     }

@@ -191,15 +191,12 @@ export function createNativeAudioService(args: {
 
       await sessionP;
 
-      try {
-        PCMStream.startRecording(
-          args.recordSampleRate ?? 48000,
-          args.recordFrameSize ?? 1536,
-          args.recordTargetRate ?? 16000
-        );
-      } catch (_e) {
-        // ignore
-      }
+      // 让 PCMStream.startRecording 的错误传播到外部 catch（不在内部静默吞掉）
+      PCMStream.startRecording(
+        args.recordSampleRate ?? 48000,
+        args.recordFrameSize ?? 1536,
+        args.recordTargetRate ?? 16000
+      );
 
       setState("recording");
     } catch (e) {

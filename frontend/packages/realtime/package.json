@@ -4,6 +4,9 @@
   "type": "module",
   "private": true,
   "description": "跨平台 Realtime(WebSocket) 客户端：支持 Web / 旧版 HTML/JS(UMD) / React Native",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "main": "index.ts",
   "types": "index.ts",
   "react-native": "index.native.ts",
@@ -31,7 +34,7 @@
   "license": "MIT",
   "dependencies": {},
   "devDependencies": {
-    "vite": "^7.1.7"
+    "vite": "^7.1.11"
   }
 }
 
