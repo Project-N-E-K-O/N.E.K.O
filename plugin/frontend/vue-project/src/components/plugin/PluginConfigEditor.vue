@@ -53,6 +53,7 @@
             v-for="name in profileNames"
             :key="name"
             :index="name"
+            :class="{ 'viewing-profile': name === selectedProfileName }"
             @click="selectProfile(name)"
           >
             <span>{{ name }}</span>
@@ -86,23 +87,36 @@
           style="margin-bottom: 12px"
         />
 
-        <el-row :gutter="12">
-          <el-col :span="12">
-            <div class="preview-card">
-              <div class="preview-title">当前生效配置</div>
-              <pre class="preview-json">{{ currentConfigJson }}</pre>
+        <div class="diff-container">
+          <div class="diff-header">
+            <div class="diff-title">当前生效配置</div>
+            <div class="diff-title">
+              应用 Profile 后预览
+              <span v-if="selectedProfileName"> ({{ selectedProfileName }})</span>
             </div>
-          </el-col>
-          <el-col :span="12">
-            <div class="preview-card">
-              <div class="preview-title">
-                应用 Profile 后预览
-                <span v-if="selectedProfileName"> ({{ selectedProfileName }})</span>
+          </div>
+          <div class="diff-body">
+            <div
+              v-for="(row, idx) in diffRows"
+              :key="idx"
+              class="diff-row"
+              :class="{
+                'diff-added': row.type === 'add',
+                'diff-deleted': row.type === 'del',
+                'diff-modified': row.type === 'mod'
+              }"
+            >
+              <div class="diff-gutter diff-gutter-left">
+                <span class="diff-line-number">{{ row.leftLineNo ?? '' }}</span>
               </div>
-              <pre class="preview-json">{{ previewConfigJson }}</pre>
+              <pre class="diff-code-cell">{{ row.leftText }}</pre>
+              <div class="diff-gutter diff-gutter-right">
+                <span class="diff-line-number">{{ row.rightLineNo ?? '' }}</span>
+              </div>
+              <pre class="diff-code-cell">{{ row.rightText }}</pre>
             </div>
-          </el-col>
-        </el-row>
+          </div>
+        </div>
 
         <el-divider style="margin: 16px 0" />
 
@@ -131,8 +145,7 @@ import {
   getPluginProfilesState,
   getPluginProfileConfig,
   upsertPluginProfileConfig,
-  deletePluginProfileConfig,
-  setPluginActiveProfile
+  deletePluginProfileConfig
 } from '@/api/config'
 import { usePluginStore } from '@/stores/plugin'
 import PluginConfigForm from '@/components/plugin/PluginConfigForm.vue'
@@ -184,6 +197,14 @@ const hasChanges = computed(() => {
   )
 })
 
+interface DiffRow {
+  leftText: string
+  rightText: string
+  leftLineNo: number | null
+  rightLineNo: number | null
+  type: 'equal' | 'add' | 'del' | 'mod'
+}
+
 const currentConfigJson = computed(() => {
   if (!effectiveConfig.value) return ''
   try {
@@ -191,6 +212,61 @@ const currentConfigJson = computed(() => {
   } catch {
     return ''
   }
+})
+
+const diffRows = computed<DiffRow[]>(() => {
+  if (!effectiveConfig.value && !previewConfig.value) return []
+
+  let left = currentConfigJson.value
+  let right = previewConfigJson.value
+
+  if (!left && effectiveConfig.value) {
+    try {
+      left = JSON.stringify(effectiveConfig.value, null, 2)
+    } catch {
+      left = ''
+    }
+  }
+
+  if (!right && previewConfig.value) {
+    try {
+      right = JSON.stringify(previewConfig.value, null, 2)
+    } catch {
+      right = ''
+    }
+  }
+
+  const leftLines = left.split('\n')
+  const rightLines = right.split('\n')
+  const maxLen = Math.max(leftLines.length, rightLines.length)
+
+  const rows: DiffRow[] = []
+  let leftNo = 1
+  let rightNo = 1
+
+  for (let i = 0; i < maxLen; i++) {
+    const l = i < leftLines.length ? leftLines[i] : null
+    const r = i < rightLines.length ? rightLines[i] : null
+
+    let type: DiffRow['type']
+    if (l !== null && r !== null) {
+      type = l === r ? 'equal' : 'mod'
+    } else if (l !== null && r === null) {
+      type = 'del'
+    } else {
+      type = 'add'
+    }
+
+    rows.push({
+      leftText: l ?? '',
+      rightText: r ?? '',
+      leftLineNo: l !== null ? leftNo++ : null,
+      rightLineNo: r !== null ? rightNo++ : null,
+      type
+    })
+  }
+
+  return rows
 })
 
 function deepMerge(base: any, updates: any): any {
@@ -274,6 +350,7 @@ async function loadAll() {
   loading.value = true
   error.value = null
   try {
+    const prevSelected = selectedProfileName.value
     const [baseRes, effectiveRes, profilesRes] = await Promise.all([
       getPluginBaseConfig(props.pluginId),
       getPluginConfig(props.pluginId),
@@ -290,7 +367,9 @@ async function loadAll() {
     const names = profileNames.value
     const active = activeProfileName.value
     let toSelect: string | null = null
-    if (typeof active === 'string' && names.includes(active)) {
+    if (prevSelected && names.includes(prevSelected)) {
+      toSelect = prevSelected
+    } else if (typeof active === 'string' && names.includes(active)) {
       toSelect = active
     } else if (names.length > 0) {
       toSelect = names[0] as string
@@ -374,10 +453,8 @@ async function save() {
       props.pluginId,
       selectedProfileName.value,
       (profileDraftConfig.value || {}) as Record<string, any>,
-      true
+      false
     )
-
-    await setPluginActiveProfile(props.pluginId, selectedProfileName.value)
 
     ElMessage.success(t('common.success'))
 
@@ -389,15 +466,23 @@ async function save() {
     profilesState.value = profilesRes
     originalProfileConfig.value = deepClone(profileDraftConfig.value || {})
 
-    try {
-      await ElMessageBox.confirm(t('plugins.configReloadPrompt'), t('plugins.configReloadTitle'), {
-        type: 'warning'
-      })
-      await pluginStore.reload(props.pluginId)
-      ElMessage.success(t('messages.pluginReloaded'))
-    } catch (e: any) {
-      if (e !== 'cancel' && e !== 'close') {
-        ElMessage.error(e?.message || t('messages.reloadFailed'))
+    // 仅当当前浏览的 profile 正好是激活中的 profile 时，才提示重载插件
+    const isActive = activeProfileName.value === selectedProfileName.value
+    if (isActive) {
+      try {
+        await ElMessageBox.confirm(
+          t('plugins.configReloadPrompt'),
+          t('plugins.configReloadTitle'),
+          {
+            type: 'warning'
+          }
+        )
+        await pluginStore.reload(props.pluginId)
+        ElMessage.success(t('messages.pluginReloaded'))
+      } catch (e: any) {
+        if (e !== 'cancel' && e !== 'close') {
+          ElMessage.error(e?.message || t('messages.reloadFailed'))
+        }
       }
     }
   } catch (e: any) {
@@ -481,6 +566,10 @@ watch(
   border-radius: 4px;
 }
 
+.profiles-menu :deep(.viewing-profile) {
+  background-color: rgba(64, 158, 255, 0.14);
+}
+
 .preview-pane {
   flex: 1 1 auto;
 }
@@ -498,15 +587,72 @@ watch(
   margin-bottom: 4px;
 }
 
-.preview-json {
+/* VSCode 风格的双列 diff 预览 */
+.diff-container {
+  border-radius: 6px;
+  border: 1px solid var(--el-border-color-lighter);
+  background: var(--el-fill-color-lighter);
+}
+
+.diff-header {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.diff-header .diff-title {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  padding: 4px 8px;
+}
+
+.diff-body {
+  max-height: 260px;
+  overflow: auto;
   font-family: Monaco, Menlo, Consolas, 'Ubuntu Mono', monospace;
   font-size: 12px;
   line-height: 1.5;
-  max-height: 260px;
-  overflow: auto;
   background: var(--el-color-white);
-  border-radius: 4px;
-  padding: 6px 8px;
+}
+
+.diff-row {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr) 54px minmax(0, 1fr);
+  white-space: pre;
+}
+
+.diff-gutter {
+  padding: 0 6px;
+  text-align: right;
+  border-right: 1px solid var(--el-border-color-lighter);
+  color: var(--el-text-color-secondary);
+  background: var(--el-fill-color-lighter);
+}
+
+.diff-gutter-right {
+  border-left: 1px solid var(--el-border-color-lighter);
+}
+
+.diff-line-number {
+  display: inline-block;
+  min-width: 24px;
+}
+
+.diff-code-cell {
+  margin: 0;
+  padding: 0 8px;
+}
+
+.diff-row.diff-added {
+  background: rgba(46, 160, 67, 0.14);
+}
+
+.diff-row.diff-deleted {
+  background: rgba(248, 81, 73, 0.16);
+}
+
+.diff-row.diff-modified {
+  background: rgba(56, 139, 253, 0.16);
 }
 
 .source-editor {
