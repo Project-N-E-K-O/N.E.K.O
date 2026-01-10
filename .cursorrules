@@ -26,6 +26,20 @@
   - 组件样式使用独立的 `.css` 文件，避免内联样式（除非是动态样式）
   - 组件库必须支持 UMD 格式，外部化 `react` 和 `react-dom`
 
+- **类型导入规范（重要！）**:
+  - **从 `@project_neko/common` 导入类型时，必须使用 `import type`**
+  - TypeScript 类型定义在编译成 JavaScript 后会被移除，混合导入会导致运行时错误
+  - ✅ 正确写法：
+    ```typescript
+    import { TinyEmitter, noop } from "@project_neko/common";
+    import type { Unsubscribe, ApiResponse } from "@project_neko/common";
+    ```
+  - ❌ 错误写法：
+    ```typescript
+    import { TinyEmitter, Unsubscribe } from "@project_neko/common"; // 运行时错误！
+    ```
+  - 详见：`docs/frontend/FIX-type-import-from-common-2026-01-10.md`
+
 - **路径别名**:
   - 使用 `@project_neko/components` 引用组件库
   - 使用 `@project_neko/common` 引用公共工具
@@ -93,6 +107,7 @@
 - ❌ 不要使用 React 19 的新 JSX 转换（必须使用经典转换以确保 UMD 兼容）
 - ❌ 不要在组件中使用内联样式（除非是动态计算的样式值）
 - ❌ 不要直接导入 `react` 和 `react-dom` 的源码（UMD 构建时会外部化）
+- ❌ 不要从 `@project_neko/common` 混合导入类型和值（使用 `import type` 分离类型导入）
 
 ### 1.6 packages 分层与 i18n 规则（过渡期：HTML/JS + bundles；终态：React App）
 
@@ -141,6 +156,7 @@
 - [ ] `components` 是否在无 Provider 时仍能运行？是否提供 `window.t` fallback？
 - [ ] 是否把 i18n 兼容/全局事件监听集中在 `web-bridge`，而不是散落在其它包？
 - [ ] 旧模板脚本顺序是否确保 `window.t` 在需要时已就绪？
+- [ ] 从 `@project_neko/common` 导入类型时，是否使用了 `import type`？（避免运行时错误）
 
 ---
 
