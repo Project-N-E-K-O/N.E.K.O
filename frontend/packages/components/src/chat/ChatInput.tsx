@@ -76,7 +76,7 @@ export default function ChatInput({
 
             <button
               onClick={() => setPendingScreenshots?.([])}
-              aria-label={tOrDefault(t, "chat.screenshot.remove", "删除此截图")}
+              aria-label={tOrDefault(t, "chat.screenshot.clearAll", "清除全部截图")}
               style={{
                 background: "#ff4d4f",
                 color: "#fff",
