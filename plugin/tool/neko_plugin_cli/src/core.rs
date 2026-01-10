@@ -17,6 +17,13 @@ use zip::read::ZipArchive;
 use zip::write::FileOptions;
 use zip::CompressionMethod;
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct BundleMeta {
+    pub(crate) name: Option<String>,
+    pub(crate) version: Option<String>,
+    pub(crate) author: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CheckFlags {
     pub(crate) id: bool,
@@ -682,7 +689,16 @@ struct Manifest {
     neko_base_version: String,
     packed_at: String,
     root_layout: String,
+    bundle: Option<ManifestBundle>,
+    bundle_profiles_root: Option<String>,
     plugins: Vec<ManifestPlugin>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct ManifestBundle {
+    name: String,
+    version: Option<String>,
+    author: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -693,6 +709,7 @@ struct ManifestPlugin {
     entry: String,
     folder: String,
     md5: Option<String>,
+    bundled_profiles: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -701,7 +718,16 @@ struct ManifestDe {
     neko_base_version: String,
     packed_at: String,
     root_layout: String,
+    bundle: Option<ManifestBundleDe>,
+    bundle_profiles_root: Option<String>,
     plugins: Vec<ManifestPluginDe>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ManifestBundleDe {
+    name: String,
+    version: Option<String>,
+    author: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -712,6 +738,67 @@ struct ManifestPluginDe {
     entry: String,
     folder: String,
     md5: Option<String>,
+    bundled_profiles: Option<Vec<String>>,
+}
+
+fn sanitize_for_filename(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        let keep = ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.');
+        out.push(if keep { ch } else { '_' });
+    }
+    if out.is_empty() {
+        "bundle".to_string()
+    } else {
+        out
+    }
+}
+
+fn derive_bundle_name(out_path: &Path) -> String {
+    out_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| sanitize_for_filename(s))
+        .unwrap_or_else(|| "bundle".to_string())
+}
+
+fn read_file_to_zip<W: Write + std::io::Seek>(
+    zip: &mut zip::ZipWriter<W>,
+    zip_path: &str,
+    src: &Path,
+    options: FileOptions<()>,
+) -> Result<()> {
+    zip.start_file(zip_path, options)?;
+    let mut f = fs::File::open(src).with_context(|| format!("failed to open {}", src.display()))?;
+    let mut buf = [0u8; 1024 * 64];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        zip.write_all(&buf[..n])?;
+    }
+    Ok(())
+}
+
+fn collect_profile_files(plugin_dir: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    let p1 = plugin_dir.join("profiles.toml");
+    if p1.is_file() {
+        out.push(p1);
+    }
+    let pdir = plugin_dir.join("profiles");
+    if pdir.is_dir() {
+        for e in WalkDir::new(&pdir).follow_links(false) {
+            if let Ok(e) = e {
+                if e.file_type().is_file() {
+                    out.push(e.path().to_path_buf());
+                }
+            }
+        }
+    }
+    out.sort();
+    out
 }
 
 #[derive(Debug, Clone)]
@@ -995,7 +1082,12 @@ pub(crate) fn folder_md5(plugin_dir: &Path, excludes: &GlobSet) -> Result<String
     Ok(format!("{:x}", hasher.compute()))
 }
 
-pub(crate) fn pack_to_zip(out_path: &Path, plugins: &[PluginPackItem], excludes: &GlobSet) -> Result<()> {
+pub(crate) fn pack_to_zip(
+    out_path: &Path,
+    plugins: &[PluginPackItem],
+    excludes: &GlobSet,
+    bundle_meta: BundleMeta,
+) -> Result<()> {
     let tmp_path = out_path.with_extension("zip.tmp");
     let f = fs::File::create(&tmp_path).with_context(|| format!("failed to create {}", tmp_path.display()))?;
     let mut zip = zip::ZipWriter::new(f);
@@ -1012,20 +1104,65 @@ pub(crate) fn pack_to_zip(out_path: &Path, plugins: &[PluginPackItem], excludes:
 
     let neko_base_version = read_neko_base_version(&repo_root)?;
 
+    let bundle_name = bundle_meta
+        .name
+        .clone()
+        .unwrap_or_else(|| derive_bundle_name(out_path));
+    let bundle_name_safe = sanitize_for_filename(&bundle_name);
+    let bundle_version_safe = bundle_meta
+        .version
+        .as_deref()
+        .map(sanitize_for_filename)
+        .unwrap_or_else(|| "unknown".to_string());
+    let bundle_profiles_root = format!("bundle_profiles/{}/", bundle_name_safe);
+
+    // Pre-compute bundled profile paths for each plugin.
+    let mut bundled_profiles_map: Vec<Vec<String>> = Vec::new();
+    for p in plugins {
+        let mut paths: Vec<String> = Vec::new();
+        for src in collect_profile_files(&p.path) {
+            let rel = src
+                .strip_prefix(&p.path)
+                .unwrap_or(&src)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let rel_name = sanitize_for_filename(&rel.replace('/', "__"));
+            let zip_path = format!(
+                "{}plugins/{}/{}__{}__{}__{}",
+                bundle_profiles_root,
+                sanitize_for_filename(&p.id),
+                bundle_name_safe,
+                bundle_version_safe,
+                sanitize_for_filename(&p.id),
+                rel_name
+            );
+            paths.push(zip_path);
+        }
+        bundled_profiles_map.push(paths);
+    }
+
     let manifest = Manifest {
         format_version: 1,
         neko_base_version,
         packed_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
         root_layout: "plugins/".to_string(),
+        bundle: Some(ManifestBundle {
+            name: bundle_name,
+            version: bundle_meta.version,
+            author: bundle_meta.author,
+        }),
+        bundle_profiles_root: Some(bundle_profiles_root.clone()),
         plugins: plugins
             .iter()
-            .map(|p| ManifestPlugin {
+            .zip(bundled_profiles_map.iter())
+            .map(|(p, paths)| ManifestPlugin {
                 id: p.id.clone(),
                 name: p.name.clone(),
                 version: p.version.clone(),
                 entry: p.entry.clone(),
                 folder: format!("plugins/{}", p.folder),
                 md5: p.md5.clone(),
+                bundled_profiles: paths.clone(),
             })
             .collect(),
     };
@@ -1067,16 +1204,15 @@ pub(crate) fn pack_to_zip(out_path: &Path, plugins: &[PluginPackItem], excludes:
                 .to_string_lossy()
                 .replace('\\', "/");
             let zip_path = format!("plugins/{}/{}", plugin.folder, rel);
-            zip.start_file(zip_path, options)?;
-            let mut f = fs::File::open(&p)?;
-            let mut buf = [0u8; 1024 * 64];
-            loop {
-                let n = f.read(&mut buf)?;
-                if n == 0 {
-                    break;
-                }
-                zip.write_all(&buf[..n])?;
-            }
+            read_file_to_zip(&mut zip, &zip_path, &p, options)?;
+        }
+    }
+
+    // Bundle profiles are stored under bundle_profiles/<bundle_name>/plugins/<plugin_id>/... with renamed files.
+    for (plugin, zip_paths) in plugins.iter().zip(bundled_profiles_map.iter()) {
+        let sources = collect_profile_files(&plugin.path);
+        for (src, zip_path) in sources.iter().zip(zip_paths.iter()) {
+            read_file_to_zip(&mut zip, zip_path, src, options)?;
         }
     }
 
@@ -1120,6 +1256,23 @@ pub(crate) fn unpack_zip(zip_path: &Path, dest_dir: &Path, force: bool, excludes
 
     let manifest = read_manifest(&mut archive)?;
     let root_layout = manifest.root_layout.trim_end_matches('/');
+
+    // Map plugin_id -> folder_name (the folder under <dest_dir>)
+    let mut id_to_folder: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for p in &manifest.plugins {
+        let folder_rel = p.folder.trim_end_matches('/');
+        let folder_name = folder_rel
+            .split('/')
+            .nth(1)
+            .ok_or_else(|| anyhow::anyhow!("invalid manifest folder: {}", p.folder))?
+            .to_string();
+        id_to_folder.insert(p.id.clone(), folder_name);
+    }
+
+    let bundle_profiles_root = manifest
+        .bundle_profiles_root
+        .as_deref()
+        .map(|s| s.trim_end_matches('/').to_string());
 
     use std::collections::HashSet;
     let mut skip_folders: HashSet<String> = HashSet::new();
@@ -1166,45 +1319,95 @@ pub(crate) fn unpack_zip(zip_path: &Path, dest_dir: &Path, force: bool, excludes
             continue;
         }
 
-        let prefix = format!("{}/", root_layout);
-        if !name.starts_with(&prefix) {
+        // 1) Normal plugin payload: <root_layout>/<folder>/<rel>
+        let prefix_plugins = format!("{}/", root_layout);
+        if name.starts_with(&prefix_plugins) {
+            let remainder = &name[prefix_plugins.len()..];
+            let mut parts = remainder.splitn(2, '/');
+            let folder = match parts.next() {
+                Some(s) if !s.is_empty() => s,
+                _ => continue,
+            };
+            let rel = match parts.next() {
+                Some(s) if !s.is_empty() => s,
+                _ => continue,
+            };
+
+            if skip_folders.contains(folder) {
+                continue;
+            }
+
+            if !is_safe_rel_path(rel) {
+                eprintln!("WARN: skipped unsafe path in zip: {}", name);
+                continue;
+            }
+
+            let out_path = dest_dir.join(folder).join(rel);
+            if let Some(parent) = out_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+
+            if out_path.exists() && !force {
+                eprintln!("WARN: file conflict, skipping: {}", out_path.display());
+                continue;
+            }
+
+            let mut out = fs::File::create(&out_path)
+                .with_context(|| format!("failed to create {}", out_path.display()))?;
+            std::io::copy(&mut file, &mut out)
+                .with_context(|| format!("failed to write {}", out_path.display()))?;
             continue;
         }
 
-        let remainder = &name[prefix.len()..];
-        let mut parts = remainder.splitn(2, '/');
-        let folder = match parts.next() {
-            Some(s) if !s.is_empty() => s,
-            _ => continue,
-        };
-        let rel = match parts.next() {
-            Some(s) if !s.is_empty() => s,
-            _ => continue,
-        };
+        // 2) Bundled profiles payload: <bundle_profiles_root>/plugins/<plugin_id>/<renamed_file>
+        if let Some(root) = &bundle_profiles_root {
+            let prefix_profiles = format!("{}/plugins/", root);
+            if name.starts_with(&prefix_profiles) {
+                let remainder = &name[prefix_profiles.len()..];
+                let mut parts = remainder.splitn(2, '/');
+                let plugin_id = match parts.next() {
+                    Some(s) if !s.is_empty() => s,
+                    _ => continue,
+                };
+                let rel = match parts.next() {
+                    Some(s) if !s.is_empty() => s,
+                    _ => continue,
+                };
 
-        if skip_folders.contains(folder) {
-            continue;
+                if !is_safe_rel_path(rel) {
+                    eprintln!("WARN: skipped unsafe bundled profile path in zip: {}", name);
+                    continue;
+                }
+
+                let Some(folder_name) = id_to_folder.get(plugin_id).cloned() else {
+                    eprintln!("WARN: bundled profile references unknown plugin id: {}", plugin_id);
+                    continue;
+                };
+
+                // Place bundled profiles inside plugin folder without touching user profiles.
+                // Use a dedicated internal directory to avoid overwriting ./profiles and ./profiles.toml.
+                let out_path = dest_dir
+                    .join(folder_name)
+                    .join("_bundle_profiles")
+                    .join(root)
+                    .join(rel);
+
+                if let Some(parent) = out_path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+
+                // Never overwrite bundled profiles unless --force.
+                if out_path.exists() && !force {
+                    continue;
+                }
+
+                let mut out = fs::File::create(&out_path)
+                    .with_context(|| format!("failed to create {}", out_path.display()))?;
+                std::io::copy(&mut file, &mut out)
+                    .with_context(|| format!("failed to write {}", out_path.display()))?;
+                continue;
+            }
         }
-
-        if !is_safe_rel_path(rel) {
-            eprintln!("WARN: skipped unsafe path in zip: {}", name);
-            continue;
-        }
-
-        let out_path = dest_dir.join(folder).join(rel);
-        if let Some(parent) = out_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        if out_path.exists() && !force {
-            eprintln!("WARN: file conflict, skipping: {}", out_path.display());
-            continue;
-        }
-
-        let mut out = fs::File::create(&out_path)
-            .with_context(|| format!("failed to create {}", out_path.display()))?;
-        std::io::copy(&mut file, &mut out)
-            .with_context(|| format!("failed to write {}", out_path.display()))?;
     }
 
     Ok(())

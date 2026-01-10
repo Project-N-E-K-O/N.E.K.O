@@ -50,6 +50,17 @@ export default {
     logoutConfirm: '确定要退出登录吗？',
     logoutSuccess: '已退出登录'
   },
+  plugin: {
+    addProfile: {
+      prompt: '请输入新的 Profile 名称',
+      title: '新增 Profile',
+      inputError: '名称只能包含字母、数字、下划线(_)和连字符(-)'
+    },
+    removeProfile: {
+      confirm: '确定要删除 Profile "{name}" 吗？',
+      title: '删除 Profile'
+    }
+  },
   dashboard: {
     title: '仪表盘',
     pluginOverview: '插件概览',

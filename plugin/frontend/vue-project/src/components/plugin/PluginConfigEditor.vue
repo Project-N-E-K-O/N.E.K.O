@@ -454,7 +454,7 @@ async function selectProfile(name: string) {
 async function addProfile() {
   try {
     const { value } = await ElMessageBox.prompt(t('plugin.addProfile.prompt'), t('plugin.addProfile.title'), {
-      inputPattern: /^\S+$/,
+      inputPattern: /^[A-Za-z0-9_-]+$/,
       inputErrorMessage: t('plugin.addProfile.inputError')
     })
     const name = String(value || '').trim()
@@ -665,6 +665,7 @@ watch(
   font-size: 12px;
   line-height: 1.5;
   background: var(--el-color-white);
+  white-space: pre;
 }
 
 .diff-row {
@@ -774,19 +775,6 @@ watch(
   font-size: 12px;
   color: var(--el-text-color-secondary);
   margin-bottom: 6px;
-}
-
-.diff-body {
-  font-family: Monaco, Menlo, Consolas, 'Ubuntu Mono', monospace;
-  font-size: 12px;
-  line-height: 1.5;
-  background: var(--el-fill-color-lighter);
-  border: 1px solid var(--el-border-color-lighter);
-  padding: 8px;
-  border-radius: 6px;
-  max-height: 320px;
-  overflow: auto;
-  white-space: pre;
 }
 
 .diff-body .add {

@@ -50,6 +50,17 @@ export default {
     logoutConfirm: 'Are you sure you want to logout?',
     logoutSuccess: 'Logged out'
   },
+  plugin: {
+    addProfile: {
+      prompt: 'Enter a new profile name',
+      title: 'Add Profile',
+      inputError: 'Only letters, digits, underscore (_) and hyphen (-) are allowed'
+    },
+    removeProfile: {
+      confirm: 'Are you sure you want to delete profile "{name}"?',
+      title: 'Delete Profile'
+    }
+  },
   dashboard: {
     title: 'Dashboard',
     pluginOverview: 'Plugin Overview',

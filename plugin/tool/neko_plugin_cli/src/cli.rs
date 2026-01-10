@@ -37,6 +37,9 @@ pub(crate) fn run() -> Result<()> {
             jobs,
             exclude,
             no_md5,
+            bundle_name,
+            bundle_version,
+            bundle_author,
         } => {
             if let Some(n) = jobs {
                 rayon::ThreadPoolBuilder::new().num_threads(n).build_global().ok();
@@ -59,7 +62,16 @@ pub(crate) fn run() -> Result<()> {
             core::compute_plugin_md5_for_pack(&mut plugins, &excludes, no_md5)?;
 
             let out_path = out.unwrap_or_else(|| core::default_pack_output(&plugins, !plugin_id.is_empty()));
-            core::pack_to_zip(&out_path, &plugins, &excludes)?;
+            core::pack_to_zip(
+                &out_path,
+                &plugins,
+                &excludes,
+                core::BundleMeta {
+                    name: bundle_name,
+                    version: bundle_version,
+                    author: bundle_author,
+                },
+            )?;
             println!("{}", out_path.display());
         }
         Commands::Check {
@@ -195,6 +207,15 @@ enum Commands {
 
         #[arg(long, help = "跳过 md5（更快但无法用于一致性跳过） / Skip md5 (faster, but no identical-skip)")]
         no_md5: bool,
+
+        #[arg(long, help = "整合包名称（用于 profiles 命名空间与重命名；默认取输出 zip 文件名） / Bundle name (for profiles namespacing; default derived from output zip name)")]
+        bundle_name: Option<String>,
+
+        #[arg(long, help = "整合包版本（写入 manifest，并参与 profiles 重命名） / Bundle version (written to manifest and used in profile renaming)")]
+        bundle_version: Option<String>,
+
+        #[arg(long, help = "整合包作者（写入 manifest，并参与 profiles 重命名） / Bundle author (written to manifest and used in profile renaming)")]
+        bundle_author: Option<String>,
     },
 
     #[command(about = "检查插件冲突与兼容性 / Check plugin conflicts and compatibility")]
