@@ -178,10 +178,19 @@
         .action-group {
             display: flex;
             gap: 10px;
+            flex-wrap: wrap;
         }
 
         .action-group .control-select {
-            flex-grow: 1;
+            flex: 1 1 100px;
+            min-width: 0;
+        }
+
+        .action-group .btn {
+            flex: 0 0 auto;
+            white-space: normal;
+            min-width: 60px;
+            padding: 10px 12px;
         }
 
         #persistent-list {
