@@ -598,6 +598,25 @@ async def on_startup():
         except Exception as e:
             logger.warning(f"全局语言初始化失败: {e}，将使用默认值")
 
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    """服务器关闭时清理资源"""
+    if _IS_MAIN_PROCESS:
+        logger.info("正在清理资源...")
+        
+        # 等待预加载任务完成（如果还在运行）
+        global _preload_task
+        if _preload_task and not _preload_task.done():
+            try:
+                await asyncio.wait_for(_preload_task, timeout=1.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                logger.debug("预加载任务清理时超时或取消（正常关闭流程）")
+            except Exception:
+                logger.debug("预加载任务清理时出错（正常关闭流程）")
+        
+        logger.info("✅ 资源清理完成")
+
 # 使用 FastAPI 的 app.state 来管理启动配置
 def get_start_config():
     """从 app.state 获取启动配置"""
@@ -802,5 +821,15 @@ if __name__ == "__main__":
     
     try:
         server.run()
+    except KeyboardInterrupt:
+        # Ctrl+C 正常关闭，不显示 traceback
+        logger.info("收到关闭信号（Ctrl+C），正在关闭服务器...")
+    except (asyncio.CancelledError, SystemExit):
+        # 正常的关闭信号
+        logger.info("服务器正在关闭...")
+    except Exception as e:
+        # 真正的错误，显示完整 traceback
+        logger.error(f"服务器运行时发生错误: {e}", exc_info=True)
+        raise
     finally:
         logger.info("服务器已关闭")

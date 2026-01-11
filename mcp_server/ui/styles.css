@@ -1,0 +1,602 @@
+/* MCP Server Dashboard Styles */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    min-height: 100vh;
+    padding: 20px;
+    color: #333;
+}
+
+.container {
+    max-width: 1400px;
+    margin: 0 auto;
+}
+
+header {
+    background: white;
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 24px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+header h1 {
+    font-size: 28px;
+    color: #667eea;
+}
+
+.status-indicator {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.status-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+.status-dot.status-online {
+    background-color: #10b981;
+    box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
+}
+
+.status-dot.status-offline {
+    background-color: #ef4444;
+    box-shadow: 0 0 8px rgba(239, 68, 68, 0.5);
+}
+
+.dashboard {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+    gap: 24px;
+    margin-bottom: 24px;
+}
+
+.card {
+    background: white;
+    border-radius: 12px;
+    padding: 24px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.card h2 {
+    font-size: 20px;
+    margin-bottom: 16px;
+    color: #667eea;
+    border-bottom: 2px solid #e5e7eb;
+    padding-bottom: 8px;
+}
+
+.info-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+}
+
+.info-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.info-item label {
+    font-size: 12px;
+    color: #6b7280;
+    font-weight: 500;
+}
+
+.info-item span {
+    font-size: 14px;
+    color: #111827;
+    font-weight: 600;
+}
+
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+}
+
+.stat-item {
+    text-align: center;
+    padding: 16px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border-radius: 8px;
+    color: white;
+}
+
+.stat-value {
+    font-size: 32px;
+    font-weight: bold;
+    margin-bottom: 4px;
+}
+
+.stat-label {
+    font-size: 12px;
+    opacity: 0.9;
+}
+
+.tools-list, .servers-list {
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.tool-item, .server-item {
+    padding: 12px;
+    margin-bottom: 8px;
+    background: #f9fafb;
+    border-radius: 8px;
+    border-left: 3px solid #667eea;
+}
+
+.tool-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.tool-name {
+    font-weight: 600;
+    color: #111827;
+    font-size: 14px;
+}
+
+.tool-source {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: #e5e7eb;
+    color: #6b7280;
+}
+
+.tool-description {
+    font-size: 13px;
+    color: #6b7280;
+    margin-bottom: 8px;
+}
+
+.tool-params {
+    font-size: 12px;
+    color: #9ca3af;
+    margin-top: 8px;
+}
+
+.param {
+    display: inline-block;
+    padding: 2px 6px;
+    margin: 2px;
+    border-radius: 4px;
+    background: #e5e7eb;
+    font-size: 11px;
+}
+
+.param.required {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.param.optional {
+    background: #dbeafe;
+    color: #1e40af;
+}
+
+.server-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.server-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+}
+
+.server-url {
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    color: #111827;
+    word-break: break-all;
+}
+
+.type-badge {
+    font-size: 10px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.type-badge.http {
+    background: #dbeafe;
+    color: #1e40af;
+}
+
+.type-badge.stdio {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.status-badge {
+    font-size: 11px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-weight: 500;
+}
+
+.status-badge.online {
+    background: #d1fae5;
+    color: #065f46;
+}
+
+.status-badge.offline {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.empty-message {
+    text-align: center;
+    color: #9ca3af;
+    padding: 24px;
+    font-style: italic;
+}
+
+footer {
+    background: white;
+    border-radius: 12px;
+    padding: 20px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+}
+
+.btn-primary, .btn-secondary {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.btn-primary {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+}
+
+.btn-primary:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(102, 126, 234, 0.4);
+}
+
+.btn-secondary {
+    background: #e5e7eb;
+    color: #374151;
+}
+
+.btn-secondary:hover {
+    background: #d1d5db;
+}
+
+.btn-secondary.active {
+    background: #10b981;
+    color: white;
+}
+
+.update-time {
+    font-size: 12px;
+    color: #6b7280;
+    margin-left: auto;
+}
+
+/* 滚动条样式 */
+.tools-list::-webkit-scrollbar,
+.servers-list::-webkit-scrollbar {
+    width: 6px;
+}
+
+.tools-list::-webkit-scrollbar-track,
+.servers-list::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 3px;
+}
+
+.tools-list::-webkit-scrollbar-thumb,
+.servers-list::-webkit-scrollbar-thumb {
+    background: #888;
+    border-radius: 3px;
+}
+
+.tools-list::-webkit-scrollbar-thumb:hover,
+.servers-list::-webkit-scrollbar-thumb:hover {
+    background: #555;
+}
+
+/* 服务器管理样式 */
+.server-management {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.management-buttons {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.server-config-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px;
+    margin-bottom: 8px;
+    background: #f9fafb;
+    border-radius: 8px;
+    border-left: 3px solid #667eea;
+}
+
+.server-config-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex: 1;
+    gap: 12px;
+}
+
+.btn-delete {
+    padding: 6px 12px;
+    border: none;
+    border-radius: 6px;
+    background: #fee2e2;
+    color: #991b1b;
+    cursor: pointer;
+    font-size: 14px;
+    transition: all 0.2s;
+}
+
+.btn-delete:hover {
+    background: #fecaca;
+    transform: scale(1.05);
+}
+
+/* 模态框样式 */
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 1000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(4px);
+}
+
+.modal-content {
+    background-color: white;
+    margin: 10% auto;
+    padding: 0;
+    border-radius: 12px;
+    width: 90%;
+    max-width: 500px;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+    animation: modalSlideIn 0.3s ease-out;
+}
+
+@keyframes modalSlideIn {
+    from {
+        transform: translateY(-50px);
+        opacity: 0;
+    }
+    to {
+        transform: translateY(0);
+        opacity: 1;
+    }
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px 24px;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.modal-header h2 {
+    margin: 0;
+    color: #667eea;
+    font-size: 20px;
+}
+
+.modal-close {
+    background: none;
+    border: none;
+    font-size: 28px;
+    color: #6b7280;
+    cursor: pointer;
+    padding: 0;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    transition: all 0.2s;
+}
+
+.modal-close:hover {
+    background: #f3f4f6;
+    color: #111827;
+}
+
+.modal-body {
+    padding: 24px;
+}
+
+.modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    padding: 20px 24px;
+    border-top: 1px solid #e5e7eb;
+}
+
+.form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.form-group label {
+    font-size: 14px;
+    font-weight: 500;
+    color: #374151;
+}
+
+.form-input {
+    padding: 10px 12px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    font-size: 14px;
+    transition: all 0.2s;
+}
+
+.form-input:focus {
+    outline: none;
+    border-color: #667eea;
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.form-hint {
+    font-size: 12px;
+    color: #6b7280;
+}
+
+.form-textarea {
+    padding: 10px 12px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    font-size: 13px;
+    font-family: 'Courier New', monospace;
+    resize: vertical;
+    min-height: 150px;
+    transition: all 0.2s;
+    width: 100%;
+}
+
+.form-textarea:focus {
+    outline: none;
+    border-color: #667eea;
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.server-config-section {
+    margin-top: 16px;
+}
+
+select.form-input {
+    cursor: pointer;
+}
+
+.import-result {
+    margin-top: 16px;
+    padding: 12px;
+    border-radius: 8px;
+    font-size: 13px;
+}
+
+.import-result.import-success {
+    background: #d1fae5;
+    border: 1px solid #10b981;
+    color: #065f46;
+}
+
+.import-result.import-error {
+    background: #fee2e2;
+    border: 1px solid #ef4444;
+    color: #991b1b;
+}
+
+.import-result h4 {
+    margin: 0 0 8px 0;
+    font-size: 14px;
+}
+
+.import-result ul {
+    margin: 8px 0 0 0;
+    padding-left: 20px;
+}
+
+.import-result li {
+    margin: 4px 0;
+}
+
+.import-added, .import-skipped, .import-errors {
+    margin-top: 12px;
+}
+
+.import-added strong {
+    color: #065f46;
+}
+
+.import-skipped strong {
+    color: #92400e;
+}
+
+.import-errors strong {
+    color: #991b1b;
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+    .dashboard {
+        grid-template-columns: 1fr;
+    }
+    
+    header {
+        flex-direction: column;
+        gap: 16px;
+        text-align: center;
+    }
+    
+    footer {
+        flex-direction: column;
+    }
+    
+    .update-time {
+        margin-left: 0;
+    }
+    
+    .modal-content {
+        width: 95%;
+        margin: 5% auto;
+    }
+    
+    .management-buttons {
+        flex-direction: column;
+    }
+    
+    .management-buttons button {
+        width: 100%;
+    }
+}
+

@@ -3,11 +3,12 @@
 
 提供插件开发的基础类和接口。
 """
-import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import TYPE_CHECKING, Optional, Dict, Any, List
 from .events import EventHandler, EventMeta, EVENT_META_ATTR
+from .config import PluginConfig
+from .plugins import Plugins
 from .version import SDK_VERSION
 from plugin.settings import (
     NEKO_PLUGIN_META_ATTR, 
@@ -17,6 +18,9 @@ from plugin.settings import (
     PLUGIN_LOG_BACKUP_COUNT,
     PLUGIN_LOG_MAX_FILES,
 )
+
+if TYPE_CHECKING:
+    from plugin.core.context import PluginContext
 
 
 @dataclass
@@ -36,9 +40,11 @@ class PluginMeta:
 class NekoPluginBase:
     """插件都继承这个基类."""
     
-    def __init__(self, ctx: Any):
-        self.ctx = ctx
+    def __init__(self, ctx: "PluginContext"):
+        self.ctx: "PluginContext" = ctx
         self._plugin_id = getattr(ctx, "plugin_id", "unknown")
+        self.config = PluginConfig(ctx)
+        self.plugins = Plugins(ctx)
 
     def get_input_schema(self) -> Dict[str, Any]:
         """默认从类属性 input_schema 取."""
@@ -72,7 +78,7 @@ class NekoPluginBase:
         通过 ctx.update_status 把状态发回主进程。
         """
         if hasattr(self.ctx, "update_status"):
-            # ✅ 这里只传原始 status，由 Context 负责打包成队列消息
+            # 这里只传原始 status，由 Context 负责打包成队列消息
             self.ctx.update_status(status)
         else:
             logger = getattr(self.ctx, "logger", None)
@@ -83,26 +89,26 @@ class NekoPluginBase:
     
     def enable_file_logging(
         self,
-        log_level: Optional[int] = None,
+        log_level: Optional[str] = None,
         max_bytes: Optional[int] = None,
         backup_count: Optional[int] = None,
         max_files: Optional[int] = None,
-    ) -> logging.Logger:
+    ) -> Any:
         """
-        启用插件文件日志功能
+        启用插件文件日志功能（使用loguru）
         
         为插件创建独立的文件日志，日志文件保存在插件的logs目录下。
         日志会同时输出到文件和控制台（终端）。
         自动管理日志文件数量，支持日志轮转。
         
         Args:
-            log_level: 日志级别，默认使用配置中的PLUGIN_LOG_LEVEL
+            log_level: 日志级别（字符串："DEBUG", "INFO", "WARNING", "ERROR"），默认使用配置中的PLUGIN_LOG_LEVEL
             max_bytes: 单个日志文件最大大小（字节），默认使用配置中的PLUGIN_LOG_MAX_BYTES
             backup_count: 保留的备份文件数量，默认使用配置中的PLUGIN_LOG_BACKUP_COUNT
             max_files: 最多保留的日志文件总数，默认使用配置中的PLUGIN_LOG_MAX_FILES
             
         Returns:
-            配置好的logger实例（已添加文件handler和控制台handler）
+            配置好的loguru logger实例（已添加文件handler和控制台handler）
             
         使用示例:
             ```python
@@ -110,7 +116,7 @@ class NekoPluginBase:
                 def __init__(self, ctx):
                     super().__init__(ctx)
                     # 启用文件日志（同时输出到文件和控制台）
-                    self.file_logger = self.enable_file_logging(log_level=logging.DEBUG)
+                    self.file_logger = self.enable_file_logging(log_level="DEBUG")
                     # 使用file_logger记录日志，会同时显示在终端和保存到文件
                     self.file_logger.info("Plugin initialized")
             ```
@@ -150,4 +156,3 @@ class NekoPluginBase:
         self.file_logger = file_logger
         
         return file_logger
-

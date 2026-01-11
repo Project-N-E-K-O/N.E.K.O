@@ -293,6 +293,7 @@ pyyaml==6.0.3
     #   langchain-classic
     #   langchain-community
     #   langchain-core
+pyzmq==27.1.0
 readchar==4.2.1
     # via inquirer
 regex==2025.11.3

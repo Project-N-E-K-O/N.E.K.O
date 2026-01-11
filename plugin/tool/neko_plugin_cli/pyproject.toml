@@ -1,0 +1,16 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "neko-plugin-cli"
+version = "0.1.0"
+description = "N.E.K.O plugin CLI (Rust + pyo3 bindings)"
+requires-python = ">=3.11,<3.13"
+
+[tool.maturin]
+# The Python module name (import name)
+module-name = "neko_plugin_cli"
+# Build with pyo3 extension module
+bindings = "pyo3"
+features = ["python"]

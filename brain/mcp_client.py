@@ -35,6 +35,7 @@ class McpRouterClient:
         self.api_key = api_key
         self._initialized = False
         self._request_id = 0
+        self._closed = False  # 标记是否已关闭
         
         # 设置HTTP客户端
         # MCP Router要求同时接受JSON和SSE流
@@ -258,7 +259,51 @@ class McpRouterClient:
             }
 
     async def aclose(self):
-        await self.http.aclose()
+        """关闭 HTTP 客户端连接
+        
+        这个方法应该在事件循环关闭前被显式调用。
+        如果事件循环已经关闭，这个方法会安全地忽略错误。
+        """
+        if self._closed:
+            return
+        
+        try:
+            if self.http is not None:
+                await self.http.aclose()
+            self._closed = True
+            logger.debug("[MCP] McpRouterClient 已关闭")
+        except RuntimeError as e:
+            # 如果事件循环已经关闭，忽略这个错误
+            if "Event loop is closed" in str(e) or "loop is closed" in str(e):
+                logger.debug("[MCP] 事件循环已关闭，跳过 AsyncClient 清理")
+                self._closed = True
+            else:
+                logger.warning(f"[MCP] 关闭 AsyncClient 时出错: {e}")
+                self._closed = True
+        except Exception as e:
+            # 其他错误也记录但不抛出，确保关闭流程能继续
+            logger.warning(f"[MCP] 关闭 AsyncClient 时出现意外错误: {e}")
+            self._closed = True
+    
+    def __del__(self):
+        """析构函数：作为最后的安全网
+        
+        注意：这不是推荐的清理方式，因为：
+        1. 在事件循环关闭后，无法执行异步操作
+        2. 垃圾回收的时机不确定
+        3. 在析构函数中无法使用 await
+        
+        如果对象在显式调用 aclose() 之前被垃圾回收，这里会记录一个警告。
+        正确的做法是在 shutdown 事件中显式调用 aclose()。
+        """
+        if not self._closed and self.http is not None:
+            # 只能记录警告，无法在析构函数中执行异步清理
+            # 这应该通过 shutdown 事件处理器来避免
+            try:
+                logger.warning("[MCP] McpRouterClient 在未显式关闭的情况下被垃圾回收。"
+                             "请确保在服务器关闭时调用 aclose() 方法。")
+            except Exception:
+                pass  # 忽略所有错误，因为这是在析构函数中（可能 logger 也不可用）
 
 
 class McpToolCatalog:

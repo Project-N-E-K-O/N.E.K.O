@@ -1,0 +1,9 @@
+[load_test]
+enable = true
+auto_start = false
+duration_seconds = 5
+worker_threads = 1
+
+[plugin_runtime]
+auto_start = false
+enabled = true

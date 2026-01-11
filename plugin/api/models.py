@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import base64
 from datetime import datetime
-from typing import Any, Dict, Literal, Optional, List
+from typing import Any, Dict, Literal, Optional, List, Union
 
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import BaseModel, Field, field_serializer, model_validator
 from plugin.sdk.version import SDK_VERSION
 
 
@@ -17,6 +17,7 @@ class PluginTriggerRequest(BaseModel):
     plugin_id: str
     entry_id: str
     args: Dict[str, Any] = {}
+    lanlan_name: Optional[str] = Field(default=None, description="触发插件的猫娘角色名称")
     task_id: Optional[str] = None
 
 
@@ -32,6 +33,46 @@ class PluginTriggerResponse(BaseModel):
 
 
 # 核心数据结构
+class PluginAuthor(BaseModel):
+    """插件作者信息"""
+    name: Optional[str] = None
+    email: Optional[str] = None
+
+
+class PluginDependency(BaseModel):
+    """
+    插件依赖信息
+    
+    支持多种依赖方式：
+    1. 依赖特定插件ID：id = "plugin_id"
+    2. 依赖特定入口点：entry = "entry_id" 或 entry = "plugin_id:entry_id"（只能引用 @plugin_entry）
+    3. 依赖特定自定义事件：custom_event = "event_type:event_id" 或 custom_event = "plugin_id:event_type:event_id"（只能引用 @custom_event）
+    4. 依赖多个候选插件：providers = ["plugin1", "plugin2"]（任一满足即可）
+    
+    注意：
+    - id、entry、custom_event、providers 至少需要提供一个
+    - entry 和 custom_event 互斥（不能同时使用）
+    """
+    id: Optional[str] = None  # 依赖特定插件ID
+    entry: Optional[str] = None  # 依赖特定入口点（格式：entry_id 或 plugin_id:entry_id，只能引用 @plugin_entry）
+    custom_event: Optional[str] = None  # 依赖特定自定义事件（格式：event_type:event_id 或 plugin_id:event_type:event_id，只能引用 @custom_event）
+    providers: Optional[List[str]] = None  # 多个候选插件ID列表（任一满足即可）
+    recommended: Optional[str] = None
+    supported: Optional[str] = None
+    untested: Optional[str] = None  # 如果使用依赖配置，此字段是必须的
+    conflicts: Optional[Union[List[str], bool]] = None  # 可以是版本范围列表，或 true（表示冲突）
+
+    @model_validator(mode="after")
+    def validate_dependency_constraints(self) -> "PluginDependency":
+        if not any([self.id, self.entry, self.custom_event, self.providers]):
+            raise ValueError("至少需要提供 id、entry、custom_event 或 providers 中的一个")
+
+        if self.entry is not None and self.custom_event is not None:
+            raise ValueError("entry 和 custom_event 不能同时使用")
+
+        return self
+
+
 class PluginMeta(BaseModel):
     """插件元数据"""
     id: str
@@ -44,6 +85,8 @@ class PluginMeta(BaseModel):
     sdk_untested: Optional[str] = None
     sdk_conflicts: List[str] = Field(default_factory=list)
     input_schema: Dict[str, Any] = Field(default_factory=lambda: {"type": "object", "properties": {}})
+    author: Optional[PluginAuthor] = None
+    dependencies: List[PluginDependency] = Field(default_factory=list)
 
 
 class HealthCheckResponse(BaseModel):
