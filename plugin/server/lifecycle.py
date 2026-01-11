@@ -53,6 +53,34 @@ async def startup() -> None:
     except Exception:
         pass
 
+    try:
+        class InterceptHandler(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                try:
+                    level = record.levelname
+                    frame, depth = logging.currentframe(), 2
+                    while frame and frame.f_code.co_filename == logging.__file__:
+                        frame = frame.f_back
+                        depth += 1
+                    logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+                except Exception:
+                    pass
+
+        logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
+
+        for logger_name in (
+            "uvicorn",
+            "uvicorn.error",
+            "uvicorn.access",
+            "fastapi",
+            "user_plugin_server",
+        ):
+            logging_logger = logging.getLogger(logger_name)
+            logging_logger.handlers = [InterceptHandler()]
+            logging_logger.propagate = False
+    except Exception:
+        pass
+
     # 确保插件响应映射在主进程中提前初始化，避免子进程各自创建新的 Manager 字典
     _ = state.plugin_response_map  # 预初始化共享响应映射
     

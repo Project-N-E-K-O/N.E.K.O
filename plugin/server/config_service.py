@@ -3,7 +3,6 @@
 
 提供插件配置的读取和更新功能。
 """
-import logging
 import io
 import os
 import re
@@ -12,25 +11,32 @@ import tempfile
 import threading
 from pathlib import Path
 from typing import Dict, Any, Optional
+from typing import cast
 from datetime import datetime
 from contextlib import contextmanager
+
+from loguru import logger
 
 from fastapi import HTTPException
 
 from plugin.settings import PLUGIN_CONFIG_ROOT
 
 # 跨平台文件锁支持
+msvcrt = None
+fcntl = None
 try:
     if sys.platform == 'win32':
-        import msvcrt
+        import msvcrt as _msvcrt
+
+        msvcrt = _msvcrt
         _has_file_lock = True
     else:
-        import fcntl
+        import fcntl as _fcntl
+
+        fcntl = _fcntl
         _has_file_lock = True
 except ImportError:
     _has_file_lock = False
-
-logger = logging.getLogger("user_plugin_server")
 
 # 进程级别的配置更新锁(每个插件ID一个锁,避免不同插件之间的不必要阻塞)
 _config_update_locks: Dict[str, threading.Lock] = {}
@@ -56,6 +62,9 @@ def file_lock(file_obj):
     
     try:
         if sys.platform == 'win32':
+            if msvcrt is None:
+                yield
+                return
             # Windows 使用 msvcrt 锁定整个文件
             # 获取文件大小以锁定整个文件
             file_obj.seek(0, 2)  # 移动到文件末尾
@@ -68,11 +77,16 @@ def file_lock(file_obj):
                 # 注意:这会在文件开头锁定 1 个字节,即使文件是空的
                 msvcrt.locking(file_obj.fileno(), msvcrt.LK_LOCK, 1)
         else:
+            if fcntl is None:
+                yield
+                return
             # Unix/Linux/macOS 使用 fcntl
             fcntl.flock(file_obj.fileno(), fcntl.LOCK_EX)
         yield
     finally:
         if sys.platform == 'win32':
+            if msvcrt is None:
+                return
             try:
                 file_obj.seek(0, 2)
                 file_size = file_obj.tell()
@@ -85,6 +99,8 @@ def file_lock(file_obj):
             except Exception:
                 pass
         else:
+            if fcntl is None:
+                return
             try:
                 fcntl.flock(file_obj.fileno(), fcntl.LOCK_UN)
             except Exception:
@@ -303,7 +319,7 @@ def _resolve_profile_path(path_str: str, base_dir: Path) -> Optional[Path]:
             p = base_dir / p
         return p.resolve()
     except Exception:
-        logger.warning("Failed to resolve user profile path %r for base_dir %s", path_str, base_dir)
+        logger.warning("Failed to resolve user profile path {!r} for base_dir {}", path_str, base_dir)
         return None
 
 
@@ -318,10 +334,7 @@ def _load_profiles_cfg_from_file(
         return None
 
     if tomllib is None:
-        logger.warning(
-            "Plugin %s: TOML library not available; cannot load profiles.toml",
-            plugin_id,
-        )
+        logger.warning("Plugin {}: TOML library not available; cannot load profiles.toml", plugin_id)
         return None
 
     try:
@@ -329,7 +342,7 @@ def _load_profiles_cfg_from_file(
             data = tomllib.load(pf)
     except Exception as e:
         logger.warning(
-            "Plugin %s: failed to load profiles.toml from %s: %s; falling back to plugin.config_profiles",
+            "Plugin {}: failed to load profiles.toml from {}: {}; falling back to plugin.config_profiles",
             plugin_id,
             profiles_path,
             e,
@@ -338,7 +351,7 @@ def _load_profiles_cfg_from_file(
 
     if not isinstance(data, dict):
         logger.warning(
-            "Plugin %s: profiles.toml at %s is not a TOML table at root; got %r; falling back to plugin.config_profiles",
+            "Plugin {}: profiles.toml at {} is not a TOML table at root; got {!r}; falling back to plugin.config_profiles",
             plugin_id,
             profiles_path,
             type(data).__name__,
@@ -348,14 +361,14 @@ def _load_profiles_cfg_from_file(
     profiles_cfg = data.get("config_profiles")
     if not isinstance(profiles_cfg, dict):
         logger.warning(
-            "Plugin %s: 'config_profiles' table not found or invalid in profiles.toml at %s; falling back to plugin.config_profiles",
+            "Plugin {}: 'config_profiles' table not found or invalid in profiles.toml at {}; falling back to plugin.config_profiles",
             plugin_id,
             profiles_path,
         )
         return None
 
     logger.info(
-        "Plugin %s: using profiles.toml at %s for config_profiles; plugin.toml [plugin.config_profiles] will be ignored",
+        "Plugin {}: using profiles.toml at {} for config_profiles; plugin.toml [plugin.config_profiles] will be ignored",
         plugin_id,
         profiles_path,
     )
@@ -417,8 +430,7 @@ def _apply_user_config_profiles(
     files_map = profiles_cfg.get("files")
     if not isinstance(files_map, dict):
         logger.warning(
-            "Plugin %s: [plugin.config_profiles.files] must be a table mapping profile names to paths; "
-            "got %r",
+            "Plugin {}: [plugin.config_profiles.files] must be a table mapping profile names to paths; got {!r}",
             plugin_id,
             type(files_map).__name__ if files_map is not None else None,
         )
@@ -427,7 +439,7 @@ def _apply_user_config_profiles(
     raw_path = files_map.get(active_name)
     if not isinstance(raw_path, str) or not raw_path.strip():
         logger.warning(
-            "Plugin %s: active profile '%s' not found in [plugin.config_profiles.files]",
+            "Plugin {}: active profile '{}' not found in [plugin.config_profiles.files]",
             plugin_id,
             active_name,
         )
@@ -440,7 +452,7 @@ def _apply_user_config_profiles(
 
     if not profile_path.exists():
         logger.warning(
-            "Plugin %s: user profile file '%s' (resolved: %s) does not exist; using base config only",
+            "Plugin {}: user profile file '{}' (resolved: {}) does not exist; using base config only",
             plugin_id,
             raw_path,
             profile_path,
@@ -449,7 +461,7 @@ def _apply_user_config_profiles(
 
     if tomllib is None:
         logger.warning(
-            "Plugin %s: TOML library not available; cannot load user profile %s",
+            "Plugin {}: TOML library not available; cannot load user profile {}",
             plugin_id,
             profile_path,
         )
@@ -460,7 +472,7 @@ def _apply_user_config_profiles(
             overlay = tomllib.load(pf)
     except Exception as e:
         logger.warning(
-            "Plugin %s: failed to load user profile %s: %s; using base config only",
+            "Plugin {}: failed to load user profile {}: {}; using base config only",
             plugin_id,
             profile_path,
             e,
@@ -469,7 +481,7 @@ def _apply_user_config_profiles(
 
     if not isinstance(overlay, dict):
         logger.warning(
-            "Plugin %s: user profile %s is not a TOML table at root; got %r",
+            "Plugin {}: user profile {} is not a TOML table at root; got {!r}",
             plugin_id,
             profile_path,
             type(overlay).__name__,
@@ -479,7 +491,7 @@ def _apply_user_config_profiles(
     # 安全约束：禁止用户 profile 覆盖 [plugin] 段
     if "plugin" in overlay:
         logger.error(
-            "Plugin %s: user profile %s attempts to override [plugin] section; rejecting config",
+            "Plugin {}: user profile {} attempts to override [plugin] section; rejecting config",
             plugin_id,
             profile_path,
         )
@@ -503,7 +515,7 @@ def _apply_user_config_profiles(
             merged[key] = value
 
     logger.info(
-        "Plugin %s: applied user config profile '%s' from %s",
+        "Plugin {}: applied user config profile '{}' from {}",
         plugin_id,
         active_name,
         profile_path,
@@ -967,9 +979,11 @@ def replace_plugin_config(plugin_id: str, new_config: Dict[str, Any]) -> Dict[st
                 with file_lock(f):
                     current_config = tomllib.load(f)
 
-                    plugin_section = new_config.get("plugin") if isinstance(new_config.get("plugin"), dict) else None
-                    if plugin_section is None:
-                        plugin_section = {}
+                    plugin_section: Dict[str, Any] = {}
+                    plugin_section_raw = new_config.get("plugin")
+                    if isinstance(plugin_section_raw, dict):
+                        plugin_section = plugin_section_raw
+                    else:
                         new_config = {**new_config, "plugin": plugin_section}
 
                     current_plugin_section = (
@@ -978,9 +992,9 @@ def replace_plugin_config(plugin_id: str, new_config: Dict[str, Any]) -> Dict[st
 
                     _validate_protected_fields_unchanged(current_config, new_config)
 
-                    if "id" not in plugin_section and "id" in current_plugin_section:
+                    if plugin_section.get("id") is None and isinstance(current_plugin_section, dict) and "id" in current_plugin_section:
                         plugin_section["id"] = current_plugin_section.get("id")
-                    if "entry" not in plugin_section and "entry" in current_plugin_section:
+                    if plugin_section.get("entry") is None and isinstance(current_plugin_section, dict) and "entry" in current_plugin_section:
                         plugin_section["entry"] = current_plugin_section.get("entry")
 
                     config_dir = config_path.parent
@@ -1171,7 +1185,8 @@ def update_plugin_config_toml(plugin_id: str, toml_text: str) -> Dict[str, Any]:
                     current_config = tomllib.load(f)
 
                     def _get_protected(cfg: Dict[str, Any], key: str) -> Any:
-                        plugin_section = cfg.get("plugin") if isinstance(cfg.get("plugin"), dict) else {}
+                        raw = cfg.get("plugin")
+                        plugin_section = raw if isinstance(raw, dict) else {}
                         return plugin_section.get(key)
 
                     # 只要 value 变化就拒绝
@@ -1245,7 +1260,8 @@ def _validate_protected_fields_unchanged(
     new_config: Dict[str, Any],
 ) -> None:
     def _get(cfg: Dict[str, Any], key: str) -> Any:
-        plugin_section = cfg.get("plugin") if isinstance(cfg.get("plugin"), dict) else {}
+        raw = cfg.get("plugin")
+        plugin_section = raw if isinstance(raw, dict) else {}
         return plugin_section.get(key)
 
     current_id = _get(current_config, "id")

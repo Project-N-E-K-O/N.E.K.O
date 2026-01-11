@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
+from loguru import logger
+
 from plugin.core.state import state
 from plugin.settings import PLUGIN_LOG_BUS_SUBSCRIPTIONS, PLUGIN_BUS_CHANGE_LOG_DEDUP_WINDOW_SECONDS
-
-logger = logging.getLogger("plugin.bus_subscriptions")
 
 
 @dataclass(frozen=True)
@@ -48,7 +47,7 @@ class BusSubscriptionManager:
             self._unsubs.append(state.bus_change_hub.subscribe("events", _on_change_factory("events")))
             self._unsubs.append(state.bus_change_hub.subscribe("lifecycle", _on_change_factory("lifecycle")))
         except Exception as e:
-            logger.exception("Failed to subscribe bus_change_hub: %s", e)
+            logger.opt(exception=True).exception("Failed to subscribe bus_change_hub: {}", e)
 
         self._task = asyncio.create_task(self._loop())
 
@@ -137,7 +136,7 @@ class BusSubscriptionManager:
                         # 输出上一条日志的重复统计（如果有）
                         if last_key is not None and self._last_log_repeat_count > 0:
                             logger.info(
-                                "Pushed bus.change (suppressed %d duplicate entries for plugin=%s sub_id=%s bus=%s op=%s)",
+                                "Pushed bus.change (suppressed {} duplicate entries for plugin={} sub_id={} bus={} op={})",
                                 self._last_log_repeat_count,
                                 last_key[0],
                                 last_key[1],
@@ -150,7 +149,7 @@ class BusSubscriptionManager:
                         self._last_log_repeat_count = 0
 
                     logger.info(
-                        "Pushed bus.change to plugin=%s sub_id=%s bus=%s op=%s",
+                        "Pushed bus.change to plugin={} sub_id={} bus={} op={}",
                         plugin_id,
                         sub_id,
                         delta.bus,

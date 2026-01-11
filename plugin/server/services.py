@@ -5,7 +5,6 @@
 """
 import asyncio
 import base64
-import logging
 import os
 import queue as _queue
 import re
@@ -39,7 +38,7 @@ from plugin.settings import (
 from plugin.sdk.errors import ErrorCode
 from plugin.sdk.responses import fail, is_envelope
 
-logger = logging.getLogger("user_plugin_server")
+logger = loguru_logger
 
 _mq_full_last_warn_ts: float = 0.0
 _mq_full_dropped: int = 0
@@ -63,7 +62,7 @@ def validate_and_advance_push_seq(*, plugin_id: str, seq: int) -> None:
             _push_expected_seq[pid] = seq_i + 1
             return
         if seq_i != int(expected):
-            loguru_logger.warning(
+            logger.opt(exception=True).warning(
                 "[MESSAGE PUSH] seq mismatch: plugin={} expected={} got={}",
                 pid,
                 int(expected),
@@ -383,7 +382,7 @@ def build_plugin_list() -> List[Dict[str, Any]]:
             result.append(plugin_info)
             
         except (AttributeError, KeyError, TypeError) as e:
-            logger.warning(f"Error processing plugin {plugin_id} metadata: {e}", exc_info=True)
+            logger.opt(exception=True).warning("Error processing plugin {} metadata: {}", plugin_id, e)
             # 即使元数据有问题，也返回基本信息
             result.append({
                 "id": plugin_id,
@@ -392,7 +391,7 @@ def build_plugin_list() -> List[Dict[str, Any]]:
                 "entries": [],
             })
     
-    logger.debug("Loaded plugins: %s", result)
+    logger.debug("Loaded plugins: {}", result)
     return result
 
 
@@ -421,13 +420,15 @@ async def trigger_plugin(
     """
     # 关键日志：记录触发请求
     logger.info(
-        "[plugin_trigger] Processing trigger: plugin_id=%s, entry_id=%s, task_id=%s",
-        plugin_id, entry_id, task_id
+        "[plugin_trigger] Processing trigger: plugin_id={}, entry_id={}, task_id={}",
+        plugin_id,
+        entry_id,
+        task_id,
     )
     
     # 详细参数信息使用 DEBUG
     logger.debug(
-        "[plugin_trigger] Args: type=%s, keys=%s, content=%s",
+        "[plugin_trigger] Args: type={}, keys={}, content={}",
         type(args),
         list(args.keys()) if isinstance(args, dict) else "N/A",
         args,
@@ -514,7 +515,7 @@ async def trigger_plugin(
                 plugin_forward_error=None,
             )
     except (AttributeError, RuntimeError) as e:
-        logger.error(f"Failed to check health for plugin {plugin_id}: {e}")
+        logger.opt(exception=True).error(f"Failed to check health for plugin {plugin_id}: {e}")
         plugin_response = fail(
             ErrorCode.NOT_READY,
             f"Plugin '{plugin_id}' health check failed",
@@ -536,7 +537,7 @@ async def trigger_plugin(
     plugin_response: Any = None
     
     logger.debug(
-        "[plugin_trigger] Calling host.trigger: entry_id=%s, args=%s",
+        "[plugin_trigger] Calling host.trigger: entry_id={}, args={}",
         entry_id,
         args,
     )
@@ -544,11 +545,11 @@ async def trigger_plugin(
     try:
         plugin_response = await host.trigger(entry_id, args, timeout=PLUGIN_EXECUTION_TIMEOUT)
         logger.debug(
-            "[plugin_trigger] Plugin response: %s",
+            "[plugin_trigger] Plugin response: {}",
             str(plugin_response)[:500] if plugin_response else None,
         )
     except (TimeoutError, asyncio.TimeoutError) as e:
-        logger.error(f"Plugin {plugin_id} entry {entry_id} timed out: {e}")
+        logger.opt(exception=True).error(f"Plugin {plugin_id} entry {entry_id} timed out: {e}")
         plugin_response = fail(
             ErrorCode.TIMEOUT,
             "Plugin execution timed out",

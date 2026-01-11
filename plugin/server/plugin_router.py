@@ -4,11 +4,12 @@
 处理插件之间的通信请求，将请求路由到目标插件的 cmd_queue。
 """
 import asyncio
-import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from queue import Empty
 from typing import Dict, Any, Optional
+
+from loguru import logger
 
 from plugin.core.state import state
 from plugin.server.requests.registry import build_request_handlers
@@ -17,8 +18,6 @@ from plugin.settings import (
     PLUGIN_ZMQ_IPC_ENDPOINT,
     PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT,
 )
-
-logger = logging.getLogger("plugin.router")
 
 
 class PluginRouter:
@@ -70,11 +69,11 @@ class PluginRouter:
                     request_handler=self._handle_zmq_request,
                 )
                 self._zmq_task = asyncio.create_task(self._zmq_server.serve_forever(shutdown_event))
-                logger.warning("ZeroMQ IPC server started at %s", PLUGIN_ZMQ_IPC_ENDPOINT)
+                logger.warning("ZeroMQ IPC server started at {}", PLUGIN_ZMQ_IPC_ENDPOINT)
             except Exception as e:
                 self._zmq_server = None
                 self._zmq_task = None
-                logger.exception("Failed to start ZeroMQ IPC server: %s", e)
+                logger.opt(exception=True).exception("Failed to start ZeroMQ IPC server: {}", e)
 
         if PLUGIN_ZMQ_IPC_ENABLED:
             try:
@@ -92,7 +91,7 @@ class PluginRouter:
                     declared_count = msg.get("count")
                     if isinstance(declared_count, int) and int(declared_count) != len(items):
                         logger.warning(
-                            "[MESSAGE_PUSH_BATCH] count mismatch from=%s declared=%s actual=%s",
+                            "[MESSAGE_PUSH_BATCH] count mismatch from={} declared={} actual={}",
                             from_plugin,
                             declared_count,
                             len(items),
@@ -119,7 +118,7 @@ class PluginRouter:
                             try:
                                 if int(first_seq) != int(seq_list[0]):
                                     logger.warning(
-                                        "[MESSAGE_PUSH_BATCH] first_seq mismatch from=%s declared=%s actual=%s",
+                                        "[MESSAGE_PUSH_BATCH] first_seq mismatch from={} declared={} actual={}",
                                         from_plugin,
                                         first_seq,
                                         seq_list[0],
@@ -130,7 +129,7 @@ class PluginRouter:
                             try:
                                 if int(last_seq) != int(seq_list[-1]):
                                     logger.warning(
-                                        "[MESSAGE_PUSH_BATCH] last_seq mismatch from=%s declared=%s actual=%s",
+                                        "[MESSAGE_PUSH_BATCH] last_seq mismatch from={} declared={} actual={}",
                                         from_plugin,
                                         last_seq,
                                         seq_list[-1],
@@ -141,7 +140,7 @@ class PluginRouter:
                         for i in range(1, len(seq_list)):
                             if seq_list[i] <= seq_list[i - 1]:
                                 logger.warning(
-                                    "[MESSAGE_PUSH_BATCH] seq not strictly increasing from=%s prev=%s curr=%s",
+                                    "[MESSAGE_PUSH_BATCH] seq not strictly increasing from={} prev={} curr={}",
                                     from_plugin,
                                     seq_list[i - 1],
                                     seq_list[i],
@@ -186,11 +185,11 @@ class PluginRouter:
 
                 self._push_pull_server = ZmqMessagePushPullConsumer(PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT, _handle_push_batch)
                 self._push_pull_task = asyncio.create_task(self._push_pull_server.serve_forever(shutdown_event))
-                logger.warning("ZeroMQ PUSH server started at %s", PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT)
+                logger.warning("ZeroMQ PUSH server started at {}", PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT)
             except Exception as e:
                 self._push_pull_server = None
                 self._push_pull_task = None
-                logger.exception("Failed to start ZeroMQ PUSH server: %s", e)
+                logger.opt(exception=True).exception("Failed to start ZeroMQ PUSH server: {}", e)
         logger.info("Plugin router started")
     
     async def stop(self) -> None:
