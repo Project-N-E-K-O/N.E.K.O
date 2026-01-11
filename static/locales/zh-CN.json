@@ -702,17 +702,6 @@
     "argsJson": "参数 (JSON)",
     "invalidJsonArgs": "无效的 JSON 参数"
   },
-  "plugin": {
-    "addProfile": {
-      "prompt": "请输入新的 Profile 名称",
-      "title": "新增 Profile",
-      "inputError": "名称不能为空且不能包含空白字符"
-    },
-    "removeProfile": {
-      "confirm": "确定要删除 Profile \"{{name}}\" 吗？",
-      "title": "删除 Profile"
-    }
-  },
   "character": {
     "manager": "角色管理",
     "name": "名称",

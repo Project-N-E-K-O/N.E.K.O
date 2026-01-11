@@ -12,6 +12,8 @@ import asyncio
 import sys
 from pathlib import Path
 
+from loguru import logger as logger
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
@@ -125,8 +127,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="N.E.K.O User Plugin Server", lifespan=lifespan)
-# 使用配置好的服务器 logger
-logger = server_logger
+# 使用 loguru logger（支持 "{}" 风格参数化日志）
 
 # 配置 CORS
 app.add_middleware(
@@ -398,7 +399,7 @@ async def plugin_trigger(payload: PluginTriggerRequest, request: Request):
     except (PluginError, TimeoutError, ConnectionError, OSError) as e:
         raise handle_plugin_error(e, "plugin_trigger", 500) from e
     except Exception as e:
-        logger.exception("plugin_trigger: Unexpected error type")
+        logger.exception("plugin_trigger: Unexpected error")
         raise handle_plugin_error(e, "plugin_trigger", 500) from e
 
 
@@ -435,7 +436,7 @@ async def get_plugin_messages(
     except (PluginError, ValueError, AttributeError) as e:
         raise handle_plugin_error(e, "Failed to get plugin messages", 500) from e
     except Exception as e:
-        logger.exception("Failed to get plugin messages: Unexpected error type")
+        logger.exception("Failed to get plugin messages: Unexpected error")
         raise handle_plugin_error(e, "Failed to get plugin messages", 500) from e
 
 
@@ -479,7 +480,7 @@ async def plugin_push_message(payload: PluginPushMessageRequest):
     except (PluginError, ValueError, AttributeError, KeyError) as e:
         raise handle_plugin_error(e, "plugin_push", 500) from e
     except Exception as e:
-        logger.exception("plugin_push: Unexpected error type")
+        logger.exception("plugin_push: Unexpected error")
         raise handle_plugin_error(e, "plugin_push", 500) from e
 
 
@@ -562,7 +563,7 @@ async def start_plugin_endpoint(plugin_id: str, _: str = require_admin):
     except (PluginError, ValueError, AttributeError, OSError) as e:
         raise handle_plugin_error(e, f"Failed to start plugin {plugin_id}", 500) from e
     except Exception as e:
-        logger.exception(f"Failed to start plugin {plugin_id}: Unexpected error type")
+        logger.exception(f"Failed to start plugin {plugin_id}: Unexpected error")
         raise handle_plugin_error(e, f"Failed to start plugin {plugin_id}", 500) from e
 
 
@@ -581,7 +582,7 @@ async def stop_plugin_endpoint(plugin_id: str, _: str = require_admin):
     except (PluginError, OSError, TimeoutError) as e:
         raise handle_plugin_error(e, f"Failed to stop plugin {plugin_id}", 500) from e
     except Exception as e:
-        logger.exception(f"Failed to stop plugin {plugin_id}: Unexpected error type")
+        logger.exception(f"Failed to stop plugin {plugin_id}: Unexpected error")
         raise handle_plugin_error(e, f"Failed to stop plugin {plugin_id}", 500) from e
 
 
@@ -600,7 +601,7 @@ async def reload_plugin_endpoint(plugin_id: str, _: str = require_admin):
     except (PluginError, OSError, TimeoutError) as e:
         raise handle_plugin_error(e, f"Failed to reload plugin {plugin_id}", 500) from e
     except Exception as e:
-        logger.exception(f"Failed to reload plugin {plugin_id}: Unexpected error type")
+        logger.exception(f"Failed to reload plugin {plugin_id}: Unexpected error")
         raise handle_plugin_error(e, f"Failed to reload plugin {plugin_id}", 500) from e
 
 
@@ -664,7 +665,7 @@ async def get_all_plugin_metrics(_: str = require_admin):
             "time": now_iso()
         }
     except Exception:
-        logger.exception("Failed to get plugin metrics: Unexpected error type")
+        logger.exception("Failed to get plugin metrics: Unexpected error")
         # 返回空结果而不是抛出异常，避免前端显示错误
         return {
             "metrics": [],
@@ -772,7 +773,7 @@ async def get_plugin_metrics(plugin_id: str, _: str = require_admin):
     except (PluginError, ValueError, AttributeError, KeyError) as e:
         raise handle_plugin_error(e, f"Failed to get metrics for plugin {plugin_id}", 500) from e
     except Exception as e:
-        logger.exception(f"Failed to get metrics for plugin {plugin_id}: Unexpected error type")
+        logger.exception(f"Failed to get metrics for plugin {plugin_id}: Unexpected error")
         raise handle_plugin_error(e, f"Failed to get metrics for plugin {plugin_id}", 500) from e
 
 
@@ -808,7 +809,7 @@ async def get_plugin_metrics_history(
     except (PluginError, ValueError, AttributeError, KeyError) as e:
         raise handle_plugin_error(e, f"Failed to get metrics history for plugin {plugin_id}", 500) from e
     except Exception as e:
-        logger.exception(f"Failed to get metrics history for plugin {plugin_id}: Unexpected error type")
+        logger.exception(f"Failed to get metrics history for plugin {plugin_id}: Unexpected error")
         raise handle_plugin_error(e, f"Failed to get metrics history for plugin {plugin_id}", 500) from e
 
 
@@ -829,7 +830,7 @@ async def get_plugin_config_endpoint(plugin_id: str, _: str = require_admin):
     except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
         raise handle_plugin_error(e, f"Failed to get config for plugin {plugin_id}", 500) from e
     except Exception as e:
-        logger.exception(f"Failed to get config for plugin {plugin_id}: Unexpected error type")
+        logger.exception(f"Failed to get config for plugin {plugin_id}: Unexpected error")
         raise handle_plugin_error(e, f"Failed to get config for plugin {plugin_id}", 500) from e
 
 
@@ -849,7 +850,7 @@ async def get_plugin_config_toml_endpoint(plugin_id: str, _: str = require_admin
     except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
         raise handle_plugin_error(e, f"Failed to get TOML config for plugin {plugin_id}", 500) from e
     except Exception as e:
-        logger.exception(f"Failed to get TOML config for plugin {plugin_id}: Unexpected error type")
+        logger.exception(f"Failed to get TOML config for plugin {plugin_id}: Unexpected error")
         raise handle_plugin_error(e, f"Failed to get TOML config for plugin {plugin_id}", 500) from e
 
 
@@ -1105,7 +1106,7 @@ async def update_plugin_config_endpoint(plugin_id: str, payload: ConfigUpdateReq
     except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
         raise handle_plugin_error(e, f"Failed to update config for plugin {plugin_id}", 500) from e
     except Exception as e:
-        logger.exception(f"Failed to update config for plugin {plugin_id}: Unexpected error type")
+        logger.exception(f"Failed to update config for plugin {plugin_id}: Unexpected error")
         raise handle_plugin_error(e, f"Failed to update config for plugin {plugin_id}", 500) from e
 
 
@@ -1126,7 +1127,7 @@ async def parse_toml_to_config_endpoint(plugin_id: str, payload: ConfigTomlParse
     except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
         raise handle_plugin_error(e, f"Failed to parse TOML for plugin {plugin_id}", 500) from e
     except Exception as e:
-        logger.exception(f"Failed to parse TOML for plugin {plugin_id}: Unexpected error type")
+        logger.exception(f"Failed to parse TOML for plugin {plugin_id}: Unexpected error")
         raise handle_plugin_error(e, f"Failed to parse TOML for plugin {plugin_id}", 500) from e
 
 
@@ -1147,7 +1148,7 @@ async def render_config_to_toml_endpoint(plugin_id: str, payload: ConfigTomlRend
     except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
         raise handle_plugin_error(e, f"Failed to render TOML for plugin {plugin_id}", 500) from e
     except Exception as e:
-        logger.exception(f"Failed to render TOML for plugin {plugin_id}: Unexpected error type")
+        logger.exception(f"Failed to render TOML for plugin {plugin_id}: Unexpected error")
         raise handle_plugin_error(e, f"Failed to render TOML for plugin {plugin_id}", 500) from e
 
 
@@ -1166,6 +1167,9 @@ async def update_plugin_config_toml_endpoint(plugin_id: str, payload: ConfigToml
     except HTTPException:
         raise
     except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
+        raise handle_plugin_error(e, f"Failed to update TOML config for plugin {plugin_id}", 500) from e
+    except Exception as e:
+        logger.exception(f"Failed to update TOML config for plugin {plugin_id}: Unexpected error")
         raise handle_plugin_error(e, f"Failed to update TOML config for plugin {plugin_id}", 500) from e
 
 
@@ -1186,7 +1190,7 @@ async def get_plugin_base_config_endpoint(plugin_id: str, _: str = require_admin
     except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
         raise handle_plugin_error(e, f"Failed to get base config for plugin {plugin_id}", 500) from e
     except Exception as e:
-        logger.exception(f"Failed to get base config for plugin {plugin_id}: Unexpected error type")
+        logger.exception(f"Failed to get base config for plugin {plugin_id}: Unexpected error")
         raise handle_plugin_error(e, f"Failed to get base config for plugin {plugin_id}", 500) from e
 
 
@@ -1207,7 +1211,7 @@ async def get_plugin_profiles_state_endpoint(plugin_id: str, _: str = require_ad
     except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
         raise handle_plugin_error(e, f"Failed to get profiles state for plugin {plugin_id}", 500) from e
     except Exception as e:
-        logger.exception(f"Failed to get profiles state for plugin {plugin_id}: Unexpected error type")
+        logger.exception(f"Failed to get profiles state for plugin {plugin_id}: Unexpected error")
         raise handle_plugin_error(e, f"Failed to get profiles state for plugin {plugin_id}", 500) from e
 
 
@@ -1228,11 +1232,7 @@ async def get_plugin_profile_config_endpoint(plugin_id: str, profile_name: str, 
     except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
         raise handle_plugin_error(e, f"Failed to get profile '{profile_name}' for plugin {plugin_id}", 500) from e
     except Exception as e:
-        logger.exception(
-            "Failed to get profile '%s' for plugin %s: Unexpected error type",
-            profile_name,
-            plugin_id,
-        )
+        logger.exception(f"Failed to get profile '{profile_name}' for plugin {plugin_id}: Unexpected error")
         raise handle_plugin_error(e, f"Failed to get profile '{profile_name}' for plugin {plugin_id}", 500) from e
 
 
@@ -1264,11 +1264,7 @@ async def upsert_plugin_profile_config_endpoint(
     except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
         raise handle_plugin_error(e, f"Failed to upsert profile '{profile_name}' for plugin {plugin_id}", 500) from e
     except Exception as e:
-        logger.exception(
-            "Failed to upsert profile '%s' for plugin %s: Unexpected error type",
-            profile_name,
-            plugin_id,
-        )
+        logger.exception(f"Failed to upsert profile '{profile_name}' for plugin {plugin_id}: Unexpected error")
         raise handle_plugin_error(e, f"Failed to upsert profile '{profile_name}' for plugin {plugin_id}", 500) from e
 
 
@@ -1289,11 +1285,7 @@ async def delete_plugin_profile_config_endpoint(plugin_id: str, profile_name: st
     except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
         raise handle_plugin_error(e, f"Failed to delete profile '{profile_name}' for plugin {plugin_id}", 500) from e
     except Exception as e:
-        logger.exception(
-            "Failed to delete profile '%s' for plugin %s: Unexpected error type",
-            profile_name,
-            plugin_id,
-        )
+        logger.exception(f"Failed to delete profile '{profile_name}' for plugin {plugin_id}: Unexpected error")
         raise handle_plugin_error(e, f"Failed to delete profile '{profile_name}' for plugin {plugin_id}", 500) from e
 
 
@@ -1314,15 +1306,8 @@ async def set_plugin_active_profile_endpoint(plugin_id: str, profile_name: str, 
     except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
         raise handle_plugin_error(e, f"Failed to set active profile '{profile_name}' for plugin {plugin_id}", 500) from e
     except Exception as e:
-        logger.exception(
-            "Failed to set active profile '%s' for plugin %s: Unexpected error type",
-            profile_name,
-            plugin_id,
-        )
+        logger.exception(f"Failed to set active profile '{profile_name}' for plugin {plugin_id}: Unexpected error")
         raise handle_plugin_error(e, f"Failed to set active profile '{profile_name}' for plugin {plugin_id}", 500) from e
-    except Exception as e:
-        logger.exception(f"Failed to update TOML config for plugin {plugin_id}: Unexpected error type")
-        raise handle_plugin_error(e, f"Failed to update TOML config for plugin {plugin_id}", 500) from e
 
 
 # ========== 日志路由 ==========

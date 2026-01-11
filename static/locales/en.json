@@ -702,17 +702,6 @@
     "argsJson": "Args (JSON)",
     "invalidJsonArgs": "Invalid JSON args"
   },
-  "plugin": {
-    "addProfile": {
-      "prompt": "Please enter a new profile name",
-      "title": "Add Profile",
-      "inputError": "Name cannot be empty and must not contain whitespace"
-    },
-    "removeProfile": {
-      "confirm": "Are you sure you want to delete Profile \"{{name}}\"?",
-      "title": "Delete Profile"
-    }
-  },
   "character": {
     "manager": "Character Manager",
     "name": "Name",
