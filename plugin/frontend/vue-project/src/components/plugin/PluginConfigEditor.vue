@@ -89,9 +89,9 @@
 
         <div class="diff-container">
           <div class="diff-header">
-            <div class="diff-title">当前生效配置</div>
+            <div class="diff-title">{{ t('plugins.currentEffectiveConfig') }}</div>
             <div class="diff-title">
-              应用 Profile 后预览
+              {{ t('plugins.profilePreview') }}
               <span v-if="selectedProfileName"> ({{ selectedProfileName }})</span>
             </div>
           </div>
@@ -121,7 +121,7 @@
         <el-divider style="margin: 16px 0" />
 
         <div>
-          <div class="preview-title">编辑当前 Profile 覆盖配置</div>
+          <div class="preview-title">{{ t('plugins.editProfileOverlay') }}</div>
           <PluginConfigForm
             :model-value="profileDraftConfig"
             :baseline-value="baseConfig"
@@ -454,7 +454,7 @@ async function selectProfile(name: string) {
 async function addProfile() {
   try {
     const { value } = await ElMessageBox.prompt(t('plugin.addProfile.prompt'), t('plugin.addProfile.title'), {
-      inputPattern: /^[A-Za-z0-9_-]+$/,
+      inputPattern: /^(?!\s*$).+/u,
       inputErrorMessage: t('plugin.addProfile.inputError')
     })
     const name = String(value || '').trim()

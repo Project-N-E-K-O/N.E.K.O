@@ -700,7 +700,10 @@
     "invalidRegex": "Invalid regular expression",
     "hoverToShowFilter": "Hover to show filter options…",
     "argsJson": "Args (JSON)",
-    "invalidJsonArgs": "Invalid JSON args"
+    "invalidJsonArgs": "Invalid JSON args",
+    "currentEffectiveConfig": "Current effective config",
+    "profilePreview": "Preview after applying profile",
+    "editProfileOverlay": "Edit current profile override config"
   },
   "character": {
     "manager": "Character Manager",

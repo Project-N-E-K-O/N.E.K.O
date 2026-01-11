@@ -700,7 +700,10 @@
     "invalidRegex": "无效的正则表达式",
     "hoverToShowFilter": "悬停以显示过滤选项…",
     "argsJson": "参数 (JSON)",
-    "invalidJsonArgs": "无效的 JSON 参数"
+    "invalidJsonArgs": "无效的 JSON 参数",
+    "currentEffectiveConfig": "当前生效配置",
+    "profilePreview": "应用 Profile 后预览",
+    "editProfileOverlay": "编辑当前 Profile 覆盖配置"
   },
   "character": {
     "manager": "角色管理",

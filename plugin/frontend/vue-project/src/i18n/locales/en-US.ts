@@ -54,7 +54,7 @@ export default {
     addProfile: {
       prompt: 'Enter a new profile name',
       title: 'Add Profile',
-      inputError: 'Only letters, digits, underscore (_) and hyphen (-) are allowed'
+      inputError: 'Name cannot be empty or whitespace only'
     },
     removeProfile: {
       confirm: 'Are you sure you want to delete profile "{name}"?',
@@ -111,7 +111,7 @@ export default {
     configPath: 'Config File',
     lastModified: 'Last Modified',
     configEditorPlaceholder: 'Please enter plugin config in TOML format',
-    configInvalidJson: 'Invalid TOML format. Please fix it before saving.',
+    configInvalidToml: 'Invalid TOML format. Please fix it before saving.',
     configLoadFailed: 'Failed to load plugin config',
     configSaveFailed: 'Failed to save plugin config',
     configReloadTitle: 'Reload Required',

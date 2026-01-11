@@ -54,7 +54,7 @@ export default {
     addProfile: {
       prompt: '请输入新的 Profile 名称',
       title: '新增 Profile',
-      inputError: '名称只能包含字母、数字、下划线(_)和连字符(-)'
+      inputError: '名称不能为空，且不能只包含空白字符'
     },
     removeProfile: {
       confirm: '确定要删除 Profile "{name}" 吗？',
@@ -111,7 +111,7 @@ export default {
     configPath: '配置文件',
     lastModified: '最后修改',
     configEditorPlaceholder: '请输入 TOML 格式的配置内容',
-    configInvalidJson: 'TOML 格式无效，请检查后再保存',
+    configInvalidToml: 'TOML 格式无效，请检查后再保存',
     configLoadFailed: '加载插件配置失败',
     configSaveFailed: '保存插件配置失败',
     configReloadTitle: '需要重载',
