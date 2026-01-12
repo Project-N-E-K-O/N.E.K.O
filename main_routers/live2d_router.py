@@ -115,7 +115,7 @@ def get_model_config(model_name: str):
     try:
         # 查找模型目录（可能在static或用户文档目录）
         model_dir, url_prefix = find_model_directory(model_name)
-        if not os.path.exists(model_dir):
+        if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
         # 查找.model3.json文件
@@ -169,7 +169,7 @@ async def update_model_config(model_name: str, request: Request):
         
         # 查找模型目录（可能在static或用户文档目录）
         model_dir, url_prefix = find_model_directory(model_name)
-        if not os.path.exists(model_dir):
+        if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
         # 查找.model3.json文件
@@ -208,7 +208,7 @@ def get_emotion_mapping(model_name: str):
     try:
         # 查找模型目录（可能在static或用户文档目录）
         model_dir, url_prefix = find_model_directory(model_name)
-        if not os.path.exists(model_dir):
+        if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
         # 查找.model3.json文件
