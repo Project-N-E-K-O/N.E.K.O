@@ -342,6 +342,20 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         console.log('已应用用户偏好参数');
     }
 
+    // 确保 PIXI ticker 正在运行（防止从VRM切换后卡住）
+    if (this.pixi_app && this.pixi_app.ticker) {
+        if (!this.pixi_app.ticker.started) {
+            this.pixi_app.ticker.start();
+            console.log('[Live2D Model] Ticker 已启动');
+        }
+        // 立即触发一次更新，确保模型正常渲染
+        try {
+            this.pixi_app.ticker.update();
+        } catch (e) {
+            console.warn('[Live2D Model] Ticker 更新失败:', e);
+        }
+    }
+
     // 调用回调函数
     if (this.onModelLoaded) {
         this.onModelLoaded(model, modelPath);
@@ -579,40 +593,95 @@ Live2DManager.prototype.installMouthOverride = function() {
                 }
                 origCoreModelUpdate();
             } catch (e) {
-                // 如果调用失败，说明 origCoreModelUpdate 可能持有已销毁的引用
-                // 尝试从 Live2D 库中获取原始的 update 方法
-                console.error('调用原始 coreModel.update 方法时出错:', e);
+                // 立即清理覆盖，避免无限递归
+                console.warn('调用保存的原始 update 方法失败，清理覆盖:', e.message || e);
                 
-                // 尝试通过 Live2D 的内部 API 获取原始 update 方法
+                // 立即清理覆盖标志，防止无限递归
+                this._mouthOverrideInstalled = false;
+                this._origCoreModelUpdate = null;
+                this._coreModelRef = null;
+                
+                // 临时恢复原始的 update 方法（如果可能），避免无限递归
                 try {
-                    // 检查是否有内部模型和核心模型
-                    if (currentCoreModel && currentCoreModel.internalModel) {
-                        // 尝试直接调用内部模型的 update（如果存在）
-                        const internalModel = currentCoreModel.internalModel;
-                        if (internalModel.update && typeof internalModel.update === 'function' && internalModel.update !== currentCoreModel.update) {
-                            internalModel.update();
-                            return;
-                        }
+                    // 尝试从原型链获取原始方法
+                    const CoreModelProto = Object.getPrototypeOf(currentCoreModel);
+                    if (CoreModelProto && CoreModelProto.update && typeof CoreModelProto.update === 'function') {
+                        // 临时恢复原始方法，避免无限递归
+                        currentCoreModel.update = CoreModelProto.update;
+                        // 调用一次原始方法
+                        CoreModelProto.update.call(currentCoreModel);
+                    } else {
+                        // 如果无法恢复，至少让模型继续运行（虽然可能没有口型同步）
+                        console.warn('无法恢复原始 update 方法，模型将继续运行但可能没有口型同步');
                     }
-                    
-                    // 如果无法获取原始方法，至少确保模型能继续渲染
-                    // 不调用 update 会导致模型无法更新，但不会崩溃
-                    console.warn('无法调用原始 update 方法，模型可能无法正常更新');
-                } catch (e2) {
-                    console.error('尝试恢复 update 方法也失败:', e2);
+                } catch (recoverError) {
+                    console.error('恢复原始 update 方法失败:', recoverError);
+                    // 即使恢复失败，也要继续，避免完全卡住
                 }
+                
+                // 延迟重新安装覆盖（避免在 update 循环中直接调用导致问题）
+                if (!this._reinstallScheduled) {
+                    this._reinstallScheduled = true;
+                    setTimeout(() => {
+                        this._reinstallScheduled = false;
+                        if (this.currentModel && this.currentModel.internalModel && this.currentModel.internalModel.coreModel) {
+                            try {
+                                this.installMouthOverride();
+                            } catch (reinstallError) {
+                                console.warn('延迟重新安装覆盖失败:', reinstallError);
+                            }
+                        }
+                    }, 100);
+                }
+                
+                return;
             }
         } else {
             // coreModel 已切换，不能使用保存的 origCoreModelUpdate
-            if (currentCoreModel !== coreModel) {
-                console.warn('检测到 coreModel 已切换，跳过旧模型的 update 调用');
+            if (currentCoreModel !== coreModel && currentCoreModel !== this._coreModelRef) {
+                console.warn('检测到 coreModel 已切换，清理覆盖以便重新安装');
+                this._mouthOverrideInstalled = false;
+                this._origCoreModelUpdate = null;
+                this._coreModelRef = null;
+                // 延迟重新安装覆盖（避免在 update 循环中直接调用导致问题）
+                if (!this._reinstallScheduled) {
+                    this._reinstallScheduled = true;
+                    setTimeout(() => {
+                        this._reinstallScheduled = false;
+                        if (this.currentModel && this.currentModel.internalModel && this.currentModel.internalModel.coreModel) {
+                            try {
+                                this.installMouthOverride();
+                            } catch (reinstallError) {
+                                console.warn('延迟重新安装覆盖失败:', reinstallError);
+                            }
+                        }
+                    }, 100);
+                }
                 return;
             }
             
             // 如果 origCoreModelUpdate 不存在，说明这是第一次调用或者原始方法丢失
-            // 这种情况下，模型可能无法正常更新，但至少不会崩溃
+            // 延迟重新安装覆盖（避免在 update 循环中直接调用导致问题）
             if (!origCoreModelUpdate) {
-                console.warn('原始 coreModel.update 方法不可用，跳过调用');
+                console.warn('原始 coreModel.update 方法不可用，延迟重新安装覆盖');
+                this._mouthOverrideInstalled = false;
+                this._origCoreModelUpdate = null;
+                this._coreModelRef = null;
+                // 延迟重新安装覆盖
+                if (!this._reinstallScheduled) {
+                    this._reinstallScheduled = true;
+                    setTimeout(() => {
+                        this._reinstallScheduled = false;
+                        if (this.currentModel && this.currentModel.internalModel && this.currentModel.internalModel.coreModel) {
+                            try {
+                                this.installMouthOverride();
+                            } catch (reinstallError) {
+                                console.warn('延迟重新安装覆盖失败:', reinstallError);
+                            }
+                        }
+                    }, 100);
+                }
+                return;
             }
         }
     };

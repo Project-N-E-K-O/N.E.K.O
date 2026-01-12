@@ -22,6 +22,11 @@ class VRMOrientationDetector {
             return false;
         }
 
+        // 确保骨骼的世界矩阵已更新
+        if (vrm.scene) {
+            vrm.scene.updateMatrixWorld(true);
+        }
+
         const headWorldPos = new THREE.Vector3();
         const chestWorldPos = new THREE.Vector3();
         headBone.getWorldPosition(headWorldPos);

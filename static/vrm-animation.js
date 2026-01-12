@@ -65,14 +65,30 @@ class VRMAnimation {
             // 强制接管时间增量，确保速度控制绝对准确
             const safeDelta = (delta <= 0 || delta > 0.1) ? 0.016 : delta;
             const updateDelta = safeDelta * this.playbackSpeed;
+            
+            // 更新 Mixer（这会更新所有 Action 的时间）
             this.vrmaMixer.update(updateDelta);
 
             // 必须在动画更新后立即更新矩阵，确保骨骼状态同步
             const vrm = this.manager.currentModel?.vrm;
             if (vrm?.scene) {
                 // 对于 VRM 1.0，需要调用 humanoid.update() 将 normalized 骨骼同步到 raw 骨骼
-                if (vrm.humanoid && vrm.humanoid.autoUpdateHumanBones) {
-                    vrm.humanoid.update();
+                // 对于 VRM 0.x，如果使用 normalized root，也需要更新
+                if (vrm.humanoid) {
+                    const vrmVersion = this._detectVRMVersion(vrm);
+                    if (vrmVersion === '1.0' && vrm.humanoid.autoUpdateHumanBones) {
+                        vrm.humanoid.update();
+                    } else if (vrmVersion === '0.0') {
+                        // VRM 0.x：检查 Mixer root 是否是 normalized
+                        const mixerRoot = this.vrmaMixer.getRoot();
+                        const normalizedRoot = vrm.humanoid?._normalizedHumanBones?.root;
+                        if (normalizedRoot && mixerRoot === normalizedRoot) {
+                            // 如果使用 normalized root，需要同步到 raw bones
+                            if (vrm.humanoid.autoUpdateHumanBones !== undefined) {
+                                vrm.humanoid.update();
+                            }
+                        }
+                    }
                 }
                 
                 // 更新所有骨骼的世界矩阵（AnimationMixer 已经更新了本地变换）
@@ -83,7 +99,6 @@ class VRMAnimation {
                     if (object.isSkinnedMesh && object.skeleton) {
                         // 更新 Skeleton 的 boneMatrices，确保 SkinnedMesh 使用最新的骨骼变换
                         object.skeleton.update();
-                        
                     }
                 });
             }
@@ -126,8 +141,9 @@ class VRMAnimation {
     async playVRMAAnimation(vrmaPath, options = {}) {
         const vrm = this.manager.currentModel?.vrm;
         if (!vrm) {
-            console.warn('[VRM Animation] 没有加载的 VRM 模型');
-            return;
+            const error = new Error('没有加载的 VRM 模型');
+            console.error('[VRM Animation]', error.message);
+            throw error;
         }
 
         try {
@@ -165,8 +181,9 @@ class VRMAnimation {
             // 获取官方库解析的动画数据
             const vrmAnimations = gltf.userData?.vrmAnimations;
             if (!vrmAnimations || vrmAnimations.length === 0) {
-                console.error('[VRM Animation] 动画文件加载成功，但没有找到 VRM 动画数据');
-                return;
+                const error = new Error('动画文件加载成功，但没有找到 VRM 动画数据');
+                console.error('[VRM Animation]', error.message);
+                throw error;
             }
 
             // 使用第一个动画（通常只有一个）
@@ -182,41 +199,56 @@ class VRMAnimation {
             // 检测 VRM 版本（在创建 Mixer 之前）
             const vrmVersion = this._detectVRMVersion(vrm);
             
-            // 根据版本决定 Mixer 的 root
+            // 初始 Mixer root（会在创建 clip 后根据匹配情况自动调整）
             let mixerRoot = vrm.scene;
+            
+            // 确保 normalized 节点在场景中（如果需要）
             if (vrmVersion === '1.0') {
-                // VRM 1.0：确保 normalized 节点在场景中
                 const normalizedRoot = vrm.humanoid?._normalizedHumanBones?.root;
                 if (normalizedRoot) {
-                    // 检查是否已在场景中
                     if (!vrm.scene.getObjectByName(normalizedRoot.name)) {
                         vrm.scene.add(normalizedRoot);
                     }
-                    // 确保 autoUpdateHumanBones 已启用
                     if (vrm.humanoid.autoUpdateHumanBones !== true) {
                         vrm.humanoid.autoUpdateHumanBones = true;
                     }
                 }
+            } else {
+                // VRM 0.x：也确保 normalized 节点在场景中（如果需要）
+                const normalizedRoot = vrm.humanoid?._normalizedHumanBones?.root;
+                if (normalizedRoot && !vrm.scene.getObjectByName(normalizedRoot.name)) {
+                    vrm.scene.add(normalizedRoot);
+                }
             }
             
-            // 创建绑定到场景的混合器
-            this.vrmaMixer = new window.THREE.AnimationMixer(mixerRoot);
-
             // 使用官方库的 createVRMAnimationClip 创建动画 Clip
             // 这会自动处理骨骼重定向和四元数问题
             const animationModule = await import('/static/libs/three-vrm-animation.module.js');
-            // 原本只有 createVRMAnimationClip，现在加一个 VRMLookAtQuaternionProxy
             const { createVRMAnimationClip, VRMLookAtQuaternionProxy } = animationModule;
 
-            //在创建 clip 之前，插入这段代码
+            // 在创建 clip 之前，确保 VRMLookAtQuaternionProxy 已创建并添加到场景
+            // 这可以避免 createVRMAnimationClip 内部的警告
             if (vrm.lookAt) {
-                new VRMLookAtQuaternionProxy(vrm.lookAt);
+                // 检查场景中是否已存在代理
+                const existingProxy = vrm.scene.getObjectByName('lookAtQuaternionProxy');
+                if (!existingProxy) {
+                    const lookAtQuatProxy = new VRMLookAtQuaternionProxy(vrm.lookAt);
+                    lookAtQuatProxy.name = 'lookAtQuaternionProxy';
+                    vrm.scene.add(lookAtQuatProxy);
+                }
             }
-            let clip = createVRMAnimationClip(vrmAnimation, vrm);
+            
+            let clip;
+            try {
+                clip = createVRMAnimationClip(vrmAnimation, vrm);
+            } catch (clipError) {
+                console.error('[VRM Animation] createVRMAnimationClip 抛出异常:', clipError);
+                throw new Error(`创建动画 Clip 时出错: ${clipError.message}`);
+            }
             
             if (!clip || !clip.tracks || clip.tracks.length === 0) {
-                console.warn('[VRM Animation] 创建的动画 Clip 没有有效的轨道');
-                console.warn('[VRM Animation] Clip 信息:', { 
+                console.error('[VRM Animation] 创建的动画 Clip 没有有效的轨道');
+                console.error('[VRM Animation] Clip 信息:', { 
                     name: clip?.name, 
                     duration: clip?.duration, 
                     tracksCount: clip?.tracks?.length,
@@ -232,12 +264,58 @@ class VRMAnimation {
                 // VRM 0.x：去掉 Normalized_ 前缀，直接使用 raw bones
                 clip.tracks.forEach(track => {
                     if (track.name.startsWith('Normalized_')) {
-                        // 去掉 "Normalized_" 前缀
                         const originalName = track.name.substring('Normalized_'.length);
                         track.name = originalName;
                     }
                 });
             }
+            
+            // 检查 tracks 是否能找到对应的骨骼，并自动选择最佳的 root
+            const sampleTracks = clip.tracks.slice(0, 10);
+            let foundCount = 0;
+            sampleTracks.forEach(track => {
+                const boneName = track.name.split('.')[0];
+                const bone = mixerRoot.getObjectByName(boneName);
+                if (bone) foundCount++;
+            });
+            
+            // 自动选择最佳的 root（在创建 Mixer 之前）
+            let bestRoot = mixerRoot;
+            let bestMatchCount = foundCount;
+            
+            // 测试 vrm.scene
+            const sceneMatchCount = sampleTracks.filter(track => {
+                const boneName = track.name.split('.')[0];
+                return !!vrm.scene.getObjectByName(boneName);
+            }).length;
+            if (sceneMatchCount > bestMatchCount) {
+                bestRoot = vrm.scene;
+                bestMatchCount = sceneMatchCount;
+            }
+            
+            // 测试 normalized root
+            const normalizedRoot = vrm.humanoid?._normalizedHumanBones?.root;
+            if (normalizedRoot) {
+                if (!vrm.scene.getObjectByName(normalizedRoot.name)) {
+                    vrm.scene.add(normalizedRoot);
+                }
+                const normalizedMatchCount = sampleTracks.filter(track => {
+                    const boneName = track.name.split('.')[0];
+                    return !!normalizedRoot.getObjectByName(boneName);
+                }).length;
+                if (normalizedMatchCount > bestMatchCount) {
+                    bestRoot = normalizedRoot;
+                    bestMatchCount = normalizedMatchCount;
+                }
+            }
+            
+            // 如果找到更好的 root，切换它
+            if (bestRoot !== mixerRoot) {
+                mixerRoot = bestRoot;
+            }
+            
+            // 创建绑定到场景的混合器（使用最佳 root）
+            this.vrmaMixer = new window.THREE.AnimationMixer(mixerRoot);
 
             const newAction = this.vrmaMixer.clipAction(clip);
             if (!newAction) {
@@ -247,14 +325,13 @@ class VRMAnimation {
             // 确保 Action 已启用
             newAction.enabled = true;
             
-            
             newAction.setLoop(options.loop ? window.THREE.LoopRepeat : window.THREE.LoopOnce);
             newAction.clampWhenFinished = true;
             
             // 设置速度 (优先使用传入参数，否则用默认)
             this.playbackSpeed = (options.timeScale !== undefined) ? options.timeScale : 1.0;
             newAction.timeScale = 1.0; // Mixer 内部保持 1，我们在 update 里控制
-
+            
             // 处理"立即播放"逻辑
             const fadeDuration = options.fadeDuration !== undefined ? options.fadeDuration : 0.4;
             const isImmediate = options.immediate === true;
@@ -297,12 +374,25 @@ class VRMAnimation {
 
             this.currentAction = newAction;
             this.vrmaIsPlaying = true;
+            
+            // 确保 Action 真的在播放
+            if (newAction.paused) {
+                console.warn('[VRM Animation] ⚠️ Action 处于暂停状态，强制播放');
+                newAction.play();
+            }
+            
+            // 立即更新一次，确保状态正确
+            this.vrmaMixer.update(0.001);
+            if (vrm.scene) {
+                vrm.scene.updateMatrixWorld(true);
+            }
+            
 
             // 如果开启了调试，更新骨骼辅助线
             if (this.debug) this._updateSkeletonHelper();
 
             // 立即更新一次，确保第一帧正确显示
-            this.vrmaMixer.update(0);
+            this.vrmaMixer.update(0.001);
             if (vrm.scene) {
                 vrm.scene.updateMatrixWorld(true);
                 // 确保 SkinnedMesh 的骨骼矩阵已更新

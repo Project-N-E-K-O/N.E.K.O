@@ -6261,10 +6261,13 @@ function init_app() {
                     vrmButtons.style.setProperty('display', 'none', 'important');
                 }
 
-                // 隐藏锁图标
+                // 隐藏并移除 VRM 锁图标（确保不会阻止 Live2D 锁图标创建）
                 const vrmLockIcon = document.getElementById('vrm-lock-icon');
                 if (vrmLockIcon) {
                     vrmLockIcon.style.setProperty('display', 'none', 'important');
+                    vrmLockIcon.style.setProperty('visibility', 'hidden', 'important');
+                    // 临时移除，确保 setupHTMLLockIcon 不会检测到它
+                    vrmLockIcon.id = 'vrm-lock-icon-hidden';
                 }
 
                 if (window.vrmManager) {
@@ -6451,18 +6454,63 @@ function init_app() {
 
                 // 转换路径为 URL
                 let modelUrl = vrmModelPath;
+                
+                // 如果是 Windows 路径（包含 \ 或 :），提取文件名
                 if (vrmModelPath.includes('\\') || vrmModelPath.includes(':')) {
                     const filename = vrmModelPath.split(/[\\/]/).pop();
                     if (filename) {
-                        modelUrl = `/static/vrm/${filename}`;
+                        // 优先尝试 /user_vrm/，如果不存在再尝试 /static/vrm/
+                        modelUrl = `/user_vrm/${filename}`;
                     }
                 } else if (!modelUrl.startsWith('http') && !modelUrl.startsWith('/')) {
+                    // 如果只是文件名，优先尝试 /user_vrm/
                     modelUrl = `/user_vrm/${modelUrl}`;
+                } else {
+                    // 如果已经是完整路径，确保格式正确
+                    modelUrl = modelUrl.replace(/\\/g, '/');
                 }
-                modelUrl = modelUrl.replace(/\\/g, '/');
+                
+                // 如果路径不是以 /user_vrm/ 或 /static/vrm/ 开头，尝试添加 /user_vrm/ 前缀
+                if (!modelUrl.startsWith('/user_vrm/') && !modelUrl.startsWith('/static/vrm/') && !modelUrl.startsWith('http')) {
+                    const filename = modelUrl.split('/').pop();
+                    if (filename) {
+                        modelUrl = `/user_vrm/${filename}`;
+                    }
+                }
 
-                // 加载 VRM 模型（不禁用阴影，使用默认设置）
-                await window.vrmManager.loadModel(modelUrl);
+                // 尝试加载模型，如果失败则尝试备用路径
+                try {
+                    await window.vrmManager.loadModel(modelUrl);
+                } catch (loadError) {
+                    console.warn(`[猫娘切换] 从 ${modelUrl} 加载失败，尝试备用路径:`, loadError);
+                    
+                    // 如果当前路径是 /user_vrm/，尝试 /static/vrm/
+                    if (modelUrl.startsWith('/user_vrm/')) {
+                        const filename = modelUrl.replace('/user_vrm/', '');
+                        const fallbackUrl = `/static/vrm/${filename}`;
+                        try {
+                            await window.vrmManager.loadModel(fallbackUrl);
+                            console.log(`[猫娘切换] 从备用路径 ${fallbackUrl} 加载成功`);
+                        } catch (fallbackError) {
+                            console.error(`[猫娘切换] 从备用路径 ${fallbackUrl} 也加载失败:`, fallbackError);
+                            throw new Error(`无法加载 VRM 模型: ${modelUrl} 和 ${fallbackUrl} 都失败`);
+                        }
+                    } else if (modelUrl.startsWith('/static/vrm/')) {
+                        // 如果当前路径是 /static/vrm/，尝试 /user_vrm/
+                        const filename = modelUrl.replace('/static/vrm/', '');
+                        const fallbackUrl = `/user_vrm/${filename}`;
+                        try {
+                            await window.vrmManager.loadModel(fallbackUrl);
+                            console.log(`[猫娘切换] 从备用路径 ${fallbackUrl} 加载成功`);
+                        } catch (fallbackError) {
+                            console.error(`[猫娘切换] 从备用路径 ${fallbackUrl} 也加载失败:`, fallbackError);
+                            throw new Error(`无法加载 VRM 模型: ${modelUrl} 和 ${fallbackUrl} 都失败`);
+                        }
+                    } else {
+                        // 其他情况，直接抛出错误
+                        throw loadError;
+                    }
+                }
 
                 // 应用角色的光照配置
                 if (catgirlConfig.lighting && window.vrmManager) {
@@ -6593,6 +6641,25 @@ function init_app() {
                             window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
                             window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
                         }
+                        
+                        // 确保锁图标已创建（loadModel 内部会调用 setupHTMLLockIcon）
+                        // 但为了保险，这里也检查一下
+                        const currentModel = window.live2dManager.getCurrentModel();
+                        if (currentModel) {
+                            const existingLockIcon = document.getElementById('live2d-lock-icon');
+                            if (!existingLockIcon && window.live2dManager.setupHTMLLockIcon) {
+                                try {
+                                    // 临时移除 VRM 锁图标的 ID，确保 setupHTMLLockIcon 不会检测到它
+                                    const hiddenVrmLockIcon = document.getElementById('vrm-lock-icon-hidden');
+                                    if (hiddenVrmLockIcon) {
+                                        hiddenVrmLockIcon.remove();
+                                    }
+                                    window.live2dManager.setupHTMLLockIcon(currentModel);
+                                } catch (e) {
+                                    console.warn('[猫娘切换] 创建锁图标失败:', e);
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -6628,9 +6695,23 @@ function init_app() {
 
                     window.dispatchEvent(new Event('resize'));
 
+                    // 确保 PIXI ticker 正确启动
                     if (window.live2dManager?.pixi_app?.ticker) {
-                        if (!window.live2dManager.pixi_app.ticker.started) {
-                            window.live2dManager.pixi_app.ticker.start();
+                        // 强制启动 ticker（即使已经启动也重新启动以确保正常）
+                        try {
+                            if (!window.live2dManager.pixi_app.ticker.started) {
+                                window.live2dManager.pixi_app.ticker.start();
+                            }
+                            // 确保模型更新循环正在运行
+                            const currentModel = window.live2dManager.getCurrentModel();
+                            if (currentModel && currentModel.internalModel && currentModel.internalModel.coreModel) {
+                                // 强制触发一次更新以确保模型正常渲染
+                                if (window.live2dManager.pixi_app.ticker) {
+                                    window.live2dManager.pixi_app.ticker.update();
+                                }
+                            }
+                        } catch (tickerError) {
+                            console.error('[猫娘切换] Ticker 启动失败:', tickerError);
                         }
                     }
 
@@ -6650,6 +6731,27 @@ function init_app() {
                         live2dLockIcon.style.removeProperty('display');
                         live2dLockIcon.style.removeProperty('visibility');
                         live2dLockIcon.style.removeProperty('opacity');
+                        // 确保锁图标可见
+                        live2dLockIcon.style.display = 'block';
+                        live2dLockIcon.style.visibility = 'visible';
+                        live2dLockIcon.style.opacity = '1';
+                    } else {
+                        // 如果锁图标不存在，尝试重新创建（如果模型已加载）
+                        const currentModel = window.live2dManager?.getCurrentModel();
+                        if (currentModel && window.live2dManager && typeof window.live2dManager.setupHTMLLockIcon === 'function') {
+                            try {
+                                window.live2dManager.setupHTMLLockIcon(currentModel);
+                                // 再次尝试显示
+                                const newLockIcon = document.getElementById('live2d-lock-icon');
+                                if (newLockIcon) {
+                                    newLockIcon.style.display = 'block';
+                                    newLockIcon.style.visibility = 'visible';
+                                    newLockIcon.style.opacity = '1';
+                                }
+                            } catch (e) {
+                                console.warn('[猫娘切换] 重新创建锁图标失败:', e);
+                            }
+                        }
                     }
                 }, 300);
             }
@@ -6662,6 +6764,22 @@ function init_app() {
         } finally {
             isSwitchingCatgirl = false;
         }
+    }
+
+    // 确保特定元素始终保持隐藏
+    function ensureHiddenElements() {
+        const elementsToHide = [
+            document.getElementById('sidebar'),
+            document.getElementById('sidebarbox'),
+            document.getElementById('status')
+        ].filter(Boolean);
+
+        elementsToHide.forEach(element => {
+            if (element) {
+                element.style.setProperty('display', 'none', 'important');
+                element.style.setProperty('visibility', 'hidden', 'important');
+            }
+        });
     }
 
     // 立即执行一次

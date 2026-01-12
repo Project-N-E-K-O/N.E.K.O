@@ -90,8 +90,10 @@ class Live2DManager {
         // 防抖定时器（用于滚轮缩放等连续操作后保存位置）
         this._savePositionDebounceTimer = null;
 
-        // ⚠️ 已启用自动保存功能：
-        // 在拖动或缩放模型后自动保存位置和缩放
+        // 口型覆盖重新安装标志（防止重复安装）
+        this._reinstallScheduled = false;
+
+        
     }
 
     // 从 FileReferences 推导 EmotionMapping（用于兼容历史数据）

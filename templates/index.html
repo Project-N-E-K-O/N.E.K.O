@@ -1856,17 +1856,27 @@
                         // 路径转换逻辑（处理各种路径格式）
                         let modelUrl = newModelPath;
 
-                        // 处理Windows绝对路径，转换为Web路径
+                        // 处理Windows绝对路径，转换为Web路径（优先使用 /user_vrm/）
                         if (modelUrl.includes('\\') || modelUrl.includes(':')) {
-                            // 如果是Windows路径或包含驱动器号，提取文件名并转换为Web路径
+                            // 如果是Windows路径或包含驱动器号，提取文件名并优先使用 /user_vrm/
                             const filename = modelUrl.split(/[\\/]/).pop();
                             if (filename) {
-                                modelUrl = `/static/vrm/${filename}`;
+                                modelUrl = `/user_vrm/${filename}`;
                             }
                         } else if (!modelUrl.startsWith('http') && !modelUrl.startsWith('/')) {
                             // 如果是相对路径，添加用户VRM路径前缀
                             const VRM_USER_PATH = '/user_vrm';
                             modelUrl = `${VRM_USER_PATH}/${modelUrl}`;
+                        } else {
+                            // 如果已经是完整路径，确保格式正确
+                            modelUrl = modelUrl.replace(/\\/g, '/');
+                            // 如果路径不是以 /user_vrm/ 或 /static/vrm/ 开头，尝试添加 /user_vrm/ 前缀
+                            if (!modelUrl.startsWith('/user_vrm/') && !modelUrl.startsWith('/static/vrm/') && !modelUrl.startsWith('http')) {
+                                const filename = modelUrl.split('/').pop();
+                                if (filename) {
+                                    modelUrl = `/user_vrm/${filename}`;
+                                }
+                            }
                         }
                         modelUrl = modelUrl.replace(/\\/g, '/'); // 修正 Windows 风格路径
 
@@ -2008,20 +2018,30 @@
                                 await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
                             }
 
-                            // 路径转换逻辑（处理各种路径格式）
+                            // 路径转换逻辑（处理各种路径格式，优先使用 /user_vrm/）
                             let modelUrl = newModelPath;
 
-                            // 处理Windows绝对路径，转换为Web路径
+                            // 处理Windows绝对路径，转换为Web路径（优先使用 /user_vrm/）
                             if (modelUrl.includes('\\') || modelUrl.includes(':')) {
-                                // 如果是Windows路径或包含驱动器号，提取文件名并转换为Web路径
+                                // 如果是Windows路径或包含驱动器号，提取文件名并优先使用 /user_vrm/
                                 const filename = modelUrl.split(/[\\/]/).pop();
                                 if (filename) {
-                                    modelUrl = `/static/vrm/${filename}`;
+                                    modelUrl = `/user_vrm/${filename}`;
                                 }
                             } else if (!modelUrl.startsWith('http') && !modelUrl.startsWith('/')) {
                                 // 如果是相对路径，添加用户VRM路径前缀
                                 const VRM_USER_PATH = '/user_vrm';
                                 modelUrl = `${VRM_USER_PATH}/${modelUrl}`;
+                            } else {
+                                // 如果已经是完整路径，确保格式正确
+                                modelUrl = modelUrl.replace(/\\/g, '/');
+                                // 如果路径不是以 /user_vrm/ 或 /static/vrm/ 开头，尝试添加 /user_vrm/ 前缀
+                                if (!modelUrl.startsWith('/user_vrm/') && !modelUrl.startsWith('/static/vrm/') && !modelUrl.startsWith('http')) {
+                                    const filename = modelUrl.split('/').pop();
+                                    if (filename) {
+                                        modelUrl = `/user_vrm/${filename}`;
+                                    }
+                                }
                             }
                             modelUrl = modelUrl.replace(/\\/g, '/'); // 修正 Windows 风格路径
 

@@ -153,8 +153,8 @@ class VRMCore {
                 // 锁定时隐藏浮动按钮
                 buttonsContainer.style.display = 'none';
             } else {
-                // 解锁时不自动显示，保持原有的鼠标悬停逻辑
-                // buttonsContainer.style.display 会由鼠标悬停事件控制
+                // 解锁时恢复显示浮动按钮
+                buttonsContainer.style.display = 'flex';
             }
         }
     }
@@ -381,22 +381,84 @@ class VRMCore {
             const loader = new GLTFLoader();
             loader.register((parser) => new VRMLoaderPlugin(parser));
 
-            // 加载 VRM 模型
-            const gltf = await new Promise((resolve, reject) => {
-                loader.load(
-                    modelUrl,
-                    (gltf) => resolve(gltf),
-                    (progress) => {
-                        if (progress.total > 0) {
-                            const percent = (progress.loaded / progress.total) * 100;
-                            if (options.onProgress) {
-                                options.onProgress(progress);
+            // 加载 VRM 模型（带备用路径机制）
+            let gltf = null;
+            let loadError = null;
+            
+            try {
+                gltf = await new Promise((resolve, reject) => {
+                    loader.load(
+                        modelUrl,
+                        (gltf) => resolve(gltf),
+                        (progress) => {
+                            if (progress.total > 0) {
+                                const percent = (progress.loaded / progress.total) * 100;
+                                if (options.onProgress) {
+                                    options.onProgress(progress);
+                                }
                             }
-                        }
-                    },
-                    (error) => reject(error)
-                );
-            });
+                        },
+                        (error) => reject(error)
+                    );
+                });
+            } catch (error) {
+                loadError = error;
+                // 如果加载失败，尝试备用路径
+                if (modelUrl.startsWith('/static/vrm/')) {
+                    const filename = modelUrl.replace('/static/vrm/', '');
+                    const fallbackUrl = `/user_vrm/${filename}`;
+                    console.warn(`[VRM Core] 从 ${modelUrl} 加载失败，尝试备用路径: ${fallbackUrl}`);
+                    try {
+                        gltf = await new Promise((resolve, reject) => {
+                            loader.load(
+                                fallbackUrl,
+                                (gltf) => resolve(gltf),
+                                (progress) => {
+                                    if (progress.total > 0) {
+                                        const percent = (progress.loaded / progress.total) * 100;
+                                        if (options.onProgress) {
+                                            options.onProgress(progress);
+                                        }
+                                    }
+                                },
+                                (error) => reject(error)
+                            );
+                        });
+                        console.log(`[VRM Core] 从备用路径 ${fallbackUrl} 加载成功`);
+                    } catch (fallbackError) {
+                        console.error(`[VRM Core] 从备用路径 ${fallbackUrl} 也加载失败:`, fallbackError);
+                        throw new Error(`无法加载 VRM 模型: ${modelUrl} 和 ${fallbackUrl} 都失败`);
+                    }
+                } else if (modelUrl.startsWith('/user_vrm/')) {
+                    const filename = modelUrl.replace('/user_vrm/', '');
+                    const fallbackUrl = `/static/vrm/${filename}`;
+                    console.warn(`[VRM Core] 从 ${modelUrl} 加载失败，尝试备用路径: ${fallbackUrl}`);
+                    try {
+                        gltf = await new Promise((resolve, reject) => {
+                            loader.load(
+                                fallbackUrl,
+                                (gltf) => resolve(gltf),
+                                (progress) => {
+                                    if (progress.total > 0) {
+                                        const percent = (progress.loaded / progress.total) * 100;
+                                        if (options.onProgress) {
+                                            options.onProgress(progress);
+                                        }
+                                    }
+                                },
+                                (error) => reject(error)
+                            );
+                        });
+                        console.log(`[VRM Core] 从备用路径 ${fallbackUrl} 加载成功`);
+                    } catch (fallbackError) {
+                        console.error(`[VRM Core] 从备用路径 ${fallbackUrl} 也加载失败:`, fallbackError);
+                        throw new Error(`无法加载 VRM 模型: ${modelUrl} 和 ${fallbackUrl} 都失败`);
+                    }
+                } else {
+                    // 其他情况，直接抛出原始错误
+                    throw error;
+                }
+            }
 
             // 如果已有模型，先移除
             if (this.manager.currentModel && this.manager.currentModel.vrm) {
@@ -485,6 +547,15 @@ class VRMCore {
             }
 
             // 【使用朝向检测模块】检测并处理模型朝向
+            // 等待几帧，确保骨骼位置计算完成
+            await new Promise(resolve => {
+                requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {
+                        requestAnimationFrame(resolve);
+                    });
+                });
+            });
+            
             const savedRotation = preferences?.rotation;
             
             const detectedRotation = window.VRMOrientationDetector 
