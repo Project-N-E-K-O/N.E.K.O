@@ -433,6 +433,14 @@ class VRMCore {
 
             // 如果已有模型，先移除
             if (this.manager.currentModel && this.manager.currentModel.vrm) {
+                // 清理交互模块的事件监听器
+                if (this.manager.interaction && typeof this.manager.interaction.cleanupDragAndZoom === 'function') {
+                    this.manager.interaction.cleanupDragAndZoom();
+                }
+                if (this.manager.interaction && typeof this.manager.interaction.cleanupFloatingButtonsMouseTracking === 'function') {
+                    this.manager.interaction.cleanupFloatingButtonsMouseTracking();
+                }
+                
                 this.manager.scene.remove(this.manager.currentModel.vrm.scene);
                 this.disposeVRM();
             }
@@ -642,6 +650,16 @@ class VRMCore {
                 this.manager.renderer.render(this.manager.scene, this.manager.camera);
             }
 
+            // 确保 humanoid 正确更新（防止T-Pose）
+            if (vrm.humanoid) {
+                // 确保 autoUpdateHumanBones 已启用
+                if (vrm.humanoid.autoUpdateHumanBones !== undefined && !vrm.humanoid.autoUpdateHumanBones) {
+                    vrm.humanoid.autoUpdateHumanBones = true;
+                }
+                // 立即更新一次 humanoid，确保骨骼状态正确
+                vrm.humanoid.update();
+            }
+
             // 创建动画混合器
             this.manager.animationMixer = new THREE.AnimationMixer(vrm.scene);
 
@@ -688,30 +706,85 @@ class VRMCore {
         
         const vrm = this.manager.currentModel.vrm;
         
-        // 清理 VRMA 动画（如果存在）
-        if (this.manager.animation && typeof this.manager.animation.stopVRMAAnimation === 'function') {
-            this.manager.animation.stopVRMAAnimation();
+        // 清理表情模块的定时器和状态
+        if (this.manager.expression) {
+            if (this.manager.expression.neutralReturnTimer) {
+                clearTimeout(this.manager.expression.neutralReturnTimer);
+                this.manager.expression.neutralReturnTimer = null;
+            }
+            // 重置表情状态
+            this.manager.expression.currentWeights = {};
+            this.manager.expression.manualBlinkInProgress = null;
+            this.manager.expression.manualExpressionInProgress = null;
+            this.manager.expression.currentMood = 'neutral';
+        }
+        
+        // 清理动画模块的定时器
+        if (this.manager.animation) {
+            if (this.manager.animation._springBoneTimer) {
+                clearTimeout(this.manager.animation._springBoneTimer);
+                this.manager.animation._springBoneTimer = null;
+            }
+            if (typeof this.manager.animation.stopVRMAAnimation === 'function') {
+                this.manager.animation.stopVRMAAnimation();
+            }
+        }
+        
+        // 清理交互模块的定时器
+        if (this.manager.interaction) {
+            if (this.manager.interaction._hideButtonsTimer) {
+                clearTimeout(this.manager.interaction._hideButtonsTimer);
+                this.manager.interaction._hideButtonsTimer = null;
+            }
+            if (this.manager.interaction._savePositionDebounceTimer) {
+                clearTimeout(this.manager.interaction._savePositionDebounceTimer);
+                this.manager.interaction._savePositionDebounceTimer = null;
+            }
         }
         
         if (this.manager.animationMixer) {
             if (vrm.scene) {
                 this.manager.animationMixer.uncacheRoot(vrm.scene);
             }
+            this.manager.animationMixer.stopAllAction();
             this.manager.animationMixer = null;
         }
 
         if (vrm.scene) {
+            // 清理 VRMLookAtQuaternionProxy（如果存在）
+            const lookAtProxy = vrm.scene.getObjectByName('lookAtQuaternionProxy');
+            if (lookAtProxy) {
+                vrm.scene.remove(lookAtProxy);
+            }
+            
             vrm.scene.traverse((object) => {
                 if (object.geometry) object.geometry.dispose();
                 if (object.material) {
                     if (Array.isArray(object.material)) {
-                        object.material.forEach(m => m.dispose());
+                        object.material.forEach(m => {
+                            if (m.map) m.map.dispose();
+                            if (m.normalMap) m.normalMap.dispose();
+                            if (m.roughnessMap) m.roughnessMap.dispose();
+                            if (m.metalnessMap) m.metalnessMap.dispose();
+                            if (m.emissiveMap) m.emissiveMap.dispose();
+                            if (m.aoMap) m.aoMap.dispose();
+                            m.dispose();
+                        });
                     } else {
+                        if (object.material.map) object.material.map.dispose();
+                        if (object.material.normalMap) object.material.normalMap.dispose();
+                        if (object.material.roughnessMap) object.material.roughnessMap.dispose();
+                        if (object.material.metalnessMap) object.material.metalnessMap.dispose();
+                        if (object.material.emissiveMap) object.material.emissiveMap.dispose();
+                        if (object.material.aoMap) object.material.aoMap.dispose();
                         object.material.dispose();
                     }
                 }
             });
         }
+        
+        // 清理 currentModel 引用
+        this.manager.currentModel = null;
     }
 
     /**

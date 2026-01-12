@@ -373,6 +373,14 @@ class VRMManager {
         // 辅助函数：显示模型并淡入画布
         const showAndFadeIn = () => {
             if (this.currentModel?.vrm?.scene) {
+                // 确保 humanoid 已更新（防止T-Pose）
+                if (this.currentModel.vrm.humanoid) {
+                    if (this.currentModel.vrm.humanoid.autoUpdateHumanBones !== undefined && !this.currentModel.vrm.humanoid.autoUpdateHumanBones) {
+                        this.currentModel.vrm.humanoid.autoUpdateHumanBones = true;
+                    }
+                    this.currentModel.vrm.humanoid.update();
+                }
+                
                 // 强制重置物理骨骼状态
                 if (this.currentModel.vrm.springBoneManager) {
                     this.currentModel.vrm.springBoneManager.reset();
