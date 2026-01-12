@@ -992,16 +992,20 @@ def delete_model(model_name: str):
         
         # 检查static目录下的模型
         static_dir = 'static'
-        if model_dir.startswith(static_dir):
-            # 检查是否在用户上传的目录中
-            for item in os.listdir(static_dir):
-                item_path = os.path.join(static_dir, item)
-                if os.path.isdir(item_path) and model_dir == item_path:
-                    # 检查是否包含.user_upload标记
-                    marker_file = os.path.join(model_dir, '.user_upload')
-                    if os.path.exists(marker_file):
-                        is_user_model = True
-                    break
+        try:
+            static_real = os.path.realpath(static_dir)
+            model_real = os.path.realpath(model_dir)
+            if os.path.commonpath([static_real, model_real]) == static_real:
+                for item in os.listdir(static_dir):
+                    item_path = os.path.join(static_dir, item)
+                    item_real = os.path.realpath(item_path)
+                    if os.path.isdir(item_real) and model_real == item_real:
+                        marker_file = os.path.join(model_real, '.user_upload')
+                        if os.path.exists(marker_file):
+                            is_user_model = True
+                        break
+        except Exception:
+            pass
         
         if not is_user_model:
             return JSONResponse(status_code=403, content={"success": False, "error": "只能删除用户导入的模型，无法删除内置模型"})

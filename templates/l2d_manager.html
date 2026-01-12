@@ -1179,13 +1179,21 @@
                             const displayName = model.name.replace(/\.model3$/i, '');
                             const item = document.createElement('div');
                             item.className = 'model-item';
-                            item.innerHTML = `
-                                <input type="checkbox" id="model-${model.name}" value="${model.name}" data-path="${model.path}">
-                                <label for="model-${model.name}">${displayName}</label>
-                                <span class="model-source">${sourceLabel}</span>
-                            `;
 
-                            const checkbox = item.querySelector('input[type="checkbox"]');
+                            const checkbox = document.createElement('input');
+                            checkbox.type = 'checkbox';
+                            checkbox.id = 'model-' + model.name;
+                            checkbox.value = model.name;
+                            checkbox.setAttribute('data-path', model.path);
+
+                            const label = document.createElement('label');
+                            label.setAttribute('for', 'model-' + model.name);
+                            label.textContent = displayName;
+
+                            const sourceSpan = document.createElement('span');
+                            sourceSpan.className = 'model-source';
+                            sourceSpan.textContent = sourceLabel;
+
                             checkbox.addEventListener('change', (e) => {
                                 if (e.target.checked) {
                                     selectedDeleteModels.add(e.target.value);
@@ -1195,6 +1203,9 @@
                                 updateConfirmDeleteButton();
                             });
 
+                            item.appendChild(checkbox);
+                            item.appendChild(label);
+                            item.appendChild(sourceSpan);
                             userModelList.appendChild(item);
                         });
                     } else {
