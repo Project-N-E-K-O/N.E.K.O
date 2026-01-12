@@ -381,14 +381,11 @@ class VRMCore {
             const loader = new GLTFLoader();
             loader.register((parser) => new VRMLoaderPlugin(parser));
 
-            // 加载 VRM 模型（带备用路径机制）
-            let gltf = null;
-            let loadError = null;
-            
-            try {
-                gltf = await new Promise((resolve, reject) => {
+            // 辅助函数：加载 GLTF 模型
+            const loadGLTF = (url) => {
+                return new Promise((resolve, reject) => {
                     loader.load(
-                        modelUrl,
+                        url,
                         (gltf) => resolve(gltf),
                         (progress) => {
                             if (progress.total > 0) {
@@ -401,54 +398,28 @@ class VRMCore {
                         (error) => reject(error)
                     );
                 });
+            };
+
+            // 加载 VRM 模型（带备用路径机制）
+            let gltf = null;
+            
+            try {
+                gltf = await loadGLTF(modelUrl);
             } catch (error) {
-                loadError = error;
                 // 如果加载失败，尝试备用路径
+                let fallbackUrl = null;
                 if (modelUrl.startsWith('/static/vrm/')) {
                     const filename = modelUrl.replace('/static/vrm/', '');
-                    const fallbackUrl = `/user_vrm/${filename}`;
-                    console.warn(`[VRM Core] 从 ${modelUrl} 加载失败，尝试备用路径: ${fallbackUrl}`);
-                    try {
-                        gltf = await new Promise((resolve, reject) => {
-                            loader.load(
-                                fallbackUrl,
-                                (gltf) => resolve(gltf),
-                                (progress) => {
-                                    if (progress.total > 0) {
-                                        const percent = (progress.loaded / progress.total) * 100;
-                                        if (options.onProgress) {
-                                            options.onProgress(progress);
-                                        }
-                                    }
-                                },
-                                (error) => reject(error)
-                            );
-                        });
-                        console.log(`[VRM Core] 从备用路径 ${fallbackUrl} 加载成功`);
-                    } catch (fallbackError) {
-                        console.error(`[VRM Core] 从备用路径 ${fallbackUrl} 也加载失败:`, fallbackError);
-                        throw new Error(`无法加载 VRM 模型: ${modelUrl} 和 ${fallbackUrl} 都失败`);
-                    }
+                    fallbackUrl = `/user_vrm/${filename}`;
                 } else if (modelUrl.startsWith('/user_vrm/')) {
                     const filename = modelUrl.replace('/user_vrm/', '');
-                    const fallbackUrl = `/static/vrm/${filename}`;
+                    fallbackUrl = `/static/vrm/${filename}`;
+                }
+                
+                if (fallbackUrl) {
                     console.warn(`[VRM Core] 从 ${modelUrl} 加载失败，尝试备用路径: ${fallbackUrl}`);
                     try {
-                        gltf = await new Promise((resolve, reject) => {
-                            loader.load(
-                                fallbackUrl,
-                                (gltf) => resolve(gltf),
-                                (progress) => {
-                                    if (progress.total > 0) {
-                                        const percent = (progress.loaded / progress.total) * 100;
-                                        if (options.onProgress) {
-                                            options.onProgress(progress);
-                                        }
-                                    }
-                                },
-                                (error) => reject(error)
-                            );
-                        });
+                        gltf = await loadGLTF(fallbackUrl);
                         console.log(`[VRM Core] 从备用路径 ${fallbackUrl} 加载成功`);
                     } catch (fallbackError) {
                         console.error(`[VRM Core] 从备用路径 ${fallbackUrl} 也加载失败:`, fallbackError);

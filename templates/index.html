@@ -1878,7 +1878,6 @@
                                 }
                             }
                         }
-                        modelUrl = modelUrl.replace(/\\/g, '/'); // 修正 Windows 风格路径
 
                         // 确保Three.js场景已初始化
                         if (!window.vrmManager._isInitialized || !window.vrmManager.scene || !window.vrmManager.camera || !window.vrmManager.renderer) {
@@ -2043,7 +2042,6 @@
                                     }
                                 }
                             }
-                            modelUrl = modelUrl.replace(/\\/g, '/'); // 修正 Windows 风格路径
 
                             // 加载VRM模型
                             try {
