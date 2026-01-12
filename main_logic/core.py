@@ -1031,6 +1031,9 @@ class LLMSessionManager:
                     await self.send_status(f"💥 连接异常关闭: {error_str}")
             
             await self.cleanup()
+            
+            # 通知前端 session 启动失败，让前端重置状态
+            await self.send_session_failed(input_mode)
         
         finally:
             # 无论成功还是失败，都重置启动标志
@@ -1710,16 +1713,33 @@ class LLMSessionManager:
             await self.send_status(f"{self.lanlan_name}已离开。")
             logger.info("End Session: Resources cleaned up.")
 
-    async def cleanup(self):
+    async def cleanup(self, expected_websocket=None):
+        """
+        清理 session 资源。
+        
+        Args:
+            expected_websocket: 可选，期望的 websocket 实例。
+                               如果提供且与当前 websocket 不匹配，跳过 cleanup。
+                               用于防止旧连接误清理新连接的资源（竞态条件保护）。
+        """
+        # 验证：如果调用者指定了期望的websocket，但当前websocket已被替换，则跳过cleanup
+        if expected_websocket is not None and self.websocket is not None:
+            if self.websocket != expected_websocket:
+                logger.info("⏭️ cleanup 跳过：当前 websocket 已被新连接替换")
+                return
+        
         await self.end_session(by_server=True)
         # 清理websocket引用，防止保留失效的连接
         # 使用共享锁保护websocket操作，防止与initialize_character_data()中的restore竞争
         if self.websocket_lock:
             async with self.websocket_lock:
-                self.websocket = None
+                # 再次检查：只有当 websocket 仍是我们期望的那个时才清理
+                if expected_websocket is None or self.websocket == expected_websocket:
+                    self.websocket = None
         else:
             # 如果没有设置websocket_lock（旧代码路径），直接清理
-            self.websocket = None
+            if expected_websocket is None or self.websocket == expected_websocket:
+                self.websocket = None
 
     def _get_translation_service(self):
         """获取翻译服务实例（延迟初始化）"""
@@ -1814,6 +1834,17 @@ class LLMSessionManager:
             pass
         except Exception as e:
             logger.error(f"💥 WS Send Session Started Error: {e}")
+    
+    async def send_session_failed(self, input_mode: str): # 通知前端session启动失败
+        """通知前端 session 启动失败，让前端隐藏 preparing banner 并重置状态"""
+        try:
+            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                data = json.dumps({"type": "session_failed", "input_mode": input_mode})
+                await self.websocket.send_text(data)
+        except WebSocketDisconnect:
+            pass
+        except Exception as e:
+            logger.error(f"💥 WS Send Session Failed Error: {e}")
 
     async def send_expressions(self, prompt=""):
         '''这个函数在直播版本中有用，用于控制Live2D模型的表情动作。但是在开源版本目前没有实际用途。'''

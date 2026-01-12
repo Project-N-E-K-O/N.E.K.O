@@ -205,7 +205,13 @@ class VRMAnimation {
             // 使用官方库的 createVRMAnimationClip 创建动画 Clip
             // 这会自动处理骨骼重定向和四元数问题
             const animationModule = await import('/static/libs/three-vrm-animation.module.js');
-            const { createVRMAnimationClip } = animationModule;
+            // 原本只有 createVRMAnimationClip，现在加一个 VRMLookAtQuaternionProxy
+            const { createVRMAnimationClip, VRMLookAtQuaternionProxy } = animationModule;
+
+            //在创建 clip 之前，插入这段代码
+            if (vrm.lookAt) {
+                new VRMLookAtQuaternionProxy(vrm.lookAt);
+            }
             let clip = createVRMAnimationClip(vrmAnimation, vrm);
             
             if (!clip || !clip.tracks || clip.tracks.length === 0) {

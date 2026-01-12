@@ -17,6 +17,9 @@ class VRMExpression {
         // 手动眨眼标志 (防止自动更新干扰)
         this.manualBlinkInProgress = null; // 存储正在手动播放的眨眼表情名称
 
+        // 手动设置的表情标志 (防止自动更新干扰手动设置的表情)
+        this.manualExpressionInProgress = null; // 存储正在手动播放的表情名称
+
         // 情绪配置
         this.autoChangeMood = false;
         this.moodTimer = 0;
@@ -69,16 +72,74 @@ class VRMExpression {
                 this.neutralReturnTimer = null;
             }
 
+            // 立即应用表情，不等待下一帧
+            this._applyMoodImmediately(moodName);
+
             // 如果不是 neutral 且开启了自动回到 neutral，设置定时器
             if (this.autoReturnToNeutral && moodName !== 'neutral') {
                 this.neutralReturnTimer = setTimeout(() => {
                     this.currentMood = 'neutral';
+                    this._applyMoodImmediately('neutral');
                     this.neutralReturnTimer = null;
                 }, this.neutralReturnDelay);
             }
         } else {
             console.warn(`[VRM Expression] 未知情绪: ${moodName}，忽略切换`);
         }
+    }
+
+    /**
+     * 立即应用情绪到VRM模型（不等待下一帧）
+     * @param {string} moodName - 情绪名称
+     */
+    _applyMoodImmediately(moodName) {
+        if (!this.manager.currentModel || !this.manager.currentModel.vrm || !this.manager.currentModel.vrm.expressionManager) {
+            return;
+        }
+
+        const expressionManager = this.manager.currentModel.vrm.expressionManager;
+        const expressionNames = this._getExpressionNames(expressionManager);
+        const moodCandidates = this.moodMap[moodName] || [];
+
+        // 先清除所有表情（除了口型和视线控制）
+        expressionNames.forEach(exprName => {
+            const lowerExprName = exprName.toLowerCase();
+            // 跳过口型和视线控制
+            if (!['aa', 'ih', 'ou', 'ee', 'oh', 'look'].some(keyword => lowerExprName.includes(keyword))) {
+                expressionManager.setValue(exprName, 0.0);
+                this.currentWeights[exprName] = 0.0;
+            }
+        });
+
+        // 如果是 neutral，直接返回（已经清除所有表情）
+        if (moodName === 'neutral') {
+            this.manualExpressionInProgress = null;
+            return;
+        }
+
+        // 查找匹配的表情并立即应用
+        for (const candidate of moodCandidates) {
+            const matchedExpression = expressionNames.find(exprName => {
+                const lowerExprName = exprName.toLowerCase();
+                const lowerCandidate = candidate.toLowerCase();
+                return lowerExprName === lowerCandidate || lowerExprName.includes(lowerCandidate);
+            });
+
+            if (matchedExpression) {
+                // 设置手动表情标志，防止 _updateWeights 干扰
+                this.manualExpressionInProgress = matchedExpression;
+
+                // 立即设置为1.0
+                expressionManager.setValue(matchedExpression, 1.0);
+                this.currentWeights[matchedExpression] = 1.0;
+                console.log(`[VRM Expression] setMood立即应用表情: ${matchedExpression} (情绪: ${moodName})`);
+                return; // 找到匹配的表情后立即返回
+            }
+        }
+
+        // 如果没有找到匹配的表情，清除标志
+        this.manualExpressionInProgress = null;
+        console.warn(`[VRM Expression] setMood未找到匹配的表情 (情绪: ${moodName}, 候选: ${moodCandidates.join(', ')})`);
     }
 
     // ... 下面是原有的 update(delta) ...
@@ -225,6 +286,11 @@ class VRMExpression {
                 return; // 跳过，让手动设置的值保持
             }
 
+            // 如果是正在手动播放的表情，跳过自动更新（除非是 neutral）
+            if (this.manualExpressionInProgress && name === this.manualExpressionInProgress && targetName !== 'neutral') {
+                return; // 跳过，让手动设置的值保持
+            }
+
             // 跳过口型表情，避免与口型同步模块冲突
             const lipSyncExpressions = ['aa', 'ih', 'ou', 'ee', 'oh'];
             const isLipSyncExpression = lipSyncExpressions.some(lip => lowerName.includes(lip));
@@ -251,6 +317,9 @@ class VRMExpression {
 
                 if (isMatch) {
                     targetWeight = 1.0;
+                } else {
+                    // 只有在没有匹配到目标表情时，才将权重设为 0
+                    targetWeight = 0.0;
                 }
             }
             
@@ -263,10 +332,6 @@ class VRMExpression {
             if (lowerName === 'blink' && !isUserTestingBlink) {
                 expressionManager.setValue(name, this.blinkWeight);
                 return; // 眨眼由定时器控制，处理完直接跳过后续插值
-            }
-            // 其他情况归零
-            else {
-                targetWeight = 0.0;
             }
            
             // 如果当前权重很小(接近0) 且 目标权重也是0，说明这个表情处于静止状态，直接跳过
@@ -355,8 +420,90 @@ class VRMExpression {
             return;
         }
 
-        // 非眨眼表情：正常设置
+        // 非眨眼表情：立即应用表情权重
         this.currentMood = name || 'neutral';
+        
+        // 清除之前的回到 neutral 定时器
+        if (this.neutralReturnTimer) {
+            clearTimeout(this.neutralReturnTimer);
+            this.neutralReturnTimer = null;
+        }
+        
+        // 立即应用表情，不等待下一帧
+        if (this.manager.currentModel && this.manager.currentModel.vrm && this.manager.currentModel.vrm.expressionManager) {
+            const expressionManager = this.manager.currentModel.vrm.expressionManager;
+            const expressionNames = this._getExpressionNames(expressionManager);
+            
+            // 先清除所有表情
+            expressionNames.forEach(exprName => {
+                const lowerExprName = exprName.toLowerCase();
+                // 跳过口型和视线控制
+                if (!['aa', 'ih', 'ou', 'ee', 'oh', 'look'].some(keyword => lowerExprName.includes(keyword))) {
+                    expressionManager.setValue(exprName, 0.0);
+                    this.currentWeights[exprName] = 0.0;
+                }
+            });
+            
+            // 如果设置了表情名称，立即应用
+            if (name && name !== 'neutral') {
+                const lowerName = name.toLowerCase();
+                // 查找匹配的表情
+                const matchedExpression = expressionNames.find(exprName => {
+                    const lowerExprName = exprName.toLowerCase();
+                    return lowerExprName === lowerName || lowerExprName.includes(lowerName);
+                });
+                
+                if (matchedExpression) {
+                    // 设置手动表情标志，防止 _updateWeights 干扰
+                    this.manualExpressionInProgress = matchedExpression;
+                    
+                    // 立即设置为1.0
+                    expressionManager.setValue(matchedExpression, 1.0);
+                    this.currentWeights[matchedExpression] = 1.0;
+                    console.log(`[VRM Expression] 立即应用表情: ${matchedExpression}`);
+                    
+                    // 如果不是 neutral 且开启了自动回到 neutral，设置定时器
+                    if (this.autoReturnToNeutral) {
+                        this.neutralReturnTimer = setTimeout(() => {
+                            this.currentMood = 'neutral';
+                            this.manualExpressionInProgress = null; // 清除标志
+                            this.neutralReturnTimer = null;
+                        }, this.neutralReturnDelay);
+                    }
+                } else {
+                    // 尝试通过映射表查找
+                    for (const [mood, candidates] of Object.entries(this.moodMap)) {
+                        if (candidates.includes(name)) {
+                            const matched = expressionNames.find(exprName => {
+                                const lowerExprName = exprName.toLowerCase();
+                                return candidates.some(candidate => lowerExprName === candidate.toLowerCase());
+                            });
+                            if (matched) {
+                                // 设置手动表情标志
+                                this.manualExpressionInProgress = matched;
+                                
+                                expressionManager.setValue(matched, 1.0);
+                                this.currentWeights[matched] = 1.0;
+                                console.log(`[VRM Expression] 通过映射应用表情: ${matched}`);
+                                
+                                // 设置自动回到 neutral 定时器
+                                if (this.autoReturnToNeutral) {
+                                    this.neutralReturnTimer = setTimeout(() => {
+                                        this.currentMood = 'neutral';
+                                        this.manualExpressionInProgress = null;
+                                        this.neutralReturnTimer = null;
+                                    }, this.neutralReturnDelay);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            } else {
+                // 如果是 neutral，清除手动表情标志
+                this.manualExpressionInProgress = null;
+            }
+        }
     }
 }
 

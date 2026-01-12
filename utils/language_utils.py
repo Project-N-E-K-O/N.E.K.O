@@ -42,21 +42,18 @@ def _is_china_region() -> bool:
         True 表示中文区，False 表示非中文区
     """
     try:
-        # 获取系统 locale（使用 locale.getlocale() 替代已弃用的 getdefaultlocale()）
-        # locale.getlocale() 返回 (language_code, encoding) 元组
         system_locale = locale.getlocale()[0]
         if system_locale:
-            # 检查是否是中文 locale
             system_locale_lower = system_locale.lower()
             if system_locale_lower.startswith('zh'):
                 return True
+            if 'chinese' in system_locale_lower and 'china' in system_locale_lower:
+                return True
         
-        # 如果无法从 locale 判断，尝试从系统语言环境变量判断
         lang_env = os.environ.get('LANG', '').lower()
         if lang_env.startswith('zh'):
             return True
         
-        # 默认判断：如果系统 locale 不是中文，则认为是非中文区
         return False
     except Exception as e:
         logger.warning(f"判断系统区域失败: {e}，默认使用非中文区")
@@ -76,16 +73,15 @@ def _get_system_language() -> str:
         system_locale = locale.getlocale()[0]
         if system_locale:
             system_locale_lower = system_locale.lower()
-            if system_locale_lower.startswith('zh'):
+            if system_locale_lower.startswith('zh') or 'chinese' in system_locale_lower:
                 return 'zh'
             elif system_locale_lower.startswith('ja'):
                 return 'ja'
             elif system_locale_lower.startswith('en'):
                 return 'en'
         
-        # 尝试从环境变量获取
         lang_env = os.environ.get('LANG', '').lower()
-        if lang_env.startswith('zh'):
+        if lang_env.startswith('zh') or 'chinese' in lang_env:
             return 'zh'
         elif lang_env.startswith('ja'):
             return 'ja'

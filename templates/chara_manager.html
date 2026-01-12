@@ -400,6 +400,117 @@
         // 角色数据缓存
         let characterData = null;
 
+        // 自动扫描并导入工坊角色卡（静默执行，不影响页面加载）
+        async function autoScanWorkshopCharacterCards() {
+            let hasNewCards = false;
+            try {
+                // 1. 获取所有订阅的创意工坊物品
+                const subscribedResponse = await fetch('/api/steam/workshop/subscribed-items');
+                const subscribedResult = await subscribedResponse.json();
+                
+                if (!subscribedResult.success) {
+                    console.log('[工坊扫描] 获取订阅物品失败或Steam未初始化，跳过扫描');
+                    return false;
+                }
+                
+                const subscribedItems = subscribedResult.items;
+                console.log(`[工坊扫描] 找到 ${subscribedItems.length} 个订阅物品`);
+                
+                // 2. 批量并发扫描所有已安装的物品（提高效率喵）
+                const scanPromises = subscribedItems.map(async (item) => {
+                    if (!item.installedFolder) return false;
+                    
+                    const itemId = item.publishedFileId;
+                    const folderPath = item.installedFolder;
+                    
+                    try {
+                        const listResponse = await fetch(`/api/steam/workshop/list-chara-files?directory=${encodeURIComponent(folderPath)}`);
+                        const listResult = await listResponse.json();
+                        
+                        if (listResult.success && listResult.files.length > 0) {
+                            let itemHasNew = false;
+                            // 对于单个物品内的多个角色卡，我们也尝试并行处理
+                            const importPromises = listResult.files.map(file => importWorkshopCharaFile(file.path, itemId));
+                            const results = await Promise.all(importPromises);
+                            if (results.some(r => r === true)) itemHasNew = true;
+                            return itemHasNew;
+                        }
+                    } catch (e) {
+                        // 静默处理单个物品的扫描错误
+                    }
+                    return false;
+                });
+                
+                const scanResults = await Promise.all(scanPromises);
+                hasNewCards = scanResults.some(r => r === true);
+                
+            } catch (error) {
+                console.log('[工坊扫描] Steam未运行或未初始化，跳过工坊角色卡扫描');
+            }
+            return hasNewCards;
+        }
+        
+        // 导入单个工坊角色卡文件，返回是否成功添加
+        async function importWorkshopCharaFile(filePath, itemId) {
+            try {
+                const readResponse = await fetch(`/api/steam/workshop/read-file?path=${encodeURIComponent(filePath)}`);
+                const readResult = await readResponse.json();
+                
+                if (readResult.success) {
+                    const charaData = JSON.parse(readResult.content);
+                    
+                    // 档案名是必需字段，用作 characters.json 中的 key
+                    if (!charaData['档案名']) {
+                        console.log(`[工坊扫描] 角色卡 ${filePath} 缺少"档案名"字段，跳过`);
+                        return false;
+                    }
+                    
+                    // 工坊保留字段 - 这些字段不应该从外部角色卡数据中读取
+                    // description/tags 及其中文版本是工坊上传时自动生成的，不属于角色卡原始数据
+                    // live2d_item_id 是系统自动管理的，不应该从外部数据读取
+                    const RESERVED_FIELDS = [
+                        '原始数据', '文件路径', '创意工坊物品ID',
+                        'description', 'tags', 'name',
+                        '描述', '标签', '关键词',
+                        'live2d_item_id'
+                    ];
+                    
+                    // 转换为符合catgirl API格式的数据（不包含保留字段）
+                    const catgirlFormat = {
+                        '档案名': charaData['档案名']
+                    };
+                    
+                    // 跳过的字段：档案名（已处理）、保留字段
+                    const skipKeys = ['档案名', ...RESERVED_FIELDS];
+                    
+                    // 添加所有非保留字段
+                    for (const [key, value] of Object.entries(charaData)) {
+                        if (!skipKeys.includes(key) && value !== undefined && value !== null && value !== '') {
+                            catgirlFormat[key] = value;
+                        }
+                    }
+                    
+                    // 重要：如果角色卡有 live2d 字段，需要同时保存 live2d_item_id
+                    // 这样首页加载时才能正确构建工坊模型的路径
+                    if (catgirlFormat['live2d'] && itemId) {
+                        catgirlFormat['live2d_item_id'] = String(itemId);
+                    }
+                    
+                    // 静默添加到系统
+                    const addResponse = await fetch('/api/characters/catgirl', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(catgirlFormat)
+                    });
+                    const addResult = await addResponse.json();
+                    return addResult.success === true;
+                }
+            } catch (e) {
+                // 静默处理
+            }
+            return false;
+        }
+
         // 加载角色数据
         // 跟踪当前展开的猫娘名称
         let expandedCatgirlName = null;
@@ -953,8 +1064,19 @@
             }
             form.appendChild(baseRow);
             // 渲染自定义项
+            // 系统保留字段（不显示、不可编辑）
+            const SYSTEM_RESERVED_FIELDS = ["live2d", "voice_id", "system_prompt", "档案名", "vrm", "model_type", "lighting"];
+            // 工坊保留字段（不显示、不可编辑）- 这些字段由工坊系统管理
+            const WORKSHOP_RESERVED_FIELDS = [
+                '原始数据', '文件路径', '创意工坊物品ID',
+                'description', 'tags', 'name',
+                '描述', '标签', '关键词',
+                'live2d_item_id'
+            ];
+            const ALL_RESERVED_FIELDS = [...SYSTEM_RESERVED_FIELDS, ...WORKSHOP_RESERVED_FIELDS];
+            
             Object.keys(cat).forEach(k => {
-                if (!["live2d", "voice_id", "vrm","model_type","system_prompt", "档案名","lighting", "lightingPreset"].includes(k)) {
+                if (!ALL_RESERVED_FIELDS.includes(k)) {
                     const row = document.createElement('div');
                     row.className = 'field-row custom-row';
                     const deleteFieldText = window.t ? window.t('character.deleteField') : '删除设定';
@@ -1047,7 +1169,23 @@
             registerVoiceBtn.type = 'button';
             registerVoiceBtn.className = 'btn sm';
             registerVoiceBtn.textContent = window.t ? window.t('character.registerNewVoice') : '注册新声音';
-            registerVoiceBtn.addEventListener('click', function () { openVoiceClone(key || ''); });
+            registerVoiceBtn.addEventListener('click', async function () {
+                const catgirlName = form.querySelector('[name="档案名"]').value;
+                if (!catgirlName) {
+                    await showAlert(window.t ? window.t('character.fillProfileNameFirstForVoice') : '请先填写猫娘档案名，然后再注册音色');
+                    return;
+                }
+                
+                // 如果是新建角色，检查角色是否已经创建
+                if (isNew) {
+                    if (!characterData['猫娘'] || !characterData['猫娘'][catgirlName]) {
+                        await showAlert(window.t ? window.t('character.createCharacterFirstForVoice') : '请先点击"确认新猫娘"按钮创建角色，然后再注册音色');
+                        return;
+                    }
+                }
+                
+                openVoiceClone(catgirlName);
+            });
             voiceRow.appendChild(registerVoiceBtn);
             foldContent.appendChild(voiceRow);
 
@@ -1215,7 +1353,15 @@
                     '',
                     window.t ? window.t('character.addCatgirlFieldTitle') : '新增猫娘设定'
                 );
-                if (!key || ["档案名", "live2d", "voice_id", "system_prompt"].includes(key)) return;
+                // 系统保留字段 + 工坊保留字段都不允许用户手动添加
+                const FORBIDDEN_FIELD_NAMES = [
+                    "档案名", "live2d", "voice_id", "system_prompt",
+                    '原始数据', '文件路径', '创意工坊物品ID',
+                    'description', 'tags', 'name',
+                    '描述', '标签', '关键词',
+                    'live2d_item_id'
+                ];
+                if (!key || FORBIDDEN_FIELD_NAMES.includes(key)) return;
                 if (form.querySelector(`[name='${key}']`)) {
                     await showAlert(window.t ? window.t('character.fieldExists') : '该设定已存在');
                     return;
@@ -1468,6 +1614,14 @@
                     let oldForm = document.getElementById('catgirl-form-' + key);
                     if (oldForm) oldForm.style.display = '';
                 } else {
+                    // 检查是否已经存在"新增猫娘"的表单，如果存在，先移除旧的容器，防止出现空白条
+                    const existingNewForm = document.getElementById('catgirl-form-new');
+                    if (existingNewForm) {
+                        const existingBlock = existingNewForm.closest('.catgirl-block');
+                    if (existingBlock) {
+                        existingBlock.remove();
+                    }
+                }
                     // 新增猫娘时，创建一个新的表单块
                     const block = document.createElement('div');
                     block.className = 'catgirl-block';
@@ -1801,11 +1955,34 @@
 
 
 
-        // 页面加载时拉取数据
+        // 页面加载时拉取数据，并在后台异步扫描工坊角色卡
+        async function initPage() {
+            // 1. 先快速加载已有的本地角色数据
+            // 我们不等待工坊扫描，先让页面呈现出来
+            await loadCharacterData();
+            
+            // 2. 延迟执行工坊角色卡扫描
+            // 使用 setTimeout 将其放到任务队列末尾，并等待几秒钟，让浏览器优先处理页面渲染和交互
+            setTimeout(() => {
+                console.log('[工坊扫描] 开始异步扫描工坊角色卡...');
+                autoScanWorkshopCharacterCards().then(async (hasNewCards) => {
+                    if (hasNewCards) {
+                        console.log('[工坊扫描] 发现新角色卡，正在更新列表...');
+                        // 发现新卡时才刷新数据
+                        await loadCharacterData();
+                    } else {
+                        console.log('[工坊扫描] 未发现新角色卡');
+                    }
+                }).catch(err => {
+                    console.error('[工坊扫描] 扫描过程中发生错误:', err);
+                });
+            }, 1000); // 延迟1秒开始扫描，确保页面交互流畅
+        }
+        
         if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', loadCharacterData);
+            document.addEventListener('DOMContentLoaded', initPage);
         } else {
-            loadCharacterData();
+            initPage();
         }
 
         // Electron白屏修复

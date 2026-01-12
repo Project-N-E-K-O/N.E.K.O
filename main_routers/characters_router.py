@@ -184,6 +184,44 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
             try:
                 # 先从完整的模型列表中查找，这样可以获取到item_id等完整信息
                 all_models = find_models()
+                
+                # 同时获取工坊模型列表，确保能找到工坊模型
+                try:
+                    from .workshop_router import get_subscribed_workshop_items
+                    workshop_result = await get_subscribed_workshop_items()
+                    if isinstance(workshop_result, dict) and workshop_result.get('success', False):
+                        for item in workshop_result.get('items', []):
+                            installed_folder = item.get('installedFolder')
+                            workshop_item_id = item.get('publishedFileId')
+                            if installed_folder and os.path.exists(installed_folder) and os.path.isdir(installed_folder) and workshop_item_id:
+                                # 检查安装目录下是否有.model3.json文件
+                                for filename in os.listdir(installed_folder):
+                                    if filename.endswith('.model3.json'):
+                                        model_name = os.path.splitext(os.path.splitext(filename)[0])[0]
+                                        if model_name not in [m['name'] for m in all_models]:
+                                            all_models.append({
+                                                'name': model_name,
+                                                'path': f'/workshop/{workshop_item_id}/{filename}',
+                                                'source': 'steam_workshop',
+                                                'item_id': workshop_item_id
+                                            })
+                                # 检查子目录
+                                for subdir in os.listdir(installed_folder):
+                                    subdir_path = os.path.join(installed_folder, subdir)
+                                    if os.path.isdir(subdir_path):
+                                        model_name = subdir
+                                        json_file = os.path.join(subdir_path, f'{model_name}.model3.json')
+                                        if os.path.exists(json_file):
+                                            if model_name not in [m['name'] for m in all_models]:
+                                                all_models.append({
+                                                    'name': model_name,
+                                                    'path': f'/workshop/{workshop_item_id}/{model_name}/{model_name}.model3.json',
+                                                    'source': 'steam_workshop',
+                                                    'item_id': workshop_item_id
+                                                })
+                except Exception as we:
+                    logger.debug(f"获取工坊模型列表时出错（非关键）: {we}")
+                
                 # 查找匹配的模型
                 matching_model = next((m for m in all_models if m['name'] == live2d_model_name), None)
                 

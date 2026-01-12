@@ -175,7 +175,10 @@ async function initVRMModel() {
         modelUrl = modelUrl.replace(/\\/g, '/'); // 修正 Windows 风格路径
 
         // 执行加载
+        // 【简化】朝向会自动检测并保存（在vrm-core.js的loadModel中处理）
+        // 如果模型背对屏幕，会自动翻转180度并保存，下次加载时直接应用
         await window.vrmManager.loadModel(modelUrl);
+        
         // 页面加载时立即应用打光配置
         if (window.lanlan_config && window.lanlan_config.lighting && window.vrmManager) {
             const lighting = window.lanlan_config.lighting;

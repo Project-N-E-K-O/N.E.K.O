@@ -429,37 +429,54 @@ class VRMCore {
                 const preferencesResponse = await fetch('/api/config/preferences');
                 const allPreferences = await preferencesResponse.json();
 
-                // 在偏好设置中查找当前模型的配置
-                if (allPreferences && allPreferences.models) {
-                    preferences = allPreferences.models.find(pref => pref.model_path === modelUrl);
+                // 【修复】API返回的格式可能是数组，也可能是 {models: [...]}
+                let modelsArray = null;
+                if (Array.isArray(allPreferences)) {
+                    modelsArray = allPreferences;
+                } else if (allPreferences && allPreferences.models && Array.isArray(allPreferences.models)) {
+                    modelsArray = allPreferences.models;
+                }
+
+                if (modelsArray && modelsArray.length > 0) {
+                    preferences = modelsArray.find(pref => pref && pref.model_path === modelUrl);
                 }
             } catch (error) {
-                console.warn('[VRM] 获取用户偏好设置失败:', error);
+                console.error('[VRM Core] 获取用户偏好设置失败:', error);
             }
 
-            // 根据是否有保存的偏好设置来决定位置和缩放
-            if (preferences && preferences.position && preferences.scale) {
-                // 恢复保存的位置
-                const pos = preferences.position;
-                if (Number.isFinite(pos.x) && Number.isFinite(pos.y) && Number.isFinite(pos.z)) {
-                    vrm.scene.position.set(pos.x, pos.y, pos.z);
+            // 根据是否有保存的偏好设置来决定位置、缩放和旋转
+            if (preferences) {
+                // 恢复保存的位置（如果有）
+                if (preferences.position) {
+                    const pos = preferences.position;
+                    if (Number.isFinite(pos.x) && Number.isFinite(pos.y) && Number.isFinite(pos.z)) {
+                        vrm.scene.position.set(pos.x, pos.y, pos.z);
+                    } else {
+                        // 如果保存的位置无效，使用默认居中位置
+                        vrm.scene.position.set(-center.x, -center.y, -center.z);
+                    }
                 } else {
-                    // 如果保存的位置无效，使用默认居中位置
+                    // 没有保存的位置，使用默认位置
                     vrm.scene.position.set(-center.x, -center.y, -center.z);
                 }
 
-                // 恢复保存的缩放
-                const scl = preferences.scale;
-                if (Number.isFinite(scl.x) && Number.isFinite(scl.y) && Number.isFinite(scl.z) &&
-                    scl.x > 0 && scl.y > 0 && scl.z > 0) {
-                    vrm.scene.scale.set(scl.x, scl.y, scl.z);
+                // 恢复保存的缩放（如果有）
+                if (preferences.scale) {
+                    const scl = preferences.scale;
+                    if (Number.isFinite(scl.x) && Number.isFinite(scl.y) && Number.isFinite(scl.z) &&
+                        scl.x > 0 && scl.y > 0 && scl.z > 0) {
+                        vrm.scene.scale.set(scl.x, scl.y, scl.z);
+                    }
                 }
 
-                // 恢复保存的旋转（如果有）
+                // 【关键修复】恢复保存的旋转（如果有）- 即使没有position/scale也要应用
                 if (preferences.rotation) {
                     const rot = preferences.rotation;
                     if (Number.isFinite(rot.x) && Number.isFinite(rot.y) && Number.isFinite(rot.z)) {
                         vrm.scene.rotation.set(rot.x, rot.y, rot.z);
+                        vrm.scene.updateMatrixWorld(true);
+                    } else {
+                        console.warn(`[VRM Core] rotation值无效:`, rot);
                     }
                 }
             } else {
@@ -467,36 +484,53 @@ class VRMCore {
                 vrm.scene.position.set(-center.x, -center.y, -center.z);
             }
 
-            // 如果没有保存的旋转，确保模型正面朝向相机
-            if (!preferences || !preferences.rotation) {
-                let needsRotation = false;
-                if (vrm.humanoid && vrm.humanoid.humanBones) {
-                    // 获取头部骨骼位置（通常头部在模型前方）
-                    const headBone = vrm.humanoid.humanBones.head?.node;
-                    const chestBone = vrm.humanoid.humanBones.chest?.node ||
-                                     vrm.humanoid.humanBones.spine?.node;
-
-                    if (headBone && chestBone) {
-                        // 计算从胸部到头部的向量（应该指向前方）
-                        const headWorldPos = new THREE.Vector3();
-                        const chestWorldPos = new THREE.Vector3();
-                        headBone.getWorldPosition(headWorldPos);
-                        chestBone.getWorldPosition(chestWorldPos);
-
-                        const forwardVec = new THREE.Vector3().subVectors(headWorldPos, chestWorldPos);
-                        forwardVec.normalize();
-
-                        // 如果forward向量指向Z轴正方向（远离相机），说明是背面，需要旋转
-                        if (forwardVec.z > 0.3) {
-                            needsRotation = true;
-                        }
-                    } else {
-                        console.warn('[VRM] 无法检测模型朝向：缺少头部或胸部骨骼');
-                    }
+            // 【使用朝向检测模块】检测并处理模型朝向
+            const savedRotation = preferences?.rotation;
+            
+            const detectedRotation = window.VRMOrientationDetector 
+                ? window.VRMOrientationDetector.detectAndFixOrientation(vrm, savedRotation)
+                : { x: 0, y: 0, z: 0 };
+            
+            // 应用检测到的旋转（在渲染前处理）
+            if (window.VRMOrientationDetector) {
+                window.VRMOrientationDetector.applyRotation(vrm, detectedRotation);
+            } else {
+                // 降级处理：如果没有检测模块，使用保存的rotation或默认值
+                if (savedRotation && 
+                    Number.isFinite(savedRotation.x) && 
+                    Number.isFinite(savedRotation.y) && 
+                    Number.isFinite(savedRotation.z)) {
+                    vrm.scene.rotation.set(savedRotation.x, savedRotation.y, savedRotation.z);
+                    vrm.scene.updateMatrixWorld(true);
                 }
-
-                // 重置旋转并应用必要的旋转
-                vrm.scene.rotation.set(0, needsRotation ? Math.PI : 0, 0);
+            }
+            
+            // 如果检测到新的rotation（没有保存的），自动保存
+            const hasSavedRotation = savedRotation && 
+                Number.isFinite(savedRotation.x) && 
+                Number.isFinite(savedRotation.y) && 
+                Number.isFinite(savedRotation.z);
+            
+            if (!hasSavedRotation && typeof this.saveUserPreferences === 'function') {
+                // 获取当前的位置和缩放（如果没有保存的，使用当前值）
+                const currentPosition = preferences?.position || vrm.scene.position.clone();
+                const currentScale = preferences?.scale || vrm.scene.scale.clone();
+                
+                // 异步保存，不阻塞加载流程
+                this.saveUserPreferences(
+                    modelUrl,
+                    { x: currentPosition.x, y: currentPosition.y, z: currentPosition.z },
+                    { x: currentScale.x, y: currentScale.y, z: currentScale.z },
+                    detectedRotation,
+                    null // display
+                ).catch(err => {
+                    console.error(`[VRM Core] 自动保存rotation时出错:`, err);
+                });
+            }
+            
+            // 禁用自动面向相机，保持检测到的朝向
+            if (this.manager.interaction) {
+                this.manager.interaction.enableFaceCamera = false;
             }
 
             // 只在没有保存的偏好设置时才计算和应用默认缩放
@@ -689,7 +723,7 @@ class VRMCore {
                     screenY: display.screenY
                 };
             }
-
+            
             const response = await fetch('/api/config/preferences', {
                 method: 'POST',
                 headers: {
@@ -699,7 +733,8 @@ class VRMCore {
             });
 
             const result = await response.json();
-            return result.success;
+            
+            return result.success || false;
         } catch (error) {
             console.error('[VRM] 保存用户偏好失败:', error);
             return false;

@@ -653,7 +653,7 @@ async def _init_and_mount_workshop():
     """
     try:
         # 1. 获取订阅的创意工坊物品列表
-        workshop_items_result = get_subscribed_workshop_items()
+        workshop_items_result = await get_subscribed_workshop_items()
         
         # 2. 提取物品列表传给 utils 层
         subscribed_items = []

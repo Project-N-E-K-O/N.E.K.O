@@ -26,7 +26,7 @@ logger = logging.getLogger("Main")
 
 
 @router.get("/models")
-def get_live2d_models(simple: bool = False):
+async def get_live2d_models(simple: bool = False):
     """
     获取Live2D模型列表
     Args:
@@ -38,7 +38,7 @@ def get_live2d_models(simple: bool = False):
         
         # 再获取Steam创意工坊模型
         try:
-            workshop_items_result = get_subscribed_workshop_items()
+            workshop_items_result = await get_subscribed_workshop_items()
             
             # 处理响应结果
             if isinstance(workshop_items_result, dict) and workshop_items_result.get('success', False):

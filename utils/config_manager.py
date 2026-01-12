@@ -818,15 +818,47 @@ class ConfigManager:
         enable_custom_api = core_cfg.get('enableCustomApi', False)
         config['ENABLE_CUSTOM_API'] = enable_custom_api
         
-        # 只有在启用自定义API时才允许覆盖视觉模型相关字段
+        # 只有在启用自定义API时才允许覆盖各模型相关字段
         if enable_custom_api:
+            # Summary（摘要）模型自定义配置映射
+            if core_cfg.get('summaryModelApiKey') is not None:
+                config['SUMMARY_MODEL_API_KEY'] = core_cfg.get('summaryModelApiKey', '') or config.get('SUMMARY_MODEL_API_KEY', '')
+            if core_cfg.get('summaryModelUrl') is not None:
+                config['SUMMARY_MODEL_URL'] = core_cfg.get('summaryModelUrl', '') or config.get('SUMMARY_MODEL_URL', '')
+            if core_cfg.get('summaryModelId') is not None:
+                config['SUMMARY_MODEL'] = core_cfg.get('summaryModelId', '') or config.get('SUMMARY_MODEL', '')
+            
+            # Correction（纠错）模型自定义配置映射
+            if core_cfg.get('correctionModelApiKey') is not None:
+                config['CORRECTION_MODEL_API_KEY'] = core_cfg.get('correctionModelApiKey', '') or config.get('CORRECTION_MODEL_API_KEY', '')
+            if core_cfg.get('correctionModelUrl') is not None:
+                config['CORRECTION_MODEL_URL'] = core_cfg.get('correctionModelUrl', '') or config.get('CORRECTION_MODEL_URL', '')
+            if core_cfg.get('correctionModelId') is not None:
+                config['CORRECTION_MODEL'] = core_cfg.get('correctionModelId', '') or config.get('CORRECTION_MODEL', '')
+            
+            # Emotion（情感分析）模型自定义配置映射
+            if core_cfg.get('emotionModelApiKey') is not None:
+                config['EMOTION_MODEL_API_KEY'] = core_cfg.get('emotionModelApiKey', '') or config.get('EMOTION_MODEL_API_KEY', '')
+            if core_cfg.get('emotionModelUrl') is not None:
+                config['EMOTION_MODEL_URL'] = core_cfg.get('emotionModelUrl', '') or config.get('EMOTION_MODEL_URL', '')
+            if core_cfg.get('emotionModelId') is not None:
+                config['EMOTION_MODEL'] = core_cfg.get('emotionModelId', '') or config.get('EMOTION_MODEL', '')
+            
+            # Vision（视觉）模型自定义配置映射
             if core_cfg.get('visionModelApiKey') is not None:
                 config['VISION_MODEL_API_KEY'] = core_cfg.get('visionModelApiKey', '') or config.get('VISION_MODEL_API_KEY', '')
             if core_cfg.get('visionModelUrl') is not None:
                 config['VISION_MODEL_URL'] = core_cfg.get('visionModelUrl', '') or config.get('VISION_MODEL_URL', '')
             if core_cfg.get('visionModelId') is not None:
-                # 将 core_cfg 中的 visionModelId 映射到内部的 VISION_MODEL（模型ID）
                 config['VISION_MODEL'] = core_cfg.get('visionModelId', '') or config.get('VISION_MODEL', '')
+            
+            # Omni/Realtime（全模态/实时）模型自定义配置映射
+            if core_cfg.get('omniModelApiKey') is not None:
+                config['REALTIME_MODEL_API_KEY'] = core_cfg.get('omniModelApiKey', '') or config.get('REALTIME_MODEL_API_KEY', '')
+            if core_cfg.get('omniModelUrl') is not None:
+                config['REALTIME_MODEL_URL'] = core_cfg.get('omniModelUrl', '') or config.get('REALTIME_MODEL_URL', '')
+            if core_cfg.get('omniModelId') is not None:
+                config['REALTIME_MODEL'] = core_cfg.get('omniModelId', '') or config.get('REALTIME_MODEL', '')
             
             # TTS 自定义配置映射
             if core_cfg.get('ttsModelApiKey') is not None:

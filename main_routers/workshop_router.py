@@ -61,7 +61,7 @@ def get_workshop_meta_path(character_card_name: str) -> str:
         "/" in safe_name or 
         "\\" in safe_name):
         logger.warning(f"检测到非法角色卡名称尝试: {character_card_name}")
-        raise ValueError(f"非法角色卡名称: 不能包含路径分隔符或目录遍历字符")
+        raise ValueError("非法角色卡名称: 不能包含路径分隔符或目录遍历字符")
     
     config_mgr = get_config_manager()
     chara_dir = config_mgr.chara_dir
@@ -110,7 +110,7 @@ def read_workshop_meta(character_card_name: str) -> dict:
     return None
 
 
-def write_workshop_meta(character_card_name: str, workshop_item_id: str, content_hash: str = None):
+def write_workshop_meta(character_card_name: str, workshop_item_id: str, content_hash: str = None, uploaded_snapshot: dict = None):
     """
     写入或更新角色卡的 .workshop_meta.json 文件
     
@@ -118,6 +118,7 @@ def write_workshop_meta(character_card_name: str, workshop_item_id: str, content
         character_card_name: 角色卡名称（不含 .chara.json 后缀）
         workshop_item_id: Workshop 物品 ID
         content_hash: 内容哈希值（可选）
+        uploaded_snapshot: 上传时的快照数据（可选），包含 description、tags、model_name、character_data
     
     Raises:
         ValueError: 如果角色卡名称验证失败
@@ -139,6 +140,10 @@ def write_workshop_meta(character_card_name: str, workshop_item_id: str, content
     existing_meta['last_update'] = now
     if content_hash:
         existing_meta['content_hash'] = content_hash
+    
+    # 保存上传快照
+    if uploaded_snapshot:
+        existing_meta['uploaded_snapshot'] = uploaded_snapshot
     
     # 写入文件
     try:
@@ -289,7 +294,7 @@ async def upload_preview_image(request: Request):
         }, status_code=500)
 
 @router.get('/subscribed-items')
-def get_subscribed_workshop_items():
+async def get_subscribed_workshop_items():
     """
     获取用户订阅的Steam创意工坊物品列表
     返回包含物品ID、基本信息和状态的JSON数据
@@ -323,6 +328,34 @@ def get_subscribed_workshop_items():
         
         # 存储处理后的物品信息
         items_info = []
+        
+        # 批量查询所有物品的详情（一次查询，避免N次等待）
+        ugc_results = {}
+        try:
+            # 转换所有ID为整数
+            all_item_ids = []
+            for sid in subscribed_items:
+                try:
+                    all_item_ids.append(int(sid))
+                except (ValueError, TypeError):
+                    continue
+            
+            if all_item_ids:
+                logger.info(f'批量查询 {len(all_item_ids)} 个物品的详细信息')
+                query_handle = steamworks.Workshop.CreateQueryUGCDetailsRequest(all_item_ids)
+                
+                if query_handle:
+                    steamworks.Workshop.SendQueryUGCRequest(query_handle)
+                    await asyncio.sleep(0.5)  # 只等待一次
+                    
+                    for i in range(len(all_item_ids)):
+                        res = steamworks.Workshop.GetQueryUGCResult(query_handle, i)
+                        if res:
+                            ugc_results[all_item_ids[i]] = res
+                    
+                    logger.info(f"批量查询成功获取 {len(ugc_results)} 个物品的详情")
+        except Exception as batch_error:
+            logger.warning(f"批量查询物品详情失败: {batch_error}")
         
         # 为每个物品获取基本信息和状态
         for item_id in subscribed_items:
@@ -464,56 +497,25 @@ def get_subscribed_workshop_items():
                     logger.warning(f'获取物品 {item_id} 下载信息失败: {e}')
                     item_info["state"]["downloading"] = False
                 
-                # 尝试获取物品详细信息（标题、描述等）- 使用官方推荐的方式
-                try:
-                    # 使用官方推荐的CreateQueryUGCDetailsRequest和SendQueryUGCRequest方法
-                    logger.debug(f'使用官方推荐方法获取物品 {item_id} 的详细信息')
-                    
-                    # 创建UGC详情查询请求
-                    query_handle = steamworks.Workshop.CreateQueryUGCDetailsRequest([item_id])
-                    
-                    if query_handle:
-                        # 设置回调函数
-                        details_received = False
-                        
-                        def query_completed_callback(result):
-                            nonlocal details_received
-                            details_received = True
-                            # 回调结果会在主线程中通过GetQueryUGCResult获取
-                            pass
-                        
-                        # 发送查询请求
-                        steamworks.Workshop.SendQueryUGCRequest(query_handle, callback=query_completed_callback, override_callback=True)
-                        
-                        # 由于这是异步回调，我们简单地等待一小段时间让查询有机会完成
-                        time.sleep(0.5)  # 等待0.5秒
-                        
-                        try:
-                            # 尝试获取查询结果
-                            result = steamworks.Workshop.GetQueryUGCResult(query_handle, 0)
-                            if result:
-                                # 从结果中提取信息
-                                if hasattr(result, 'title') and result.title:
-                                    item_info['title'] = result.title.decode('utf-8', errors='replace')
-                                if hasattr(result, 'description') and result.description:
-                                    item_info['description'] = result.description.decode('utf-8', errors='replace')
-                                # 获取创建和更新时间
-                                if hasattr(result, 'timeCreated'):
-                                    item_info['timeAdded'] = int(result.timeCreated)
-                                if hasattr(result, 'timeUpdated'):
-                                    item_info['timeUpdated'] = int(result.timeUpdated)
-                                # 获取作者信息
-                                if hasattr(result, 'steamIDOwner'):
-                                    item_info['steamIDOwner'] = str(result.steamIDOwner)
-                                # 获取文件大小信息
-                                if hasattr(result, 'fileSize'):
-                                    item_info['fileSizeOnDisk'] = int(result.fileSize)
-                                
-                                logger.info(f"成功获取物品 {item_id} 的详情信息")
-                        except Exception as query_error:
-                            logger.warning(f"获取查询结果时出错: {query_error}")
-                except Exception as api_error:
-                    logger.warning(f"使用官方API获取物品 {item_id} 详情时出错: {api_error}")
+                # 从批量查询结果中提取物品详情
+                if item_id in ugc_results:
+                    result = ugc_results[item_id]
+                    try:
+                        if hasattr(result, 'title') and result.title:
+                            item_info['title'] = result.title.decode('utf-8', errors='replace')
+                        if hasattr(result, 'description') and result.description:
+                            item_info['description'] = result.description.decode('utf-8', errors='replace')
+                        if hasattr(result, 'timeCreated'):
+                            item_info['timeAdded'] = int(result.timeCreated)
+                        if hasattr(result, 'timeUpdated'):
+                            item_info['timeUpdated'] = int(result.timeUpdated)
+                        if hasattr(result, 'steamIDOwner'):
+                            item_info['steamIDOwner'] = str(result.steamIDOwner)
+                        if hasattr(result, 'fileSize'):
+                            item_info['fileSizeOnDisk'] = int(result.fileSize)
+                        logger.debug(f"从批量查询结果填充物品 {item_id} 详情")
+                    except Exception as detail_error:
+                        logger.warning(f"提取物品 {item_id} 详情时出错: {detail_error}")
                 
                 # 作为备选方案，如果本地有安装路径，尝试从本地文件获取信息
                 if item_info['title'].startswith('未知物品_') or not item_info['description']:
@@ -701,7 +703,7 @@ def get_workshop_item_path(item_id: str):
 
 
 @router.get('/item/{item_id}')
-def get_workshop_item_details(item_id: str):
+async def get_workshop_item_details(item_id: str):
     """
     获取单个Steam创意工坊物品的详细信息
     """
@@ -728,7 +730,7 @@ def get_workshop_item_details(item_id: str):
         # 发送查询请求
         # 注意：SendQueryUGCRequest返回None而不是布尔值
         steamworks.Workshop.SendQueryUGCRequest(query_handle)
-        time.sleep(0.5)
+        await asyncio.sleep(0.5)
         
         # 直接获取查询结果，不检查handle
         result = steamworks.Workshop.GetQueryUGCResult(query_handle, 0)
@@ -1103,6 +1105,50 @@ async def unsubscribe_workshop_item(request: Request):
             "success": False,
             "error": "服务器内部错误",
             "message": f"取消订阅过程中发生错误: {str(e)}"
+        }, status_code=500)
+
+
+@router.get('/meta/{character_name}')
+async def get_workshop_meta(character_name: str):
+    """
+    获取角色卡的 Workshop 元数据（包含上传状态和快照）
+    
+    Args:
+        character_name: 角色卡名称（URL 编码）
+    
+    Returns:
+        JSON: 包含 workshop_item_id、uploaded_snapshot 等信息
+    """
+    try:
+        # URL 解码
+        decoded_name = unquote(character_name)
+        
+        # 读取元数据
+        meta_data = read_workshop_meta(decoded_name)
+        
+        if meta_data:
+            return JSONResponse(content={
+                "success": True,
+                "has_uploaded": bool(meta_data.get('workshop_item_id')),
+                "meta": meta_data
+            })
+        else:
+            return JSONResponse(content={
+                "success": True,
+                "has_uploaded": False,
+                "meta": None
+            })
+    except ValueError as e:
+        logger.warning(f"获取 Workshop 元数据失败: {e}")
+        return JSONResponse(content={
+            "success": False,
+            "error": str(e)
+        }, status_code=400)
+    except Exception as e:
+        logger.error(f"获取 Workshop 元数据时出错: {e}")
+        return JSONResponse(content={
+            "success": False,
+            "error": "内部错误"
         }, status_code=500)
 
 
@@ -1908,14 +1954,48 @@ async def publish_to_workshop(request: Request):
         
         logger.info(f"成功发布创意工坊物品，ID: {published_file_id}")
         
-        # 上传成功后，更新 .workshop_meta.json
+        # 上传成功后，更新 .workshop_meta.json 并保存快照
         if character_card_name and published_file_id:
             try:
                 # 计算内容哈希
                 content_hash = calculate_content_hash(content_folder)
-                # 写入元数据文件
-                write_workshop_meta(character_card_name, published_file_id, content_hash)
-                logger.info(f"已更新角色卡 {character_card_name} 的 .workshop_meta.json")
+                
+                # 构建上传快照
+                uploaded_snapshot = {
+                    'description': description,
+                    'tags': tags,
+                    'title': title,
+                    'visibility': visibility
+                }
+                
+                # 尝试从临时文件夹中读取角色卡数据
+                try:
+                    import glob
+                    chara_files = glob.glob(os.path.join(content_folder, "*.chara.json"))
+                    if chara_files:
+                        with open(chara_files[0], 'r', encoding='utf-8') as f:
+                            chara_data = json.load(f)
+                            uploaded_snapshot['character_data'] = chara_data
+                        logger.info(f"已从临时文件夹读取角色卡数据")
+                    
+                    # 获取模型名称（从文件夹中查找模型目录）
+                    for item in os.listdir(content_folder):
+                        item_path = os.path.join(content_folder, item)
+                        if os.path.isdir(item_path) and not item.startswith('.'):
+                            # 检查是否是 Live2D 模型目录（包含 .model3.json 或 model.json）
+                            model_files = glob.glob(os.path.join(item_path, "*.model3.json")) + \
+                                         glob.glob(os.path.join(item_path, "*.model.json")) + \
+                                         glob.glob(os.path.join(item_path, "model.json"))
+                            if model_files:
+                                uploaded_snapshot['model_name'] = item
+                                logger.info(f"检测到模型目录: {item}")
+                                break
+                except Exception as read_error:
+                    logger.warning(f"读取角色卡数据时出错: {read_error}")
+                
+                # 写入元数据文件（包含快照）
+                write_workshop_meta(character_card_name, published_file_id, content_hash, uploaded_snapshot)
+                logger.info(f"已更新角色卡 {character_card_name} 的 .workshop_meta.json（包含快照）")
             except Exception as e:
                 logger.error(f"更新 .workshop_meta.json 失败: {e}")
                 # 不阻止成功响应，只记录错误

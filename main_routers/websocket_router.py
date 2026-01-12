@@ -144,9 +144,5 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 session_id.pop(lanlan_name, None)
         
         if is_current and lanlan_name in session_manager:
-            await session_manager[lanlan_name].cleanup()
-            # 注意：cleanup() 会清空 websocket，但只在连接真正断开时调用
-            # 如果连接还在，websocket应该保持设置
-            if session_manager[lanlan_name].websocket == websocket:
-                session_manager[lanlan_name].websocket = None
+            await session_manager[lanlan_name].cleanup(expected_websocket=websocket)
 

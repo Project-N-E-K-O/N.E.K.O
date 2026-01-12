@@ -567,36 +567,10 @@ function init_app() {
                             : '';
                         const trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
                         if (trimmed) {
-                            const messageDiv = document.createElement('div');
-                            messageDiv.classList.add('message', 'gemini');
-                            const timeStr = new Date().toLocaleTimeString('en-US', {
-                                hour12: false,
-                                hour: '2-digit',
-                                minute: '2-digit',
-                                second: '2-digit'
-                            });
-                            messageDiv.textContent = `[${timeStr}] 🎀 ${trimmed}`;
-                            chatContainer.appendChild(messageDiv);
-                            try {
-                                chatContainer.scrollTop = chatContainer.scrollHeight;
-                            } catch (_) { }
-                            window.currentGeminiMessage = messageDiv;
+                            window._realisticGeminiQueue = window._realisticGeminiQueue || [];
+                            window._realisticGeminiQueue.push(trimmed);
                             window._realisticGeminiBuffer = '';
-
-                            // 与正常气泡创建行为保持一致：字幕提示 & 首次对话成就
-                            try {
-                                checkAndShowSubtitlePrompt(trimmed);
-                            } catch (e) {
-                                console.warn('turn end flush subtitle prompt failed:', e);
-                            }
-                            if (typeof isFirstAIResponse !== 'undefined' && isFirstAIResponse) {
-                                isFirstAIResponse = false;
-                                try {
-                                    checkAndUnlockFirstDialogueAchievement();
-                                } catch (e) {
-                                    console.warn('turn end flush first-dialogue achievement failed:', e);
-                                }
-                            }
+                            processRealisticQueue();
                         }
                     } catch (e) {
                         console.warn('turn end flush realistic buffer failed:', e);
@@ -698,6 +672,22 @@ function init_app() {
                             sessionStartedResolver = null;
                         }
                     }, 500);
+                } else if (response.type === 'session_failed') {
+                    // Session启动失败（由后端发送）
+                    console.log('收到session_failed事件，模式:', response.input_mode);
+                    // 立即隐藏准备中提示
+                    hideVoicePreparingToast();
+                    // 清除超时定时器
+                    if (window.sessionTimeoutId) {
+                        clearTimeout(window.sessionTimeoutId);
+                        window.sessionTimeoutId = null;
+                    }
+                    // Reject sessionStartedResolver 让等待的代码能处理失败情况
+                    if (sessionStartedResolver) {
+                        // 注意：这里不 reject，因为前端的 Promise.all 会在其他地方处理失败
+                        // 直接清除 resolver 即可，避免超时后重复触发
+                        sessionStartedResolver = null;
+                    }
                 } else if (response.type === 'reload_page') {
                     console.log('收到reload_page事件：', response.message);
                     // 显示提示信息
@@ -779,6 +769,62 @@ function init_app() {
         }
     });
 
+    function getCurrentTimeString() {
+        return new Date().toLocaleTimeString('en-US', {
+            hour12: false,
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit'
+        });
+    }
+
+    function createGeminiBubble(sentence) {
+        const messageDiv = document.createElement('div');
+        messageDiv.classList.add('message', 'gemini');
+        messageDiv.textContent = "[" + getCurrentTimeString() + "] 🎀 " + sentence;
+        chatContainer.appendChild(messageDiv);
+        window.currentGeminiMessage = messageDiv;
+
+        // 检测AI消息的语言，如果与用户语言不同，显示字幕提示框
+        checkAndShowSubtitlePrompt(sentence);
+
+        // 如果是AI第一次回复，更新状态并检查成就
+        if (isFirstAIResponse) {
+            isFirstAIResponse = false;
+            console.log('检测到AI第一次回复');
+            checkAndUnlockFirstDialogueAchievement();
+        }
+    }
+
+    async function processRealisticQueue() {
+        if (window._isProcessingRealisticQueue) return;
+        window._isProcessingRealisticQueue = true;
+
+        try {
+            while (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
+                // 基于时间戳的延迟：确保每句之间至少间隔2秒
+                const now = Date.now();
+                const timeSinceLastBubble = now - (window._lastBubbleTime || 0);
+                if (window._lastBubbleTime > 0 && timeSinceLastBubble < 2000) {
+                    await new Promise(resolve => setTimeout(resolve, 2000 - timeSinceLastBubble));
+                }
+
+                const s = window._realisticGeminiQueue.shift();
+                if (s) {
+                    createGeminiBubble(s);
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                    window._lastBubbleTime = Date.now();
+                }
+            }
+        } finally {
+            window._isProcessingRealisticQueue = false;
+            // 兜底检查：如果在循环结束到重置标志位之间又有新消息进入队列，递归触发
+            if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
+                processRealisticQueue();
+            }
+        }
+    }
+
     // 添加消息到聊天界面
     function appendMessage(text, sender, isNewMessage = true) {
         function isMergeMessagesEnabled() {
@@ -823,33 +869,6 @@ function init_app() {
             return { sentences, rest };
         }
 
-        function createGeminiBubble(sentence) {
-            const messageDiv = document.createElement('div');
-            messageDiv.classList.add('message', 'gemini');
-            messageDiv.textContent = "[" + getCurrentTimeString() + "] 🎀 " + sentence;
-            chatContainer.appendChild(messageDiv);
-            window.currentGeminiMessage = messageDiv;
-
-            // 检测AI消息的语言，如果与用户语言不同，显示字幕提示框
-            checkAndShowSubtitlePrompt(sentence);
-
-            // 如果是AI第一次回复，更新状态并检查成就
-            if (isFirstAIResponse) {
-                isFirstAIResponse = false;
-                console.log('检测到AI第一次回复');
-                checkAndUnlockFirstDialogueAchievement();
-            }
-        }
-
-        function getCurrentTimeString() {
-            return new Date().toLocaleTimeString('en-US', {
-                hour12: false,
-                hour: '2-digit',
-                minute: '2-digit',
-                second: '2-digit'
-            });
-        }
-
         // 维护“本轮 AI 回复”的完整文本（用于 turn end 时整段翻译/情感分析）
         if (sender === 'gemini') {
             if (isNewMessage) {
@@ -863,16 +882,24 @@ function init_app() {
             // 拟真输出（合并消息关闭）：流式内容先缓冲，按句号/问号/感叹号/换行等切分，每句一个气泡
             if (isNewMessage) {
                 window._realisticGeminiBuffer = '';
+                window._realisticGeminiQueue = []; // 新一轮开始时，清空队列
+                window._lastBubbleTime = 0; // 重置时间戳，第一句立即显示
             }
             const prev = typeof window._realisticGeminiBuffer === 'string' ? window._realisticGeminiBuffer : '';
             const combined = prev + normalizeGeminiText(text);
             const { sentences, rest } = splitIntoSentences(combined);
             window._realisticGeminiBuffer = rest;
 
-            sentences.forEach(s => createGeminiBubble(s));
+            if (sentences.length > 0) {
+                window._realisticGeminiQueue = window._realisticGeminiQueue || [];
+                window._realisticGeminiQueue.push(...sentences);
+                processRealisticQueue();
+            }
         } else if (sender === 'gemini' && isMergeMessagesEnabled() && isNewMessage) {
             // 合并消息开启：新一轮开始时，清空拟真缓冲，防止残留
             window._realisticGeminiBuffer = '';
+            window._realisticGeminiQueue = [];
+            window._lastBubbleTime = 0;
             const messageDiv = document.createElement('div');
             messageDiv.classList.add('message', 'gemini');
             messageDiv.textContent = "[" + getCurrentTimeString() + "] 🎀 " + (text || '');
@@ -1034,11 +1061,126 @@ function init_app() {
             // 先显示选择提示
             showStatusToast(window.t ? window.t('app.deviceSelected', { device: deviceName }) : `已选择 ${deviceName}`, 3000);
             // 延迟重启录音，让用户看到选择提示
-            await stopMicCapture();
-            // 等待一小段时间，确保选择提示显示出来
-            await new Promise(resolve => setTimeout(resolve, 500));
-            if (wasRecording) {
-                await startMicCapture();
+
+            // 保存需要恢复的状态
+            const shouldRestartProactiveVision = proactiveVisionEnabled && isRecording;
+            const shouldRestartScreening = videoSenderInterval !== undefined && videoSenderInterval !== null;
+
+            // 防止并发切换导致状态混乱
+            if (window._isSwitchingMicDevice) {
+                console.warn('设备切换中,请稍后再试');
+                showStatusToast(window.t ? window.t('app.deviceSwitching') : '设备切换中...', 2000);
+                return;
+            }
+            window._isSwitchingMicDevice = true;
+
+            try {
+                // 停止语音期间主动视觉定时
+                stopProactiveVisionDuringSpeech();
+                // 停止屏幕共享
+                stopScreening();
+                // 停止静音检测
+                stopSilenceDetection();
+                // 清理输入analyser
+                inputAnalyser = null;
+                // 停止所有轨道
+                if (stream instanceof MediaStream) {
+                    stream.getTracks().forEach(track => track.stop());
+                    stream = null;
+                }
+                // 清理 AudioContext 本地资源
+                if (audioContext) {
+                    if (audioContext.state !== 'closed') {
+                        await audioContext.close().catch((e) => console.warn('AudioContext close 失败:', e));
+                    }
+                    audioContext = null;
+                }
+                workletNode = null;
+
+                // 等待一小段时间，确保选择提示显示出来
+                await new Promise(resolve => setTimeout(resolve, 500));
+
+                if (wasRecording) {
+                    await startMicCapture();
+
+                    // 重启屏幕共享（如果之前正在共享）
+                    if (shouldRestartScreening) {
+                        if (typeof startScreenSharing === 'function') {
+                            try {
+                                await startScreenSharing();
+                            } catch (e) {
+                                console.warn('重启屏幕共享失败:', e);
+                            }
+                        }
+                    }
+                    // 重启主动视觉（如果之前已启用）
+                    if (shouldRestartProactiveVision) {
+                        startProactiveVisionDuringSpeech();
+                    }
+                }
+            } catch (e) {
+                console.error('切换麦克风设备失败:', e);
+                showStatusToast(window.t ? window.t('app.deviceSwitchFailed') : '设备切换失败', 3000);
+
+                // 完整清理：重置状态
+                isRecording = false;
+                window.isRecording = false;
+
+                // 重置所有按钮状态（参考 stopMicCapture 逻辑）
+                micButton.classList.remove('recording', 'active');
+                muteButton.classList.remove('recording', 'active');
+                screenButton.classList.remove('active');
+                if (stopButton) stopButton.classList.remove('recording', 'active');
+
+                // 同步浮动按钮状态
+                syncFloatingMicButtonState(false);
+                syncFloatingScreenButtonState(false);
+
+                // 启用/禁用按钮状态
+                micButton.disabled = false;
+                muteButton.disabled = true;
+                screenButton.disabled = true;
+                if (stopButton) stopButton.disabled = true;
+
+                // 显示文本输入区域
+                const textInputArea = document.getElementById('text-input-area');
+                if (textInputArea) {
+                    textInputArea.classList.remove('hidden');
+                }
+
+                // 清理资源
+                stopScreening();
+                stopSilenceDetection();
+                inputAnalyser = null;
+
+                if (stream instanceof MediaStream) {
+                    stream.getTracks().forEach(track => track.stop());
+                    stream = null;
+                }
+
+                if (audioContext) {
+                    if (audioContext.state !== 'closed') {
+                        await audioContext.close().catch((err) => console.warn('AudioContext close 失败:', err));
+                    }
+                    audioContext = null;
+                }
+                workletNode = null;
+
+                // 通知后端
+                if (socket.readyState === WebSocket.OPEN) {
+                    socket.send(JSON.stringify({ action: 'pause_session' }));
+                }
+
+                // 如果主动搭话/主动视觉已启用，重置并开始定时
+                if (proactiveChatEnabled || proactiveVisionEnabled) {
+                    lastUserInputTime = Date.now();
+                    resetProactiveChatBackoff();
+                }
+
+                window._isSwitchingMicDevice = false;
+                return;
+            } finally {
+                window._isSwitchingMicDevice = false;
             }
         } else {
             // 如果不在录音，直接显示选择提示
@@ -2580,7 +2722,10 @@ function init_app() {
 
     // 停止录屏
     function stopScreening() {
-        if (videoSenderInterval) clearInterval(videoSenderInterval);
+        if (videoSenderInterval) {
+            clearInterval(videoSenderInterval);
+            videoSenderInterval = null;
+        }
     }
 
     // 停止录音

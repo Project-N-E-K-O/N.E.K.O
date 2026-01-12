@@ -26,55 +26,51 @@ except ImportError:
     def is_china_region() -> bool:
         """
         区域检测回退方案
-        
+
         仅对中国大陆地区返回True（zh_cn及其变体）
         港澳台地区（zh_tw, zh_hk）返回False
+        Windows 中文系统返回 True
         """
-        # 中国大陆地区的locale标识符
         mainland_china_locales = {'zh_cn', 'chinese_china', 'chinese_simplified_china'}
-        
+
         def normalize_locale(loc: str) -> str:
             """标准化locale字符串：小写、替换连字符、去除编码"""
             if not loc:
                 return ''
-            # 小写化
             loc = loc.lower()
-            # 替换连字符为下划线
             loc = loc.replace('-', '_')
-            # 去除编码部分（如 .UTF-8）
             if '.' in loc:
                 loc = loc.split('.')[0]
             return loc
-        
+
         def check_locale(loc: str) -> bool:
             """检查标准化后的locale是否为中国大陆"""
             normalized = normalize_locale(loc)
             if not normalized:
                 return False
-            # 精确匹配或以 zh_cn 开头（处理 zh_cn.utf8 等情况）
             if normalized in mainland_china_locales:
                 return True
             if normalized.startswith('zh_cn'):
                 return True
+            if 'chinese' in normalized and 'china' in normalized:
+                return True
             return False
-        
+
         try:
-            # 尝试 locale.getlocale()
             try:
                 system_locale = locale.getlocale()[0]
                 if system_locale and check_locale(system_locale):
                     return True
             except Exception:
                 pass
-            
-            # 尝试 locale.getdefaultlocale()（已弃用但仍可用于回退）
+
             try:
                 default_locale = locale.getdefaultlocale()[0]
                 if default_locale and check_locale(default_locale):
                     return True
             except Exception:
                 pass
-            
+
             return False
         except Exception:
             return False
