@@ -1853,31 +1853,8 @@
                     if (live2dReturnBtn) live2dReturnBtn.remove();
 
                     if (window.vrmManager && newModelPath) {
-                        // 路径转换逻辑（处理各种路径格式）
-                        let modelUrl = newModelPath;
-
-                        // 处理Windows绝对路径，转换为Web路径（优先使用 /user_vrm/）
-                        if (modelUrl.includes('\\') || modelUrl.includes(':')) {
-                            // 如果是Windows路径或包含驱动器号，提取文件名并优先使用 /user_vrm/
-                            const filename = modelUrl.split(/[\\/]/).pop();
-                            if (filename) {
-                                modelUrl = `/user_vrm/${filename}`;
-                            }
-                        } else if (!modelUrl.startsWith('http') && !modelUrl.startsWith('/')) {
-                            // 如果是相对路径，添加用户VRM路径前缀
-                            const VRM_USER_PATH = '/user_vrm';
-                            modelUrl = `${VRM_USER_PATH}/${modelUrl}`;
-                        } else {
-                            // 如果已经是完整路径，确保格式正确
-                            modelUrl = modelUrl.replace(/\\/g, '/');
-                            // 如果路径不是以 /user_vrm/ 或 /static/vrm/ 开头，尝试添加 /user_vrm/ 前缀
-                            if (!modelUrl.startsWith('/user_vrm/') && !modelUrl.startsWith('/static/vrm/') && !modelUrl.startsWith('http')) {
-                                const filename = modelUrl.split('/').pop();
-                                if (filename) {
-                                    modelUrl = `/user_vrm/${filename}`;
-                                }
-                            }
-                        }
+                        // 使用统一的路径转换函数
+                        const modelUrl = convertVRMModelPath(newModelPath);
 
                         // 确保Three.js场景已初始化
                         if (!window.vrmManager._isInitialized || !window.vrmManager.scene || !window.vrmManager.camera || !window.vrmManager.renderer) {
@@ -2017,31 +1994,8 @@
                                 await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
                             }
 
-                            // 路径转换逻辑（处理各种路径格式，优先使用 /user_vrm/）
-                            let modelUrl = newModelPath;
-
-                            // 处理Windows绝对路径，转换为Web路径（优先使用 /user_vrm/）
-                            if (modelUrl.includes('\\') || modelUrl.includes(':')) {
-                                // 如果是Windows路径或包含驱动器号，提取文件名并优先使用 /user_vrm/
-                                const filename = modelUrl.split(/[\\/]/).pop();
-                                if (filename) {
-                                    modelUrl = `/user_vrm/${filename}`;
-                                }
-                            } else if (!modelUrl.startsWith('http') && !modelUrl.startsWith('/')) {
-                                // 如果是相对路径，添加用户VRM路径前缀
-                                const VRM_USER_PATH = '/user_vrm';
-                                modelUrl = `${VRM_USER_PATH}/${modelUrl}`;
-                            } else {
-                                // 如果已经是完整路径，确保格式正确
-                                modelUrl = modelUrl.replace(/\\/g, '/');
-                                // 如果路径不是以 /user_vrm/ 或 /static/vrm/ 开头，尝试添加 /user_vrm/ 前缀
-                                if (!modelUrl.startsWith('/user_vrm/') && !modelUrl.startsWith('/static/vrm/') && !modelUrl.startsWith('http')) {
-                                    const filename = modelUrl.split('/').pop();
-                                    if (filename) {
-                                        modelUrl = `/user_vrm/${filename}`;
-                                    }
-                                }
-                            }
+                            // 使用统一的路径转换函数
+                            const modelUrl = convertVRMModelPath(newModelPath);
 
                             // 加载VRM模型
                             try {
@@ -2337,6 +2291,34 @@
                 clearInterval(modelLoadCheckInterval);
             }
         });
+
+        // 路径转换工具函数（提取重复逻辑）
+        function convertVRMModelPath(modelPath) {
+            let modelUrl = modelPath;
+            // 处理Windows绝对路径，转换为Web路径（优先使用 /user_vrm/）
+            if (modelUrl.includes('\\') || modelUrl.includes(':')) {
+                // 如果是Windows路径或包含驱动器号，提取文件名并优先使用 /user_vrm/
+                const filename = modelUrl.split(/[\\/]/).pop();
+                if (filename) {
+                    modelUrl = `/user_vrm/${filename}`;
+                }
+            } else if (!modelUrl.startsWith('http') && !modelUrl.startsWith('/')) {
+                // 如果是相对路径，添加用户VRM路径前缀
+                const VRM_USER_PATH = '/user_vrm';
+                modelUrl = `${VRM_USER_PATH}/${modelUrl}`;
+            } else {
+                // 如果已经是完整路径，确保格式正确
+                modelUrl = modelUrl.replace(/\\/g, '/');
+                // 如果路径不是以 /user_vrm/ 或 /static/vrm/ 开头，尝试添加 /user_vrm/ 前缀
+                if (!modelUrl.startsWith('/user_vrm/') && !modelUrl.startsWith('/static/vrm/') && !modelUrl.startsWith('http')) {
+                    const filename = modelUrl.split('/').pop();
+                    if (filename) {
+                        modelUrl = `/user_vrm/${filename}`;
+                    }
+                }
+            }
+            return modelUrl;
+        }
     </script>
     <script src="/static/libs/live2d.min.js"></script> <!-- Cubism 2.1核心库（支持旧模型） -->
     <script src="/static/libs/pixi.min.js"></script> <!-- PixiJS v7 CDN -->

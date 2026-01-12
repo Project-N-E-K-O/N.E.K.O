@@ -549,103 +549,6 @@
     </script>
 
     <script>
-        // 修复 VRM 模型朝向
-        function fixVRMModel() {
-            console.log("🔧 [模型检查] 正在运行...");
-
-            const mgr = window.vrmManager;
-            if (!mgr) return;
-
-            // 1. 获取 VRM 实例
-            const wrapper = mgr.currentModel;
-            if (!wrapper) return;
-            const vrm = wrapper.vrm || wrapper;
-
-            if (!vrm.humanoid || !vrm.scene) {
-                console.warn("⚠️ [模型检查] 非标准 VRM，跳过。");
-                return;
-            }
-
-            // 【重要改动】删除了之前的 resetPose 代码
-            // 因为模型加载默认就是 T-Pose，强制重置反而会导致手举高（Surrender Pose）
-            console.log("✅ [骨骼检查] 保持默认姿态 (Trust Original Pose)");
-
-            // 2. 朝向修正逻辑 (改进版：更可靠的检测方法)
-            try {
-                const scene = vrm.scene;
-                const humanoid = vrm.humanoid;
-
-                // 记录当前旋转状态
-                const currentRotation = scene.rotation.y;
-                console.log(`[朝向检测] 当前旋转: ${(currentRotation * 180 / Math.PI).toFixed(1)}度`);
-
-                scene.updateMatrixWorld(true);
-                
-                // 使用脚部检测（最可靠的方法）
-                const foot = humanoid.getNormalizedBoneNode('leftFoot');
-                const toes = humanoid.getNormalizedBoneNode('leftToes');
-
-                if (foot && toes) {
-                    const footPos = new THREE.Vector3();
-                    const toesPos = new THREE.Vector3();
-                    foot.getWorldPosition(footPos);
-                    toes.getWorldPosition(toesPos);
-
-                    const zDiff = toesPos.z - footPos.z;
-                    console.log(`[朝向检测] 脚跟Z: ${footPos.z.toFixed(4)}, 脚尖Z: ${toesPos.z.toFixed(4)}, 差值: ${zDiff.toFixed(4)}`);
-
-                    // 【关键修复】判断逻辑说明：
-                    // 在Three.js坐标系中，默认相机看向-Z方向（Z轴正方向指向屏幕外）
-                    // 如果模型正对屏幕（面向观察者）：脚尖应该在脚跟前面，脚尖Z < 脚跟Z（脚尖更靠近屏幕，Z值更小）
-                    // 如果模型背对屏幕：脚尖在脚跟后面，脚尖Z > 脚跟Z（脚尖更远离屏幕，Z值更大）
-                    
-                    // 检查当前旋转状态
-                    const isCurrentlyRotated = Math.abs(currentRotation - Math.PI) < 0.1; // 接近180度
-                    const isCurrentlyNormal = Math.abs(currentRotation) < 0.1; // 接近0度
-                    
-                    // 【修复】判断逻辑：
-                    // zDiff = toesPos.z - footPos.z
-                    // 在Three.js中，相机默认看向-Z方向
-                    // 如果模型正对屏幕：脚尖应该在脚跟前面，脚尖Z < 脚跟Z（zDiff < 0）
-                    // 如果模型背对屏幕：脚尖在脚跟后面，脚尖Z > 脚跟Z（zDiff > 0）
-                    
-                    // 【重要修复】原来的逻辑可能判断反了，现在改为：
-                    // 如果 zDiff < 0（正对），且当前未旋转 -> 保持0度（正确）
-                    // 如果 zDiff < 0（正对），但当前已旋转 -> 恢复为0度（修正）
-                    // 如果 zDiff > 0（背对），且当前未旋转 -> 旋转180度（修正）
-                    // 如果 zDiff > 0（背对），但当前已旋转 -> 保持180度（正确）
-                    
-                    if (zDiff < -0.001) {
-                        // 检测到正对屏幕（脚尖Z < 脚跟Z，脚尖更靠近屏幕）
-                        if (isCurrentlyRotated) {
-                            // 当前已旋转，但实际正对 -> 需要恢复为0
-                            console.log("🔄 [朝向修正] 检测到正对屏幕（当前已旋转）-> 恢复为 0 度");
-                            scene.rotation.y = 0;
-                        } else {
-                            // 当前未旋转，且检测到正对 -> 朝向正确，保持
-                            console.log("✨ [朝向检测] 已正对屏幕（未旋转），保持当前状态");
-                        }
-                    } else if (zDiff > 0.001) {
-                        // 检测到背对屏幕（脚尖Z > 脚跟Z，脚尖更远离屏幕）
-                        if (isCurrentlyNormal) {
-                            // 当前未旋转，但检测到背对 -> 需要旋转180度
-                            console.log("🔄 [朝向修正] 检测到背对屏幕（当前未旋转）-> 旋转 180 度");
-                            scene.rotation.y = Math.PI;
-                        } else {
-                            // 当前已旋转，且检测到背对 -> 朝向正确，保持
-                            console.log("✨ [朝向检测] 已背对屏幕（已旋转），保持当前状态");
-                        }
-                    } else {
-                        // 差值太小，无法判断，保持当前状态
-                        console.log(`⚠️ [朝向检测] 差值太小无法判断 (${zDiff.toFixed(4)})，保持当前旋转`);
-                    }
-                } else {
-                    console.warn("⚠️ [朝向检测] 未找到脚部骨骼，跳过自动修正");
-                }
-            } catch (e) {
-                console.error("❌ [检查出错]", e);
-            }
-        }
         // 用于页面间通信的事件处理
         function sendMessageToMainPage(action) {
             try {
@@ -1524,10 +1427,6 @@
                             }
                         }
                         
-                        // 【可选】调用智能检测函数（如果检测逻辑有问题，可以注释掉这行）
-                        // 注意：如果模型加载后朝向错误，可以手动在控制台运行 fixVRMModel() 来修正
-                        // 或者取消下面的注释来启用自动检测
-                        // fixVRMModel();
                         
                         // 在这里加载表情
                         loadVRMExpressions();
