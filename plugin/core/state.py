@@ -16,6 +16,9 @@ from plugin.sdk.events import EventHandler
 from plugin.settings import EVENT_QUEUE_MAX, LIFECYCLE_QUEUE_MAX, MESSAGE_QUEUE_MAX
 
 
+MAX_DELETED_BUS_IDS = 20000
+
+
 class BusChangeHub:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -88,6 +91,9 @@ class PluginRuntimeState:
         self._deleted_message_ids: Set[str] = set()
         self._deleted_event_ids: Set[str] = set()
         self._deleted_lifecycle_ids: Set[str] = set()
+        self._deleted_message_ids_order: Deque[str] = deque()
+        self._deleted_event_ids_order: Deque[str] = deque()
+        self._deleted_lifecycle_ids_order: Deque[str] = deque()
 
         self._bus_rev_lock = threading.Lock()
         self._bus_rev: Dict[str, int] = {
@@ -475,7 +481,12 @@ class PluginRuntimeState:
             return False
         removed = False
         with self._bus_store_lock:
-            self._deleted_message_ids.add(message_id)
+            if message_id not in self._deleted_message_ids:
+                self._deleted_message_ids.add(message_id)
+                self._deleted_message_ids_order.append(message_id)
+                while len(self._deleted_message_ids) > MAX_DELETED_BUS_IDS:
+                    old = self._deleted_message_ids_order.popleft()
+                    self._deleted_message_ids.discard(old)
             # 重建 deque，排除要删除的记录
             new_store = deque(maxlen=self._message_store.maxlen)
             for rec in self._message_store:
@@ -523,7 +534,12 @@ class PluginRuntimeState:
             return False
         removed = False
         with self._bus_store_lock:
-            self._deleted_event_ids.add(event_id)
+            if event_id not in self._deleted_event_ids:
+                self._deleted_event_ids.add(event_id)
+                self._deleted_event_ids_order.append(event_id)
+                while len(self._deleted_event_ids) > MAX_DELETED_BUS_IDS:
+                    old = self._deleted_event_ids_order.popleft()
+                    self._deleted_event_ids.discard(old)
             new_store = deque(maxlen=self._event_store.maxlen)
             for rec in self._event_store:
                 rid = rec.get("event_id") or rec.get("trace_id") if isinstance(rec, dict) else None
@@ -545,7 +561,12 @@ class PluginRuntimeState:
             return False
         removed = False
         with self._bus_store_lock:
-            self._deleted_lifecycle_ids.add(lifecycle_id)
+            if lifecycle_id not in self._deleted_lifecycle_ids:
+                self._deleted_lifecycle_ids.add(lifecycle_id)
+                self._deleted_lifecycle_ids_order.append(lifecycle_id)
+                while len(self._deleted_lifecycle_ids) > MAX_DELETED_BUS_IDS:
+                    old = self._deleted_lifecycle_ids_order.popleft()
+                    self._deleted_lifecycle_ids.discard(old)
             new_store = deque(maxlen=self._lifecycle_store.maxlen)
             for rec in self._lifecycle_store:
                 rid = rec.get("lifecycle_id") or rec.get("trace_id") if isinstance(rec, dict) else None
@@ -639,6 +660,11 @@ class PluginRuntimeState:
             return got
 
         while True:
+            # Fast path: check again before waiting.
+            got = self.get_plugin_response(rid)
+            if got is not None:
+                return got
+
             remaining = deadline - time.time()
             if remaining <= 0:
                 return None
@@ -647,11 +673,20 @@ class PluginRuntimeState:
                 time.sleep(min(0.01, remaining))
             else:
                 try:
+                    notify_ev.wait(timeout=min(0.1, remaining))
+
+                    got = self.get_plugin_response(rid)
+                    if got is not None:
+                        try:
+                            notify_ev.clear()
+                        except Exception:
+                            pass
+                        return got
+
                     try:
                         notify_ev.clear()
                     except Exception:
                         pass
-                    notify_ev.wait(timeout=remaining)
                 except Exception:
                     time.sleep(min(0.01, remaining))
 

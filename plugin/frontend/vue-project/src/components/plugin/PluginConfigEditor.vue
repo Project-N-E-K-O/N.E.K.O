@@ -612,7 +612,7 @@ watch(
         return
       }
     }
-    loadAll()
+    await loadAll()
   }
 )
 </script>

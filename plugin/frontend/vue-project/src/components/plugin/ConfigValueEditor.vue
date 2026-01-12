@@ -81,7 +81,7 @@
           </div>
           <div class="ops">
             <el-button
-              v-if="idx < (modelValue as any[]).length"
+              v-if="Array.isArray(modelValue) && idx < modelValue.length"
               size="small"
               type="danger"
               text
