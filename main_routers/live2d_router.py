@@ -990,32 +990,25 @@ def delete_model(model_name: str):
         except Exception:
             pass
         
-        # 检查static目录下的模型
-        static_dir = 'static'
-        try:
-            static_real = os.path.realpath(static_dir)
-            model_real = os.path.realpath(model_dir)
-            if os.path.commonpath([static_real, model_real]) == static_real:
-                for item in os.listdir(static_dir):
-                    item_path = os.path.join(static_dir, item)
-                    item_real = os.path.realpath(item_path)
-                    if os.path.isdir(item_real) and model_real == item_real:
-                        marker_file = os.path.join(model_real, '.user_upload')
-                        if os.path.exists(marker_file):
-                            is_user_model = True
-                        break
-        except Exception:
-            pass
-        
         if not is_user_model:
             return JSONResponse(status_code=403, content={"success": False, "error": "只能删除用户导入的模型，无法删除内置模型"})
         
+        # 再次检查路径是否存在
+        if not os.path.exists(model_dir):
+            logger.info(f"模型目录不存在，视为已删除: {model_name}")
+            return {"success": True, "message": f"模型 {model_name} 已成功删除"}
+        
         # 递归删除模型目录
         import shutil
-        shutil.rmtree(model_dir)
+        shutil.rmtree(model_dir, ignore_errors=True)
         
-        logger.info(f"已删除Live2D模型: {model_name}")
-        return {"success": True, "message": f"模型 {model_name} 已成功删除"}
+        # 验证删除是否成功
+        if os.path.exists(model_dir):
+            logger.warning(f"删除后文件夹仍存在: {model_dir}，可能被占用或权限不足")
+            return JSONResponse(status_code=500, content={"success": False, "error": f"删除模型失败，文件夹仍存在: {model_dir}"})
+        else:
+            logger.info(f"已删除Live2D模型: {model_name}")
+            return {"success": True, "message": f"模型 {model_name} 已成功删除"}
     except Exception as e:
         logger.error(f"删除模型失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
@@ -1046,26 +1039,6 @@ def get_user_models():
                             })
         except Exception as e:
             logger.warning(f"扫描用户文档模型目录时出错: {e}")
-        
-        # 检查static目录下用户上传的模型
-        static_dir = 'static'
-        if os.path.exists(static_dir):
-            for item in os.listdir(static_dir):
-                item_path = os.path.join(static_dir, item)
-                if os.path.isdir(item_path):
-                    # 检查是否有.user_upload标记文件
-                    marker_file = os.path.join(item_path, '.user_upload')
-                    if os.path.exists(marker_file):
-                        # 查找.model3.json文件
-                        for file in os.listdir(item_path):
-                            if file.endswith('.model3.json'):
-                                model_name = os.path.splitext(os.path.splitext(file)[0])[0]
-                                user_models.append({
-                                    'name': model_name,
-                                    'path': f'/static/{item}/{file}',
-                                    'source': 'user_upload'
-                                })
-                                break
         
         return {"success": True, "models": user_models}
     except Exception as e:
