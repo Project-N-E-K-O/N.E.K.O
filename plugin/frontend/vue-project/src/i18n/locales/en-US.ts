@@ -122,6 +122,7 @@ export default {
     addField: 'Add Field',
     addItem: 'Add Item',
     fieldName: 'Field Name',
+    fieldNameRequired: 'Field name is required',
     fieldType: 'Field Type',
     duplicateFieldKey: 'Field name already exists. Please choose another one.',
     profiles: 'Profiles',

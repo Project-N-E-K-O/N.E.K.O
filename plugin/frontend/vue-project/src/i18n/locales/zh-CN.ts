@@ -122,6 +122,7 @@ export default {
     addField: '新增字段',
     addItem: '新增项',
     fieldName: '字段名',
+    fieldNameRequired: '字段名不能为空',
     fieldType: '字段类型',
     duplicateFieldKey: '字段名已存在，请换一个',
     profiles: '配置方案',

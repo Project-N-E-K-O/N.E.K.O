@@ -329,7 +329,10 @@ function initialValueByType(tp: typeof newType.value) {
 
 function confirmAddKey() {
   const key = (newKey.value || '').trim()
-  if (!key) return
+  if (!key) {
+    ElMessage.warning(t('plugins.fieldNameRequired'))
+    return
+  }
 
   const next = { ...(props.modelValue || {}) }
   if (Object.prototype.hasOwnProperty.call(next, key)) {

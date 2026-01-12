@@ -394,13 +394,6 @@ class PluginRuntimeState:
         nn = int(n)
         if nn <= 0:
             return []
-        for _i in range(3):
-            try:
-                tail_rev = list(itertools.islice(reversed(self._message_store), nn))
-                tail_rev.reverse()
-                return tail_rev
-            except Exception:
-                continue
         with self._bus_store_lock:
             try:
                 tail_rev = list(itertools.islice(reversed(self._message_store), nn))
@@ -480,9 +473,9 @@ class PluginRuntimeState:
     def delete_message(self, message_id: str) -> bool:
         if not isinstance(message_id, str) or not message_id:
             return False
+        removed = False
         with self._bus_store_lock:
             self._deleted_message_ids.add(message_id)
-            removed = False
             # 重建 deque，排除要删除的记录
             new_store = deque(maxlen=self._message_store.maxlen)
             for rec in self._message_store:
@@ -491,13 +484,13 @@ class PluginRuntimeState:
                 else:
                     new_store.append(rec)
             self._message_store = new_store
-            if removed:
-                try:
-                    rev = self._bump_bus_rev("messages")
-                    self.bus_change_hub.emit("messages", "del", {"message_id": message_id, "rev": rev})
-                except Exception:
-                    pass
-            return removed
+        if removed:
+            try:
+                rev = self._bump_bus_rev("messages")
+                self.bus_change_hub.emit("messages", "del", {"message_id": message_id, "rev": rev})
+            except Exception:
+                pass
+        return removed
 
     def add_bus_subscription(self, bus: str, sub_id: str, info: Dict[str, Any]) -> None:
         b = str(bus).strip()
@@ -528,9 +521,9 @@ class PluginRuntimeState:
     def delete_event(self, event_id: str) -> bool:
         if not isinstance(event_id, str) or not event_id:
             return False
+        removed = False
         with self._bus_store_lock:
             self._deleted_event_ids.add(event_id)
-            removed = False
             new_store = deque(maxlen=self._event_store.maxlen)
             for rec in self._event_store:
                 rid = rec.get("event_id") or rec.get("trace_id") if isinstance(rec, dict) else None
@@ -539,20 +532,20 @@ class PluginRuntimeState:
                 else:
                     new_store.append(rec)
             self._event_store = new_store
-            if removed:
-                try:
-                    rev = self._bump_bus_rev("events")
-                    self.bus_change_hub.emit("events", "del", {"event_id": event_id, "rev": rev})
-                except Exception:
-                    pass
-            return removed
+        if removed:
+            try:
+                rev = self._bump_bus_rev("events")
+                self.bus_change_hub.emit("events", "del", {"event_id": event_id, "rev": rev})
+            except Exception:
+                pass
+        return removed
 
     def delete_lifecycle(self, lifecycle_id: str) -> bool:
         if not isinstance(lifecycle_id, str) or not lifecycle_id:
             return False
+        removed = False
         with self._bus_store_lock:
             self._deleted_lifecycle_ids.add(lifecycle_id)
-            removed = False
             new_store = deque(maxlen=self._lifecycle_store.maxlen)
             for rec in self._lifecycle_store:
                 rid = rec.get("lifecycle_id") or rec.get("trace_id") if isinstance(rec, dict) else None
@@ -561,13 +554,13 @@ class PluginRuntimeState:
                 else:
                     new_store.append(rec)
             self._lifecycle_store = new_store
-            if removed:
-                try:
-                    rev = self._bump_bus_rev("lifecycle")
-                    self.bus_change_hub.emit("lifecycle", "del", {"lifecycle_id": lifecycle_id, "rev": rev})
-                except Exception:
-                    pass
-            return removed
+        if removed:
+            try:
+                rev = self._bump_bus_rev("lifecycle")
+                self.bus_change_hub.emit("lifecycle", "del", {"lifecycle_id": lifecycle_id, "rev": rev})
+            except Exception:
+                pass
+        return removed
     
     def set_plugin_response(self, request_id: str, response: Dict[str, Any], timeout: float = 10.0) -> None:
         """

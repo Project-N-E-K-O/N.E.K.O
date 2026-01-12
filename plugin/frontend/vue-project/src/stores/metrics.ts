@@ -52,7 +52,7 @@ export const useMetricsStore = defineStore('metrics', () => {
       // 返回响应以便提取全局指标
       return response
     } catch (err: any) {
-      error.value = err.message || '获取性能指标失败'
+      error.value = err?.message || 'FETCH_METRICS_FAILED'
       console.error('Failed to fetch metrics:', err)
       throw err
     } finally {

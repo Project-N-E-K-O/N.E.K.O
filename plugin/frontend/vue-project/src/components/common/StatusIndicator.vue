@@ -14,6 +14,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { STATUS_COLORS, STATUS_TEXT, PluginStatus } from '@/utils/constants'
 
 interface Props {
@@ -25,12 +26,14 @@ const props = withDefaults(defineProps<Props>(), {
   effect: 'light'
 })
 
+const { t } = useI18n()
+
 const statusColor = computed(() => {
   return STATUS_COLORS[props.status as PluginStatus] || STATUS_COLORS[PluginStatus.STOPPED]
 })
 
 const statusText = computed(() => {
-  return STATUS_TEXT[props.status as PluginStatus] || '未知'
+  return STATUS_TEXT[props.status as PluginStatus] || t('common.unknown')
 })
 
 const tagType = computed(() => {

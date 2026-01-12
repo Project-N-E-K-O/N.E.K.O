@@ -45,8 +45,10 @@ async function handleRefresh() {
 }
 
 function startAutoRefresh() {
-  refreshTimer = window.setInterval(() => {
-    handleRefresh()
+  refreshTimer = window.setInterval(async () => {
+    if (!loading.value) {
+      await handleRefresh()
+    }
   }, METRICS_REFRESH_INTERVAL)
 }
 

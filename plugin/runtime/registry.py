@@ -957,11 +957,9 @@ def load_plugins_from_toml(
             
             logger.info("Plugin {} entry point: {}", pid, entry)
 
-            # 在主加载流程中，仅处理 “启用 且 auto_start=true” 的插件：
-            # - enabled = false 的插件：跳过 SDK 检查 / 依赖图 / ID 冲突 / 元数据注册和自动启动；
-            #   视为禁用插件，后续可以单独做管理/展示。
-            # - enabled = true 且 auto_start = false 的插件：也跳过上述所有步骤，视为“只支持手动启动”的插件，
-            #   仅在通过管理接口 start_plugin 时才执行 SDK/依赖/注册等检查。
+            # 在主加载流程中：
+            # - enabled = false 的插件：跳过本次运行时加载流程。
+            # - enabled = true 且 auto_start = false 的插件：仍然参与解析/注册（保证前端可见），但不在本次启动进程。
             runtime_cfg = conf.get("plugin_runtime")
             enabled_val = True
             auto_start_val = True
@@ -997,10 +995,9 @@ def load_plugins_from_toml(
 
             if not auto_start_val:
                 logger.info(
-                    "Plugin {} has plugin_runtime.auto_start=false; treating as manual-start-only and skipping runtime load in this pass",
+                    "Plugin {} has plugin_runtime.auto_start=false; treating as manual-start-only (will register metadata but skip auto process start)",
                     pid,
                 )
-                continue
 
             sdk_config = pdata.get("sdk")
             sdk_supported_str = None
