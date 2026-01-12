@@ -18,6 +18,7 @@ class LoadTestPlugin(NekoPluginBase):
         self.plugin_id = ctx.plugin_id
         self._stop_event = threading.Event()
         self._auto_thread: Optional[threading.Thread] = None
+        self._bench_lock = threading.Lock()
 
     def _cleanup(self) -> None:
         try:
@@ -279,54 +280,55 @@ class LoadTestPlugin(NekoPluginBase):
         - wrap result into ok(data={...}) at call site
         """
 
-        global_enabled = bool(root_cfg.get("enable", True)) if root_cfg else True
-        enabled = bool(sec_cfg.get("enable", global_enabled)) if sec_cfg else global_enabled
-        if not enabled:
+        with self._bench_lock:
+            global_enabled = bool(root_cfg.get("enable", True)) if root_cfg else True
+            enabled = bool(sec_cfg.get("enable", global_enabled)) if sec_cfg else global_enabled
+            if not enabled:
+                try:
+                    self.logger.info("[load_tester] %s disabled by config", test_name)
+                except Exception:
+                    pass
+                return {"test": test_name, "enabled": False, "skipped": True}
+
+            workers, log_summary = self._get_bench_config(root_cfg, sec_cfg)
+
+            dur_cfg = sec_cfg.get("duration_seconds") if sec_cfg else None
+            if dur_cfg is None and root_cfg:
+                dur_cfg = root_cfg.get("duration_seconds")
             try:
-                self.logger.info("[load_tester] %s disabled by config", test_name)
+                duration = float(dur_cfg) if dur_cfg is not None else default_duration
             except Exception:
-                pass
-            return {"test": test_name, "enabled": False, "skipped": True}
+                duration = default_duration
 
-        workers, log_summary = self._get_bench_config(root_cfg, sec_cfg)
+            if workers > 1:
+                stats = self._bench_loop_concurrent(duration, workers, op_fn)
+            else:
+                stats = self._bench_loop(duration, op_fn)
 
-        dur_cfg = sec_cfg.get("duration_seconds") if sec_cfg else None
-        if dur_cfg is None and root_cfg:
-            dur_cfg = root_cfg.get("duration_seconds")
-        try:
-            duration = float(dur_cfg) if dur_cfg is not None else default_duration
-        except Exception:
-            duration = default_duration
-
-        if workers > 1:
-            stats = self._bench_loop_concurrent(duration, workers, op_fn)
-        else:
-            stats = self._bench_loop(duration, op_fn)
-
-        try:
-            stats.update(self._sample_latency_ms(op_fn, samples=100))
-        except Exception:
-            pass
-
-        if callable(extra_data_builder):
             try:
-                extra = extra_data_builder(stats, duration, workers)
-                if isinstance(extra, dict):
-                    stats.update(extra)
+                stats.update(self._sample_latency_ms(op_fn, samples=100))
             except Exception:
                 pass
 
-        if log_summary and log_template:
-            try:
-                args = ()
-                if callable(build_log_args):
-                    args = build_log_args(duration, stats, workers) or ()
-                self.logger.info(log_template, *args)
-            except Exception:
-                pass
+            if callable(extra_data_builder):
+                try:
+                    extra = extra_data_builder(stats, duration, workers)
+                    if isinstance(extra, dict):
+                        stats.update(extra)
+                except Exception:
+                    pass
 
-        # Caller is responsible for wrapping into ok(data={...}).
-        return {"test": test_name, **stats}
+            if log_summary and log_template:
+                try:
+                    args = ()
+                    if callable(build_log_args):
+                        args = build_log_args(duration, stats, workers) or ()
+                    self.logger.info(log_template, *args)
+                except Exception:
+                    pass
+
+            # Caller is responsible for wrapping into ok(data={...}).
+            return {"test": test_name, **stats}
 
     @plugin_entry(
         id="op_bus_messages_get",
@@ -545,6 +547,11 @@ class LoadTestPlugin(NekoPluginBase):
     ):
         root_cfg = self._get_load_test_section(None)
         sec_cfg = self._get_load_test_section("bus_messages_get")
+
+        try:
+            self.ctx.close()
+        except Exception:
+            pass
 
         timeout_cfg = None
         if sec_cfg:
@@ -1384,8 +1391,8 @@ class LoadTestPlugin(NekoPluginBase):
         results = {}
         tests = [
             ("bench_push_messages", self.bench_push_messages),
-            ("bench_push_messages_fast", self.bench_push_messages_fast),
             ("bench_bus_messages_get", self.bench_bus_messages_get),
+            ("bench_push_messages_fast", self.bench_push_messages_fast),
             ("bench_bus_events_get", self.bench_bus_events_get),
             ("bench_bus_lifecycle_get", self.bench_bus_lifecycle_get),
             ("bench_buslist_filter", self.bench_buslist_filter),
@@ -1395,6 +1402,10 @@ class LoadTestPlugin(NekoPluginBase):
         ]
         for name, fn in tests:
             try:
+                try:
+                    self.ctx.close()
+                except Exception:
+                    pass
                 res = fn(duration_seconds=duration_seconds)
                 results[name] = getattr(res, "data", None) or getattr(res, "get", lambda *_a, **_k: None)("data") or None
             except Exception as e:
@@ -1505,25 +1516,9 @@ class LoadTestPlugin(NekoPluginBase):
         def _runner() -> None:
             try:
                 try:
-                    raw = self.ctx.get_own_config(timeout=2.0)
-                    data = raw.get("data") if isinstance(raw, dict) else None
-                    inner = data if isinstance(data, dict) else raw
-                    cfg_root = inner.get("config") if isinstance(inner, dict) else None
-                    lt = None
-                    if isinstance(cfg_root, dict):
-                        lt = cfg_root.get("load_test")
-                    cfg_path = inner.get("config_path") if isinstance(inner, dict) else None
-                    self.ctx.logger.info(
-                        "[load_tester] get_own_config diag: config_path={} load_test={} raw_keys={}",
-                        cfg_path,
-                        lt,
-                        list(raw.keys()) if isinstance(raw, dict) else type(raw).__name__,
-                    )
-                except Exception as e:
-                    try:
-                        self.ctx.logger.warning("[load_tester] get_own_config diag failed: {}", e)
-                    except Exception:
-                        pass
+                    _ = self.ctx.bus.messages
+                except Exception:
+                    pass
 
                 root_cfg = self._get_load_test_section(None)
                 enabled = bool(root_cfg.get("enable", True)) if root_cfg else True
@@ -1537,6 +1532,7 @@ class LoadTestPlugin(NekoPluginBase):
                     )
                 except Exception:
                     pass
+
                 if not enabled or not auto_start:
                     return
                 if self._stop_event.is_set():

@@ -51,6 +51,47 @@ _BUS_LATEST_REV_LOCK = _WATCHER_REGISTRY_LOCK
 
 _BUS_RECENT_DELTAS: Dict[str, "deque[tuple[int, str, Dict[str, Any]]]" ] = {}
 
+_BUS_CHANGE_LISTENERS: Dict[str, "list[Callable[[str, str, Dict[str, Any]], None]]"] = {
+    "messages": [],
+    "events": [],
+    "lifecycle": [],
+}
+
+
+def register_bus_change_listener(bus: str, fn: "Callable[[str, str, Dict[str, Any]], None]") -> Callable[[], None]:
+    b = str(bus).strip()
+    if b not in _BUS_CHANGE_LISTENERS:
+        raise ValueError(f"invalid bus: {bus!r}")
+    if not callable(fn):
+        raise ValueError("listener must be callable")
+    if _BUS_LATEST_REV_LOCK is not None:
+        with _BUS_LATEST_REV_LOCK:
+            _BUS_CHANGE_LISTENERS[b].append(fn)
+    else:
+        _BUS_CHANGE_LISTENERS[b].append(fn)
+
+    def _unsub() -> None:
+        try:
+            if _BUS_LATEST_REV_LOCK is not None:
+                with _BUS_LATEST_REV_LOCK:
+                    lst = _BUS_CHANGE_LISTENERS.get(b)
+                    if lst is not None:
+                        try:
+                            lst.remove(fn)
+                        except ValueError:
+                            pass
+            else:
+                lst = _BUS_CHANGE_LISTENERS.get(b)
+                if lst is not None:
+                    try:
+                        lst.remove(fn)
+                    except ValueError:
+                        pass
+        except Exception:
+            return
+
+    return _unsub
+
 _BUS_REV_SUB_ID: Dict[str, str] = {}
 
 
@@ -181,9 +222,42 @@ def dispatch_bus_change(*, sub_id: str, bus: str, op: str, delta: Optional[Dict[
     else:
         w = _WATCHER_REGISTRY.get(sid)
     if w is None:
+        try:
+            b2 = str(bus).strip()
+            d2 = dict(delta or {})
+            if b2 in _BUS_CHANGE_LISTENERS:
+                if _BUS_LATEST_REV_LOCK is not None:
+                    with _BUS_LATEST_REV_LOCK:
+                        listeners = list(_BUS_CHANGE_LISTENERS.get(b2, []))
+                else:
+                    listeners = list(_BUS_CHANGE_LISTENERS.get(b2, []))
+                for fn in listeners:
+                    try:
+                        fn(b2, str(op), d2)
+                    except Exception:
+                        continue
+        except Exception:
+            pass
         return
     try:
         w._on_remote_change(bus=str(bus), op=str(op), delta=dict(delta or {}))
+    except Exception:
+        return
+
+    try:
+        b2 = str(bus).strip()
+        d2 = dict(delta or {})
+        if b2 in _BUS_CHANGE_LISTENERS:
+            if _BUS_LATEST_REV_LOCK is not None:
+                with _BUS_LATEST_REV_LOCK:
+                    listeners = list(_BUS_CHANGE_LISTENERS.get(b2, []))
+            else:
+                listeners = list(_BUS_CHANGE_LISTENERS.get(b2, []))
+            for fn in listeners:
+                try:
+                    fn(b2, str(op), d2)
+                except Exception:
+                    continue
     except Exception:
         return
 

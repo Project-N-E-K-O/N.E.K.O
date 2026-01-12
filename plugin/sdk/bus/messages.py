@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 from plugin.core.state import state
 from plugin.settings import PLUGIN_LOG_BUS_SDK_TIMEOUT_WARNINGS
 from plugin.settings import BUS_SDK_POLL_INTERVAL_SECONDS
-from .types import BusList, BusOp, BusRecord, GetNode
+from .types import BusList, BusOp, BusRecord, GetNode, register_bus_change_listener
 
 if TYPE_CHECKING:
     from plugin.core.context import PluginContext
@@ -117,6 +117,118 @@ class MessageList(BusList[MessageRecord]):
 
 
 @dataclass
+class _LocalMessageCache:
+    maxlen: int = 2048
+
+    def __post_init__(self) -> None:
+        try:
+            from collections import deque
+
+            self._q = deque(maxlen=int(self.maxlen))
+        except Exception:
+            self._q = []
+
+        try:
+            import threading
+
+            self._lock = threading.Lock()
+        except Exception:
+            self._lock = None
+
+    def on_delta(self, _bus: str, op: str, delta: Dict[str, Any]) -> None:
+        if str(op) not in ("add", "change"):
+            return
+        if not isinstance(delta, dict) or not delta:
+            return
+        try:
+            mid = delta.get("message_id")
+        except Exception:
+            mid = None
+        if not isinstance(mid, str) or not mid:
+            return
+
+        item: Dict[str, Any] = {"message_id": mid}
+        try:
+            if "rev" in delta:
+                item["rev"] = delta.get("rev")
+        except Exception:
+            pass
+        try:
+            if "priority" in delta:
+                item["priority"] = delta.get("priority")
+        except Exception:
+            pass
+        try:
+            if "source" in delta:
+                item["source"] = delta.get("source")
+        except Exception:
+            pass
+        try:
+            if "export" in delta:
+                item["export"] = delta.get("export")
+        except Exception:
+            pass
+
+        if self._lock is not None:
+            with self._lock:
+                try:
+                    self._q.append(item)
+                except Exception:
+                    return
+            return
+        try:
+            self._q.append(item)  # type: ignore[attr-defined]
+        except Exception:
+            return
+
+    def tail(self, n: int) -> List[Dict[str, Any]]:
+        nn = int(n)
+        if nn <= 0:
+            return []
+        if self._lock is not None:
+            with self._lock:
+                try:
+                    arr = list(self._q)
+                except Exception:
+                    return []
+        else:
+            try:
+                arr = list(self._q)
+            except Exception:
+                return []
+        if nn >= len(arr):
+            return arr
+        return arr[-nn:]
+
+
+_LOCAL_CACHE: Optional[_LocalMessageCache] = None
+_LOCAL_CACHE_UNSUB: Optional[Any] = None
+
+try:
+    _LOCAL_CACHE = _LocalMessageCache()
+    try:
+        _LOCAL_CACHE_UNSUB = register_bus_change_listener("messages", _LOCAL_CACHE.on_delta)
+    except Exception:
+        _LOCAL_CACHE_UNSUB = None
+except Exception:
+    _LOCAL_CACHE = None
+    _LOCAL_CACHE_UNSUB = None
+
+
+def _ensure_local_cache() -> _LocalMessageCache:
+    global _LOCAL_CACHE, _LOCAL_CACHE_UNSUB
+    if _LOCAL_CACHE is not None:
+        return _LOCAL_CACHE
+    c = _LocalMessageCache()
+    _LOCAL_CACHE = c
+    try:
+        _LOCAL_CACHE_UNSUB = register_bus_change_listener("messages", c.on_delta)
+    except Exception:
+        _LOCAL_CACHE_UNSUB = None
+    return c
+
+
+@dataclass
 class MessageClient:
     ctx: "PluginContext"
 
@@ -132,6 +244,53 @@ class MessageClient:
         timeout: float = 5.0,
         raw: bool = False,
     ) -> MessageList:
+        if bool(raw) and (plugin_id is None or str(plugin_id).strip() == "*"):
+            if priority_min is None and (source is None or not str(source)) and filter is None and since_ts is None:
+                c = _ensure_local_cache()
+                cached = c.tail(int(max_count) if max_count is not None else 50)
+                if cached:
+                    # Local-cache fast path: avoid IPC round-trip.
+                    cached_records: List[MessageRecord] = []
+                    for item in cached:
+                        if isinstance(item, dict):
+                            try:
+                                record_type = item.get("message_type") or item.get("type") or "MESSAGE"
+                            except Exception:
+                                record_type = "MESSAGE"
+                            try:
+                                pid = item.get("plugin_id")
+                            except Exception:
+                                pid = None
+                            try:
+                                src = item.get("source")
+                            except Exception:
+                                src = None
+                            try:
+                                pr = item.get("priority", 0)
+                                pr_i = int(pr) if pr is not None else 0
+                            except Exception:
+                                pr_i = 0
+                            try:
+                                mid = item.get("message_id")
+                            except Exception:
+                                mid = None
+                            cached_records.append(
+                                MessageRecord(
+                                    kind="message",
+                                    type=str(record_type),
+                                    timestamp=None,
+                                    plugin_id=str(pid) if pid is not None else None,
+                                    source=str(src) if src is not None else None,
+                                    priority=pr_i,
+                                    content=None,
+                                    metadata={},
+                                    raw=item,
+                                    message_id=str(mid) if mid is not None else None,
+                                    message_type=str(record_type) if record_type is not None else None,
+                                    description=None,
+                                )
+                            )
+                    return MessageList(cached_records, plugin_id="*", ctx=self.ctx, trace=None, plan=None)
         if hasattr(self.ctx, "_enforce_sync_call_policy"):
             self.ctx._enforce_sync_call_policy("bus.messages.get")
 
