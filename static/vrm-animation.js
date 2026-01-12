@@ -55,7 +55,6 @@ class VRMAnimation {
             // 默认返回 0.0（向后兼容）
             return '0.0';
         } catch (error) {
-            console.warn('[VRM Animation] 版本检测失败，默认使用 0.0:', error);
             return '0.0';
         }
     }
@@ -377,7 +376,6 @@ class VRMAnimation {
             
             // 确保 Action 真的在播放
             if (newAction.paused) {
-                console.warn('[VRM Animation] ⚠️ Action 处于暂停状态，强制播放');
                 newAction.play();
             }
             

@@ -312,11 +312,6 @@ async def update_catgirl_l2d(name: str, request: Request):
         item_id = data.get('item_id')  # 获取可选的item_id
         vrm_animation = data.get('vrm_animation')  # 获取可选的VRM动作
         
-        # 调试日志
-        logger.debug(f"更新模型设置 - 接收到的数据: {data}")
-        logger.debug(f"model_type: {model_type}, type: {type(model_type)}")
-        logger.debug(f"vrm_model: {vrm_model}, live2d_model: {live2d_model}")
-        
         # 根据model_type检查相应的模型字段
         model_type_str = str(model_type).lower() if model_type else 'live2d'
         if model_type_str == 'vrm':

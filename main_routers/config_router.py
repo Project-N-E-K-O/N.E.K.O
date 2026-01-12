@@ -138,7 +138,7 @@ async def save_preferences(request: Request):
         parameters = data.get('parameters')
         # 获取显示器信息（可选，用于多屏幕位置恢复）
         display = data.get('display')
-        # 【新增】获取旋转信息（可选，用于VRM模型朝向）
+        # 获取旋转信息（可选，用于VRM模型朝向）
         rotation = data.get('rotation')
         
         # 更新偏好

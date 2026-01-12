@@ -420,7 +420,6 @@ class VRMCore {
                     console.warn(`[VRM Core] 从 ${modelUrl} 加载失败，尝试备用路径: ${fallbackUrl}`);
                     try {
                         gltf = await loadGLTF(fallbackUrl);
-                        console.log(`[VRM Core] 从备用路径 ${fallbackUrl} 加载成功`);
                     } catch (fallbackError) {
                         console.error(`[VRM Core] 从备用路径 ${fallbackUrl} 也加载失败:`, fallbackError);
                         throw new Error(`无法加载 VRM 模型: ${modelUrl} 和 ${fallbackUrl} 都失败`);

@@ -2846,7 +2846,6 @@ function init_app() {
                         // VRM模型的口型同步
                         window.vrmManager.animation.startLipSync(globalAnalyser);
                         lipSyncActive = true;
-                        console.log('[App] 已启动VRM口型同步');
                     }
                 }
 
@@ -2870,7 +2869,6 @@ function init_app() {
                         } else if (window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
                             // VRM模型停止口型同步
                             window.vrmManager.animation.stopLipSync();
-                            console.log('[App] 已停止VRM口型同步');
                         }
                         lipSyncActive = false;
                         isPlaying = false; // 新增：所有音频播放完毕，重置isPlaying
@@ -3331,7 +3329,7 @@ function init_app() {
             window.vrmManager.resetAllButtons();
         }
 
-        // 【改进】使用统一的 setLocked 方法设置锁定状态（同时更新图标和 canvas）
+        // 使用统一的 setLocked 方法设置锁定状态（同时更新图标和 canvas）
         if (window.live2dManager && typeof window.live2dManager.setLocked === 'function') {
             window.live2dManager.setLocked(true, { updateFloatingButtons: false });
         }
@@ -3340,7 +3338,7 @@ function init_app() {
             window.vrmManager.core.setLocked(true);
         }
 
-        // 【修复】隐藏 Live2D canvas，使 Electron 的 alpha 检测认为该区域完全透明
+        // 隐藏 Live2D canvas，使 Electron 的 alpha 检测认为该区域完全透明
         // 仅设置 pointer-events: none 不够，因为 Electron 根据像素 alpha 值来决定事件转发
         // 必须设置 visibility: hidden 来确保 canvas 不渲染任何像素
         const live2dCanvas = document.getElementById('live2d-canvas');
@@ -3350,7 +3348,7 @@ function init_app() {
             console.log('[App] 已隐藏 live2d-canvas（visibility: hidden），Electron 将认为该区域透明');
         }
 
-        // 【新增】隐藏 VRM 容器和 canvas
+        // 隐藏 VRM 容器和 canvas
         const vrmContainer = document.getElementById('vrm-container');
         if (vrmContainer) {
             vrmContainer.style.setProperty('visibility', 'hidden', 'important');
@@ -3388,14 +3386,14 @@ function init_app() {
             }
         }
 
-        // 第二步：立即隐藏所有浮动按钮和锁按钮（设置为 !important 防止其他代码覆盖）
+        // 第二步：立即隐藏所有浮动按钮和锁按钮
         const live2dFloatingButtons = document.getElementById('live2d-floating-buttons');
         if (live2dFloatingButtons) {
             live2dFloatingButtons.style.setProperty('display', 'none', 'important');
             live2dFloatingButtons.style.setProperty('visibility', 'hidden', 'important');
             live2dFloatingButtons.style.setProperty('opacity', '0', 'important');
         }
-        // 【新增】隐藏VRM的浮动按钮
+        // 隐藏VRM的浮动按钮
         const vrmFloatingButtons = document.getElementById('vrm-floating-buttons');
         if (vrmFloatingButtons) {
             vrmFloatingButtons.style.setProperty('display', 'none', 'important');
@@ -3409,7 +3407,7 @@ function init_app() {
             live2dLockIcon.style.setProperty('visibility', 'hidden', 'important');
             live2dLockIcon.style.setProperty('opacity', '0', 'important');
         }
-        // 【新增】隐藏VRM的锁图标
+        // 隐藏VRM的锁图标
         const vrmLockIcon = document.getElementById('vrm-lock-icon');
         if (vrmLockIcon) {
             vrmLockIcon.style.setProperty('display', 'none', 'important');
@@ -3445,7 +3443,7 @@ function init_app() {
             live2dReturnButtonContainer.style.pointerEvents = 'auto';
         }
         
-        // 【新增】显示VRM的返回按钮
+        // 显示VRM的返回按钮
         if (vrmReturnButtonContainer) {
             if (savedGoodbyeRect) {
                 const containerWidth = vrmReturnButtonContainer.offsetWidth || 64;
@@ -3545,7 +3543,7 @@ function init_app() {
             live2dReturnButtonContainer.style.display = 'none';
             live2dReturnButtonContainer.style.pointerEvents = 'none';
         }
-        // 【新增】隐藏VRM的"请她回来"按钮
+        //隐藏VRM的"请她回来"按钮
         const vrmReturnButtonContainer = document.getElementById('vrm-return-button-container');
         if (vrmReturnButtonContainer) {
             vrmReturnButtonContainer.style.display = 'none';
@@ -3569,7 +3567,7 @@ function init_app() {
             live2dContainer.style.removeProperty('opacity');
         }
 
-        // 【修复】恢复 Live2D canvas 的可见性和鼠标事件
+        // 恢复 Live2D canvas 的可见性和鼠标事件
         const live2dCanvas = document.getElementById('live2d-canvas');
         if (live2dCanvas) {
             // 恢复 visibility，使 Electron 能够检测到 canvas 像素
@@ -3583,7 +3581,7 @@ function init_app() {
             console.log('[App] 已恢复 live2d-canvas 的可见性和鼠标事件，isLocked:', isLocked);
         }
 
-        // 【新增】恢复 VRM 容器和 canvas 的可见性
+        // 恢复 VRM 容器和 canvas 的可见性
         const vrmContainer = document.getElementById('vrm-container');
         if (vrmContainer) {
             vrmContainer.style.removeProperty('visibility');
@@ -3608,18 +3606,18 @@ function init_app() {
             live2dLockIcon.style.removeProperty('visibility');
             live2dLockIcon.style.removeProperty('opacity');
         }
-        // 【新增】恢复VRM的锁图标
+        // 恢复VRM的锁图标
         const vrmLockIcon = document.getElementById('vrm-lock-icon');
         if (vrmLockIcon) {
             vrmLockIcon.style.display = 'block';
             vrmLockIcon.style.removeProperty('visibility');
             vrmLockIcon.style.removeProperty('opacity');
         }
-        // 【改进】使用统一的 setLocked 方法设置解锁状态（同时更新图标和 canvas）
+        // 使用统一的 setLocked 方法设置解锁状态（同时更新图标和 canvas）
         if (window.live2dManager && typeof window.live2dManager.setLocked === 'function') {
             window.live2dManager.setLocked(false, { updateFloatingButtons: false });
         }
-        // 【新增】设置VRM的解锁状态
+        //设置VRM的解锁状态
         if (window.vrmManager && window.vrmManager.core && typeof window.vrmManager.core.setLocked === 'function') {
             window.vrmManager.core.setLocked(false);
         }
@@ -3648,7 +3646,7 @@ function init_app() {
                 });
             }
 
-            // 【修复】恢复所有弹窗的交互能力（清除"请她离开"时设置的 pointer-events: none 等样式）
+            // 恢复所有弹窗的交互能力（清除"请她离开"时设置的 pointer-events: none 等样式）
             const allLive2dPopups = document.querySelectorAll('[id^="live2d-popup-"]');
             allLive2dPopups.forEach(popup => {
                 // 清除之前设置的 !important 样式
@@ -3661,7 +3659,7 @@ function init_app() {
             console.log('[App] 已恢复所有Live2D弹窗的交互能力，数量:', allLive2dPopups.length);
         }
         
-        // 【新增】恢复VRM的浮动按钮系统（使用 !important 强制显示，覆盖之前的隐藏样式）
+        // 恢复VRM的浮动按钮系统（使用 !important 强制显示，覆盖之前的隐藏样式）
         const vrmFloatingButtons = document.getElementById('vrm-floating-buttons');
         if (vrmFloatingButtons) {
             // 先清除所有可能的隐藏样式
@@ -6202,10 +6200,7 @@ function init_app() {
 
     // 处理猫娘切换的逻辑（支持 VRM 和 Live2D 双模型类型热切换）
     async function handleCatgirlSwitch(newCatgirl, oldCatgirl) {
-        console.log('[猫娘切换] 🚀 handleCatgirlSwitch 启动:', { newCatgirl, oldCatgirl });
-
         if (isSwitchingCatgirl) {
-            console.warn('[猫娘切换] ⚠️ 正在切换中，忽略重复请求');
             return;
         }
         if (!newCatgirl) return;
@@ -6215,7 +6210,6 @@ function init_app() {
             // 0. 紧急制动：立即停止所有渲染循环
             // 停止 Live2D Ticker
             if (window.live2dManager && window.live2dManager.pixi_app && window.live2dManager.pixi_app.ticker) {
-                console.log('[猫娘切换] 🛑 暂停 Live2D Ticker');
                 window.live2dManager.pixi_app.ticker.stop();
             }
 
@@ -6226,7 +6220,6 @@ function init_app() {
             }
 
             // 1. 获取新角色的配置（包括 model_type）
-            console.log('[猫娘切换] 1. 获取新角色配置...');
             const charResponse = await fetch('/api/characters');
             if (!charResponse.ok) {
                 throw new Error('无法获取角色配置');
@@ -6239,14 +6232,11 @@ function init_app() {
             }
 
             const modelType = catgirlConfig.model_type || (catgirlConfig.vrm ? 'vrm' : 'live2d');
-            console.log('[猫娘切换] 新角色模型类型:', modelType);
 
             // 2. 清理旧模型资源（温和清理，保留基础设施）
-            console.log('[猫娘切换] 2. 清理旧模型资源...');
 
             // 清理 VRM 资源（参考 index.html 的清理逻辑）
             try {
-                console.log('[猫娘切换] 清理VRM资源...');
 
                 // 隐藏容器
                 const vrmContainer = document.getElementById('vrm-container');
@@ -6342,14 +6332,12 @@ function init_app() {
                     window.vrmManager._goodbyeClicked = true;
                 }
 
-                console.log('[猫娘切换] VRM资源清理完成');
             } catch (e) {
                 console.warn('[猫娘切换] VRM 清理出错:', e);
             }
 
             // 清理 Live2D 资源（参考 index.html 的清理逻辑）
             try {
-                console.log('[猫娘切换] 清理Live2D资源...');
 
                 // 隐藏容器
                 const live2dContainer = document.getElementById('live2d-container');
@@ -6384,7 +6372,6 @@ function init_app() {
                     }
                 }
 
-                console.log('[猫娘切换] Live2D资源清理完成');
             } catch (e) {
                 console.warn('[猫娘切换] Live2D 清理出错:', e);
             }
@@ -6412,11 +6399,8 @@ function init_app() {
             document.title = `${newCatgirl} Terminal - Project N.E.K.O.`;
 
             // 4. 根据模型类型加载相应的模型
-            console.log('[猫娘切换] 4. 加载新模型...');
-
             if (modelType === 'vrm') {
                 // 加载 VRM 模型
-                console.log('[猫娘切换] 加载 VRM 模型...');
 
                 let vrmModelPath = catgirlConfig.vrm;
                 if (!vrmModelPath) {
@@ -6425,7 +6409,6 @@ function init_app() {
 
                 // 确保 VRM 管理器已初始化
                 if (!window.vrmManager || !window.vrmManager._isInitialized) {
-                    console.log('[猫娘切换] 初始化 VRM 管理器...');
 
                     // 等待 VRM 模块加载
                     if (typeof window.VRMManager === 'undefined') {
@@ -6452,39 +6435,29 @@ function init_app() {
                     await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
                 }
 
-                // 转换路径为 URL
+                // 转换路径为 URL（基本格式处理，vrm-core.js 会处理备用路径）
                 let modelUrl = vrmModelPath;
                 
-                // 如果是 Windows 路径（包含 \ 或 :），提取文件名
+                // 处理 Windows 路径：提取文件名并转换为 Web 路径
                 if (vrmModelPath.includes('\\') || vrmModelPath.includes(':')) {
                     const filename = vrmModelPath.split(/[\\/]/).pop();
                     if (filename) {
-                        // 优先尝试 /user_vrm/，如果不存在再尝试 /static/vrm/
                         modelUrl = `/user_vrm/${filename}`;
                     }
                 } else if (!modelUrl.startsWith('http') && !modelUrl.startsWith('/')) {
-                    // 如果只是文件名，优先尝试 /user_vrm/
+                    // 相对路径，添加 /user_vrm/ 前缀
                     modelUrl = `/user_vrm/${modelUrl}`;
                 } else {
-                    // 如果已经是完整路径，确保格式正确
+                    // 确保路径格式正确（统一使用正斜杠）
                     modelUrl = modelUrl.replace(/\\/g, '/');
                 }
-                
-                // 如果路径不是以 /user_vrm/ 或 /static/vrm/ 开头，尝试添加 /user_vrm/ 前缀
-                if (!modelUrl.startsWith('/user_vrm/') && !modelUrl.startsWith('/static/vrm/') && !modelUrl.startsWith('http')) {
-                    const filename = modelUrl.split('/').pop();
-                    if (filename) {
-                        modelUrl = `/user_vrm/${filename}`;
-                    }
-                }
 
-                // 加载 VRM 模型（vrm-core.js 内部已实现备用路径机制，无需在此重复处理）
+                // 加载 VRM 模型（vrm-core.js 内部已实现备用路径机制，会自动尝试 /user_vrm/ 和 /static/vrm/）
                 await window.vrmManager.loadModel(modelUrl);
 
                 // 应用角色的光照配置
                 if (catgirlConfig.lighting && window.vrmManager) {
                     const lighting = catgirlConfig.lighting;
-                    console.log('[猫娘切换] 应用角色光照配置:', lighting);
                     
                     // 确保光照已初始化，如果没有则等待
                     const applyLighting = () => {
@@ -6521,7 +6494,6 @@ function init_app() {
                 }
 
                 // 显示 VRM 容器
-                console.log('[猫娘切换] 显示 VRM 界面...');
 
                 const vrmContainer = document.getElementById('vrm-container');
                 const live2dContainer = document.getElementById('live2d-container');
@@ -6569,7 +6541,6 @@ function init_app() {
 
             } else {
                 // 加载 Live2D 模型
-                console.log('[猫娘切换] 加载 Live2D 模型...');
 
                 // 重置goodbyeClicked标志
                 if (window.live2dManager) {
@@ -6620,7 +6591,6 @@ function init_app() {
                 }
 
                 // 显示 Live2D 容器
-                console.log('[猫娘切换] 显示 Live2D 界面...');
 
                 if (typeof showLive2d === 'function') {
                     showLive2d();
@@ -6647,7 +6617,6 @@ function init_app() {
 
                 // 延时重启 Ticker 和显示按钮
                 setTimeout(() => {
-                    console.log('[猫娘切换] ✅ 模型加载完毕，重启 Ticker');
 
                     window.dispatchEvent(new Event('resize'));
 

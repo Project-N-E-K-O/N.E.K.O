@@ -132,7 +132,6 @@ class VRMExpression {
                 // 立即设置为1.0
                 expressionManager.setValue(matchedExpression, 1.0);
                 this.currentWeights[matchedExpression] = 1.0;
-                console.log(`[VRM Expression] setMood立即应用表情: ${matchedExpression} (情绪: ${moodName})`);
                 return; // 找到匹配的表情后立即返回
             }
         }
@@ -460,7 +459,6 @@ class VRMExpression {
                     // 立即设置为1.0
                     expressionManager.setValue(matchedExpression, 1.0);
                     this.currentWeights[matchedExpression] = 1.0;
-                    console.log(`[VRM Expression] 立即应用表情: ${matchedExpression}`);
                     
                     // 如果不是 neutral 且开启了自动回到 neutral，设置定时器
                     if (this.autoReturnToNeutral) {
@@ -484,7 +482,6 @@ class VRMExpression {
                                 
                                 expressionManager.setValue(matched, 1.0);
                                 this.currentWeights[matched] = 1.0;
-                                console.log(`[VRM Expression] 通过映射应用表情: ${matched}`);
                                 
                                 // 设置自动回到 neutral 定时器
                                 if (this.autoReturnToNeutral) {

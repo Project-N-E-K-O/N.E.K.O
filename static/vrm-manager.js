@@ -331,7 +331,6 @@ class VRMManager {
                         }
                     }
                 } catch (e) {
-                    console.warn('[VRM Manager] 获取骨骼位置失败，使用包围盒位置:', e);
                     // 回退到使用包围盒
                     shadowY = bodyBox.min.y + SHADOW_Y_OFFSET;
                 }

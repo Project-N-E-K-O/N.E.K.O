@@ -179,7 +179,6 @@ class AudioManager {
         } else if (window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
             // VRM模型的口型同步
             window.vrmManager.animation.startLipSync(analyser);
-            console.log('[AudioManager] 已启动VRM口型同步');
         }
     }
 
@@ -194,7 +193,6 @@ class AudioManager {
         } else if (window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
             // VRM模型停止口型同步
             window.vrmManager.animation.stopLipSync();
-            console.log('[AudioManager] 已停止VRM口型同步');
         }
     }
 }

@@ -385,13 +385,6 @@ if _IS_MAIN_PROCESS:
     if os.path.exists(vrm_animation_path):
         app.mount("/user_vrm/animation", CustomStaticFiles(directory=vrm_animation_path), name="user_vrm_animation")
         logger.info(f"已挂载VRM动画目录: {vrm_animation_path}")
-    
-    # 挂载models/vrm/animations目录（如果存在）
-    project_root = _config_manager._get_project_root()
-    models_animations_path = str(project_root / "models" / "vrm" / "animations")
-    if os.path.exists(models_animations_path):
-        app.mount("/models/vrm/animations", CustomStaticFiles(directory=models_animations_path), name="models_vrm_animations")
-        logger.info(f"已挂载models/vrm/animations目录: {models_animations_path}")
 
     # 挂载用户mod路径
     user_mod_path = _config_manager.get_workshop_path()

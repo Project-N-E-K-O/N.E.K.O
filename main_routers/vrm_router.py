@@ -22,8 +22,7 @@ logger = logging.getLogger("Main")
 # VRM 模型路径常量
 VRM_USER_PATH = "/user_vrm"  
 VRM_STATIC_PATH = "/static/vrm"
-VRM_STATIC_ANIMATION_PATH = "/static/vrm/animation" 
-VRM_MODELS_ANIMATION_PATH = "/models/vrm/animations"  
+VRM_STATIC_ANIMATION_PATH = "/static/vrm/animation"  
 
 
 @router.post('/upload')
@@ -139,12 +138,7 @@ def get_vrm_animations():
         if static_animation_dir.exists():
             animations_dirs.append(static_animation_dir)
 
-        # 2. 检查项目目录下的models/vrm/animations
-        models_animations_dir = project_root / "models" / "vrm" / "animations"
-        if models_animations_dir.exists():
-            animations_dirs.append(models_animations_dir)
-
-        # 3. 检查用户目录下的vrm/animation（兼容旧版）
+        # 2. 检查用户目录下的vrm/animation（兼容旧版）
         if config_mgr.vrm_animation_dir.exists():
             animations_dirs.append(config_mgr.vrm_animation_dir)
         
@@ -155,8 +149,6 @@ def get_vrm_animations():
                 if anim_dir == static_animation_dir:
                     # static/vrm/animation 目录 -> /static/vrm/animation/
                     url_prefix = "/static/vrm/animation"
-                elif anim_dir == models_animations_dir:
-                    url_prefix = VRM_MODELS_ANIMATION_PATH
                 elif anim_dir == config_mgr.vrm_animation_dir:
                     url_prefix = "/user_vrm/animation"
                 else:
@@ -191,6 +183,8 @@ def get_vrm_animations():
     except Exception as e:
         logger.error(f"获取VRM动画列表失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+
 # 新增配置获取接口 
 @router.get('/config')
 async def get_vrm_config():
@@ -200,7 +194,6 @@ async def get_vrm_config():
         "paths": {
             "user_vrm": VRM_USER_PATH,
             "static_vrm": VRM_STATIC_PATH,
-            "static_animation": VRM_STATIC_ANIMATION_PATH,
-            "models_animation": VRM_MODELS_ANIMATION_PATH
+            "static_animation": VRM_STATIC_ANIMATION_PATH
         }
     })

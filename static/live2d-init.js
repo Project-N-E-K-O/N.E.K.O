@@ -20,7 +20,7 @@ window.LanLan1.setEmotion = function(emotion) {
     }
     
     // 如果不是 VRM，且 Live2D 模型已加载，才调用 Live2D
-    if (window.live2dManager && window.live2dManager.model) {
+    if (window.live2dManager && window.live2dManager.currentModel) {
         window.live2dManager.setEmotion(emotion);
     }
 };
@@ -32,12 +32,11 @@ window.LanLan1.playExpression = window.LanLan1.setEmotion;
 window.LanLan1.playMotion = function(group, no, priority) {
     // VRM 模式下忽略 Live2D 的动作指令，防止报错
     if (window.vrmManager && window.vrmManager.currentModel) {
-        console.log('[LanLan1] VRM 模式忽略 Live2D 动作指令:', group);
         return;
     }
 
     // Live2D 模式
-    if (window.live2dManager && window.live2dManager.model) {
+    if (window.live2dManager && window.live2dManager.currentModel) {
         window.live2dManager.playMotion(group, no, priority);
     }
 };
@@ -60,7 +59,7 @@ window.LanLan1.clearExpression = function() {
 // 4. 嘴型控制
 window.LanLan1.setMouth = function(value) {
     // VRM 的嘴型通常由 Audio 分析自动控制 (vrm-animation.js)，这里主要服务 Live2D
-    if (window.live2dManager && window.live2dManager.model) {
+    if (window.live2dManager && window.live2dManager.currentModel) {
         window.live2dManager.setMouth(value);
     }
 };
