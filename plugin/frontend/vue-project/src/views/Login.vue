@@ -81,6 +81,11 @@ const isCodeValid = computed(() => {
   return /^[A-Z]{4}$/.test(normalized)
 })
 
+function isValidRedirect(url: string): boolean {
+  if (!url) return false
+  return url.startsWith('/') && !url.startsWith('//')
+}
+
 function handleInput() {
   // 自动转换为大写
   code.value = code.value.toUpperCase()
@@ -106,8 +111,8 @@ async function handleLogin() {
       await get('/server/info')
       // 验证成功，跳转到目标页面或首页
       ElMessage.success('登录成功')
-      const redirect = (route.query.redirect as string) || '/'
-      router.push(redirect)
+      const redirect = route.query.redirect as string
+      router.push(isValidRedirect(redirect) ? redirect : '/')
     } catch (error: any) {
       // 如果返回 401 或 403，说明验证码错误
       if (error.response?.status === 401 || error.response?.status === 403) {

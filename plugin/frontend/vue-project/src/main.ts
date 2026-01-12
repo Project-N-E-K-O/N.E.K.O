@@ -31,11 +31,6 @@ console.log('✅ Setting up Pinia...')
 const pinia = createPinia()
 app.use(pinia)
 
-// 暴露 auth store 到 window，供 request 拦截器使用
-import { useAuthStore } from './stores/auth'
-const authStore = useAuthStore()
-;(window as any).__authStore = authStore
-
 console.log('✅ Setting up Router...')
 app.use(router)
 

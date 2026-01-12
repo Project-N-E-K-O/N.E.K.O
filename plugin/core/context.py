@@ -6,9 +6,11 @@
 import contextlib
 import contextvars
 import asyncio
-import inspect
 import time
-import tomllib
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
 import uuid
 import threading
 import functools
@@ -550,7 +552,12 @@ class PluginContext:
                         return result if isinstance(result, dict) else {"result": result}
                     return result
                 if isinstance(pending, dict) and rid:
-                    pending[str(rid)] = msg
+                    try:
+                        if len(pending) > 1024:
+                            pending.clear()
+                        pending[str(rid)] = msg
+                    except Exception:
+                        pass
 
         check_interval = 0.01
         while time.time() < deadline:

@@ -211,8 +211,16 @@ class LifecycleClient:
                     break
                 if isinstance(rid, str) and pending is not None:
                     try:
-                        if len(pending) > 1024:
-                            pending.clear()
+                        max_pending = 1024
+                        while len(pending) >= max_pending:
+                            try:
+                                oldest_key = next(iter(pending))
+                            except StopIteration:
+                                break
+                            try:
+                                pending.pop(oldest_key, None)
+                            except Exception:
+                                break
                         pending[rid] = item
                     except Exception:
                         pass

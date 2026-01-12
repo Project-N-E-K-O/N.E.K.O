@@ -73,7 +73,7 @@ def _plugin_process_runner(
             cur = cur.parent
         # Fallback: assume layout plugin/plugins/<id>/plugin.toml
         try:
-            logger.debug(
+            loguru_logger.debug(
                 "[Plugin Process] Could not find project root via exploration from %s; using fallback pattern",
                 p,
             )
@@ -105,9 +105,10 @@ def _plugin_process_runner(
         colorize=True,
     )
     # 添加文件输出（使用项目根目录的log目录）
-    log_dir = project_root / "log" / "plugins" / plugin_id
+    safe_pid = "".join(c if (c.isalnum() or c in ("-", "_")) else "_" for c in str(plugin_id))
+    log_dir = project_root / "log" / "plugins" / safe_pid
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / f"{plugin_id}_{time.strftime('%Y%m%d_%H%M%S')}.log"
+    log_file = log_dir / f"{safe_pid}_{time.strftime('%Y%m%d_%H%M%S')}.log"
     logger.add(
         str(log_file),
         format=f"{{time:YYYY-MM-DD HH:mm:ss}} | {{level: <8}} | [Proc-{plugin_id}] {{message}}",

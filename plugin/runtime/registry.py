@@ -449,10 +449,22 @@ def _parse_plugin_dependencies(
                 logger.warning("Plugin {}: dependency with conflicts=true requires 'id' field, skipping", plugin_id)
                 continue
             # 简化格式：只有 id 和 conflicts = true
-            dependencies.append(PluginDependency(
-                id=dep_id,
-                conflicts=True
-            ))
+            try:
+                dependencies.append(
+                    PluginDependency(
+                        id=dep_id,
+                        conflicts=True,
+                    )
+                )
+            except Exception:
+                try:
+                    logger.exception(
+                        "Plugin {}: failed to parse dependency config (conflicts=true), skipping: {}",
+                        plugin_id,
+                        dep_config,
+                    )
+                except Exception:
+                    pass
             continue
         
         # 完整格式：解析所有字段
@@ -479,18 +491,30 @@ def _parse_plugin_dependencies(
             providers_list = [str(p) for p in dep_providers if p]
         elif isinstance(dep_providers, str) and dep_providers.strip():
             providers_list = [dep_providers.strip()]
-        
-        dependencies.append(PluginDependency(
-            id=dep_id,
-            entry=dep_entry,
-            custom_event=dep_custom_event,
-            providers=providers_list,
-            recommended=dep_config.get("recommended"),
-            supported=dep_config.get("supported"),
-            untested=untested,
-            conflicts=conflicts_list
-        ))
-    
+
+        try:
+            dependencies.append(
+                PluginDependency(
+                    id=dep_id,
+                    entry=dep_entry,
+                    custom_event=dep_custom_event,
+                    providers=providers_list,
+                    recommended=dep_config.get("recommended"),
+                    supported=dep_config.get("supported"),
+                    untested=untested,
+                    conflicts=conflicts_list,
+                )
+            )
+        except Exception:
+            try:
+                logger.exception(
+                    "Plugin {}: failed to parse dependency config, skipping: {}",
+                    plugin_id,
+                    dep_config,
+                )
+            except Exception:
+                pass
+
     return dependencies
 
 
@@ -1082,17 +1106,45 @@ def load_plugins_from_toml(
     
     # 构建图：pid -> set(dependency_pids)
     graph: Dict[str, set] = {ctx["pid"]: set() for ctx in plugin_contexts}
+
+    def _candidate_dependency_pids(dep: PluginDependency) -> List[str]:
+        if getattr(dep, "conflicts", None) is True:
+            return []
+        out: List[str] = []
+        if getattr(dep, "id", None):
+            out.append(str(dep.id))
+        providers = getattr(dep, "providers", None)
+        if isinstance(providers, list):
+            for p in providers:
+                if p:
+                    out.append(str(p))
+        entry = getattr(dep, "entry", None)
+        if isinstance(entry, str) and ":" in entry:
+            try:
+                pid_part, _rest = entry.split(":", 1)
+                if pid_part:
+                    out.append(pid_part)
+            except Exception:
+                pass
+        custom_event = getattr(dep, "custom_event", None)
+        if isinstance(custom_event, str):
+            try:
+                parts = custom_event.split(":")
+                if len(parts) == 3 and parts[0]:
+                    out.append(parts[0])
+            except Exception:
+                pass
+        return out
     
     for ctx in plugin_contexts:
         pid = ctx["pid"]
         for dep in ctx["dependencies"]:
-            # 只处理显式的 ID 依赖
-            if dep.id:
+            for dep_pid in _candidate_dependency_pids(dep):
                 # 只有当依赖的插件也在本次加载列表中时，才添加边
                 # 如果依赖是外部已加载的插件，不影响本次排序顺序
-                if dep.id in pid_to_context:
-                    graph[pid].add(dep.id)
-                    logger.debug("Dependency edge: {} -> {}", pid, dep.id)
+                if dep_pid in pid_to_context:
+                    graph[pid].add(dep_pid)
+                    logger.debug("Dependency edge: {} -> {}", pid, dep_pid)
     
     # 重新构建图以便于 Kahn 算法：Node = Plugin, Edge = Dependency -> Dependent
     # 即：如果 A 依赖 B，则有一条边 B -> A (B 必须先完成)
@@ -1102,11 +1154,11 @@ def load_plugins_from_toml(
     for ctx in plugin_contexts:
         dependent = ctx["pid"]
         for dep in ctx["dependencies"]:
-            if dep.id and dep.id in pid_to_context:
-                dependency = dep.id
-                # Dependency -> Dependent
-                adj_list[dependency].append(dependent)
-                in_degree[dependent] += 1
+            for dependency in _candidate_dependency_pids(dep):
+                if dependency in pid_to_context:
+                    # Dependency -> Dependent
+                    adj_list[dependency].append(dependent)
+                    in_degree[dependent] += 1
     
     # 队列中放入所有入度为 0 的节点（无依赖或依赖已满足）
     queue = [pid for pid in pid_to_context if in_degree[pid] == 0]

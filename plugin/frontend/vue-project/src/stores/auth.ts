@@ -16,7 +16,7 @@ export const useAuthStore = defineStore('auth', () => {
   }
   const authCode = ref<string | null>(storedCode)
   // 计算属性
-  const isAuthenticated = computed(() => authCode.value !== null && authCode.value.length === 4)
+  const isAuthenticated = computed(() => authCode.value !== null && /^[A-Z]{4}$/.test(authCode.value))
 
   // 方法
   function setAuthCode(code: string) {

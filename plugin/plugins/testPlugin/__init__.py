@@ -7,6 +7,7 @@ from typing import Any, Dict
 from plugin.sdk.base import NekoPluginBase
 from plugin.sdk.decorators import lifecycle, neko_plugin, plugin_entry, custom_event
 from plugin.sdk import ok, SystemInfo
+from plugin.sdk.memory import MemoryClient
 
 
 @neko_plugin
@@ -551,6 +552,21 @@ class HelloPlugin(NekoPluginBase):
         },
     )
     def config_debug(self, include_values: bool = False, **_):
+        if include_values:
+            cfg: Dict[str, Any] = self._read_local_toml()
+            raw_debug = cfg.get("debug")
+            debug_cfg: Dict[str, Any] = raw_debug if isinstance(raw_debug, dict) else {}
+            raw_config = debug_cfg.get("config")
+            config_cfg: Dict[str, Any] = raw_config if isinstance(raw_config, dict) else {}
+            allow_sensitive = bool(config_cfg.get("allow_sensitive", False))
+            if not allow_sensitive:
+                return ok(
+                    data={
+                        "ok": False,
+                        "error": "include_values requires debug.config.allow_sensitive=true",
+                    }
+                )
+
         plugin_cfg = self.config.dump(timeout=5.0)
         sys_cfg = SystemInfo(self.ctx).get_system_config(timeout=5.0)
         py_env = SystemInfo(self.ctx).get_python_env()
@@ -604,12 +620,19 @@ class HelloPlugin(NekoPluginBase):
                 }
             )
 
+        memory_query_result: Any = None
+        try:
+            memory_query_result = MemoryClient(self.ctx).query(ln, query, timeout=float(timeout))
+        except Exception as e:
+            memory_query_result = {"ok": False, "error": str(e)}
+
         memory_list = self.ctx.bus.memory.get(bucket_id=ln, limit=20, timeout=timeout)
         filtered = memory_list.filter(type="PLUGIN_TRIGGER").limit(10)
         return ok(
             data={
                 "bucket_id": ln,
                 "query": query,
+                "query_result": memory_query_result,
                 "count": len(memory_list),
                 "history": memory_list.dump(),
                 "filtered": filtered.dump(),

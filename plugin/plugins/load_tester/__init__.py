@@ -967,17 +967,17 @@ class LoadTestPlugin(NekoPluginBase):
                     n = len(durs)
                     avg = sum(durs) / float(n)
 
-                    def _pct(p: float) -> float:
-                        if not durs:
+                    def _pct(p: float, data: list[float] = durs) -> float:
+                        if not data:
                             return 0.0
-                        if len(durs) == 1:
-                            return float(durs[0])
-                        idx = round((float(p) / 100.0) * (len(durs) - 1))
+                        if len(data) == 1:
+                            return float(data[0])
+                        idx = round((float(p) / 100.0) * (len(data) - 1))
                         if idx < 0:
                             idx = 0
-                        if idx >= len(durs):
-                            idx = len(durs) - 1
-                        return float(durs[idx])
+                        if idx >= len(data):
+                            idx = len(data) - 1
+                        return float(data[idx])
 
                     per_latency = {
                         "latency_min_ms": float(durs[0]),

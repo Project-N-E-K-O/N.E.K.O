@@ -126,7 +126,8 @@ export default {
     duplicateFieldKey: '字段名已存在，请换一个',
     profiles: '配置方案',
     active: '当前',
-    diffPreview: '差异预览'
+    diffPreview: '差异预览',
+    unsavedChangesWarning: '你有未保存的更改，切换插件将丢失这些更改。是否继续？'
   },
   metrics: {
     title: '性能指标',

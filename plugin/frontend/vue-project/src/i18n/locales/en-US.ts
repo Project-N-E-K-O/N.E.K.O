@@ -126,7 +126,8 @@ export default {
     duplicateFieldKey: 'Field name already exists. Please choose another one.',
     profiles: 'Profiles',
     active: 'Active',
-    diffPreview: 'Diff Preview'
+    diffPreview: 'Diff Preview',
+    unsavedChangesWarning: 'You have unsaved changes. Switching plugins will discard them. Continue?'
   },
   metrics: {
     title: 'Metrics',

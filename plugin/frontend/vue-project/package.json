@@ -28,8 +28,8 @@
     "vue-router": "^4.4.5"
   },
   "devDependencies": {
-    "@tsconfig/node24": "^24.0.3",
-    "@types/node": "^24.10.1",
+    "@tsconfig/node22": "^22.0.2",
+    "@types/node": "^22.0.0",
     "@vitejs/plugin-vue": "^6.0.2",
     "@vue/eslint-config-prettier": "^10.2.0",
     "@vue/eslint-config-typescript": "^14.6.0",

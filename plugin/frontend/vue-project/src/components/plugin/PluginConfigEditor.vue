@@ -302,6 +302,7 @@ const diffRows = computed<DiffRow[]>(() => {
 
   for (let i = 0; i < changes.length; i++) {
     const cur = changes[i]
+    if (!cur) continue
     const next = i + 1 < changes.length ? changes[i + 1] : undefined
 
     // treat adjacent removed+added as a modification block so the UI aligns them
@@ -588,7 +589,18 @@ onMounted(loadAll)
 
 watch(
   () => props.pluginId,
-  () => {
+  async (newId, oldId) => {
+    if (hasChanges.value && oldId) {
+      try {
+        await ElMessageBox.confirm(
+          t('plugins.unsavedChangesWarning'),
+          t('common.warning'),
+          { type: 'warning' }
+        )
+      } catch {
+        return
+      }
+    }
     loadAll()
   }
 )
