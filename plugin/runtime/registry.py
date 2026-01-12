@@ -1025,7 +1025,7 @@ def load_plugins_from_toml(
                 continue
 
             # SDK Version Checks
-            host_version_obj: Optional[Version] = None
+            host_version_obj: Optional[Any] = None
             if Version and SpecifierSet:
                 try:
                     host_version_obj = Version(SDK_VERSION)
@@ -1460,15 +1460,18 @@ def load_plugins_from_toml(
             dependencies=dependencies,
         )
         
-        # 在调用 register_plugin 之前，验证 host 是否还在 plugin_hosts 中
-        with state.plugin_hosts_lock:
-            host_still_exists = pid in state.plugin_hosts
-            if not host_still_exists:
-                logger.error(
-                    "Plugin {} host was removed from plugin_hosts before register_plugin call! "
-                    "This should not happen. Current plugin_hosts keys: {}",
-                    pid, list(state.plugin_hosts.keys())
-                )
+        # 在调用 register_plugin 之前，验证 host 是否还在 plugin_hosts 中。
+        # 对于 manual-start-only 插件（auto_start=false），host 允许为 None，此时不应要求在 plugin_hosts 中存在。
+        host_still_exists = False
+        if host is not None:
+            with state.plugin_hosts_lock:
+                host_still_exists = pid in state.plugin_hosts
+                if not host_still_exists:
+                    logger.error(
+                        "Plugin {} host was removed from plugin_hosts before register_plugin call! "
+                        "This should not happen. Current plugin_hosts keys: {}",
+                        pid, list(state.plugin_hosts.keys())
+                    )
         
         resolved_id = register_plugin(
             plugin_meta,
@@ -1483,21 +1486,22 @@ def load_plugins_from_toml(
         )
         
         # 验证 register_plugin 调用后 host 是否还在
-        with state.plugin_hosts_lock:
-            host_after_register = pid in state.plugin_hosts
-            all_keys_after = list(state.plugin_hosts.keys())
-            if host_still_exists and not host_after_register:
-                logger.error(
-                    "Plugin {} host was removed from plugin_hosts during register_plugin call! "
-                    "resolved_id={}, host_still_exists={}, host_after_register={}, "
-                    "Current plugin_hosts keys: {}",
-                    pid, resolved_id, host_still_exists, host_after_register, all_keys_after
-                )
-            elif host_still_exists and host_after_register:
-                logger.debug(
-                    "Plugin {} host still exists in plugin_hosts after register_plugin (resolved_id={})",
-                    pid, resolved_id
-                )
+        if host is not None:
+            with state.plugin_hosts_lock:
+                host_after_register = pid in state.plugin_hosts
+                all_keys_after = list(state.plugin_hosts.keys())
+                if host_still_exists and not host_after_register:
+                    logger.error(
+                        "Plugin {} host was removed from plugin_hosts during register_plugin call! "
+                        "resolved_id={}, host_still_exists={}, host_after_register={}, "
+                        "Current plugin_hosts keys: {}",
+                        pid, resolved_id, host_still_exists, host_after_register, all_keys_after
+                    )
+                elif host_still_exists and host_after_register:
+                    logger.debug(
+                        "Plugin {} host still exists in plugin_hosts after register_plugin (resolved_id={})",
+                        pid, resolved_id
+                    )
         
         # 如果 register_plugin 返回 None 或原始 ID 但检测到重复，说明这是重复加载
         # 需要移除刚注册的 host 和清理资源

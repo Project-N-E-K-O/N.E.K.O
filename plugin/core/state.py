@@ -234,7 +234,7 @@ class PluginRuntimeState:
         try:
             mgr = self._plugin_response_map_manager
             if mgr is None:
-                _ = self.plugin_response_event_map
+                _ = self.plugin_response_map
                 mgr = self._plugin_response_map_manager
             if mgr is None:
                 return None
@@ -595,6 +595,13 @@ class PluginRuntimeState:
         }
 
         try:
+            ev = self._get_or_create_response_event(request_id)
+            if ev is not None:
+                ev.set()
+        except Exception:
+            pass
+
+        try:
             self.plugin_response_notify_event.set()
         except Exception:
             pass
@@ -641,11 +648,11 @@ class PluginRuntimeState:
         """
         rid = str(request_id)
         deadline = time.time() + max(0.0, float(timeout))
-        notify_ev = None
+        per_req_ev = None
         try:
-            notify_ev = self.plugin_response_notify_event
+            per_req_ev = self._get_or_create_response_event(rid)
         except Exception:
-            notify_ev = None
+            per_req_ev = None
 
         # Fast path: check once before waiting.
         got = self.get_plugin_response(rid)
@@ -661,23 +668,20 @@ class PluginRuntimeState:
             remaining = deadline - time.time()
             if remaining <= 0:
                 return None
-            if notify_ev is None:
-                # Fallback to short sleep if notify event is unavailable.
+            if per_req_ev is None:
+                # Fallback to short sleep if per-request event is unavailable.
                 time.sleep(min(0.01, remaining))
             else:
                 try:
-                    notify_ev.wait(timeout=min(0.1, remaining))
+                    per_req_ev.wait(timeout=min(0.1, remaining))
 
                     got = self.get_plugin_response(rid)
                     if got is not None:
-                        try:
-                            notify_ev.clear()
-                        except Exception:
-                            pass
                         return got
 
+                    # Clear to avoid immediate returns on the next wait() if we woke up spuriously.
                     try:
-                        notify_ev.clear()
+                        per_req_ev.clear()
                     except Exception:
                         pass
                 except Exception:

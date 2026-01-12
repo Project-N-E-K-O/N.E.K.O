@@ -33,6 +33,11 @@ class LoadTestPlugin(NekoPluginBase):
                 # 避免 join 异常中断清理
                 pass
 
+    def _unwrap_ok_data(self, value: Any) -> Any:
+        if isinstance(value, dict) and "data" in value:
+            return value.get("data")
+        return value
+
     def _bench_loop(self, duration_seconds: float, fn, *args, **kwargs) -> Dict[str, Any]:
         start = time.perf_counter()
         end_time = start + float(duration_seconds)
@@ -281,15 +286,6 @@ class LoadTestPlugin(NekoPluginBase):
         """
 
         with self._bench_lock:
-            global_enabled = bool(root_cfg.get("enable", True)) if root_cfg else True
-            enabled = bool(sec_cfg.get("enable", global_enabled)) if sec_cfg else global_enabled
-            if not enabled:
-                try:
-                    self.logger.info("[load_tester] %s disabled by config", test_name)
-                except Exception:
-                    pass
-                return {"test": test_name, "enabled": False, "skipped": True}
-
             workers, log_summary = self._get_bench_config(root_cfg, sec_cfg)
 
             dur_cfg = sec_cfg.get("duration_seconds") if sec_cfg else None
@@ -320,9 +316,11 @@ class LoadTestPlugin(NekoPluginBase):
 
             if log_summary and log_template:
                 try:
-                    args = ()
+                    args: tuple[Any, ...] = ()
                     if callable(build_log_args):
-                        args = build_log_args(duration, stats, workers) or ()
+                        built = build_log_args(duration, stats, workers)
+                        if isinstance(built, tuple):
+                            args = built
                     self.logger.info(log_template, *args)
                 except Exception:
                     pass
@@ -1371,49 +1369,62 @@ class LoadTestPlugin(NekoPluginBase):
         },
     )
     def run_all_benchmarks(self, duration_seconds: float = 5.0, **_: Any):
-        root_cfg = self._get_load_test_section(None)
-        if root_cfg and not bool(root_cfg.get("enable", True)):
-            try:
-                self.logger.info("[load_tester] run_all_benchmarks disabled by config.load_test.enable=false")
-            except Exception:
-                pass
-            return ok(data={"tests": {}, "enabled": False, "skipped": True})
+        results: Dict[str, Any] = {}
+        try:
+            results["bench_push_messages"] = self._unwrap_ok_data(
+                self.bench_push_messages(duration_seconds=duration_seconds)
+            )
+        except Exception as e:
+            results["bench_push_messages"] = {"error": str(e)}
+        try:
+            results["bench_bus_messages_get"] = self._unwrap_ok_data(
+                self.bench_bus_messages_get(duration_seconds=duration_seconds)
+            )
+        except Exception as e:
+            results["bench_bus_messages_get"] = {"error": str(e)}
+        try:
+            results["bench_push_messages_fast"] = self._unwrap_ok_data(
+                self.bench_push_messages_fast(duration_seconds=duration_seconds)
+            )
+        except Exception as e:
+            results["bench_push_messages_fast"] = {"error": str(e)}
+        try:
+            results["bench_bus_events_get"] = self._unwrap_ok_data(
+                self.bench_bus_events_get(duration_seconds=duration_seconds)
+            )
+        except Exception as e:
+            results["bench_bus_events_get"] = {"error": str(e)}
+        try:
+            results["bench_bus_lifecycle_get"] = self._unwrap_ok_data(
+                self.bench_bus_lifecycle_get(duration_seconds=duration_seconds)
+            )
+        except Exception as e:
+            results["bench_bus_lifecycle_get"] = {"error": str(e)}
+        try:
+            results["bench_buslist_filter"] = self._unwrap_ok_data(
+                self.bench_buslist_filter(duration_seconds=duration_seconds)
+            )
+        except Exception as e:
+            results["bench_buslist_filter"] = {"error": str(e)}
+        try:
+            results["bench_buslist_reload_full"] = self._unwrap_ok_data(
+                self.bench_buslist_reload(duration_seconds=duration_seconds, incremental=False)
+            )
+        except Exception as e:
+            results["bench_buslist_reload_full"] = {"error": str(e)}
+        try:
+            results["bench_buslist_reload_incr"] = self._unwrap_ok_data(
+                self.bench_buslist_reload(duration_seconds=duration_seconds, incremental=True)
+            )
+        except Exception as e:
+            results["bench_buslist_reload_incr"] = {"error": str(e)}
+        try:
+            results["bench_buslist_reload_nochange"] = self._unwrap_ok_data(
+                self.bench_buslist_reload_nochange(duration_seconds=duration_seconds)
+            )
+        except Exception as e:
+            results["bench_buslist_reload_nochange"] = {"error": str(e)}
 
-        # 如果配置中设置了全局 duration_seconds，则覆盖参数作为默认时长
-        if root_cfg:
-            dur_cfg = root_cfg.get("duration_seconds")
-            try:
-                if dur_cfg is not None:
-                    duration_seconds = float(dur_cfg)
-            except Exception:
-                pass
-
-        results = {}
-        tests = [
-            ("bench_push_messages", self.bench_push_messages),
-            ("bench_bus_messages_get", self.bench_bus_messages_get),
-            ("bench_push_messages_fast", self.bench_push_messages_fast),
-            ("bench_bus_events_get", self.bench_bus_events_get),
-            ("bench_bus_lifecycle_get", self.bench_bus_lifecycle_get),
-            ("bench_buslist_filter", self.bench_buslist_filter),
-            ("bench_buslist_reload_full", lambda **kw: self.bench_buslist_reload(incremental=False, **kw)),
-            ("bench_buslist_reload_incr", lambda **kw: self.bench_buslist_reload(incremental=True, **kw)),
-            ("bench_buslist_reload_nochange", self.bench_buslist_reload_nochange),
-        ]
-        for name, fn in tests:
-            try:
-                try:
-                    self.ctx.close()
-                except Exception:
-                    pass
-                res = fn(duration_seconds=duration_seconds)
-                results[name] = getattr(res, "data", None) or getattr(res, "get", lambda *_a, **_k: None)("data") or None
-            except Exception as e:
-                results[name] = {"error": str(e)}
-                try:
-                    self.logger.warning("[load_tester] benchmark {} failed: {}", name, e)
-                except Exception:
-                    pass
         try:
             headers = ["test", "qps", "errors", "iterations", "elapsed_s", "extra"]
             rows = []
@@ -1505,36 +1516,18 @@ class LoadTestPlugin(NekoPluginBase):
         We only spawn a daemon thread here.
         """
 
-        try:
-            try:
-                self.ctx.logger.info("[load_tester] lifecycle.startup invoked")
-            except Exception:
-                self.logger.info("[load_tester] lifecycle.startup invoked")
-        except Exception:
-            pass
-
         def _runner() -> None:
             try:
-                try:
-                    _ = self.ctx.bus.messages
-                except Exception:
-                    pass
-
-                root_cfg = self._get_load_test_section(None)
-                enabled = bool(root_cfg.get("enable", True)) if root_cfg else True
-                auto_start = bool(root_cfg.get("auto_start", False)) if root_cfg else False
+                # Wait a short grace period after plugin process startup.
+                if self._stop_event.wait(timeout=3.0):
+                    return
                 try:
                     self.ctx.logger.info(
-                        "[load_tester] auto_start thread begin: enabled={} auto_start={} stop={}",
-                        enabled,
-                        auto_start,
+                        "[load_tester] auto_start thread begin: stop={}",
                         self._stop_event.is_set(),
                     )
                 except Exception:
                     pass
-
-                if not enabled or not auto_start:
-                    return
                 if self._stop_event.is_set():
                     return
                 self.run_all_benchmarks()
