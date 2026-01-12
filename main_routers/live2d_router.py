@@ -966,3 +966,106 @@ def open_model_directory(model_name: str):
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 
+@router.delete('/model/{model_name}')
+def delete_model(model_name: str):
+    """删除指定的Live2D模型"""
+    try:
+        # 查找模型目录
+        model_dir, url_prefix = find_model_directory(model_name)
+        
+        if not model_dir or not os.path.exists(model_dir):
+            return JSONResponse(status_code=404, content={"success": False, "error": f"模型 {model_name} 不存在"})
+        
+        # 检查是否是用户导入的模型（只能删除用户导入的模型，不能删除内置模型）
+        is_user_model = False
+        
+        # 检查是否在用户文档目录下
+        try:
+            from utils.config_manager import get_config_manager
+            config_mgr = get_config_manager()
+            user_live2d_dir = str(config_mgr.live2d_dir).replace('\\', '/')
+            model_dir_normalized = model_dir.replace('\\', '/')
+            if model_dir_normalized.startswith(user_live2d_dir):
+                is_user_model = True
+        except Exception:
+            pass
+        
+        # 检查static目录下的模型
+        static_dir = 'static'
+        if model_dir.startswith(static_dir):
+            # 检查是否在用户上传的目录中
+            for item in os.listdir(static_dir):
+                item_path = os.path.join(static_dir, item)
+                if os.path.isdir(item_path) and model_dir == item_path:
+                    # 检查是否包含.user_upload标记
+                    marker_file = os.path.join(model_dir, '.user_upload')
+                    if os.path.exists(marker_file):
+                        is_user_model = True
+                    break
+        
+        if not is_user_model:
+            return JSONResponse(status_code=403, content={"success": False, "error": "只能删除用户导入的模型，无法删除内置模型"})
+        
+        # 递归删除模型目录
+        import shutil
+        shutil.rmtree(model_dir)
+        
+        logger.info(f"已删除Live2D模型: {model_name}")
+        return {"success": True, "message": f"模型 {model_name} 已成功删除"}
+    except Exception as e:
+        logger.error(f"删除模型失败: {e}")
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+
+@router.get('/user_models')
+def get_user_models():
+    """获取用户导入的模型列表"""
+    try:
+        from utils.config_manager import get_config_manager
+        
+        user_models = []
+        
+        # 获取用户文档目录下的live2d模型
+        try:
+            config_mgr = get_config_manager()
+            docs_live2d_dir = str(config_mgr.live2d_dir)
+            if os.path.exists(docs_live2d_dir):
+                for root, dirs, files in os.walk(docs_live2d_dir):
+                    for file in files:
+                        if file.endswith('.model3.json'):
+                            model_name = os.path.basename(root)
+                            rel_path = os.path.relpath(root, docs_live2d_dir)
+                            user_models.append({
+                                'name': model_name,
+                                'path': f'/user_live2d/{rel_path}/{file}',
+                                'source': 'user_documents'
+                            })
+        except Exception as e:
+            logger.warning(f"扫描用户文档模型目录时出错: {e}")
+        
+        # 检查static目录下用户上传的模型
+        static_dir = 'static'
+        if os.path.exists(static_dir):
+            for item in os.listdir(static_dir):
+                item_path = os.path.join(static_dir, item)
+                if os.path.isdir(item_path):
+                    # 检查是否有.user_upload标记文件
+                    marker_file = os.path.join(item_path, '.user_upload')
+                    if os.path.exists(marker_file):
+                        # 查找.model3.json文件
+                        for file in os.listdir(item_path):
+                            if file.endswith('.model3.json'):
+                                model_name = os.path.splitext(os.path.splitext(file)[0])[0]
+                                user_models.append({
+                                    'name': model_name,
+                                    'path': f'/static/{item}/{file}',
+                                    'source': 'user_upload'
+                                })
+                                break
+        
+        return {"success": True, "models": user_models}
+    except Exception as e:
+        logger.error(f"获取用户模型列表失败: {e}")
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+

@@ -202,6 +202,149 @@
             max-width: 280px;
             word-break: break-all;
         }
+
+        .btn-danger {
+            background: #dc3545;
+        }
+
+        .btn-danger:hover:not(:disabled) {
+            background: #c82333;
+        }
+
+        #delete-model-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+
+        #delete-model-modal.show {
+            display: flex;
+        }
+
+        .modal-content {
+            background: #fff;
+            border-radius: 12px;
+            padding: 20px;
+            max-width: 400px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #eee;
+        }
+
+        .modal-header h3 {
+            margin: 0;
+            font-size: 18px;
+            color: #333;
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            color: #999;
+            padding: 0;
+            line-height: 1;
+        }
+
+        .modal-close:hover {
+            color: #333;
+        }
+
+        .model-list-container {
+            max-height: 400px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 10px;
+            background: #f8f9fa;
+        }
+
+        .model-item {
+            display: flex;
+            align-items: center;
+            padding: 10px;
+            background: #fff;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            border: 1px solid #ddd;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .model-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .model-item:hover {
+            background: #f0f7ff;
+        }
+
+        .model-item input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            margin-right: 12px;
+            cursor: pointer;
+        }
+
+        .model-item label {
+            flex: 1;
+            cursor: pointer;
+            font-size: 14px;
+            color: #333;
+        }
+
+        .model-item .model-source {
+            font-size: 11px;
+            color: #999;
+            margin-left: 8px;
+        }
+
+        .modal-footer {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #eee;
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+
+        .modal-footer .btn {
+            min-width: 100px;
+        }
+
+        .empty-message {
+            text-align: center;
+            color: #999;
+            padding: 20px;
+            font-size: 14px;
+        }
+
+        .delete-warning {
+            font-size: 12px;
+            color: #dc3545;
+            margin-bottom: 10px;
+            padding: 8px;
+            background: #fff3f3;
+            border-radius: 6px;
+        }
     </style>
 </head>
 
@@ -224,6 +367,11 @@
             <select id="model-select" class="control-select">
                 <option data-i18n="common.loading">加载中...</option>
             </select>
+        </div>
+
+        <div class="control-group">
+            <button id="delete-model-btn" class="btn btn-danger" data-i18n="live2d.deleteModel" style="width:100%;">
+            </button>
         </div>
 
         <div class="control-group">
@@ -288,6 +436,25 @@
     </div>
 
     <div id="live2d-container"><canvas id="live2d-canvas"></canvas></div>
+
+    <div id="delete-model-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 data-i18n="live2d.deleteModelTitle">删除已导入模型</h3>
+                <button class="modal-close" id="close-delete-modal">&times;</button>
+            </div>
+            <div class="delete-warning" data-i18n="live2d.deleteWarning">
+                以下列出了您已导入的所有模型。您可以选择要删除的模型。注意：此操作不可恢复。
+            </div>
+            <div class="model-list-container" id="user-model-list">
+                <div class="empty-message" data-i18n="live2d.noUserModels">暂无可删除的用户模型</div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="cancel-delete-btn" data-i18n="common.cancel">取消</button>
+                <button class="btn btn-danger" id="confirm-delete-btn" data-i18n="live2d.deleteSelected" disabled>删除选中</button>
+            </div>
+        </div>
+    </div>
 
     <script src="/static/libs/live2dcubismcore.min.js"></script>
     <script src="/static/libs/live2d.min.js"></script>
@@ -401,6 +568,12 @@
             const modelUpload = document.getElementById('model-upload');
             const uploadStatus = document.getElementById('upload-status');
             const backToMainBtn = document.getElementById('backToMainBtn');
+            const deleteModelBtn = document.getElementById('delete-model-btn');
+            const deleteModelModal = document.getElementById('delete-model-modal');
+            const closeDeleteModal = document.getElementById('close-delete-modal');
+            const cancelDeleteBtn = document.getElementById('cancel-delete-btn');
+            const confirmDeleteBtn = document.getElementById('confirm-delete-btn');
+            const userModelList = document.getElementById('user-model-list');
 
 
             // 检测页面来源，设置返回按钮文本
@@ -862,16 +1035,16 @@
                 // 检查是否有未保存的更改
                 if (window.hasUnsavedChanges) {
                     const message = t('dialogs.unsavedChanges', '您有未保存的设置，确定要离开吗？');
-                    const title = t('dialogs.confirmLeave', '确认离开');
+                    const title = t('dialogs.confirmLeave', 'Confirm Leave');
                     const confirmLeave = await showConfirm(message, title, { danger: true });
-                    console.log('用户选择:', confirmLeave ? '确定离开' : '取消');
+                    console.log('User choice:', confirmLeave ? 'Confirm' : 'Cancel');
                     if (!confirmLeave) {
                         return; // 用户取消，不离开
                     }
                     // 用户确认离开，重置未保存状态，避免被 beforeunload 拦截
                     window.hasUnsavedChanges = false;
                 } else {
-                    console.log('没有未保存的更改，直接返回');
+                    console.log('No unsaved changes, returning directly');
                 }
 
                 // 如果处于全屏状态，先退出全屏
@@ -972,6 +1145,155 @@
                     modelUpload.value = '';
                 }
             });
+
+            // 删除模型功能
+            let selectedDeleteModels = new Set();
+
+            function showDeleteModelModal() {
+                if (deleteModelModal) {
+                    deleteModelModal.classList.add('show');
+                    loadUserModels();
+                }
+            }
+
+            function hideDeleteModelModal() {
+                if (deleteModelModal) {
+                    deleteModelModal.classList.remove('show');
+                    selectedDeleteModels.clear();
+                }
+            }
+
+            async function loadUserModels() {
+                try {
+                    userModelList.innerHTML = '<div class="empty-message">' + t('live2d.loadingModels', '正在加载...') + '</div>';
+
+                    const response = await fetch('/api/live2d/user_models');
+                    const result = await response.json();
+
+                    if (result.success && result.models && result.models.length > 0) {
+                        userModelList.innerHTML = '';
+                        result.models.forEach(model => {
+                            const sourceLabel = model.source === 'user_documents' 
+                                ? t('live2d.userDocuments', '用户文档')
+                                : t('live2d.localUpload', '本地上传');
+                            const displayName = model.name.replace(/\.model3$/i, '');
+                            const item = document.createElement('div');
+                            item.className = 'model-item';
+                            item.innerHTML = `
+                                <input type="checkbox" id="model-${model.name}" value="${model.name}" data-path="${model.path}">
+                                <label for="model-${model.name}">${displayName}</label>
+                                <span class="model-source">${sourceLabel}</span>
+                            `;
+
+                            const checkbox = item.querySelector('input[type="checkbox"]');
+                            checkbox.addEventListener('change', (e) => {
+                                if (e.target.checked) {
+                                    selectedDeleteModels.add(e.target.value);
+                                } else {
+                                    selectedDeleteModels.delete(e.target.value);
+                                }
+                                updateConfirmDeleteButton();
+                            });
+
+                            userModelList.appendChild(item);
+                        });
+                    } else {
+                        userModelList.innerHTML = '<div class="empty-message">' + t('live2d.noUserModels', '暂无可删除的用户模型') + '</div>';
+                    }
+                } catch (error) {
+                    console.error('Failed to load user models:', error);
+                    userModelList.innerHTML = '<div class="empty-message">' + t('live2d.loadModelsFailed', '加载模型失败') + '</div>';
+                }
+            }
+
+            function updateConfirmDeleteButton() {
+                if (confirmDeleteBtn) {
+                    confirmDeleteBtn.disabled = selectedDeleteModels.size === 0;
+                    confirmDeleteBtn.textContent = t('live2d.deleteSelected', `Delete Selected (${selectedDeleteModels.size})`, { count: selectedDeleteModels.size });
+                }
+            }
+
+            async function deleteSelectedModels() {
+                if (selectedDeleteModels.size === 0) return;
+
+                const message = t('live2d.confirmDelete', '确定要删除选中的 {{count}} 个模型吗？此操作不可恢复！', { count: selectedDeleteModels.size });
+                const title = t('live2d.deleteModelTitle', '删除已导入模型');
+                const confirmDelete = await showConfirm(message, title, { danger: true });
+                if (!confirmDelete) return;
+
+                confirmDeleteBtn.disabled = true;
+                confirmDeleteBtn.textContent = t('live2d.deleting', "Deleting...");
+
+                let successCount = 0;
+                let failCount = 0;
+
+                for (const modelName of selectedDeleteModels) {
+                    try {
+                        const response = await fetch(`/api/live2d/model/${encodeURIComponent(modelName)}`, {
+                            method: 'DELETE'
+                        });
+                        const result = await response.json();
+                        if (result.success) {
+                            successCount++;
+                        } else {
+                            console.error(`Failed to delete model ${modelName}:`, result.error);
+                            failCount++;
+                        }
+                    } catch (error) {
+                        console.error(`Error deleting model ${modelName}:`, error);
+                        failCount++;
+                    }
+                }
+
+                await loadUserModels();
+                selectedDeleteModels.clear();
+                updateConfirmDeleteButton();
+
+                try {
+                    const modelsResponse = await fetch('/api/live2d/models');
+                    availableModels = await modelsResponse.json();
+                    modelSelect.innerHTML = `<option value="">${t('live2d.pleaseSelectModel', '请选择一个模型')}</option>`;
+                    availableModels.forEach(model => {
+                        const option = document.createElement('option');
+                        option.value = model.name;
+                        option.textContent = model.display_name || model.name;
+                        modelSelect.appendChild(option);
+                    });
+                } catch (e) {
+                    console.error('重新加载模型列表失败:', e);
+                }
+
+                if (successCount > 0) {
+                    const successMessage = t('live2d.deleteSuccess', '✓ 成功删除 {{count}} 个模型', { count: successCount }) + (failCount > 0 ? `，${t('live2d.deleteFailed', '失败 {{count}} 个', { count: failCount })}` : '');
+                    await showAlert(successMessage);
+                } else {
+                    await showAlert(t('live2d.deleteFailed', '✗ 删除失败，所有模型可能都是内置模型'));
+                }
+            }
+
+            if (deleteModelBtn) {
+                deleteModelBtn.addEventListener('click', showDeleteModelModal);
+            }
+
+            if (closeDeleteModal) {
+                closeDeleteModal.addEventListener('click', hideDeleteModelModal);
+            }
+
+            if (cancelDeleteBtn) {
+                cancelDeleteBtn.addEventListener('click', hideDeleteModelModal);
+            }
+
+            if (confirmDeleteBtn) {
+                confirmDeleteBtn.addEventListener('click', deleteSelectedModels);
+            }
+
+            if (deleteModelModal) {
+                deleteModelModal.addEventListener('click', (e) => {
+                    if (e.target === deleteModelModal) {
+                        hideDeleteModelModal();
+                    }
+                });
+            }
 
             // 更新常驻表情选择框
             async function updatePersistentExpressionSelect() {

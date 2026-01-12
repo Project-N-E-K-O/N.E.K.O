@@ -622,13 +622,26 @@
       "savingParameters": "Saving...",
       "parametersSaved": "Saved!",
       "parametersSavePartialFailed": "Save failed: {{errors}}",
-      "parametersSaveFailed": "Save failed: {{error}}",
-      "modelDirectorySaveFailed": "File save failed",
-      "userPreferencesSaveFailed": "Prefs save failed",
-      "modelNotFound": "Model not found",
-      "cannotGetModelFiles": "Cannot get model files",
-      "cannotGetModelConfig": "Cannot get model config"
-    }
+      "parametersSaveFailed": "Save failed: {{error}}"
+    },
+    "modelDirectorySaveFailed": "File save failed",
+    "userPreferencesSaveFailed": "Prefs save failed",
+    "modelNotFound": "Model not found",
+    "cannotGetModelFiles": "Cannot get model files",
+    "cannotGetModelConfig": "Cannot get model config",
+    "deleteModelTitle": "Delete Imported Models",
+    "deleteWarning": "The following lists all models you have imported. You can select models to delete. Note: This action cannot be undone.",
+    "deleteModel": "Delete Imported Models",
+    "loadingModels": "Loading...",
+    "noUserModels": "No deletable user models",
+    "loadModelsFailed": "Failed to load models",
+    "deleteSelected": "Delete Selected",
+    "deleting": "Deleting...",
+    "confirmDelete": "Are you sure you want to delete the selected {{count}} models? This action cannot be undone!",
+    "deleteSuccess": "✓ Successfully deleted {{count}} models",
+    "deleteFailed": "✗ Deletion failed, all models may be built-in models",
+    "userDocuments": "User Documents",
+    "localUpload": "Local Upload"
   },
   "voice": {
     "title": "Voice Registration - Please Use Alibaba Cloud API",
