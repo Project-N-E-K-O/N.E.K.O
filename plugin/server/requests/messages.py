@@ -70,6 +70,7 @@ async def handle_message_push(request: Dict[str, Any], send_response: SendRespon
     binary_url = request.get("binary_url", None)
     metadata = request.get("metadata", None)
     seq = request.get("seq", None)
+    unsafe = request.get("unsafe", False)
 
     if not isinstance(source, str) or not source:
         send_response(from_plugin, request_id, None, "source is required", timeout=timeout)
@@ -89,11 +90,13 @@ async def handle_message_push(request: Dict[str, Any], send_response: SendRespon
             source=str(source),
             message_type=str(message_type),
             description=str(description) if isinstance(description, str) else "",
-            priority=int(priority) if priority is not None else 0,
-            content=str(content) if isinstance(content, str) or content is None else str(content),
-            binary_data=binary_data if isinstance(binary_data, (bytes, type(None))) else None,
+            # Keep raw-ish values so strict schema can reject invalid types.
+            priority=priority,
+            content=content,
+            binary_data=binary_data,
             binary_url=str(binary_url) if isinstance(binary_url, str) and binary_url else None,
-            metadata=dict(metadata) if isinstance(metadata, dict) else None,
+            metadata=metadata,
+            unsafe=bool(unsafe),
             mode="zmq-sync",
         )
         send_response(from_plugin, request_id, {"message_id": mid}, None, timeout=timeout)

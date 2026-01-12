@@ -197,6 +197,20 @@ PLUGIN_LOG_CTX_MESSAGE_PUSH = _get_bool_env("NEKO_PLUGIN_LOG_CTX_MESSAGE_PUSH", 
 # Env: NEKO_PLUGIN_LOG_SERVER_DEBUG, default=False
 PLUGIN_LOG_SERVER_DEBUG = _get_bool_env("NEKO_PLUGIN_LOG_SERVER_DEBUG", False)
 
+# ========== Message Schema 校验 ==========
+
+# 是否对 message bus 的 payload 做严格字段/类型校验。
+# Env: NEKO_MESSAGE_SCHEMA_STRICT, default=True
+MESSAGE_SCHEMA_STRICT = _get_bool_env("NEKO_MESSAGE_SCHEMA_STRICT", True)
+
+# 是否允许插件通过 payload 标记 unsafe 来跳过严格校验（用于高性能场景）。
+# Env: NEKO_MESSAGE_SCHEMA_ALLOW_UNSAFE, default=True
+MESSAGE_SCHEMA_ALLOW_UNSAFE = _get_bool_env("NEKO_MESSAGE_SCHEMA_ALLOW_UNSAFE", True)
+
+# 是否对出现未知字段（schema 外字段）打印 warning。
+# Env: NEKO_MESSAGE_SCHEMA_WARN_UNKNOWN_FIELDS, default=True
+MESSAGE_SCHEMA_WARN_UNKNOWN_FIELDS = _get_bool_env("NEKO_MESSAGE_SCHEMA_WARN_UNKNOWN_FIELDS", True)
+
 # 是否启用 ZeroMQ IPC 管道（插件进程 <-> 主进程）
 # Env: NEKO_PLUGIN_ZMQ_IPC_ENABLED, default=True
 PLUGIN_ZMQ_IPC_ENABLED = _get_bool_env("NEKO_PLUGIN_ZMQ_IPC_ENABLED", True)
@@ -419,6 +433,11 @@ __all__ = [
     "NEKO_PLUGIN_TAG",
     "EVENT_META_ATTR",
     
+    # Message schema 校验
+    "MESSAGE_SCHEMA_STRICT",
+    "MESSAGE_SCHEMA_ALLOW_UNSAFE",
+    "MESSAGE_SCHEMA_WARN_UNKNOWN_FIELDS",
+    
     # 其他配置
     "STATUS_CONSUMER_SLEEP_INTERVAL",
     "MESSAGE_CONSUMER_SLEEP_INTERVAL",
@@ -445,4 +464,3 @@ __all__ = [
     # 验证函数
     "validate_config",
 ]
-

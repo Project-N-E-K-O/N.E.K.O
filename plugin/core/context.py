@@ -204,6 +204,7 @@ class PluginContext:
         binary_data: Optional[bytes] = None,
         binary_url: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        unsafe: bool = False,
         fast_mode: bool = False,
     ) -> None:
         """
@@ -218,6 +219,7 @@ class PluginContext:
             binary_data: 二进制数据（当message_type为binary时，仅用于小文件）
             binary_url: 二进制文件的URL（当message_type为binary_url时）
             metadata: 额外的元数据
+            unsafe: 为 True 时，允许主进程跳过严格 schema 校验（用于高性能场景，默认 False）
         """
         zmq_client = getattr(self, "_zmq_ipc_client", None)
         if zmq_client is None and bool(fast_mode):
@@ -298,6 +300,7 @@ class PluginContext:
                         "binary_data": binary_data,
                         "binary_url": binary_url,
                         "metadata": metadata or {},
+                        "unsafe": bool(unsafe),
                     }
                     batcher.enqueue(item)
                 return
@@ -347,6 +350,7 @@ class PluginContext:
                         "binary_data": binary_data,
                         "binary_url": binary_url,
                         "metadata": metadata or {},
+                        "unsafe": bool(unsafe),
                     }
                     try:
                         resp = zmq_client.request(req, timeout=attempt_timeout)
@@ -405,6 +409,7 @@ class PluginContext:
                 "binary_data": binary_data,
                 "binary_url": binary_url,
                 "metadata": metadata or {},
+                "unsafe": bool(unsafe),
                 "time": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             }
             self.message_queue.put_nowait(payload)

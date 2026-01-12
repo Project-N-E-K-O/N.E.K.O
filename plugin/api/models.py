@@ -110,6 +110,24 @@ class PluginPushMessageRequest(BaseModel):
     binary_data: Optional[bytes] = Field(default=None, description="二进制数据（当message_type为binary时，仅用于小文件）")
     binary_url: Optional[str] = Field(default=None, description="二进制文件的URL（当message_type为binary_url时）")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="额外的元数据")
+    unsafe: bool = Field(default=False, description="为 True 时允许主进程跳过严格 schema 校验（用于高性能场景）")
+
+    @model_validator(mode="after")
+    def validate_message_type_payload(self) -> "PluginPushMessageRequest":
+        mt = self.message_type
+        if mt in ("text", "url"):
+            if not isinstance(self.content, str) or not self.content:
+                raise ValueError("content is required when message_type is 'text' or 'url'")
+            return self
+        if mt == "binary":
+            if not isinstance(self.binary_data, (bytes, bytearray)):
+                raise ValueError("binary_data is required when message_type is 'binary'")
+            return self
+        if mt == "binary_url":
+            if not isinstance(self.binary_url, str) or not self.binary_url:
+                raise ValueError("binary_url is required when message_type is 'binary_url'")
+            return self
+        return self
 
 
 class PluginPushMessage(BaseModel):

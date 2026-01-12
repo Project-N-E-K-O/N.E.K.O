@@ -22,6 +22,7 @@ from plugin.api.models import (
     PluginTriggerResponse,
     PluginPushMessageResponse,
 )
+from plugin.api.models import PluginPushMessageRequest
 from plugin.api.exceptions import (
     PluginError,
     PluginTimeoutError,
@@ -34,6 +35,9 @@ from plugin.utils.logging import format_log_text as _format_log_text
 from plugin.settings import (
     PLUGIN_EXECUTION_TIMEOUT,
     MESSAGE_QUEUE_DEFAULT_MAX_COUNT,
+    MESSAGE_SCHEMA_STRICT,
+    MESSAGE_SCHEMA_ALLOW_UNSAFE,
+    MESSAGE_SCHEMA_WARN_UNKNOWN_FIELDS,
 )
 from plugin.sdk.errors import ErrorCode
 from plugin.sdk.responses import fail, is_envelope
@@ -45,6 +49,10 @@ _mq_full_dropped: int = 0
 
 _msg_push_last_info_ts: float = 0.0
 _msg_push_suppressed: int = 0
+
+_msg_schema_unknown_last_warn_ts: float = 0.0
+_msg_schema_unknown_suppressed: int = 0
+_msg_schema_unknown_last_fields: Optional[tuple[str, ...]] = None
 
 _push_seq_lock = threading.Lock()
 _push_expected_seq: Dict[str, int] = {}
@@ -76,6 +84,107 @@ def validate_and_advance_push_seq(*, plugin_id: str, seq: int) -> None:
 _BUS_INGESTION_ENABLED = os.getenv("NEKO_BUS_INGESTION_LOOP", "0").lower() in ("1", "true", "yes", "on")
 _bus_ingest_stop: Optional[asyncio.Event] = None
 _bus_ingest_task: Optional[asyncio.Task[None]] = None
+
+
+def _warn_unknown_message_fields(*, unknown: List[str], mode: str) -> None:
+    if not MESSAGE_SCHEMA_WARN_UNKNOWN_FIELDS:
+        return
+    if not unknown:
+        return
+    global _msg_schema_unknown_last_warn_ts, _msg_schema_unknown_suppressed, _msg_schema_unknown_last_fields
+    try:
+        fields_key = tuple(sorted(set(str(x) for x in unknown if x)))
+    except Exception:
+        fields_key = None
+    _msg_schema_unknown_suppressed += 1
+    now_ts = time.time()
+    if (now_ts - float(_msg_schema_unknown_last_warn_ts)) < 1.0 and _msg_schema_unknown_last_fields == fields_key:
+        return
+    _msg_schema_unknown_last_warn_ts = float(now_ts)
+    _msg_schema_unknown_last_fields = fields_key
+    n = int(_msg_schema_unknown_suppressed)
+    _msg_schema_unknown_suppressed = 0
+    try:
+        logger.warning(
+            "[MESSAGE SCHEMA] Unknown fields detected (mode={} fields={} count={})",
+            str(mode),
+            list(fields_key or ()),
+            n,
+        )
+    except Exception:
+        pass
+
+
+def _validate_message_payload(payload: Dict[str, Any], *, mode: str) -> Dict[str, Any]:
+    """Validate message payload.
+
+    - Default: strict enabled, reject invalid/missing required fields.
+    - If payload['unsafe']=True and MESSAGE_SCHEMA_ALLOW_UNSAFE is enabled: skip strict validation,
+      but still enforce minimal invariants to keep runtime stable.
+    - Unknown fields: warn (rate-limited) but do not reject.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("message payload must be a dict")
+
+    allowed = {
+        # envelope / runtime fields (not part of SDK schema but present in bus records)
+        "type",
+        "message_id",
+        "time",
+
+        "plugin_id",
+        "source",
+        "description",
+        "priority",
+        "message_type",
+        "content",
+        "binary_data",
+        "binary_url",
+        "metadata",
+        "unsafe",
+    }
+    try:
+        unknown = [k for k in payload.keys() if k not in allowed]
+    except Exception:
+        unknown = []
+    _warn_unknown_message_fields(unknown=unknown, mode=mode)
+
+    unsafe = bool(payload.get("unsafe"))
+    if unsafe and MESSAGE_SCHEMA_ALLOW_UNSAFE:
+        # Minimal invariants (do not allow runtime errors downstream)
+        plugin_id = payload.get("plugin_id")
+        source = payload.get("source")
+        message_type = payload.get("message_type")
+        if not isinstance(plugin_id, str) or not plugin_id:
+            raise ValueError("plugin_id is required")
+        if not isinstance(source, str) or not source:
+            raise ValueError("source is required")
+        if not isinstance(message_type, str) or not message_type:
+            raise ValueError("message_type is required")
+        md = payload.get("metadata")
+        if md is not None and not isinstance(md, dict):
+            raise ValueError("metadata must be a dict")
+        return payload
+
+    if not MESSAGE_SCHEMA_STRICT:
+        return payload
+
+    # Strict path: use Pydantic to validate types + cross-field constraints.
+    data = {
+        "plugin_id": payload.get("plugin_id"),
+        "source": payload.get("source"),
+        "description": payload.get("description", ""),
+        "priority": payload.get("priority", 0),
+        "message_type": payload.get("message_type"),
+        "content": payload.get("content"),
+        "binary_data": payload.get("binary_data"),
+        "binary_url": payload.get("binary_url"),
+        "metadata": payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+        "unsafe": False,
+    }
+    req = PluginPushMessageRequest.model_validate(data)
+    out = req.model_dump()
+    return out
 
 
 def _parse_iso_ts(value: Any) -> Optional[float]:
@@ -138,6 +247,15 @@ def _ingest_normalize_message(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not isinstance(msg, dict):
         return None
     if msg.get("_bus_stored") is True:
+        return None
+    # Validate early to avoid polluting the bus store.
+    try:
+        _ = _validate_message_payload(msg, mode="ingest")
+    except Exception as e:
+        try:
+            logger.warning("[MESSAGE SCHEMA] Dropped invalid message in ingest: {}", e)
+        except Exception:
+            pass
         return None
     out = msg
     if not isinstance(out.get("message_id"), str) or not out.get("message_id"):
@@ -1067,6 +1185,7 @@ def push_message_to_queue(
     binary_data: Optional[bytes] = None,
     binary_url: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
+    unsafe: bool = False,
     mode: str = "unknown",
 ) -> str:
     """
@@ -1088,8 +1207,31 @@ def push_message_to_queue(
         "binary_data": binary_data,
         "binary_url": binary_url,
         "metadata": metadata or {},
+        "unsafe": bool(unsafe),
         "time": now_iso(),
     }
+
+    # Validate schema (strict by default; may be bypassed when unsafe is enabled).
+    try:
+        validated = _validate_message_payload(message, mode=str(mode))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    # Apply validated values back to the stored message to keep bus records consistent.
+    # (Keep envelope fields like type/message_id/time as-is.)
+    try:
+        if isinstance(validated, dict):
+            message["plugin_id"] = validated.get("plugin_id", message.get("plugin_id"))
+            message["source"] = validated.get("source", message.get("source"))
+            message["description"] = validated.get("description", message.get("description"))
+            message["priority"] = validated.get("priority", message.get("priority"))
+            message["message_type"] = validated.get("message_type", message.get("message_type"))
+            message["content"] = validated.get("content", message.get("content"))
+            message["binary_data"] = validated.get("binary_data", message.get("binary_data"))
+            message["binary_url"] = validated.get("binary_url", message.get("binary_url"))
+            message["metadata"] = validated.get("metadata", message.get("metadata")) or {}
+    except Exception:
+        pass
     
     try:
         state.message_queue.put_nowait(message)
