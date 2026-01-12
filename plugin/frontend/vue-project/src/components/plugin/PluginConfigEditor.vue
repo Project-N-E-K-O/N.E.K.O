@@ -519,8 +519,10 @@ async function addProfile() {
     // 重新加载所有配置与 profiles 状态，并选中新建的 profile
     await loadAll()
     await selectProfile(name)
-  } catch {
+  } catch (e: any) {
     // 用户取消或请求失败时忽略，由上层错误提示负责
+    if (e === 'cancel' || e === 'close') return
+    ElMessage.error(e?.message || t('common.error'))
   }
 }
 
@@ -601,6 +603,7 @@ onMounted(loadAll)
 watch(
   () => props.pluginId,
   async (newId, oldId) => {
+    if (!newId) return
     if (hasChanges.value && oldId) {
       try {
         await ElMessageBox.confirm(
@@ -609,7 +612,6 @@ watch(
           { type: 'warning' }
         )
       } catch {
-        return
       }
     }
     await loadAll()

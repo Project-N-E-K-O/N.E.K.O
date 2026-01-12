@@ -8,8 +8,9 @@ import os
 import sys
 import threading
 import time
+import hashlib
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Type
 from multiprocessing import Queue
 from queue import Empty
 
@@ -34,6 +35,18 @@ from plugin.settings import (
     PROCESS_SHUTDOWN_TIMEOUT,
     PROCESS_TERMINATE_TIMEOUT,
 )
+
+
+def _sanitize_plugin_id(raw: Any, max_len: int = 64) -> str:
+    s = str(raw)
+    safe = "".join(c if (c.isalnum() or c in ("-", "_")) else "_" for c in s)
+    safe = safe.strip("_-")
+    if not safe:
+        safe = hashlib.sha256(s.encode("utf-8", errors="ignore")).hexdigest()[:16]
+    if len(safe) > max_len:
+        digest = hashlib.sha256(s.encode("utf-8", errors="ignore")).hexdigest()[:12]
+        safe = f"{safe[:max_len - 13]}_{digest}"
+    return safe
 
 
 def _plugin_process_runner(
@@ -100,18 +113,18 @@ def _plugin_process_runner(
     # 添加控制台输出
     logger.add(
         sys.stdout,
-        format=f"<green>{{time:YYYY-MM-DD HH:mm:ss}}</green> | <level>{{level: <8}}</level> | [Proc-{plugin_id}] <level>{{message}}</level>",
+        format=f"<green>{{time:YYYY-MM-DD HH:mm:ss}}</green> | <level>{{level: <8}}</level> | [Proc-{_sanitize_plugin_id(plugin_id)}] <level>{{message}}</level>",
         level="INFO",
         colorize=True,
     )
     # 添加文件输出（使用项目根目录的log目录）
-    safe_pid = "".join(c if (c.isalnum() or c in ("-", "_")) else "_" for c in str(plugin_id))
+    safe_pid = _sanitize_plugin_id(plugin_id)
     log_dir = project_root / "log" / "plugins" / safe_pid
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / f"{safe_pid}_{time.strftime('%Y%m%d_%H%M%S')}.log"
     logger.add(
         str(log_file),
-        format=f"{{time:YYYY-MM-DD HH:mm:ss}} | {{level: <8}} | [Proc-{plugin_id}] {{message}}",
+        format=f"{{time:YYYY-MM-DD HH:mm:ss}} | {{level: <8}} | [Proc-{safe_pid}] {{message}}",
         level="INFO",
         rotation="10 MB",
         retention=10,
@@ -129,16 +142,16 @@ def _plugin_process_runner(
         logger.info("[Plugin Process] Resolved project_root: {}", project_root)
         logger.info("[Plugin Process] Python path (head): {}", sys.path[:3])
 
-        InterceptHandler = None
+        handler_cls: Optional[Type[logging.Handler]] = None
         try:
-            from utils.logger_config import InterceptHandler as _IH
+            import utils.logger_config as _lc
 
-            InterceptHandler = _IH
+            handler_cls = getattr(_lc, "InterceptHandler", None)
         except Exception:
-            InterceptHandler = None
+            handler_cls = None
 
-        if InterceptHandler is None:
-            class InterceptHandler(logging.Handler):
+        if handler_cls is None:
+            class _InterceptHandler(logging.Handler):
                 def emit(self, record: logging.LogRecord) -> None:
                     try:
                         level = record.levelname
@@ -147,12 +160,14 @@ def _plugin_process_runner(
                     except Exception:
                         pass
 
-        logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
+            handler_cls = _InterceptHandler
+
+        logging.basicConfig(handlers=[handler_cls()], level=0, force=True)
 
         # 显式设置 uvicorn logger，并禁止传播以避免重复
         for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access", "fastapi"):
             logging_logger = logging.getLogger(logger_name)
-            logging_logger.handlers = [InterceptHandler()]
+            logging_logger.handlers = [handler_cls()]
             logging_logger.propagate = False
         
         logger.info("[Plugin Process] Standard logging intercepted and redirected to loguru")
@@ -225,8 +240,10 @@ def _plugin_process_runner(
             if name.startswith("_") and not hasattr(member, EVENT_META_ATTR):
                 continue
             event_meta = getattr(member, EVENT_META_ATTR, None)
-            if not event_meta and hasattr(member, "__wrapped__"):
-                event_meta = getattr(member.__wrapped__, EVENT_META_ATTR, None)
+            if not event_meta:
+                wrapped = getattr(member, "__wrapped__", None)
+                if wrapped is not None:
+                    event_meta = getattr(wrapped, EVENT_META_ATTR, None)
 
             if event_meta:
                 eid = getattr(event_meta, "id", name)
@@ -409,7 +426,7 @@ def _plugin_process_runner(
                             result_container = {"result": None, "exception": None, "done": False}
                             event = threading.Event()
                             
-                            def run_async(method=method, args=args, result_container=result_container, event=event, event_type=event_type, event_id=event_id):
+                            def _run_async_thread(method=method, args=args, result_container=result_container, event=event, event_type=event_type, event_id=event_id):
                                 try:
                                     with ctx._handler_scope(f"{event_type}.{event_id}"):
                                         result_container["result"] = asyncio.run(method(**args))
@@ -419,7 +436,7 @@ def _plugin_process_runner(
                                     result_container["done"] = True
                                     event.set()
                             
-                            thread = threading.Thread(target=run_async, daemon=True)
+                            thread = threading.Thread(target=_run_async_thread, daemon=True)
                             thread.start()
                             
                             # 等待异步方法完成（允许超时）

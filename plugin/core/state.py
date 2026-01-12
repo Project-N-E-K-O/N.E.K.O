@@ -54,6 +54,10 @@ class BusChangeHub:
             try:
                 cb(str(op), dict(payload) if isinstance(payload, dict) else {})
             except Exception:
+                import logging
+                logging.getLogger("user_plugin_server").debug(
+                    f"BusChangeHub callback error for bus={bus}, op={op}", exc_info=True
+                )
                 continue
 
 
@@ -153,7 +157,6 @@ class PluginRuntimeState:
         if self._plugin_comm_queue is None:
             with self._plugin_comm_lock:
                 if self._plugin_comm_queue is None:
-                    import multiprocessing
                     # 使用 multiprocessing.Queue 因为需要跨进程
                     self._plugin_comm_queue = multiprocessing.Queue()
         return self._plugin_comm_queue
@@ -185,7 +188,6 @@ class PluginRuntimeState:
         if self._plugin_response_map is None:
             with self._plugin_comm_lock:
                 if self._plugin_response_map is None:
-                    import multiprocessing
                     # 使用 Manager 创建跨进程共享的字典
                     if self._plugin_response_map_manager is None:
                         self._plugin_response_map_manager = multiprocessing.Manager()
@@ -409,11 +411,8 @@ class PluginRuntimeState:
                 return list(self._message_store)
 
     def message_store_len(self) -> int:
-        try:
+        with self._bus_store_lock:
             return len(self._message_store)
-        except Exception:
-            with self._bus_store_lock:
-                return len(self._message_store)
 
     def iter_message_records_reverse(self):
         with self._bus_store_lock:
@@ -437,11 +436,8 @@ class PluginRuntimeState:
                 return list(self._event_store)
 
     def event_store_len(self) -> int:
-        try:
+        with self._bus_store_lock:
             return len(self._event_store)
-        except Exception:
-            with self._bus_store_lock:
-                return len(self._event_store)
 
     def iter_event_records_reverse(self):
         with self._bus_store_lock:
@@ -465,11 +461,8 @@ class PluginRuntimeState:
                 return list(self._lifecycle_store)
 
     def lifecycle_store_len(self) -> int:
-        try:
+        with self._bus_store_lock:
             return len(self._lifecycle_store)
-        except Exception:
-            with self._bus_store_lock:
-                return len(self._lifecycle_store)
 
     def iter_lifecycle_records_reverse(self):
         with self._bus_store_lock:

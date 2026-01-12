@@ -115,7 +115,7 @@
 
     <template v-else>
       <div class="input-wrap">
-        <el-input v-model="strVal" :disabled="isReadOnly" @input="emitUpdate(strVal)" />
+        <el-input v-model="strVal" :disabled="isReadOnly" @change="emitUpdate(strVal)" />
       </div>
     </template>
   </div>
@@ -215,6 +215,47 @@ function isKeyDeleted(k: string) {
   return !inA && inB
 }
 
+function deepEqual(a: any, b: any, seen?: WeakMap<object, object>): boolean {
+  if (a === b) return true
+  if (a == null || b == null) return a === b
+  const ta = typeof a
+  const tb = typeof b
+  if (ta !== tb) return false
+  if (ta !== 'object') return false
+
+  if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime()
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b)) return false
+    if (a.length !== b.length) return false
+    const s = seen || new WeakMap<object, object>()
+    const existing = s.get(a as object)
+    if (existing) return existing === (b as object)
+    s.set(a as object, b as object)
+    for (let i = 0; i < a.length; i++) {
+      if (!deepEqual(a[i], b[i], s)) return false
+    }
+    return true
+  }
+
+  const s = seen || new WeakMap<object, object>()
+  const existing = s.get(a as object)
+  if (existing) return existing === (b as object)
+  s.set(a as object, b as object)
+
+  const ak = Object.keys(a)
+  const bk = Object.keys(b)
+  if (ak.length !== bk.length) return false
+  ak.sort()
+  bk.sort()
+  for (let i = 0; i < ak.length; i++) {
+    if (ak[i] !== bk[i]) return false
+  }
+  for (const k of ak) {
+    if (!deepEqual(a[k], b[k], s)) return false
+  }
+  return true
+}
+
 function rowClassForKey(k: string) {
   if (kind.value !== 'object') return ''
   const a = props.modelValue && typeof props.modelValue === 'object' ? props.modelValue : {}
@@ -229,7 +270,7 @@ function rowClassForKey(k: string) {
   if (inA && inB) {
     const av = (a as any)[k]
     const bv = (b as any)[k]
-    if (JSON.stringify(av) !== JSON.stringify(bv)) return 'diff-modified'
+    if (!deepEqual(av, bv)) return 'diff-modified'
   }
   return ''
 }
@@ -280,7 +321,7 @@ function restoreObjectKey(k: string) {
 function updateArrayIndex(idx: number, v: any) {
   const a = Array.isArray(props.modelValue) ? [...props.modelValue] : []
   const b = Array.isArray(props.baselineValue) ? props.baselineValue : []
-  while (a.length < idx) a.push(b[a.length])
+  while (a.length < idx) a.push(b[a.length] ?? null)
   if (a.length === idx) a.push(v)
   else a[idx] = v
   emitUpdate(a)
@@ -304,7 +345,7 @@ function rowClassForArrayIndex(idx: number) {
   if (idx < a.length && idx >= b.length) return 'diff-added'
   if (idx >= a.length && idx < b.length) return 'diff-deleted'
   if (idx < a.length && idx < b.length) {
-    if (JSON.stringify(a[idx]) !== JSON.stringify(b[idx])) return 'diff-modified'
+    if (!deepEqual(a[idx], b[idx])) return 'diff-modified'
   }
   return ''
 }
