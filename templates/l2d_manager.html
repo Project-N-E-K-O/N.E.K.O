@@ -1174,17 +1174,18 @@
                                 ? t('live2d.userDocuments', '用户文档')
                                 : t('live2d.localUpload', '本地上传');
                             const displayName = model.name.replace(/\.model3$/i, '');
+                            const safeId = 'model-' + encodeURIComponent(model.name);
                             const item = document.createElement('div');
                             item.className = 'model-item';
 
                             const checkbox = document.createElement('input');
                             checkbox.type = 'checkbox';
-                            checkbox.id = 'model-' + model.name;
+                            checkbox.id = safeId;
                             checkbox.value = model.name;
                             checkbox.setAttribute('data-path', model.path);
 
                             const label = document.createElement('label');
-                            label.setAttribute('for', 'model-' + model.name);
+                            label.setAttribute('for', safeId);
                             label.textContent = displayName;
 
                             const sourceSpan = document.createElement('span');
