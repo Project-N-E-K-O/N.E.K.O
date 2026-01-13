@@ -484,8 +484,8 @@ async def update_catgirl_lighting(name: str, request: Request):
             'main': float(lighting['main']),
             'fill': float(lighting['fill']),
             'rim': float(lighting['rim']),
-            'top': float(lighting.get('top', 0.3)),
-            'bottom': float(lighting.get('bottom', 0.15))
+            'top': float(lighting['top']),
+            'bottom': float(lighting['bottom'])
         }
         logger.info(f"已保存角色 {name} 的打光配置: {characters['猫娘'][name]['lighting']}")
 

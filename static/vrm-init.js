@@ -29,10 +29,13 @@ async function fetchVRMConfig() {
                 // 更新全局配置
                 window.VRM_PATHS = data.paths;
                 window.VRM_PATHS.isLoaded = true;  // 标记已加载
+                return true;
             }
         }
+        return false;
     } catch (error) {
         console.warn('[VRM Init] 无法获取路径配置，使用默认值:', error);
+        return false;
     }
 }
 
@@ -113,12 +116,17 @@ window.convertVRMModelPath = function(modelPath, options = {}) {
     } else {
         // 6. 如果已经是完整路径（以 / 开头），确保格式正确
         modelUrl = modelUrl.replace(/\\/g, '/');
-        // 如果路径不是以用户 VRM 路径或静态 VRM 路径开头，尝试添加用户 VRM 路径前缀
+        // 只重映射单段路径（如 "/file.vrm"），保留多段路径（如 "/custom/models/my.vrm"）
         if (!modelUrl.startsWith(userVrmPath + '/') && !modelUrl.startsWith(staticVrmPath + '/')) {
-            const filename = modelUrl.split('/').pop();
-            if (filename) {
-                modelUrl = `${userVrmPath}/${filename}`;
+            const pathSegments = modelUrl.split('/').filter(Boolean);
+            // 如果是单段路径（只有文件名），重映射到 userVrmPath
+            if (pathSegments.length === 1) {
+                const filename = pathSegments[0];
+                if (filename) {
+                    modelUrl = `${userVrmPath}/${filename}`;
+                }
             }
+            // 否则保留原始绝对路径（多段路径不重映射）
         }
     }
     
@@ -362,6 +370,7 @@ window.checkAndLoadVRM = async function() {
         // 1. 获取当前角色名称
         let currentLanlanName = window.lanlan_config?.lanlan_name;
         if (!currentLanlanName) {
+            console.debug('[VRM Check] 未找到当前角色名称，跳过检查');
             return;
         }
 

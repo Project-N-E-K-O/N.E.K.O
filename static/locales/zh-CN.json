@@ -1019,7 +1019,8 @@
       "sceneNotInitializedForAdd": "场景未初始化。请先调用 initThreeJS() 初始化场景。",
       "animationClipError": "创建动画 Clip 时出错: {{error}}",
       "animationClipNoBones": "动画 Clip 创建失败：没有找到匹配的骨骼",
-      "cannotCreateAnimationAction": "无法创建动画动作"
+      "cannotCreateAnimationAction": "无法创建动画动作",
+      "invalidModelPath": "VRM 模型路径无效: {{path}}"
     },
     "lighting": {
       "title": "VRM打光设置",

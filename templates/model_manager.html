@@ -1099,7 +1099,7 @@
 
                             // 清理VRM管理器
                             if (typeof window.vrmManager.dispose === 'function') {
-                                window.vrmManager.dispose();
+                                await window.vrmManager.dispose();
                             }
 
                             // 清理Three.js渲染器（但不移除canvas，因为后续可能还要用）

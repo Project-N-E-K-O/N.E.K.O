@@ -1019,7 +1019,8 @@
       "sceneNotInitializedForAdd": "Scene not initialized. Please call initThreeJS() to initialize the scene first.",
       "animationClipError": "Error creating animation Clip: {{error}}",
       "animationClipNoBones": "Animation Clip creation failed: no matching bones found",
-      "cannotCreateAnimationAction": "Cannot create animation action"
+      "cannotCreateAnimationAction": "Cannot create animation action",
+      "invalidModelPath": "Invalid VRM model path: {{path}}"
     },
     "lighting": {
       "title": "VRM Lighting Settings",

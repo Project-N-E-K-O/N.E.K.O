@@ -126,7 +126,7 @@ async function initLive2DModel() {
             try {
                 // 如果VRM管理器有清理方法，调用它
                 if (typeof window.vrmManager.dispose === 'function') {
-                    window.vrmManager.dispose();
+                    await window.vrmManager.dispose();
                     console.log('[Live2D Init] 已清理VRM管理器');
                 }
                 // 清理Three.js渲染器

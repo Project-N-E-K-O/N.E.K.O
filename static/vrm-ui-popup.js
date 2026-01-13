@@ -334,13 +334,17 @@ VRMManager.prototype._createSettingsMenuItems = function (popup) {
                     if (this._openSettingsWindows[finalUrl] && !this._openSettingsWindows[finalUrl].closed) {
                         this._openSettingsWindows[finalUrl].focus(); return;
                     }
-                    this.closeAllSettingsWindows();
+                    if (typeof this.closeAllSettingsWindows === 'function') {
+                        this.closeAllSettingsWindows();
+                    }
                     this._openSettingsWindows[finalUrl] = window.open(finalUrl, '_blank', 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no');
                 } else {
                     if (this._openSettingsWindows[finalUrl] && !this._openSettingsWindows[finalUrl].closed) {
                         this._openSettingsWindows[finalUrl].focus(); return;
                     }
-                    this.closeAllSettingsWindows();
+                    if (typeof this.closeAllSettingsWindows === 'function') {
+                        this.closeAllSettingsWindows();
+                    }
                     const newWindow = window.open(finalUrl, '_blank', 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no');
                     if(newWindow) {
                         this._openSettingsWindows[finalUrl] = newWindow;

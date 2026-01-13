@@ -34,9 +34,15 @@ class VRMCore {
      * 检测设备性能模式
      */
     detectPerformanceMode() {
-        const savedMode = localStorage.getItem('vrm_performance_mode');
-        if (savedMode && ['low', 'medium', 'high'].includes(savedMode)) {
-            return savedMode;
+        // 尝试从 localStorage 获取保存的模式（在受限环境中可能抛出异常）
+        let savedMode = null;
+        try {
+            savedMode = localStorage.getItem('vrm_performance_mode');
+            if (savedMode && ['low', 'medium', 'high'].includes(savedMode)) {
+                return savedMode;
+            }
+        } catch (e) {
+            // localStorage 访问失败，继续使用 canvas/feature 检测
         }
         
         try {
@@ -358,12 +364,19 @@ class VRMCore {
         this.manager.scene.add(bottomLight);
         this.manager.bottomLight = bottomLight;
 
-        // 安全的窗口大小调整处理：调用前检查 onWindowResize 是否存在
-        window.addEventListener('resize', () => {
+        // 注册窗口大小调整监听器（使用命名函数，便于后续移除）
+        if (!this.manager._windowEventHandlers) {
+            this.manager._windowEventHandlers = [];
+        }
+        
+        const resizeHandler = () => {
             if (this.manager && typeof this.manager.onWindowResize === 'function') {
                 this.manager.onWindowResize();
             }
-        });
+        };
+        
+        this.manager._windowEventHandlers.push({ event: 'resize', handler: resizeHandler });
+        window.addEventListener('resize', resizeHandler);
     }
 
     /**
@@ -382,7 +395,7 @@ class VRMCore {
             modelUrl === 'null' || 
             (typeof modelUrl === 'string' && (modelUrl.trim() === '' || modelUrl.includes('undefined')))) {
             console.error('[VRM Core] 模型路径无效:', modelUrl, '类型:', typeof modelUrl);
-            const errorMsg = window.t ? window.t('vrm.error.invalidModelPath', 'VRM 模型路径无效') : `VRM 模型路径无效: ${modelUrl}`;
+            const errorMsg = window.t ? window.t('vrm.error.invalidModelPath', { path: modelUrl, defaultValue: `VRM 模型路径无效: ${modelUrl}` }) : `VRM 模型路径无效: ${modelUrl}`;
             throw new Error(errorMsg);
         }
 
@@ -498,6 +511,23 @@ class VRMCore {
                         throw new Error('请求超时');
                     }
                     throw error;
+                }
+                
+                if (!preferencesResponse.ok) {
+                    clearTimeout(timeoutId);
+                    let errorText = '';
+                    try {
+                        const contentType = preferencesResponse.headers.get('content-type');
+                        if (contentType && contentType.includes('application/json')) {
+                            const errorData = await preferencesResponse.json();
+                            errorText = JSON.stringify(errorData);
+                        } else {
+                            errorText = await preferencesResponse.text();
+                        }
+                    } catch (e) {
+                        errorText = preferencesResponse.statusText || '未知错误';
+                    }
+                    throw new Error(`获取偏好设置失败: ${preferencesResponse.status} ${preferencesResponse.statusText}${errorText ? ` - ${errorText}` : ''}`);
                 }
                 
                 const allPreferences = await preferencesResponse.json();
@@ -798,7 +828,7 @@ class VRMCore {
     /**
      * 清理 VRM 资源
      */
-    disposeVRM() {
+    async disposeVRM() {
         if (!this.manager.currentModel || !this.manager.currentModel.vrm) return;
         
         const vrm = this.manager.currentModel.vrm;
@@ -856,53 +886,51 @@ class VRMCore {
         if (vrm.scene) {
             // 使用 VRMUtils.deepDispose 清理场景（推荐方式，更安全且符合库的设计）
             // 这会自动清理所有几何体、材质、贴图等资源
-            (async () => {
-                try {
-                    const VRMUtils = await VRMCore._getVRMUtils();
-                    if (VRMUtils && typeof VRMUtils.deepDispose === 'function') {
-                        VRMUtils.deepDispose(vrm.scene);
-                    } else {
-                        // 如果 VRMUtils 不可用，回退到手动清理
-                        throw new Error('VRMUtils.deepDispose 不可用');
-                    }
-                } catch (error) {
-                    // 如果导入失败，回退到手动清理（兼容性处理）
-                    console.warn('[VRM Core] 无法使用 VRMUtils.deepDispose，回退到手动清理:', error);
-                    // 清理 VRMLookAtQuaternionProxy（如果存在）
-                    const lookAtProxy = vrm.scene.getObjectByName('lookAtQuaternionProxy');
-                    if (lookAtProxy) {
-                        vrm.scene.remove(lookAtProxy);
-                    }
-                    
-                    vrm.scene.traverse((object) => {
-                        if (object.geometry) object.geometry.dispose();
-                        if (object.material) {
-                            if (Array.isArray(object.material)) {
-                                object.material.forEach(m => {
-                                    if (m.map) m.map.dispose();
-                                    if (m.normalMap) m.normalMap.dispose();
-                                    if (m.roughnessMap) m.roughnessMap.dispose();
-                                    if (m.metalnessMap) m.metalnessMap.dispose();
-                                    if (m.emissiveMap) m.emissiveMap.dispose();
-                                    if (m.aoMap) m.aoMap.dispose();
-                                    m.dispose();
-                                });
-                            } else {
-                                if (object.material.map) object.material.map.dispose();
-                                if (object.material.normalMap) object.material.normalMap.dispose();
-                                if (object.material.roughnessMap) object.material.roughnessMap.dispose();
-                                if (object.material.metalnessMap) object.material.metalnessMap.dispose();
-                                if (object.material.emissiveMap) object.material.emissiveMap.dispose();
-                                if (object.material.aoMap) object.material.aoMap.dispose();
-                                object.material.dispose();
-                            }
-                        }
-                    });
+            try {
+                const VRMUtils = await VRMCore._getVRMUtils();
+                if (VRMUtils && typeof VRMUtils.deepDispose === 'function') {
+                    VRMUtils.deepDispose(vrm.scene);
+                } else {
+                    // 如果 VRMUtils 不可用，回退到手动清理
+                    throw new Error('VRMUtils.deepDispose 不可用');
                 }
-            })();
+            } catch (error) {
+                // 如果导入失败，回退到手动清理（兼容性处理）
+                console.warn('[VRM Core] 无法使用 VRMUtils.deepDispose，回退到手动清理:', error);
+                // 清理 VRMLookAtQuaternionProxy（如果存在）
+                const lookAtProxy = vrm.scene.getObjectByName('lookAtQuaternionProxy');
+                if (lookAtProxy) {
+                    vrm.scene.remove(lookAtProxy);
+                }
+                
+                vrm.scene.traverse((object) => {
+                    if (object.geometry) object.geometry.dispose();
+                    if (object.material) {
+                        if (Array.isArray(object.material)) {
+                            object.material.forEach(m => {
+                                if (m.map) m.map.dispose();
+                                if (m.normalMap) m.normalMap.dispose();
+                                if (m.roughnessMap) m.roughnessMap.dispose();
+                                if (m.metalnessMap) m.metalnessMap.dispose();
+                                if (m.emissiveMap) m.emissiveMap.dispose();
+                                if (m.aoMap) m.aoMap.dispose();
+                                m.dispose();
+                            });
+                        } else {
+                            if (object.material.map) object.material.map.dispose();
+                            if (object.material.normalMap) object.material.normalMap.dispose();
+                            if (object.material.roughnessMap) object.material.roughnessMap.dispose();
+                            if (object.material.metalnessMap) object.material.metalnessMap.dispose();
+                            if (object.material.emissiveMap) object.material.emissiveMap.dispose();
+                            if (object.material.aoMap) object.material.aoMap.dispose();
+                            object.material.dispose();
+                        }
+                    }
+                });
+            }
         }
         
-        // 清理 currentModel 引用
+        // 清理 currentModel 引用（在清理完成后才设置为 null）
         this.manager.currentModel = null;
     }
 
@@ -981,6 +1009,23 @@ class VRMCore {
                     throw new Error('请求超时');
                 }
                 throw error;
+            }
+
+            if (!response.ok) {
+                clearTimeout(timeoutId);
+                let errorText = '';
+                try {
+                    const contentType = response.headers.get('content-type');
+                    if (contentType && contentType.includes('application/json')) {
+                        const errorData = await response.json();
+                        errorText = JSON.stringify(errorData);
+                    } else {
+                        errorText = await response.text();
+                    }
+                } catch (e) {
+                    errorText = response.statusText || '未知错误';
+                }
+                throw new Error(`保存偏好设置失败: ${response.status} ${response.statusText}${errorText ? ` - ${errorText}` : ''}`);
             }
 
             const result = await response.json();

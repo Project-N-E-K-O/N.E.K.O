@@ -41,6 +41,13 @@ class VRMManager {
         canvas.height = 64;
         const ctx = canvas.getContext('2d');
         
+        // 检查 ctx 是否为 null（某些环境可能不支持 2d context）
+        if (!ctx) {
+            console.warn('[VRM Manager] 无法获取 2d context，返回透明纹理');
+            // 返回一个透明的 CanvasTexture 作为安全回退
+            return new window.THREE.CanvasTexture(canvas);
+        }
+        
         // 创建径向渐变 (从中心向外)
         const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
         gradient.addColorStop(0, 'rgba(0, 0, 0, 0.6)'); // 中心：黑色，60%透明度
@@ -145,29 +152,30 @@ class VRMManager {
         let shadowY = 0;
         let shadowZ = 0;
         
-        // 优先使用 humanoid 骨骼来精确定位
-        if (result.vrm.humanoid && result.vrm.humanoid.humanBones) {
+        // 优先使用 humanoid 骨骼来精确定位（使用 getNormalizedBoneNode() API 保证 VRM0/VRM1 兼容性）
+        if (result.vrm.humanoid) {
             try {
                 // 优先使用脚趾骨骼（leftToes/rightToes），因为脚部骨骼（leftFoot/rightFoot）在脚踝位置
-                const leftToes = result.vrm.humanoid.humanBones.leftToes;
-                const rightToes = result.vrm.humanoid.humanBones.rightToes;
-                const leftFoot = result.vrm.humanoid.humanBones.leftFoot;
-                const rightFoot = result.vrm.humanoid.humanBones.rightFoot;
+                // 使用 getNormalizedBoneNode() API 来处理 VRM0/VRM1 的骨骼差异
+                const leftToes = result.vrm.humanoid.getNormalizedBoneNode('leftToes');
+                const rightToes = result.vrm.humanoid.getNormalizedBoneNode('rightToes');
+                const leftFoot = result.vrm.humanoid.getNormalizedBoneNode('leftFoot');
+                const rightFoot = result.vrm.humanoid.getNormalizedBoneNode('rightFoot');
                 
                 // 优先使用脚趾骨骼，如果不存在则使用脚部骨骼
-                const leftTargetBone = (leftToes?.node) ? leftToes : leftFoot;
-                const rightTargetBone = (rightToes?.node) ? rightToes : rightFoot;
+                const leftTargetBone = leftToes || leftFoot;
+                const rightTargetBone = rightToes || rightFoot;
                 
-                if (leftTargetBone?.node && rightTargetBone?.node) {
+                if (leftTargetBone && rightTargetBone) {
                     // 更新骨骼矩阵
-                    leftTargetBone.node.updateMatrixWorld(true);
-                    rightTargetBone.node.updateMatrixWorld(true);
+                    leftTargetBone.updateMatrixWorld(true);
+                    rightTargetBone.updateMatrixWorld(true);
                     
                     // 获取两脚的世界位置
                     const leftFootPos = new window.THREE.Vector3();
                     const rightFootPos = new window.THREE.Vector3();
-                    leftTargetBone.node.getWorldPosition(leftFootPos);
-                    rightTargetBone.node.getWorldPosition(rightFootPos);
+                    leftTargetBone.getWorldPosition(leftFootPos);
+                    rightTargetBone.getWorldPosition(rightFootPos);
                     
                     // 如果使用的是脚部骨骼（不是脚趾），需要向下偏移到脚底
                     // 脚部骨骼在脚踝，脚趾骨骼在脚底
@@ -193,12 +201,12 @@ class VRMManager {
                     };
                     
                     // 如果使用的是脚部骨骼，需要向下偏移（估算脚的长度）
-                    if (!leftToes?.node && leftFoot?.node) {
-                        leftBottomY = findLowestY(leftFoot.node, leftFootPos.y);
+                    if (!leftToes && leftFoot) {
+                        leftBottomY = findLowestY(leftFoot, leftFootPos.y);
                     }
                     
-                    if (!rightToes?.node && rightFoot?.node) {
-                        rightBottomY = findLowestY(rightFoot.node, rightFootPos.y);
+                    if (!rightToes && rightFoot) {
+                        rightBottomY = findLowestY(rightFoot, rightFootPos.y);
                     }
                     
                     // 转换为相对于 vrm.scene 的局部坐标
@@ -223,12 +231,12 @@ class VRMManager {
                     }
                 } else {
                     // 如果没有脚部骨骼，尝试使用 hips 骨骼
-                    const hipsBone = result.vrm.humanoid.humanBones.hips;
-                    if (hipsBone?.node) {
-                        hipsBone.node.updateMatrixWorld(true);
+                    const hipsBone = result.vrm.humanoid.getNormalizedBoneNode('hips');
+                    if (hipsBone) {
+                        hipsBone.updateMatrixWorld(true);
                         
                         const hipsPos = new window.THREE.Vector3();
-                        hipsBone.node.getWorldPosition(hipsPos);
+                        hipsBone.getWorldPosition(hipsPos);
                         
                         // 转换为局部坐标
                         result.vrm.scene.updateMatrixWorld(true);
@@ -604,7 +612,7 @@ class VRMManager {
      * 完整清理 VRM 资源（用于模型切换）
      * 包括：取消动画循环、清理模型资源、清理场景/渲染器、重置初始化状态
      */
-    dispose() {
+    async dispose() {
         console.log('[VRM Manager] 开始完整清理 VRM 资源...');
         
         // 1. 取消动画循环（最关键）
@@ -630,7 +638,7 @@ class VRMManager {
         
         // 5. 清理模型资源（调用 core.disposeVRM）
         if (this.core && typeof this.core.disposeVRM === 'function') {
-            this.core.disposeVRM();
+            await this.core.disposeVRM();
         }
         
         // 6. 清理动画模块
@@ -705,14 +713,15 @@ class VRMManager {
         // 11. 清理 UI 元素（浮动按钮、锁图标等）
         if (typeof this.cleanupUI === 'function') {
             this.cleanupUI();
-        } else {
-            // 手动清理 window 事件监听器（如果 cleanupUI 不存在）
-            if (this._windowEventHandlers && this._windowEventHandlers.length > 0) {
-                this._windowEventHandlers.forEach(({ event, handler }) => {
-                    window.removeEventListener(event, handler);
-                });
-                this._windowEventHandlers = [];
-            }
+        }
+        
+        // 清理 window 事件监听器（包括 VRMCore.init() 中注册的 resize 监听器）
+        // 无论 cleanupUI 是否存在，都需要清理 _windowEventHandlers（因为 VRMCore.init() 的 resize 监听器存储在这里）
+        if (this._windowEventHandlers && this._windowEventHandlers.length > 0) {
+            this._windowEventHandlers.forEach(({ event, handler }) => {
+                window.removeEventListener(event, handler);
+            });
+            this._windowEventHandlers = [];
         }
         
         // 12. 重置引用和状态

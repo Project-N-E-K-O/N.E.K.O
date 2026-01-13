@@ -10,7 +10,8 @@ class VRMAnimation {
         this.currentAction = null;
         this.vrmaIsPlaying = false;
         this._loaderPromise = null;
-        this._springBoneTimer = null;
+        this._fadeTimer = null;
+        this._springBoneRestoreTimer = null;
         this.playbackSpeed = 1.0;
         this.skeletonHelper = null;
         this.debug = false;
@@ -21,6 +22,7 @@ class VRMAnimation {
         this.frequencyData = null;
         this._boundsUpdateFrameCounter = 0;
         this._boundsUpdateInterval = 5;
+        this._skinnedMeshes = []; // 缓存的 SkinnedMesh 引用，避免每帧遍历场景
     }
 
     /**
@@ -86,9 +88,9 @@ class VRMAnimation {
                     }
                 }
                 vrm.scene.updateMatrixWorld(true);
-                vrm.scene.traverse((object) => {
-                    if (object.isSkinnedMesh && object.skeleton) {
-                        object.skeleton.update();
+                this._skinnedMeshes.forEach(mesh => {
+                    if (mesh.skeleton) {
+                        mesh.skeleton.update();
                     }
                 });
             }
@@ -338,14 +340,29 @@ class VRMAnimation {
         
         if (vrm.scene) {
             vrm.scene.updateMatrixWorld(true);
-            vrm.scene.traverse((object) => {
-                if (object.isSkinnedMesh && object.skeleton) {
-                    object.skeleton.update();
+            this._skinnedMeshes.forEach(mesh => {
+                if (mesh.skeleton) {
+                    mesh.skeleton.update();
                 }
             });
         }
 
         if (this.debug) this._updateSkeletonHelper();
+    }
+
+    /**
+     * 缓存场景中的 SkinnedMesh 引用，避免每帧遍历场景
+     * @param {Object} vrm - VRM 模型实例
+     */
+    _cacheSkinnedMeshes(vrm) {
+        this._skinnedMeshes = [];
+        if (vrm?.scene) {
+            vrm.scene.traverse((object) => {
+                if (object.isSkinnedMesh && object.skeleton) {
+                    this._skinnedMeshes.push(object);
+                }
+            });
+        }
     }
 
     async playVRMAAnimation(vrmaPath, options = {}) {
@@ -354,6 +371,10 @@ class VRMAnimation {
             const error = new Error('没有加载的 VRM 模型');
             console.error('[VRM Animation]', error.message);
             throw error;
+        }
+
+        if (this._skinnedMeshes.length === 0 || !vrm.scene) {
+            this._cacheSkinnedMeshes(vrm);
         }
 
         try {
@@ -389,26 +410,37 @@ class VRMAnimation {
     }
 
     stopVRMAAnimation() {
-        if (this._springBoneTimer) {
-            clearTimeout(this._springBoneTimer);
-            this._springBoneTimer = null;
+        if (this._fadeTimer) {
+            clearTimeout(this._fadeTimer);
+            this._fadeTimer = null;
+        }
+        if (this._springBoneRestoreTimer) {
+            clearTimeout(this._springBoneRestoreTimer);
+            this._springBoneRestoreTimer = null;
         }
 
         if (this.currentAction) {
             this.currentAction.fadeOut(0.5);
-            this._springBoneTimer = setTimeout(() => {
-                if (this.vrmaMixer) this.vrmaMixer.stopAllAction();
+            
+            this._fadeTimer = setTimeout(() => {
+                if (this.vrmaMixer) {
+                    this.vrmaMixer.stopAllAction();
+                }
                 this.currentAction = null;
                 this.vrmaIsPlaying = false;
-                this._springBoneTimer = setTimeout(() => {
+                this._fadeTimer = null;
+                
+                this._springBoneRestoreTimer = setTimeout(() => {
                     if (this.manager.toggleSpringBone) {
                         this.manager.toggleSpringBone(true);
                     }
-                    this._springBoneTimer = null;
+                    this._springBoneRestoreTimer = null;
                 }, 100);
             }, 500);
         } else {
-            if (this.vrmaMixer) this.vrmaMixer.stopAllAction();
+            if (this.vrmaMixer) {
+                this.vrmaMixer.stopAllAction();
+            }
             this.vrmaIsPlaying = false;
             if (this.manager.toggleSpringBone) {
                 this.manager.toggleSpringBone(true);
@@ -446,7 +478,7 @@ class VRMAnimation {
         if (this.analyser) {
             this.frequencyData = new Uint8Array(this.analyser.frequencyBinCount);
         } else {
-            console.warn('[VRM LipSync] analyser为空，无法启动口型同步');
+            console.debug('[VRM LipSync] analyser为空，口型同步将不可用');
         }
     }
     stopLipSync() {
@@ -525,10 +557,16 @@ class VRMAnimation {
     }
 
     reset() {
-        if (this._springBoneTimer) {
-            clearTimeout(this._springBoneTimer);
-            this._springBoneTimer = null;
+        if (this._fadeTimer) {
+            clearTimeout(this._fadeTimer);
+            this._fadeTimer = null;
         }
+        if (this._springBoneRestoreTimer) {
+            clearTimeout(this._springBoneRestoreTimer);
+            this._springBoneRestoreTimer = null;
+        }
+        
+        this._skinnedMeshes = [];
         
         if (this.vrmaMixer) {
             this.vrmaMixer.stopAllAction();

@@ -1418,7 +1418,7 @@
     <div id="settings-panel" style="display: none;">
         <div class="settings-header">
             <span>⚙️ 系统设置</span>
-            <button class="close-btn" onclick="(function() { const panel = document.querySelector('#settings-panel'); if (panel) { panel.style.display = 'none'; } window.dispatchEvent(new CustomEvent('neko-settings-toggle', { detail: { active: false } })); })()">×</button>
+            <button class="close-btn" id="settings-panel-close-btn">×</button>
         </div>
         <div class="settings-content">
             <p style="color: #ff6b6b; font-weight: bold;">⚠️ 占位 UI - 功能开发中...</p>
@@ -1481,9 +1481,10 @@
             static_vrm: '/static/vrm'
         };
 
-        // 页面启动时加载 VRM 路径配置（在页面配置加载之前）
+        // 异步预热 VRM 路径配置（不阻塞页面加载，因为已同步设置默认值）
         async function loadVRMPathsConfig() {
             // 初始化 window.VRM_PATHS（使用默认值，供 window.convertVRMModelPath 使用）
+            // 注意：这里已经同步设置了默认值，所以后续代码不依赖 await 也能正常工作
             window.VRM_PATHS = window.VRM_PATHS || {
                 user_vrm: '/user_vrm',
                 static_vrm: '/static/vrm',
@@ -1510,7 +1511,7 @@
             }
         }
 
-        // 调用加载函数
+        // 异步预热（不 await，因为已有默认值，不阻塞后续代码）
         loadVRMPathsConfig();
 
         // 异步获取页面配置
@@ -1959,39 +1960,54 @@
                 }
 
                 // 5. 检查当前加载的模型路径（优先使用 _lastLoadedModelPath）
-                const currentModel = window.live2dManager?.getCurrentModel();
                 let currentModelPath = '';
-                
-                // 检查模型是否处于有效状态（可能因窗口关闭导致模型失效）
                 let modelMayBeInvalid = false;
-                if (currentModel) {
-                    // 检查模型是否完整可用
-                    if (!currentModel.internalModel || !currentModel.internalModel.coreModel) {
-                        modelMayBeInvalid = true;
-                    }
-                    // 检查模型是否在舞台上
-                    if (!currentModel.parent) {
+                
+                // 根据模型类型分别判断模型有效性
+                if (modelType === 'vrm') {
+                    // VRM 模型：检查 VRM 管理器的当前模型
+                    const currentVrmModel = window.vrmManager?.currentModel;
+                    if (currentVrmModel) {
+                        // 检查 VRM 模型是否完整可用
+                        if (!currentVrmModel.vrm || !currentVrmModel.vrm.scene) {
+                            modelMayBeInvalid = true;
+                        }
+                        // 检查模型是否在场景中
+                        if (currentVrmModel.vrm?.scene && !currentVrmModel.vrm.scene.parent) {
+                            modelMayBeInvalid = true;
+                        }
+                        // 获取模型路径
+                        if (currentVrmModel.url) {
+                            currentModelPath = currentVrmModel.url;
+                        }
+                    } else {
                         modelMayBeInvalid = true;
                     }
                 } else {
-                    modelMayBeInvalid = true;
-                }
-                
-                if (window.live2dManager?._lastLoadedModelPath) {
-                    currentModelPath = window.live2dManager._lastLoadedModelPath;
-                } else if (currentModel && currentModel.url) {
-                    currentModelPath = currentModel.url;
-                } else if (window.live2dManager?.modelRootPath && window.live2dManager?.modelName) {
-                    currentModelPath = `${window.live2dManager.modelRootPath}/${window.live2dManager.modelName}.model3.json`;
-                }
-                
-                // 对于VRM模型，还需要检查VRM管理器的当前模型
-                if (modelType === 'vrm' && window.vrmManager) {
-                    // VRM模型的路径检查逻辑
-                    // 注意：currentModel 的结构是 { vrm: {...}, gltf: {...}, scene: {...}, url: '...' }
-                    const currentVrmModel = window.vrmManager.currentModel;
-                    if (currentVrmModel && currentVrmModel.url) {
-                        currentModelPath = currentVrmModel.url;
+                    // Live2D 模型：检查 Live2D 管理器的当前模型
+                    const currentModel = window.live2dManager?.getCurrentModel();
+                    if (currentModel) {
+                        // 检查模型是否完整可用
+                        if (!currentModel.internalModel || !currentModel.internalModel.coreModel) {
+                            modelMayBeInvalid = true;
+                        }
+                        // 检查模型是否在舞台上
+                        if (!currentModel.parent) {
+                            modelMayBeInvalid = true;
+                        }
+                        // 获取模型路径
+                        if (currentModel.url) {
+                            currentModelPath = currentModel.url;
+                        }
+                    } else {
+                        modelMayBeInvalid = true;
+                    }
+                    
+                    // Live2D 模型的路径获取（优先使用 _lastLoadedModelPath）
+                    if (!currentModelPath && window.live2dManager?._lastLoadedModelPath) {
+                        currentModelPath = window.live2dManager._lastLoadedModelPath;
+                    } else if (!currentModelPath && window.live2dManager?.modelRootPath && window.live2dManager?.modelName) {
+                        currentModelPath = `${window.live2dManager.modelRootPath}/${window.live2dManager.modelName}.model3.json`;
                     }
                 }
 
@@ -2077,7 +2093,7 @@
                                 // 使用统一的 dispose() 方法进行完整清理
                                 // 这会取消动画循环、清理模型资源、清理场景/渲染器、重置初始化状态
                                 if (typeof window.vrmManager.dispose === 'function') {
-                                    window.vrmManager.dispose();
+                                    await window.vrmManager.dispose();
                                 } else {
                                     // 降级方案：手动清理（如果 dispose 方法不存在）
                                     console.warn('[主页] VRM Manager 没有 dispose 方法，使用降级清理方案');
@@ -2757,6 +2773,19 @@
                 console.error('错误：找不到 id="settings-panel" 的元素！');
             }
         });
+
+        // 处理占位 settings-panel 的关闭按钮（移除 inline onclick，改用事件绑定）
+        const settingsPanelCloseBtn = document.getElementById('settings-panel-close-btn');
+        if (settingsPanelCloseBtn) {
+            settingsPanelCloseBtn.addEventListener('click', () => {
+                const panel = document.getElementById('settings-panel');
+                if (panel) {
+                    panel.style.display = 'none';
+                    // 发送事件通知其他监听器（如果需要）
+                    window.dispatchEvent(new CustomEvent('neko-settings-toggle', { detail: { active: false } }));
+                }
+            });
+        }
     </script>
 </body>
 

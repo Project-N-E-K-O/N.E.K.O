@@ -434,8 +434,10 @@ VRMManager.prototype.setupFloatingButtons = function () {
             return;
         }
         
-        // 使用 core.setLocked() 统一管理锁定状态
-        const newLockedState = !this.interaction.isLocked;
+        // 使用显式的布尔值处理，避免 undefined 导致的意外行为
+        const currentLocked = Boolean(this.interaction?.isLocked);
+        const newLockedState = !currentLocked;
+        
         if (this.core && typeof this.core.setLocked === 'function') {
             // 优先使用 core.setLocked（它会调用 interaction.setLocked）
             this.core.setLocked(newLockedState);
@@ -460,8 +462,8 @@ VRMManager.prototype.setupFloatingButtons = function () {
             }
         }
         
-        // 更新锁图标样式
-        const isLocked = this.interaction.isLocked;
+        // 更新锁图标样式（使用显式的布尔值）
+        const isLocked = Boolean(this.interaction?.isLocked);
         lockIcon.style.backgroundImage = isLocked ? 'url(/static/icons/locked_icon.png)' : 'url(/static/icons/unlocked_icon.png)';
         
         // 获取当前的基础缩放值（如果已设置）
@@ -555,7 +557,10 @@ VRMManager.prototype._startUIUpdateLoop = function() {
 
         // 移动端跳过位置更新，使用 CSS 固定定位
         if (window.isMobileWidth()) {
-            this._uiUpdateLoopId = requestAnimationFrame(update);
+            // 移动端降低更新频率，减少资源消耗
+            setTimeout(() => {
+                this._uiUpdateLoopId = requestAnimationFrame(update);
+            }, 100);
             return;
         }
         
