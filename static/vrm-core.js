@@ -34,7 +34,6 @@ class VRMCore {
      * 检测设备性能模式
      */
     detectPerformanceMode() {
-        // 尝试从 localStorage 获取保存的模式（在受限环境中可能抛出异常）
         let savedMode = null;
         try {
             savedMode = localStorage.getItem('vrm_performance_mode');
@@ -42,7 +41,6 @@ class VRMCore {
                 return savedMode;
             }
         } catch (e) {
-            // localStorage 访问失败，继续使用 canvas/feature 检测
         }
         
         try {
@@ -78,10 +76,6 @@ class VRMCore {
         } catch (e) {
             return 'medium';
         }
-    }
-
-    ensureFloatingButtons() {
-        return;
     }
 
     /**
@@ -204,12 +198,42 @@ class VRMCore {
     /**
      * 初始化场景
      */
-    async init(canvasId, containerId) {
+    /**
+     * 检查 Three.js 依赖是否完整
+     */
+    _ensureThreeReady() {
         const THREE = window.THREE;
         if (!THREE) {
             const errorMsg = window.t ? window.t('vrm.error.threeNotLoaded') : 'Three.js库未加载，请确保已引入three.js';
             throw new Error(errorMsg);
         }
+        
+        const required = [
+            { name: 'WebGLRenderer', obj: THREE.WebGLRenderer },
+            { name: 'Clock', obj: THREE.Clock },
+            { name: 'Scene', obj: THREE.Scene },
+            { name: 'PerspectiveCamera', obj: THREE.PerspectiveCamera },
+            { name: 'PCFSoftShadowMap', obj: THREE.PCFSoftShadowMap }
+        ];
+        
+        const missing = required.filter(item => !item.obj);
+        if (missing.length > 0) {
+            const missingNames = missing.map(item => item.name).join(', ');
+            const errorMsg = window.t 
+                ? window.t('vrm.error.threeIncomplete', { missing: missingNames, defaultValue: `Three.js 依赖不完整，缺少: ${missingNames}` })
+                : `Three.js 依赖不完整，缺少: ${missingNames}`;
+            throw new Error(errorMsg);
+        }
+        
+        // 检查编码相关字段（兼容新旧版本）
+        if (THREE.SRGBColorSpace === undefined && THREE.sRGBEncoding === undefined) {
+            console.warn('[VRM Core] Three.js 版本可能过旧，缺少颜色空间定义');
+        }
+    }
+
+    async init(canvasId, containerId) {
+        this._ensureThreeReady();
+        const THREE = window.THREE;
 
         this.manager.container = document.getElementById(containerId);
         this.manager.canvas = document.getElementById(canvasId);
@@ -272,15 +296,12 @@ class VRMCore {
             // 新 API (r152+)
             this.manager.renderer.outputColorSpace = THREE.SRGBColorSpace;
         } else {
-            // 旧 API (r150 及以下)
             this.manager.renderer.outputEncoding = THREE.sRGBEncoding;
         }
         
-        //  Linear (最稳妥的方案)
         this.manager.renderer.toneMapping = THREE.LinearToneMapping; 
         this.manager.renderer.toneMappingExposure = 1.0;
 
-        // 确保容器和 canvas 可以接收事件
         const canvas = this.manager.renderer.domElement;
         canvas.style.setProperty('pointer-events', 'auto', 'important');
         canvas.style.setProperty('touch-action', 'none', 'important');
@@ -290,15 +311,11 @@ class VRMCore {
         canvas.style.height = '100%';
         canvas.style.display = 'block';
 
-        // 添加轨道控制器
         if (typeof window.OrbitControls !== 'undefined') {
             this.manager.controls = new window.OrbitControls(this.manager.camera, this.manager.renderer.domElement);
-            // 禁用旋转功能，只允许平移
-            // 缩放功能由 VRMInteraction 手动处理，确保功能正常
-            this.manager.controls.enableRotate = false; // 禁用旋转
-            this.manager.controls.enablePan = true; // 允许平移
-            this.manager.controls.enableZoom = false; // 禁用自动缩放，由 VRMInteraction 手动处理
-            // 设置缩放限制
+            this.manager.controls.enableRotate = false;
+            this.manager.controls.enablePan = true;
+            this.manager.controls.enableZoom = false;
             this.manager.controls.minDistance = 0.5;
             this.manager.controls.maxDistance = 10;
             this.manager.controls.target.set(0, 1, 0);
@@ -307,22 +324,14 @@ class VRMCore {
             this.manager.controls.update();
         }
 
-        // 添加灯光 - 参考 vroidhub 等专业 VRM 展示平台的打光策略
         this.manager.scene.add(this.manager.camera);
 
-        // 1. 半球光（HemisphereLight）：模拟天空和地面的自然光照，比 AmbientLight 更自然
-        // 天空色（上方）使用略微冷色调，地面色（下方）使用略微暖色调
-        const hemisphereLight = new THREE.HemisphereLight(
-            0xffffff,  // 天空色（上方）
-            0x444444,  // 地面色（下方）
-            0.4        // 强度
-        );
+        const hemisphereLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.4);
         this.manager.scene.add(hemisphereLight);
-        this.manager.ambientLight = hemisphereLight; // 保持兼容性
+        this.manager.ambientLight = hemisphereLight;
 
-        // 2. 主光源（Key Light）：从正面偏上45度照射，提供主要照明和立体感
         const mainLight = new THREE.DirectionalLight(0xffffff, 1.2);
-        mainLight.position.set(1, 2.5, 2); // 从右上前方45度角照射
+        mainLight.position.set(1, 2.5, 2);
         mainLight.castShadow = true;
         mainLight.shadow.mapSize.width = 2048;
         mainLight.shadow.mapSize.height = 2048;
@@ -336,35 +345,33 @@ class VRMCore {
         this.manager.scene.add(mainLight);
         this.manager.mainLight = mainLight;
 
-        // 3. 补光（Fill Light）：从左侧前方柔和补光，减少阴影对比度
         const fillLight = new THREE.DirectionalLight(0xffffff, 0.5);
-        fillLight.position.set(-2, 1, 1.5); // 从左侧前方柔和照射
+        fillLight.position.set(-2, 1, 1.5);
         fillLight.castShadow = false;
         this.manager.scene.add(fillLight);
         this.manager.fillLight = fillLight;
 
-        // 4. 轮廓光（Rim Light）：从背后上方照射，勾勒头发和身体边缘
         const rimLight = new THREE.DirectionalLight(0xffffff, 0.8);
-        rimLight.position.set(0, 2, -3); // 从背后上方照射
+        rimLight.position.set(0, 2, -3);
         rimLight.castShadow = false;
         this.manager.scene.add(rimLight);
         this.manager.rimLight = rimLight;
 
-        // 5. 顶光（Top Light）：从上方照射，增加头顶和肩部的亮度
         const topLight = new THREE.DirectionalLight(0xffffff, 0.3);
-        topLight.position.set(0, 4, 0); // 从正上方照射
+        topLight.position.set(0, 4, 0);
         topLight.castShadow = false;
         this.manager.scene.add(topLight);
         this.manager.topLight = topLight;
 
-        // 6. 底光（Bottom Light）：从下方轻微照射，减少下巴和颈部的阴影
         const bottomLight = new THREE.DirectionalLight(0xffffff, 0.15);
-        bottomLight.position.set(0, -2, 0.5); // 从下方轻微照射
+        bottomLight.position.set(0, -2, 0.5);
         bottomLight.castShadow = false;
         this.manager.scene.add(bottomLight);
         this.manager.bottomLight = bottomLight;
 
-        // 注册窗口大小调整监听器（使用命名函数，便于后续移除）
+        if (!this.manager._windowEventHandlers) {
+            this.manager._windowEventHandlers = [];
+        }
         if (!this.manager._windowEventHandlers) {
             this.manager._windowEventHandlers = [];
         }
@@ -379,9 +386,6 @@ class VRMCore {
         window.addEventListener('resize', resizeHandler);
     }
 
-    /**
-     * 加载VRM模型
-     */
     async loadModel(modelUrl, options = {}) {
         const THREE = window.THREE;
         if (!THREE) {
@@ -389,7 +393,6 @@ class VRMCore {
             throw new Error(errorMsg);
         }
 
-        // 验证模型路径有效性（防止 undefined 或字符串 "undefined" 被传递）
         if (!modelUrl || 
             modelUrl === 'undefined' || 
             modelUrl === 'null' || 
@@ -400,14 +403,30 @@ class VRMCore {
         }
 
         try {
-            // 使用全局THREE对象（避免动态import问题）
-            const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
-            const VRMLoaderPlugin = (await import('@pixiv/three-vrm')).VRMLoaderPlugin;
+            let GLTFLoader, VRMLoaderPlugin;
+            try {
+                const gltfModule = await import('three/addons/loaders/GLTFLoader.js');
+                GLTFLoader = gltfModule.GLTFLoader;
+            } catch (importError) {
+                const errorMsg = window.t 
+                    ? window.t('vrm.error.gltfLoaderImportFailed', { error: importError.message, defaultValue: `无法导入 GLTFLoader: ${importError.message}` })
+                    : `无法导入 GLTFLoader: ${importError.message}`;
+                throw new Error(errorMsg);
+            }
+            
+            try {
+                const vrmModule = await import('@pixiv/three-vrm');
+                VRMLoaderPlugin = vrmModule.VRMLoaderPlugin;
+            } catch (importError) {
+                const errorMsg = window.t 
+                    ? window.t('vrm.error.vrmLoaderImportFailed', { error: importError.message, defaultValue: `无法导入 VRMLoaderPlugin: ${importError.message}` })
+                    : `无法导入 VRMLoaderPlugin: ${importError.message}`;
+                throw new Error(errorMsg);
+            }
 
             const loader = new GLTFLoader();
             loader.register((parser) => new VRMLoaderPlugin(parser));
 
-            // 辅助函数：加载 GLTF 模型
             const loadGLTF = (url) => {
                 return new Promise((resolve, reject) => {
                     loader.load(
@@ -426,13 +445,11 @@ class VRMCore {
                 });
             };
 
-            // 加载 VRM 模型（带备用路径机制）
             let gltf = null;
             
             try {
                 gltf = await loadGLTF(modelUrl);
             } catch (error) {
-                // 如果加载失败，尝试备用路径
                 let fallbackUrl = null;
                 if (modelUrl.startsWith('/static/vrm/')) {
                     const filename = modelUrl.replace('/static/vrm/', '');
@@ -446,18 +463,18 @@ class VRMCore {
                     console.warn(`[VRM Core] 从 ${modelUrl} 加载失败，尝试备用路径: ${fallbackUrl}`);
                     try {
                         gltf = await loadGLTF(fallbackUrl);
+                        modelUrl = fallbackUrl;
+                        console.log(`[VRM Core] 使用备用路径成功加载: ${modelUrl}`);
                     } catch (fallbackError) {
                         console.error(`[VRM Core] 从备用路径 ${fallbackUrl} 也加载失败:`, fallbackError);
                         const errorMsg = window.t ? window.t('vrm.error.modelLoadFailed', { url: modelUrl, fallback: fallbackUrl }) : `无法加载 VRM 模型: ${modelUrl} 和 ${fallbackUrl} 都失败`;
                         throw new Error(errorMsg);
                     }
                 } else {
-                    // 其他情况，直接抛出原始错误
                     throw error;
                 }
             }
 
-            // 如果已有模型，先移除
             if (this.manager.currentModel && this.manager.currentModel.vrm) {
                 // 清理交互模块的事件监听器
                 if (this.manager.interaction && typeof this.manager.interaction.cleanupDragAndZoom === 'function') {
@@ -470,9 +487,6 @@ class VRMCore {
                 this.manager.scene.remove(this.manager.currentModel.vrm.scene);
                 this.disposeVRM();
             }
-
-            // 确保浮动按钮系统已初始化（如果不存在则创建）
-            this.ensureFloatingButtons();
 
             // 获取 VRM 实例
             const vrm = gltf.userData.vrm;
@@ -532,7 +546,6 @@ class VRMCore {
                 
                 const allPreferences = await preferencesResponse.json();
 
-                // 【修复】API返回的格式可能是数组，也可能是 {models: [...]}
                 let modelsArray = null;
                 if (Array.isArray(allPreferences)) {
                     modelsArray = allPreferences;
@@ -541,29 +554,56 @@ class VRMCore {
                 }
 
                 if (modelsArray && modelsArray.length > 0) {
-                    preferences = modelsArray.find(pref => pref && pref.model_path === modelUrl);
+                    const normalizePath = (path) => {
+                        if (!path || typeof path !== 'string') return '';
+                        // 移除协议和主机
+                        let normalized = path.replace(/^https?:\/\/[^\/]+/, '');
+                        // 移除 /user_vrm/ 或 /static/vrm/ 前缀
+                        normalized = normalized.replace(/^\/(user_vrm|static\/vrm)\//, '/');
+                        return normalized.toLowerCase();
+                    };
+                    
+                    // 辅助函数：提取文件名（路径的最后一部分）
+                    const getFilename = (path) => {
+                        if (!path || typeof path !== 'string') return '';
+                        const parts = path.split('/').filter(Boolean);
+                        return parts.length > 0 ? parts[parts.length - 1].toLowerCase() : '';
+                    };
+                    
+                    const normalizedModelUrl = normalizePath(modelUrl);
+                    const modelFilename = getFilename(modelUrl);
+                    
+                    preferences = modelsArray.find(pref => {
+                        if (!pref || !pref.model_path) return false;
+                        const prefPath = pref.model_path;
+                        
+                        if (prefPath === modelUrl) return true;
+                        
+                        const normalizedPrefPath = normalizePath(prefPath);
+                        if (normalizedPrefPath && normalizedPrefPath === normalizedModelUrl) return true;
+                        
+                        const prefFilename = getFilename(prefPath);
+                        if (modelFilename && prefFilename && prefFilename === modelFilename) return true;
+                        
+                        return false;
+                    });
                 }
             } catch (error) {
                 console.error('[VRM Core] 获取用户偏好设置失败:', error);
             }
 
-            // 根据是否有保存的偏好设置来决定位置、缩放和旋转
             if (preferences) {
-                // 恢复保存的位置（如果有）
                 if (preferences.position) {
                     const pos = preferences.position;
                     if (Number.isFinite(pos.x) && Number.isFinite(pos.y) && Number.isFinite(pos.z)) {
                         vrm.scene.position.set(pos.x, pos.y, pos.z);
                     } else {
-                        // 如果保存的位置无效，使用默认居中位置
                         vrm.scene.position.set(-center.x, -center.y, -center.z);
                     }
                 } else {
-                    // 没有保存的位置，使用默认位置
                     vrm.scene.position.set(-center.x, -center.y, -center.z);
                 }
 
-                // 恢复保存的缩放（如果有）
                 if (preferences.scale) {
                     const scl = preferences.scale;
                     if (Number.isFinite(scl.x) && Number.isFinite(scl.y) && Number.isFinite(scl.z) &&
@@ -572,7 +612,6 @@ class VRMCore {
                     }
                 }
 
-                // 【关键修复】恢复保存的旋转（如果有）- 即使没有position/scale也要应用
                 if (preferences.rotation) {
                     const rot = preferences.rotation;
                     if (Number.isFinite(rot.x) && Number.isFinite(rot.y) && Number.isFinite(rot.z)) {
@@ -583,12 +622,9 @@ class VRMCore {
                     }
                 }
             } else {
-                // 没有保存的偏好设置，使用默认位置
                 vrm.scene.position.set(-center.x, -center.y, -center.z);
             }
 
-            // 检测并处理模型朝向
-            // 等待3帧，确保骨骼位置计算完成
             await new Promise(resolve => {
                 let frameCount = 0;
                 const waitFrames = () => {
@@ -608,11 +644,9 @@ class VRMCore {
                 ? window.VRMOrientationDetector.detectAndFixOrientation(vrm, savedRotation)
                 : { x: 0, y: 0, z: 0 };
             
-            // 应用检测到的旋转（在渲染前处理）
             if (window.VRMOrientationDetector) {
                 window.VRMOrientationDetector.applyRotation(vrm, detectedRotation);
             } else {
-                // 降级处理：如果没有检测模块，使用保存的rotation或默认值
                 if (savedRotation && 
                     Number.isFinite(savedRotation.x) && 
                     Number.isFinite(savedRotation.y) && 
@@ -622,7 +656,6 @@ class VRMCore {
                 }
             }
             
-            // 如果检测到新的rotation（没有保存的），自动保存
             const hasSavedRotation = savedRotation && 
                 Number.isFinite(savedRotation.x) && 
                 Number.isFinite(savedRotation.y) && 
@@ -661,7 +694,6 @@ class VRMCore {
                     };
                 }
                 
-                // 异步保存，不阻塞加载流程
                 this.saveUserPreferences(
                     modelUrl,
                     currentPosition,
@@ -673,14 +705,11 @@ class VRMCore {
                 });
             }
             
-            // 禁用自动面向相机，保持检测到的朝向
             if (this.manager.interaction) {
                 this.manager.interaction.enableFaceCamera = false;
             }
 
-            // 只在没有保存的偏好设置时才计算和应用默认缩放
             if (!preferences || !preferences.scale) {
-                // 设置模型初始缩放
                 if (options.scale) {
                     vrm.scene.scale.set(options.scale.x || 1, options.scale.y || 1, options.scale.z || 1);
                 } else {
@@ -744,9 +773,7 @@ class VRMCore {
                 const fov = this.manager.camera.fov * (Math.PI / 180);
                 const distance = (modelHeight / 2) / Math.tan(fov / 2) / targetScreenHeight * screenHeight;
                 
-                // isMobile 变量在这个作用域没有定义，需要重新定义或直接判断
                 const isMobileDevice = screenWidth <= 768;
-                // 调整相机位置，使模型在屏幕中央合适的位置
                 const cameraY = center.y + (isMobileDevice ? modelHeight * 0.2 : modelHeight * 0.1);
                 const cameraZ = Math.abs(distance);
                 this.manager.camera.position.set(0, cameraY, cameraZ);
@@ -766,37 +793,29 @@ class VRMCore {
             // 优化材质设置（根据性能模式）
             this.optimizeMaterials();
 
-            // 更新控制器目标
             if (this.manager.controls) {
                 this.manager.controls.target.set(0, center.y, 0);
                 this.manager.controls.update();
             }
 
-            // 渲染一次
             if (this.manager.renderer && this.manager.scene && this.manager.camera) {
                 this.manager.renderer.render(this.manager.scene, this.manager.camera);
             }
 
-            // 确保 humanoid 正确更新（防止T-Pose）
             if (vrm.humanoid) {
-                // 确保 autoUpdateHumanBones 已启用
                 if (vrm.humanoid.autoUpdateHumanBones !== undefined && !vrm.humanoid.autoUpdateHumanBones) {
                     vrm.humanoid.autoUpdateHumanBones = true;
                 }
-                // 立即更新一次 humanoid，确保骨骼状态正确
                 vrm.humanoid.update();
             }
 
-            // 创建动画混合器
             this.manager.animationMixer = new THREE.AnimationMixer(vrm.scene);
 
-            // 播放模型自带的动画（如果有）
             if (gltf.animations && gltf.animations.length > 0) {
                 const action = this.manager.animationMixer.clipAction(gltf.animations[0]);
                 action.play();
             }
 
-            // 保存模型引用
             this.manager.currentModel = {
                 vrm: vrm,
                 gltf: gltf,
@@ -804,16 +823,10 @@ class VRMCore {
                 url: modelUrl
             };
 
-            // 更新口型表情映射（如果animation模块存在）
             if (this.manager.animation && typeof this.manager.animation.updateMouthExpressionMapping === 'function') {
                 this.manager.animation.updateMouthExpressionMapping();
             }
 
-            
-
-            // 锁图标由 setupFloatingButtons() 创建，不需要单独设置
-
-            // 启用鼠标跟踪（用于控制浮动按钮显示/隐藏）
             if (this.manager.interaction && typeof this.manager.interaction.enableMouseTracking === 'function') {
                 this.manager.interaction.enableMouseTracking(true);
             }
@@ -825,28 +838,28 @@ class VRMCore {
         }
     }
 
-    /**
-     * 清理 VRM 资源
-     */
     async disposeVRM() {
         if (!this.manager.currentModel || !this.manager.currentModel.vrm) return;
         
         const vrm = this.manager.currentModel.vrm;
         
-        // 清理表情模块的定时器和状态
+        if (vrm.scene && vrm.scene.parent) {
+            vrm.scene.parent.remove(vrm.scene);
+        } else if (this.manager.scene && vrm.scene && this.manager.scene.children.includes(vrm.scene)) {
+            this.manager.scene.remove(vrm.scene);
+        }
+        
         if (this.manager.expression) {
             if (this.manager.expression.neutralReturnTimer) {
                 clearTimeout(this.manager.expression.neutralReturnTimer);
                 this.manager.expression.neutralReturnTimer = null;
             }
-            // 重置表情状态
             this.manager.expression.currentWeights = {};
             this.manager.expression.manualBlinkInProgress = null;
             this.manager.expression.manualExpressionInProgress = null;
             this.manager.expression.currentMood = 'neutral';
         }
         
-        // 清理动画模块的定时器
         if (this.manager.animation) {
             if (this.manager.animation._springBoneTimer) {
                 clearTimeout(this.manager.animation._springBoneTimer);

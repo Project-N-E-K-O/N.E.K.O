@@ -32,27 +32,21 @@ class VRMManager {
         }
         if (!this.interaction && typeof window.VRMInteraction !== 'undefined') this.interaction = new window.VRMInteraction(this);
     }
-    /**
-     * 创建一个圆形渐变纹理 (Blob Shadow)
-     */
     _createBlobShadowTexture() {
         const canvas = document.createElement('canvas');
         canvas.width = 64;
         canvas.height = 64;
         const ctx = canvas.getContext('2d');
         
-        // 检查 ctx 是否为 null（某些环境可能不支持 2d context）
         if (!ctx) {
             console.warn('[VRM Manager] 无法获取 2d context，返回透明纹理');
-            // 返回一个透明的 CanvasTexture 作为安全回退
             return new window.THREE.CanvasTexture(canvas);
         }
         
-        // 创建径向渐变 (从中心向外)
         const gradient = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
-        gradient.addColorStop(0, 'rgba(0, 0, 0, 0.6)'); // 中心：黑色，60%透明度
-        gradient.addColorStop(0.5, 'rgba(0, 0, 0, 0.3)'); // 中间：过渡
-        gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');   // 边缘：完全透明
+        gradient.addColorStop(0, 'rgba(0, 0, 0, 0.6)');
+        gradient.addColorStop(0.5, 'rgba(0, 0, 0, 0.3)');
+        gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
         
         ctx.fillStyle = gradient;
         ctx.fillRect(0, 0, 64, 64);
@@ -61,46 +55,32 @@ class VRMManager {
         return texture;
     }
 
-    /**
-     * 计算并添加模型阴影
-     * 考虑了多种骨骼回退策略（脚趾→脚部→臀部→包围盒）
-     * @param {Object} result - loadModel 返回的结果对象，包含 vrm 实例
-     */
     _calculateAndAddShadow(result) {
-        // 1. 可调节参数
-        const SHADOW_SCALE_MULT = 0.5;     // 大小倍率：数字越大阴影越大
-        const SHADOW_Y_OFFSET = 0.001;      // Y轴偏移：紧贴脚底的微小偏移（防止 Z-fighting）
-        const FIX_CENTER_XZ = true;        // true: 强制阴影在 (0,0); false: 使用骨骼位置
+        const SHADOW_SCALE_MULT = 0.5;
+        const SHADOW_Y_OFFSET = 0.001;
+        const FIX_CENTER_XZ = true;
         
-        // 2. 确保场景矩阵已更新
         result.vrm.scene.updateMatrixWorld(true);
         
-        // 3. 计算身体部分的包围盒（只计算 SkinnedMesh，排除头发、武器等）
         const bodyBox = new window.THREE.Box3();
         let hasBodyMesh = false;
         
         result.vrm.scene.traverse((object) => {
             if (object.isSkinnedMesh) {
-                // 更新对象的世界矩阵
                 object.updateMatrixWorld(true);
-                // 计算该 mesh 的世界包围盒
                 const meshBox = new window.THREE.Box3();
                 meshBox.setFromObject(object);
-                // 合并到总包围盒
                 bodyBox.union(meshBox);
                 hasBodyMesh = true;
             }
         });
         
-        // 如果没找到 SkinnedMesh，使用整个场景的包围盒
         if (!hasBodyMesh) {
             bodyBox.setFromObject(result.vrm.scene);
         }
         
-        // 将 bodyBox 转换为 vrm.scene 的本地空间（用于回退分支）
         result.vrm.scene.updateMatrixWorld(true);
         const sceneInverseMatrix = result.vrm.scene.matrixWorld.clone().invert();
-        // 创建本地空间的包围盒：转换所有8个角点，然后重新计算包围盒
         const worldCorners = [
             new window.THREE.Vector3(bodyBox.min.x, bodyBox.min.y, bodyBox.min.z),
             new window.THREE.Vector3(bodyBox.max.x, bodyBox.min.y, bodyBox.min.z),
@@ -223,6 +203,7 @@ class VRMManager {
                     shadowY = Math.min(leftBottomPos.y, rightBottomPos.y) + SHADOW_Y_OFFSET;
                     
                     // X/Z轴：使用两脚的中点（如果 FIX_CENTER_XZ 为 false）
+                    // 注意：当前 FIX_CENTER_XZ 固定为 true，此分支不会执行，保留用于未来可能的配置需求
                     if (!FIX_CENTER_XZ) {
                         leftFootPos.applyMatrix4(currentSceneInverseMatrix);
                         rightFootPos.applyMatrix4(currentSceneInverseMatrix);
@@ -244,6 +225,7 @@ class VRMManager {
                         hipsPos.applyMatrix4(currentSceneInverseMatrix);
                         
                         // 使用 hips 的 X/Z 位置（如果 FIX_CENTER_XZ 为 false）
+                        // 注意：当前 FIX_CENTER_XZ 固定为 true，此分支不会执行，保留用于未来可能的配置需求
                         if (!FIX_CENTER_XZ) {
                             shadowX = hipsPos.x;
                             shadowZ = hipsPos.z;
@@ -462,7 +444,10 @@ class VRMManager {
 
         if (!this._animationFrameId) this.startAnimateLoop();
 
-        const DEFAULT_LOOP_ANIMATION = '/static/vrm/animation/wait03.vrma';
+        // 获取默认循环动画路径：优先从 options 传入，其次从配置读取，最后使用默认值
+        const DEFAULT_LOOP_ANIMATION = options.idleAnimation || 
+            window.lanlan_config?.vrmIdleAnimation || 
+            '/static/vrm/animation/wait03.vrma';
 
         // 确保 animation 模块已初始化
         if (!this.animation) {
@@ -472,7 +457,6 @@ class VRMManager {
         // 辅助函数：显示模型并淡入画布
         const showAndFadeIn = () => {
             if (this.currentModel?.vrm?.scene) {
-                // 确保 humanoid 已更新（防止T-Pose）
                 if (this.currentModel.vrm.humanoid) {
                     if (this.currentModel.vrm.humanoid.autoUpdateHumanBones !== undefined && !this.currentModel.vrm.humanoid.autoUpdateHumanBones) {
                         this.currentModel.vrm.humanoid.autoUpdateHumanBones = true;
@@ -480,13 +464,10 @@ class VRMManager {
                     this.currentModel.vrm.humanoid.update();
                 }
                 
-                // 强制重置物理骨骼状态
                 if (this.currentModel.vrm.springBoneManager) {
                     this.currentModel.vrm.springBoneManager.reset();
                 }
-                // 先让 3D 物体可见
                 this.currentModel.vrm.scene.visible = true;
-                // 下一帧将画布透明度设为 1，触发 CSS 淡入动画
                 requestAnimationFrame(() => {
                     if (this.renderer && this.renderer.domElement) {
                         this.renderer.domElement.style.opacity = '1';
@@ -502,9 +483,7 @@ class VRMManager {
                 this._retryTimerId = null;
             }
             
-            // 等待 animation 模块初始化（如果还没加载）
             const tryPlayAnimation = async (retries = 10) => {
-                // 检查组件是否仍然有效（防止在重试过程中被销毁）
                 if (!this.currentModel || !this.currentModel.vrm) {
                     if (this._retryTimerId) {
                         clearTimeout(this._retryTimerId);
@@ -515,16 +494,13 @@ class VRMManager {
                 
                 if (!this.animation) {
                     this._initModules();
-                    // 如果 VRMAnimation 类还没加载，等待一下
                     if (!this.animation && typeof window.VRMAnimation === 'undefined') {
                         if (retries > 0) {
-                            // 清除之前的 timer（如果存在）
                             if (this._retryTimerId) {
                                 clearTimeout(this._retryTimerId);
                             }
-                            // 保存新的 timer ID 到实例变量
                             this._retryTimerId = setTimeout(() => {
-                                this._retryTimerId = null; // 执行后清空引用
+                                this._retryTimerId = null;
                                 tryPlayAnimation(retries - 1);
                             }, 100);
                             return;
@@ -537,42 +513,35 @@ class VRMManager {
                     }
                 }
                 
-                // 清除 timer 引用（成功或失败都清除）
                 if (this._retryTimerId) {
                     clearTimeout(this._retryTimerId);
                     this._retryTimerId = null;
                 }
                 
-                // 确保 animation 已初始化
                 if (this.animation) {
                     try {
                         await this.playVRMAAnimation(DEFAULT_LOOP_ANIMATION, { 
                             loop: true,
                             immediate: true 
                         });
-                        // 动画应用成功，执行淡入
                         showAndFadeIn();
                     } catch (err) {
                         console.warn('[VRM Manager] 自动播放失败，强制显示:', err);
                         showAndFadeIn();
                     }
                 } else {
-                    // animation 初始化失败，直接显示
                     console.warn('[VRM Manager] animation 模块初始化失败，跳过自动播放');
                     showAndFadeIn();
                 }
             };
             
-            // 延迟一点确保模型完全加载
             setTimeout(() => {
                 tryPlayAnimation();
             }, 100);
         } else {
-            // 不自动播放，直接淡入
             showAndFadeIn();
         }
         
-        // 设置初始表情
         if (this.expression) {
             this.expression.setMood('neutral'); 
         }
@@ -714,7 +683,12 @@ class VRMManager {
         if (typeof this.cleanupUI === 'function') {
             this.cleanupUI();
         }
-        
+
+        // 11.5. 关闭所有设置窗口并清理定时器（防止定时器泄漏）
+        if (typeof this.closeAllSettingsWindows === 'function') {
+            this.closeAllSettingsWindows();
+        }
+
         // 清理 window 事件监听器（包括 VRMCore.init() 中注册的 resize 监听器）
         // 无论 cleanupUI 是否存在，都需要清理 _windowEventHandlers（因为 VRMCore.init() 的 resize 监听器存储在这里）
         if (this._windowEventHandlers && this._windowEventHandlers.length > 0) {

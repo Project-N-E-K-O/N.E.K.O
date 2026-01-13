@@ -38,7 +38,6 @@ VRMManager.prototype.createPopup = function (buttonId) {
     });
 
     if (buttonId === 'mic') {
-        popup.id = 'vrm-popup-mic';
         popup.setAttribute('data-legacy-id', 'vrm-mic-popup');
     } else if (buttonId === 'agent') {
         this._createAgentPopupContent(popup);
@@ -128,6 +127,7 @@ VRMManager.prototype._createToggleItem = function (toggle, popup) {
     }
 
     const indicator = document.createElement('div');
+    indicator.className = 'vrm-toggle-indicator';
     Object.assign(indicator.style, {
         width: '20px', height: '20px', borderRadius: '50%', border: '2px solid #ccc',
         backgroundColor: 'transparent', cursor: 'pointer', flexShrink: '0', transition: 'all 0.2s ease',
@@ -135,6 +135,7 @@ VRMManager.prototype._createToggleItem = function (toggle, popup) {
     });
 
     const checkmark = document.createElement('div');
+    checkmark.className = 'vrm-toggle-checkmark';
     checkmark.innerHTML = '✓';
     Object.assign(checkmark.style, {
         color: '#fff', fontSize: '13px', fontWeight: 'bold', lineHeight: '1', opacity: '0',
@@ -213,6 +214,7 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
     }
 
     const indicator = document.createElement('div');
+    indicator.className = 'vrm-toggle-indicator';
     Object.assign(indicator.style, {
         width: '20px', height: '20px', borderRadius: '50%', border: '2px solid #ccc',
         backgroundColor: 'transparent', cursor: 'pointer', flexShrink: '0', transition: 'all 0.2s ease',
@@ -220,6 +222,7 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
     });
 
     const checkmark = document.createElement('div');
+    checkmark.className = 'vrm-toggle-checkmark';
     checkmark.innerHTML = '✓';
     Object.assign(checkmark.style, {
         color: '#fff', fontSize: '13px', fontWeight: 'bold', lineHeight: '1', opacity: '0',

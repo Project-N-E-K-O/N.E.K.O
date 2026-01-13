@@ -291,6 +291,8 @@ VRMManager.prototype.setupFloatingButtons = function () {
     // 监听 "请她离开" 事件 (由 app.js 触发)
     // 创建命名处理函数以便追踪和清理
     const goodbyeHandler = () => {
+        // 设置返回状态标志，阻止更新循环显示锁图标和按钮
+        this._isInReturnState = true;
         
         // 1. 隐藏主按钮组
         if (this._floatingButtonsContainer) {
@@ -326,6 +328,8 @@ VRMManager.prototype.setupFloatingButtons = function () {
     // 监听 "请她回来" 事件 (由 app.js 或 vrm 自身触发)
     // 创建命名处理函数以便追踪和清理
     const returnHandler = () => {
+        // 清除返回状态标志，允许更新循环正常显示锁图标和按钮
+        this._isInReturnState = false;
         
         // 1. 隐藏"请她回来"按钮
         if (this._returnButtonContainer) {
@@ -538,11 +542,9 @@ VRMManager.prototype._startUIUpdateLoop = function() {
         }).length;
     };
 
-    // 基准按钮尺寸和工具栏高度（用于计算缩放，与 Live2D 保持一致）
+    // 基准按钮尺寸和间距（用于计算缩放，与 Live2D 保持一致）
     const baseButtonSize = 48;
     const baseGap = 12;
-    const visibleCount = getVisibleButtonCount();
-    const baseToolbarHeight = baseButtonSize * visibleCount + baseGap * (visibleCount - 1);
 
     const update = () => {
         // 检查循环是否已被取消
@@ -555,6 +557,12 @@ VRMManager.prototype._startUIUpdateLoop = function() {
             return;
         }
 
+        // 如果处于返回状态，跳过按钮和锁图标的定位与显示
+        if (this._isInReturnState) {
+            this._uiUpdateLoopId = requestAnimationFrame(update);
+            return;
+        }
+        
         // 移动端跳过位置更新，使用 CSS 固定定位
         if (window.isMobileWidth()) {
             // 移动端降低更新频率，减少资源消耗
@@ -642,6 +650,10 @@ VRMManager.prototype._startUIUpdateLoop = function() {
                 modelScreenHeight = size.y * 0.8; // 估算
             }
 
+            // 重新计算可见按钮数量和基准工具栏高度（响应移动端/桌面端切换）
+            const visibleCount = getVisibleButtonCount();
+            const baseToolbarHeight = baseButtonSize * visibleCount + baseGap * (visibleCount - 1);
+            
             // 计算目标工具栏高度（模型高度的一半，与 Live2D 保持一致）
             const targetToolbarHeight = modelScreenHeight / 2;
 
@@ -706,7 +718,8 @@ VRMManager.prototype._startUIUpdateLoop = function() {
             }
 
             // 更新锁位置（使用与按钮相同的缩放比例）
-            if (lockIcon) {
+            // 只有在非返回状态下才更新锁图标位置和显示
+            if (lockIcon && !this._isInReturnState) {
                 // 获取头部位置用于锁图标定位
                 let headNode = null;
                 if (vrm.humanoid) {
@@ -812,7 +825,7 @@ VRMManager.prototype.setupVRMReturnButtonDrag = function (returnButtonContainer)
     };
 
     returnButtonContainer.addEventListener('mousedown', (e) => {
-        if (e.target === returnButtonContainer || e.target.classList.contains('vrm-return-btn')) {
+        if (returnButtonContainer.contains(e.target)) {
             e.preventDefault(); handleStart(e.clientX, e.clientY);
         }
     });
@@ -831,7 +844,7 @@ VRMManager.prototype.setupVRMReturnButtonDrag = function (returnButtonContainer)
     document.addEventListener('mouseup', this._returnButtonDragHandlers.mouseUp);
     
     returnButtonContainer.addEventListener('touchstart', (e) => {
-        if (e.target === returnButtonContainer || e.target.classList.contains('vrm-return-btn')) {
+        if (returnButtonContainer.contains(e.target)) {
             e.preventDefault(); const touch = e.touches[0]; handleStart(touch.clientX, touch.clientY);
         }
     });

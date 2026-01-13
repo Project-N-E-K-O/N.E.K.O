@@ -237,13 +237,13 @@ class VRMExpression {
                 this.blinkTimer = 0;
             }
         } else if (this.blinkState === 1) {
-            this.blinkWeight += delta * 4.0; // 眨眼速度（降低从12.0到8.0，更自然）
+            this.blinkWeight += delta * 4.0; // 眨眼速度（乘数 4.0，更自然）
             if (this.blinkWeight >= 1.0) {
                 this.blinkWeight = 1.0;
                 this.blinkState = 2;
             }
         } else if (this.blinkState === 2) {
-            this.blinkWeight -= delta * 4.0; // 睁眼速度（降低从10.0到6.0，更自然）
+            this.blinkWeight -= delta * 4.0; // 睁眼速度（乘数 4.0，更自然）
             if (this.blinkWeight <= 0.0) {
                 this.blinkWeight = 0.0;
                 this.blinkState = 0;

@@ -11,10 +11,7 @@ window.VRM_PATHS = {
 // 全局：判断是否为移动端宽度（如果不存在则定义，避免重复定义）
 window.isMobileWidth = window.isMobileWidth || (() => window.innerWidth <= 768);
 
-// 检查是否在模型管理页面（通过路径或特定元素判断）
-// 使用函数形式，在需要时再判断，避免 DOM 未加载时判断不准确
 const isModelManagerPage = () => window.location.pathname.includes('model_manager') || document.querySelector('#vrm-model-select') !== null;
-// 创建全局 VRM 管理器实例（延迟创建，确保所有模块都已加载）
 window.vrmManager = null;
 
 /**
@@ -26,9 +23,25 @@ async function fetchVRMConfig() {
         if (response.ok) {
             const data = await response.json();
             if (data.success && data.paths) {
-                // 更新全局配置
-                window.VRM_PATHS = data.paths;
-                window.VRM_PATHS.isLoaded = true;  // 标记已加载
+                // 合并默认值，提升容错：如果后端忘了带 user_vrm/static_vrm 任一字段，使用默认值
+                const defaultPaths = {
+                    user_vrm: '/user_vrm',
+                    static_vrm: '/static/vrm'
+                };
+                
+                // 确保 VRM_PATHS 已初始化（如果不存在则使用默认值）
+                if (!window.VRM_PATHS) {
+                    window.VRM_PATHS = { ...defaultPaths };
+                }
+                
+                // 合并后端返回的路径配置，保留默认值作为后备
+                window.VRM_PATHS = {
+                    ...defaultPaths,
+                    ...window.VRM_PATHS,  // 保留已有的配置（如果有）
+                    ...data.paths,         // 后端返回的配置（覆盖默认值）
+                    isLoaded: true         // 标记已加载
+                };
+                
                 return true;
             }
         }
@@ -39,16 +52,7 @@ async function fetchVRMConfig() {
     }
 }
 
-/**
- * 统一的 VRM 模型路径转换工具函数
- * 整合所有路径转换逻辑，避免在多处复制导致不一致
- * 
- * @param {string} modelPath - 原始模型路径
- * @param {object} options - 可选配置
- * @param {string} options.defaultPath - 如果路径无效时的默认路径（默认: '/static/vrm/sister1.0.vrm'）
- * @returns {string} 转换后的模型 URL
- */
-window.convertVRMModelPath = function(modelPath, options = {}) {
+window._vrmConvertPath = function(modelPath, options = {}) {
     const defaultPath = options.defaultPath || '/static/vrm/sister1.0.vrm';
     
     // 1. 验证输入路径的有效性
@@ -79,7 +83,6 @@ window.convertVRMModelPath = function(modelPath, options = {}) {
     const userVrmPath = window.VRM_PATHS.user_vrm || '/user_vrm';
     const staticVrmPath = window.VRM_PATHS.static_vrm || '/static/vrm';
     
-    // 2. 处理完整的 HTTP/HTTPS URL
     if (/^https?:\/\//.test(modelUrl)) {
         return modelUrl;
     }
@@ -141,6 +144,16 @@ window.convertVRMModelPath = function(modelPath, options = {}) {
     
     return modelUrl;
 };
+
+// 同时挂载到 window.convertVRMModelPath（保持向后兼容）
+// 但优先使用 _vrmConvertPath 来避免与本地函数的递归问题
+// 只有在 window.convertVRMModelPath 不存在或已经被覆盖时才设置
+if (!window.convertVRMModelPath) {
+    window.convertVRMModelPath = window._vrmConvertPath;
+} else if (window.convertVRMModelPath === window._vrmConvertPath) {
+    // 如果已经是 _vrmConvertPath，保持不变
+    // 这样可以避免覆盖本地函数
+}
 
 function initializeVRMManager() {
     if (window.vrmManager) return;
@@ -333,10 +346,24 @@ async function initVRMModel() {
         // 页面加载时立即应用打光配置
         if (window.lanlan_config && window.lanlan_config.lighting && window.vrmManager) {
             const lighting = window.lanlan_config.lighting;
-            if (window.vrmManager.ambientLight) window.vrmManager.ambientLight.intensity = lighting.ambient;
-            if (window.vrmManager.mainLight) window.vrmManager.mainLight.intensity = lighting.main;
-            if (window.vrmManager.fillLight) window.vrmManager.fillLight.intensity = lighting.fill;
-            if (window.vrmManager.rimLight) window.vrmManager.rimLight.intensity = lighting.rim;
+            if (window.vrmManager.ambientLight && lighting.ambient !== undefined) {
+                window.vrmManager.ambientLight.intensity = lighting.ambient;
+            }
+            if (window.vrmManager.mainLight && lighting.main !== undefined) {
+                window.vrmManager.mainLight.intensity = lighting.main;
+            }
+            if (window.vrmManager.fillLight && lighting.fill !== undefined) {
+                window.vrmManager.fillLight.intensity = lighting.fill;
+            }
+            if (window.vrmManager.rimLight && lighting.rim !== undefined) {
+                window.vrmManager.rimLight.intensity = lighting.rim;
+            }
+            if (window.vrmManager.topLight && lighting.top !== undefined) {
+                window.vrmManager.topLight.intensity = lighting.top;
+            }
+            if (window.vrmManager.bottomLight && lighting.bottom !== undefined) {
+                window.vrmManager.bottomLight.intensity = lighting.bottom;
+            }
         }
 
     } catch (error) {
@@ -427,9 +454,46 @@ window.checkAndLoadVRM = async function() {
             await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
         }
 
-        // 8. 检查是否需要重新加载模型
+        // 8. 检查是否需要重新加载模型（使用规范化比较，避免路径前缀差异导致不必要的重载）
         const currentModelUrl = window.vrmManager.currentModel?.url;
-        const needReload = !currentModelUrl || currentModelUrl !== modelUrl;
+        let needReload = true;
+        
+        if (currentModelUrl) {
+            // 辅助函数：提取文件名（路径的最后一部分，不区分大小写）
+            const getFilename = (path) => {
+                if (!path || typeof path !== 'string') return '';
+                const parts = path.split('/').filter(Boolean);
+                return parts.length > 0 ? parts[parts.length - 1].toLowerCase() : '';
+            };
+            
+            // 辅助函数：规范化路径（移除协议/主机，移除 /user_vrm/ 或 /static/vrm/ 前缀）
+            const normalizePath = (path) => {
+                if (!path || typeof path !== 'string') return '';
+                // 移除协议和主机
+                let normalized = path.replace(/^https?:\/\/[^\/]+/, '');
+                // 移除 /user_vrm/ 或 /static/vrm/ 前缀
+                normalized = normalized.replace(/^\/(user_vrm|static\/vrm)\//, '/');
+                return normalized.toLowerCase();
+            };
+            
+            const currentFilename = getFilename(currentModelUrl);
+            const newFilename = getFilename(modelUrl);
+            
+            // 首先尝试文件名匹配（最宽松，处理路径前缀差异）
+            if (currentFilename && newFilename && currentFilename === newFilename) {
+                needReload = false;
+            } else {
+                // 如果文件名不同，尝试规范化路径匹配
+                const normalizedCurrent = normalizePath(currentModelUrl);
+                const normalizedNew = normalizePath(modelUrl);
+                if (normalizedCurrent && normalizedNew && normalizedCurrent === normalizedNew) {
+                    needReload = false;
+                } else if (currentModelUrl === modelUrl) {
+                    // 最后尝试完整路径精确匹配
+                    needReload = false;
+                }
+            }
+        }
 
         if (needReload) {
             await window.vrmManager.loadModel(modelUrl);
@@ -439,10 +503,24 @@ window.checkAndLoadVRM = async function() {
         const lighting = catgirlConfig.lighting;
         
         if (lighting && window.vrmManager) {
-            if (window.vrmManager.ambientLight) window.vrmManager.ambientLight.intensity = lighting.ambient;
-            if (window.vrmManager.mainLight) window.vrmManager.mainLight.intensity = lighting.main;
-            if (window.vrmManager.fillLight) window.vrmManager.fillLight.intensity = lighting.fill;
-            if (window.vrmManager.rimLight) window.vrmManager.rimLight.intensity = lighting.rim;
+            if (window.vrmManager.ambientLight && lighting.ambient !== undefined) {
+                window.vrmManager.ambientLight.intensity = lighting.ambient;
+            }
+            if (window.vrmManager.mainLight && lighting.main !== undefined) {
+                window.vrmManager.mainLight.intensity = lighting.main;
+            }
+            if (window.vrmManager.fillLight && lighting.fill !== undefined) {
+                window.vrmManager.fillLight.intensity = lighting.fill;
+            }
+            if (window.vrmManager.rimLight && lighting.rim !== undefined) {
+                window.vrmManager.rimLight.intensity = lighting.rim;
+            }
+            if (window.vrmManager.topLight && lighting.top !== undefined) {
+                window.vrmManager.topLight.intensity = lighting.top;
+            }
+            if (window.vrmManager.bottomLight && lighting.bottom !== undefined) {
+                window.vrmManager.bottomLight.intensity = lighting.bottom;
+            }
             
             // 顺便更新一下全局变量，以防万一
             if (window.lanlan_config) window.lanlan_config.lighting = lighting;
