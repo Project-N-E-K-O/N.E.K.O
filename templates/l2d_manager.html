@@ -1157,6 +1157,8 @@
             function showDeleteModelModal() {
                 if (deleteModelModal) {
                     deleteModelModal.classList.add('show');
+                    selectedDeleteModels.clear();
+                    updateConfirmDeleteButton();
                     loadUserModels();
                 }
             }
