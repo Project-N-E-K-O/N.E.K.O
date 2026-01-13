@@ -659,6 +659,9 @@ def _resolve_plugin_id_conflict(
     """
     from plugin.settings import PLUGIN_ENABLE_ID_CONFLICT_CHECK
 
+    _ = entry_point
+    _ = plugin_data
+
     if enable_rename is None:
         enable_rename = bool(PLUGIN_ENABLE_ID_CONFLICT_CHECK)
 

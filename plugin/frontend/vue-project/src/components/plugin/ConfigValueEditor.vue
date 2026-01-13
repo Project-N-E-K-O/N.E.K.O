@@ -321,7 +321,7 @@ function restoreObjectKey(k: string) {
 function updateArrayIndex(idx: number, v: any) {
   const a = Array.isArray(props.modelValue) ? [...props.modelValue] : []
   const b = Array.isArray(props.baselineValue) ? props.baselineValue : []
-  while (a.length < idx) a.push(b[a.length] ?? null)
+  while (a.length < idx) a.push(undefined)
   if (a.length === idx) a.push(v)
   else a[idx] = v
   emitUpdate(a)

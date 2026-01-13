@@ -241,9 +241,21 @@ class PluginRuntimeState:
             ev = mgr.Event()
             try:
                 event_map = self.plugin_response_event_map
-                event_map[rid] = ev
+                try:
+                    stored = event_map.setdefault(rid, ev)
+                    ev = stored if stored is not None else ev
+                except Exception:
+                    event_map[rid] = ev
+                try:
+                    existing = event_map.get(rid)
+                    if existing is not None:
+                        ev = existing
+                except Exception:
+                    pass
             except Exception:
-                pass
+                logging.getLogger("user_plugin_server").debug(
+                    f"Failed to store response event for request_id={rid}", exc_info=True
+                )
             return ev
         except Exception:
             return None
@@ -679,11 +691,9 @@ class PluginRuntimeState:
                     if got is not None:
                         return got
 
-                    # Clear to avoid immediate returns on the next wait() if we woke up spuriously.
-                    try:
-                        per_req_ev.clear()
-                    except Exception:
-                        pass
+                    # If the event is left in a signaled state (e.g. another waiter consumed the response),
+                    # wait() would return immediately and cause a tight loop. Back off briefly.
+                    time.sleep(min(0.01, remaining))
                 except Exception:
                     time.sleep(min(0.01, remaining))
 

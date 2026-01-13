@@ -546,11 +546,6 @@ class LoadTestPlugin(NekoPluginBase):
         root_cfg = self._get_load_test_section(None)
         sec_cfg = self._get_load_test_section("bus_messages_get")
 
-        try:
-            self.ctx.close()
-        except Exception:
-            pass
-
         timeout_cfg = None
         if sec_cfg:
             timeout_cfg = sec_cfg.get("timeout")
@@ -595,6 +590,10 @@ class LoadTestPlugin(NekoPluginBase):
             ),
             build_log_args=_build_log_args,
         )
+        try:
+            self.ctx.close()
+        except Exception:
+            pass
         return ok(data=stats)
 
     @plugin_entry(
@@ -1488,11 +1487,15 @@ class LoadTestPlugin(NekoPluginBase):
                     ]
                 )
 
-            cols = list(zip(*[headers, *rows], strict=True))
+            expected_len = len(headers)
+            if any(len(r) != expected_len for r in rows):
+                raise ValueError("Invalid summary table: row length mismatch")
+
+            cols = list(zip(*[headers, *rows]))
             widths = [max(len(str(x)) for x in col) for col in cols]
 
             def _line(parts: list[str]) -> str:
-                return " | ".join(p.ljust(w) for p, w in zip(parts, widths, strict=True))
+                return " | ".join(p.ljust(w) for p, w in zip(parts, widths))
 
             sep = "-+-".join("-" * w for w in widths)
             table = "\n".join([
