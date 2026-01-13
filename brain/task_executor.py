@@ -5,6 +5,7 @@ DirectTaskExecutor: 合并 Analyzer + Planner 的功能
 优先使用 MCP,其次使用 ComputerUse,最后使用 UserPlugin
 """
 import json
+import re
 import asyncio
 import logging
 from typing import Dict, Any, List, Optional, Tuple, Callable, Awaitable
@@ -74,6 +75,12 @@ class DirectTaskExecutor:
     """
     
     def __init__(self, computer_use: Optional[ComputerUseAdapter] = None):
+        """
+        Initialize the DirectTaskExecutor, setting up MCP router and tool catalog, a ComputerUse adapter, configuration manager, and initial plugin-related state.
+        
+        Parameters:
+            computer_use (Optional[ComputerUseAdapter]): Optional adapter for GUI automation; if omitted a default ComputerUseAdapter is created and used.
+        """
         self.router = McpRouterClient()
         self.catalog = McpToolCatalog(self.router)
         self.computer_use = computer_use or ComputerUseAdapter()
@@ -81,10 +88,18 @@ class DirectTaskExecutor:
         self.plugin_list = []
         self.user_plugin_enabled_default = False
         self._external_plugin_provider: Optional[Callable[[bool], Awaitable[List[Dict[str, Any]]]]] = None
+        self._current_lanlan_name: Optional[str] = None
     
     
     def set_plugin_list_provider(self, provider: Callable[[bool], Awaitable[List[Dict[str, Any]]]]):
-        """Allow agent_server to inject a custom async provider for plugin discovery."""
+        """
+        Register an external asynchronous provider used to discover available user plugins.
+        
+        Parameters:
+            provider (Callable[[bool], Awaitable[List[Dict[str, Any]]]]): An async callable that accepts a single
+                boolean argument `force_refresh` and returns a list of plugin metadata dictionaries. When set,
+                this provider will be used instead of the built-in HTTP-based discovery.
+        """
         self._external_plugin_provider = provider
 
     async def plugin_list_provider(self, force_refresh: bool = True) -> List[Dict[str, Any]]:
@@ -269,7 +284,14 @@ OUTPUT FORMAT (strict JSON):
         cu_available: bool
     ) -> ComputerUseDecision:
         """
-        独立评估 ComputerUse 可行性（专注于 GUI 操作）
+        Assess whether the conversation requires and can be executed via GUI/desktop automation.
+        
+        Parameters:
+            conversation (str): The conversation text to analyze for actionable GUI tasks.
+            cu_available (bool): Whether the ComputerUse adapter is available to perform GUI actions.
+        
+        Returns:
+            ComputerUseDecision: Decision object indicating if a task exists (`has_task`), whether it can be executed via ComputerUse (`can_execute`), a brief `task_description`, and a `reason` explaining the decision.
         """
         if not cu_available:
             return ComputerUseDecision(
@@ -319,7 +341,7 @@ OUTPUT FORMAT (strict JSON):
                         {"role": "user", "content": user_prompt},
                     ],
                     "temperature": 0,
-                    "max_tokens": 400
+                    "max_tokens": 800  # 增加 token 限制, 避免 JSON 被截断
                 }
                 
                 extra_body = get_extra_body(model)
@@ -358,8 +380,23 @@ OUTPUT FORMAT (strict JSON):
     
     async def _assess_user_plugin(self, conversation: str, plugins: Any) -> UserPluginDecision:
         """
-        评估本地用户插件可行性（plugins 为外部传入的插件列表）
-        返回结构与 MCP 决策类似，但包含 plugin_id/plugin_args
+        Determine whether an available user plugin can handle the given conversation and, if so, select the plugin and entry to invoke.
+        
+        Analyzes the provided conversation and the supplied plugins list and returns a UserPluginDecision describing whether a task exists and whether it can be executed via a plugin. When executable, the decision includes the selected plugin_id, the plugin entry_id to invoke, and plugin_args to pass to that entry. If no suitable plugin or entry can be determined, the decision indicates no executable task and provides a reason.
+        
+        Parameters:
+            conversation (str): Full conversation text to evaluate; the last line is treated as the user's intent summary.
+            plugins (Any): Plugin registry or list (e.g., list of dicts or a dict of plugin objects) describing available plugins, their input schemas, and entries.
+        
+        Returns:
+            UserPluginDecision: Decision object with:
+                - has_task: `true` if a relevant task was detected.
+                - can_execute: `true` if a concrete plugin entry and arguments are provided and execution is possible.
+                - task_description: brief description of the identified task.
+                - plugin_id: selected plugin identifier or `None`.
+                - entry_id: selected plugin entry identifier or `None`.
+                - plugin_args: argument object to pass to the plugin entry or `None`.
+                - reason: human-readable explanation when no executable plugin was chosen or to provide context.
         """
         # 如果没有插件，快速返回
         try:
@@ -464,7 +501,7 @@ Return only the JSON object, nothing else.
                         {"role": "user", "content": user_prompt},
                     ],
                     "temperature": 0,
-                    "max_tokens": 400
+                    "max_tokens": 800  # 增加 token 限制, 避免 JSON 被截断
                 }
                 
                 extra_body = get_extra_body(model)
@@ -495,11 +532,47 @@ Return only the JSON object, nothing else.
                     logger.warning("[UserPlugin Assessment] Empty LLM response; cannot parse JSON")
                     return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason="Empty LLM response")
                 
+                # Try to fix common JSON issues before parsing
+                # Remove trailing commas before closing braces/brackets
+                # Fix trailing commas in objects and arrays
+                text = re.sub(r',(\s*[}\]])', r'\1', text)
+                # NOTE: 避免"去注释"误伤字符串内容；只做最小化 JSON 修复
+                # 不删除注释，因为正则表达式会误伤 JSON 字符串中的内容（如 http://、/*...*/）
+                
                 try:
                     decision = json.loads(text)
                 except Exception as e:
-                    logger.exception(f"[UserPlugin Assessment] JSON parse error: {e}; raw_text (truncated): {repr(raw_text)[:2000]}")
-                    return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason=f"JSON parse error: {e}")
+                    # 只在 DEBUG 级别记录 raw_text，避免隐私泄露和日志膨胀
+                    logger.debug(
+                        "[UserPlugin Assessment] JSON parse error; raw_text (truncated): %s",
+                        (repr(raw_text)[:2000] if raw_text is not None else None),
+                    )
+                    # ERROR 级别只记录错误信息，不包含敏感内容
+                    logger.exception("[UserPlugin Assessment] JSON parse error: %s", str(e))
+                    # Try to extract JSON from the text if it's embedded in other text
+                    try:
+                        # Try to find JSON object in the text (improved regex to handle nested objects)
+                        json_match = re.search(r'\{[^{}]*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}[^{}]*)*\}', text)
+                        if json_match:
+                            cleaned_text = json_match.group(0)
+                            # Fix trailing commas again
+                            cleaned_text = re.sub(r',(\s*[}\]])', r'\1', cleaned_text)
+                            decision = json.loads(cleaned_text)
+                            logger.info("[UserPlugin Assessment] Successfully extracted JSON from text")
+                        else:
+                            # JSON extraction failed - return safe default instead of trying to reconstruct
+                            logger.warning("[UserPlugin Assessment] Failed to extract valid JSON from response")
+                            return UserPluginDecision(
+                                has_task=False, 
+                                can_execute=False, 
+                                task_description="", 
+                                plugin_id=None, 
+                                plugin_args=None, 
+                                reason=f"JSON parse error: {e}"
+                            )
+                    except Exception as e2:
+                        logger.warning(f"[UserPlugin Assessment] Failed to extract JSON: {e2}")
+                        return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason=f"JSON parse error: {e}")
                 
                 # return a simple object-like struct, include entry_id if provided by the LLM
                 return UserPluginDecision(
@@ -528,12 +601,24 @@ Return only the JSON object, nothing else.
         agent_flags: Optional[Dict[str, bool]] = None
     ) -> Optional[TaskResult]:
         """
-        并行评估 MCP 和 ComputerUse，然后执行任务
+        Assess available execution methods for a conversation and execute the highest-priority feasible method.
         
-        优先级: MCP > ComputerUse > UserPlugin
+        Performs parallel feasibility assessments for MCP tools, ComputerUse (GUI automation), and user plugins, then selects and runs the highest-priority executable path in the order: MCP > ComputerUse > UserPlugin. If MCP executes, this method returns the execution TaskResult. If ComputerUse is chosen, returns a TaskResult representing the pending ComputerUse task (success set to False). If a UserPlugin is executed, returns its TaskResult. If any task is detected but none are executable, returns a failed TaskResult with a combined reason. Returns None when no task is detected or when all relevant subsystems are disabled.
+        
+        Parameters:
+            messages (List[Dict[str, str]]): Conversation messages to analyze (ordered list of role/text dicts).
+            lanlan_name (Optional[str]): Optional context name injected into plugin triggers for downstream use.
+            agent_flags (Optional[Dict[str, bool]]): Optional feature flags controlling assessments, e.g. {"mcp_enabled": bool, "computer_use_enabled": bool, "user_plugin_enabled": bool}. Missing flags default to disabled.
+        
+        Returns:
+            Optional[TaskResult]: A TaskResult describing the detected/executed task and outcome, or `None` if no task was identified.
         """
         import uuid
         task_id = str(uuid.uuid4())
+
+        # Cache current lanlan_name for downstream user_plugin trigger injection.
+        # This allows plugins to access memory without requiring every caller to manually pass lanlan_name.
+        self._current_lanlan_name = lanlan_name
         
         if agent_flags is None:
             agent_flags = {"mcp_enabled": False, "computer_use_enabled": False}
@@ -667,7 +752,7 @@ Return only the JSON object, nothing else.
             try:
                 return await self._execute_user_plugin(task_id=task_id, up_decision=up_decision)
             except Exception as e:
-                logger.exception(f"[TaskExecutor] UserPlugin execution failed: {e}")
+                logger.exception("[TaskExecutor] UserPlugin execution failed")
                 return TaskResult(
                     task_id=task_id,
                     has_task=True,
@@ -785,8 +870,23 @@ Return only the JSON object, nothing else.
     
     async def _execute_user_plugin(self, task_id: str, up_decision: Any) -> TaskResult:
         """
-        Execute a user plugin via HTTP endpoint or specific plugin_entry.
-        up_decision is expected to have attributes: plugin_id, plugin_args, task_description
+        Execute a user plugin by triggering the local plugin service and return a TaskResult describing the outcome.
+        
+        Parameters:
+            task_id (str): Unique identifier for the task invocation.
+            up_decision (Any): Decision object produced by the assessor; expected attributes include
+                - plugin_id (str): Identifier of the plugin to invoke.
+                - plugin_args (dict): Arguments to pass to the plugin (may include reserved `_ctx`).
+                - task_description (str): Short human-readable description of the task.
+                - entry_id (optional, str): Optional plugin entry identifier to invoke.
+        
+        Returns:
+            TaskResult: A TaskResult representing the trigger outcome.
+                - If the plugin was not resolvable or lookup failed, returns success=False with `error` and `reason`.
+                - If the trigger endpoint accepted the request (2xx), returns success=True, `result` includes
+                  `accepted: True`, `trigger_response` (parsed response or text fallback), and `entry_id` if available.
+                - If the trigger endpoint returned a non-2xx status or an exception occurred, returns success=False
+                  and includes `error`, `result` (status/text when available), `tool_name` (plugin_id), and `tool_args`.
         """
         plugin_id = getattr(up_decision, "plugin_id", None)
         plugin_args = getattr(up_decision, "plugin_args", {}) or {}
@@ -847,17 +947,46 @@ Return only the JSON object, nothing else.
             )
         # Route via /plugin/trigger; use separate top-level entry_id when provided
         trigger_endpoint = f"http://localhost:{USER_PLUGIN_SERVER_PORT}/plugin/trigger"
-        trigger_body = {"task_id": task_id, "plugin_id": plugin_id, "args": plugin_args or {}}
+        safe_args: Dict[str, Any]
+        if isinstance(plugin_args, dict):
+            safe_args = dict(plugin_args)
+        else:
+            safe_args = {}
+
+        # Inject context for plugins (reserved field).
+        # Plugins can read args.get('_ctx', {}).get('lanlan_name') to know which character/session they belong to.
+        try:
+            if self._current_lanlan_name:
+                ctx_obj = safe_args.get("_ctx")
+                if not isinstance(ctx_obj, dict):
+                    ctx_obj = {}
+                if "lanlan_name" not in ctx_obj:
+                    ctx_obj["lanlan_name"] = self._current_lanlan_name
+                safe_args["_ctx"] = ctx_obj
+        except Exception:
+            pass
+
+        trigger_body = {"task_id": task_id, "plugin_id": plugin_id, "args": safe_args}
         if plugin_entry_id:
             trigger_body["entry_id"] = plugin_entry_id
             logger.info("[TaskExecutor] Using explicit plugin_entry_id for trigger: %s", plugin_entry_id)
-        # send trigger (avoid dumping full args at INFO)
+        
+        # 关键日志: 记录准备触发插件
         logger.info(
-            "[TaskExecutor] POST to plugin trigger %s (plugin_id=%s, entry_id=%s, arg_keys=%s)",
-            trigger_endpoint,
+            "[TaskExecutor] Preparing plugin trigger: plugin_id=%s, entry_id=%s, endpoint=%s",
             plugin_id,
             plugin_entry_id,
+            trigger_endpoint,
+        )
+        # 详细参数信息使用 DEBUG
+        logger.debug(
+            "[TaskExecutor] Plugin args: arg_keys=%s, arg_values=%s",
             list(plugin_args.keys()) if isinstance(plugin_args, dict) else str(type(plugin_args)),
+            {k: str(v)[:100] for k, v in plugin_args.items()} if isinstance(plugin_args, dict) else plugin_args,
+        )
+        logger.debug(
+            "[TaskExecutor] Full trigger_body: %s",
+            trigger_body,
         )
         try:
             import httpx
@@ -917,7 +1046,7 @@ Return only the JSON object, nothing else.
                         reason=getattr(up_decision, "reason", "") or "trigger_failed"
                     )
         except Exception as e:
-            logger.exception(f"[TaskExecutor] Trigger call error: {e}")
+            logger.exception("[TaskExecutor] Trigger call error")
             return TaskResult(
                 task_id=task_id,
                 has_task=True,

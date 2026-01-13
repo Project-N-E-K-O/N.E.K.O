@@ -571,7 +571,11 @@ def _sync_preload_modules():
 # Startup 事件：延迟初始化 Steamworks 和全局语言
 @app.on_event("startup")
 async def on_startup():
-    """服务器启动时执行的初始化操作"""
+    """
+    Perform application-level initialization when the server starts.
+    
+    Initializes Steamworks and publishes the instance to shared state, starts a background preload task for audio and translation modules, initializes and mounts the workshop directory, and attempts to set the global language preference (using Steam or system settings). Logs progress and warnings on failure.
+    """
     if _IS_MAIN_PROCESS:
         global steamworks, _preload_task
         logger.info("正在初始化 Steamworks...")
@@ -598,9 +602,42 @@ async def on_startup():
         except Exception as e:
             logger.warning(f"全局语言初始化失败: {e}，将使用默认值")
 
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    """
+    Perform main-process resource cleanup when the server shuts down.
+    
+    If running in the main process, waits up to 1 second for the background preload task to finish and logs cleanup progress.
+    """
+    if _IS_MAIN_PROCESS:
+        logger.info("正在清理资源...")
+        
+        # 等待预加载任务完成（如果还在运行）
+        global _preload_task
+        if _preload_task and not _preload_task.done():
+            try:
+                await asyncio.wait_for(_preload_task, timeout=1.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                logger.debug("预加载任务清理时超时或取消（正常关闭流程）")
+            except Exception:
+                logger.debug("预加载任务清理时出错（正常关闭流程）")
+        
+        logger.info("✅ 资源清理完成")
+
 # 使用 FastAPI 的 app.state 来管理启动配置
 def get_start_config():
-    """从 app.state 获取启动配置"""
+    """
+    Retrieve the server startup configuration from the FastAPI app state.
+    
+    If no configuration is stored on app.state, returns a default dictionary with:
+    - "browser_mode_enabled" (bool): whether browser UI mode is enabled.
+    - "browser_page" (str): initial browser page to open.
+    - "server" (optional): server instance or `None`.
+    
+    Returns:
+        dict: Startup configuration dictionary.
+    """
     if hasattr(app.state, 'start_config'):
         return app.state.start_config
     return {
@@ -802,5 +839,15 @@ if __name__ == "__main__":
     
     try:
         server.run()
+    except KeyboardInterrupt:
+        # Ctrl+C 正常关闭，不显示 traceback
+        logger.info("收到关闭信号（Ctrl+C），正在关闭服务器...")
+    except (asyncio.CancelledError, SystemExit):
+        # 正常的关闭信号
+        logger.info("服务器正在关闭...")
+    except Exception as e:
+        # 真正的错误，显示完整 traceback
+        logger.error(f"服务器运行时发生错误: {e}", exc_info=True)
+        raise
     finally:
         logger.info("服务器已关闭")

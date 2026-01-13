@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
+import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
-import threading
 
 from plugin.settings import (
     STATUS_CONSUMER_SHUTDOWN_TIMEOUT,
@@ -66,21 +66,77 @@ class PluginStatusManager:
 
     def get_plugin_status(self, plugin_id: Optional[str] = None) -> Dict[str, Any]:
         """
-        在进程内获取当前插件运行状态。
-        - plugin_id 为 None：返回 {plugin_id: status, ...}
-        - 否则只返回该插件状态（可能为空 dict）
+        Return an augmented snapshot of current plugin statuses, merging in registered plugins and host liveness.
+        
+        Parameters:
+            plugin_id (Optional[str]): If provided, return only the status for this plugin; if absent, return statuses for all known plugins.
+        
+        Returns:
+            dict: If `plugin_id` is None, a mapping of plugin_id to status objects; otherwise the status object for the specified plugin (a synthetic "stopped" entry if the plugin is unknown).
         """
+        from plugin.core.state import state
         with self._lock:
-            if plugin_id is None:
-                return {pid: s.copy() for pid, s in self._plugin_status.items()}
-            return self._plugin_status.get(plugin_id, {}).copy()
+            cached = {pid: s.copy() for pid, s in self._plugin_status.items()}
+
+        with state.plugin_hosts_lock:
+            plugin_hosts_snapshot = dict(state.plugin_hosts)
+        with state.plugins_lock:
+            registered_plugin_ids = list(state.plugins.keys())
+
+        def _build_synthetic(pid: str, status: str) -> Dict[str, Any]:
+            """
+            Create a synthetic plugin status record for the given plugin ID and status.
+            
+            Parameters:
+                pid (str): Plugin identifier to include in the synthetic record.
+                status (str): Status string to embed under the `status` field.
+            
+            Returns:
+                Dict[str, Any]: A dict with keys:
+                    - `plugin_id`: the provided `pid`
+                    - `status`: an object `{"status": <status>}`
+                    - `updated_at`: current UTC ISO 8601 timestamp with `Z` suffix
+                    - `source`: the literal `"main_process_synthetic"`
+            """
+            return {
+                "plugin_id": pid,
+                "status": {"status": status},
+                "updated_at": _now_iso(),
+                "source": "main_process_synthetic",
+            }
+
+        for pid in registered_plugin_ids:
+            cached.setdefault(pid, _build_synthetic(pid, "stopped"))
+
+        for pid, host in plugin_hosts_snapshot.items():
+            alive = False
+            try:
+                is_alive = getattr(host, "is_alive", None)
+                if callable(is_alive):
+                    alive = bool(is_alive())
+            except Exception as e:
+                self.logger.debug("检查插件 %s 存活状态时出错: %s", pid, e)
+                alive = False
+
+            existing = cached.get(pid)
+            if existing is None or existing.get("source") == "main_process_synthetic":
+                cached[pid] = _build_synthetic(pid, "running" if alive else "crashed")
+
+        if plugin_id is None:
+            return cached
+        return cached.get(plugin_id, _build_synthetic(plugin_id, "stopped"))
 
     async def start_status_consumer(self, plugin_hosts_getter: callable) -> None:
         """
-        启动状态消费任务
+        Start the background task that consumes status messages from plugin hosts.
         
-        Args:
-            plugin_hosts_getter: 返回 plugin_hosts 字典的回调函数
+        Ensures the internal shutdown event exists, stores the provided callable for retrieving
+        the current plugin hosts map, and creates the consumer asyncio Task if one is not already running.
+        
+        Parameters:
+            plugin_hosts_getter (callable): A zero-argument callable that returns the current mapping
+                of plugin_id to host objects; each host is expected to expose the interfaces used by
+                the status consumer to fetch status messages.
         """
         self._ensure_shutdown_event()
         self._plugin_hosts_getter = plugin_hosts_getter

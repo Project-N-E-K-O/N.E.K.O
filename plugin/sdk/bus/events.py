@@ -1,0 +1,416 @@
+from __future__ import annotations
+
+import time
+import uuid
+from dataclasses import dataclass
+from queue import Empty
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
+
+from plugin.core.state import state
+from plugin.settings import BUS_SDK_POLL_INTERVAL_SECONDS
+from .types import BusList, BusOp, BusRecord, GetNode, parse_iso_timestamp
+
+if TYPE_CHECKING:
+    from plugin.core.context import PluginContext
+
+@dataclass(frozen=True)
+class EventRecord(BusRecord):
+    event_id: Optional[str] = None
+    entry_id: Optional[str] = None
+    args: Optional[Dict[str, Any]] = None
+
+    @staticmethod
+    def from_raw(raw: Dict[str, Any]) -> "EventRecord":
+        """
+        Constructs an EventRecord from a raw payload, normalizing common event fields and providing sensible defaults.
+        
+        Parameters:
+        	raw (Dict[str, Any]): Raw event payload or any value; if not a dict it will be wrapped under the `raw` key.
+        
+        Returns:
+        	EventRecord: An EventRecord with kind set to `"event"`. Field normalization:
+        	- `type`: string from `type` or `"EVENT"` when missing.
+        	- `timestamp`: parsed from `timestamp`, `received_at`, or `time` when present.
+        	- `plugin_id`, `source`, `entry_id`, `event_id`: converted to strings when present, otherwise `None`.
+        	- `priority`: integer parsed from `priority`, defaults to `0` on error or when missing.
+        	- `args`: preserved only if a dict, otherwise `None`.
+        	- `content`: string from `content` or fallback to `entry_id`, otherwise `None`.
+        	- `metadata`: dict when present, otherwise an empty dict.
+        	- `raw`: the normalized payload dict used to build the record.
+        """
+        payload = dict(raw) if isinstance(raw, dict) else {"raw": raw}
+
+        ev_type = payload.get("type")
+        ev_type = str(ev_type) if ev_type is not None else "EVENT"
+
+        ts = parse_iso_timestamp(payload.get("timestamp") or payload.get("received_at") or payload.get("time"))
+
+        plugin_id = payload.get("plugin_id")
+        plugin_id = str(plugin_id) if plugin_id is not None else None
+
+        source = payload.get("source")
+        source = str(source) if source is not None else None
+
+        priority = payload.get("priority", 0)
+        try:
+            priority = int(priority)
+        except (ValueError, TypeError):
+            priority = 0
+
+        entry_id = payload.get("entry_id")
+        entry_id = str(entry_id) if entry_id is not None else None
+
+        event_id = payload.get("trace_id") or payload.get("event_id")
+        event_id = str(event_id) if event_id is not None else None
+
+        args = payload.get("args")
+        if not isinstance(args, dict):
+            args = None
+
+        content = payload.get("content")
+        if content is None and entry_id:
+            content = entry_id
+        content = str(content) if content is not None else None
+
+        metadata = payload.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        return EventRecord(
+            kind="event",
+            type=str(ev_type),
+            timestamp=ts,
+            plugin_id=plugin_id,
+            source=source,
+            priority=priority,
+            content=content,
+            metadata=metadata,
+            raw=payload,
+            event_id=event_id,
+            entry_id=entry_id,
+            args=args,
+        )
+
+    def dump(self) -> Dict[str, Any]:
+        """
+        Return a dictionary representation of the record including event-specific fields.
+        
+        The resulting dict is based on the superclass dump and is extended with `event_id`, `entry_id`, and `args`. If `args` is a dict, a shallow copy is used.
+        
+        Returns:
+            dict: Serialized record with keys from the base dump plus `event_id`, `entry_id`, and `args`.
+        """
+        base = super().dump()
+        base["event_id"] = self.event_id
+        base["entry_id"] = self.entry_id
+        base["args"] = dict(self.args) if isinstance(self.args, dict) else self.args
+        return base
+
+
+class EventList(BusList[EventRecord]):
+    def __init__(
+        self,
+        items: Sequence[EventRecord],
+        *,
+        plugin_id: Optional[str] = None,
+        ctx: Optional[Any] = None,
+        trace: Optional[Sequence[BusOp]] = None,
+        plan: Optional[Any] = None,
+        fast_mode: bool = False,
+    ):
+        """
+        Create an EventList container for EventRecord items with optional plugin scope and context.
+        
+        Parameters:
+            items: Sequence of EventRecord items to include in the list.
+            plugin_id: Optional plugin identifier that scopes the events; use "*" to indicate multiple plugins.
+            ctx: Optional plugin execution context to attach to the list for downstream operations.
+            trace: Optional sequence of BusOp entries used for tracing the operation that produced this list.
+            plan: Optional planning/metadata object associated with this list.
+            fast_mode: When True, indicates the list was produced or should be processed in a fast-path mode.
+        """
+        super().__init__(items, ctx=ctx, trace=trace, plan=plan, fast_mode=fast_mode)
+        self.plugin_id = plugin_id
+
+    def merge(self, other: "BusList[EventRecord]") -> "EventList":
+        """
+        Merge this EventList with another and return a new EventList containing the combined records.
+        
+        Parameters:
+            other (BusList[EventRecord]): The other list to merge; its plugin_id is compared to determine the resulting plugin scope.
+        
+        Returns:
+            EventList: A new EventList with records from both lists. The returned list's `plugin_id` is the same as the inputs when both share an identical `plugin_id`; otherwise it is "*". Context, trace, plan, and fast_mode are preserved from the merged result.
+        """
+        merged = super().merge(other)
+        other_pid = getattr(other, "plugin_id", None)
+        pid = self.plugin_id if self.plugin_id == other_pid else "*"
+        return EventList(
+            merged.dump_records(),
+            plugin_id=pid,
+            ctx=getattr(merged, "_ctx", None),
+            trace=merged.trace,
+            plan=getattr(merged, "_plan", None),
+            fast_mode=merged.fast_mode,
+        )
+
+    def __add__(self, other: "BusList[EventRecord]") -> "EventList":
+        """
+        Merge this EventList with another EventList and return the combined result.
+        
+        Parameters:
+            other (BusList[EventRecord]): The EventList to merge with this instance.
+        
+        Returns:
+            EventList: A new EventList containing the merged records and combined metadata.
+        """
+        return self.merge(other)
+
+
+
+@dataclass
+class EventClient:
+    ctx: "PluginContext"
+
+    def get(
+        self,
+        plugin_id: Optional[str] = None,
+        max_count: int = 50,
+        filter: Optional[Dict[str, Any]] = None,
+        strict: bool = True,
+        since_ts: Optional[float] = None,
+        timeout: float = 5.0,
+    ) -> EventList:
+        """
+        Retrieve events from the bus for a plugin scope and return them as an EventList.
+        
+        Parameters:
+            plugin_id (Optional[str]): Plugin id to scope results to; None uses the current plugin, "*" requests all plugins.
+            max_count (int): Maximum number of events to return.
+            filter (Optional[Dict[str, Any]]): Optional filter dictionary to narrow returned events.
+            strict (bool): If true, apply the filter strictly when selecting events.
+            since_ts (Optional[float]): Only return events with timestamp >= this POSIX seconds value.
+            timeout (float): Maximum time in seconds to wait for a response.
+        
+        Returns:
+            EventList: List of EventRecord objects matching the request, annotated with the effective plugin_id, tracing, and plan metadata.
+        
+        Raises:
+            RuntimeError: If the plugin communication queue is unavailable or an invalid/error response is received.
+            TimeoutError: If the request times out while waiting for a response.
+        """
+        if hasattr(self.ctx, "_enforce_sync_call_policy"):
+            self.ctx._enforce_sync_call_policy("bus.events.get")
+
+        zmq_client = getattr(self.ctx, "_zmq_ipc_client", None)
+
+        plugin_comm_queue = getattr(self.ctx, "_plugin_comm_queue", None)
+        if plugin_comm_queue is None:
+            raise RuntimeError(
+                f"Plugin communication queue not available for plugin {getattr(self.ctx, 'plugin_id', 'unknown')}. "
+                "This method can only be called from within a plugin process."
+            )
+
+        req_id = str(uuid.uuid4())
+        pid_norm: Optional[str]
+        if isinstance(plugin_id, str):
+            pid_norm = plugin_id.strip()
+        else:
+            pid_norm = None
+        if pid_norm == "":
+            pid_norm = None
+
+        request = {
+            "type": "EVENT_GET",
+            "from_plugin": getattr(self.ctx, "plugin_id", ""),
+            "request_id": req_id,
+            "plugin_id": pid_norm,
+            "max_count": int(max_count),
+            "filter": dict(filter) if isinstance(filter, dict) else None,
+            "strict": bool(strict),
+            "since_ts": float(since_ts) if since_ts is not None else None,
+            "timeout": float(timeout),
+        }
+
+        if zmq_client is not None:
+            try:
+                resp = zmq_client.request(request, timeout=float(timeout))
+                if isinstance(resp, dict):
+                    response = resp
+                else:
+                    response = None
+            except Exception:
+                response = None
+            if response is None:
+                if hasattr(self.ctx, "logger"):
+                    try:
+                        self.ctx.logger.warning("[bus.events.get] ZeroMQ IPC failed; raising exception (no fallback)")
+                    except Exception:
+                        pass
+                raise TimeoutError(f"EVENT_GET over ZeroMQ timed out or failed after {timeout}s")
+        else:
+            try:
+                plugin_comm_queue.put(request, timeout=timeout)
+            except Exception as e:
+                raise RuntimeError(f"Failed to send EVENT_GET request: {e}") from e
+
+            response = None
+        resp_q = getattr(self.ctx, "_response_queue", None)
+        pending = getattr(self.ctx, "_response_pending", None)
+        if pending is None:
+            try:
+                pending = {}
+                setattr(self.ctx, "_response_pending", pending)
+            except Exception:
+                pending = None
+        if pending is not None:
+            try:
+                cached = pending.pop(req_id, None)
+            except Exception:
+                cached = None
+            if isinstance(cached, dict):
+                response = cached
+        if response is None and resp_q is not None:
+            deadline = time.time() + max(0.0, float(timeout))
+            while True:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    break
+                try:
+                    item = resp_q.get(timeout=remaining)
+                except Empty:
+                    break
+                except Exception:
+                    break
+                if not isinstance(item, dict):
+                    continue
+                rid = item.get("request_id")
+                if rid == req_id:
+                    response = item
+                    break
+                if isinstance(rid, str) and pending is not None:
+                    try:
+                        if len(pending) > 1024:
+                            pending.clear()
+                        pending[rid] = item
+                    except Exception:
+                        pass
+        if response is None:
+            response = state.wait_for_plugin_response(req_id, timeout)
+        if response is None:
+            raise TimeoutError(f"EVENT_GET timed out after {timeout}s")
+        if not isinstance(response, dict):
+            raise RuntimeError("Invalid EVENT_GET response")
+        if response.get("error"):
+            raise RuntimeError(str(response.get("error")))
+
+        events: List[Any] = []
+        result = response.get("result")
+        if isinstance(result, dict):
+            evs = result.get("events")
+            if isinstance(evs, list):
+                events = evs
+            else:
+                events = []
+        elif isinstance(result, list):
+            events = result
+        else:
+            events = []
+
+        records: List[EventRecord] = []
+        for item in events:
+            if isinstance(item, dict):
+                records.append(EventRecord.from_raw(item))
+            else:
+                records.append(EventRecord.from_raw({"raw": item}))
+
+        get_params = {
+            "plugin_id": pid_norm,
+            "max_count": max_count,
+            "filter": dict(filter) if isinstance(filter, dict) else None,
+            "strict": bool(strict),
+            "since_ts": since_ts,
+            "timeout": timeout,
+        }
+        trace = [BusOp(name="get", params=dict(get_params), at=time.time())]
+        plan = GetNode(op="get", params={"bus": "events", "params": dict(get_params)}, at=time.time())
+        if pid_norm == "*":
+            effective_plugin_id = "*"
+        else:
+            effective_plugin_id = pid_norm if pid_norm else getattr(self.ctx, "plugin_id", None)
+        return EventList(records, plugin_id=effective_plugin_id, ctx=self.ctx, trace=trace, plan=plan)
+
+    def delete(self, event_id: str, timeout: float = 5.0) -> bool:
+        """
+        Request deletion of a bus event identified by `event_id` and return whether it was deleted.
+        
+        Parameters:
+            event_id (str): The identifier of the event to delete; must be a non-empty string.
+            timeout (float): Maximum time in seconds to wait for a deletion response.
+        
+        Returns:
+            True if the event was deleted, False otherwise.
+        
+        Raises:
+            ValueError: If `event_id` is empty.
+            RuntimeError: If the plugin communication queue is unavailable, sending the request fails, or an invalid/error response is received.
+            TimeoutError: If no response is received within `timeout` seconds.
+        """
+        if hasattr(self.ctx, "_enforce_sync_call_policy"):
+            self.ctx._enforce_sync_call_policy("bus.events.delete")
+
+        zmq_client = getattr(self.ctx, "_zmq_ipc_client", None)
+
+        plugin_comm_queue = getattr(self.ctx, "_plugin_comm_queue", None)
+        if plugin_comm_queue is None:
+            raise RuntimeError(
+                f"Plugin communication queue not available for plugin {getattr(self.ctx, 'plugin_id', 'unknown')}. "
+                "This method can only be called from within a plugin process."
+            )
+
+        eid = str(event_id).strip() if event_id is not None else ""
+        if not eid:
+            raise ValueError("event_id is required")
+
+        req_id = str(uuid.uuid4())
+        request = {
+            "type": "EVENT_DEL",
+            "from_plugin": getattr(self.ctx, "plugin_id", ""),
+            "request_id": req_id,
+            "event_id": eid,
+            "timeout": float(timeout),
+        }
+
+        if zmq_client is not None:
+            response = None
+            try:
+                resp = zmq_client.request(request, timeout=float(timeout))
+                if isinstance(resp, dict):
+                    response = resp
+            except Exception:
+                response = None
+            if response is None:
+                if hasattr(self.ctx, "logger"):
+                    try:
+                        self.ctx.logger.warning("[bus.events.delete] ZeroMQ IPC failed; raising exception (no fallback)")
+                    except Exception:
+                        pass
+                raise TimeoutError(f"EVENT_DEL over ZeroMQ timed out or failed after {timeout}s")
+        else:
+            try:
+                plugin_comm_queue.put(request, timeout=timeout)
+            except Exception as e:
+                raise RuntimeError(f"Failed to send EVENT_DEL request: {e}") from e
+
+            response = state.wait_for_plugin_response(req_id, timeout)
+        if response is None:
+            raise TimeoutError(f"EVENT_DEL timed out after {timeout}s")
+        if not isinstance(response, dict):
+            raise RuntimeError("Invalid EVENT_DEL response")
+        if response.get("error"):
+            raise RuntimeError(str(response.get("error")))
+
+        result = response.get("result")
+        if isinstance(result, dict):
+            return bool(result.get("deleted"))
+        return False

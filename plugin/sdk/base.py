@@ -3,11 +3,12 @@
 
 提供插件开发的基础类和接口。
 """
-import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import TYPE_CHECKING, Optional, Dict, Any, List
 from .events import EventHandler, EventMeta, EVENT_META_ATTR
+from .config import PluginConfig
+from .plugins import Plugins
 from .version import SDK_VERSION
 from plugin.settings import (
     NEKO_PLUGIN_META_ATTR, 
@@ -17,6 +18,9 @@ from plugin.settings import (
     PLUGIN_LOG_BACKUP_COUNT,
     PLUGIN_LOG_MAX_FILES,
 )
+
+if TYPE_CHECKING:
+    from plugin.core.context import PluginContext
 
 
 @dataclass
@@ -36,12 +40,27 @@ class PluginMeta:
 class NekoPluginBase:
     """插件都继承这个基类."""
     
-    def __init__(self, ctx: Any):
-        self.ctx = ctx
+    def __init__(self, ctx: "PluginContext"):
+        """
+        Initialize the plugin base with the given plugin context and construct common plugin helpers.
+        
+        Parameters:
+            ctx (PluginContext): The plugin's execution context providing runtime services and metadata.
+                Stored on the instance as `self.ctx`; `plugin_id` is derived from it (defaults to "unknown")
+                and used to construct `self.config` (PluginConfig) and `self.plugins` (Plugins).
+        """
+        self.ctx: "PluginContext" = ctx
         self._plugin_id = getattr(ctx, "plugin_id", "unknown")
+        self.config = PluginConfig(ctx)
+        self.plugins = Plugins(ctx)
 
     def get_input_schema(self) -> Dict[str, Any]:
-        """默认从类属性 input_schema 取."""
+        """
+        Retrieve the plugin input schema from the instance.
+        
+        Returns:
+            A dictionary of the input schema defined on the instance (`self.input_schema`) or an empty dict if no schema is set.
+        """
         schema = getattr(self, "input_schema", None)
         return schema or {}
 
@@ -68,11 +87,15 @@ class NekoPluginBase:
     
     def report_status(self, status: Dict[str, Any]) -> None:
         """
-        插件内部调用此方法上报状态。
-        通过 ctx.update_status 把状态发回主进程。
+        Report plugin status to the host.
+        
+        If the plugin context supports status updates, sends the provided status payload to the host. If the context does not support updates, attempts to issue a warning via the context's logger.
+        
+        Parameters:
+            status (Dict[str, Any]): Arbitrary status data to report to the host.
         """
         if hasattr(self.ctx, "update_status"):
-            # ✅ 这里只传原始 status，由 Context 负责打包成队列消息
+            # 这里只传原始 status，由 Context 负责打包成队列消息
             self.ctx.update_status(status)
         else:
             logger = getattr(self.ctx, "logger", None)
@@ -83,44 +106,22 @@ class NekoPluginBase:
     
     def enable_file_logging(
         self,
-        log_level: Optional[int] = None,
+        log_level: Optional[str] = None,
         max_bytes: Optional[int] = None,
         backup_count: Optional[int] = None,
         max_files: Optional[int] = None,
-    ) -> logging.Logger:
+    ) -> Any:
         """
-        启用插件文件日志功能
+        Enable per-plugin file logging and console output, creating rotated log files under the plugin's logs directory.
         
-        为插件创建独立的文件日志，日志文件保存在插件的logs目录下。
-        日志会同时输出到文件和控制台（终端）。
-        自动管理日志文件数量，支持日志轮转。
+        Parameters:
+            log_level (Optional[str]): Log level as a string (e.g., "DEBUG", "INFO", "WARNING", "ERROR"). Defaults to PLUGIN_LOG_LEVEL when None.
+            max_bytes (Optional[int]): Maximum size in bytes of a single log file before rotation. Defaults to PLUGIN_LOG_MAX_BYTES when None.
+            backup_count (Optional[int]): Number of backup files to keep per rotation. Defaults to PLUGIN_LOG_BACKUP_COUNT when None.
+            max_files (Optional[int]): Maximum total number of retained log files; older files beyond this limit will be removed. Defaults to PLUGIN_LOG_MAX_FILES when None.
         
-        Args:
-            log_level: 日志级别，默认使用配置中的PLUGIN_LOG_LEVEL
-            max_bytes: 单个日志文件最大大小（字节），默认使用配置中的PLUGIN_LOG_MAX_BYTES
-            backup_count: 保留的备份文件数量，默认使用配置中的PLUGIN_LOG_BACKUP_COUNT
-            max_files: 最多保留的日志文件总数，默认使用配置中的PLUGIN_LOG_MAX_FILES
-            
         Returns:
-            配置好的logger实例（已添加文件handler和控制台handler）
-            
-        使用示例:
-            ```python
-            class MyPlugin(NekoPluginBase):
-                def __init__(self, ctx):
-                    super().__init__(ctx)
-                    # 启用文件日志（同时输出到文件和控制台）
-                    self.file_logger = self.enable_file_logging(log_level=logging.DEBUG)
-                    # 使用file_logger记录日志，会同时显示在终端和保存到文件
-                    self.file_logger.info("Plugin initialized")
-            ```
-        
-        注意:
-            - 日志文件保存在 `{plugin_dir}/logs/` 目录下
-            - 日志文件名格式：`{plugin_id}_{YYYYMMDD_HHMMSS}.log`（包含日期和时间）
-            - 日志会同时输出到文件和控制台（终端）
-            - 当日志文件达到最大大小时会自动轮转
-            - 超过最大文件数量限制的旧日志会自动删除
+            Any: A configured loguru logger instance with both file and console handlers attached.
         """
         # 延迟导入，避免循环依赖
         from .logger import enable_plugin_file_logging
@@ -150,4 +151,3 @@ class NekoPluginBase:
         self.file_logger = file_logger
         
         return file_logger
-

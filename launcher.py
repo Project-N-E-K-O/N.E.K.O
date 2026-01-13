@@ -6,6 +6,7 @@ N.E.K.O. 统一启动器
 import sys
 import os
 import io
+import signal
 
 # 强制 UTF-8 编码
 if sys.platform == 'win32':
@@ -349,7 +350,14 @@ def cleanup_servers():
                 print(f"✗ {server['name']} 关闭失败: {e}", flush=True)
 
 def main():
-    """主函数"""
+    """
+    Orchestrates launching, monitoring, and shutdown of the configured server subprocesses and returns a process exit code.
+    
+    Starts each server process, waits for them to become ready, presents a simple user-facing prompt, monitors subprocess liveness, and performs graceful cleanup on interrupt or error. If subprocesses fail to start or do not become ready, performs cleanup and returns a nonzero exit code. If subprocesses remain alive after graceful cleanup, attempts forceful termination and may terminate the program with exit code 1.
+    
+    Returns:
+        int: Exit code where `0` indicates normal shutdown with no lingering subprocesses, and `1` indicates a failure during startup or that one or more subprocesses remained after cleanup.
+    """
     # 支持 multiprocessing 在 Windows 上的打包
     freeze_support()
     
@@ -401,16 +409,100 @@ def main():
                 break
         
     except KeyboardInterrupt:
-        print("\n\n收到中断信号，正在关闭...", flush=True)
+        print("\n\n收到中断信号，等待子进程退出...", flush=True)
+        # 子进程已经收到了 SIGINT，给它们一点时间自己退出
+        start_wait = time.time()
+        while time.time() - start_wait < 3:
+            all_dead = True
+            for server in SERVERS:
+                if server.get('process') and server['process'].is_alive():
+                    all_dead = False
+                    break
+            if all_dead:
+                break
+            time.sleep(0.1)
+            
     except Exception as e:
         print(f"\n发生错误: {e}", flush=True)
     finally:
+        print("\n正在关闭所有进程...", flush=True)
+        
+        # 尝试优雅关闭
         cleanup_servers()
-        print("\n所有服务器已关闭", flush=True)
-        print("再见！\n", flush=True)
+        
+        # 等待一段时间，确认进程是否真的无法终止
+        print("\n等待进程清理完成...", flush=True)
+        time.sleep(2)
+        
+        # 检查是否还有存活的进程
+        has_alive = any(
+            server.get('process') and server['process'].is_alive()
+            for server in SERVERS
+        )
+        
+        if has_alive:
+            print("\n检测到进程未能正常退出，尝试强制终止...", flush=True)
+            
+            try:
+                if hasattr(os, 'killpg'):
+                    # POSIX: 逐个终止子进程，避免向自身进程组发送 SIGKILL
+                    for server in SERVERS:
+                        proc = server.get('process')
+                        if not proc:
+                            continue
+                        pid = getattr(proc, 'pid', None)
+                        if not pid:
+                            continue
+                        try:
+                            os.kill(pid, signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
+                    time.sleep(1)
+
+                    for server in SERVERS:
+                        proc = server.get('process')
+                        if not proc or not proc.is_alive():
+                            continue
+                        pid = getattr(proc, 'pid', None)
+                        if not pid:
+                            continue
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    time.sleep(0.5)
+                else:
+                    # Windows: 使用 taskkill 强制杀死进程树
+                    import subprocess
+                    for server in SERVERS:
+                        proc = server.get('process')
+                        if not proc:
+                            continue
+                        pid = getattr(proc, 'pid', None)
+                        if not pid:
+                            continue
+                        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    time.sleep(0.5)
+            except Exception as e:
+                # 强制终止失败，忽略错误（进程可能已经退出）
+                print(f"强制终止进程组时出错（可能进程已退出）: {e}", flush=True)
+
+            # 强制终止后重新检查是否还有存活的进程
+            has_alive = any(
+                server.get('process') and server['process'].is_alive()
+                for server in SERVERS
+            )
+        
+        print("\n清理完成", flush=True)
+        # 如果还有残留进程，使用非零退出码
+        # 注意：如果 has_alive 为 True，sys.exit(1) 会终止程序，不会执行 return 0
+        # 如果 has_alive 为 False，所有进程正常退出，继续执行 return 0
+        if has_alive:
+            sys.exit(1)
     
+    # 所有进程正常退出，返回成功退出码
     return 0
 
 if __name__ == "__main__":
     sys.exit(main())
-

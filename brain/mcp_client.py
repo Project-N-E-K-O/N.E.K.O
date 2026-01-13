@@ -24,6 +24,16 @@ class McpRouterClient:
     """
     def __init__(self, base_url: str = None, api_key: str = None, timeout: float = 10.0):
         # 动态获取配置
+        """
+        Construct an MCP Router HTTP client configured to call the MCP protocol endpoint.
+        
+        Initializes base URL and MCP endpoint, API key (from provided value or core config), internal state flags (initialized, request id, closed), an AsyncClient configured to accept JSON and SSE, a short-lived tools cache, and failure cooldown tracking.
+        
+        Parameters:
+            base_url (str | None): Base URL of the MCP Router; if None, resolved from MCP_ROUTER_URL config.
+            api_key (str | None): API key for Authorization header; if None, read from core config. A sentinel value of 'Copy from MCP Router if needed' will not be used for authorization.
+            timeout (float): HTTP client timeout in seconds.
+        """
         if base_url is None:
             base_url = MCP_ROUTER_URL
         if api_key is None:
@@ -35,6 +45,7 @@ class McpRouterClient:
         self.api_key = api_key
         self._initialized = False
         self._request_id = 0
+        self._closed = False  # 标记是否已关闭
         
         # 设置HTTP客户端
         # MCP Router要求同时接受JSON和SSE流
@@ -230,7 +241,18 @@ class McpRouterClient:
 
     async def call_tool(self, tool_name: str, arguments: Dict[str, Any] = None) -> Dict[str, Any]:
         """
-        调用MCP工具
+        Invoke a named MCP tool with the given arguments and return the execution outcome.
+        
+        Parameters:
+            tool_name (str): The name or identifier of the MCP tool to call.
+            arguments (Dict[str, Any], optional): A mapping of arguments to pass to the tool. Defaults to an empty dict.
+        
+        Returns:
+            Dict[str, Any]: A dictionary describing the call result:
+                - `success` (bool): `True` if the tool executed and returned a result, `False` otherwise.
+                - `result` (Any): The tool's returned value when `success` is `True`.
+                - `error` (str): An error message when `success` is `False`.
+                - `tool` (str): The name of the tool that was called.
         """
         # 确保已初始化
         if not self._initialized:
@@ -258,7 +280,46 @@ class McpRouterClient:
             }
 
     async def aclose(self):
-        await self.http.aclose()
+        """
+        Close the underlying HTTP client and mark this McpRouterClient as closed.
+        
+        Safe to call multiple times. If the event loop is already closed or an error occurs during shutdown, the error is logged and suppressed; the client's closed flag is set regardless.
+        """
+        if self._closed:
+            return
+        
+        try:
+            if self.http is not None:
+                await self.http.aclose()
+            self._closed = True
+            logger.debug("[MCP] McpRouterClient 已关闭")
+        except RuntimeError as e:
+            # 如果事件循环已经关闭，忽略这个错误
+            if "Event loop is closed" in str(e) or "loop is closed" in str(e):
+                logger.debug("[MCP] 事件循环已关闭，跳过 AsyncClient 清理")
+                self._closed = True
+            else:
+                logger.warning(f"[MCP] 关闭 AsyncClient 时出错: {e}")
+                self._closed = True
+        except Exception as e:
+            # 其他错误也记录但不抛出，确保关闭流程能继续
+            logger.warning(f"[MCP] 关闭 AsyncClient 时出现意外错误: {e}")
+            self._closed = True
+    
+    def __del__(self):
+        """
+        Warns if the client is garbage-collected without being explicitly closed.
+        
+        This destructor logs a warning when the instance is finalized while `_closed` is False and the HTTP client still exists. It performs no cleanup or asynchronous operations and must not be relied upon for resource release; call `aclose()` during shutdown to close the client deterministically.
+        """
+        if not self._closed and self.http is not None:
+            # 只能记录警告，无法在析构函数中执行异步清理
+            # 这应该通过 shutdown 事件处理器来避免
+            try:
+                logger.warning("[MCP] McpRouterClient 在未显式关闭的情况下被垃圾回收。"
+                             "请确保在服务器关闭时调用 aclose() 方法。")
+            except Exception:
+                pass  # 忽略所有错误，因为这是在析构函数中（可能 logger 也不可用）
 
 
 class McpToolCatalog:
@@ -291,5 +352,4 @@ class McpToolCatalog:
         
         logger.debug(f"[MCP] Loaded {len(capabilities)} tool capabilities")
         return capabilities
-
 
