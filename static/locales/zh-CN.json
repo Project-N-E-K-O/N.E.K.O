@@ -635,7 +635,7 @@
     "loadingModels": "正在加载...",
     "noUserModels": "暂无可删除的用户模型",
     "loadModelsFailed": "加载模型失败",
-    "deleteSelected": "删除选中",
+    "deleteSelected": "删除选中 ({{count}})",
     "deleting": "删除中...",
     "confirmDelete": "确定要删除选中的 {{count}} 个模型吗？此操作不可恢复！",
     "deleteSuccess": "✓ 成功删除 {{count}} 个模型",

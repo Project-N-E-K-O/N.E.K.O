@@ -635,11 +635,11 @@
     "loadingModels": "Loading...",
     "noUserModels": "No deletable user models",
     "loadModelsFailed": "Failed to load models",
-    "deleteSelected": "Delete Selected",
+    "deleteSelected": "Delete Selected ({{count}})",
     "deleting": "Deleting...",
     "confirmDelete": "Are you sure you want to delete the selected {{count}} models? This action cannot be undone!",
     "deleteSuccess": "✓ Successfully deleted {{count}} models",
-    "deleteFailed": "Failed {{count}}",
+    "deleteFailed": "Failed to delete {{count}} models",
     "switchingToDefault": "Current model deleted, switching to default model...",
     "userDocuments": "User Documents",
     "localUpload": "Local Upload"

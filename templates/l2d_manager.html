@@ -1286,6 +1286,10 @@
                         const option = document.createElement('option');
                         option.value = model.name;
                         option.textContent = model.display_name || model.name;
+                        // Preserve workshop item_id so it's not lost when the select is reconstructed
+                        if (model.item_id) {
+                            option.dataset.itemId = model.item_id;
+                        }
                         modelSelect.appendChild(option);
                     });
 

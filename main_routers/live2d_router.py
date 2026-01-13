@@ -982,6 +982,7 @@ def delete_model(model_name: str):
         # 检查是否在用户文档目录下
         try:
             config_mgr = get_config_manager()
+            config_mgr.ensure_live2d_directory()
             user_live2d_dir = os.path.realpath(str(config_mgr.live2d_dir))
             model_dir_real = os.path.realpath(model_dir)
             try:
@@ -1022,13 +1023,12 @@ def delete_model(model_name: str):
 def get_user_models():
     """获取用户导入的模型列表"""
     try:
-        from utils.config_manager import get_config_manager
-        
         user_models = []
         
         # 获取用户文档目录下的live2d模型
         try:
             config_mgr = get_config_manager()
+            config_mgr.ensure_live2d_directory()
             docs_live2d_dir = str(config_mgr.live2d_dir)
             if os.path.exists(docs_live2d_dir):
                 for root, dirs, files in os.walk(docs_live2d_dir):
@@ -1036,12 +1036,23 @@ def get_user_models():
                         if file.endswith('.model3.json'):
                             model_name = os.path.basename(root)
                             rel_path = os.path.relpath(root, docs_live2d_dir)
-                            rel_path_posix = pathlib.Path(rel_path).as_posix()
+                            # Normalize '.' to empty string to avoid '/user_live2d/./' paths
+                            if rel_path == '.':
+                                rel_path_posix = ''
+                            else:
+                                rel_path_posix = pathlib.Path(rel_path).as_posix()
+                            # Build path without duplicate slash
+                            if rel_path_posix:
+                                path = f'/user_live2d/{rel_path_posix}/{file}'
+                            else:
+                                path = f'/user_live2d/{file}'
                             user_models.append({
                                 'name': model_name,
-                                'path': f'/user_live2d/{rel_path_posix}/{file}',
+                                'path': path,
                                 'source': 'user_documents'
                             })
+                            # Prune deeper traversal after finding a .model3.json
+                            dirs[:] = []
         except Exception as e:
             logger.warning(f"扫描用户文档模型目录时出错: {e}")
         
