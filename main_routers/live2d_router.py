@@ -971,7 +971,7 @@ def delete_model(model_name: str):
     """删除指定的Live2D模型"""
     try:
         # 查找模型目录
-        model_dir, url_prefix = find_model_directory(model_name)
+        model_dir, _url_prefix = find_model_directory(model_name)
         
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": f"模型 {model_name} 不存在"})
@@ -981,14 +981,13 @@ def delete_model(model_name: str):
         
         # 检查是否在用户文档目录下
         try:
-            from utils.config_manager import get_config_manager
             config_mgr = get_config_manager()
             user_live2d_dir = str(config_mgr.live2d_dir).replace('\\', '/')
             model_dir_normalized = model_dir.replace('\\', '/')
             if model_dir_normalized.startswith(user_live2d_dir):
                 is_user_model = True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"检查用户模型目录时出错: {e}")
         
         if not is_user_model:
             return JSONResponse(status_code=403, content={"success": False, "error": "只能删除用户导入的模型，无法删除内置模型"})

@@ -640,6 +640,7 @@
     "confirmDelete": "确定要删除选中的 {{count}} 个模型吗？此操作不可恢复！",
     "deleteSuccess": "✓ 成功删除 {{count}} 个模型",
     "deleteFailed": "✗ 删除失败，所有模型可能都是内置模型",
+    "switchingToDefault": "当前模型已删除，正在切换到默认模型...",
     "userDocuments": "用户文档",
     "localUpload": "本地上传"
   },

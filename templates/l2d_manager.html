@@ -360,6 +360,8 @@
             <input type="file" id="model-upload" webkitdirectory directory multiple style="display: none;">
             <button id="upload-btn" class="btn btn-primary" data-i18n="live2d.selectFolder">📁 选择文件夹</button>
             <div id="upload-status" style="font-size:12px; color:#666; margin-top:4px;"></div>
+            <button id="delete-model-btn" class="btn btn-danger" data-i18n="live2d.deleteModel" style="width:100%; margin-top:4px;">
+            </button>
         </div>
 
         <div class="control-group">
@@ -367,11 +369,6 @@
             <select id="model-select" class="control-select">
                 <option data-i18n="common.loading">加载中...</option>
             </select>
-        </div>
-
-        <div class="control-group">
-            <button id="delete-model-btn" class="btn btn-danger" data-i18n="live2d.deleteModel" style="width:100%;">
-            </button>
         </div>
 
         <div class="control-group">
@@ -1235,6 +1232,8 @@
                 confirmDeleteBtn.disabled = true;
                 confirmDeleteBtn.textContent = t('live2d.deleting', "Deleting...");
 
+                const currentModelName = currentModelInfo ? currentModelInfo.name : null;
+                const modelsToDelete = new Set(selectedDeleteModels);
                 let successCount = 0;
                 let failCount = 0;
 
@@ -1270,6 +1269,15 @@
                         option.textContent = model.display_name || model.name;
                         modelSelect.appendChild(option);
                     });
+
+                    if (successCount > 0 && currentModelName && modelsToDelete.has(currentModelName)) {
+                        const maoProModel = availableModels.find(m => m.name === 'mao_pro');
+                        if (maoProModel) {
+                            showStatus(t('live2d.switchingToDefault', '当前模型已删除，正在切换到默认模型...'));
+                            currentModelInfo = maoProModel;
+                            await loadModel('mao_pro', maoProModel, undefined);
+                        }
+                    }
                 } catch (e) {
                     console.error('重新加载模型列表失败:', e);
                 }
