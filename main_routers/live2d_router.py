@@ -1036,9 +1036,10 @@ def get_user_models():
                         if file.endswith('.model3.json'):
                             model_name = os.path.basename(root)
                             rel_path = os.path.relpath(root, docs_live2d_dir)
+                            rel_path_posix = pathlib.Path(rel_path).as_posix()
                             user_models.append({
                                 'name': model_name,
-                                'path': f'/user_live2d/{rel_path}/{file}',
+                                'path': f'/user_live2d/{rel_path_posix}/{file}',
                                 'source': 'user_documents'
                             })
         except Exception as e:

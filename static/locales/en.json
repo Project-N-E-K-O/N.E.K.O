@@ -639,7 +639,7 @@
     "deleting": "Deleting...",
     "confirmDelete": "Are you sure you want to delete the selected {{count}} models? This action cannot be undone!",
     "deleteSuccess": "✓ Successfully deleted {{count}} models",
-    "deleteFailed": "✗ Deletion failed, all models may be built-in models",
+    "deleteFailed": "Failed {{count}}",
     "switchingToDefault": "Current model deleted, switching to default model...",
     "userDocuments": "User Documents",
     "localUpload": "Local Upload"

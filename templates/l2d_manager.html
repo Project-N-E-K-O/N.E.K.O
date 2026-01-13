@@ -1236,6 +1236,7 @@
                 const modelsToDelete = new Set(selectedDeleteModels);
                 let successCount = 0;
                 let failCount = 0;
+                let lastErrorMessage = '';
 
                 for (const modelName of selectedDeleteModels) {
                     try {
@@ -1247,10 +1248,18 @@
                             successCount++;
                         } else {
                             console.error(`Failed to delete model ${modelName}:`, result.error);
+                            if (result && result.error) {
+                                lastErrorMessage = String(result.error);
+                            }
                             failCount++;
                         }
                     } catch (error) {
                         console.error(`Error deleting model ${modelName}:`, error);
+                        if (error && error.message) {
+                            lastErrorMessage = String(error.message);
+                        } else if (error) {
+                            lastErrorMessage = String(error);
+                        }
                         failCount++;
                     }
                 }
@@ -1272,10 +1281,18 @@
 
                     if (successCount > 0 && currentModelName && modelsToDelete.has(currentModelName)) {
                         const maoProModel = availableModels.find(m => m.name === 'mao_pro');
-                        if (maoProModel) {
+                        let fallbackModel = maoProModel;
+                        if (!fallbackModel && Array.isArray(availableModels) && availableModels.length > 0) {
+                            fallbackModel = availableModels[0];
+                        }
+
+                        if (fallbackModel) {
                             showStatus(t('live2d.switchingToDefault', '当前模型已删除，正在切换到默认模型...'));
-                            currentModelInfo = maoProModel;
-                            await loadModel('mao_pro', maoProModel, undefined);
+                            currentModelInfo = fallbackModel;
+                            await loadModel(fallbackModel.name, fallbackModel, undefined);
+                        } else {
+                            showStatus(t('live2d.noModelsFound', '未找到可用模型'));
+                            currentModelInfo = null;
                         }
                     }
                 } catch (e) {
@@ -1286,7 +1303,9 @@
                     const successMessage = t('live2d.deleteSuccess', '✓ 成功删除 {{count}} 个模型', { count: successCount }) + (failCount > 0 ? `，${t('live2d.deleteFailed', '失败 {{count}} 个', { count: failCount })}` : '');
                     await showAlert(successMessage);
                 } else {
-                    await showAlert(t('live2d.deleteFailed', '✗ 删除失败，所有模型可能都是内置模型'));
+                    const failedPart = t('live2d.deleteFailed', '失败 {{count}} 个', { count: failCount, reason: lastErrorMessage });
+                    const reasonPart = lastErrorMessage ? `：${lastErrorMessage}` : '';
+                    await showAlert(`✗ ${failedPart}${reasonPart}`);
                 }
             }
 
