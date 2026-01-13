@@ -605,6 +605,8 @@
             // 将后端返回的相对路径或本地路径转换为前端可用的 URL
             vrmToUrl(path, type = 'animation') {
                 if (!path) return '';
+                // 确保 path 是字符串类型
+                path = String(path);
                 // 如果已经是 URL 格式 (http/https) 或 Web 绝对路径 (/)，直接返回
                 if (path.startsWith('http') || path.startsWith('/')) return path;
                 
@@ -1486,9 +1488,11 @@
                         vrmAnimationSelect.innerHTML = `<option value="">${t('live2d.vrmAnimation.selectAnimation', '选择动作')}</option>`;
                         vrmAnimations.forEach(anim => {
                             const option = document.createElement('option');
-                            const animPath = anim.path || anim;
+                            // 确保 animPath 是字符串：优先使用 anim.path，否则使用 anim.url，最后使用 anim 本身（如果是字符串）
+                            const animPath = (typeof anim.path === 'string' ? anim.path : null) 
+                                || (typeof anim.url === 'string' ? anim.url : null)
+                                || (typeof anim === 'string' ? anim : String(anim));
                             
-                            // 依然使用 ModelPathHelper 转换路径
                             const finalUrl = ModelPathHelper.vrmToUrl(animPath, 'animation');
                             
                             option.value = finalUrl; 

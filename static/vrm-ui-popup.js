@@ -92,8 +92,7 @@ VRMManager.prototype._createSettingsPopupContent = function (popup) {
     });
 
     // 手机仅保留开关；桌面端追加导航菜单
-    const isMobileWidth = () => window.innerWidth <= 768;
-    if (!isMobileWidth()) {
+    if (!window.isMobileWidth()) {
         // 添加分隔线
         const separator = document.createElement('div');
         Object.assign(separator.style, {
@@ -340,7 +339,15 @@ VRMManager.prototype._createSettingsMenuItems = function (popup) {
                     const newWindow = window.open(finalUrl, '_blank', 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no');
                     if(newWindow) {
                         this._openSettingsWindows[finalUrl] = newWindow;
-                        const checkClosed = setInterval(() => { if(newWindow.closed) { delete this._openSettingsWindows[finalUrl]; clearInterval(checkClosed); } }, 500);
+                        // 使用递归 setTimeout 替代 setInterval，窗口关闭后自动停止
+                        const checkClosed = () => {
+                            if (newWindow.closed) {
+                                delete this._openSettingsWindows[finalUrl];
+                            } else {
+                                setTimeout(checkClosed, 500);
+                            }
+                        };
+                        setTimeout(checkClosed, 500);
                     }
                 }
             }
@@ -619,13 +626,31 @@ VRMManager.prototype.renderScreenSourceList = async function (popup) {
                 minWidth: '0'
             });
 
-            // 缩略图
+            // 缩略图（带异常处理和占位图回退）
             if (source.thumbnail) {
                 const thumb = document.createElement('img');
-                // NativeImage 对象需要转换为 dataURL 字符串
-                thumb.src = typeof source.thumbnail === 'string' 
-                    ? source.thumbnail 
-                    : (source.thumbnail.toDataURL ? source.thumbnail.toDataURL() : '');
+                let thumbnailDataUrl = '';
+                try {
+                    // NativeImage 对象需要转换为 dataURL 字符串
+                    if (typeof source.thumbnail === 'string') {
+                        thumbnailDataUrl = source.thumbnail;
+                    } else if (source.thumbnail && typeof source.thumbnail.toDataURL === 'function') {
+                        thumbnailDataUrl = source.thumbnail.toDataURL();
+                    }
+                    // 检查是否为空字符串或无效值
+                    if (!thumbnailDataUrl || thumbnailDataUrl.trim() === '') {
+                        throw new Error('thumbnail.toDataURL() 返回空值');
+                    }
+                } catch (e) {
+                    console.warn('[屏幕源] 缩略图转换失败，使用占位图:', e);
+                    // 使用占位图（1x1 透明像素的 dataURL）
+                    thumbnailDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+                }
+                thumb.src = thumbnailDataUrl;
+                // 添加错误处理，如果图片加载失败也使用占位图
+                thumb.onerror = () => {
+                    thumb.src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+                };
                 Object.assign(thumb.style, {
                     width: '100%',
                     maxWidth: '90px',

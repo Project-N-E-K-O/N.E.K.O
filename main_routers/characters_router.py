@@ -314,6 +314,17 @@ async def update_catgirl_l2d(name: str, request: Request):
         
         # 根据model_type检查相应的模型字段
         model_type_str = str(model_type).lower() if model_type else 'live2d'
+        
+        # 【修复】model_type 只允许 {live2d, vrm}，否则 400
+        if model_type_str not in ['live2d', 'vrm']:
+            return JSONResponse(
+                content={
+                    'success': False,
+                    'error': f'无效的模型类型: {model_type}，只允许 live2d 或 vrm'
+                },
+                status_code=400
+            )
+        
         if model_type_str == 'vrm':
             if not vrm_model:
                 return JSONResponse(
@@ -348,8 +359,12 @@ async def update_catgirl_l2d(name: str, request: Request):
                 status_code=404
             )
         
-        # 根据模型类型更新相应的设置
+        # 【修复】切换模型类型时清理"另一套模型字段"，避免配置残留
         if model_type_str == 'vrm':
+            # 切到 VRM 时清理 Live2D 相关字段
+            characters['猫娘'][name].pop('live2d', None)
+            characters['猫娘'][name].pop('live2d_item_id', None)
+            
             # 更新VRM模型设置
             characters['猫娘'][name]['vrm'] = vrm_model
             characters['猫娘'][name]['model_type'] = 'vrm'
@@ -360,6 +375,10 @@ async def update_catgirl_l2d(name: str, request: Request):
             else:
                 logger.debug(f"已保存角色 {name} 的VRM模型 {vrm_model}")
         else:
+            # 切到 Live2D 时清理 VRM 相关字段
+            characters['猫娘'][name].pop('vrm', None)
+            characters['猫娘'][name].pop('vrm_animation', None)
+            
             # 更新Live2D模型设置，同时保存item_id（如果有）
             characters['猫娘'][name]['live2d'] = live2d_model
             characters['猫娘'][name]['model_type'] = 'live2d'

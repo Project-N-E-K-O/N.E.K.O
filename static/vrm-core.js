@@ -213,13 +213,8 @@ class VRMCore {
                     // 这样脸永远是白净的，但头发还是会投射影子到脖子上
                     object.receiveShadow = false;
                     
-                    // 可选：稍微增加一点自发光，确保肤色通透
-                    if (object.material) {
-                        const materials = Array.isArray(object.material) ? object.material : [object.material];
-                        materials.forEach(material => {
-                            // 可以在这里调整脸部材质的自发光等属性
-                        });
-                    }
+                    // TODO: 未来可在此调整脸部材质的自发光等属性，确保肤色通透
+                    // 例如：material.emissive.setHex(0x111111); material.emissiveIntensity = 0.1;
                 }
             }
         });
@@ -560,14 +555,8 @@ class VRMCore {
             }
 
             // 【使用朝向检测模块】检测并处理模型朝向
-            // 等待几帧，确保骨骼位置计算完成
-            await new Promise(resolve => {
-                requestAnimationFrame(() => {
-                    requestAnimationFrame(() => {
-                        requestAnimationFrame(resolve);
-                    });
-                });
-            });
+            // 等待约3帧（约50ms），确保骨骼位置计算完成
+            await new Promise(resolve => setTimeout(resolve, 50));
             
             const savedRotation = preferences?.rotation;
             
@@ -663,8 +652,10 @@ class VRMCore {
             const fov = this.manager.camera.fov * (Math.PI / 180);
             const distance = (modelHeight / 2) / Math.tan(fov / 2) / targetScreenHeight * screenHeight;
             
+            // 【修复】isMobile 变量在这个作用域没有定义，需要重新定义或直接判断
+            const isMobileDevice = screenWidth <= 768;
             // 调整相机位置，使模型在屏幕中央合适的位置
-            const cameraY = center.y + (isMobile ? modelHeight * 0.2 : modelHeight * 0.1);
+            const cameraY = center.y + (isMobileDevice ? modelHeight * 0.2 : modelHeight * 0.1);
             const cameraZ = Math.abs(distance);
             this.manager.camera.position.set(0, cameraY, cameraZ);
             this.manager.camera.lookAt(0, center.y, 0);
@@ -781,6 +772,12 @@ class VRMCore {
                 clearTimeout(this.manager.interaction._savePositionDebounceTimer);
                 this.manager.interaction._savePositionDebounceTimer = null;
             }
+        }
+        
+        // 清理自动播放动画的重试 timer
+        if (this.manager._retryTimerId) {
+            clearTimeout(this.manager._retryTimerId);
+            this.manager._retryTimerId = null;
         }
         
         if (this.manager.animationMixer) {

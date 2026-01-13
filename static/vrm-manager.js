@@ -46,6 +46,200 @@ class VRMManager {
         const texture = new window.THREE.CanvasTexture(canvas);
         return texture;
     }
+
+    /**
+     * 计算并添加模型阴影
+     * 考虑了多种骨骼回退策略（脚趾→脚部→臀部→包围盒）
+     * @param {Object} result - loadModel 返回的结果对象，包含 vrm 实例
+     */
+    _calculateAndAddShadow(result) {
+        // 1. 可调节参数
+        const SHADOW_SCALE_MULT = 0.5;     // 大小倍率：数字越大阴影越大
+        const SHADOW_Y_OFFSET = 0.001;      // Y轴偏移：紧贴脚底的微小偏移（防止 Z-fighting）
+        const FIX_CENTER_XZ = true;        // true: 强制阴影在 (0,0); false: 使用骨骼位置
+        
+        // 2. 确保场景矩阵已更新
+        result.vrm.scene.updateMatrixWorld(true);
+        
+        // 3. 计算身体部分的包围盒（只计算 SkinnedMesh，排除头发、武器等）
+        const bodyBox = new window.THREE.Box3();
+        let hasBodyMesh = false;
+        
+        result.vrm.scene.traverse((object) => {
+            if (object.isSkinnedMesh) {
+                // 更新对象的世界矩阵
+                object.updateMatrixWorld(true);
+                // 计算该 mesh 的世界包围盒
+                const meshBox = new window.THREE.Box3();
+                meshBox.setFromObject(object);
+                // 合并到总包围盒
+                bodyBox.union(meshBox);
+                hasBodyMesh = true;
+            }
+        });
+        
+        // 如果没找到 SkinnedMesh，使用整个场景的包围盒
+        if (!hasBodyMesh) {
+            bodyBox.setFromObject(result.vrm.scene);
+        }
+        
+        // 获取包围盒尺寸（用于计算阴影大小）
+        const bodySize = new window.THREE.Vector3();
+        bodyBox.getSize(bodySize);
+        
+        // 4. 计算阴影大小
+        // 使用身体宽度和深度的较大值作为基准
+        const shadowDiameter = Math.max(
+            Math.max(bodySize.x, bodySize.z) * SHADOW_SCALE_MULT,
+            0.3  // 最小尺寸保底
+        );
+        
+        // 5. 创建阴影纹理和材质
+        const shadowTexture = this._createBlobShadowTexture();
+        const shadowMaterial = new window.THREE.MeshBasicMaterial({
+            map: shadowTexture,
+            transparent: true,
+            opacity: 1.0,
+            depthWrite: false,  // 不写入深度缓冲，避免遮挡模型
+            side: window.THREE.DoubleSide
+        });
+        
+        // 6. 创建阴影网格
+        const shadowGeo = new window.THREE.PlaneGeometry(1, 1);
+        const shadowMesh = new window.THREE.Mesh(shadowGeo, shadowMaterial);
+        shadowMesh.rotation.x = -Math.PI / 2;  // 旋转到水平面
+        shadowMesh.scale.set(shadowDiameter, shadowDiameter, 1);
+        
+        // 7. 计算阴影位置（使用多种回退策略）
+        let shadowX = 0;
+        let shadowY = 0;
+        let shadowZ = 0;
+        
+        // 优先使用 humanoid 骨骼来精确定位
+        if (result.vrm.humanoid && result.vrm.humanoid.humanBones) {
+            try {
+                // 优先使用脚趾骨骼（leftToes/rightToes），因为脚部骨骼（leftFoot/rightFoot）在脚踝位置
+                const leftToes = result.vrm.humanoid.humanBones.leftToes;
+                const rightToes = result.vrm.humanoid.humanBones.rightToes;
+                const leftFoot = result.vrm.humanoid.humanBones.leftFoot;
+                const rightFoot = result.vrm.humanoid.humanBones.rightFoot;
+                
+                // 优先使用脚趾骨骼，如果不存在则使用脚部骨骼
+                const leftTargetBone = (leftToes?.node) ? leftToes : leftFoot;
+                const rightTargetBone = (rightToes?.node) ? rightToes : rightFoot;
+                
+                if (leftTargetBone?.node && rightTargetBone?.node) {
+                    // 更新骨骼矩阵
+                    leftTargetBone.node.updateMatrixWorld(true);
+                    rightTargetBone.node.updateMatrixWorld(true);
+                    
+                    // 获取两脚的世界位置
+                    const leftFootPos = new window.THREE.Vector3();
+                    const rightFootPos = new window.THREE.Vector3();
+                    leftTargetBone.node.getWorldPosition(leftFootPos);
+                    rightTargetBone.node.getWorldPosition(rightFootPos);
+                    
+                    // 如果使用的是脚部骨骼（不是脚趾），需要向下偏移到脚底
+                    // 脚部骨骼在脚踝，脚趾骨骼在脚底
+                    let leftBottomY = leftFootPos.y;
+                    let rightBottomY = rightFootPos.y;
+                    
+                    // 定义一次查找最低Y坐标的辅助函数（避免重复定义）
+                    const findLowestY = (bone, currentY) => {
+                        let lowest = currentY;
+                        if (bone) {
+                            bone.updateMatrixWorld(true);
+                            const pos = new window.THREE.Vector3();
+                            bone.getWorldPosition(pos);
+                            if (pos.y < lowest) {
+                                lowest = pos.y;
+                            }
+                            // 递归检查所有子骨骼
+                            bone.children.forEach(child => {
+                                lowest = findLowestY(child, lowest);
+                            });
+                        }
+                        return lowest;
+                    };
+                    
+                    // 如果使用的是脚部骨骼，需要向下偏移（估算脚的长度）
+                    if (!leftToes?.node && leftFoot?.node) {
+                        leftBottomY = findLowestY(leftFoot.node, leftFootPos.y);
+                    }
+                    
+                    if (!rightToes?.node && rightFoot?.node) {
+                        rightBottomY = findLowestY(rightFoot.node, rightFootPos.y);
+                    }
+                    
+                    // 转换为相对于 vrm.scene 的局部坐标
+                    result.vrm.scene.updateMatrixWorld(true);
+                    const sceneInverseMatrix = result.vrm.scene.matrixWorld.clone().invert();
+                    
+                    // 将最低点转换为局部坐标
+                    const leftBottomPos = new window.THREE.Vector3(leftFootPos.x, leftBottomY, leftFootPos.z);
+                    const rightBottomPos = new window.THREE.Vector3(rightFootPos.x, rightBottomY, rightFootPos.z);
+                    leftBottomPos.applyMatrix4(sceneInverseMatrix);
+                    rightBottomPos.applyMatrix4(sceneInverseMatrix);
+                    
+                    // Y轴：使用两脚中较低的 Y 值，确保阴影在脚底
+                    shadowY = Math.min(leftBottomPos.y, rightBottomPos.y) + SHADOW_Y_OFFSET;
+                    
+                    // X/Z轴：使用两脚的中点（如果 FIX_CENTER_XZ 为 false）
+                    if (!FIX_CENTER_XZ) {
+                        leftFootPos.applyMatrix4(sceneInverseMatrix);
+                        rightFootPos.applyMatrix4(sceneInverseMatrix);
+                        shadowX = (leftFootPos.x + rightFootPos.x) / 2;
+                        shadowZ = (leftFootPos.z + rightFootPos.z) / 2;
+                    }
+                } else {
+                    // 如果没有脚部骨骼，尝试使用 hips 骨骼
+                    const hipsBone = result.vrm.humanoid.humanBones.hips;
+                    if (hipsBone?.node) {
+                        hipsBone.node.updateMatrixWorld(true);
+                        
+                        const hipsPos = new window.THREE.Vector3();
+                        hipsBone.node.getWorldPosition(hipsPos);
+                        
+                        // 转换为局部坐标
+                        result.vrm.scene.updateMatrixWorld(true);
+                        const sceneInverseMatrix = result.vrm.scene.matrixWorld.clone().invert();
+                        hipsPos.applyMatrix4(sceneInverseMatrix);
+                        
+                        // 使用 hips 的 X/Z 位置（如果 FIX_CENTER_XZ 为 false）
+                        if (!FIX_CENTER_XZ) {
+                            shadowX = hipsPos.x;
+                            shadowZ = hipsPos.z;
+                        }
+                        
+                        // Y轴：使用包围盒的最低点（因为 hips 在腰部，不是脚底）
+                        shadowY = bodyBox.min.y + SHADOW_Y_OFFSET;
+                    } else {
+                        // 如果连 hips 都没有，使用包围盒的最低点
+                        shadowY = bodyBox.min.y + SHADOW_Y_OFFSET;
+                    }
+                }
+            } catch (e) {
+                // 回退到使用包围盒
+                shadowY = bodyBox.min.y + SHADOW_Y_OFFSET;
+            }
+        } else {
+            // 如果没有 humanoid，使用包围盒的最低点
+            shadowY = bodyBox.min.y + SHADOW_Y_OFFSET;
+        }
+        
+        // 如果 FIX_CENTER_XZ 为 true，强制使用 (0, 0) 作为 X/Z
+        if (FIX_CENTER_XZ) {
+            shadowX = 0;
+            shadowZ = 0;
+        }
+        
+        // 8. 设置阴影位置
+        shadowMesh.position.set(shadowX, shadowY, shadowZ);
+        
+        // 9. 添加到模型场景中
+        result.vrm.scene.add(shadowMesh);
+    }
+
     async initThreeJS(canvasId, containerId) {
         if (this.scene) return true;
         if (!this.clock && window.THREE) this.clock = new window.THREE.Clock();
@@ -155,191 +349,7 @@ class VRMManager {
 
         // 动态计算阴影位置和大小
         if (options.addShadow !== false && result && result.vrm && result.vrm.scene) {
-            // 1. 可调节参数
-            const SHADOW_SCALE_MULT = 0.5;     // 大小倍率：数字越大阴影越大
-            const SHADOW_Y_OFFSET = 0.001;      // Y轴偏移：紧贴脚底的微小偏移（防止 Z-fighting）
-            const FIX_CENTER_XZ = true;        // true: 强制阴影在 (0,0); false: 使用骨骼位置
-            
-            // 2. 确保场景矩阵已更新
-            result.vrm.scene.updateMatrixWorld(true);
-            
-            // 3. 计算身体部分的包围盒（只计算 SkinnedMesh，排除头发、武器等）
-            const bodyBox = new window.THREE.Box3();
-            let hasBodyMesh = false;
-            
-            result.vrm.scene.traverse((object) => {
-                if (object.isSkinnedMesh) {
-                    // 更新对象的世界矩阵
-                    object.updateMatrixWorld(true);
-                    // 计算该 mesh 的世界包围盒
-                    const meshBox = new window.THREE.Box3();
-                    meshBox.setFromObject(object);
-                    // 合并到总包围盒
-                    bodyBox.union(meshBox);
-                    hasBodyMesh = true;
-                }
-            });
-            
-            // 如果没找到 SkinnedMesh，使用整个场景的包围盒
-            if (!hasBodyMesh) {
-                bodyBox.setFromObject(result.vrm.scene);
-            }
-            
-            // 获取包围盒尺寸（用于计算阴影大小）
-            const bodySize = new window.THREE.Vector3();
-            bodyBox.getSize(bodySize);
-            
-            // 4. 计算阴影大小
-            // 使用身体宽度和深度的较大值作为基准
-            const shadowDiameter = Math.max(
-                Math.max(bodySize.x, bodySize.z) * SHADOW_SCALE_MULT,
-                0.3  // 最小尺寸保底
-            );
-            
-            // 5. 创建阴影纹理和材质
-            const shadowTexture = this._createBlobShadowTexture();
-            const shadowMaterial = new window.THREE.MeshBasicMaterial({
-                map: shadowTexture,
-                transparent: true,
-                opacity: 1.0,
-                depthWrite: false,  // 不写入深度缓冲，避免遮挡模型
-                side: window.THREE.DoubleSide
-            });
-            
-            // 6. 创建阴影网格
-            const shadowGeo = new window.THREE.PlaneGeometry(1, 1);
-            const shadowMesh = new window.THREE.Mesh(shadowGeo, shadowMaterial);
-            shadowMesh.rotation.x = -Math.PI / 2;  // 旋转到水平面
-            shadowMesh.scale.set(shadowDiameter, shadowDiameter, 1);
-            
-            // 计算阴影位置
-            let shadowX = 0;
-            let shadowY = 0;
-            let shadowZ = 0;
-            
-            // 优先使用 humanoid 骨骼来精确定位
-            if (result.vrm.humanoid && result.vrm.humanoid.humanBones) {
-                try {
-                    // 优先使用脚趾骨骼（leftToes/rightToes），因为脚部骨骼（leftFoot/rightFoot）在脚踝位置
-                    const leftToes = result.vrm.humanoid.humanBones.leftToes;
-                    const rightToes = result.vrm.humanoid.humanBones.rightToes;
-                    const leftFoot = result.vrm.humanoid.humanBones.leftFoot;
-                    const rightFoot = result.vrm.humanoid.humanBones.rightFoot;
-                    
-                    // 优先使用脚趾骨骼，如果不存在则使用脚部骨骼
-                    const leftTargetBone = (leftToes?.node) ? leftToes : leftFoot;
-                    const rightTargetBone = (rightToes?.node) ? rightToes : rightFoot;
-                    
-                    if (leftTargetBone?.node && rightTargetBone?.node) {
-                        // 更新骨骼矩阵
-                        leftTargetBone.node.updateMatrixWorld(true);
-                        rightTargetBone.node.updateMatrixWorld(true);
-                        
-                        // 获取两脚的世界位置
-                        const leftFootPos = new window.THREE.Vector3();
-                        const rightFootPos = new window.THREE.Vector3();
-                        leftTargetBone.node.getWorldPosition(leftFootPos);
-                        rightTargetBone.node.getWorldPosition(rightFootPos);
-                        
-                        // 如果使用的是脚部骨骼（不是脚趾），需要向下偏移到脚底
-                        // 脚部骨骼在脚踝，脚趾骨骼在脚底
-                        let leftBottomY = leftFootPos.y;
-                        let rightBottomY = rightFootPos.y;
-                        
-                        // 定义一次查找最低Y坐标的辅助函数（避免重复定义）
-                        const findLowestY = (bone, currentY) => {
-                            let lowest = currentY;
-                            if (bone) {
-                                bone.updateMatrixWorld(true);
-                                const pos = new window.THREE.Vector3();
-                                bone.getWorldPosition(pos);
-                                if (pos.y < lowest) {
-                                    lowest = pos.y;
-                                }
-                                // 递归检查所有子骨骼
-                                bone.children.forEach(child => {
-                                    lowest = findLowestY(child, lowest);
-                                });
-                            }
-                            return lowest;
-                        };
-                        
-                        // 如果使用的是脚部骨骼，需要向下偏移（估算脚的长度）
-                        if (!leftToes?.node && leftFoot?.node) {
-                            leftBottomY = findLowestY(leftFoot.node, leftFootPos.y);
-                        }
-                        
-                        if (!rightToes?.node && rightFoot?.node) {
-                            rightBottomY = findLowestY(rightFoot.node, rightFootPos.y);
-                        }
-                        
-                        // 转换为相对于 vrm.scene 的局部坐标
-                        result.vrm.scene.updateMatrixWorld(true);
-                        const sceneInverseMatrix = result.vrm.scene.matrixWorld.clone().invert();
-                        
-                        // 将最低点转换为局部坐标
-                        const leftBottomPos = new window.THREE.Vector3(leftFootPos.x, leftBottomY, leftFootPos.z);
-                        const rightBottomPos = new window.THREE.Vector3(rightFootPos.x, rightBottomY, rightFootPos.z);
-                        leftBottomPos.applyMatrix4(sceneInverseMatrix);
-                        rightBottomPos.applyMatrix4(sceneInverseMatrix);
-                        
-                        // Y轴：使用两脚中较低的 Y 值，确保阴影在脚底
-                        shadowY = Math.min(leftBottomPos.y, rightBottomPos.y) + SHADOW_Y_OFFSET;
-                        
-                        // X/Z轴：使用两脚的中点（如果 FIX_CENTER_XZ 为 false）
-                        if (!FIX_CENTER_XZ) {
-                            leftFootPos.applyMatrix4(sceneInverseMatrix);
-                            rightFootPos.applyMatrix4(sceneInverseMatrix);
-                            shadowX = (leftFootPos.x + rightFootPos.x) / 2;
-                            shadowZ = (leftFootPos.z + rightFootPos.z) / 2;
-                        }
-                    } else {
-                        // 如果没有脚部骨骼，尝试使用 hips 骨骼
-                        const hipsBone = result.vrm.humanoid.humanBones.hips;
-                        if (hipsBone?.node) {
-                            hipsBone.node.updateMatrixWorld(true);
-                            
-                            const hipsPos = new window.THREE.Vector3();
-                            hipsBone.node.getWorldPosition(hipsPos);
-                            
-                            // 转换为局部坐标
-                            result.vrm.scene.updateMatrixWorld(true);
-                            const sceneInverseMatrix = result.vrm.scene.matrixWorld.clone().invert();
-                            hipsPos.applyMatrix4(sceneInverseMatrix);
-                            
-                            // 使用 hips 的 X/Z 位置（如果 FIX_CENTER_XZ 为 false）
-                            if (!FIX_CENTER_XZ) {
-                                shadowX = hipsPos.x;
-                                shadowZ = hipsPos.z;
-                            }
-                            
-                            // Y轴：使用包围盒的最低点（因为 hips 在腰部，不是脚底）
-                            shadowY = bodyBox.min.y + SHADOW_Y_OFFSET;
-                        } else {
-                            // 如果连 hips 都没有，使用包围盒的最低点
-                            shadowY = bodyBox.min.y + SHADOW_Y_OFFSET;
-                        }
-                    }
-                } catch (e) {
-                    // 回退到使用包围盒
-                    shadowY = bodyBox.min.y + SHADOW_Y_OFFSET;
-                }
-            } else {
-                // 如果没有 humanoid，使用包围盒的最低点
-                shadowY = bodyBox.min.y + SHADOW_Y_OFFSET;
-            }
-            
-            // 如果 FIX_CENTER_XZ 为 true，强制使用 (0, 0) 作为 X/Z
-            if (FIX_CENTER_XZ) {
-                shadowX = 0;
-                shadowZ = 0;
-            }
-            
-            // 8. 设置阴影位置
-            shadowMesh.position.set(shadowX, shadowY, shadowZ);
-            
-            // 9. 添加到模型场景中
-            result.vrm.scene.add(shadowMesh);
+            this._calculateAndAddShadow(result);
             
             // 隐藏模型等待动画就绪
             result.vrm.scene.visible = false;
@@ -387,21 +397,50 @@ class VRMManager {
 
         // 自动播放待机动画
         if (options.autoPlay !== false) {
+            // 初始化重试 timer ID 实例变量（如果不存在）
+            if (!this._retryTimerId) {
+                this._retryTimerId = null;
+            }
+            
             // 等待 animation 模块初始化（如果还没加载）
             const tryPlayAnimation = async (retries = 10) => {
+                // 检查组件是否仍然有效（防止在重试过程中被销毁）
+                if (!this.currentModel || !this.currentModel.vrm) {
+                    if (this._retryTimerId) {
+                        clearTimeout(this._retryTimerId);
+                        this._retryTimerId = null;
+                    }
+                    return;
+                }
+                
                 if (!this.animation) {
                     this._initModules();
                     // 如果 VRMAnimation 类还没加载，等待一下
                     if (!this.animation && typeof window.VRMAnimation === 'undefined') {
                         if (retries > 0) {
-                            setTimeout(() => tryPlayAnimation(retries - 1), 100);
+                            // 清除之前的 timer（如果存在）
+                            if (this._retryTimerId) {
+                                clearTimeout(this._retryTimerId);
+                            }
+                            // 保存新的 timer ID 到实例变量
+                            this._retryTimerId = setTimeout(() => {
+                                this._retryTimerId = null; // 执行后清空引用
+                                tryPlayAnimation(retries - 1);
+                            }, 100);
                             return;
                         } else {
                             console.warn('[VRM Manager] VRMAnimation 模块未加载，跳过自动播放');
+                            this._retryTimerId = null;
                             showAndFadeIn();
                             return;
                         }
                     }
+                }
+                
+                // 清除 timer 引用（成功或失败都清除）
+                if (this._retryTimerId) {
+                    clearTimeout(this._retryTimerId);
+                    this._retryTimerId = null;
                 }
                 
                 // 确保 animation 已初始化

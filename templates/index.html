@@ -1417,7 +1417,7 @@
     <div id="settings-panel" style="display: none;">
         <div class="settings-header">
             <span>⚙️ 系统设置</span>
-            <button class="close-btn" onclick="document.querySelector('#live2d-btn-settings').click()">×</button>
+            <button class="close-btn" onclick="(function() { const panel = document.querySelector('#settings-panel'); if (panel) { panel.style.display = 'none'; } window.dispatchEvent(new CustomEvent('neko-settings-toggle', { detail: { active: false } })); })()">×</button>
         </div>
         <div class="settings-content">
             <p>在这里添加你的设置选项...</p>
@@ -1472,6 +1472,9 @@
         window.lanlan_config = lanlan_config;
         let cubism4Model = "";
         let vrmModel = "";
+
+        // 页面启动时加载 VRM 路径配置（在页面配置加载之前）
+        loadVRMPathsConfig();
 
         // 异步获取页面配置
         async function loadPageConfig() {
@@ -1732,10 +1735,15 @@
         function hideMainUI() {
             // 隐藏主要UI元素
             const live2dContainer = document.getElementById('live2d-container');
+            const vrmContainer = document.getElementById('vrm-container');
             const chatContainer = document.getElementById('chat-container');
 
+            // 隐藏所有模型容器，确保不会同时显示
             if (live2dContainer) {
                 live2dContainer.style.display = 'none';
+            }
+            if (vrmContainer) {
+                vrmContainer.style.display = 'none';
             }
             if (chatContainer) {
                 chatContainer.style.display = 'none';
@@ -1756,19 +1764,10 @@
                 return;
             }
 
-            // 显示主要UI元素
+            // 获取容器元素
             const live2dContainer = document.getElementById('live2d-container');
+            const vrmContainer = document.getElementById('vrm-container');
             const chatContainer = document.getElementById('chat-container');
-
-            if (live2dContainer) {
-                live2dContainer.style.display = '';
-            }
-            if (chatContainer) {
-                chatContainer.style.display = '';
-            }
-
-            // 移除隐藏状态标记
-            document.body.removeAttribute('data-ui-hidden');
 
             // 检查模型是否需要重新加载（弹出窗口可能修改了模型配置）
             try {
@@ -1780,12 +1779,71 @@
                 const charResponse = await fetch('/api/characters');
                 if (!charResponse.ok) {
                     console.warn('获取角色配置失败，跳过模型检查');
+                    // 如果获取配置失败，使用默认逻辑：显示 Live2D 容器
+                    if (live2dContainer) {
+                        live2dContainer.style.display = '';
+                    }
+                    if (vrmContainer) {
+                        vrmContainer.style.display = 'none';
+                    }
+                    if (chatContainer) {
+                        chatContainer.style.display = '';
+                    }
+                    document.body.removeAttribute('data-ui-hidden');
                     return;
                 }
                 const charactersData = await charResponse.json();
 
                 // 确保 lanlan_config.lanlan_name 更新到 chara_manager.html 当前选中的猫娘
                 currentLanlanName = lanlan_config.lanlan_name = charactersData['当前猫娘'];
+                
+                // 从猫娘配置中获取当前角色的模型信息（支持Live2D和VRM）
+                const catgirlConfig = charactersData['猫娘']?.[currentLanlanName];
+                if (!catgirlConfig) {
+                    console.warn(`未找到角色 ${currentLanlanName} 的配置，跳过模型检查`);
+                    // 如果找不到配置，使用默认逻辑：显示 Live2D 容器
+                    if (live2dContainer) {
+                        live2dContainer.style.display = '';
+                    }
+                    if (vrmContainer) {
+                        vrmContainer.style.display = 'none';
+                    }
+                    if (chatContainer) {
+                        chatContainer.style.display = '';
+                    }
+                    document.body.removeAttribute('data-ui-hidden');
+                    return;
+                }
+                
+                // 获取当前角色的 model_type，决定显示哪个容器
+                const modelType = catgirlConfig.model_type || 'live2d';
+                
+                // 根据 model_type 显示正确的容器，确保两个容器不会同时可见
+                if (modelType === 'vrm') {
+                    // VRM 模式：显示 VRM 容器，隐藏 Live2D 容器
+                    if (vrmContainer) {
+                        vrmContainer.style.display = 'block';
+                    }
+                    if (live2dContainer) {
+                        live2dContainer.style.display = 'none';
+                    }
+                } else {
+                    // Live2D 模式：显示 Live2D 容器，隐藏 VRM 容器
+                    if (live2dContainer) {
+                        live2dContainer.style.display = '';
+                    }
+                    if (vrmContainer) {
+                        vrmContainer.style.display = 'none';
+                    }
+                }
+                
+                // 显示聊天容器
+                if (chatContainer) {
+                    chatContainer.style.display = '';
+                }
+                
+                // 移除隐藏状态标记
+                document.body.removeAttribute('data-ui-hidden');
 
                 // 提取公共函数：清理Live2D资源并切换到VRM
                 function cleanupLive2DAndSwitchToVRM() {
@@ -1835,15 +1893,6 @@
                         if (el) el.remove();
                     });
                 }
-
-                // 从猫娘配置中获取当前角色的模型信息（支持Live2D和VRM）
-                const catgirlConfig = charactersData['猫娘']?.[currentLanlanName];
-                if (!catgirlConfig) {
-                    console.warn(`未找到角色 ${currentLanlanName} 的配置，跳过模型检查`);
-                    return;
-                }
-                
-                const modelType = catgirlConfig.model_type || 'live2d';
                 // 根据模型类型获取正确的路径字段
                 let newModelPath = '';
                 if (modelType === 'vrm') {
@@ -1904,7 +1953,8 @@
                 // 对于VRM模型，还需要检查VRM管理器的当前模型
                 if (modelType === 'vrm' && window.vrmManager) {
                     // VRM模型的路径检查逻辑
-                    const currentVrmModel = window.vrmManager.currentModelInfo;
+                    // 注意：currentModel 的结构是 { vrm: {...}, gltf: {...}, scene: {...}, url: '...' }
+                    const currentVrmModel = window.vrmManager.currentModel;
                     if (currentVrmModel && currentVrmModel.url) {
                         currentModelPath = currentVrmModel.url;
                     }
@@ -2266,28 +2316,52 @@
             }
         });
 
-        // 路径转换工具函数（提取重复逻辑）
+        // VRM 路径配置缓存（从后端获取）
+        let VRM_PATHS_CACHE = {
+            user_vrm: '/user_vrm',
+            static_vrm: '/static/vrm'
+        };
+
+        // 页面启动时加载 VRM 路径配置
+        async function loadVRMPathsConfig() {
+            try {
+                const response = await fetch('/api/model/vrm/config');
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.success && data.paths) {
+                        VRM_PATHS_CACHE = data.paths;
+                        console.log('[主页] VRM 路径配置已加载:', VRM_PATHS_CACHE);
+                    }
+                }
+            } catch (error) {
+                console.warn('[主页] 无法获取 VRM 路径配置，使用默认值:', error);
+            }
+        }
+
+        // 路径转换工具函数（使用后端配置，避免硬编码）
         function convertVRMModelPath(modelPath) {
             let modelUrl = modelPath;
-            // 处理Windows绝对路径，转换为Web路径（优先使用 /user_vrm/）
+            const userVrmPath = VRM_PATHS_CACHE.user_vrm || '/user_vrm';
+            const staticVrmPath = VRM_PATHS_CACHE.static_vrm || '/static/vrm';
+            
+            // 处理Windows绝对路径，转换为Web路径（优先使用用户VRM路径）
             if (modelUrl.includes('\\') || modelUrl.includes(':')) {
-                // 如果是Windows路径或包含驱动器号，提取文件名并优先使用 /user_vrm/
+                // 如果是Windows路径或包含驱动器号，提取文件名并优先使用用户VRM路径
                 const filename = modelUrl.split(/[\\/]/).pop();
                 if (filename) {
-                    modelUrl = `/user_vrm/${filename}`;
+                    modelUrl = `${userVrmPath}/${filename}`;
                 }
             } else if (!modelUrl.startsWith('http') && !modelUrl.startsWith('/')) {
                 // 如果是相对路径，添加用户VRM路径前缀
-                const VRM_USER_PATH = '/user_vrm';
-                modelUrl = `${VRM_USER_PATH}/${modelUrl}`;
+                modelUrl = `${userVrmPath}/${modelUrl}`;
             } else {
                 // 如果已经是完整路径，确保格式正确
                 modelUrl = modelUrl.replace(/\\/g, '/');
-                // 如果路径不是以 /user_vrm/ 或 /static/vrm/ 开头，尝试添加 /user_vrm/ 前缀
-                if (!modelUrl.startsWith('/user_vrm/') && !modelUrl.startsWith('/static/vrm/') && !modelUrl.startsWith('http')) {
+                // 如果路径不是以用户VRM路径或静态VRM路径开头，尝试添加用户VRM路径前缀
+                if (!modelUrl.startsWith(userVrmPath + '/') && !modelUrl.startsWith(staticVrmPath + '/') && !modelUrl.startsWith('http')) {
                     const filename = modelUrl.split('/').pop();
                     if (filename) {
-                        modelUrl = `/user_vrm/${filename}`;
+                        modelUrl = `${userVrmPath}/${filename}`;
                     }
                 }
             }
@@ -2560,9 +2634,22 @@
         })();
     </script>
     <script>
-        // 监听来自 vrm-ui-buttons.js 的广播信号
+        // 监听设置面板切换事件（支持 Live2D 和 VRM）
         window.addEventListener('live2d-settings-toggle', (e) => {
             console.log('[主页] 收到设置开关信号:', e.detail.active);
+            
+            const panel = document.getElementById('settings-panel');
+            if (panel) {
+                // 根据信号状态显示或隐藏面板
+                panel.style.display = e.detail.active ? 'block' : 'none';
+            } else {
+                console.error('错误：找不到 id="settings-panel" 的元素！');
+            }
+        });
+        
+        // 监听通用设置面板切换事件（neko-settings-toggle）
+        window.addEventListener('neko-settings-toggle', (e) => {
+            console.log('[主页] 收到通用设置开关信号:', e.detail.active);
             
             const panel = document.getElementById('settings-panel');
             if (panel) {

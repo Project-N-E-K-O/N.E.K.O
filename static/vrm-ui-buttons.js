@@ -9,6 +9,16 @@ VRMManager.prototype.setupFloatingButtons = function () {
         return; 
     }
     
+    // 初始化并清理 window 级别的事件监听器数组
+    if (this._windowEventHandlers && this._windowEventHandlers.length > 0) {
+        this._windowEventHandlers.forEach(({ event, handler }) => {
+            window.removeEventListener(event, handler);
+        });
+        this._windowEventHandlers = [];
+    } else {
+        this._windowEventHandlers = [];
+    }
+    
     // 如果之前已经注册过 document 级别的事件监听器，先移除它们以防止重复注册
     if (this._returnButtonDragHandlers) {
         document.removeEventListener('mousemove', this._returnButtonDragHandlers.mouseMove);
@@ -49,11 +59,8 @@ VRMManager.prototype.setupFloatingButtons = function () {
     });
 
     // 响应式布局逻辑
-    // 确保 isMobileWidth 可用
-    const isMobileWidth = () => window.innerWidth <= 768;
-
     const applyResponsiveFloatingLayout = () => {
-        if (isMobileWidth()) {
+        if (window.isMobileWidth()) {
             // 移动端：固定在右下角，纵向排布，整体上移
             buttonsContainer.style.flexDirection = 'column';
             buttonsContainer.style.bottom = '116px';
@@ -70,10 +77,12 @@ VRMManager.prototype.setupFloatingButtons = function () {
         }
     };
     applyResponsiveFloatingLayout();
+    // 追踪 resize 事件监听器以便清理
+    this._windowEventHandlers.push({ event: 'resize', handler: applyResponsiveFloatingLayout });
     window.addEventListener('resize', applyResponsiveFloatingLayout);
 
     // 2. 按钮配置（与 Live2D 保持一致）
-    const iconVersion = '?v=' + Date.now();
+    const iconVersion = '?v=' + (window.APP_VERSION || '1.0.0');
     const buttonConfigs = [
         { id: 'mic', emoji: '🎤', title: window.t ? window.t('buttons.voiceControl') : '语音控制', titleKey: 'buttons.voiceControl', hasPopup: true, toggle: true, separatePopupTrigger: true, iconOff: '/static/icons/mic_icon_off.png'+iconVersion, iconOn: '/static/icons/mic_icon_on.png'+iconVersion },
         { id: 'screen', emoji: '🖥️', title: window.t ? window.t('buttons.screenShare') : '屏幕分享', titleKey: 'buttons.screenShare', hasPopup: true, toggle: true, separatePopupTrigger: true, iconOff: '/static/icons/screen_icon_off.png'+iconVersion, iconOn: '/static/icons/screen_icon_on.png'+iconVersion },
@@ -87,7 +96,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
     // 3. 创建按钮
     buttonConfigs.forEach(config => {
         // 移动端隐藏 agent 和 goodbye 按钮
-        if (isMobileWidth() && (config.id === 'agent' || config.id === 'goodbye')) {
+        if (window.isMobileWidth() && (config.id === 'agent' || config.id === 'goodbye')) {
             return;
         }
 
@@ -229,7 +238,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
         // 如果有弹出框且需要独立的触发器（仅麦克风）
         if (config.hasPopup && config.separatePopupTrigger) {
             // 手机模式下移除麦克风弹窗与触发器
-            if (isMobileWidth() && config.id === 'mic') {
+            if (window.isMobileWidth() && config.id === 'mic') {
                 buttonsContainer.appendChild(btnWrapper);
                 return;
             }
@@ -323,7 +332,8 @@ VRMManager.prototype.setupFloatingButtons = function () {
     });
 
     // 监听 "请她离开" 事件 (由 app.js 触发)
-    window.addEventListener('live2d-goodbye-click', () => {
+    // 创建命名处理函数以便追踪和清理
+    const goodbyeHandler = () => {
         
         // 1. 隐藏主按钮组
         if (this._floatingButtonsContainer) {
@@ -350,10 +360,15 @@ VRMManager.prototype.setupFloatingButtons = function () {
             
             this._returnButtonContainer.style.display = 'flex';
         }
-    });
+    };
+    
+    // 追踪 goodbye 事件监听器以便清理
+    this._windowEventHandlers.push({ event: 'live2d-goodbye-click', handler: goodbyeHandler });
+    window.addEventListener('live2d-goodbye-click', goodbyeHandler);
 
     // 监听 "请她回来" 事件 (由 app.js 或 vrm 自身触发)
-    const handleReturn = () => {
+    // 创建命名处理函数以便追踪和清理
+    const returnHandler = () => {
         
         // 1. 隐藏"请她回来"按钮
         if (this._returnButtonContainer) {
@@ -371,9 +386,12 @@ VRMManager.prototype.setupFloatingButtons = function () {
         }
     };
     
-    // 同时监听两个可能的事件名，确保兼容性
-    window.addEventListener('vrm-return-click', handleReturn);
-    window.addEventListener('live2d-return-click', handleReturn);
+    
+    // 追踪 return 事件监听器以便清理
+    this._windowEventHandlers.push({ event: 'vrm-return-click', handler: returnHandler });
+    this._windowEventHandlers.push({ event: 'live2d-return-click', handler: returnHandler });
+    window.addEventListener('vrm-return-click', returnHandler);
+    window.addEventListener('live2d-return-click', returnHandler);
     // 创建"请她回来"按钮
     const returnButtonContainer = document.createElement('div');
     returnButtonContainer.id = 'vrm-return-button-container';
@@ -515,14 +533,30 @@ VRMManager.prototype.setupFloatingButtons = function () {
 
 // 循环更新位置 (保持跟随)
 VRMManager.prototype._startUIUpdateLoop = function() {
-    // 确保 isMobileWidth 可用
-    const isMobileWidth = () => window.innerWidth <= 768;
+    // 计算可见按钮数量（移动端隐藏 agent 和 goodbye 按钮）
+    const getVisibleButtonCount = () => {
+        const buttonConfigs = [
+            { id: 'mic' },
+            { id: 'screen' },
+            { id: 'agent' },
+            { id: 'settings' },
+            { id: 'goodbye' }
+        ];
+        const mobile = window.isMobileWidth();
+        // 移动端隐藏 agent 和 goodbye 按钮
+        return buttonConfigs.filter(config => {
+            if (mobile && (config.id === 'agent' || config.id === 'goodbye')) {
+                return false;
+            }
+            return true;
+        }).length;
+    };
 
     // 基准按钮尺寸和工具栏高度（用于计算缩放，与 Live2D 保持一致）
     const baseButtonSize = 48;
     const baseGap = 12;
-    const buttonCount = 5;
-    const baseToolbarHeight = baseButtonSize * buttonCount + baseGap * (buttonCount - 1); // 288px
+    const visibleCount = getVisibleButtonCount();
+    const baseToolbarHeight = baseButtonSize * visibleCount + baseGap * (visibleCount - 1);
 
     const update = () => {
         if (!this.currentModel || !this.currentModel.vrm) {
@@ -531,7 +565,7 @@ VRMManager.prototype._startUIUpdateLoop = function() {
         }
 
         // 移动端跳过位置更新，使用 CSS 固定定位
-        if (isMobileWidth()) {
+        if (window.isMobileWidth()) {
             requestAnimationFrame(update);
             return;
         }
@@ -837,6 +871,14 @@ VRMManager.prototype.cleanupUI = function() {
     document.querySelectorAll('#vrm-lock-icon').forEach(el => el.remove());
     const vrmReturnBtn = document.getElementById('vrm-return-button-container');
     if (vrmReturnBtn) vrmReturnBtn.remove();
+    
+    // 移除 window 级别的事件监听器，防止内存泄漏
+    if (this._windowEventHandlers && this._windowEventHandlers.length > 0) {
+        this._windowEventHandlers.forEach(({ event, handler }) => {
+            window.removeEventListener(event, handler);
+        });
+        this._windowEventHandlers = [];
+    }
     
     // 移除 document 级别的事件监听器，防止内存泄漏
     if (this._returnButtonDragHandlers) {

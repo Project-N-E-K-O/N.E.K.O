@@ -112,12 +112,25 @@ DEFAULT_LANLAN_TEMPLATE = {
 }
 
 # 默认VRM打光配置用于新角色初始化
+# 注意：这是一个可变对象，请使用 get_default_vrm_lighting() 获取副本以避免全局污染
 DEFAULT_VRM_LIGHTING = {
     "ambient": 0.08,  # 环境光强度 (范围: 0-0.3)
     "main": 0.06,     # 主光源强度 (范围: 0-2.5)
     "fill": 0.12,     # 补光强度 (范围: 0-0.5)
     "rim": 0.8        # 轮廓光强度 (范围: 0-1.5)
 }
+
+
+def get_default_vrm_lighting():
+    """
+    获取默认VRM打光配置的深拷贝。
+    
+    返回一个新的字典副本，避免修改全局默认值。
+    
+    Returns:
+        dict: 包含默认VRM打光配置的字典副本
+    """
+    return deepcopy(DEFAULT_VRM_LIGHTING)
 
 DEFAULT_CHARACTERS_CONFIG = {
     "主人": deepcopy(DEFAULT_MASTER_TEMPLATE),
@@ -310,6 +323,7 @@ __all__ = [
     'DEFAULT_MASTER_TEMPLATE',
     'DEFAULT_LANLAN_TEMPLATE',
     'DEFAULT_VRM_LIGHTING',
+    'get_default_vrm_lighting',
     'DEFAULT_CHARACTERS_CONFIG',
     'DEFAULT_CORE_CONFIG',
     'DEFAULT_USER_PREFERENCES',

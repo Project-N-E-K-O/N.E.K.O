@@ -3,8 +3,8 @@
  * 负责拖拽、缩放、鼠标跟踪等交互功能
  */
 
-// 确保 THREE 可用（支持 window.THREE 或全局 THREE）
-const THREE = window.THREE || (typeof THREE !== 'undefined' ? THREE : null);
+// 确保 THREE 可用（只从全局对象读取，避免 TDZ ReferenceError）
+const THREE = (typeof window !== 'undefined' && window.THREE) || (typeof globalThis !== 'undefined' && globalThis.THREE) || null;
 if (!THREE) {
     console.error('[VRM Interaction] THREE.js 未加载，交互功能将不可用');
 }

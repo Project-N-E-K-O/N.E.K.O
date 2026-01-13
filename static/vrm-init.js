@@ -8,8 +8,12 @@ window.VRM_PATHS = {
     static_vrm: '/static/vrm'
 };
 
+// 全局：判断是否为移动端宽度（如果不存在则定义，避免重复定义）
+window.isMobileWidth = window.isMobileWidth || (() => window.innerWidth <= 768);
+
 // 检查是否在模型管理页面（通过路径或特定元素判断）
-const isModelManagerPage = window.location.pathname.includes('model_manager') || document.querySelector('#vrm-model-select') !== null;
+// 使用函数形式，在需要时再判断，避免 DOM 未加载时判断不准确
+const isModelManagerPage = () => window.location.pathname.includes('model_manager') || document.querySelector('#vrm-model-select') !== null;
 // 创建全局 VRM 管理器实例（延迟创建，确保所有模块都已加载）
 window.vrmManager = null;
 
@@ -41,7 +45,24 @@ function initializeVRMManager() {
             window.vrmManager = new VRMManager();
         }
     } catch (error) {
+        console.debug('[VRM Init] VRMManager 初始化失败，可能模块尚未加载:', error);
     }
+}
+
+/**
+ * 清理 Live2D 的 UI 元素（浮动按钮、锁图标、返回按钮）
+ * 提取为公共函数，避免代码重复
+ */
+function cleanupLive2DUIElements() {
+    const elementsToRemove = [
+        'live2d-floating-buttons',
+        'live2d-lock-icon',
+        'live2d-return-button-container'
+    ];
+    elementsToRemove.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.remove();
+    });
 }
 
 // 替换掉原有的轮询，改用标准的事件监听
@@ -49,7 +70,7 @@ window.addEventListener('vrm-modules-ready', () => {
     initializeVRMManager();
 
     // 如果不是管理页面，尝试自动加载模型
-    if (!isModelManagerPage) {
+    if (!isModelManagerPage()) {
         initVRMModel();
     }
 });
@@ -93,7 +114,7 @@ async function initVRMModel() {
             console.warn('[VRM Init] 同步角色数据失败，将使用默认设置:', e);
         }
         // 2. 获取并确定模型路径
-        let targetModelPath = window.vrmModel || (typeof vrmModel !== 'undefined' ? vrmModel : '');
+        let targetModelPath = window.vrmModel || '';
 
         // 如果未指定路径，使用默认模型保底
         if (!targetModelPath) {
@@ -125,20 +146,7 @@ async function initVRMModel() {
         if (live2dContainer) live2dContainer.style.display = 'none';
 
         // 清理Live2D的浮动按钮和锁图标
-        const live2dFloatingButtons = document.getElementById('live2d-floating-buttons');
-        if (live2dFloatingButtons) {
-            live2dFloatingButtons.remove();
-        }
-
-        const live2dLockIcon = document.getElementById('live2d-lock-icon');
-        if (live2dLockIcon) {
-            live2dLockIcon.remove();
-        }
-
-        const live2dReturnBtn = document.getElementById('live2d-return-button-container');
-        if (live2dReturnBtn) {
-            live2dReturnBtn.remove();
-        }
+        cleanupLive2DUIElements();
 
         // 清理Live2D管理器和PIXI应用
         if (window.live2dManager) {
@@ -215,7 +223,7 @@ window.checkAndLoadVRM = async function() {
         // 确保配置已同步 (防止直接调用此函数时配置还没加载) 
         if (!window.VRM_PATHS.isLoaded) { 
             await fetchVRMConfig();
-       }
+        }
 
         // 1. 获取当前角色名称
         let currentLanlanName = window.lanlan_config?.lanlan_name;
@@ -255,20 +263,7 @@ window.checkAndLoadVRM = async function() {
         }
 
         // 删除Live2D的浮动按钮和锁图标，而不是只隐藏
-        const live2dFloatingButtons = document.getElementById('live2d-floating-buttons');
-        if (live2dFloatingButtons) {
-            live2dFloatingButtons.remove();
-        }
-
-        const live2dLockIcon = document.getElementById('live2d-lock-icon');
-        if (live2dLockIcon) {
-            live2dLockIcon.remove();
-        }
-
-        const live2dReturnBtn = document.getElementById('live2d-return-button-container');
-        if (live2dReturnBtn) {
-            live2dReturnBtn.remove();
-        }
+        cleanupLive2DUIElements();
 
         // 5. 检查VRM管理器
         if (!window.vrmManager) {
@@ -326,7 +321,7 @@ document.addEventListener('visibilitychange', () => {
     // 当页面从后台（或子页面）切回来变可见时
     if (document.visibilityState === 'visible') {
         // 如果是在主页，且 VRM 检查函数存在
-        if (!window.location.pathname.includes('model_manager') && window.checkAndLoadVRM) {
+        if (!isModelManagerPage() && window.checkAndLoadVRM) {
             window.checkAndLoadVRM();
         }
     }

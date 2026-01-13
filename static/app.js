@@ -8,13 +8,14 @@ let oggOpusDecoderReady = null;
 async function getOggOpusDecoder() {
     if (oggOpusDecoder) return oggOpusDecoder;
     if (oggOpusDecoderReady) {
-        const result = await oggOpusDecoderReady;
-        // 如果之前失败返回了 null，清空缓存允许重试
-        if (result === null) {
-            oggOpusDecoderReady = null;
-        } else {
-            return result;
+        try {
+            const result = await oggOpusDecoderReady;
+            if (result !== null) return result;
+        } catch (e) {
+            console.warn('[OGG OPUS] 初始化 Promise 失败，将允许重试:', e);
         }
+        // 如果返回 null 或 reject，清空缓存允许重试
+        oggOpusDecoderReady = null;
     }
 
     oggOpusDecoderReady = (async () => {
@@ -36,12 +37,17 @@ async function getOggOpusDecoder() {
         }
     })();
 
-    const result = await oggOpusDecoderReady;
-    // 如果失败返回了 null，清空缓存允许重试
-    if (result === null) {
+    try {
+        const result = await oggOpusDecoderReady;
+        if (result === null) oggOpusDecoderReady = null;
+        return result;
+    } catch (e) {
+        // 【修复】Promise reject 会"毒化缓存"，需要清空缓存允许重试
         oggOpusDecoderReady = null;
+        oggOpusDecoder = null;
+        console.warn('[OGG OPUS] 初始化失败（reject），已清缓存:', e);
+        return null;
     }
-    return result;
 }
 
 // 重置解码器（在新的音频流开始时调用）
@@ -215,6 +221,8 @@ function init_app() {
     let globalAnalyser = null;
     let lipSyncActive = false;
     let screenCaptureStream = null; // 暂存屏幕共享stream，不再需要每次都弹窗选择共享区域，方便自动重连
+    let screenCaptureStreamLastUsed = null; // 记录屏幕流最后使用时间，用于闲置自动释放
+    let screenCaptureStreamIdleTimer = null; // 闲置释放定时器
     // 新增：当前选择的麦克风设备ID
     let selectedMicrophoneId = null;
 
@@ -233,6 +241,7 @@ function init_app() {
     let isTextSessionActive = false;
     let isSwitchingMode = false; // 新增：模式切换标志
     let sessionStartedResolver = null; // 用于等待 session_started 消息
+    let sessionStartedRejecter = null; // 用于等待 session_failed / timeout 消息
 
     // 主动搭话功能相关
     let proactiveChatEnabled = false;
@@ -375,7 +384,13 @@ function init_app() {
                         // 新轮对话开始，在此时重置解码器（确保有新的头信息）
                         if (pendingDecoderReset) {
                             console.log('新轮对话开始，重置解码器:', speechId);
-                            resetOggOpusDecoder();
+                            // 【修复】使用立即执行的异步函数等待重置完成，避免竞态条件
+                            // 注意：这里使用立即执行的异步函数，因为 WebSocket 消息处理不是异步的
+                            (async () => {
+                                await resetOggOpusDecoder();
+                                pendingDecoderReset = false;
+                            })();
+                        } else {
                             pendingDecoderReset = false;
                         }
                         currentPlayingSpeechId = speechId;
@@ -390,7 +405,10 @@ function init_app() {
 
                     if (isNewMessage) {
                         // 如果是新消息，清空当前音频队列
-                        clearAudioQueue();
+                        // 【修复】使用立即执行的异步函数等待清空完成，避免竞态条件
+                        (async () => {
+                            await clearAudioQueue();
+                        })();
                     }
 
                     // 根据数据格式选择处理方法
@@ -476,6 +494,7 @@ function init_app() {
                                     let autoRestartTimeoutId = null;
                                     const sessionStartPromise = new Promise((resolve, reject) => {
                                         sessionStartedResolver = resolve;
+                                        sessionStartedRejecter = reject; // 【修复】保存 reject 函数
                                     });
 
                                     // 发送start session事件
@@ -486,8 +505,10 @@ function init_app() {
                                     
                                     // 在发送消息后才开始超时计时（自动重启场景）
                                     autoRestartTimeoutId = setTimeout(() => {
-                                        if (sessionStartedResolver) {
+                                        if (sessionStartedRejecter) {
+                                            const rejecter = sessionStartedRejecter;
                                             sessionStartedResolver = null;
+                                            sessionStartedRejecter = null; // 【修复】同时清理 rejecter
                                             
                                             // 超时时向后端发送 end_session 消息
                                             if (socket.readyState === WebSocket.OPEN) {
@@ -497,7 +518,7 @@ function init_app() {
                                                 console.log('[Auto Restart Timeout] 已向后端发送 end_session 消息');
                                             }
                                             
-                                            reject(new Error(window.t ? window.t('app.sessionTimeout') : 'Session启动超时'));
+                                            rejecter(new Error(window.t ? window.t('app.sessionTimeout') : 'Session启动超时'));
                                         }
                                     }, 10000);
 
@@ -692,6 +713,7 @@ function init_app() {
                             }
                             sessionStartedResolver(response.input_mode);
                             sessionStartedResolver = null;
+                            sessionStartedRejecter = null; // 【修复】同时清理 rejecter
                         }
                     }, 500);
                 } else if (response.type === 'session_failed') {
@@ -704,12 +726,12 @@ function init_app() {
                         clearTimeout(window.sessionTimeoutId);
                         window.sessionTimeoutId = null;
                     }
-                    // Reject sessionStartedResolver 让等待的代码能处理失败情况
-                    if (sessionStartedResolver) {
-                        // 注意：这里不 reject，因为前端的 Promise.all 会在其他地方处理失败
-                        // 直接清除 resolver 即可，避免超时后重复触发
-                        sessionStartedResolver = null;
+                    // 【修复】Reject Promise 让等待的代码能处理失败情况，避免 Promise 永远 pending
+                    if (sessionStartedRejecter) {
+                        sessionStartedRejecter(new Error(response.message || (window.t ? window.t('app.sessionFailed') : 'Session启动失败')));
                     }
+                    sessionStartedResolver = null;
+                    sessionStartedRejecter = null;
                 } else if (response.type === 'reload_page') {
                     console.log('收到reload_page事件：', response.message);
                     // 显示提示信息
@@ -1474,6 +1496,39 @@ function init_app() {
                     }
                 }
             }
+            
+            // 更新最后使用时间并重置闲置定时器
+            screenCaptureStreamLastUsed = Date.now();
+            if (screenCaptureStreamIdleTimer) {
+                clearTimeout(screenCaptureStreamIdleTimer);
+                screenCaptureStreamIdleTimer = null;
+            }
+            
+            // 设置闲置自动释放定时器（5分钟未使用则释放）
+            screenCaptureStreamIdleTimer = setTimeout(() => {
+                if (screenCaptureStream && screenCaptureStreamLastUsed) {
+                    const idleTime = Date.now() - screenCaptureStreamLastUsed;
+                    if (idleTime >= 5 * 60 * 1000) { // 5分钟
+                        console.log('[屏幕分享] 检测到闲置超过5分钟，自动释放屏幕流');
+                        try {
+                            if (screenCaptureStream instanceof MediaStream) {
+                                const vt = screenCaptureStream.getVideoTracks?.()?.[0];
+                                if (vt) vt.onended = null;
+                                screenCaptureStream.getTracks().forEach(track => {
+                                    try { track.stop(); } catch (_) {}
+                                });
+                            }
+                        } catch (e) {
+                            console.warn('[屏幕分享] 自动释放时出错:', e);
+                        } finally {
+                            screenCaptureStream = null;
+                            screenCaptureStreamLastUsed = null;
+                            screenCaptureStreamIdleTimer = null;
+                        }
+                    }
+                }
+            }, 5 * 60 * 1000); // 5分钟后检查
+            
             startScreenVideoStreaming(screenCaptureStream, isMobile() ? 'camera' : 'screen');
 
             micButton.disabled = true;
@@ -1547,6 +1602,12 @@ function init_app() {
         } finally {
             // 确保引用被清空，即使出错也能释放
             screenCaptureStream = null;
+            screenCaptureStreamLastUsed = null;
+            // 清除闲置定时器
+            if (screenCaptureStreamIdleTimer) {
+                clearTimeout(screenCaptureStreamIdleTimer);
+                screenCaptureStreamIdleTimer = null;
+            }
         }
         
         micButton.disabled = true;
@@ -1839,6 +1900,7 @@ function init_app() {
             let timeoutId = null; // 在外部作用域定义，以便清除
             const sessionStartPromise = new Promise((resolve, reject) => {
                 sessionStartedResolver = resolve;
+                sessionStartedRejecter = reject; // 【修复】保存 reject 函数
 
                 // 清除之前的超时定时器（如果存在）
                 if (window.sessionTimeoutId) {
@@ -1855,9 +1917,10 @@ function init_app() {
                 
                 // 设置超时（10秒），如果超时则拒绝
                 timeoutId = setTimeout(() => {
-                    if (sessionStartedResolver) {
-                        const resolver = sessionStartedResolver;
+                    if (sessionStartedRejecter) {
+                        const rejecter = sessionStartedRejecter;
                         sessionStartedResolver = null; // 先清除，防止重复触发
+                        sessionStartedRejecter = null; // 【修复】同时清理 rejecter
                         window.sessionTimeoutId = null; // 清除全局定时器ID
                         
                         // 超时时向后端发送 end_session 消息
@@ -1870,9 +1933,9 @@ function init_app() {
                         
                         // 更新提示信息，显示超时
                         showVoicePreparingToast(window.t ? window.t('app.sessionTimeout') || '连接超时' : '连接超时，请检查网络连接');
-                        reject(new Error(window.t ? window.t('app.sessionTimeout') : 'Session启动超时'));
+                        rejecter(new Error(window.t ? window.t('app.sessionTimeout') : 'Session启动超时'));
                     } else {
-                        window.sessionTimeoutId = null; // 即使 resolver 不存在也清除
+                        window.sessionTimeoutId = null; // 即使 rejecter 不存在也清除
                     }
                 }, 10000); // 10秒超时
 
@@ -1889,6 +1952,9 @@ function init_app() {
                 }
                 if (sessionStartedResolver) {
                     sessionStartedResolver = null;
+                }
+                if (sessionStartedRejecter) {
+                    sessionStartedRejecter = null; // 【修复】同时清理 rejecter
                 }
                 throw new Error(window.t ? window.t('app.websocketNotConnectedError') : 'WebSocket未连接');
             }
@@ -1957,6 +2023,9 @@ function init_app() {
             }
             if (sessionStartedResolver) {
                 sessionStartedResolver = null;
+            }
+            if (sessionStartedRejecter) {
+                sessionStartedRejecter = null; // 【修复】同时清理 rejecter
             }
             
             // 确保后端清理资源，避免前后端状态不一致
@@ -2034,7 +2103,10 @@ function init_app() {
             }));
         }
         stopRecording();
-        clearAudioQueue();
+        // 【修复】使用立即执行的异步函数等待清空完成，避免竞态条件
+        (async () => {
+            await clearAudioQueue();
+        })();
 
         // 重置所有状态
         isTextSessionActive = false;
@@ -2150,6 +2222,7 @@ function init_app() {
             let timeoutId = null;
             const sessionStartPromise = new Promise((resolve, reject) => {
                 sessionStartedResolver = resolve;
+                sessionStartedRejecter = reject; // 【修复】保存 reject 函数
 
                 // 清除之前的超时定时器（如果存在）
                 if (window.sessionTimeoutId) {
@@ -2158,9 +2231,10 @@ function init_app() {
 
                 // 设置超时（15秒），如果超时则拒绝
                 timeoutId = setTimeout(() => {
-                    if (sessionStartedResolver) {
-                        const resolver = sessionStartedResolver;
+                    if (sessionStartedRejecter) {
+                        const rejecter = sessionStartedRejecter;
                         sessionStartedResolver = null; // 先清除，防止重复触发
+                        sessionStartedRejecter = null; // 【修复】同时清理 rejecter
                         window.sessionTimeoutId = null; // 清除全局定时器ID
                         
                         // 超时时向后端发送 end_session 消息
@@ -2171,7 +2245,7 @@ function init_app() {
                             console.log('[Return Session Timeout] 已向后端发送 end_session 消息');
                         }
                         
-                        reject(new Error(window.t ? window.t('app.sessionTimeout') : 'Session启动超时'));
+                        rejecter(new Error(window.t ? window.t('app.sessionTimeout') : 'Session启动超时'));
                     }
                 }, 15000); // 15秒超时
 
@@ -2197,6 +2271,9 @@ function init_app() {
                 }
                 if (sessionStartedResolver) {
                     sessionStartedResolver = null;
+                }
+                if (sessionStartedRejecter) {
+                    sessionStartedRejecter = null; // 【修复】同时清理 rejecter
                 }
                 hideVoicePreparingToast();
                 throw new Error(window.t ? window.t('app.websocketNotConnectedError') : 'WebSocket未连接');
@@ -2244,6 +2321,9 @@ function init_app() {
             if (sessionStartedResolver) {
                 sessionStartedResolver = null;
             }
+            if (sessionStartedRejecter) {
+                sessionStartedRejecter = null; // 【修复】同时清理 rejecter
+            }
             
             // 重新启用按钮，允许用户重试
             returnSessionButton.disabled = false;
@@ -2283,12 +2363,15 @@ function init_app() {
                 // 创建一个 Promise 来等待 session_started 消息
                 const sessionStartPromise = new Promise((resolve, reject) => {
                     sessionStartedResolver = resolve;
+                    sessionStartedRejecter = reject; // 【修复】保存 reject 函数
 
                     // 设置超时（15秒），如果超时则拒绝
                     setTimeout(() => {
-                        if (sessionStartedResolver) {
+                        if (sessionStartedRejecter) {
+                            const rejecter = sessionStartedRejecter;
                             sessionStartedResolver = null;
-                            reject(new Error(window.t ? window.t('app.sessionTimeout') : 'Session启动超时'));
+                            sessionStartedRejecter = null; // 【修复】同时清理 rejecter
+                            rejecter(new Error(window.t ? window.t('app.sessionTimeout') : 'Session启动超时'));
                         }
                     }, 15000);
                 });
@@ -2825,7 +2908,7 @@ function init_app() {
     }
 
     // 清空音频队列并停止所有播放
-    function clearAudioQueue() {
+    async function clearAudioQueue() {
         // 停止所有计划的音频源
         scheduledSources.forEach(source => {
             try {
@@ -2842,8 +2925,8 @@ function init_app() {
         audioStartTime = 0;
         nextStartTime = 0; // 新增：重置预调度时间
 
-        // 重置 OGG OPUS 流式解码器
-        resetOggOpusDecoder();
+        // 【修复】重置 OGG OPUS 流式解码器（等待重置完成，避免竞态条件）
+        await resetOggOpusDecoder();
     }
 
     // 清空音频队列但不重置解码器（用于精确打断控制）
@@ -3033,6 +3116,39 @@ function init_app() {
     }
 
     function startScreenVideoStreaming(stream, input_type) {
+        // 更新最后使用时间（每次使用屏幕流时都更新）
+        if (stream === screenCaptureStream) {
+            screenCaptureStreamLastUsed = Date.now();
+            // 重置闲置定时器
+            if (screenCaptureStreamIdleTimer) {
+                clearTimeout(screenCaptureStreamIdleTimer);
+            }
+            // 重新设置闲置定时器（5分钟未使用则释放）
+            screenCaptureStreamIdleTimer = setTimeout(() => {
+                if (screenCaptureStream && screenCaptureStreamLastUsed) {
+                    const idleTime = Date.now() - screenCaptureStreamLastUsed;
+                    if (idleTime >= 5 * 60 * 1000) { // 5分钟
+                        console.log('[屏幕分享] 检测到闲置超过5分钟，自动释放屏幕流');
+                        try {
+                            if (screenCaptureStream instanceof MediaStream) {
+                                const vt = screenCaptureStream.getVideoTracks?.()?.[0];
+                                if (vt) vt.onended = null;
+                                screenCaptureStream.getTracks().forEach(track => {
+                                    try { track.stop(); } catch (_) {}
+                                });
+                            }
+                        } catch (e) {
+                            console.warn('[屏幕分享] 自动释放时出错:', e);
+                        } finally {
+                            screenCaptureStream = null;
+                            screenCaptureStreamLastUsed = null;
+                            screenCaptureStreamIdleTimer = null;
+                        }
+                    }
+                }
+            }, 5 * 60 * 1000); // 5分钟后检查
+        }
+        
         const video = document.createElement('video');
         // console.log('Ready for sharing 1')
 
@@ -3223,7 +3339,8 @@ function init_app() {
 
     // 智能显示当前模型（根据角色配置自动判断VRM或Live2D）
     async function showCurrentModel() {
-        // 【修复】检查"请她离开"状态，如果处于该状态则直接返回，不执行显示逻辑
+        // 检查"请她离开"状态，如果处于该状态则直接返回，不执行显示逻辑
+        // 建议在调用 showCurrentModel 之前确保 goodbye 状态已正确重置
         if (window.live2dManager && window.live2dManager._goodbyeClicked) {
             console.log('[showCurrentModel] 当前处于"请她离开"状态，跳过显示逻辑');
             return;
@@ -3231,6 +3348,14 @@ function init_app() {
         if (window.vrmManager && window.vrmManager._goodbyeClicked) {
             console.log('[showCurrentModel] 当前处于"请她离开"状态（VRM），跳过显示逻辑');
             return;
+        }
+        
+        // 在显示模型前，明确重置 goodbye 标志（防止标志持久化导致模型无法显示）
+        if (window.live2dManager) {
+            window.live2dManager._goodbyeClicked = false;
+        }
+        if (window.vrmManager) {
+            window.vrmManager._goodbyeClicked = false;
         }
 
         try {
@@ -3295,9 +3420,9 @@ function init_app() {
                     vrmLockIcon.style.display = 'block';
                 }
 
-                // 设置VRM解锁状态
-                if (window.vrmManager && window.vrmManager.interaction && typeof window.vrmManager.interaction.setLocked === 'function') {
-                    window.vrmManager.interaction.setLocked(false);
+                // 设置VRM解锁状态（统一使用 core.setLocked API）
+                if (window.vrmManager && window.vrmManager.core && typeof window.vrmManager.core.setLocked === 'function') {
+                    window.vrmManager.core.setLocked(false);
                 }
 
                 // 【修复】隐藏Live2D浮动按钮和锁图标
@@ -5743,13 +5868,31 @@ function init_app() {
                     option.style.borderColor = '#4f8cff';
                 }
 
-                // 缩略图
+                // 缩略图（带异常处理和占位图回退）
                 if (source.thumbnail) {
                     const thumb = document.createElement('img');
-                    // NativeImage 对象需要转换为 dataURL 字符串
-                    thumb.src = typeof source.thumbnail === 'string' 
-                        ? source.thumbnail 
-                        : (source.thumbnail.toDataURL ? source.thumbnail.toDataURL() : '');
+                    let thumbnailDataUrl = '';
+                    try {
+                        // NativeImage 对象需要转换为 dataURL 字符串
+                        if (typeof source.thumbnail === 'string') {
+                            thumbnailDataUrl = source.thumbnail;
+                        } else if (source.thumbnail && typeof source.thumbnail.toDataURL === 'function') {
+                            thumbnailDataUrl = source.thumbnail.toDataURL();
+                        }
+                        // 检查是否为空字符串或无效值
+                        if (!thumbnailDataUrl || thumbnailDataUrl.trim() === '') {
+                            throw new Error('thumbnail.toDataURL() 返回空值');
+                        }
+                    } catch (e) {
+                        console.warn('[屏幕源] 缩略图转换失败，使用占位图:', e);
+                        // 使用占位图（1x1 透明像素的 dataURL）
+                        thumbnailDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+                    }
+                    thumb.src = thumbnailDataUrl;
+                    // 添加错误处理，如果图片加载失败也使用占位图
+                    thumb.onerror = () => {
+                        thumb.src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+                    };
                     Object.assign(thumb.style, {
                         width: '100%',
                         maxWidth: '90px',
@@ -6481,7 +6624,8 @@ function init_app() {
 
                     // 7. 重置模型引用
                     window.vrmManager.currentModel = null;
-                    window.vrmManager._goodbyeClicked = true;
+                    // 不在这里设置 _goodbyeClicked = true，因为这会永久短路 showCurrentModel
+                    // 标志会在 finally 块中统一重置，或在加载新模型时清除
                 }
 
             } catch (e) {
@@ -6543,7 +6687,10 @@ function init_app() {
                 syncFloatingMicButtonState(false);
                 syncFloatingScreenButtonState(false);
             }
-            if (typeof clearAudioQueue === 'function') clearAudioQueue();
+            // 【修复】等待清空音频队列完成，避免竞态条件
+            if (typeof clearAudioQueue === 'function') {
+                await clearAudioQueue();
+            }
             if (isTextSessionActive) isTextSessionActive = false;
 
             if (socket) socket.close();
@@ -6623,10 +6770,12 @@ function init_app() {
 
                     if (!window.vrmManager) {
                         window.vrmManager = new window.VRMManager();
+                        // 初始化时确保 _goodbyeClicked 为 false
+                        window.vrmManager._goodbyeClicked = false;
+                    } else {
+                        // 如果 vrmManager 已存在，也清除 goodbyeClicked 标志，确保新模型可以正常显示
+                        window.vrmManager._goodbyeClicked = false;
                     }
-                    
-                    // 【修复】恢复 goodbyeClicked 标志，确保新模型可以正常显示
-                    window.vrmManager._goodbyeClicked = false;
 
                     // 确保容器和 canvas 存在
                     const vrmContainer = document.getElementById('vrm-container');
@@ -6778,9 +6927,12 @@ function init_app() {
             } else {
                 // 加载 Live2D 模型
 
-                // 重置goodbyeClicked标志
+                // 重置goodbyeClicked标志（包括 VRM 的，避免快速切换时遗留）
                 if (window.live2dManager) {
                     window.live2dManager._goodbyeClicked = false;
+                }
+                if (window.vrmManager) {
+                    window.vrmManager._goodbyeClicked = false;
                 }
 
                 const modelResponse = await fetch(`/api/characters/current_live2d_model?catgirl_name=${encodeURIComponent(newCatgirl)}`);
@@ -6923,6 +7075,14 @@ function init_app() {
             isSwitchingCatgirl = false;
             // 清理切换标识，取消所有 pending 的 applyLighting 定时器
             window._currentCatgirlSwitchId = null;
+            
+            // 重置 goodbyeClicked 标志，确保 showCurrentModel 可以正常运行
+            if (window.live2dManager) {
+                window.live2dManager._goodbyeClicked = false;
+            }
+            if (window.vrmManager) {
+                window.vrmManager._goodbyeClicked = false;
+            }
         }
     }
 
