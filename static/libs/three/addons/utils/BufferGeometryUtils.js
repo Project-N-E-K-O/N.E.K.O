@@ -607,15 +607,18 @@ function mergeVertices( geometry, tolerance = 1e-4 ) {
 			attr.normalized
 		);
 
-		const morphAttr = geometry.morphAttributes[ name ];
-		if ( morphAttr ) {
-
-			tmpMorphAttributes[ name ] = new BufferAttribute(
-				new morphAttr.array.constructor( morphAttr.count * morphAttr.itemSize ),
-				morphAttr.itemSize,
-				morphAttr.normalized
-			);
-
+		const morphAttrArray = geometry.morphAttributes[ name ];
+		if ( morphAttrArray && Array.isArray( morphAttrArray ) && morphAttrArray.length > 0 ) {
+			// morphAttributes[name] 是一个数组，每个元素是一个 BufferAttribute（对应一个 morph target）
+			tmpMorphAttributes[ name ] = [];
+			for ( let m = 0; m < morphAttrArray.length; m ++ ) {
+				const morphAttr = morphAttrArray[ m ];
+				tmpMorphAttributes[ name ].push( new BufferAttribute(
+					new morphAttr.array.constructor( morphAttr.count * morphAttr.itemSize ),
+					morphAttr.itemSize,
+					morphAttr.normalized
+				) );
+			}
 		}
 
 	}
@@ -657,7 +660,7 @@ function mergeVertices( geometry, tolerance = 1e-4 ) {
 
 				const name = attributeNames[ j ];
 				const attribute = geometry.getAttribute( name );
-				const morphAttr = geometry.morphAttributes[ name ];
+				const morphAttrArray = geometry.morphAttributes[ name ];
 				const itemSize = attribute.itemSize;
 				const newarray = tmpAttributes[ name ];
 				const newMorphArrays = tmpMorphAttributes[ name ];
@@ -668,11 +671,14 @@ function mergeVertices( geometry, tolerance = 1e-4 ) {
 					const setterFunc = setters[ k ];
 					newarray[ setterFunc ]( nextIndex, attribute[ getterFunc ]( index ) );
 
-					if ( morphAttr ) {
+					if ( morphAttrArray && Array.isArray( morphAttrArray ) && newMorphArrays && Array.isArray( newMorphArrays ) ) {
 
-						for ( let m = 0, ml = morphAttr.length; m < ml; m ++ ) {
+						for ( let m = 0, ml = morphAttrArray.length; m < ml; m ++ ) {
 
-							newMorphArrays[ m ][ setterFunc ]( nextIndex, morphAttr[ m ][ getterFunc ]( index ) );
+							const morphAttr = morphAttrArray[ m ];
+							if ( newMorphArrays[ m ] && morphAttr ) {
+								newMorphArrays[ m ][ setterFunc ]( nextIndex, morphAttr[ getterFunc ]( index ) );
+							}
 
 						}
 
@@ -704,16 +710,27 @@ function mergeVertices( geometry, tolerance = 1e-4 ) {
 
 		if ( ! ( name in tmpMorphAttributes ) ) continue;
 
-		for ( let j = 0; j < tmpMorphAttributes[ name ].length; j ++ ) {
+		// 确保 result.morphAttributes[name] 是一个数组
+		if ( ! result.morphAttributes ) {
+			result.morphAttributes = {};
+		}
+		if ( ! result.morphAttributes[ name ] ) {
+			result.morphAttributes[ name ] = [];
+		}
 
-			const tmpMorphAttribute = tmpMorphAttributes[ name ][ j ];
+		const tmpMorphArray = tmpMorphAttributes[ name ];
+		if ( Array.isArray( tmpMorphArray ) ) {
+			for ( let j = 0; j < tmpMorphArray.length; j ++ ) {
 
-			result.morphAttributes[ name ][ j ] = new BufferAttribute(
-				tmpMorphAttribute.array.slice( 0, nextIndex * tmpMorphAttribute.itemSize ),
-				tmpMorphAttribute.itemSize,
-				tmpMorphAttribute.normalized,
-			);
+				const tmpMorphAttribute = tmpMorphArray[ j ];
 
+				result.morphAttributes[ name ][ j ] = new BufferAttribute(
+					tmpMorphAttribute.array.slice( 0, nextIndex * tmpMorphAttribute.itemSize ),
+					tmpMorphAttribute.itemSize,
+					tmpMorphAttribute.normalized,
+				);
+
+			}
 		}
 
 	}
@@ -941,7 +958,7 @@ function computeMorphedAttributes( object ) {
 	const morphPosition = geometry.morphAttributes.position;
 	const morphTargetsRelative = geometry.morphTargetsRelative;
 	const normalAttribute = geometry.attributes.normal;
-	const morphNormal = geometry.morphAttributes.position;
+	const morphNormal = geometry.morphAttributes.normal;
 
 	const groups = geometry.groups;
 	const drawRange = geometry.drawRange;

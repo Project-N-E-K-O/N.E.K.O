@@ -427,8 +427,8 @@ class VRMAnimation {
                 this.currentAction = null;
                 this.vrmaIsPlaying = false;
 
-                // 再次延迟启用物理
-                setTimeout(() => {
+                // 再次延迟启用物理（内层 timer 也要保存引用，防止重复调用时无法取消）
+                this._springBoneTimer = setTimeout(() => {
                     if (this.manager.toggleSpringBone) {
                         this.manager.toggleSpringBone(true);
                     }

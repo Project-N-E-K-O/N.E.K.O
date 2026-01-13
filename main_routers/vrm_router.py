@@ -37,6 +37,19 @@ async def upload_vrm_model(file: UploadFile = File(...)):
         if not filename or not filename.lower().endswith('.vrm'):
             return JSONResponse(status_code=400, content={"success": False, "error": "文件必须是.vrm格式"})
         
+        # 读取文件内容（用于大小检查和保存）
+        # 注意：只读取一次，后续保存时复用此 content，避免重复读取
+        content = await file.read()
+        
+        # 检查文件大小（限制为200MB）
+        MAX_FILE_SIZE = 200 * 1024 * 1024  # 200MB
+        file_size = len(content)
+        if file_size > MAX_FILE_SIZE:
+            return JSONResponse(status_code=400, content={
+                "success": False, 
+                "error": f"文件过大，最大允许 {MAX_FILE_SIZE // (1024*1024)}MB，当前文件大小: {file_size // (1024*1024)}MB"
+            })
+        
         # 获取模型名称（去掉扩展名）
         model_name = pathlib.Path(filename).stem
         
@@ -55,9 +68,8 @@ async def upload_vrm_model(file: UploadFile = File(...)):
                 "error": f"模型 {filename} 已存在，请先删除或重命名现有模型"
             })
         
-        # 保存文件
+        # 保存文件（使用已读取的 content，不再重复读取）
         with open(target_file_path, 'wb') as f:
-            content = await file.read()
             f.write(content)
         
         logger.info(f"成功上传VRM模型: {filename} -> {target_file_path}")
@@ -166,7 +178,8 @@ def get_vrm_animations():
                     })
                 # 也支持.vrm文件作为动画（某些情况下）
                 for anim_file in anim_dir.glob('*.vrm'):
-                    if anim_file not in [pathlib.Path(a["path"]) for a in animations]:
+                    # 【修复】比较字符串而不是 Path 对象，避免每次创建新对象导致比较失败
+                    if str(anim_file) not in [a["path"] for a in animations]:
                         animations.append({
                             "name": anim_file.stem,
                             "filename": anim_file.name,

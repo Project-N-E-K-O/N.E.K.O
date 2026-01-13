@@ -622,7 +622,10 @@ VRMManager.prototype.renderScreenSourceList = async function (popup) {
             // 缩略图
             if (source.thumbnail) {
                 const thumb = document.createElement('img');
-                thumb.src = source.thumbnail;
+                // NativeImage 对象需要转换为 dataURL 字符串
+                thumb.src = typeof source.thumbnail === 'string' 
+                    ? source.thumbnail 
+                    : (source.thumbnail.toDataURL ? source.thumbnail.toDataURL() : '');
                 Object.assign(thumb.style, {
                     width: '100%',
                     maxWidth: '90px',

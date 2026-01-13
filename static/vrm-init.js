@@ -24,6 +24,7 @@ async function fetchVRMConfig() {
             if (data.success && data.paths) {
                 // 更新全局配置
                 window.VRM_PATHS = data.paths;
+                window.VRM_PATHS.isLoaded = true;  // 标记已加载
             }
         }
     } catch (error) {
@@ -62,59 +63,59 @@ async function initVRMModel() {
     // 标记开始
     window._isVRMInitializing = true;
     
-    // 1. 等待配置加载完成
-    if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
-        await window.pageConfigReady;
-    }
-    // 在此处同步后端路径配置 
-    await fetchVRMConfig();
-    
-    // 主动去服务器拉取最新的角色详情（包含光照）
     try {
-        const currentName = window.lanlan_config?.lanlan_name;
-        if (currentName) {
-            // 请求完整的角色列表
-            const res = await fetch('/api/characters');
-            if (res.ok) {
-                const data = await res.json();
-                // 提取当前角色的数据
-                const charData = data['猫娘']?.[currentName];
-                if (charData) {
-                    // 把 lighting 补全到全局配置里
-                    window.lanlan_config.lighting = charData.lighting;
-                    // 顺便把 VRM 路径也更新一下，防止主页存的是旧路径
-                    if (charData.vrm) window.lanlan_config.vrm = charData.vrm;
+        // 1. 等待配置加载完成
+        if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
+            await window.pageConfigReady;
+        }
+        // 在此处同步后端路径配置 
+        await fetchVRMConfig();
+        
+        // 主动去服务器拉取最新的角色详情（包含光照）
+        try {
+            const currentName = window.lanlan_config?.lanlan_name;
+            if (currentName) {
+                // 请求完整的角色列表
+                const res = await fetch('/api/characters');
+                if (res.ok) {
+                    const data = await res.json();
+                    // 提取当前角色的数据
+                    const charData = data['猫娘']?.[currentName];
+                    if (charData) {
+                        // 把 lighting 补全到全局配置里
+                        window.lanlan_config.lighting = charData.lighting;
+                        // 顺便把 VRM 路径也更新一下，防止主页存的是旧路径
+                        if (charData.vrm) window.lanlan_config.vrm = charData.vrm;
+                    }
                 }
             }
+        } catch (e) {
+            console.warn('[VRM Init] 同步角色数据失败，将使用默认设置:', e);
         }
-    } catch (e) {
-        console.warn('[VRM Init] 同步角色数据失败，将使用默认设置:', e);
-    }
-    // 2. 获取并确定模型路径
-    let targetModelPath = window.vrmModel || (typeof vrmModel !== 'undefined' ? vrmModel : '');
+        // 2. 获取并确定模型路径
+        let targetModelPath = window.vrmModel || (typeof vrmModel !== 'undefined' ? vrmModel : '');
 
-    // 如果未指定路径，使用默认模型保底
-    if (!targetModelPath) {
-        // 获取当前是否应该处于 VRM 模式
-        // (检查全局配置是否指定了 model_type: 'vrm')
-        const isVRMMode = window.lanlan_config && window.lanlan_config.model_type === 'vrm';
+        // 如果未指定路径，使用默认模型保底
+        if (!targetModelPath) {
+            // 获取当前是否应该处于 VRM 模式
+            // (检查全局配置是否指定了 model_type: 'vrm')
+            const isVRMMode = window.lanlan_config && window.lanlan_config.model_type === 'vrm';
 
-        // 只有在 "存在 Live2D 对象" 且 "当前配置不是 VRM 模式" 时，才真的退出
-        // 这样即使 window.cubism4Model 没销毁，只要配置切到了 vrm，就会继续往下走
-        if (window.cubism4Model && !isVRMMode) {
-            return; // Live2D 模式且未强制切换，跳过 VRM 默认加载
+            // 只有在 "存在 Live2D 对象" 且 "当前配置不是 VRM 模式" 时，才真的退出
+            // 这样即使 window.cubism4Model 没销毁，只要配置切到了 vrm，就会继续往下走
+            if (window.cubism4Model && !isVRMMode) {
+                return; // Live2D 模式且未强制切换，跳过 VRM 默认加载
+            }
+
+            // 如果上面的 if 没拦截住（说明我们要加载 VRM），就会执行这一行，赋予默认模型
+            targetModelPath = '/static/vrm/sister1.0.vrm';
+        }
+        
+        if (!window.vrmManager) {
+            console.warn('[VRM Init] VRM管理器未初始化，跳过加载');
+            return;
         }
 
-        // 如果上面的 if 没拦截住（说明我们要加载 VRM），就会执行这一行，赋予默认模型
-        targetModelPath = '/static/vrm/sister1.0.vrm';
-    }
-    
-    if (!window.vrmManager) {
-        console.warn('[VRM Init] VRM管理器未初始化，跳过加载');
-        return;
-    }
-
-    try {
         // UI 切换逻辑
         const vrmContainer = document.getElementById('vrm-container');
         if (vrmContainer) vrmContainer.style.display = 'block';
@@ -190,8 +191,8 @@ async function initVRMModel() {
 
     } catch (error) {
         console.error('[VRM Init] 错误详情:', error.stack);
-    }finally {
-        // 无论成功还是失败，最后都释放锁
+    } finally {
+        // 无论成功还是失败，包括所有早期返回，最后都释放锁
         window._isVRMInitializing = false;
     }
 }

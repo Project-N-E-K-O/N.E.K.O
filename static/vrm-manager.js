@@ -246,44 +246,30 @@ class VRMManager {
                         let leftBottomY = leftFootPos.y;
                         let rightBottomY = rightFootPos.y;
                         
+                        // 定义一次查找最低Y坐标的辅助函数（避免重复定义）
+                        const findLowestY = (bone, currentY) => {
+                            let lowest = currentY;
+                            if (bone) {
+                                bone.updateMatrixWorld(true);
+                                const pos = new window.THREE.Vector3();
+                                bone.getWorldPosition(pos);
+                                if (pos.y < lowest) {
+                                    lowest = pos.y;
+                                }
+                                // 递归检查所有子骨骼
+                                bone.children.forEach(child => {
+                                    lowest = findLowestY(child, lowest);
+                                });
+                            }
+                            return lowest;
+                        };
+                        
                         // 如果使用的是脚部骨骼，需要向下偏移（估算脚的长度）
                         if (!leftToes?.node && leftFoot?.node) {
-                            // 尝试找到脚部骨骼的最底部（遍历子骨骼）
-                            const findLowestY = (bone, currentY) => {
-                                let lowest = currentY;
-                                if (bone) {
-                                    bone.updateMatrixWorld(true);
-                                    const pos = new window.THREE.Vector3();
-                                    bone.getWorldPosition(pos);
-                                    if (pos.y < lowest) {
-                                        lowest = pos.y;
-                                    }
-                                    // 递归检查所有子骨骼
-                                    bone.children.forEach(child => {
-                                        lowest = findLowestY(child, lowest);
-                                    });
-                                }
-                                return lowest;
-                            };
                             leftBottomY = findLowestY(leftFoot.node, leftFootPos.y);
                         }
                         
                         if (!rightToes?.node && rightFoot?.node) {
-                            const findLowestY = (bone, currentY) => {
-                                let lowest = currentY;
-                                if (bone) {
-                                    bone.updateMatrixWorld(true);
-                                    const pos = new window.THREE.Vector3();
-                                    bone.getWorldPosition(pos);
-                                    if (pos.y < lowest) {
-                                        lowest = pos.y;
-                                    }
-                                    bone.children.forEach(child => {
-                                        lowest = findLowestY(child, lowest);
-                                    });
-                                }
-                                return lowest;
-                            };
                             rightBottomY = findLowestY(rightFoot.node, rightFootPos.y);
                         }
                         
@@ -477,10 +463,10 @@ class VRMManager {
         return this.currentModel; 
     }
     setModelPosition(x,y,z) { 
-        if(this.currentModel?.scene) this.currentModel.scene.position.set(x,y,z); 
+        if(this.currentModel?.vrm?.scene) this.currentModel.vrm.scene.position.set(x,y,z); 
     }
     setModelScale(x,y,z) { 
-        if(this.currentModel?.scene) this.currentModel.scene.scale.set(x,y,z); 
+        if(this.currentModel?.vrm?.scene) this.currentModel.vrm.scene.scale.set(x,y,z); 
     }
 }
 

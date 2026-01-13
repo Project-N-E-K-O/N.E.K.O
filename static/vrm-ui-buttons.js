@@ -8,6 +8,15 @@ VRMManager.prototype.setupFloatingButtons = function () {
     if (window.location.pathname.includes('model_manager')) {
         return; 
     }
+    
+    // 如果之前已经注册过 document 级别的事件监听器，先移除它们以防止重复注册
+    if (this._returnButtonDragHandlers) {
+        document.removeEventListener('mousemove', this._returnButtonDragHandlers.mouseMove);
+        document.removeEventListener('mouseup', this._returnButtonDragHandlers.mouseUp);
+        document.removeEventListener('touchmove', this._returnButtonDragHandlers.touchMove);
+        document.removeEventListener('touchend', this._returnButtonDragHandlers.touchEnd);
+        this._returnButtonDragHandlers = null;
+    }
     const container = document.getElementById('vrm-container');
 
     // 强力清除旧势力的残党
@@ -762,18 +771,27 @@ VRMManager.prototype.setupVRMReturnButtonDrag = function (returnButtonContainer)
             e.preventDefault(); handleStart(e.clientX, e.clientY);
         }
     });
-    document.addEventListener('mousemove', (e) => handleMove(e.clientX, e.clientY));
-    document.addEventListener('mouseup', handleEnd);
+    
+    // 保存 document 级别的事件监听器引用，以便后续清理
+    this._returnButtonDragHandlers = {
+        mouseMove: (e) => handleMove(e.clientX, e.clientY),
+        mouseUp: handleEnd,
+        touchMove: (e) => {
+            if(isDragging) { e.preventDefault(); const touch = e.touches[0]; handleMove(touch.clientX, touch.clientY); }
+        },
+        touchEnd: handleEnd
+    };
+    
+    document.addEventListener('mousemove', this._returnButtonDragHandlers.mouseMove);
+    document.addEventListener('mouseup', this._returnButtonDragHandlers.mouseUp);
     
     returnButtonContainer.addEventListener('touchstart', (e) => {
         if (e.target === returnButtonContainer || e.target.classList.contains('vrm-return-btn')) {
             e.preventDefault(); const touch = e.touches[0]; handleStart(touch.clientX, touch.clientY);
         }
     });
-    document.addEventListener('touchmove', (e) => {
-        if(isDragging) { e.preventDefault(); const touch = e.touches[0]; handleMove(touch.clientX, touch.clientY); }
-    }, {passive: false});
-    document.addEventListener('touchend', handleEnd);
+    document.addEventListener('touchmove', this._returnButtonDragHandlers.touchMove, {passive: false});
+    document.addEventListener('touchend', this._returnButtonDragHandlers.touchEnd);
     returnButtonContainer.style.cursor = 'grab';
 };
 
@@ -819,6 +837,16 @@ VRMManager.prototype.cleanupUI = function() {
     document.querySelectorAll('#vrm-lock-icon').forEach(el => el.remove());
     const vrmReturnBtn = document.getElementById('vrm-return-button-container');
     if (vrmReturnBtn) vrmReturnBtn.remove();
+    
+    // 移除 document 级别的事件监听器，防止内存泄漏
+    if (this._returnButtonDragHandlers) {
+        document.removeEventListener('mousemove', this._returnButtonDragHandlers.mouseMove);
+        document.removeEventListener('mouseup', this._returnButtonDragHandlers.mouseUp);
+        document.removeEventListener('touchmove', this._returnButtonDragHandlers.touchMove);
+        document.removeEventListener('touchend', this._returnButtonDragHandlers.touchEnd);
+        this._returnButtonDragHandlers = null;
+    }
+    
     if (window.lanlan_config) window.lanlan_config.vrm_model = null;
     this._vrmLockIcon = null;
     this._floatingButtons = null;

@@ -171,7 +171,7 @@ class AudioManager {
                 // 这里可以调整映射关系
                 const mouthOpen = Math.min(1, rms * 8); // 放大到 0~1
                 // 设置 Live2D 嘴巴参数
-                model.internalModel.coreModel.setParameterValueById("ParamMouthOpenY", Math.max(mouthOpen));
+                model.internalModel.coreModel.setParameterValueById("ParamMouthOpenY", mouthOpen);
                 this.models.get(modelId).animationFrameId = requestAnimationFrame(animate);
             }
 

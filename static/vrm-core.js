@@ -90,7 +90,14 @@ class VRMCore {
                 }
                 
                 if (vrm.expressionManager && vrm.expressionManager.expressions) {
-                    const exprCount = Object.keys(vrm.expressionManager.expressions).length;
+                    // VRM 1.0 使用 Map，VRM 0.0 使用 Object
+                    // 如果使用 Object.keys(map)，Map 会返回空数组，导致误判
+                    let exprCount;
+                    if (vrm.expressionManager.expressions instanceof Map) {
+                        exprCount = vrm.expressionManager.expressions.size;
+                    } else {
+                        exprCount = Object.keys(vrm.expressionManager.expressions).length;
+                    }
                     if (exprCount > 10) {
                         return '1.0';
                     }
@@ -124,12 +131,12 @@ class VRMCore {
             }
         }
 
-        // 更新 canvas 的 pointerEvents
-        if (this.manager.canvas) {
-            this.manager.canvas.style.pointerEvents = locked ? 'none' : 'auto';
-        }
+        // 不再修改 canvas 的 pointerEvents，改用逻辑拦截
+        // 这样锁定时虽然不能移动/缩放，但依然可以点中模型弹出菜单
+        // pointerEvents 的修改由 VRMInteraction 统一管理（如果需要的话）
 
         // 更新交互模块的锁定状态
+        // VRMInteraction 会通过 checkLocked() 来拦截拖拽/缩放操作
         if (this.manager.interaction && typeof this.manager.interaction.setLocked === 'function') {
             this.manager.interaction.setLocked(locked);
         }
@@ -165,14 +172,22 @@ class VRMCore {
     applyPerformanceSettings() {
         if (!this.manager.renderer) return;
         
-        let pixelRatio = window.devicePixelRatio || 1;
+        const devicePixelRatio = window.devicePixelRatio || 1;
+        let pixelRatio;
+        
         if (this.performanceMode === 'low') {
-            pixelRatio = Math.max(1.5, Math.min(pixelRatio, 2.0));
+            // 低性能模式：降低 pixelRatio 以减少 GPU 负担
+            pixelRatio = Math.min(0.75, devicePixelRatio);
         } else if (this.performanceMode === 'medium') {
-            pixelRatio = Math.max(2.0, Math.min(pixelRatio, 2.5));
+            // 中等性能模式：使用适中的值
+            pixelRatio = Math.min(1.0, devicePixelRatio);
         } else {
-            pixelRatio = Math.max(2.0, pixelRatio);
+            // 高性能模式：可以使用更高的值
+            pixelRatio = Math.min(2.0, devicePixelRatio);
         }
+        
+        // 确保 pixelRatio 至少为 0.5（避免过低的渲染质量）
+        pixelRatio = Math.max(0.5, pixelRatio);
         
         this.manager.renderer.setPixelRatio(pixelRatio);
     }
@@ -184,23 +199,28 @@ class VRMCore {
         if (!this.manager.currentModel || !this.manager.currentModel.vrm || !this.manager.currentModel.vrm.scene) return;
         
         this.manager.currentModel.vrm.scene.traverse((object) => {
-            if (object.material) {
-                const materials = Array.isArray(object.material) ? object.material : [object.material];
-                materials.forEach(material => {
-                    // 1. 全局开启阴影 (衣服、头发)
-                    material.castShadow = true;
-                    material.receiveShadow = true;
+            // castShadow/receiveShadow 是 Object3D/Mesh 的属性，不是材质属性
+            // 应该在 object 上设置，而不是 material 上
+            if (object.isMesh || object.isObject3D) {
+                // 1. 全局开启阴影 (衣服、头发)
+                object.castShadow = true;
+                object.receiveShadow = true;
+                
+                // 智能检测脸部：如果物体名称包含 "Face"、"Skin"、"Head" 等关键词
+                const objectName = object.name.toLowerCase();
+                if (objectName.includes('face') || objectName.includes('skin') || objectName.includes('head')) {
+                    // ❌ 脸部不接收阴影 (防止出现奇怪的鼻影或黑脸)
+                    // 这样脸永远是白净的，但头发还是会投射影子到脖子上
+                    object.receiveShadow = false;
                     
-                    // 智能检测脸部：如果材质名称或物体名称包含 "Face"、"Skin"、"Body" 等关键词
-                    const name = (object.name + (material.name || '')).toLowerCase();
-                    if (name.includes('face') || name.includes('skin') || name.includes('head')) {
-                        // ❌ 脸部不接收阴影 (防止出现奇怪的鼻影或黑脸)
-                        // 这样脸永远是白净的，但头发还是会投射影子到脖子上
-                        material.receiveShadow = false; 
-                        
-                        // 可选：稍微增加一点自发光，确保肤色通透
+                    // 可选：稍微增加一点自发光，确保肤色通透
+                    if (object.material) {
+                        const materials = Array.isArray(object.material) ? object.material : [object.material];
+                        materials.forEach(material => {
+                            // 可以在这里调整脸部材质的自发光等属性
+                        });
                     }
-                });
+                }
             }
         });
     }
@@ -280,7 +300,16 @@ class VRMCore {
         // 开启高质量软阴影 
         this.manager.renderer.shadowMap.enabled = true; // 开启阴影
         this.manager.renderer.shadowMap.type = THREE.PCFSoftShadowMap; // 使用柔和阴影
-        this.manager.renderer.outputEncoding = THREE.sRGBEncoding;
+        
+        // 【兼容性修复】three.js r152+ 使用 outputColorSpace，r150 及以下使用 outputEncoding
+        // outputEncoding 从 r152 开始被标记为废弃，r162 会被完全移除
+        if (THREE.SRGBColorSpace !== undefined) {
+            // 新 API (r152+)
+            this.manager.renderer.outputColorSpace = THREE.SRGBColorSpace;
+        } else {
+            // 旧 API (r150 及以下)
+            this.manager.renderer.outputEncoding = THREE.sRGBEncoding;
+        }
         
         //  Linear (最稳妥的方案)
         this.manager.renderer.toneMapping = THREE.LinearToneMapping; 
@@ -594,7 +623,33 @@ class VRMCore {
                 if (options.scale) {
                     vrm.scene.scale.set(options.scale.x || 1, options.scale.y || 1, options.scale.z || 1);
                 } else {
-                    vrm.scene.scale.set(1, 1, 1);
+                    // 根据模型大小和屏幕大小计算合适的默认缩放
+                    const modelHeight = size.y;
+                    const screenHeight = window.innerHeight;
+                    const screenWidth = window.innerWidth;
+
+                    // 计算合适的初始缩放（参考Live2D的默认大小计算，参考 vrm.js）
+                    const isMobile = window.innerWidth <= 768;
+                    let targetScale;
+
+                    if (isMobile) {
+                        // 移动端：较小
+                        targetScale = Math.min(
+                            0.5,
+                            window.innerHeight * 1.3 / 4000,
+                            window.innerWidth * 1.2 / 2000
+                        );
+                    } else {
+                        // 桌面端：参考Live2D的计算方式
+                        targetScale = Math.min(
+                            0.5,
+                            (window.innerHeight * 0.75) / 7000,
+                            (window.innerWidth * 0.6) / 7000
+                        );
+                    }
+                    
+                    // 应用计算出的 targetScale
+                    vrm.scene.scale.setScalar(targetScale);
                 }
             }
 
@@ -607,26 +662,6 @@ class VRMCore {
             const targetScreenHeight = screenHeight * 0.45;
             const fov = this.manager.camera.fov * (Math.PI / 180);
             const distance = (modelHeight / 2) / Math.tan(fov / 2) / targetScreenHeight * screenHeight;
-
-            // 计算合适的初始缩放（参考Live2D的默认大小计算，参考 vrm.js）
-            const isMobile = window.innerWidth <= 768;
-            let targetScale;
-
-            if (isMobile) {
-                // 移动端：较小
-                targetScale = Math.min(
-                    0.5,
-                    window.innerHeight * 1.3 / 4000,
-                    window.innerWidth * 1.2 / 2000
-                );
-            } else {
-                // 桌面端：参考Live2D的计算方式
-                targetScale = Math.min(
-                    0.5,
-                    (window.innerHeight * 0.75) / 7000,
-                    (window.innerWidth * 0.6) / 7000
-                );
-            }
             
             // 调整相机位置，使模型在屏幕中央合适的位置
             const cameraY = center.y + (isMobile ? modelHeight * 0.2 : modelHeight * 0.1);

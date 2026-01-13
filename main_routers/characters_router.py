@@ -316,16 +316,22 @@ async def update_catgirl_l2d(name: str, request: Request):
         model_type_str = str(model_type).lower() if model_type else 'live2d'
         if model_type_str == 'vrm':
             if not vrm_model:
-                return JSONResponse(content={
-                    'success': False,
-                    'error': '未提供VRM模型路径'
-                })
+                return JSONResponse(
+                    content={
+                        'success': False,
+                        'error': '未提供VRM模型路径'
+                    },
+                    status_code=400
+                )
         else:
             if not live2d_model:
-                return JSONResponse(content={
-                    'success': False,
-                    'error': '未提供Live2D模型名称'
-                })
+                return JSONResponse(
+                    content={
+                        'success': False,
+                        'error': '未提供Live2D模型名称'
+                    },
+                    status_code=400
+                )
         
         # 加载当前角色配置
         _config_manager = get_config_manager()
@@ -369,8 +375,8 @@ async def update_catgirl_l2d(name: str, request: Request):
         initialize_character_data = get_initialize_character_data()
         await initialize_character_data()
         
-        # 根据模型类型返回相应的消息
-        if model_type == 'vrm':
+        # 根据模型类型返回相应的消息（统一使用 model_type_str）
+        if model_type_str == 'vrm':
             message = f'已更新角色 {name} 的VRM模型为 {vrm_model}'
         else:
             message = f'已更新角色 {name} 的Live2D模型为 {live2d_model}'
@@ -450,6 +456,11 @@ async def update_catgirl_lighting(name: str, request: Request):
 
         # 保存配置
         _config_manager.save_characters(characters)
+        
+        # 自动重新加载配置，让运行时配置立即生效
+        initialize_character_data = get_initialize_character_data()
+        if initialize_character_data:
+            await initialize_character_data()
 
         return JSONResponse(content={
             'success': True,

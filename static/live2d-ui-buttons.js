@@ -48,6 +48,11 @@ Live2DManager.prototype.setupHTMLLockIcon = function (model) {
     // 这样可以避免重复创建，并确保锁图标的状态是最新的
     const existingLockIcon = document.getElementById('live2d-lock-icon');
     if (existingLockIcon) {
+        // 先移除旧的 ticker，防止回调累积泄漏
+        if (this._lockIconTicker && this.pixi_app?.ticker) {
+            this.pixi_app.ticker.remove(this._lockIconTicker);
+            this._lockIconTicker = null;
+        }
         // 移除旧的锁图标，准备创建新的
         existingLockIcon.remove();
     }
@@ -162,6 +167,12 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
         return;
     }
 
+    // 如果之前已经注册过 resize 监听器，先移除它以防止重复注册
+    if (this._floatingButtonsResizeHandler) {
+        window.removeEventListener('resize', this._floatingButtonsResizeHandler);
+        this._floatingButtonsResizeHandler = null;
+    }
+
     // 在 l2d_manager 等页面不显示
     if (!document.getElementById('chat-container')) {
         this.isLocked = false;
@@ -223,7 +234,9 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
         }
     };
     applyResponsiveFloatingLayout();
-    window.addEventListener('resize', applyResponsiveFloatingLayout);
+    // 保存 handler 引用，以便后续清理
+    this._floatingButtonsResizeHandler = applyResponsiveFloatingLayout;
+    window.addEventListener('resize', this._floatingButtonsResizeHandler);
 
     // 定义按钮配置（从上到下：麦克风、显示屏、锤子、设置、睡觉）
     // 添加版本号防止缓存（更新图标时修改这个版本号）

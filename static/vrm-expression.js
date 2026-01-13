@@ -168,22 +168,31 @@ class VRMExpression {
         
         const exprs = expressionManager.expressions;
 
-        // 1. 如果是 Map (VRM 1.0 标准)，转为数组
+        // 1. 如果 exprs 缺失或为 null，优先检查内部属性 _expressionMap
+        if (!exprs) {
+            if (expressionManager._expressionMap) {
+                return Object.keys(expressionManager._expressionMap);
+            }
+            return [];
+        }
+
+        // 2. 如果是 Map (VRM 1.0 标准)，转为数组
         if (exprs instanceof Map) {
             return Array.from(exprs.keys());
         }
 
-        // 2. 如果是 Array (某些加载器版本)，提取内部的 name 属性
+        // 3. 如果是 Array (某些加载器版本)，提取内部的 name 属性
         if (Array.isArray(exprs)) {
             return exprs.map(e => e.expressionName || e.name || e.presetName).filter(n => n);
         }
 
-        // 3. 如果是普通 Object (VRM 0.0)，直接取键名
-        if (typeof exprs === 'object') {
+        // 4. 如果是普通 Object (VRM 0.0)，直接取键名
+        // 注意：typeof null === 'object'，所以需要额外检查 null
+        if (exprs && typeof exprs === 'object') {
             return Object.keys(exprs);
         }
 
-        // 4. 备用方案：检查内部属性 _expressionMap
+        // 5. 最后的备用方案：检查内部属性 _expressionMap
         if (expressionManager._expressionMap) {
             return Object.keys(expressionManager._expressionMap);
         }

@@ -3,6 +3,12 @@
  * 负责拖拽、缩放、鼠标跟踪等交互功能
  */
 
+// 确保 THREE 可用（支持 window.THREE 或全局 THREE）
+const THREE = window.THREE || (typeof THREE !== 'undefined' ? THREE : null);
+if (!THREE) {
+    console.error('[VRM Interaction] THREE.js 未加载，交互功能将不可用');
+}
+
 class VRMInteraction {
     constructor(manager) {
         this.manager = manager;
@@ -45,7 +51,10 @@ class VRMInteraction {
         }
         
         const canvas = this.manager.renderer.domElement;
-        const THREE = window.THREE;
+        if (!THREE) {
+            console.error('[VRM Interaction] THREE.js 未加载，无法初始化拖拽和缩放');
+            return;
+        }
 
         // 先清理旧的事件监听器
         this.cleanupDragAndZoom();
@@ -130,7 +139,11 @@ class VRMInteraction {
             e.preventDefault();
             e.stopPropagation();
             
-            const THREE = window.THREE;
+            if (!THREE) {
+                console.error('[VRM Interaction] THREE.js 未加载，无法处理滚轮缩放');
+                return;
+            }
+            
             const delta = e.deltaY;
             const zoomSpeed = 0.05;
             const zoomFactor = delta > 0 ? (1 + zoomSpeed) : (1 - zoomSpeed); 
@@ -176,7 +189,9 @@ class VRMInteraction {
         document.addEventListener('mousemove', this.dragHandler); // 绑定到 document 以支持拖出画布
         document.addEventListener('mouseup', this.mouseUpHandler);
         canvas.addEventListener('mouseenter', this.mouseEnterHandler);
-        canvas.addEventListener('wheel', this.wheelHandler, { passive: false, capture: true });
+        // 保存 wheel 监听器选项，确保添加和移除时使用相同的选项
+        this._wheelListenerOptions = { passive: false, capture: true };
+        canvas.addEventListener('wheel', this.wheelHandler, this._wheelListenerOptions);
         canvas.addEventListener('auxclick', this.auxClickHandler);
         
         
@@ -260,6 +275,11 @@ class VRMInteraction {
      * @returns {THREE.Vector3} - 调整后的位置
      */
     ensureModelVisibility(position) {
+        if (!THREE) {
+            console.error('[VRM Interaction] THREE.js 未加载，无法确保模型可见性');
+            return position;
+        }
+        
         // 如果模型移动得太远（超出20个单位），重置到原点
         const maxAllowedDistance = 20;
         const distanceFromOrigin = position.length();
@@ -273,6 +293,8 @@ class VRMInteraction {
 
     /**
      * 清理拖拽和缩放相关事件监听器
+     * 注意：如果事件监听器在添加时使用了选项（如 { capture: true, passive: false }），
+     * 移除时必须使用相同的选项，否则 removeEventListener 不会生效
      */
     cleanupDragAndZoom() {
         if (!this.manager.renderer) return;
@@ -280,6 +302,7 @@ class VRMInteraction {
         const canvas = this.manager.renderer.domElement;
         
         // 移除所有事件监听器
+        // 注意：这些事件在添加时没有使用选项，所以移除时也不需要选项
         if (this.mouseDownHandler) {
             canvas.removeEventListener('mousedown', this.mouseDownHandler);
             this.mouseDownHandler = null;
@@ -302,8 +325,10 @@ class VRMInteraction {
             this.mouseEnterHandler = null;
         }
         if (this.wheelHandler) {
-            canvas.removeEventListener('wheel', this.wheelHandler);
+            // 移除时必须使用与添加时相同的选项，否则 removeEventListener 不会生效
+            canvas.removeEventListener('wheel', this.wheelHandler, this._wheelListenerOptions || { capture: true });
             this.wheelHandler = null;
+            this._wheelListenerOptions = null;
         }
     }
     
@@ -315,7 +340,11 @@ class VRMInteraction {
             return position;
         }
         
-        const THREE = window.THREE;
+        if (!THREE) {
+            console.error('[VRM Interaction] THREE.js 未加载，无法限制模型位置');
+            return position;
+        }
+        
         const camera = this.manager.camera;
         
         // 1. 将目标位置(世界坐标)投影到屏幕空间(NDC)
@@ -471,7 +500,7 @@ class VRMInteraction {
                     const camera = this.manager.camera;
                     const renderer = this.manager.renderer;
                     
-                    if (vrm && camera && renderer) {
+                    if (vrm && camera && renderer && THREE) {
                         const mouseX = this._lastMouseX || 0;
                         const mouseY = this._lastMouseY || 0;
                         
@@ -610,7 +639,7 @@ class VRMInteraction {
                 const camera = this.manager.camera;
                 const renderer = this.manager.renderer;
                 
-                if (!camera || !renderer) {
+                if (!camera || !renderer || !THREE) {
                     startHideTimer();
                     return;
                 }

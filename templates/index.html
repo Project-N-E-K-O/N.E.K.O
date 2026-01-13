@@ -1787,24 +1787,9 @@
                 // 确保 lanlan_config.lanlan_name 更新到 chara_manager.html 当前选中的猫娘
                 currentLanlanName = lanlan_config.lanlan_name = charactersData['当前猫娘'];
 
-                // 从猫娘配置中获取当前角色的模型信息（支持Live2D和VRM）
-                const catgirlConfig = charactersData['猫娘']?.[currentLanlanName];
-                if (!catgirlConfig) {
-                    console.warn(`未找到角色 ${currentLanlanName} 的配置，跳过模型检查`);
-                    return;
-                }
-                
-                const modelType = catgirlConfig.model_type || 'live2d';
-                // 根据模型类型获取正确的路径字段
-                let newModelPath = '';
-                if (modelType === 'vrm') {
-                    newModelPath = catgirlConfig.vrm || '';
-                } else {
-                    newModelPath = catgirlConfig.live2d || '';
-                }
-
-                if (modelType === 'vrm') {
-                    // 【关键修复】先清理Live2D资源，确保完全切换
+                // 提取公共函数：清理Live2D资源并切换到VRM
+                function cleanupLive2DAndSwitchToVRM() {
+                    // 清理Live2D资源
                     if (window.live2dManager) {
                         try {
                             console.log('[主页] 切换到VRM，开始清理Live2D资源...');
@@ -1832,7 +1817,7 @@
                         }
                     }
                     
-                    // 隐藏 Live2D，显示 VRM
+                    // 切换容器显示
                     const live2dContainer = document.getElementById('live2d-container');
                     const vrmContainer = document.getElementById('vrm-container');
                     if (live2dContainer) {
@@ -1845,12 +1830,31 @@
                     }
 
                     // 清理 Live2D 的 UI 元素（锁图标、浮动按钮等）
-                    const live2dLockIcon = document.getElementById('live2d-lock-icon');
-                    if (live2dLockIcon) live2dLockIcon.remove();
-                    const live2dFloatingButtons = document.getElementById('live2d-floating-buttons');
-                    if (live2dFloatingButtons) live2dFloatingButtons.remove();
-                    const live2dReturnBtn = document.getElementById('live2d-return-button-container');
-                    if (live2dReturnBtn) live2dReturnBtn.remove();
+                    ['live2d-lock-icon', 'live2d-floating-buttons', 'live2d-return-button-container'].forEach(id => {
+                        const el = document.getElementById(id);
+                        if (el) el.remove();
+                    });
+                }
+
+                // 从猫娘配置中获取当前角色的模型信息（支持Live2D和VRM）
+                const catgirlConfig = charactersData['猫娘']?.[currentLanlanName];
+                if (!catgirlConfig) {
+                    console.warn(`未找到角色 ${currentLanlanName} 的配置，跳过模型检查`);
+                    return;
+                }
+                
+                const modelType = catgirlConfig.model_type || 'live2d';
+                // 根据模型类型获取正确的路径字段
+                let newModelPath = '';
+                if (modelType === 'vrm') {
+                    newModelPath = catgirlConfig.vrm || '';
+                } else {
+                    newModelPath = catgirlConfig.live2d || '';
+                }
+
+                if (modelType === 'vrm') {
+                    // 使用公共函数清理Live2D资源并切换到VRM
+                    cleanupLive2DAndSwitchToVRM();
 
                     if (window.vrmManager && newModelPath) {
                         // 使用统一的路径转换函数
@@ -1956,38 +1960,8 @@
                     if (modelType === 'vrm') {
                         // VRM模型：重新加载VRM模型
                         if (window.vrmManager) {
-                            // 【关键修复】先清理Live2D资源
-                            if (window.live2dManager) {
-                                try {
-                                    console.log('[主页] 重新加载VRM，清理Live2D资源...');
-                                    if (window.live2dManager.currentModel) {
-                                        if (typeof window.live2dManager.currentModel.destroy === 'function') {
-                                            window.live2dManager.currentModel.destroy();
-                                        }
-                                        window.live2dManager.currentModel = null;
-                                    }
-                                    if (window.live2dManager.pixi_app) {
-                                        window.live2dManager.pixi_app.ticker.stop();
-                                        if (window.live2dManager.pixi_app.stage) {
-                                            window.live2dManager.pixi_app.stage.removeChildren();
-                                        }
-                                    }
-                                } catch (cleanupError) {
-                                    console.warn('[主页] Live2D清理时出现警告:', cleanupError);
-                                }
-                            }
-                            
-                            // 隐藏Live2D容器，显示VRM容器
-                            const live2dContainer = document.getElementById('live2d-container');
-                            const vrmContainer = document.getElementById('vrm-container');
-                            if (live2dContainer) {
-                                live2dContainer.style.display = 'none';
-                                live2dContainer.classList.add('hidden');
-                            }
-                            if (vrmContainer) {
-                                vrmContainer.style.display = 'block';
-                                vrmContainer.classList.remove('hidden');
-                            }
+                            // 使用公共函数清理Live2D资源并切换到VRM
+                            cleanupLive2DAndSwitchToVRM();
 
                             // 确保Three.js场景已初始化
                             if (!window.vrmManager._isInitialized || !window.vrmManager.scene || !window.vrmManager.camera || !window.vrmManager.renderer) {

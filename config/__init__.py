@@ -111,7 +111,7 @@ DEFAULT_LANLAN_TEMPLATE = {
     }
 }
 
-# 默认VRM打光配置（用于新角色初始化）
+# 默认VRM打光配置用于新角色初始化
 DEFAULT_VRM_LIGHTING = {
     "ambient": 0.08,  # 环境光强度 (范围: 0-0.3)
     "main": 0.06,     # 主光源强度 (范围: 0-2.5)

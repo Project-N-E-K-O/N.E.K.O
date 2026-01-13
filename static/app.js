@@ -7,7 +7,15 @@ let oggOpusDecoderReady = null;
 
 async function getOggOpusDecoder() {
     if (oggOpusDecoder) return oggOpusDecoder;
-    if (oggOpusDecoderReady) return oggOpusDecoderReady;
+    if (oggOpusDecoderReady) {
+        const result = await oggOpusDecoderReady;
+        // 如果之前失败返回了 null，清空缓存允许重试
+        if (result === null) {
+            oggOpusDecoderReady = null;
+        } else {
+            return result;
+        }
+    }
 
     oggOpusDecoderReady = (async () => {
         const module = window["ogg-opus-decoder"];
@@ -28,17 +36,31 @@ async function getOggOpusDecoder() {
         }
     })();
 
-    return oggOpusDecoderReady;
+    const result = await oggOpusDecoderReady;
+    // 如果失败返回了 null，清空缓存允许重试
+    if (result === null) {
+        oggOpusDecoderReady = null;
+    }
+    return result;
 }
 
 // 重置解码器（在新的音频流开始时调用）
+// 使用 reset() 而非 free()：reset() 是为新的音频流做状态重置，实例仍可复用
+// free() 会释放 WASM 内存导致实例完全不可用，后续必须新建实例（性能开销）
 async function resetOggOpusDecoder() {
     if (oggOpusDecoder) {
         try {
-            oggOpusDecoder.free();
-        } catch (e) { }
-        oggOpusDecoder = null;
-        oggOpusDecoderReady = null;
+            // reset() 是异步的，用于重置解码器状态以处理新的音频流
+            await oggOpusDecoder.reset();
+        } catch (e) {
+            console.warn('[OGG OPUS] 重置解码器失败:', e);
+            // 如果 reset() 失败，可能需要重新创建实例
+            // 此时清空引用，下次调用 getOggOpusDecoder() 时会创建新实例
+            oggOpusDecoder = null;
+            oggOpusDecoderReady = null;
+        }
+        // 注意：不在这里设置 oggOpusDecoder = null
+        // 仅在彻底不需要时再赋 null；若想继续复用实例则不赋值
     }
 }
 
@@ -1502,12 +1524,36 @@ function init_app() {
 
     async function stopScreenSharing() { // 停止共享，按钮on click
         stopScreening();
+        
+        // 停止所有 tracks 并清除回调，防止隐私/资源泄漏
+        try {
+            if (screenCaptureStream instanceof MediaStream) {
+                // 清除 onended 回调，防止重复触发
+                const vt = screenCaptureStream.getVideoTracks?.()?.[0];
+                if (vt) {
+                    vt.onended = null;
+                }
+                // 停止所有 tracks（包括视频和音频）
+                screenCaptureStream.getTracks().forEach(track => {
+                    try {
+                        track.stop();
+                    } catch (e) {
+                        // 忽略已经停止的 track
+                    }
+                });
+            }
+        } catch (e) {
+            console.warn('[屏幕分享] 停止 tracks 时出错:', e);
+        } finally {
+            // 确保引用被清空，即使出错也能释放
+            screenCaptureStream = null;
+        }
+        
         micButton.disabled = true;
         muteButton.disabled = false;
         screenButton.disabled = false;
         stopButton.disabled = true;
         resetSessionButton.disabled = false;
-        screenCaptureStream = null;
         showStatusToast(window.t ? window.t('app.speaking') : '正在语音...', 2000);
 
         // 移除active类
@@ -2068,82 +2114,17 @@ function init_app() {
         }, 500);
     });
 
-    // "请她回来"按钮事件（修复版：支持VRM和Live2D）
+    // "请她回来"按钮事件（重构版：复用 sessionStartedResolver + timeout 模式，统一使用 showCurrentModel）
     returnSessionButton.addEventListener('click', async () => {
         isSwitchingMode = true; // 开始模式切换
 
         try {
-            // 获取当前角色配置以确定模型类型
-            const charResponse = await fetch('/api/characters');
-            if (!charResponse.ok) {
-                throw new Error('无法获取角色配置');
+            // 清除 goodbyeClicked 标志
+            if (window.live2dManager) {
+                window.live2dManager._goodbyeClicked = false;
             }
-            const charactersData = await charResponse.json();
-            const currentCatgirl = lanlan_config.lanlan_name;
-            const catgirlConfig = charactersData['猫娘']?.[currentCatgirl];
-
-            if (!catgirlConfig) {
-                throw new Error(`未找到角色 ${currentCatgirl} 的配置`);
-            }
-
-            const modelType = catgirlConfig.model_type || (catgirlConfig.vrm ? 'vrm' : 'live2d');
-            console.log('[请他回来] 当前角色模型类型:', modelType);
-
-            // 根据模型类型显示相应的模型
-            if (modelType === 'vrm') {
-                // 显示 VRM 模型
-                if (window.vrmManager) {
-                    window.vrmManager._goodbyeClicked = false;
-                }
-
-                const vrmContainer = document.getElementById('vrm-container');
-                if (vrmContainer) {
-                    vrmContainer.classList.remove('hidden');
-                    vrmContainer.style.display = 'block';
-                    vrmContainer.style.visibility = 'visible';
-                }
-
-                // 确保Live2D容器隐藏
-                const live2dContainer = document.getElementById('live2d-container');
-                if (live2dContainer) {
-                    live2dContainer.style.display = 'none';
-                    live2dContainer.classList.add('hidden');
-                }
-
-                // 显示VRM按钮
-                const vrmButtons = document.getElementById('vrm-floating-buttons');
-                if (vrmButtons) {
-                    vrmButtons.style.setProperty('display', 'flex', 'important');
-                    vrmButtons.style.visibility = 'visible';
-                }
-
-                // 显示VRM锁图标
-                const vrmLockIcon = document.getElementById('vrm-lock-icon');
-                if (vrmLockIcon) {
-                    vrmLockIcon.style.removeProperty('display');
-                }
-            } else {
-                // 显示 Live2D 模型
-                showLive2d();
-
-                // 确保VRM容器隐藏
-                const vrmContainer = document.getElementById('vrm-container');
-                if (vrmContainer) {
-                    vrmContainer.style.display = 'none';
-                    vrmContainer.classList.add('hidden');
-                }
-
-                // 同步更新Live2D浮动按钮的状态
-                if (window.live2dManager && window.live2dManager._floatingButtons) {
-                    ['mic', 'screen'].forEach(buttonId => {
-                        const buttonData = window.live2dManager._floatingButtons[buttonId];
-                        if (buttonData && buttonData.button) {
-                            buttonData.button.dataset.active = 'false';
-                            if (buttonData.imgOff) buttonData.imgOff.style.opacity = '1';
-                            if (buttonData.imgOn) buttonData.imgOn.style.opacity = '0';
-                        }
-                    });
-                }
+            if (window.vrmManager) {
+                window.vrmManager._goodbyeClicked = false;
             }
 
             // 清除所有语音相关的状态类
@@ -2154,6 +2135,81 @@ function init_app() {
             // 确保停止录音状态
             isRecording = false;
             window.isRecording = false;
+
+            // 显示文本输入区
+            const textInputArea = document.getElementById('text-input-area');
+            if (textInputArea) {
+                textInputArea.classList.remove('hidden');
+            }
+
+            // 显示准备中提示
+            showStatusToast(window.t ? window.t('app.initializingText') : '正在初始化文本对话...', 3000);
+            showVoicePreparingToast(window.t ? window.t('app.textSystemPreparing') : '文本系统准备中，请稍候...');
+
+            // 创建一个 Promise 来等待 session_started 消息（复用已有模式）
+            let timeoutId = null;
+            const sessionStartPromise = new Promise((resolve, reject) => {
+                sessionStartedResolver = resolve;
+
+                // 清除之前的超时定时器（如果存在）
+                if (window.sessionTimeoutId) {
+                    clearTimeout(window.sessionTimeoutId);
+                }
+
+                // 设置超时（15秒），如果超时则拒绝
+                timeoutId = setTimeout(() => {
+                    if (sessionStartedResolver) {
+                        const resolver = sessionStartedResolver;
+                        sessionStartedResolver = null; // 先清除，防止重复触发
+                        window.sessionTimeoutId = null; // 清除全局定时器ID
+                        
+                        // 超时时向后端发送 end_session 消息
+                        if (socket.readyState === WebSocket.OPEN) {
+                            socket.send(JSON.stringify({
+                                action: 'end_session'
+                            }));
+                            console.log('[Return Session Timeout] 已向后端发送 end_session 消息');
+                        }
+                        
+                        reject(new Error(window.t ? window.t('app.sessionTimeout') : 'Session启动超时'));
+                    }
+                }, 15000); // 15秒超时
+
+                // 保存到全局变量，以便在 session_started 事件中清除
+                window.sessionTimeoutId = timeoutId;
+            });
+
+            // 启动文本session
+            if (socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({
+                    action: 'start_session',
+                    input_type: 'text',
+                    new_session: true
+                }));
+            } else {
+                // WebSocket未连接，清除超时定时器和状态
+                if (timeoutId) {
+                    clearTimeout(timeoutId);
+                }
+                if (window.sessionTimeoutId) {
+                    clearTimeout(window.sessionTimeoutId);
+                    window.sessionTimeoutId = null;
+                }
+                if (sessionStartedResolver) {
+                    sessionStartedResolver = null;
+                }
+                hideVoicePreparingToast();
+                throw new Error(window.t ? window.t('app.websocketNotConnectedError') : 'WebSocket未连接');
+            }
+
+            // 等待session真正启动成功
+            await sessionStartPromise;
+
+            // 只有在 session_started 确认后才设置状态
+            isTextSessionActive = true;
+
+            // 使用 showCurrentModel() 统一处理模型显示（避免重复分叉）
+            await showCurrentModel();
 
             // 启用所有基本输入按钮
             micButton.disabled = false;
@@ -2166,33 +2222,31 @@ function init_app() {
             muteButton.disabled = true;
             screenButton.disabled = true;
             stopButton.disabled = true;
+            returnSessionButton.disabled = true;
 
-            // 显示文本输入区
-            const textInputArea = document.getElementById('text-input-area');
-            textInputArea.classList.remove('hidden');
-
-            // 重新建立会话
-            if (socket.readyState === WebSocket.OPEN) {
-                socket.send(JSON.stringify({
-                    action: 'start_session',
-                    input_type: 'text',
-                    new_session: true
-                }));
-
-                isTextSessionActive = true;
-                showStatusToast(window.t ? window.t('app.returning', { name: lanlan_config.lanlan_name }) : `🫴 ${lanlan_config.lanlan_name}回来了！正在重新连接...`, 3000);
-
-                // 重置主动搭话定时器
-                if (proactiveChatEnabled || proactiveVisionEnabled) {
-                    resetProactiveChatBackoff();
-                }
-            } else {
-                showStatusToast(window.t ? window.t('app.websocketNotConnected') : 'WebSocket未连接！', 4000);
+            // 重置主动搭话定时器
+            if (proactiveChatEnabled || proactiveVisionEnabled) {
+                resetProactiveChatBackoff();
             }
+
+            showStatusToast(window.t ? window.t('app.returning', { name: lanlan_config.lanlan_name }) : `🫴 ${lanlan_config.lanlan_name}回来了！`, 3000);
 
         } catch (error) {
             console.error('[请他回来] 失败:', error);
-            showStatusToast(`回来失败: ${error.message}`, 4000);
+            hideVoicePreparingToast(); // 确保失败时隐藏准备提示
+            showStatusToast(window.t ? window.t('app.startFailed', { error: error.message }) : `回来失败: ${error.message}`, 5000);
+            
+            // 清除所有超时定时器和状态
+            if (window.sessionTimeoutId) {
+                clearTimeout(window.sessionTimeoutId);
+                window.sessionTimeoutId = null;
+            }
+            if (sessionStartedResolver) {
+                sessionStartedResolver = null;
+            }
+            
+            // 重新启用按钮，允许用户重试
+            returnSessionButton.disabled = false;
         } finally {
             // 延迟重置模式切换标志
             setTimeout(() => {
@@ -2844,8 +2898,10 @@ function init_app() {
                         lipSyncActive = true;
                     } else if (window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
                         // VRM模型的口型同步
-                        window.vrmManager.animation.startLipSync(globalAnalyser);
-                        lipSyncActive = true;
+                        if (typeof window.vrmManager.animation.startLipSync === 'function') {
+                            window.vrmManager.animation.startLipSync(globalAnalyser);
+                            lipSyncActive = true;
+                        }
                     }
                 }
 
@@ -2868,7 +2924,9 @@ function init_app() {
                             stopLipSync(window.LanLan1.live2dModel);
                         } else if (window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
                             // VRM模型停止口型同步
-                            window.vrmManager.animation.stopLipSync();
+                            if (typeof window.vrmManager.animation.stopLipSync === 'function') {
+                                window.vrmManager.animation.stopLipSync();
+                            }
                         }
                         lipSyncActive = false;
                         isPlaying = false; // 新增：所有音频播放完毕，重置isPlaying
@@ -3165,6 +3223,16 @@ function init_app() {
 
     // 智能显示当前模型（根据角色配置自动判断VRM或Live2D）
     async function showCurrentModel() {
+        // 【修复】检查"请她离开"状态，如果处于该状态则直接返回，不执行显示逻辑
+        if (window.live2dManager && window.live2dManager._goodbyeClicked) {
+            console.log('[showCurrentModel] 当前处于"请她离开"状态，跳过显示逻辑');
+            return;
+        }
+        if (window.vrmManager && window.vrmManager._goodbyeClicked) {
+            console.log('[showCurrentModel] 当前处于"请她离开"状态（VRM），跳过显示逻辑');
+            return;
+        }
+
         try {
             const charResponse = await fetch('/api/characters');
             if (!charResponse.ok) {
@@ -3195,19 +3263,102 @@ function init_app() {
                     vrmContainer.style.visibility = 'visible';
                 }
 
+                // 恢复 VRM canvas 的可见性
+                const vrmCanvas = document.getElementById('vrm-canvas');
+                if (vrmCanvas) {
+                    vrmCanvas.style.removeProperty('visibility');
+                    vrmCanvas.style.removeProperty('pointer-events');
+                    vrmCanvas.style.visibility = 'visible';
+                }
+
                 // 确保Live2D隐藏
                 const live2dContainer = document.getElementById('live2d-container');
                 if (live2dContainer) {
                     live2dContainer.style.display = 'none';
+                    live2dContainer.classList.add('hidden');
+                }
+
+                // 【修复】显示VRM浮动按钮（与 showLive2d 保持一致的处理方式）
+                const vrmFloatingButtons = document.getElementById('vrm-floating-buttons');
+                if (vrmFloatingButtons) {
+                    vrmFloatingButtons.style.setProperty('display', 'flex', 'important');
+                    vrmFloatingButtons.style.setProperty('visibility', 'visible', 'important');
+                    vrmFloatingButtons.style.setProperty('opacity', '1', 'important');
+                }
+
+                // 【修复】显示VRM锁图标（与 showLive2d 保持一致的处理方式）
+                const vrmLockIcon = document.getElementById('vrm-lock-icon');
+                if (vrmLockIcon) {
+                    vrmLockIcon.style.removeProperty('display');
+                    vrmLockIcon.style.removeProperty('visibility');
+                    vrmLockIcon.style.removeProperty('opacity');
+                    vrmLockIcon.style.display = 'block';
+                }
+
+                // 设置VRM解锁状态
+                if (window.vrmManager && window.vrmManager.interaction && typeof window.vrmManager.interaction.setLocked === 'function') {
+                    window.vrmManager.interaction.setLocked(false);
+                }
+
+                // 【修复】隐藏Live2D浮动按钮和锁图标
+                const live2dFloatingButtons = document.getElementById('live2d-floating-buttons');
+                if (live2dFloatingButtons) {
+                    live2dFloatingButtons.style.display = 'none';
+                }
+                const live2dLockIcon = document.getElementById('live2d-lock-icon');
+                if (live2dLockIcon) {
+                    live2dLockIcon.style.display = 'none';
+                }
+
+                // 【修复】隐藏原生按钮和status栏（与 showLive2d 保持一致）
+                const sidebar = document.getElementById('sidebar');
+                const sidebarbox = document.getElementById('sidebarbox');
+                if (sidebar) {
+                    sidebar.style.setProperty('display', 'none', 'important');
+                    sidebar.style.setProperty('visibility', 'hidden', 'important');
+                    sidebar.style.setProperty('opacity', '0', 'important');
+                }
+                if (sidebarbox) {
+                    sidebarbox.style.setProperty('display', 'none', 'important');
+                    sidebarbox.style.setProperty('visibility', 'hidden', 'important');
+                    sidebarbox.style.setProperty('opacity', '0', 'important');
+                }
+                const sideButtons = document.querySelectorAll('.side-btn');
+                sideButtons.forEach(btn => {
+                    btn.style.setProperty('display', 'none', 'important');
+                    btn.style.setProperty('visibility', 'hidden', 'important');
+                    btn.style.setProperty('opacity', '0', 'important');
+                });
+                const statusElement = document.getElementById('status');
+                if (statusElement) {
+                    statusElement.style.setProperty('display', 'none', 'important');
+                    statusElement.style.setProperty('visibility', 'hidden', 'important');
+                    statusElement.style.setProperty('opacity', '0', 'important');
                 }
             } else {
-                // 显示 Live2D 模型
+                // 显示 Live2D 模型（showLive2d 内部已有 goodbye 检查和完整的 UI 同步）
                 showLive2d();
 
                 // 确保VRM隐藏
                 const vrmContainer = document.getElementById('vrm-container');
                 if (vrmContainer) {
                     vrmContainer.style.display = 'none';
+                    vrmContainer.classList.add('hidden');
+                }
+                const vrmCanvas = document.getElementById('vrm-canvas');
+                if (vrmCanvas) {
+                    vrmCanvas.style.visibility = 'hidden';
+                    vrmCanvas.style.pointerEvents = 'none';
+                }
+
+                // 隐藏VRM浮动按钮和锁图标
+                const vrmFloatingButtons = document.getElementById('vrm-floating-buttons');
+                if (vrmFloatingButtons) {
+                    vrmFloatingButtons.style.display = 'none';
+                }
+                const vrmLockIcon = document.getElementById('vrm-lock-icon');
+                if (vrmLockIcon) {
+                    vrmLockIcon.style.display = 'none';
                 }
             }
         } catch (error) {
@@ -3420,8 +3571,11 @@ function init_app() {
         const live2dReturnButtonContainer = document.getElementById('live2d-return-button-container');
         const vrmReturnButtonContainer = document.getElementById('vrm-return-button-container');
         
-        // 显示Live2D的返回按钮
-        if (live2dReturnButtonContainer) {
+        // 检查当前激活的模型（通过检查 vrmGoodbyeButton 是否可见）
+        const useVrmReturn = !!(vrmGoodbyeButton && vrmGoodbyeButton.offsetParent !== null);
+        
+        // 显示Live2D的返回按钮（仅在非VRM模式时显示）
+        if (!useVrmReturn && live2dReturnButtonContainer) {
             if (savedGoodbyeRect) {
                 const containerWidth = live2dReturnButtonContainer.offsetWidth || 64;
                 const containerHeight = live2dReturnButtonContainer.offsetHeight || 64;
@@ -3441,10 +3595,13 @@ function init_app() {
             }
             live2dReturnButtonContainer.style.display = 'flex';
             live2dReturnButtonContainer.style.pointerEvents = 'auto';
+        } else if (live2dReturnButtonContainer) {
+            // 隐藏Live2D返回按钮（如果VRM是激活的）
+            live2dReturnButtonContainer.style.display = 'none';
         }
         
-        // 显示VRM的返回按钮
-        if (vrmReturnButtonContainer) {
+        // 显示VRM的返回按钮（仅在VRM模式时显示）
+        if (useVrmReturn && vrmReturnButtonContainer) {
             if (savedGoodbyeRect) {
                 const containerWidth = vrmReturnButtonContainer.offsetWidth || 64;
                 const containerHeight = vrmReturnButtonContainer.offsetHeight || 64;
@@ -3464,6 +3621,9 @@ function init_app() {
             }
             vrmReturnButtonContainer.style.display = 'flex';
             vrmReturnButtonContainer.style.pointerEvents = 'auto';
+        } else if (vrmReturnButtonContainer) {
+            // 隐藏VRM返回按钮（如果Live2D是激活的）
+            vrmReturnButtonContainer.style.display = 'none';
         }
 
         // 第四步：立即隐藏所有 side-btn 按钮和侧边栏
@@ -3512,7 +3672,7 @@ function init_app() {
     });
 
     // 请她回来按钮
-    window.addEventListener('live2d-return-click', () => {
+    window.addEventListener('live2d-return-click', async () => {
         console.log('[App] 请她回来按钮被点击，开始恢复所有界面');
 
         // 第一步：同步 window 中的设置值到局部变量（防止从 l2d 页面返回时值丢失）
@@ -3550,48 +3710,15 @@ function init_app() {
             vrmReturnButtonContainer.style.pointerEvents = 'none';
         }
 
-        // 第四步：恢复live2d容器（移除minimized类）
-        const live2dContainer = document.getElementById('live2d-container');
-        if (live2dContainer) {
-            console.log('[App] 移除minimized类前，容器类列表:', live2dContainer.classList.toString());
-            live2dContainer.classList.remove('minimized');
-
-            // 如果容器没有其他类，完全移除class属性以避免显示为class=""
-            if (live2dContainer.classList.length === 0) {
-                live2dContainer.removeAttribute('class');
-            }
-
-            console.log('[App] 移除minimized类后，容器类列表:', live2dContainer.classList.toString());
-            live2dContainer.style.removeProperty('display');
-            live2dContainer.style.removeProperty('visibility');
-            live2dContainer.style.removeProperty('opacity');
+        // 第四步：使用 showCurrentModel() 做最终裁决（根据角色配置决定显示哪个模型）
+        // showCurrentModel 内部会处理容器显示/隐藏和按钮/锁图标同步
+        try {
+            await showCurrentModel();
+        } catch (error) {
+            console.error('[App] showCurrentModel 失败:', error);
+            // 出错时默认显示 Live2D
+            showLive2d();
         }
-
-        // 恢复 Live2D canvas 的可见性和鼠标事件
-        const live2dCanvas = document.getElementById('live2d-canvas');
-        if (live2dCanvas) {
-            // 恢复 visibility，使 Electron 能够检测到 canvas 像素
-            live2dCanvas.style.removeProperty('visibility');
-            live2dCanvas.style.visibility = 'visible';
-
-            // 根据当前锁定状态恢复 pointerEvents
-            const isLocked = window.live2dManager ? window.live2dManager.isLocked : true;
-            live2dCanvas.style.removeProperty('pointer-events');
-            live2dCanvas.style.pointerEvents = isLocked ? 'none' : 'auto';
-            console.log('[App] 已恢复 live2d-canvas 的可见性和鼠标事件，isLocked:', isLocked);
-        }
-
-        // 恢复 VRM 容器和 canvas 的可见性
-        const vrmContainer = document.getElementById('vrm-container');
-        if (vrmContainer) {
-            vrmContainer.style.removeProperty('visibility');
-            vrmContainer.style.removeProperty('pointer-events');
-            vrmContainer.style.removeProperty('display');
-            vrmContainer.style.visibility = 'visible';
-            vrmContainer.style.display = 'block';
-            console.log('[App] 已恢复 vrm-container 的可见性');
-        }
-        const vrmCanvas = document.getElementById('vrm-canvas');
         if (vrmCanvas) {
             vrmCanvas.style.removeProperty('visibility');
             vrmCanvas.style.removeProperty('pointer-events');
@@ -5448,12 +5575,30 @@ function init_app() {
     }, 1500);
 
     // 屏幕源选择功能（仅Electron环境）
-    // 当前选中的屏幕源ID
-    let selectedScreenSourceId = null;
+    // 当前选中的屏幕源ID（从 localStorage 恢复）
+    let selectedScreenSourceId = (() => {
+        try {
+            const saved = localStorage.getItem('selectedScreenSourceId');
+            return saved || null;
+        } catch (e) {
+            return null;
+        }
+    })();
 
     // 选择屏幕源
     async function selectScreenSource(sourceId, sourceName) {
         selectedScreenSourceId = sourceId;
+        
+        // 持久化到 localStorage
+        try {
+            if (sourceId) {
+                localStorage.setItem('selectedScreenSourceId', sourceId);
+            } else {
+                localStorage.removeItem('selectedScreenSourceId');
+            }
+        } catch (e) {
+            console.warn('[屏幕源] 无法保存到 localStorage:', e);
+        }
 
         // 更新UI选中状态
         updateScreenSourceListSelection();
@@ -5601,7 +5746,10 @@ function init_app() {
                 // 缩略图
                 if (source.thumbnail) {
                     const thumb = document.createElement('img');
-                    thumb.src = source.thumbnail;
+                    // NativeImage 对象需要转换为 dataURL 字符串
+                    thumb.src = typeof source.thumbnail === 'string' 
+                        ? source.thumbnail 
+                        : (source.thumbnail.toDataURL ? source.thumbnail.toDataURL() : '');
                     Object.assign(thumb.style, {
                         width: '100%',
                         maxWidth: '90px',
@@ -6419,18 +6567,66 @@ function init_app() {
                 // 确保 VRM 管理器已初始化
                 if (!window.vrmManager || !window.vrmManager._isInitialized) {
 
-                    // 等待 VRM 模块加载
+                    // 等待 VRM 模块加载（双保险：事件 + 轮询）
                     if (typeof window.VRMManager === 'undefined') {
                         await new Promise((resolve, reject) => {
-                            if (window.VRMManager) return resolve();
-                            window.addEventListener('vrm-modules-ready', resolve, { once: true });
-                            setTimeout(() => reject(new Error('VRM 模块加载超时')), 5000);
+                            // 先检查是否已经就绪（事件可能已经发出）
+                            if (window.VRMManager) {
+                                return resolve();
+                            }
+
+                            let resolved = false;
+                            const timeoutId = setTimeout(() => {
+                                if (!resolved) {
+                                    resolved = true;
+                                    reject(new Error('VRM 模块加载超时'));
+                                }
+                            }, 5000);
+
+                            // 方法1：监听事件
+                            const eventHandler = () => {
+                                if (!resolved && window.VRMManager) {
+                                    resolved = true;
+                                    clearTimeout(timeoutId);
+                                    window.removeEventListener('vrm-modules-ready', eventHandler);
+                                    resolve();
+                                }
+                            };
+                            window.addEventListener('vrm-modules-ready', eventHandler, { once: true });
+
+                            // 方法2：轮询检查（双保险）
+                            const pollInterval = setInterval(() => {
+                                if (window.VRMManager) {
+                                    if (!resolved) {
+                                        resolved = true;
+                                        clearTimeout(timeoutId);
+                                        clearInterval(pollInterval);
+                                        window.removeEventListener('vrm-modules-ready', eventHandler);
+                                        resolve();
+                                    }
+                                }
+                            }, 100); // 每100ms检查一次
+
+                            // 清理轮询（在超时或成功时）
+                            const originalResolve = resolve;
+                            const originalReject = reject;
+                            resolve = (...args) => {
+                                clearInterval(pollInterval);
+                                originalResolve(...args);
+                            };
+                            reject = (...args) => {
+                                clearInterval(pollInterval);
+                                originalReject(...args);
+                            };
                         });
                     }
 
                     if (!window.vrmManager) {
                         window.vrmManager = new window.VRMManager();
                     }
+                    
+                    // 【修复】恢复 goodbyeClicked 标志，确保新模型可以正常显示
+                    window.vrmManager._goodbyeClicked = false;
 
                     // 确保容器和 canvas 存在
                     const vrmContainer = document.getElementById('vrm-container');
@@ -6468,8 +6664,23 @@ function init_app() {
                 if (catgirlConfig.lighting && window.vrmManager) {
                     const lighting = catgirlConfig.lighting;
                     
-                    // 确保光照已初始化，如果没有则等待
+                    // 确保光照已初始化，如果没有则等待（添加最大重试次数和切换取消条件）
+                    let applyLightingRetryCount = 0;
+                    const MAX_RETRY_COUNT = 50; // 最多重试50次（5秒）
+                    let applyLightingTimerId = null;
+                    const currentSwitchId = Symbol(); // 用于标识当前切换，防止旧切换的定时器继续执行
+                    window._currentCatgirlSwitchId = currentSwitchId;
+                    
                     const applyLighting = () => {
+                        // 检查是否切换已被取消（新的切换已开始）
+                        if (window._currentCatgirlSwitchId !== currentSwitchId) {
+                            if (applyLightingTimerId) {
+                                clearTimeout(applyLightingTimerId);
+                                applyLightingTimerId = null;
+                            }
+                            return;
+                        }
+                        
                         if (window.vrmManager?.ambientLight && window.vrmManager?.mainLight && 
                             window.vrmManager?.fillLight && window.vrmManager?.rimLight) {
                             if (window.vrmManager.ambientLight) {
@@ -6489,11 +6700,27 @@ function init_app() {
                             if (window.vrmManager.renderer && window.vrmManager.scene && window.vrmManager.camera) {
                                 window.vrmManager.renderer.render(window.vrmManager.scene, window.vrmManager.camera);
                             }
+                            
+                            // 成功应用，清理定时器
+                            if (applyLightingTimerId) {
+                                clearTimeout(applyLightingTimerId);
+                                applyLightingTimerId = null;
+                            }
                         } else {
-                            // 光照未初始化，延迟重试
-                            setTimeout(applyLighting, 100);
+                            // 光照未初始化，延迟重试（但限制重试次数）
+                            applyLightingRetryCount++;
+                            if (applyLightingRetryCount < MAX_RETRY_COUNT) {
+                                applyLightingTimerId = setTimeout(applyLighting, 100);
+                            } else {
+                                console.warn('[猫娘切换] 光照应用失败：已达到最大重试次数');
+                                if (applyLightingTimerId) {
+                                    clearTimeout(applyLightingTimerId);
+                                    applyLightingTimerId = null;
+                                }
+                            }
                         }
                     };
+                    
                     applyLighting();
                 }
 
@@ -6694,6 +6921,8 @@ function init_app() {
             showStatusToast(`切换失败: ${error.message}`, 4000);
         } finally {
             isSwitchingCatgirl = false;
+            // 清理切换标识，取消所有 pending 的 applyLighting 定时器
+            window._currentCatgirlSwitchId = null;
         }
     }
 
