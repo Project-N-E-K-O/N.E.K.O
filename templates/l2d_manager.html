@@ -1304,6 +1304,7 @@
                             showStatus(t('live2d.switchingToDefault', '当前模型已删除，正在切换到默认模型...'));
                             currentModelInfo = fallbackModel;
                             await loadModel(fallbackModel.name, fallbackModel, undefined);
+                            await saveModelToCharacter(fallbackModel.name, fallbackModel.item_id || null);
                         } else {
                             showStatus(t('live2d.noModelsFound', '未找到可用模型'));
                             currentModelInfo = null;
