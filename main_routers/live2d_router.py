@@ -982,10 +982,15 @@ def delete_model(model_name: str):
         # 检查是否在用户文档目录下
         try:
             config_mgr = get_config_manager()
-            user_live2d_dir = str(config_mgr.live2d_dir).replace('\\', '/')
-            model_dir_normalized = model_dir.replace('\\', '/')
-            if model_dir_normalized.startswith(user_live2d_dir):
-                is_user_model = True
+            user_live2d_dir = os.path.realpath(str(config_mgr.live2d_dir))
+            model_dir_real = os.path.realpath(model_dir)
+            try:
+                common = os.path.commonpath([user_live2d_dir, model_dir_real])
+                if common == user_live2d_dir:
+                    is_user_model = True
+            except ValueError:
+                # 不同驱动器/根目录的情况
+                pass
         except Exception as e:
             logger.warning(f"检查用户模型目录时出错: {e}")
         

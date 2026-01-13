@@ -1217,7 +1217,7 @@
             function updateConfirmDeleteButton() {
                 if (confirmDeleteBtn) {
                     confirmDeleteBtn.disabled = selectedDeleteModels.size === 0;
-                    confirmDeleteBtn.textContent = t('live2d.deleteSelected', `Delete Selected (${selectedDeleteModels.size})`, { count: selectedDeleteModels.size });
+                    confirmDeleteBtn.textContent = t('live2d.deleteSelected', 'Delete Selected ({{count}})', { count: selectedDeleteModels.size });
                 }
             }
 
@@ -1230,7 +1230,7 @@
                 if (!confirmDelete) return;
 
                 confirmDeleteBtn.disabled = true;
-                confirmDeleteBtn.textContent = t('live2d.deleting', "Deleting...");
+                confirmDeleteBtn.textContent = t('live2d.deleting', '删除中...');
 
                 const currentModelName = currentModelInfo ? currentModelInfo.name : null;
                 const modelsToDelete = new Set(selectedDeleteModels);
