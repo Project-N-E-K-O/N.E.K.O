@@ -36,13 +36,112 @@ async function fetchVRMConfig() {
     }
 }
 
+/**
+ * 统一的 VRM 模型路径转换工具函数
+ * 整合所有路径转换逻辑，避免在多处复制导致不一致
+ * 
+ * @param {string} modelPath - 原始模型路径
+ * @param {object} options - 可选配置
+ * @param {string} options.defaultPath - 如果路径无效时的默认路径（默认: '/static/vrm/sister1.0.vrm'）
+ * @returns {string} 转换后的模型 URL
+ */
+window.convertVRMModelPath = function(modelPath, options = {}) {
+    const defaultPath = options.defaultPath || '/static/vrm/sister1.0.vrm';
+    
+    // 1. 验证输入路径的有效性
+    if (!modelPath || 
+        modelPath === 'undefined' || 
+        modelPath === 'null' || 
+        (typeof modelPath === 'string' && (modelPath.trim() === '' || modelPath.includes('undefined')))) {
+        console.warn('[VRM Path] 路径无效，使用默认路径:', modelPath);
+        return defaultPath;
+    }
+    
+    // 确保 modelPath 是字符串
+    if (typeof modelPath !== 'string') {
+        console.warn('[VRM Path] 路径不是字符串，使用默认路径:', modelPath);
+        return defaultPath;
+    }
+    
+    let modelUrl = modelPath;
+    
+    // 确保 VRM_PATHS 已初始化
+    if (!window.VRM_PATHS) {
+        window.VRM_PATHS = {
+            user_vrm: '/user_vrm',
+            static_vrm: '/static/vrm'
+        };
+    }
+    
+    const userVrmPath = window.VRM_PATHS.user_vrm || '/user_vrm';
+    const staticVrmPath = window.VRM_PATHS.static_vrm || '/static/vrm';
+    
+    // 2. 处理完整的 HTTP/HTTPS URL
+    if (/^https?:\/\//.test(modelUrl)) {
+        return modelUrl;
+    }
+    
+    // 3. 处理 Windows 绝对路径（驱动器字母模式，如 C:\ 或 C:/）
+    const windowsPathPattern = /^[A-Za-z]:[\\/]/;
+    if (windowsPathPattern.test(modelUrl) || (modelUrl.includes('\\') && modelUrl.includes(':'))) {
+        // 提取文件名并使用 static_vrm 路径（Windows 路径通常来自本地文件系统）
+        const filename = modelUrl.split(/[\\/]/).pop();
+        if (filename) {
+            modelUrl = `${staticVrmPath}/${filename}`;
+        } else {
+            return defaultPath;
+        }
+    } else if (modelUrl.includes('\\')) {
+        // 4. 如果包含反斜杠但不是 Windows 驱动器路径，统一转换为正斜杠
+        modelUrl = modelUrl.replace(/\\/g, '/');
+        // 如果不是以 / 开头，当作相对路径处理
+        if (!modelUrl.startsWith('/')) {
+            modelUrl = `${userVrmPath}/${modelUrl}`;
+        }
+    } else if (!modelUrl.startsWith('http') && !modelUrl.startsWith('/')) {
+        // 5. 如果是相对路径（不以 http 或 / 开头），添加 user_vrm 路径前缀
+        // 验证路径有效性
+        if (userVrmPath !== 'undefined' && 
+            userVrmPath !== 'null' &&
+            modelUrl !== 'undefined' &&
+            modelUrl !== 'null') {
+            modelUrl = `${userVrmPath}/${modelUrl}`;
+        } else {
+            console.error('[VRM Path] 路径拼接参数无效，使用默认路径:', { userVrmPath, modelUrl });
+            return defaultPath;
+        }
+    } else {
+        // 6. 如果已经是完整路径（以 / 开头），确保格式正确
+        modelUrl = modelUrl.replace(/\\/g, '/');
+        // 如果路径不是以用户 VRM 路径或静态 VRM 路径开头，尝试添加用户 VRM 路径前缀
+        if (!modelUrl.startsWith(userVrmPath + '/') && !modelUrl.startsWith(staticVrmPath + '/')) {
+            const filename = modelUrl.split('/').pop();
+            if (filename) {
+                modelUrl = `${userVrmPath}/${filename}`;
+            }
+        }
+    }
+    
+    // 7. 最终验证：确保 modelUrl 不包含 "undefined" 或 "null"
+    if (typeof modelUrl !== 'string' || 
+        modelUrl.includes('undefined') || 
+        modelUrl.includes('null') ||
+        modelUrl.trim() === '') {
+        console.error('[VRM Path] 路径转换后仍包含无效值，使用默认路径:', modelUrl);
+        return defaultPath;
+    }
+    
+    return modelUrl;
+};
+
 function initializeVRMManager() {
     if (window.vrmManager) return;
 
     try {
         // 检查核心类是否存在
         if (typeof window.VRMManager !== 'undefined') {
-            window.vrmManager = new VRMManager();
+            // 使用显式的全局引用实例化，避免在非全局作用域中的 ReferenceError
+            window.vrmManager = new window.VRMManager();
         }
     } catch (error) {
         console.debug('[VRM Init] VRMManager 初始化失败，可能模块尚未加载:', error);
@@ -215,58 +314,8 @@ async function initVRMModel() {
         // 初始化 Three.js 场景
         await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
 
-        // 路径转换逻辑
-        // 再次验证 targetModelPath 的有效性（防止在路径转换时出现问题）
-        if (!targetModelPath || 
-            targetModelPath === 'undefined' || 
-            targetModelPath === 'null' || 
-            (typeof targetModelPath === 'string' && (targetModelPath.trim() === '' || targetModelPath.includes('undefined')))) {
-            console.error('[VRM Init] targetModelPath 无效，使用默认模型:', targetModelPath);
-            targetModelPath = '/static/vrm/sister1.0.vrm';
-        }
-        
-        let modelUrl = targetModelPath;
-        
-        // 确保 VRM_PATHS 已初始化
-        if (!window.VRM_PATHS) {
-            window.VRM_PATHS = {
-                user_vrm: '/user_vrm',
-                static_vrm: '/static/vrm'
-            };
-        }
-        
-        // 确保 modelUrl 是有效的字符串
-        if (typeof modelUrl !== 'string' || !modelUrl) {
-            console.error('[VRM Init] modelUrl 不是有效字符串，使用默认模型:', modelUrl);
-            modelUrl = '/static/vrm/sister1.0.vrm';
-        }
-        
-        if (!modelUrl.startsWith('http') && !modelUrl.startsWith('/')) {
-            // 使用动态获取的 user_vrm 路径
-            const userVrmPath = window.VRM_PATHS.user_vrm || '/user_vrm';
-            // 再次验证 userVrmPath 和 modelUrl 的有效性
-            if (typeof userVrmPath === 'string' && 
-                userVrmPath !== 'undefined' && 
-                userVrmPath !== 'null' &&
-                typeof modelUrl === 'string' &&
-                modelUrl !== 'undefined' &&
-                modelUrl !== 'null') {
-                modelUrl = `${userVrmPath}/${modelUrl}`;
-            } else {
-                console.error('[VRM Init] 路径拼接参数无效，使用默认模型:', { userVrmPath, modelUrl });
-                modelUrl = '/static/vrm/sister1.0.vrm';
-            }
-        }
-        modelUrl = modelUrl.replace(/\\/g, '/'); // 修正 Windows 风格路径
-        
-        // 最终验证：确保 modelUrl 不包含 "undefined" 或 "null"
-        if (typeof modelUrl !== 'string' || 
-            modelUrl.includes('undefined') || 
-            modelUrl.includes('null') ||
-            modelUrl.trim() === '') {
-            console.error('[VRM Init] 路径转换后仍包含无效值，使用默认模型:', modelUrl);
-            modelUrl = '/static/vrm/sister1.0.vrm';
-        }
+        // 使用统一的路径转换工具函数
+        const modelUrl = window.convertVRMModelPath(targetModelPath);
 
         // 执行加载
         // 【简化】朝向会自动检测并保存（在vrm-core.js的loadModel中处理）
@@ -355,20 +404,8 @@ window.checkAndLoadVRM = async function() {
             return;
         }
 
-        // 6. 路径转换
-        let modelUrl = newModelPath;
-
-        // 处理Windows绝对路径，转换为Web路径
-        if (modelUrl.includes('\\') || modelUrl.includes(':')) {
-            const filename = modelUrl.split(/[\\/]/).pop();
-            if (filename) {
-                // 使用动态获取的 static_vrm 路径
-                modelUrl = `${window.VRM_PATHS.static_vrm}/${filename}`;
-            }
-        } else if (!modelUrl.startsWith('http') && !modelUrl.startsWith('/')) {
-            // 使用动态获取的 user_vrm 路径
-            modelUrl = `${window.VRM_PATHS.user_vrm}/${modelUrl}`;
-        }
+        // 6. 使用统一的路径转换工具函数
+        const modelUrl = window.convertVRMModelPath(newModelPath);
 
         // 7. 初始化Three.js场景
         if (!window.vrmManager._isInitialized || !window.vrmManager.scene || !window.vrmManager.camera || !window.vrmManager.renderer) {

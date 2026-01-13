@@ -643,11 +643,11 @@
     },
     "vrmLighting": {
       "title": "💡 VRM Lighting Settings:",
-      "ambient": "Ambient Light:",
-      "main": "Main Light:",
-      "fill": "Fill Light:",
-      "rim": "Rim Light:",
-      "reset": "🔄 Reset Default"
+      "ambientLight": "Ambient Light:",
+      "mainLight": "Main Light:",
+      "fillLight": "Fill Light:",
+      "rimLight": "Rim Light:",
+      "resetLighting": "🔄 Reset Default"
     },
     "vrmUpload": {
       "detectingOrientation": "Detecting and correcting model orientation...",

@@ -113,8 +113,7 @@ DEFAULT_LANLAN_TEMPLATE = {
 }
 
 # 默认VRM打光配置用于新角色初始化
-# 使用 MappingProxyType 包装，使 DEFAULT_VRM_LIGHTING 成为只读结构，防止意外修改
-# 请使用 get_default_vrm_lighting() 获取可修改的副本
+
 _DEFAULT_VRM_LIGHTING_MUTABLE = {
     "ambient": 0.08,  # 环境光强度 (范围: 0-0.3)
     "main": 0.06,     # 主光源强度 (范围: 0-2.5)
@@ -126,18 +125,22 @@ _DEFAULT_VRM_LIGHTING_MUTABLE = {
 DEFAULT_VRM_LIGHTING = MappingProxyType(_DEFAULT_VRM_LIGHTING_MUTABLE)
 
 
-def get_default_vrm_lighting():
+def get_default_vrm_lighting() -> dict[str, float]:
     """
-    获取默认VRM打光配置的深拷贝。
+    获取默认VRM打光配置的副本。
     
     返回一个新的字典副本，避免修改全局默认值。
     由于 DEFAULT_VRM_LIGHTING 是只读的(MappingProxyType),
     即使直接访问也无法修改，但此函数仍返回可修改的副本。
     
+    对于扁平 dict,使用 dict() 构造函数比 deepcopy 更轻量。
+    如果后续添加嵌套结构，需要改用 deepcopy。
+    
     Returns:
-        dict: 包含默认VRM打光配置的字典副本(可修改)
+        dict[str, float]: 包含默认VRM打光配置的字典副本(可修改)
     """
-    return deepcopy(DEFAULT_VRM_LIGHTING)
+    
+    return dict(DEFAULT_VRM_LIGHTING)
 
 DEFAULT_CHARACTERS_CONFIG = {
     "主人": deepcopy(DEFAULT_MASTER_TEMPLATE),

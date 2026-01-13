@@ -1524,9 +1524,11 @@
                 if (data.success) {
                     // 使用 URL 中的 lanlan_name（如果有），否则使用 API 返回的
                     lanlan_config.lanlan_name = lanlanNameFromUrl || data.lanlan_name || "";
-                    window.lanlan_config = lanlan_config;
                     const modelPath = data.model_path || "";
                     const modelType = data.model_type || 'live2d'; // 使用API返回的model_type
+                    // 将 model_type 写回 lanlan_config，减少各处"猜模式"的分支
+                    lanlan_config.model_type = modelType;
+                    window.lanlan_config = lanlan_config;
                     // 根据model_type判断是Live2D还是VRM
                     if (modelType === 'vrm') {
                         // 验证 modelPath 有效性（防止 undefined 或字符串 "undefined"）
@@ -2056,34 +2058,6 @@
                             console.warn('[主页] VRM管理器未初始化或模型路径为空，无法加载VRM模型');
                         }
                     } else {
-                        // needReload 为 false，说明模型已经加载，只需要确保场景已初始化并显示
-                        if (modelType === 'vrm' && window.vrmManager) {
-                            // 确保Three.js场景已初始化（可能被清理了）
-                            if (!window.vrmManager._isInitialized || !window.vrmManager.scene || !window.vrmManager.camera || !window.vrmManager.renderer) {
-                                console.log('[主页] VRM模型已加载但场景未初始化，重新初始化...');
-                                await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
-                                // 如果模型存在但不在场景中，需要重新加载
-                                if (window.vrmManager.currentModel && window.vrmManager.currentModel.vrm) {
-                                    const modelUrl = convertVRMModelPath(newModelPath);
-                                    try {
-                                        await window.vrmManager.loadModel(modelUrl);
-                                    } catch (error) {
-                                        console.error('[主页] VRM模型重新加载失败:', error);
-                                    }
-                                }
-                            } else {
-                                // 场景已初始化，确保模型可见
-                                if (window.vrmManager.currentModel && window.vrmManager.currentModel.vrm) {
-                                    window.vrmManager.currentModel.vrm.scene.visible = true;
-                                }
-                                // 确保渲染器可见
-                                if (window.vrmManager.renderer && window.vrmManager.renderer.domElement) {
-                                    window.vrmManager.renderer.domElement.style.display = 'block';
-                                    window.vrmManager.renderer.domElement.style.opacity = '1';
-                                }
-                            }
-                        }
-                        
                         // Live2D模型：使用原有逻辑
                         // 使用统一的 dispose() 方法清理VRM资源，确保完全切换
                         if (window.vrmManager) {
@@ -2148,25 +2122,66 @@
                         console.log('Live2D模型已重新加载');
                     }
                 } else {
-                    // 模型未变，但需要更新位置和缩放设置
-                    if (modelPreferences && currentModel) {
-                        // 应用位置设置
-                        if (modelPreferences.position) {
-                            currentModel.x = modelPreferences.position.x || currentModel.x;
-                            currentModel.y = modelPreferences.position.y || currentModel.y;
+                    // 模型未变，但需要确保场景已初始化、模型可见、恢复动画循环
+                    if (modelType === 'vrm') {
+                        // VRM模型：确保场景已初始化 + 模型可见 + 需要时恢复动画循环
+                        if (window.vrmManager) {
+                            // 确保Three.js场景已初始化（可能被清理了）
+                            if (!window.vrmManager._isInitialized || !window.vrmManager.scene || !window.vrmManager.camera || !window.vrmManager.renderer) {
+                                console.log('[主页] VRM模型已加载但场景未初始化，重新初始化...');
+                                await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
+                                // 如果模型存在但不在场景中，需要重新加载
+                                if (window.vrmManager.currentModel && window.vrmManager.currentModel.vrm) {
+                                    const modelUrl = convertVRMModelPath(newModelPath);
+                                    try {
+                                        await window.vrmManager.loadModel(modelUrl);
+                                        // 恢复循环动作
+                                        const IDLE_ANIMATION_PATH = '/static/vrm/animation/wait03.vrma';
+                                        if (window.vrmManager.animation) {
+                                            window.vrmManager.playVRMAAnimation(IDLE_ANIMATION_PATH, { loop: true });
+                                        }
+                                    } catch (error) {
+                                        console.error('[主页] VRM模型重新加载失败:', error);
+                                    }
+                                }
+                            } else {
+                                // 场景已初始化，确保模型可见
+                                if (window.vrmManager.currentModel && window.vrmManager.currentModel.vrm) {
+                                    window.vrmManager.currentModel.vrm.scene.visible = true;
+                                }
+                                // 确保渲染器可见
+                                if (window.vrmManager.renderer && window.vrmManager.renderer.domElement) {
+                                    window.vrmManager.renderer.domElement.style.display = 'block';
+                                    window.vrmManager.renderer.domElement.style.opacity = '1';
+                                }
+                                // 确保动画循环正在运行（如果被停止了，需要恢复）
+                                if (!window.vrmManager._animationFrameId && typeof window.vrmManager.startAnimateLoop === 'function') {
+                                    console.log('[主页] 恢复VRM动画循环...');
+                                    window.vrmManager.startAnimateLoop();
+                                }
+                            }
                         }
+                    } else {
+                        // Live2D模型：更新位置和缩放设置
+                        if (modelPreferences && currentModel) {
+                            // 应用位置设置
+                            if (modelPreferences.position) {
+                                currentModel.x = modelPreferences.position.x || currentModel.x;
+                                currentModel.y = modelPreferences.position.y || currentModel.y;
+                            }
 
-                        // 应用缩放设置
-                        if (modelPreferences.scale) {
-                            currentModel.scale.set(
-                                modelPreferences.scale.x || currentModel.scale.x,
-                                modelPreferences.scale.y || currentModel.scale.y
-                            );
-                        }
+                            // 应用缩放设置
+                            if (modelPreferences.scale) {
+                                currentModel.scale.set(
+                                    modelPreferences.scale.x || currentModel.scale.x,
+                                    modelPreferences.scale.y || currentModel.scale.y
+                                );
+                            }
 
-                        // 应用保存的模型参数
-                        if (modelPreferences.parameters && currentModel.internalModel && currentModel.internalModel.coreModel) {
-                            window.live2dManager.applyModelParameters(currentModel, modelPreferences.parameters);
+                            // 应用保存的模型参数
+                            if (modelPreferences.parameters && currentModel.internalModel && currentModel.internalModel.coreModel) {
+                                window.live2dManager.applyModelParameters(currentModel, modelPreferences.parameters);
+                            }
                         }
                     }
                 }
@@ -2335,11 +2350,17 @@
 
         // VRM 路径配置缓存和加载函数已移动到前面的 script 标签中（第 1476-1495 行）
 
-        // 路径转换工具函数（使用后端配置，避免硬编码）
+        // 路径转换工具函数（使用统一的全局函数，如果存在则使用，否则使用本地实现作为回退）
         function convertVRMModelPath(modelPath) {
+            // 优先使用全局统一的路径转换函数（由 vrm-init.js 提供）
+            if (window.convertVRMModelPath && typeof window.convertVRMModelPath === 'function') {
+                return window.convertVRMModelPath(modelPath);
+            }
+            
+            // 回退到本地实现（兼容性，以防 vrm-init.js 未加载）
             let modelUrl = modelPath;
-            const userVrmPath = VRM_PATHS_CACHE.user_vrm || '/user_vrm';
-            const staticVrmPath = VRM_PATHS_CACHE.static_vrm || '/static/vrm';
+            const userVrmPath = VRM_PATHS_CACHE?.user_vrm || '/user_vrm';
+            const staticVrmPath = VRM_PATHS_CACHE?.static_vrm || '/static/vrm';
             
             // 首先检查是否是完整的 URL（http:// 或 https://），如果是则直接返回
             if (/^https?:\/\//.test(modelUrl)) {

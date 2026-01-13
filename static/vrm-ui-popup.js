@@ -262,7 +262,11 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
             } else if (toggle.id === 'proactive-chat') {
                 window.proactiveChatEnabled = isChecked;
                 window.saveNEKOSettings();
-                isChecked ? (window.resetProactiveChatBackoff && window.resetProactiveChatBackoff()) : (window.stopProactiveChatSchedule && window.stopProactiveChatSchedule());
+                if (isChecked) {
+                    window.resetProactiveChatBackoff && window.resetProactiveChatBackoff();
+                } else {
+                    window.stopProactiveChatSchedule && window.stopProactiveChatSchedule();
+                }
             } else if (toggle.id === 'proactive-vision') {
                 window.proactiveVisionEnabled = isChecked;
                 window.saveNEKOSettings();
@@ -339,15 +343,25 @@ VRMManager.prototype._createSettingsMenuItems = function (popup) {
                     const newWindow = window.open(finalUrl, '_blank', 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no');
                     if(newWindow) {
                         this._openSettingsWindows[finalUrl] = newWindow;
+                        // 初始化定时器数组（如果不存在）
+                        this._windowCheckTimers = this._windowCheckTimers || {};
                         // 使用递归 setTimeout 替代 setInterval，窗口关闭后自动停止
                         const checkClosed = () => {
                             if (newWindow.closed) {
                                 delete this._openSettingsWindows[finalUrl];
+                                // 清理对应的定时器引用
+                                if (this._windowCheckTimers[finalUrl]) {
+                                    delete this._windowCheckTimers[finalUrl];
+                                }
                             } else {
-                                setTimeout(checkClosed, 500);
+                                // 存储定时器 ID，以便后续清理
+                                const timerId = setTimeout(checkClosed, 500);
+                                this._windowCheckTimers[finalUrl] = timerId;
                             }
                         };
-                        setTimeout(checkClosed, 500);
+                        // 启动第一次检查，并存储定时器 ID
+                        const timerId = setTimeout(checkClosed, 500);
+                        this._windowCheckTimers[finalUrl] = timerId;
                     }
                 }
             }
@@ -385,8 +399,15 @@ VRMManager.prototype.closeAllPopupsExcept = function (currentButtonId) {
 // 辅助方法：关闭设置窗口
 VRMManager.prototype.closeAllSettingsWindows = function (exceptUrl = null) {
     if (!this._openSettingsWindows) return;
+    // 初始化定时器数组（如果不存在）
+    this._windowCheckTimers = this._windowCheckTimers || {};
     Object.keys(this._openSettingsWindows).forEach(url => {
         if (exceptUrl && url === exceptUrl) return;
+        // 清理对应的定时器
+        if (this._windowCheckTimers[url]) {
+            clearTimeout(this._windowCheckTimers[url]);
+            delete this._windowCheckTimers[url];
+        }
         try { if (this._openSettingsWindows[url] && !this._openSettingsWindows[url].closed) this._openSettingsWindows[url].close(); } catch (_) {}
         delete this._openSettingsWindows[url];
     });
@@ -520,17 +541,58 @@ VRMManager.prototype.renderMicList = async function (popup) {
                 // 但通常我们会通过 fetch 发送给后端
                 if (deviceId) {
                     try {
-                        await fetch('/api/characters/set_microphone', {
+                        const response = await fetch('/api/characters/set_microphone', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ microphone_id: deviceId })
                         });
-                        // 刷新页面或提示
+                        
+                        // 检查 HTTP 响应状态
+                        if (!response.ok) {
+                            // 尝试解析错误信息（优先 JSON，否则 text）
+                            let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+                            try {
+                                const errorData = await response.json();
+                                if (errorData.error) {
+                                    errorMessage = errorData.error;
+                                } else if (errorData.message) {
+                                    errorMessage = errorData.message;
+                                }
+                            } catch (jsonError) {
+                                // JSON 解析失败，尝试 text
+                                try {
+                                    const errorText = await response.text();
+                                    if (errorText) {
+                                        errorMessage = errorText;
+                                    }
+                                } catch (textError) {
+                                    // text 解析也失败，使用默认错误消息
+                                }
+                            }
+                            
+                            // 向用户显示错误消息
+                            if (window.showStatusToast) {
+                                const message = window.t ? window.t('microphone.switchFailed', { error: errorMessage }) : `切换麦克风失败: ${errorMessage}`;
+                                window.showStatusToast(message, 3000);
+                            } else {
+                                console.error('[VRM UI] 切换麦克风失败:', errorMessage);
+                            }
+                            return; // 失败时不显示成功消息
+                        }
+                        
+                        // 只有响应成功时才显示成功消息
                         if (window.showStatusToast) {
                             const message = window.t ? window.t('microphone.switched') : '已切换麦克风 (下一次录音生效)';
                             window.showStatusToast(message, 2000);
                         }
-                    } catch(e) { console.error(e); }
+                    } catch(e) {
+                        // 网络异常等错误仍然会被 catch 块捕获
+                        console.error('[VRM UI] 切换麦克风时发生网络错误:', e);
+                        if (window.showStatusToast) {
+                            const message = window.t ? window.t('microphone.networkError') : '切换麦克风失败：网络错误';
+                            window.showStatusToast(message, 3000);
+                        }
+                    }
                 }
             });
             popup.appendChild(btn);

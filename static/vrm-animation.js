@@ -1,6 +1,7 @@
 class VRMAnimation {
     static MAX_DELTA_THRESHOLD = 0.1;
     static DEFAULT_FRAME_DELTA = 0.016;
+    static _animationModuleCache = null;
 
     constructor(manager) {
         this.manager = manager;
@@ -17,6 +18,20 @@ class VRMAnimation {
         this.mouthExpressions = { 'aa': null, 'ih': null, 'ou': null, 'ee': null, 'oh': null };
         this.currentMouthWeight = 0;
         this.frequencyData = null;
+        this._boundsUpdateFrameCounter = 0;
+        this._boundsUpdateInterval = 5; // 每 5 帧更新一次
+    }
+
+    /**
+     * 获取 three-vrm-animation 模块（带缓存）
+     * @returns {Promise<object>} three-vrm-animation 模块对象
+     */
+    static async _getAnimationModule() {
+        if (VRMAnimation._animationModuleCache) {
+            return VRMAnimation._animationModuleCache;
+        }
+        VRMAnimation._animationModuleCache = await import('/static/libs/three-vrm-animation.module.js');
+        return VRMAnimation._animationModuleCache;
     }
 
     _detectVRMVersion(vrm) {
@@ -45,11 +60,13 @@ class VRMAnimation {
     }
 
     update(delta) {
+        // 限制 delta 值，防止后台化后出现大的跳跃
+        const safeDelta = (delta <= 0 || delta > VRMAnimation.MAX_DELTA_THRESHOLD) 
+            ? VRMAnimation.DEFAULT_FRAME_DELTA 
+            : delta;
+        const updateDelta = safeDelta * this.playbackSpeed;
+
         if (this.vrmaIsPlaying && this.vrmaMixer) {
-            const safeDelta = (delta <= 0 || delta > VRMAnimation.MAX_DELTA_THRESHOLD) 
-                ? VRMAnimation.DEFAULT_FRAME_DELTA 
-                : delta;
-            const updateDelta = safeDelta * this.playbackSpeed;
             this.vrmaMixer.update(updateDelta);
 
             const vrm = this.manager.currentModel?.vrm;
@@ -77,7 +94,17 @@ class VRMAnimation {
             }
         }
         if (this.lipSyncActive && this.analyser) {
-            this._updateLipSync(delta);
+            // 使用相同的限制后的 delta 进行口型同步，与 mixer 保持一致
+            this._updateLipSync(updateDelta);
+        }
+        
+        // 在模型动画更新时主动刷新 bounds 缓存（低频节流，每 5 帧更新一次）
+        if (this.manager?.interaction && typeof this.manager.interaction.updateModelBoundsCache === 'function') {
+            this._boundsUpdateFrameCounter++;
+            if (this._boundsUpdateFrameCounter >= this._boundsUpdateInterval) {
+                this._boundsUpdateFrameCounter = 0;
+                this.manager.interaction.updateModelBoundsCache();
+            }
         }
     }
 
@@ -87,7 +114,7 @@ class VRMAnimation {
         this._loaderPromise = (async () => {
             try {
                 const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
-                const animationModule = await import('/static/libs/three-vrm-animation.module.js');
+                const animationModule = await VRMAnimation._getAnimationModule();
                 const { VRMAnimationLoaderPlugin } = animationModule;
                 const loader = new GLTFLoader();
                 loader.register((parser) => new VRMAnimationLoaderPlugin(parser));
@@ -142,7 +169,7 @@ class VRMAnimation {
         if (!vrm.lookAt) return;
         const existingProxy = vrm.scene.getObjectByName('lookAtQuaternionProxy');
         if (!existingProxy) {
-            const animationModule = await import('/static/libs/three-vrm-animation.module.js');
+            const animationModule = await VRMAnimation._getAnimationModule();
             const { VRMLookAtQuaternionProxy } = animationModule;
             const lookAtQuatProxy = new VRMLookAtQuaternionProxy(vrm.lookAt);
             lookAtQuatProxy.name = 'lookAtQuaternionProxy';
@@ -151,7 +178,7 @@ class VRMAnimation {
     }
 
     async _createAndValidateAnimationClip(vrmAnimation, vrm) {
-        const animationModule = await import('/static/libs/three-vrm-animation.module.js');
+        const animationModule = await VRMAnimation._getAnimationModule();
         const { createVRMAnimationClip } = animationModule;
 
         let clip;

@@ -201,7 +201,7 @@ class VRMCore {
         this.manager.currentModel.vrm.scene.traverse((object) => {
             // castShadow/receiveShadow 是 Object3D/Mesh 的属性，不是材质属性
             // 应该在 object 上设置，而不是 material 上
-            if (object.isMesh || object.isObject3D) {
+            if (object.isMesh || object.isSkinnedMesh) {
                 // 1. 全局开启阴影 (衣服、头发)
                 object.castShadow = true;
                 object.receiveShadow = true;
@@ -386,7 +386,12 @@ class VRMCore {
         this.manager.scene.add(rimLight);
         this.manager.rimLight = rimLight; // 保存引用供UI控制
 
-        window.addEventListener('resize', () => this.manager.onWindowResize());
+        // 安全的窗口大小调整处理：调用前检查 onWindowResize 是否存在
+        window.addEventListener('resize', () => {
+            if (this.manager && typeof this.manager.onWindowResize === 'function') {
+                this.manager.onWindowResize();
+            }
+        });
     }
 
     /**
@@ -659,20 +664,38 @@ class VRMCore {
                     let targetScale;
 
                     if (isMobile) {
-                        // 移动端：较小
-                        targetScale = Math.min(
-                            0.5,
-                            window.innerHeight * 1.3 / 4000,
-                            window.innerWidth * 1.2 / 2000
-                        );
+                        // 移动端：使用固定缩放值，确保模型可见但不会太大
+                        targetScale = Math.max(0.4, Math.min(0.8, screenHeight / 1800));
                     } else {
-                        // 桌面端：参考Live2D的计算方式
-                        targetScale = Math.min(
-                            0.5,
-                            (window.innerHeight * 0.75) / 7000,
-                            (window.innerWidth * 0.6) / 7000
-                        );
+                        // 桌面端：使用更平衡的计算方式
+                        if (modelHeight > 0 && Number.isFinite(modelHeight)) {
+                            // 目标：让模型在屏幕上的高度约为屏幕高度的0.4-0.5倍
+                            const targetScreenHeight = screenHeight * 0.45;
+                            
+                            // 检查相机是否存在
+                            if (this.manager.camera && this.manager.camera.fov) {
+                                const fov = this.manager.camera.fov * (Math.PI / 180);
+                                const cameraDistance = this.manager.camera.position?.z || 5; // 默认距离 5
+                                const worldHeightAtDistance = 2 * Math.tan(fov / 2) * cameraDistance;
+                                const scaleRatio = (targetScreenHeight / screenHeight) * (worldHeightAtDistance / modelHeight);
+                                
+                                // 限制在合理范围内：最小 0.5，最大 1.2
+                                targetScale = Math.max(0.5, Math.min(1.2, scaleRatio));
+                            } else {
+                                // 如果相机不存在，使用简单的比例计算
+                                // 假设标准 VRM 模型高度约为 1.5 单位，目标屏幕高度为屏幕的 0.45 倍
+                                const standardModelHeight = 1.5;
+                                const scaleRatio = (targetScreenHeight / screenHeight) * (standardModelHeight / modelHeight);
+                                targetScale = Math.max(0.5, Math.min(1.2, scaleRatio));
+                            }
+                        } else {
+                            // 如果模型高度无效，使用屏幕尺寸计算
+                            targetScale = Math.max(0.5, Math.min(1.0, screenHeight / 1200));
+                        }
                     }
+                    
+                    // 确保缩放值在合理范围内（最小 0.5，最大 1.2）
+                    targetScale = Math.max(0.5, Math.min(1.2, targetScale));
                     
                     // 应用计算出的 targetScale
                     vrm.scene.scale.setScalar(targetScale);
@@ -680,22 +703,27 @@ class VRMCore {
             }
 
             // 根据模型大小和屏幕大小计算合适的相机距离
-            const modelHeight = size.y;
-            const screenHeight = window.innerHeight;
-            const screenWidth = window.innerWidth;
+            // 检查相机是否存在
+            if (this.manager.camera && this.manager.camera.fov) {
+                const modelHeight = size.y;
+                const screenHeight = window.innerHeight;
+                const screenWidth = window.innerWidth;
 
-            // 目标：让模型在屏幕上的高度约为屏幕高度的0.4-0.5倍（类似Live2D）
-            const targetScreenHeight = screenHeight * 0.45;
-            const fov = this.manager.camera.fov * (Math.PI / 180);
-            const distance = (modelHeight / 2) / Math.tan(fov / 2) / targetScreenHeight * screenHeight;
-            
-            // isMobile 变量在这个作用域没有定义，需要重新定义或直接判断
-            const isMobileDevice = screenWidth <= 768;
-            // 调整相机位置，使模型在屏幕中央合适的位置
-            const cameraY = center.y + (isMobileDevice ? modelHeight * 0.2 : modelHeight * 0.1);
-            const cameraZ = Math.abs(distance);
-            this.manager.camera.position.set(0, cameraY, cameraZ);
-            this.manager.camera.lookAt(0, center.y, 0);
+                // 目标：让模型在屏幕上的高度约为屏幕高度的0.4-0.5倍（类似Live2D）
+                const targetScreenHeight = screenHeight * 0.45;
+                const fov = this.manager.camera.fov * (Math.PI / 180);
+                const distance = (modelHeight / 2) / Math.tan(fov / 2) / targetScreenHeight * screenHeight;
+                
+                // isMobile 变量在这个作用域没有定义，需要重新定义或直接判断
+                const isMobileDevice = screenWidth <= 768;
+                // 调整相机位置，使模型在屏幕中央合适的位置
+                const cameraY = center.y + (isMobileDevice ? modelHeight * 0.2 : modelHeight * 0.1);
+                const cameraZ = Math.abs(distance);
+                this.manager.camera.position.set(0, cameraY, cameraZ);
+                this.manager.camera.lookAt(0, center.y, 0);
+            } else {
+                console.warn('[VRM Core] 相机未初始化，跳过相机位置调整');
+            }
             
             // 添加到场景 - 确保场景已初始化
             if (!this.manager.scene) {

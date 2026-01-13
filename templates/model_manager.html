@@ -414,7 +414,7 @@
             <label class="control-label" data-i18n="live2d.vrmLighting.title">💡 VRM打光设置:</label>
 
             <div class="lighting-control">
-                <label for="ambient-light-slider" data-i18n="live2d.vrmLighting.ambient">环境光强度:</label>
+                <label for="ambient-light-slider" data-i18n="live2d.vrmLighting.ambientLight">环境光强度:</label>
                 <div style="display: flex; align-items: center; gap: 10px;">
                     <input type="range" id="ambient-light-slider" min="0" max="0.3" step="0.01" value="0.08" style="flex: 1;">
                     <span id="ambient-light-value" style="min-width: 40px;">0.08</span>
@@ -422,7 +422,7 @@
             </div>
 
             <div class="lighting-control">
-                <label for="main-light-slider" data-i18n="live2d.vrmLighting.main">主光源强度:</label>
+                <label for="main-light-slider" data-i18n="live2d.vrmLighting.mainLight">主光源强度:</label>
                 <div style="display: flex; align-items: center; gap: 10px;">
                     <input type="range" id="main-light-slider" min="0" max="2.5" step="0.01" value="0.06" style="flex: 1;">
                     <span id="main-light-value" style="min-width: 40px;">0.06</span>
@@ -430,7 +430,7 @@
             </div>
 
             <div class="lighting-control">
-                <label for="fill-light-slider" data-i18n="live2d.vrmLighting.fill">补光强度:</label>
+                <label for="fill-light-slider" data-i18n="live2d.vrmLighting.fillLight">补光强度:</label>
                 <div style="display: flex; align-items: center; gap: 10px;">
                     <input type="range" id="fill-light-slider" min="0" max="0.5" step="0.01" value="0.12" style="flex: 1;">
                     <span id="fill-light-value" style="min-width: 40px;">0.12</span>
@@ -438,7 +438,7 @@
             </div>
 
             <div class="lighting-control">
-                <label for="rim-light-slider" data-i18n="live2d.vrmLighting.rim">轮廓光强度:</label>
+                <label for="rim-light-slider" data-i18n="live2d.vrmLighting.rimLight">轮廓光强度:</label>
                 <div style="display: flex; align-items: center; gap: 10px;">
                     <input type="range" id="rim-light-slider" min="0" max="1.5" step="0.05" value="0.8" style="flex: 1;">
                     <span id="rim-light-value" style="min-width: 40px;">0.8</span>
@@ -448,7 +448,7 @@
 
             <div style="display: flex; gap: 10px; margin-top: 10px;">
                 <button id="reset-lighting-btn" class="btn btn-secondary" style="flex: 1;">
-                    <span data-i18n="live2d.vrmLighting.reset">🔄 重置默认</span>
+                    <span data-i18n="live2d.vrmLighting.resetLighting">🔄 重置默认</span>
                 </button>
             </div>
         </div>
@@ -943,6 +943,45 @@
                         return false;
                     }
 
+                    // 在发送 PUT 请求保存数据前，添加校验
+                    if (currentModelType === 'vrm') {
+                        // 如果 modelName (即路径) 是 "undefined"，抛出错误或尝试自动修复
+                        if (!modelName || 
+                            modelName === 'undefined' || 
+                            modelName === 'null' ||
+                            (typeof modelName === 'string' && (
+                                modelName.trim() === '' ||
+                                modelName.toLowerCase().includes('undefined') ||
+                                modelName.toLowerCase().includes('null')
+                            ))) {
+                            console.error('[模型管理] 检测到无效的 VRM 模型路径，尝试自动修复:', modelName);
+                            
+                            // 尝试从 currentModelInfo 获取有效路径
+                            if (currentModelInfo && currentModelInfo.path && 
+                                currentModelInfo.path !== 'undefined' && 
+                                currentModelInfo.path !== 'null' &&
+                                !currentModelInfo.path.toLowerCase().includes('undefined')) {
+                                modelName = currentModelInfo.path;
+                                console.log('[模型管理] 已从 currentModelInfo 修复路径:', modelName);
+                            } else if (currentModelInfo && currentModelInfo.name && 
+                                      currentModelInfo.name !== 'undefined' && 
+                                      currentModelInfo.name !== 'null' &&
+                                      !currentModelInfo.name.toLowerCase().includes('undefined')) {
+                                // 尝试根据文件名构建路径
+                                const filename = currentModelInfo.name.endsWith('.vrm') 
+                                    ? currentModelInfo.name 
+                                    : `${currentModelInfo.name}.vrm`;
+                                modelName = `/user_vrm/${filename}`;
+                                console.log('[模型管理] 已根据文件名修复路径:', modelName);
+                            } else {
+                                // 如果无法修复，抛出错误
+                                const errorMsg = t('live2d.vrmModelPathInvalid', 'VRM 模型路径无效，无法保存。请重新选择模型。');
+                                showStatus(errorMsg, 5000);
+                                throw new Error('VRM 模型路径无效: ' + modelName);
+                            }
+                        }
+                    }
+
                     showStatus(t('live2d.savingSettings', '正在保存设置...'));
 
                     // 2. 🔥 先从服务器拉取当前角色的完整档案（防止覆盖掉其他不需要修改的属性）
@@ -956,6 +995,7 @@
                     // 3. 更新模型相关字段
                     if (currentModelType === 'vrm') {
                         charData.model_type = 'vrm';
+                        // 绝对不要把 "undefined" 字符串保存到后端数据库
                         charData.vrm = modelName;
                         // 清空 Live2D 字段，避免混淆
                         charData.live2d = ""; 
@@ -1307,9 +1347,43 @@
                         vrmModelSelect.innerHTML = `<option value="">${t('live2d.pleaseSelectModel', '请选择一个模型')}</option>`;
                         models.forEach(model => {
                             const option = document.createElement('option');
-                            option.value = model.url || model.path;
-                            option.setAttribute('data-path', model.path);
-                            option.textContent = model.name || model.filename || model.path;
+                            
+                            // 严格检查 model.path，如果不存在或为字符串 "undefined"，根据 model.filename 构建路径
+                            let modelPath = model.path;
+                            let isValidPath = modelPath && 
+                                             modelPath !== 'undefined' && 
+                                             modelPath !== 'null' &&
+                                             typeof modelPath === 'string' &&
+                                             modelPath.trim() !== '' &&
+                                             !modelPath.toLowerCase().includes('undefined') &&
+                                             !modelPath.toLowerCase().includes('null');
+                            
+                            if (!isValidPath && model.filename) {
+                                // 根据 filename 自动构建路径
+                                const filename = model.filename.trim();
+                                if (filename && filename !== 'undefined' && filename !== 'null' && !filename.toLowerCase().includes('undefined')) {
+                                    modelPath = `/user_vrm/${filename}`;
+                                    isValidPath = true;
+                                }
+                            }
+                            
+                            // 如果仍然无效，跳过该模型
+                            if (!isValidPath) {
+                                console.warn('[模型管理] 跳过无效的 VRM 模型:', model);
+                                return;
+                            }
+                            
+                            // 确保 data-path 属性永远是有效的 URL
+                            const validPath = modelPath.startsWith('/') || modelPath.startsWith('http') 
+                                ? modelPath 
+                                : `/user_vrm/${model.filename || modelPath.split(/[/\\]/).pop()}`;
+                            
+                            option.value = model.url || validPath;
+                            option.setAttribute('data-path', validPath);
+                            if (model.filename) {
+                                option.setAttribute('data-filename', model.filename);
+                            }
+                            option.textContent = model.name || model.filename || validPath;
                             vrmModelSelect.appendChild(option);
                         });
                         showStatus(t('live2d.vrmModelListLoaded', 'VRM 模型列表加载成功'), 2000);
@@ -1393,17 +1467,66 @@
 
                     // 获取选中的option，获取原始路径和文件名
                     const selectedOption = vrmModelSelect.options[vrmModelSelect.selectedIndex];
-                    const originalPath = selectedOption ? selectedOption.getAttribute('data-path') : null;
+                    let originalPath = selectedOption ? selectedOption.getAttribute('data-path') : null;
                     const filename = selectedOption ? selectedOption.getAttribute('data-filename') : null;
+                    
+                    // 增加逻辑判断：如果获取到的路径是 null、空或者字符串 "undefined"，立即使用 data-filename 重新构造正确路径
+                    if (!originalPath || 
+                        originalPath === 'undefined' || 
+                        originalPath === 'null' ||
+                        originalPath.trim() === '' ||
+                        originalPath.toLowerCase().includes('undefined') ||
+                        originalPath.toLowerCase().includes('null')) {
+                        if (filename && filename !== 'undefined' && filename !== 'null' && !filename.toLowerCase().includes('undefined')) {
+                            originalPath = `/user_vrm/${filename}`;
+                            console.warn('[模型管理] 检测到无效路径，已根据文件名自动修复:', originalPath);
+                        } else {
+                            console.error('[模型管理] 无法修复无效路径，缺少有效的文件名');
+                            showStatus(t('live2d.vrmModelPathInvalid', 'VRM 模型路径无效，请重新选择模型'), 3000);
+                            e.target.value = '';
+                            return;
+                        }
+                    }
                     
                     // modelPath 现在是 URL（如 /user_vrm/sister1.0.vrm），用于加载模型
                     // originalPath 是本地文件路径，用于保存配置
-                    const modelUrl = modelPath; // 用于加载的URL
-                    const modelPathForConfig = originalPath || filename || modelPath; // 用于配置的路径
+                    let modelUrl = modelPath; // 用于加载的URL
+                    let modelPathForConfig = originalPath; // 用于配置的路径
+                    
+                    // 确保 modelUrl 也是有效的
+                    if (!modelUrl || 
+                        modelUrl === 'undefined' || 
+                        modelUrl === 'null' ||
+                        modelUrl.trim() === '' ||
+                        modelUrl.toLowerCase().includes('undefined') ||
+                        modelUrl.toLowerCase().includes('null')) {
+                        if (filename) {
+                            modelUrl = `/user_vrm/${filename}`;
+                        } else {
+                            modelUrl = originalPath;
+                        }
+                    }
+                    
+                    // 确保赋值给 currentModelInfo 的 path 是绝对有效的
+                    if (!modelPathForConfig || 
+                        modelPathForConfig === 'undefined' || 
+                        modelPathForConfig === 'null' ||
+                        modelPathForConfig.trim() === '' ||
+                        modelPathForConfig.toLowerCase().includes('undefined') ||
+                        modelPathForConfig.toLowerCase().includes('null')) {
+                        if (filename) {
+                            modelPathForConfig = `/user_vrm/${filename}`;
+                        } else {
+                            console.error('[模型管理] 无法确定有效的模型路径');
+                            showStatus(t('live2d.vrmModelPathInvalid', 'VRM 模型路径无效，请重新选择模型'), 3000);
+                            e.target.value = '';
+                            return;
+                        }
+                    }
                     
                     // 保存当前 VRM 模型信息，用于后续保存到角色配置（在加载前就设置，这样即使加载失败也能保存）
                     currentModelInfo = {
-                        name: filename || modelPathForConfig,
+                        name: filename || modelPathForConfig.split(/[/\\]/).pop() || modelPathForConfig,
                         path: modelPathForConfig,
                         url: modelUrl,
                         type: 'vrm'
@@ -1447,6 +1570,64 @@
                                     if (vrmManager.interaction) {
                                         vrmManager.interaction.enableFaceCamera = false;
                                     }
+                                }
+                                
+                                //检查模型缩放是否太小或太大，自动调整为合理值
+                                const currentScale = vrm.scene.scale.x; // 使用 x 作为统一缩放值
+                                const needsAdjustment = currentScale < 0.5 || currentScale > 1.2;
+                                
+                                if (needsAdjustment) {
+                                    const issue = currentScale < 0.5 ? '过小' : '过大';
+                                    console.warn(`[模型管理] 检测到模型缩放${issue} (${currentScale})，自动调整为合理值`);
+                                    
+                                    // 等待一帧，确保模型完全加载和骨骼计算完成
+                                    await new Promise(resolve => requestAnimationFrame(resolve));
+                                    
+                                    // 计算模型的包围盒来获取实际高度
+                                    const THREE = window.THREE;
+                                    const box = new THREE.Box3().setFromObject(vrm.scene);
+                                    const modelSize = box.getSize(new THREE.Vector3());
+                                    const modelHeight = modelSize.y;
+                                    
+                                    const screenHeight = window.innerHeight;
+                                    const screenWidth = window.innerWidth;
+                                    const isMobile = window.innerWidth <= 768;
+                                    
+                                    let targetScale;
+                                    if (isMobile) {
+                                        // 移动端：使用固定缩放值，避免过大
+                                        targetScale = Math.max(0.5, Math.min(0.8, screenHeight / 1500));
+                                    } else {
+                                        // 桌面端：基于模型实际高度计算
+                                        if (modelHeight > 0 && Number.isFinite(modelHeight)) {
+                                            // 目标：让模型在屏幕上的高度约为屏幕高度的0.4-0.5倍
+                                            const targetScreenHeight = screenHeight * 0.45;
+                                            // 使用相机 FOV 计算
+                                            const camera = vrmManager.camera;
+                                            if (camera && camera.fov) {
+                                                const fov = camera.fov * (Math.PI / 180);
+                                                const cameraDistance = camera.position?.z || 5; // 默认距离 5
+                                                const worldHeightAtDistance = 2 * Math.tan(fov / 2) * cameraDistance;
+                                                const scaleRatio = (targetScreenHeight / screenHeight) * (worldHeightAtDistance / modelHeight);
+                                                targetScale = Math.max(0.5, Math.min(1.2, scaleRatio));
+                                            } else {
+                                                // 如果没有相机，使用简单的比例计算
+                                                // 假设标准 VRM 模型高度约为 1.5 单位
+                                                const standardModelHeight = 1.5;
+                                                const scaleRatio = (targetScreenHeight / screenHeight) * (standardModelHeight / modelHeight);
+                                                targetScale = Math.max(0.5, Math.min(1.2, scaleRatio));
+                                            }
+                                        } else {
+                                            // 如果无法获取模型高度，使用屏幕尺寸计算
+                                            targetScale = Math.max(0.5, Math.min(1.0, screenHeight / 1200));
+                                        }
+                                    }
+                                    
+                                    // 确保缩放值在合理范围内（最小 0.5，最大 1.2）
+                                    targetScale = Math.max(0.5, Math.min(1.2, targetScale));
+                                    
+                                    vrm.scene.scale.setScalar(targetScale);
+                                    console.log(`[模型管理] 已将模型缩放从 ${currentScale.toFixed(3)} 调整为: ${targetScale.toFixed(3)} (模型高度: ${modelHeight.toFixed(2)})`);
                                 }
                             }
                         }
@@ -2915,26 +3096,89 @@
                                 const trimmed = rawValue.trim();
                                 // 检查是否是无效的字符串值
                                 if (trimmed !== '' && 
-                                    trimmed !== 'undefined' && 
-                                    trimmed !== 'null' && 
-                                    !trimmed.includes('undefined') &&
-                                    !trimmed.includes('null')) {
+                                    trimmed.toLowerCase() !== 'undefined' && 
+                                    trimmed.toLowerCase() !== 'null' && 
+                                    !trimmed.toLowerCase().includes('undefined') &&
+                                    !trimmed.toLowerCase().includes('null')) {
                                     vrmModelPath = trimmed;
                                 }
                             } else {
                                 // 非字符串类型，转换为字符串后也要验证
                                 const strValue = String(rawValue);
-                                if (strValue !== 'undefined' && strValue !== 'null' && !strValue.includes('undefined')) {
+                                const lowerStr = strValue.toLowerCase();
+                                if (lowerStr !== 'undefined' && lowerStr !== 'null' && !lowerStr.includes('undefined')) {
                                     vrmModelPath = strValue;
                                 }
                             }
                         }
                         
-                        // 如果路径无效，跳过加载
-                        if (!vrmModelPath) {
-                            console.warn(`[模型管理] 角色 ${lanlanName} 的 VRM 模型路径无效:`, catgirlConfig.vrm);
-                            showStatus(t('live2d.vrmModelPathInvalid', `角色 ${lanlanName} 的 VRM 模型路径无效，请手动选择模型`, { name: lanlanName }));
-                            return;
+                        // 如果路径无效，尝试在下拉列表中根据文件名寻找匹配项并自动修复
+                        if (!vrmModelPath || 
+                            vrmModelPath === 'undefined' || 
+                            vrmModelPath === 'null' ||
+                            vrmModelPath.toLowerCase().includes('undefined') ||
+                            vrmModelPath.toLowerCase().includes('null')) {
+                            console.warn(`[模型管理] 角色 ${lanlanName} 的 VRM 模型路径无效，尝试自动修复:`, catgirlConfig.vrm);
+                            
+                            // 尝试在下拉列表中根据文件名寻找匹配项
+                            if (vrmModelSelect && vrmModelSelect.options.length > 0) {
+                                // 如果路径包含文件名，尝试提取文件名
+                                let possibleFilename = null;
+                                if (catgirlConfig.vrm && typeof catgirlConfig.vrm === 'string') {
+                                    const parts = catgirlConfig.vrm.split(/[/\\]/);
+                                    const lastPart = parts[parts.length - 1];
+                                    if (lastPart && lastPart !== 'undefined' && lastPart !== 'null' && lastPart.endsWith('.vrm')) {
+                                        possibleFilename = lastPart;
+                                    }
+                                }
+                                
+                                // 在下拉列表中查找匹配项
+                                let matchedOption = null;
+                                if (possibleFilename) {
+                                    matchedOption = Array.from(vrmModelSelect.options).find(opt => {
+                                        const optFilename = opt.getAttribute('data-filename');
+                                        const optPath = opt.getAttribute('data-path');
+                                        return (optFilename && optFilename === possibleFilename) ||
+                                               (optPath && optPath.includes(possibleFilename));
+                                    });
+                                }
+                                
+                                if (matchedOption) {
+                                    const fixedPath = matchedOption.getAttribute('data-path');
+                                    if (fixedPath && fixedPath !== 'undefined' && fixedPath !== 'null') {
+                                        vrmModelPath = fixedPath;
+                                        console.log(`[模型管理] 已在下拉列表中找到匹配项，修复路径为: ${vrmModelPath}`);
+                                        
+                                        // 自动修复后端配置
+                                        try {
+                                            const fixResponse = await fetch(`/api/characters/catgirl/l2d/${encodeURIComponent(lanlanName)}`, {
+                                                method: 'PUT',
+                                                headers: { 'Content-Type': 'application/json' },
+                                                body: JSON.stringify({
+                                                    model_type: 'vrm',
+                                                    vrm: vrmModelPath
+                                                })
+                                            });
+                                            if (fixResponse.ok) {
+                                                console.log(`[模型管理] 已自动修复角色 ${lanlanName} 的 VRM 模型路径配置`);
+                                            }
+                                        } catch (fixError) {
+                                            console.warn('[模型管理] 自动修复配置时出错:', fixError);
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            // 如果仍然无效，跳过加载
+                            if (!vrmModelPath || 
+                                vrmModelPath === 'undefined' || 
+                                vrmModelPath === 'null' ||
+                                vrmModelPath.toLowerCase().includes('undefined') ||
+                                vrmModelPath.toLowerCase().includes('null')) {
+                                console.warn(`[模型管理] 角色 ${lanlanName} 的 VRM 模型路径无效且无法自动修复:`, catgirlConfig.vrm);
+                                showStatus(t('live2d.vrmModelPathInvalid', `角色 ${lanlanName} 的 VRM 模型路径无效，请手动选择模型`, { name: lanlanName }));
+                                return;
+                            }
                         }
                         
                         console.log(`自动加载角色 ${lanlanName} 的 VRM 模型: ${vrmModelPath}`);
@@ -3016,9 +3260,6 @@
                             // 注意：模型朝向会自动检测并保存，无需手动处理
                             await vrmManager.loadModel(modelUrl, { autoPlay: false, addShadow: false });
                             
-                            // if (vrmManager.currentVrm) {
-                            //     autoCorrectVRMOrientation(vrmManager.currentVrm);
-                            // }
                             console.log('模型加载完成，已重置为 T-Pose 等待指令');
                             
                         } else {

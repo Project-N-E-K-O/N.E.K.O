@@ -203,21 +203,21 @@ class VRMManager {
                     
                     // 转换为相对于 vrm.scene 的局部坐标
                     result.vrm.scene.updateMatrixWorld(true);
-                    const sceneInverseMatrix = result.vrm.scene.matrixWorld.clone().invert();
+                    const currentSceneInverseMatrix = result.vrm.scene.matrixWorld.clone().invert();
                     
                     // 将最低点转换为局部坐标
                     const leftBottomPos = new window.THREE.Vector3(leftFootPos.x, leftBottomY, leftFootPos.z);
                     const rightBottomPos = new window.THREE.Vector3(rightFootPos.x, rightBottomY, rightFootPos.z);
-                    leftBottomPos.applyMatrix4(sceneInverseMatrix);
-                    rightBottomPos.applyMatrix4(sceneInverseMatrix);
+                    leftBottomPos.applyMatrix4(currentSceneInverseMatrix);
+                    rightBottomPos.applyMatrix4(currentSceneInverseMatrix);
                     
                     // Y轴：使用两脚中较低的 Y 值，确保阴影在脚底
                     shadowY = Math.min(leftBottomPos.y, rightBottomPos.y) + SHADOW_Y_OFFSET;
                     
                     // X/Z轴：使用两脚的中点（如果 FIX_CENTER_XZ 为 false）
                     if (!FIX_CENTER_XZ) {
-                        leftFootPos.applyMatrix4(sceneInverseMatrix);
-                        rightFootPos.applyMatrix4(sceneInverseMatrix);
+                        leftFootPos.applyMatrix4(currentSceneInverseMatrix);
+                        rightFootPos.applyMatrix4(currentSceneInverseMatrix);
                         shadowX = (leftFootPos.x + rightFootPos.x) / 2;
                         shadowZ = (leftFootPos.z + rightFootPos.z) / 2;
                     }
@@ -232,8 +232,8 @@ class VRMManager {
                         
                         // 转换为局部坐标
                         result.vrm.scene.updateMatrixWorld(true);
-                        const sceneInverseMatrix = result.vrm.scene.matrixWorld.clone().invert();
-                        hipsPos.applyMatrix4(sceneInverseMatrix);
+                        const currentSceneInverseMatrix = result.vrm.scene.matrixWorld.clone().invert();
+                        hipsPos.applyMatrix4(currentSceneInverseMatrix);
                         
                         // 使用 hips 的 X/Z 位置（如果 FIX_CENTER_XZ 为 false）
                         if (!FIX_CENTER_XZ) {
@@ -325,7 +325,15 @@ class VRMManager {
         if (this._animationFrameId) cancelAnimationFrame(this._animationFrameId);
 
         const animateLoop = () => {
-            if (!this.renderer) return;
+            // 检查渲染器、场景和相机是否都存在，如果任何一个被 dispose 了则取消动画循环
+            if (!this.renderer || !this.scene || !this.camera) {
+                // 如果资源已被清理，取消动画帧并返回
+                if (this._animationFrameId) {
+                    cancelAnimationFrame(this._animationFrameId);
+                    this._animationFrameId = null;
+                }
+                return;
+            }
 
             this._animationFrameId = requestAnimationFrame(animateLoop);
             const delta = this.clock ? this.clock.getDelta() : 0.016;
@@ -370,8 +378,10 @@ class VRMManager {
                 this.controls.update();
             }
 
-            // 7. 渲染场景
-            this.renderer.render(this.scene, this.camera);
+            // 7. 渲染场景（在渲染前再次检查，防止在帧执行过程中被 dispose）
+            if (this.renderer && this.scene && this.camera) {
+                this.renderer.render(this.scene, this.camera);
+            }
         };
 
         this._animationFrameId = requestAnimationFrame(animateLoop);
@@ -681,6 +691,14 @@ class VRMManager {
         // 11. 清理 UI 元素（浮动按钮、锁图标等）
         if (typeof this.cleanupUI === 'function') {
             this.cleanupUI();
+        } else {
+            // 手动清理 window 事件监听器（如果 cleanupUI 不存在）
+            if (this._windowEventHandlers && this._windowEventHandlers.length > 0) {
+                this._windowEventHandlers.forEach(({ event, handler }) => {
+                    window.removeEventListener(event, handler);
+                });
+                this._windowEventHandlers = [];
+            }
         }
         
         // 12. 重置引用和状态

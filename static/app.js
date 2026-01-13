@@ -6708,22 +6708,32 @@ function init_app() {
 
                 // 安全获取 VRM 模型路径，处理各种边界情况
                 let vrmModelPath = null;
-                if (catgirlConfig.vrm !== undefined && catgirlConfig.vrm !== null) {
-                    const rawValue = catgirlConfig.vrm;
+                // 检查 vrm 字段是否存在且有效
+                const hasVrmField = catgirlConfig.hasOwnProperty('vrm');
+                const vrmValue = catgirlConfig.vrm;
+                
+                // 检查 vrmValue 是否是有效的值（排除字符串 "undefined" 和 "null"）
+                let isVrmValueInvalid = false;
+                if (hasVrmField && vrmValue !== undefined && vrmValue !== null) {
+                    const rawValue = vrmValue;
                     if (typeof rawValue === 'string') {
                         const trimmed = rawValue.trim();
-                        // 检查是否是无效的字符串值
-                        if (trimmed !== '' && 
-                            trimmed !== 'undefined' && 
-                            trimmed !== 'null' && 
-                            !trimmed.includes('undefined') &&
-                            !trimmed.includes('null')) {
+                        const lowerTrimmed = trimmed.toLowerCase();
+                        // 检查是否是无效的字符串值（包括 "undefined", "null" 等）
+                        isVrmValueInvalid = trimmed === '' || 
+                            lowerTrimmed === 'undefined' || 
+                            lowerTrimmed === 'null' ||
+                            lowerTrimmed.includes('undefined') ||
+                            lowerTrimmed.includes('null');
+                        if (!isVrmValueInvalid) {
                             vrmModelPath = trimmed;
                         }
                     } else {
                         // 非字符串类型，转换为字符串后也要验证
                         const strValue = String(rawValue);
-                        if (strValue !== 'undefined' && strValue !== 'null' && !strValue.includes('undefined')) {
+                        const lowerStr = strValue.toLowerCase();
+                        isVrmValueInvalid = lowerStr === 'undefined' || lowerStr === 'null' || lowerStr.includes('undefined');
+                        if (!isVrmValueInvalid) {
                             vrmModelPath = strValue;
                         }
                     }
@@ -6731,12 +6741,49 @@ function init_app() {
                 
                 // 如果路径无效，使用默认模型或抛出错误
                 if (!vrmModelPath) {
-                    console.warn('[猫娘切换] VRM 模型路径无效，尝试使用默认模型:', catgirlConfig.vrm);
-                    // 如果配置中明确指定了 model_type 为 'vrm'，使用默认模型
+                    // 如果配置中明确指定了 model_type 为 'vrm'，静默使用默认模型
                     if (catgirlConfig.model_type === 'vrm') {
                         vrmModelPath = '/static/vrm/sister1.0.vrm';
+                        
+                        // 如果 vrmValue 是字符串 "undefined" 或 "null"，视为"未配置"，不显示警告
+                        // 只有在 vrm 字段存在且值不是字符串 "undefined"/"null" 时才显示警告
+                        if (hasVrmField && vrmValue !== undefined && vrmValue !== null && !isVrmValueInvalid) {
+                            // 这种情况不应该发生，因为 isVrmValueInvalid 为 false 时应该已经设置了 vrmModelPath
+                            const vrmValueStr = typeof vrmValue === 'string' ? `"${vrmValue}"` : String(vrmValue);
+                            console.warn(`[猫娘切换] VRM 模型路径无效 (${vrmValueStr})，使用默认模型`);
+                        } else {
+                            // vrmValue 是字符串 "undefined"、"null" 或未配置，视为正常情况，只显示 info
+                            console.info('[猫娘切换] VRM 模型路径未配置或无效，使用默认模型');
+                            
+                            // 如果 vrmValue 是字符串 "undefined"，尝试自动修复后端配置
+                            if (hasVrmField && isVrmValueInvalid && typeof vrmValue === 'string') {
+                                try {
+                                    const fixResponse = await fetch(`/api/characters/catgirl/l2d/${encodeURIComponent(newCatgirl)}`, {
+                                        method: 'PUT',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({
+                                            model_type: 'vrm',
+                                            vrm: vrmModelPath  // 使用默认模型路径
+                                        })
+                                    });
+                                    if (fixResponse.ok) {
+                                        const fixResult = await fixResponse.json();
+                                        if (fixResult.success) {
+                                            console.log(`[猫娘切换] 已自动修复角色 ${newCatgirl} 的 VRM 模型路径配置（从 "undefined" 修复为默认模型）`);
+                                        }
+                                    }
+                                } catch (fixError) {
+                                    console.warn('[猫娘切换] 自动修复配置时出错:', fixError);
+                                }
+                            }
+                        }
+                        console.info('[猫娘切换] 使用默认 VRM 模型:', vrmModelPath);
                     } else {
-                        throw new Error(`VRM 模型路径无效: ${catgirlConfig.vrm}`);
+                        // model_type 不是 'vrm'，抛出错误
+                        const vrmValueStr = hasVrmField && vrmValue !== undefined && vrmValue !== null 
+                            ? (typeof vrmValue === 'string' ? `"${vrmValue}"` : String(vrmValue))
+                            : '(未配置)';
+                        throw new Error(`VRM 模型路径无效: ${vrmValueStr}`);
                     }
                 }
 

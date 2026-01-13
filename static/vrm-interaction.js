@@ -170,6 +170,19 @@ class VRMInteraction {
         this.wheelHandler = (e) => {
             if (this.checkLocked() || !this.manager.currentModel) return;
             
+            // 检查事件目标是否是 canvas 或其子元素，如果不是则不拦截事件（允许聊天区域正常滚动）
+            const canvas = this.manager.renderer?.domElement;
+            if (!canvas) return;
+            
+            const target = e.target;
+            // 检查目标是否是 canvas 本身或其子元素
+            const isCanvasOrDescendant = target === canvas || canvas.contains(target);
+            
+            // 只有当事件发生在 canvas 或其子元素上时，才拦截事件
+            if (!isCanvasOrDescendant) {
+                return; // 不拦截，允许事件继续传播到聊天区域
+            }
+            
             e.preventDefault();
             e.stopPropagation();
             

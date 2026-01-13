@@ -208,20 +208,22 @@ VRMManager.prototype.setupFloatingButtons = function () {
                     }
                 }
 
-                const currentActive = btn.dataset.active === 'true';
-                let targetActive = !currentActive; 
-
                 // 如果是 popupToggle 按钮（settings 或 agent），由 popupToggle 分支的处理器处理，这里直接返回
                 if (config.popupToggle) {
                     return;
                 }
+
+                const currentActive = btn.dataset.active === 'true';
+                let targetActive = !currentActive; 
                 
                 if (config.id === 'mic' || config.id === 'screen') {
                    // 触发全局事件
                    window.dispatchEvent(new CustomEvent(`live2d-${config.id}-toggle`, {detail:{active:targetActive}}));
                    
                    // 使用统一的状态管理方法更新 UI 状态
-                   // 注意：UI状态更新通常由 app.js 监听事件后回调，但这里预先更新以提高响应速度
+                   // 【设计决策】预先更新 UI 状态以提高响应速度，优化用户体验
+                   // 注意：如果 app.js 处理失败，UI 状态可能与实际状态不同步
+                   // 这是为了用户体验而做的权衡：优先响应速度，而非严格的状态一致性
                    this.setButtonActive(config.id, targetActive);
                 }
                 else if (config.id === 'goodbye') {
@@ -929,6 +931,21 @@ VRMManager.prototype.cleanupUI = function() {
         document.removeEventListener('touchmove', this._returnButtonDragHandlers.touchMove);
         document.removeEventListener('touchend', this._returnButtonDragHandlers.touchEnd);
         this._returnButtonDragHandlers = null;
+    }
+    
+    // 清理窗口检查定时器（防止内存泄漏）
+    if (this._windowCheckTimers) {
+        Object.keys(this._windowCheckTimers).forEach(url => {
+            if (this._windowCheckTimers[url]) {
+                clearTimeout(this._windowCheckTimers[url]);
+            }
+        });
+        this._windowCheckTimers = {};
+    }
+    
+    // 关闭所有设置窗口
+    if (typeof this.closeAllSettingsWindows === 'function') {
+        this.closeAllSettingsWindows();
     }
     
     if (window.lanlan_config) window.lanlan_config.vrm_model = null;
