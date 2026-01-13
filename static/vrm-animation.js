@@ -2,6 +2,7 @@ class VRMAnimation {
     static MAX_DELTA_THRESHOLD = 0.1;
     static DEFAULT_FRAME_DELTA = 0.016;
     static _animationModuleCache = null;
+    static _normalizedRootWarningShown = false;
 
     constructor(manager) {
         this.manager = manager;
@@ -19,7 +20,7 @@ class VRMAnimation {
         this.currentMouthWeight = 0;
         this.frequencyData = null;
         this._boundsUpdateFrameCounter = 0;
-        this._boundsUpdateInterval = 5; // 每 5 帧更新一次
+        this._boundsUpdateInterval = 5;
     }
 
     /**
@@ -60,7 +61,6 @@ class VRMAnimation {
     }
 
     update(delta) {
-        // 限制 delta 值，防止后台化后出现大的跳跃
         const safeDelta = (delta <= 0 || delta > VRMAnimation.MAX_DELTA_THRESHOLD) 
             ? VRMAnimation.DEFAULT_FRAME_DELTA 
             : delta;
@@ -94,11 +94,9 @@ class VRMAnimation {
             }
         }
         if (this.lipSyncActive && this.analyser) {
-            // 使用相同的限制后的 delta 进行口型同步，与 mixer 保持一致
             this._updateLipSync(updateDelta);
         }
         
-        // 在模型动画更新时主动刷新 bounds 缓存（低频节流，每 5 帧更新一次）
         if (this.manager?.interaction && typeof this.manager.interaction.updateModelBoundsCache === 'function') {
             this._boundsUpdateFrameCounter++;
             if (this._boundsUpdateFrameCounter >= this._boundsUpdateInterval) {
@@ -253,6 +251,11 @@ class VRMAnimation {
                 bestRoot = normalizedRoot;
                 bestMatchCount = normalizedMatchCount;
             }
+        } else {
+            if (!VRMAnimation._normalizedRootWarningShown) {
+                console.warn('[VRM Animation] _normalizedHumanBones.root 不可用，使用 vrm.scene 作为动画根节点。如果动画播放异常，可能是 three-vrm 版本升级导致的。');
+                VRMAnimation._normalizedRootWarningShown = true;
+            }
         }
         
         if (bestRoot !== mixerRoot) {
@@ -331,15 +334,10 @@ class VRMAnimation {
             newAction.play();
         }
         
-        // 更新动画混合器，确保 action 开始播放后立即应用初始状态
-        // 使用 0.001 的小增量来触发初始更新，避免 T-pose 闪烁
         this.vrmaMixer.update(0.001);
         
         if (vrm.scene) {
-            // 更新场景的世界矩阵
             vrm.scene.updateMatrixWorld(true);
-            
-            // 遍历更新所有 SkinnedMesh 的 skeleton，确保骨骼动画正确应用
             vrm.scene.traverse((object) => {
                 if (object.isSkinnedMesh && object.skeleton) {
                     object.skeleton.update();
@@ -406,6 +404,7 @@ class VRMAnimation {
                     if (this.manager.toggleSpringBone) {
                         this.manager.toggleSpringBone(true);
                     }
+                    this._springBoneTimer = null;
                 }, 100);
             }, 500);
         } else {
@@ -508,7 +507,6 @@ class VRMAnimation {
         for(let i = 0; i < lowEnd; i++) lowFreqEnergy += this.frequencyData[i];
         for(let i = lowEnd; i < midEnd; i++) midFreqEnergy += this.frequencyData[i];
 
-        // 添加除零保护：如果 lowEnd 或 (midEnd - lowEnd) 为 0，使用 1 作为除数
         lowFreqEnergy /= (lowEnd || 1);
         midFreqEnergy /= ((midEnd - lowEnd) || 1);
 

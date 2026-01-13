@@ -15,6 +15,21 @@ class VRMCore {
         this.currentFPS = 0;
     }
 
+    static _vrmUtilsCache = null;
+    static async _getVRMUtils() {
+        if (VRMCore._vrmUtilsCache) {
+            return VRMCore._vrmUtilsCache;
+        }
+        try {
+            const { VRMUtils } = await import('@pixiv/three-vrm');
+            VRMCore._vrmUtilsCache = VRMUtils;
+            return VRMUtils;
+        } catch (error) {
+            console.warn('[VRM Core] 无法导入 VRMUtils:', error);
+            return null;
+        }
+    }
+
     /**
      * 检测设备性能模式
      */
@@ -59,13 +74,7 @@ class VRMCore {
         }
     }
 
-    /**
-     * 确保浮动按钮系统已初始化（VRM不需要此方法，由setupFloatingButtons处理）
-     * 保留空函数以防其他地方调用
-     */
     ensureFloatingButtons() {
-        // VRM使用 setupFloatingButtons() 创建自己的按钮
-        // 此方法保留为空，防止创建Live2D按钮
         return;
     }
 
@@ -90,8 +99,6 @@ class VRMCore {
                 }
                 
                 if (vrm.expressionManager && vrm.expressionManager.expressions) {
-                    // VRM 1.0 使用 Map，VRM 0.0 使用 Object
-                    // 如果使用 Object.keys(map)，Map 会返回空数组，导致误判
                     let exprCount;
                     if (vrm.expressionManager.expressions instanceof Map) {
                         exprCount = vrm.expressionManager.expressions.size;
@@ -117,52 +124,32 @@ class VRMCore {
     setLocked(locked) {
         this.manager.isLocked = locked;
 
-        // 更新锁图标样式（兼容新旧两种锁图标系统）
         if (this._lockIconImages) {
-            // 旧系统：使用图片元素
             const { locked: imgLocked, unlocked: imgUnlocked } = this._lockIconImages;
             if (imgLocked) imgLocked.style.opacity = locked ? '1' : '0';
             if (imgUnlocked) imgUnlocked.style.opacity = locked ? '0' : '1';
         } else {
-            // 新系统：使用背景图片
             const lockIcon = document.getElementById('vrm-lock-icon');
             if (lockIcon) {
                 lockIcon.style.backgroundImage = locked ? 'url(/static/icons/locked_icon.png)' : 'url(/static/icons/unlocked_icon.png)';
             }
         }
 
-        // 不再修改 canvas 的 pointerEvents，改用逻辑拦截
-        // 这样锁定时虽然不能移动/缩放，但依然可以点中模型弹出菜单
-        // pointerEvents 的修改由 VRMInteraction 统一管理（如果需要的话）
-
-        // 更新交互模块的锁定状态
-        // VRMInteraction 会通过 checkLocked() 来拦截拖拽/缩放操作
         if (this.manager.interaction && typeof this.manager.interaction.setLocked === 'function') {
             this.manager.interaction.setLocked(locked);
         }
 
-        // 更新控制器的启用状态
-        // 注意：缩放功能由 VRMInteraction 手动处理，不使用控制器的自动缩放
         if (this.manager.controls) {
             this.manager.controls.enablePan = !locked;
-            // enableZoom 保持为 false，由 VRMInteraction 手动处理
         }
 
-        // 同步更新 Live2D 管理器的锁定状态（用于浮动按钮显示控制）
         if (window.live2dManager) {
             window.live2dManager.isLocked = locked;
         }
 
-        // 控制浮动按钮的显示/隐藏
         const buttonsContainer = document.getElementById('vrm-floating-buttons');
         if (buttonsContainer) {
-            if (locked) {
-                // 锁定时隐藏浮动按钮
-                buttonsContainer.style.display = 'none';
-            } else {
-                // 解锁时恢复显示浮动按钮
-                buttonsContainer.style.display = 'flex';
-            }
+            buttonsContainer.style.display = locked ? 'none' : 'flex';
         }
     }
 
@@ -176,10 +163,8 @@ class VRMCore {
         let pixelRatio;
         
         if (this.performanceMode === 'low') {
-            // 低性能模式：降低 pixelRatio 以减少 GPU 负担
             pixelRatio = Math.min(0.75, devicePixelRatio);
         } else if (this.performanceMode === 'medium') {
-            // 中等性能模式：使用适中的值
             pixelRatio = Math.min(1.0, devicePixelRatio);
         } else {
             // 高性能模式：可以使用更高的值
@@ -199,22 +184,12 @@ class VRMCore {
         if (!this.manager.currentModel || !this.manager.currentModel.vrm || !this.manager.currentModel.vrm.scene) return;
         
         this.manager.currentModel.vrm.scene.traverse((object) => {
-            // castShadow/receiveShadow 是 Object3D/Mesh 的属性，不是材质属性
-            // 应该在 object 上设置，而不是 material 上
             if (object.isMesh || object.isSkinnedMesh) {
-                // 1. 全局开启阴影 (衣服、头发)
                 object.castShadow = true;
                 object.receiveShadow = true;
-                
-                // 智能检测脸部：如果物体名称包含 "Face"、"Skin"、"Head" 等关键词
                 const objectName = object.name.toLowerCase();
                 if (objectName.includes('face') || objectName.includes('skin') || objectName.includes('head')) {
-                    // ❌ 脸部不接收阴影 (防止出现奇怪的鼻影或黑脸)
-                    // 这样脸永远是白净的，但头发还是会投射影子到脖子上
                     object.receiveShadow = false;
-                    
-                    // TODO: 未来可在此调整脸部材质的自发光等属性，确保肤色通透
-                    // 例如：material.emissive.setHex(0x111111); material.emissiveIntensity = 0.1;
                 }
             }
         });
@@ -233,7 +208,6 @@ class VRMCore {
         this.manager.container = document.getElementById(containerId);
         this.manager.canvas = document.getElementById(canvasId);
 
-        // 确保canvas有正确的ID（以防万一）
         if (this.manager.canvas && !this.manager.canvas.id) {
             this.manager.canvas.id = canvasId;
         }
@@ -248,7 +222,6 @@ class VRMCore {
             throw new Error(errorMsg);
         }
 
-        // 确保容器可见且有大小（参考 vrm.js）
         this.manager.container.style.display = 'block';
         this.manager.container.style.visibility = 'visible';
         this.manager.container.style.opacity = '1';
@@ -263,21 +236,16 @@ class VRMCore {
         this.manager.scene = new THREE.Scene();
         this.manager.scene.background = null;
 
-        // 创建相机 - 如果容器大小为0，使用窗口大小
         let width = this.manager.container.clientWidth || this.manager.container.offsetWidth;
         let height = this.manager.container.clientHeight || this.manager.container.offsetHeight;
-        
         if (width === 0 || height === 0) {
             width = window.innerWidth;
             height = window.innerHeight;
         }
-        //使用 30 度长焦视角，减少透视畸变，让角色更修长好看
         this.manager.camera = new THREE.PerspectiveCamera(30, width / height, 0.1, 2000);
-        // 调整相机位置，从正面看模型，提供更好的面部透视
         this.manager.camera.position.set(0, 1.1, 1.5);
         this.manager.camera.lookAt(0, 0.9, 0);
 
-        // 创建渲染器 - 提高渲染质量设置（参考 vrm.js）
         const antialias = true;
         const precision = 'highp';
         this.manager.renderer = new THREE.WebGLRenderer({ 
@@ -292,12 +260,8 @@ class VRMCore {
         });
         this.manager.renderer.setSize(width, height);
         this.applyPerformanceSettings();
-        // 开启高质量软阴影 
-        this.manager.renderer.shadowMap.enabled = true; // 开启阴影
-        this.manager.renderer.shadowMap.type = THREE.PCFSoftShadowMap; // 使用柔和阴影
-        
-        // 【兼容性修复】three.js r152+ 使用 outputColorSpace，r150 及以下使用 outputEncoding
-        // outputEncoding 从 r152 开始被标记为废弃，r162 会被完全移除
+        this.manager.renderer.shadowMap.enabled = true;
+        this.manager.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         if (THREE.SRGBColorSpace !== undefined) {
             // 新 API (r152+)
             this.manager.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -337,54 +301,62 @@ class VRMCore {
             this.manager.controls.update();
         }
 
-        // 添加灯光 - 增强亮度和立体感
-        // 1. 先把相机添加到场景中 
+        // 添加灯光 - 参考 vroidhub 等专业 VRM 展示平台的打光策略
         this.manager.scene.add(this.manager.camera);
 
-        // 2. 环境光 (Ambient): 稍微调暗，保证阴影部分有颜色但足够深
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.08);  // 从0.1降到0.08
-        this.manager.scene.add(ambientLight);
-        this.manager.ambientLight = ambientLight; // 保存引用供UI控制
+        // 1. 半球光（HemisphereLight）：模拟天空和地面的自然光照，比 AmbientLight 更自然
+        // 天空色（上方）使用略微冷色调，地面色（下方）使用略微暖色调
+        const hemisphereLight = new THREE.HemisphereLight(
+            0xffffff,  // 天空色（上方）
+            0x444444,  // 地面色（下方）
+            0.4        // 强度
+        );
+        this.manager.scene.add(hemisphereLight);
+        this.manager.ambientLight = hemisphereLight; // 保持兼容性
 
-        // 3. 建立"跟随灯光组"
-        const camLightGroup = new THREE.Group();
-
-
-        // 4. 主光源 : 负责产生主要阴影和亮度
-        const mainLight = new THREE.DirectionalLight(0xffffff, 0.06);  // 从0.1降到0.06，减少脸部亮度
-        mainLight.position.set(-1, 1, 1); // 相对相机的位置
+        // 2. 主光源（Key Light）：从正面偏上45度照射，提供主要照明和立体感
+        const mainLight = new THREE.DirectionalLight(0xffffff, 1.2);
+        mainLight.position.set(1, 2.5, 2); // 从右上前方45度角照射
         mainLight.castShadow = true;
-        // 优化阴影参数，去除锯齿
         mainLight.shadow.mapSize.width = 2048;
         mainLight.shadow.mapSize.height = 2048;
         mainLight.shadow.bias = -0.0001;
-        // 限制阴影范围，聚焦角色
         mainLight.shadow.camera.near = 0.1;
         mainLight.shadow.camera.far = 20;
-        mainLight.shadow.camera.left = -2;
-        mainLight.shadow.camera.right = 2;
-        mainLight.shadow.camera.top = 2;
-        mainLight.shadow.camera.bottom = -2;
-
+        mainLight.shadow.camera.left = -3;
+        mainLight.shadow.camera.right = 3;
+        mainLight.shadow.camera.top = 3;
+        mainLight.shadow.camera.bottom = -3;
         this.manager.scene.add(mainLight);
-        this.manager.mainLight = mainLight; // 保存引用供UI控制
+        this.manager.mainLight = mainLight;
 
-
-        // 补光 (Fill Light): 位于相机右侧，柔和化阴影
-        const fillLight = new THREE.DirectionalLight(0xffffff, 0.12);  // 从0.2降到0.12，减少正面补光
-        fillLight.position.set(1, 0, 1); // 相对相机
+        // 3. 补光（Fill Light）：从左侧前方柔和补光，减少阴影对比度
+        const fillLight = new THREE.DirectionalLight(0xffffff, 0.5);
+        fillLight.position.set(-2, 1, 1.5); // 从左侧前方柔和照射
         fillLight.castShadow = false;
-        camLightGroup.add(fillLight);
-        this.manager.fillLight = fillLight; // 保存引用供UI控制
+        this.manager.scene.add(fillLight);
+        this.manager.fillLight = fillLight;
 
-        // 将灯光组挂载到相机上！
-        this.manager.camera.add(camLightGroup);
-        // 5. 轮廓光 (Rim Light): 依然固定在场景里 (世界坐标)
-        // 从背后打光，勾勒头发边缘，增加通透感
+        // 4. 轮廓光（Rim Light）：从背后上方照射，勾勒头发和身体边缘
         const rimLight = new THREE.DirectionalLight(0xffffff, 0.8);
-        rimLight.position.set(0, 5, -5); // 从正后上方
+        rimLight.position.set(0, 2, -3); // 从背后上方照射
+        rimLight.castShadow = false;
         this.manager.scene.add(rimLight);
-        this.manager.rimLight = rimLight; // 保存引用供UI控制
+        this.manager.rimLight = rimLight;
+
+        // 5. 顶光（Top Light）：从上方照射，增加头顶和肩部的亮度
+        const topLight = new THREE.DirectionalLight(0xffffff, 0.3);
+        topLight.position.set(0, 4, 0); // 从正上方照射
+        topLight.castShadow = false;
+        this.manager.scene.add(topLight);
+        this.manager.topLight = topLight;
+
+        // 6. 底光（Bottom Light）：从下方轻微照射，减少下巴和颈部的阴影
+        const bottomLight = new THREE.DirectionalLight(0xffffff, 0.15);
+        bottomLight.position.set(0, -2, 0.5); // 从下方轻微照射
+        bottomLight.castShadow = false;
+        this.manager.scene.add(bottomLight);
+        this.manager.bottomLight = bottomLight;
 
         // 安全的窗口大小调整处理：调用前检查 onWindowResize 是否存在
         window.addEventListener('resize', () => {
@@ -627,15 +599,43 @@ class VRMCore {
                 Number.isFinite(savedRotation.z);
             
             if (!hasSavedRotation && typeof this.saveUserPreferences === 'function') {
-                // 获取当前的位置和缩放（如果没有保存的，使用当前值）
-                const currentPosition = preferences?.position || vrm.scene.position.clone();
-                const currentScale = preferences?.scale || vrm.scene.scale.clone();
+                // 标准化位置为普通对象 {x, y, z}
+                let currentPosition;
+                if (preferences?.position) {
+                    currentPosition = {
+                        x: preferences.position.x,
+                        y: preferences.position.y,
+                        z: preferences.position.z
+                    };
+                } else {
+                    currentPosition = {
+                        x: vrm.scene.position.x,
+                        y: vrm.scene.position.y,
+                        z: vrm.scene.position.z
+                    };
+                }
+                
+                // 标准化缩放为普通对象 {x, y, z}
+                let currentScale;
+                if (preferences?.scale) {
+                    currentScale = {
+                        x: preferences.scale.x,
+                        y: preferences.scale.y,
+                        z: preferences.scale.z
+                    };
+                } else {
+                    currentScale = {
+                        x: vrm.scene.scale.x,
+                        y: vrm.scene.scale.y,
+                        z: vrm.scene.scale.z
+                    };
+                }
                 
                 // 异步保存，不阻塞加载流程
                 this.saveUserPreferences(
                     modelUrl,
-                    { x: currentPosition.x, y: currentPosition.y, z: currentPosition.z },
-                    { x: currentScale.x, y: currentScale.y, z: currentScale.z },
+                    currentPosition,
+                    currentScale,
                     detectedRotation,
                     null // display
                 ).catch(err => {
@@ -854,36 +854,52 @@ class VRMCore {
         }
 
         if (vrm.scene) {
-            // 清理 VRMLookAtQuaternionProxy（如果存在）
-            const lookAtProxy = vrm.scene.getObjectByName('lookAtQuaternionProxy');
-            if (lookAtProxy) {
-                vrm.scene.remove(lookAtProxy);
-            }
-            
-            vrm.scene.traverse((object) => {
-                if (object.geometry) object.geometry.dispose();
-                if (object.material) {
-                    if (Array.isArray(object.material)) {
-                        object.material.forEach(m => {
-                            if (m.map) m.map.dispose();
-                            if (m.normalMap) m.normalMap.dispose();
-                            if (m.roughnessMap) m.roughnessMap.dispose();
-                            if (m.metalnessMap) m.metalnessMap.dispose();
-                            if (m.emissiveMap) m.emissiveMap.dispose();
-                            if (m.aoMap) m.aoMap.dispose();
-                            m.dispose();
-                        });
+            // 使用 VRMUtils.deepDispose 清理场景（推荐方式，更安全且符合库的设计）
+            // 这会自动清理所有几何体、材质、贴图等资源
+            (async () => {
+                try {
+                    const VRMUtils = await VRMCore._getVRMUtils();
+                    if (VRMUtils && typeof VRMUtils.deepDispose === 'function') {
+                        VRMUtils.deepDispose(vrm.scene);
                     } else {
-                        if (object.material.map) object.material.map.dispose();
-                        if (object.material.normalMap) object.material.normalMap.dispose();
-                        if (object.material.roughnessMap) object.material.roughnessMap.dispose();
-                        if (object.material.metalnessMap) object.material.metalnessMap.dispose();
-                        if (object.material.emissiveMap) object.material.emissiveMap.dispose();
-                        if (object.material.aoMap) object.material.aoMap.dispose();
-                        object.material.dispose();
+                        // 如果 VRMUtils 不可用，回退到手动清理
+                        throw new Error('VRMUtils.deepDispose 不可用');
                     }
+                } catch (error) {
+                    // 如果导入失败，回退到手动清理（兼容性处理）
+                    console.warn('[VRM Core] 无法使用 VRMUtils.deepDispose，回退到手动清理:', error);
+                    // 清理 VRMLookAtQuaternionProxy（如果存在）
+                    const lookAtProxy = vrm.scene.getObjectByName('lookAtQuaternionProxy');
+                    if (lookAtProxy) {
+                        vrm.scene.remove(lookAtProxy);
+                    }
+                    
+                    vrm.scene.traverse((object) => {
+                        if (object.geometry) object.geometry.dispose();
+                        if (object.material) {
+                            if (Array.isArray(object.material)) {
+                                object.material.forEach(m => {
+                                    if (m.map) m.map.dispose();
+                                    if (m.normalMap) m.normalMap.dispose();
+                                    if (m.roughnessMap) m.roughnessMap.dispose();
+                                    if (m.metalnessMap) m.metalnessMap.dispose();
+                                    if (m.emissiveMap) m.emissiveMap.dispose();
+                                    if (m.aoMap) m.aoMap.dispose();
+                                    m.dispose();
+                                });
+                            } else {
+                                if (object.material.map) object.material.map.dispose();
+                                if (object.material.normalMap) object.material.normalMap.dispose();
+                                if (object.material.roughnessMap) object.material.roughnessMap.dispose();
+                                if (object.material.metalnessMap) object.material.metalnessMap.dispose();
+                                if (object.material.emissiveMap) object.material.emissiveMap.dispose();
+                                if (object.material.aoMap) object.material.aoMap.dispose();
+                                object.material.dispose();
+                            }
+                        }
+                    });
                 }
-            });
+            })();
         }
         
         // 清理 currentModel 引用

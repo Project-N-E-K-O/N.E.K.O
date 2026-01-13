@@ -429,30 +429,24 @@ async def update_catgirl_lighting(name: str, request: Request):
         data = await request.json()
         lighting = data.get('lighting')
         
-        # 检查是否需要立即应用运行时更新（默认 false，避免频繁重载）
         apply_runtime = data.get('apply_runtime', False)
-        # 也支持通过查询参数控制
         query_params = request.query_params
         if 'apply_runtime' in query_params:
             apply_runtime = query_params.get('apply_runtime', '').lower() in ('true', '1', 'yes')
 
-        # 加载当前角色配置
         _config_manager = get_config_manager()
         characters = _config_manager.load_characters()
 
-        # 确保猫娘配置存在
         if '猫娘' not in characters or name not in characters['猫娘']:
             return JSONResponse(content={
                 'success': False,
                 'error': '角色不存在'
             }, status_code=404)
 
-        # 检查是否为VRM模型
         model_type = characters['猫娘'][name].get('model_type', 'live2d')
         if model_type != 'vrm':
             logger.warning(f"角色 {name} 不是VRM模型，但仍保存打光配置")
         
-        # 支持 partial update：用"当前值(优先) / 默认值"补齐缺失字段
         from config import get_default_vrm_lighting
         base_lighting = (
             characters['猫娘'][name].get('lighting')
@@ -466,16 +460,10 @@ async def update_catgirl_lighting(name: str, request: Request):
                 'error': 'lighting 必须是对象'
             }, status_code=400)
         
-        # 合并：优先使用请求中的值，缺失的字段使用当前值或默认值
         lighting = {**base_lighting, **lighting}
 
-        # 验证打光参数
-        lighting_ranges = {
-            'ambient': (0, 0.3),
-            'main': (0, 2.5),
-            'fill': (0, 0.5),
-            'rim': (0, 1.5)
-        }
+        from config import VRM_LIGHTING_RANGES
+        lighting_ranges = VRM_LIGHTING_RANGES
 
         for key, (min_val, max_val) in lighting_ranges.items():
             if key not in lighting:
@@ -491,28 +479,26 @@ async def update_catgirl_lighting(name: str, request: Request):
                     'error': f'打光参数 {key} 超出范围 ({min_val}-{max_val})'
                 }, status_code=400)
 
-        # 保存打光配置
         characters['猫娘'][name]['lighting'] = {
             'ambient': float(lighting['ambient']),
             'main': float(lighting['main']),
             'fill': float(lighting['fill']),
-            'rim': float(lighting['rim'])
+            'rim': float(lighting['rim']),
+            'top': float(lighting.get('top', 0.3)),
+            'bottom': float(lighting.get('bottom', 0.15))
         }
         logger.info(f"已保存角色 {name} 的打光配置: {characters['猫娘'][name]['lighting']}")
 
-        # 保存配置到文件
         _config_manager.save_characters(characters)
         
-        # 条件性完整重载：只在明确请求时执行（避免频繁重载）
         if apply_runtime:
             initialize_character_data = get_initialize_character_data()
             if initialize_character_data:
                 await initialize_character_data()
                 logger.info(f"已执行完整配置重载（角色 {name} 的打光配置）")
         else:
-            logger.debug(f"跳过完整配置重载（apply_runtime=False），配置已保存到磁盘，需要刷新页面或调用重载才能生效")
+            logger.debug("跳过完整配置重载（apply_runtime=False），配置已保存到磁盘，需要刷新页面或调用重载才能生效")
 
-        # 根据是否应用运行时更新，返回不同的消息
         if apply_runtime:
             message = f'已保存角色 {name} 的打光配置并已应用到运行时'
         else:
@@ -522,7 +508,7 @@ async def update_catgirl_lighting(name: str, request: Request):
             'success': True,
             'message': message,
             'applied_runtime': apply_runtime,
-            'needs_reload': not apply_runtime  # 提示前端是否需要刷新
+            'needs_reload': not apply_runtime
         })
 
     except Exception as e:

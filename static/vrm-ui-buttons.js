@@ -9,7 +9,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
         return; 
     }
     
-    // 初始化并清理 window 级别的事件监听器数组
+    // 清理旧的事件监听器
     if (this._windowEventHandlers && this._windowEventHandlers.length > 0) {
         this._windowEventHandlers.forEach(({ event, handler }) => {
             window.removeEventListener(event, handler);
@@ -19,7 +19,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
         this._windowEventHandlers = [];
     }
     
-    // 如果之前已经注册过 document 级别的事件监听器，先移除它们以防止重复注册
+    // 清理旧的 document 事件监听器
     if (this._returnButtonDragHandlers) {
         document.removeEventListener('mousemove', this._returnButtonDragHandlers.mouseMove);
         document.removeEventListener('mouseup', this._returnButtonDragHandlers.mouseUp);
@@ -29,13 +29,8 @@ VRMManager.prototype.setupFloatingButtons = function () {
     }
     const container = document.getElementById('vrm-container');
 
-    // 强力清除旧势力的残党
     document.querySelectorAll('#live2d-floating-buttons').forEach(el => el.remove());
-    
-    // 1. 改这里：给他一个全新的名字，不再和旧代码打架
-    const buttonsContainerId = 'vrm-floating-buttons'; 
-
-    // 清理逻辑（防止热重载堆积）
+    const buttonsContainerId = 'vrm-floating-buttons';
     const old = document.getElementById(buttonsContainerId);
     if (old) old.remove();
 
@@ -52,36 +47,34 @@ VRMManager.prototype.setupFloatingButtons = function () {
     });
     this._floatingButtonsContainer = buttonsContainer;
 
-    // 阻止浮动按钮容器上的指针事件传播到window
     const stopContainerEvent = (e) => { e.stopPropagation(); };
     ['pointerdown','pointermove','pointerup','mousedown','mousemove','mouseup','touchstart','touchmove','touchend'].forEach(evt => {
         buttonsContainer.addEventListener(evt, stopContainerEvent);
     });
 
-    // 响应式布局逻辑
     const applyResponsiveFloatingLayout = () => {
+        const isLocked = this.interaction && this.interaction.checkLocked ? this.interaction.checkLocked() : false;
+        if (isLocked) {
+            buttonsContainer.style.display = 'none';
+            return;
+        }
         if (window.isMobileWidth()) {
-            // 移动端：固定在右下角，纵向排布，整体上移
             buttonsContainer.style.flexDirection = 'column';
             buttonsContainer.style.bottom = '116px';
             buttonsContainer.style.right = '16px';
-            buttonsContainer.style.left = ''; // 清除左定位
-            buttonsContainer.style.top = '';  // 清除上定位
-            buttonsContainer.style.display = 'flex'; // 移动端强制显示
+            buttonsContainer.style.left = '';
+            buttonsContainer.style.top = '';
+            buttonsContainer.style.display = 'flex';
         } else {
-            // 桌面端：恢复纵向排布，由 _startUIUpdateLoop 动态定位
             buttonsContainer.style.flexDirection = 'column';
             buttonsContainer.style.bottom = '';
             buttonsContainer.style.right = '';
-            // display 由 loop 控制
         }
     };
     applyResponsiveFloatingLayout();
-    // 追踪 resize 事件监听器以便清理
     this._windowEventHandlers.push({ event: 'resize', handler: applyResponsiveFloatingLayout });
     window.addEventListener('resize', applyResponsiveFloatingLayout);
 
-    // 2. 按钮配置（与 Live2D 保持一致）
     const iconVersion = '?v=' + (window.APP_VERSION || '1.0.0');
     const buttonConfigs = [
         { id: 'mic', emoji: '🎤', title: window.t ? window.t('buttons.voiceControl') : '语音控制', titleKey: 'buttons.voiceControl', hasPopup: true, toggle: true, separatePopupTrigger: true, iconOff: '/static/icons/mic_icon_off.png'+iconVersion, iconOn: '/static/icons/mic_icon_on.png'+iconVersion },
@@ -95,7 +88,6 @@ VRMManager.prototype.setupFloatingButtons = function () {
 
     // 3. 创建按钮
     buttonConfigs.forEach(config => {
-        // 移动端隐藏 agent 和 goodbye 按钮
         if (window.isMobileWidth() && (config.id === 'agent' || config.id === 'goodbye')) {
             return;
         }
@@ -179,21 +171,16 @@ VRMManager.prototype.setupFloatingButtons = function () {
                 e.stopPropagation();
                 e.preventDefault();
 
-                // 1. 麦克风安全检查
                 if (config.id === 'mic') {
                     const micButton = document.getElementById('micButton');
-                    // 检查是否正在启动中
                     const isMicStarting = window.isMicStarting || false;
                     if (isMicStarting) {
                         if (btn.dataset.active !== 'true') {
-                            // 使用统一的状态管理方法
                             this.setButtonActive(config.id, true);
                         }
                         return; 
                     }
                 }
-
-                // 2. 屏幕分享安全检查
                 if (config.id === 'screen') {
                     const isRecording = window.isRecording || false;
                     const wantToActivate = btn.dataset.active !== 'true';
@@ -208,7 +195,6 @@ VRMManager.prototype.setupFloatingButtons = function () {
                     }
                 }
 
-                // 如果是 popupToggle 按钮（settings 或 agent），由 popupToggle 分支的处理器处理，这里直接返回
                 if (config.popupToggle) {
                     return;
                 }
@@ -217,13 +203,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
                 let targetActive = !currentActive; 
                 
                 if (config.id === 'mic' || config.id === 'screen') {
-                   // 触发全局事件
                    window.dispatchEvent(new CustomEvent(`live2d-${config.id}-toggle`, {detail:{active:targetActive}}));
-                   
-                   // 使用统一的状态管理方法更新 UI 状态
-                   // 【设计决策】预先更新 UI 状态以提高响应速度，优化用户体验
-                   // 注意：如果 app.js 处理失败，UI 状态可能与实际状态不同步
-                   // 这是为了用户体验而做的权衡：优先响应速度，而非严格的状态一致性
                    this.setButtonActive(config.id, targetActive);
                 }
                 else if (config.id === 'goodbye') {
@@ -237,9 +217,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
 
         btnWrapper.appendChild(btn);
 
-        // 如果有弹出框且需要独立的触发器（仅麦克风）
         if (config.hasPopup && config.separatePopupTrigger) {
-            // 手机模式下移除麦克风弹窗与触发器
             if (window.isMobileWidth() && config.id === 'mic') {
                 buttonsContainer.appendChild(btnWrapper);
                 return;
@@ -258,22 +236,15 @@ VRMManager.prototype.setupFloatingButtons = function () {
                 marginLeft: '-10px'
             });
 
-            // 阻止冒泡
             const stopTriggerEvent = (e) => { e.stopPropagation(); };
             ['pointerdown','mousedown','touchstart'].forEach(evt => triggerBtn.addEventListener(evt, stopTriggerEvent));
 
             triggerBtn.addEventListener('click', async (e) => {
                 e.stopPropagation();
-
-                // 检查弹出框是否已经显示（如果已显示，showPopup会关闭它，不需要重新加载）
                 const isPopupVisible = popup.style.display === 'flex' && popup.style.opacity === '1';
-
-                // 如果是麦克风弹出框且弹窗未显示，先加载麦克风列表
                 if (config.id === 'mic' && !isPopupVisible) {
                     await this.renderMicList(popup);
                 }
-
-                // 如果是屏幕分享弹出框且弹窗未显示，先加载屏幕源列表
                 if (config.id === 'screen' && !isPopupVisible) {
                     await this.renderScreenSourceList(popup);
                 }
@@ -294,36 +265,20 @@ VRMManager.prototype.setupFloatingButtons = function () {
             btnWrapper.appendChild(btn);
             btnWrapper.appendChild(popup);
 
-            // 添加防抖标志，防止在动画过程中重复点击
             let isToggling = false;
-
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
-
-                // 如果正在切换中，忽略点击
                 if (isToggling) {
                     return;
                 }
-
-                // 检查弹出框当前状态（考虑动画过程中的状态）
-                // 如果 display 是 'flex' 且 opacity 不是 '0'，则认为弹窗可见
                 const isPopupVisible = popup.style.display === 'flex' && 
                                       popup.style.opacity !== '0' && 
                                       popup.style.opacity !== '';
-
-                // 实现互斥逻辑：如果有exclusive配置，关闭对方
                 if (!isPopupVisible && config.exclusive) {
                     this.closePopupById(config.exclusive);
                 }
-
-                // 设置防抖标志
                 isToggling = true;
-
-                // 切换弹出框
-                // showPopup 方法会处理按钮图标状态的更新，这里不需要重复处理
                 this.showPopup(config.id, popup);
-
-                // 200ms 后解除防抖（与动画时间一致）
                 setTimeout(() => {
                     isToggling = false;
                 }, 200);
@@ -614,9 +569,11 @@ VRMManager.prototype._startUIUpdateLoop = function() {
 
         try {
             const vrm = this.currentModel.vrm;
-            const width = window.innerWidth;
-            const height = window.innerHeight;
+            // 统一使用 canvasRect 的宽高，确保在缩放/嵌入场景下定位准确
+            // 如果未来 VRM canvas 不再全屏，使用 canvasRect 可以保证定位精度
             const canvasRect = this.renderer.domElement.getBoundingClientRect();
+            const canvasWidth = canvasRect.width;
+            const canvasHeight = canvasRect.height;
 
             // 计算模型在屏幕上的高度（通过头部和脚部骨骼）
             let modelScreenHeight = 0;
@@ -640,7 +597,7 @@ VRMManager.prototype._startUIUpdateLoop = function() {
                     const headPos = new window.THREE.Vector3();
                     headNode.getWorldPosition(headPos);
                     headPos.project(this.camera);
-                    headScreenY = (-headPos.y * 0.5 + 0.5) * canvasRect.height;
+                    headScreenY = (-headPos.y * 0.5 + 0.5) * canvasHeight;
                 }
 
                 // 使用脚趾骨骼（如果存在）或脚部骨骼来计算脚底位置
@@ -655,7 +612,7 @@ VRMManager.prototype._startUIUpdateLoop = function() {
                     const footPos = new window.THREE.Vector3();
                     footNode.getWorldPosition(footPos);
                     footPos.project(this.camera);
-                    footScreenY = (-footPos.y * 0.5 + 0.5) * canvasRect.height;
+                    footScreenY = (-footPos.y * 0.5 + 0.5) * canvasHeight;
                 } else {
                     // 如果没有脚部骨骼，使用场景包围盒估算
                     const box = new window.THREE.Box3().setFromObject(vrm.scene);
@@ -666,7 +623,7 @@ VRMManager.prototype._startUIUpdateLoop = function() {
                     const centerPos = new window.THREE.Vector3();
                     box.getCenter(centerPos);
                     centerPos.project(this.camera);
-                    const centerScreenY = (-centerPos.y * 0.5 + 0.5) * canvasRect.height;
+                    const centerScreenY = (-centerPos.y * 0.5 + 0.5) * canvasHeight;
                     headScreenY = centerScreenY + estimatedModelHeight / 2;
                     footScreenY = centerScreenY - estimatedModelHeight / 2;
                 }
@@ -706,31 +663,36 @@ VRMManager.prototype._startUIUpdateLoop = function() {
                 btnPos.x += 0.2;   // 从 0.35 减小到 0.2，更靠近模型
                 btnPos.y += 0.05;  // 从 0.1 减小到 0.05，更靠近模型
                 btnPos.project(this.camera);
-                const screenX = (btnPos.x * 0.5 + 0.5) * width;
-                const screenY = (-(btnPos.y * 0.5) + 0.5) * height;
+                // 统一使用 canvasRect 的宽高计算屏幕坐标，确保在缩放/嵌入场景下定位准确
+                const screenX = (btnPos.x * 0.5 + 0.5) * canvasWidth;
+                const screenY = (-(btnPos.y * 0.5) + 0.5) * canvasHeight;
                 
                 // 应用缩放到容器（使用 transform-origin: left top 确保从左上角缩放）
                 buttonsContainer.style.transformOrigin = 'left top';
                 buttonsContainer.style.transform = `scale(${scale})`;
 
                 // 计算目标位置（应用偏移，减小垂直偏移让按钮更靠近模型）
-                const targetX = screenX;
-                const targetY = screenY - 50;  // 从 -100 减小到 -50，更靠近模型
+                // 注意：screenX/screenY 是相对于 canvas 的坐标，需要加上 canvas 的偏移量
+                const targetX = canvasRect.left + screenX;
+                const targetY = canvasRect.top + screenY - 50;  // 从 -100 减小到 -50，更靠近模型
                 
                 // 使用缩放后的实际工具栏高度和宽度（用于边界限制）
                 const actualToolbarHeight = baseToolbarHeight * scale;
                 const actualToolbarWidth = 48 * scale;  // 按钮宽度
                 
                 // 屏幕边缘限制（参考 Live2D 的实现）
+                // 使用窗口尺寸进行边界限制（因为按钮是相对于窗口定位的）
                 const minMargin = 10;  // 最小边距
+                const windowWidth = window.innerWidth;
+                const windowHeight = window.innerHeight;
                 
                 // X轴边界限制：确保按钮容器不超出屏幕右边界
-                const maxX = width - actualToolbarWidth - minMargin;
+                const maxX = windowWidth - actualToolbarWidth - minMargin;
                 const clampedX = Math.max(minMargin, Math.min(targetX, maxX));
                 
                 // Y轴边界限制：确保按钮容器不超出屏幕上下边界
                 const minY = minMargin;
-                const maxY = height - actualToolbarHeight - minMargin;
+                const maxY = windowHeight - actualToolbarHeight - minMargin;
                 const clampedY = Math.max(minY, Math.min(targetY, maxY));
                 
                 buttonsContainer.style.left = `${clampedX}px`;
@@ -754,8 +716,12 @@ VRMManager.prototype._startUIUpdateLoop = function() {
                 lockPos.x += 0.1; 
                 lockPos.y -= 0.55; 
                 lockPos.project(this.camera);
-                const targetLockX = (lockPos.x * 0.5 + 0.5) * width;
-                const targetLockY = (-(lockPos.y * 0.5) + 0.5) * height;
+                // 统一使用 canvasRect 的宽高计算屏幕坐标
+                const lockScreenX = (lockPos.x * 0.5 + 0.5) * canvasWidth;
+                const lockScreenY = (-(lockPos.y * 0.5) + 0.5) * canvasHeight;
+                // 加上 canvas 的偏移量，转换为窗口坐标
+                const targetLockX = canvasRect.left + lockScreenX;
+                const targetLockY = canvasRect.top + lockScreenY;
                 
                 // 应用缩放到锁图标（使用与按钮相同的缩放比例）
                 const baseLockIconSize = 44;  // 锁图标基准尺寸 44px x 44px
@@ -765,10 +731,12 @@ VRMManager.prototype._startUIUpdateLoop = function() {
                 // 使用缩放后的实际尺寸（用于边界限制）
                 const actualLockIconSize = baseLockIconSize * scale;
                 const minMargin = 10;  // 最小边距
+                const windowWidth = window.innerWidth;
+                const windowHeight = window.innerHeight;
                 
-                // 屏幕边缘限制
-                const maxLockX = width - actualLockIconSize - minMargin;
-                const maxLockY = height - actualLockIconSize - minMargin;
+                // 屏幕边缘限制（使用窗口尺寸）
+                const maxLockX = windowWidth - actualLockIconSize - minMargin;
+                const maxLockY = windowHeight - actualLockIconSize - minMargin;
                 const clampedLockX = Math.max(minMargin, Math.min(targetLockX, maxLockX));
                 const clampedLockY = Math.max(minMargin, Math.min(targetLockY, maxLockY));
                 

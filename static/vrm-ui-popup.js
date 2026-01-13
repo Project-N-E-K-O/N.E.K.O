@@ -78,7 +78,7 @@ VRMManager.prototype._createAgentPopupContent = function (popup) {
 
 // 创建设置弹出框内容
 VRMManager.prototype._createSettingsPopupContent = function (popup) {
-    // 先添加 Focus 模式、主动搭话和自主视觉开关（在最上面），与Live2D保持一致
+    // 添加开关项
     const settingsToggles = [
         { id: 'merge-messages', label: window.t ? window.t('settings.toggles.mergeMessages') : '合并消息', labelKey: 'settings.toggles.mergeMessages' },
         { id: 'focus-mode', label: window.t ? window.t('settings.toggles.allowInterrupt') : '允许打断', labelKey: 'settings.toggles.allowInterrupt', storageKey: 'focusModeEnabled', inverted: true }, // inverted表示值与focusModeEnabled相反
@@ -91,7 +91,7 @@ VRMManager.prototype._createSettingsPopupContent = function (popup) {
         popup.appendChild(toggleItem);
     });
 
-    // 手机仅保留开关；桌面端追加导航菜单
+    // 桌面端添加导航菜单
     if (!window.isMobileWidth()) {
         // 添加分隔线
         const separator = document.createElement('div');
@@ -249,7 +249,6 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
     toggleItem.addEventListener('mouseenter', () => { if(checkbox.checked) toggleItem.style.background = 'rgba(68, 183, 254, 0.15)'; else toggleItem.style.background = 'rgba(68, 183, 254, 0.08)'; });
     toggleItem.addEventListener('mouseleave', updateStyle);
 
-    // 合并消息的处理逻辑
     const handleToggleChange = (isChecked) => {
         updateStyle();
         if (typeof window.saveNEKOSettings === 'function') {
@@ -325,7 +324,9 @@ VRMManager.prototype._createSettingsMenuItems = function (popup) {
                 if (item.id === 'vrm-manage' && item.urlBase) {
                     const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                     finalUrl = `${item.urlBase}?lanlan_name=${encodeURIComponent(lanlanName)}`;
-                    if (window.closeAllSettingsWindows) window.closeAllSettingsWindows();
+                    if (typeof this.closeAllSettingsWindows === 'function') {
+                        this.closeAllSettingsWindows();
+                    }
                     window.location.href = finalUrl;
                 } else if (item.id === 'voice-clone' && item.url) {
                     const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
@@ -343,23 +344,18 @@ VRMManager.prototype._createSettingsMenuItems = function (popup) {
                     const newWindow = window.open(finalUrl, '_blank', 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no');
                     if(newWindow) {
                         this._openSettingsWindows[finalUrl] = newWindow;
-                        // 初始化定时器数组（如果不存在）
                         this._windowCheckTimers = this._windowCheckTimers || {};
-                        // 使用递归 setTimeout 替代 setInterval，窗口关闭后自动停止
                         const checkClosed = () => {
                             if (newWindow.closed) {
                                 delete this._openSettingsWindows[finalUrl];
-                                // 清理对应的定时器引用
                                 if (this._windowCheckTimers[finalUrl]) {
                                     delete this._windowCheckTimers[finalUrl];
                                 }
                             } else {
-                                // 存储定时器 ID，以便后续清理
                                 const timerId = setTimeout(checkClosed, 500);
                                 this._windowCheckTimers[finalUrl] = timerId;
                             }
                         };
-                        // 启动第一次检查，并存储定时器 ID
                         const timerId = setTimeout(checkClosed, 500);
                         this._windowCheckTimers[finalUrl] = timerId;
                     }
@@ -381,7 +377,7 @@ VRMManager.prototype.closePopupById = function (buttonId) {
     popup.style.opacity = '0'; popup.style.transform = 'translateX(-10px)';
     setTimeout(() => popup.style.display = 'none', 200);
 
-    // 使用统一的状态管理方法更新按钮状态
+    // 更新按钮状态
     if (typeof this.setButtonActive === 'function') {
         this.setButtonActive(buttonId, false);
     }
@@ -399,11 +395,9 @@ VRMManager.prototype.closeAllPopupsExcept = function (currentButtonId) {
 // 辅助方法：关闭设置窗口
 VRMManager.prototype.closeAllSettingsWindows = function (exceptUrl = null) {
     if (!this._openSettingsWindows) return;
-    // 初始化定时器数组（如果不存在）
     this._windowCheckTimers = this._windowCheckTimers || {};
     Object.keys(this._openSettingsWindows).forEach(url => {
         if (exceptUrl && url === exceptUrl) return;
-        // 清理对应的定时器
         if (this._windowCheckTimers[url]) {
             clearTimeout(this._windowCheckTimers[url]);
             delete this._windowCheckTimers[url];
@@ -415,10 +409,8 @@ VRMManager.prototype.closeAllSettingsWindows = function (exceptUrl = null) {
 
 // 显示弹出框
 VRMManager.prototype.showPopup = function (buttonId, popup) {
-    // 判断弹窗是否可见：display 是 'flex' 且 opacity 是 '1'（完全可见）
-    // 注意：在动画过程中，opacity 可能是 '0' 或其他值，只有完全可见时才认为是可见的
-    const isVisible = popup.style.display === 'flex' && 
-                     popup.style.opacity === '1';
+    // 使用 display === 'flex' 判断弹窗是否可见（避免动画中误判）
+    const isVisible = popup.style.display === 'flex';
 
     // 如果是设置弹出框，每次显示时更新开关状态
     if (buttonId === 'settings') {
@@ -456,7 +448,7 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
         popup.style.opacity = '0'; popup.style.transform = 'translateX(-10px)';
         if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('live2d-agent-popup-closed'));
         
-        // 使用统一的状态管理方法更新按钮图标状态（弹窗关闭时，恢复为 off 图标）
+        // 更新按钮状态为关闭
         if (typeof this.setButtonActive === 'function') {
             this.setButtonActive(buttonId, false);
         }
@@ -466,7 +458,7 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
         this.closeAllPopupsExcept(buttonId);
         popup.style.display = 'flex'; popup.style.opacity = '0'; popup.style.visibility = 'visible';
         
-        // 使用统一的状态管理方法更新按钮图标状态（弹窗打开时，显示 on 图标）
+        // 更新按钮状态为打开
         if (typeof this.setButtonActive === 'function') {
             this.setButtonActive(buttonId, true);
         }
@@ -518,8 +510,7 @@ VRMManager.prototype.renderMicList = async function (popup) {
             return;
         }
 
-        // 渲染列表逻辑（复用 app.js 风格）
-        // 1. 默认设备
+        // 渲染设备列表
         const addOption = (label, deviceId) => {
             const btn = document.createElement('div');
             btn.textContent = label;
@@ -536,9 +527,6 @@ VRMManager.prototype.renderMicList = async function (popup) {
             
             btn.addEventListener('click', async (e) => {
                 e.stopPropagation();
-                // 调用 app.js 里定义的全局函数来切换设备（如果存在）
-                // 因为 app.js 并没有把 selectMicrophone 暴露给 window，这里我们暂时无法直接调用
-                // 但通常我们会通过 fetch 发送给后端
                 if (deviceId) {
                     try {
                         const response = await fetch('/api/characters/set_microphone', {
@@ -547,46 +535,31 @@ VRMManager.prototype.renderMicList = async function (popup) {
                             body: JSON.stringify({ microphone_id: deviceId })
                         });
                         
-                        // 检查 HTTP 响应状态
                         if (!response.ok) {
-                            // 尝试解析错误信息（优先 JSON，否则 text）
+                            // 解析错误信息
                             let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
                             try {
                                 const errorData = await response.json();
-                                if (errorData.error) {
-                                    errorMessage = errorData.error;
-                                } else if (errorData.message) {
-                                    errorMessage = errorData.message;
-                                }
-                            } catch (jsonError) {
-                                // JSON 解析失败，尝试 text
+                                errorMessage = errorData.error || errorData.message || errorMessage;
+                            } catch {
                                 try {
                                     const errorText = await response.text();
-                                    if (errorText) {
-                                        errorMessage = errorText;
-                                    }
-                                } catch (textError) {
-                                    // text 解析也失败，使用默认错误消息
-                                }
+                                    if (errorText) errorMessage = errorText;
+                                } catch {}
                             }
-                            
-                            // 向用户显示错误消息
                             if (window.showStatusToast) {
                                 const message = window.t ? window.t('microphone.switchFailed', { error: errorMessage }) : `切换麦克风失败: ${errorMessage}`;
                                 window.showStatusToast(message, 3000);
                             } else {
                                 console.error('[VRM UI] 切换麦克风失败:', errorMessage);
                             }
-                            return; // 失败时不显示成功消息
+                            return;
                         }
-                        
-                        // 只有响应成功时才显示成功消息
                         if (window.showStatusToast) {
                             const message = window.t ? window.t('microphone.switched') : '已切换麦克风 (下一次录音生效)';
                             window.showStatusToast(message, 2000);
                         }
                     } catch(e) {
-                        // 网络异常等错误仍然会被 catch 块捕获
                         console.error('[VRM UI] 切换麦克风时发生网络错误:', e);
                         if (window.showStatusToast) {
                             const message = window.t ? window.t('microphone.networkError') : '切换麦克风失败：网络错误';
@@ -688,28 +661,24 @@ VRMManager.prototype.renderScreenSourceList = async function (popup) {
                 minWidth: '0'
             });
 
-            // 缩略图（带异常处理和占位图回退）
+            // 缩略图
             if (source.thumbnail) {
                 const thumb = document.createElement('img');
                 let thumbnailDataUrl = '';
                 try {
-                    // NativeImage 对象需要转换为 dataURL 字符串
                     if (typeof source.thumbnail === 'string') {
                         thumbnailDataUrl = source.thumbnail;
-                    } else if (source.thumbnail && typeof source.thumbnail.toDataURL === 'function') {
+                    } else if (source.thumbnail?.toDataURL) {
                         thumbnailDataUrl = source.thumbnail.toDataURL();
                     }
-                    // 检查是否为空字符串或无效值
-                    if (!thumbnailDataUrl || thumbnailDataUrl.trim() === '') {
-                        throw new Error('thumbnail.toDataURL() 返回空值');
+                    if (!thumbnailDataUrl?.trim()) {
+                        throw new Error('缩略图为空');
                     }
                 } catch (e) {
-                    console.warn('[屏幕源] 缩略图转换失败，使用占位图:', e);
-                    // 使用占位图（1x1 透明像素的 dataURL）
+                    console.warn('[屏幕源] 缩略图转换失败:', e);
                     thumbnailDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
                 }
                 thumb.src = thumbnailDataUrl;
-                // 添加错误处理，如果图片加载失败也使用占位图
                 thumb.onerror = () => {
                     thumb.src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
                 };

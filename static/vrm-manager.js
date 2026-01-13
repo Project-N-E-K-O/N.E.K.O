@@ -292,13 +292,21 @@ class VRMManager {
         if (this._shadowMaterial) {
             // 清理材质使用的纹理
             if (this._shadowMaterial.map) {
-                this._shadowMaterial.map.dispose();
+                // 检查材质使用的纹理是否就是 _shadowTexture，避免双重释放
+                if (this._shadowMaterial.map === this._shadowTexture) {
+                    // 如果是同一个对象，释放它并将 _shadowTexture 设为 null
+                    this._shadowMaterial.map.dispose();
+                    this._shadowTexture = null;
+                } else {
+                    // 如果不是同一个对象，只释放材质使用的纹理
+                    this._shadowMaterial.map.dispose();
+                }
             }
             this._shadowMaterial.dispose();
             this._shadowMaterial = null;
         }
         
-        // 清理纹理（如果材质没有清理它）
+        // 清理纹理（如果材质没有清理它，即不是同一个对象）
         if (this._shadowTexture) {
             this._shadowTexture.dispose();
             this._shadowTexture = null;
@@ -306,7 +314,11 @@ class VRMManager {
     }
 
     async initThreeJS(canvasId, containerId) {
-        if (this.scene) return true;
+        // 检查是否已完全初始化（不仅检查 scene，还要检查 camera 和 renderer）
+        if (this.scene && this.camera && this.renderer) {
+            this._isInitialized = true;
+            return true;
+        }
         if (!this.clock && window.THREE) this.clock = new window.THREE.Clock();
         this._initModules();
         if (!this.core) {
@@ -316,6 +328,8 @@ class VRMManager {
         await this.core.init(canvasId, containerId);
         if (this.interaction) this.interaction.initDragAndZoom();
         this.startAnimateLoop();
+        // 设置初始化标志
+        this._isInitialized = true;
         return true;
     }
     

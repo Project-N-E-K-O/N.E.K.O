@@ -112,33 +112,29 @@ DEFAULT_LANLAN_TEMPLATE = {
     }
 }
 
-# 默认VRM打光配置用于新角色初始化
-
 _DEFAULT_VRM_LIGHTING_MUTABLE = {
-    "ambient": 0.08,  # 环境光强度 (范围: 0-0.3)
-    "main": 0.06,     # 主光源强度 (范围: 0-2.5)
-    "fill": 0.12,     # 补光强度 (范围: 0-0.5)
-    "rim": 0.8        # 轮廓光强度 (范围: 0-1.5)
+    "ambient": 0.4,  # HemisphereLight 强度
+    "main": 1.2,     # 主光源强度
+    "fill": 0.5,     # 补光强度
+    "rim": 0.8,      # 轮廓光强度
+    "top": 0.3,      # 顶光强度
+    "bottom": 0.15   # 底光强度
 }
 
-# 只读的默认配置（使用 MappingProxyType 包装，任何写入操作都会抛出 TypeError）
 DEFAULT_VRM_LIGHTING = MappingProxyType(_DEFAULT_VRM_LIGHTING_MUTABLE)
+
+VRM_LIGHTING_RANGES = {
+    'ambient': (0, 1.0),
+    'main': (0, 2.5),
+    'fill': (0, 1.0),
+    'rim': (0, 1.5),
+    'top': (0, 1.0),
+    'bottom': (0, 0.5)
+}
 
 
 def get_default_vrm_lighting() -> dict[str, float]:
-    """
-    获取默认VRM打光配置的副本。
-    
-    返回一个新的字典副本，避免修改全局默认值。
-    由于 DEFAULT_VRM_LIGHTING 是只读的(MappingProxyType),
-    即使直接访问也无法修改，但此函数仍返回可修改的副本。
-    
-    对于扁平 dict,使用 dict() 构造函数比 deepcopy 更轻量。
-    如果后续添加嵌套结构，需要改用 deepcopy。
-    
-    Returns:
-        dict[str, float]: 包含默认VRM打光配置的字典副本(可修改)
-    """
+    """获取默认VRM打光配置的副本"""
     
     return dict(DEFAULT_VRM_LIGHTING)
 

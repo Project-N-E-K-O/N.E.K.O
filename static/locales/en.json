@@ -345,6 +345,8 @@
     "deviceLabel": "Microphone {{index}}",
     "loadFailed": "Failed to load microphone list",
     "switched": "Microphone switched (will take effect on next recording)",
+    "switchFailed": "Failed to switch microphone: {{error}}",
+    "networkError": "Failed to switch microphone: network error",
     "accessFailed": "Cannot access microphone"
   },
   "status": {
@@ -640,14 +642,6 @@
       "selectFirst": "Please select an expression first",
       "playing": "Playing expression: {{name}}",
       "reset": "Reset expression"
-    },
-    "vrmLighting": {
-      "title": "💡 VRM Lighting Settings:",
-      "ambientLight": "Ambient Light:",
-      "mainLight": "Main Light:",
-      "fillLight": "Fill Light:",
-      "rimLight": "Rim Light:",
-      "resetLighting": "🔄 Reset Default"
     },
     "vrmUpload": {
       "detectingOrientation": "Detecting and correcting model orientation...",
@@ -1033,6 +1027,8 @@
       "mainLight": "Main Light",
       "fillLight": "Fill Light",
       "rimLight": "Rim Light",
+      "topLight": "Top Light Intensity",
+      "bottomLight": "Bottom Light Intensity",
       "resetLighting": "Reset Default",
       "saveLighting": "Save Lighting",
       "selectPreset": "Select Preset",

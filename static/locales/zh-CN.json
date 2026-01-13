@@ -345,6 +345,8 @@
     "deviceLabel": "麦克风 {{index}}",
     "loadFailed": "获取麦克风列表失败",
     "switched": "已切换麦克风 (下一次录音生效)",
+    "switchFailed": "切换麦克风失败: {{error}}",
+    "networkError": "切换麦克风失败：网络错误",
     "accessFailed": "无法访问麦克风"
   },
   "status": {
@@ -639,14 +641,6 @@
       "selectFirst": "请先选择一个表情",
       "playing": "正在播放表情: {{name}}",
       "reset": "重置表情"
-    },
-    "vrmLighting": {
-      "title": "💡 VRM打光设置:",
-      "ambientLight": "环境光强度:",
-      "mainLight": "主光源强度:",
-      "fillLight": "补光强度:",
-      "rimLight": "轮廓光强度:",
-      "resetLighting": "🔄 重置默认"
     },
     "vrmUpload": {
       "detectingOrientation": "正在检测并修正模型朝向...",
@@ -1033,6 +1027,8 @@
       "mainLight": "主光源强度",
       "fillLight": "补光强度",
       "rimLight": "轮廓光强度",
+      "topLight": "顶光强度",
+      "bottomLight": "底光强度",
       "resetLighting": "重置默认",
       "saveLighting": "保存打光",
       "selectPreset": "选择预设",

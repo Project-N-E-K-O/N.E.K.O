@@ -411,44 +411,59 @@
 
         <!-- VRM 打光设置 -->
         <div class="control-group" id="vrm-lighting-group" style="display:none;">
-            <label class="control-label" data-i18n="live2d.vrmLighting.title">💡 VRM打光设置:</label>
+            <label class="control-label">💡 <span data-i18n="vrm.lighting.title">VRM打光设置</span>:</label>
 
             <div class="lighting-control">
-                <label for="ambient-light-slider" data-i18n="live2d.vrmLighting.ambientLight">环境光强度:</label>
+                <label for="ambient-light-slider"><span data-i18n="vrm.lighting.ambientLight">环境光强度</span>:</label>
                 <div style="display: flex; align-items: center; gap: 10px;">
-                    <input type="range" id="ambient-light-slider" min="0" max="0.3" step="0.01" value="0.08" style="flex: 1;">
-                    <span id="ambient-light-value" style="min-width: 40px;">0.08</span>
+                    <input type="range" id="ambient-light-slider" min="0" max="1.0" step="0.01" value="0.4" style="flex: 1;">
+                    <span id="ambient-light-value" style="min-width: 40px;">0.4</span>
                 </div>
             </div>
 
             <div class="lighting-control">
-                <label for="main-light-slider" data-i18n="live2d.vrmLighting.mainLight">主光源强度:</label>
+                <label for="main-light-slider"><span data-i18n="vrm.lighting.mainLight">主光源强度</span>:</label>
                 <div style="display: flex; align-items: center; gap: 10px;">
-                    <input type="range" id="main-light-slider" min="0" max="2.5" step="0.01" value="0.06" style="flex: 1;">
-                    <span id="main-light-value" style="min-width: 40px;">0.06</span>
+                    <input type="range" id="main-light-slider" min="0" max="2.5" step="0.01" value="1.2" style="flex: 1;">
+                    <span id="main-light-value" style="min-width: 40px;">1.2</span>
                 </div>
             </div>
 
             <div class="lighting-control">
-                <label for="fill-light-slider" data-i18n="live2d.vrmLighting.fillLight">补光强度:</label>
+                <label for="fill-light-slider"><span data-i18n="vrm.lighting.fillLight">补光强度</span>:</label>
                 <div style="display: flex; align-items: center; gap: 10px;">
-                    <input type="range" id="fill-light-slider" min="0" max="0.5" step="0.01" value="0.12" style="flex: 1;">
-                    <span id="fill-light-value" style="min-width: 40px;">0.12</span>
+                    <input type="range" id="fill-light-slider" min="0" max="1.0" step="0.01" value="0.5" style="flex: 1;">
+                    <span id="fill-light-value" style="min-width: 40px;">0.5</span>
                 </div>
             </div>
 
             <div class="lighting-control">
-                <label for="rim-light-slider" data-i18n="live2d.vrmLighting.rimLight">轮廓光强度:</label>
+                <label for="rim-light-slider"><span data-i18n="vrm.lighting.rimLight">轮廓光强度</span>:</label>
                 <div style="display: flex; align-items: center; gap: 10px;">
                     <input type="range" id="rim-light-slider" min="0" max="1.5" step="0.05" value="0.8" style="flex: 1;">
                     <span id="rim-light-value" style="min-width: 40px;">0.8</span>
                 </div>
             </div>
 
+            <div class="lighting-control">
+                <label for="top-light-slider"><span data-i18n="vrm.lighting.topLight">顶光强度</span>:</label>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <input type="range" id="top-light-slider" min="0" max="1.0" step="0.01" value="0.3" style="flex: 1;">
+                    <span id="top-light-value" style="min-width: 40px;">0.3</span>
+                </div>
+            </div>
+
+            <div class="lighting-control">
+                <label for="bottom-light-slider"><span data-i18n="vrm.lighting.bottomLight">底光强度</span>:</label>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <input type="range" id="bottom-light-slider" min="0" max="0.5" step="0.01" value="0.15" style="flex: 1;">
+                    <span id="bottom-light-value" style="min-width: 40px;">0.15</span>
+                </div>
+            </div>
 
             <div style="display: flex; gap: 10px; margin-top: 10px;">
                 <button id="reset-lighting-btn" class="btn btn-secondary" style="flex: 1;">
-                    <span data-i18n="live2d.vrmLighting.resetLighting">🔄 重置默认</span>
+                    <span>🔄 <span data-i18n="vrm.lighting.resetLighting">重置默认</span></span>
                 </button>
             </div>
         </div>
@@ -1006,6 +1021,8 @@
                         const main = document.getElementById('main-light-slider');
                         const fill = document.getElementById('fill-light-slider');
                         const rim = document.getElementById('rim-light-slider');
+                        const top = document.getElementById('top-light-slider');
+                        const bottom = document.getElementById('bottom-light-slider');
 
                         if (ambient && main && fill && rim) {
                             charData.lighting = {
@@ -1014,6 +1031,13 @@
                                 fill: parseFloat(fill.value),
                                 rim: parseFloat(rim.value)
                             };
+                            // 如果存在顶光和底光滑块，也保存它们
+                            if (top) {
+                                charData.lighting.top = parseFloat(top.value);
+                            }
+                            if (bottom) {
+                                charData.lighting.bottom = parseFloat(bottom.value);
+                            }
                             // 移除旧的预设字段
                             delete charData.lightingPreset;
                         }
@@ -1261,49 +1285,56 @@
                     if (parameterEditorGroup) parameterEditorGroup.style.display = 'none';
                     
                     // 初始化 VRM 管理器
+                    // 1. 如果 vrmManager 不存在，创建实例
                     if (!vrmManager) {
                         try {
-                            // 1. 定义一个纯净的等待函数
+                            // 定义一个纯净的等待函数
                             const waitForVRM = () => new Promise(resolve => {
-                                if (window.VRMManager) return resolve(); // 如果已经好了，直接通过
-                                // 否则，监听我们在 3.1 步骤中定义的自定义事件
+                                if (window.VRMManager) return resolve();
                                 window.addEventListener('vrm-modules-ready', resolve, { once: true });
-                                // 5秒保底超时，防止脚本加载失败导致页面永久卡死
                                 setTimeout(resolve, 5000);
                             });
 
                             showStatus(t('live2d.waitingVRMLoader', '正在初始化 VRM 管理器...'));
-                            
-                            // 2. 执行等待
                             await waitForVRM();
 
-                            // 3. 检查最终状态
                             if (typeof window.VRMManager === 'undefined') {
                                 throw new Error('VRM 模块加载超时或失败，请检查网络并刷新。');
                             }
 
-                            // 4. 创建或复用实例
+                            // 创建或复用实例
                             vrmManager = window.vrmManager || new window.VRMManager();
                             window.vrmManager = vrmManager;
-
-                            // 5. 确保容器内有 Canvas
-                            const container = document.getElementById('vrm-container');
-                            if (container && !container.querySelector('canvas')) {
-                                const canvas = document.createElement('canvas');
-                                canvas.id = 'vrm-canvas';
-                                container.appendChild(canvas);
-                            }
-
-                            // 6. 初始化 Three.js 场景
-                            if (!vrmManager._isInitialized && (!vrmManager.scene || !vrmManager.camera || !vrmManager.renderer)) {
-                                await vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
-                            }
-
-                            showStatus(t('live2d.vrmInitialized', 'VRM 管理器初始化成功'));
                         } catch (error) {
-                            console.error('VRM 初始化失败:', error);
-                            showStatus(t('live2d.vrmInitFailed', `VRM 初始化失败: ${error.message}`));
+                            console.error('VRM 管理器创建失败:', error);
+                            showStatus(t('live2d.vrmInitFailed', `VRM 管理器创建失败: ${error.message}`));
+                            return;
                         }
+                    }
+
+                    // 2. 确保容器内有 Canvas（移到 if 块外部，每次切换都会检查）
+                    try {
+                        const container = document.getElementById('vrm-container');
+                        if (container && !container.querySelector('canvas')) {
+                            const canvas = document.createElement('canvas');
+                            canvas.id = 'vrm-canvas';
+                            container.appendChild(canvas);
+                        }
+
+                        // 3. 检查并初始化 Three.js 场景（移到 if 块外部，每次切换都会检查）
+                        if (!vrmManager.scene || !vrmManager.camera || !vrmManager.renderer) {
+                            console.log('[模型管理] VRM 场景未完全初始化，正在初始化...');
+                            await vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
+                            // 再次验证初始化是否成功
+                            if (!vrmManager.scene || !vrmManager.camera || !vrmManager.renderer) {
+                                throw new Error('场景初始化后仍缺少必要组件');
+                            }
+                            console.log('[模型管理] VRM 场景初始化成功');
+                            showStatus(t('live2d.vrmInitialized', 'VRM 管理器初始化成功'));
+                        }
+                    } catch (error) {
+                        console.error('VRM 场景初始化失败:', error);
+                        showStatus(t('live2d.vrmInitFailed', `VRM 场景初始化失败: ${error.message}`));
                     }
                     
                     // 加载 VRM 模型列表（仅在切换到VRM模式时调用，不阻塞其他功能）
@@ -1461,6 +1492,23 @@
                         } catch (error) {
                             console.error('VRM 管理器初始化失败:', error);
                             showStatus(t('live2d.vrmInitFailed', `VRM 管理器初始化失败: ${error.message}`));
+                            return;
+                        }
+                    }
+                    
+                    // 确保场景已完全初始化（即使 vrmManager 已存在，场景也可能未初始化）
+                    if (vrmManager && (!vrmManager.scene || !vrmManager.camera || !vrmManager.renderer)) {
+                        console.log('[模型管理] VRM 场景未完全初始化，正在初始化...');
+                        try {
+                            await vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
+                            // 再次验证初始化是否成功
+                            if (!vrmManager.scene || !vrmManager.camera || !vrmManager.renderer) {
+                                throw new Error('场景初始化后仍缺少必要组件');
+                            }
+                            console.log('[模型管理] VRM 场景初始化成功');
+                        } catch (initError) {
+                            console.error('[模型管理] 场景初始化失败:', initError);
+                            showStatus(t('live2d.vrmInitFailed', `场景初始化失败: ${initError.message}`), 5000);
                             return;
                         }
                     }
@@ -1831,10 +1879,14 @@
             const mainLightSlider = document.getElementById('main-light-slider');
             const fillLightSlider = document.getElementById('fill-light-slider');
             const rimLightSlider = document.getElementById('rim-light-slider');
+            const topLightSlider = document.getElementById('top-light-slider');
+            const bottomLightSlider = document.getElementById('bottom-light-slider');
             const ambientLightValue = document.getElementById('ambient-light-value');
             const mainLightValue = document.getElementById('main-light-value');
             const fillLightValue = document.getElementById('fill-light-value');
             const rimLightValue = document.getElementById('rim-light-value');
+            const topLightValue = document.getElementById('top-light-value');
+            const bottomLightValue = document.getElementById('bottom-light-value');
             const resetLightingBtn = document.getElementById('reset-lighting-btn');
 
             // 环境光滑块
@@ -1881,29 +1933,51 @@
                 });
             }
 
+            // 顶光滑块
+            if (topLightSlider && topLightValue) {
+                topLightSlider.addEventListener('input', (e) => {
+                    const value = parseFloat(e.target.value);
+                    topLightValue.textContent = value.toFixed(2);
+                    if (vrmManager && vrmManager.topLight) {
+                        vrmManager.topLight.intensity = value;
+                    }
+                });
+            }
+
+            // 底光滑块
+            if (bottomLightSlider && bottomLightValue) {
+                bottomLightSlider.addEventListener('input', (e) => {
+                    const value = parseFloat(e.target.value);
+                    bottomLightValue.textContent = value.toFixed(2);
+                    if (vrmManager && vrmManager.bottomLight) {
+                        vrmManager.bottomLight.intensity = value;
+                    }
+                });
+            }
+
             // 重置打光按钮
             if (resetLightingBtn) {
                 resetLightingBtn.addEventListener('click', () => {
                     // 重置为默认值
                     if (ambientLightSlider) {
-                        ambientLightSlider.value = 0.08;
-                        ambientLightValue.textContent = '0.08';
+                        ambientLightSlider.value = 0.4;
+                        ambientLightValue.textContent = '0.4';
                         if (vrmManager && vrmManager.ambientLight) {
-                            vrmManager.ambientLight.intensity = 0.08;
+                            vrmManager.ambientLight.intensity = 0.4;
                         }
                     }
                     if (mainLightSlider) {
-                        mainLightSlider.value = 0.06;
-                        mainLightValue.textContent = '0.06';
+                        mainLightSlider.value = 1.2;
+                        mainLightValue.textContent = '1.2';
                         if (vrmManager && vrmManager.mainLight) {
-                            vrmManager.mainLight.intensity = 0.06;
+                            vrmManager.mainLight.intensity = 1.2;
                         }
                     }
                     if (fillLightSlider) {
-                        fillLightSlider.value = 0.12;
-                        fillLightValue.textContent = '0.12';
+                        fillLightSlider.value = 0.5;
+                        fillLightValue.textContent = '0.5';
                         if (vrmManager && vrmManager.fillLight) {
-                            vrmManager.fillLight.intensity = 0.12;
+                            vrmManager.fillLight.intensity = 0.5;
                         }
                     }
                     if (rimLightSlider) {
@@ -1911,6 +1985,20 @@
                         rimLightValue.textContent = '0.8';
                         if (vrmManager && vrmManager.rimLight) {
                             vrmManager.rimLight.intensity = 0.8;
+                        }
+                    }
+                    if (topLightSlider) {
+                        topLightSlider.value = 0.4;
+                        topLightValue.textContent = '0.4';
+                        if (vrmManager && vrmManager.topLight) {
+                            vrmManager.topLight.intensity = 0.4;
+                        }
+                    }
+                    if (bottomLightSlider) {
+                        bottomLightSlider.value = 0.15;
+                        bottomLightValue.textContent = '0.15';
+                        if (vrmManager && vrmManager.bottomLight) {
+                            vrmManager.bottomLight.intensity = 0.15;
                         }
                     }
                     showStatus(t('vrm.lighting.lightingReset', '打光设置已重置为默认值', {}), 2000);
@@ -1957,6 +2045,20 @@
                     rimLightValue.textContent = lighting.rim.toFixed(2);
                     if (vrmManager.rimLight) {
                         vrmManager.rimLight.intensity = lighting.rim;
+                    }
+                }
+                if (topLightSlider && topLightValue && lighting.top !== undefined) {
+                    topLightSlider.value = lighting.top;
+                    topLightValue.textContent = lighting.top.toFixed(2);
+                    if (vrmManager.topLight) {
+                        vrmManager.topLight.intensity = lighting.top;
+                    }
+                }
+                if (bottomLightSlider && bottomLightValue && lighting.bottom !== undefined) {
+                    bottomLightSlider.value = lighting.bottom;
+                    bottomLightValue.textContent = lighting.bottom.toFixed(2);
+                    if (vrmManager.bottomLight) {
+                        vrmManager.bottomLight.intensity = lighting.bottom;
                     }
                 }
                 
@@ -3254,6 +3356,23 @@
                                 console.error('[模型管理] 路径转换后仍包含无效值:', modelUrl);
                                 showStatus(t('live2d.vrmModelPathInvalid', `VRM 模型路径无效，请手动选择模型`));
                                 return;
+                            }
+                            
+                            // 确保场景已完全初始化（检查所有必要组件）
+                            if (!vrmManager.scene || !vrmManager.camera || !vrmManager.renderer) {
+                                console.log('[模型管理] VRM 场景未完全初始化，正在初始化...');
+                                try {
+                                    await vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
+                                    // 再次验证初始化是否成功
+                                    if (!vrmManager.scene || !vrmManager.camera || !vrmManager.renderer) {
+                                        throw new Error('场景初始化后仍缺少必要组件');
+                                    }
+                                    console.log('[模型管理] VRM 场景初始化成功');
+                                } catch (initError) {
+                                    console.error('[模型管理] VRM 场景初始化失败:', initError);
+                                    showStatus(t('live2d.vrmInitFailed', `场景初始化失败: ${initError.message}`), 5000);
+                                    return;
+                                }
                             }
                             
                             // 传入 { autoPlay: false }

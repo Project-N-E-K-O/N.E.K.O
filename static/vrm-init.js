@@ -84,10 +84,10 @@ window.convertVRMModelPath = function(modelPath, options = {}) {
     // 3. 处理 Windows 绝对路径（驱动器字母模式，如 C:\ 或 C:/）
     const windowsPathPattern = /^[A-Za-z]:[\\/]/;
     if (windowsPathPattern.test(modelUrl) || (modelUrl.includes('\\') && modelUrl.includes(':'))) {
-        // 提取文件名并使用 static_vrm 路径（Windows 路径通常来自本地文件系统）
+        // 提取文件名并使用 user_vrm 路径（Windows 路径通常来自本地文件系统，应映射到用户目录）
         const filename = modelUrl.split(/[\\/]/).pop();
         if (filename) {
-            modelUrl = `${staticVrmPath}/${filename}`;
+            modelUrl = `${userVrmPath}/${filename}`;
         } else {
             return defaultPath;
         }
@@ -394,6 +394,12 @@ window.checkAndLoadVRM = async function() {
         const vrmContainer = document.getElementById('vrm-container');
         if (vrmContainer) {
             vrmContainer.style.display = 'block';
+        }
+
+        // 隐藏Live2D容器，避免UI重叠
+        const live2dContainer = document.getElementById('live2d-container');
+        if (live2dContainer) {
+            live2dContainer.style.display = 'none';
         }
 
         // 删除Live2D的浮动按钮和锁图标，而不是只隐藏

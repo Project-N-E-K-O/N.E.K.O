@@ -1414,18 +1414,20 @@
         <canvas id="vrm-canvas"></canvas>
     </div>
 
+    <!-- TODO: 占位 UI，未完成 -->
     <div id="settings-panel" style="display: none;">
         <div class="settings-header">
             <span>⚙️ 系统设置</span>
             <button class="close-btn" onclick="(function() { const panel = document.querySelector('#settings-panel'); if (panel) { panel.style.display = 'none'; } window.dispatchEvent(new CustomEvent('neko-settings-toggle', { detail: { active: false } })); })()">×</button>
         </div>
         <div class="settings-content">
-            <p>在这里添加你的设置选项...</p>
-            <div style="margin-top: 10px;">
-                <label><input type="checkbox"> 开启自动眨眼</label>
+            <p style="color: #ff6b6b; font-weight: bold;">⚠️ 占位 UI - 功能开发中...</p>
+            <p style="color: #999; font-size: 12px; margin-top: 5px;">请使用 VRM/Live2D 浮动按钮中的设置入口</p>
+            <div style="margin-top: 10px; opacity: 0.5;">
+                <label><input type="checkbox" disabled> 开启自动眨眼</label>
             </div>
-            <div style="margin-top: 10px;">
-                <label>音量: <input type="range"></label>
+            <div style="margin-top: 10px; opacity: 0.5;">
+                <label>音量: <input type="range" disabled></label>
             </div>
         </div>
     </div>
@@ -1481,17 +1483,30 @@
 
         // 页面启动时加载 VRM 路径配置（在页面配置加载之前）
         async function loadVRMPathsConfig() {
+            // 初始化 window.VRM_PATHS（使用默认值，供 window.convertVRMModelPath 使用）
+            window.VRM_PATHS = window.VRM_PATHS || {
+                user_vrm: '/user_vrm',
+                static_vrm: '/static/vrm',
+                isLoaded: false
+            };
+            
             try {
                 const response = await fetch('/api/model/vrm/config');
                 if (response.ok) {
                     const data = await response.json();
                     if (data.success && data.paths) {
                         VRM_PATHS_CACHE = data.paths;
+                        // 更新 window.VRM_PATHS，供 window.convertVRMModelPath 使用
+                        window.VRM_PATHS.user_vrm = data.paths.user_vrm || '/user_vrm';
+                        window.VRM_PATHS.static_vrm = data.paths.static_vrm || '/static/vrm';
+                        window.VRM_PATHS.isLoaded = true;
                         console.log('[主页] VRM 路径配置已加载:', VRM_PATHS_CACHE);
                     }
                 }
             } catch (error) {
                 console.warn('[主页] 无法获取 VRM 路径配置，使用默认值:', error);
+                // 即使加载失败，也标记为已初始化（使用默认值）
+                window.VRM_PATHS.isLoaded = true;
             }
         }
 
@@ -1531,7 +1546,6 @@
                     window.lanlan_config = lanlan_config;
                     // 根据model_type判断是Live2D还是VRM
                     if (modelType === 'vrm') {
-                        // 验证 modelPath 有效性（防止 undefined 或字符串 "undefined"）
                         if (modelPath && 
                             modelPath !== 'undefined' && 
                             modelPath !== 'null' && 
@@ -2040,13 +2054,9 @@
                                 await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
                             }
 
-                            // 使用统一的路径转换函数
                             const modelUrl = convertVRMModelPath(newModelPath);
-
-                            // 加载VRM模型
                             try {
-                                await window.vrmManager.loadModel(modelUrl);
-                                // 切换模型后立即播放循环动作
+                                await window.vrmManager.loadModel(modelUrl, { autoPlay: false });
                                 const IDLE_ANIMATION_PATH = '/static/vrm/animation/wait03.vrma';
                                 if (window.vrmManager.animation) {
                                     window.vrmManager.playVRMAAnimation(IDLE_ANIMATION_PATH, { loop: true });
@@ -2126,16 +2136,13 @@
                     if (modelType === 'vrm') {
                         // VRM模型：确保场景已初始化 + 模型可见 + 需要时恢复动画循环
                         if (window.vrmManager) {
-                            // 确保Three.js场景已初始化（可能被清理了）
                             if (!window.vrmManager._isInitialized || !window.vrmManager.scene || !window.vrmManager.camera || !window.vrmManager.renderer) {
                                 console.log('[主页] VRM模型已加载但场景未初始化，重新初始化...');
                                 await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
-                                // 如果模型存在但不在场景中，需要重新加载
                                 if (window.vrmManager.currentModel && window.vrmManager.currentModel.vrm) {
                                     const modelUrl = convertVRMModelPath(newModelPath);
                                     try {
-                                        await window.vrmManager.loadModel(modelUrl);
-                                        // 恢复循环动作
+                                        await window.vrmManager.loadModel(modelUrl, { autoPlay: false });
                                         const IDLE_ANIMATION_PATH = '/static/vrm/animation/wait03.vrma';
                                         if (window.vrmManager.animation) {
                                             window.vrmManager.playVRMAAnimation(IDLE_ANIMATION_PATH, { loop: true });
@@ -2348,47 +2355,68 @@
             }
         });
 
-        // VRM 路径配置缓存和加载函数已移动到前面的 script 标签中（第 1476-1495 行）
-
-        // 路径转换工具函数（使用统一的全局函数，如果存在则使用，否则使用本地实现作为回退）
-        function convertVRMModelPath(modelPath) {
-            // 优先使用全局统一的路径转换函数（由 vrm-init.js 提供）
+        function convertVRMModelPath(modelPath, options = {}) {
             if (window.convertVRMModelPath && typeof window.convertVRMModelPath === 'function') {
-                return window.convertVRMModelPath(modelPath);
+                return window.convertVRMModelPath(modelPath, options);
             }
             
-            // 回退到本地实现（兼容性，以防 vrm-init.js 未加载）
-            let modelUrl = modelPath;
-            const userVrmPath = VRM_PATHS_CACHE?.user_vrm || '/user_vrm';
-            const staticVrmPath = VRM_PATHS_CACHE?.static_vrm || '/static/vrm';
+            const defaultPath = options.defaultPath || '/static/vrm/sister1.0.vrm';
+            if (!modelPath || 
+                modelPath === 'undefined' || 
+                modelPath === 'null' || 
+                (typeof modelPath === 'string' && (modelPath.trim() === '' || modelPath.includes('undefined')))) {
+                console.warn('[VRM Path] 路径无效，使用默认路径:', modelPath);
+                return defaultPath;
+            }
             
-            // 首先检查是否是完整的 URL（http:// 或 https://），如果是则直接返回
+            // 确保 modelPath 是字符串
+            if (typeof modelPath !== 'string') {
+                console.warn('[VRM Path] 路径不是字符串，使用默认路径:', modelPath);
+                return defaultPath;
+            }
+            
+            let modelUrl = modelPath;
+            
+            // 确保 VRM_PATHS 已初始化（使用 window.VRM_PATHS 或 VRM_PATHS_CACHE）
+            if (!window.VRM_PATHS) {
+                window.VRM_PATHS = {
+                    user_vrm: VRM_PATHS_CACHE?.user_vrm || '/user_vrm',
+                    static_vrm: VRM_PATHS_CACHE?.static_vrm || '/static/vrm'
+                };
+            }
+            
+            const userVrmPath = window.VRM_PATHS.user_vrm || VRM_PATHS_CACHE?.user_vrm || '/user_vrm';
+            const staticVrmPath = window.VRM_PATHS.static_vrm || VRM_PATHS_CACHE?.static_vrm || '/static/vrm';
+            
             if (/^https?:\/\//.test(modelUrl)) {
                 return modelUrl;
             }
             
-            // 检查是否是 Windows 绝对路径（驱动器字母模式，如 C:\ 或 C:/）
             const windowsPathPattern = /^[A-Za-z]:[\\/]/;
-            if (windowsPathPattern.test(modelUrl)) {
-                // 如果是 Windows 路径，提取文件名并优先使用用户 VRM 路径
+            if (windowsPathPattern.test(modelUrl) || (modelUrl.includes('\\') && modelUrl.includes(':'))) {
                 const filename = modelUrl.split(/[\\/]/).pop();
                 if (filename) {
                     modelUrl = `${userVrmPath}/${filename}`;
+                } else {
+                    return defaultPath;
                 }
             } else if (modelUrl.includes('\\')) {
-                // 如果包含反斜杠但不是 Windows 驱动器路径，可能是其他格式的路径，统一转换为正斜杠
                 modelUrl = modelUrl.replace(/\\/g, '/');
-                // 如果不是以 / 开头，当作相对路径处理
                 if (!modelUrl.startsWith('/')) {
                     modelUrl = `${userVrmPath}/${modelUrl}`;
                 }
-            } else if (!modelUrl.startsWith('/')) {
-                // 如果是相对路径（不以 / 开头），添加用户 VRM 路径前缀
-                modelUrl = `${userVrmPath}/${modelUrl}`;
+            } else if (!modelUrl.startsWith('http') && !modelUrl.startsWith('/')) {
+                if (userVrmPath !== 'undefined' && 
+                    userVrmPath !== 'null' &&
+                    modelUrl !== 'undefined' &&
+                    modelUrl !== 'null') {
+                    modelUrl = `${userVrmPath}/${modelUrl}`;
+                } else {
+                    console.error('[VRM Path] 路径拼接参数无效，使用默认路径:', { userVrmPath, modelUrl });
+                    return defaultPath;
+                }
             } else {
-                // 如果已经是完整路径（以 / 开头），确保格式正确
                 modelUrl = modelUrl.replace(/\\/g, '/');
-                // 如果路径不是以用户 VRM 路径或静态 VRM 路径开头，尝试添加用户 VRM 路径前缀
                 if (!modelUrl.startsWith(userVrmPath + '/') && !modelUrl.startsWith(staticVrmPath + '/')) {
                     const filename = modelUrl.split('/').pop();
                     if (filename) {
@@ -2396,6 +2424,14 @@
                     }
                 }
             }
+            if (typeof modelUrl !== 'string' || 
+                modelUrl.includes('undefined') || 
+                modelUrl.includes('null') ||
+                modelUrl.trim() === '') {
+                console.error('[VRM Path] 路径转换后仍包含无效值，使用默认路径:', modelUrl);
+                return defaultPath;
+            }
+            
             return modelUrl;
         }
     </script>
