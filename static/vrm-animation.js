@@ -242,7 +242,8 @@ class VRMAnimation {
                 clip = createVRMAnimationClip(vrmAnimation, vrm);
             } catch (clipError) {
                 console.error('[VRM Animation] createVRMAnimationClip 抛出异常:', clipError);
-                throw new Error(`创建动画 Clip 时出错: ${clipError.message}`);
+                const errorMsg = window.t ? window.t('vrm.error.animationClipError', { error: clipError.message }) : `创建动画 Clip 时出错: ${clipError.message}`;
+                throw new Error(errorMsg);
             }
             
             if (!clip || !clip.tracks || clip.tracks.length === 0) {
@@ -253,7 +254,8 @@ class VRMAnimation {
                     tracksCount: clip?.tracks?.length,
                     tracks: clip?.tracks?.map(t => t.name)
                 });
-                throw new Error('动画 Clip 创建失败：没有找到匹配的骨骼');
+                const errorMsg = window.t ? window.t('vrm.error.animationClipNoBones') : '动画 Clip 创建失败：没有找到匹配的骨骼';
+                throw new Error(errorMsg);
             }
             
             // 根据版本处理 tracks 名称
@@ -318,7 +320,8 @@ class VRMAnimation {
 
             const newAction = this.vrmaMixer.clipAction(clip);
             if (!newAction) {
-                throw new Error('无法创建动画动作');
+                const errorMsg = window.t ? window.t('vrm.error.cannotCreateAnimationAction') : '无法创建动画动作';
+                throw new Error(errorMsg);
             }
             
             // 确保 Action 已启用

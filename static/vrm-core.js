@@ -211,7 +211,8 @@ class VRMCore {
     async init(canvasId, containerId) {
         const THREE = window.THREE;
         if (!THREE) {
-            throw new Error('Three.js库未加载，请确保已引入three.js');
+            const errorMsg = window.t ? window.t('vrm.error.threeNotLoaded') : 'Three.js库未加载，请确保已引入three.js';
+            throw new Error(errorMsg);
         }
 
         this.manager.container = document.getElementById(containerId);
@@ -223,11 +224,13 @@ class VRMCore {
         }
 
         if (!this.manager.container) {
-            throw new Error(`找不到容器元素: ${containerId}`);
+            const errorMsg = window.t ? window.t('vrm.error.containerNotFound', { id: containerId }) : `找不到容器元素: ${containerId}`;
+            throw new Error(errorMsg);
         }
 
         if (!this.manager.canvas) {
-            throw new Error(`找不到canvas元素: ${canvasId}`);
+            const errorMsg = window.t ? window.t('vrm.error.canvasNotFound', { id: canvasId }) : `找不到canvas元素: ${canvasId}`;
+            throw new Error(errorMsg);
         }
 
         // 确保容器可见且有大小（参考 vrm.js）
@@ -370,7 +373,8 @@ class VRMCore {
     async loadModel(modelUrl, options = {}) {
         const THREE = window.THREE;
         if (!THREE) {
-            throw new Error('Three.js库未加载，无法加载VRM模型');
+            const errorMsg = window.t ? window.t('vrm.error.threeNotLoadedForModel') : 'Three.js库未加载，无法加载VRM模型';
+            throw new Error(errorMsg);
         }
 
         try {
@@ -422,7 +426,8 @@ class VRMCore {
                         gltf = await loadGLTF(fallbackUrl);
                     } catch (fallbackError) {
                         console.error(`[VRM Core] 从备用路径 ${fallbackUrl} 也加载失败:`, fallbackError);
-                        throw new Error(`无法加载 VRM 模型: ${modelUrl} 和 ${fallbackUrl} 都失败`);
+                        const errorMsg = window.t ? window.t('vrm.error.modelLoadFailed', { url: modelUrl, fallback: fallbackUrl }) : `无法加载 VRM 模型: ${modelUrl} 和 ${fallbackUrl} 都失败`;
+                        throw new Error(errorMsg);
                     }
                 } else {
                     // 其他情况，直接抛出原始错误
@@ -452,7 +457,8 @@ class VRMCore {
             if (!vrm) {
                 console.error('[VRM] 加载失败: gltf.userData:', gltf.userData);
                 console.error('[VRM] 加载失败: gltf.scene:', gltf.scene);
-                throw new Error(`加载的模型不是有效的 VRM 格式。文件: ${modelUrl}`);
+                const errorMsg = window.t ? window.t('vrm.error.invalidVRMFormat', { file: modelUrl }) : `加载的模型不是有效的 VRM 格式。文件: ${modelUrl}`;
+                throw new Error(errorMsg);
             }
 
             // 检测 VRM 模型版本（0.0 或 1.0）
@@ -630,7 +636,8 @@ class VRMCore {
             
             // 添加到场景 - 确保场景已初始化
             if (!this.manager.scene) {
-                throw new Error('场景未初始化。请先调用 initThreeJS() 初始化场景。');
+                const errorMsg = window.t ? window.t('vrm.error.sceneNotInitializedForAdd') : '场景未初始化。请先调用 initThreeJS() 初始化场景。';
+                throw new Error(errorMsg);
             }
             
             this.manager.scene.add(vrm.scene);

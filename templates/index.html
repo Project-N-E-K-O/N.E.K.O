@@ -2342,9 +2342,60 @@
 
         window.THREE = THREE;
         // 手动将 GLTFLoader 挂载到 window.THREE 对象上
-        window.THREE.GLTFLoader = GLTFLoader;
-
-        console.log('[Three.js] ES 模块已加载并挂载到 window.THREE (含 GLTFLoader)');
+        // 使用更安全的方式避免 "Cannot redefine property" 错误
+        let gltfLoaderAttached = false;
+        
+        // 方法1: 检查是否已存在且值相同
+        if (window.THREE.GLTFLoader === GLTFLoader) {
+            console.log('[Three.js] GLTFLoader 已存在且值相同，跳过挂载');
+            gltfLoaderAttached = true;
+        } else {
+            // 方法2: 尝试简单赋值
+            try {
+                const descriptor = Object.getOwnPropertyDescriptor(window.THREE, 'GLTFLoader');
+                if (descriptor && !descriptor.configurable) {
+                    // 属性存在且不可配置，检查值
+                    if (descriptor.value === GLTFLoader) {
+                        console.log('[Three.js] GLTFLoader 已存在且值相同（不可配置），跳过挂载');
+                        gltfLoaderAttached = true;
+                    } else {
+                        throw new Error('GLTFLoader 已存在且不可重新定义');
+                    }
+                } else {
+                    // 尝试删除（如果存在且可配置）或直接赋值
+                    if (descriptor && descriptor.configurable) {
+                        delete window.THREE.GLTFLoader;
+                    }
+                    window.THREE.GLTFLoader = GLTFLoader;
+                    console.log('[Three.js] ES 模块已加载并挂载到 window.THREE (含 GLTFLoader)');
+                    gltfLoaderAttached = true;
+                }
+            } catch (error) {
+                // 方法3: 如果简单赋值失败，尝试 defineProperty（仅在对象不可扩展时）
+                if (!gltfLoaderAttached && !Object.isExtensible(window.THREE)) {
+                    try {
+                        Object.defineProperty(window.THREE, 'GLTFLoader', {
+                            value: GLTFLoader,
+                            writable: true,
+                            enumerable: true,
+                            configurable: true
+                        });
+                        console.log('[Three.js] ES 模块已加载并挂载到 window.THREE (含 GLTFLoader，使用 defineProperty)');
+                        gltfLoaderAttached = true;
+                    } catch (defineError) {
+                        console.error('[Three.js] 无法添加 GLTFLoader 到 window.THREE:', defineError);
+                    }
+                } else {
+                    console.error('[Three.js] 无法添加 GLTFLoader 到 window.THREE:', error);
+                }
+            }
+        }
+        
+        // 方法4: 如果所有方法都失败，使用备用方案
+        if (!gltfLoaderAttached) {
+            window.THREE_GLTFLoader = GLTFLoader;
+            console.warn('[Three.js] GLTFLoader 已挂载到 window.THREE_GLTFLoader 作为备用');
+        }
     </script>
     <!-- i18next 已在 head 中加载，这里不再需要 -->
     <!-- OGG OPUS WASM 解码器 (@wasm-audio-decoders/ogg-opus-decoder) -->

@@ -6251,14 +6251,18 @@ function init_app() {
                     vrmButtons.style.setProperty('display', 'none', 'important');
                 }
 
-                // 隐藏并移除 VRM 锁图标（确保不会阻止 Live2D 锁图标创建）
+                // 完全移除 VRM 锁图标（而不是只隐藏），避免内存泄漏
+                // 确保不会阻止 Live2D 锁图标创建
                 const vrmLockIcon = document.getElementById('vrm-lock-icon');
                 if (vrmLockIcon) {
-                    vrmLockIcon.style.setProperty('display', 'none', 'important');
-                    vrmLockIcon.style.setProperty('visibility', 'hidden', 'important');
-                    // 临时移除，确保 setupHTMLLockIcon 不会检测到它
-                    vrmLockIcon.id = 'vrm-lock-icon-hidden';
+                    vrmLockIcon.remove();
                 }
+                // 清理所有可能残留的 VRM 锁图标（包括被重命名的）
+                const hiddenVrmLockIcon = document.getElementById('vrm-lock-icon-hidden');
+                if (hiddenVrmLockIcon) {
+                    hiddenVrmLockIcon.remove();
+                }
+                document.querySelectorAll('#vrm-lock-icon, #vrm-lock-icon-hidden').forEach(el => el.remove());
 
                 if (window.vrmManager) {
                     // 1. 停止动画循环
@@ -6346,10 +6350,15 @@ function init_app() {
                     live2dContainer.classList.add('hidden');
                 }
 
-                // 隐藏锁图标
-                const live2dLockIcon = document.getElementById('live2d-lock-icon');
-                if (live2dLockIcon) {
-                    live2dLockIcon.style.setProperty('display', 'none', 'important');
+                // 完全移除 Live2D 锁图标（而不是只隐藏），避免内存泄漏
+                // 如果新角色是 Live2D，锁图标会在加载新模型时重新创建
+                if (modelType !== 'live2d') {
+                    const live2dLockIcon = document.getElementById('live2d-lock-icon');
+                    if (live2dLockIcon) {
+                        live2dLockIcon.remove();
+                    }
+                    // 清理所有可能残留的 Live2D 锁图标
+                    document.querySelectorAll('#live2d-lock-icon').forEach(el => el.remove());
                 }
 
                 if (window.live2dManager) {
@@ -6582,11 +6591,9 @@ function init_app() {
                             window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
                         }
                         
-                        // 确保 VRM 锁图标已完全移除（loadModel 内部会调用 setupHTMLLockIcon）
-                        const hiddenVrmLockIcon = document.getElementById('vrm-lock-icon-hidden');
-                        if (hiddenVrmLockIcon) {
-                            hiddenVrmLockIcon.remove();
-                        }
+                        // 确保所有 VRM 锁图标已完全移除（loadModel 内部会调用 setupHTMLLockIcon）
+                        // 清理所有可能残留的 VRM 锁图标
+                        document.querySelectorAll('#vrm-lock-icon, #vrm-lock-icon-hidden').forEach(el => el.remove());
                     }
                 }
 
@@ -6653,9 +6660,29 @@ function init_app() {
                     // 【关键】显示 Live2D 锁图标（loadModel 内部已调用 setupHTMLLockIcon）
                     const live2dLockIcon = document.getElementById('live2d-lock-icon');
                     if (live2dLockIcon) {
-                        live2dLockIcon.style.display = 'block';
-                        live2dLockIcon.style.visibility = 'visible';
-                        live2dLockIcon.style.opacity = '1';
+                        // 【修复】使用 setProperty 移除之前的 !important 样式，确保能够正常显示
+                        live2dLockIcon.style.removeProperty('display');
+                        live2dLockIcon.style.removeProperty('visibility');
+                        live2dLockIcon.style.setProperty('display', 'block', 'important');
+                        live2dLockIcon.style.setProperty('visibility', 'visible', 'important');
+                        live2dLockIcon.style.setProperty('opacity', '1', 'important');
+                    } else {
+                        // 如果锁图标不存在，尝试重新创建
+                        // 这可能发生在快速切换模型类型时，锁图标创建被阻止的情况
+                        const currentModel = window.live2dManager?.getCurrentModel();
+                        if (currentModel && window.live2dManager?.setupHTMLLockIcon) {
+                            console.log('[锁图标] 锁图标不存在，尝试重新创建');
+                            window.live2dManager.setupHTMLLockIcon(currentModel);
+                            // 再次尝试显示
+                            const newLockIcon = document.getElementById('live2d-lock-icon');
+                            if (newLockIcon) {
+                                newLockIcon.style.removeProperty('display');
+                                newLockIcon.style.removeProperty('visibility');
+                                newLockIcon.style.setProperty('display', 'block', 'important');
+                                newLockIcon.style.setProperty('visibility', 'visible', 'important');
+                                newLockIcon.style.setProperty('opacity', '1', 'important');
+                            }
+                        }
                     }
                 }, 300);
             }

@@ -5,10 +5,21 @@
 
 // 设置 HTML 锁形图标（保留用于兼容）
 Live2DManager.prototype.setupHTMLLockIcon = function (model) {
-    // 如果是 VRM 模式，停止运行
-    if (document.getElementById('vrm-lock-icon') || (window.lanlan_config && window.lanlan_config.vrm_model)) {
-        console.log('检测到 VRM 模式，Live2D 锁停止生成');
-        return; 
+    // 【资源优化】如果正在加载 Live2D 模型（model 参数存在），
+    // 强制清理所有 VRM 锁图标残留和旧的 Live2D 锁图标，确保 Live2D 锁图标能够正常创建
+    if (model) {
+        // 正在加载 Live2D 模型，清理所有 VRM 锁图标（包括隐藏的）
+        document.querySelectorAll('#vrm-lock-icon, #vrm-lock-icon-hidden').forEach(el => {
+            console.log('[锁图标] 清理残留的 VRM 锁图标');
+            el.remove();
+        });
+    } else {
+        // 没有模型参数，可能是初始化阶段，检查是否应该阻止创建
+        const vrmLockIcon = document.getElementById('vrm-lock-icon');
+        if (vrmLockIcon || (window.lanlan_config && window.lanlan_config.vrm_model)) {
+            console.log('检测到 VRM 模式，Live2D 锁停止生成');
+            return;
+        }
     }
     
     const container = document.getElementById('live2d-canvas');
@@ -31,6 +42,14 @@ Live2DManager.prototype.setupHTMLLockIcon = function (model) {
         this.isLocked = false;
         container.style.pointerEvents = 'auto';
         return;
+    }
+
+    // 如果锁图标已存在，先移除它以确保创建新的锁图标
+    // 这样可以避免重复创建，并确保锁图标的状态是最新的
+    const existingLockIcon = document.getElementById('live2d-lock-icon');
+    if (existingLockIcon) {
+        // 移除旧的锁图标，准备创建新的
+        existingLockIcon.remove();
     }
 
     const lockIcon = document.createElement('div');

@@ -343,7 +343,9 @@
     "noDevices": "没有检测到麦克风设备",
     "defaultDevice": "系统默认麦克风",
     "deviceLabel": "麦克风 {{index}}",
-    "loadFailed": "获取麦克风列表失败"
+    "loadFailed": "获取麦克风列表失败",
+    "switched": "已切换麦克风 (下一次录音生效)",
+    "accessFailed": "无法访问麦克风"
   },
   "status": {
     "initializing": "正在初始化...",
@@ -627,6 +629,32 @@
     "persistentExpressionRemoved": "常驻表情已删除",
     "persistentExpressionRemoveFailed": "删除常驻表情失败",
     "persistentExpressionExists": "该表情已添加为常驻表情",
+    "vrmExpression": {
+      "title": "VRM表情配置:",
+      "loadModelFirst": "加载模型后可见",
+      "selectExpression": "选择表情预览",
+      "noExpressions": "无可用表情",
+      "selectFirst": "请先选择一个表情",
+      "playing": "正在播放表情: {{name}}",
+      "reset": "重置表情"
+    },
+    "vrmLighting": {
+      "title": "💡 VRM打光设置:",
+      "ambient": "环境光强度:",
+      "main": "主光源强度:",
+      "fill": "补光强度:",
+      "rim": "轮廓光强度:",
+      "reset": "🔄 重置默认"
+    },
+    "vrmUpload": {
+      "detectingOrientation": "正在检测并修正模型朝向...",
+      "orientationFixed": "✓ 模型朝向已修正并保存 ({{degrees}}度)",
+      "orientationFixedButSaveFailed": "⚠ 朝向已修正但保存失败",
+      "cannotSaveOrientation": "⚠ 无法保存朝向配置",
+      "cannotGetModelInstance": "⚠ 无法获取模型实例",
+      "orientationDetectionFailed": "⚠ 朝向检测失败，但模型已上传"
+    },
+    "loadError": "错误: {{error}}",
     "parameterEditor": {
       "title": "Live2D 参数编辑器（捏脸系统）",
       "backToMain": "← 返回L2D设置",
@@ -778,7 +806,7 @@
     "saveFailedWithError": "保存失败: {{error}}",
     "saveFailed": "保存失败",
     "saveError": "保存时发生错误: {{error}}",
-    "fillProfileNameFirst": "请先填写猫娘档案名，然后再设置Live2D模型",
+    "fillProfileNameFirstForLive2D": "请先填写猫娘档案名，然后再设置Live2D模型",
     "createCharacterFirst": "请先点击\"确认新猫娘\"按钮创建角色，然后再设置Live2D模型",
     "fillProfileNameFirstForVoice": "请先填写猫娘档案名，然后再注册音色",
     "createCharacterFirstForVoice": "请先点击\"确认新猫娘\"按钮创建角色，然后再注册音色",
@@ -983,6 +1011,20 @@
     }
   },
   "vrm": {
+    "error": {
+      "coreNotLoaded": "VRMCore 尚未加载",
+      "sceneNotInitialized": "无法加载模型：场景未初始化。",
+      "threeNotLoaded": "Three.js库未加载，请确保已引入three.js",
+      "containerNotFound": "找不到容器元素: {{id}}",
+      "canvasNotFound": "找不到canvas元素: {{id}}",
+      "threeNotLoadedForModel": "Three.js库未加载，无法加载VRM模型",
+      "modelLoadFailed": "无法加载 VRM 模型: {{url}} 和 {{fallback}} 都失败",
+      "invalidVRMFormat": "加载的模型不是有效的 VRM 格式。文件: {{file}}",
+      "sceneNotInitializedForAdd": "场景未初始化。请先调用 initThreeJS() 初始化场景。",
+      "animationClipError": "创建动画 Clip 时出错: {{error}}",
+      "animationClipNoBones": "动画 Clip 创建失败：没有找到匹配的骨骼",
+      "cannotCreateAnimationAction": "无法创建动画动作"
+    },
     "lighting": {
       "title": "VRM打光设置",
       "ambientLight": "环境光强度",

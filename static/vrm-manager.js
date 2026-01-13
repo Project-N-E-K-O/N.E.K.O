@@ -50,7 +50,10 @@ class VRMManager {
         if (this.scene) return true;
         if (!this.clock && window.THREE) this.clock = new window.THREE.Clock();
         this._initModules();
-        if (!this.core) throw new Error("VRMCore 尚未加载");
+        if (!this.core) {
+            const errorMsg = window.t ? window.t('vrm.error.coreNotLoaded') : 'VRMCore 尚未加载';
+            throw new Error(errorMsg);
+        }
         await this.core.init(canvasId, containerId);
         if (this.interaction) this.interaction.initDragAndZoom();
         this.startAnimateLoop();
@@ -134,7 +137,8 @@ class VRMManager {
             if (canvas && container) {
                 await this.initThreeJS(canvasId, containerId);
             } else {
-                throw new Error(`无法加载模型：场景未初始化。`);
+                const errorMsg = window.t ? window.t('vrm.error.sceneNotInitialized') : '无法加载模型：场景未初始化。';
+                throw new Error(errorMsg);
             }
         }
 

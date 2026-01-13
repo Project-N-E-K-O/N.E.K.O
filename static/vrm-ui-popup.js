@@ -484,7 +484,7 @@ VRMManager.prototype.renderMicList = async function (popup) {
 
         if (audioInputs.length === 0) {
             const noDev = document.createElement('div');
-            noDev.textContent = '未检测到麦克风';
+            noDev.textContent = window.t ? window.t('microphone.noDevices') : '未检测到麦克风';
             Object.assign(noDev.style, { padding:'8px', fontSize:'13px', color:'#666' });
             popup.appendChild(noDev);
             return;
@@ -519,7 +519,10 @@ VRMManager.prototype.renderMicList = async function (popup) {
                             body: JSON.stringify({ microphone_id: deviceId })
                         });
                         // 刷新页面或提示
-                        if (window.showStatusToast) window.showStatusToast('已切换麦克风 (下一次录音生效)', 2000);
+                        if (window.showStatusToast) {
+                            const message = window.t ? window.t('microphone.switched') : '已切换麦克风 (下一次录音生效)';
+                            window.showStatusToast(message, 2000);
+                        }
                     } catch(e) { console.error(e); }
                 }
             });
@@ -528,13 +531,14 @@ VRMManager.prototype.renderMicList = async function (popup) {
 
         // 添加列表
         audioInputs.forEach((device, index) => {
-            addOption(device.label || `麦克风 ${index + 1}`, device.deviceId);
+            const deviceLabel = device.label || (window.t ? window.t('microphone.deviceLabel', { index: index + 1 }) : `麦克风 ${index + 1}`);
+            addOption(deviceLabel, device.deviceId);
         });
 
     } catch (e) {
         console.error('获取麦克风失败', e);
         const errDiv = document.createElement('div');
-        errDiv.textContent = '无法访问麦克风';
+        errDiv.textContent = window.t ? window.t('microphone.accessFailed') : '无法访问麦克风';
         popup.appendChild(errDiv);
     }
 };
@@ -733,7 +737,7 @@ VRMManager.prototype.renderScreenSourceList = async function (popup) {
         console.error('[VRM] 获取屏幕源失败', e);
         popup.innerHTML = '';
         const errDiv = document.createElement('div');
-        errDiv.textContent = '获取屏幕源失败';
+        errDiv.textContent = window.t ? window.t('app.screenSource.loadFailed') : '获取屏幕源失败';
         Object.assign(errDiv.style, { padding:'12px', fontSize:'13px', color:'#dc3545', textAlign:'center' });
         popup.appendChild(errDiv);
     }

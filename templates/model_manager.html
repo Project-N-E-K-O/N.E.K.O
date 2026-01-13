@@ -347,18 +347,17 @@
             </div>
         </div>
         <div class="control-group" id="vrm-expression-group" style="display:none;">
-            <label class="control-label">VRM表情配置:</label>
+            <label class="control-label" data-i18n="live2d.vrmExpression.title">VRM表情配置:</label>
             <div class="action-group">
                 <select id="vrm-expression-select" class="control-select" disabled>
-                    <option value="">加载模型后可见</option>
+                    <option value="" data-i18n="live2d.vrmExpression.loadModelFirst">加载模型后可见</option>
                 </select>
                 <button id="trigger-vrm-expression-btn" class="btn btn-primary btn-icon" disabled>
-                    <img src="/static/icons/play_icon.png" alt="播放">
-                    <span>播放</span>
+                    <img src="/static/icons/play_icon.png" alt="播放" data-i18n-alt="live2d.play">
+                    <span data-i18n="live2d.play">播放</span>
                 </button>
                 <button id="reset-vrm-expression-btn" class="btn btn-secondary" disabled>
-                    <span data-i18n="common.reset">恢复自动</span>
-                    <span data-i18n="common.reset">重置表情</span>
+                    <span data-i18n="live2d.vrmExpression.reset">重置表情</span>
                 </button>
             </div>
         </div>
@@ -412,10 +411,10 @@
 
         <!-- VRM 打光设置 -->
         <div class="control-group" id="vrm-lighting-group" style="display:none;">
-            <label class="control-label">💡 VRM打光设置:</label>
+            <label class="control-label" data-i18n="live2d.vrmLighting.title">💡 VRM打光设置:</label>
 
             <div class="lighting-control">
-                <label for="ambient-light-slider">环境光强度:</label>
+                <label for="ambient-light-slider" data-i18n="live2d.vrmLighting.ambient">环境光强度:</label>
                 <div style="display: flex; align-items: center; gap: 10px;">
                     <input type="range" id="ambient-light-slider" min="0" max="0.3" step="0.01" value="0.08" style="flex: 1;">
                     <span id="ambient-light-value" style="min-width: 40px;">0.08</span>
@@ -423,7 +422,7 @@
             </div>
 
             <div class="lighting-control">
-                <label for="main-light-slider">主光源强度:</label>
+                <label for="main-light-slider" data-i18n="live2d.vrmLighting.main">主光源强度:</label>
                 <div style="display: flex; align-items: center; gap: 10px;">
                     <input type="range" id="main-light-slider" min="0" max="2.5" step="0.01" value="0.06" style="flex: 1;">
                     <span id="main-light-value" style="min-width: 40px;">0.06</span>
@@ -431,7 +430,7 @@
             </div>
 
             <div class="lighting-control">
-                <label for="fill-light-slider">补光强度:</label>
+                <label for="fill-light-slider" data-i18n="live2d.vrmLighting.fill">补光强度:</label>
                 <div style="display: flex; align-items: center; gap: 10px;">
                     <input type="range" id="fill-light-slider" min="0" max="0.5" step="0.01" value="0.12" style="flex: 1;">
                     <span id="fill-light-value" style="min-width: 40px;">0.12</span>
@@ -439,7 +438,7 @@
             </div>
 
             <div class="lighting-control">
-                <label for="rim-light-slider">轮廓光强度:</label>
+                <label for="rim-light-slider" data-i18n="live2d.vrmLighting.rim">轮廓光强度:</label>
                 <div style="display: flex; align-items: center; gap: 10px;">
                     <input type="range" id="rim-light-slider" min="0" max="1.5" step="0.05" value="0.8" style="flex: 1;">
                     <span id="rim-light-value" style="min-width: 40px;">0.8</span>
@@ -449,7 +448,7 @@
 
             <div style="display: flex; gap: 10px; margin-top: 10px;">
                 <button id="reset-lighting-btn" class="btn btn-secondary" style="flex: 1;">
-                    <span>🔄 重置默认</span>
+                    <span data-i18n="live2d.vrmLighting.reset">🔄 重置默认</span>
                 </button>
             </div>
         </div>
@@ -549,6 +548,20 @@
     </script>
 
     <script>
+        // ===== 跨页面通信系统 =====
+        const CHANNEL_NAME = 'neko_page_channel';
+        let modelManagerBroadcastChannel = null;
+
+        // 初始化 BroadcastChannel（如果支持）
+        try {
+            if (typeof BroadcastChannel !== 'undefined') {
+                modelManagerBroadcastChannel = new BroadcastChannel(CHANNEL_NAME);
+                console.log('[CrossPageComm] model_manager BroadcastChannel 已初始化');
+            }
+        } catch (e) {
+            console.log('[CrossPageComm] BroadcastChannel 不可用，将使用 localStorage 后备方案');
+        }
+
         // 用于页面间通信的事件处理
         function sendMessageToMainPage(action) {
             try {
@@ -556,7 +569,13 @@
                     action: action,
                     timestamp: Date.now()
                 };
-                
+
+                // 优先使用 BroadcastChannel
+                if (modelManagerBroadcastChannel) {
+                    modelManagerBroadcastChannel.postMessage(message);
+                    console.log('[CrossPageComm] 通过 BroadcastChannel 发送消息:', action);
+                }
+
                 // 方式1: 如果是在弹出窗口中，使用 postMessage（更可靠）
                 if (window.opener && !window.opener.closed) {
                     console.log(`[消息发送] 使用 postMessage 发送消息: ${action}`);
@@ -860,8 +879,11 @@
             const savedModelType = localStorage.getItem('modelType') || 'live2d';
             await switchModelDisplay(savedModelType);
 
+            // 然后加载当前角色的模型（此时下拉框已经有选项了）
+            await loadCurrentCharacterModel();
 
             // 如果已自动加载了一个模型，确保在下拉框中选中它
+            // 这是双重保险：防止 loadCurrentCharacterModel() 内部设置失败
             if (currentModelInfo && currentModelInfo.name) {
                 const exists = availableModels.some(m => m.name === currentModelInfo.name);
                 if (exists && modelSelect.value !== currentModelInfo.name) {
@@ -1295,7 +1317,7 @@
                 } catch (error) {
                     console.error('加载 VRM 模型列表失败:', error);
                     vrmModelSelect.innerHTML = `<option value="">${t('live2d.loadFailed', '加载失败')}</option>`;
-                    showStatus(`错误: ${error.message}`, 5000);
+                    showStatus(t('live2d.loadError', `错误: ${error.message}`, { error: error.message }), 5000);
                 }
             }
 
@@ -1485,7 +1507,7 @@
                     if (vrmAnimationSelect) {
                         vrmAnimationSelect.innerHTML = `<option value="">${t('live2d.loadFailed', '加载失败')}</option>`;
                     }
-                    showStatus(`错误: ${error.message}`, 5000);
+                    showStatus(t('live2d.loadError', `错误: ${error.message}`, { error: error.message }), 5000);
                 }
             }
 
@@ -1574,7 +1596,7 @@
                 
                 const expressions = vrmManager.expression.getExpressionList();
                 
-                vrmExpressionSelect.innerHTML = '<option value="">选择表情预览</option>';
+                vrmExpressionSelect.innerHTML = `<option value="">${t('live2d.vrmExpression.selectExpression', '选择表情预览')}</option>`;
                 
                 if (expressions.length > 0) {
                     expressions.forEach(name => {
@@ -1588,7 +1610,7 @@
                     // 【新增】启用播放按钮
                     if (triggerVrmExpressionBtn) triggerVrmExpressionBtn.disabled = false;
                 } else {
-                    vrmExpressionSelect.innerHTML = '<option value="">无可用表情</option>';
+                    vrmExpressionSelect.innerHTML = `<option value="">${t('live2d.vrmExpression.noExpressions', '无可用表情')}</option>`;
                     vrmExpressionSelect.disabled = true;
                 }
             }
@@ -1597,13 +1619,13 @@
                 triggerVrmExpressionBtn.addEventListener('click', () => {
                     const name = vrmExpressionSelect.value;
                     if (!name) {
-                        showStatus('请先选择一个表情');
+                        showStatus(t('live2d.vrmExpression.selectFirst', '请先选择一个表情'));
                         return;
                     }
                     if (vrmManager && vrmManager.expression) {
                         // 调用设置表情的方法
                         vrmManager.expression.setBaseExpression(name);
-                        showStatus(`正在播放表情: ${name}`);
+                        showStatus(t('live2d.vrmExpression.playing', `正在播放表情: ${name}`, { name: name }));
                     }
                 });
             }
@@ -1948,7 +1970,8 @@
                         loadEmotionMapping: true,
                         dragEnabled: true,
                         wheelEnabled: true,
-                        preferences: modelPreferences
+                        preferences: modelPreferences,
+                        skipCloseWindows: true  // model_manager 页面不需要关闭其他窗口
                     });
                     live2dModel = window.live2dManager.getCurrentModel();
 
@@ -2324,7 +2347,7 @@
                         if (result.model_path && window.VRMOrientationDetector && window.vrmManager) {
                             console.log(`[上传] ✅ 开始检测模型朝向`);
                             try {
-                                uploadStatus.textContent = '正在检测并修正模型朝向...';
+                                uploadStatus.textContent = t('live2d.vrmUpload.detectingOrientation', '正在检测并修正模型朝向...');
                                 
                                 // 转换模型路径为URL格式
                                 // result.model_path 可能是本地路径（如 C:/Users/.../file.vrm）
@@ -2393,13 +2416,13 @@
                                         
                                         if (saveSuccess) {
                                             const rotationDegrees = (detectedRotation.y * 180 / Math.PI).toFixed(1);
-                                            uploadStatus.textContent = `✓ 模型朝向已修正并保存 (${rotationDegrees}度)`;
+                                            uploadStatus.textContent = t('live2d.vrmUpload.orientationFixed', `✓ 模型朝向已修正并保存 (${rotationDegrees}度)`, { degrees: rotationDegrees });
                                         } else {
-                                            uploadStatus.textContent = '⚠ 朝向已修正但保存失败';
+                                            uploadStatus.textContent = t('live2d.vrmUpload.orientationFixedButSaveFailed', '⚠ 朝向已修正但保存失败');
                                             console.error(`[上传检测] 保存失败: ${modelUrl}`);
                                         }
                                     } else {
-                                        uploadStatus.textContent = '⚠ 无法保存朝向配置';
+                                        uploadStatus.textContent = t('live2d.vrmUpload.cannotSaveOrientation', '⚠ 无法保存朝向配置');
                                         console.error(`[上传检测] saveUserPreferences方法不存在`);
                                     }
                                     
@@ -2410,12 +2433,12 @@
                                         window.vrmManager.currentModel = null;
                                     }
                                 } else {
-                                    uploadStatus.textContent = '⚠ 无法获取模型实例';
+                                    uploadStatus.textContent = t('live2d.vrmUpload.cannotGetModelInstance', '⚠ 无法获取模型实例');
                                     console.error(`[上传检测] 无法获取模型实例`);
                                 }
                             } catch (orientationError) {
                                 console.warn('检测模型朝向时出错，将继续添加到列表:', orientationError);
-                                uploadStatus.textContent = '⚠ 朝向检测失败，但模型已上传';
+                                uploadStatus.textContent = t('live2d.vrmUpload.orientationDetectionFailed', '⚠ 朝向检测失败，但模型已上传');
                             }
                         }
 
