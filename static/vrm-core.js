@@ -196,9 +196,6 @@ class VRMCore {
     }
 
     /**
-     * 初始化场景
-     */
-    /**
      * 检查 Three.js 依赖是否完整
      */
     _ensureThreeReady() {
@@ -372,9 +369,6 @@ class VRMCore {
         if (!this.manager._windowEventHandlers) {
             this.manager._windowEventHandlers = [];
         }
-        if (!this.manager._windowEventHandlers) {
-            this.manager._windowEventHandlers = [];
-        }
         
         const resizeHandler = () => {
             if (this.manager && typeof this.manager.onWindowResize === 'function') {
@@ -528,7 +522,6 @@ class VRMCore {
                 }
                 
                 if (!preferencesResponse.ok) {
-                    clearTimeout(timeoutId);
                     let errorText = '';
                     try {
                         const contentType = preferencesResponse.headers.get('content-type');
@@ -554,21 +547,19 @@ class VRMCore {
                 }
 
                 if (modelsArray && modelsArray.length > 0) {
-                    const normalizePath = (path) => {
+                    // 使用共享的路径处理工具函数（避免与 vrm-init.js 重复）
+                    const normalizePath = window._vrmPathUtils?.normalizePath || ((path) => {
                         if (!path || typeof path !== 'string') return '';
-                        // 移除协议和主机
                         let normalized = path.replace(/^https?:\/\/[^\/]+/, '');
-                        // 移除 /user_vrm/ 或 /static/vrm/ 前缀
                         normalized = normalized.replace(/^\/(user_vrm|static\/vrm)\//, '/');
                         return normalized.toLowerCase();
-                    };
+                    });
                     
-                    // 辅助函数：提取文件名（路径的最后一部分）
-                    const getFilename = (path) => {
+                    const getFilename = window._vrmPathUtils?.getFilename || ((path) => {
                         if (!path || typeof path !== 'string') return '';
                         const parts = path.split('/').filter(Boolean);
                         return parts.length > 0 ? parts[parts.length - 1].toLowerCase() : '';
-                    };
+                    });
                     
                     const normalizedModelUrl = normalizePath(modelUrl);
                     const modelFilename = getFilename(modelUrl);
@@ -1025,7 +1016,6 @@ class VRMCore {
             }
 
             if (!response.ok) {
-                clearTimeout(timeoutId);
                 let errorText = '';
                 try {
                     const contentType = response.headers.get('content-type');

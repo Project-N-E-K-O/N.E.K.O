@@ -23,27 +23,22 @@ async function fetchVRMConfig() {
         if (response.ok) {
             const data = await response.json();
             if (data.success && data.paths) {
-                // 合并默认值，提升容错：如果后端忘了带 user_vrm/static_vrm 任一字段，使用默认值
                 const defaultPaths = {
                     user_vrm: '/user_vrm',
                     static_vrm: '/static/vrm'
                 };
                 
-                // 确保 VRM_PATHS 已初始化（如果不存在则使用默认值）
-                if (!window.VRM_PATHS) {
-                    window.VRM_PATHS = { ...defaultPaths };
-                }
-                
                 // 合并后端返回的路径配置，保留默认值作为后备
                 window.VRM_PATHS = {
                     ...defaultPaths,
-                    ...window.VRM_PATHS,  // 保留已有的配置（如果有）
                     ...data.paths,         // 后端返回的配置（覆盖默认值）
                     isLoaded: true         // 标记已加载
                 };
                 
                 return true;
             }
+        } else {
+            console.warn('[VRM Init] 获取路径配置失败，HTTP 状态:', response.status, response.statusText);
         }
         return false;
     } catch (error) {
@@ -55,7 +50,7 @@ async function fetchVRMConfig() {
 window._vrmConvertPath = function(modelPath, options = {}) {
     const defaultPath = options.defaultPath || '/static/vrm/sister1.0.vrm';
     
-    // 1. 验证输入路径的有效性
+    // 验证输入路径的有效性
     if (!modelPath || 
         modelPath === 'undefined' || 
         modelPath === 'null' || 
@@ -87,10 +82,10 @@ window._vrmConvertPath = function(modelPath, options = {}) {
         return modelUrl;
     }
     
-    // 3. 处理 Windows 绝对路径（驱动器字母模式，如 C:\ 或 C:/）
+    // 处理 Windows 绝对路径（驱动器字母模式，如 C:\ 或 C:/）
     const windowsPathPattern = /^[A-Za-z]:[\\/]/;
     if (windowsPathPattern.test(modelUrl) || (modelUrl.includes('\\') && modelUrl.includes(':'))) {
-        // 提取文件名并使用 user_vrm 路径（Windows 路径通常来自本地文件系统，应映射到用户目录）
+        // 提取文件名并使用 user_vrm 路径
         const filename = modelUrl.split(/[\\/]/).pop();
         if (filename) {
             modelUrl = `${userVrmPath}/${filename}`;
@@ -98,15 +93,13 @@ window._vrmConvertPath = function(modelPath, options = {}) {
             return defaultPath;
         }
     } else if (modelUrl.includes('\\')) {
-        // 4. 如果包含反斜杠但不是 Windows 驱动器路径，统一转换为正斜杠
+        // 如果包含反斜杠但不是 Windows 驱动器路径，统一转换为正斜杠
         modelUrl = modelUrl.replace(/\\/g, '/');
-        // 如果不是以 / 开头，当作相对路径处理
         if (!modelUrl.startsWith('/')) {
             modelUrl = `${userVrmPath}/${modelUrl}`;
         }
     } else if (!modelUrl.startsWith('http') && !modelUrl.startsWith('/')) {
-        // 5. 如果是相对路径（不以 http 或 / 开头），添加 user_vrm 路径前缀
-        // 验证路径有效性
+        // 如果是相对路径（不以 http 或 / 开头），添加 user_vrm 路径前缀
         if (userVrmPath !== 'undefined' && 
             userVrmPath !== 'null' &&
             modelUrl !== 'undefined' &&
@@ -117,23 +110,21 @@ window._vrmConvertPath = function(modelPath, options = {}) {
             return defaultPath;
         }
     } else {
-        // 6. 如果已经是完整路径（以 / 开头），确保格式正确
+        // 如果已经是完整路径（以 / 开头），确保格式正确
         modelUrl = modelUrl.replace(/\\/g, '/');
-        // 只重映射单段路径（如 "/file.vrm"），保留多段路径（如 "/custom/models/my.vrm"）
+        // 只重映射单段路径，保留多段路径
         if (!modelUrl.startsWith(userVrmPath + '/') && !modelUrl.startsWith(staticVrmPath + '/')) {
             const pathSegments = modelUrl.split('/').filter(Boolean);
-            // 如果是单段路径（只有文件名），重映射到 userVrmPath
             if (pathSegments.length === 1) {
                 const filename = pathSegments[0];
                 if (filename) {
                     modelUrl = `${userVrmPath}/${filename}`;
                 }
             }
-            // 否则保留原始绝对路径（多段路径不重映射）
         }
     }
     
-    // 7. 最终验证：确保 modelUrl 不包含 "undefined" 或 "null"
+    // 最终验证：确保 modelUrl 不包含 "undefined" 或 "null"
     if (typeof modelUrl !== 'string' || 
         modelUrl.includes('undefined') || 
         modelUrl.includes('null') ||
@@ -145,23 +136,31 @@ window._vrmConvertPath = function(modelPath, options = {}) {
     return modelUrl;
 };
 
-// 同时挂载到 window.convertVRMModelPath（保持向后兼容）
-// 但优先使用 _vrmConvertPath 来避免与本地函数的递归问题
-// 只有在 window.convertVRMModelPath 不存在或已经被覆盖时才设置
-if (!window.convertVRMModelPath) {
-    window.convertVRMModelPath = window._vrmConvertPath;
-} else if (window.convertVRMModelPath === window._vrmConvertPath) {
-    // 如果已经是 _vrmConvertPath，保持不变
-    // 这样可以避免覆盖本地函数
-}
+
+// 挂载到 window.convertVRMModelPath（保持向后兼容）
+// 注意：_vrmConvertPath 是权威实现，convertVRMModelPath 只是别名
+window.convertVRMModelPath = window.convertVRMModelPath || window._vrmConvertPath;
+
+// 共享的路径处理工具函数（供 vrm-core.js 和 vrm-init.js 使用）
+window._vrmPathUtils = window._vrmPathUtils || {
+    getFilename: (path) => {
+        if (!path || typeof path !== 'string') return '';
+        const parts = path.split('/').filter(Boolean);
+        return parts.length > 0 ? parts[parts.length - 1].toLowerCase() : '';
+    },
+    normalizePath: (path) => {
+        if (!path || typeof path !== 'string') return '';
+        let normalized = path.replace(/^https?:\/\/[^\/]+/, '');
+        normalized = normalized.replace(/^\/(user_vrm|static\/vrm)\//, '/');
+        return normalized.toLowerCase();
+    }
+};
 
 function initializeVRMManager() {
     if (window.vrmManager) return;
 
     try {
-        // 检查核心类是否存在
         if (typeof window.VRMManager !== 'undefined') {
-            // 使用显式的全局引用实例化，避免在非全局作用域中的 ReferenceError
             window.vrmManager = new window.VRMManager();
         }
     } catch (error) {
@@ -219,7 +218,13 @@ async function initVRMModel() {
                 // 请求完整的角色列表
                 const res = await fetch('/api/characters');
                 if (res.ok) {
-                    const data = await res.json();
+                    let data;
+                    try {
+                        data = await res.json();
+                    } catch (parseError) {
+                        console.error('[VRM Init] JSON 解析失败:', parseError);
+                        throw new Error('角色数据格式错误');
+                    }
                     // 提取当前角色的数据
                     const charData = data['猫娘']?.[currentName];
                     if (charData) {
@@ -228,10 +233,16 @@ async function initVRMModel() {
                         // 顺便把 VRM 路径也更新一下，防止主页存的是旧路径
                         if (charData.vrm) window.lanlan_config.vrm = charData.vrm;
                     }
+                } else {
+                    console.warn('[VRM Init] 获取角色数据失败，HTTP 状态:', res.status, res.statusText);
                 }
             }
         } catch (e) {
-            console.warn('[VRM Init] 同步角色数据失败，将使用默认设置:', e);
+            if (e.message === '角色数据格式错误') {
+                console.error('[VRM Init] 角色数据解析失败，将使用默认设置:', e);
+            } else {
+                console.warn('[VRM Init] 网络请求失败，将使用默认设置:', e);
+            }
         }
         // 2. 获取并确定模型路径
         // 安全获取 window.vrmModel，处理各种边界情况（包括字符串 "undefined" 和 "null"）
@@ -459,38 +470,30 @@ window.checkAndLoadVRM = async function() {
         let needReload = true;
         
         if (currentModelUrl) {
-            // 辅助函数：提取文件名（路径的最后一部分，不区分大小写）
-            const getFilename = (path) => {
-                if (!path || typeof path !== 'string') return '';
-                const parts = path.split('/').filter(Boolean);
-                return parts.length > 0 ? parts[parts.length - 1].toLowerCase() : '';
-            };
+            // 使用共享的路径处理工具函数（避免与 vrm-core.js 重复）
+            const getFilename = window._vrmPathUtils?.getFilename;
+            const normalizePath = window._vrmPathUtils?.normalizePath;
             
-            // 辅助函数：规范化路径（移除协议/主机，移除 /user_vrm/ 或 /static/vrm/ 前缀）
-            const normalizePath = (path) => {
-                if (!path || typeof path !== 'string') return '';
-                // 移除协议和主机
-                let normalized = path.replace(/^https?:\/\/[^\/]+/, '');
-                // 移除 /user_vrm/ 或 /static/vrm/ 前缀
-                normalized = normalized.replace(/^\/(user_vrm|static\/vrm)\//, '/');
-                return normalized.toLowerCase();
-            };
-            
-            const currentFilename = getFilename(currentModelUrl);
-            const newFilename = getFilename(modelUrl);
-            
-            // 首先尝试文件名匹配（最宽松，处理路径前缀差异）
-            if (currentFilename && newFilename && currentFilename === newFilename) {
-                needReload = false;
+            if (!getFilename || !normalizePath) {
+                console.warn('[VRM Init] 路径处理工具函数未初始化，跳过路径比较');
+                needReload = true;
             } else {
-                // 如果文件名不同，尝试规范化路径匹配
-                const normalizedCurrent = normalizePath(currentModelUrl);
-                const normalizedNew = normalizePath(modelUrl);
-                if (normalizedCurrent && normalizedNew && normalizedCurrent === normalizedNew) {
+                const currentFilename = getFilename(currentModelUrl);
+                const newFilename = getFilename(modelUrl);
+                
+                // 首先尝试文件名匹配（最宽松，处理路径前缀差异）
+                if (currentFilename && newFilename && currentFilename === newFilename) {
                     needReload = false;
-                } else if (currentModelUrl === modelUrl) {
-                    // 最后尝试完整路径精确匹配
-                    needReload = false;
+                } else {
+                    // 如果文件名不同，尝试规范化路径匹配
+                    const normalizedCurrent = normalizePath(currentModelUrl);
+                    const normalizedNew = normalizePath(modelUrl);
+                    if (normalizedCurrent && normalizedNew && normalizedCurrent === normalizedNew) {
+                        needReload = false;
+                    } else if (currentModelUrl === modelUrl) {
+                        // 最后尝试完整路径精确匹配
+                        needReload = false;
+                    }
                 }
             }
         }
@@ -532,13 +535,17 @@ window.checkAndLoadVRM = async function() {
 };
 
 // 监听器必须放在函数外面！
-document.addEventListener('visibilitychange', () => {
-    // 当页面从后台（或子页面）切回来变可见时
+const handleVisibilityChange = () => {
     if (document.visibilityState === 'visible') {
-        // 如果是在主页，且 VRM 检查函数存在
         if (!isModelManagerPage() && window.checkAndLoadVRM) {
             window.checkAndLoadVRM();
         }
     }
-});
+};
+
+document.addEventListener('visibilitychange', handleVisibilityChange);
+
+window.cleanupVRMInit = function() {
+    document.removeEventListener('visibilitychange', handleVisibilityChange);
+};
 // VRM 系统初始化完成

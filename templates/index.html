@@ -1414,19 +1414,23 @@
         <canvas id="vrm-canvas"></canvas>
     </div>
 
-    <!-- TODO: 占位 UI，未完成 -->
-    <div id="settings-panel" style="display: none;">
-        <div class="settings-header">
-            <span>⚙️ 系统设置</span>
+    <!-- TODO: 占位 UI，未完成 - 开发中功能，生产环境建议隐藏 -->
+    <div id="settings-panel" style="display: none; border: 2px dashed #ff6b6b; background: rgba(255, 107, 107, 0.05);">
+        <div class="settings-header" style="background: rgba(255, 107, 107, 0.1);">
+            <span style="color: #ff6b6b;">⚠️ 系统设置（开发中）</span>
             <button class="close-btn" id="settings-panel-close-btn">×</button>
         </div>
         <div class="settings-content">
-            <p style="color: #ff6b6b; font-weight: bold;">⚠️ 占位 UI - 功能开发中...</p>
-            <p style="color: #999; font-size: 12px; margin-top: 5px;">请使用 VRM/Live2D 浮动按钮中的设置入口</p>
-            <div style="margin-top: 10px; opacity: 0.5;">
+            <p style="color: #ff6b6b; font-weight: bold; text-align: center; padding: 10px; background: rgba(255, 107, 107, 0.1); border-radius: 6px;">
+                ⚠️ 占位 UI - 功能开发中...
+            </p>
+            <p style="color: #999; font-size: 12px; margin-top: 10px; text-align: center;">
+                请使用 VRM/Live2D 浮动按钮中的设置入口
+            </p>
+            <div style="margin-top: 15px; opacity: 0.5; pointer-events: none;">
                 <label><input type="checkbox" disabled> 开启自动眨眼</label>
             </div>
-            <div style="margin-top: 10px; opacity: 0.5;">
+            <div style="margin-top: 10px; opacity: 0.5; pointer-events: none;">
                 <label>音量: <input type="range" disabled></label>
             </div>
         </div>
@@ -1481,37 +1485,40 @@
             static_vrm: '/static/vrm'
         };
 
-        // 异步预热 VRM 路径配置（不阻塞页面加载，因为已同步设置默认值）
-        async function loadVRMPathsConfig() {
+        // 初始化 VRM 路径配置（使用默认值，等待 vrm-init.js 的 fetchVRMConfig 完成）
+        function loadVRMPathsConfig() {
             // 初始化 window.VRM_PATHS（使用默认值，供 window.convertVRMModelPath 使用）
-            // 注意：这里已经同步设置了默认值，所以后续代码不依赖 await 也能正常工作
             window.VRM_PATHS = window.VRM_PATHS || {
                 user_vrm: '/user_vrm',
                 static_vrm: '/static/vrm',
                 isLoaded: false
             };
             
-            try {
-                const response = await fetch('/api/model/vrm/config');
-                if (response.ok) {
-                    const data = await response.json();
-                    if (data.success && data.paths) {
-                        VRM_PATHS_CACHE = data.paths;
-                        // 更新 window.VRM_PATHS，供 window.convertVRMModelPath 使用
-                        window.VRM_PATHS.user_vrm = data.paths.user_vrm || '/user_vrm';
-                        window.VRM_PATHS.static_vrm = data.paths.static_vrm || '/static/vrm';
-                        window.VRM_PATHS.isLoaded = true;
-                        console.log('[主页] VRM 路径配置已加载:', VRM_PATHS_CACHE);
+            // 等待 vrm-init.js 中的 fetchVRMConfig 完成（通过轮询 isLoaded）
+            let checkCount = 0;
+            const maxChecks = 50; // 最多检查 50 次（5 秒）
+            const checkConfigLoaded = () => {
+                if (window.VRM_PATHS && window.VRM_PATHS.isLoaded) {
+                    if (window.VRM_PATHS.user_vrm && window.VRM_PATHS.static_vrm) {
+                        VRM_PATHS_CACHE = {
+                            user_vrm: window.VRM_PATHS.user_vrm,
+                            static_vrm: window.VRM_PATHS.static_vrm
+                        };
+                        console.log('[主页] VRM 路径配置已从 vrm-init.js 加载:', VRM_PATHS_CACHE);
                     }
+                } else if (checkCount < maxChecks) {
+                    checkCount++;
+                    setTimeout(checkConfigLoaded, 100);
+                } else {
+                    console.warn('[主页] VRM 路径配置加载超时，使用默认值');
                 }
-            } catch (error) {
-                console.warn('[主页] 无法获取 VRM 路径配置，使用默认值:', error);
-                // 即使加载失败，也标记为已初始化（使用默认值）
-                window.VRM_PATHS.isLoaded = true;
-            }
+            };
+            
+            // 延迟检查，给 vrm-init.js 一些时间加载
+            setTimeout(checkConfigLoaded, 100);
         }
 
-        // 异步预热（不 await，因为已有默认值，不阻塞后续代码）
+        // 同步设置默认值（不阻塞页面加载）
         loadVRMPathsConfig();
 
         // 异步获取页面配置
@@ -1808,6 +1815,55 @@
         // 记录页面加载时间，防止初始加载时误触发模型重新加载
         const pageLoadTime = Date.now();
 
+        // 提取公共函数：清理Live2D资源并切换到VRM（移到函数外部，避免每次调用都重新创建）
+        function cleanupLive2DAndSwitchToVRM() {
+            // 清理Live2D资源
+            if (window.live2dManager) {
+                try {
+                    console.log('[主页] 切换到VRM，开始清理Live2D资源...');
+                    
+                    // 清理Live2D模型
+                    if (window.live2dManager.currentModel) {
+                        if (typeof window.live2dManager.currentModel.destroy === 'function') {
+                            window.live2dManager.currentModel.destroy();
+                        }
+                        window.live2dManager.currentModel = null;
+                    }
+                    
+                    // 停止PIXI渲染循环
+                    if (window.live2dManager.pixi_app) {
+                        window.live2dManager.pixi_app.ticker.stop();
+                        // 清理舞台
+                        if (window.live2dManager.pixi_app.stage) {
+                            window.live2dManager.pixi_app.stage.removeChildren();
+                        }
+                    }
+                    
+                    console.log('[主页] Live2D资源清理完成');
+                } catch (cleanupError) {
+                    console.warn('[主页] Live2D清理时出现警告:', cleanupError);
+                }
+            }
+            
+            // 切换容器显示
+            const live2dContainer = document.getElementById('live2d-container');
+            const vrmContainer = document.getElementById('vrm-container');
+            if (live2dContainer) {
+                live2dContainer.style.display = 'none';
+                live2dContainer.classList.add('hidden');
+            }
+            if (vrmContainer) {
+                vrmContainer.style.display = 'block';
+                vrmContainer.classList.remove('hidden');
+            }
+
+            // 清理 Live2D 的 UI 元素（锁图标、浮动按钮等）
+            ['live2d-lock-icon', 'live2d-floating-buttons', 'live2d-return-button-container'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.remove();
+            });
+        }
+
         async function showMainUI() {
             // 防止在初始加载时（3秒内）触发模型检查
             const now = Date.now();
@@ -1867,7 +1923,7 @@
                 }
                 
                 // 获取当前角色的 model_type，决定显示哪个容器
-                const modelType = catgirlConfig.model_type || 'live2d';
+                let modelType = catgirlConfig.model_type || 'live2d';
                 
                 // 根据 model_type 显示正确的容器，确保两个容器不会同时可见
                 if (modelType === 'vrm') {
@@ -1896,54 +1952,6 @@
                 // 移除隐藏状态标记
                 document.body.removeAttribute('data-ui-hidden');
 
-                // 提取公共函数：清理Live2D资源并切换到VRM
-                function cleanupLive2DAndSwitchToVRM() {
-                    // 清理Live2D资源
-                    if (window.live2dManager) {
-                        try {
-                            console.log('[主页] 切换到VRM，开始清理Live2D资源...');
-                            
-                            // 清理Live2D模型
-                            if (window.live2dManager.currentModel) {
-                                if (typeof window.live2dManager.currentModel.destroy === 'function') {
-                                    window.live2dManager.currentModel.destroy();
-                                }
-                                window.live2dManager.currentModel = null;
-                            }
-                            
-                            // 停止PIXI渲染循环
-                            if (window.live2dManager.pixi_app) {
-                                window.live2dManager.pixi_app.ticker.stop();
-                                // 清理舞台
-                                if (window.live2dManager.pixi_app.stage) {
-                                    window.live2dManager.pixi_app.stage.removeChildren();
-                                }
-                            }
-                            
-                            console.log('[主页] Live2D资源清理完成');
-                        } catch (cleanupError) {
-                            console.warn('[主页] Live2D清理时出现警告:', cleanupError);
-                        }
-                    }
-                    
-                    // 切换容器显示
-                    const live2dContainer = document.getElementById('live2d-container');
-                    const vrmContainer = document.getElementById('vrm-container');
-                    if (live2dContainer) {
-                        live2dContainer.style.display = 'none';
-                        live2dContainer.classList.add('hidden');
-                    }
-                    if (vrmContainer) {
-                        vrmContainer.style.display = 'block';
-                        vrmContainer.classList.remove('hidden');
-                    }
-
-                    // 清理 Live2D 的 UI 元素（锁图标、浮动按钮等）
-                    ['live2d-lock-icon', 'live2d-floating-buttons', 'live2d-return-button-container'].forEach(id => {
-                        const el = document.getElementById(id);
-                        if (el) el.remove();
-                    });
-                }
                 // 根据模型类型获取正确的路径字段
                 let newModelPath = '';
                 if (modelType === 'vrm') {
@@ -2294,34 +2302,62 @@
                 });
 
                 if (!modelPreferences) {
-                    // 尝试文件名匹配
+                    // 尝试精确的文件名匹配
                     const currentFileName = currentModelPath.split('/').pop() || '';
-                    modelPreferences = preferences.find(p => {
+                    const matchingPrefs = preferences.filter(p => {
                         if (!p || !p.model_path) return false;
                         const prefFileName = p.model_path.split('/').pop() || '';
                         return currentFileName && prefFileName && currentFileName === prefFileName;
                     });
+                    
+                    if (matchingPrefs.length === 1) {
+                        modelPreferences = matchingPrefs[0];
+                    } else if (matchingPrefs.length > 1) {
+                        console.warn('[主页] 多个偏好设置匹配文件名，跳过模糊匹配:', currentFileName, matchingPrefs.map(p => p.model_path));
+                    }
                 }
 
-                // 如果还是没找到，尝试通过模型名称匹配
+                if (!modelPreferences) {
+                    // 尝试规范化的 basename 比较（移除版本后缀）
+                    const normalizeBasename = (filename) => {
+                        if (!filename) return '';
+                        return filename.replace(/[._-]v\d+$/i, '').replace(/\.v\d+$/i, '');
+                    };
+                    
+                    const currentFileName = currentModelPath.split('/').pop() || '';
+                    const normalizedCurrent = normalizeBasename(currentFileName);
+                    
+                    if (normalizedCurrent) {
+                        const matchingPrefs = preferences.filter(p => {
+                            if (!p || !p.model_path) return false;
+                            const prefFileName = p.model_path.split('/').pop() || '';
+                            const normalizedPref = normalizeBasename(prefFileName);
+                            return normalizedPref && normalizedCurrent === normalizedPref;
+                        });
+                        
+                        if (matchingPrefs.length === 1) {
+                            modelPreferences = matchingPrefs[0];
+                        } else if (matchingPrefs.length > 1) {
+                            console.warn('[主页] 多个偏好设置匹配规范化文件名，跳过模糊匹配:', normalizedCurrent, matchingPrefs.map(p => p.model_path));
+                        }
+                    }
+                }
+
+                // 如果还是没找到，尝试通过模型名称匹配（使用边界安全的匹配）
                 if (!modelPreferences && window.live2dManager?.modelName) {
                     const modelName = window.live2dManager.modelName;
-                    modelPreferences = preferences.find(p => {
+                    const matchingPrefs = preferences.filter(p => {
                         if (!p || !p.model_path) return false;
-                        return p.model_path.includes(modelName);
+                        const pathParts = p.model_path.split('/').filter(Boolean);
+                        // 检查 modelName 是否作为路径段出现（边界安全）
+                        return pathParts.some(part => part === modelName || part.startsWith(modelName + '.') || part.startsWith(modelName + '_'));
                     });
-                }
-
-                // 如果还是没找到，尝试部分匹配
-                if (!modelPreferences) {
-                    const currentPathParts = currentModelPath.split('/').filter(p => p);
-                    modelPreferences = preferences.find(p => {
-                        if (!p || !p.model_path) return false;
-                        const prefPathParts = p.model_path.split('/').filter(p => p);
-                        // 检查是否有共同的部分
-                        const commonParts = currentPathParts.filter(part => prefPathParts.includes(part));
-                        return commonParts.length >= 2; // 至少有两个共同部分
-                    });
+                    
+                    if (matchingPrefs.length === 1) {
+                        modelPreferences = matchingPrefs[0];
+                    } else if (matchingPrefs.length > 1) {
+                        console.warn('[主页] 多个偏好设置匹配模型名称，跳过模糊匹配:', modelName, matchingPrefs.map(p => p.model_path));
+                    }
                 }
 
                 if (modelPreferences && modelPreferences.parameters) {
@@ -2409,13 +2445,10 @@
         let _isConvertingPath = false;
         
         function convertVRMModelPath(modelPath, options = {}) {
-            // 防止自递归：如果已经在转换中，直接使用 fallback
-            if (_isConvertingPath) {
-                console.warn('[VRM Path Fallback] 检测到递归调用，使用 fallback 实现');
-                // 继续使用 fallback 实现，避免递归
-            } else {
-                // 如果全局函数已加载，直接使用（优先）
-                // 使用 _vrmConvertPath 作为内部引用，避免直接使用 window.convertVRMModelPath 导致递归
+            const defaultPath = options.defaultPath || '/static/vrm/sister1.0.vrm';
+            
+            // 优先使用全局转换器（如果已加载）
+            if (!_isConvertingPath) {
                 const globalConverter = window._vrmConvertPath || 
                     (window.convertVRMModelPath && window.convertVRMModelPath !== convertVRMModelPath 
                         ? window.convertVRMModelPath 
@@ -2430,16 +2463,12 @@
                     } catch (error) {
                         _isConvertingPath = false;
                         console.warn('[VRM Path Fallback] 全局函数调用失败，使用 fallback:', error);
-                        // 继续使用 fallback 实现
                     }
                 }
             }
             
-            // Fallback 实现：如果 vrm-init.js 尚未加载，返回默认路径并等待
-            // 这样可以避免在 showMainUI() 运行过早时错误地重映射路径
-            const defaultPath = options.defaultPath || '/static/vrm/sister1.0.vrm';
-            
-            // 如果路径无效，直接返回默认路径
+            // Fallback 实现：只处理最小情况，复杂映射推迟到 vrm-init.js 加载后
+            // 基本验证
             if (!modelPath || 
                 modelPath === 'undefined' ||
                 modelPath === 'null' || 
@@ -2448,85 +2477,20 @@
                 return defaultPath;
             }
             
-            // 确保 modelPath 是字符串
             if (typeof modelPath !== 'string') {
                 console.warn('[VRM Path Fallback] 路径不是字符串，使用默认路径:', modelPath);
                 return defaultPath;
             }
             
-            // 对于 HTTP/HTTPS URL，直接返回（不需要转换）
+            // HTTP/HTTPS URL 直接返回
             if (/^https?:\/\//.test(modelPath)) {
                 return modelPath;
             }
             
-            // 如果 vrm-init.js 尚未加载，对于需要转换的路径，返回默认路径
-            // 这样可以避免错误地重映射多段绝对路径
-            if (!window.VRM_PATHS || !window.VRM_PATHS.isLoaded) {
-                console.warn('[VRM Path Fallback] vrm-init.js 尚未加载，使用默认路径。建议等待模块加载后再调用。');
-                return defaultPath;
-            }
-            
-            // 如果已加载，使用与 vrm-init.js 完全相同的算法
-            let modelUrl = modelPath;
-            
-            const userVrmPath = window.VRM_PATHS.user_vrm || '/user_vrm';
-            const staticVrmPath = window.VRM_PATHS.static_vrm || '/static/vrm';
-            
-            // 处理 Windows 绝对路径（驱动器字母模式，如 C:\ 或 C:/）
-            const windowsPathPattern = /^[A-Za-z]:[\\/]/;
-            if (windowsPathPattern.test(modelUrl) || (modelUrl.includes('\\') && modelUrl.includes(':'))) {
-                // 提取文件名并使用 user_vrm 路径
-                const filename = modelUrl.split(/[\\/]/).pop();
-                if (filename) {
-                    modelUrl = `${userVrmPath}/${filename}`;
-                } else {
-                    return defaultPath;
-                }
-            } else if (modelUrl.includes('\\')) {
-                // 如果包含反斜杠但不是 Windows 驱动器路径，统一转换为正斜杠
-                modelUrl = modelUrl.replace(/\\/g, '/');
-                // 如果不是以 / 开头，当作相对路径处理
-                if (!modelUrl.startsWith('/')) {
-                    modelUrl = `${userVrmPath}/${modelUrl}`;
-                }
-            } else if (!modelUrl.startsWith('http') && !modelUrl.startsWith('/')) {
-                // 如果是相对路径（不以 http 或 / 开头），添加 user_vrm 路径前缀
-                if (userVrmPath !== 'undefined' && 
-                    userVrmPath !== 'null' &&
-                    modelUrl !== 'undefined' &&
-                    modelUrl !== 'null') {
-                    modelUrl = `${userVrmPath}/${modelUrl}`;
-                } else {
-                    console.error('[VRM Path Fallback] 路径拼接参数无效，使用默认路径:', { userVrmPath, modelUrl });
-                    return defaultPath;
-                }
-            } else {
-                // 如果已经是完整路径（以 / 开头），确保格式正确
-                modelUrl = modelUrl.replace(/\\/g, '/');
-                // 只重映射单段路径（如 "/file.vrm"），保留多段路径（如 "/custom/models/my.vrm"）
-                if (!modelUrl.startsWith(userVrmPath + '/') && !modelUrl.startsWith(staticVrmPath + '/')) {
-                    const pathSegments = modelUrl.split('/').filter(Boolean);
-                    // 如果是单段路径（只有文件名），重映射到 userVrmPath
-                    if (pathSegments.length === 1) {
-                        const filename = pathSegments[0];
-                        if (filename) {
-                            modelUrl = `${userVrmPath}/${filename}`;
-                        }
-                    }
-                    // 否则保留原始绝对路径（多段路径不重映射）
-                }
-            }
-            
-            // 最终验证：确保 modelUrl 不包含 "undefined" 或 "null"
-            if (typeof modelUrl !== 'string' || 
-                modelUrl.includes('undefined') || 
-                modelUrl.includes('null') ||
-                modelUrl.trim() === '') {
-                console.warn('[VRM Path Fallback] 最终路径无效，使用默认路径:', modelUrl);
-                return defaultPath;
-            }
-            
-            return modelUrl;
+            // 对于其他情况，如果 vrm-init.js 尚未加载，返回默认路径
+            // 复杂映射逻辑由 vrm-init.js 的全局转换器处理
+            console.warn('[VRM Path Fallback] vrm-init.js 尚未加载，使用默认路径。建议等待模块加载后再调用。');
+            return defaultPath;
         }
     </script>
     <script src="/static/libs/live2d.min.js"></script> <!-- Cubism 2.1核心库（支持旧模型） -->
@@ -2671,7 +2635,6 @@
                 }
 
                 // 加载所有 live2d 模块
-                // 标记 core 和 init 为关键模块，失败时中止
                 const criticalLive2DModules = ['live2dcubismcore', 'live2d.min.js', 'live2d-init.js'];
                 await loadScriptsSequentially(live2dModules, criticalLive2DModules);
 
@@ -2722,7 +2685,6 @@
                     });
                     
                     // 最终 readiness 判定：检查关键对象是否存在
-                    // 只有所有关键对象都存在时，才发送 'vrm-modules-ready' 事件
                     const checkVRMReadiness = () => {
                         const hasTHREE = typeof window.THREE !== 'undefined' && window.THREE !== null;
                         const hasVRMCore = typeof window.VRMCore !== 'undefined' && window.VRMCore !== null;
@@ -2789,7 +2751,6 @@
                     window._vrmModulesAvailable = false;
                     
                     // 禁用 VRM 相关的 UI 元素（如果存在）
-                    // 注意：这些元素可能在后续页面加载时才出现，所以需要在 showMainUI 等函数中也检查
                     const vrmContainer = document.getElementById('vrm-container');
                     if (vrmContainer) {
                         vrmContainer.style.display = 'none';

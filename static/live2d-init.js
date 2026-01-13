@@ -281,12 +281,32 @@ async function initLive2DModel() {
                     modelPreferences = preferences.find(p => {
                         if (!p || !p.model_path) return false;
                         const prefPathParts = p.model_path.split('/').filter(p => p);
-                        // 检查是否有足够的共同部分
-                        const commonParts = targetPathParts.filter(part => prefPathParts.includes(part));
-                        if (commonParts.length >= 2) {
-                            console.log('部分路径匹配成功:', p.model_path, '共同部分:', commonParts);
+                        
+                        // 获取文件名（最后一个路径段）
+                        const targetFilename = targetPathParts[targetPathParts.length - 1];
+                        const prefFilename = prefPathParts[prefPathParts.length - 1];
+                        
+                        // 主要条件：文件名必须匹配
+                        if (targetFilename && prefFilename && targetFilename === prefFilename) {
+                            console.log('部分路径匹配成功（文件名匹配）:', p.model_path);
                             return true;
                         }
+                        
+                        // 次要条件：如果文件名不匹配，需要更严格的路径匹配
+                        const commonParts = targetPathParts.filter(part => prefPathParts.includes(part));
+                        
+                        // 检查最后两个路径段是否匹配
+                        const targetLastTwo = targetPathParts.slice(-2);
+                        const prefLastTwo = prefPathParts.slice(-2);
+                        const lastTwoMatch = targetLastTwo.length === 2 && prefLastTwo.length === 2 &&
+                            targetLastTwo[0] === prefLastTwo[0] && targetLastTwo[1] === prefLastTwo[1];
+                        
+                        // 如果最后两个路径段匹配，或者共同部分 >= 3，则允许匹配
+                        if (lastTwoMatch || commonParts.length >= 3) {
+                            console.log('部分路径匹配成功（严格匹配）:', p.model_path, '共同部分:', commonParts);
+                            return true;
+                        }
+                        
                         return false;
                     });
                 }

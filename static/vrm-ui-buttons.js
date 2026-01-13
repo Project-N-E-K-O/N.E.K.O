@@ -4,7 +4,7 @@
 
 // 设置浮动按钮系统
 VRMManager.prototype.setupFloatingButtons = function () {
-    // 如果是模型管理页面，直接禁止创建浮动按钮
+    // 如果是模型管理页面，直接禁止创建浮动按钮（在最开头检查，避免后续资源初始化）
     if (window.location.pathname.includes('model_manager')) {
         return; 
     }
@@ -69,6 +69,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
             buttonsContainer.style.flexDirection = 'column';
             buttonsContainer.style.bottom = '';
             buttonsContainer.style.right = '';
+            buttonsContainer.style.display = '';
         }
     };
     applyResponsiveFloatingLayout();
@@ -172,7 +173,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
                 e.preventDefault();
 
                 if (config.id === 'mic') {
-                    const micButton = document.getElementById('micButton');
+                    // 检查全局状态：window.isMicStarting 由语音控制模块设置，表示麦克风正在启动
                     const isMicStarting = window.isMicStarting || false;
                     if (isMicStarting) {
                         if (btn.dataset.active !== 'true') {
@@ -182,6 +183,8 @@ VRMManager.prototype.setupFloatingButtons = function () {
                     }
                 }
                 if (config.id === 'screen') {
+                    // 检查全局状态：window.isRecording 由语音控制模块设置，表示正在录音/通话中
+                    // 屏幕分享功能仅在音视频通话时可用
                     const isRecording = window.isRecording || false;
                     const wantToActivate = btn.dataset.active !== 'true';
                     if (wantToActivate && !isRecording) {
@@ -396,9 +399,9 @@ VRMManager.prototype.setupFloatingButtons = function () {
     returnBtn.addEventListener('click', (e) => {
         if (returnButtonContainer.getAttribute('data-dragging') === 'true') { e.preventDefault(); e.stopPropagation(); return; }
         e.stopPropagation(); e.preventDefault();
-        // 同时派发两个事件，确保app.js的完整恢复逻辑执行
+        // 只派发 vrm-return-click，由 VRM 处理恢复逻辑
+        // app.js 中的 live2d-return-click 监听器会独立处理 Live2D 的恢复
         window.dispatchEvent(new CustomEvent('vrm-return-click'));
-        window.dispatchEvent(new CustomEvent('live2d-return-click'));
     });
 
     returnBtn.appendChild(returnImgOff);
@@ -545,6 +548,8 @@ VRMManager.prototype._startUIUpdateLoop = function() {
     // 基准按钮尺寸和间距（用于计算缩放，与 Live2D 保持一致）
     const baseButtonSize = 48;
     const baseGap = 12;
+    let lastMobileUpdate = 0;
+    const MOBILE_UPDATE_INTERVAL = 100;
 
     const update = () => {
         // 检查循环是否已被取消
@@ -565,11 +570,12 @@ VRMManager.prototype._startUIUpdateLoop = function() {
         
         // 移动端跳过位置更新，使用 CSS 固定定位
         if (window.isMobileWidth()) {
-            // 移动端降低更新频率，减少资源消耗
-            setTimeout(() => {
+            const now = performance.now();
+            if (now - lastMobileUpdate < MOBILE_UPDATE_INTERVAL) {
                 this._uiUpdateLoopId = requestAnimationFrame(update);
-            }, 100);
-            return;
+                return;
+            }
+            lastMobileUpdate = now;
         }
         
         const buttonsContainer = document.getElementById('vrm-floating-buttons')
@@ -763,7 +769,10 @@ VRMManager.prototype._startUIUpdateLoop = function() {
                 lockIcon.style.display = 'block';
             }
         } catch (error) {
-            // 忽略单帧异常，继续更新循环
+            // 忽略单帧异常，继续更新循环（开发模式下记录）
+            if (window.DEBUG_MODE) {
+                console.debug('[VRM UI] 更新循环单帧异常:', error);
+            }
         }
         
         // 继续下一帧（存储 RAF ID）

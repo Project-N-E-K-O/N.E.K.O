@@ -352,10 +352,18 @@ VRMManager.prototype._createSettingsMenuItems = function (popup) {
                     if(newWindow) {
                         this._openSettingsWindows[finalUrl] = newWindow;
                         this._windowCheckTimers = this._windowCheckTimers || {};
+                        
+                        // 清理同一 URL 的旧定时器，避免轮询累积
+                        if (this._windowCheckTimers[finalUrl]) {
+                            clearTimeout(this._windowCheckTimers[finalUrl]);
+                            delete this._windowCheckTimers[finalUrl];
+                        }
+                        
                         const checkClosed = () => {
                             if (newWindow.closed) {
                                 delete this._openSettingsWindows[finalUrl];
                                 if (this._windowCheckTimers[finalUrl]) {
+                                    clearTimeout(this._windowCheckTimers[finalUrl]);
                                     delete this._windowCheckTimers[finalUrl];
                                 }
                             } else {
