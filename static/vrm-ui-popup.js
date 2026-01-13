@@ -176,7 +176,7 @@ VRMManager.prototype._createToggleItem = function (toggle, popup) {
         checkbox.checked = !checkbox.checked;
         checkbox.dispatchEvent(new Event('change', { bubbles: true }));
         updateStyle();
-        setTimeout(() => checkbox._processing = false, 5500);
+        setTimeout(() => checkbox._processing = false, 500);
         e?.preventDefault(); e?.stopPropagation();
     };
 
@@ -483,7 +483,7 @@ VRMManager.prototype.renderMicList = async function (popup) {
     try {
         // 获取权限
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        stream.getTracks().forEach(t => t.stop()); // 立即释放
+        stream.getTracks().forEach(track => track.stop()); // 立即释放
 
         // 获取设备列表
         const devices = await navigator.mediaDevices.enumerateDevices();

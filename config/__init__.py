@@ -3,6 +3,7 @@
 
 from copy import deepcopy
 import logging
+from types import MappingProxyType
 
 from config.prompts_chara import lanlan_prompt
 
@@ -112,13 +113,17 @@ DEFAULT_LANLAN_TEMPLATE = {
 }
 
 # 默认VRM打光配置用于新角色初始化
-# 注意：这是一个可变对象，请使用 get_default_vrm_lighting() 获取副本以避免全局污染
-DEFAULT_VRM_LIGHTING = {
+# 使用 MappingProxyType 包装，使 DEFAULT_VRM_LIGHTING 成为只读结构，防止意外修改
+# 请使用 get_default_vrm_lighting() 获取可修改的副本
+_DEFAULT_VRM_LIGHTING_MUTABLE = {
     "ambient": 0.08,  # 环境光强度 (范围: 0-0.3)
     "main": 0.06,     # 主光源强度 (范围: 0-2.5)
     "fill": 0.12,     # 补光强度 (范围: 0-0.5)
     "rim": 0.8        # 轮廓光强度 (范围: 0-1.5)
 }
+
+# 只读的默认配置（使用 MappingProxyType 包装，任何写入操作都会抛出 TypeError）
+DEFAULT_VRM_LIGHTING = MappingProxyType(_DEFAULT_VRM_LIGHTING_MUTABLE)
 
 
 def get_default_vrm_lighting():
@@ -126,9 +131,11 @@ def get_default_vrm_lighting():
     获取默认VRM打光配置的深拷贝。
     
     返回一个新的字典副本，避免修改全局默认值。
+    由于 DEFAULT_VRM_LIGHTING 是只读的(MappingProxyType),
+    即使直接访问也无法修改，但此函数仍返回可修改的副本。
     
     Returns:
-        dict: 包含默认VRM打光配置的字典副本
+        dict: 包含默认VRM打光配置的字典副本(可修改)
     """
     return deepcopy(DEFAULT_VRM_LIGHTING)
 

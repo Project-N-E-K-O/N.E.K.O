@@ -471,19 +471,41 @@ VRMManager.prototype.setupFloatingButtons = function () {
     const toggleLock = (e) => {
         if(e) { e.preventDefault(); e.stopPropagation(); }
         
+        // 检查 interaction 是否存在
+        if (!this.interaction) {
+            console.warn('[VRM UI Buttons] interaction 未初始化，无法切换锁定状态');
+            return;
+        }
+        
         // 使用 core.setLocked() 统一管理锁定状态
         const newLockedState = !this.interaction.isLocked;
         if (this.core && typeof this.core.setLocked === 'function') {
+            // 优先使用 core.setLocked（它会调用 interaction.setLocked）
             this.core.setLocked(newLockedState);
+        } else if (this.interaction && typeof this.interaction.setLocked === 'function') {
+            // 如果没有 core.setLocked，直接使用 interaction.setLocked
+            // interaction.setLocked 会设置 isLocked 标志，让 interaction handlers 通过 checkLocked() 来尊重锁定状态
+            this.interaction.setLocked(newLockedState);
         } else {
-            // 如果没有 core.setLocked，直接设置
+            // 最后的降级方案：直接设置 isLocked（但不修改 pointerEvents）
+            // interaction handlers 会通过 checkLocked() 检查这个标志
             this.interaction.isLocked = newLockedState;
-            const vrmCanvas = document.getElementById('vrm-canvas');
-            if (vrmCanvas) vrmCanvas.style.pointerEvents = newLockedState ? 'none' : 'auto';
+        }
+        
+        // 可选：使用 CSS 类来标记锁定状态（用于样式或调试，但不影响 pointerEvents）
+        // interaction handlers 会通过 checkLocked() 来尊重 isLocked 标志，而不是依赖 CSS 类
+        const vrmCanvas = document.getElementById('vrm-canvas');
+        if (vrmCanvas) {
+            if (newLockedState) {
+                vrmCanvas.classList.add('ui-locked');
+            } else {
+                vrmCanvas.classList.remove('ui-locked');
+            }
         }
         
         // 更新锁图标样式
-        lockIcon.style.backgroundImage = this.interaction.isLocked ? 'url(/static/icons/locked_icon.png)' : 'url(/static/icons/unlocked_icon.png)';
+        const isLocked = this.interaction.isLocked;
+        lockIcon.style.backgroundImage = isLocked ? 'url(/static/icons/locked_icon.png)' : 'url(/static/icons/unlocked_icon.png)';
         
         // 获取当前的基础缩放值（如果已设置）
         const currentTransform = lockIcon.style.transform || '';
@@ -533,6 +555,11 @@ VRMManager.prototype.setupFloatingButtons = function () {
 
 // 循环更新位置 (保持跟随)
 VRMManager.prototype._startUIUpdateLoop = function() {
+    // 防止重复启动循环
+    if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) {
+        return; // 循环已在运行
+    }
+    
     // 计算可见按钮数量（移动端隐藏 agent 和 goodbye 按钮）
     const getVisibleButtonCount = () => {
         const buttonConfigs = [
@@ -559,14 +586,19 @@ VRMManager.prototype._startUIUpdateLoop = function() {
     const baseToolbarHeight = baseButtonSize * visibleCount + baseGap * (visibleCount - 1);
 
     const update = () => {
+        // 检查循环是否已被取消
+        if (this._uiUpdateLoopId === null || this._uiUpdateLoopId === undefined) {
+            return;
+        }
+        
         if (!this.currentModel || !this.currentModel.vrm) {
-            requestAnimationFrame(update);
+            this._uiUpdateLoopId = requestAnimationFrame(update);
             return;
         }
 
         // 移动端跳过位置更新，使用 CSS 固定定位
         if (window.isMobileWidth()) {
-            requestAnimationFrame(update);
+            this._uiUpdateLoopId = requestAnimationFrame(update);
             return;
         }
         
@@ -574,7 +606,7 @@ VRMManager.prototype._startUIUpdateLoop = function() {
         const lockIcon = this._vrmLockIcon;
         
         if (!this.camera || !this.renderer) {
-            requestAnimationFrame(update);
+            this._uiUpdateLoopId = requestAnimationFrame(update);
             return;
         }
 
@@ -745,9 +777,13 @@ VRMManager.prototype._startUIUpdateLoop = function() {
         } catch (error) {
             // 忽略单帧异常，继续更新循环
         }
-        requestAnimationFrame(update);
+        
+        // 继续下一帧（存储 RAF ID）
+        this._uiUpdateLoopId = requestAnimationFrame(update);
     };
-    requestAnimationFrame(update);
+    
+    // 启动循环（存储初始 RAF ID）
+    this._uiUpdateLoopId = requestAnimationFrame(update);
 };
 
 // 为VRM的"请她回来"按钮设置拖动功能 (保持不变)
@@ -866,6 +902,12 @@ VRMManager.prototype._addReturnButtonBreathingAnimation = function() {
  * 清理VRM UI元素
  */
 VRMManager.prototype.cleanupUI = function() {
+    // 取消 UI 更新循环（防止内存泄漏）
+    if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) {
+        cancelAnimationFrame(this._uiUpdateLoopId);
+        this._uiUpdateLoopId = null;
+    }
+    
     const vrmButtons = document.getElementById('vrm-floating-buttons');
     if (vrmButtons) vrmButtons.remove();
     document.querySelectorAll('#vrm-lock-icon').forEach(el => el.remove());

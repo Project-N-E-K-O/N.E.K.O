@@ -2835,14 +2835,108 @@
                     }
 
                     // 检查模型类型
-                    const modelType = catgirlConfig.model_type || (catgirlConfig.vrm ? 'vrm' : 'live2d');
+                    // 首先安全地检查 VRM 模型路径是否存在且有效
+                    let hasValidVRMPath = false;
+                    if (catgirlConfig.vrm !== undefined && catgirlConfig.vrm !== null) {
+                        const rawValue = catgirlConfig.vrm;
+                        if (typeof rawValue === 'string') {
+                            const trimmed = rawValue.trim();
+                            if (trimmed !== '' && 
+                                trimmed !== 'undefined' && 
+                                trimmed !== 'null' && 
+                                !trimmed.includes('undefined') &&
+                                !trimmed.includes('null')) {
+                                hasValidVRMPath = true;
+                            }
+                        } else {
+                            const strValue = String(rawValue);
+                            if (strValue !== 'undefined' && strValue !== 'null' && !strValue.includes('undefined')) {
+                                hasValidVRMPath = true;
+                            }
+                        }
+                    }
+                    
+                    // 确定模型类型：优先使用 model_type，如果没有则根据是否有有效的 VRM 路径判断
+                    let modelType = catgirlConfig.model_type || (hasValidVRMPath ? 'vrm' : 'live2d');
 
-                    // 【关键修复】先切换模型类型，清理旧模型资源
+                    // 如果模型类型是 VRM 但没有有效的 VRM 路径，自动修复配置
+                    if (modelType === 'vrm' && !hasValidVRMPath) {
+                        console.warn(`[模型管理] 角色 ${lanlanName} 的模型类型设置为 VRM，但 VRM 模型路径无效或未设置，自动修复为 Live2D:`, catgirlConfig.vrm);
+                        showStatus(t('live2d.autoFixModelType', `角色 ${lanlanName} 的模型类型配置不一致，已自动修复为 Live2D`, { name: lanlanName }), 3000);
+                        
+                        // 自动修复：将 model_type 改为 'live2d'
+                        try {
+                            const fixResponse = await fetch(`/api/characters/catgirl/${encodeURIComponent(lanlanName)}`, {
+                                method: 'PUT',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                },
+                                body: JSON.stringify({
+                                    model_type: 'live2d'
+                                })
+                            });
+                            
+                            if (fixResponse.ok) {
+                                const fixResult = await fixResponse.json();
+                                if (fixResult.success) {
+                                    console.log(`[模型管理] 已自动修复角色 ${lanlanName} 的模型类型配置`);
+                                    // 更新本地配置对象
+                                    catgirlConfig.model_type = 'live2d';
+                                    // 修复后，将 modelType 设置为 'live2d'，继续执行后续逻辑
+                                    modelType = 'live2d';
+                                } else {
+                                    console.error(`[模型管理] 自动修复配置失败:`, fixResult.error);
+                                    // 即使修复失败，也设置为 'live2d' 以避免后续错误
+                                    modelType = 'live2d';
+                                }
+                            } else {
+                                console.error(`[模型管理] 自动修复配置请求失败:`, fixResponse.status);
+                                // 即使修复失败，也设置为 'live2d' 以避免后续错误
+                                modelType = 'live2d';
+                            }
+                        } catch (fixError) {
+                            console.error(`[模型管理] 自动修复配置时发生错误:`, fixError);
+                            // 即使修复失败，也设置为 'live2d' 以避免后续错误
+                            modelType = 'live2d';
+                        }
+                    }
+                    
+                    // 先切换模型类型，清理旧模型资源
                     await switchModelDisplay(modelType);
 
-                    if (modelType === 'vrm' && catgirlConfig.vrm) {
+                    // 只有当模型类型是 VRM 且存在有效的 VRM 路径时才加载
+                    if (modelType === 'vrm' && hasValidVRMPath) {
                         // VRM 模型
-                        const vrmModelPath = catgirlConfig.vrm;
+                        // 安全获取 VRM 模型路径（已经验证过有效性）
+                        let vrmModelPath = null;
+                        if (catgirlConfig.vrm !== undefined && catgirlConfig.vrm !== null) {
+                            const rawValue = catgirlConfig.vrm;
+                            if (typeof rawValue === 'string') {
+                                const trimmed = rawValue.trim();
+                                // 检查是否是无效的字符串值
+                                if (trimmed !== '' && 
+                                    trimmed !== 'undefined' && 
+                                    trimmed !== 'null' && 
+                                    !trimmed.includes('undefined') &&
+                                    !trimmed.includes('null')) {
+                                    vrmModelPath = trimmed;
+                                }
+                            } else {
+                                // 非字符串类型，转换为字符串后也要验证
+                                const strValue = String(rawValue);
+                                if (strValue !== 'undefined' && strValue !== 'null' && !strValue.includes('undefined')) {
+                                    vrmModelPath = strValue;
+                                }
+                            }
+                        }
+                        
+                        // 如果路径无效，跳过加载
+                        if (!vrmModelPath) {
+                            console.warn(`[模型管理] 角色 ${lanlanName} 的 VRM 模型路径无效:`, catgirlConfig.vrm);
+                            showStatus(t('live2d.vrmModelPathInvalid', `角色 ${lanlanName} 的 VRM 模型路径无效，请手动选择模型`, { name: lanlanName }));
+                            return;
+                        }
+                        
                         console.log(`自动加载角色 ${lanlanName} 的 VRM 模型: ${vrmModelPath}`);
                         showStatus(t('live2d.loadingCharacterModel', `正在加载角色 ${lanlanName} 的 VRM 模型...`, { name: lanlanName }));
                         
@@ -2861,17 +2955,63 @@
                         // 加载 VRM 模型（会自动循环播放wait动作）
                         // 注意：vrmModelPath 可能是本地路径，需要转换为 URL
                         if (vrmManager) {
+                            // 再次验证 vrmModelPath 的有效性
+                            if (!vrmModelPath || 
+                                vrmModelPath === 'undefined' || 
+                                vrmModelPath === 'null' || 
+                                (typeof vrmModelPath === 'string' && (vrmModelPath.trim() === '' || vrmModelPath.includes('undefined')))) {
+                                console.error('[模型管理] vrmModelPath 在路径转换前无效:', vrmModelPath);
+                                showStatus(t('live2d.vrmModelPathInvalid', `VRM 模型路径无效，请手动选择模型`));
+                                return;
+                            }
+                            
                             // 如果路径是本地文件路径，转换为 URL
                             let modelUrl = vrmModelPath;
-                            if (vrmModelPath && !vrmModelPath.startsWith('/') && !vrmModelPath.startsWith('http')) {
-                                // 假设是文件名，转换为 URL
-                                const filename = vrmModelPath.split(/[/\\]/).pop();
-                                modelUrl = `/user_vrm/${filename}`;
-                            } else if (vrmModelPath && vrmModelPath.includes(':')) {
-                                // 如果是 Windows 路径（如 C:\...），提取文件名
-                                const filename = vrmModelPath.split(/[/\\]/).pop();
-                                modelUrl = `/user_vrm/${filename}`;
+                            
+                            // 确保 modelUrl 是有效的字符串
+                            if (typeof modelUrl !== 'string' || !modelUrl) {
+                                console.error('[模型管理] modelUrl 不是有效字符串:', modelUrl);
+                                showStatus(t('live2d.vrmModelPathInvalid', `VRM 模型路径无效，请手动选择模型`));
+                                return;
                             }
+                            
+                            if (!modelUrl.startsWith('/') && !modelUrl.startsWith('http')) {
+                                // 假设是文件名，转换为 URL
+                                const filename = modelUrl.split(/[/\\]/).pop();
+                                // 验证文件名有效性
+                                if (filename && filename !== 'undefined' && filename !== 'null' && !filename.includes('undefined')) {
+                                    modelUrl = `/user_vrm/${filename}`;
+                                } else {
+                                    console.error('[模型管理] 提取的文件名无效:', filename);
+                                    showStatus(t('live2d.vrmModelPathInvalid', `VRM 模型路径无效，请手动选择模型`));
+                                    return;
+                                }
+                            } else if (modelUrl.includes(':')) {
+                                // 如果是 Windows 路径（如 C:\...），提取文件名
+                                const filename = modelUrl.split(/[/\\]/).pop();
+                                // 验证文件名有效性
+                                if (filename && filename !== 'undefined' && filename !== 'null' && !filename.includes('undefined')) {
+                                    modelUrl = `/user_vrm/${filename}`;
+                                } else {
+                                    console.error('[模型管理] Windows 路径提取的文件名无效:', filename);
+                                    showStatus(t('live2d.vrmModelPathInvalid', `VRM 模型路径无效，请手动选择模型`));
+                                    return;
+                                }
+                            } else {
+                                // 确保路径格式正确（统一使用正斜杠）
+                                modelUrl = modelUrl.replace(/\\/g, '/');
+                            }
+                            
+                            // 最终验证：确保 modelUrl 不包含 "undefined" 或 "null"
+                            if (typeof modelUrl !== 'string' || 
+                                modelUrl.includes('undefined') || 
+                                modelUrl.includes('null') ||
+                                modelUrl.trim() === '') {
+                                console.error('[模型管理] 路径转换后仍包含无效值:', modelUrl);
+                                showStatus(t('live2d.vrmModelPathInvalid', `VRM 模型路径无效，请手动选择模型`));
+                                return;
+                            }
+                            
                             // 传入 { autoPlay: false }
                             // 注意：模型朝向会自动检测并保存，无需手动处理
                             await vrmManager.loadModel(modelUrl, { autoPlay: false, addShadow: false });

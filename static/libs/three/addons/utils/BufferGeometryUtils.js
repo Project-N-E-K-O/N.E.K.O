@@ -4,19 +4,19 @@
  * 【本地修改说明】
  * 本文件基于 Three.js 官方 BufferGeometryUtils 进行了以下修改：
  * 
- * 1. mergeVertices 函数（约第 610-622 行）：
+ * 1. mergeVertices 函数：
  *    - 修复了 morphAttributes 的处理逻辑
  *    - morphAttributes[name] 是一个数组，每个元素是一个 BufferAttribute（对应一个 morph target）
  *    - 原代码错误地将 morphAttributes[name] 当作单个 BufferAttribute 处理
  *    - 修改原因：修复 VRM 模型加载时的 morph target 处理错误
  * 
- * 2. computeMorphedAttributes 函数（约第 961 行）：
+ * 2. computeMorphedAttributes 函数：
  *    - 修复了 morphNormal 的赋值错误
  *    - 原代码错误地使用了 geometry.morphAttributes.position
  *    - 修改为 geometry.morphAttributes.normal
  *    - 修改原因：修复法线 morph target 计算错误
  * 
- * 3. 拼写错误修复（第 1246 行）：
+ * 3. 拼写错误修复：
  *    - 修复了 "reusable vertors" 的拼写错误为 "reusable vectors"
  *    - 这是上游 Three.js 源码中的拼写错误
  * 

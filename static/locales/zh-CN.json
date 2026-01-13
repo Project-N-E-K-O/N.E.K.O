@@ -603,6 +603,8 @@
     "vrmInitialized": "VRM 管理器初始化成功",
     "vrmInitFailed": "VRM 管理器初始化失败: {{error}}",
     "cannotChangeModelInVoiceMode": "语音模式下无法切换模型，请先停止语音对话",
+    "vrmModelPathInvalid": "角色 {{name}} 的 VRM 模型路径无效，请手动选择模型",
+    "autoFixModelType": "角色 {{name}} 的模型类型配置不一致，已自动修复为 Live2D",
     "vrmAnimation": {
       "title": "VRM动作预览:",
       "selectAnimation": "选择动作",

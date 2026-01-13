@@ -419,6 +419,13 @@ async def update_catgirl_lighting(name: str, request: Request):
     try:
         data = await request.json()
         lighting = data.get('lighting')
+        
+        # 检查是否需要立即应用运行时更新（默认 false，避免频繁重载）
+        apply_runtime = data.get('apply_runtime', False)
+        # 也支持通过查询参数控制
+        query_params = request.query_params
+        if 'apply_runtime' in query_params:
+            apply_runtime = query_params.get('apply_runtime', '').lower() in ('true', '1', 'yes')
 
         if not lighting:
             return JSONResponse(content={
@@ -437,10 +444,22 @@ async def update_catgirl_lighting(name: str, request: Request):
                 'error': '角色不存在'
             }, status_code=404)
 
-        # 检查是否为VRM模型（可选验证）
+        # 检查是否为VRM模型
         model_type = characters['猫娘'][name].get('model_type', 'live2d')
         if model_type != 'vrm':
             logger.warning(f"角色 {name} 不是VRM模型，但仍保存打光配置")
+        
+        # 如果 model_type == 'vrm' 且 lighting 缺失，使用默认值填充
+        if model_type == 'vrm' and 'lighting' not in characters['猫娘'][name]:
+            from config import get_default_vrm_lighting
+            default_lighting = get_default_vrm_lighting()
+            # 如果请求中只提供了部分参数，用默认值填充缺失的参数
+            if lighting:
+                for key in ['ambient', 'main', 'fill', 'rim']:
+                    if key not in lighting:
+                        lighting[key] = default_lighting.get(key, 0)
+            else:
+                lighting = default_lighting.copy()
 
         # 验证打光参数
         lighting_ranges = {
@@ -473,17 +492,34 @@ async def update_catgirl_lighting(name: str, request: Request):
         }
         logger.info(f"已保存角色 {name} 的打光配置: {characters['猫娘'][name]['lighting']}")
 
-        # 保存配置
+        # 保存配置到文件
         _config_manager.save_characters(characters)
         
-        # 自动重新加载配置，让运行时配置立即生效
-        initialize_character_data = get_initialize_character_data()
-        if initialize_character_data:
-            await initialize_character_data()
+        # 轻量级更新：直接更新运行时内存状态（如果存在）
+        try:
+            # 获取当前运行时状态
+            _, _, _, lanlan_basic_config, _, _, _, _, _, _ = _config_manager.get_character_data()
+            if name in lanlan_basic_config:
+                # 直接更新运行时状态，避免完整重载
+                lanlan_basic_config[name]['lighting'] = characters['猫娘'][name]['lighting']
+                logger.info(f"已更新角色 {name} 的运行时打光配置（轻量级更新）")
+        except Exception as runtime_update_error:
+            logger.warning(f"轻量级运行时更新失败，将使用完整重载: {runtime_update_error}")
+            apply_runtime = True  # 降级到完整重载
+        
+        # 条件性完整重载：只在明确请求时执行（避免频繁重载）
+        if apply_runtime:
+            initialize_character_data = get_initialize_character_data()
+            if initialize_character_data:
+                await initialize_character_data()
+                logger.info(f"已执行完整配置重载（角色 {name} 的打光配置）")
+        else:
+            logger.debug(f"跳过完整配置重载（apply_runtime=False），仅更新了运行时状态")
 
         return JSONResponse(content={
             'success': True,
-            'message': f'已保存角色 {name} 的打光配置'
+            'message': f'已保存角色 {name} 的打光配置',
+            'applied_runtime': apply_runtime
         })
 
     except Exception as e:

@@ -1473,7 +1473,29 @@
         let cubism4Model = "";
         let vrmModel = "";
 
+        // VRM 路径配置缓存（从后端获取）
+        let VRM_PATHS_CACHE = {
+            user_vrm: '/user_vrm',
+            static_vrm: '/static/vrm'
+        };
+
         // 页面启动时加载 VRM 路径配置（在页面配置加载之前）
+        async function loadVRMPathsConfig() {
+            try {
+                const response = await fetch('/api/model/vrm/config');
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.success && data.paths) {
+                        VRM_PATHS_CACHE = data.paths;
+                        console.log('[主页] VRM 路径配置已加载:', VRM_PATHS_CACHE);
+                    }
+                }
+            } catch (error) {
+                console.warn('[主页] 无法获取 VRM 路径配置，使用默认值:', error);
+            }
+        }
+
+        // 调用加载函数
         loadVRMPathsConfig();
 
         // 异步获取页面配置
@@ -1507,8 +1529,19 @@
                     const modelType = data.model_type || 'live2d'; // 使用API返回的model_type
                     // 根据model_type判断是Live2D还是VRM
                     if (modelType === 'vrm') {
-                        vrmModel = modelPath;
-                        window.vrmModel = vrmModel;
+                        // 验证 modelPath 有效性（防止 undefined 或字符串 "undefined"）
+                        if (modelPath && 
+                            modelPath !== 'undefined' && 
+                            modelPath !== 'null' && 
+                            typeof modelPath === 'string' && 
+                            modelPath.trim() !== '') {
+                            vrmModel = modelPath;
+                            window.vrmModel = vrmModel;
+                        } else {
+                            // 如果路径无效，设置为空字符串，让 vrm-init.js 使用默认模型
+                            vrmModel = "";
+                            window.vrmModel = "";
+                        }
                         cubism4Model = "";
                         window.cubism4Model = "";
                     } else {
@@ -1905,22 +1938,8 @@
                     // 使用公共函数清理Live2D资源并切换到VRM
                     cleanupLive2DAndSwitchToVRM();
 
-                    if (window.vrmManager && newModelPath) {
-                        // 使用统一的路径转换函数
-                        const modelUrl = convertVRMModelPath(newModelPath);
-
-                        // 确保Three.js场景已初始化
-                        if (!window.vrmManager._isInitialized || !window.vrmManager.scene || !window.vrmManager.camera || !window.vrmManager.renderer) {
-                            await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
-                        }
-                        try {
-                            await window.vrmManager.loadModel(modelUrl);
-                        } catch (error) {
-                            console.error('[主页] VRM模型加载失败:', error);
-                        }
-                    } else {
-                        console.warn('[主页] VRM管理器未准备或模型路径为空:', { vrmManager: !!window.vrmManager, newModelPath });
-                    }
+                    // 注意：这里不立即加载模型，而是等待 needReload 判断后再决定是否加载
+                    // 避免重复加载（如果 needReload 为 false，说明模型已经加载，不需要重复加载）
                 }
 
                 // 5. 检查当前加载的模型路径（优先使用 _lastLoadedModelPath）
@@ -2009,12 +2028,13 @@
                     // 模型改变了，需要完全重新加载
                     if (modelType === 'vrm') {
                         // VRM模型：重新加载VRM模型
-                        if (window.vrmManager) {
+                        if (window.vrmManager && newModelPath) {
                             // 使用公共函数清理Live2D资源并切换到VRM
                             cleanupLive2DAndSwitchToVRM();
 
-                            // 确保Three.js场景已初始化
+                            // 确保Three.js场景已初始化（如果被清理了，需要重新初始化）
                             if (!window.vrmManager._isInitialized || !window.vrmManager.scene || !window.vrmManager.camera || !window.vrmManager.renderer) {
+                                console.log('[主页] VRM场景未初始化，重新初始化...');
                                 await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
                             }
 
@@ -2033,72 +2053,69 @@
                                 console.error('[主页] VRM模型重新加载失败:', error);
                             }
                         } else {
-                            console.warn('VRM管理器未初始化，无法加载VRM模型');
+                            console.warn('[主页] VRM管理器未初始化或模型路径为空，无法加载VRM模型');
                         }
                     } else {
+                        // needReload 为 false，说明模型已经加载，只需要确保场景已初始化并显示
+                        if (modelType === 'vrm' && window.vrmManager) {
+                            // 确保Three.js场景已初始化（可能被清理了）
+                            if (!window.vrmManager._isInitialized || !window.vrmManager.scene || !window.vrmManager.camera || !window.vrmManager.renderer) {
+                                console.log('[主页] VRM模型已加载但场景未初始化，重新初始化...');
+                                await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
+                                // 如果模型存在但不在场景中，需要重新加载
+                                if (window.vrmManager.currentModel && window.vrmManager.currentModel.vrm) {
+                                    const modelUrl = convertVRMModelPath(newModelPath);
+                                    try {
+                                        await window.vrmManager.loadModel(modelUrl);
+                                    } catch (error) {
+                                        console.error('[主页] VRM模型重新加载失败:', error);
+                                    }
+                                }
+                            } else {
+                                // 场景已初始化，确保模型可见
+                                if (window.vrmManager.currentModel && window.vrmManager.currentModel.vrm) {
+                                    window.vrmManager.currentModel.vrm.scene.visible = true;
+                                }
+                                // 确保渲染器可见
+                                if (window.vrmManager.renderer && window.vrmManager.renderer.domElement) {
+                                    window.vrmManager.renderer.domElement.style.display = 'block';
+                                    window.vrmManager.renderer.domElement.style.opacity = '1';
+                                }
+                            }
+                        }
+                        
                         // Live2D模型：使用原有逻辑
-                        // 【关键修复】先清理VRM资源，确保完全切换
+                        // 使用统一的 dispose() 方法清理VRM资源，确保完全切换
                         if (window.vrmManager) {
                             try {
                                 console.log('[主页] 切换到Live2D，开始清理VRM资源...');
                                 
-                                // 1. 停止VRM动画循环（最关键）
-                                if (window.vrmManager._animationFrameId) {
-                                    cancelAnimationFrame(window.vrmManager._animationFrameId);
-                                    window.vrmManager._animationFrameId = null;
-                                }
-                                
-                                // 2. 停止VRM动画
-                                if (window.vrmManager.animation) {
-                                    window.vrmManager.animation.stopVRMAAnimation();
-                                    // 清理动画模块
-                                    if (typeof window.vrmManager.animation.dispose === 'function') {
-                                        window.vrmManager.animation.dispose();
+                                // 使用统一的 dispose() 方法进行完整清理
+                                // 这会取消动画循环、清理模型资源、清理场景/渲染器、重置初始化状态
+                                if (typeof window.vrmManager.dispose === 'function') {
+                                    window.vrmManager.dispose();
+                                } else {
+                                    // 降级方案：手动清理（如果 dispose 方法不存在）
+                                    console.warn('[主页] VRM Manager 没有 dispose 方法，使用降级清理方案');
+                                    if (window.vrmManager._animationFrameId) {
+                                        cancelAnimationFrame(window.vrmManager._animationFrameId);
+                                        window.vrmManager._animationFrameId = null;
                                     }
-                                }
-                                
-                                // 3. 清理VRM模型（从场景中移除）
-                                if (window.vrmManager.currentModel && window.vrmManager.currentModel.vrm) {
-                                    const vrm = window.vrmManager.currentModel.vrm;
-                                    // 先隐藏模型
-                                    if (vrm.scene) {
-                                        vrm.scene.visible = false;
-                                    }
-                                    // 从场景中移除
-                                    if (window.vrmManager.scene && vrm.scene) {
-                                        window.vrmManager.scene.remove(vrm.scene);
-                                    }
-                                    // 调用dispose清理资源
                                     if (window.vrmManager.core && typeof window.vrmManager.core.disposeVRM === 'function') {
                                         window.vrmManager.core.disposeVRM();
                                     }
-                                }
-                                
-                                // 4. 清理动画混合器
-                                if (window.vrmManager.animationMixer) {
-                                    window.vrmManager.animationMixer.stopAllAction();
-                                    if (window.vrmManager.currentModel && window.vrmManager.currentModel.vrm) {
-                                        window.vrmManager.animationMixer.uncacheRoot(window.vrmManager.currentModel.vrm.scene);
+                                    if (window.vrmManager.scene) {
+                                        while (window.vrmManager.scene.children.length > 0) {
+                                            window.vrmManager.scene.remove(window.vrmManager.scene.children[0]);
+                                        }
                                     }
-                                    window.vrmManager.animationMixer = null;
-                                }
-                                
-                                // 5. 清理场景（清空所有对象）
-                                if (window.vrmManager.scene) {
-                                    // 遍历并移除所有子对象
-                                    while (window.vrmManager.scene.children.length > 0) {
-                                        window.vrmManager.scene.remove(window.vrmManager.scene.children[0]);
+                                    if (window.vrmManager.renderer && window.vrmManager.renderer.domElement) {
+                                        window.vrmManager.renderer.domElement.style.display = 'none';
+                                        window.vrmManager.renderer.domElement.style.opacity = '0';
                                     }
+                                    window.vrmManager.currentModel = null;
+                                    window.vrmManager._isInitialized = false;
                                 }
-                                
-                                // 6. 停止渲染器渲染（通过隐藏canvas）
-                                if (window.vrmManager.renderer && window.vrmManager.renderer.domElement) {
-                                    window.vrmManager.renderer.domElement.style.display = 'none';
-                                    window.vrmManager.renderer.domElement.style.opacity = '0';
-                                }
-                                
-                                // 7. 重置当前模型引用
-                                window.vrmManager.currentModel = null;
                                 
                                 console.log('[主页] VRM资源清理完成');
                             } catch (cleanupError) {
@@ -2316,27 +2333,7 @@
             }
         });
 
-        // VRM 路径配置缓存（从后端获取）
-        let VRM_PATHS_CACHE = {
-            user_vrm: '/user_vrm',
-            static_vrm: '/static/vrm'
-        };
-
-        // 页面启动时加载 VRM 路径配置
-        async function loadVRMPathsConfig() {
-            try {
-                const response = await fetch('/api/model/vrm/config');
-                if (response.ok) {
-                    const data = await response.json();
-                    if (data.success && data.paths) {
-                        VRM_PATHS_CACHE = data.paths;
-                        console.log('[主页] VRM 路径配置已加载:', VRM_PATHS_CACHE);
-                    }
-                }
-            } catch (error) {
-                console.warn('[主页] 无法获取 VRM 路径配置，使用默认值:', error);
-            }
-        }
+        // VRM 路径配置缓存和加载函数已移动到前面的 script 标签中（第 1476-1495 行）
 
         // 路径转换工具函数（使用后端配置，避免硬编码）
         function convertVRMModelPath(modelPath) {
@@ -2344,21 +2341,34 @@
             const userVrmPath = VRM_PATHS_CACHE.user_vrm || '/user_vrm';
             const staticVrmPath = VRM_PATHS_CACHE.static_vrm || '/static/vrm';
             
-            // 处理Windows绝对路径，转换为Web路径（优先使用用户VRM路径）
-            if (modelUrl.includes('\\') || modelUrl.includes(':')) {
-                // 如果是Windows路径或包含驱动器号，提取文件名并优先使用用户VRM路径
+            // 首先检查是否是完整的 URL（http:// 或 https://），如果是则直接返回
+            if (/^https?:\/\//.test(modelUrl)) {
+                return modelUrl;
+            }
+            
+            // 检查是否是 Windows 绝对路径（驱动器字母模式，如 C:\ 或 C:/）
+            const windowsPathPattern = /^[A-Za-z]:[\\/]/;
+            if (windowsPathPattern.test(modelUrl)) {
+                // 如果是 Windows 路径，提取文件名并优先使用用户 VRM 路径
                 const filename = modelUrl.split(/[\\/]/).pop();
                 if (filename) {
                     modelUrl = `${userVrmPath}/${filename}`;
                 }
-            } else if (!modelUrl.startsWith('http') && !modelUrl.startsWith('/')) {
-                // 如果是相对路径，添加用户VRM路径前缀
+            } else if (modelUrl.includes('\\')) {
+                // 如果包含反斜杠但不是 Windows 驱动器路径，可能是其他格式的路径，统一转换为正斜杠
+                modelUrl = modelUrl.replace(/\\/g, '/');
+                // 如果不是以 / 开头，当作相对路径处理
+                if (!modelUrl.startsWith('/')) {
+                    modelUrl = `${userVrmPath}/${modelUrl}`;
+                }
+            } else if (!modelUrl.startsWith('/')) {
+                // 如果是相对路径（不以 / 开头），添加用户 VRM 路径前缀
                 modelUrl = `${userVrmPath}/${modelUrl}`;
             } else {
-                // 如果已经是完整路径，确保格式正确
+                // 如果已经是完整路径（以 / 开头），确保格式正确
                 modelUrl = modelUrl.replace(/\\/g, '/');
-                // 如果路径不是以用户VRM路径或静态VRM路径开头，尝试添加用户VRM路径前缀
-                if (!modelUrl.startsWith(userVrmPath + '/') && !modelUrl.startsWith(staticVrmPath + '/') && !modelUrl.startsWith('http')) {
+                // 如果路径不是以用户 VRM 路径或静态 VRM 路径开头，尝试添加用户 VRM 路径前缀
+                if (!modelUrl.startsWith(userVrmPath + '/') && !modelUrl.startsWith(staticVrmPath + '/')) {
                     const filename = modelUrl.split('/').pop();
                     if (filename) {
                         modelUrl = `${userVrmPath}/${filename}`;
@@ -2539,10 +2549,41 @@
                         vrmInitScript.onerror = (error) => resolve(); // 即使失败也继续
                         document.body.appendChild(vrmInitScript);
                     });
-                    // 【新增】手动触发 vrm-init.js 正在等待的启动事件
-                    window.dispatchEvent(new Event('vrm-modules-ready'));
+                    
+                    // 最终 readiness 判定：检查关键对象是否存在
+                    // 只有所有关键对象都存在时，才发送 'vrm-modules-ready' 事件
+                    const checkVRMReadiness = () => {
+                        const hasTHREE = typeof window.THREE !== 'undefined' && window.THREE !== null;
+                        const hasVRMCore = typeof window.VRMCore !== 'undefined' && window.VRMCore !== null;
+                        const hasVRMManager = typeof window.VRMManager !== 'undefined' && window.VRMManager !== null;
+                        
+                        if (hasTHREE && hasVRMCore && hasVRMManager) {
+                            console.log('[VRM 模块] 所有关键对象已加载，发送 vrm-modules-ready 事件');
+                            window.dispatchEvent(new Event('vrm-modules-ready'));
+                        } else {
+                            console.warn('[VRM 模块] 关键对象缺失，发送 vrm-modules-failed 事件', {
+                                hasTHREE,
+                                hasVRMCore,
+                                hasVRMManager
+                            });
+                            window.dispatchEvent(new CustomEvent('vrm-modules-failed', {
+                                detail: {
+                                    hasTHREE,
+                                    hasVRMCore,
+                                    hasVRMManager
+                                }
+                            }));
+                        }
+                    };
+                    
+                    // 延迟一点检查，给脚本执行时间
+                    setTimeout(checkVRMReadiness, 100);
                 } catch (vrmError) {
                     console.warn('VRM模块加载过程中出错（不影响Live2D）:', vrmError);
+                    // 即使 catch 到错误，也发送 failed 事件
+                    window.dispatchEvent(new CustomEvent('vrm-modules-failed', {
+                        detail: { error: vrmError }
+                    }));
                 }
 
 

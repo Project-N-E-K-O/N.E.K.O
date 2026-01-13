@@ -114,10 +114,39 @@ async function initVRMModel() {
             console.warn('[VRM Init] 同步角色数据失败，将使用默认设置:', e);
         }
         // 2. 获取并确定模型路径
-        let targetModelPath = window.vrmModel || '';
+        // 安全获取 window.vrmModel，处理各种边界情况（包括字符串 "undefined" 和 "null"）
+        let targetModelPath = null;
+        if (window.vrmModel !== undefined && window.vrmModel !== null) {
+            const rawValue = window.vrmModel;
+            if (typeof rawValue === 'string') {
+                const trimmed = rawValue.trim();
+                // 检查是否是无效的字符串值（包括 "undefined"、"null"、空字符串、包含 "undefined" 的字符串）
+                if (trimmed !== '' && 
+                    trimmed !== 'undefined' && 
+                    trimmed !== 'null' && 
+                    !trimmed.includes('undefined') &&
+                    !trimmed.includes('null')) {
+                    targetModelPath = trimmed;
+                }
+            } else {
+                // 非字符串类型，转换为字符串后也要验证
+                const strValue = String(rawValue);
+                if (strValue !== 'undefined' && strValue !== 'null' && !strValue.includes('undefined')) {
+                    targetModelPath = strValue;
+                }
+            }
+        }
 
-        // 如果未指定路径，使用默认模型保底
-        if (!targetModelPath) {
+        // 如果未指定路径或路径无效，使用默认模型保底
+        // 额外检查：确保 targetModelPath 不是字符串 "undefined" 或包含 "undefined"
+        if (!targetModelPath || 
+            (typeof targetModelPath === 'string' && (
+                targetModelPath === 'undefined' || 
+                targetModelPath === 'null' || 
+                targetModelPath.includes('undefined') ||
+                targetModelPath.includes('null') ||
+                targetModelPath.trim() === ''
+            ))) {
             // 获取当前是否应该处于 VRM 模式
             // (检查全局配置是否指定了 model_type: 'vrm')
             const isVRMMode = window.lanlan_config && window.lanlan_config.model_type === 'vrm';
@@ -166,6 +195,17 @@ async function initVRMModel() {
                     if (window.live2dManager.pixi_app.stage) {
                         window.live2dManager.pixi_app.stage.removeChildren();
                     }
+                    // 完全销毁PIXI应用释放WebGL上下文
+                    try {
+                        window.live2dManager.pixi_app.destroy(true, { 
+                            children: true, 
+                            texture: true, 
+                            baseTexture: true 
+                        });
+                    } catch (destroyError) {
+                        console.warn('[VRM Init] PIXI应用销毁时出现警告:', destroyError);
+                    }
+                    window.live2dManager.pixi_app = null;
                 }
             } catch (cleanupError) {
                 console.warn('[VRM Init] Live2D清理时出现警告:', cleanupError);
@@ -176,12 +216,57 @@ async function initVRMModel() {
         await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
 
         // 路径转换逻辑
+        // 再次验证 targetModelPath 的有效性（防止在路径转换时出现问题）
+        if (!targetModelPath || 
+            targetModelPath === 'undefined' || 
+            targetModelPath === 'null' || 
+            (typeof targetModelPath === 'string' && (targetModelPath.trim() === '' || targetModelPath.includes('undefined')))) {
+            console.error('[VRM Init] targetModelPath 无效，使用默认模型:', targetModelPath);
+            targetModelPath = '/static/vrm/sister1.0.vrm';
+        }
+        
         let modelUrl = targetModelPath;
+        
+        // 确保 VRM_PATHS 已初始化
+        if (!window.VRM_PATHS) {
+            window.VRM_PATHS = {
+                user_vrm: '/user_vrm',
+                static_vrm: '/static/vrm'
+            };
+        }
+        
+        // 确保 modelUrl 是有效的字符串
+        if (typeof modelUrl !== 'string' || !modelUrl) {
+            console.error('[VRM Init] modelUrl 不是有效字符串，使用默认模型:', modelUrl);
+            modelUrl = '/static/vrm/sister1.0.vrm';
+        }
+        
         if (!modelUrl.startsWith('http') && !modelUrl.startsWith('/')) {
             // 使用动态获取的 user_vrm 路径
-            modelUrl = `${window.VRM_PATHS.user_vrm}/${modelUrl}`;
+            const userVrmPath = window.VRM_PATHS.user_vrm || '/user_vrm';
+            // 再次验证 userVrmPath 和 modelUrl 的有效性
+            if (typeof userVrmPath === 'string' && 
+                userVrmPath !== 'undefined' && 
+                userVrmPath !== 'null' &&
+                typeof modelUrl === 'string' &&
+                modelUrl !== 'undefined' &&
+                modelUrl !== 'null') {
+                modelUrl = `${userVrmPath}/${modelUrl}`;
+            } else {
+                console.error('[VRM Init] 路径拼接参数无效，使用默认模型:', { userVrmPath, modelUrl });
+                modelUrl = '/static/vrm/sister1.0.vrm';
+            }
         }
         modelUrl = modelUrl.replace(/\\/g, '/'); // 修正 Windows 风格路径
+        
+        // 最终验证：确保 modelUrl 不包含 "undefined" 或 "null"
+        if (typeof modelUrl !== 'string' || 
+            modelUrl.includes('undefined') || 
+            modelUrl.includes('null') ||
+            modelUrl.trim() === '') {
+            console.error('[VRM Init] 路径转换后仍包含无效值，使用默认模型:', modelUrl);
+            modelUrl = '/static/vrm/sister1.0.vrm';
+        }
 
         // 执行加载
         // 【简化】朝向会自动检测并保存（在vrm-core.js的loadModel中处理）

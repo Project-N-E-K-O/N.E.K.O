@@ -12,7 +12,14 @@ class VRMManager {
         this.clock = (typeof window.THREE !== 'undefined') ? new window.THREE.Clock() : null;
         this.container = null;
         this._animationFrameId = null;
-        this.enablePhysics = true; 
+        this._uiUpdateLoopId = null; 
+        this.enablePhysics = true;
+        
+        // 阴影资源引用（用于清理）
+        this._shadowTexture = null;
+        this._shadowMaterial = null;
+        this._shadowGeometry = null;
+        this._shadowMesh = null; 
         
         this._initModules();
     }
@@ -83,7 +90,27 @@ class VRMManager {
             bodyBox.setFromObject(result.vrm.scene);
         }
         
-        // 获取包围盒尺寸（用于计算阴影大小）
+        // 将 bodyBox 转换为 vrm.scene 的本地空间（用于回退分支）
+        result.vrm.scene.updateMatrixWorld(true);
+        const sceneInverseMatrix = result.vrm.scene.matrixWorld.clone().invert();
+        // 创建本地空间的包围盒：转换所有8个角点，然后重新计算包围盒
+        const worldCorners = [
+            new window.THREE.Vector3(bodyBox.min.x, bodyBox.min.y, bodyBox.min.z),
+            new window.THREE.Vector3(bodyBox.max.x, bodyBox.min.y, bodyBox.min.z),
+            new window.THREE.Vector3(bodyBox.min.x, bodyBox.max.y, bodyBox.min.z),
+            new window.THREE.Vector3(bodyBox.max.x, bodyBox.max.y, bodyBox.min.z),
+            new window.THREE.Vector3(bodyBox.min.x, bodyBox.min.y, bodyBox.max.z),
+            new window.THREE.Vector3(bodyBox.max.x, bodyBox.min.y, bodyBox.max.z),
+            new window.THREE.Vector3(bodyBox.min.x, bodyBox.max.y, bodyBox.max.z),
+            new window.THREE.Vector3(bodyBox.max.x, bodyBox.max.y, bodyBox.max.z),
+        ];
+        const localBodyBox = new window.THREE.Box3();
+        worldCorners.forEach(corner => {
+            const localCorner = corner.clone().applyMatrix4(sceneInverseMatrix);
+            localBodyBox.expandByPoint(localCorner);
+        });
+        
+        // 获取包围盒尺寸（用于计算阴影大小，使用世界空间的尺寸）
         const bodySize = new window.THREE.Vector3();
         bodyBox.getSize(bodySize);
         
@@ -94,23 +121,26 @@ class VRMManager {
             0.3  // 最小尺寸保底
         );
         
-        // 5. 创建阴影纹理和材质
-        const shadowTexture = this._createBlobShadowTexture();
-        const shadowMaterial = new window.THREE.MeshBasicMaterial({
-            map: shadowTexture,
+        // 5. 清理之前的阴影资源（如果存在）
+        this._disposeShadowResources();
+        
+        // 6. 创建阴影纹理和材质
+        this._shadowTexture = this._createBlobShadowTexture();
+        this._shadowMaterial = new window.THREE.MeshBasicMaterial({
+            map: this._shadowTexture,
             transparent: true,
             opacity: 1.0,
             depthWrite: false,  // 不写入深度缓冲，避免遮挡模型
             side: window.THREE.DoubleSide
         });
         
-        // 6. 创建阴影网格
-        const shadowGeo = new window.THREE.PlaneGeometry(1, 1);
-        const shadowMesh = new window.THREE.Mesh(shadowGeo, shadowMaterial);
-        shadowMesh.rotation.x = -Math.PI / 2;  // 旋转到水平面
-        shadowMesh.scale.set(shadowDiameter, shadowDiameter, 1);
+        // 7. 创建阴影网格
+        this._shadowGeometry = new window.THREE.PlaneGeometry(1, 1);
+        this._shadowMesh = new window.THREE.Mesh(this._shadowGeometry, this._shadowMaterial);
+        this._shadowMesh.rotation.x = -Math.PI / 2;  // 旋转到水平面
+        this._shadowMesh.scale.set(shadowDiameter, shadowDiameter, 1);
         
-        // 7. 计算阴影位置（使用多种回退策略）
+        // 8. 计算阴影位置（使用多种回退策略）
         let shadowX = 0;
         let shadowY = 0;
         let shadowZ = 0;
@@ -211,20 +241,20 @@ class VRMManager {
                             shadowZ = hipsPos.z;
                         }
                         
-                        // Y轴：使用包围盒的最低点（因为 hips 在腰部，不是脚底）
-                        shadowY = bodyBox.min.y + SHADOW_Y_OFFSET;
+                        // Y轴：使用本地空间包围盒的最低点（因为 hips 在腰部，不是脚底）
+                        shadowY = localBodyBox.min.y + SHADOW_Y_OFFSET;
                     } else {
-                        // 如果连 hips 都没有，使用包围盒的最低点
-                        shadowY = bodyBox.min.y + SHADOW_Y_OFFSET;
+                        // 如果连 hips 都没有，使用本地空间包围盒的最低点
+                        shadowY = localBodyBox.min.y + SHADOW_Y_OFFSET;
                     }
                 }
             } catch (e) {
-                // 回退到使用包围盒
-                shadowY = bodyBox.min.y + SHADOW_Y_OFFSET;
+                // 回退到使用本地空间包围盒
+                shadowY = localBodyBox.min.y + SHADOW_Y_OFFSET;
             }
         } else {
-            // 如果没有 humanoid，使用包围盒的最低点
-            shadowY = bodyBox.min.y + SHADOW_Y_OFFSET;
+            // 如果没有 humanoid，使用本地空间包围盒的最低点
+            shadowY = localBodyBox.min.y + SHADOW_Y_OFFSET;
         }
         
         // 如果 FIX_CENTER_XZ 为 true，强制使用 (0, 0) 作为 X/Z
@@ -233,11 +263,46 @@ class VRMManager {
             shadowZ = 0;
         }
         
-        // 8. 设置阴影位置
-        shadowMesh.position.set(shadowX, shadowY, shadowZ);
+        // 9. 设置阴影位置
+        this._shadowMesh.position.set(shadowX, shadowY, shadowZ);
         
-        // 9. 添加到模型场景中
-        result.vrm.scene.add(shadowMesh);
+        // 10. 添加到模型场景中
+        result.vrm.scene.add(this._shadowMesh);
+    }
+    
+    /**
+     * 清理阴影资源（纹理、材质、几何体、网格）
+     */
+    _disposeShadowResources() {
+        // 从场景中移除阴影网格
+        if (this._shadowMesh) {
+            if (this._shadowMesh.parent) {
+                this._shadowMesh.parent.remove(this._shadowMesh);
+            }
+            this._shadowMesh = null;
+        }
+        
+        // 清理几何体
+        if (this._shadowGeometry) {
+            this._shadowGeometry.dispose();
+            this._shadowGeometry = null;
+        }
+        
+        // 清理材质
+        if (this._shadowMaterial) {
+            // 清理材质使用的纹理
+            if (this._shadowMaterial.map) {
+                this._shadowMaterial.map.dispose();
+            }
+            this._shadowMaterial.dispose();
+            this._shadowMaterial = null;
+        }
+        
+        // 清理纹理（如果材质没有清理它）
+        if (this._shadowTexture) {
+            this._shadowTexture.dispose();
+            this._shadowTexture = null;
+        }
     }
 
     async initThreeJS(canvasId, containerId) {
@@ -319,6 +384,9 @@ class VRMManager {
     async loadModel(modelUrl, options = {}) {
         this._initModules();
         if (!this.core) this.core = new window.VRMCore(this);
+        
+        // 清理之前的阴影资源（如果存在旧模型）
+        this._disposeShadowResources();
         
         // 确保场景已初始化
         if (!this.scene || !this.camera || !this.renderer) {
@@ -506,6 +574,131 @@ class VRMManager {
     }
     setModelScale(x,y,z) { 
         if(this.currentModel?.vrm?.scene) this.currentModel.vrm.scene.scale.set(x,y,z); 
+    }
+
+    /**
+     * 完整清理 VRM 资源（用于模型切换）
+     * 包括：取消动画循环、清理模型资源、清理场景/渲染器、重置初始化状态
+     */
+    dispose() {
+        console.log('[VRM Manager] 开始完整清理 VRM 资源...');
+        
+        // 1. 取消动画循环（最关键）
+        if (this._animationFrameId) {
+            cancelAnimationFrame(this._animationFrameId);
+            this._animationFrameId = null;
+        }
+        
+        // 2. 清理 UI 更新循环
+        if (this._uiUpdateLoopId) {
+            cancelAnimationFrame(this._uiUpdateLoopId);
+            this._uiUpdateLoopId = null;
+        }
+        
+        // 3. 清理重试定时器（loadModel 中的 tryPlayAnimation 重试）
+        if (this._retryTimerId) {
+            clearTimeout(this._retryTimerId);
+            this._retryTimerId = null;
+        }
+        
+        // 4. 清理阴影资源
+        this._disposeShadowResources();
+        
+        // 5. 清理模型资源（调用 core.disposeVRM）
+        if (this.core && typeof this.core.disposeVRM === 'function') {
+            this.core.disposeVRM();
+        }
+        
+        // 6. 清理动画模块
+        if (this.animation) {
+            if (typeof this.animation.dispose === 'function') {
+                this.animation.dispose();
+            }
+            if (typeof this.animation.stopVRMAAnimation === 'function') {
+                this.animation.stopVRMAAnimation();
+            }
+        }
+        
+        // 7. 清理交互模块的定时器
+        if (this.interaction) {
+            if (this.interaction._hideButtonsTimer) {
+                clearTimeout(this.interaction._hideButtonsTimer);
+                this.interaction._hideButtonsTimer = null;
+            }
+            if (this.interaction._savePositionDebounceTimer) {
+                clearTimeout(this.interaction._savePositionDebounceTimer);
+                this.interaction._savePositionDebounceTimer = null;
+            }
+            // 清理交互模块的初始化定时器
+            if (this.interaction._initTimerId) {
+                clearTimeout(this.interaction._initTimerId);
+                this.interaction._initTimerId = null;
+            }
+            // 清理交互模块的拖拽和缩放事件监听器
+            if (typeof this.interaction.cleanupDragAndZoom === 'function') {
+                this.interaction.cleanupDragAndZoom();
+            }
+        }
+        
+        // 8. 清理场景中的所有对象（包括灯光）
+        if (this.scene) {
+            // 遍历并清理所有子对象
+            while (this.scene.children.length > 0) {
+                const child = this.scene.children[0];
+                this.scene.remove(child);
+                
+                // 如果是可清理的对象，调用 dispose
+                if (child.geometry) child.geometry.dispose();
+                if (child.material) {
+                    if (Array.isArray(child.material)) {
+                        child.material.forEach(m => m.dispose());
+                    } else {
+                        child.material.dispose();
+                    }
+                }
+            }
+        }
+        
+        // 9. 清理渲染器（但不销毁 canvas，因为后续可能还要用）
+        if (this.renderer) {
+            // 清理所有纹理
+            this.renderer.dispose();
+            // 重置 canvas 样式
+            if (this.renderer.domElement) {
+                this.renderer.domElement.style.display = 'none';
+                this.renderer.domElement.style.opacity = '0';
+            }
+        }
+        
+        // 10. 清理轨道控制器
+        if (this.controls) {
+            if (typeof this.controls.dispose === 'function') {
+                this.controls.dispose();
+            }
+            this.controls = null;
+        }
+        
+        // 11. 清理 UI 元素（浮动按钮、锁图标等）
+        if (typeof this.cleanupUI === 'function') {
+            this.cleanupUI();
+        }
+        
+        // 12. 重置引用和状态
+        this.currentModel = null;
+        this.animationMixer = null;
+        this.scene = null;
+        this.camera = null;
+        this.renderer = null;
+        this.ambientLight = null;
+        this.directionalLight = null;
+        this.spotLight = null;
+        this.canvas = null;
+        this.container = null;
+        
+        // 13. 重置初始化标志（确保下次切回 VRM 时会重新初始化）
+        this._isInitialized = false;
+        
+        console.log('[VRM Manager] VRM 资源清理完成');
     }
 }
 

@@ -6706,9 +6706,38 @@ function init_app() {
             if (modelType === 'vrm') {
                 // 加载 VRM 模型
 
-                let vrmModelPath = catgirlConfig.vrm;
+                // 安全获取 VRM 模型路径，处理各种边界情况
+                let vrmModelPath = null;
+                if (catgirlConfig.vrm !== undefined && catgirlConfig.vrm !== null) {
+                    const rawValue = catgirlConfig.vrm;
+                    if (typeof rawValue === 'string') {
+                        const trimmed = rawValue.trim();
+                        // 检查是否是无效的字符串值
+                        if (trimmed !== '' && 
+                            trimmed !== 'undefined' && 
+                            trimmed !== 'null' && 
+                            !trimmed.includes('undefined') &&
+                            !trimmed.includes('null')) {
+                            vrmModelPath = trimmed;
+                        }
+                    } else {
+                        // 非字符串类型，转换为字符串后也要验证
+                        const strValue = String(rawValue);
+                        if (strValue !== 'undefined' && strValue !== 'null' && !strValue.includes('undefined')) {
+                            vrmModelPath = strValue;
+                        }
+                    }
+                }
+                
+                // 如果路径无效，使用默认模型或抛出错误
                 if (!vrmModelPath) {
-                    throw new Error('VRM 模型路径为空');
+                    console.warn('[猫娘切换] VRM 模型路径无效，尝试使用默认模型:', catgirlConfig.vrm);
+                    // 如果配置中明确指定了 model_type 为 'vrm'，使用默认模型
+                    if (catgirlConfig.model_type === 'vrm') {
+                        vrmModelPath = '/static/vrm/sister1.0.vrm';
+                    } else {
+                        throw new Error(`VRM 模型路径无效: ${catgirlConfig.vrm}`);
+                    }
                 }
 
                 // 确保 VRM 管理器已初始化
@@ -6790,20 +6819,53 @@ function init_app() {
                 }
 
                 // 转换路径为 URL（基本格式处理，vrm-core.js 会处理备用路径）
+                // 再次验证 vrmModelPath 的有效性
+                if (!vrmModelPath || 
+                    vrmModelPath === 'undefined' || 
+                    vrmModelPath === 'null' || 
+                    (typeof vrmModelPath === 'string' && (vrmModelPath.trim() === '' || vrmModelPath.includes('undefined')))) {
+                    console.error('[猫娘切换] vrmModelPath 在路径转换前无效，使用默认模型:', vrmModelPath);
+                    vrmModelPath = '/static/vrm/sister1.0.vrm';
+                }
+                
                 let modelUrl = vrmModelPath;
                 
+                // 确保 modelUrl 是有效的字符串
+                if (typeof modelUrl !== 'string' || !modelUrl) {
+                    console.error('[猫娘切换] modelUrl 不是有效字符串，使用默认模型:', modelUrl);
+                    modelUrl = '/static/vrm/sister1.0.vrm';
+                }
+                
                 // 处理 Windows 路径：提取文件名并转换为 Web 路径
-                if (vrmModelPath.includes('\\') || vrmModelPath.includes(':')) {
-                    const filename = vrmModelPath.split(/[\\/]/).pop();
-                    if (filename) {
+                if (modelUrl.includes('\\') || modelUrl.includes(':')) {
+                    const filename = modelUrl.split(/[\\/]/).pop();
+                    if (filename && filename !== 'undefined' && filename !== 'null' && !filename.includes('undefined')) {
                         modelUrl = `/user_vrm/${filename}`;
+                    } else {
+                        console.error('[猫娘切换] Windows 路径提取的文件名无效，使用默认模型:', filename);
+                        modelUrl = '/static/vrm/sister1.0.vrm';
                     }
                 } else if (!modelUrl.startsWith('http') && !modelUrl.startsWith('/')) {
                     // 相对路径，添加 /user_vrm/ 前缀
-                    modelUrl = `/user_vrm/${modelUrl}`;
+                    // 再次验证 modelUrl 的有效性
+                    if (modelUrl !== 'undefined' && modelUrl !== 'null' && !modelUrl.includes('undefined')) {
+                        modelUrl = `/user_vrm/${modelUrl}`;
+                    } else {
+                        console.error('[猫娘切换] 相对路径无效，使用默认模型:', modelUrl);
+                        modelUrl = '/static/vrm/sister1.0.vrm';
+                    }
                 } else {
                     // 确保路径格式正确（统一使用正斜杠）
                     modelUrl = modelUrl.replace(/\\/g, '/');
+                }
+                
+                // 最终验证：确保 modelUrl 不包含 "undefined" 或 "null"
+                if (typeof modelUrl !== 'string' || 
+                    modelUrl.includes('undefined') || 
+                    modelUrl.includes('null') ||
+                    modelUrl.trim() === '') {
+                    console.error('[猫娘切换] 路径转换后仍包含无效值，使用默认模型:', modelUrl);
+                    modelUrl = '/static/vrm/sister1.0.vrm';
                 }
 
                 // 加载 VRM 模型（vrm-core.js 内部已实现备用路径机制，会自动尝试 /user_vrm/ 和 /static/vrm/）

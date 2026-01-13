@@ -334,8 +334,6 @@ class VRMCore {
             this.manager.controls.target.set(0, 1, 0);
             this.manager.controls.enableDamping = true;
             this.manager.controls.dampingFactor = 0.1;
-            this.manager.controls.minDistance = 0.5;
-            this.manager.controls.maxDistance = 10;
             this.manager.controls.update();
         }
 
@@ -398,6 +396,16 @@ class VRMCore {
         const THREE = window.THREE;
         if (!THREE) {
             const errorMsg = window.t ? window.t('vrm.error.threeNotLoadedForModel') : 'Three.js库未加载，无法加载VRM模型';
+            throw new Error(errorMsg);
+        }
+
+        // 验证模型路径有效性（防止 undefined 或字符串 "undefined" 被传递）
+        if (!modelUrl || 
+            modelUrl === 'undefined' || 
+            modelUrl === 'null' || 
+            (typeof modelUrl === 'string' && (modelUrl.trim() === '' || modelUrl.includes('undefined')))) {
+            console.error('[VRM Core] 模型路径无效:', modelUrl, '类型:', typeof modelUrl);
+            const errorMsg = window.t ? window.t('vrm.error.invalidModelPath', 'VRM 模型路径无效') : `VRM 模型路径无效: ${modelUrl}`;
             throw new Error(errorMsg);
         }
 
@@ -496,7 +504,25 @@ class VRMCore {
             // 获取保存的用户偏好设置
             let preferences = null;
             try {
-                const preferencesResponse = await fetch('/api/config/preferences');
+                // 添加超时保护（5秒超时）
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 5000);
+                
+                let preferencesResponse;
+                try {
+                    preferencesResponse = await fetch('/api/config/preferences', {
+                        signal: controller.signal
+                    });
+                    clearTimeout(timeoutId);
+                } catch (error) {
+                    clearTimeout(timeoutId);
+                    if (error.name === 'AbortError') {
+                        console.warn('[VRM Core] 获取偏好设置请求超时（5秒）');
+                        throw new Error('请求超时');
+                    }
+                    throw error;
+                }
+                
                 const allPreferences = await preferencesResponse.json();
 
                 // 【修复】API返回的格式可能是数组，也可能是 {models: [...]}
@@ -554,9 +580,20 @@ class VRMCore {
                 vrm.scene.position.set(-center.x, -center.y, -center.z);
             }
 
-            // 【使用朝向检测模块】检测并处理模型朝向
-            // 等待约3帧（约50ms），确保骨骼位置计算完成
-            await new Promise(resolve => setTimeout(resolve, 50));
+            // 检测并处理模型朝向
+            // 等待3帧，确保骨骼位置计算完成
+            await new Promise(resolve => {
+                let frameCount = 0;
+                const waitFrames = () => {
+                    frameCount++;
+                    if (frameCount >= 3) {
+                        resolve();
+                    } else {
+                        requestAnimationFrame(waitFrames);
+                    }
+                };
+                requestAnimationFrame(waitFrames);
+            });
             
             const savedRotation = preferences?.rotation;
             
@@ -652,7 +689,7 @@ class VRMCore {
             const fov = this.manager.camera.fov * (Math.PI / 180);
             const distance = (modelHeight / 2) / Math.tan(fov / 2) / targetScreenHeight * screenHeight;
             
-            // 【修复】isMobile 变量在这个作用域没有定义，需要重新定义或直接判断
+            // isMobile 变量在这个作用域没有定义，需要重新定义或直接判断
             const isMobileDevice = screenWidth <= 768;
             // 调整相机位置，使模型在屏幕中央合适的位置
             const cameraY = center.y + (isMobileDevice ? modelHeight * 0.2 : modelHeight * 0.1);
@@ -877,13 +914,30 @@ class VRMCore {
                 };
             }
             
-            const response = await fetch('/api/config/preferences', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(preferences)
-            });
+            // 添加超时保护（5秒超时）
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
+            
+            let response;
+            try {
+                response = await fetch('/api/config/preferences', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(preferences),
+                    signal: controller.signal
+                });
+                
+                clearTimeout(timeoutId);
+            } catch (error) {
+                clearTimeout(timeoutId);
+                if (error.name === 'AbortError') {
+                    console.warn('[VRM Core] 保存偏好设置请求超时（5秒）');
+                    throw new Error('请求超时');
+                }
+                throw error;
+            }
 
             const result = await response.json();
             

@@ -304,22 +304,23 @@ class VRMAnimation {
             newAction.play();
         }
         
+        // 更新动画混合器，确保 action 开始播放后立即应用初始状态
+        // 使用 0.001 的小增量来触发初始更新，避免 T-pose 闪烁
         this.vrmaMixer.update(0.001);
+        
         if (vrm.scene) {
+            // 更新场景的世界矩阵
             vrm.scene.updateMatrixWorld(true);
-        }
-
-        if (this.debug) this._updateSkeletonHelper();
-
-        this.vrmaMixer.update(0.001);
-        if (vrm.scene) {
-            vrm.scene.updateMatrixWorld(true);
+            
+            // 遍历更新所有 SkinnedMesh 的 skeleton，确保骨骼动画正确应用
             vrm.scene.traverse((object) => {
                 if (object.isSkinnedMesh && object.skeleton) {
                     object.skeleton.update();
                 }
             });
         }
+
+        if (this.debug) this._updateSkeletonHelper();
     }
 
     async playVRMAAnimation(vrmaPath, options = {}) {
@@ -480,8 +481,9 @@ class VRMAnimation {
         for(let i = 0; i < lowEnd; i++) lowFreqEnergy += this.frequencyData[i];
         for(let i = lowEnd; i < midEnd; i++) midFreqEnergy += this.frequencyData[i];
 
-        lowFreqEnergy /= lowEnd;
-        midFreqEnergy /= (midEnd - lowEnd);
+        // 添加除零保护：如果 lowEnd 或 (midEnd - lowEnd) 为 0，使用 1 作为除数
+        lowFreqEnergy /= (lowEnd || 1);
+        midFreqEnergy /= ((midEnd - lowEnd) || 1);
 
         const volume = Math.max(lowFreqEnergy, midFreqEnergy * 0.5);
         const targetWeight = Math.min(1.0, volume / 128.0);

@@ -603,6 +603,8 @@
     "vrmInitialized": "VRM manager initialized successfully",
     "vrmInitFailed": "VRM manager initialization failed: {{error}}",
     "cannotChangeModelInVoiceMode": "Cannot switch model in voice mode, please stop voice conversation first",
+    "vrmModelPathInvalid": "VRM model path for character {{name}} is invalid, please manually select a model",
+    "autoFixModelType": "Model type configuration for character {{name}} is inconsistent, automatically fixed to Live2D",
     "vrmAnimation": {
       "title": "VRM Animation Preview:",
       "selectAnimation": "Select Animation",
