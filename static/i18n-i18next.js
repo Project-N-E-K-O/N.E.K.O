@@ -712,8 +712,8 @@
      * 更新 Live2D 动态文本
      */
     function updateLive2DDynamicTexts() {
-        // 更新浮动按钮的标题（包括 .floating-btn 和 .live2d-floating-btn）
-        const buttons = document.querySelectorAll('.floating-btn, .live2d-floating-btn');
+        // 更新浮动按钮的标题（包括 .floating-btn, .live2d-floating-btn 和 .vrm-floating-btn）
+        const buttons = document.querySelectorAll('.floating-btn, .live2d-floating-btn, .vrm-floating-btn');
         buttons.forEach(btn => {
             const titleKey = btn.getAttribute('data-i18n-title');
             if (titleKey) {
@@ -736,8 +736,8 @@
         // 更新动态创建的标签
         // _updateLabelText 是附加在父容器（toggleItem 或 menuItem）上的，不是直接在 [data-i18n] 元素上
         // 查找所有可能包含 _updateLabelText 的容器元素
-        // 方法1：查找所有 live2d-popup 内的直接子 div（toggleItem 和 menuItem）
-        const popups = document.querySelectorAll('.live2d-popup');
+        // 方法1：查找所有 live2d-popup 和 shared-popup 内的直接子 div（toggleItem 和 menuItem）
+        const popups = document.querySelectorAll('.live2d-popup, .shared-popup');
         popups.forEach(popup => {
             // 查找 popup 的直接子 div 元素
             Array.from(popup.children).forEach(child => {

@@ -3,6 +3,7 @@
 
 from copy import deepcopy
 import logging
+from types import MappingProxyType
 
 from config.prompts_chara import lanlan_prompt
 
@@ -110,6 +111,32 @@ DEFAULT_LANLAN_TEMPLATE = {
         "system_prompt": lanlan_prompt,
     }
 }
+
+_DEFAULT_VRM_LIGHTING_MUTABLE = {
+    "ambient": 0.4,  # HemisphereLight 强度
+    "main": 1.2,     # 主光源强度
+    "fill": 0.5,     # 补光强度
+    "rim": 0.8,      # 轮廓光强度
+    "top": 0.3,      # 顶光强度
+    "bottom": 0.15   # 底光强度
+}
+
+DEFAULT_VRM_LIGHTING = MappingProxyType(_DEFAULT_VRM_LIGHTING_MUTABLE)
+
+VRM_LIGHTING_RANGES = {
+    'ambient': (0, 1.0),
+    'main': (0, 2.5),
+    'fill': (0, 1.0),
+    'rim': (0, 1.5),
+    'top': (0, 1.0),
+    'bottom': (0, 0.5)
+}
+
+
+def get_default_vrm_lighting() -> dict[str, float]:
+    """获取默认VRM打光配置的副本"""
+    
+    return dict(DEFAULT_VRM_LIGHTING)
 
 DEFAULT_CHARACTERS_CONFIG = {
     "主人": deepcopy(DEFAULT_MASTER_TEMPLATE),
@@ -301,6 +328,8 @@ __all__ = [
     'CONFIG_FILES',
     'DEFAULT_MASTER_TEMPLATE',
     'DEFAULT_LANLAN_TEMPLATE',
+    'DEFAULT_VRM_LIGHTING',
+    'get_default_vrm_lighting',
     'DEFAULT_CHARACTERS_CONFIG',
     'DEFAULT_CORE_CONFIG',
     'DEFAULT_USER_PREFERENCES',

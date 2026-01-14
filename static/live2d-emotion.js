@@ -565,14 +565,14 @@ Live2DManager.prototype.setEmotion = async function(emotion) {
     
     try {
         console.log(`开始设置新情感: ${emotion}`);
-        
+
         // 清理之前的motion效果（按照注释保留expression）
         this.clearEmotionEffects();
-        
+
         this.currentEmotion = emotion;
         this.currentExpressionFile = targetExpressionFile;
         console.log(`情感已更新为: ${emotion}，表情文件: ${targetExpressionFile}`);
-        
+
         // 暂停idle动画，防止覆盖我们的动作
         if (this.currentModel && this.currentModel.internalModel && this.currentModel.internalModel.motionManager) {
             try {
@@ -585,13 +585,13 @@ Live2DManager.prototype.setEmotion = async function(emotion) {
                 console.warn('停止idle动画失败:', motionError);
             }
         }
-        
+
         // 播放表情（使用确定的表情文件以保持一致性）
         await this.playExpression(emotion, targetExpressionFile);
-        
+
         // 播放动作
         await this.playMotion(emotion);
-        
+
         console.log(`情感 ${emotion} 设置完成`);
     } catch (error) {
         console.error(`设置情感 ${emotion} 失败:`, error);

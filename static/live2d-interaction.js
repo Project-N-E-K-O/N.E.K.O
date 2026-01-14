@@ -612,7 +612,33 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             setLockedHoverFade(false);
             return;
         }
-
+        
+        // 检查当前模型是否仍然是传入的模型（防止模型切换后使用旧的模型引用）
+        if (this.currentModel !== model) {
+            // 模型已切换，清理监听器
+            if (this._mouseTrackingListener) {
+                window.removeEventListener('pointermove', this._mouseTrackingListener);
+                this._mouseTrackingListener = null;
+            }
+            return;
+        }
+        
+        // 检查模型是否仍在舞台上（防止模型被销毁或移除后仍然调用）
+        if (!model.parent) {
+            // 模型已被从舞台移除，清理监听器
+            if (this._mouseTrackingListener) {
+                window.removeEventListener('pointermove', this._mouseTrackingListener);
+                this._mouseTrackingListener = null;
+            }
+            return;
+        }
+        
+        // 检查模型是否已被销毁（检查关键属性是否存在）
+        // 注意：某些PIXI版本可能没有destroyed属性，所以使用可选链
+        if (model.destroyed === true) {
+            return;
+        }
+        
         // 使用 clientX/Y 作为全局坐标
         const pointer = { x: event.clientX, y: event.clientY };
 
@@ -642,6 +668,10 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
         }
 
         try {
+            // 在调用 getBounds 前再次检查模型是否有效
+            if (!model.parent || model.destroyed) {
+                return;
+            }
             const bounds = model.getBounds();
 
             const dx = Math.max(bounds.left - pointer.x, 0, pointer.x - bounds.right);

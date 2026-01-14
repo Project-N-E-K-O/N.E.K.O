@@ -9,8 +9,7 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
         throw new Error('PIXI 应用未初始化，请先调用 initPIXI()');
     }
 
-    // 检查是否正在加载模型，防止并发加载导致重复模型叠加
-    // 如果已有加载操作正在进行，拒绝新的加载请求并明确返回错误
+    // 检查是否正在加载模型，防止并发加载导致重复模型叠加；如果已有加载操作正在进行，拒绝新的加载请求并明确返回错误
     if (this._isLoadingModel) {
         console.warn('模型正在加载中，跳过重复加载请求:', modelPath);
         return Promise.reject(new Error('Model is already loading. Please wait for the current operation to complete.'));
@@ -22,8 +21,7 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     try {
         // 移除当前模型
         if (this.currentModel) {
-            // 关闭所有已打开的设置窗口（防御性检查）
-            // 可通过 options.skipCloseWindows 跳过此操作（例如从设置窗口返回时重新加载模型）
+            // 关闭所有已打开的设置窗口（防御性检查）；可通过 options.skipCloseWindows 跳过此操作（例如从设置窗口返回时重新加载模型）
             if (window.closeAllSettingsWindows && !options.skipCloseWindows) {
                 window.closeAllSettingsWindows();
             }
@@ -46,6 +44,7 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
             } catch (_) {}
             this._mouthOverrideInstalled = false;
             this._origCoreModelUpdate = null;
+            this._coreModelRef = null;
             // 同时移除 mouthTicker（若曾启用过 ticker 模式）
             if (this._mouthTicker && this.pixi_app && this.pixi_app.ticker) {
                 try { this.pixi_app.ticker.remove(this._mouthTicker); } catch (_) {}
@@ -270,6 +269,15 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     // 设置常驻表情
     try { await this.syncEmotionMappingWithServer({ replacePersistentOnly: true }); } catch(_) {}
     await this.setupPersistentExpressions();
+    
+    // 调用常驻表情应用完成的回调（事件驱动方式，替代不可靠的 setTimeout）
+    if (options.onResidentExpressionApplied && typeof options.onResidentExpressionApplied === 'function') {
+        try {
+            options.onResidentExpressionApplied(model);
+        } catch (callbackError) {
+            console.warn('[Live2D Model] 常驻表情应用完成回调执行失败:', callbackError);
+        }
+    }
 
     // 记录模型的初始参数（用于expression重置）
     this.recordInitialParameters();
@@ -327,14 +335,39 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         console.log('已应用用户偏好参数');
     }
 
+    // 确保 PIXI ticker 正在运行（防止从VRM切换后卡住）
+    if (this.pixi_app && this.pixi_app.ticker) {
+        if (!this.pixi_app.ticker.started) {
+            this.pixi_app.ticker.start();
+            console.log('[Live2D Model] Ticker 已启动');
+        }
+    }
+
     // 调用回调函数
     if (this.onModelLoaded) {
         this.onModelLoaded(model, modelPath);
     }
 };
 
-// 安装覆盖：同时覆盖 motionManager.update 和 coreModel.update，双重保险
-// motionManager.update 会重置参数，所以在其后覆盖；coreModel.update 前再覆盖一次确保生效
+
+// 延迟重新安装覆盖的辅助方法
+Live2DManager.prototype._scheduleReinstallOverride = function() {
+    if (this._reinstallScheduled) return;
+    
+    this._reinstallScheduled = true;
+    this._reinstallTimer = setTimeout(() => {
+        this._reinstallScheduled = false;
+        this._reinstallTimer = null;
+        if (this.currentModel && this.currentModel.internalModel && this.currentModel.internalModel.coreModel) {
+            try {
+                this.installMouthOverride();
+            } catch (reinstallError) {
+                console.warn('延迟重新安装覆盖失败:', reinstallError);
+            }
+        }
+    }, 100);
+};
+
 Live2DManager.prototype.installMouthOverride = function() {
     if (!this.currentModel || !this.currentModel.internalModel) {
         throw new Error('模型未就绪，无法安装口型覆盖');
@@ -487,12 +520,39 @@ Live2DManager.prototype.installMouthOverride = function() {
     }
     
     // 覆盖 coreModel.update - 在调用原始 update 之前写入参数
-    // 先保存原始的 update 方法
+    // 先保存原始的 update 方法（使用更安全的方式保存引用）
     const origCoreModelUpdate = coreModel.update ? coreModel.update.bind(coreModel) : null;
     this._origCoreModelUpdate = origCoreModelUpdate;
+    // 同时保存 coreModel 引用，用于验证
+    this._coreModelRef = coreModel;
     
     // 覆盖 coreModel.update，确保在调用原始方法前写入参数
     coreModel.update = () => {
+        // 首先检查覆盖是否仍然有效（防止在清理后仍然被调用）
+        if (!this._mouthOverrideInstalled || !this._coreModelRef) {
+            // 覆盖已被清理，但函数可能仍在运行，直接返回
+            return;
+        }
+        
+        // 验证 coreModel 是否仍然有效（防止模型切换后调用已销毁的 coreModel）
+        if (!this.currentModel || !this.currentModel.internalModel || !this.currentModel.internalModel.coreModel) {
+            // coreModel 已无效，清理覆盖标志并返回
+            this._mouthOverrideInstalled = false;
+            this._origCoreModelUpdate = null;
+            this._coreModelRef = null;
+            return;
+        }
+        
+        // 验证是否是同一个 coreModel（防止切换模型后调用错误的 coreModel）
+        const currentCoreModel = this.currentModel.internalModel.coreModel;
+        if (currentCoreModel !== this._coreModelRef) {
+            // coreModel 已切换，清理覆盖标志并返回
+            this._mouthOverrideInstalled = false;
+            this._origCoreModelUpdate = null;
+            this._coreModelRef = null;
+            return;
+        }
+        
         try {
             // 这里的逻辑主要为了确保渲染前参数正确（防止 physics 等后续步骤重置了某些值）
             // 注意：如果 physics 运行在 motionManager.update 之后但在 coreModel.update 之前，
@@ -503,7 +563,7 @@ Live2DManager.prototype.installMouthOverride = function() {
             // 1. 强制写入口型参数
             for (const [id, idx] of Object.entries(mouthParamIndices)) {
                 try {
-                    coreModel.setParameterValueByIndex(idx, this.mouthValue);
+                    currentCoreModel.setParameterValueByIndex(idx, this.mouthValue);
                 } catch (_) {}
             }
             
@@ -515,7 +575,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                         for (const p of params) {
                             if (window.LIPSYNC_PARAMS.includes(p.Id)) continue;
                             try {
-                                coreModel.setParameterValueById(p.Id, p.Value);
+                                currentCoreModel.setParameterValueById(p.Id, p.Value);
                             } catch (_) {}
                         }
                     }
@@ -526,14 +586,71 @@ Live2DManager.prototype.installMouthOverride = function() {
         }
         
         // 调用原始的 update 方法（重要：必须调用，否则模型无法渲染）
-        if (origCoreModelUpdate) {
+        // 检查是否是同一个 coreModel（防止切换模型后调用错误的 coreModel）
+        if (currentCoreModel === coreModel && origCoreModelUpdate) {
+            // 是同一个 coreModel，可以安全调用保存的原始方法
             try {
+                // 在调用前再次验证 coreModel 是否仍然有效
+                if (!currentCoreModel || typeof currentCoreModel.setParameterValueByIndex !== 'function') {
+                    console.warn('coreModel 已无效，跳过 update 调用');
+                    return;
+                }
                 origCoreModelUpdate();
             } catch (e) {
-                console.error('调用原始 coreModel.update 方法时出错:', e);
+                // 立即清理覆盖，避免无限递归
+                console.warn('调用保存的原始 update 方法失败，清理覆盖:', e.message || e);
+                
+                // 立即清理覆盖标志，防止无限递归
+                this._mouthOverrideInstalled = false;
+                this._origCoreModelUpdate = null;
+                this._coreModelRef = null;
+                
+                // 临时恢复原始的 update 方法（如果可能），避免无限递归
+                try {
+                    // 尝试从原型链获取原始方法
+                    const CoreModelProto = Object.getPrototypeOf(currentCoreModel);
+                    if (CoreModelProto && CoreModelProto.update && typeof CoreModelProto.update === 'function') {
+                        // 临时恢复原始方法，避免无限递归
+                        currentCoreModel.update = CoreModelProto.update;
+                        // 调用一次原始方法
+                        CoreModelProto.update.call(currentCoreModel);
+                    } else {
+                        // 如果无法恢复，至少让模型继续运行（虽然可能没有口型同步）
+                        console.warn('无法恢复原始 update 方法，模型将继续运行但可能没有口型同步');
+                    }
+                } catch (recoverError) {
+                    console.error('恢复原始 update 方法失败:', recoverError);
+                    // 即使恢复失败，也要继续，避免完全卡住
+                }
+                
+                // 延迟重新安装覆盖（避免在 update 循环中直接调用导致问题）
+                this._scheduleReinstallOverride();
+                
+                return;
             }
         } else {
-            console.error('警告：原始 coreModel.update 方法不存在，模型可能无法正常渲染');
+            // coreModel 已切换，不能使用保存的 origCoreModelUpdate
+            if (currentCoreModel !== coreModel && currentCoreModel !== this._coreModelRef) {
+                console.warn('检测到 coreModel 已切换，清理覆盖以便重新安装');
+                this._mouthOverrideInstalled = false;
+                this._origCoreModelUpdate = null;
+                this._coreModelRef = null;
+                // 延迟重新安装覆盖（避免在 update 循环中直接调用导致问题）
+                this._scheduleReinstallOverride();
+                return;
+            }
+            
+            // 如果 origCoreModelUpdate 不存在，说明这是第一次调用或者原始方法丢失
+            // 延迟重新安装覆盖（避免在 update 循环中直接调用导致问题）
+            if (!origCoreModelUpdate) {
+                console.warn('原始 coreModel.update 方法不可用，延迟重新安装覆盖');
+                this._mouthOverrideInstalled = false;
+                this._origCoreModelUpdate = null;
+                this._coreModelRef = null;
+                // 延迟重新安装覆盖
+                this._scheduleReinstallOverride();
+                return;
+            }
         }
     };
 

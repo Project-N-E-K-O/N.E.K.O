@@ -4,6 +4,7 @@
 <head>
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <link rel="manifest" href="/static/manifest.json">
+    <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black">
     <link rel="apple-touch-icon" href="/static/xiaoba_192.png">
@@ -293,6 +294,44 @@
         }
 
         #live2d-canvas.minimized {
+            opacity: 0;
+            visibility: hidden;
+        }
+
+        #vrm-container {
+            position: fixed;
+            right: 0px;
+            bottom: 0px;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+            pointer-events: none;
+            background: none;
+            opacity: 1;
+            overflow: hidden;
+            visibility: visible;
+            transition: all 1s ease-in-out;
+        }
+
+        #vrm-container.minimized {
+            right: -800px;
+            opacity: 0;
+            visibility: hidden;
+        }
+
+        #vrm-canvas {
+            right: 0;
+            bottom: 0;
+            pointer-events: auto;
+            display: block;
+            opacity: 1;
+            visibility: visible;
+            background: transparent;
+            width: 100%;
+            height: 100%;
+        }
+
+        #vrm-canvas.minimized {
             opacity: 0;
             visibility: hidden;
         }
@@ -1370,6 +1409,66 @@
     <div id="live2d-container">
         <canvas id="live2d-canvas"></canvas>
     </div>
+    <!-- VRM模型容器 -->
+    <div id="vrm-container" style="display: none;">
+        <canvas id="vrm-canvas"></canvas>
+    </div>
+
+    <!-- TODO: 占位 UI，未完成 - 开发中功能，生产环境建议隐藏 -->
+    <div id="settings-panel" style="display: none; border: 2px dashed #ff6b6b; background: rgba(255, 107, 107, 0.05);">
+        <div class="settings-header" style="background: rgba(255, 107, 107, 0.1);">
+            <span style="color: #ff6b6b;">⚠️ 系统设置（开发中）</span>
+            <button class="close-btn" id="settings-panel-close-btn">×</button>
+        </div>
+        <div class="settings-content">
+            <p style="color: #ff6b6b; font-weight: bold; text-align: center; padding: 10px; background: rgba(255, 107, 107, 0.1); border-radius: 6px;">
+                ⚠️ 占位 UI - 功能开发中...
+            </p>
+            <p style="color: #999; font-size: 12px; margin-top: 10px; text-align: center;">
+                请使用 VRM/Live2D 浮动按钮中的设置入口
+            </p>
+            <div style="margin-top: 15px; opacity: 0.5; pointer-events: none;">
+                <label><input type="checkbox" disabled> 开启自动眨眼</label>
+            </div>
+            <div style="margin-top: 10px; opacity: 0.5; pointer-events: none;">
+                <label>音量: <input type="range" disabled></label>
+            </div>
+        </div>
+    </div>
+
+    <style>
+        #settings-panel {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 320px;
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.5);
+            z-index: 100000;
+            overflow: hidden;
+            animation: fadeIn 0.3s ease;
+        }
+        .settings-header {
+            padding: 12px 16px;
+            background: rgba(0, 0, 0, 0.03);
+            border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-weight: bold;
+            color: #333;
+        }
+        .close-btn {
+            background: none; border: none; font-size: 20px; cursor: pointer; color: #666;
+        }
+        .close-btn:hover { color: #000; }
+        .settings-content { padding: 20px; color: #444; }
+    </style>
 
     <script>
         // 页面配置 - 从 URL 或 API 获取
@@ -1378,6 +1477,49 @@
         };
         window.lanlan_config = lanlan_config;
         let cubism4Model = "";
+        let vrmModel = "";
+
+        // VRM 路径配置缓存（从后端获取）
+        let VRM_PATHS_CACHE = {
+            user_vrm: '/user_vrm',
+            static_vrm: '/static/vrm'
+        };
+
+        // 初始化 VRM 路径配置（使用默认值，等待 vrm-init.js 的 fetchVRMConfig 完成）
+        function loadVRMPathsConfig() {
+            // 初始化 window.VRM_PATHS（使用默认值，供 window.convertVRMModelPath 使用）
+            window.VRM_PATHS = window.VRM_PATHS || {
+                user_vrm: '/user_vrm',
+                static_vrm: '/static/vrm',
+                isLoaded: false
+            };
+            
+            // 等待 vrm-init.js 中的 fetchVRMConfig 完成（通过轮询 isLoaded）
+            let checkCount = 0;
+            const maxChecks = 50; // 最多检查 50 次（5 秒）
+            const checkConfigLoaded = () => {
+                if (window.VRM_PATHS && window.VRM_PATHS.isLoaded) {
+                    if (window.VRM_PATHS.user_vrm && window.VRM_PATHS.static_vrm) {
+                        VRM_PATHS_CACHE = {
+                            user_vrm: window.VRM_PATHS.user_vrm,
+                            static_vrm: window.VRM_PATHS.static_vrm
+                        };
+                        console.log('[主页] VRM 路径配置已从 vrm-init.js 加载:', VRM_PATHS_CACHE);
+                    }
+                } else if (checkCount < maxChecks) {
+                    checkCount++;
+                    setTimeout(checkConfigLoaded, 100);
+                } else {
+                    console.warn('[主页] VRM 路径配置加载超时，使用默认值');
+                }
+            };
+            
+            // 延迟检查，给 vrm-init.js 一些时间加载
+            setTimeout(checkConfigLoaded, 100);
+        }
+
+        // 同步设置默认值（不阻塞页面加载）
+        loadVRMPathsConfig();
 
         // 异步获取页面配置
         async function loadPageConfig() {
@@ -1405,20 +1547,50 @@
                 if (data.success) {
                     // 使用 URL 中的 lanlan_name（如果有），否则使用 API 返回的
                     lanlan_config.lanlan_name = lanlanNameFromUrl || data.lanlan_name || "";
+                    const modelPath = data.model_path || "";
+                    // 使用API返回的model_type，并转换为小写以防后端/旧数据大小写不一致
+                    const modelType = (data.model_type || 'live2d').toLowerCase();
+                    // 将 model_type 写回 lanlan_config，减少各处"猜模式"的分支
+                    lanlan_config.model_type = modelType;
                     window.lanlan_config = lanlan_config;
-                    cubism4Model = data.model_path || "";
-                    window.cubism4Model = cubism4Model;
+                    // 根据model_type判断是Live2D还是VRM
+                    if (modelType === 'vrm') {
+                        if (modelPath && 
+                            modelPath !== 'undefined' && 
+                            modelPath !== 'null' && 
+                            typeof modelPath === 'string' && 
+                            modelPath.trim() !== '') {
+                            vrmModel = modelPath;
+                            window.vrmModel = vrmModel;
+                        } else {
+                            // 如果路径无效，设置为空字符串，让 vrm-init.js 使用默认模型
+                            vrmModel = "";
+                            window.vrmModel = "";
+                        }
+                        cubism4Model = "";
+                        window.cubism4Model = "";
+                    } else {
+                        cubism4Model = modelPath;
+                        window.cubism4Model = cubism4Model;
+                        vrmModel = "";
+                        window.vrmModel = "";
+                    }
 
                     // 动态设置页面标题
                     document.title = `${lanlan_config.lanlan_name} Terminal - Project N.E.K.O.`;
 
-                    console.log('页面配置加载成功:', { lanlan_name: lanlan_config.lanlan_name, model_path: cubism4Model });
+                    console.log('页面配置加载成功:', { 
+                        lanlan_name: lanlan_config.lanlan_name, 
+                        live2d_model: cubism4Model,
+                        vrm_model: vrmModel 
+                    });
                     return true;
                 } else {
                     console.error('获取页面配置失败:', data.error);
                     // 使用默认值
                     lanlan_config.lanlan_name = "";
                     cubism4Model = "";
+                    vrmModel = "";
                     return false;
                 }
             } catch (error) {
@@ -1426,6 +1598,7 @@
                 // 使用默认值
                 lanlan_config.lanlan_name = "";
                 cubism4Model = "";
+                vrmModel = "";
                 return false;
             }
         }
@@ -1620,10 +1793,15 @@
         function hideMainUI() {
             // 隐藏主要UI元素
             const live2dContainer = document.getElementById('live2d-container');
+            const vrmContainer = document.getElementById('vrm-container');
             const chatContainer = document.getElementById('chat-container');
 
+            // 隐藏所有模型容器，确保不会同时显示
             if (live2dContainer) {
                 live2dContainer.style.display = 'none';
+            }
+            if (vrmContainer) {
+                vrmContainer.style.display = 'none';
             }
             if (chatContainer) {
                 chatContainer.style.display = 'none';
@@ -1637,6 +1815,55 @@
         // 记录页面加载时间，防止初始加载时误触发模型重新加载
         const pageLoadTime = Date.now();
 
+        // 提取公共函数：清理Live2D资源并切换到VRM（移到函数外部，避免每次调用都重新创建）
+        function cleanupLive2DAndSwitchToVRM() {
+            // 清理Live2D资源
+            if (window.live2dManager) {
+                try {
+                    console.log('[主页] 切换到VRM，开始清理Live2D资源...');
+                    
+                    // 清理Live2D模型
+                    if (window.live2dManager.currentModel) {
+                        if (typeof window.live2dManager.currentModel.destroy === 'function') {
+                            window.live2dManager.currentModel.destroy();
+                        }
+                        window.live2dManager.currentModel = null;
+                    }
+                    
+                    // 停止PIXI渲染循环
+                    if (window.live2dManager.pixi_app) {
+                        window.live2dManager.pixi_app.ticker.stop();
+                        // 清理舞台
+                        if (window.live2dManager.pixi_app.stage) {
+                            window.live2dManager.pixi_app.stage.removeChildren();
+                        }
+                    }
+                    
+                    console.log('[主页] Live2D资源清理完成');
+                } catch (cleanupError) {
+                    console.warn('[主页] Live2D清理时出现警告:', cleanupError);
+                }
+            }
+            
+            // 切换容器显示
+            const live2dContainer = document.getElementById('live2d-container');
+            const vrmContainer = document.getElementById('vrm-container');
+            if (live2dContainer) {
+                live2dContainer.style.display = 'none';
+                live2dContainer.classList.add('hidden');
+            }
+            if (vrmContainer) {
+                vrmContainer.style.display = 'block';
+                vrmContainer.classList.remove('hidden');
+            }
+
+            // 清理 Live2D 的 UI 元素（锁图标、浮动按钮等）
+            ['live2d-lock-icon', 'live2d-floating-buttons', 'live2d-return-button-container'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.remove();
+            });
+        }
+
         async function showMainUI() {
             // 防止在初始加载时（3秒内）触发模型检查
             const now = Date.now();
@@ -1644,19 +1871,10 @@
                 return;
             }
 
-            // 显示主要UI元素
+            // 获取容器元素
             const live2dContainer = document.getElementById('live2d-container');
+            const vrmContainer = document.getElementById('vrm-container');
             const chatContainer = document.getElementById('chat-container');
-
-            if (live2dContainer) {
-                live2dContainer.style.display = '';
-            }
-            if (chatContainer) {
-                chatContainer.style.display = '';
-            }
-
-            // 移除隐藏状态标记
-            document.body.removeAttribute('data-ui-hidden');
 
             // 检查模型是否需要重新加载（弹出窗口可能修改了模型配置）
             try {
@@ -1664,81 +1882,173 @@
 
                 // 1. 获取当前角色名称
                 let currentLanlanName = lanlan_config.lanlan_name;
-                console.log('BEFORE currentLanlanName: ', currentLanlanName);
-
                 // 2. 获取最新的角色配置（包含所有猫娘的完整配置）
                 const charResponse = await fetch('/api/characters');
                 if (!charResponse.ok) {
                     console.warn('获取角色配置失败，跳过模型检查');
+                    // 如果获取配置失败，使用默认逻辑：显示 Live2D 容器
+                    if (live2dContainer) {
+                        live2dContainer.style.display = '';
+                    }
+                    if (vrmContainer) {
+                        vrmContainer.style.display = 'none';
+                    }
+                    if (chatContainer) {
+                        chatContainer.style.display = '';
+                    }
+                    document.body.removeAttribute('data-ui-hidden');
                     return;
                 }
                 const charactersData = await charResponse.json();
 
                 // 确保 lanlan_config.lanlan_name 更新到 chara_manager.html 当前选中的猫娘
                 currentLanlanName = lanlan_config.lanlan_name = charactersData['当前猫娘'];
-                console.log('AFTER currentLanlanName: ', currentLanlanName);
-
-                // 从猫娘配置中获取当前角色的 live2d 模型名称
+                
+                // 从猫娘配置中获取当前角色的模型信息（支持Live2D和VRM）
                 const catgirlConfig = charactersData['猫娘']?.[currentLanlanName];
                 if (!catgirlConfig) {
                     console.warn(`未找到角色 ${currentLanlanName} 的配置，跳过模型检查`);
+                    // 如果找不到配置，使用默认逻辑：显示 Live2D 容器
+                    if (live2dContainer) {
+                        live2dContainer.style.display = '';
+                    }
+                    if (vrmContainer) {
+                        vrmContainer.style.display = 'none';
+                    }
+                    if (chatContainer) {
+                        chatContainer.style.display = '';
+                    }
+                    document.body.removeAttribute('data-ui-hidden');
                     return;
                 }
-                const newModelName = catgirlConfig.live2d || 'mao_pro';
-                console.log('AFTER newModelName: ', newModelName);
+                
+                // 获取当前角色的 model_type，决定显示哪个容器
+                let modelType = catgirlConfig.model_type || 'live2d';
+                
+                // 根据 model_type 显示正确的容器，确保两个容器不会同时可见
+                if (modelType === 'vrm') {
+                    // VRM 模式：显示 VRM 容器，隐藏 Live2D 容器
+                    if (vrmContainer) {
+                        vrmContainer.style.display = 'block';
+                    }
+                    if (live2dContainer) {
+                        live2dContainer.style.display = 'none';
+                    }
+                } else {
+                    // Live2D 模式：显示 Live2D 容器，隐藏 VRM 容器
+                    if (live2dContainer) {
+                        live2dContainer.style.display = '';
+                    }
+                    if (vrmContainer) {
+                        vrmContainer.style.display = 'none';
+                    }
+                }
+                
+                // 显示聊天容器
+                if (chatContainer) {
+                    chatContainer.style.display = '';
+                }
+                
+                // 移除隐藏状态标记
+                document.body.removeAttribute('data-ui-hidden');
 
-                // 3. 获取所有可用模型列表
-                const modelsResponse = await fetch('/api/live2d/models');
-                if (!modelsResponse.ok) {
-                    console.warn('获取模型列表失败，跳过模型检查');
-                    return;
+                // 根据模型类型获取正确的路径字段
+                let newModelPath = '';
+                if (modelType === 'vrm') {
+                    newModelPath = catgirlConfig.vrm || '';
+                } else {
+                    newModelPath = catgirlConfig.live2d || '';
                 }
-                const models = await modelsResponse.json();
 
-                // 4. 根据模型名称查找对应的模型路径
-                const modelInfo = models.find(m => m.name === newModelName);
-                if (!modelInfo) {
-                    console.warn(`未找到模型 ${newModelName}，跳过模型检查`);
-                    return;
+                if (modelType === 'vrm') {
+                    // 检查 VRM 模块是否可用
+                    if (window._vrmModulesAvailable === false) {
+                        console.error('[主页] VRM 模块不可用，无法切换到 VRM 模式');
+                        const errorMsg = window.t 
+                            ? window.t('vrm.error.modulesNotAvailable', { defaultValue: 'VRM 模块加载失败，无法切换到 VRM 模式。请刷新页面重试。' })
+                            : 'VRM 模块加载失败，无法切换到 VRM 模式。请刷新页面重试。';
+                        if (typeof window.showStatus === 'function') {
+                            window.showStatus(errorMsg, 5000);
+                        } else {
+                            alert(errorMsg);
+                        }
+                        // 回退到 Live2D 模式
+                        if (catgirlConfig.live2d) {
+                            newModelPath = catgirlConfig.live2d;
+                            modelType = 'live2d';
+                            window.lanlan_config.model_type = 'live2d';
+                        } else {
+                            console.error('[主页] 无法切换到 VRM 模式，且没有 Live2D 模型可用');
+                            return;
+                        }
+                    } else {
+                        // 使用公共函数清理Live2D资源并切换到VRM
+                        cleanupLive2DAndSwitchToVRM();
+
+                        // 注意：这里不立即加载模型，而是等待 needReload 判断后再决定是否加载
+                        // 避免重复加载（如果 needReload 为 false，说明模型已经加载，不需要重复加载）
+                    }
                 }
-                const newModelPath = modelInfo.path;
-                console.log('AFTER newModelPath: ', newModelPath);
 
                 // 5. 检查当前加载的模型路径（优先使用 _lastLoadedModelPath）
-                const currentModel = window.live2dManager?.getCurrentModel();
                 let currentModelPath = '';
-                
-                // 检查模型是否处于有效状态（可能因窗口关闭导致模型失效）
                 let modelMayBeInvalid = false;
-                if (currentModel) {
-                    // 检查模型是否完整可用
-                    if (!currentModel.internalModel || !currentModel.internalModel.coreModel) {
-                        console.log('检测到模型可能损坏或未完全加载');
-                        modelMayBeInvalid = true;
-                    }
-                    // 检查模型是否在舞台上
-                    if (!currentModel.parent) {
-                        console.log('检测到模型未在舞台上显示');
+                
+                // 根据模型类型分别判断模型有效性
+                if (modelType === 'vrm') {
+                    // VRM 模型：检查 VRM 管理器的当前模型
+                    const currentVrmModel = window.vrmManager?.currentModel;
+                    if (currentVrmModel) {
+                        // 检查 VRM 模型是否完整可用
+                        if (!currentVrmModel.vrm || !currentVrmModel.vrm.scene) {
+                            modelMayBeInvalid = true;
+                        }
+                        // 检查模型是否在场景中
+                        if (currentVrmModel.vrm?.scene && !currentVrmModel.vrm.scene.parent) {
+                            modelMayBeInvalid = true;
+                        }
+                        // 获取模型路径
+                        if (currentVrmModel.url) {
+                            currentModelPath = currentVrmModel.url;
+                        }
+                    } else {
                         modelMayBeInvalid = true;
                     }
                 } else {
-                    console.log('当前没有加载的模型');
-                    modelMayBeInvalid = true;
-                }
-                
-                if (window.live2dManager?._lastLoadedModelPath) {
-                    currentModelPath = window.live2dManager._lastLoadedModelPath;
-                } else if (currentModel && currentModel.url) {
-                    currentModelPath = currentModel.url;
-                } else if (window.live2dManager?.modelRootPath && window.live2dManager?.modelName) {
-                    currentModelPath = `${window.live2dManager.modelRootPath}/${window.live2dManager.modelName}.model3.json`;
+                    // Live2D 模型：检查 Live2D 管理器的当前模型
+                    const currentModel = window.live2dManager?.getCurrentModel();
+                    if (currentModel) {
+                        // 检查模型是否完整可用
+                        if (!currentModel.internalModel || !currentModel.internalModel.coreModel) {
+                            modelMayBeInvalid = true;
+                        }
+                        // 检查模型是否在舞台上
+                        if (!currentModel.parent) {
+                            modelMayBeInvalid = true;
+                        }
+                        // 获取模型路径
+                        if (currentModel.url) {
+                            currentModelPath = currentModel.url;
+                        }
+                    } else {
+                        modelMayBeInvalid = true;
+                    }
+                    
+                    // Live2D 模型的路径获取（优先使用 _lastLoadedModelPath）
+                    if (!currentModelPath && window.live2dManager?._lastLoadedModelPath) {
+                        currentModelPath = window.live2dManager._lastLoadedModelPath;
+                    } else if (!currentModelPath && window.live2dManager?.modelRootPath && window.live2dManager?.modelName) {
+                        currentModelPath = `${window.live2dManager.modelRootPath}/${window.live2dManager.modelName}.model3.json`;
+                    }
                 }
 
-                // 6. 总是重新加载用户偏好（位置、缩放等可能被修改）
-                const preferences = await window.live2dManager.loadUserPreferences();
+                // 6. 对于Live2D模型，重新加载用户偏好（位置、缩放等可能被修改）
                 let modelPreferences = null;
-                if (preferences && preferences.length > 0) {
-                    modelPreferences = preferences.find(p => p && p.model_path === newModelPath);
+                if (modelType !== 'vrm' && window.live2dManager) {
+                    const preferences = await window.live2dManager.loadUserPreferences();
+                    if (preferences && preferences.length > 0) {
+                        modelPreferences = preferences.find(p => p && p.model_path === newModelPath);
+                    }
                 }
 
                 // 7. 比较模型路径，判断是否需要完全重新加载模型（使用更准确的路径比较）
@@ -1757,65 +2067,186 @@
                     const normalizedCurrent = normalizePath(currentModelPath);
                     const normalizedNew = normalizePath(newModelPath);
 
-                    // 提取模型名称进行比较
-                    const currentModelName = normalizedCurrent.split('/').filter(Boolean).pop()?.replace('.model3.json', '') || '';
-                    const newModelNameCompare = normalizedNew.split('/').filter(Boolean).pop()?.replace('.model3.json', '') || '';
-
-                    if (normalizedCurrent === normalizedNew) {
-                        needReload = false;
-                    } else if (currentModelName && newModelNameCompare && currentModelName === newModelNameCompare) {
-                        needReload = false;
+                    // 对于VRM模型，比较文件名；对于Live2D模型，比较完整路径
+                    if (modelType === 'vrm') {
+                        const currentFileName = normalizedCurrent.split('/').filter(Boolean).pop() || '';
+                        const newFileName = normalizedNew.split('/').filter(Boolean).pop() || '';
+                        needReload = currentFileName !== newFileName;
                     } else {
-                        needReload = true;
+                        // 提取模型名称进行比较
+                        const currentModelName = normalizedCurrent.split('/').filter(Boolean).pop()?.replace('.model3.json', '') || '';
+                        const newModelNameCompare = normalizedNew.split('/').filter(Boolean).pop()?.replace('.model3.json', '') || '';
+
+                        if (normalizedCurrent === normalizedNew) {
+                            needReload = false;
+                        } else if (currentModelName && newModelNameCompare && currentModelName === newModelNameCompare) {
+                            needReload = false;
+                        } else {
+                            needReload = true;
+                        }
                     }
                 }
 
                 if (needReload) {
                     // 模型改变了，需要完全重新加载
-                    console.log(`检测到模型变化，重新加载: ${newModelPath}`);
-                    console.log(`当前模型: ${currentModelPath}`);
-                    console.log(`新模型: ${newModelPath}`);
+                    if (modelType === 'vrm') {
+                        // VRM模型：重新加载VRM模型
+                        if (window.vrmManager && newModelPath) {
+                            // 使用公共函数清理Live2D资源并切换到VRM
+                            cleanupLive2DAndSwitchToVRM();
 
-                    await window.live2dManager.loadModel(newModelPath, {
-                        preferences: modelPreferences,
-                        isMobile: window.innerWidth <= 768,
-                        skipCloseWindows: true  // 从设置窗口返回时不关闭其他窗口
-                    });
+                            // 确保Three.js场景已初始化（如果被清理了，需要重新初始化）
+                            if (!window.vrmManager._isInitialized || !window.vrmManager.scene || !window.vrmManager.camera || !window.vrmManager.renderer) {
+                                console.log('[主页] VRM场景未初始化，重新初始化...');
+                                await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
+                            }
 
-                    // 更新全局引用
-                    window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
-                    window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
-                    window.LanLan1.emotionMapping = window.live2dManager.getEmotionMapping();
-
-                    console.log('模型已重新加载');
-                } else {
-                    // 模型未变，但需要更新位置和缩放设置
-                    console.log('模型未改变，但重新应用用户偏好设置');
-
-                    if (modelPreferences && currentModel) {
-                        // 应用位置设置
-                        if (modelPreferences.position) {
-                            currentModel.x = modelPreferences.position.x || currentModel.x;
-                            currentModel.y = modelPreferences.position.y || currentModel.y;
-                            console.log('已应用位置设置:', modelPreferences.position);
-                        }
-
-                        // 应用缩放设置
-                        if (modelPreferences.scale) {
-                            currentModel.scale.set(
-                                modelPreferences.scale.x || currentModel.scale.x,
-                                modelPreferences.scale.y || currentModel.scale.y
-                            );
-                            console.log('已应用缩放设置:', modelPreferences.scale);
-                        }
-
-                        // 应用保存的模型参数
-                        if (modelPreferences.parameters && currentModel.internalModel && currentModel.internalModel.coreModel) {
-                            window.live2dManager.applyModelParameters(currentModel, modelPreferences.parameters);
-                            console.log('已应用保存的模型参数');
+                            const modelUrl = convertVRMModelPath(newModelPath);
+                            try {
+                                // 获取默认待机动画路径：优先从配置读取，其次使用默认值
+                                const idleAnimationPath = window.lanlan_config?.vrmIdleAnimation || 
+                                    '/static/vrm/animation/wait03.vrma';
+                                await window.vrmManager.loadModel(modelUrl, { 
+                                    autoPlay: false,
+                                    idleAnimation: idleAnimationPath
+                                });
+                                if (window.vrmManager.animation) {
+                                    window.vrmManager.playVRMAAnimation(idleAnimationPath, { loop: true });
+                                }
+                            } catch (error) {
+                                console.error('[主页] VRM模型重新加载失败:', error);
+                            }
+                        } else {
+                            console.warn('[主页] VRM管理器未初始化或模型路径为空，无法加载VRM模型');
                         }
                     } else {
-                        console.log('无需应用偏好设置（未找到或模型未加载）');
+                        // Live2D模型：使用原有逻辑
+                        // 使用统一的 dispose() 方法清理VRM资源，确保完全切换
+                        if (window.vrmManager) {
+                            try {
+                                console.log('[主页] 切换到Live2D，开始清理VRM资源...');
+                                
+                                // 使用统一的 dispose() 方法进行完整清理
+                                // 这会取消动画循环、清理模型资源、清理场景/渲染器、重置初始化状态
+                                if (typeof window.vrmManager.dispose === 'function') {
+                                    await window.vrmManager.dispose();
+                                } else {
+                                    // 降级方案：手动清理（如果 dispose 方法不存在）
+                                    console.warn('[主页] VRM Manager 没有 dispose 方法，使用降级清理方案');
+                                    if (window.vrmManager._animationFrameId) {
+                                        cancelAnimationFrame(window.vrmManager._animationFrameId);
+                                        window.vrmManager._animationFrameId = null;
+                                    }
+                                    if (window.vrmManager.core && typeof window.vrmManager.core.disposeVRM === 'function') {
+                                        window.vrmManager.core.disposeVRM();
+                                    }
+                                    if (window.vrmManager.scene) {
+                                        while (window.vrmManager.scene.children.length > 0) {
+                                            window.vrmManager.scene.remove(window.vrmManager.scene.children[0]);
+                                        }
+                                    }
+                                    if (window.vrmManager.renderer && window.vrmManager.renderer.domElement) {
+                                        window.vrmManager.renderer.domElement.style.display = 'none';
+                                        window.vrmManager.renderer.domElement.style.opacity = '0';
+                                    }
+                                    window.vrmManager.currentModel = null;
+                                    window.vrmManager._isInitialized = false;
+                                }
+                                
+                                console.log('[主页] VRM资源清理完成');
+                            } catch (cleanupError) {
+                                console.warn('[主页] VRM清理时出现警告:', cleanupError);
+                            }
+                        }
+                        
+                        // 隐藏VRM容器，显示Live2D容器
+                        const live2dContainer = document.getElementById('live2d-container');
+                        const vrmContainer = document.getElementById('vrm-container');
+                        if (live2dContainer) {
+                            live2dContainer.style.display = 'block';
+                            live2dContainer.classList.remove('hidden');
+                        }
+                        if (vrmContainer) {
+                            vrmContainer.style.display = 'none';
+                            vrmContainer.classList.add('hidden');
+                        }
+                        
+                        await window.live2dManager.loadModel(newModelPath, {
+                            preferences: modelPreferences,
+                            isMobile: window.innerWidth <= 768
+                        });
+
+                        // 更新全局引用
+                        window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
+                        window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
+                        window.LanLan1.emotionMapping = window.live2dManager.getEmotionMapping();
+
+                        console.log('Live2D模型已重新加载');
+                    }
+                } else {
+                    // 模型未变，但需要确保场景已初始化、模型可见、恢复动画循环
+                    if (modelType === 'vrm') {
+                        // VRM模型：确保场景已初始化 + 模型可见 + 需要时恢复动画循环
+                        if (window.vrmManager) {
+                            if (!window.vrmManager._isInitialized || !window.vrmManager.scene || !window.vrmManager.camera || !window.vrmManager.renderer) {
+                                console.log('[主页] VRM模型已加载但场景未初始化，重新初始化...');
+                                await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
+                                if (window.vrmManager.currentModel && window.vrmManager.currentModel.vrm) {
+                                    const modelUrl = convertVRMModelPath(newModelPath);
+                                    try {
+                                        // 获取默认待机动画路径：优先从配置读取，其次使用默认值
+                                        const idleAnimationPath = window.lanlan_config?.vrmIdleAnimation || 
+                                            '/static/vrm/animation/wait03.vrma';
+                                        await window.vrmManager.loadModel(modelUrl, { 
+                                            autoPlay: false,
+                                            idleAnimation: idleAnimationPath
+                                        });
+                                        if (window.vrmManager.animation) {
+                                            window.vrmManager.playVRMAAnimation(idleAnimationPath, { loop: true });
+                                        }
+                                    } catch (error) {
+                                        console.error('[主页] VRM模型重新加载失败:', error);
+                                    }
+                                }
+                            } else {
+                                // 场景已初始化，确保模型可见
+                                if (window.vrmManager.currentModel && window.vrmManager.currentModel.vrm) {
+                                    window.vrmManager.currentModel.vrm.scene.visible = true;
+                                }
+                                // 确保渲染器可见
+                                if (window.vrmManager.renderer && window.vrmManager.renderer.domElement) {
+                                    window.vrmManager.renderer.domElement.style.display = 'block';
+                                    window.vrmManager.renderer.domElement.style.opacity = '1';
+                                }
+                                // 确保动画循环正在运行（如果被停止了，需要恢复）
+                                if (!window.vrmManager._animationFrameId && typeof window.vrmManager.startAnimateLoop === 'function') {
+                                    console.log('[主页] 恢复VRM动画循环...');
+                                    window.vrmManager.startAnimateLoop();
+                                }
+                            }
+                        }
+                    } else {
+                        // Live2D模型：更新位置和缩放设置
+                        if (modelPreferences && currentModel) {
+                            // 应用位置设置
+                            if (modelPreferences.position) {
+                                currentModel.x = modelPreferences.position.x || currentModel.x;
+                                currentModel.y = modelPreferences.position.y || currentModel.y;
+                            }
+
+                            // 应用缩放设置
+                            if (modelPreferences.scale) {
+                                currentModel.scale.set(
+                                    modelPreferences.scale.x || currentModel.scale.x,
+                                    modelPreferences.scale.y || currentModel.scale.y
+                                );
+                            }
+
+                            // 应用保存的模型参数
+                            if (modelPreferences.parameters && currentModel.internalModel && currentModel.internalModel.coreModel) {
+                                window.live2dManager.applyModelParameters(currentModel, modelPreferences.parameters);
+                            }
+                        }
                     }
                 }
 
@@ -1828,10 +2259,8 @@
         // 重新加载模型参数（用于参数编辑器保存后）
         async function reloadModelParameters() {
             try {
-                console.log('=== 开始重新加载模型参数 ===');
                 const currentModel = window.live2dManager?.getCurrentModel();
                 if (!currentModel) {
-                    console.log('模型未加载，跳过参数重新加载');
                     return;
                 }
 
@@ -1841,42 +2270,27 @@
                 // 方式1: 从live2dManager的_lastLoadedModelPath获取（最可靠）
                 if (window.live2dManager?._lastLoadedModelPath) {
                     currentModelPath = window.live2dManager._lastLoadedModelPath;
-                    console.log('使用 _lastLoadedModelPath:', currentModelPath);
                 }
                 // 方式2: 从模型的url获取
                 else if (currentModel.url) {
                     currentModelPath = currentModel.url;
-                    console.log('使用 currentModel.url:', currentModelPath);
                 }
                 // 方式3: 从modelRootPath和modelName构建
                 else if (window.live2dManager?.modelRootPath && window.live2dManager?.modelName) {
                     currentModelPath = `${window.live2dManager.modelRootPath}/${window.live2dManager.modelName}.model3.json`;
-                    console.log('使用 modelRootPath + modelName:', currentModelPath);
                 }
                 // 方式4: 从cubism4Model获取
                 else if (typeof cubism4Model !== 'undefined' && cubism4Model) {
                     currentModelPath = cubism4Model;
-                    console.log('使用 cubism4Model:', currentModelPath);
                 }
 
                 if (!currentModelPath) {
                     console.warn('无法确定当前模型路径，跳过参数重新加载');
-                    console.log('live2dManager状态:', {
-                        hasManager: !!window.live2dManager,
-                        _lastLoadedModelPath: window.live2dManager?._lastLoadedModelPath,
-                        modelRootPath: window.live2dManager?.modelRootPath,
-                        modelName: window.live2dManager?.modelName,
-                        currentModelUrl: currentModel?.url
-                    });
                     return;
                 }
 
-                console.log('当前模型路径:', currentModelPath);
-
                 // 重新加载用户偏好
                 const preferences = await window.live2dManager.loadUserPreferences();
-                console.log('加载到的偏好设置数量:', preferences.length);
-                console.log('所有偏好设置的路径:', preferences.map(p => p?.model_path).filter(Boolean));
 
                 // 尝试多种匹配方式
                 let modelPreferences = null;
@@ -1887,84 +2301,71 @@
                     return p.model_path === currentModelPath;
                 });
 
-                if (modelPreferences) {
-                    console.log('找到精确匹配的偏好设置');
-                } else {
-                    // 尝试文件名匹配
+                if (!modelPreferences) {
+                    // 尝试精确的文件名匹配
                     const currentFileName = currentModelPath.split('/').pop() || '';
-                    console.log('尝试文件名匹配，当前文件名:', currentFileName);
-
-                    modelPreferences = preferences.find(p => {
+                    const matchingPrefs = preferences.filter(p => {
                         if (!p || !p.model_path) return false;
                         const prefFileName = p.model_path.split('/').pop() || '';
-                        if (currentFileName && prefFileName && currentFileName === prefFileName) {
-                            console.log('文件名匹配成功:', p.model_path);
-                            return true;
-                        }
-                        return false;
+                        return currentFileName && prefFileName && currentFileName === prefFileName;
                     });
+                    
+                    if (matchingPrefs.length === 1) {
+                        modelPreferences = matchingPrefs[0];
+                    } else if (matchingPrefs.length > 1) {
+                        console.warn('[主页] 多个偏好设置匹配文件名，跳过模糊匹配:', currentFileName, matchingPrefs.map(p => p.model_path));
+                    }
                 }
 
-                // 如果还是没找到，尝试通过模型名称匹配
+                if (!modelPreferences) {
+                    // 尝试规范化的 basename 比较（移除版本后缀）
+                    const normalizeBasename = (filename) => {
+                        if (!filename) return '';
+                        return filename.replace(/[._-]v\d+$/i, '').replace(/\.v\d+$/i, '');
+                    };
+                    
+                    const currentFileName = currentModelPath.split('/').pop() || '';
+                    const normalizedCurrent = normalizeBasename(currentFileName);
+                    
+                    if (normalizedCurrent) {
+                        const matchingPrefs = preferences.filter(p => {
+                            if (!p || !p.model_path) return false;
+                            const prefFileName = p.model_path.split('/').pop() || '';
+                            const normalizedPref = normalizeBasename(prefFileName);
+                            return normalizedPref && normalizedCurrent === normalizedPref;
+                        });
+                        
+                        if (matchingPrefs.length === 1) {
+                            modelPreferences = matchingPrefs[0];
+                        } else if (matchingPrefs.length > 1) {
+                            console.warn('[主页] 多个偏好设置匹配规范化文件名，跳过模糊匹配:', normalizedCurrent, matchingPrefs.map(p => p.model_path));
+                        }
+                    }
+                }
+
+                // 如果还是没找到，尝试通过模型名称匹配（使用边界安全的匹配）
                 if (!modelPreferences && window.live2dManager?.modelName) {
                     const modelName = window.live2dManager.modelName;
-                    console.log('尝试模型名称匹配:', modelName);
-                    modelPreferences = preferences.find(p => {
+                    const matchingPrefs = preferences.filter(p => {
                         if (!p || !p.model_path) return false;
-                        if (p.model_path.includes(modelName)) {
-                            console.log('模型名称匹配成功:', p.model_path);
-                            return true;
-                        }
-                        return false;
+                        const pathParts = p.model_path.split('/').filter(Boolean);
+                        // 检查 modelName 是否作为路径段出现（边界安全）
+                        return pathParts.some(part => part === modelName || part.startsWith(modelName + '.') || part.startsWith(modelName + '_'));
                     });
-                }
-
-                // 如果还是没找到，尝试部分匹配
-                if (!modelPreferences) {
-                    console.log('尝试部分匹配...');
-                    const currentPathParts = currentModelPath.split('/').filter(p => p);
-                    modelPreferences = preferences.find(p => {
-                        if (!p || !p.model_path) return false;
-                        const prefPathParts = p.model_path.split('/').filter(p => p);
-                        // 检查是否有共同的部分
-                        const commonParts = currentPathParts.filter(part => prefPathParts.includes(part));
-                        if (commonParts.length >= 2) { // 至少有两个共同部分
-                            console.log('部分匹配成功:', p.model_path, '共同部分:', commonParts);
-                            return true;
-                        }
-                        return false;
-                    });
-                }
-
-                if (modelPreferences) {
-                    console.log('找到匹配的偏好设置:', modelPreferences.model_path);
-                    console.log('是否有参数:', !!modelPreferences.parameters);
-
-                    if (modelPreferences.parameters) {
-                        const paramCount = Object.keys(modelPreferences.parameters).length;
-                        console.log('参数数量:', paramCount);
-                        console.log('参数示例:', Object.keys(modelPreferences.parameters).slice(0, 5));
-
-                        // 应用保存的参数
-                        if (currentModel.internalModel && currentModel.internalModel.coreModel) {
-                            window.live2dManager.applyModelParameters(currentModel, modelPreferences.parameters);
-                            console.log('✓ 已重新应用保存的模型参数，参数数量:', paramCount);
-                        } else {
-                            console.warn('模型未完全加载，无法应用参数');
-                        }
-                    } else {
-                        console.log('偏好设置中没有参数数据');
+                    
+                    if (matchingPrefs.length === 1) {
+                        modelPreferences = matchingPrefs[0];
+                    } else if (matchingPrefs.length > 1) {
+                        console.warn('[主页] 多个偏好设置匹配模型名称，跳过模糊匹配:', modelName, matchingPrefs.map(p => p.model_path));
                     }
-                } else {
-                    console.warn('未找到匹配的偏好设置');
-                    console.log('当前模型路径:', currentModelPath);
-                    console.log('所有可用偏好设置的路径:');
-                    preferences.forEach((p, i) => {
-                        console.log(`  [${i}] ${p?.model_path || 'N/A'}`);
-                    });
                 }
 
-                console.log('=== 重新加载模型参数完成 ===');
+                if (modelPreferences && modelPreferences.parameters) {
+                    // 应用保存的参数
+                    if (currentModel.internalModel && currentModel.internalModel.coreModel) {
+                        window.live2dManager.applyModelParameters(currentModel, modelPreferences.parameters);
+                    }
+                }
             } catch (error) {
                 console.error('重新加载模型参数失败:', error);
                 console.error('错误堆栈:', error.stack);
@@ -2010,7 +2411,6 @@
 
                     // 等待一小段时间确保模型完全初始化
                     setTimeout(async () => {
-                        console.log('模型已加载，检查参数更新...');
                         await reloadModelParameters();
                     }, 500);
                 }
@@ -2039,10 +2439,145 @@
                 clearInterval(modelLoadCheckInterval);
             }
         });
+
+        // 安全包装器：防止自递归导致栈溢出
+        // 使用内部标志来跟踪是否正在调用全局函数
+        let _isConvertingPath = false;
+        
+        function convertVRMModelPath(modelPath, options = {}) {
+            const defaultPath = options.defaultPath || '/static/vrm/sister1.0.vrm';
+            
+            // 优先使用全局转换器（如果已加载）
+            if (!_isConvertingPath) {
+                const globalConverter = window._vrmConvertPath || 
+                    (window.convertVRMModelPath && window.convertVRMModelPath !== convertVRMModelPath 
+                        ? window.convertVRMModelPath 
+                        : null);
+                
+                if (globalConverter && typeof globalConverter === 'function') {
+                    try {
+                        _isConvertingPath = true;
+                        const result = globalConverter(modelPath, options);
+                        _isConvertingPath = false;
+                        return result;
+                    } catch (error) {
+                        _isConvertingPath = false;
+                        console.warn('[VRM Path Fallback] 全局函数调用失败，使用 fallback:', error);
+                    }
+                }
+            }
+            
+            // Fallback 实现：只处理最小情况，复杂映射推迟到 vrm-init.js 加载后
+            // 基本验证
+            if (!modelPath || 
+                modelPath === 'undefined' ||
+                modelPath === 'null' || 
+                (typeof modelPath === 'string' && (modelPath.trim() === '' || modelPath.includes('undefined')))) {
+                console.warn('[VRM Path Fallback] 路径无效，使用默认路径:', modelPath);
+                return defaultPath;
+            }
+            
+            if (typeof modelPath !== 'string') {
+                console.warn('[VRM Path Fallback] 路径不是字符串，使用默认路径:', modelPath);
+                return defaultPath;
+            }
+            
+            // HTTP/HTTPS URL 直接返回
+            if (/^https?:\/\//.test(modelPath)) {
+                return modelPath;
+            }
+            
+            // 对于其他情况，如果 vrm-init.js 尚未加载，返回默认路径
+            // 复杂映射逻辑由 vrm-init.js 的全局转换器处理
+            console.warn('[VRM Path Fallback] vrm-init.js 尚未加载，使用默认路径。建议等待模块加载后再调用。');
+            return defaultPath;
+        }
     </script>
     <script src="/static/libs/live2d.min.js"></script> <!-- Cubism 2.1核心库（支持旧模型） -->
     <script src="/static/libs/pixi.min.js"></script> <!-- PixiJS v7 CDN -->
     <script src="/static/libs/index.min.js"></script> <!-- pixi-live2d-display v0.5.0-ls-6（RaSan147 fork，支持v7） -->
+    <!-- Three.js 和 three-vrm 的 importmap（用于动态导入 ES 模块） -->
+    <!-- 
+        重要：确保 @pixiv/three-vrm 和 @pixiv/three-vrm-animation 使用相同的 @pixiv/three-vrm-core 版本
+        如果出现原型不匹配错误，请检查：
+        1. three-vrm.module.min.js 和 three-vrm-animation.module.js 是否基于相同的 three-vrm-core 版本构建
+        2. 建议使用 three-vrm-core v3.x+ 的构建版本（推荐）
+        3. 或者确保两个模块都使用 three-vrm-core v2.x 兼容版本
+        4. 在部署前，检查每个文件内打包的 core 版本号是否一致
+    -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "/static/libs/three.module.js",
+            "three/addons/": "/static/libs/three/addons/",
+            "@pixiv/three-vrm": "/static/libs/three-vrm.module.min.js",
+            "@pixiv/three-vrm-animation": "/static/libs/three-vrm-animation.module.js"
+        }
+    }
+    </script>
+    <!-- 将 THREE 挂载到 window 对象，以便非模块脚本可以使用 -->
+    <script type="module">
+        import * as THREE from 'three';
+        // 导入 GLTFLoader（注意路径要和 importmap 对应）
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+        window.THREE = THREE;
+        // 手动将 GLTFLoader 挂载到 window.THREE 对象上
+        // 使用更安全的方式避免 "Cannot redefine property" 错误
+        let gltfLoaderAttached = false;
+        
+        // 方法1: 检查是否已存在且值相同
+        if (window.THREE.GLTFLoader === GLTFLoader) {
+            console.log('[Three.js] GLTFLoader 已存在且值相同，跳过挂载');
+            gltfLoaderAttached = true;
+        } else {
+            // 方法2: 尝试简单赋值
+            try {
+                const descriptor = Object.getOwnPropertyDescriptor(window.THREE, 'GLTFLoader');
+                if (descriptor && !descriptor.configurable) {
+                    // 属性存在且不可配置，检查值
+                    if (descriptor.value === GLTFLoader) {
+                        console.log('[Three.js] GLTFLoader 已存在且值相同（不可配置），跳过挂载');
+                        gltfLoaderAttached = true;
+                    } else {
+                        throw new Error('GLTFLoader 已存在且不可重新定义');
+                    }
+                } else {
+                    // 尝试删除（如果存在且可配置）或直接赋值
+                    if (descriptor && descriptor.configurable) {
+                        delete window.THREE.GLTFLoader;
+                    }
+                    window.THREE.GLTFLoader = GLTFLoader;
+                    console.log('[Three.js] ES 模块已加载并挂载到 window.THREE (含 GLTFLoader)');
+                    gltfLoaderAttached = true;
+                }
+            } catch (error) {
+                // 方法3: 如果简单赋值失败，尝试 defineProperty（仅在对象不可扩展时）
+                if (!gltfLoaderAttached && !Object.isExtensible(window.THREE)) {
+                    try {
+                        Object.defineProperty(window.THREE, 'GLTFLoader', {
+                            value: GLTFLoader,
+                            writable: true,
+                            enumerable: true,
+                            configurable: true
+                        });
+                        console.log('[Three.js] ES 模块已加载并挂载到 window.THREE (含 GLTFLoader，使用 defineProperty)');
+                        gltfLoaderAttached = true;
+                    } catch (defineError) {
+                        console.error('[Three.js] 无法添加 GLTFLoader 到 window.THREE:', defineError);
+                    }
+                } else {
+                    console.error('[Three.js] 无法添加 GLTFLoader 到 window.THREE:', error);
+                }
+            }
+        }
+        
+        // 方法4: 如果所有方法都失败，使用备用方案
+        if (!gltfLoaderAttached) {
+            window.THREE_GLTFLoader = GLTFLoader;
+            console.warn('[Three.js] GLTFLoader 已挂载到 window.THREE_GLTFLoader 作为备用');
+        }
+    </script>
     <!-- i18next 已在 head 中加载，这里不再需要 -->
     <!-- OGG OPUS WASM 解码器 (@wasm-audio-decoders/ogg-opus-decoder) -->
     <script>window.webpackChunkogg_opus_decoder = window.webpackChunkogg_opus_decoder || [];</script>
@@ -2069,20 +2604,178 @@
                 ];
 
                 // 按顺序加载脚本的辅助函数
-                async function loadScriptsSequentially(scripts) {
+                // 对于关键模块（core/init），失败时会中止并提示用户
+                async function loadScriptsSequentially(scripts, criticalModules = []) {
                     for (const src of scripts) {
-                        await new Promise((resolve, reject) => {
-                            const script = document.createElement('script');
-                            script.src = src;
-                            script.onload = resolve;
-                            script.onerror = reject;
-                            document.body.appendChild(script);
-                        });
+                        try {
+                            await new Promise((resolve, reject) => {
+                                const script = document.createElement('script');
+                                script.src = src;
+                                script.onload = resolve;
+                                script.onerror = (error) => {
+                                    console.error(`脚本加载失败: ${src}`, error);
+                                    reject(error);
+                                };
+                                document.body.appendChild(script);
+                            });
+                        } catch (error) {
+                            const isCritical = criticalModules.some(critical => src.includes(critical));
+                            if (isCritical) {
+                                // 关键模块失败：中止并提示用户
+                                console.error(`关键模块加载失败，中止初始化: ${src}`, error);
+                                const errorMsg = `Live2D 关键模块加载失败: ${src}\n\n请刷新页面重试，或检查网络连接。`;
+                                alert(errorMsg);
+                                throw new Error(`关键模块加载失败: ${src}`);
+                            } else {
+                                console.error(`加载脚本失败，但继续加载其他脚本: ${src}`, error);
+                                // 非关键模块失败：继续加载下一个脚本
+                            }
+                        }
                     }
                 }
 
                 // 加载所有 live2d 模块
-                await loadScriptsSequentially(live2dModules);
+                const criticalLive2DModules = ['live2dcubismcore', 'live2d.min.js', 'live2d-init.js'];
+                await loadScriptsSequentially(live2dModules, criticalLive2DModules);
+
+                // 等待Three.js加载完成
+                if (typeof window.THREE === 'undefined') {
+                    await new Promise(resolve => {
+                        const checkThree = () => {
+                            if (typeof window.THREE !== 'undefined') {
+                                resolve();
+                            } else {
+                                setTimeout(checkThree, 100);
+                            }
+                        };
+                        checkThree();
+                    });
+                }
+
+                // 加载VRM模块（按顺序加载，失败不影响Live2D）
+                try {
+                    const vrmModules = [
+                        '/static/vrm-orientation.js',
+                        '/static/vrm-core.js',
+                        '/static/vrm-expression.js',
+                        '/static/vrm-animation.js',
+                        '/static/vrm-interaction.js',
+                        '/static/vrm-manager.js',
+                        '/static/vrm-ui-popup.js',
+                        '/static/vrm-ui-buttons.js'
+                    ];
+
+                    for (const moduleSrc of vrmModules) {
+                        const script = document.createElement('script');
+                        script.src = moduleSrc;
+                        await new Promise((resolve, reject) => {
+                            script.onload = () => resolve();
+                            script.onerror = (error) => resolve(); // 即使失败也继续，不中断流程
+                            document.body.appendChild(script);
+                        });
+                    }
+
+                    // 加载VRM初始化脚本
+                    const vrmInitScript = document.createElement('script');
+                    vrmInitScript.src = '/static/vrm-init.js';
+                    await new Promise((resolve, reject) => {
+                        vrmInitScript.onload = () => resolve();
+                        vrmInitScript.onerror = (error) => resolve(); // 即使失败也继续
+                        document.body.appendChild(vrmInitScript);
+                    });
+                    
+                    // 最终 readiness 判定：检查关键对象是否存在
+                    const checkVRMReadiness = () => {
+                        const hasTHREE = typeof window.THREE !== 'undefined' && window.THREE !== null;
+                        const hasVRMCore = typeof window.VRMCore !== 'undefined' && window.VRMCore !== null;
+                        const hasVRMManager = typeof window.VRMManager !== 'undefined' && window.VRMManager !== null;
+                        
+                        if (hasTHREE && hasVRMCore && hasVRMManager) {
+                            console.log('[VRM 模块] 所有关键对象已加载，发送 vrm-modules-ready 事件');
+                            window.dispatchEvent(new Event('vrm-modules-ready'));
+                        } else {
+                            console.warn('[VRM 模块] 关键对象缺失，发送 vrm-modules-failed 事件', {
+                                hasTHREE,
+                                hasVRMCore,
+                                hasVRMManager
+                            });
+                            window.dispatchEvent(new CustomEvent('vrm-modules-failed', {
+                                detail: {
+                                    hasTHREE,
+                                    hasVRMCore,
+                                    hasVRMManager
+                                }
+                            }));
+                        }
+                    };
+                    
+                    // 延迟一点检查，给脚本执行时间
+                    setTimeout(checkVRMReadiness, 100);
+                } catch (vrmError) {
+                    console.warn('VRM模块加载过程中出错（不影响Live2D）:', vrmError);
+                    // 即使 catch 到错误，也发送 failed 事件
+                    window.dispatchEvent(new CustomEvent('vrm-modules-failed', {
+                        detail: { error: vrmError }
+                    }));
+                }
+                
+                // 监听 VRM 模块加载失败事件，禁用 VRM 相关功能并提示用户
+                window.addEventListener('vrm-modules-failed', (event) => {
+                    console.error('[VRM 模块] 加载失败，禁用 VRM 相关功能', event.detail);
+                    
+                    // 显示用户提示
+                    const errorDetail = event.detail || {};
+                    let errorMessage = 'VRM 模块加载失败，VRM 功能已禁用。';
+                    if (errorDetail.error) {
+                        errorMessage += `\n错误: ${errorDetail.error.message || errorDetail.error}`;
+                    } else if (errorDetail.hasTHREE === false || errorDetail.hasVRMCore === false || errorDetail.hasVRMManager === false) {
+                        const missing = [];
+                        if (errorDetail.hasTHREE === false) missing.push('Three.js');
+                        if (errorDetail.hasVRMCore === false) missing.push('VRM Core');
+                        if (errorDetail.hasVRMManager === false) missing.push('VRM Manager');
+                        errorMessage += `\n缺失模块: ${missing.join(', ')}`;
+                    }
+                    
+                    // 在控制台显示详细错误
+                    console.error('[VRM 模块]', errorMessage);
+                    
+                    // 可选：显示用户友好的提示（使用 toast 或状态栏）
+                    if (typeof window.showStatus === 'function') {
+                        window.showStatus(errorMessage, 5000);
+                    } else {
+                        // 如果没有 showStatus，使用 console 警告
+                        console.warn('[VRM 模块]', errorMessage);
+                    }
+                    
+                    // 标记 VRM 模块为不可用
+                    window._vrmModulesAvailable = false;
+                    
+                    // 禁用 VRM 相关的 UI 元素（如果存在）
+                    const vrmContainer = document.getElementById('vrm-container');
+                    if (vrmContainer) {
+                        vrmContainer.style.display = 'none';
+                        vrmContainer.classList.add('vrm-disabled');
+                    }
+                    
+                    // 如果当前是 VRM 模式，尝试切换回 Live2D
+                    if (window.lanlan_config?.model_type === 'vrm') {
+                        console.warn('[VRM 模块] 当前为 VRM 模式但模块加载失败，建议切换到 Live2D 模式');
+                        // 不自动切换，让用户决定
+                    }
+                });
+                
+                // 监听 VRM 模块加载成功事件，启用 VRM 相关功能
+                window.addEventListener('vrm-modules-ready', () => {
+                    console.log('[VRM 模块] 加载成功，启用 VRM 相关功能');
+                    window._vrmModulesAvailable = true;
+                    
+                    // 移除禁用标记
+                    const vrmContainer = document.getElementById('vrm-container');
+                    if (vrmContainer) {
+                        vrmContainer.classList.remove('vrm-disabled');
+                    }
+                });
+
 
                 // 等待 live2d 模块加载完成后再加载 app.js
                 const appScript = document.createElement('script');
@@ -2125,7 +2818,6 @@
                             if (autoCollapseTimer) {
                                 clearTimeout(autoCollapseTimer);
                                 autoCollapseTimer = null;
-                                console.log('用户聚焦文本框，取消自动折叠');
                             }
                             chatTooltip.classList.add('hidden');
                             // 移除监听器，因为已经完成任务
@@ -2138,7 +2830,6 @@
                             if (autoCollapseTimer) {
                                 clearTimeout(autoCollapseTimer);
                                 autoCollapseTimer = null;
-                                console.log('用户手动折叠对话区，取消自动折叠');
                             }
                             chatTooltip.classList.add('hidden');
                             // 移除监听器，因为已经完成任务
@@ -2153,7 +2844,6 @@
                         autoCollapseTimer = setTimeout(() => {
                             // 检查是否有活动菜单，如果有则不自动折叠
                             if (window.activeMenuCount > 0) {
-                                console.log('检测到活动菜单，跳过自动折叠');
                                 return;
                             }
 
@@ -2163,20 +2853,62 @@
                             setTimeout(() => {
                                 // 再次检查是否有活动菜单
                                 if (window.activeMenuCount > 0) {
-                                    console.log('检测到活动菜单，跳过自动折叠');
                                     return;
                                 }
                                 // 直接模拟点击事件
                                 toggleBtn.click();
-                                console.log('自动折叠对话区');
                             }, 300);
                         }, 5000);
-
-                        console.log('页面加载完成，5秒后将自动折叠对话区（除非有活动菜单）');
                     }
                 }, 100); // 100ms 延迟确保所有初始化完成
             });
         })();
+    </script>
+    <script>
+        // 监听设置面板切换事件（支持 Live2D 和 VRM）
+        window.addEventListener('live2d-settings-toggle', (e) => {
+            // 安全地读取 active 标志，如果 e.detail 不存在则默认为 false
+            const active = e?.detail?.active ?? false;
+            console.log('[主页] 收到设置开关信号:', active);
+            
+            const panel = document.getElementById('settings-panel');
+            if (panel) {
+                // 根据信号状态显示或隐藏面板
+                panel.style.display = active ? 'block' : 'none';
+            } else {
+                console.error('错误：找不到 id="settings-panel" 的元素！');
+            }
+        });
+        
+        // 监听通用设置面板切换事件（neko-settings-toggle）
+        window.addEventListener('neko-settings-toggle', (e) => {
+            // 安全地读取 active 标志，如果 e.detail 不存在则默认为 false
+            const active = e?.detail?.active ?? false;
+            console.log('[主页] 收到通用设置开关信号:', active);
+            
+            const panel = document.getElementById('settings-panel');
+            if (panel) {
+                // 根据信号状态显示或隐藏面板
+                panel.style.display = active ? 'block' : 'none';
+            } else {
+                console.error('错误：找不到 id="settings-panel" 的元素！');
+            }
+        });
+
+        // 处理占位 settings-panel 的关闭按钮（移除 inline onclick，改用事件绑定）
+        const settingsPanelCloseBtn = document.getElementById('settings-panel-close-btn');
+        if (settingsPanelCloseBtn) {
+            settingsPanelCloseBtn.addEventListener('click', () => {
+                const panel = document.getElementById('settings-panel');
+                if (panel) {
+                    panel.style.display = 'none';
+                    // 发送事件通知其他监听器，确保使用相同的格式 { detail: { active: false } }
+                    const closeEvent = { detail: { active: false } };
+                    window.dispatchEvent(new CustomEvent('neko-settings-toggle', closeEvent));
+                    window.dispatchEvent(new CustomEvent('live2d-settings-toggle', closeEvent));
+                }
+            });
+        }
     </script>
 </body>
 

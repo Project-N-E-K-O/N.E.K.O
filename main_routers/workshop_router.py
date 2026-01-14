@@ -1678,12 +1678,12 @@ async def prepare_workshop_upload(request: Request):
         
         # 2. 查找模型目录并复制模型文件
         model_dir, _ = find_model_directory(model_name)
-        if not os.path.exists(model_dir):
+        if not model_dir or not os.path.exists(model_dir):
             # 清理临时目录
             shutil.rmtree(temp_item_dir, ignore_errors=True)
             return JSONResponse({
                 "success": False,
-                "error": f"模型目录不存在: {model_dir}"
+                "error": f"模型目录不存在: {model_name}"
             }, status_code=404)
         
         # 复制整个模型目录到临时目录

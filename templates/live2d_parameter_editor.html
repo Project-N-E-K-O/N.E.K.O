@@ -778,21 +778,20 @@
         }
 
         // 返回L2D设置界面
-        backToMainBtn.addEventListener('click', async () => {
-            // 构建目标 URL
-            const urlParams = new URLSearchParams(window.location.search);
-            const lanlanName = urlParams.get('lanlan_name');
-            let targetUrl = '/l2d';
-            if (lanlanName) {
-                targetUrl += `?lanlan_name=${encodeURIComponent(lanlanName)}`;
-            }
-
-            // 使用确认机制发送消息，等待主页确认后再跳转
-            const ackReceived = await sendMessageWithAck('reload_model_parameters');
-            console.log('[Navigation] 消息确认状态:', ackReceived ? '已确认' : '超时/未确认');
-            
-            // 无论是否收到确认都执行跳转（超时后自动继续）
-            window.location.href = targetUrl;
+        backToMainBtn.addEventListener('click', () => {
+            // 在跳转前发送消息通知主页
+            sendMessageToMainPage('reload_model_parameters');
+            // 延迟一点确保消息发送
+            setTimeout(() => {
+                // 获取当前URL参数，保留lanlan_name等参数
+                const urlParams = new URLSearchParams(window.location.search);
+                const lanlanName = urlParams.get('lanlan_name');
+                let targetUrl = '/model_manager';
+                if (lanlanName) {
+                    targetUrl += `?lanlan_name=${encodeURIComponent(lanlanName)}`;
+                }
+                window.location.href = targetUrl;
+            }, 100);
         });
 
         // 加载模型列表

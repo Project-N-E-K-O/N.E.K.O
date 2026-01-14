@@ -551,7 +551,7 @@ Live2DManager.prototype._createSettingsToggleItem = function (toggle, popup) {
 // 创建设置菜单项
 Live2DManager.prototype._createSettingsMenuItems = function (popup) {
     const settingsItems = [
-        { id: 'live2d-manage', label: window.t ? window.t('settings.menu.live2dSettings') : 'Live2D设置', labelKey: 'settings.menu.live2dSettings', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', urlBase: '/l2d' },
+        { id: 'live2d-manage', label: window.t ? window.t('settings.menu.modelSettings') : '模型管理', labelKey: 'settings.menu.modelSettings', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', urlBase: '/model_manager' },
         { id: 'api-keys', label: window.t ? window.t('settings.menu.apiKeys') : 'API密钥', labelKey: 'settings.menu.apiKeys', icon: '/static/icons/api_key_icon.png', action: 'navigate', url: '/api_key' },
         { id: 'character', label: window.t ? window.t('settings.menu.characterManage') : '角色管理', labelKey: 'settings.menu.characterManage', icon: '/static/icons/character_icon.png', action: 'navigate', url: '/chara_manager' },
         { id: 'voice-clone', label: window.t ? window.t('settings.menu.voiceClone') : '声音克隆', labelKey: 'settings.menu.voiceClone', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_clone' },

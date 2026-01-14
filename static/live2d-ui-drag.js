@@ -309,28 +309,22 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
         // 辅助函数：更新 checkbox 的视觉样式
         const updateCheckboxStyle = (checkbox) => {
             if (!checkbox) return;
-            // toggleItem 是 checkbox 的父元素
             const toggleItem = checkbox.parentElement;
             if (!toggleItem) return;
 
-            // indicator 是 toggleItem 的第二个子元素（第一个是 checkbox，第二个是 indicator）
-            const indicator = toggleItem.children[1];
-            if (!indicator) return;
-
-            // checkmark 是 indicator 的第一个子元素
-            const checkmark = indicator.firstElementChild;
+            const indicator = toggleItem.querySelector('.vrm-toggle-indicator');
+            const checkmark = indicator?.querySelector('.vrm-toggle-checkmark');
+            if (!indicator || !checkmark) return;
 
             if (checkbox.checked) {
-                // 选中状态
                 indicator.style.backgroundColor = '#44b7fe';
                 indicator.style.borderColor = '#44b7fe';
-                if (checkmark) checkmark.style.opacity = '1';
+                checkmark.style.opacity = '1';
                 toggleItem.style.background = 'rgba(68, 183, 254, 0.1)';
             } else {
-                // 未选中状态
                 indicator.style.backgroundColor = 'transparent';
                 indicator.style.borderColor = '#ccc';
-                if (checkmark) checkmark.style.opacity = '0';
+                checkmark.style.opacity = '0';
                 toggleItem.style.background = 'transparent';
             }
         };
