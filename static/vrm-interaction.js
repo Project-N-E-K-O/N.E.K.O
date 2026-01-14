@@ -4,7 +4,8 @@
  */
 
 // 确保 THREE 可用（只从全局对象读取，避免 TDZ ReferenceError）
-const THREE = (typeof window !== 'undefined' && window.THREE) || (typeof globalThis !== 'undefined' && globalThis.THREE) || null;
+// 使用 var 避免重复声明错误，或检查是否已存在
+var THREE = (typeof window !== 'undefined' && window.THREE) || (typeof globalThis !== 'undefined' && globalThis.THREE) || null;
 if (!THREE) {
     console.error('[VRM Interaction] THREE.js 未加载，交互功能将不可用');
 }
@@ -72,6 +73,11 @@ class VRMInteraction {
             this._initTimerId = setTimeout(() => {
                 this._isInitializingDragAndZoom = false;
                 this._initTimerId = null;
+                this._initRetryCount++;
+                if (this._initRetryCount >= this._maxInitRetries) {
+                    console.warn('[VRM Interaction] 相机初始化超时，放弃拖拽和缩放功能');
+                    return;
+                }
                 if (this.manager.camera) {
                     this.initDragAndZoom();
                 }
@@ -113,6 +119,8 @@ class VRMInteraction {
         this.dragHandler = (e) => {
             if (this.checkLocked()) {
                 if (this.isDragging) {
+                    e.preventDefault();
+                    e.stopPropagation();
                     this.isDragging = false;
                     this.dragMode = null;
                     canvas.style.cursor = 'grab';
@@ -144,8 +152,6 @@ class VRMInteraction {
             }
 
             this.previousMousePosition = { x: e.clientX, y: e.clientY };
-            e.preventDefault();
-            e.stopPropagation();
         };
 
         // 3. 鼠标释放
@@ -892,7 +898,11 @@ class VRMInteraction {
     dispose() {
         this.enableMouseTracking(false);
         this.cleanupDragAndZoom();
-
+        // 确保初始化定时器被清理（即使 renderer 不存在）
+        if (this._initTimerId !== null) {
+            clearTimeout(this._initTimerId);
+            this._initTimerId = null;
+        }
         // 清理所有可能的定时器
         if (this._hideButtonsTimer) {
             clearTimeout(this._hideButtonsTimer);

@@ -35,6 +35,11 @@ async function fetchVRMConfig() {
                     isLoaded: true         // 标记已加载
                 };
                 
+                // 派发配置加载完成事件
+                window.dispatchEvent(new CustomEvent('vrm-paths-loaded', {
+                    detail: { paths: window.VRM_PATHS }
+                }));
+                
                 return true;
             }
         } else {

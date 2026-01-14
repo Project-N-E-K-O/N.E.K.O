@@ -839,7 +839,25 @@
 
                     // 检查 HTTP 状态码
                     if (!response.ok) {
-                        throw new Error(`网络请求失败 (HTTP ${response.status})`);
+                        // 尝试读取错误响应体以获取详细错误信息
+                        let errorMessage = `网络请求失败 (HTTP ${response.status})`;
+                        try {
+                            const errorData = await response.json();
+                            if (errorData.error) {
+                                errorMessage = errorData.error;
+                                // 如果有错误类型和堆栈跟踪，也记录到控制台
+                                if (errorData.error_type) {
+                                    console.error(`错误类型: ${errorData.error_type}`);
+                                }
+                                if (errorData.traceback && errorData.traceback.length > 0) {
+                                    console.error('错误堆栈:', errorData.traceback.join('\n'));
+                                }
+                            }
+                        } catch (parseError) {
+                            // 如果无法解析 JSON，使用默认错误消息
+                            console.warn('无法解析错误响应:', parseError);
+                        }
+                        throw new Error(errorMessage);
                     }
 
                     // 检查内容类型，确保是 JSON

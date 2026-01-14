@@ -2,7 +2,8 @@
  * VRM 模型朝向检测和处理模块
  * 在模型加载后、渲染前检测并修正模型朝向
  */
-const THREE = (typeof window !== 'undefined' && window.THREE) || (typeof globalThis !== 'undefined' && globalThis.THREE) || null;
+// 确保 THREE 可用（使用 var 避免重复声明错误）
+var THREE = (typeof window !== 'undefined' && window.THREE) || (typeof globalThis !== 'undefined' && globalThis.THREE) || null;
 class VRMOrientationDetector {
     /**
      * 检测VRM模型是否需要旋转（是否背对屏幕）

@@ -370,7 +370,6 @@ def find_model_directory(model_name: str):
     try:
         if WORKSHOP_SEARCH_DIR and os.path.exists(WORKSHOP_SEARCH_DIR):
             workshop_search_real = os.path.realpath(WORKSHOP_SEARCH_DIR)
-            workshop_search_real = os.path.realpath(WORKSHOP_SEARCH_DIR)
             # 直接匹配（如果模型名称恰好与文件夹名相同）
             workshop_model_dir = os.path.join(WORKSHOP_SEARCH_DIR, model_name)
             if os.path.exists(workshop_model_dir):
@@ -407,7 +406,6 @@ def find_model_directory(model_name: str):
         user_mods_path = config_mgr.get_workshop_path()
         if user_mods_path and os.path.exists(user_mods_path):
             user_mods_path_real = os.path.realpath(user_mods_path)
-            user_mods_path_real = os.path.realpath(user_mods_path)
             # 直接匹配（如果模型名称恰好与文件夹名相同）
             user_mod_model_dir = os.path.join(user_mods_path, model_name)
             if os.path.exists(user_mod_model_dir):
@@ -439,9 +437,6 @@ def find_model_directory(model_name: str):
         logging.warning(f"检查用户mod目录模型时出错: {e}")
     
     # 最后尝试static目录
-    static_dir = 'static'
-    static_dir_real = os.path.realpath(static_dir)
-    static_model_dir = os.path.join(static_dir, model_name)
     static_dir = 'static'
     static_dir_real = os.path.realpath(static_dir)
     static_model_dir = os.path.join(static_dir, model_name)

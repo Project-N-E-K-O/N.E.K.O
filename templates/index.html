@@ -1439,28 +1439,34 @@
                 isLoaded: false
             };
             
-            // 等待 vrm-init.js 中的 fetchVRMConfig 完成（通过轮询 isLoaded）
-            let checkCount = 0;
-            const maxChecks = 50; // 最多检查 50 次（5 秒）
-            const checkConfigLoaded = () => {
-                if (window.VRM_PATHS && window.VRM_PATHS.isLoaded) {
-                    if (window.VRM_PATHS.user_vrm && window.VRM_PATHS.static_vrm) {
-                        VRM_PATHS_CACHE = {
-                            user_vrm: window.VRM_PATHS.user_vrm,
-                            static_vrm: window.VRM_PATHS.static_vrm
-                        };
-                        console.log('[主页] VRM 路径配置已从 vrm-init.js 加载:', VRM_PATHS_CACHE);
-                    }
-                } else if (checkCount < maxChecks) {
-                    checkCount++;
-                    setTimeout(checkConfigLoaded, 100);
-                } else {
-                    console.warn('[主页] VRM 路径配置加载超时，使用默认值');
+            // 使用事件机制等待 vrm-init.js 中的 fetchVRMConfig 完成
+            const handleVRMPathsLoaded = (event) => {
+                const paths = event.detail?.paths || window.VRM_PATHS;
+                if (paths && paths.user_vrm && paths.static_vrm) {
+                    VRM_PATHS_CACHE = {
+                        user_vrm: paths.user_vrm,
+                        static_vrm: paths.static_vrm
+                    };
+                    console.log('[主页] VRM 路径配置已从 vrm-init.js 加载:', VRM_PATHS_CACHE);
                 }
+                window.removeEventListener('vrm-paths-loaded', handleVRMPathsLoaded);
             };
             
-            // 延迟检查，给 vrm-init.js 一些时间加载
-            setTimeout(checkConfigLoaded, 100);
+            // 监听配置加载完成事件
+            window.addEventListener('vrm-paths-loaded', handleVRMPathsLoaded);
+            
+            // 如果配置已经加载（事件可能已经派发），立即处理
+            if (window.VRM_PATHS && window.VRM_PATHS.isLoaded) {
+                handleVRMPathsLoaded({ detail: { paths: window.VRM_PATHS } });
+            } else {
+                // 超时保护：如果 5 秒后仍未加载，使用默认值
+                setTimeout(() => {
+                    if (!VRM_PATHS_CACHE || !VRM_PATHS_CACHE.user_vrm) {
+                        console.warn('[主页] VRM 路径配置加载超时，使用默认值');
+                        window.removeEventListener('vrm-paths-loaded', handleVRMPathsLoaded);
+                    }
+                }, 5000);
+            }
         }
 
         // 同步设置默认值（不阻塞页面加载）
@@ -2048,16 +2054,7 @@
 
                             const modelUrl = convertVRMModelPath(newModelPath);
                             try {
-                                // 获取默认待机动画路径：优先从配置读取，其次使用默认值
-                                const idleAnimationPath = window.lanlan_config?.vrmIdleAnimation || 
-                                    '/static/vrm/animation/wait03.vrma';
-                                await window.vrmManager.loadModel(modelUrl, { 
-                                    autoPlay: false,
-                                    idleAnimation: idleAnimationPath
-                                });
-                                if (window.vrmManager.animation) {
-                                    window.vrmManager.playVRMAAnimation(idleAnimationPath, { loop: true });
-                                }
+                                await loadVRMModelWithIdleAnimation(modelUrl);
                             } catch (error) {
                                 console.error('[主页] VRM模型重新加载失败:', error);
                             }
@@ -2139,16 +2136,7 @@
                                 if (window.vrmManager.currentModel && window.vrmManager.currentModel.vrm) {
                                     const modelUrl = convertVRMModelPath(newModelPath);
                                     try {
-                                        // 获取默认待机动画路径：优先从配置读取，其次使用默认值
-                                        const idleAnimationPath = window.lanlan_config?.vrmIdleAnimation || 
-                                            '/static/vrm/animation/wait03.vrma';
-                                        await window.vrmManager.loadModel(modelUrl, { 
-                                            autoPlay: false,
-                                            idleAnimation: idleAnimationPath
-                                        });
-                                        if (window.vrmManager.animation) {
-                                            window.vrmManager.playVRMAAnimation(idleAnimationPath, { loop: true });
-                                        }
+                                        await loadVRMModelWithIdleAnimation(modelUrl);
                                     } catch (error) {
                                         console.error('[主页] VRM模型重新加载失败:', error);
                                     }
@@ -2387,6 +2375,19 @@
         });
 
         // 安全包装器：防止自递归导致栈溢出
+        // 加载 VRM 模型并播放待机动画的辅助函数
+        async function loadVRMModelWithIdleAnimation(modelUrl) {
+            const idleAnimationPath = window.lanlan_config?.vrmIdleAnimation || 
+                '/static/vrm/animation/wait03.vrma';
+            await window.vrmManager.loadModel(modelUrl, { 
+                autoPlay: false,
+                idleAnimation: idleAnimationPath
+            });
+            if (window.vrmManager.animation) {
+                window.vrmManager.playVRMAAnimation(idleAnimationPath, { loop: true });
+            }
+        }
+
         // 路径转换函数：完全依赖 vrm-init.js 中的权威实现
         // 如果 vrm-init.js 尚未加载，返回默认路径并警告
         function convertVRMModelPath(modelPath, options = {}) {
@@ -2581,14 +2582,30 @@
                 const criticalLive2DModules = ['live2dcubismcore', 'live2d.min.js', 'live2d-init.js'];
                 await loadScriptsSequentially(live2dModules, criticalLive2DModules);
 
-                // 等待Three.js加载完成
-                if (typeof window.THREE === 'undefined') {
+                // 等待Three.js加载完成并确保完全初始化
+                if (typeof window.THREE === 'undefined' || !window.THREE) {
                     await new Promise(resolve => {
+                        let checkCount = 0;
+                        const maxChecks = 50; // 最多等待 5 秒
                         const checkThree = () => {
-                            if (typeof window.THREE !== 'undefined') {
-                                resolve();
-                            } else {
+                            if (typeof window.THREE !== 'undefined' && window.THREE !== null) {
+                                // 确保 THREE 对象有基本属性（验证完整性）
+                                if (window.THREE.Scene && window.THREE.PerspectiveCamera) {
+                                    console.log('[VRM 模块] THREE.js 已完全加载');
+                                    resolve();
+                                } else if (checkCount < maxChecks) {
+                                    checkCount++;
+                                    setTimeout(checkThree, 100);
+                                } else {
+                                    console.warn('[VRM 模块] THREE.js 加载超时，但继续尝试加载 VRM 模块');
+                                    resolve();
+                                }
+                            } else if (checkCount < maxChecks) {
+                                checkCount++;
                                 setTimeout(checkThree, 100);
+                            } else {
+                                console.warn('[VRM 模块] THREE.js 加载超时，但继续尝试加载 VRM 模块');
+                                resolve();
                             }
                         };
                         checkThree();

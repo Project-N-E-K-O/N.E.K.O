@@ -198,7 +198,7 @@ class ConfigManager:
         return fallback
     
     def _get_project_root(self):
-        """获取项目根目录"""
+        """获取项目根目录（私有方法）"""
         if getattr(sys, 'frozen', False):
             # 如果是打包后的exe（PyInstaller）
             if hasattr(sys, '_MEIPASS'):
@@ -210,6 +210,11 @@ class ConfigManager:
         else:
             # 开发模式：使用当前工作目录
             return Path.cwd()
+    
+    @property
+    def project_root(self):
+        """获取项目根目录（公共属性）"""
+        return self._get_project_root()
     
     def _get_project_config_directory(self):
         """获取项目的config目录"""

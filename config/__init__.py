@@ -135,7 +135,6 @@ VRM_LIGHTING_RANGES = {
 
 def get_default_vrm_lighting() -> dict[str, float]:
     """获取默认VRM打光配置的副本"""
-    
     return dict(DEFAULT_VRM_LIGHTING)
 
 DEFAULT_CHARACTERS_CONFIG = {

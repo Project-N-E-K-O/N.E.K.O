@@ -136,7 +136,10 @@ function computeMikkTSpaceTangents( geometry, MikkTSpace, negateSign = true ) {
  * @return {BufferGeometry}
  */
 function mergeBufferGeometries( geometries, useGroups = false ) {
-
+	if ( ! geometries || geometries.length === 0 ) {
+		console.error( 'THREE.BufferGeometryUtils: .mergeBufferGeometries() failed. No geometries provided.' );
+		return null;
+	}
 	const isIndexed = geometries[ 0 ].index !== null;
 
 	const attributesUsed = new Set( Object.keys( geometries[ 0 ].attributes ) );
@@ -997,9 +1000,9 @@ function computeMorphedAttributes( object ) {
 	const normalAttribute = geometry.attributes.normal;
 	const morphNormal = geometry.morphAttributes.normal;
 	if ( ! normalAttribute ) {
-		    console.warn( 'THREE.BufferGeometryUtils: computeMorphedAttributes() requires "normal" attribute.' );
-		    return null;
-		}
+		console.warn( 'THREE.BufferGeometryUtils: computeMorphedAttributes() requires "normal" attribute.' );
+		return null;
+	}
 	const groups = geometry.groups;
 	const drawRange = geometry.drawRange;
 	let i, j, il, jl;

@@ -410,8 +410,43 @@ async def update_catgirl_l2d(name: str, request: Request):
                     characters['猫娘'][name].pop('vrm_animation', None)
                     logger.debug(f"已保存角色 {name} 的VRM模型 {vrm_model}，已清空动作")
                 else:
-                    characters['猫娘'][name]['vrm_animation'] = vrm_animation
-                    logger.debug(f"已保存角色 {name} 的VRM模型 {vrm_model} 和动作 {vrm_animation}")
+                    # 验证 VRM 动画路径：只允许安全的路径前缀，拒绝 URL 方案和路径遍历
+                    vrm_animation_str = str(vrm_animation).strip()
+                    
+                    # 检查是否包含 URL 方案
+                    if '://' in vrm_animation_str or vrm_animation_str.startswith('data:'):
+                        return JSONResponse(
+                            content={
+                                'success': False,
+                                'error': 'VRM动画路径不能包含URL方案'
+                            },
+                            status_code=400
+                        )
+                    
+                    # 检查是否包含路径遍历（..）
+                    if '..' in vrm_animation_str:
+                        return JSONResponse(
+                            content={
+                                'success': False,
+                                'error': 'VRM动画路径不能包含路径遍历（..）'
+                            },
+                            status_code=400
+                        )
+                    
+                    # 检查是否以允许的前缀开头
+                    allowed_animation_prefixes = ['/user_vrm/animation/', '/static/vrm/animation/']
+                    if not any(vrm_animation_str.startswith(prefix) for prefix in allowed_animation_prefixes):
+                        return JSONResponse(
+                            content={
+                                'success': False,
+                                'error': 'VRM动画路径必须以 /user_vrm/animation/ 或 /static/vrm/animation/ 开头'
+                            },
+                            status_code=400
+                        )
+                    
+                    # 使用验证后的值
+                    characters['猫娘'][name]['vrm_animation'] = vrm_animation_str
+                    logger.debug(f"已保存角色 {name} 的VRM模型 {vrm_model} 和动作 {vrm_animation_str}")
             else:
                 logger.debug(f"已保存角色 {name} 的VRM模型 {vrm_model}，动作字段未变更")
         else:
@@ -446,7 +481,7 @@ async def update_catgirl_l2d(name: str, request: Request):
         })
         
     except Exception as e:
-        logger.exception(f"更新角色模型设置失败: {e}")
+        logger.exception("更新角色模型设置失败")
         return JSONResponse(content={
             'success': False,
             'error': str(e)

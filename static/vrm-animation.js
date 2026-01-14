@@ -1,4 +1,6 @@
-const THREE = (typeof window !== 'undefined' && window.THREE) || null;
+// 确保 THREE 可用（使用 var 避免重复声明错误）
+var THREE = (typeof window !== 'undefined' && window.THREE) || (typeof globalThis !== 'undefined' && globalThis.THREE) || null;
+
 if (!THREE) {
     console.error('[VRM Animation] THREE.js 未加载，动画功能将不可用');
 }

@@ -59,7 +59,7 @@ async def get_page_config(lanlan_name: str = ""):
                     logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型绝对路径: {model_path}")
                 else:
                     filename = os.path.basename(vrm_path)
-                    project_root = _config_manager._get_project_root()
+                    project_root = _config_manager.project_root
                     project_vrm_path = project_root / 'static' / 'vrm' / filename
                     if project_vrm_path.exists():
                         model_path = f'{VRM_STATIC_PATH}/{filename}'

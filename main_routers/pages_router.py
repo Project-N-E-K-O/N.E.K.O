@@ -31,7 +31,7 @@ def _render_model_manager(request: Request):
 
 @router.get("/l2d", response_class=HTMLResponse)
 async def get_l2d_manager(request: Request):
-    """渲染模型管理器页面（兼容旧路由）"""
+    """渲染模型管理器页面(兼容旧路由)"""
     return _render_model_manager(request)
 
 

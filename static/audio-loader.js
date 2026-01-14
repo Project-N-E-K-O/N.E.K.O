@@ -167,8 +167,11 @@ class AudioManager {
                 const mouthOpen = Math.min(1, rms * 8); // 放大到 0~1
                 // 设置 Live2D 嘴巴参数
                 model.internalModel.coreModel.setParameterValueById("ParamMouthOpenY", mouthOpen);
-                this.models.get(modelId).animationFrameId = requestAnimationFrame(animate);
-            }
+                const modelData = this.models.get(modelId);
+                if (modelData) {
+                    modelData.animationFrameId = requestAnimationFrame(animate);
+                }
+             }
 
             animate();
         } else if (window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {

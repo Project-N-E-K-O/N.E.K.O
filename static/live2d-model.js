@@ -356,10 +356,11 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
 };
 
 
-// 延迟重新安装覆盖的辅助方法
+
+// 延迟重新安装覆盖的默认超时时间（毫秒）
+const REINSTALL_OVERRIDE_DELAY_MS = 100;
 Live2DManager.prototype._scheduleReinstallOverride = function() {
     if (this._reinstallScheduled) return;
-    
     this._reinstallScheduled = true;
     this._reinstallTimer = setTimeout(() => {
         this._reinstallScheduled = false;
@@ -371,7 +372,7 @@ Live2DManager.prototype._scheduleReinstallOverride = function() {
                 console.warn('延迟重新安装覆盖失败:', reinstallError);
             }
         }
-    }, 100);
+    }, REINSTALL_OVERRIDE_DELAY_MS)
 };
 
 Live2DManager.prototype.installMouthOverride = function() {
@@ -616,11 +617,13 @@ Live2DManager.prototype.installMouthOverride = function() {
                     // 尝试从原型链获取原始方法
                     const CoreModelProto = Object.getPrototypeOf(currentCoreModel);
                     if (CoreModelProto && CoreModelProto.update && typeof CoreModelProto.update === 'function') {
+                        console.log('[Live2D Model] 从原型链成功恢复原始 update 方法');
                         // 临时恢复原始方法，避免无限递归
                         currentCoreModel.update = CoreModelProto.update;
                         // 调用一次原始方法
                         CoreModelProto.update.call(currentCoreModel);
                     } else {
+                        console.warn('[Live2D Model] 原型链上未找到 update 方法，CoreModelProto:', CoreModelProto);
                         // 如果无法恢复，至少让模型继续运行（虽然可能没有口型同步）
                         console.warn('无法恢复原始 update 方法，模型将继续运行但可能没有口型同步');
                     }
@@ -636,7 +639,7 @@ Live2DManager.prototype.installMouthOverride = function() {
             }
         } else {
             // coreModel 已切换，不能使用保存的 origCoreModelUpdate
-            if (currentCoreModel !== coreModel && currentCoreModel !== this._coreModelRef) {
+            if (currentCoreModel !== this._coreModelRef) {
                 console.warn('检测到 coreModel 已切换，清理覆盖以便重新安装');
                 this._mouthOverrideInstalled = false;
                 this._origCoreModelUpdate = null;
