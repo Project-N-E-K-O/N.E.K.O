@@ -276,10 +276,10 @@ async function initVRMModel() {
     if (window._isVRMLoading) {
         return;
     }
-    // 标记开始（共享锁）
-    window._isVRMLoading = true;
     
     try {
+        // 标记开始（共享锁）- 放在 try 块内确保 finally 能正确释放
+        window._isVRMLoading = true;
         // 1. 等待配置加载完成
         if (window.pageConfigReady && typeof window.pageConfigReady.then === 'function') {
             await window.pageConfigReady;

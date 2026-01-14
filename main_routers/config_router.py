@@ -71,8 +71,9 @@ async def get_page_config(lanlan_name: str = ""):
                             model_path = f'{VRM_USER_PATH}/{filename}'
                             logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型在用户目录: {vrm_path} -> {model_path}")
                         else:
-                            model_path = f'{VRM_STATIC_PATH}/{filename}'
-                            logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型路径未找到，使用默认: {vrm_path} -> {model_path}")
+                            # 文件不存在，返回空路径让前端使用默认模型
+                            model_path = ""
+                            logger.warning(f"获取页面配置 - 角色: {target_name}, VRM模型文件未找到: {filename}")
             else:
                 logger.warning(f"角色 {target_name} 的VRM模型路径为空")
         else:

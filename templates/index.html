@@ -2049,7 +2049,12 @@
                             // 确保Three.js场景已初始化（如果被清理了，需要重新初始化）
                             if (!window.vrmManager._isInitialized || !window.vrmManager.scene || !window.vrmManager.camera || !window.vrmManager.renderer) {
                                 console.log('[主页] VRM场景未初始化，重新初始化...');
-                                await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
+                                try {
+                                    await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
+                                } catch (initError) {
+                                    console.error('[主页] VRM场景初始化失败:', initError);
+                                    return;
+                                }
                             }
 
                             const modelUrl = convertVRMModelPath(newModelPath);
@@ -2374,9 +2379,13 @@
             }
         });
 
-        // 安全包装器：防止自递归导致栈溢出
+
         // 加载 VRM 模型并播放待机动画的辅助函数
         async function loadVRMModelWithIdleAnimation(modelUrl) {
+            if (!window.vrmManager) {
+                console.error('[VRM] vrmManager 未初始化，无法加载模型喵');
+                return;
+            }
             const idleAnimationPath = window.lanlan_config?.vrmIdleAnimation || 
                 '/static/vrm/animation/wait03.vrma';
             await window.vrmManager.loadModel(modelUrl, { 

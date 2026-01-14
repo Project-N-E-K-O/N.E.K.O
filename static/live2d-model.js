@@ -372,7 +372,7 @@ Live2DManager.prototype._scheduleReinstallOverride = function() {
                 console.warn('延迟重新安装覆盖失败:', reinstallError);
             }
         }
-    }, REINSTALL_OVERRIDE_DELAY_MS)
+    }, REINSTALL_OVERRIDE_DELAY_MS);
 };
 
 Live2DManager.prototype.installMouthOverride = function() {
@@ -638,28 +638,14 @@ Live2DManager.prototype.installMouthOverride = function() {
                 return;
             }
         } else {
-            // coreModel 已切换，不能使用保存的 origCoreModelUpdate
-            if (currentCoreModel !== this._coreModelRef) {
-                console.warn('检测到 coreModel 已切换，清理覆盖以便重新安装');
-                this._mouthOverrideInstalled = false;
-                this._origCoreModelUpdate = null;
-                this._coreModelRef = null;
-                // 延迟重新安装覆盖（避免在 update 循环中直接调用导致问题）
-                this._scheduleReinstallOverride();
-                return;
-            }
-            
-            // 如果 origCoreModelUpdate 不存在，说明这是第一次调用或者原始方法丢失
+            // 如果 origCoreModelUpdate 不存在，说明原始方法丢失
             // 延迟重新安装覆盖（避免在 update 循环中直接调用导致问题）
-            if (!origCoreModelUpdate) {
-                console.warn('原始 coreModel.update 方法不可用，延迟重新安装覆盖');
-                this._mouthOverrideInstalled = false;
-                this._origCoreModelUpdate = null;
-                this._coreModelRef = null;
-                // 延迟重新安装覆盖
-                this._scheduleReinstallOverride();
-                return;
-            }
+            console.warn('原始 coreModel.update 方法不可用或 coreModel 状态异常，延迟重新安装覆盖');
+            this._mouthOverrideInstalled = false;
+            this._origCoreModelUpdate = null;
+            this._coreModelRef = null;
+            this._scheduleReinstallOverride();
+            return;
         }
     };
 

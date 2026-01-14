@@ -152,7 +152,6 @@ class AudioManager {
             // Live2D模型的口型同步
             const model = window[modelId].live2dModel;
             const dataArray = new Uint8Array(analyser.fftSize);
-            const self = this;
 
             const animate = () => {
                 analyser.getByteTimeDomainData(dataArray);

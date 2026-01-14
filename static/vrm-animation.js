@@ -12,6 +12,7 @@ class VRMAnimation {
 
     constructor(manager) {
         this.manager = manager;
+        this._disposed = false;
         this.vrmaMixer = null;
         this.currentAction = null;
         this.vrmaIsPlaying = false;
@@ -500,6 +501,7 @@ class VRMAnimation {
             this.currentAction.fadeOut(0.5);
             
             this._fadeTimer = setTimeout(() => {
+                if (this._disposed) return;
                 // 只有当 currentAction 仍然是 actionAtStop 时才执行清理（防止取消新启动的 action）
                 if (this.currentAction === actionAtStop) {
                     if (this.vrmaMixer) {
@@ -670,6 +672,7 @@ class VRMAnimation {
     }
 
     dispose() {
+        this._disposed = true;
         this.reset();
         this.stopLipSync();
         if (this.skeletonHelper) {

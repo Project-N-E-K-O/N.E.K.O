@@ -157,15 +157,14 @@ class VRMInteraction {
         // 3. 鼠标释放
         this.mouseUpHandler = async (e) => {
             if (this.isDragging) {
+                e.preventDefault();
++               e.stopPropagation();
                 this.isDragging = false;
                 this.dragMode = null;
                 canvas.style.cursor = 'grab';
 
                 // 拖动结束后保存位置
                 await this._savePositionAfterInteraction();
-
-                e.preventDefault();
-                e.stopPropagation();
             }
         };
         

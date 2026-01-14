@@ -4,6 +4,11 @@
  */
 // 确保 THREE 可用（使用 var 避免重复声明错误）
 var THREE = (typeof window !== 'undefined' && window.THREE) || (typeof globalThis !== 'undefined' && globalThis.THREE) || null;
+
+// 朝向检测阈值常量
+const SPINE_Z_THRESHOLD = 0.05;  // 脊椎向量Z分量的阈值，用于判断模型是否背对屏幕
+const HEAD_Z_THRESHOLD = 0.1;    // 头部位置Z分量的阈值，当脊椎向量不明确时作为备选判断
+
 class VRMOrientationDetector {
     /**
      * 检测VRM模型是否需要旋转（是否背对屏幕）
@@ -42,16 +47,13 @@ class VRMOrientationDetector {
 
         let needsRotation = false;
         
-        if (spineVec.z > 0.05) {
+        if (spineVec.z > SPINE_Z_THRESHOLD) {
             needsRotation = true;
-        } else if (spineVec.z < -0.05) {
-            needsRotation = false;
+        } else if (spineVec.z < -SPINE_Z_THRESHOLD) {
+            // 明确朝向正确，保持 false
         } else {
-            if (headWorldPos.z > 0.1) {
-                needsRotation = true;
-            } else {
-                needsRotation = false;
-            }
+            // 脊椎向量不明确时，使用头部位置作为备选判断
+            needsRotation = headWorldPos.z > HEAD_Z_THRESHOLD;
         }
         
         return needsRotation;
@@ -64,6 +66,7 @@ class VRMOrientationDetector {
      * @returns {Object} 返回处理后的旋转信息 {x, y, z}
      */
     static detectAndFixOrientation(vrm, savedRotation = null) {
+        // 仅当所有旋转分量都有效时才使用保存的旋转值（全有或全无策略）
         if (savedRotation && 
             Number.isFinite(savedRotation.x) && 
             Number.isFinite(savedRotation.y) && 

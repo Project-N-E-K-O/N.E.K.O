@@ -353,17 +353,11 @@ def get_vrm_animations():
         # 返回更详细的错误信息以便调试
         error_message = str(e)
         error_type = type(e).__name__
-        # 提取关键错误信息（最后几行堆栈跟踪）
-        traceback_lines = error_detail.split('\n')
-        relevant_traceback = [line for line in traceback_lines if line.strip()][-10:] if traceback_lines else []
-        
         return JSONResponse(
             status_code=500, 
             content={
                 "success": False, 
-                "error": error_message,
-                "error_type": error_type,
-                "traceback": relevant_traceback
+                "error": error_message
             }
         )
 
