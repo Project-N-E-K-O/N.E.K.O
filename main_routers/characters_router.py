@@ -25,7 +25,7 @@ import dashscope
 from dashscope.audio.tts_v2 import VoiceEnrollmentService
 
 from .shared_state import get_config_manager, get_session_manager, get_initialize_character_data
-from utils.frontend_utils import find_models, find_model_directory
+from utils.frontend_utils import find_models, find_model_directory, is_user_imported_model
 from utils.language_utils import normalize_language_code
 from config import MEMORY_SERVER_PORT, TFLINK_UPLOAD_URL
 
@@ -238,8 +238,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                         if model_files:
                             model_file = model_files[0]
                             
-                            # 使用保存的item_id构建model_path
-                            # 从之前的逻辑中获取saved_item_id
+                            # 使用保存的item_id构建model_path，从之前的逻辑中获取saved_item_id
                             saved_item_id = catgirl_data.get('live2d_item_id', '') if 'catgirl_data' in locals() else ''
                             
                             # 如果有保存的item_id，使用它构建路径
@@ -1508,7 +1507,6 @@ async def save_catgirl_to_model_folder(request: Request):
             return JSONResponse({"success": False, "error": "缺少必要参数"}, status_code=400)
         
         # 使用find_model_directory函数查找模型的实际文件系统路径
-        from utils.frontend_utils import find_model_directory
         model_folder_path, _ = find_model_directory(model_name)
         
         # 检查模型目录是否存在
@@ -1516,23 +1514,8 @@ async def save_catgirl_to_model_folder(request: Request):
             return JSONResponse({"success": False, "error": f"无法找到模型目录: {model_name}"}, status_code=404)
         
         # 检查是否是用户导入的模型，只允许写入用户目录的模型，不允许写入 workshop/static
-        is_user_model = False
-        
-        # 检查是否在用户文档目录下
-        try:
-            config_mgr = get_config_manager()
-            config_mgr.ensure_live2d_directory()
-            user_live2d_dir = os.path.realpath(str(config_mgr.live2d_dir))
-            model_folder_path_real = os.path.realpath(model_folder_path)
-            try:
-                common = os.path.commonpath([user_live2d_dir, model_folder_path_real])
-                if common == user_live2d_dir:
-                    is_user_model = True
-            except ValueError:
-                # 不同驱动器/根目录的情况
-                pass
-        except Exception as e:
-            logger.warning(f"检查用户模型目录时出错: {e}")
+        config_mgr = get_config_manager()
+        is_user_model = is_user_imported_model(model_folder_path, config_mgr)
         
         if not is_user_model:
             return JSONResponse(

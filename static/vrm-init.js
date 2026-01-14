@@ -66,8 +66,7 @@ window._vrmConvertPath = function(modelPath, options = {}) {
     }
     
     
-    // 如果路径已经是有效的站内相对路径，直接返回，避免不必要的回退到默认路径
-    // 使用 window.VRM_PATHS 动态获取前缀，而不是硬编码
+    // 如果路径已经是有效的站内相对路径，直接返回，避免不必要的回退到默认路径；使用 window.VRM_PATHS 动态获取前缀，而不是硬编码
     const getConfiguredPrefixes = () => {
         if (!window.VRM_PATHS) {
             // 如果配置未加载，使用默认前缀
@@ -146,9 +145,8 @@ window._vrmConvertPath = function(modelPath, options = {}) {
             return defaultPath;
         }
     } else {
-        // 如果已经是完整路径（以 / 开头），确保格式正确
+        // 如果已经是完整路径（以 / 开头），确保格式正确；只重映射单段路径，保留多段路径
         modelUrl = modelUrl.replace(/\\/g, '/');
-        // 只重映射单段路径，保留多段路径
         if (!modelUrl.startsWith(userVrmPath + '/') && !modelUrl.startsWith(staticVrmPath + '/')) {
             const pathSegments = modelUrl.split('/').filter(Boolean);
             if (pathSegments.length === 1) {
@@ -480,17 +478,20 @@ window.checkAndLoadVRM = async function() {
         const catgirlConfig = charactersData['猫娘']?.[currentLanlanName];
 
         if (!catgirlConfig) {
+            console.debug('[VRM Check] 未找到当前角色配置，跳过检查');
             return;
         }
 
         const modelType = catgirlConfig.model_type || 'live2d';
         if (modelType !== 'vrm') {
+            console.debug('[VRM Check] 当前角色不是 VRM 模式，跳过检查');
             return;
         }
 
         // 3. 获取VRM路径
         const newModelPath = catgirlConfig.vrm || '';
         if (!newModelPath) {
+            console.debug('[VRM Check] VRM 路径为空，跳过检查');
             return;
         }
 

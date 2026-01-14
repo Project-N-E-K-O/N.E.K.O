@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 
 from .shared_state import get_config_manager
 from .workshop_router import get_subscribed_workshop_items
-from utils.frontend_utils import find_models, find_model_directory, find_model_by_workshop_item_id, find_workshop_item_by_id
+from utils.frontend_utils import find_models, find_model_directory, find_model_by_workshop_item_id, find_workshop_item_by_id, is_user_imported_model
 router = APIRouter(prefix="/api/live2d", tags=["live2d"])
 logger = logging.getLogger("Main")
 
@@ -47,9 +47,8 @@ async def get_live2d_models(simple: bool = False):
                 
                 # 遍历所有物品，提取已安装的模型
                 for item in items:
-                    # 直接使用get_subscribed_workshop_items返回的installedFolder
+                    # 直接使用get_subscribed_workshop_items返回的installedFolder；从publishedFileId字段获取物品ID，而不是item_id
                     installed_folder = item.get('installedFolder')
-                    # 从publishedFileId字段获取物品ID，而不是item_id
                     item_id = item.get('publishedFileId')
                     
                     if installed_folder and os.path.exists(installed_folder) and os.path.isdir(installed_folder) and item_id:
@@ -60,10 +59,9 @@ async def get_live2d_models(simple: bool = False):
                                 
                                 # 避免重复添加
                                 if model_name not in [m['name'] for m in models]:
-                                    # 构建正确的/workshop URL路径，确保没有多余的引号
+                                    # 构建正确的/workshop URL路径，确保没有多余的引号；移除可能的额外引号
                                     path_value = f'/workshop/{item_id}/{filename}'
                                     logger.debug(f"添加模型路径: {path_value!r}, item_id类型: {type(item_id)}, filename类型: {type(filename)}")
-                                    # 移除可能的额外引号
                                     path_value = path_value.strip('"')
                                     models.append({
                                         'name': model_name,
@@ -81,10 +79,9 @@ async def get_live2d_models(simple: bool = False):
                                 if os.path.exists(json_file):
                                     # 避免重复添加
                                     if model_name not in [m['name'] for m in models]:
-                                        # 构建正确的/workshop URL路径，确保没有多余的引号
+                                        # 构建正确的/workshop URL路径，确保没有多余的引号；移除可能的额外引号
                                         path_value = f'/workshop/{item_id}/{model_name}/{model_name}.model3.json'
                                         logger.debug(f"添加子目录模型路径: {path_value!r}, item_id类型: {type(item_id)}, model_name类型: {type(model_name)}")
-                                        # 移除可能的额外引号
                                         path_value = path_value.strip('"')
                                         models.append({
                                             'name': model_name,
@@ -977,23 +974,8 @@ def delete_model(model_name: str):
             return JSONResponse(status_code=404, content={"success": False, "error": f"模型 {model_name} 不存在"})
         
         # 检查是否是用户导入的模型，只能删除用户导入的模型，不能删除系统模型
-        is_user_model = False
-        
-        # 检查是否在用户文档目录下
-        try:
-            config_mgr = get_config_manager()
-            config_mgr.ensure_live2d_directory()
-            user_live2d_dir = os.path.realpath(str(config_mgr.live2d_dir))
-            model_dir_real = os.path.realpath(model_dir)
-            try:
-                common = os.path.commonpath([user_live2d_dir, model_dir_real])
-                if common == user_live2d_dir:
-                    is_user_model = True
-            except ValueError:
-                # 不同驱动器/根目录的情况
-                pass
-        except Exception as e:
-            logger.warning(f"检查用户模型目录时出错: {e}")
+        config_mgr = get_config_manager()
+        is_user_model = is_user_imported_model(model_dir, config_mgr)
         
         if not is_user_model:
             return JSONResponse(status_code=403, content={"success": False, "error": "只能删除用户导入的模型，无法删除系统模型"})

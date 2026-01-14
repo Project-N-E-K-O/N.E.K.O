@@ -57,9 +57,8 @@ class VRMAnimation {
         } catch (error) {
             primaryError = error;
             console.warn('[VRM Animation] 无法导入 @pixiv/three-vrm-animation，请检查 importmap 配置:', error);
-            // 如果 importmap 失败，回退到硬编码路径（兼容性处理）
+            // 如果 importmap 失败，回退到硬编码路径（兼容性处理）；在尝试导入前检查回退文件是否存在
             try {
-                // 在尝试导入前检查回退文件是否存在
                 const fallbackExists = await VRMAnimation._checkFallbackFileExists();
                 if (!fallbackExists) {
                     console.warn('[VRM Animation] 回退文件不存在: /static/libs/three-vrm-animation.module.js，请确保文件已正确部署');
@@ -180,7 +179,10 @@ class VRMAnimation {
     _cleanupOldMixer(vrm) {
         if (this.manager.animationMixer) {
             this.manager.animationMixer.stopAllAction();
-            this.manager.animationMixer.uncacheRoot(vrm.scene);
+            // 添加空值保护，避免传入 null/undefined 导致 Three.js bug
+            if (vrm?.scene) {
+                this.manager.animationMixer.uncacheRoot(vrm.scene);
+            }
             this.manager.animationMixer = null;
         }
         
@@ -188,7 +190,10 @@ class VRMAnimation {
             const oldRoot = this.vrmaMixer.getRoot();
             // 总是清理旧的 VRMA mixer，无论 oldRoot 是否等于当前的 vrm.scene 或 normalized root
             this.vrmaMixer.stopAllAction();
-            this.vrmaMixer.uncacheRoot(oldRoot);
+            // 添加空值保护，避免传入 null/undefined 导致 Three.js bug
+            if (oldRoot) {
+                this.vrmaMixer.uncacheRoot(oldRoot);
+            }
             this.vrmaMixer = null;
             this.currentAction = null;
             this.vrmaIsPlaying = false;
@@ -317,7 +322,11 @@ class VRMAnimation {
     _createAndConfigureAction(clip, mixerRoot, options) {
         if (this.vrmaMixer) {
             this.vrmaMixer.stopAllAction();
-            this.vrmaMixer.uncacheRoot(this.vrmaMixer.getRoot());
+            // 添加空值保护，避免传入 null/undefined 导致 Three.js bug
+            const root = this.vrmaMixer.getRoot();
+            if (root) {
+                this.vrmaMixer.uncacheRoot(root);
+            }
             this.vrmaMixer = null;
             this.currentAction = null;
             this.vrmaIsPlaying = false;

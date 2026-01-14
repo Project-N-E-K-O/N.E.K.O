@@ -9,8 +9,7 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
         throw new Error('PIXI 应用未初始化，请先调用 initPIXI()');
     }
 
-    // 检查是否正在加载模型，防止并发加载导致重复模型叠加
-    // 如果已有加载操作正在进行，拒绝新的加载请求并明确返回错误
+    // 检查是否正在加载模型，防止并发加载导致重复模型叠加；如果已有加载操作正在进行，拒绝新的加载请求并明确返回错误
     if (this._isLoadingModel) {
         console.warn('模型正在加载中，跳过重复加载请求:', modelPath);
         return Promise.reject(new Error('Model is already loading. Please wait for the current operation to complete.'));
@@ -22,8 +21,7 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
     try {
         // 移除当前模型
         if (this.currentModel) {
-            // 关闭所有已打开的设置窗口（防御性检查）
-            // 可通过 options.skipCloseWindows 跳过此操作（例如从设置窗口返回时重新加载模型）
+            // 关闭所有已打开的设置窗口（防御性检查）；可通过 options.skipCloseWindows 跳过此操作（例如从设置窗口返回时重新加载模型）
             if (window.closeAllSettingsWindows && !options.skipCloseWindows) {
                 window.closeAllSettingsWindows();
             }
