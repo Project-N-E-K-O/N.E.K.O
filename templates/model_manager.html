@@ -513,12 +513,21 @@
     <script src="/static/live2d-ui-drag.js"></script>
     <script src="/static/live2d-init.js"></script>
     <!-- Three.js 核心库和importmap（用于ES6模块导入）-->
+    <!-- 
+        重要：确保 @pixiv/three-vrm 和 @pixiv/three-vrm-animation 使用相同的 @pixiv/three-vrm-core 版本
+        如果出现原型不匹配错误，请检查：
+        1. three-vrm.module.min.js 和 three-vrm-animation.module.js 是否基于相同的 three-vrm-core 版本构建
+        2. 建议使用 three-vrm-core v3.x+ 的构建版本（推荐）
+        3. 或者确保两个模块都使用 three-vrm-core v2.x 兼容版本
+        4. 在部署前，检查每个文件内打包的 core 版本号是否一致
+    -->
     <script type="importmap">
     {
         "imports": {
             "three": "/static/libs/three.module.js",
             "three/addons/": "/static/libs/three/addons/",
-            "@pixiv/three-vrm": "/static/libs/three-vrm.module.min.js"
+            "@pixiv/three-vrm": "/static/libs/three-vrm.module.min.js",
+            "@pixiv/three-vrm-animation": "/static/libs/three-vrm-animation.module.js"
         }
     }
     </script>

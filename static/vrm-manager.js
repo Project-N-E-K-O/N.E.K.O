@@ -19,7 +19,20 @@ class VRMManager {
         this._shadowTexture = null;
         this._shadowMaterial = null;
         this._shadowGeometry = null;
-        this._shadowMesh = null; 
+        this._shadowMesh = null;
+        
+        // 模块作用域的 window 事件处理器数组（避免模块间冲突）：_coreWindowHandlers（VRMCore，如 resize）、_uiWindowHandlers（VRMUIButtons，如 resize, live2d-goodbye-click）、_initWindowHandlers（VRMInit，如 visibilitychange）
+        this._coreWindowHandlers = [];
+        this._uiWindowHandlers = [];
+        this._initWindowHandlers = [];
+        
+        // 向后兼容：保留 _windowEventHandlers 作为 core 的别名（避免破坏现有代码）；建议新代码使用 _coreWindowHandlers
+        Object.defineProperty(this, '_windowEventHandlers', {
+            get: () => this._coreWindowHandlers,
+            set: (value) => { this._coreWindowHandlers = value; },
+            enumerable: true,
+            configurable: true
+        });
         
         this._initModules();
     }
@@ -699,12 +712,31 @@ class VRMManager {
             window.cleanupVRMInit();
         }
 
-        // 清理 window 事件监听器（包括 VRMCore.init() 中注册的 resize 监听器）
-        if (this._windowEventHandlers && this._windowEventHandlers.length > 0) {
-            this._windowEventHandlers.forEach(({ event, handler }) => {
+        // 清理 window 事件监听器（按模块分别清理，避免模块间冲突）
+        // 清理 Core 模块的 handlers（VRMCore.init() 中注册的 resize 监听器等）
+        if (this._coreWindowHandlers && this._coreWindowHandlers.length > 0) {
+            this._coreWindowHandlers.forEach(({ event, handler }) => {
                 window.removeEventListener(event, handler);
             });
-            this._windowEventHandlers = [];
+            this._coreWindowHandlers = [];
+        }
+        
+        // 清理 UI 模块的 handlers（VRMUIButtons 中注册的 resize, live2d-goodbye-click 等）
+        // 注意：UI 模块有自己的 cleanupUI() 方法，但这里也清理以确保完整性
+        if (this._uiWindowHandlers && this._uiWindowHandlers.length > 0) {
+            this._uiWindowHandlers.forEach(({ event, handler }) => {
+                window.removeEventListener(event, handler);
+            });
+            this._uiWindowHandlers = [];
+        }
+        
+        // 清理 Init 模块的 handlers（vrm-init.js 中的 visibilitychange 等）
+        // 注意：Init 模块有自己的 cleanupVRMInit() 方法，但这里也清理以确保完整性
+        if (this._initWindowHandlers && this._initWindowHandlers.length > 0) {
+            this._initWindowHandlers.forEach(({ event, handler }) => {
+                window.removeEventListener(event, handler);
+            });
+            this._initWindowHandlers = [];
         }
         
         // 12. 重置引用和状态

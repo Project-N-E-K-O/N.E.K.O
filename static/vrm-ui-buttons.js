@@ -9,14 +9,15 @@ VRMManager.prototype.setupFloatingButtons = function () {
         return; 
     }
     
-    // 清理旧的事件监听器
-    if (this._windowEventHandlers && this._windowEventHandlers.length > 0) {
-        this._windowEventHandlers.forEach(({ event, handler }) => {
+    // 清理旧的事件监听器（使用 UI 模块专用的 handlers 数组）
+    if (!this._uiWindowHandlers) {
+        this._uiWindowHandlers = [];
+    }
+    if (this._uiWindowHandlers.length > 0) {
+        this._uiWindowHandlers.forEach(({ event, handler }) => {
             window.removeEventListener(event, handler);
         });
-        this._windowEventHandlers = [];
-    } else {
-        this._windowEventHandlers = [];
+        this._uiWindowHandlers = [];
     }
     
     // 清理旧的 document 事件监听器
@@ -73,7 +74,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
         }
     };
     applyResponsiveFloatingLayout();
-    this._windowEventHandlers.push({ event: 'resize', handler: applyResponsiveFloatingLayout });
+    this._uiWindowHandlers.push({ event: 'resize', handler: applyResponsiveFloatingLayout });
     window.addEventListener('resize', applyResponsiveFloatingLayout);
 
     const iconVersion = '?v=' + (window.APP_VERSION || '1.0.0');
@@ -325,7 +326,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
     };
     
     // 追踪 goodbye 事件监听器以便清理
-    this._windowEventHandlers.push({ event: 'live2d-goodbye-click', handler: goodbyeHandler });
+    this._uiWindowHandlers.push({ event: 'live2d-goodbye-click', handler: goodbyeHandler });
     window.addEventListener('live2d-goodbye-click', goodbyeHandler);
 
     // 监听 "请她回来" 事件 (由 app.js 或 vrm 自身触发)
@@ -352,8 +353,8 @@ VRMManager.prototype.setupFloatingButtons = function () {
     
     
     // 追踪 return 事件监听器以便清理
-    this._windowEventHandlers.push({ event: 'vrm-return-click', handler: returnHandler });
-    this._windowEventHandlers.push({ event: 'live2d-return-click', handler: returnHandler });
+    this._uiWindowHandlers.push({ event: 'vrm-return-click', handler: returnHandler });
+    this._uiWindowHandlers.push({ event: 'live2d-return-click', handler: returnHandler });
     window.addEventListener('vrm-return-click', returnHandler);
     window.addEventListener('live2d-return-click', returnHandler);
     // 创建"请她回来"按钮
@@ -911,12 +912,12 @@ VRMManager.prototype.cleanupUI = function() {
     const vrmReturnBtn = document.getElementById('vrm-return-button-container');
     if (vrmReturnBtn) vrmReturnBtn.remove();
     
-    // 移除 window 级别的事件监听器，防止内存泄漏
-    if (this._windowEventHandlers && this._windowEventHandlers.length > 0) {
-        this._windowEventHandlers.forEach(({ event, handler }) => {
+    // 移除 window 级别的事件监听器，防止内存泄漏（使用 UI 模块专用的 handlers 数组）
+    if (this._uiWindowHandlers && this._uiWindowHandlers.length > 0) {
+        this._uiWindowHandlers.forEach(({ event, handler }) => {
             window.removeEventListener(event, handler);
         });
-        this._windowEventHandlers = [];
+        this._uiWindowHandlers = [];
     }
     
     // 移除 document 级别的事件监听器，防止内存泄漏

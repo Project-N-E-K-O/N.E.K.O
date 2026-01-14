@@ -16,16 +16,22 @@ class VRMCore {
     }
 
     static _vrmUtilsCache = null;
+    /**
+     * 获取 VRMUtils（带缓存）
+     * 使用 importmap 中的映射，确保与 @pixiv/three-vrm-animation 使用相同的 three-vrm-core 版本
+     * @returns {Promise<VRMUtils|null>} VRMUtils 对象，如果导入失败则返回 null
+     */
     static async _getVRMUtils() {
         if (VRMCore._vrmUtilsCache) {
             return VRMCore._vrmUtilsCache;
         }
         try {
+            // 使用 importmap 中的映射，确保与 @pixiv/three-vrm-animation 使用相同的 three-vrm-core 版本（推荐 v3.x+）
             const { VRMUtils } = await import('@pixiv/three-vrm');
             VRMCore._vrmUtilsCache = VRMUtils;
             return VRMUtils;
         } catch (error) {
-            console.warn('[VRM Core] 无法导入 VRMUtils:', error);
+            console.warn('[VRM Core] 无法导入 VRMUtils，请检查 importmap 配置:', error);
             return null;
         }
     }
@@ -366,18 +372,29 @@ class VRMCore {
         this.manager.scene.add(bottomLight);
         this.manager.bottomLight = bottomLight;
 
-        if (!this.manager._windowEventHandlers) {
-            this.manager._windowEventHandlers = [];
+        // 使用 Core 模块专用的 handlers 数组
+        if (!this.manager._coreWindowHandlers) {
+            this.manager._coreWindowHandlers = [];
         }
         
-        const resizeHandler = () => {
-            if (this.manager && typeof this.manager.onWindowResize === 'function') {
-                this.manager.onWindowResize();
-            }
-        };
+        // 创建命名函数并存储在 manager 上，以便 dispose() 可以移除它；如果已存在则复用，避免重复注册
+        if (!this.manager._resizeHandler) {
+            this.manager._resizeHandler = () => {
+                if (this.manager && typeof this.manager.onWindowResize === 'function') {
+                    this.manager.onWindowResize();
+                }
+            };
+        }
         
-        this.manager._windowEventHandlers.push({ event: 'resize', handler: resizeHandler });
-        window.addEventListener('resize', resizeHandler);
+        // 检查是否已经注册过，避免重复注册
+        const alreadyRegistered = this.manager._coreWindowHandlers.some(
+            h => h.event === 'resize' && h.handler === this.manager._resizeHandler
+        );
+        
+        if (!alreadyRegistered) {
+            this.manager._coreWindowHandlers.push({ event: 'resize', handler: this.manager._resizeHandler });
+            window.addEventListener('resize', this.manager._resizeHandler);
+        }
     }
 
     async loadModel(modelUrl, options = {}) {
@@ -478,8 +495,10 @@ class VRMCore {
                     this.manager.interaction.cleanupFloatingButtonsMouseTracking();
                 }
                 
+                // disposeVRM 内部也会尝试从 parent/scene 移除，这里保留 remove 也行，但必须 await
+                // 确保旧模型完全清理后再继续，避免竞态条件（旧 VRM 还在 deepDispose、新 VRM 已加入 scene）
                 this.manager.scene.remove(this.manager.currentModel.vrm.scene);
-                this.disposeVRM();
+                await this.disposeVRM();
             }
 
             // 获取 VRM 实例
@@ -603,15 +622,8 @@ class VRMCore {
                     }
                 }
 
-                if (preferences.rotation) {
-                    const rot = preferences.rotation;
-                    if (Number.isFinite(rot.x) && Number.isFinite(rot.y) && Number.isFinite(rot.z)) {
-                        vrm.scene.rotation.set(rot.x, rot.y, rot.z);
-                        vrm.scene.updateMatrixWorld(true);
-                    } else {
-                        console.warn(`[VRM Core] rotation值无效:`, rot);
-                    }
-                }
+                // 注意：不在这里直接设置 rotation，避免双重旋转
+                // rotation 将在检测器阶段之后统一设置（见下方代码）
             } else {
                 vrm.scene.position.set(-center.x, -center.y, -center.z);
             }
@@ -629,6 +641,8 @@ class VRMCore {
                 requestAnimationFrame(waitFrames);
             });
             
+            // 旋转设置统一在这里处理，确保只应用一次
+            // 先通过检测器检测并修复方向，然后应用最终的旋转值
             const savedRotation = preferences?.rotation;
             
             const detectedRotation = window.VRMOrientationDetector 
@@ -638,6 +652,7 @@ class VRMCore {
             if (window.VRMOrientationDetector) {
                 window.VRMOrientationDetector.applyRotation(vrm, detectedRotation);
             } else {
+                // 如果没有检测器，回退到直接使用保存的旋转值
                 if (savedRotation && 
                     Number.isFinite(savedRotation.x) && 
                     Number.isFinite(savedRotation.y) && 

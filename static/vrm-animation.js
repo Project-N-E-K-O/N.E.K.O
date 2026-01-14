@@ -22,19 +22,28 @@ class VRMAnimation {
         this.frequencyData = null;
         this._boundsUpdateFrameCounter = 0;
         this._boundsUpdateInterval = 5;
-        this._skinnedMeshes = []; // 缓存的 SkinnedMesh 引用，避免每帧遍历场景
+        this._skinnedMeshes = [];
     }
 
     /**
      * 获取 three-vrm-animation 模块（带缓存）
+     * 使用 importmap 中的映射，确保与 @pixiv/three-vrm 使用相同的 three-vrm-core 版本
      * @returns {Promise<object>} three-vrm-animation 模块对象
      */
     static async _getAnimationModule() {
         if (VRMAnimation._animationModuleCache) {
             return VRMAnimation._animationModuleCache;
         }
-        VRMAnimation._animationModuleCache = await import('/static/libs/three-vrm-animation.module.js');
-        return VRMAnimation._animationModuleCache;
+        try {
+            // 使用 importmap 中的映射，确保与 @pixiv/three-vrm 使用相同的 three-vrm-core 版本
+            VRMAnimation._animationModuleCache = await import('@pixiv/three-vrm-animation');
+            return VRMAnimation._animationModuleCache;
+        } catch (error) {
+            console.warn('[VRM Animation] 无法导入 @pixiv/three-vrm-animation，请检查 importmap 配置:', error);
+            // 如果 importmap 失败，回退到硬编码路径（兼容性处理）
+            VRMAnimation._animationModuleCache = await import('/static/libs/three-vrm-animation.module.js');
+            return VRMAnimation._animationModuleCache;
+        }
     }
 
     _detectVRMVersion(vrm) {

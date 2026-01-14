@@ -65,6 +65,12 @@ window._vrmConvertPath = function(modelPath, options = {}) {
         return defaultPath;
     }
     
+    // vrm-init.js 未就绪时：能直接用的站内路径就别回退喵
+    // 如果路径已经是有效的站内相对路径，直接返回，避免不必要的回退到默认路径
+    if (modelPath.startsWith('/static/vrm/') || modelPath.startsWith('/user_vrm/')) {
+        return modelPath;
+    }
+    
     let modelUrl = modelPath;
     
     // 确保 VRM_PATHS 已初始化
@@ -137,9 +143,9 @@ window._vrmConvertPath = function(modelPath, options = {}) {
 };
 
 
-// 挂载到 window.convertVRMModelPath（保持向后兼容）
-// 注意：_vrmConvertPath 是权威实现，convertVRMModelPath 只是别名
-window.convertVRMModelPath = window.convertVRMModelPath || window._vrmConvertPath;
+
+// 直接赋值确保 _vrmConvertPath 的权威性，不会被已存在的 convertVRMModelPath 覆盖
+window.convertVRMModelPath = window._vrmConvertPath;
 
 // 共享的路径处理工具函数（供 vrm-core.js 和 vrm-init.js 使用）
 window._vrmPathUtils = window._vrmPathUtils || {
@@ -155,6 +161,36 @@ window._vrmPathUtils = window._vrmPathUtils || {
         return normalized.toLowerCase();
     }
 };
+
+/**
+ * 应用 VRM 打光配置到 vrmManager
+ * @param {Object} lighting - 打光配置对象，包含 ambient, main, fill, rim, top, bottom 等属性
+ * @param {Object} vrmManager - VRM 管理器实例
+ * @returns {void}
+ */
+function applyVRMLighting(lighting, vrmManager) {
+    // 如果缺少参数，提前返回
+    if (!lighting || !vrmManager) {
+        return;
+    }
+
+    // 映射：vrmManager 的光源属性名 → lighting 配置的键名
+    const lightMapping = {
+        ambientLight: 'ambient',
+        mainLight: 'main',
+        fillLight: 'fill',
+        rimLight: 'rim',
+        topLight: 'top',
+        bottomLight: 'bottom'
+    };
+
+    // 遍历映射，只有当 vrmManager 属性存在且 lighting[key] !== undefined 时才设置 intensity
+    for (const [vrmManagerProp, lightingKey] of Object.entries(lightMapping)) {
+        if (vrmManager[vrmManagerProp] && lighting[lightingKey] !== undefined) {
+            vrmManager[vrmManagerProp].intensity = lighting[lightingKey];
+        }
+    }
+}
 
 function initializeVRMManager() {
     if (window.vrmManager) return;
@@ -355,27 +391,7 @@ async function initVRMModel() {
         await window.vrmManager.loadModel(modelUrl);
         
         // 页面加载时立即应用打光配置
-        if (window.lanlan_config && window.lanlan_config.lighting && window.vrmManager) {
-            const lighting = window.lanlan_config.lighting;
-            if (window.vrmManager.ambientLight && lighting.ambient !== undefined) {
-                window.vrmManager.ambientLight.intensity = lighting.ambient;
-            }
-            if (window.vrmManager.mainLight && lighting.main !== undefined) {
-                window.vrmManager.mainLight.intensity = lighting.main;
-            }
-            if (window.vrmManager.fillLight && lighting.fill !== undefined) {
-                window.vrmManager.fillLight.intensity = lighting.fill;
-            }
-            if (window.vrmManager.rimLight && lighting.rim !== undefined) {
-                window.vrmManager.rimLight.intensity = lighting.rim;
-            }
-            if (window.vrmManager.topLight && lighting.top !== undefined) {
-                window.vrmManager.topLight.intensity = lighting.top;
-            }
-            if (window.vrmManager.bottomLight && lighting.bottom !== undefined) {
-                window.vrmManager.bottomLight.intensity = lighting.bottom;
-            }
-        }
+        applyVRMLighting(window.lanlan_config?.lighting, window.vrmManager);
 
     } catch (error) {
         console.error('[VRM Init] 错误详情:', error.stack);
@@ -505,28 +521,12 @@ window.checkAndLoadVRM = async function() {
         // 直接使用刚刚拉取的 catgirlConfig 中的 lighting
         const lighting = catgirlConfig.lighting;
         
-        if (lighting && window.vrmManager) {
-            if (window.vrmManager.ambientLight && lighting.ambient !== undefined) {
-                window.vrmManager.ambientLight.intensity = lighting.ambient;
-            }
-            if (window.vrmManager.mainLight && lighting.main !== undefined) {
-                window.vrmManager.mainLight.intensity = lighting.main;
-            }
-            if (window.vrmManager.fillLight && lighting.fill !== undefined) {
-                window.vrmManager.fillLight.intensity = lighting.fill;
-            }
-            if (window.vrmManager.rimLight && lighting.rim !== undefined) {
-                window.vrmManager.rimLight.intensity = lighting.rim;
-            }
-            if (window.vrmManager.topLight && lighting.top !== undefined) {
-                window.vrmManager.topLight.intensity = lighting.top;
-            }
-            if (window.vrmManager.bottomLight && lighting.bottom !== undefined) {
-                window.vrmManager.bottomLight.intensity = lighting.bottom;
-            }
-            
-            // 顺便更新一下全局变量，以防万一
-            if (window.lanlan_config) window.lanlan_config.lighting = lighting;
+        // 应用打光配置
+        applyVRMLighting(lighting, window.vrmManager);
+        
+        // 顺便更新一下全局变量，以防万一
+        if (lighting && window.lanlan_config) {
+            window.lanlan_config.lighting = lighting;
         }
 
     } catch (error) {

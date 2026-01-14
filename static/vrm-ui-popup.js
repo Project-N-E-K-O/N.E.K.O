@@ -455,6 +455,11 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
         if (proactiveChatCheckbox && typeof window.proactiveChatEnabled !== 'undefined') {
             proactiveChatCheckbox.checked = window.proactiveChatEnabled; updateCheckboxStyle(proactiveChatCheckbox);
         }
+        
+        const proactiveVisionCheckbox = popup.querySelector('#vrm-proactive-vision');
+        if (proactiveVisionCheckbox && typeof window.proactiveVisionEnabled !== 'undefined') {
+            proactiveVisionCheckbox.checked = window.proactiveVisionEnabled; updateCheckboxStyle(proactiveVisionCheckbox);
+        }
     }
 
     if (buttonId === 'agent' && !isVisible) window.dispatchEvent(new CustomEvent('live2d-agent-popup-opening'));
