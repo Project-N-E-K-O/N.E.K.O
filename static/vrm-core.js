@@ -462,12 +462,16 @@ class VRMCore {
                 gltf = await loadGLTF(modelUrl);
             } catch (error) {
                 let fallbackUrl = null;
-                if (modelUrl.startsWith('/static/vrm/')) {
-                    const filename = modelUrl.replace('/static/vrm/', '');
-                    fallbackUrl = `/user_vrm/${filename}`;
-                } else if (modelUrl.startsWith('/user_vrm/')) {
-                    const filename = modelUrl.replace('/user_vrm/', '');
-                    fallbackUrl = `/static/vrm/${filename}`;
+                // 使用 window.VRM_PATHS 动态获取路径前缀，而不是硬编码
+                const userPrefix = (window.VRM_PATHS?.user_vrm || '/user_vrm').replace(/\/+$/, '');
+                const staticPrefix = (window.VRM_PATHS?.static_vrm || '/static/vrm').replace(/\/+$/, '');
+                
+                if (modelUrl.startsWith(staticPrefix + '/')) {
+                    const filename = modelUrl.replace(staticPrefix + '/', '');
+                    fallbackUrl = `${userPrefix}/${filename}`;
+                } else if (modelUrl.startsWith(userPrefix + '/')) {
+                    const filename = modelUrl.replace(userPrefix + '/', '');
+                    fallbackUrl = `${staticPrefix}/${filename}`;
                 }
                 
                 if (fallbackUrl) {
@@ -777,17 +781,18 @@ class VRMCore {
             // 根据模型大小和屏幕大小计算合适的相机距离
             // 检查相机是否存在
             if (this.manager.camera && this.manager.camera.fov) {
-                const modelHeight = size.y;
+                // 使用缩放后的模型高度进行一致性校验
+                const scaledModelHeight = size.y * vrm.scene.scale.y;
                 const screenHeight = window.innerHeight;
                 const screenWidth = window.innerWidth;
 
                 // 目标：让模型在屏幕上的高度约为屏幕高度的0.4-0.5倍（类似Live2D）
                 const targetScreenHeight = screenHeight * 0.45;
                 const fov = this.manager.camera.fov * (Math.PI / 180);
-                const distance = (modelHeight / 2) / Math.tan(fov / 2) / targetScreenHeight * screenHeight;
+                const distance = (scaledModelHeight / 2) / Math.tan(fov / 2) / targetScreenHeight * screenHeight;
                 
                 const isMobileDevice = screenWidth <= 768;
-                const cameraY = center.y + (isMobileDevice ? modelHeight * 0.2 : modelHeight * 0.1);
+                const cameraY = center.y + (isMobileDevice ? scaledModelHeight * 0.2 : scaledModelHeight * 0.1);
                 const cameraZ = Math.abs(distance);
                 this.manager.camera.position.set(0, cameraY, cameraZ);
                 this.manager.camera.lookAt(0, center.y, 0);

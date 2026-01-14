@@ -610,6 +610,127 @@ VRMManager.prototype.renderMicList = async function (popup) {
     }
 };
 
+// 创建网格容器的辅助函数（提取到外部避免重复创建）
+function createScreenSourceGridContainer() {
+    const grid = document.createElement('div');
+    Object.assign(grid.style, {
+        display: 'grid',
+        gridTemplateColumns: 'repeat(4, 1fr)',
+        gap: '6px',
+        padding: '4px',
+        width: '100%',
+        boxSizing: 'border-box'
+    });
+    return grid;
+}
+
+// 创建屏幕源选项元素的辅助函数（提取到外部避免重复创建）
+function createScreenSourceOption(source) {
+    const option = document.createElement('div');
+    option.className = 'screen-source-option';
+    option.dataset.sourceId = source.id;
+    Object.assign(option.style, {
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        padding: '4px',
+        cursor: 'pointer',
+        borderRadius: '6px',
+        border: '2px solid transparent',
+        transition: 'all 0.2s ease',
+        background: 'transparent',
+        boxSizing: 'border-box',
+        minWidth: '0'
+    });
+
+    // 缩略图
+    if (source.thumbnail) {
+        const thumb = document.createElement('img');
+        let thumbnailDataUrl = '';
+        try {
+            if (typeof source.thumbnail === 'string') {
+                thumbnailDataUrl = source.thumbnail;
+            } else if (source.thumbnail?.toDataURL) {
+                thumbnailDataUrl = source.thumbnail.toDataURL();
+            }
+            if (!thumbnailDataUrl?.trim()) {
+                throw new Error('缩略图为空');
+            }
+        } catch (e) {
+            console.warn('[屏幕源] 缩略图转换失败:', e);
+            thumbnailDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+        }
+        thumb.src = thumbnailDataUrl;
+        thumb.onerror = () => {
+            thumb.src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+        };
+        Object.assign(thumb.style, {
+            width: '100%',
+            maxWidth: '90px',
+            height: '56px',
+            objectFit: 'cover',
+            borderRadius: '4px',
+            border: '1px solid #ddd',
+            marginBottom: '4px'
+        });
+        option.appendChild(thumb);
+    } else {
+        const iconPlaceholder = document.createElement('div');
+        iconPlaceholder.textContent = source.id.startsWith('screen:') ? '🖥️' : '🪟';
+        Object.assign(iconPlaceholder.style, {
+            width: '100%',
+            maxWidth: '90px',
+            height: '56px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '24px',
+            background: '#f5f5f5',
+            borderRadius: '4px',
+            marginBottom: '4px'
+        });
+        option.appendChild(iconPlaceholder);
+    }
+
+    // 名称
+    const label = document.createElement('span');
+    label.textContent = source.name;
+    Object.assign(label.style, {
+        fontSize: '10px',
+        color: '#333',
+        width: '100%',
+        textAlign: 'center',
+        lineHeight: '1.3',
+        wordBreak: 'break-word',
+        display: '-webkit-box',
+        WebkitLineClamp: '2',
+        WebkitBoxOrient: 'vertical',
+        overflow: 'hidden',
+        height: '26px'
+    });
+    option.appendChild(label);
+
+    // 悬停效果
+    option.addEventListener('mouseenter', () => {
+        option.style.background = 'rgba(68, 183, 254, 0.1)';
+    });
+    option.addEventListener('mouseleave', () => {
+        option.style.background = 'transparent';
+    });
+
+    option.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        // 调用全局的屏幕源选择函数（app.js中定义）
+        if (window.selectScreenSource) {
+            await window.selectScreenSource(source.id, source.name);
+        } else {
+            console.warn('[VRM] window.selectScreenSource 未定义');
+        }
+    });
+
+    return option;
+}
+
 // VRM 专用的屏幕源列表渲染函数
 VRMManager.prototype.renderScreenSourceList = async function (popup) {
     if (!popup) return;
@@ -653,127 +774,6 @@ VRMManager.prototype.renderScreenSourceList = async function (popup) {
         const screens = sources.filter(s => s.id.startsWith('screen:'));
         const windows = sources.filter(s => s.id.startsWith('window:'));
 
-        // 创建网格容器
-        const createGridContainer = () => {
-            const grid = document.createElement('div');
-            Object.assign(grid.style, {
-                display: 'grid',
-                gridTemplateColumns: 'repeat(4, 1fr)',
-                gap: '6px',
-                padding: '4px',
-                width: '100%',
-                boxSizing: 'border-box'
-            });
-            return grid;
-        };
-
-        // 创建屏幕源选项元素
-        const createSourceOption = (source) => {
-            const option = document.createElement('div');
-            option.className = 'screen-source-option';
-            option.dataset.sourceId = source.id;
-            Object.assign(option.style, {
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                padding: '4px',
-                cursor: 'pointer',
-                borderRadius: '6px',
-                border: '2px solid transparent',
-                transition: 'all 0.2s ease',
-                background: 'transparent',
-                boxSizing: 'border-box',
-                minWidth: '0'
-            });
-
-            // 缩略图
-            if (source.thumbnail) {
-                const thumb = document.createElement('img');
-                let thumbnailDataUrl = '';
-                try {
-                    if (typeof source.thumbnail === 'string') {
-                        thumbnailDataUrl = source.thumbnail;
-                    } else if (source.thumbnail?.toDataURL) {
-                        thumbnailDataUrl = source.thumbnail.toDataURL();
-                    }
-                    if (!thumbnailDataUrl?.trim()) {
-                        throw new Error('缩略图为空');
-                    }
-                } catch (e) {
-                    console.warn('[屏幕源] 缩略图转换失败:', e);
-                    thumbnailDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
-                }
-                thumb.src = thumbnailDataUrl;
-                thumb.onerror = () => {
-                    thumb.src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
-                };
-                Object.assign(thumb.style, {
-                    width: '100%',
-                    maxWidth: '90px',
-                    height: '56px',
-                    objectFit: 'cover',
-                    borderRadius: '4px',
-                    border: '1px solid #ddd',
-                    marginBottom: '4px'
-                });
-                option.appendChild(thumb);
-            } else {
-                const iconPlaceholder = document.createElement('div');
-                iconPlaceholder.textContent = source.id.startsWith('screen:') ? '🖥️' : '🪟';
-                Object.assign(iconPlaceholder.style, {
-                    width: '100%',
-                    maxWidth: '90px',
-                    height: '56px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: '24px',
-                    background: '#f5f5f5',
-                    borderRadius: '4px',
-                    marginBottom: '4px'
-                });
-                option.appendChild(iconPlaceholder);
-            }
-
-            // 名称
-            const label = document.createElement('span');
-            label.textContent = source.name;
-            Object.assign(label.style, {
-                fontSize: '10px',
-                color: '#333',
-                width: '100%',
-                textAlign: 'center',
-                lineHeight: '1.3',
-                wordBreak: 'break-word',
-                display: '-webkit-box',
-                WebkitLineClamp: '2',
-                WebkitBoxOrient: 'vertical',
-                overflow: 'hidden',
-                height: '26px'
-            });
-            option.appendChild(label);
-
-            // 悬停效果
-            option.addEventListener('mouseenter', () => {
-                option.style.background = 'rgba(68, 183, 254, 0.1)';
-            });
-            option.addEventListener('mouseleave', () => {
-                option.style.background = 'transparent';
-            });
-
-            option.addEventListener('click', async (e) => {
-                e.stopPropagation();
-                // 调用全局的屏幕源选择函数（app.js中定义）
-                if (window.selectScreenSource) {
-                    await window.selectScreenSource(source.id, source.name);
-                } else {
-                    console.warn('[VRM] window.selectScreenSource 未定义');
-                }
-            });
-
-            return option;
-        };
-
         // 渲染屏幕列表
         if (screens.length > 0) {
             const screenTitle = document.createElement('div');
@@ -788,9 +788,9 @@ VRMManager.prototype.renderScreenSourceList = async function (popup) {
             });
             popup.appendChild(screenTitle);
 
-            const screenGrid = createGridContainer();
+            const screenGrid = createScreenSourceGridContainer();
             screens.forEach(source => {
-                screenGrid.appendChild(createSourceOption(source));
+                screenGrid.appendChild(createScreenSourceOption(source));
             });
             popup.appendChild(screenGrid);
         }
@@ -810,9 +810,9 @@ VRMManager.prototype.renderScreenSourceList = async function (popup) {
             });
             popup.appendChild(windowTitle);
 
-            const windowGrid = createGridContainer();
+            const windowGrid = createScreenSourceGridContainer();
             windows.forEach(source => {
-                windowGrid.appendChild(createSourceOption(source));
+                windowGrid.appendChild(createScreenSourceOption(source));
             });
             popup.appendChild(windowGrid);
         }

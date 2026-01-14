@@ -559,13 +559,17 @@ VRMManager.prototype._startUIUpdateLoop = function() {
         }
         
         if (!this.currentModel || !this.currentModel.vrm) {
-            this._uiUpdateLoopId = requestAnimationFrame(update);
+            if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) {
+                this._uiUpdateLoopId = requestAnimationFrame(update);
+            }
             return;
         }
 
         // 如果处于返回状态，跳过按钮和锁图标的定位与显示
         if (this._isInReturnState) {
-            this._uiUpdateLoopId = requestAnimationFrame(update);
+            if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) {
+                this._uiUpdateLoopId = requestAnimationFrame(update);
+            }
             return;
         }
         
@@ -573,7 +577,9 @@ VRMManager.prototype._startUIUpdateLoop = function() {
         if (window.isMobileWidth()) {
             const now = performance.now();
             if (now - lastMobileUpdate < MOBILE_UPDATE_INTERVAL) {
-                this._uiUpdateLoopId = requestAnimationFrame(update);
+                if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) {
+                    this._uiUpdateLoopId = requestAnimationFrame(update);
+                }
                 return;
             }
             lastMobileUpdate = now;
@@ -583,7 +589,9 @@ VRMManager.prototype._startUIUpdateLoop = function() {
         const lockIcon = this._vrmLockIcon;
         
         if (!this.camera || !this.renderer) {
-            this._uiUpdateLoopId = requestAnimationFrame(update);
+            if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) {
+                this._uiUpdateLoopId = requestAnimationFrame(update);
+            }
             return;
         }
 
@@ -788,8 +796,10 @@ VRMManager.prototype._startUIUpdateLoop = function() {
             }
         }
         
-        // 继续下一帧（存储 RAF ID）
-        this._uiUpdateLoopId = requestAnimationFrame(update);
+        // 继续下一帧（只有在循环未被取消时才重新调度）
+        if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) {
+            this._uiUpdateLoopId = requestAnimationFrame(update);
+        }
     };
     
     // 启动循环（存储初始 RAF ID）

@@ -376,7 +376,7 @@ def get_model_files(model_name: str):
         # 查找模型目录（可能在static或用户文档目录）
         model_dir, url_prefix = find_model_directory(model_name)
         
-        if not os.path.exists(model_dir):
+        if not model_dir or not os.path.exists(model_dir):
             return {"success": False, "error": f"模型 {model_name} 不存在"}
         
         motion_files = []
@@ -425,7 +425,7 @@ def get_model_parameters(model_name: str):
         # 查找模型目录
         model_dir, url_prefix = find_model_directory(model_name)
         
-        if not os.path.exists(model_dir):
+        if not model_dir or not os.path.exists(model_dir):
             return {"success": False, "error": f"模型 {model_name} 不存在"}
         
         # 查找.cdi3.json文件
@@ -480,7 +480,7 @@ async def save_model_parameters(model_name: str, request: Request):
         # 查找模型目录
         model_dir, url_prefix = find_model_directory(model_name)
         
-        if not os.path.exists(model_dir):
+        if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": f"模型 {model_name} 不存在"})
         
         # 获取请求体中的参数
@@ -509,7 +509,7 @@ def load_model_parameters(model_name: str):
         # 查找模型目录
         model_dir, url_prefix = find_model_directory(model_name)
         
-        if not os.path.exists(model_dir):
+        if not model_dir or not os.path.exists(model_dir):
             return {"success": False, "error": f"模型 {model_name} 不存在"}
         
         # 读取parameters.json文件
@@ -543,7 +543,7 @@ def get_model_config_by_id(model_id: str):
             model_dir = ""
             logger.warning(f"通过model_id查找失败: {e}")
 
-        if not os.path.exists(model_dir):
+        if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
         # 查找.model3.json文件
@@ -603,7 +603,7 @@ async def update_model_config_by_id(model_id: str, request: Request):
             model_dir = ""
             logger.warning(f"通过model_id查找失败: {e}")
 
-        if not os.path.exists(model_dir):
+        if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
         # 查找.model3.json文件
@@ -950,7 +950,7 @@ def open_model_directory(model_name: str):
         # 查找模型目录
         model_dir, url_prefix = find_model_directory(model_name)
         
-        if not os.path.exists(model_dir):
+        if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": f"模型目录不存在: {model_dir}"})
         
         # 使用os.startfile在Windows上打开目录
@@ -999,13 +999,17 @@ def delete_model(model_name: str):
             return JSONResponse(status_code=403, content={"success": False, "error": "只能删除用户导入的模型，无法删除系统模型"})
         
         # 再次检查路径是否存在
-        if not os.path.exists(model_dir):
+        if not model_dir or not os.path.exists(model_dir):
             logger.info(f"模型目录不存在，认为已删除: {model_name}")
             return {"success": True, "message": f"模型 {model_name} 已成功删除"}
         
         # 递归删除模型目录
         import shutil
-        shutil.rmtree(model_dir, ignore_errors=True)
+        try:
+            shutil.rmtree(model_dir)
+        except Exception as e:
+            logger.warning(f"删除模型目录时出错: {e}")
+            return JSONResponse(status_code=500, content={"success": False, "error": f"删除模型失败: {e}"})
         
         # 验证删除是否成功
         if os.path.exists(model_dir):

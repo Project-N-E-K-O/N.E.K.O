@@ -232,7 +232,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                 else:
                     # 如果在完整列表中找不到，回退到原来的逻辑
                     model_dir, url_prefix = find_model_directory(live2d_model_name)
-                    if os.path.exists(model_dir):
+                    if model_dir and os.path.exists(model_dir):
                         # 查找模型配置文件
                         model_files = [f for f in os.listdir(model_dir) if f.endswith('.model3.json')]
                         if model_files:
@@ -274,7 +274,7 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
                 else:
                     # 如果找不到，回退到原来的逻辑
                     model_dir, url_prefix = find_model_directory('mao_pro')
-                    if os.path.exists(model_dir):
+                    if model_dir and os.path.exists(model_dir):
                         model_files = [f for f in os.listdir(model_dir) if f.endswith('.model3.json')]
                         if model_files:
                             model_file = model_files[0]
@@ -1471,6 +1471,10 @@ async def save_catgirl_to_model_folder(request: Request):
         # 使用find_model_directory函数查找模型的实际文件系统路径
         from utils.frontend_utils import find_model_directory
         model_folder_path, _ = find_model_directory(model_name)
+        
+        # 检查模型目录是否存在
+        if not model_folder_path:
+            return JSONResponse({"success": False, "error": f"无法找到模型目录: {model_name}"}, status_code=404)
         
         # 确保模型文件夹存在
         if not os.path.exists(model_folder_path):

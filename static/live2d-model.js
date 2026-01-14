@@ -46,26 +46,12 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
             } catch (_) {}
             this._mouthOverrideInstalled = false;
             this._origCoreModelUpdate = null;
+            this._coreModelRef = null;
             // 同时移除 mouthTicker（若曾启用过 ticker 模式）
             if (this._mouthTicker && this.pixi_app && this.pixi_app.ticker) {
                 try { this.pixi_app.ticker.remove(this._mouthTicker); } catch (_) {}
                 this._mouthTicker = null;
             }
-        // 还原 coreModel.update 覆盖
-        try {
-            const coreModel = this.currentModel.internalModel && this.currentModel.internalModel.coreModel;
-            if (coreModel && this._mouthOverrideInstalled && typeof this._origCoreModelUpdate === 'function') {
-                coreModel.update = this._origCoreModelUpdate;
-            }
-        } catch (_) {}
-        this._mouthOverrideInstalled = false;
-        this._origCoreModelUpdate = null;
-        this._coreModelRef = null;
-        // 同时移除 mouthTicker（若曾启用过 ticker 模式）
-        if (this._mouthTicker && this.pixi_app && this.pixi_app.ticker) {
-            try { this.pixi_app.ticker.remove(this._mouthTicker); } catch (_) {}
-            this._mouthTicker = null;
-        }
 
             // 移除由 HTML 锁图标或交互注册的监听，避免访问已销毁的显示对象
             try {
@@ -371,8 +357,24 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     }
 };
 
-// 安装覆盖：同时覆盖 motionManager.update 和 coreModel.update，双重保险
-// motionManager.update 会重置参数，所以在其后覆盖；coreModel.update 前再覆盖一次确保生效
+
+// 延迟重新安装覆盖的辅助方法
+Live2DManager.prototype._scheduleReinstallOverride = function() {
+    if (this._reinstallScheduled) return;
+    
+    this._reinstallScheduled = true;
+    setTimeout(() => {
+        this._reinstallScheduled = false;
+        if (this.currentModel && this.currentModel.internalModel && this.currentModel.internalModel.coreModel) {
+            try {
+                this.installMouthOverride();
+            } catch (reinstallError) {
+                console.warn('延迟重新安装覆盖失败:', reinstallError);
+            }
+        }
+    }, 100);
+};
+
 Live2DManager.prototype.installMouthOverride = function() {
     if (!this.currentModel || !this.currentModel.internalModel) {
         throw new Error('模型未就绪，无法安装口型覆盖');
@@ -629,19 +631,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                 }
                 
                 // 延迟重新安装覆盖（避免在 update 循环中直接调用导致问题）
-                if (!this._reinstallScheduled) {
-                    this._reinstallScheduled = true;
-                    setTimeout(() => {
-                        this._reinstallScheduled = false;
-                        if (this.currentModel && this.currentModel.internalModel && this.currentModel.internalModel.coreModel) {
-                            try {
-                                this.installMouthOverride();
-                            } catch (reinstallError) {
-                                console.warn('延迟重新安装覆盖失败:', reinstallError);
-                            }
-                        }
-                    }, 100);
-                }
+                this._scheduleReinstallOverride();
                 
                 return;
             }
@@ -653,19 +643,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                 this._origCoreModelUpdate = null;
                 this._coreModelRef = null;
                 // 延迟重新安装覆盖（避免在 update 循环中直接调用导致问题）
-                if (!this._reinstallScheduled) {
-                    this._reinstallScheduled = true;
-                    setTimeout(() => {
-                        this._reinstallScheduled = false;
-                        if (this.currentModel && this.currentModel.internalModel && this.currentModel.internalModel.coreModel) {
-                            try {
-                                this.installMouthOverride();
-                            } catch (reinstallError) {
-                                console.warn('延迟重新安装覆盖失败:', reinstallError);
-                            }
-                        }
-                    }, 100);
-                }
+                this._scheduleReinstallOverride();
                 return;
             }
             
@@ -677,19 +655,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                 this._origCoreModelUpdate = null;
                 this._coreModelRef = null;
                 // 延迟重新安装覆盖
-                if (!this._reinstallScheduled) {
-                    this._reinstallScheduled = true;
-                    setTimeout(() => {
-                        this._reinstallScheduled = false;
-                        if (this.currentModel && this.currentModel.internalModel && this.currentModel.internalModel.coreModel) {
-                            try {
-                                this.installMouthOverride();
-                            } catch (reinstallError) {
-                                console.warn('延迟重新安装覆盖失败:', reinstallError);
-                            }
-                        }
-                    }, 100);
-                }
+                this._scheduleReinstallOverride();
                 return;
             }
         }

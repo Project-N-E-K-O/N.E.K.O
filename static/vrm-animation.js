@@ -167,13 +167,12 @@ class VRMAnimation {
         
         if (this.vrmaMixer) {
             const oldRoot = this.vrmaMixer.getRoot();
-            if (oldRoot !== vrm.scene && oldRoot !== vrm.humanoid?._normalizedHumanBones?.root) {
-                this.vrmaMixer.stopAllAction();
-                this.vrmaMixer.uncacheRoot(oldRoot);
-                this.vrmaMixer = null;
-                this.currentAction = null;
-                this.vrmaIsPlaying = false;
-            }
+            // 总是清理旧的 VRMA mixer，无论 oldRoot 是否等于当前的 vrm.scene 或 normalized root
+            this.vrmaMixer.stopAllAction();
+            this.vrmaMixer.uncacheRoot(oldRoot);
+            this.vrmaMixer = null;
+            this.currentAction = null;
+            this.vrmaIsPlaying = false;
         }
     }
 
@@ -301,6 +300,8 @@ class VRMAnimation {
             this.vrmaMixer.stopAllAction();
             this.vrmaMixer.uncacheRoot(this.vrmaMixer.getRoot());
             this.vrmaMixer = null;
+            this.currentAction = null;
+            this.vrmaIsPlaying = false;
         }
         
         this.vrmaMixer = new window.THREE.AnimationMixer(mixerRoot);

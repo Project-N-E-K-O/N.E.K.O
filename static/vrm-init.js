@@ -277,7 +277,13 @@ async function initVRMModel() {
                         if (charData.vrm) window.lanlan_config.vrm = charData.vrm;
                     }
                 } else {
-                    console.warn('[VRM Init] 获取角色数据失败，HTTP 状态:', res.status, res.statusText);
+                    if (res.status === 404) {
+                        console.warn('[VRM Init] 角色数据接口不存在 (404)');
+                    } else if (res.status >= 500) {
+                        console.error('[VRM Init] 服务器错误:', res.status, res.statusText);
+                    } else {
+                        console.warn('[VRM Init] 获取角色数据失败，HTTP 状态:', res.status, res.statusText);
+                    }
                 }
             }
         } catch (e) {

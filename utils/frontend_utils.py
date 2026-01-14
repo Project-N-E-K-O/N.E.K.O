@@ -490,8 +490,9 @@ def find_model_config_file(model_name: str) -> str:
     """
     model_dir, url_prefix = find_model_directory(model_name)
     
-    if not os.path.exists(model_dir):
-        return f"{url_prefix}/{model_name}/{model_name}.model3.json"  # 默认路径
+    if not model_dir or not os.path.exists(model_dir):
+        # 如果找不到模型目录，返回 None 或空字符串，而不是默认路径
+        return None
     
     # 查找.model3.json文件
     for file in os.listdir(model_dir):

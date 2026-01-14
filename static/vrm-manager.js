@@ -540,7 +540,9 @@ class VRMManager {
                 }
             };
             
-            setTimeout(() => {
+            // 将初始 setTimeout 的返回值赋值给 _retryTimerId，以便 dispose() 可以清理
+            this._retryTimerId = setTimeout(() => {
+                this._retryTimerId = null; // 回调执行时清除引用
                 tryPlayAnimation();
             }, 100);
         } else {
