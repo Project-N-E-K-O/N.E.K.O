@@ -285,6 +285,15 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     // 设置常驻表情
     try { await this.syncEmotionMappingWithServer({ replacePersistentOnly: true }); } catch(_) {}
     await this.setupPersistentExpressions();
+    
+    // 调用常驻表情应用完成的回调（事件驱动方式，替代不可靠的 setTimeout）
+    if (options.onResidentExpressionApplied && typeof options.onResidentExpressionApplied === 'function') {
+        try {
+            options.onResidentExpressionApplied(model);
+        } catch (callbackError) {
+            console.warn('[Live2D Model] 常驻表情应用完成回调执行失败:', callbackError);
+        }
+    }
 
     // 记录模型的初始参数（用于expression重置）
     this.recordInitialParameters();

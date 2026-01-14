@@ -691,36 +691,48 @@ VRMManager.prototype._startUIUpdateLoop = function() {
                 const screenX = (btnPos.x * 0.5 + 0.5) * canvasWidth;
                 const screenY = (-(btnPos.y * 0.5) + 0.5) * canvasHeight;
                 
-                // 应用缩放到容器（使用 transform-origin: left top 确保从左上角缩放）
-                buttonsContainer.style.transformOrigin = 'left top';
+                // 检测移动端布局（与 applyResponsiveFloatingLayout 保持一致）
+                const isMobile = window.isMobileWidth();
+                
+                // 应用缩放到容器
+                // 移动端使用 bottom/right 定位，transform-origin 需要相应调整
+                if (isMobile) {
+                    buttonsContainer.style.transformOrigin = 'right bottom';
+                } else {
+                    buttonsContainer.style.transformOrigin = 'left top';
+                }
                 buttonsContainer.style.transform = `scale(${scale})`;
 
-                // 计算目标位置（应用偏移，减小垂直偏移让按钮更靠近模型）
-                // 注意：screenX/screenY 是相对于 canvas 的坐标，需要加上 canvas 的偏移量
-                const targetX = canvasRect.left + screenX;
-                const targetY = canvasRect.top + screenY - 50;  // 从 -100 减小到 -50，更靠近模型
-                
-                // 使用缩放后的实际工具栏高度和宽度（用于边界限制）
-                const actualToolbarHeight = baseToolbarHeight * scale;
-                const actualToolbarWidth = 48 * scale;  // 按钮宽度
-                
-                // 屏幕边缘限制（参考 Live2D 的实现）
-                // 使用窗口尺寸进行边界限制（因为按钮是相对于窗口定位的）
-                const minMargin = 10;  // 最小边距
-                const windowWidth = window.innerWidth;
-                const windowHeight = window.innerHeight;
-                
-                // X轴边界限制：确保按钮容器不超出屏幕右边界
-                const maxX = windowWidth - actualToolbarWidth - minMargin;
-                const clampedX = Math.max(minMargin, Math.min(targetX, maxX));
-                
-                // Y轴边界限制：确保按钮容器不超出屏幕上下边界
-                const minY = minMargin;
-                const maxY = windowHeight - actualToolbarHeight - minMargin;
-                const clampedY = Math.max(minY, Math.min(targetY, maxY));
-                
-                buttonsContainer.style.left = `${clampedX}px`;
-                buttonsContainer.style.top = `${clampedY}px`;
+                // 在移动端，跳过设置 left/top，保持 applyResponsiveFloatingLayout 设置的 bottom/right
+                // 桌面端正常设置 left/top 进行动态定位
+                if (!isMobile) {
+                    // 计算目标位置（应用偏移，减小垂直偏移让按钮更靠近模型）
+                    // 注意：screenX/screenY 是相对于 canvas 的坐标，需要加上 canvas 的偏移量
+                    const targetX = canvasRect.left + screenX;
+                    const targetY = canvasRect.top + screenY - 50;  // 从 -100 减小到 -50，更靠近模型
+                    
+                    // 使用缩放后的实际工具栏高度和宽度（用于边界限制）
+                    const actualToolbarHeight = baseToolbarHeight * scale;
+                    const actualToolbarWidth = 48 * scale;  // 按钮宽度
+                    
+                    // 屏幕边缘限制（参考 Live2D 的实现）
+                    // 使用窗口尺寸进行边界限制（因为按钮是相对于窗口定位的）
+                    const minMargin = 10;  // 最小边距
+                    const windowWidth = window.innerWidth;
+                    const windowHeight = window.innerHeight;
+                    
+                    // X轴边界限制：确保按钮容器不超出屏幕右边界
+                    const maxX = windowWidth - actualToolbarWidth - minMargin;
+                    const clampedX = Math.max(minMargin, Math.min(targetX, maxX));
+                    
+                    // Y轴边界限制：确保按钮容器不超出屏幕上下边界
+                    const minY = minMargin;
+                    const maxY = windowHeight - actualToolbarHeight - minMargin;
+                    const clampedY = Math.max(minY, Math.min(targetY, maxY));
+                    
+                    buttonsContainer.style.left = `${clampedX}px`;
+                    buttonsContainer.style.top = `${clampedY}px`;
+                }
                 // 不要在这里设置 display，让鼠标检测逻辑和初始显示逻辑来控制显示/隐藏（与 Live2D 保持一致） 
             }
 

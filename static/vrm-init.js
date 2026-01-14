@@ -65,7 +65,7 @@ window._vrmConvertPath = function(modelPath, options = {}) {
         return defaultPath;
     }
     
-    // vrm-init.js 未就绪时：能直接用的站内路径就别回退喵
+    
     // 如果路径已经是有效的站内相对路径，直接返回，避免不必要的回退到默认路径
     if (modelPath.startsWith('/static/vrm/') || modelPath.startsWith('/user_vrm/')) {
         return modelPath;
@@ -157,7 +157,14 @@ window._vrmPathUtils = window._vrmPathUtils || {
     normalizePath: (path) => {
         if (!path || typeof path !== 'string') return '';
         let normalized = path.replace(/^https?:\/\/[^\/]+/, '');
-        normalized = normalized.replace(/^\/(user_vrm|static\/vrm)\//, '/');
+        // 使用 window.VRM_PATHS 动态获取路径前缀，而不是硬编码
+        const userPrefix = (window.VRM_PATHS?.user_vrm || '/user_vrm').replace(/\/+$/, '');
+        const staticPrefix = (window.VRM_PATHS?.static_vrm || '/static/vrm').replace(/\/+$/, '');
+        // 转义正则表达式特殊字符并构建匹配模式
+        const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        normalized = normalized
+            .replace(new RegExp(`^${escapeRegex(userPrefix)}/`), '/')
+            .replace(new RegExp(`^${escapeRegex(staticPrefix)}/`), '/');
         return normalized.toLowerCase();
     }
 };
@@ -315,11 +322,9 @@ async function initVRMModel() {
                 targetModelPath.trim() === ''
             ))) {
             // 获取当前是否应该处于 VRM 模式
-            // (检查全局配置是否指定了 model_type: 'vrm')
             const isVRMMode = window.lanlan_config && window.lanlan_config.model_type === 'vrm';
 
             // 只有在 "存在 Live2D 对象" 且 "当前配置不是 VRM 模式" 时，才真的退出
-            // 这样即使 window.cubism4Model 没销毁，只要配置切到了 vrm，就会继续往下走
             if (window.cubism4Model && !isVRMMode) {
                 return; // Live2D 模式且未强制切换，跳过 VRM 默认加载
             }
@@ -385,8 +390,8 @@ async function initVRMModel() {
         // 使用统一的路径转换工具函数
         const modelUrl = window.convertVRMModelPath(targetModelPath);
 
-        // 执行加载
-        // 【简化】朝向会自动检测并保存（在vrm-core.js的loadModel中处理）
+        
+        // 朝向会自动检测并保存（在vrm-core.js的loadModel中处理）
         // 如果模型背对屏幕，会自动翻转180度并保存，下次加载时直接应用
         await window.vrmManager.loadModel(modelUrl);
         

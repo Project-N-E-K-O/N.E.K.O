@@ -64,6 +64,118 @@ window.LanLan1.setMouth = function(value) {
     }
 };
 
+/**
+ * 清理 VRM 资源（抽取为独立函数以提高可读性）
+ * 处理初始化中的竞态条件、双重释放等问题
+ */
+async function cleanupVRMResources() {
+    if (!window.vrmManager) return;
+    
+    try {
+        // 如果 VRM 正在初始化，等待其完成或通过 dispose() 取消
+        // 不要直接设置 _isVRMInitializing = false，避免竞态条件
+        let hasDisposed = false;
+        if (window._isVRMInitializing) {
+            let waitCount = 0;
+            const maxWait = 50; // 最多等待 5 秒 (50 * 100ms)
+            while (window._isVRMInitializing && waitCount < maxWait) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+                waitCount++;
+            }
+            if (window._isVRMInitializing) {
+                console.warn('[Live2D Init] VRM 初始化超时，通过 dispose() 取消初始化');
+                // 通过 dispose() 取消初始化（确保资源正确清理，由 initVRMModel 的 finally 块设置 _isVRMInitializing = false）
+                if (typeof window.vrmManager.dispose === 'function') {
+                    try {
+                        await window.vrmManager.dispose();
+                        hasDisposed = true;
+                    } catch (disposeError) {
+                        console.warn('[Live2D Init] 调用 dispose() 取消初始化时出错:', disposeError);
+                    }
+                }
+            }
+        }
+        
+        // 使用 dispose() 作为主要清理路径（确保资源正确清理，包括取消正在进行的初始化）；如果已调用过则不再重复
+        if (!hasDisposed && typeof window.vrmManager.dispose === 'function') {
+            await window.vrmManager.dispose();
+            console.log('[Live2D Init] 已清理VRM管理器');
+            
+            // 只有在确认 dispose() 完成且初始化标志已清除时才清理引用（由 initVRMModel 的 finally 块处理 _isVRMInitializing）
+            if (window.vrmManager && !window._isVRMInitializing) {
+                if (window.vrmManager.currentModel) {
+                    window.vrmManager.currentModel = null;
+                }
+                if (window.vrmManager.renderer) {
+                    window.vrmManager.renderer = null;
+                }
+                if (window.vrmManager.scene) {
+                    window.vrmManager.scene = null;
+                }
+            }
+        } else {
+            // 降级方案：如果 dispose 不存在，手动清理（避免双重释放）；只有在确认初始化已完成时才清理
+            if (!window._isVRMInitializing) {
+                if (window.vrmManager.renderer) {
+                    window.vrmManager.renderer.dispose();
+                    window.vrmManager.renderer = null;
+                    console.log('[Live2D Init] 已清理Three.js渲染器（降级方案）');
+                }
+                if (window.vrmManager.scene) {
+                    window.vrmManager.scene.clear();
+                    window.vrmManager.scene = null;
+                    console.log('[Live2D Init] 已清理Three.js场景（降级方案）');
+                }
+                if (window.vrmManager) {
+                    window.vrmManager.currentModel = null;
+                }
+            } else {
+                console.warn('[Live2D Init] VRM 正在初始化中，跳过手动清理（等待 dispose 或初始化完成）');
+            }
+        }
+    } catch (cleanupError) {
+        console.warn('[Live2D Init] VRM清理时出现警告:', cleanupError);
+        // 如果 dispose 抛出错误，尝试降级清理；只有在确认初始化已完成时才清理
+        try {
+            if (!window._isVRMInitializing) {
+                // 只有在初始化已完成时才清理
+                if (window.vrmManager && !window.vrmManager.renderer && !window.vrmManager.scene) {
+                    // dispose 可能已经部分清理，只清理剩余引用
+                    if (window.vrmManager.currentModel) {
+                        window.vrmManager.currentModel = null;
+                    }
+                } else {
+                    // dispose 可能完全失败，尝试手动清理
+                    if (window.vrmManager?.renderer) {
+                        try {
+                            window.vrmManager.renderer.dispose();
+                        } catch (e) {
+                            // 忽略 dispose 错误
+                        }
+                        window.vrmManager.renderer = null;
+                    }
+                    if (window.vrmManager?.scene) {
+                        try {
+                            window.vrmManager.scene.clear();
+                        } catch (e) {
+                            // 忽略 clear 错误
+                        }
+                        window.vrmManager.scene = null;
+                    }
+                    if (window.vrmManager) {
+                        window.vrmManager.currentModel = null;
+                    }
+                }
+            } else {
+                console.warn('[Live2D Init] VRM 正在初始化中，跳过降级清理（等待初始化完成）');
+            }
+        } catch (fallbackError) {
+            console.error('[Live2D Init] 降级清理也失败:', fallbackError);
+            // 不要直接设置 _isVRMInitializing = false，这应该由 initVRMModel 的 finally 块处理
+        }
+    }
+}
+
 // 自动初始化函数（延迟执行，等待 cubism4Model 设置）
 async function initLive2DModel() {
     // 检查是否在 VRM 模式下，如果是则跳过 Live2D 初始化
@@ -76,13 +188,21 @@ async function initLive2DModel() {
     // 检查是否在 model_manager 页面且当前选择的是 VRM 模型
     const isModelManagerPage = window.location.pathname.includes('model_manager');
     if (isModelManagerPage) {
-        // 检查当前选择的模型类型
+        // 优先使用模型类型选择器（radio/checkbox）来检测当前活跃的模型类型（更健壮）
+        const activeModelType = document.querySelector('input[name="modelType"]:checked')?.value;
+        if (activeModelType === 'vrm') {
+            console.log('[Live2D Init] 模型管理页面当前选择的是 VRM 模型（通过 modelType 选择器），跳过 Live2D 初始化');
+            return;
+        }
+        
+        // 回退方案：检查选择器状态（防御性编程，处理边界情况）
         const vrmModelSelect = document.querySelector('#vrmModelSelect');
         const live2dModelSelect = document.querySelector('#live2dModelSelect');
         
         // 如果 VRM 模型选择器存在且有选中值，且 Live2D 选择器没有选中值，说明当前是 VRM 模式
+        // 注意：这里假设两个选择器是互斥的，如果同时有值，优先检查 modelType 选择器
         if (vrmModelSelect && vrmModelSelect.value && (!live2dModelSelect || !live2dModelSelect.value)) {
-            console.log('[Live2D Init] 模型管理页面当前选择的是 VRM 模型，跳过 Live2D 初始化');
+            console.log('[Live2D Init] 模型管理页面当前选择的是 VRM 模型（通过选择器状态），跳过 Live2D 初始化');
             return;
         }
     }
@@ -120,111 +240,8 @@ async function initLive2DModel() {
             console.log('[Live2D Init] 已清理VRM回来按钮');
         }
 
-        // 清理VRM管理器和Three.js场景
-        if (window.vrmManager) {
-            try {
-                // 如果 VRM 正在初始化，等待其完成或通过 dispose() 取消；不要直接设置 _isVRMInitializing = false，避免竞态条件
-                let hasDisposed = false;
-                if (window._isVRMInitializing) {
-                    let waitCount = 0;
-                    const maxWait = 50; // 最多等待 5 秒 (50 * 100ms)
-                    while (window._isVRMInitializing && waitCount < maxWait) {
-                        await new Promise(resolve => setTimeout(resolve, 100));
-                        waitCount++;
-                    }
-                    if (window._isVRMInitializing) {
-                        console.warn('[Live2D Init] VRM 初始化超时，通过 dispose() 取消初始化');
-                        // 通过 dispose() 取消初始化（确保资源正确清理，由 initVRMModel 的 finally 块设置 _isVRMInitializing = false）
-                        if (typeof window.vrmManager.dispose === 'function') {
-                            try {
-                                await window.vrmManager.dispose();
-                                hasDisposed = true;
-                            } catch (disposeError) {
-                                console.warn('[Live2D Init] 调用 dispose() 取消初始化时出错:', disposeError);
-                            }
-                        }
-                    }
-                }
-                
-                // 使用 dispose() 作为主要清理路径（确保资源正确清理，包括取消正在进行的初始化）；如果已调用过则不再重复
-                if (!hasDisposed && typeof window.vrmManager.dispose === 'function') {
-                    await window.vrmManager.dispose();
-                    console.log('[Live2D Init] 已清理VRM管理器');
-                    
-                    // 只有在确认 dispose() 完成且初始化标志已清除时才清理引用（由 initVRMModel 的 finally 块处理 _isVRMInitializing）
-                    if (window.vrmManager && !window._isVRMInitializing) {
-                        if (window.vrmManager.currentModel) {
-                            window.vrmManager.currentModel = null;
-                        }
-                        if (window.vrmManager.renderer) {
-                            window.vrmManager.renderer = null;
-                        }
-                        if (window.vrmManager.scene) {
-                            window.vrmManager.scene = null;
-                        }
-                    }
-                } else {
-                    // 降级方案：如果 dispose 不存在，手动清理（避免双重释放）；只有在确认初始化已完成时才清理
-                    if (!window._isVRMInitializing) {
-                        if (window.vrmManager.renderer) {
-                            window.vrmManager.renderer.dispose();
-                            window.vrmManager.renderer = null;
-                            console.log('[Live2D Init] 已清理Three.js渲染器（降级方案）');
-                        }
-                        if (window.vrmManager.scene) {
-                            window.vrmManager.scene.clear();
-                            window.vrmManager.scene = null;
-                            console.log('[Live2D Init] 已清理Three.js场景（降级方案）');
-                        }
-                        if (window.vrmManager) {
-                            window.vrmManager.currentModel = null;
-                        }
-                    } else {
-                        console.warn('[Live2D Init] VRM 正在初始化中，跳过手动清理（等待 dispose 或初始化完成）');
-                    }
-                }
-            } catch (cleanupError) {
-                console.warn('[Live2D Init] VRM清理时出现警告:', cleanupError);
-                // 如果 dispose 抛出错误，尝试降级清理；只有在确认初始化已完成时才清理
-                try {
-                    if (!window._isVRMInitializing) {
-                        // 只有在初始化已完成时才清理
-                        if (window.vrmManager && !window.vrmManager.renderer && !window.vrmManager.scene) {
-                            // dispose 可能已经部分清理，只清理剩余引用
-                            if (window.vrmManager.currentModel) {
-                                window.vrmManager.currentModel = null;
-                            }
-                        } else {
-                            // dispose 可能完全失败，尝试手动清理
-                            if (window.vrmManager?.renderer) {
-                                try {
-                                    window.vrmManager.renderer.dispose();
-                                } catch (e) {
-                                    // 忽略 dispose 错误
-                                }
-                                window.vrmManager.renderer = null;
-                            }
-                            if (window.vrmManager?.scene) {
-                                try {
-                                    window.vrmManager.scene.clear();
-                                } catch (e) {
-                                    // 忽略 clear 错误
-                                }
-                                window.vrmManager.scene = null;
-                            }
-                            if (window.vrmManager) {
-                                window.vrmManager.currentModel = null;
-                            }
-                        }
-                    } else {
-                        console.warn('[Live2D Init] VRM 正在初始化中，跳过降级清理（等待初始化完成）');
-                    }
-                } catch (fallbackError) {
-                    console.error('[Live2D Init] 降级清理也失败:', fallbackError);
-                    // 不要直接设置 _isVRMInitializing = false，这应该由 initVRMModel 的 finally 块处理
-                }
-            }
-        }
+        // 清理VRM管理器和Three.js场景（使用抽取的清理函数）
+        await cleanupVRMResources();
 
         // 确保Live2D容器可见
         const live2dContainer = document.getElementById('live2d-container');
@@ -285,10 +302,28 @@ async function initLive2DModel() {
                     if (modelName) {
                         modelPreferences = preferences.find(p => {
                             if (!p || !p.model_path) return false;
-                            if (p.model_path.includes(modelName)) {
-                                console.log('模型名称匹配成功:', p.model_path);
+                            
+                            // 分割路径（支持 '/' 和 '\\'）
+                            const pathSegments = p.model_path.split(/[/\\]/).filter(seg => seg);
+                            
+                            // 检查是否有任何完整段等于 modelName（精确匹配，不是子字符串）
+                            const hasExactSegmentMatch = pathSegments.some(seg => seg === modelName);
+                            if (hasExactSegmentMatch) {
+                                console.log('模型名称匹配成功（完整段匹配）:', p.model_path);
                                 return true;
                             }
+                            
+                            // 获取最后一个路径段的 basename（去掉扩展名）
+                            if (pathSegments.length > 0) {
+                                const lastSegment = pathSegments[pathSegments.length - 1];
+                                // 去掉常见扩展名（.model3.json, .model.json, .json 等）
+                                const basename = lastSegment.replace(/\.(model3\.json|model\.json|json)$/i, '');
+                                if (basename === modelName) {
+                                    console.log('模型名称匹配成功（basename匹配）:', p.model_path);
+                                    return true;
+                                }
+                            }
+                            
                             return false;
                         });
                     }
@@ -299,7 +334,7 @@ async function initLive2DModel() {
                     console.log('尝试部分路径匹配...');
                     modelPreferences = preferences.find(p => {
                         if (!p || !p.model_path) return false;
-                        const prefPathParts = p.model_path.split('/').filter(p => p);
+                        const prefPathParts = p.model_path.split('/').filter(part => part);
                         
                         // 获取文件名（最后一个路径段）
                         const targetFilename = targetPathParts[targetPathParts.length - 1];
@@ -362,22 +397,19 @@ async function initLive2DModel() {
 
         // 只有在非模型管理界面且有模型路径时才自动加载模型
         if (!isModelManagerPage && targetModelPath) {
-            // 加载模型
+            // 加载模型（使用事件驱动方式，在常驻表情应用完成后应用参数）
             await window.live2dManager.loadModel(targetModelPath, {
                 preferences: modelPreferences,
-                isMobile: window.innerWidth <= 768
-            });
-
-            // 确保参数在常驻表情设置后再次应用（防止被覆盖）
-            if (modelPreferences && modelPreferences.parameters) {
-                const model = window.live2dManager.getCurrentModel();
-                if (model && model.internalModel && model.internalModel.coreModel) {
-                    // 延迟一点确保常驻表情已经设置完成
-                    setTimeout(() => {
+                isMobile: window.innerWidth <= 768,
+                // 在常驻表情应用完成后应用参数（事件驱动，替代不可靠的 setTimeout）
+                onResidentExpressionApplied: (model) => {
+                    if (modelPreferences && modelPreferences.parameters && 
+                        model && model.internalModel && model.internalModel.coreModel) {
                         window.live2dManager.applyModelParameters(model, modelPreferences.parameters);
-                    }, 300);
+                        console.log('[Live2D Init] 在常驻表情应用后已重新应用用户偏好参数');
+                    }
                 }
-            }
+            });
 
         // 设置全局引用（兼容性）
         window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();

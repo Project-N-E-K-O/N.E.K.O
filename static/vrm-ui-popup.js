@@ -42,9 +42,9 @@ VRMManager.prototype.createPopup = function (buttonId) {
     } else if (buttonId === 'agent') {
         this._createAgentPopupContent(popup);
     } else if (buttonId === 'settings') {
-        // 设置菜单移除高度限制和滚动条，让所有内容直接展示
-        popup.style.maxHeight = 'none';
-        popup.style.overflowY = 'visible';
+        // 避免小屏溢出：限制高度并允许滚动
+        popup.style.maxHeight = '70vh';
+        popup.style.overflowY = 'auto';
         this._createSettingsPopupContent(popup);
     }
 
@@ -432,8 +432,13 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
         const updateCheckboxStyle = (checkbox) => {
             if (!checkbox) return;
             const toggleItem = checkbox.parentElement;
-            const indicator = toggleItem.children[1];
-            const checkmark = indicator.firstElementChild;
+            // 使用 class 选择器查找元素，避免依赖 DOM 结构顺序
+            const indicator = toggleItem?.querySelector('.vrm-toggle-indicator');
+            const checkmark = indicator?.querySelector('.vrm-toggle-checkmark');
+            if (!indicator || !checkmark) {
+                console.warn('[VRM UI Popup] 无法找到 toggle indicator 或 checkmark 元素');
+                return;
+            }
             if (checkbox.checked) {
                 indicator.style.backgroundColor = '#44b7fe'; indicator.style.borderColor = '#44b7fe'; checkmark.style.opacity = '1'; toggleItem.style.background = 'rgba(68, 183, 254, 0.1)';
             } else {

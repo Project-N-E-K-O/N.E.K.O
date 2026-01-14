@@ -487,10 +487,6 @@ class VRMManager {
 
         // 自动播放待机动画
         if (options.autoPlay !== false) {
-            if (!this._retryTimerId) {
-                this._retryTimerId = null;
-            }
-            
             const tryPlayAnimation = async (retries = 10) => {
                 if (!this.currentModel || !this.currentModel.vrm) {
                     if (this._retryTimerId) {
@@ -507,8 +503,9 @@ class VRMManager {
                             if (this._retryTimerId) {
                                 clearTimeout(this._retryTimerId);
                             }
+                            // 将 setTimeout 的返回值赋值给 _retryTimerId，以便 dispose() 可以清理
                             this._retryTimerId = setTimeout(() => {
-                                this._retryTimerId = null;
+                                this._retryTimerId = null; // 回调执行时清除引用
                                 tryPlayAnimation(retries - 1);
                             }, 100);
                             return;
@@ -669,9 +666,23 @@ class VRMManager {
                 // 如果是可清理的对象，调用 dispose
                 if (child.geometry) child.geometry.dispose();
                 if (child.material) {
+                    // 辅助函数：清理单个材质的纹理资源
+                    const disposeMaterialTextures = (material) => {
+                        const textureKeys = ['map', 'normalMap', 'aoMap', 'emissiveMap', 'metalnessMap', 'roughnessMap'];
+                        textureKeys.forEach(key => {
+                            if (material[key] && typeof material[key].dispose === 'function') {
+                                material[key].dispose();
+                            }
+                        });
+                    };
+                    
                     if (Array.isArray(child.material)) {
-                        child.material.forEach(m => m.dispose());
+                        child.material.forEach(m => {
+                            disposeMaterialTextures(m);
+                            m.dispose();
+                        });
                     } else {
+                        disposeMaterialTextures(child.material);
                         child.material.dispose();
                     }
                 }

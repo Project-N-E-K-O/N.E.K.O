@@ -23,6 +23,7 @@ class VRMAnimation {
         this._boundsUpdateFrameCounter = 0;
         this._boundsUpdateInterval = 5;
         this._skinnedMeshes = [];
+        this._cachedSceneUuid = null; // 跟踪缓存的 scene UUID，防止跨模型僵尸引用
     }
 
     /**
@@ -34,15 +35,30 @@ class VRMAnimation {
         if (VRMAnimation._animationModuleCache) {
             return VRMAnimation._animationModuleCache;
         }
+        let primaryError = null;
         try {
             // 使用 importmap 中的映射，确保与 @pixiv/three-vrm 使用相同的 three-vrm-core 版本
             VRMAnimation._animationModuleCache = await import('@pixiv/three-vrm-animation');
             return VRMAnimation._animationModuleCache;
         } catch (error) {
+            primaryError = error;
             console.warn('[VRM Animation] 无法导入 @pixiv/three-vrm-animation，请检查 importmap 配置:', error);
             // 如果 importmap 失败，回退到硬编码路径（兼容性处理）
-            VRMAnimation._animationModuleCache = await import('/static/libs/three-vrm-animation.module.js');
-            return VRMAnimation._animationModuleCache;
+            try {
+                VRMAnimation._animationModuleCache = await import('/static/libs/three-vrm-animation.module.js');
+                return VRMAnimation._animationModuleCache;
+            } catch (fallbackError) {
+                // fallback 也失败，抛出包含两次错误的详细错误信息
+                const combinedError = new Error(
+                    `[VRM Animation] 无法导入动画模块：\n` +
+                    `  主路径失败 (@pixiv/three-vrm-animation): ${primaryError?.message || primaryError}\n` +
+                    `  回退路径失败 (/static/libs/three-vrm-animation.module.js): ${fallbackError?.message || fallbackError}\n` +
+                    `请检查 importmap 配置或确保回退文件存在且路径正确。`
+                );
+                console.error(combinedError.message, { primaryError, fallbackError });
+                VRMAnimation._animationModuleCache = null; // 清除缓存，允许重试
+                throw combinedError;
+            }
         }
     }
 
@@ -82,6 +98,11 @@ class VRMAnimation {
 
             const vrm = this.manager.currentModel?.vrm;
             if (vrm?.scene) {
+                // 检查 scene 是否变化，如果变化则重建缓存（防止僵尸引用）
+                if (this._cachedSceneUuid !== vrm.scene.uuid) {
+                    this._cacheSkinnedMeshes(vrm);
+                }
+                
                 if (vrm.humanoid) {
                     const vrmVersion = this._detectVRMVersion(vrm);
                     if (vrmVersion === '1.0' && vrm.humanoid.autoUpdateHumanBones) {
@@ -348,6 +369,11 @@ class VRMAnimation {
         this.vrmaMixer.update(0.001);
         
         if (vrm.scene) {
+            // 检查 scene 是否变化，如果变化则重建缓存（防止僵尸引用）
+            if (this._cachedSceneUuid !== vrm.scene.uuid) {
+                this._cacheSkinnedMeshes(vrm);
+            }
+            
             vrm.scene.updateMatrixWorld(true);
             this._skinnedMeshes.forEach(mesh => {
                 if (mesh.skeleton) {
@@ -366,11 +392,15 @@ class VRMAnimation {
     _cacheSkinnedMeshes(vrm) {
         this._skinnedMeshes = [];
         if (vrm?.scene) {
+            // 更新缓存的 scene UUID，用于检测 scene 变化
+            this._cachedSceneUuid = vrm.scene.uuid;
             vrm.scene.traverse((object) => {
                 if (object.isSkinnedMesh && object.skeleton) {
                     this._skinnedMeshes.push(object);
                 }
             });
+        } else {
+            this._cachedSceneUuid = null;
         }
     }
 
@@ -382,7 +412,8 @@ class VRMAnimation {
             throw error;
         }
 
-        if (this._skinnedMeshes.length === 0 || !vrm.scene) {
+        // 检查是否需要重建缓存：缓存为空、scene 不存在、或 scene UUID 变化（防止僵尸引用）
+        if (this._skinnedMeshes.length === 0 || !vrm.scene || this._cachedSceneUuid !== vrm.scene.uuid) {
             this._cacheSkinnedMeshes(vrm);
         }
 
@@ -429,22 +460,34 @@ class VRMAnimation {
         }
 
         if (this.currentAction) {
+            // 捕获要停止的 action，防止竞态条件（新 action 可能在定时器回调执行前启动）
+            const actionAtStop = this.currentAction;
             this.currentAction.fadeOut(0.5);
             
             this._fadeTimer = setTimeout(() => {
-                if (this.vrmaMixer) {
-                    this.vrmaMixer.stopAllAction();
-                }
-                this.currentAction = null;
-                this.vrmaIsPlaying = false;
-                this._fadeTimer = null;
-                
-                this._springBoneRestoreTimer = setTimeout(() => {
-                    if (this.manager.toggleSpringBone) {
-                        this.manager.toggleSpringBone(true);
+                // 只有当 currentAction 仍然是 actionAtStop 时才执行清理（防止取消新启动的 action）
+                if (this.currentAction === actionAtStop) {
+                    if (this.vrmaMixer) {
+                        this.vrmaMixer.stopAllAction();
                     }
-                    this._springBoneRestoreTimer = null;
-                }, 100);
+                    this.currentAction = null;
+                    this.vrmaIsPlaying = false;
+                    this._fadeTimer = null;
+                    
+                    // 只为匹配的已停止 action 恢复 spring bones
+                    this._springBoneRestoreTimer = setTimeout(() => {
+                        // 再次检查，确保没有新 action 启动（currentAction 仍为 null）
+                        if (this.currentAction === null) {
+                            if (this.manager.toggleSpringBone) {
+                                this.manager.toggleSpringBone(true);
+                            }
+                        }
+                        this._springBoneRestoreTimer = null;
+                    }, 100);
+                } else {
+                    // 如果 currentAction 已变化（新 action 启动），只清除定时器引用
+                    this._fadeTimer = null;
+                }
             }, 500);
         } else {
             if (this.vrmaMixer) {
@@ -576,6 +619,7 @@ class VRMAnimation {
         }
         
         this._skinnedMeshes = [];
+        this._cachedSceneUuid = null;
         
         if (this.vrmaMixer) {
             this.vrmaMixer.stopAllAction();

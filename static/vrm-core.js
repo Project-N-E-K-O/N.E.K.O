@@ -570,7 +570,14 @@ class VRMCore {
                     const normalizePath = window._vrmPathUtils?.normalizePath || ((path) => {
                         if (!path || typeof path !== 'string') return '';
                         let normalized = path.replace(/^https?:\/\/[^\/]+/, '');
-                        normalized = normalized.replace(/^\/(user_vrm|static\/vrm)\//, '/');
+                        // 使用 window.VRM_PATHS 动态获取路径前缀，而不是硬编码
+                        const userPrefix = (window.VRM_PATHS?.user_vrm || '/user_vrm').replace(/\/+$/, '');
+                        const staticPrefix = (window.VRM_PATHS?.static_vrm || '/static/vrm').replace(/\/+$/, '');
+                        // 转义正则表达式特殊字符并构建匹配模式
+                        const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                        normalized = normalized
+                            .replace(new RegExp(`^${escapeRegex(userPrefix)}/`), '/')
+                            .replace(new RegExp(`^${escapeRegex(staticPrefix)}/`), '/');
                         return normalized.toLowerCase();
                     });
                     
@@ -1046,7 +1053,13 @@ class VRMCore {
                 throw new Error(`保存偏好设置失败: ${response.status} ${response.statusText}${errorText ? ` - ${errorText}` : ''}`);
             }
 
-            const result = await response.json();
+            // 安全解析 JSON，避免空响应体或非 JSON 响应导致异常被吞掉
+            const result = await response.json().catch((parseError) => {
+                const statusText = response.statusText || '';
+                const truncatedStatusText = statusText.length > 50 ? statusText.substring(0, 50) + '...' : statusText;
+                console.warn(`[VRM Core] 保存偏好设置响应解析失败: ${response.status} ${truncatedStatusText}`, parseError);
+                return {};
+            });
             
             return result.success || false;
         } catch (error) {
