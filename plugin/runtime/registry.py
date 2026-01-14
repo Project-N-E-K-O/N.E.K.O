@@ -110,7 +110,11 @@ def _find_plugins_by_entry(entry_id: str) -> List[tuple[str, Dict[str, Any]]]:
     with state.plugins_lock:
         for pid in found_plugin_ids:
             if pid in state.plugins:
-                matching_plugins.append((pid, state.plugins[pid]))
+                meta = state.plugins[pid]
+                # Disabled plugins are visible but should not participate in dependency satisfaction.
+                if isinstance(meta, dict) and meta.get("runtime_enabled") is False:
+                    continue
+                matching_plugins.append((pid, meta))
     
     return matching_plugins
 
@@ -177,6 +181,13 @@ def _check_plugin_dependency(
     Returns:
         (是否满足, 错误信息)
     """
+    def _runtime_enabled(pid: str) -> bool:
+        with state.plugins_lock:
+            meta = state.plugins.get(pid)
+        if isinstance(meta, dict) and meta.get("runtime_enabled") is False:
+            return False
+        return meta is not None
+
     # 如果 conflicts 是 true，表示冲突（不允许）
     if dependency.conflicts is True:
         if not dependency.id:
@@ -184,9 +195,8 @@ def _check_plugin_dependency(
 
         if dependency.id:
             # 检查依赖插件是否存在
-            with state.plugins_lock:
-                if dependency.id in state.plugins:
-                    return False, f"Dependency plugin '{dependency.id}' conflicts (conflicts=true) but plugin exists"
+            if _runtime_enabled(str(dependency.id)):
+                return False, f"Dependency plugin '{dependency.id}' conflicts (conflicts=true) but plugin exists"
         return True, None  # 简化格式，插件不存在则满足
     
     # 确定要检查的插件列表
@@ -196,8 +206,12 @@ def _check_plugin_dependency(
         # 方式3：多个候选插件（任一满足即可）
         with state.plugins_lock:
             for provider_id in dependency.providers:
-                if provider_id in state.plugins:
-                    plugins_to_check.append((provider_id, state.plugins[provider_id]))
+                meta = state.plugins.get(provider_id)
+                if meta is None:
+                    continue
+                if isinstance(meta, dict) and meta.get("runtime_enabled") is False:
+                    continue
+                plugins_to_check.append((provider_id, meta))
         
         if not plugins_to_check:
             return False, f"None of the provider plugins {dependency.providers} found"
@@ -281,11 +295,16 @@ def _check_plugin_dependency(
                 with state.plugins_lock:
                     if target_plugin_id not in state.plugins:
                         return False, f"Dependency custom_event '{custom_event_spec}': plugin '{target_plugin_id}' not found"
-                    # 验证该插件是否提供该事件
+                    # 查找指定插件是否提供该事件
                     matching_plugins = _find_plugins_by_custom_event(event_type, event_id)
                     if not any(pid == target_plugin_id for pid, _ in matching_plugins):
                         return False, f"Dependency custom_event '{custom_event_spec}': plugin '{target_plugin_id}' does not provide event '{event_type}.{event_id}'"
-                    plugins_to_check = [(target_plugin_id, state.plugins[target_plugin_id])]
+                    # Ensure disabled plugins do not satisfy dependencies.
+                    with state.plugins_lock:
+                        dep_meta = state.plugins.get(target_plugin_id)
+                    if isinstance(dep_meta, dict) and dep_meta.get("runtime_enabled") is False:
+                        return False, f"Dependency custom_event '{custom_event_spec}': plugin '{target_plugin_id}' does not provide event '{event_type}.{event_id}'"
+                    plugins_to_check = [(target_plugin_id, dep_meta)] if dep_meta is not None else []
             else:
                 return False, f"Invalid custom_event format: '{custom_event_spec}', expected 'event_type:event_id' or 'plugin_id:event_type:event_id'"
         else:
@@ -311,6 +330,10 @@ def _check_plugin_dependency(
             if dep_id not in state.plugins:
                 return False, f"Dependency plugin '{dep_id}' not found"
             dep_plugin_meta = state.plugins[dep_id]
+
+        # Disabled plugins are visible but must not satisfy dependencies.
+        if isinstance(dep_plugin_meta, dict) and dep_plugin_meta.get("runtime_enabled") is False:
+            return False, f"Dependency plugin '{dep_id}' not found"
         
         return _check_single_plugin_version(
             dep_id, dep_plugin_meta, dependency, logger, plugin_id
@@ -898,6 +921,99 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
             # 继续处理其他条目，不中断整个插件加载
 
 
+def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> List[Dict[str, Any]]:
+    """Extract entry metadata for UI visibility without registering event handlers.
+
+    NOTE: This function must not touch state.event_handlers. It is intended for disabled
+    plugins (visibility only) so that UI can still display entries.
+    """
+    results: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _to_dict(v: Any) -> Dict[str, Any]:
+        if isinstance(v, dict):
+            return v
+        try:
+            if hasattr(v, "model_dump"):
+                d = v.model_dump()
+                return d if isinstance(d, dict) else {}
+        except Exception:
+            pass
+        return {}
+
+    # 1) Decorator-based metadata (@plugin_entry / EVENT_META_ATTR)
+    try:
+        for name, member in inspect.getmembers(cls):
+            event_meta = getattr(member, EVENT_META_ATTR, None)
+            if event_meta is None and hasattr(member, "__wrapped__"):
+                event_meta = getattr(member.__wrapped__, EVENT_META_ATTR, None)
+
+            if not event_meta:
+                continue
+            etype = getattr(event_meta, "event_type", None) or "plugin_entry"
+            if etype != "plugin_entry":
+                continue
+
+            eid = str(getattr(event_meta, "id", None) or name)
+            if not eid or eid in seen:
+                continue
+            seen.add(eid)
+
+            input_schema = _to_dict(getattr(event_meta, "input_schema", {}) or {})
+            results.append(
+                {
+                    "id": eid,
+                    "name": str(getattr(event_meta, "name", "") or ""),
+                    "description": str(getattr(event_meta, "description", "") or ""),
+                    "event_key": f"{pid}.{eid}",
+                    "input_schema": input_schema,
+                    "return_message": str(getattr(event_meta, "return_message", "") or ""),
+                }
+            )
+    except Exception:
+        # Best-effort: preview must never break plugin listing.
+        pass
+
+    # 2) Config-specified entries (conf/pdata)
+    entries = conf.get("entries") or pdata.get("entries") or []
+    for ent in entries:
+        try:
+            if isinstance(ent, dict):
+                eid = str(ent.get("id") or "")
+                if not eid or eid in seen:
+                    continue
+                seen.add(eid)
+                results.append(
+                    {
+                        "id": eid,
+                        "name": str(ent.get("name") or ""),
+                        "description": str(ent.get("description") or ""),
+                        "event_key": f"{pid}.{eid}",
+                        "input_schema": _to_dict(ent.get("input_schema") or {}),
+                        "return_message": "",
+                    }
+                )
+            else:
+                eid = str(ent)
+                if not eid or eid in seen:
+                    continue
+                seen.add(eid)
+                results.append(
+                    {
+                        "id": eid,
+                        "name": "",
+                        "description": "",
+                        "event_key": f"{pid}.{eid}",
+                        "input_schema": {},
+                        "return_message": "",
+                    }
+                )
+        except Exception:
+            continue
+
+    return results
+
+
 def load_plugins_from_toml(
     plugin_config_root: Path,
     logger: Any,
@@ -1014,13 +1130,12 @@ def load_plugins_from_toml(
                     elif s in ("1", "true", "yes", "on"):
                         auto_start_val = True
 
-            # 任何一个为 False，都不会参与本次运行时加载流程
+            # enabled=false: still collect for visibility, but do not participate in runtime load.
             if not enabled_val:
                 logger.info(
-                    "Plugin {} is disabled by plugin_runtime.enabled=false; skipping runtime checks and load in this pass",
+                    "Plugin {} is disabled by plugin_runtime.enabled=false; will register for visibility only (no runtime load)",
                     pid,
                 )
-                continue
 
             if not auto_start_val:
                 logger.info(
@@ -1190,8 +1305,8 @@ def load_plugins_from_toml(
     
     # 队列中放入所有入度为 0 的节点（无依赖或依赖已满足）
     queue = [pid for pid in pid_to_context if in_degree[pid] == 0]
-    # 为了保持确定性，按字母顺序排序
-    queue.sort()
+    # 为了保持确定性：同一层里优先加载 enabled 插件，避免 disabled 的可见性注册抢占 ID。
+    queue.sort(key=lambda x: (0 if pid_to_context.get(x, {}).get("enabled", True) else 1, str(x)))
     
     final_order = []
     while queue:
@@ -1202,8 +1317,8 @@ def load_plugins_from_toml(
             in_degree[v] -= 1
             if in_degree[v] == 0:
                 queue.append(v)
-        # 保持队列有序
-        queue.sort()
+        # 保持队列有序：同一层里优先 enabled
+        queue.sort(key=lambda x: (0 if pid_to_context.get(x, {}).get("enabled", True) else 1, str(x)))
     
     # 检查是否有循环依赖
     if len(final_order) != len(plugin_contexts):
@@ -1248,6 +1363,56 @@ def load_plugins_from_toml(
 
         enabled_val = context.get("enabled", True)
         auto_start_val = context.get("auto_start", True)
+
+        # disabled plugins: visibility only. Do not load runtime, do not scan event handlers,
+        # and must not participate in dependency/conflict evaluation.
+        if not enabled_val:
+            entries_preview: List[Dict[str, Any]] = []
+            try:
+                module_path, class_name = entry.split(":", 1)
+                mod = importlib.import_module(module_path)
+                plugin_cls: Type[Any] = getattr(mod, class_name)
+                entries_preview = _extract_entries_preview(pid, plugin_cls, conf, pdata)
+            except Exception:
+                entries_preview = []
+
+            author_data = pdata.get("author")
+            author = None
+            if author_data and isinstance(author_data, dict):
+                author = PluginAuthor(
+                    name=author_data.get("name"),
+                    email=author_data.get("email")
+                )
+
+            plugin_meta = PluginMeta(
+                id=pid,
+                name=pdata.get("name", pid),
+                description=pdata.get("description", ""),
+                version=pdata.get("version", "0.1.0"),
+                sdk_version=sdk_supported_str or SDK_VERSION,
+                sdk_recommended=sdk_recommended_str,
+                sdk_supported=sdk_supported_str,
+                sdk_untested=sdk_untested_str,
+                sdk_conflicts=sdk_conflicts_list,
+                input_schema={"type": "object", "properties": {}},
+                author=author,
+                dependencies=dependencies,
+            )
+            resolved_id = register_plugin(
+                plugin_meta,
+                logger,
+                config_path=toml_path,
+                entry_point=entry,
+            )
+            if resolved_id is not None:
+                with state.plugins_lock:
+                    meta = state.plugins.get(resolved_id)
+                    if isinstance(meta, dict):
+                        meta["runtime_enabled"] = False
+                        meta["runtime_auto_start"] = False
+                        meta["entries_preview"] = entries_preview
+                        state.plugins[resolved_id] = meta
+            continue
 
         # 依赖检查（可通过配置禁用）
         from plugin.settings import PLUGIN_ENABLE_DEPENDENCY_CHECK
@@ -1496,6 +1661,15 @@ def load_plugins_from_toml(
             config_path=toml_path,
             entry_point=entry
         )
+
+        # Mark runtime flags for dependency/conflict filtering.
+        if resolved_id is not None:
+            with state.plugins_lock:
+                meta = state.plugins.get(resolved_id)
+                if isinstance(meta, dict):
+                    meta["runtime_enabled"] = True
+                    meta["runtime_auto_start"] = bool(auto_start_val)
+                    state.plugins[resolved_id] = meta
         
         logger.debug(
             "Plugin {}: register_plugin returned resolved_id={}, original pid={}",

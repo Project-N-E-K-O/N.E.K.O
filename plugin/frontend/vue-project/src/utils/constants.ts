@@ -14,7 +14,8 @@ export enum PluginStatus {
   RUNNING = 'running',
   STOPPED = 'stopped',
   CRASHED = 'crashed',
-  LOADING = 'loading'
+  LOADING = 'loading',
+  DISABLED = 'disabled'
 }
 
 // 日志级别
@@ -39,7 +40,8 @@ export const STATUS_COLORS = {
   [PluginStatus.RUNNING]: '#67C23A',
   [PluginStatus.STOPPED]: '#909399',
   [PluginStatus.CRASHED]: '#F56C6C',
-  [PluginStatus.LOADING]: '#409EFF'
+  [PluginStatus.LOADING]: '#409EFF',
+  [PluginStatus.DISABLED]: '#909399'
 } as const
 
 // 状态文本映射
@@ -47,7 +49,8 @@ export const STATUS_TEXT_KEYS = {
   [PluginStatus.RUNNING]: 'status.running',
   [PluginStatus.STOPPED]: 'status.stopped',
   [PluginStatus.CRASHED]: 'status.crashed',
-  [PluginStatus.LOADING]: 'status.loading'
+  [PluginStatus.LOADING]: 'status.loading',
+  [PluginStatus.DISABLED]: 'status.disabled'
 } as const
 
 // 日志级别颜色映射

@@ -49,10 +49,16 @@ export const usePluginStore = defineStore('plugin', () => {
       
       // 确保返回的 status 始终是字符串
       const finalStatus = typeof statusValue === 'string' ? statusValue : StatusEnum.STOPPED
+
+      const enabled = plugin.runtime_enabled !== false
+      const autoStart = plugin.runtime_auto_start !== false
+      const displayStatus = enabled ? finalStatus : StatusEnum.DISABLED
       
       return {
         ...plugin,
-        status: finalStatus
+        status: displayStatus,
+        enabled,
+        autoStart
       }
     })
   })

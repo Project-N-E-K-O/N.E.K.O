@@ -527,6 +527,32 @@ def build_plugin_list() -> List[Dict[str, Any]]:
                     "input_schema": getattr(eh.meta, "input_schema", {}),
                     "return_message": returned_message,
                 })
+
+            # Fallback: disabled plugins (visibility only) may carry entries_preview instead of
+            # registering into state.event_handlers.
+            if not plugin_info["entries"]:
+                preview = plugin_meta.get("entries_preview")
+                if isinstance(preview, list):
+                    for ent in preview:
+                        if not isinstance(ent, dict):
+                            continue
+                        eid = ent.get("id")
+                        if not eid:
+                            continue
+                        dedup_key = ("plugin_entry", str(eid))
+                        if dedup_key in seen:
+                            continue
+                        seen.add(dedup_key)
+                        plugin_info["entries"].append(
+                            {
+                                "id": str(eid),
+                                "name": ent.get("name", ""),
+                                "description": ent.get("description", ""),
+                                "event_key": ent.get("event_key", f"{plugin_id}.{eid}"),
+                                "input_schema": ent.get("input_schema", {}) or {},
+                                "return_message": ent.get("return_message", "") or "",
+                            }
+                        )
             
             result.append(plugin_info)
             

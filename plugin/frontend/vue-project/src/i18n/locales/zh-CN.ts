@@ -134,7 +134,11 @@ export default {
     profiles: '配置方案',
     active: '当前',
     diffPreview: '差异预览',
-    unsavedChangesWarning: '你有未保存的更改，切换插件将丢失这些更改。是否继续？'
+    unsavedChangesWarning: '你有未保存的更改，切换插件将丢失这些更改。是否继续？',
+    enabled: '已启用',
+    disabled: '已禁用',
+    autoStart: '自动启动',
+    manualStart: '手动启动'
   },
   metrics: {
     title: '性能指标',
@@ -185,7 +189,8 @@ export default {
     running: '运行中',
     stopped: '已停止',
     crashed: '已崩溃',
-    loading: '加载中'
+    loading: '加载中',
+    disabled: '已禁用'
   },
   logLevel: {
     DEBUG: '调试',
@@ -208,7 +213,8 @@ export default {
     pluginReloaded: '插件重载成功',
     startFailed: '启动失败',
     stopFailed: '停止失败',
-    reloadFailed: '重载失败'
+    reloadFailed: '重载失败',
+    pluginDisabled: '插件已禁用，请先启用'
   },
   welcome: {
     about: {

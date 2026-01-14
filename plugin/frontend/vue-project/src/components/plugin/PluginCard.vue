@@ -4,7 +4,13 @@
       <div class="plugin-card-header">
         <div class="plugin-info">
           <h3 class="plugin-name">{{ plugin.name }}</h3>
-          <StatusIndicator :status="plugin.status" />
+          <StatusIndicator :status="plugin.status || 'stopped'" />
+          <el-tag v-if="plugin.enabled === false" size="small" type="info">
+            {{ t('plugins.disabled') }}
+          </el-tag>
+          <el-tag v-else-if="plugin.autoStart === false" size="small" type="warning">
+            {{ t('plugins.manualStart') }}
+          </el-tag>
         </div>
       </div>
     </template>
@@ -34,12 +40,13 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import StatusIndicator from '@/components/common/StatusIndicator.vue'
 import PluginMetricsInline from '@/components/plugin/PluginMetricsInline.vue'
 import type { PluginMeta } from '@/types/api'
 
 interface Props {
-  plugin: PluginMeta & { status?: string }
+  plugin: PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean }
   isSelected?: boolean
   showMetrics?: boolean
 }
@@ -48,6 +55,8 @@ const props = withDefaults(defineProps<Props>(), {
   isSelected: false,
   showMetrics: false
 })
+
+const { t } = useI18n()
 
 defineEmits<{
   click: []

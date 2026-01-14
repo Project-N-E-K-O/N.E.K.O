@@ -19,6 +19,16 @@
               <el-descriptions-item :label="$t('plugins.version')">{{ plugin.version }}</el-descriptions-item>
               <el-descriptions-item :label="$t('plugins.description')" :span="2">{{ plugin.description || $t('common.noData') }}</el-descriptions-item>
               <el-descriptions-item :label="$t('plugins.sdkVersion')">{{ plugin.sdk_version || $t('common.nA') }}</el-descriptions-item>
+              <el-descriptions-item :label="$t('plugins.enabled')">
+                <el-tag size="small" :type="plugin.enabled ? 'success' : 'info'">
+                  {{ plugin.enabled ? $t('plugins.enabled') : $t('plugins.disabled') }}
+                </el-tag>
+              </el-descriptions-item>
+              <el-descriptions-item :label="$t('plugins.autoStart')">
+                <el-tag size="small" :type="plugin.autoStart ? 'success' : 'warning'" :disabled="!plugin.enabled">
+                  {{ plugin.autoStart ? $t('plugins.autoStart') : $t('plugins.manualStart') }}
+                </el-tag>
+              </el-descriptions-item>
               <el-descriptions-item :label="$t('plugins.status')">
                 <StatusIndicator :status="pluginStatus" />
               </el-descriptions-item>

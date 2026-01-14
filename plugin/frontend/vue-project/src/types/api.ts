@@ -23,6 +23,8 @@ export interface PluginMeta {
   sdk_untested?: string
   sdk_conflicts?: string[]
   entries?: PluginEntry[]
+  runtime_enabled?: boolean
+  runtime_auto_start?: boolean
 }
 
 // JSON Schema（简化版），用于描述插件入口参数

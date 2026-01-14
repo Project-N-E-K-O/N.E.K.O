@@ -134,7 +134,11 @@ export default {
     profiles: 'Profiles',
     active: 'Active',
     diffPreview: 'Diff Preview',
-    unsavedChangesWarning: 'You have unsaved changes. Switching plugins will discard them. Continue?'
+    unsavedChangesWarning: 'You have unsaved changes. Switching plugins will discard them. Continue?',
+    enabled: 'Enabled',
+    disabled: 'Disabled',
+    autoStart: 'Auto Start',
+    manualStart: 'Manual Start'
   },
   metrics: {
     title: 'Metrics',
@@ -185,7 +189,8 @@ export default {
     running: 'Running',
     stopped: 'Stopped',
     crashed: 'Crashed',
-    loading: 'Loading'
+    loading: 'Loading',
+    disabled: 'Disabled'
   },
   logLevel: {
     DEBUG: 'Debug',
@@ -208,7 +213,8 @@ export default {
     pluginReloaded: 'Plugin reloaded successfully',
     startFailed: 'Failed to start',
     stopFailed: 'Failed to stop',
-    reloadFailed: 'Failed to reload'
+    reloadFailed: 'Failed to reload',
+    pluginDisabled: 'Plugin is disabled. Please enable it first.'
   },
   welcome: {
     about: {

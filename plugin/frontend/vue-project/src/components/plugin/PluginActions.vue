@@ -2,7 +2,7 @@
   <div class="plugin-actions">
     <el-button-group>
       <el-button
-        v-if="status !== 'running'"
+        v-if="status !== 'running' && status !== 'disabled'"
         type="success"
         :icon="VideoPlay"
         @click="handleStart"
@@ -24,6 +24,7 @@
         :icon="Refresh"
         @click="handleReload"
         :loading="loading"
+        :disabled="status === 'disabled'"
       >
         {{ t('plugins.reload') }}
       </el-button>
@@ -53,7 +54,13 @@ const status = computed(() => {
   return plugin?.status || 'stopped'
 })
 
+const isDisabled = computed(() => status.value === 'disabled')
+
 async function handleStart() {
+  if (isDisabled.value) {
+    ElMessage.warning(t('messages.pluginDisabled'))
+    return
+  }
   try {
     loading.value = true
     await pluginStore.start(props.pluginId)
@@ -66,6 +73,10 @@ async function handleStart() {
 }
 
 async function handleStop() {
+  if (isDisabled.value) {
+    ElMessage.warning(t('messages.pluginDisabled'))
+    return
+  }
   try {
     await ElMessageBox.confirm(t('messages.confirmStop'), t('common.confirm'), {
       type: 'warning'
@@ -83,6 +94,10 @@ async function handleStop() {
 }
 
 async function handleReload() {
+  if (isDisabled.value) {
+    ElMessage.warning(t('messages.pluginDisabled'))
+    return
+  }
   try {
     await ElMessageBox.confirm(t('messages.confirmReload'), t('common.confirm'), {
       type: 'warning'

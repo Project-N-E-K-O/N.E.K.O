@@ -1,0 +1,5 @@
+[config_profiles]
+active = "1"
+
+[config_profiles.files]
+1 = "profiles/1.toml"
