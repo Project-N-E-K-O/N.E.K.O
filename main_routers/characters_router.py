@@ -337,12 +337,12 @@ async def update_catgirl_l2d(name: str, request: Request):
             # 验证 VRM 模型路径：只允许安全的路径前缀，拒绝 URL 方案和路径遍历
             vrm_model_str = str(vrm_model).strip()
             
-            # 检查是否包含 URL 方案（http://, https://）
-            if vrm_model_str.startswith(('http://', 'https://')):
+            # 检查是否包含 URL 方案
+            if '://' in vrm_model_str or vrm_model_str.startswith('data:'):
                 return JSONResponse(
                     content={
                         'success': False,
-                        'error': 'VRM模型路径不能包含URL方案（http://或https://）'
+                        'error': 'VRM模型路径不能包含URL方案'
                     },
                     status_code=400
                 )
@@ -397,7 +397,6 @@ async def update_catgirl_l2d(name: str, request: Request):
         
         # 切换模型类型时清理"另一套模型字段"，避免配置残留
         if model_type_str == 'vrm':
-            # 切到 VRM 时清理 Live2D 相关字段
             characters['猫娘'][name].pop('live2d', None)
             characters['猫娘'][name].pop('live2d_item_id', None)
             
@@ -407,22 +406,18 @@ async def update_catgirl_l2d(name: str, request: Request):
             
             # 处理 vrm_animation：支持显式清空（传 null 或空字符串）
             if 'vrm_animation' in data:
-                # 字段在请求中显式传递
                 if vrm_animation is None or vrm_animation == '':
-                    # 显式清空：删除该字段
                     characters['猫娘'][name].pop('vrm_animation', None)
                     logger.debug(f"已保存角色 {name} 的VRM模型 {vrm_model}，已清空动作")
                 else:
-                    # 有值：保存动作
                     characters['猫娘'][name]['vrm_animation'] = vrm_animation
                     logger.debug(f"已保存角色 {name} 的VRM模型 {vrm_model} 和动作 {vrm_animation}")
             else:
-                # 字段未在请求中传递：保留旧值（向后兼容）
                 logger.debug(f"已保存角色 {name} 的VRM模型 {vrm_model}，动作字段未变更")
         else:
-            # 切到 Live2D 时清理 VRM 相关字段
             characters['猫娘'][name].pop('vrm', None)
             characters['猫娘'][name].pop('vrm_animation', None)
+            characters['猫娘'][name].pop('lighting', None)  # 清理 VRM 打光配置
             
             # 更新Live2D模型设置，同时保存item_id（如果有）
             characters['猫娘'][name]['live2d'] = live2d_model
@@ -439,7 +434,7 @@ async def update_catgirl_l2d(name: str, request: Request):
         initialize_character_data = get_initialize_character_data()
         await initialize_character_data()
         
-        # 根据模型类型返回相应的消息（统一使用 model_type_str）
+        
         if model_type_str == 'vrm':
             message = f'已更新角色 {name} 的VRM模型为 {vrm_model}'
         else:
@@ -460,7 +455,13 @@ async def update_catgirl_l2d(name: str, request: Request):
 
 @router.put('/catgirl/{name}/lighting')
 async def update_catgirl_lighting(name: str, request: Request):
-    """更新指定猫娘的VRM打光配置"""
+    """更新指定猫娘的VRM打光配置
+    
+    Args:
+        name: 角色名称
+        request: 请求体包含 lighting (dict) 和可选的 apply_runtime (bool)
+                 apply_runtime 也可通过 query param 传递,query param 优先级更高
+    """
     try:
         data = await request.json()
         lighting = data.get('lighting')
@@ -517,14 +518,13 @@ async def update_catgirl_lighting(name: str, request: Request):
                     'error': f'打光参数 {key} 超出范围 ({min_val}-{max_val})'
                 }, status_code=400)
 
+        
         characters['猫娘'][name]['lighting'] = {
-            'ambient': float(lighting['ambient']),
-            'main': float(lighting['main']),
-            'fill': float(lighting['fill']),
-            'rim': float(lighting['rim']),
-            'top': float(lighting['top']),
-            'bottom': float(lighting['bottom'])
+            key: float(lighting[key]) for key in lighting_ranges.keys()
         }
+
+
+
         logger.info(f"已保存角色 {name} 的打光配置: {characters['猫娘'][name]['lighting']}")
 
         _config_manager.save_characters(characters)

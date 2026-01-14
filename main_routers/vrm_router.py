@@ -73,9 +73,13 @@ async def upload_vrm_model(file: UploadFile = File(...)):
         if not filename or not filename.lower().endswith('.vrm'):
             return JSONResponse(status_code=400, content={"success": False, "error": "文件必须是.vrm格式"})
         
+        # 只取文件名，避免上传时夹带子目录
+        filename = Path(filename).name
+        
         # 获取用户文档的vrm目录
         config_mgr = get_config_manager()
-        config_mgr.ensure_vrm_directory()
+        if not config_mgr.ensure_vrm_directory():
+            return JSONResponse(status_code=500, content={"success": False, "error": "VRM目录创建失败"})
         user_vrm_dir = config_mgr.vrm_dir
         
         # 使用安全路径函数防止路径穿越
@@ -87,62 +91,55 @@ async def upload_vrm_model(file: UploadFile = File(...)):
                 "error": path_error
             })
         
-        # 如果目标文件已存在，返回错误
-        if target_file_path.exists():
+        # 边读边写，避免将整个文件加载到内存
+        total_size = 0
+        try:
+            # 使用 'xb' 模式：原子操作，如果文件已存在会抛出 FileExistsError
+            # 这样可以避免 TOCTOU (Time-of-check Time-of-use) 竞态条件
+            with open(target_file_path, 'xb') as f:
+                while True:
+                    chunk = await file.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    total_size += len(chunk)
+                    if total_size > MAX_FILE_SIZE:
+                        raise ValueError("FILE_TOO_LARGE")
+                    f.write(chunk)
+        except FileExistsError:
             return JSONResponse(status_code=400, content={
-                "success": False, 
+                "success": False,
                 "error": f"模型 {filename} 已存在，请先删除或重命名现有模型"
             })
-        
-        # 流式读取文件，在读取过程中检查大小，避免一次性加载到内存
-        total_size = 0
-        chunks = []
-        
-        try:
-            while True:
-                chunk = await file.read(CHUNK_SIZE)
-                if not chunk:
-                    break
-                
-                total_size += len(chunk)
-                
-                # 在每次迭代中检查文件大小，避免读取过大文件
-                if total_size > MAX_FILE_SIZE:
-                    logger.warning(f"文件过大: {filename} ({total_size / (1024*1024):.2f}MB > {MAX_FILE_SIZE / (1024*1024)}MB)")
-                    return JSONResponse(status_code=400, content={
-                        "success": False,
-                        "error": f"文件过大，最大允许 {MAX_FILE_SIZE // (1024*1024)}MB，当前文件大小: {total_size // (1024*1024)}MB"
-                    })
-                
-                chunks.append(chunk)
-        except Exception as e:
-            logger.error(f"读取上传文件失败: {e}")
-            return JSONResponse(status_code=500, content={
-                "success": False,
-                "error": f"读取文件失败: {str(e)}"
-            })
-        
-        # 使用异步写入，避免阻塞 I/O
-        try:
-            # 使用 asyncio.to_thread 在线程池中执行阻塞写入操作
-            def write_file():
-                with open(target_file_path, 'wb') as f:
-                    for chunk in chunks:
-                        f.write(chunk)
-            
-            await asyncio.to_thread(write_file)
-        except Exception as e:
-            logger.error(f"写入文件失败: {e}")
-            # 如果写入失败，尝试清理已创建的文件
-            if target_file_path.exists():
+        except ValueError as ve:
+            if str(ve) == "FILE_TOO_LARGE":
+                # 如果文件过大，尝试清理已创建的文件
                 try:
-                    target_file_path.unlink()
-                except:
+                    target_file_path.unlink(missing_ok=True)
+                except Exception:
                     pass
+                logger.warning(f"文件过大: {filename} ({total_size / (1024*1024):.2f}MB > {MAX_FILE_SIZE / (1024*1024)}MB)")
+                return JSONResponse(status_code=400, content={
+                    "success": False,
+                    "error": f"文件过大，最大允许 {MAX_FILE_SIZE // (1024*1024)}MB"
+                })
+            raise
+        except Exception as e:
+            logger.error(f"读取或写入上传文件失败: {e}")
+            # 如果写入失败，尝试清理已创建的文件
+            try:
+                target_file_path.unlink(missing_ok=True)
+            except Exception:
+                pass
             return JSONResponse(status_code=500, content={
                 "success": False,
                 "error": f"保存文件失败: {str(e)}"
             })
+        finally:
+            # 确保文件流关闭
+            try:
+                await file.close()
+            except Exception:
+                pass
         
         # 获取模型名称（去掉扩展名）
         model_name = Path(filename).stem

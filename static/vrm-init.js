@@ -461,6 +461,8 @@ window.forceUnlockVRM = function() {
 
 // 手动触发主页VRM模型检查的函数
 window.checkAndLoadVRM = async function() {
+    if (window._isVRMChecking) return;
+    window._isVRMChecking = true;
     try {
         // 确保配置已同步 (防止直接调用此函数时配置还没加载) 
         if (!window.VRM_PATHS.isLoaded) { 
@@ -581,6 +583,8 @@ window.checkAndLoadVRM = async function() {
 
     } catch (error) {
         console.error('[VRM Check] 检查失败:', error);
+    } finally {
+        window._isVRMChecking = false;
     }
 };
 
