@@ -70,7 +70,9 @@ VRMManager.prototype.setupFloatingButtons = function () {
             buttonsContainer.style.flexDirection = 'column';
             buttonsContainer.style.bottom = '';
             buttonsContainer.style.right = '';
-            buttonsContainer.style.display = '';
+            buttonsContainer.style.left = '';
+            buttonsContainer.style.top = '';
+            buttonsContainer.style.display = 'flex';
         }
     };
     applyResponsiveFloatingLayout();
@@ -340,14 +342,15 @@ VRMManager.prototype.setupFloatingButtons = function () {
             this._returnButtonContainer.style.display = 'none';
         }
         
-        // 2. 恢复主按钮组
-        if (this._floatingButtonsContainer) {
-            this._floatingButtonsContainer.style.display = 'flex';
-        }
+        // 2. 恢复主按钮组（使用响应式布局函数，会检查锁定状态和视口）
+        applyResponsiveFloatingLayout();
         
-        // 3. 恢复锁图标
+        // 3. 恢复锁图标（检查锁定状态，只有在未锁定时才显示）
         if (this._vrmLockIcon) {
-            this._vrmLockIcon.style.display = 'block';
+            const isLocked = this.interaction && this.interaction.checkLocked ? this.interaction.checkLocked() : false;
+            if (!isLocked) {
+                this._vrmLockIcon.style.display = 'block';
+            }
         }
     };
     
@@ -495,24 +498,17 @@ VRMManager.prototype.setupFloatingButtons = function () {
     // 启动更新循环
     this._startUIUpdateLoop();
     
-    // 页面加载时直接显示按钮（锁定状态下不显示）
+    // 页面加载时直接显示按钮（使用响应式布局函数，会检查锁定状态和视口）
     setTimeout(() => {
-        // 检查锁定状态
-        const isLocked = this.interaction && this.interaction.checkLocked ? this.interaction.checkLocked() : false;
+        // 使用响应式布局函数，会检查锁定状态和视口
+        applyResponsiveFloatingLayout();
         
-        // 锁定状态下不显示浮动按钮容器
-        if (isLocked) {
-            return;
-        }
-        
-        // 显示浮动按钮容器（一直显示，不隐藏）
-        if (buttonsContainer) {
-            buttonsContainer.style.display = 'flex';
-        }
-        
-        // 显示锁图标
+        // 显示锁图标（检查锁定状态，只有在未锁定时才显示）
         if (this._vrmLockIcon) {
-            this._vrmLockIcon.style.display = 'block';
+            const isLocked = this.interaction && this.interaction.checkLocked ? this.interaction.checkLocked() : false;
+            if (!isLocked) {
+                this._vrmLockIcon.style.display = 'block';
+            }
         }
     }, 100); // 延迟100ms确保位置已计算
     

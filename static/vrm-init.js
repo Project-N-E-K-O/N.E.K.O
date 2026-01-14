@@ -67,7 +67,37 @@ window._vrmConvertPath = function(modelPath, options = {}) {
     
     
     // 如果路径已经是有效的站内相对路径，直接返回，避免不必要的回退到默认路径
-    if (modelPath.startsWith('/static/vrm/') || modelPath.startsWith('/user_vrm/')) {
+    // 使用 window.VRM_PATHS 动态获取前缀，而不是硬编码
+    const getConfiguredPrefixes = () => {
+        if (!window.VRM_PATHS) {
+            // 如果配置未加载，使用默认前缀
+            return ['/static/vrm/', '/user_vrm/'];
+        }
+        
+        // 处理数组或对象形状的配置
+        let prefixes = [];
+        if (Array.isArray(window.VRM_PATHS)) {
+            prefixes = window.VRM_PATHS.map(p => (typeof p === 'string' ? p : p.path || '')).filter(Boolean);
+        } else if (typeof window.VRM_PATHS === 'object') {
+            // 从对象中提取路径前缀
+            const userVrm = window.VRM_PATHS.user_vrm || '/user_vrm';
+            const staticVrm = window.VRM_PATHS.static_vrm || '/static/vrm';
+            prefixes = [
+                staticVrm.endsWith('/') ? staticVrm : staticVrm + '/',
+                userVrm.endsWith('/') ? userVrm : userVrm + '/'
+            ];
+        }
+        
+        // 如果没有有效的前缀，使用默认值
+        if (prefixes.length === 0) {
+            return ['/static/vrm/', '/user_vrm/'];
+        }
+        
+        return prefixes;
+    };
+    
+    const configuredPrefixes = getConfiguredPrefixes();
+    if (configuredPrefixes.some(prefix => modelPath.startsWith(prefix))) {
         return modelPath;
     }
     

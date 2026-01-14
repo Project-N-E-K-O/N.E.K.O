@@ -334,6 +334,43 @@ async def update_catgirl_l2d(name: str, request: Request):
                     },
                     status_code=400
                 )
+            
+            # 验证 VRM 模型路径：只允许安全的路径前缀，拒绝 URL 方案和路径遍历
+            vrm_model_str = str(vrm_model).strip()
+            
+            # 检查是否包含 URL 方案（http://, https://）
+            if vrm_model_str.startswith(('http://', 'https://')):
+                return JSONResponse(
+                    content={
+                        'success': False,
+                        'error': 'VRM模型路径不能包含URL方案（http://或https://）'
+                    },
+                    status_code=400
+                )
+            
+            # 检查是否包含路径遍历（..）
+            if '..' in vrm_model_str:
+                return JSONResponse(
+                    content={
+                        'success': False,
+                        'error': 'VRM模型路径不能包含路径遍历（..）'
+                    },
+                    status_code=400
+                )
+            
+            # 检查是否以允许的前缀开头
+            allowed_prefixes = ['/user_vrm/', '/static/vrm/']
+            if not any(vrm_model_str.startswith(prefix) for prefix in allowed_prefixes):
+                return JSONResponse(
+                    content={
+                        'success': False,
+                        'error': 'VRM模型路径必须以 /user_vrm/ 或 /static/vrm/ 开头'
+                    },
+                    status_code=400
+                )
+            
+            # 使用验证后的值
+            vrm_model = vrm_model_str
         else:
             if not live2d_model:
                 return JSONResponse(
@@ -444,7 +481,9 @@ async def update_catgirl_lighting(name: str, request: Request):
             }, status_code=404)
 
         model_type = characters['猫娘'][name].get('model_type', 'live2d')
-        if model_type != 'vrm':
+        # 统一做 .lower() 处理，避免大小写/空值导致误判
+        model_type_normalized = str(model_type).lower() if model_type else 'live2d'
+        if model_type_normalized != 'vrm':
             logger.warning(f"角色 {name} 不是VRM模型，但仍保存打光配置")
         
         from config import get_default_vrm_lighting
@@ -1475,6 +1514,34 @@ async def save_catgirl_to_model_folder(request: Request):
         # 检查模型目录是否存在
         if not model_folder_path:
             return JSONResponse({"success": False, "error": f"无法找到模型目录: {model_name}"}, status_code=404)
+        
+        # 检查是否是用户导入的模型，只允许写入用户目录的模型，不允许写入 workshop/static
+        is_user_model = False
+        
+        # 检查是否在用户文档目录下
+        try:
+            config_mgr = get_config_manager()
+            config_mgr.ensure_live2d_directory()
+            user_live2d_dir = os.path.realpath(str(config_mgr.live2d_dir))
+            model_folder_path_real = os.path.realpath(model_folder_path)
+            try:
+                common = os.path.commonpath([user_live2d_dir, model_folder_path_real])
+                if common == user_live2d_dir:
+                    is_user_model = True
+            except ValueError:
+                # 不同驱动器/根目录的情况
+                pass
+        except Exception as e:
+            logger.warning(f"检查用户模型目录时出错: {e}")
+        
+        if not is_user_model:
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "success": False,
+                    "error": "只能保存到用户导入的模型目录。请先导入模型到用户模型目录后再保存。"
+                }
+            )
         
         # 确保模型文件夹存在
         if not os.path.exists(model_folder_path):

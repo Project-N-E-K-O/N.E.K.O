@@ -1017,6 +1017,29 @@ def delete_model(model_name: str):
             return JSONResponse(status_code=500, content={"success": False, "error": f"删除模型失败，文件仍然存在: {model_dir}"})
         else:
             logger.info(f"已删除Live2D模型: {model_name}")
+            
+            # 同步清理角色配置中对该模型的引用，避免残留引用导致前端加载失败
+            try:
+                config_mgr = get_config_manager()
+                characters = config_mgr.load_characters()
+                updated = False
+                
+                if '猫娘' in characters:
+                    for char_name, char_data in characters['猫娘'].items():
+                        # 检查 live2d 字段是否引用已删除的模型
+                        if char_data.get('live2d') == model_name:
+                            # 回退到默认模型 mao_pro
+                            char_data['live2d'] = 'mao_pro'
+                            updated = True
+                            logger.info(f"已将角色 {char_name} 的模型从 {model_name} 回退到默认模型 mao_pro")
+                
+                if updated:
+                    config_mgr.save_characters(characters)
+                    logger.info(f"已更新角色配置，清理了对已删除模型 {model_name} 的引用")
+            except Exception as e:
+                logger.warning(f"清理角色配置中对模型 {model_name} 的引用时出错: {e}")
+                # 不影响删除操作的成功返回
+            
             return {"success": True, "message": f"模型 {model_name} 已成功删除"}
     except Exception as e:
         logger.error(f"删除模型失败: {e}")
@@ -1030,33 +1053,28 @@ def get_user_models():
         user_models = []
         
         # 获取用户文档目录下的live2d模型
+        # 只扫描一层目录，避免重复和异常项
         try:
             config_mgr = get_config_manager()
             config_mgr.ensure_live2d_directory()
-            docs_live2d_dir = str(config_mgr.live2d_dir)
-            if os.path.exists(docs_live2d_dir):
-                for root, dirs, files in os.walk(docs_live2d_dir):
-                    for file in files:
-                        if file.endswith('.model3.json'):
-                            model_name = os.path.basename(root)
-                            rel_path = os.path.relpath(root, docs_live2d_dir)
-                            # Normalize '.' to empty string to avoid '/user_live2d/./' paths
-                            if rel_path == '.':
-                                rel_path_posix = ''
-                            else:
-                                rel_path_posix = pathlib.Path(rel_path).as_posix()
-                            # Build path without duplicate slash
-                            if rel_path_posix:
-                                path = f'/user_live2d/{rel_path_posix}/{file}'
-                            else:
-                                path = f'/user_live2d/{file}'
-                            user_models.append({
-                                'name': model_name,
-                                'path': path,
-                                'source': 'user_documents'
-                            })
-                            # Prune deeper traversal after finding a .model3.json
-                            dirs[:] = []
+            docs_live2d_dir = os.path.realpath(str(config_mgr.live2d_dir))
+            if os.path.isdir(docs_live2d_dir):
+                for model_name in os.listdir(docs_live2d_dir):
+                    model_dir = os.path.join(docs_live2d_dir, model_name)
+                    if not os.path.isdir(model_dir):
+                        continue
+                    try:
+                        # 只查找第一个 .model3.json 文件，找到后即确定为一个模型
+                        model3 = next((f for f in os.listdir(model_dir) if f.endswith('.model3.json')), None)
+                    except OSError:
+                        continue
+                    if not model3:
+                        continue
+                    user_models.append({
+                        'name': model_name,
+                        'path': f'/user_live2d/{model_name}/{model3}',
+                        'source': 'user_documents'
+                    })
         except Exception as e:
             logger.warning(f"扫描用户文档模型目录时出错: {e}")
         

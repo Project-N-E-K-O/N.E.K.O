@@ -155,7 +155,12 @@ class VRMCore {
 
         const buttonsContainer = document.getElementById('vrm-floating-buttons');
         if (buttonsContainer) {
-            buttonsContainer.style.display = locked ? 'none' : 'flex';
+            // 如果处于返回状态，保持按钮隐藏，不要因为解锁而显示按钮
+            if (this.manager._isInReturnState) {
+                buttonsContainer.style.display = 'none';
+            } else {
+                buttonsContainer.style.display = locked ? 'none' : 'flex';
+            }
         }
     }
 

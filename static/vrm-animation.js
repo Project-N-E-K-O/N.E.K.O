@@ -27,6 +27,20 @@ class VRMAnimation {
     }
 
     /**
+     * 检查回退文件是否存在（启动时自检）
+     * @returns {Promise<boolean>} 文件是否存在
+     */
+    static async _checkFallbackFileExists() {
+        const fallbackPath = '/static/libs/three-vrm-animation.module.js';
+        try {
+            const response = await fetch(fallbackPath, { method: 'HEAD' });
+            return response.ok;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    /**
      * 获取 three-vrm-animation 模块（带缓存）
      * 使用 importmap 中的映射，确保与 @pixiv/three-vrm 使用相同的 three-vrm-core 版本
      * @returns {Promise<object>} three-vrm-animation 模块对象
@@ -45,6 +59,11 @@ class VRMAnimation {
             console.warn('[VRM Animation] 无法导入 @pixiv/three-vrm-animation，请检查 importmap 配置:', error);
             // 如果 importmap 失败，回退到硬编码路径（兼容性处理）
             try {
+                // 在尝试导入前检查回退文件是否存在
+                const fallbackExists = await VRMAnimation._checkFallbackFileExists();
+                if (!fallbackExists) {
+                    console.warn('[VRM Animation] 回退文件不存在: /static/libs/three-vrm-animation.module.js，请确保文件已正确部署');
+                }
                 VRMAnimation._animationModuleCache = await import('/static/libs/three-vrm-animation.module.js');
                 return VRMAnimation._animationModuleCache;
             } catch (fallbackError) {

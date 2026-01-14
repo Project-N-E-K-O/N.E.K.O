@@ -343,12 +343,6 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
             this.pixi_app.ticker.start();
             console.log('[Live2D Model] Ticker 已启动');
         }
-        // 立即触发一次更新，确保模型正常渲染
-        try {
-            this.pixi_app.ticker.update();
-        } catch (e) {
-            console.warn('[Live2D Model] Ticker 更新失败:', e);
-        }
     }
 
     // 调用回调函数
@@ -363,8 +357,9 @@ Live2DManager.prototype._scheduleReinstallOverride = function() {
     if (this._reinstallScheduled) return;
     
     this._reinstallScheduled = true;
-    setTimeout(() => {
+    this._reinstallTimer = setTimeout(() => {
         this._reinstallScheduled = false;
+        this._reinstallTimer = null;
         if (this.currentModel && this.currentModel.internalModel && this.currentModel.internalModel.coreModel) {
             try {
                 this.installMouthOverride();
@@ -552,7 +547,7 @@ Live2DManager.prototype.installMouthOverride = function() {
         
         // 验证是否是同一个 coreModel（防止切换模型后调用错误的 coreModel）
         const currentCoreModel = this.currentModel.internalModel.coreModel;
-        if (currentCoreModel !== coreModel && currentCoreModel !== this._coreModelRef) {
+        if (currentCoreModel !== this._coreModelRef) {
             // coreModel 已切换，清理覆盖标志并返回
             this._mouthOverrideInstalled = false;
             this._origCoreModelUpdate = null;

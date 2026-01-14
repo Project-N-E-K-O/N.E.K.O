@@ -282,11 +282,13 @@ def find_model_directory(model_name: str):
     查找模型目录，优先在用户文档目录，其次在创意工坊目录，最后在static目录
     返回 (实际路径, URL前缀) 元组
     """
-    import re
     from utils.config_manager import get_config_manager
     
     # 验证模型名称，只允许字母、数字、下划线、中文字符、日文字符、韩文字符、连字符和空格
     # 防止路径遍历攻击
+    if not model_name or not model_name.strip():
+        logging.warning(f"模型名称为空")
+        return (None, None)
     if not re.match(r'^[\w\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af\- ]+$', model_name):
         logging.warning(f"无效的模型名称: {model_name}")
         return (None, None)
@@ -295,8 +297,6 @@ def find_model_directory(model_name: str):
     workshop_config_data = load_workshop_config()
     WORKSHOP_SEARCH_DIR = workshop_config_data.get("WORKSHOP_PATH", workshop_config_data.get("steam_workshop_path", workshop_config_data.get("default_workshop_folder")))
     
-    # 定义允许的基础目录列表
-    allowed_base_dirs = []
     
     # 首先尝试在用户文档目录
     try:
