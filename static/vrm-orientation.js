@@ -43,6 +43,11 @@ class VRMOrientationDetector {
         chestBone.getWorldPosition(chestWorldPos);
 
         const spineVec = new THREE.Vector3().subVectors(headWorldPos, chestWorldPos);
+        // 防御零向量情况
+        if (spineVec.lengthSq() < 0.0001) {
+            console.warn('脊椎向量长度过小，使用默认朝向');
+            return false;
+        }
         spineVec.normalize();
 
         let needsRotation = false;

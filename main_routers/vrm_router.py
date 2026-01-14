@@ -350,9 +350,7 @@ def get_vrm_animations():
         error_detail = traceback.format_exc()
         logger.exception("获取VRM动画列表失败")
         logger.error(f"错误详情: {error_detail}")
-        # 返回更详细的错误信息以便调试
         error_message = str(e)
-        error_type = type(e).__name__
         return JSONResponse(
             status_code=500, 
             content={

@@ -154,6 +154,10 @@ class AudioManager {
             const dataArray = new Uint8Array(analyser.fftSize);
 
             const animate = () => {
+                // 检查模型是否仍然有效
+                if (!model || model.destroyed || !model.internalModel?.coreModel) {
+                    return;
+                }
                 analyser.getByteTimeDomainData(dataArray);
                 // 简单求音量（RMS 或最大振幅）
                 let sum = 0;
@@ -187,9 +191,12 @@ class AudioManager {
             const modelData = this.models.get(modelId);
             if (modelData?.animationFrameId) {
                 cancelAnimationFrame(modelData.animationFrameId);
+                modelData.animationFrameId = null;
             }
             // 关闭嘴巴
-            model.internalModel.coreModel.setParameterValueById("ParamMouthOpenY", 0);
+            if (model.internalModel?.coreModel) {
+                model.internalModel.coreModel.setParameterValueById("ParamMouthOpenY", 0);
+            }
         } else if (window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
             // VRM模型停止口型同步
             window.vrmManager.animation.stopLipSync();

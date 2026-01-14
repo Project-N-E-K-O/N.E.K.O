@@ -37,6 +37,8 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
                 this._reinstallTimer = null;
                 this._reinstallScheduled = false;
             }
+            // 重置重装计数（切换模型时）
+            this._reinstallAttempts = 0;
             // 先清空常驻表情记录和初始参数
             this.teardownPersistentExpressions();
             this.initialParameters = {};
@@ -359,12 +361,31 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
 
 // 延迟重新安装覆盖的默认超时时间（毫秒）
 const REINSTALL_OVERRIDE_DELAY_MS = 100;
+// 最大重装尝试次数
+const MAX_REINSTALL_ATTEMPTS = 3;
+
 Live2DManager.prototype._scheduleReinstallOverride = function() {
     if (this._reinstallScheduled) return;
+    
+    // 初始化重装计数（如果尚未初始化）
+    if (typeof this._reinstallAttempts === 'undefined') {
+        this._reinstallAttempts = 0;
+    }
+    if (typeof this._maxReinstallAttempts === 'undefined') {
+        this._maxReinstallAttempts = MAX_REINSTALL_ATTEMPTS;
+    }
+    
+    // 检查是否超过最大重装次数
+    if (this._reinstallAttempts >= this._maxReinstallAttempts) {
+        console.error('覆盖重装已达最大尝试次数，放弃重装');
+        return;
+    }
+    
     this._reinstallScheduled = true;
     this._reinstallTimer = setTimeout(() => {
         this._reinstallScheduled = false;
         this._reinstallTimer = null;
+        this._reinstallAttempts++;
         if (this.currentModel && this.currentModel.internalModel && this.currentModel.internalModel.coreModel) {
             try {
                 this.installMouthOverride();
@@ -650,6 +671,8 @@ Live2DManager.prototype.installMouthOverride = function() {
     };
 
     this._mouthOverrideInstalled = true;
+    // 重置重装计数（安装成功时）
+    this._reinstallAttempts = 0;
     console.log('已安装双重参数覆盖（motionManager.update 后 + coreModel.update 前）');
 };
 
