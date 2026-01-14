@@ -322,6 +322,12 @@ async function initVRMModel() {
             }
         }
         // 2. 获取并确定模型路径
+        // 如果是模型管理页面，不自动加载模型，直接返回
+        if (isModelManagerPage()) {
+            console.log('[VRM Init] 模型管理页面，跳过自动模型加载');
+            return;
+        }
+        
         // 安全获取 window.vrmModel，处理各种边界情况（包括字符串 "undefined" 和 "null"）
         let targetModelPath = null;
         if (window.vrmModel !== undefined && window.vrmModel !== null) {
@@ -418,8 +424,9 @@ async function initVRMModel() {
             }
         }
 
-        // 初始化 Three.js 场景
-        await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
+        // 初始化 Three.js 场景，传入光照配置（如果存在）
+        const lightingConfig = window.lanlan_config?.lighting || null;
+        await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container', lightingConfig);
 
         // 使用统一的路径转换工具函数
         const modelUrl = window.convertVRMModelPath(targetModelPath);
@@ -429,7 +436,7 @@ async function initVRMModel() {
         // 如果模型背对屏幕，会自动翻转180度并保存，下次加载时直接应用
         await window.vrmManager.loadModel(modelUrl);
         
-        // 页面加载时立即应用打光配置
+        // 页面加载时立即应用打光配置（如果初始化时没有传入，这里会应用）
         applyVRMLighting(window.lanlan_config?.lighting, window.vrmManager);
 
     } catch (error) {
@@ -518,9 +525,10 @@ window.checkAndLoadVRM = async function() {
         // 6. 使用统一的路径转换工具函数
         const modelUrl = window.convertVRMModelPath(newModelPath);
 
-        // 7. 初始化Three.js场景
+        // 7. 初始化Three.js场景，传入光照配置（如果存在）
         if (!window.vrmManager._isInitialized || !window.vrmManager.scene || !window.vrmManager.camera || !window.vrmManager.renderer) {
-            await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container');
+            const lightingConfig = catgirlConfig.lighting || null;
+            await window.vrmManager.initThreeJS('vrm-canvas', 'vrm-container', lightingConfig);
         }
 
         // 8. 检查是否需要重新加载模型（使用规范化比较，避免路径前缀差异导致不必要的重载）

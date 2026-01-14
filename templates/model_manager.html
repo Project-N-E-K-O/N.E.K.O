@@ -3572,8 +3572,55 @@
                     // 先切换模型类型，清理旧模型资源
                     await switchModelDisplay(modelType);
 
-                    // 只有当模型类型是 VRM 且存在有效的 VRM 路径时才加载
+                    // 在模型管理页面，不自动加载VRM模型，等待用户手动选择
+                    // 只有当模型类型是 VRM 且存在有效的 VRM 路径时才加载（但不在模型管理页面自动加载）
                     if (modelType === 'vrm' && hasValidVRMPath) {
+                        // 检查是否在模型管理页面，如果是则不自动加载，只设置选择器的值
+                        const isModelManagerPage = window.location.pathname.includes('model_manager');
+                        if (isModelManagerPage) {
+                            // 在模型管理页面，只设置选择器的值，不自动加载模型
+                            let vrmModelPath = null;
+                            if (catgirlConfig.vrm !== undefined && catgirlConfig.vrm !== null) {
+                                const rawValue = catgirlConfig.vrm;
+                                if (typeof rawValue === 'string') {
+                                    const trimmed = rawValue.trim();
+                                    if (trimmed !== '' && 
+                                        trimmed.toLowerCase() !== 'undefined' && 
+                                        trimmed.toLowerCase() !== 'null' && 
+                                        !trimmed.toLowerCase().includes('undefined') &&
+                                        !trimmed.toLowerCase().includes('null')) {
+                                        vrmModelPath = trimmed;
+                                    }
+                                } else {
+                                    const strValue = String(rawValue);
+                                    const lowerStr = strValue.toLowerCase();
+                                    if (lowerStr !== 'undefined' && lowerStr !== 'null' && !lowerStr.includes('undefined')) {
+                                        vrmModelPath = strValue;
+                                    }
+                                }
+                            }
+                            
+                            // 如果路径有效，设置选择器的值，但不加载模型
+                            if (vrmModelPath && vrmModelSelect) {
+                                // 尝试在下拉列表中找到匹配的选项
+                                const matchedOption = Array.from(vrmModelSelect.options).find(opt => {
+                                    const optPath = opt.getAttribute('data-path');
+                                    const optValue = opt.value;
+                                    return optPath === vrmModelPath || optValue === vrmModelPath || 
+                                           (optPath && optPath.includes(vrmModelPath.split(/[/\\]/).pop()));
+                                });
+                                
+                                if (matchedOption) {
+                                    vrmModelSelect.value = matchedOption.value;
+                                    console.log(`[模型管理] 已设置VRM模型选择器为: ${matchedOption.value}，等待用户确认加载`);
+                                } else {
+                                    console.log(`[模型管理] 未在下拉列表中找到匹配的VRM模型选项: ${vrmModelPath}`);
+                                }
+                            }
+                            return; // 在模型管理页面不自动加载，直接返回
+                        }
+                        
+                        // 非模型管理页面，继续原有的自动加载逻辑
                         // VRM 模型
                         // 安全获取 VRM 模型路径（已经验证过有效性）
                         let vrmModelPath = null;

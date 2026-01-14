@@ -395,7 +395,7 @@ async def update_catgirl_l2d(name: str, request: Request):
                 status_code=404
             )
         
-        # 【修复】切换模型类型时清理"另一套模型字段"，避免配置残留
+        # 切换模型类型时清理"另一套模型字段"，避免配置残留
         if model_type_str == 'vrm':
             # 切到 VRM 时清理 Live2D 相关字段
             characters['猫娘'][name].pop('live2d', None)

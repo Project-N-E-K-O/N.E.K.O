@@ -239,7 +239,7 @@ class VRMCore {
         }
     }
 
-    async init(canvasId, containerId) {
+    async init(canvasId, containerId, lightingConfig = null) {
         this._ensureThreeReady();
         const THREE = window.THREE;
 
@@ -334,11 +334,23 @@ class VRMCore {
 
         this.manager.scene.add(this.manager.camera);
 
-        const hemisphereLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.4);
+        // 使用光照配置（如果提供），否则使用默认值
+        // 默认值：ambient=0.4, main=1.2, fill=0.5, rim=0.8, top=0.3, bottom=0.15
+        const defaultLighting = {
+            ambient: 0.4,
+            main: 1.2,
+            fill: 0.5,
+            rim: 0.8,
+            top: 0.3,
+            bottom: 0.15
+        };
+        const lighting = lightingConfig || defaultLighting;
+
+        const hemisphereLight = new THREE.HemisphereLight(0xffffff, 0x444444, lighting.ambient ?? defaultLighting.ambient);
         this.manager.scene.add(hemisphereLight);
         this.manager.ambientLight = hemisphereLight;
 
-        const mainLight = new THREE.DirectionalLight(0xffffff, 1.2);
+        const mainLight = new THREE.DirectionalLight(0xffffff, lighting.main ?? defaultLighting.main);
         mainLight.position.set(1, 2.5, 2);
         mainLight.castShadow = true;
         mainLight.shadow.mapSize.width = 2048;
@@ -353,25 +365,25 @@ class VRMCore {
         this.manager.scene.add(mainLight);
         this.manager.mainLight = mainLight;
 
-        const fillLight = new THREE.DirectionalLight(0xffffff, 0.5);
+        const fillLight = new THREE.DirectionalLight(0xffffff, lighting.fill ?? defaultLighting.fill);
         fillLight.position.set(-2, 1, 1.5);
         fillLight.castShadow = false;
         this.manager.scene.add(fillLight);
         this.manager.fillLight = fillLight;
 
-        const rimLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        const rimLight = new THREE.DirectionalLight(0xffffff, lighting.rim ?? defaultLighting.rim);
         rimLight.position.set(0, 2, -3);
         rimLight.castShadow = false;
         this.manager.scene.add(rimLight);
         this.manager.rimLight = rimLight;
 
-        const topLight = new THREE.DirectionalLight(0xffffff, 0.3);
+        const topLight = new THREE.DirectionalLight(0xffffff, lighting.top ?? defaultLighting.top);
         topLight.position.set(0, 4, 0);
         topLight.castShadow = false;
         this.manager.scene.add(topLight);
         this.manager.topLight = topLight;
 
-        const bottomLight = new THREE.DirectionalLight(0xffffff, 0.15);
+        const bottomLight = new THREE.DirectionalLight(0xffffff, lighting.bottom ?? defaultLighting.bottom);
         bottomLight.position.set(0, -2, 0.5);
         bottomLight.castShadow = false;
         this.manager.scene.add(bottomLight);

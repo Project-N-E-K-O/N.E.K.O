@@ -315,7 +315,7 @@ class VRMManager {
         }
     }
 
-    async initThreeJS(canvasId, containerId) {
+    async initThreeJS(canvasId, containerId, lightingConfig = null) {
         // 检查是否已完全初始化（不仅检查 scene，还要检查 camera 和 renderer）
         if (this.scene && this.camera && this.renderer) {
             this._isInitialized = true;
@@ -327,7 +327,7 @@ class VRMManager {
             const errorMsg = window.t ? window.t('vrm.error.coreNotLoaded') : 'VRMCore 尚未加载';
             throw new Error(errorMsg);
         }
-        await this.core.init(canvasId, containerId);
+        await this.core.init(canvasId, containerId, lightingConfig);
         if (this.interaction) this.interaction.initDragAndZoom();
         this.startAnimateLoop();
         // 设置初始化标志

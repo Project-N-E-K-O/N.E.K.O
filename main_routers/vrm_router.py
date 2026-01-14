@@ -32,16 +32,7 @@ CHUNK_SIZE = 1024 * 1024  # 1MB chunks for streaming
 
 
 def safe_vrm_path(vrm_dir: Path, filename: str) -> tuple[Path | None, str]:
-    """
-    安全地构造和验证 VRM 目录内的路径，防止路径穿越攻击。
-    
-    Args:
-        vrm_dir: VRM 基础目录
-        filename: 文件名
-        
-    Returns:
-        tuple: (resolved_path or None, error_message)
-    """
+    """安全地构造和验证 VRM 目录内的路径，防止路径穿越攻击。"""
     try:
         # 使用 pathlib 构造路径
         target_path = vrm_dir / filename
@@ -87,7 +78,7 @@ async def upload_vrm_model(file: UploadFile = File(...)):
         config_mgr.ensure_vrm_directory()
         user_vrm_dir = config_mgr.vrm_dir
         
-        # 【修复】使用安全路径函数防止路径穿越
+        # 使用安全路径函数防止路径穿越
         target_file_path, path_error = safe_vrm_path(user_vrm_dir, filename)
         if target_file_path is None:
             logger.warning(f"路径穿越尝试被阻止: {filename!r} - {path_error}")
@@ -103,7 +94,7 @@ async def upload_vrm_model(file: UploadFile = File(...)):
                 "error": f"模型 {filename} 已存在，请先删除或重命名现有模型"
             })
         
-        # 【修复】流式读取文件，在读取过程中检查大小，避免一次性加载到内存
+        # 流式读取文件，在读取过程中检查大小，避免一次性加载到内存
         total_size = 0
         chunks = []
         
@@ -131,7 +122,7 @@ async def upload_vrm_model(file: UploadFile = File(...)):
                 "error": f"读取文件失败: {str(e)}"
             })
         
-        # 【修复】使用异步写入，避免阻塞 I/O
+        # 使用异步写入，避免阻塞 I/O
         try:
             # 使用 asyncio.to_thread 在线程池中执行阻塞写入操作
             def write_file():
@@ -192,7 +183,7 @@ def get_vrm_models():
                     continue
                 seen_urls.add(url)
                 
-                # 【修复】移除绝对路径，只返回公共 URL 和相对信息
+                # 移除绝对路径，只返回公共 URL 和相对信息
                 if vrm_file.exists():
                     models.append({
                         "name": vrm_file.stem,
@@ -213,7 +204,7 @@ def get_vrm_models():
                     continue
                 seen_urls.add(url)
                 
-                # 【修复】移除绝对路径，只返回公共 URL 和相对信息
+                # 移除绝对路径，只返回公共 URL 和相对信息
                 if vrm_file.exists():
                     models.append({
                         "name": vrm_file.stem,
@@ -270,12 +261,12 @@ def get_vrm_animations():
                 # 查找.vrma文件
                 for anim_file in anim_dir.glob('*.vrma'):
                     url = f"{url_prefix}/{anim_file.name}"
-                    # 【修复】使用 set 去重，基于 URL（逻辑路径）而不是绝对路径
+                    # 使用 set 去重，基于 URL（逻辑路径）而不是绝对路径
                     if url in seen_urls:
                         continue
                     seen_urls.add(url)
                     
-                    # 【修复】移除绝对路径，只返回公共 URL 和相对信息
+                    # 移除绝对路径，只返回公共 URL 和相对信息
                     if anim_file.exists():
                         animations.append({
                             "name": anim_file.stem,
@@ -288,12 +279,12 @@ def get_vrm_animations():
                 # 也支持.vrm文件作为动画（某些情况下）
                 for anim_file in anim_dir.glob('*.vrm'):
                     url = f"{url_prefix}/{anim_file.name}"
-                    # 【修复】使用 set 去重，基于 URL（逻辑路径）
+                    # 使用 set 去重，基于 URL（逻辑路径）
                     if url in seen_urls:
                         continue
                     seen_urls.add(url)
                     
-                    # 【修复】移除绝对路径，只返回公共 URL 和相对信息
+                    # 移除绝对路径，只返回公共 URL 和相对信息
                     if anim_file.exists():
                         animations.append({
                             "name": anim_file.stem,
