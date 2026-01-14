@@ -397,14 +397,14 @@ class VRMExpression {
                 // 150ms后保持闭眼状态（确保眼睛完全闭上）
                 setTimeout(() => {
                     expressionManager.setValue(name, 1.0);
-                }, 350);
+                }, 150);
 
-                // 400ms后开始睁眼
+                // 300ms后开始睁眼
                 setTimeout(() => {
                     expressionManager.setValue(name, 0.0);
                     this.currentMood = 'neutral';
                     this.manualBlinkInProgress = null; // 清除标志
-                }, 400);
+                }, 300);
 
             } else {
                 // 双眼眨眼：使用 blinkWeight 动画（原有逻辑）

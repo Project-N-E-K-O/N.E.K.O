@@ -2,35 +2,136 @@
  * VRM UI Popup - 弹出框组件（功能同步修复版）
  */
 
+// 注入 CSS 样式（如果尚未注入）
+(function() {
+    if (document.getElementById('vrm-popup-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'vrm-popup-styles';
+    style.textContent = `
+        .vrm-popup {
+            position: absolute;
+            left: 100%;
+            top: 0;
+            margin-left: 8px;
+            z-index: 100000;
+            background: rgba(255, 255, 255, 0.65);
+            backdrop-filter: saturate(180%) blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 8px;
+            padding: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.04);
+            display: none;
+            flex-direction: column;
+            gap: 6px;
+            min-width: 180px;
+            max-height: 200px;
+            overflow-y: auto;
+            pointer-events: auto;
+            opacity: 0;
+            transform: translateX(-10px);
+            transition: opacity 0.2s cubic-bezier(0.1, 0.9, 0.2, 1), transform 0.2s cubic-bezier(0.1, 0.9, 0.2, 1);
+        }
+        .vrm-popup.vrm-popup-settings {
+            max-height: 70vh;
+        }
+        .vrm-toggle-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 8px;
+            cursor: pointer;
+            border-radius: 6px;
+            transition: background 0.2s ease, opacity 0.2s ease;
+            font-size: 13px;
+            white-space: nowrap;
+        }
+        .vrm-toggle-item:focus-within {
+            outline: 2px solid #44b7fe;
+            outline-offset: 2px;
+        }
+        .vrm-toggle-item[aria-disabled="true"] {
+            opacity: 0.5;
+            cursor: default;
+        }
+        .vrm-toggle-indicator {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            border: 2px solid #ccc;
+            background-color: transparent;
+            cursor: pointer;
+            flex-shrink: 0;
+            transition: all 0.2s ease;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .vrm-toggle-indicator[aria-checked="true"] {
+            background-color: #44b7fe;
+            border-color: #44b7fe;
+        }
+        .vrm-toggle-checkmark {
+            color: #fff;
+            font-size: 13px;
+            font-weight: bold;
+            line-height: 1;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+            pointer-events: none;
+            user-select: none;
+        }
+        .vrm-toggle-indicator[aria-checked="true"] .vrm-toggle-checkmark {
+            opacity: 1;
+        }
+        .vrm-toggle-label {
+            cursor: pointer;
+            user-select: none;
+            font-size: 13px;
+            color: #333;
+        }
+        .vrm-toggle-item:hover:not([aria-disabled="true"]) {
+            background: rgba(68, 183, 254, 0.1);
+        }
+        .vrm-settings-menu-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            cursor: pointer;
+            border-radius: 6px;
+            transition: background 0.2s ease;
+            font-size: 13px;
+            white-space: nowrap;
+            color: #333;
+        }
+        .vrm-settings-menu-item:hover {
+            background: rgba(68, 183, 254, 0.1);
+        }
+        .vrm-settings-separator {
+            height: 1px;
+            background: rgba(0,0,0,0.1);
+            margin: 4px 0;
+        }
+        .vrm-agent-status {
+            font-size: 12px;
+            color: #44b7fe;
+            padding: 6px 8px;
+            border-radius: 4px;
+            background: rgba(68, 183, 254, 0.05);
+            margin-bottom: 8px;
+            min-height: 20px;
+            text-align: center;
+        }
+    `;
+    document.head.appendChild(style);
+})();
+
 // 创建弹出框
 VRMManager.prototype.createPopup = function (buttonId) {
     const popup = document.createElement('div');
     popup.id = `vrm-popup-${buttonId}`;
     popup.className = 'vrm-popup';
-
-    Object.assign(popup.style, {
-        position: 'absolute',
-        left: '100%',
-        top: '0',
-        marginLeft: '8px',
-        zIndex: '100000',
-        background: 'rgba(255, 255, 255, 0.65)',
-        backdropFilter: 'saturate(180%) blur(20px)',
-        border: '1px solid rgba(255, 255, 255, 0.18)',
-        borderRadius: '8px',
-        padding: '8px',
-        boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.04)',
-        display: 'none',
-        flexDirection: 'column',
-        gap: '6px',
-        minWidth: '180px',
-        maxHeight: '200px',
-        overflowY: 'auto',
-        pointerEvents: 'auto',
-        opacity: '0',
-        transform: 'translateX(-10px)',
-        transition: 'opacity 0.2s cubic-bezier(0.1, 0.9, 0.2, 1), transform 0.2s cubic-bezier(0.1, 0.9, 0.2, 1)'
-    });
 
     const stopEventPropagation = (e) => { e.stopPropagation(); };
     ['pointerdown','pointermove','pointerup','mousedown','mousemove','mouseup','touchstart','touchmove','touchend'].forEach(evt => {
@@ -41,10 +142,9 @@ VRMManager.prototype.createPopup = function (buttonId) {
         popup.setAttribute('data-legacy-id', 'vrm-mic-popup');
     } else if (buttonId === 'agent') {
         this._createAgentPopupContent(popup);
-    } else if (buttonId === 'settings') {
+    } else     if (buttonId === 'settings') {
         // 避免小屏溢出：限制高度并允许滚动
-        popup.style.maxHeight = '70vh';
-        popup.style.overflowY = 'auto';
+        popup.classList.add('vrm-popup-settings');
         this._createSettingsPopupContent(popup);
     }
 
@@ -55,10 +155,7 @@ VRMManager.prototype.createPopup = function (buttonId) {
 VRMManager.prototype._createAgentPopupContent = function (popup) {
     const statusDiv = document.createElement('div');
     statusDiv.id = 'vrm-agent-status';
-    Object.assign(statusDiv.style, {
-        fontSize: '12px', color: '#44b7fe', padding: '6px 8px', borderRadius: '4px',
-        background: 'rgba(68, 183, 254, 0.05)', marginBottom: '8px', minHeight: '20px', textAlign: 'center'
-    });
+    statusDiv.className = 'vrm-agent-status';
     statusDiv.textContent = window.t ? window.t('settings.toggles.checking') : '查询中...';
     popup.appendChild(statusDiv);
 
@@ -94,11 +191,7 @@ VRMManager.prototype._createSettingsPopupContent = function (popup) {
     if (!window.isMobileWidth()) {
         // 添加分隔线
         const separator = document.createElement('div');
-        Object.assign(separator.style, {
-            height: '1px',
-            background: 'rgba(0,0,0,0.1)',
-            margin: '4px 0'
-        });
+        separator.className = 'vrm-settings-separator';
         popup.appendChild(separator);
 
         // 然后添加导航菜单项
@@ -109,52 +202,51 @@ VRMManager.prototype._createSettingsPopupContent = function (popup) {
 // 创建Agent开关项
 VRMManager.prototype._createToggleItem = function (toggle, popup) {
     const toggleItem = document.createElement('div');
-    Object.assign(toggleItem.style, {
-        display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 8px', cursor: 'pointer',
-        borderRadius: '6px', transition: 'background 0.2s ease, opacity 0.2s ease', fontSize: '13px',
-        whiteSpace: 'nowrap', opacity: toggle.initialDisabled ? '0.5' : '1'
-    });
+    toggleItem.className = 'vrm-toggle-item';
+    toggleItem.setAttribute('role', 'switch');
+    toggleItem.setAttribute('tabIndex', toggle.initialDisabled ? '-1' : '0');
+    toggleItem.setAttribute('aria-checked', 'false');
+    toggleItem.setAttribute('aria-disabled', toggle.initialDisabled ? 'true' : 'false');
+    if (toggle.initialDisabled) {
+        toggleItem.style.opacity = '0.5';
+    }
 
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.id = `vrm-${toggle.id}`;
-    checkbox.style.display = 'none';
+    checkbox.style.position = 'absolute';
+    checkbox.style.opacity = '0';
+    checkbox.style.width = '1px';
+    checkbox.style.height = '1px';
+    checkbox.style.overflow = 'hidden';
+    checkbox.setAttribute('aria-hidden', 'true');
 
     if (toggle.initialDisabled) {
         checkbox.disabled = true;
         checkbox.title = window.t ? window.t('settings.toggles.checking') : '查询中...';
-        toggleItem.style.cursor = 'default';
     }
 
     const indicator = document.createElement('div');
     indicator.className = 'vrm-toggle-indicator';
-    Object.assign(indicator.style, {
-        width: '20px', height: '20px', borderRadius: '50%', border: '2px solid #ccc',
-        backgroundColor: 'transparent', cursor: 'pointer', flexShrink: '0', transition: 'all 0.2s ease',
-        position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center'
-    });
+    indicator.setAttribute('role', 'presentation');
+    indicator.setAttribute('aria-hidden', 'true');
 
     const checkmark = document.createElement('div');
     checkmark.className = 'vrm-toggle-checkmark';
     checkmark.innerHTML = '✓';
-    Object.assign(checkmark.style, {
-        color: '#fff', fontSize: '13px', fontWeight: 'bold', lineHeight: '1', opacity: '0',
-        transition: 'opacity 0.2s ease', pointerEvents: 'none', userSelect: 'none'
-    });
     indicator.appendChild(checkmark);
 
     const label = document.createElement('label');
+    label.className = 'vrm-toggle-label';
     label.innerText = toggle.label;
     if (toggle.labelKey) label.setAttribute('data-i18n', toggle.labelKey);
     label.htmlFor = `vrm-${toggle.id}`;
-    Object.assign(label.style, { cursor: 'pointer', userSelect: 'none', fontSize: '13px', color: '#333' });
+    toggleItem.setAttribute('aria-label', toggle.label);
 
     const updateStyle = () => {
-        if (checkbox.checked) {
-            indicator.style.backgroundColor = '#44b7fe'; indicator.style.borderColor = '#44b7fe'; checkmark.style.opacity = '1';
-        } else {
-            indicator.style.backgroundColor = 'transparent'; indicator.style.borderColor = '#ccc'; checkmark.style.opacity = '0';
-        }
+        const isChecked = checkbox.checked;
+        toggleItem.setAttribute('aria-checked', isChecked ? 'true' : 'false');
+        indicator.setAttribute('aria-checked', isChecked ? 'true' : 'false');
     };
 
     checkbox.addEventListener('change', updateStyle);
@@ -162,12 +254,6 @@ VRMManager.prototype._createToggleItem = function (toggle, popup) {
 
     toggleItem.appendChild(checkbox); toggleItem.appendChild(indicator); toggleItem.appendChild(label);
     
-    // 鼠标悬停
-    toggleItem.addEventListener('mouseenter', () => {
-        if (!checkbox.disabled) toggleItem.style.background = 'rgba(68, 183, 254, 0.1)';
-    });
-    toggleItem.addEventListener('mouseleave', () => toggleItem.style.background = 'transparent');
-
     const handleToggle = (e) => {
         if (checkbox.disabled) return;
         if (checkbox._processing) {
@@ -181,6 +267,15 @@ VRMManager.prototype._createToggleItem = function (toggle, popup) {
         e?.preventDefault(); e?.stopPropagation();
     };
 
+    // 键盘支持
+    toggleItem.addEventListener('keydown', (e) => {
+        if (checkbox.disabled) return;
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            handleToggle(e);
+        }
+    });
+
     [toggleItem, indicator, label].forEach(el => el.addEventListener('click', (e) => {
         if (e.target !== checkbox) handleToggle(e);
     }));
@@ -191,16 +286,22 @@ VRMManager.prototype._createToggleItem = function (toggle, popup) {
 // 创建设置开关项
 VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
     const toggleItem = document.createElement('div');
-    Object.assign(toggleItem.style, {
-        display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', cursor: 'pointer',
-        borderRadius: '6px', transition: 'background 0.2s ease', fontSize: '13px', whiteSpace: 'nowrap',
-        borderBottom: '1px solid rgba(0,0,0,0.05)'
-    });
+    toggleItem.className = 'vrm-toggle-item';
+    toggleItem.setAttribute('role', 'switch');
+    toggleItem.setAttribute('tabIndex', '0');
+    toggleItem.setAttribute('aria-checked', 'false');
+    toggleItem.style.padding = '8px 12px';
+    toggleItem.style.borderBottom = '1px solid rgba(0,0,0,0.05)';
 
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.id = `vrm-${toggle.id}`;
-    checkbox.style.display = 'none';
+    checkbox.style.position = 'absolute';
+    checkbox.style.opacity = '0';
+    checkbox.style.width = '1px';
+    checkbox.style.height = '1px';
+    checkbox.style.overflow = 'hidden';
+    checkbox.setAttribute('aria-hidden', 'true');
 
     // 初始化状态
     if (toggle.id === 'merge-messages' && typeof window.mergeMessagesEnabled !== 'undefined') {
@@ -215,33 +316,31 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
 
     const indicator = document.createElement('div');
     indicator.className = 'vrm-toggle-indicator';
-    Object.assign(indicator.style, {
-        width: '20px', height: '20px', borderRadius: '50%', border: '2px solid #ccc',
-        backgroundColor: 'transparent', cursor: 'pointer', flexShrink: '0', transition: 'all 0.2s ease',
-        position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center'
-    });
+    indicator.setAttribute('role', 'presentation');
+    indicator.setAttribute('aria-hidden', 'true');
 
     const checkmark = document.createElement('div');
     checkmark.className = 'vrm-toggle-checkmark';
     checkmark.innerHTML = '✓';
-    Object.assign(checkmark.style, {
-        color: '#fff', fontSize: '13px', fontWeight: 'bold', lineHeight: '1', opacity: '0',
-        transition: 'opacity 0.2s ease', pointerEvents: 'none', userSelect: 'none'
-    });
     indicator.appendChild(checkmark);
 
     const label = document.createElement('label');
+    label.className = 'vrm-toggle-label';
     label.innerText = toggle.label;
     if (toggle.labelKey) label.setAttribute('data-i18n', toggle.labelKey);
     label.htmlFor = `vrm-${toggle.id}`;
-    Object.assign(label.style, { cursor: 'pointer', userSelect: 'none', fontSize: '13px', color: '#333', display: 'flex', alignItems: 'center', height: '20px' });
+    label.style.display = 'flex';
+    label.style.alignItems = 'center';
+    label.style.height = '20px';
+    toggleItem.setAttribute('aria-label', toggle.label);
 
     const updateStyle = () => {
-        if (checkbox.checked) {
-            indicator.style.backgroundColor = '#44b7fe'; indicator.style.borderColor = '#44b7fe'; checkmark.style.opacity = '1';
+        const isChecked = checkbox.checked;
+        toggleItem.setAttribute('aria-checked', isChecked ? 'true' : 'false');
+        indicator.setAttribute('aria-checked', isChecked ? 'true' : 'false');
+        if (isChecked) {
             toggleItem.style.background = 'rgba(68, 183, 254, 0.1)';
         } else {
-            indicator.style.backgroundColor = 'transparent'; indicator.style.borderColor = '#ccc'; checkmark.style.opacity = '0';
             toggleItem.style.background = 'transparent';
         }
     };
@@ -251,6 +350,15 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
 
     toggleItem.addEventListener('mouseenter', () => { if(checkbox.checked) toggleItem.style.background = 'rgba(68, 183, 254, 0.15)'; else toggleItem.style.background = 'rgba(68, 183, 254, 0.08)'; });
     toggleItem.addEventListener('mouseleave', updateStyle);
+
+    // 键盘支持
+    toggleItem.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            checkbox.checked = !checkbox.checked;
+            handleToggleChange(checkbox.checked);
+        }
+    });
 
     const handleToggleChange = (isChecked) => {
         updateStyle();
@@ -304,7 +412,7 @@ VRMManager.prototype._createSettingsMenuItems = function (popup) {
 
     settingsItems.forEach(item => {
         const menuItem = document.createElement('div');
-        Object.assign(menuItem.style, { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', cursor: 'pointer', borderRadius: '6px', transition: 'background 0.2s ease', fontSize: '13px', whiteSpace: 'nowrap', color: '#333' });
+        menuItem.className = 'vrm-settings-menu-item';
 
         if (item.icon) {
             const iconImg = document.createElement('img'); iconImg.src = item.icon; iconImg.alt = item.label;
@@ -340,7 +448,11 @@ VRMManager.prototype._createSettingsMenuItems = function (popup) {
                     if (typeof this.closeAllSettingsWindows === 'function') {
                         this.closeAllSettingsWindows();
                     }
-                    this._openSettingsWindows[finalUrl] = window.open(finalUrl, '_blank', 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no');
+                    const newWindow = window.open(finalUrl, '_blank', 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no,noopener');
+                    if (newWindow) {
+                        newWindow.opener = null;
+                        this._openSettingsWindows[finalUrl] = newWindow;
+                    }
                 } else {
                     if (this._openSettingsWindows[finalUrl] && !this._openSettingsWindows[finalUrl].closed) {
                         this._openSettingsWindows[finalUrl].focus(); return;
@@ -348,8 +460,9 @@ VRMManager.prototype._createSettingsMenuItems = function (popup) {
                     if (typeof this.closeAllSettingsWindows === 'function') {
                         this.closeAllSettingsWindows();
                     }
-                    const newWindow = window.open(finalUrl, '_blank', 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no');
+                    const newWindow = window.open(finalUrl, '_blank', 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no,noopener');
                     if(newWindow) {
+                        newWindow.opener = null;
                         this._openSettingsWindows[finalUrl] = newWindow;
                         this._windowCheckTimers = this._windowCheckTimers || {};
                         

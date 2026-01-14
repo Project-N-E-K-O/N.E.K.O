@@ -213,21 +213,7 @@ class ConfigManager:
     
     def _get_project_config_directory(self):
         """获取项目的config目录"""
-        if getattr(sys, 'frozen', False):
-            # 如果是打包后的exe（PyInstaller）
-            # 单文件模式：数据文件在 _MEIPASS 临时目录
-            # 多文件模式：数据文件在 exe 同目录
-            if hasattr(sys, '_MEIPASS'):
-                # 单文件模式：使用临时解压目录
-                app_dir = Path(sys._MEIPASS)
-            else:
-                # 多文件模式：使用 exe 同目录
-                app_dir = Path(sys.executable).parent
-        else:
-            # 如果是脚本运行
-            app_dir = Path.cwd()
-        
-        return app_dir / "config"
+        return self._get_project_root() / "config"
     
     def _get_project_memory_directory(self):
         """获取项目的memory/store目录"""

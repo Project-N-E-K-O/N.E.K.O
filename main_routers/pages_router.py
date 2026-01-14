@@ -21,21 +21,24 @@ async def get_default_index(request: Request):
     })
 
 
-@router.get("/l2d", response_class=HTMLResponse)
-async def get_l2d_manager(request: Request):
-    """渲染模型管理器页面（兼容旧路由）"""
+def _render_model_manager(request: Request):
+    """渲染模型管理器页面的内部实现"""
     templates = get_templates()
     return templates.TemplateResponse("templates/model_manager.html", {
         "request": request
     })
 
+
+@router.get("/l2d", response_class=HTMLResponse)
+async def get_l2d_manager(request: Request):
+    """渲染模型管理器页面（兼容旧路由）"""
+    return _render_model_manager(request)
+
+
 @router.get("/model_manager", response_class=HTMLResponse)
 async def get_model_manager(request: Request):
     """渲染模型管理器页面"""
-    templates = get_templates()
-    return templates.TemplateResponse("templates/model_manager.html", {
-        "request": request
-    })
+    return _render_model_manager(request)
 
 
 @router.get("/live2d_parameter_editor", response_class=HTMLResponse)

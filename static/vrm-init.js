@@ -267,12 +267,12 @@ window.addEventListener('vrm-modules-ready', () => {
 
 // 自动初始化函数
 async function initVRMModel() {
-    // 防止重复进入：如果正在初始化或模型已加载，直接退出
-    if (window._isVRMInitializing) {
+    // 防止重复进入：使用共享锁，避免与 checkAndLoadVRM 并发
+    if (window._isVRMLoading) {
         return;
     }
-    // 标记开始
-    window._isVRMInitializing = true;
+    // 标记开始（共享锁）
+    window._isVRMLoading = true;
     
     try {
         // 1. 等待配置加载完成
@@ -442,8 +442,8 @@ async function initVRMModel() {
     } catch (error) {
         console.error('[VRM Init] 错误详情:', error.stack);
     } finally {
-        // 无论成功还是失败，包括所有早期返回，最后都释放锁
-        window._isVRMInitializing = false;
+        // 无论成功还是失败，包括所有早期返回，最后都释放锁（共享锁）
+        window._isVRMLoading = false;
     }
 }
 
@@ -461,8 +461,9 @@ window.forceUnlockVRM = function() {
 
 // 手动触发主页VRM模型检查的函数
 window.checkAndLoadVRM = async function() {
-    if (window._isVRMChecking) return;
-    window._isVRMChecking = true;
+    // 使用共享锁，避免与 initVRMModel 并发
+    if (window._isVRMLoading) return;
+    window._isVRMLoading = true;
     try {
         // 确保配置已同步 (防止直接调用此函数时配置还没加载) 
         if (!window.VRM_PATHS.isLoaded) { 
@@ -584,7 +585,8 @@ window.checkAndLoadVRM = async function() {
     } catch (error) {
         console.error('[VRM Check] 检查失败:', error);
     } finally {
-        window._isVRMChecking = false;
+        // 释放共享锁
+        window._isVRMLoading = false;
     }
 };
 

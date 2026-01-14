@@ -446,7 +446,7 @@ async def update_catgirl_l2d(name: str, request: Request):
         })
         
     except Exception as e:
-        logger.error(f"更新角色模型设置失败: {e}")
+        logger.exception(f"更新角色模型设置失败: {e}")
         return JSONResponse(content={
             'success': False,
             'error': str(e)
@@ -487,11 +487,11 @@ async def update_catgirl_lighting(name: str, request: Request):
             logger.warning(f"角色 {name} 不是VRM模型，但仍保存打光配置")
         
         from config import get_default_vrm_lighting
-        base_lighting = (
-            characters['猫娘'][name].get('lighting')
-            if isinstance(characters['猫娘'][name].get('lighting'), dict)
-            else None
-        ) or get_default_vrm_lighting()
+        existing_lighting = characters['猫娘'][name].get('lighting')
+        if isinstance(existing_lighting, dict):
+            base_lighting = existing_lighting
+        else:
+            base_lighting = get_default_vrm_lighting()
         
         if not isinstance(lighting, dict):
             return JSONResponse(content={

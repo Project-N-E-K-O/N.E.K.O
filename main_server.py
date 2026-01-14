@@ -368,7 +368,13 @@ if _IS_MAIN_PROCESS:
     if os.path.exists(user_live2d_path):
         app.mount("/user_live2d", CustomStaticFiles(directory=user_live2d_path), name="user_live2d")
         logger.info(f"已挂载用户Live2D目录: {user_live2d_path}")
-    
+
+    # 挂载VRM动画目录（static/vrm/animation） 必须第一个挂载
+    vrm_animation_path = str(_config_manager.vrm_animation_dir)
+    if os.path.exists(vrm_animation_path):
+        app.mount("/user_vrm/animation", CustomStaticFiles(directory=vrm_animation_path), name="user_vrm_animation")
+        logger.info(f"已挂载VRM动画目录: {vrm_animation_path}")
+
     # 挂载VRM模型目录（用户文档目录）
     user_vrm_path = str(_config_manager.vrm_dir)
     if os.path.exists(user_vrm_path):
@@ -380,11 +386,6 @@ if _IS_MAIN_PROCESS:
     if os.path.exists(project_vrm_path) and os.path.isdir(project_vrm_path):
         logger.info(f"项目VRM目录存在: {project_vrm_path} (可通过 /static/vrm/ 访问)")
     
-    # 挂载VRM动画目录（static/vrm/animation）
-    vrm_animation_path = str(_config_manager.vrm_animation_dir)
-    if os.path.exists(vrm_animation_path):
-        app.mount("/user_vrm/animation", CustomStaticFiles(directory=vrm_animation_path), name="user_vrm_animation")
-        logger.info(f"已挂载VRM动画目录: {vrm_animation_path}")
 
     # 挂载用户mod路径
     user_mod_path = _config_manager.get_workshop_path()

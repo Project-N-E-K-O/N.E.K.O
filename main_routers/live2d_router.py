@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 
 from .shared_state import get_config_manager
 from .workshop_router import get_subscribed_workshop_items
-from utils.frontend_utils import find_models, find_model_directory, find_model_by_workshop_item_id, find_workshop_item_by_id, is_user_imported_model
+from utils.frontend_utils import find_models, find_model_directory, find_model_by_workshop_item_id, find_workshop_item_by_id
 router = APIRouter(prefix="/api/live2d", tags=["live2d"])
 logger = logging.getLogger("Main")
 
@@ -113,7 +113,6 @@ def get_model_config(model_name: str):
         # 查找模型目录（可能在static或用户文档目录）
         model_dir, url_prefix = find_model_directory(model_name)
         if not model_dir or not os.path.exists(model_dir):
-        if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
         # 查找.model3.json文件
@@ -168,7 +167,6 @@ async def update_model_config(model_name: str, request: Request):
         # 查找模型目录（可能在static或用户文档目录）
         model_dir, url_prefix = find_model_directory(model_name)
         if not model_dir or not os.path.exists(model_dir):
-        if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
         # 查找.model3.json文件
@@ -207,7 +205,6 @@ def get_emotion_mapping(model_name: str):
     try:
         # 查找模型目录（可能在static或用户文档目录）
         model_dir, url_prefix = find_model_directory(model_name)
-        if not model_dir or not os.path.exists(model_dir):
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
@@ -280,7 +277,6 @@ async def update_emotion_mapping(model_name: str, request: Request):
 
         # 查找模型目录（可能在static或用户文档目录）
         model_dir, url_prefix = find_model_directory(model_name)
-        if not model_dir or not os.path.exists(model_dir):
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         

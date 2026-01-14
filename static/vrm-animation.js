@@ -1,3 +1,7 @@
+const THREE = (typeof window !== 'undefined' && window.THREE) || null;
+if (!THREE) {
+    console.error('[VRM Animation] THREE.js 未加载，动画功能将不可用');
+}
 class VRMAnimation {
     static MAX_DELTA_THRESHOLD = 0.1;
     static DEFAULT_FRAME_DELTA = 0.016;

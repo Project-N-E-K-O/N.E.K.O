@@ -2,7 +2,7 @@
  * VRM 模型朝向检测和处理模块
  * 在模型加载后、渲染前检测并修正模型朝向
  */
-
+const THREE = (typeof window !== 'undefined' && window.THREE) || (typeof globalThis !== 'undefined' && globalThis.THREE) || null;
 class VRMOrientationDetector {
     /**
      * 检测VRM模型是否需要旋转（是否背对屏幕）
@@ -10,6 +10,10 @@ class VRMOrientationDetector {
      * @returns {boolean} 如果需要旋转180度返回true，否则返回false
      */
     static detectNeedsRotation(vrm) {
+        if (!THREE) {
+            console.warn('THREE.js 未加载，无法检测模型朝向');
+            return false;
+        }
         if (!vrm || !vrm.humanoid || !vrm.humanoid.humanBones) {
             return false;
         }
@@ -32,14 +36,14 @@ class VRMOrientationDetector {
         headBone.getWorldPosition(headWorldPos);
         chestBone.getWorldPosition(chestWorldPos);
 
-        const forwardVec = new THREE.Vector3().subVectors(headWorldPos, chestWorldPos);
-        forwardVec.normalize();
+        const spineVec = new THREE.Vector3().subVectors(headWorldPos, chestWorldPos);
+        spineVec.normalize();
 
         let needsRotation = false;
         
-        if (forwardVec.z > 0.05) {
+        if (spineVec.z > 0.05) {
             needsRotation = true;
-        } else if (forwardVec.z < -0.05) {
+        } else if (spineVec.z < -0.05) {
             needsRotation = false;
         } else {
             if (headWorldPos.z > 0.1) {

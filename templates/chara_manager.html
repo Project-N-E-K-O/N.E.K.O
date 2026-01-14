@@ -1139,7 +1139,7 @@
             let modelDisplayText = '';
             if (modelType === 'vrm' && cat['vrm']) {
                 const vrmPath = cat['vrm'];
-                const vrmName = vrmPath.split(/[\\/]/).pop() || vrmPath;
+                const vrmName = vrmPath ? (vrmPath.split(/[\\/]/).pop() || vrmPath) : '';
                 modelDisplayText = `VRM: ${vrmName}`;
             } else if (cat['live2d']) {
                 modelDisplayText = cat['live2d'];

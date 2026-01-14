@@ -20,6 +20,8 @@ class VRMInteraction {
         this.isLocked = false; 
         this._isInitializingDragAndZoom = false; 
         this._initTimerId = null; 
+        this._initRetryCount = 0;
+        this._maxInitRetries = 50; // 最多重试50次（约5秒）
         
         // 拖拽相关事件处理器引用（用于清理）
         this.mouseDownHandler = null;
@@ -171,12 +173,12 @@ class VRMInteraction {
             if (this.checkLocked() || !this.manager.currentModel) return;
             
             // 检查事件目标是否是 canvas 或其子元素，如果不是则不拦截事件（允许聊天区域正常滚动）
-            const canvas = this.manager.renderer?.domElement;
-            if (!canvas) return;
+            const canvasEl = this.manager.renderer?.domElement;
+            if (!canvasEl) return;
             
             const target = e.target;
             // 检查目标是否是 canvas 本身或其子元素
-            const isCanvasOrDescendant = target === canvas || canvas.contains(target);
+            const isCanvasOrDescendant = target === canvasEl || canvasEl.contains(target);
             
             // 只有当事件发生在 canvas 或其子元素上时，才拦截事件
             if (!isCanvasOrDescendant) {
@@ -662,10 +664,7 @@ class VRMInteraction {
         };
         
         const onMouseEnter = () => showButtons();
-        const onMouseLeave = () => {
-            // 不再隐藏按钮，保持一直显示
-            // 只更新位置（如果需要）
-        };
+        
         
         // RAF 回调：执行昂贵的 Box3 和投影计算
         const performExpensiveCalculation = () => {
@@ -739,11 +738,9 @@ class VRMInteraction {
         };
         
         canvas.addEventListener('mouseenter', onMouseEnter);
-        canvas.addEventListener('mouseleave', onMouseLeave);
         window.addEventListener('pointermove', onPointerMove);
         
         this._floatingButtonsMouseEnter = onMouseEnter;
-        this._floatingButtonsMouseLeave = onMouseLeave;
         this._floatingButtonsPointerMove = onPointerMove;
         
         if (this.manager.currentModel && !this.checkLocked()) {

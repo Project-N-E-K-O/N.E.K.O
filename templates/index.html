@@ -1414,61 +1414,6 @@
         <canvas id="vrm-canvas"></canvas>
     </div>
 
-    <!-- TODO: 占位 UI，未完成 - 开发中功能，生产环境建议隐藏 -->
-    <div id="settings-panel" style="display: none; border: 2px dashed #ff6b6b; background: rgba(255, 107, 107, 0.05);">
-        <div class="settings-header" style="background: rgba(255, 107, 107, 0.1);">
-            <span style="color: #ff6b6b;">⚠️ 系统设置（开发中）</span>
-            <button class="close-btn" id="settings-panel-close-btn">×</button>
-        </div>
-        <div class="settings-content">
-            <p style="color: #ff6b6b; font-weight: bold; text-align: center; padding: 10px; background: rgba(255, 107, 107, 0.1); border-radius: 6px;">
-                ⚠️ 占位 UI - 功能开发中...
-            </p>
-            <p style="color: #999; font-size: 12px; margin-top: 10px; text-align: center;">
-                请使用 VRM/Live2D 浮动按钮中的设置入口
-            </p>
-            <div style="margin-top: 15px; opacity: 0.5; pointer-events: none;">
-                <label><input type="checkbox" disabled> 开启自动眨眼</label>
-            </div>
-            <div style="margin-top: 10px; opacity: 0.5; pointer-events: none;">
-                <label>音量: <input type="range" disabled></label>
-            </div>
-        </div>
-    </div>
-
-    <style>
-        #settings-panel {
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            width: 320px;
-            background: rgba(255, 255, 255, 0.9);
-            backdrop-filter: blur(20px);
-            -webkit-backdrop-filter: blur(20px);
-            border-radius: 12px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
-            border: 1px solid rgba(255, 255, 255, 0.5);
-            z-index: 100000;
-            overflow: hidden;
-            animation: fadeIn 0.3s ease;
-        }
-        .settings-header {
-            padding: 12px 16px;
-            background: rgba(0, 0, 0, 0.03);
-            border-bottom: 1px solid rgba(0, 0, 0, 0.05);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            font-weight: bold;
-            color: #333;
-        }
-        .close-btn {
-            background: none; border: none; font-size: 20px; cursor: pointer; color: #666;
-        }
-        .close-btn:hover { color: #000; }
-        .settings-content { padding: 20px; color: #444; }
-    </style>
 
     <script>
         // 页面配置 - 从 URL 或 API 获取
@@ -1923,7 +1868,7 @@
                 }
                 
                 // 获取当前角色的 model_type，决定显示哪个容器
-                let modelType = catgirlConfig.model_type || 'live2d';
+                let modelType = (catgirlConfig.model_type || 'live2d').toLowerCase();
                 
                 // 根据 model_type 显示正确的容器，确保两个容器不会同时可见
                 if (modelType === 'vrm') {
@@ -2227,6 +2172,7 @@
                         }
                     } else {
                         // Live2D模型：更新位置和缩放设置
+                        const currentModel = window.live2dManager?.getCurrentModel?.();
                         if (modelPreferences && currentModel) {
                             // 应用位置设置
                             if (modelPreferences.position) {
@@ -2441,44 +2387,34 @@
         });
 
         // 安全包装器：防止自递归导致栈溢出
-        // 使用内部标志来跟踪是否正在调用全局函数
-        let _isConvertingPath = false;
-        
+        // 路径转换函数：完全依赖 vrm-init.js 中的权威实现
+        // 如果 vrm-init.js 尚未加载，返回默认路径并警告
         function convertVRMModelPath(modelPath, options = {}) {
             const defaultPath = options.defaultPath || '/static/vrm/sister1.0.vrm';
             
-            // 优先使用全局转换器（如果已加载）
-            if (!_isConvertingPath) {
-                const globalConverter = window._vrmConvertPath || 
-                    (window.convertVRMModelPath && window.convertVRMModelPath !== convertVRMModelPath 
-                        ? window.convertVRMModelPath 
-                        : null);
-                
-                if (globalConverter && typeof globalConverter === 'function') {
-                    try {
-                        _isConvertingPath = true;
-                        const result = globalConverter(modelPath, options);
-                        _isConvertingPath = false;
-                        return result;
-                    } catch (error) {
-                        _isConvertingPath = false;
-                        console.warn('[VRM Path Fallback] 全局函数调用失败，使用 fallback:', error);
-                    }
+            // 优先使用 vrm-init.js 中的权威实现
+            const globalConverter = window._vrmConvertPath || window.convertVRMModelPath;
+            
+            if (globalConverter && typeof globalConverter === 'function' && globalConverter !== convertVRMModelPath) {
+                try {
+                    return globalConverter(modelPath, options);
+                } catch (error) {
+                    console.error('[VRM Path] 路径转换失败，使用默认路径:', error);
+                    return defaultPath;
                 }
             }
             
-            // Fallback 实现：只处理最小情况，复杂映射推迟到 vrm-init.js 加载后
-            // 基本验证
+            // vrm-init.js 尚未加载时的最小处理（仅用于紧急情况）
             if (!modelPath || 
                 modelPath === 'undefined' ||
                 modelPath === 'null' || 
                 (typeof modelPath === 'string' && (modelPath.trim() === '' || modelPath.includes('undefined')))) {
-                console.warn('[VRM Path Fallback] 路径无效，使用默认路径:', modelPath);
+                console.warn('[VRM Path] vrm-init.js 尚未加载，路径无效，使用默认路径:', modelPath);
                 return defaultPath;
             }
             
             if (typeof modelPath !== 'string') {
-                console.warn('[VRM Path Fallback] 路径不是字符串，使用默认路径:', modelPath);
+                console.warn('[VRM Path] vrm-init.js 尚未加载，路径不是字符串，使用默认路径:', modelPath);
                 return defaultPath;
             }
             
@@ -2487,9 +2423,8 @@
                 return modelPath;
             }
             
-            // 对于其他情况，如果 vrm-init.js 尚未加载，返回默认路径
-            // 复杂映射逻辑由 vrm-init.js 的全局转换器处理
-            console.warn('[VRM Path Fallback] vrm-init.js 尚未加载，使用默认路径。建议等待模块加载后再调用。');
+            // 其他情况：等待 vrm-init.js 加载
+            console.warn('[VRM Path] vrm-init.js 尚未加载，使用默认路径。建议等待模块加载后再调用。');
             return defaultPath;
         }
     </script>
@@ -2619,7 +2554,15 @@
                                 document.body.appendChild(script);
                             });
                         } catch (error) {
-                            const isCritical = criticalModules.some(critical => src.includes(critical));
+                            // 使用路径结尾或文件名来匹配关键模块
+                            const getBasename = (path) => {
+                                const parts = path.split('/');
+                                return parts[parts.length - 1];
+                            };
+                            const srcBasename = getBasename(src);
+                            const isCritical = criticalModules.some(critical => 
+                                src.endsWith(critical) || srcBasename === critical
+                            );
                             if (isCritical) {
                                 // 关键模块失败：中止并提示用户
                                 console.error(`关键模块加载失败，中止初始化: ${src}`, error);
@@ -2866,18 +2809,12 @@
     </script>
     <script>
         // 监听设置面板切换事件（支持 Live2D 和 VRM）
+        // 注意：占位 settings-panel 已移除，这些事件监听器保留用于未来可能的实现
         window.addEventListener('live2d-settings-toggle', (e) => {
             // 安全地读取 active 标志，如果 e.detail 不存在则默认为 false
             const active = e?.detail?.active ?? false;
             console.log('[主页] 收到设置开关信号:', active);
-            
-            const panel = document.getElementById('settings-panel');
-            if (panel) {
-                // 根据信号状态显示或隐藏面板
-                panel.style.display = active ? 'block' : 'none';
-            } else {
-                console.error('错误：找不到 id="settings-panel" 的元素！');
-            }
+            // 占位面板已移除，此事件暂时无操作
         });
         
         // 监听通用设置面板切换事件（neko-settings-toggle）
@@ -2885,30 +2822,8 @@
             // 安全地读取 active 标志，如果 e.detail 不存在则默认为 false
             const active = e?.detail?.active ?? false;
             console.log('[主页] 收到通用设置开关信号:', active);
-            
-            const panel = document.getElementById('settings-panel');
-            if (panel) {
-                // 根据信号状态显示或隐藏面板
-                panel.style.display = active ? 'block' : 'none';
-            } else {
-                console.error('错误：找不到 id="settings-panel" 的元素！');
-            }
+            // 占位面板已移除，此事件暂时无操作
         });
-
-        // 处理占位 settings-panel 的关闭按钮（移除 inline onclick，改用事件绑定）
-        const settingsPanelCloseBtn = document.getElementById('settings-panel-close-btn');
-        if (settingsPanelCloseBtn) {
-            settingsPanelCloseBtn.addEventListener('click', () => {
-                const panel = document.getElementById('settings-panel');
-                if (panel) {
-                    panel.style.display = 'none';
-                    // 发送事件通知其他监听器，确保使用相同的格式 { detail: { active: false } }
-                    const closeEvent = { detail: { active: false } };
-                    window.dispatchEvent(new CustomEvent('neko-settings-toggle', closeEvent));
-                    window.dispatchEvent(new CustomEvent('live2d-settings-toggle', closeEvent));
-                }
-            });
-        }
     </script>
 </body>
 

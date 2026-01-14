@@ -31,6 +31,12 @@ Live2DManager.prototype.loadModel = async function(modelPath, options = {}) {
                 this._savedParamsTimer = null;
             }
             
+            // 清除延迟重新安装覆盖的定时器
+            if (this._reinstallTimer) {
+                clearTimeout(this._reinstallTimer);
+                this._reinstallTimer = null;
+                this._reinstallScheduled = false;
+            }
             // 先清空常驻表情记录和初始参数
             this.teardownPersistentExpressions();
             this.initialParameters = {};

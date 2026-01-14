@@ -383,8 +383,6 @@ def find_model_directory(model_name: str):
                 item_path = os.path.join(WORKSHOP_SEARCH_DIR, item_id)
                 item_path_real = os.path.realpath(item_path)
                 if os.path.isdir(item_path_real):
-                item_path_real = os.path.realpath(item_path)
-                if os.path.isdir(item_path_real):
                     # 检查子文件夹中是否包含与模型名称匹配的文件夹
                     potential_model_path = os.path.join(item_path, model_name)
                     if os.path.exists(potential_model_path):
@@ -422,8 +420,6 @@ def find_model_directory(model_name: str):
                 mod_path = os.path.join(user_mods_path, mod_folder)
                 mod_path_real = os.path.realpath(mod_path)
                 if os.path.isdir(mod_path_real):
-                mod_path_real = os.path.realpath(mod_path)
-                if os.path.isdir(mod_path_real):
                     # 检查子文件夹中是否包含与模型名称匹配的文件夹
                     potential_model_path = os.path.join(mod_path, model_name)
                     if os.path.exists(potential_model_path):
@@ -454,8 +450,6 @@ def find_model_directory(model_name: str):
         if os.path.commonpath([static_model_dir_real, static_dir_real]) == static_dir_real:
             return (static_model_dir, '/static')
     
-    # 如果都不存在，返回None
-    return (None, None)
     # 如果都不存在，返回None
     return (None, None)
 

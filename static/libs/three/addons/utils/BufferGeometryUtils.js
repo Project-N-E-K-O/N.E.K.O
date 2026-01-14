@@ -996,7 +996,10 @@ function computeMorphedAttributes( object ) {
 	const morphTargetsRelative = geometry.morphTargetsRelative;
 	const normalAttribute = geometry.attributes.normal;
 	const morphNormal = geometry.morphAttributes.normal;
-
+	if ( ! normalAttribute ) {
+		    console.warn( 'THREE.BufferGeometryUtils: computeMorphedAttributes() requires "normal" attribute.' );
+		    return null;
+		}
 	const groups = geometry.groups;
 	const drawRange = geometry.drawRange;
 	let i, j, il, jl;

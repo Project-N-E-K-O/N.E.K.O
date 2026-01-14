@@ -92,13 +92,8 @@ class AudioManager {
                 fadeGain.gain.setValueAtTime(1, m.nextTime + buffer.duration - fadeTime);
                 fadeGain.gain.linearRampToValueAtTime(0, m.nextTime + buffer.duration);
 
-                // 口型同步 - 支持Live2D和VRM
-                if (window[modelId] && window[modelId].live2dModel) {
-                    this.startLipSync(modelId, m.analyser);
-                } else if (window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
-                    // VRM模型的口型同步
-                    this.startLipSync(modelId, m.analyser);
-                }
+                // 口型同步 - 支持Live2D和VRM（startLipSync内部会自动检测模型类型）
+                this.startLipSync(modelId, m.analyser);
 
                 src.onended = () => {
                     m.playingSources.delete(src);
@@ -187,7 +182,10 @@ class AudioManager {
         if (window[modelId] && window[modelId].live2dModel) {
             // Live2D模型停止口型同步
             const model = window[modelId].live2dModel;
-            cancelAnimationFrame(this.models.get(modelId).animationFrameId);
+            const modelData = this.models.get(modelId);
+            if (modelData?.animationFrameId) {
+                cancelAnimationFrame(modelData.animationFrameId);
+            }
             // 关闭嘴巴
             model.internalModel.coreModel.setParameterValueById("ParamMouthOpenY", 0);
         } else if (window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
