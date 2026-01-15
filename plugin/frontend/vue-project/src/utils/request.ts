@@ -7,6 +7,7 @@ import { ElMessage } from 'element-plus'
 import { API_BASE_URL, API_TIMEOUT } from './constants'
 import { useAuthStore } from '@/stores/auth'
 import { useConnectionStore } from '@/stores/connection'
+import { i18n } from '@/i18n'
 
 let lastNetworkErrorShownAt = 0
 
@@ -79,7 +80,7 @@ service.interceptors.response.use(
       console.error('Response error:', error)
     }
 
-    let message = '请求失败'
+    let message = i18n.global.t('messages.requestFailed')
     
     if (error.response) {
       try {
@@ -93,33 +94,33 @@ service.interceptors.response.use(
 
       switch (status) {
         case 400:
-          message = data.detail || '请求参数错误'
+          message = data.detail || i18n.global.t('messages.badRequest')
           break
         case 401:
-          message = '未授权，请重新登录'
+          message = i18n.global.t('auth.unauthorized')
           await handleAuthError(message)
           break
         case 403:
-          message = data.detail || '拒绝访问：验证码错误或已过期'
+          message = data.detail || i18n.global.t('auth.forbidden')
           await handleAuthError(message)
           break
         case 404:
-          message = data.detail || '请求的资源不存在'
+          message = data.detail || i18n.global.t('messages.resourceNotFound')
           // 404 错误不显示通用错误消息，让调用方自己处理
           ElMessage.closeAll()
           break
         case 500:
-          message = data.detail || '服务器内部错误'
+          message = data.detail || i18n.global.t('messages.internalServerError')
           break
         case 503:
-          message = data.detail || '服务不可用'
+          message = data.detail || i18n.global.t('messages.serviceUnavailable')
           break
         default:
-          message = data.detail || `请求失败 (${status})`
+          message = data.detail || i18n.global.t('messages.requestFailedWithStatus', { status })
       }
     } else if (error.request) {
       // 请求已发出，但没有收到响应
-      message = '网络错误，请检查网络连接'
+      message = i18n.global.t('messages.networkError')
       try {
         const connectionStore = useConnectionStore()
         const wasDisconnected = connectionStore.disconnected
@@ -134,7 +135,7 @@ service.interceptors.response.use(
       }
     } else {
       // 其他错误
-      message = error.message || '请求失败'
+      message = error.message || i18n.global.t('messages.requestFailed')
     }
 
     // 对于 401/403/404，不显示错误消息（已处理或由调用方处理）

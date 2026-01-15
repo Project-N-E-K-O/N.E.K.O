@@ -217,7 +217,14 @@ export default {
     startFailed: '启动失败',
     stopFailed: '停止失败',
     reloadFailed: '重载失败',
-    pluginDisabled: '插件已禁用，请先启用'
+    pluginDisabled: '插件已禁用，请先启用',
+    requestFailed: '请求失败',
+    requestFailedWithStatus: '请求失败 ({status})',
+    badRequest: '请求参数错误',
+    resourceNotFound: '请求的资源不存在',
+    internalServerError: '服务器内部错误',
+    serviceUnavailable: '服务不可用',
+    networkError: '网络错误，请检查网络连接'
   },
   welcome: {
     about: {

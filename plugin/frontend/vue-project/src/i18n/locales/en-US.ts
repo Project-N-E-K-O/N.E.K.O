@@ -217,7 +217,14 @@ export default {
     startFailed: 'Failed to start',
     stopFailed: 'Failed to stop',
     reloadFailed: 'Failed to reload',
-    pluginDisabled: 'Plugin is disabled. Please enable it first.'
+    pluginDisabled: 'Plugin is disabled. Please enable it first.',
+    requestFailed: 'Request failed',
+    requestFailedWithStatus: 'Request failed ({status})',
+    badRequest: 'Invalid request parameters',
+    resourceNotFound: 'Requested resource not found',
+    internalServerError: 'Internal server error',
+    serviceUnavailable: 'Service unavailable',
+    networkError: 'Network error. Please check your connection.'
   },
   welcome: {
     about: {

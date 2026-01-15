@@ -1269,21 +1269,28 @@ def load_plugins_from_toml(
                 if p:
                     out.append(str(p))
         entry = getattr(dep, "entry", None)
-        if isinstance(entry, str) and ":" in entry:
-            try:
-                pid_part, _rest = entry.split(":", 1)
-                if pid_part:
-                    out.append(pid_part)
-            except Exception:
-                pass
+        if isinstance(entry, str):
+            if ":" in entry:
+                try:
+                    pid_part, _rest = entry.split(":", 1)
+                    if pid_part:
+                        out.append(pid_part)
+                except Exception:
+                    logger.debug("Failed to parse dependency entry spec '{}'", entry, exc_info=True)
+            else:
+                # entry 也可能直接引用插件 ID（某些配置/文档会这么写）
+                if entry:
+                    out.append(entry)
         custom_event = getattr(dep, "custom_event", None)
         if isinstance(custom_event, str):
             try:
-                parts = custom_event.split(":")
-                if len(parts) == 3 and parts[0]:
+                # 支持：plugin_id:event_type:event_id
+                # 其中 event_id 可能包含额外 ':'，因此只切前两次。
+                parts = custom_event.split(":", 2)
+                if len(parts) >= 3 and parts[0]:
                     out.append(parts[0])
             except Exception:
-                pass
+                logger.debug("Failed to parse dependency custom_event spec '{}'", custom_event, exc_info=True)
         return out
     
     for ctx in plugin_contexts:
