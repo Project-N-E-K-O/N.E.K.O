@@ -73,7 +73,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, computed, watch } from 'vue'
+import { onMounted, onUnmounted, ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import Sidebar from './Sidebar.vue'
 import Header from './Header.vue'
@@ -115,6 +115,13 @@ watch(
   },
   { immediate: true }
 )
+
+onUnmounted(() => {
+  if (autoAuthTimer) {
+    clearTimeout(autoAuthTimer)
+    autoAuthTimer = undefined
+  }
+})
 
 function handleAuthInput() {
   authCodeInput.value = authCodeInput.value.toUpperCase().slice(0, 4)

@@ -3,16 +3,16 @@
     <el-card class="login-card">
       <template #header>
         <div class="login-header">
-          <h2>🔐 N.E.K.O 插件管理</h2>
-          <p class="subtitle">请输入管理员验证码</p>
+          <h2>🔐 {{ t('auth.loginTitle') }}</h2>
+          <p class="subtitle">{{ t('auth.loginSubtitle') }}</p>
         </div>
       </template>
 
       <el-form @submit.prevent="handleLogin">
-        <el-form-item label="验证码" :error="errorMessage">
+        <el-form-item :label="t('auth.login')" :error="errorMessage">
           <el-input
             v-model="code"
-            placeholder="请输入4位字母验证码"
+            :placeholder="t('auth.codePlaceholder')"
             :maxlength="4"
             :disabled="loading"
             @keyup.enter="handleLogin"
@@ -59,8 +59,8 @@
         >
           <template #title>
             <div class="hint-content">
-              <p>验证码在服务器启动时显示在终端中</p>
-              <p class="hint-small">格式：4个大写字母（如：ABCD）</p>
+              <p>{{ t('auth.codeHint') }}</p>
+              <p class="hint-small">{{ t('auth.codeFormat') }}</p>
             </div>
           </template>
         </el-alert>
@@ -70,7 +70,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
@@ -132,6 +132,13 @@ function scheduleAutoLogin() {
   }, 150)
 }
 
+onUnmounted(() => {
+  if (autoLoginTimer) {
+    clearTimeout(autoLoginTimer)
+    autoLoginTimer = undefined
+  }
+})
+
 async function handlePasteFromClipboard() {
   try {
     if (!navigator.clipboard?.readText) {
@@ -157,7 +164,7 @@ async function handlePasteFromClipboard() {
 
 async function handleLogin(): Promise<boolean> {
   if (!isCodeValid.value) {
-    errorMessage.value = '请输入4位字母验证码'
+    errorMessage.value = t('auth.codePlaceholder')
     return false
   }
 
@@ -173,7 +180,7 @@ async function handleLogin(): Promise<boolean> {
     try {
       await get('/server/info')
       // 验证成功，跳转到目标页面或首页
-      ElMessage.success('登录成功')
+      ElMessage.success(t('auth.loginSuccess'))
       const redirect = route.query.redirect as string
       router.push(isValidRedirect(redirect) ? redirect : '/')
       return true
@@ -181,21 +188,21 @@ async function handleLogin(): Promise<boolean> {
       // 如果返回 401 或 403，说明验证码错误
       if (error.response?.status === 401 || error.response?.status === 403) {
         authStore.clearAuthCode()
-        errorMessage.value = '验证码错误，请重新输入'
-        ElMessage.error('验证码错误')
+        errorMessage.value = t('auth.codeError')
+        ElMessage.error(t('auth.codeError'))
         return false
       } else {
         // 其他错误（500、网络问题等），不保存验证码
         authStore.clearAuthCode()
-        errorMessage.value = '服务器连接失败，请稍后重试'
-        ElMessage.error('无法连接到服务器')
+        errorMessage.value = t('auth.loginFailed')
+        ElMessage.error(t('auth.networkError'))
         return false
       }
     }
   } catch (error) {
     console.error('Login error:', error)
-    errorMessage.value = '登录失败，请重试'
-    ElMessage.error('登录失败')
+    errorMessage.value = t('auth.loginFailed')
+    ElMessage.error(t('auth.loginFailed'))
     return false
   } finally {
     loading.value = false

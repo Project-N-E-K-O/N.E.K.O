@@ -40,6 +40,8 @@ export default {
     login: '登录',
     logout: '退出登录',
     loggingIn: '验证中...',
+    loginTitle: 'N.E.K.O 插件管理',
+    loginSubtitle: '请输入管理员验证码',
     codePlaceholder: '请输入4位字母验证码',
     codeHint: '验证码在服务器启动时显示在终端中',
     codeFormat: '格式：4个大写字母（如：ABCD）',

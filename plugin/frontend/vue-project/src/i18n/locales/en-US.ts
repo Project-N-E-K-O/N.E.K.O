@@ -40,6 +40,8 @@ export default {
     login: 'Login',
     logout: 'Logout',
     loggingIn: 'Verifying...',
+    loginTitle: 'N.E.K.O Plugin Manager',
+    loginSubtitle: 'Enter the admin verification code',
     codePlaceholder: 'Enter 4-letter code',
     codeHint: 'Code is displayed in terminal when server starts',
     codeFormat: 'Format: 4 uppercase letters (e.g., ABCD)',
