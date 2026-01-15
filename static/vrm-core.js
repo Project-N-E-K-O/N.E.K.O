@@ -44,6 +44,7 @@ class VRMCore {
                 return savedMode;
             }
         } catch (e) {
+            console.debug('[VRM Core] localStorage 访问失败:', e);
         }
         
         try {
@@ -676,7 +677,8 @@ class VRMCore {
             } else {
                 vrm.scene.position.set(-center.x, -center.y, -center.z);
             }
-
+            
+            // 等待 3 帧确保 DOM 布局和 Three.js 场景完全稳定后再处理旋转
             await new Promise(resolve => {
                 let frameCount = 0;
                 const waitFrames = () => {

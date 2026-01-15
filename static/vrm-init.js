@@ -70,7 +70,6 @@ window._vrmConvertPath = function(modelPath, options = {}) {
         return defaultPath;
     }
     
-    
     // 如果路径已经是有效的站内相对路径，直接返回，避免不必要的回退到默认路径；使用 window.VRM_PATHS 动态获取前缀，而不是硬编码
     const getConfiguredPrefixes = () => {
         if (!window.VRM_PATHS) {
