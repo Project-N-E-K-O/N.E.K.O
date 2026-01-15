@@ -26,6 +26,7 @@ async def handle_export_push(request: Dict[str, Any], send_response: SendRespons
     text = request.get("text", None)
     url = request.get("url", None)
     binary_base64 = request.get("binary_base64", None)
+    binary_url = request.get("binary_url", None)
     mime = request.get("mime", None)
     metadata = request.get("metadata", None)
 
@@ -35,9 +36,9 @@ async def handle_export_push(request: Dict[str, Any], send_response: SendRespons
     if not isinstance(export_type, str) or not export_type.strip():
         send_response(from_plugin, request_id, None, "export_type is required", timeout=float(timeout))
         return
-
+    
     et = export_type.strip()
-    if et not in ("text", "url", "binary"):
+    if et not in ("text", "url", "binary", "binary_url"):
         send_response(from_plugin, request_id, None, "unsupported export_type", timeout=float(timeout))
         return
 
@@ -49,6 +50,10 @@ async def handle_export_push(request: Dict[str, Any], send_response: SendRespons
     elif et == "url":
         if not isinstance(url, str) or not url.strip():
             send_response(from_plugin, request_id, None, "url is required", timeout=float(timeout))
+            return
+    elif et == "binary_url":
+        if not isinstance(binary_url, str) or not binary_url.strip():
+            send_response(from_plugin, request_id, None, "binary_url is required", timeout=float(timeout))
             return
     elif et == "binary":
         if not isinstance(binary_base64, str) or not binary_base64:
@@ -93,6 +98,8 @@ async def handle_export_push(request: Dict[str, Any], send_response: SendRespons
         item_kwargs["text"] = text
     elif et == "url":
         item_kwargs["url"] = url
+    elif et == "binary_url":
+        item_kwargs["binary_url"] = binary_url
     elif et == "binary":
         item_kwargs["binary"] = binary_base64
 

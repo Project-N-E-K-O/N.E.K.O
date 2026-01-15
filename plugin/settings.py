@@ -74,6 +74,9 @@ EXPORT_INLINE_BINARY_MAX_BYTES = _get_int_env("NEKO_EXPORT_INLINE_BINARY_MAX_BYT
 RUN_TOKEN_SECRET = os.getenv("NEKO_RUN_TOKEN_SECRET", "dev-insecure-run-token-secret")
 RUN_TOKEN_TTL_SECONDS = _get_int_env("NEKO_RUN_TOKEN_TTL_SECONDS", 3600)
 
+BLOB_STORE_DIR = os.getenv("NEKO_BLOB_STORE_DIR", str((Path(__file__).parent / "store" / "blobs").resolve()))
+BLOB_UPLOAD_MAX_BYTES = _get_int_env("NEKO_BLOB_UPLOAD_MAX_BYTES", 200 * 1024 * 1024)
+
 
 # ========== 超时 & 轮询配置（秒） ==========
 

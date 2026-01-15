@@ -221,6 +221,31 @@ class PluginContext:
             wrap_result=True,
         )
 
+    def export_push_binary_url(
+        self,
+        *,
+        run_id: str,
+        binary_url: str,
+        mime: Optional[str] = None,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout: float = 5.0,
+    ) -> Dict[str, Any]:
+        return self._send_request_and_wait(
+            method_name="export_push_binary_url",
+            request_type="EXPORT_PUSH",
+            request_data={
+                "run_id": run_id,
+                "export_type": "binary_url",
+                "binary_url": binary_url,
+                "mime": mime,
+                "description": description,
+                "metadata": metadata or {},
+            },
+            timeout=float(timeout),
+            wrap_result=True,
+        )
+
     def export_push_url(
         self,
         *,
