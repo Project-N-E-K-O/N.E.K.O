@@ -20,6 +20,7 @@ def build_request_handlers() -> Dict[str, RequestHandler]:
     from plugin.server.requests.user_context import handle_user_context_get
     from plugin.server.requests.messages import handle_message_get, handle_message_push
     from plugin.server.requests.export import handle_export_push
+    from plugin.server.requests.run_update import handle_run_update
     from plugin.server.requests.events import handle_event_get
     from plugin.server.requests.lifecycle import handle_lifecycle_get
     from plugin.server.requests.bus_delete import (
@@ -47,6 +48,7 @@ def build_request_handlers() -> Dict[str, RequestHandler]:
         "MESSAGE_GET": handle_message_get,
         "MESSAGE_PUSH": handle_message_push,
         "EXPORT_PUSH": handle_export_push,
+        "RUN_UPDATE": handle_run_update,
         "EVENT_GET": handle_event_get,
         "LIFECYCLE_GET": handle_lifecycle_get,
         "MESSAGE_DEL": handle_message_del,

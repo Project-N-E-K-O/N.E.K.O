@@ -276,6 +276,62 @@ class PluginContext:
             wrap_result=True,
         )
 
+    def run_update(
+        self,
+        *,
+        run_id: str,
+        progress: Optional[float] = None,
+        stage: Optional[str] = None,
+        message: Optional[str] = None,
+        step: Optional[int] = None,
+        step_total: Optional[int] = None,
+        eta_seconds: Optional[float] = None,
+        metrics: Optional[Dict[str, Any]] = None,
+        timeout: float = 5.0,
+    ) -> Dict[str, Any]:
+        data: Dict[str, Any] = {
+            "run_id": run_id,
+        }
+        if progress is not None:
+            data["progress"] = progress
+        if stage is not None:
+            data["stage"] = stage
+        if message is not None:
+            data["message"] = message
+        if step is not None:
+            data["step"] = step
+        if step_total is not None:
+            data["step_total"] = step_total
+        if eta_seconds is not None:
+            data["eta_seconds"] = eta_seconds
+        if metrics is not None:
+            data["metrics"] = metrics
+
+        return self._send_request_and_wait(
+            method_name="run_update",
+            request_type="RUN_UPDATE",
+            request_data=data,
+            timeout=float(timeout),
+            wrap_result=True,
+        )
+
+    def run_progress(
+        self,
+        *,
+        run_id: str,
+        progress: float,
+        stage: Optional[str] = None,
+        message: Optional[str] = None,
+        timeout: float = 5.0,
+    ) -> Dict[str, Any]:
+        return self.run_update(
+            run_id=run_id,
+            progress=float(progress),
+            stage=stage,
+            message=message,
+            timeout=float(timeout),
+        )
+
     def push_message(
         self,
         source: str,

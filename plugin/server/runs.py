@@ -85,6 +85,12 @@ class RunRecord(BaseModel):
     started_at: Optional[float] = None
     finished_at: Optional[float] = None
     progress: Optional[float] = None
+    stage: Optional[str] = None
+    message: Optional[str] = None
+    step: Optional[int] = None
+    step_total: Optional[int] = None
+    eta_seconds: Optional[float] = None
+    metrics: Dict[str, Any] = Field(default_factory=dict)
 
     cancel_requested: bool = False
     cancel_reason: Optional[str] = None
@@ -201,6 +207,10 @@ class InMemoryRunStore:
 _run_store: RunStore = InMemoryRunStore()
 _export_store: ExportStore = InMemoryExportStore()
 
+_runs_emit_lock = threading.Lock()
+_runs_last_emit_at: Dict[str, float] = {}
+_runs_emit_min_interval_s: float = 0.2
+
 
 def set_run_store(store: RunStore) -> None:
     global _run_store
@@ -221,6 +231,12 @@ def _emit_runs(op: str, rec: RunRecord) -> None:
         "run_id": rec.run_id,
         "status": rec.status,
         "progress": rec.progress,
+        "stage": rec.stage,
+        "message": rec.message,
+        "step": rec.step,
+        "step_total": rec.step_total,
+        "eta_seconds": rec.eta_seconds,
+        "metrics": rec.metrics,
         "updated_at": rec.updated_at,
         "rev": rev,
     }
@@ -261,6 +277,105 @@ def list_export_for_run(*, run_id: str, after: Optional[str], limit: int) -> Exp
 def append_export_item(item: ExportItem) -> None:
     _export_store.append(item)
     _emit_export("add", item)
+
+
+def update_run_from_plugin(*, from_plugin: str, run_id: str, patch: Dict[str, Any]) -> Tuple[Optional[RunRecord], bool]:
+    rid = str(run_id).strip()
+    rec = _run_store.get(rid)
+    if rec is None:
+        return None, False
+    if str(from_plugin) != rec.plugin_id:
+        raise RuntimeError("forbidden")
+    if rec.status not in ("running", "cancel_requested"):
+        return rec, False
+
+    patch2: Dict[str, Any] = {}
+
+    status = patch.get("status")
+    if isinstance(status, str) and status.strip():
+        st = status.strip()
+        if st != "running":
+            raise RuntimeError("invalid status")
+        patch2["status"] = st
+
+    if "progress" in patch:
+        v = patch.get("progress")
+        if v is None:
+            patch2["progress"] = None
+        else:
+            pv = float(v)
+            if pv < 0.0 or pv > 1.0:
+                raise RuntimeError("invalid progress")
+            patch2["progress"] = pv
+
+    for k in ("stage", "message"):
+        vv = patch.get(k)
+        if vv is None:
+            continue
+        if isinstance(vv, str):
+            if k == "stage" and len(vv) > 128:
+                raise RuntimeError("stage too long")
+            if k == "message" and len(vv) > 512:
+                raise RuntimeError("message too long")
+            patch2[k] = vv
+
+    for k in ("step", "step_total"):
+        vv = patch.get(k)
+        if vv is None:
+            continue
+        try:
+            patch2[k] = int(vv)
+        except Exception:
+            raise RuntimeError(f"invalid {k}")
+
+    step_v = patch2.get("step")
+    step_total_v = patch2.get("step_total")
+    if isinstance(step_v, int) and step_v < 0:
+        raise RuntimeError("invalid step")
+    if isinstance(step_total_v, int) and step_total_v < 0:
+        raise RuntimeError("invalid step_total")
+    if isinstance(step_v, int) and isinstance(step_total_v, int):
+        if step_v > step_total_v:
+            raise RuntimeError("invalid step")
+
+    if "eta_seconds" in patch:
+        vv = patch.get("eta_seconds")
+        if vv is None:
+            patch2["eta_seconds"] = None
+        else:
+            ev = float(vv)
+            if ev < 0.0:
+                raise RuntimeError("invalid eta_seconds")
+            patch2["eta_seconds"] = ev
+
+    metrics = patch.get("metrics")
+    if metrics is not None:
+        if not isinstance(metrics, dict):
+            raise RuntimeError("invalid metrics")
+        patch2["metrics"] = dict(metrics)
+
+    if not patch2:
+        return rec, False
+
+    updated = _run_store.update(rid, **patch2)
+    if updated is None:
+        return None, False
+
+    now = float(time.time())
+    should_emit = True
+    try:
+        with _runs_emit_lock:
+            last = float(_runs_last_emit_at.get(rid, 0.0))
+            if last > 0.0 and (now - last) < float(_runs_emit_min_interval_s):
+                should_emit = False
+            if should_emit:
+                _runs_last_emit_at[rid] = now
+    except Exception:
+        should_emit = True
+
+    if should_emit:
+        _emit_runs("change", updated)
+    return updated, True
 
 
 def cancel_run(run_id: str, *, reason: Optional[str]) -> Optional[RunRecord]:
