@@ -230,6 +230,11 @@ function applyVRMLighting(lighting, vrmManager) {
             vrmManager[vrmManagerProp].intensity = lighting[lightingKey];
         }
     }
+    
+    // 应用曝光设置
+    if (lighting.exposure !== undefined && vrmManager.renderer) {
+        vrmManager.renderer.toneMappingExposure = lighting.exposure;
+    }
 }
 
 function initializeVRMManager() {

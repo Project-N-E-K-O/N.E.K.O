@@ -613,6 +613,14 @@
                 </div>
             </div>
 
+            <div class="lighting-control">
+                <label for="exposure-slider"><span data-i18n="vrm.lighting.exposure">曝光</span>:</label>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <input type="range" id="exposure-slider" min="0.5" max="2.5" step="0.05" value="1.0" style="flex: 1;">
+                    <span id="exposure-value" style="min-width: 40px;">1.00</span>
+                </div>
+            </div>
+
             <div style="display: flex; gap: 10px; margin-top: 10px;">
                 <button id="reset-lighting-btn" class="btn btn-secondary" style="flex: 1;">
                     <span>🔄 <span data-i18n="vrm.lighting.resetLighting">重置默认</span></span>
@@ -1241,6 +1249,11 @@
                             }
                             if (bottom) {
                                 charData.lighting.bottom = parseFloat(bottom.value);
+                            }
+                            // 保存曝光值
+                            const exposure = document.getElementById('exposure-slider');
+                            if (exposure) {
+                                charData.lighting.exposure = parseFloat(exposure.value);
                             }
                             // 移除旧的预设字段
                             delete charData.lightingPreset;
@@ -2085,12 +2098,14 @@
             const rimLightSlider = document.getElementById('rim-light-slider');
             const topLightSlider = document.getElementById('top-light-slider');
             const bottomLightSlider = document.getElementById('bottom-light-slider');
+            const exposureSlider = document.getElementById('exposure-slider');
             const ambientLightValue = document.getElementById('ambient-light-value');
             const mainLightValue = document.getElementById('main-light-value');
             const fillLightValue = document.getElementById('fill-light-value');
             const rimLightValue = document.getElementById('rim-light-value');
             const topLightValue = document.getElementById('top-light-value');
             const bottomLightValue = document.getElementById('bottom-light-value');
+            const exposureValue = document.getElementById('exposure-value');
             const resetLightingBtn = document.getElementById('reset-lighting-btn');
 
             // 环境光滑块
@@ -2159,6 +2174,17 @@
                 });
             }
 
+            // 曝光滑块
+            if (exposureSlider && exposureValue) {
+                exposureSlider.addEventListener('input', (e) => {
+                    const value = parseFloat(e.target.value);
+                    exposureValue.textContent = value.toFixed(2);
+                    if (vrmManager && vrmManager.renderer) {
+                        vrmManager.renderer.toneMappingExposure = value;
+                    }
+                });
+            }
+
             // 重置打光按钮
             if (resetLightingBtn) {
                 resetLightingBtn.addEventListener('click', () => {
@@ -2203,6 +2229,13 @@
                         bottomLightValue.textContent = '0.15';
                         if (vrmManager && vrmManager.bottomLight) {
                             vrmManager.bottomLight.intensity = 0.15;
+                        }
+                    }
+                    if (exposureSlider) {
+                        exposureSlider.value = 1.0;
+                        exposureValue.textContent = '1.00';
+                        if (vrmManager && vrmManager.renderer) {
+                            vrmManager.renderer.toneMappingExposure = 1.0;
                         }
                     }
                     showStatus(t('vrm.lighting.lightingReset', '打光设置已重置为默认值', {}), 2000);
@@ -2263,6 +2296,13 @@
                     bottomLightValue.textContent = lighting.bottom.toFixed(2);
                     if (vrmManager.bottomLight) {
                         vrmManager.bottomLight.intensity = lighting.bottom;
+                    }
+                }
+                if (exposureSlider && exposureValue && lighting.exposure !== undefined) {
+                    exposureSlider.value = lighting.exposure;
+                    exposureValue.textContent = lighting.exposure.toFixed(2);
+                    if (vrmManager.renderer) {
+                        vrmManager.renderer.toneMappingExposure = lighting.exposure;
                     }
                 }
                 

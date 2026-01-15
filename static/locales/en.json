@@ -1045,6 +1045,7 @@
       "rimLight": "Rim Light",
       "topLight": "Top Light Intensity",
       "bottomLight": "Bottom Light Intensity",
+      "exposure": "Exposure",
       "resetLighting": "Reset Default",
       "saveLighting": "Save Lighting",
       "selectPreset": "Select Preset",

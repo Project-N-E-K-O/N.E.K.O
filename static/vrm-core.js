@@ -10,9 +10,6 @@ class VRMCore {
         this.targetFPS = this.performanceMode === 'low' ? 30 : (this.performanceMode === 'medium' ? 45 : 60);
         this.frameTime = 1000 / this.targetFPS;
         this.lastFrameTime = 0;
-        this.frameCount = 0;
-        this.lastFPSUpdate = 0;
-        this.currentFPS = 0;
     }
 
     static _vrmUtilsCache = null;
@@ -288,16 +285,40 @@ class VRMCore {
 
         const antialias = true;
         const precision = 'highp';
-        this.manager.renderer = new THREE.WebGLRenderer({ 
-            canvas: this.manager.canvas,
-            alpha: true, 
-            antialias: antialias,
-            powerPreference: 'high-performance',
-            precision: precision,
-            preserveDrawingBuffer: false,
-            stencil: false,
-            depth: true
-        });
+        
+        // WebGL 可用性检查
+        const webglAvailable = (() => {
+            try {
+                const testCanvas = document.createElement('canvas');
+                return !!(testCanvas.getContext('webgl2') || testCanvas.getContext('webgl'));
+            } catch (e) {
+                return false;
+            }
+        })();
+        
+        if (!webglAvailable) {
+            console.error('[VRMCore] WebGL is not available in this browser');
+            this.manager.renderer = null;
+            return;
+        }
+        
+        try {
+            this.manager.renderer = new THREE.WebGLRenderer({ 
+                canvas: this.manager.canvas,
+                alpha: true, 
+                antialias: antialias,
+                powerPreference: 'high-performance',
+                precision: precision,
+                preserveDrawingBuffer: false,
+                stencil: false,
+                depth: true
+            });
+        } catch (e) {
+            console.error('[VRMCore] Failed to create WebGLRenderer:', e);
+            this.manager.renderer = null;
+            return;
+        }
+        
         this.manager.renderer.setSize(width, height);
         this.applyPerformanceSettings();
         this.manager.renderer.shadowMap.enabled = true;
@@ -310,7 +331,7 @@ class VRMCore {
         }
         
         this.manager.renderer.toneMapping = THREE.LinearToneMapping; 
-        this.manager.renderer.toneMappingExposure = 1.0;
+        this.manager.renderer.toneMappingExposure = 1.1;
 
         const canvas = this.manager.renderer.domElement;
         canvas.style.setProperty('pointer-events', 'auto', 'important');
@@ -337,51 +358,51 @@ class VRMCore {
         this.manager.scene.add(this.manager.camera);
 
         // 使用光照配置（如果提供），否则使用默认值
-        // VRoid Hub 风格：高环境光、低方向光、无阴影、整体柔和均匀
+        // VRoid Hub 风格：高环境光、柔和方向光
         const defaultLighting = {
-            ambient: 1.2,
-            main: 0.3,
-            fill: 0.4,
-            rim: 0.2,
-            top: 0.2,
-            bottom: 0.3
+            ambient: 1.0,
+            main: 0.5,
+            fill: 0.3,
+            rim: 0.1,
+            top: 0.15,
+            bottom: 0.2
         };
         const lighting = lightingConfig || defaultLighting;
 
-        // 环境光：使用更亮的地面色，减少上下明暗差
+        // 环境光：高强度消除死黑阴影
         const hemisphereLight = new THREE.HemisphereLight(0xffffff, 0xcccccc, lighting.ambient ?? defaultLighting.ambient);
         this.manager.scene.add(hemisphereLight);
         this.manager.ambientLight = hemisphereLight;
 
-        // 主光：降低强度，关闭阴影，更柔和
+        // 主光：正前方略偏上，消除鼻底和脖子深重阴影
         const mainLight = new THREE.DirectionalLight(0xffffff, lighting.main ?? defaultLighting.main);
-        mainLight.position.set(0, 2, 3);
+        mainLight.position.set(0.2, 1.0, 3.0);
         mainLight.castShadow = false;
         this.manager.scene.add(mainLight);
         this.manager.mainLight = mainLight;
 
-        // 补光：从左前方补充
+        // 补光：轻微补充
         const fillLight = new THREE.DirectionalLight(0xffffff, lighting.fill ?? defaultLighting.fill);
         fillLight.position.set(-2, 1, 2);
         fillLight.castShadow = false;
         this.manager.scene.add(fillLight);
         this.manager.fillLight = fillLight;
 
-        // 轮廓光：降低强度
+        // 轮廓光：关闭以减少边缘杂光
         const rimLight = new THREE.DirectionalLight(0xffffff, lighting.rim ?? defaultLighting.rim);
         rimLight.position.set(0, 1, -2);
         rimLight.castShadow = false;
         this.manager.scene.add(rimLight);
         this.manager.rimLight = rimLight;
 
-        // 顶光
+        // 顶光：微弱
         const topLight = new THREE.DirectionalLight(0xffffff, lighting.top ?? defaultLighting.top);
         topLight.position.set(0, 3, 0);
         topLight.castShadow = false;
         this.manager.scene.add(topLight);
         this.manager.topLight = topLight;
 
-        // 底部补光：照亮下半身
+        // 底部补光：关闭
         const bottomLight = new THREE.DirectionalLight(0xffffff, lighting.bottom ?? defaultLighting.bottom);
         bottomLight.position.set(0, -1, 1);
         bottomLight.castShadow = false;
