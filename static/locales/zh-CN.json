@@ -1046,6 +1046,7 @@
       "topLight": "顶光强度",
       "bottomLight": "底光强度",
       "exposure": "曝光",
+      "toneMapping": "色调映射",
       "resetLighting": "重置默认",
       "saveLighting": "保存打光",
       "selectPreset": "选择预设",

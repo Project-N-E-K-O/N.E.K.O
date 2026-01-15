@@ -330,8 +330,9 @@ class VRMCore {
             this.manager.renderer.outputEncoding = THREE.sRGBEncoding;
         }
         
-        this.manager.renderer.toneMapping = THREE.LinearToneMapping; 
-        this.manager.renderer.toneMappingExposure = 1.1;
+        // 使用 Cineon 色调映射，提亮暗部，降低整体对比度，更接近 VRoid Hub 效果
+        this.manager.renderer.toneMapping = THREE.CineonToneMapping; 
+        this.manager.renderer.toneMappingExposure = 1.3;
 
         const canvas = this.manager.renderer.domElement;
         canvas.style.setProperty('pointer-events', 'auto', 'important');

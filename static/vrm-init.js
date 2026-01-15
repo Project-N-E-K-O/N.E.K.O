@@ -235,6 +235,11 @@ function applyVRMLighting(lighting, vrmManager) {
     if (lighting.exposure !== undefined && vrmManager.renderer) {
         vrmManager.renderer.toneMappingExposure = lighting.exposure;
     }
+    
+    // 应用色调映射
+    if (lighting.toneMapping !== undefined && vrmManager.renderer) {
+        vrmManager.renderer.toneMapping = lighting.toneMapping;
+    }
 }
 
 function initializeVRMManager() {

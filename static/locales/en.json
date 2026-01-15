@@ -1046,6 +1046,7 @@
       "topLight": "Top Light Intensity",
       "bottomLight": "Bottom Light Intensity",
       "exposure": "Exposure",
+      "toneMapping": "Tone Mapping",
       "resetLighting": "Reset Default",
       "saveLighting": "Save Lighting",
       "selectPreset": "Select Preset",
