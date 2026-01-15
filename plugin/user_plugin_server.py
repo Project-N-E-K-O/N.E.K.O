@@ -79,6 +79,8 @@ from plugin.server.runs import (
     list_export_for_run,
 )
 
+from plugin.server.ws_run import issue_run_token, ws_run_endpoint
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
@@ -319,12 +321,17 @@ async def list_plugins():
 async def runs_create(payload: RunCreateRequest, request: Request):
     try:
         client_host = request.client.host if request.client else None
-        return await create_run(payload, client_host=client_host)
-    except HTTPException:
-        raise
+        base = await create_run(payload, client_host=client_host)
+        token, exp = issue_run_token(run_id=base.run_id, perm="read")
+        return RunCreateResponse(run_id=base.run_id, status=base.status, run_token=token, expires_at=exp)
     except Exception as e:
-        logger.exception("Failed to create run")
-        raise handle_plugin_error(e, "Failed to create run", 500) from e
+        server_logger.error(f"Error creating run: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.websocket("/ws/run")
+async def ws_run(websocket: WebSocket):
+    await ws_run_endpoint(websocket)
 
 
 @app.get("/runs/{run_id}", response_model=RunRecord)

@@ -39,6 +39,8 @@ class RunCreateRequest(BaseModel):
 class RunCreateResponse(BaseModel):
     run_id: str
     status: RunStatus
+    run_token: Optional[str] = None
+    expires_at: Optional[int] = None
 
 
 class RunCancelRequest(BaseModel):
