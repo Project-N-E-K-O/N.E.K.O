@@ -174,16 +174,18 @@ class VRMCore {
         let pixelRatio;
         
         if (this.performanceMode === 'low') {
-            pixelRatio = Math.min(0.75, devicePixelRatio);
-        } else if (this.performanceMode === 'medium') {
+            // 低性能模式：限制最大为 1.0
             pixelRatio = Math.min(1.0, devicePixelRatio);
+        } else if (this.performanceMode === 'medium') {
+            // 中性能模式：限制最大为 1.5
+            pixelRatio = Math.min(1.5, devicePixelRatio);
         } else {
-            // 高性能模式：可以使用更高的值
-            pixelRatio = Math.min(2.0, devicePixelRatio);
+            // 高性能模式：使用完整设备像素比，确保清晰度
+            pixelRatio = devicePixelRatio;
         }
         
-        // 确保 pixelRatio 至少为 0.5（避免过低的渲染质量）
-        pixelRatio = Math.max(0.5, pixelRatio);
+        // 确保 pixelRatio 至少为 1.0（避免模糊）
+        pixelRatio = Math.max(1.0, pixelRatio);
         
         this.manager.renderer.setPixelRatio(pixelRatio);
     }
@@ -335,56 +337,53 @@ class VRMCore {
         this.manager.scene.add(this.manager.camera);
 
         // 使用光照配置（如果提供），否则使用默认值
-        // 默认值：ambient=0.4, main=1.2, fill=0.5, rim=0.8, top=0.3, bottom=0.15
+        // VRoid Hub 风格：高环境光、低方向光、无阴影、整体柔和均匀
         const defaultLighting = {
-            ambient: 0.4,
-            main: 1.2,
-            fill: 0.5,
-            rim: 0.8,
-            top: 0.3,
-            bottom: 0.15
+            ambient: 1.2,
+            main: 0.3,
+            fill: 0.4,
+            rim: 0.2,
+            top: 0.2,
+            bottom: 0.3
         };
         const lighting = lightingConfig || defaultLighting;
 
-        const hemisphereLight = new THREE.HemisphereLight(0xffffff, 0x444444, lighting.ambient ?? defaultLighting.ambient);
+        // 环境光：使用更亮的地面色，减少上下明暗差
+        const hemisphereLight = new THREE.HemisphereLight(0xffffff, 0xcccccc, lighting.ambient ?? defaultLighting.ambient);
         this.manager.scene.add(hemisphereLight);
         this.manager.ambientLight = hemisphereLight;
 
+        // 主光：降低强度，关闭阴影，更柔和
         const mainLight = new THREE.DirectionalLight(0xffffff, lighting.main ?? defaultLighting.main);
-        mainLight.position.set(1, 2.5, 2);
-        mainLight.castShadow = true;
-        mainLight.shadow.mapSize.width = 2048;
-        mainLight.shadow.mapSize.height = 2048;
-        mainLight.shadow.bias = -0.0001;
-        mainLight.shadow.camera.near = 0.1;
-        mainLight.shadow.camera.far = 20;
-        mainLight.shadow.camera.left = -3;
-        mainLight.shadow.camera.right = 3;
-        mainLight.shadow.camera.top = 3;
-        mainLight.shadow.camera.bottom = -3;
+        mainLight.position.set(0, 2, 3);
+        mainLight.castShadow = false;
         this.manager.scene.add(mainLight);
         this.manager.mainLight = mainLight;
 
+        // 补光：从左前方补充
         const fillLight = new THREE.DirectionalLight(0xffffff, lighting.fill ?? defaultLighting.fill);
-        fillLight.position.set(-2, 1, 1.5);
+        fillLight.position.set(-2, 1, 2);
         fillLight.castShadow = false;
         this.manager.scene.add(fillLight);
         this.manager.fillLight = fillLight;
 
+        // 轮廓光：降低强度
         const rimLight = new THREE.DirectionalLight(0xffffff, lighting.rim ?? defaultLighting.rim);
-        rimLight.position.set(0, 2, -3);
+        rimLight.position.set(0, 1, -2);
         rimLight.castShadow = false;
         this.manager.scene.add(rimLight);
         this.manager.rimLight = rimLight;
 
+        // 顶光
         const topLight = new THREE.DirectionalLight(0xffffff, lighting.top ?? defaultLighting.top);
-        topLight.position.set(0, 4, 0);
+        topLight.position.set(0, 3, 0);
         topLight.castShadow = false;
         this.manager.scene.add(topLight);
         this.manager.topLight = topLight;
 
+        // 底部补光：照亮下半身
         const bottomLight = new THREE.DirectionalLight(0xffffff, lighting.bottom ?? defaultLighting.bottom);
-        bottomLight.position.set(0, -2, 0.5);
+        bottomLight.position.set(0, -1, 1);
         bottomLight.castShadow = false;
         this.manager.scene.add(bottomLight);
         this.manager.bottomLight = bottomLight;
