@@ -69,6 +69,7 @@ LIFECYCLE_QUEUE_MAX = _get_int_env("NEKO_LIFECYCLE_QUEUE_MAX", 1000)
 # Env: NEKO_MESSAGE_QUEUE_MAX, default=1000
 # 用于插件向主进程推送消息的总队列上限，避免无限堆积。
 MESSAGE_QUEUE_MAX = _get_int_env("NEKO_MESSAGE_QUEUE_MAX", 1000)
+EXPORT_INLINE_BINARY_MAX_BYTES = _get_int_env("NEKO_EXPORT_INLINE_BINARY_MAX_BYTES", 256 * 1024)
 
 
 # ========== 超时 & 轮询配置（秒） ==========

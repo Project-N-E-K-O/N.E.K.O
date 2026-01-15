@@ -258,6 +258,11 @@ def list_export_for_run(*, run_id: str, after: Optional[str], limit: int) -> Exp
     return ExportListResponse(items=items, next_after=next_after)
 
 
+def append_export_item(item: ExportItem) -> None:
+    _export_store.append(item)
+    _emit_export("add", item)
+
+
 def cancel_run(run_id: str, *, reason: Optional[str]) -> Optional[RunRecord]:
     rid = str(run_id)
     now = float(time.time())
@@ -320,10 +325,23 @@ async def create_run(req: RunCreateRequest, *, client_host: Optional[str]) -> Ru
             return
 
         try:
+            trigger_args = dict(req.args or {})
+            try:
+                ctx_obj = trigger_args.get("_ctx")
+                if not isinstance(ctx_obj, dict):
+                    ctx_obj = {}
+                else:
+                    ctx_obj = dict(ctx_obj)
+                if "run_id" not in ctx_obj:
+                    ctx_obj["run_id"] = run_id
+                trigger_args["_ctx"] = ctx_obj
+            except Exception:
+                pass
+
             resp = await trigger_plugin(
                 plugin_id=req.plugin_id,
                 entry_id=req.entry_id,
-                args=req.args or {},
+                args=trigger_args,
                 task_id=req.task_id,
                 client_host=client_host,
             )

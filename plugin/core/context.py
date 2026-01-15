@@ -6,6 +6,7 @@
 import contextlib
 import contextvars
 import asyncio
+import base64
 import time
 try:
     import tomllib
@@ -26,6 +27,7 @@ from plugin.api.exceptions import PluginEntryNotFoundError, PluginError
 from plugin.core.state import state
 from plugin.settings import (
     EVENT_META_ATTR,
+    EXPORT_INLINE_BINARY_MAX_BYTES,
     PLUGIN_LOG_CTX_MESSAGE_PUSH,
     PLUGIN_LOG_CTX_STATUS_UPDATE,
     PLUGIN_LOG_SYNC_CALL_WARNINGS,
@@ -195,6 +197,84 @@ class PluginContext:
         except Exception as e:
             # 其他未知异常
             self.logger.exception(f"Unexpected error updating status for plugin {self.plugin_id}: {e}")
+
+    def export_push_text(
+        self,
+        *,
+        run_id: str,
+        text: str,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout: float = 5.0,
+    ) -> Dict[str, Any]:
+        return self._send_request_and_wait(
+            method_name="export_push_text",
+            request_type="EXPORT_PUSH",
+            request_data={
+                "run_id": run_id,
+                "export_type": "text",
+                "text": text,
+                "description": description,
+                "metadata": metadata or {},
+            },
+            timeout=float(timeout),
+            wrap_result=True,
+        )
+
+    def export_push_url(
+        self,
+        *,
+        run_id: str,
+        url: str,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout: float = 5.0,
+    ) -> Dict[str, Any]:
+        return self._send_request_and_wait(
+            method_name="export_push_url",
+            request_type="EXPORT_PUSH",
+            request_data={
+                "run_id": run_id,
+                "export_type": "url",
+                "url": url,
+                "description": description,
+                "metadata": metadata or {},
+            },
+            timeout=float(timeout),
+            wrap_result=True,
+        )
+
+    def export_push_binary(
+        self,
+        *,
+        run_id: str,
+        binary_data: bytes,
+        mime: Optional[str] = None,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout: float = 5.0,
+    ) -> Dict[str, Any]:
+        if not isinstance(binary_data, (bytes, bytearray)):
+            raise TypeError("binary_data must be bytes")
+        data = bytes(binary_data)
+        limit = int(EXPORT_INLINE_BINARY_MAX_BYTES) if EXPORT_INLINE_BINARY_MAX_BYTES is not None else 0
+        if limit > 0 and len(data) > limit:
+            raise ValueError("binary_data too large")
+        b64 = base64.b64encode(data).decode("ascii")
+        return self._send_request_and_wait(
+            method_name="export_push_binary",
+            request_type="EXPORT_PUSH",
+            request_data={
+                "run_id": run_id,
+                "export_type": "binary",
+                "binary_base64": b64,
+                "mime": mime,
+                "description": description,
+                "metadata": metadata or {},
+            },
+            timeout=float(timeout),
+            wrap_result=True,
+        )
 
     def push_message(
         self,
