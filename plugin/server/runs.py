@@ -203,6 +203,19 @@ class InMemoryRunStore:
                 return r.model_copy(deep=True)
             now = float(time.time())
             data = r.model_dump()
+
+            if status == "succeeded":
+                try:
+                    pv = data.get("progress")
+                    if pv is None or float(pv) < 1.0:
+                        data["progress"] = 1.0
+                except Exception:
+                    data["progress"] = 1.0
+                if not (isinstance(data.get("stage"), str) and str(data.get("stage") or "").strip()):
+                    data["stage"] = "done"
+                if not (isinstance(data.get("message"), str) and str(data.get("message") or "").strip()):
+                    data["message"] = "done"
+
             data.update(
                 {
                     "status": status,

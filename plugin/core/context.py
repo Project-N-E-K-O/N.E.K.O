@@ -43,6 +43,8 @@ if TYPE_CHECKING:
 
 _IN_HANDLER: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_in_handler", default=None)
 
+_CURRENT_RUN_ID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_current_run_id", default=None)
+
 
 class _BusHub:
     def __init__(self, ctx: "PluginContext"):
@@ -180,6 +182,24 @@ class PluginContext:
         finally:
             _IN_HANDLER.reset(token)
 
+    @contextlib.contextmanager
+    def _run_scope(self, run_id: Optional[str]):
+        token = _CURRENT_RUN_ID.set(run_id if isinstance(run_id, str) and run_id.strip() else None)
+        try:
+            yield
+        finally:
+            _CURRENT_RUN_ID.reset(token)
+
+    @property
+    def run_id(self) -> Optional[str]:
+        return _CURRENT_RUN_ID.get()
+
+    def require_run_id(self) -> str:
+        rid = self.run_id
+        if not isinstance(rid, str) or not rid.strip():
+            raise RuntimeError("run_id is required (this entry may not be triggered via /runs)")
+        return rid
+
     def update_status(self, status: Dict[str, Any]) -> None:
         """
         子进程 / 插件内部调用：把原始 status 丢到主进程的队列里，由主进程统一整理。
@@ -210,11 +230,23 @@ class PluginContext:
         metadata: Optional[Dict[str, Any]] = None,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
-        return self._send_request_and_wait(
+        raise RuntimeError("export_push_text is async-only; use await export_push_text_async(...)")
+
+    async def export_push_text_async(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        text: str,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout: float = 5.0,
+    ) -> Dict[str, Any]:
+        rid = run_id if isinstance(run_id, str) and run_id.strip() else self.require_run_id()
+        return await self._send_request_and_wait_async(
             method_name="export_push_text",
             request_type="EXPORT_PUSH",
             request_data={
-                "run_id": run_id,
+                "run_id": rid,
                 "export_type": "text",
                 "text": text,
                 "description": description,
@@ -234,11 +266,24 @@ class PluginContext:
         metadata: Optional[Dict[str, Any]] = None,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
-        return self._send_request_and_wait(
+        raise RuntimeError("export_push_binary_url is async-only; use await export_push_binary_url_async(...)")
+
+    async def export_push_binary_url_async(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        binary_url: str,
+        mime: Optional[str] = None,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout: float = 5.0,
+    ) -> Dict[str, Any]:
+        rid = run_id if isinstance(run_id, str) and run_id.strip() else self.require_run_id()
+        return await self._send_request_and_wait_async(
             method_name="export_push_binary_url",
             request_type="EXPORT_PUSH",
             request_data={
-                "run_id": run_id,
+                "run_id": rid,
                 "export_type": "binary_url",
                 "binary_url": binary_url,
                 "mime": mime,
@@ -258,11 +303,23 @@ class PluginContext:
         metadata: Optional[Dict[str, Any]] = None,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
-        return self._send_request_and_wait(
+        raise RuntimeError("export_push_url is async-only; use await export_push_url_async(...)")
+
+    async def export_push_url_async(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        url: str,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout: float = 5.0,
+    ) -> Dict[str, Any]:
+        rid = run_id if isinstance(run_id, str) and run_id.strip() else self.require_run_id()
+        return await self._send_request_and_wait_async(
             method_name="export_push_url",
             request_type="EXPORT_PUSH",
             request_data={
-                "run_id": run_id,
+                "run_id": rid,
                 "export_type": "url",
                 "url": url,
                 "description": description,
@@ -289,11 +346,31 @@ class PluginContext:
         if limit > 0 and len(data) > limit:
             raise ValueError("binary_data too large")
         b64 = base64.b64encode(data).decode("ascii")
-        return self._send_request_and_wait(
+        raise RuntimeError("export_push_binary is async-only; use await export_push_binary_async(...)")
+
+    async def export_push_binary_async(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        binary_data: bytes,
+        mime: Optional[str] = None,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout: float = 5.0,
+    ) -> Dict[str, Any]:
+        if not isinstance(binary_data, (bytes, bytearray)):
+            raise TypeError("binary_data must be bytes")
+        data = bytes(binary_data)
+        limit = int(EXPORT_INLINE_BINARY_MAX_BYTES) if EXPORT_INLINE_BINARY_MAX_BYTES is not None else 0
+        if limit > 0 and len(data) > limit:
+            raise ValueError("binary_data too large")
+        b64 = base64.b64encode(data).decode("ascii")
+        rid = run_id if isinstance(run_id, str) and run_id.strip() else self.require_run_id()
+        return await self._send_request_and_wait_async(
             method_name="export_push_binary",
             request_type="EXPORT_PUSH",
             request_data={
-                "run_id": run_id,
+                "run_id": rid,
                 "export_type": "binary",
                 "binary_base64": b64,
                 "mime": mime,
@@ -317,8 +394,24 @@ class PluginContext:
         metrics: Optional[Dict[str, Any]] = None,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
+        raise RuntimeError("run_update is async-only; use await run_update_async(...)")
+
+    async def run_update_async(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        progress: Optional[float] = None,
+        stage: Optional[str] = None,
+        message: Optional[str] = None,
+        step: Optional[int] = None,
+        step_total: Optional[int] = None,
+        eta_seconds: Optional[float] = None,
+        metrics: Optional[Dict[str, Any]] = None,
+        timeout: float = 5.0,
+    ) -> Dict[str, Any]:
+        rid = run_id if isinstance(run_id, str) and run_id.strip() else self.require_run_id()
         data: Dict[str, Any] = {
-            "run_id": run_id,
+            "run_id": rid,
         }
         if progress is not None:
             data["progress"] = progress
@@ -335,7 +428,7 @@ class PluginContext:
         if metrics is not None:
             data["metrics"] = metrics
 
-        return self._send_request_and_wait(
+        return await self._send_request_and_wait_async(
             method_name="run_update",
             request_type="RUN_UPDATE",
             request_data=data,
@@ -352,7 +445,18 @@ class PluginContext:
         message: Optional[str] = None,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
-        return self.run_update(
+        raise RuntimeError("run_progress is async-only; use await run_progress_async(...)")
+
+    async def run_progress_async(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        progress: float,
+        stage: Optional[str] = None,
+        message: Optional[str] = None,
+        timeout: float = 5.0,
+    ) -> Dict[str, Any]:
+        return await self.run_update_async(
             run_id=run_id,
             progress=float(progress),
             stage=stage,
@@ -836,9 +940,9 @@ class PluginContext:
         except TimeoutError as e:
             raise TimeoutError(f"Plugin query timed out after {timeout}s") from e
 
-    def get_own_config(self, timeout: float = 5.0) -> Dict[str, Any]:
+    async def get_own_config(self, timeout: float = 5.0) -> Dict[str, Any]:
         try:
-            return self._send_request_and_wait(
+            return await self._send_request_and_wait_async(
                 method_name="get_own_config",
                 request_type="PLUGIN_CONFIG_GET",
                 request_data={"plugin_id": self.plugin_id},
@@ -849,9 +953,9 @@ class PluginContext:
         except TimeoutError as e:
             raise TimeoutError(f"Plugin config get timed out after {timeout}s") from e
 
-    def get_own_base_config(self, timeout: float = 5.0) -> Dict[str, Any]:
+    async def get_own_base_config(self, timeout: float = 5.0) -> Dict[str, Any]:
         try:
-            return self._send_request_and_wait(
+            return await self._send_request_and_wait_async(
                 method_name="get_own_base_config",
                 request_type="PLUGIN_CONFIG_BASE_GET",
                 request_data={"plugin_id": self.plugin_id},
@@ -862,9 +966,9 @@ class PluginContext:
         except TimeoutError as e:
             raise TimeoutError(f"Plugin base config get timed out after {timeout}s") from e
 
-    def get_own_profiles_state(self, timeout: float = 5.0) -> Dict[str, Any]:
+    async def get_own_profiles_state(self, timeout: float = 5.0) -> Dict[str, Any]:
         try:
-            return self._send_request_and_wait(
+            return await self._send_request_and_wait_async(
                 method_name="get_own_profiles_state",
                 request_type="PLUGIN_CONFIG_PROFILES_GET",
                 request_data={"plugin_id": self.plugin_id},
@@ -875,11 +979,11 @@ class PluginContext:
         except TimeoutError as e:
             raise TimeoutError(f"Plugin profiles state get timed out after {timeout}s") from e
 
-    def get_own_profile_config(self, profile_name: str, timeout: float = 5.0) -> Dict[str, Any]:
+    async def get_own_profile_config(self, profile_name: str, timeout: float = 5.0) -> Dict[str, Any]:
         if not isinstance(profile_name, str) or not profile_name.strip():
             raise ValueError("profile_name must be a non-empty string")
         try:
-            return self._send_request_and_wait(
+            return await self._send_request_and_wait_async(
                 method_name="get_own_profile_config",
                 request_type="PLUGIN_CONFIG_PROFILE_GET",
                 request_data={
@@ -893,21 +997,25 @@ class PluginContext:
         except TimeoutError as e:
             raise TimeoutError(f"Plugin profile config get timed out after {timeout}s") from e
 
-    def get_own_effective_config(self, profile_name: Optional[str] = None, timeout: float = 5.0) -> Dict[str, Any]:
+    async def get_own_effective_config(
+        self,
+        profile_name: Optional[str] = None,
+        timeout: float = 5.0,
+    ) -> Dict[str, Any]:
         """Get effective config.
 
         - profile_name is None: returns active profile overlay (same as get_own_config).
-        - profile_name is a string: returns base overlaid by that profile name.
+        - profile_name is a string: returns base + that profile overlay.
         """
 
-        request_data: Dict[str, Any] = {"plugin_id": self.plugin_id}
-        if profile_name is not None:
-            if not isinstance(profile_name, str) or not profile_name.strip():
-                raise ValueError("profile_name must be a non-empty string")
+        request_data: Dict[str, Any] = {
+            "plugin_id": self.plugin_id,
+        }
+        if isinstance(profile_name, str) and profile_name.strip():
             request_data["profile_name"] = profile_name.strip()
 
         try:
-            return self._send_request_and_wait(
+            return await self._send_request_and_wait_async(
                 method_name="get_own_effective_config",
                 request_type="PLUGIN_CONFIG_EFFECTIVE_GET",
                 request_data=request_data,
@@ -918,9 +1026,9 @@ class PluginContext:
         except TimeoutError as e:
             raise TimeoutError(f"Plugin effective config get timed out after {timeout}s") from e
 
-    def get_system_config(self, timeout: float = 5.0) -> Dict[str, Any]:
+    async def get_system_config(self, timeout: float = 5.0) -> Dict[str, Any]:
         try:
-            return self._send_request_and_wait(
+            return await self._send_request_and_wait_async(
                 method_name="get_system_config",
                 request_type="PLUGIN_SYSTEM_CONFIG_GET",
                 request_data={},
@@ -947,11 +1055,11 @@ class PluginContext:
         except TimeoutError as e:
             raise TimeoutError(f"Memory query timed out after {timeout}s") from e
 
-    def update_own_config(self, updates: Dict[str, Any], timeout: float = 10.0) -> Dict[str, Any]:
+    async def update_own_config(self, updates: Dict[str, Any], timeout: float = 10.0) -> Dict[str, Any]:
         if not isinstance(updates, dict):
             raise TypeError("updates must be a dict")
         try:
-            return self._send_request_and_wait(
+            return await self._send_request_and_wait_async(
                 method_name="update_own_config",
                 request_type="PLUGIN_CONFIG_UPDATE",
                 request_data={

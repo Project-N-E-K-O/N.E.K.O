@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+import asyncio
 import threading
 import time
 from typing import Any, Dict
@@ -21,24 +22,12 @@ class HelloPlugin(NekoPluginBase):
         self._debug_executor = ThreadPoolExecutor(max_workers=8)
         self._active_watchers = []
         self._stop_events = []
+        self._startup_cfg: Dict[str, Any] = {}
         self.file_logger.info("HelloPlugin initialized with file logging enabled")
 
     def _read_local_toml(self) -> dict:
-        try:
-            try:
-                import tomllib
-            except ImportError:
-                import tomli as tomllib  # type: ignore
-
-            config_path = getattr(self.ctx, "config_path", None)
-            if config_path is None:
-                return {}
-            with config_path.open("rb") as f:
-                data = tomllib.load(f)
-            return data if isinstance(data, dict) else {}
-        except Exception as e:
-            self.file_logger.warning("Failed to read local TOML config: {}", e)
-            return {}
+        data = getattr(self, "_startup_cfg", None)
+        return data if isinstance(data, dict) else {}
 
     def _start_debug_timer(self) -> None:
         # Delay to ensure the plugin command loop is running before we do sync IPC calls.
@@ -62,11 +51,11 @@ class HelloPlugin(NekoPluginBase):
             timer_id = str(timer_cfg.get("timer_id", debug_cfg.get("timer_id", ""))).strip()
             if not timer_id:
                 timer_id = f"testPlugin_debug_{int(time.time())}"
-                self.config.set("debug.timer.timer_id", timer_id)
+                asyncio.run(self.config.set("debug.timer.timer_id", timer_id))
 
             # Keep startup non-blocking: do the update in background as well.
             loaded_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-            self.config.set("debug.timer.loaded_at", loaded_at)
+            asyncio.run(self.config.set("debug.timer.loaded_at", loaded_at))
 
             # IMPORTANT: avoid immediate callback before command loop is ready.
             # We already delayed; immediate=True is now safe and gives fast feedback.
@@ -439,8 +428,17 @@ class HelloPlugin(NekoPluginBase):
             self.file_logger.exception("Lifecycle debug failed")
 
     @lifecycle(id="startup")
-    def startup(self, **_):
-        cfg = self._read_local_toml()
+    async def startup(self, **_):
+        try:
+            cfg = await self.config.dump(timeout=5.0)
+        except Exception as e:
+            try:
+                self.file_logger.warning("Failed to read startup config via SDK: {}", e)
+            except Exception:
+                pass
+            cfg = {}
+        self._startup_cfg = cfg if isinstance(cfg, dict) else {}
+
         debug_cfg = cfg.get("debug") if isinstance(cfg.get("debug"), dict) else {}
         timer_cfg = debug_cfg.get("timer") if isinstance(debug_cfg.get("timer"), dict) else {}
         config_cfg = debug_cfg.get("config") if isinstance(debug_cfg.get("config"), dict) else {}
@@ -456,7 +454,14 @@ class HelloPlugin(NekoPluginBase):
         events_enabled = bool(ev_cfg.get("enable", False))
         lifecycle_enabled = bool(lc_cfg.get("enable", False))
 
-        if not timer_enabled and not config_enabled and not memory_enabled and not messages_enabled and not events_enabled and not lifecycle_enabled:
+        if (
+            not timer_enabled
+            and not config_enabled
+            and not memory_enabled
+            and not messages_enabled
+            and not events_enabled
+            and not lifecycle_enabled
+        ):
             self.file_logger.info("Debug disabled, skipping startup debug actions")
             return ok(data={"status": "disabled"})
 
@@ -545,7 +550,7 @@ class HelloPlugin(NekoPluginBase):
             "required": [],
         },
     )
-    def config_debug(self, include_values: bool = False, **_):
+    async def config_debug(self, include_values: bool = False, **_):
         if include_values:
             cfg: Dict[str, Any] = self._read_local_toml()
             raw_debug = cfg.get("debug")
@@ -561,8 +566,8 @@ class HelloPlugin(NekoPluginBase):
                     }
                 )
 
-        plugin_cfg = self.config.dump(timeout=5.0)
-        sys_cfg = SystemInfo(self.ctx).get_system_config(timeout=5.0)
+        plugin_cfg = await self.config.dump(timeout=5.0)
+        sys_cfg = await SystemInfo(self.ctx).get_system_config(timeout=5.0)
         py_env = SystemInfo(self.ctx).get_python_env()
 
         if include_values:
@@ -662,47 +667,55 @@ class HelloPlugin(NekoPluginBase):
             "required": [],
         },
     )
-    def hello_run(self, name: str = "world", sleep_seconds: float = 0.6, **kwargs):
-        ctx_obj = kwargs.get("_ctx")
-        run_id = None
-        if isinstance(ctx_obj, dict):
-            run_id = ctx_obj.get("run_id")
-        if not isinstance(run_id, str) or not run_id:
-            return ok(data={"ok": False, "error": "missing _ctx.run_id"})
-
+    async def hello_run(self, name: str = "world", sleep_seconds: float = 0.6, **kwargs):
         s = 0.1
         try:
             s = max(0.0, float(sleep_seconds))
         except Exception:
             s = 0.1
 
-        self.ctx.run_update(run_id=run_id, progress=0.0, stage="start", message="hello_run started", step=0, step_total=3)
-        time.sleep(s)
+        await self.ctx.run_update_async(
+            progress=0.0,
+            stage="start",
+            message="hello_run started",
+            step=0,
+            step_total=3,
+        )
+        await asyncio.sleep(s)
 
-        self.ctx.run_update(
-            run_id=run_id,
+        await self.ctx.run_update_async(
             progress=0.33,
             stage="working",
             message=f"preparing greeting for {name}",
             step=1,
             step_total=3,
         )
-        self.ctx.export_push_text(
-            run_id=run_id,
+        await self.ctx.export_push_text_async(
             text=f"Hello, {name}! (from testPlugin hello_run)",
             description="hello message",
             metadata={"plugin_id": self.ctx.plugin_id, "entry_id": "hello_run"},
         )
-        time.sleep(s)
+        await asyncio.sleep(s)
 
-        self.ctx.run_update(run_id=run_id, progress=0.66, stage="working", message="doing some work...", step=2, step_total=3)
-        time.sleep(s)
+        await self.ctx.run_update_async(
+            progress=0.66,
+            stage="working",
+            message="doing some work...",
+            step=2,
+            step_total=3,
+        )
+        await asyncio.sleep(s)
 
-        self.ctx.export_push_text(
-            run_id=run_id,
+        await self.ctx.export_push_text_async(
             text=f"Done. timestamp={int(time.time())}",
             description="done marker",
             metadata={"kind": "done"},
         )
-        self.ctx.run_update(run_id=run_id, progress=1.0, stage="done", message="hello_run finished", step=3, step_total=3)
-        return ok(data={"ok": True, "run_id": run_id, "greeted": name})
+        await self.ctx.run_update_async(
+            progress=1.0,
+            stage="done",
+            message="hello_run finished",
+            step=3,
+            step_total=3,
+        )
+        return ok(data={"ok": True, "greeted": name})

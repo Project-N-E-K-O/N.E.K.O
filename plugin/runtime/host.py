@@ -525,6 +525,14 @@ def _plugin_process_runner(
                 try:
                     if not method:
                         raise PluginEntryNotFoundError(plugin_id, entry_id)
+
+                    run_id = None
+                    try:
+                        ctx_obj = args.get("_ctx") if isinstance(args, dict) else None
+                        if isinstance(ctx_obj, dict):
+                            run_id = ctx_obj.get("run_id")
+                    except Exception:
+                        run_id = None
                     
                     method_name = getattr(method, "__name__", entry_id)
                     # 关键日志：记录开始执行
@@ -555,7 +563,7 @@ def _plugin_process_runner(
                         
                         def run_async(method=method, args=args, result_container=result_container, event=event, entry_id=entry_id):
                             try:
-                                with ctx._handler_scope(f"plugin_entry.{entry_id}"):
+                                with ctx._handler_scope(f"plugin_entry.{entry_id}"), ctx._run_scope(run_id):
                                     result_container["result"] = asyncio.run(method(**args))
                             except Exception as e:
                                 result_container["exception"] = e
@@ -593,7 +601,7 @@ def _plugin_process_runner(
                                 "[Plugin Process] Calling method with args: {}",
                                 args,
                             )
-                            with ctx._handler_scope(f"plugin_entry.{entry_id}"):
+                            with ctx._handler_scope(f"plugin_entry.{entry_id}"), ctx._run_scope(run_id):
                                 res = method(**args)
                             logger.debug(
                                 "[Plugin Process] Method call succeeded, result type: {}",

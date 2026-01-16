@@ -6,6 +6,7 @@ plugin's own `plugin.toml` via the main process.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
@@ -80,33 +81,56 @@ class PluginConfig:
             raise PluginConfigError(f"Invalid config inner type: {type(inner)}", operation=operation)
         return inner
 
-    def dump(self, *, timeout: float = 5.0) -> Dict[str, Any]:
+    def _run_sync(self, coro: Any, *, operation: str) -> Any:
+        """Run an async config coroutine from sync context.
+
+        This is a convenience for plugin authors who are not in an async function.
+        It is intentionally strict: if called while an event loop is running,
+        we raise to avoid deadlocks and "coroutine was never awaited" mistakes.
+        """
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+        raise PluginConfigError(
+            f"{operation}_sync cannot be used inside a running event loop; use 'await {operation}(...)' instead",
+            operation=operation,
+        )
+
+    async def dump(self, *, timeout: float = 5.0) -> Dict[str, Any]:
         if not hasattr(self.ctx, "get_own_config"):
             raise PluginConfigError("ctx.get_own_config is not available", operation="dump")
         try:
-            cfg = self.ctx.get_own_config(timeout=timeout)
+            cfg = await self.ctx.get_own_config(timeout=timeout)
         except Exception as e:
             raise PluginConfigError(f"Failed to read config: {e}", operation="dump") from e
         return self._unwrap(cfg, operation="dump")
 
-    def dump_base(self, *, timeout: float = 5.0) -> Dict[str, Any]:
+    def dump_sync(self, *, timeout: float = 5.0) -> Dict[str, Any]:
+        return self._run_sync(self.dump(timeout=timeout), operation="dump")
+
+    async def dump_base(self, *, timeout: float = 5.0) -> Dict[str, Any]:
         """Return base config (plugin.toml without profile overlay)."""
 
         if not hasattr(self.ctx, "get_own_base_config"):
             raise PluginConfigError("ctx.get_own_base_config is not available", operation="dump_base")
         try:
-            res = self.ctx.get_own_base_config(timeout=timeout)
+            res = await self.ctx.get_own_base_config(timeout=timeout)
         except Exception as e:
             raise PluginConfigError(f"Failed to read base config: {e}", operation="dump_base") from e
         return self._unwrap(res, operation="dump_base")
 
-    def get_profiles_state(self, *, timeout: float = 5.0) -> Dict[str, Any]:
+    def dump_base_sync(self, *, timeout: float = 5.0) -> Dict[str, Any]:
+        return self._run_sync(self.dump_base(timeout=timeout), operation="dump_base")
+
+    async def get_profiles_state(self, *, timeout: float = 5.0) -> Dict[str, Any]:
         """Return profiles.toml state (active + files mapping)."""
 
         if not hasattr(self.ctx, "get_own_profiles_state"):
             raise PluginConfigError("ctx.get_own_profiles_state is not available", operation="get_profiles_state")
         try:
-            res = self.ctx.get_own_profiles_state(timeout=timeout)
+            res = await self.ctx.get_own_profiles_state(timeout=timeout)
         except Exception as e:
             raise PluginConfigError(f"Failed to read profiles state: {e}", operation="get_profiles_state") from e
         if not isinstance(res, dict):
@@ -115,13 +139,16 @@ class PluginConfig:
             res = res["data"]
         return res
 
-    def get_profile(self, profile_name: str, *, timeout: float = 5.0) -> Dict[str, Any]:
+    def get_profiles_state_sync(self, *, timeout: float = 5.0) -> Dict[str, Any]:
+        return self._run_sync(self.get_profiles_state(timeout=timeout), operation="get_profiles_state")
+
+    async def get_profile(self, profile_name: str, *, timeout: float = 5.0) -> Dict[str, Any]:
         """Return a single profile overlay config."""
 
         if not hasattr(self.ctx, "get_own_profile_config"):
             raise PluginConfigError("ctx.get_own_profile_config is not available", operation="get_profile")
         try:
-            res = self.ctx.get_own_profile_config(profile_name, timeout=timeout)
+            res = await self.ctx.get_own_profile_config(profile_name, timeout=timeout)
         except Exception as e:
             raise PluginConfigError(f"Failed to read profile '{profile_name}': {e}", operation="get_profile") from e
         if not isinstance(res, dict):
@@ -135,7 +162,10 @@ class PluginConfig:
             raise PluginConfigError(f"Invalid profile config type: {type(cfg)}", operation="get_profile")
         return cfg
 
-    def dump_effective(self, profile_name: Optional[str] = None, *, timeout: float = 5.0) -> Dict[str, Any]:
+    def get_profile_sync(self, profile_name: str, *, timeout: float = 5.0) -> Dict[str, Any]:
+        return self._run_sync(self.get_profile(profile_name, timeout=timeout), operation="get_profile")
+
+    async def dump_effective(self, profile_name: Optional[str] = None, *, timeout: float = 5.0) -> Dict[str, Any]:
         """Return effective config.
 
         - profile_name is None: same as dump() (active profile + env override).
@@ -143,12 +173,12 @@ class PluginConfig:
         """
 
         if profile_name is None:
-            return self.dump(timeout=timeout)
+            return await self.dump(timeout=timeout)
 
         if not hasattr(self.ctx, "get_own_effective_config"):
             raise PluginConfigError("ctx.get_own_effective_config is not available", operation="dump_effective")
         try:
-            res = self.ctx.get_own_effective_config(profile_name, timeout=timeout)
+            res = await self.ctx.get_own_effective_config(profile_name, timeout=timeout)
         except Exception as e:
             raise PluginConfigError(
                 f"Failed to read effective config for profile '{profile_name}': {e}",
@@ -156,8 +186,11 @@ class PluginConfig:
             ) from e
         return self._unwrap(res, operation="dump_effective")
 
-    def get(self, path: str, default: Any = _MISSING, *, timeout: float = 5.0) -> Any:
-        cfg = self.dump(timeout=timeout)
+    def dump_effective_sync(self, profile_name: Optional[str] = None, *, timeout: float = 5.0) -> Dict[str, Any]:
+        return self._run_sync(self.dump_effective(profile_name, timeout=timeout), operation="dump_effective")
+
+    async def get(self, path: str, default: Any = _MISSING, *, timeout: float = 5.0) -> Any:
+        cfg = await self.dump(timeout=timeout)
         try:
             return _get_by_path(cfg, path)
         except PluginConfigError:
@@ -165,28 +198,40 @@ class PluginConfig:
                 raise
             return default
 
-    def require(self, path: str, *, timeout: float = 5.0) -> Any:
-        cfg = self.dump(timeout=timeout)
+    def get_sync(self, path: str, default: Any = _MISSING, *, timeout: float = 5.0) -> Any:
+        return self._run_sync(self.get(path, default=default, timeout=timeout), operation="get")
+
+    async def require(self, path: str, *, timeout: float = 5.0) -> Any:
+        cfg = await self.dump(timeout=timeout)
         return _get_by_path(cfg, path)
 
-    def update(self, patch: Dict[str, Any], *, timeout: float = 10.0) -> Dict[str, Any]:
+    def require_sync(self, path: str, *, timeout: float = 5.0) -> Any:
+        return self._run_sync(self.require(path, timeout=timeout), operation="require")
+
+    async def update(self, patch: Dict[str, Any], *, timeout: float = 10.0) -> Dict[str, Any]:
         if not isinstance(patch, dict):
             raise PluginConfigError("patch must be a dict", operation="update")
         if not hasattr(self.ctx, "update_own_config"):
             raise PluginConfigError("ctx.update_own_config is not available", operation="update")
         try:
-            updated = self.ctx.update_own_config(updates=patch, timeout=timeout)
+            updated = await self.ctx.update_own_config(updates=patch, timeout=timeout)
         except Exception as e:
             raise PluginConfigError(f"Failed to update config: {e}", operation="update") from e
         return self._unwrap(updated, operation="update")
 
-    def set(self, path: str, value: Any, *, timeout: float = 10.0) -> Dict[str, Any]:
+    def update_sync(self, patch: Dict[str, Any], *, timeout: float = 10.0) -> Dict[str, Any]:
+        return self._run_sync(self.update(patch, timeout=timeout), operation="update")
+
+    async def set(self, path: str, value: Any, *, timeout: float = 10.0) -> Dict[str, Any]:
         patch: Dict[str, Any] = {}
         _set_by_path(patch, path, value)
-        return self.update(patch, timeout=timeout)
+        return await self.update(patch, timeout=timeout)
 
-    def get_section(self, path: str, *, timeout: float = 5.0) -> Dict[str, Any]:
-        value = self.get(path, default=None, timeout=timeout)
+    def set_sync(self, path: str, value: Any, *, timeout: float = 10.0) -> Dict[str, Any]:
+        return self._run_sync(self.set(path, value, timeout=timeout), operation="set")
+
+    async def get_section(self, path: str, *, timeout: float = 5.0) -> Dict[str, Any]:
+        value = await self.get(path, default=None, timeout=timeout)
         if value is None:
             return {}
         if not isinstance(value, dict):
@@ -196,3 +241,6 @@ class PluginConfig:
                 operation="get_section",
             )
         return value
+
+    def get_section_sync(self, path: str, *, timeout: float = 5.0) -> Dict[str, Any]:
+        return self._run_sync(self.get_section(path, timeout=timeout), operation="get_section")

@@ -10,22 +10,22 @@ from typing import Any, Dict
 class SystemInfo:
     ctx: Any
 
-    def get_system_config(self, *, timeout: float = 5.0) -> Dict[str, Any]:
+    async def get_system_config(self, *, timeout: float = 5.0) -> Dict[str, Any]:
         if not hasattr(self.ctx, "get_system_config"):
             raise RuntimeError("ctx.get_system_config is not available")
-        result = self.ctx.get_system_config(timeout=timeout)
+        result = await self.ctx.get_system_config(timeout=timeout)
         if not isinstance(result, dict):
             return {"result": result}
         return result
 
-    def get_server_settings(self, *, timeout: float = 5.0) -> Dict[str, Any]:
+    async def get_server_settings(self, *, timeout: float = 5.0) -> Dict[str, Any]:
         """Return a flat dict of plugin server settings.
 
         This is a convenience wrapper around ``ctx.get_system_config`` that
         extracts the ``config`` field from the IPC response.
         """
 
-        result = self.get_system_config(timeout=timeout)
+        result = await self.get_system_config(timeout=timeout)
         if "data" in result and isinstance(result.get("data"), dict):
             result = result["data"]
         cfg = result.get("config") if isinstance(result, dict) else None
