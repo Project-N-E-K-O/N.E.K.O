@@ -640,3 +640,69 @@ class HelloPlugin(NekoPluginBase):
             "hello": message or "world",
             "extra": kwargs,
         }
+
+    @plugin_entry(
+        id="hello_run",
+        name="Hello (Run Demo)",
+        description="HelloWorld demo for new Run protocol: progress updates + export items",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Name to greet",
+                    "default": "world",
+                },
+                "sleep_seconds": {
+                    "type": "number",
+                    "description": "Simulated work time in seconds",
+                    "default": 0.6,
+                },
+            },
+            "required": [],
+        },
+    )
+    def hello_run(self, name: str = "world", sleep_seconds: float = 0.6, **kwargs):
+        ctx_obj = kwargs.get("_ctx")
+        run_id = None
+        if isinstance(ctx_obj, dict):
+            run_id = ctx_obj.get("run_id")
+        if not isinstance(run_id, str) or not run_id:
+            return ok(data={"ok": False, "error": "missing _ctx.run_id"})
+
+        s = 0.1
+        try:
+            s = max(0.0, float(sleep_seconds))
+        except Exception:
+            s = 0.1
+
+        self.ctx.run_update(run_id=run_id, progress=0.0, stage="start", message="hello_run started", step=0, step_total=3)
+        time.sleep(s)
+
+        self.ctx.run_update(
+            run_id=run_id,
+            progress=0.33,
+            stage="working",
+            message=f"preparing greeting for {name}",
+            step=1,
+            step_total=3,
+        )
+        self.ctx.export_push_text(
+            run_id=run_id,
+            text=f"Hello, {name}! (from testPlugin hello_run)",
+            description="hello message",
+            metadata={"plugin_id": self.ctx.plugin_id, "entry_id": "hello_run"},
+        )
+        time.sleep(s)
+
+        self.ctx.run_update(run_id=run_id, progress=0.66, stage="working", message="doing some work...", step=2, step_total=3)
+        time.sleep(s)
+
+        self.ctx.export_push_text(
+            run_id=run_id,
+            text=f"Done. timestamp={int(time.time())}",
+            description="done marker",
+            metadata={"kind": "done"},
+        )
+        self.ctx.run_update(run_id=run_id, progress=1.0, stage="done", message="hello_run finished", step=3, step_total=3)
+        return ok(data={"ok": True, "run_id": run_id, "greeted": name})

@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 import asyncio
+import logging
 import sys
 from pathlib import Path
 
@@ -39,6 +40,30 @@ except ModuleNotFoundError:
     _spec.loader.exec_module(_mod)
     setup_logging = getattr(_mod, "setup_logging")
 server_logger, server_log_config = setup_logging(service_name="PluginServer", log_level="INFO")
+
+try:
+    for _ln in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        _lg = logging.getLogger(_ln)
+        try:
+            _lg.handlers.clear()
+        except Exception:
+            pass
+        _lg.propagate = True
+except Exception:
+    pass
+
+try:
+    _server_log_path = server_log_config.get_log_file_path()
+    if isinstance(_server_log_path, str) and _server_log_path:
+        logger.add(
+            _server_log_path,
+            rotation="10 MB",
+            retention="30 days",
+            enqueue=True,
+            encoding="utf-8",
+        )
+except Exception:
+    pass
 
 from plugin.core.state import state
 from plugin.api.models import (
@@ -81,6 +106,7 @@ from plugin.server.runs import (
 
 from plugin.server.ws_run import issue_run_token, ws_run_endpoint
 from plugin.server.blob_store import blob_store
+from plugin.server.ws_admin import ws_admin_endpoint
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -333,6 +359,11 @@ async def runs_create(payload: RunCreateRequest, request: Request):
 @app.websocket("/ws/run")
 async def ws_run(websocket: WebSocket):
     await ws_run_endpoint(websocket)
+
+
+@app.websocket("/ws/admin")
+async def ws_admin(websocket: WebSocket):
+    await ws_admin_endpoint(websocket)
 
 
 @app.get("/runs/{run_id}", response_model=RunRecord)
@@ -1616,7 +1647,7 @@ if __name__ == "__main__":
             selected_port,
         )
     else:
-        logger.info("User plugin server starting on %s:%s", host, selected_port)
+        logger.info("User plugin server starting on {}:{}", host, selected_port)
     
     try:
         uvicorn.run(app, host=host, port=selected_port, log_config=None)

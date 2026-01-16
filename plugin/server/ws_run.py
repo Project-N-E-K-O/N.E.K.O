@@ -94,6 +94,8 @@ class WsRunHub:
         self._conns_by_run: Dict[str, Set[_Conn]] = {}
         self._unsubs: list[Any] = []
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._dispatch_q: "asyncio.Queue[Tuple[str, Dict[str, Any]]]" = asyncio.Queue(maxsize=2000)
+        self._dispatch_task: Optional[asyncio.Task[None]] = None
         self._started = False
 
     async def start(self) -> None:
@@ -111,11 +113,11 @@ class WsRunHub:
                     rid = None
                 if not isinstance(rid, str) or not rid:
                     return
-                if self._loop is None:
-                    return
                 evt = {"bus": bus, "op": str(op), "payload": dict(payload or {})}
                 try:
-                    self._loop.call_soon_threadsafe(lambda: asyncio.create_task(self._broadcast(rid, evt)))
+                    if self._loop is None:
+                        return
+                    self._loop.call_soon_threadsafe(self._try_enqueue, rid, evt)
                 except Exception:
                     return
 
@@ -127,6 +129,9 @@ class WsRunHub:
         except Exception:
             self._unsubs = []
 
+        if self._dispatch_task is None:
+            self._dispatch_task = asyncio.create_task(self._dispatch_loop(), name="ws-run-hub-dispatch")
+
     async def stop(self) -> None:
         for u in list(self._unsubs):
             try:
@@ -134,9 +139,34 @@ class WsRunHub:
             except Exception:
                 pass
         self._unsubs.clear()
+        try:
+            if self._dispatch_task is not None:
+                self._dispatch_task.cancel()
+        except Exception:
+            pass
+        try:
+            if self._dispatch_task is not None:
+                await self._dispatch_task
+        except Exception:
+            pass
+        self._dispatch_task = None
         async with self._lock:
             self._conns_by_run.clear()
         self._started = False
+
+    def _try_enqueue(self, run_id: str, evt: Dict[str, Any]) -> None:
+        try:
+            self._dispatch_q.put_nowait((run_id, evt))
+        except Exception:
+            return
+
+    async def _dispatch_loop(self) -> None:
+        while True:
+            run_id, evt = await self._dispatch_q.get()
+            try:
+                await self._broadcast(run_id, evt)
+            except Exception:
+                continue
 
     async def register(self, conn: _Conn) -> None:
         async with self._lock:
@@ -170,7 +200,14 @@ class WsRunHub:
             try:
                 c.queue.put_nowait({"type": "event", "event": "bus.change", "data": evt})
             except Exception:
-                continue
+                try:
+                    await self.unregister(c)
+                except Exception:
+                    pass
+                try:
+                    await asyncio.wait_for(c.ws.close(code=1013, reason="slow client"), timeout=1.0)
+                except Exception:
+                    pass
 
 
 ws_run_hub = WsRunHub()
@@ -227,12 +264,27 @@ async def ws_run_endpoint(ws: WebSocket) -> None:
     conn = _Conn(ws=ws, run_id=run_id, perm=perm, queue=q)
     await ws_run_hub.register(conn)
 
+    last_pong = float(time.time())
+
+    async def _heartbeat_loop() -> None:
+        nonlocal last_pong
+        while True:
+            await asyncio.sleep(15.0)
+            if (time.time() - last_pong) > 45.0:
+                await _close(1011, "heartbeat timeout")
+                return
+            try:
+                await ws.send_text(json.dumps({"type": "ping"}, ensure_ascii=False, separators=(",", ":")))
+            except Exception:
+                return
+
     async def _send_loop() -> None:
         while True:
             msg = await q.get()
             await ws.send_text(json.dumps(msg, ensure_ascii=False, separators=(",", ":")))
 
     send_task = asyncio.create_task(_send_loop(), name="ws-run-send")
+    hb_task = asyncio.create_task(_heartbeat_loop(), name="ws-run-heartbeat")
 
     async def _send_resp(rid: str, ok: bool, result: Any = None, error: Optional[str] = None) -> None:
         out = {"type": "resp", "id": rid, "ok": bool(ok)}
@@ -256,6 +308,9 @@ async def ws_run_endpoint(ws: WebSocket) -> None:
             except Exception:
                 continue
             if not isinstance(msg, dict):
+                continue
+            if msg.get("type") == "pong":
+                last_pong = float(time.time())
                 continue
             if msg.get("type") != "req":
                 continue
@@ -315,7 +370,15 @@ async def ws_run_endpoint(ws: WebSocket) -> None:
         except Exception:
             pass
         try:
+            hb_task.cancel()
+        except Exception:
+            pass
+        try:
             await send_task
+        except Exception:
+            pass
+        try:
+            await hb_task
         except Exception:
             pass
         try:

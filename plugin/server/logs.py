@@ -74,7 +74,19 @@ def get_plugin_log_dir(plugin_id: str) -> Path:
     # 如果是服务器日志，使用应用日志目录（log文件夹）
     if plugin_id == SERVER_LOG_ID:
         try:
-            from utils.logger_config import RobustLoggerConfig
+            try:
+                from utils.logger_config import RobustLoggerConfig
+            except Exception:
+                import importlib.util
+
+                project_root = PLUGIN_CONFIG_ROOT.parent.parent
+                logger_config_path = project_root / "utils" / "logger_config.py"
+                spec = importlib.util.spec_from_file_location("utils.logger_config", logger_config_path)
+                if spec is None or spec.loader is None:
+                    raise
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                RobustLoggerConfig = getattr(mod, "RobustLoggerConfig")
             config = RobustLoggerConfig(service_name="PluginServer")
             # get_log_directory_path() 返回字符串，需要转换为 Path
             log_dir_str = config.get_log_directory_path()
@@ -267,6 +279,18 @@ def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
             "line": 0,
             "message": message.strip()
         }
+
+    pattern3b = r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s+(.+)'
+    match = re.match(pattern3b, line)
+    if match:
+        timestamp, level, message = match.groups()
+        return {
+            "timestamp": timestamp.strip(),
+            "level": level.strip(),
+            "file": "",
+            "line": 0,
+            "message": message.strip(),
+        }
     
     # 模式4: 管道分隔格式 - 2024-01-01 00:00:00 | INFO | module:function:123 | message
     # 支持格式: timestamp | level | location | message
@@ -318,6 +342,35 @@ def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
             "file": (file or "").strip(),
             "line": 0,
             "message": (message or "").strip()
+        }
+
+    pattern6 = r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?:\.(\d+))?\s*\|\s*(\w+)\s*\|\s*([^|]+?)\s*-\s*(.+)'
+    match = re.match(pattern6, line)
+    if match:
+        ts, ms, level, location, message = match.groups()
+        timestamp = ts.strip()
+        if isinstance(ms, str) and ms:
+            timestamp = f"{timestamp}.{ms}"
+        location = (location or "").strip()
+        message = (message or "").strip()
+        file = ""
+        line_num = 0
+        try:
+            parts = location.split(":")
+            if len(parts) >= 3 and parts[-1].isdigit():
+                line_num = int(parts[-1])
+                file = ":".join(parts[:-2]) if len(parts) > 3 else parts[0]
+            else:
+                file = parts[0] if parts else location
+        except Exception:
+            file = location
+            line_num = 0
+        return {
+            "timestamp": timestamp,
+            "level": level.strip(),
+            "file": file.strip(),
+            "line": line_num,
+            "message": message,
         }
     
     # 如果格式不匹配，返回原始行
