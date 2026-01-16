@@ -542,6 +542,9 @@ VRMManager.prototype.setupFloatingButtons = function () {
         }, 100);
         
         lockIcon.style.display = 'block';
+        
+        // 刷新浮动按钮布局，立即反映新的锁定状态
+        applyResponsiveFloatingLayout();
     };
 
     lockIcon.addEventListener('mousedown', toggleLock);

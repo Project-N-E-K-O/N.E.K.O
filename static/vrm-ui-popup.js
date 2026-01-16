@@ -594,8 +594,22 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
             this.setButtonActive(buttonId, false);
         }
         
-        setTimeout(() => { popup.style.display = 'none'; popup.style.left = '100%'; popup.style.top = '0'; }, 200);
+        // 存储 timeout ID，以便在快速重新打开时能够清除
+        const hideTimeoutId = setTimeout(() => { 
+            popup.style.display = 'none'; 
+            popup.style.left = '100%'; 
+            popup.style.top = '0';
+            // 清除 timeout ID 引用
+            popup._hideTimeoutId = null;
+        }, 200);
+        popup._hideTimeoutId = hideTimeoutId;
     } else {
+        // 清除之前可能存在的隐藏 timeout，防止旧的 timeout 关闭新打开的 popup
+        if (popup._hideTimeoutId) {
+            clearTimeout(popup._hideTimeoutId);
+            popup._hideTimeoutId = null;
+        }
+        
         this.closeAllPopupsExcept(buttonId);
         popup.style.display = 'flex'; popup.style.opacity = '0'; popup.style.visibility = 'visible';
         
