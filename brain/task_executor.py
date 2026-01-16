@@ -1050,14 +1050,45 @@ Return only the JSON object, nothing else.
                 r = await client.post(runs_endpoint, json=run_body)
                 if not (200 <= r.status_code < 300):
                     raise RuntimeError(f"/runs returned {r.status_code}: {r.text}")
-                data = r.json()
-            run_id = data.get("run_id")
-            run_token = data.get("run_token")
-            expires_at = data.get("expires_at")
-            if not isinstance(run_id, str) or not run_id:
-                raise RuntimeError("missing run_id")
-            if not isinstance(run_token, str) or not run_token:
-                raise RuntimeError("missing run_token")
+                try:
+                    data = r.json()
+                except Exception:
+                    logger.error(
+                        "[TaskExecutor] /runs returned non-JSON response; skip fallback to avoid duplicate execution. status=%s body=%s",
+                        r.status_code,
+                        (r.text or "")[:1000],
+                    )
+                    return TaskResult(
+                        task_id=task_id,
+                        has_task=True,
+                        task_description=task_description,
+                        execution_method="user_plugin",
+                        success=False,
+                        error="Invalid /runs response (non-JSON)",
+                        tool_name=plugin_id,
+                        tool_args=plugin_args,
+                        reason=getattr(up_decision, "reason", "") or "run_invalid_response",
+                    )
+
+            run_id = data.get("run_id") if isinstance(data, dict) else None
+            run_token = data.get("run_token") if isinstance(data, dict) else None
+            expires_at = data.get("expires_at") if isinstance(data, dict) else None
+            if not isinstance(run_id, str) or not run_id or not isinstance(run_token, str) or not run_token:
+                logger.error(
+                    "[TaskExecutor] /runs response missing run_id/run_token; skip fallback to avoid duplicate execution. data=%r",
+                    data,
+                )
+                return TaskResult(
+                    task_id=task_id,
+                    has_task=True,
+                    task_description=task_description,
+                    execution_method="user_plugin",
+                    success=False,
+                    error="Invalid /runs response (missing run_id/run_token)",
+                    tool_name=plugin_id,
+                    tool_args=plugin_args,
+                    reason=getattr(up_decision, "reason", "") or "run_invalid_response",
+                )
 
             result_obj: Dict[str, Any] = {
                 "accepted": True,

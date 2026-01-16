@@ -311,7 +311,12 @@ export const useRunsStore = defineStore('runs', () => {
       }, 5000)
     })
 
-    sock.send(JSON.stringify(payload))
+    try {
+      sock.send(JSON.stringify(payload))
+    } catch (e) {
+      inflight.delete(id)
+      throw e
+    }
     return p
   }
 

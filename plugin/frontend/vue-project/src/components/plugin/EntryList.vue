@@ -118,11 +118,11 @@ const hasSchema = computed(() => {
 
 function initFormModelFromSchema(entry: PluginEntry) {
   const schema = entry.input_schema
-  const props = schema?.properties || {}
+  const schemaProps = schema?.properties || {}
   const initial: Record<string, any> = {}
-  for (const key in props) {
-    if (!Object.prototype.hasOwnProperty.call(props, key)) continue
-    const field = props[key]
+  for (const key in schemaProps) {
+    if (!Object.prototype.hasOwnProperty.call(schemaProps, key)) continue
+    const field = schemaProps[key]
     if (!field) continue
     if ('default' in field) {
       initial[key] = field.default
@@ -183,7 +183,7 @@ async function handleExecute() {
       entry_id: currentEntry.value.id,
       args: parsedArgs,
     })
-    const rid = (resp as any)?.run_id
+    const rid = resp?.run_id
     ElMessage.success(rid ? `${t('plugins.triggerSuccess')} (${rid})` : t('plugins.triggerSuccess'))
     dialogVisible.value = false
   } catch (e: any) {

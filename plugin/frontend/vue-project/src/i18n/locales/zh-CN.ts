@@ -151,7 +151,8 @@ export default {
     enabled: '已启用',
     disabled: '已禁用',
     autoStart: '自动启动',
-    manualStart: '手动启动'
+    manualStart: '手动启动',
+    fetchFailed: '获取插件列表失败'
   },
   metrics: {
     title: '性能指标',

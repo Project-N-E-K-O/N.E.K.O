@@ -151,7 +151,8 @@ export default {
     enabled: 'Enabled',
     disabled: 'Disabled',
     autoStart: 'Auto Start',
-    manualStart: 'Manual Start'
+    manualStart: 'Manual Start',
+    fetchFailed: 'Failed to fetch plugins'
   },
   metrics: {
     title: 'Metrics',

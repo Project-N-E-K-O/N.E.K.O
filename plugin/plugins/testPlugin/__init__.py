@@ -96,7 +96,7 @@ class HelloPlugin(NekoPluginBase):
                 return
             include_values = bool(config_cfg.get("include_values", False))
 
-            result = self.config_debug(include_values=include_values)
+            result = asyncio.run(self.config_debug(include_values=include_values))
             try:
                 self.file_logger.info("[testPlugin.config_debug] {}", result)
             except Exception as log_err:

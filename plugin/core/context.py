@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from plugin.sdk.bus.lifecycle import LifecycleClient
     from plugin.sdk.bus.memory import MemoryClient
     from plugin.sdk.bus.messages import MessageClient
+    from loguru import Logger as LoguruLogger
 
 
 _IN_HANDLER: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("plugin_in_handler", default=None)
@@ -80,7 +81,7 @@ class PluginContext:
     """插件运行时上下文"""
     plugin_id: str
     config_path: Path
-    logger: Any  # loguru.Logger
+    logger: "LoguruLogger"
     status_queue: Any
     message_queue: Any = None  # 消息推送队列
     app: Optional[FastAPI] = None
@@ -231,7 +232,7 @@ class PluginContext:
         except (AttributeError, RuntimeError) as e:
             # 队列操作错误
             self.logger.warning(f"Queue error updating status for plugin {self.plugin_id}: {e}")
-        except Exception as e:
+        except Exception:
             # 其他未知异常
             self.logger.exception(f"Unexpected error updating status for plugin {self.plugin_id}")
 
@@ -816,6 +817,7 @@ class PluginContext:
         warn_on_orphan_response: bool = False,
         orphan_warning_template: Optional[str] = None,
     ) -> Any:
+        _ = method_name
         plugin_comm_queue = self._plugin_comm_queue
         if plugin_comm_queue is None:
             raise RuntimeError(
@@ -907,7 +909,9 @@ class PluginContext:
                 if isinstance(pending, dict) and rid:
                     try:
                         if len(pending) > 1024:
-                            pending.clear()
+                            keys_to_remove = list(pending.keys())[:512]
+                            for k in keys_to_remove:
+                                pending.pop(k, None)
                         pending[str(rid)] = msg
                     except Exception:
                         pass

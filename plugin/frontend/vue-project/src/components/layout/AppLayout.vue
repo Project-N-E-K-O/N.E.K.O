@@ -197,7 +197,12 @@ async function submitAuth(): Promise<boolean> {
     await get('/server/info')
     connectionStore.clearAuthRequired()
     authDialogVisible.value = false
-    await pluginStore.fetchPlugins()
+    try {
+      await pluginStore.fetchPlugins()
+    } catch (e) {
+      console.error('Failed to fetch plugins:', e)
+      ElMessage.warning(t('plugins.fetchFailed'))
+    }
     ElMessage.success(t('auth.loginSuccess'))
     return true
   } catch (e: any) {
