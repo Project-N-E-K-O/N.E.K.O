@@ -432,28 +432,23 @@ class PluginContext:
                     lock = new_lock
 
             if bool(fast_mode):
-                if getattr(self, "_push_batcher", None) is None:
-                    from plugin.zeromq_ipc import ZmqMessagePushBatcher
-
-                    batcher = ZmqMessagePushBatcher(
-                        plugin_id=self.plugin_id,
-                        endpoint=str(PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT),
-                        batch_size=int(PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE),
-                        flush_interval_ms=int(PLUGIN_ZMQ_MESSAGE_PUSH_FLUSH_INTERVAL_MS),
-                    )
-                    batcher.start()
-                    try:
-                        object.__setattr__(self, "_push_batcher", batcher)
-                    except Exception:
-                        self._push_batcher = batcher
-
-                batcher = getattr(self, "_push_batcher", None)
-                if batcher is None:
-                    raise RuntimeError("push batcher not initialized")
-
-                # IMPORTANT: seq allocation and enqueue must be atomic under the same lock.
-                # Otherwise, concurrent threads can enqueue out-of-order relative to seq.
                 with lock:
+                    batcher = getattr(self, "_push_batcher", None)
+                    if batcher is None:
+                        from plugin.zeromq_ipc import ZmqMessagePushBatcher
+
+                        batcher = ZmqMessagePushBatcher(
+                            plugin_id=self.plugin_id,
+                            endpoint=str(PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT),
+                            batch_size=int(PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE),
+                            flush_interval_ms=int(PLUGIN_ZMQ_MESSAGE_PUSH_FLUSH_INTERVAL_MS),
+                        )
+                        batcher.start()
+                        try:
+                            object.__setattr__(self, "_push_batcher", batcher)
+                        except Exception:
+                            self._push_batcher = batcher
+
                     self._push_seq = int(getattr(self, "_push_seq", 0)) + 1
                     seq = int(self._push_seq)
                     item = {
@@ -469,7 +464,7 @@ class PluginContext:
                         "unsafe": bool(unsafe),
                     }
                     batcher.enqueue(item)
-                return
+                    return
 
             timeout_s = float(PLUGIN_ZMQ_MESSAGE_PUSH_SYNC_TIMEOUT)
             if timeout_s <= 0:
@@ -644,12 +639,15 @@ class PluginContext:
             )
 
         request_id = str(uuid.uuid4())
+        payload = dict(request_data or {})
+        for _k in ("type", "from_plugin", "request_id", "timeout"):
+            payload.pop(_k, None)
         request: Dict[str, Any] = {
+            **payload,
             "type": request_type,
             "from_plugin": self.plugin_id,
             "request_id": request_id,
             "timeout": timeout,
-            **(request_data or {}),
         }
 
         try:
@@ -659,16 +657,22 @@ class PluginContext:
                 lambda: plugin_comm_queue.put(request, timeout=timeout),
             )
             if send_log_template:
-                self.logger.debug(
-                    send_log_template.format(
-                        request_id=request_id,
-                        from_plugin=self.plugin_id,
-                        **(request_data or {}),
+                try:
+                    self.logger.debug(
+                        send_log_template.format(
+                            request_id=request_id,
+                            from_plugin=self.plugin_id,
+                            **payload,
+                        )
                     )
-                )
+                except Exception:
+                    pass
         except Exception as e:
             if error_log_template:
-                self.logger.exception(error_log_template.format(error=e))
+                try:
+                    self.logger.exception(error_log_template.format(error=e))
+                except Exception:
+                    pass
             raise RuntimeError(f"Failed to send {request_type} request: {e}") from e
 
         deadline = time.time() + timeout
@@ -749,13 +753,16 @@ class PluginContext:
             except Exception:
                 pass
             if orphan_warning_template:
-                self.logger.warning(
-                    orphan_warning_template.format(
-                        request_id=request_id,
-                        from_plugin=self.plugin_id,
-                        **(request_data or {}),
+                try:
+                    self.logger.warning(
+                        orphan_warning_template.format(
+                            request_id=request_id,
+                            from_plugin=self.plugin_id,
+                            **payload,
+                        )
                     )
-                )
+                except Exception:
+                    pass
         raise TimeoutError(f"{request_type} timed out after {timeout}s")
     
     def trigger_plugin_event(

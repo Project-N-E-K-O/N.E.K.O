@@ -454,6 +454,8 @@ def _check_single_plugin_version(
             dep_version_obj = Version(dep_version_str)
             untested_spec = _parse_specifier(dependency.untested, logger)
             
+            if untested_spec is None:
+                return False, f"Invalid dependency 'untested' specifier: {dependency.untested!r}"
             if untested_spec:
                 in_untested = _version_matches(untested_spec, dep_version_obj)
                 if not in_untested:
@@ -502,6 +504,7 @@ def _parse_plugin_dependencies(
     Returns:
         依赖列表
     """
+    logger = _wrap_logger(logger)
     dependencies: List[PluginDependency] = []
     
     # TOML 数组表语法 [[plugin.dependency]] 会被解析为 conf["plugin"]["dependency"] 列表
@@ -755,6 +758,7 @@ def _resolve_plugin_id_conflict(
     Returns:
         解决冲突后的插件 ID（如果无冲突则返回原始 ID，如果是重复加载则返回 None）
     """
+    logger = _wrap_logger(logger)
     from plugin.settings import PLUGIN_ENABLE_ID_CONFLICT_CHECK
 
     _ = entry_point
@@ -872,8 +876,7 @@ def register_plugin(
     Returns:
         实际注册的插件 ID（如果发生冲突，返回重命名后的 ID）
     """
-    if logger is None:
-        logger = loguru_logger
+    logger_ = cast(Any, _wrap_logger(logger or loguru_logger))
     
     # 准备插件数据用于哈希计算
     plugin_data = {
@@ -888,7 +891,7 @@ def register_plugin(
     # 检测并解决 ID 冲突
     resolved_id = _resolve_plugin_id_conflict(
         plugin.id,
-        logger,
+        logger_,
         config_path=config_path,
         entry_point=entry_point,
         plugin_data=plugin_data,
@@ -898,7 +901,7 @@ def register_plugin(
     
     # 如果返回 None，说明是重复加载，不应该注册
     if resolved_id is None:
-        logger.warning(
+        logger_.warning(
             "Plugin {} is already loaded (duplicate detected), skipping registration",
             plugin.id
         )
@@ -1229,7 +1232,7 @@ def load_plugins_from_toml(
             elif sdk_config is not None:
                 # SDK configuration must be a dict (plugin.sdk block) if present
                 logger.error(
-                    "Plugin %s: SDK configuration must be a dict (plugin.sdk block), got %s; skipping load",
+                    "Plugin {}: SDK configuration must be a dict (plugin.sdk block), got {}; skipping load",
                     pid,
                     type(sdk_config).__name__
                 )
@@ -1256,7 +1259,7 @@ def load_plugins_from_toml(
                 # Conflict check
                 if any(spec and _version_matches(spec, host_version_obj) for spec in conflict_specs):
                     logger.error(
-                        "Plugin %s conflicts with host SDK %s (conflict ranges: %s); skipping load",
+                        "Plugin {} conflicts with host SDK {} (conflict ranges: {}); skipping load",
                         pid, SDK_VERSION, sdk_conflicts_list
                     )
                     continue
@@ -1531,7 +1534,7 @@ def load_plugins_from_toml(
                         current_resolved = toml_path.resolve()
                         if existing_resolved == current_resolved:
                             logger.warning(
-                                "Plugin %s from %s is already loaded (same config path), skipping duplicate load",
+                                "Plugin {} from {} is already loaded (same config path), skipping duplicate load",
                                 pid, toml_path
                             )
                             continue
@@ -1539,7 +1542,7 @@ def load_plugins_from_toml(
                         # 如果路径解析失败，使用字符串比较
                         if str(existing_config_path) == str(toml_path):
                             logger.warning(
-                                "Plugin %s from %s is already loaded (same config path), skipping duplicate load",
+                                "Plugin {} from {} is already loaded (same config path), skipping duplicate load",
                                 pid, toml_path
                             )
                             continue
@@ -1658,7 +1661,7 @@ def load_plugins_from_toml(
                             try:
                                 if Path(existing_config).resolve() == toml_path.resolve():
                                     logger.warning(
-                                        "Plugin %s from %s is already registered in plugin_hosts, skipping duplicate registration",
+                                        "Plugin {} from {} is already registered in plugin_hosts, skipping duplicate registration",
                                         pid, toml_path
                                     )
                                     skip_register = True
@@ -1808,7 +1811,7 @@ def load_plugins_from_toml(
         # 需要移除刚注册的 host 和清理资源
         if resolved_id is None:
             logger.warning(
-                "Plugin %s from %s detected as duplicate in register_plugin, removing from plugin_hosts",
+                "Plugin {} from {} detected as duplicate in register_plugin, removing from plugin_hosts",
                 pid, toml_path
             )
             existing_host = None

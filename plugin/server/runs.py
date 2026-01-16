@@ -183,6 +183,17 @@ class InMemoryRunStore:
             self._runs[run_id] = nr
             return nr.model_copy(deep=True)
 
+    def list_runs(self) -> List[RunRecord]:
+        with self._lock:
+            items = list(self._runs.values())
+        out: List[RunRecord] = []
+        for r in items:
+            try:
+                out.append(r.model_copy(deep=True))
+            except Exception:
+                pass
+        return out
+
     def commit_terminal(self, run_id: str, *, status: RunStatus, error: Optional[RunError], result_refs: List[str]) -> Optional[RunRecord]:
         with self._lock:
             r = self._runs.get(run_id)
@@ -269,6 +280,29 @@ def _emit_export(op: str, item: ExportItem) -> None:
 
 def get_run(run_id: str) -> Optional[RunRecord]:
     return _run_store.get(str(run_id))
+
+
+def list_runs(*, plugin_id: Optional[str] = None) -> List[RunRecord]:
+    fn = getattr(_run_store, "list_runs", None)
+    if fn is None:
+        return []
+    try:
+        items = fn()
+    except Exception:
+        return []
+    if plugin_id is None:
+        return items
+    pid = str(plugin_id)
+    if not pid:
+        return items
+    out: List[RunRecord] = []
+    for r in items:
+        try:
+            if r.plugin_id == pid:
+                out.append(r)
+        except Exception:
+            continue
+    return out
 
 
 def list_export_for_run(*, run_id: str, after: Optional[str], limit: int) -> ExportListResponse:

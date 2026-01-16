@@ -62,13 +62,13 @@ export default {
   },
   plugin: {
     addProfile: {
-      prompt: '请输入新的 Profile 名称',
-      title: '新增 Profile',
+      prompt: '请输入新的配置方案名称',
+      title: '新增配置方案',
       inputError: '名称不能为空，且不能只包含空白字符'
     },
     removeProfile: {
-      confirm: '确定要删除 Profile "{name}" 吗？',
-      title: '删除 Profile'
+      confirm: '确定要删除配置方案 "{name}" 吗？',
+      title: '删除配置方案'
     }
   },
   dashboard: {
