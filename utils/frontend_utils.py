@@ -282,35 +282,56 @@ def find_model_directory(model_name: str):
     查找模型目录，优先在用户文档目录，其次在创意工坊目录，最后在static目录
     返回 (实际路径, URL前缀) 元组
     """
+    import re
     from utils.config_manager import get_config_manager
+    
+    # 验证模型名称：只允许字母、数字、下划线、连字符、中文字符、日文字符、韩文字符和空格
+    # 防止路径遍历攻击
+    if not re.match(r'^[\w\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af\- ]+$', model_name):
+        logging.warning(f"无效的模型名称: {model_name}")
+        return (None, None)
+    
     # 从配置文件获取WORKSHOP_PATH，如果不存在则使用steam_workshop_path
     workshop_config_data = load_workshop_config()
     WORKSHOP_SEARCH_DIR = workshop_config_data.get("WORKSHOP_PATH", workshop_config_data.get("steam_workshop_path", workshop_config_data.get("default_workshop_folder")))
+    
+    # 定义允许的基础目录列表
+    allowed_base_dirs = []
+    
     # 首先尝试在用户文档目录
     try:
         config_mgr = get_config_manager()
         docs_model_dir = config_mgr.live2d_dir / model_name
         if docs_model_dir.exists():
-            return (str(docs_model_dir), '/user_live2d')
+            docs_model_dir_real = os.path.realpath(docs_model_dir)
+            docs_live2d_dir_real = os.path.realpath(config_mgr.live2d_dir)
+            if os.path.commonpath([docs_model_dir_real, docs_live2d_dir_real]) == docs_live2d_dir_real:
+                return (str(docs_model_dir), '/user_live2d')
     except Exception as e:
         logging.warning(f"检查文档目录模型时出错: {e}")
     
     # 然后尝试创意工坊目录
     try:
         if WORKSHOP_SEARCH_DIR and os.path.exists(WORKSHOP_SEARCH_DIR):
+            workshop_search_real = os.path.realpath(WORKSHOP_SEARCH_DIR)
             # 直接匹配（如果模型名称恰好与文件夹名相同）
             workshop_model_dir = os.path.join(WORKSHOP_SEARCH_DIR, model_name)
             if os.path.exists(workshop_model_dir):
-                return (workshop_model_dir, '/workshop')
+                workshop_model_dir_real = os.path.realpath(workshop_model_dir)
+                if os.path.commonpath([workshop_model_dir_real, workshop_search_real]) == workshop_search_real:
+                    return (workshop_model_dir, '/workshop')
             
             # 递归搜索创意工坊目录下的所有子文件夹（处理Steam工坊使用物品ID命名的情况）
             for item_id in os.listdir(WORKSHOP_SEARCH_DIR):
                 item_path = os.path.join(WORKSHOP_SEARCH_DIR, item_id)
-                if os.path.isdir(item_path):
+                item_path_real = os.path.realpath(item_path)
+                if os.path.isdir(item_path_real):
                     # 检查子文件夹中是否包含与模型名称匹配的文件夹
                     potential_model_path = os.path.join(item_path, model_name)
                     if os.path.exists(potential_model_path):
-                        return (potential_model_path, '/workshop')
+                        potential_model_path_real = os.path.realpath(potential_model_path)
+                        if os.path.commonpath([potential_model_path_real, workshop_search_real]) == workshop_search_real:
+                            return (potential_model_path, '/workshop')
                     
                     # 检查子文件夹本身是否就是模型目录（包含.model3.json文件）
                     for file in os.listdir(item_path):
@@ -318,7 +339,8 @@ def find_model_directory(model_name: str):
                             # 提取模型名称（不带后缀）
                             potential_model_name = os.path.splitext(os.path.splitext(file)[0])[0]
                             if potential_model_name == model_name:
-                                return (item_path, '/workshop')
+                                if os.path.commonpath([item_path_real, workshop_search_real]) == workshop_search_real:
+                                    return (item_path, '/workshop')
     except Exception as e:
         logging.warning(f"检查创意工坊目录模型时出错: {e}")
     
@@ -327,19 +349,25 @@ def find_model_directory(model_name: str):
         config_mgr = get_config_manager()
         user_mods_path = config_mgr.get_workshop_path()
         if user_mods_path and os.path.exists(user_mods_path):
+            user_mods_path_real = os.path.realpath(user_mods_path)
             # 直接匹配（如果模型名称恰好与文件夹名相同）
             user_mod_model_dir = os.path.join(user_mods_path, model_name)
             if os.path.exists(user_mod_model_dir):
-                return (user_mod_model_dir, '/user_mods')
+                user_mod_model_dir_real = os.path.realpath(user_mod_model_dir)
+                if os.path.commonpath([user_mod_model_dir_real, user_mods_path_real]) == user_mods_path_real:
+                    return (user_mod_model_dir, '/user_mods')
             
             # 递归搜索用户mod目录下的所有子文件夹
             for mod_folder in os.listdir(user_mods_path):
                 mod_path = os.path.join(user_mods_path, mod_folder)
-                if os.path.isdir(mod_path):
+                mod_path_real = os.path.realpath(mod_path)
+                if os.path.isdir(mod_path_real):
                     # 检查子文件夹中是否包含与模型名称匹配的文件夹
                     potential_model_path = os.path.join(mod_path, model_name)
                     if os.path.exists(potential_model_path):
-                        return (potential_model_path, '/user_mods')
+                        potential_model_path_real = os.path.realpath(potential_model_path)
+                        if os.path.commonpath([potential_model_path_real, user_mods_path_real]) == user_mods_path_real:
+                            return (potential_model_path, '/user_mods')
                     
                     # 检查子文件夹本身是否就是模型目录（包含.model3.json文件）
                     for file in os.listdir(mod_path):
@@ -347,17 +375,22 @@ def find_model_directory(model_name: str):
                             # 提取模型名称（不带后缀）
                             potential_model_name = os.path.splitext(os.path.splitext(file)[0])[0]
                             if potential_model_name == model_name:
-                                return (mod_path, '/user_mods')
+                                if os.path.commonpath([mod_path_real, user_mods_path_real]) == user_mods_path_real:
+                                    return (mod_path, '/user_mods')
     except Exception as e:
         logging.warning(f"检查用户mod目录模型时出错: {e}")
     
     # 最后尝试static目录
-    static_model_dir = os.path.join('static', model_name)
+    static_dir = 'static'
+    static_dir_real = os.path.realpath(static_dir)
+    static_model_dir = os.path.join(static_dir, model_name)
     if os.path.exists(static_model_dir):
-        return (static_model_dir, '/static')
+        static_model_dir_real = os.path.realpath(static_model_dir)
+        if os.path.commonpath([static_model_dir_real, static_dir_real]) == static_dir_real:
+            return (static_model_dir, '/static')
     
-    # 如果都不存在，返回static默认路径
-    return (static_model_dir, '/static')
+    # 如果都不存在，返回None
+    return (None, None)
 
 def find_workshop_item_by_id(item_id: str) -> tuple:
     """

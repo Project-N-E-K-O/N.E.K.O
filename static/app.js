@@ -672,6 +672,22 @@ function init_app() {
                             sessionStartedResolver = null;
                         }
                     }, 500);
+                } else if (response.type === 'session_failed') {
+                    // Session启动失败（由后端发送）
+                    console.log('收到session_failed事件，模式:', response.input_mode);
+                    // 立即隐藏准备中提示
+                    hideVoicePreparingToast();
+                    // 清除超时定时器
+                    if (window.sessionTimeoutId) {
+                        clearTimeout(window.sessionTimeoutId);
+                        window.sessionTimeoutId = null;
+                    }
+                    // Reject sessionStartedResolver 让等待的代码能处理失败情况
+                    if (sessionStartedResolver) {
+                        // 注意：这里不 reject，因为前端的 Promise.all 会在其他地方处理失败
+                        // 直接清除 resolver 即可，避免超时后重复触发
+                        sessionStartedResolver = null;
+                    }
                 } else if (response.type === 'reload_page') {
                     console.log('收到reload_page事件：', response.message);
                     // 显示提示信息

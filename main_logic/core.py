@@ -1031,6 +1031,9 @@ class LLMSessionManager:
                     await self.send_status(f"💥 连接异常关闭: {error_str}")
             
             await self.cleanup()
+            
+            # 通知前端 session 启动失败，让前端重置状态
+            await self.send_session_failed(input_mode)
         
         finally:
             # 无论成功还是失败，都重置启动标志
@@ -1831,6 +1834,17 @@ class LLMSessionManager:
             pass
         except Exception as e:
             logger.error(f"💥 WS Send Session Started Error: {e}")
+    
+    async def send_session_failed(self, input_mode: str): # 通知前端session启动失败
+        """通知前端 session 启动失败，让前端隐藏 preparing banner 并重置状态"""
+        try:
+            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                data = json.dumps({"type": "session_failed", "input_mode": input_mode})
+                await self.websocket.send_text(data)
+        except WebSocketDisconnect:
+            pass
+        except Exception as e:
+            logger.error(f"💥 WS Send Session Failed Error: {e}")
 
     async def send_expressions(self, prompt=""):
         '''这个函数在直播版本中有用，用于控制Live2D模型的表情动作。但是在开源版本目前没有实际用途。'''
