@@ -13,7 +13,7 @@
             left: 100%;
             top: 0;
             margin-left: 8px;
-            z-index: 100000;
+            z-index: 100001;
             background: rgba(255, 255, 255, 0.65);
             backdrop-filter: saturate(180%) blur(20px);
             border: 1px solid rgba(255, 255, 255, 0.18);
@@ -26,7 +26,7 @@
             min-width: 180px;
             max-height: 200px;
             overflow-y: auto;
-            pointer-events: auto;
+            pointer-events: auto !important;
             opacity: 0;
             transform: translateX(-10px);
             transition: opacity 0.2s cubic-bezier(0.1, 0.9, 0.2, 1), transform 0.2s cubic-bezier(0.1, 0.9, 0.2, 1);
@@ -104,6 +104,9 @@
             font-size: 13px;
             white-space: nowrap;
             color: #333;
+            pointer-events: auto !important;
+            position: relative;
+            z-index: 100002;
         }
         .vrm-settings-menu-item:hover {
             background: rgba(68, 183, 254, 0.1);

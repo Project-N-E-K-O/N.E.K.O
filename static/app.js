@@ -3262,8 +3262,26 @@ function init_app() {
         const container = document.getElementById('live2d-container');
         console.log('[App] showLive2d调用前，容器类列表:', container.classList.toString());
 
+        // 【关键修复】检查Live2D浮动按钮是否存在，如果不存在则重新创建（防止切换后按钮丢失）
+        let floatingButtons = document.getElementById('live2d-floating-buttons');
+        console.log('[showLive2d] 检查浮动按钮 - 存在:', !!floatingButtons, 'live2dManager:', !!window.live2dManager);
+
+        if (!floatingButtons && window.live2dManager) {
+            console.log('[showLive2d] Live2D浮动按钮不存在，准备重新创建');
+            const currentModel = window.live2dManager.getCurrentModel();
+            console.log('[showLive2d] currentModel:', !!currentModel, 'setupFloatingButtons:', typeof window.live2dManager.setupFloatingButtons);
+
+            if (currentModel && typeof window.live2dManager.setupFloatingButtons === 'function') {
+                console.log('[showLive2d] 调用 setupFloatingButtons');
+                window.live2dManager.setupFloatingButtons(currentModel);
+                floatingButtons = document.getElementById('live2d-floating-buttons');
+                console.log('[showLive2d] 创建后按钮存在:', !!floatingButtons);
+            } else {
+                console.warn('[showLive2d] 无法重新创建按钮 - currentModel或setupFloatingButtons不可用');
+            }
+        }
+
         // 确保浮动按钮显示（使用 !important 强制显示，覆盖所有其他逻辑）
-        const floatingButtons = document.getElementById('live2d-floating-buttons');
         if (floatingButtons) {
             // 直接设置 !important 样式，不先清除（避免被鼠标跟踪逻辑覆盖）
             floatingButtons.style.setProperty('display', 'flex', 'important');
@@ -3309,15 +3327,14 @@ function init_app() {
         }
 
         // 强制显示live2d容器
+        container.classList.remove('hidden'); // 先移除hidden类
+        container.classList.remove('minimized'); // 移除minimized类
         container.style.visibility = 'visible';
         container.style.display = 'block';
         container.style.opacity = '1';
 
         // 强制浏览器重新计算样式，确保过渡效果正常
         void container.offsetWidth;
-
-        // 移除minimized类，触发过渡动画
-        container.classList.remove('minimized');
 
         // 如果容器没有其他类，完全移除class属性以避免显示为class=""
         if (container.classList.length === 0) {
@@ -3369,20 +3386,28 @@ function init_app() {
             console.log('[showCurrentModel] 当前角色模型类型:', modelType);
 
             if (modelType === 'vrm') {
+                console.log('[showCurrentModel] 开始显示VRM模型');
+
                 // 显示 VRM 模型
                 const vrmContainer = document.getElementById('vrm-container');
+                console.log('[showCurrentModel] vrmContainer存在:', !!vrmContainer);
                 if (vrmContainer) {
                     vrmContainer.classList.remove('hidden');
                     vrmContainer.style.display = 'block';
                     vrmContainer.style.visibility = 'visible';
+                    vrmContainer.style.removeProperty('pointer-events');
+                    console.log('[showCurrentModel] 已设置vrmContainer可见');
                 }
 
                 // 恢复 VRM canvas 的可见性
                 const vrmCanvas = document.getElementById('vrm-canvas');
+                console.log('[showCurrentModel] vrmCanvas存在:', !!vrmCanvas);
                 if (vrmCanvas) {
                     vrmCanvas.style.removeProperty('visibility');
                     vrmCanvas.style.removeProperty('pointer-events');
                     vrmCanvas.style.visibility = 'visible';
+                    vrmCanvas.style.pointerEvents = 'auto';
+                    console.log('[showCurrentModel] 已设置vrmCanvas可见');
                 }
 
                 // 确保Live2D隐藏
@@ -3392,8 +3417,18 @@ function init_app() {
                     live2dContainer.classList.add('hidden');
                 }
 
+                // 【关键修复】检查VRM浮动按钮是否存在，如果不存在则重新创建（防止cleanupUI后按钮丢失）
+                let vrmFloatingButtons = document.getElementById('vrm-floating-buttons');
+                console.log('[showCurrentModel] VRM浮动按钮存在:', !!vrmFloatingButtons, 'vrmManager存在:', !!window.vrmManager);
+
+                if (!vrmFloatingButtons && window.vrmManager && typeof window.vrmManager.setupFloatingButtons === 'function') {
+                    console.log('[showCurrentModel] VRM浮动按钮不存在，重新创建');
+                    window.vrmManager.setupFloatingButtons();
+                    vrmFloatingButtons = document.getElementById('vrm-floating-buttons');
+                    console.log('[showCurrentModel] 创建后VRM浮动按钮存在:', !!vrmFloatingButtons);
+                }
+
                 // 显示VRM浮动按钮（与 showLive2d 保持一致的处理方式）
-                const vrmFloatingButtons = document.getElementById('vrm-floating-buttons');
                 if (vrmFloatingButtons) {
                     vrmFloatingButtons.style.setProperty('display', 'flex', 'important');
                     vrmFloatingButtons.style.setProperty('visibility', 'visible', 'important');
@@ -3613,8 +3648,16 @@ function init_app() {
             console.log('[App] 已隐藏 live2d-canvas（visibility: hidden），Electron 将认为该区域透明');
         }
 
-        // 隐藏 VRM 容器和 canvas
+        // 【关键修复】在隐藏按钮之前，先判断当前激活的模型类型
+        // 通过检查容器的可见性来判断，而不是按钮的可见性（因为按钮即将被隐藏）
         const vrmContainer = document.getElementById('vrm-container');
+        const live2dContainer = document.getElementById('live2d-container');
+        const isVrmActive = vrmContainer &&
+                           vrmContainer.style.display !== 'none' &&
+                           !vrmContainer.classList.contains('hidden');
+        console.log('[App] 判断当前模型类型 - isVrmActive:', isVrmActive);
+
+        // 隐藏 VRM 容器和 canvas
         if (vrmContainer) {
             vrmContainer.style.setProperty('visibility', 'hidden', 'important');
             vrmContainer.style.setProperty('pointer-events', 'none', 'important');
@@ -3633,7 +3676,7 @@ function init_app() {
         const live2dGoodbyeButton = document.getElementById('live2d-btn-goodbye');
         const vrmGoodbyeButton = document.getElementById('vrm-btn-goodbye');
         let savedGoodbyeRect = null;
-        
+
         // 优先使用当前显示的模型的按钮位置
         if (vrmGoodbyeButton && vrmGoodbyeButton.offsetParent !== null) {
             try {
@@ -3685,8 +3728,9 @@ function init_app() {
         const live2dReturnButtonContainer = document.getElementById('live2d-return-button-container');
         const vrmReturnButtonContainer = document.getElementById('vrm-return-button-container');
         
-        // 检查当前激活的模型（通过检查 vrmGoodbyeButton 是否可见）
-        const useVrmReturn = !!(vrmGoodbyeButton && vrmGoodbyeButton.offsetParent !== null);
+        // 【关键修复】使用之前判断的 isVrmActive 来决定显示哪个返回按钮
+        // 不再检查按钮可见性，因为按钮已经被隐藏了
+        const useVrmReturn = isVrmActive;
         
         // 显示Live2D的返回按钮（仅在非VRM模式时显示）
         if (!useVrmReturn && live2dReturnButtonContainer) {
@@ -3715,6 +3759,19 @@ function init_app() {
         }
         
         // 显示VRM的返回按钮（仅在VRM模式时显示）
+        console.log('[App] VRM返回按钮检查 - useVrmReturn:', useVrmReturn, 'vrmReturnButtonContainer存在:', !!vrmReturnButtonContainer);
+
+        // 【关键修复】如果VRM返回按钮不存在，重新创建整个浮动按钮系统
+        if (useVrmReturn && !vrmReturnButtonContainer && window.vrmManager) {
+            console.log('[App] VRM返回按钮不存在，重新创建浮动按钮系统');
+            if (typeof window.vrmManager.setupFloatingButtons === 'function') {
+                window.vrmManager.setupFloatingButtons();
+                // 重新获取返回按钮引用
+                vrmReturnButtonContainer = document.getElementById('vrm-return-button-container');
+                console.log('[App] 重新创建后VRM返回按钮存在:', !!vrmReturnButtonContainer);
+            }
+        }
+
         if (useVrmReturn && vrmReturnButtonContainer) {
             if (savedGoodbyeRect) {
                 const containerWidth = vrmReturnButtonContainer.offsetWidth || 64;
@@ -3801,6 +3858,7 @@ function init_app() {
 
         // 第二步：清除"请她离开"标志
         if (window.live2dManager) {
+            console.log('[App] 清除 live2dManager._goodbyeClicked，之前值:', window.live2dManager._goodbyeClicked);
             window.live2dManager._goodbyeClicked = false;
         }
         if (window.live2d) {
@@ -3808,8 +3866,13 @@ function init_app() {
         }
         //  清除VRM的"请她离开"标志
         if (window.vrmManager) {
+            console.log('[App] 清除 vrmManager._goodbyeClicked，之前值:', window.vrmManager._goodbyeClicked);
             window.vrmManager._goodbyeClicked = false;
         }
+
+        // 确认标志已清除
+        console.log('[App] 标志清除后 - live2dManager._goodbyeClicked:', window.live2dManager?._goodbyeClicked);
+        console.log('[App] 标志清除后 - vrmManager._goodbyeClicked:', window.vrmManager?._goodbyeClicked);
 
         // 第三步：隐藏独立的"请她回来"按钮
         const live2dReturnButtonContainer = document.getElementById('live2d-return-button-container');
@@ -3833,11 +3896,24 @@ function init_app() {
             // 出错时默认显示 Live2D
             showLive2d();
         }
+
+        // 恢复 VRM canvas 的可见性（如果存在）
+        const vrmCanvas = document.getElementById('vrm-canvas');
         if (vrmCanvas) {
             vrmCanvas.style.removeProperty('visibility');
             vrmCanvas.style.removeProperty('pointer-events');
             vrmCanvas.style.visibility = 'visible';
             console.log('[App] 已恢复 vrm-canvas 的可见性');
+        }
+
+        // 【关键修复】恢复 Live2D canvas 的可见性（如果存在）
+        const live2dCanvas = document.getElementById('live2d-canvas');
+        if (live2dCanvas) {
+            live2dCanvas.style.removeProperty('visibility');
+            live2dCanvas.style.removeProperty('pointer-events');
+            live2dCanvas.style.visibility = 'visible';
+            live2dCanvas.style.pointerEvents = 'auto';
+            console.log('[App] 已恢复 live2d-canvas 的可见性');
         }
 
         // 第五步：恢复锁按钮，并设置为解锁状态（用户可以拖动模型）
@@ -6525,24 +6601,10 @@ function init_app() {
                     vrmContainer.classList.add('hidden');
                 }
 
-                // 隐藏按钮
-                const vrmButtons = document.getElementById('vrm-floating-buttons');
-                if (vrmButtons) {
-                    vrmButtons.style.setProperty('display', 'none', 'important');
+                // 【关键修复】调用 cleanupUI 来完全清理 VRM UI 资源（包括浮动按钮、锁图标和"请她回来"按钮）
+                if (window.vrmManager && typeof window.vrmManager.cleanupUI === 'function') {
+                    window.vrmManager.cleanupUI();
                 }
-
-                // 完全移除 VRM 锁图标（而不是只隐藏），避免内存泄漏
-                // 确保不会阻止 Live2D 锁图标创建
-                const vrmLockIcon = document.getElementById('vrm-lock-icon');
-                if (vrmLockIcon) {
-                    vrmLockIcon.remove();
-                }
-                // 清理所有可能残留的 VRM 锁图标（包括被重命名的）
-                const hiddenVrmLockIcon = document.getElementById('vrm-lock-icon-hidden');
-                if (hiddenVrmLockIcon) {
-                    hiddenVrmLockIcon.remove();
-                }
-                document.querySelectorAll('#vrm-lock-icon, #vrm-lock-icon-hidden').forEach(el => el.remove());
 
                 if (window.vrmManager) {
                     // 1. 停止动画循环
@@ -6631,13 +6693,17 @@ function init_app() {
                     live2dContainer.classList.add('hidden');
                 }
 
-                // 完全移除 Live2D 锁图标（而不是只隐藏），避免内存泄漏
-                // 如果新角色是 Live2D，锁图标会在加载新模型时重新创建
+                // 【关键修复】手动清理 Live2D UI 资源（Live2D没有cleanupUI方法）
+                // 只有在切换到非Live2D模型时才清理UI
                 if (modelType !== 'live2d') {
-                    const live2dLockIcon = document.getElementById('live2d-lock-icon');
-                    if (live2dLockIcon) {
-                        live2dLockIcon.remove();
-                    }
+                    // 移除浮动按钮
+                    const live2dButtons = document.getElementById('live2d-floating-buttons');
+                    if (live2dButtons) live2dButtons.remove();
+
+                    // 移除"请她回来"按钮
+                    const live2dReturnBtn = document.getElementById('live2d-return-button-container');
+                    if (live2dReturnBtn) live2dReturnBtn.remove();
+
                     // 清理所有可能残留的 Live2D 锁图标
                     document.querySelectorAll('#live2d-lock-icon').forEach(el => el.remove());
                 }
@@ -6651,9 +6717,13 @@ function init_app() {
                         window.live2dManager.currentModel = null;
                     }
 
-                    // 2. 停止ticker
+                    // 2. 停止ticker（但保留 pixi_app，以便后续重启）
                     if (window.live2dManager.pixi_app && window.live2dManager.pixi_app.ticker) {
-                        window.live2dManager.pixi_app.ticker.stop();
+                        // 只有在切换到非 Live2D 模型时才停止 ticker
+                        // 如果切换到 Live2D，ticker 会在加载新模型后重启
+                        if (modelType !== 'live2d') {
+                            window.live2dManager.pixi_app.ticker.stop();
+                        }
                     }
 
                     // 3. 清理舞台（但不销毁pixi_app）
@@ -7088,6 +7158,23 @@ function init_app() {
                         // 确保所有 VRM 锁图标已完全移除（loadModel 内部会调用 setupHTMLLockIcon）
                         // 清理所有可能残留的 VRM 锁图标
                         document.querySelectorAll('#vrm-lock-icon, #vrm-lock-icon-hidden').forEach(el => el.remove());
+                        
+                        // 【关键修复】确保 PIXI ticker 在模型加载完成后立即启动
+                        if (window.live2dManager?.pixi_app?.ticker) {
+                            try {
+                                if (!window.live2dManager.pixi_app.ticker.started) {
+                                    window.live2dManager.pixi_app.ticker.start();
+                                    console.log('[猫娘切换] Live2D ticker 已启动');
+                                }
+                                // 强制触发一次更新以确保模型正常渲染
+                                const currentModel = window.live2dManager.getCurrentModel();
+                                if (currentModel && currentModel.internalModel && currentModel.internalModel.coreModel) {
+                                    window.live2dManager.pixi_app.ticker.update();
+                                }
+                            } catch (tickerError) {
+                                console.error('[猫娘切换] Ticker 启动失败:', tickerError);
+                            }
+                        }
                     }
                 }
 
@@ -7116,17 +7203,18 @@ function init_app() {
                 if (chatContainer) chatContainer.classList.remove('minimized');
                 if (textInputArea) textInputArea.classList.remove('hidden');
 
-                // 延时重启 Ticker 和显示按钮
+                // 延时重启 Ticker 和显示按钮（双重保险）
                 setTimeout(() => {
 
                     window.dispatchEvent(new Event('resize'));
 
-                    // 确保 PIXI ticker 正确启动
+                    // 确保 PIXI ticker 正确启动（双重保险）
                     if (window.live2dManager?.pixi_app?.ticker) {
                         // 强制启动 ticker（即使已经启动也重新启动以确保正常）
                         try {
                             if (!window.live2dManager.pixi_app.ticker.started) {
                                 window.live2dManager.pixi_app.ticker.start();
+                                console.log('[猫娘切换] Live2D ticker 延迟启动（双重保险）');
                             }
                             // 确保模型更新循环正在运行
                             const currentModel = window.live2dManager.getCurrentModel();
@@ -7135,10 +7223,14 @@ function init_app() {
                                 if (window.live2dManager.pixi_app.ticker) {
                                     window.live2dManager.pixi_app.ticker.update();
                                 }
+                            } else {
+                                console.warn('[猫娘切换] Live2D 模型未完全加载，ticker 可能无法正常工作');
                             }
                         } catch (tickerError) {
                             console.error('[猫娘切换] Ticker 启动失败:', tickerError);
                         }
+                    } else {
+                        console.warn('[猫娘切换] Live2D pixi_app 或 ticker 不存在');
                     }
 
                     const l2dCanvas = document.getElementById('live2d-canvas');

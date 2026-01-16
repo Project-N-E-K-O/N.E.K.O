@@ -336,18 +336,64 @@ VRMManager.prototype.setupFloatingButtons = function () {
     const returnHandler = () => {
         // 清除返回状态标志，允许更新循环正常显示锁图标和按钮
         this._isInReturnState = false;
-        
+
         // 1. 隐藏"请她回来"按钮
         if (this._returnButtonContainer) {
             this._returnButtonContainer.style.display = 'none';
         }
-        
-        // 2. 恢复主按钮组（使用响应式布局函数，会检查锁定状态和视口）
+
+        // 2. 恢复VRM容器和canvas的可见性
+        const vrmContainer = document.getElementById('vrm-container');
+        if (vrmContainer) {
+            vrmContainer.style.removeProperty('visibility');
+            vrmContainer.style.removeProperty('pointer-events');
+            vrmContainer.style.removeProperty('display');
+            vrmContainer.classList.remove('hidden');
+            vrmContainer.classList.remove('minimized');
+        }
+
+        const vrmCanvas = document.getElementById('vrm-canvas');
+        if (vrmCanvas) {
+            vrmCanvas.style.removeProperty('visibility');
+            vrmCanvas.style.removeProperty('pointer-events');
+        }
+
+        // 3. 检查浮动按钮是否存在，如果不存在则重新创建（防止cleanupUI后按钮丢失）
+        const buttonsContainer = document.getElementById('vrm-floating-buttons');
+        if (!buttonsContainer) {
+            // 重新创建整个浮动按钮系统
+            this.setupFloatingButtons();
+            return; // setupFloatingButtons会处理所有显示逻辑，直接返回
+        }
+
+        // 4. 移除"请她离开"时设置的 !important 样式
+        buttonsContainer.style.removeProperty('display');
+        buttonsContainer.style.removeProperty('visibility');
+        buttonsContainer.style.removeProperty('opacity');
+
+        // 5. 解锁模型（如果被锁定了）
+        if (this.interaction && typeof this.interaction.setLocked === 'function') {
+            const wasLocked = this.interaction.checkLocked ? this.interaction.checkLocked() : false;
+            if (wasLocked) {
+                this.interaction.setLocked(false);
+            }
+        }
+
+        // 6. 恢复主按钮组（使用响应式布局函数，会检查锁定状态和视口）
         applyResponsiveFloatingLayout();
-        
-        // 3. 恢复锁图标（检查锁定状态，只有在未锁定时才显示）
+
+        // 7. 恢复锁图标（检查锁定状态，只有在未锁定时才显示）
         if (this._vrmLockIcon) {
+            // 先移除"请她离开"时设置的 !important 样式
+            this._vrmLockIcon.style.removeProperty('display');
+            this._vrmLockIcon.style.removeProperty('visibility');
+            this._vrmLockIcon.style.removeProperty('opacity');
+
             const isLocked = this.interaction && this.interaction.checkLocked ? this.interaction.checkLocked() : false;
+            // 更新锁图标背景图片（确保显示正确的锁定/解锁状态）
+            this._vrmLockIcon.style.backgroundImage = isLocked 
+                ? 'url(/static/icons/locked_icon.png)' 
+                : 'url(/static/icons/unlocked_icon.png)';
             if (!isLocked) {
                 this._vrmLockIcon.style.display = 'block';
             }
@@ -401,7 +447,9 @@ VRMManager.prototype.setupFloatingButtons = function () {
         returnImgOff.style.opacity = '1'; returnImgOn.style.opacity = '0';
     });
     returnBtn.addEventListener('click', (e) => {
-        if (returnButtonContainer.getAttribute('data-dragging') === 'true') { e.preventDefault(); e.stopPropagation(); return; }
+        if (returnButtonContainer.getAttribute('data-dragging') === 'true') {
+            e.preventDefault(); e.stopPropagation(); return;
+        }
         e.stopPropagation(); e.preventDefault();
         // 只派发 vrm-return-click，由 VRM 处理恢复逻辑
         // app.js 中的 live2d-return-click 监听器会独立处理 Live2D 的恢复
