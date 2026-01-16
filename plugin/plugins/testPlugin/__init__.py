@@ -674,7 +674,7 @@ class HelloPlugin(NekoPluginBase):
         except Exception:
             s = 0.1
 
-        await self.ctx.run_update_async(
+        await self.ctx.run_update(
             progress=0.0,
             stage="start",
             message="hello_run started",
@@ -683,21 +683,21 @@ class HelloPlugin(NekoPluginBase):
         )
         await asyncio.sleep(s)
 
-        await self.ctx.run_update_async(
+        await self.ctx.run_update(
             progress=0.33,
             stage="working",
             message=f"preparing greeting for {name}",
             step=1,
             step_total=3,
         )
-        await self.ctx.export_push_text_async(
+        await self.ctx.export_push_text(
             text=f"Hello, {name}! (from testPlugin hello_run)",
             description="hello message",
             metadata={"plugin_id": self.ctx.plugin_id, "entry_id": "hello_run"},
         )
         await asyncio.sleep(s)
 
-        await self.ctx.run_update_async(
+        await self.ctx.run_update(
             progress=0.66,
             stage="working",
             message="doing some work...",
@@ -706,12 +706,12 @@ class HelloPlugin(NekoPluginBase):
         )
         await asyncio.sleep(s)
 
-        await self.ctx.export_push_text_async(
+        await self.ctx.export_push_text(
             text=f"Done. timestamp={int(time.time())}",
             description="done marker",
             metadata={"kind": "done"},
         )
-        await self.ctx.run_update_async(
+        await self.ctx.run_update(
             progress=1.0,
             stage="done",
             message="hello_run finished",

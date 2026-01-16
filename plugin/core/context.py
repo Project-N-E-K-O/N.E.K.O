@@ -200,6 +200,20 @@ class PluginContext:
             raise RuntimeError("run_id is required (this entry may not be triggered via /runs)")
         return rid
 
+    def _run_coro_sync(self, coro: Any, *, operation: str) -> Any:
+        """Run a coroutine from sync context.
+
+        This is a convenience wrapper (e.g. run_update_sync) and is intentionally
+        strict: it refuses to run when an event loop is already running.
+        """
+
+        self._enforce_sync_call_policy(operation)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+        raise RuntimeError(f"{operation}_sync cannot be used inside a running event loop; use 'await {operation}(...)' instead")
+
     def update_status(self, status: Dict[str, Any]) -> None:
         """
         子进程 / 插件内部调用：把原始 status 丢到主进程的队列里，由主进程统一整理。
@@ -221,18 +235,7 @@ class PluginContext:
             # 其他未知异常
             self.logger.exception(f"Unexpected error updating status for plugin {self.plugin_id}")
 
-    def export_push_text(
-        self,
-        *,
-        run_id: str,
-        text: str,
-        description: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        timeout: float = 5.0,
-    ) -> Dict[str, Any]:
-        raise RuntimeError("export_push_text is async-only; use await export_push_text_async(...)")
-
-    async def export_push_text_async(
+    async def export_push_text(
         self,
         *,
         run_id: Optional[str] = None,
@@ -256,19 +259,57 @@ class PluginContext:
             wrap_result=True,
         )
 
-    def export_push_binary_url(
+    async def export_push_binary_async(
         self,
         *,
-        run_id: str,
-        binary_url: str,
+        run_id: Optional[str] = None,
+        binary_data: bytes,
         mime: Optional[str] = None,
         description: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
-        raise RuntimeError("export_push_binary_url is async-only; use await export_push_binary_url_async(...)")
+        return await self.export_push_binary(
+            run_id=run_id,
+            binary_data=binary_data,
+            mime=mime,
+            description=description,
+            metadata=metadata,
+            timeout=timeout,
+        )
 
-    async def export_push_binary_url_async(
+    def export_push_binary_sync(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        binary_data: bytes,
+        mime: Optional[str] = None,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout: float = 5.0,
+    ) -> Dict[str, Any]:
+        return self._run_coro_sync(
+            self.export_push_binary(
+                run_id=run_id,
+                binary_data=binary_data,
+                mime=mime,
+                description=description,
+                metadata=metadata,
+                timeout=timeout,
+            ),
+            operation="export_push_binary",
+        )
+
+    async def export_push_text_async(self, *, run_id: Optional[str] = None, text: str, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
+        return await self.export_push_text(run_id=run_id, text=text, description=description, metadata=metadata, timeout=timeout)
+
+    def export_push_text_sync(self, *, run_id: Optional[str] = None, text: str, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
+        return self._run_coro_sync(
+            self.export_push_text(run_id=run_id, text=text, description=description, metadata=metadata, timeout=timeout),
+            operation="export_push_text",
+        )
+
+    async def export_push_binary_url(
         self,
         *,
         run_id: Optional[str] = None,
@@ -294,18 +335,16 @@ class PluginContext:
             wrap_result=True,
         )
 
-    def export_push_url(
-        self,
-        *,
-        run_id: str,
-        url: str,
-        description: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        timeout: float = 5.0,
-    ) -> Dict[str, Any]:
-        raise RuntimeError("export_push_url is async-only; use await export_push_url_async(...)")
+    async def export_push_binary_url_async(self, *, run_id: Optional[str] = None, binary_url: str, mime: Optional[str] = None, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
+        return await self.export_push_binary_url(run_id=run_id, binary_url=binary_url, mime=mime, description=description, metadata=metadata, timeout=timeout)
 
-    async def export_push_url_async(
+    def export_push_binary_url_sync(self, *, run_id: Optional[str] = None, binary_url: str, mime: Optional[str] = None, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
+        return self._run_coro_sync(
+            self.export_push_binary_url(run_id=run_id, binary_url=binary_url, mime=mime, description=description, metadata=metadata, timeout=timeout),
+            operation="export_push_binary_url",
+        )
+
+    async def export_push_url(
         self,
         *,
         run_id: Optional[str] = None,
@@ -329,26 +368,16 @@ class PluginContext:
             wrap_result=True,
         )
 
-    def export_push_binary(
-        self,
-        *,
-        run_id: str,
-        binary_data: bytes,
-        mime: Optional[str] = None,
-        description: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        timeout: float = 5.0,
-    ) -> Dict[str, Any]:
-        if not isinstance(binary_data, (bytes, bytearray)):
-            raise TypeError("binary_data must be bytes")
-        data = bytes(binary_data)
-        limit = int(EXPORT_INLINE_BINARY_MAX_BYTES) if EXPORT_INLINE_BINARY_MAX_BYTES is not None else 0
-        if limit > 0 and len(data) > limit:
-            raise ValueError("binary_data too large")
-        b64 = base64.b64encode(data).decode("ascii")
-        raise RuntimeError("export_push_binary is async-only; use await export_push_binary_async(...)")
+    async def export_push_url_async(self, *, run_id: Optional[str] = None, url: str, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
+        return await self.export_push_url(run_id=run_id, url=url, description=description, metadata=metadata, timeout=timeout)
 
-    async def export_push_binary_async(
+    def export_push_url_sync(self, *, run_id: Optional[str] = None, url: str, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
+        return self._run_coro_sync(
+            self.export_push_url(run_id=run_id, url=url, description=description, metadata=metadata, timeout=timeout),
+            operation="export_push_url",
+        )
+
+    async def export_push_binary(
         self,
         *,
         run_id: Optional[str] = None,
@@ -381,22 +410,7 @@ class PluginContext:
             wrap_result=True,
         )
 
-    def run_update(
-        self,
-        *,
-        run_id: str,
-        progress: Optional[float] = None,
-        stage: Optional[str] = None,
-        message: Optional[str] = None,
-        step: Optional[int] = None,
-        step_total: Optional[int] = None,
-        eta_seconds: Optional[float] = None,
-        metrics: Optional[Dict[str, Any]] = None,
-        timeout: float = 5.0,
-    ) -> Dict[str, Any]:
-        raise RuntimeError("run_update is async-only; use await run_update_async(...)")
-
-    async def run_update_async(
+    async def run_update(
         self,
         *,
         run_id: Optional[str] = None,
@@ -436,18 +450,60 @@ class PluginContext:
             wrap_result=True,
         )
 
-    def run_progress(
+    async def run_update_async(
         self,
         *,
-        run_id: str,
-        progress: float,
+        run_id: Optional[str] = None,
+        progress: Optional[float] = None,
         stage: Optional[str] = None,
         message: Optional[str] = None,
+        step: Optional[int] = None,
+        step_total: Optional[int] = None,
+        eta_seconds: Optional[float] = None,
+        metrics: Optional[Dict[str, Any]] = None,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
-        raise RuntimeError("run_progress is async-only; use await run_progress_async(...)")
+        return await self.run_update(
+            run_id=run_id,
+            progress=progress,
+            stage=stage,
+            message=message,
+            step=step,
+            step_total=step_total,
+            eta_seconds=eta_seconds,
+            metrics=metrics,
+            timeout=timeout,
+        )
 
-    async def run_progress_async(
+    def run_update_sync(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        progress: Optional[float] = None,
+        stage: Optional[str] = None,
+        message: Optional[str] = None,
+        step: Optional[int] = None,
+        step_total: Optional[int] = None,
+        eta_seconds: Optional[float] = None,
+        metrics: Optional[Dict[str, Any]] = None,
+        timeout: float = 5.0,
+    ) -> Dict[str, Any]:
+        return self._run_coro_sync(
+            self.run_update(
+                run_id=run_id,
+                progress=progress,
+                stage=stage,
+                message=message,
+                step=step,
+                step_total=step_total,
+                eta_seconds=eta_seconds,
+                metrics=metrics,
+                timeout=timeout,
+            ),
+            operation="run_update",
+        )
+
+    async def run_progress(
         self,
         *,
         run_id: Optional[str] = None,
@@ -456,12 +512,37 @@ class PluginContext:
         message: Optional[str] = None,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
-        return await self.run_update_async(
+        return await self.run_update(
             run_id=run_id,
             progress=float(progress),
             stage=stage,
             message=message,
             timeout=float(timeout),
+        )
+
+    async def run_progress_async(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        progress: float = 0.0,
+        stage: Optional[str] = None,
+        message: Optional[str] = None,
+        timeout: float = 5.0,
+    ) -> Dict[str, Any]:
+        return await self.run_progress(run_id=run_id, progress=progress, stage=stage, message=message, timeout=timeout)
+
+    def run_progress_sync(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        progress: float = 0.0,
+        stage: Optional[str] = None,
+        message: Optional[str] = None,
+        timeout: float = 5.0,
+    ) -> Dict[str, Any]:
+        return self._run_coro_sync(
+            self.run_progress(run_id=run_id, progress=progress, stage=stage, message=message, timeout=timeout),
+            operation="run_progress",
         )
 
     def push_message(
