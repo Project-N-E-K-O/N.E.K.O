@@ -6,6 +6,7 @@ import type {
   PluginMeta,
   PluginStatusData,
   PluginHealth,
+  PluginMessage,
 } from '@/types/api'
 
 /**
@@ -19,7 +20,7 @@ export function getPlugins(): Promise<{ plugins: PluginMeta[]; message: string }
  * 获取插件状态
  */
 export function getPluginStatus(pluginId?: string): Promise<PluginStatusData | { plugins: Record<string, PluginStatusData> }> {
-  const url = pluginId ? `/plugin/status?plugin_id=${pluginId}` : '/plugin/status'
+  const url = pluginId ? `/plugin/status?plugin_id=${encodeURIComponent(pluginId)}` : '/plugin/status'
   return get(url)
 }
 
@@ -58,7 +59,7 @@ export function getPluginMessages(params?: {
   plugin_id?: string
   max_count?: number
   priority_min?: number
-}): Promise<{ messages: any[]; count: number; time: string }> {
+}): Promise<{ messages: PluginMessage[]; count: number; time: string }> {
   return get('/plugin/messages', { params })
 }
 

@@ -21,6 +21,8 @@ class LoadTestPlugin(NekoPluginBase):
         self._auto_thread: Optional[threading.Thread] = None
         self._run_thread: Optional[threading.Thread] = None
         self._bench_lock = threading.RLock()
+        self._run_all_guard = threading.Lock()
+        self._run_all_running = False
 
     def _cleanup(self) -> None:
         try:
@@ -1264,7 +1266,7 @@ class LoadTestPlugin(NekoPluginBase):
         **_: Any,
     ):
         root_cfg = self._get_load_test_section(None)
-        sec_cfg = self._get_load_test_section("buslist_reload")
+        sec_cfg = self._get_load_test_section("buslist_reload_nochange")
 
         timeout_cfg = None
         if sec_cfg:
@@ -1380,27 +1382,28 @@ class LoadTestPlugin(NekoPluginBase):
         # Do not run heavy benchmarks inline inside handler; it can block the command loop
         # and cause IPC timeouts. We spawn a background thread and return immediately.
         try:
-            acquired = self._bench_lock.acquire(blocking=False)
-            if not acquired:
-                return ok(data={"accepted": False, "reason": "benchmark already running"})
-            self._bench_lock.release()
+            with self._run_all_guard:
+                if self._run_all_running:
+                    return ok(data={"accepted": False, "reason": "benchmark already running"})
+                self._run_all_running = True
         except Exception:
-            # if lock is broken, still try to proceed best-effort
             pass
 
         def _bg() -> None:
             try:
                 if self._stop_event.is_set():
                     return
-                if not self._bench_lock.acquire(blocking=False):
-                    return
-                try:
+                with self._bench_lock:
                     self._run_all_benchmarks_sync(duration_seconds=float(duration_seconds))
-                finally:
-                    self._bench_lock.release()
             except Exception as e:
                 try:
                     self.logger.warning("[load_tester] run_all_benchmarks background failed: {}", e)
+                except Exception:
+                    pass
+            finally:
+                try:
+                    with self._run_all_guard:
+                        self._run_all_running = False
                 except Exception:
                     pass
 
@@ -1409,6 +1412,11 @@ class LoadTestPlugin(NekoPluginBase):
             self._run_thread = t
             t.start()
         except Exception as e:
+            try:
+                with self._run_all_guard:
+                    self._run_all_running = False
+            except Exception:
+                pass
             return ok(data={"accepted": False, "reason": str(e)})
 
         return ok(data={"accepted": True})

@@ -820,6 +820,8 @@ class PluginA(NekoPluginBase):
             return {"success": False, "error": str(e)}
 ```
 
+提示：在 `@plugin_entry` 中同步调用 `call_plugin` 可能触发 A1 同步互调策略（`plugin.safety` 下的告警模式/拒绝模式）；建议将 `call_plugin` 下沉到后台线程/`asyncio.to_thread`，或改为消息化/异步流程，避免 handler 内阻塞导致超时或死锁。
+
 #### 5.3.2 调用其他插件的 plugin_entry
 
 ```python

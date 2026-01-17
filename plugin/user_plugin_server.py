@@ -39,7 +39,7 @@ except ModuleNotFoundError:
     _mod = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(_mod)
     setup_logging = getattr(_mod, "setup_logging")
-server_logger, server_log_config = setup_logging(service_name="PluginServer", log_level="INFO")
+server_logger, server_log_config = setup_logging(service_name="PluginServer", log_level="INFO", silent=True)
 
 try:
     for _ln in ("uvicorn", "uvicorn.error", "uvicorn.access"):
@@ -62,6 +62,33 @@ try:
             enqueue=True,
             encoding="utf-8",
         )
+except Exception:
+    pass
+
+
+class _LoguruInterceptHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            level = logger.level(record.levelname).name
+        except Exception:
+            level = record.levelno
+
+        frame, depth = logging.currentframe(), 2
+        while frame and frame.f_code.co_filename == logging.__file__:
+            frame = frame.f_back
+            depth += 1
+
+        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+
+
+try:
+    logging.root.handlers.clear()
+    logging.root.addHandler(_LoguruInterceptHandler())
+    logging.root.setLevel(logging.INFO)
+    for _ln in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        _lg = logging.getLogger(_ln)
+        _lg.handlers.clear()
+        _lg.propagate = True
 except Exception:
     pass
 

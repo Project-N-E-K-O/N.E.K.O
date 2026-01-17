@@ -12,6 +12,22 @@ export interface ApiResponse<T = any> {
 }
 
 // 插件元数据
+export interface PluginAuthor {
+  name?: string
+  email?: string
+}
+
+export interface PluginDependency {
+  id?: string
+  entry?: string
+  custom_event?: string
+  providers?: string[]
+  recommended?: string
+  supported?: string
+  untested?: string
+  conflicts?: string[] | boolean
+}
+
 export interface PluginMeta {
   id: string
   name: string
@@ -25,6 +41,9 @@ export interface PluginMeta {
   entries?: PluginEntry[]
   runtime_enabled?: boolean
   runtime_auto_start?: boolean
+  author?: PluginAuthor
+  dependencies?: PluginDependency[]
+  input_schema?: JSONSchema
 }
 
 // JSON Schema（简化版），用于描述插件入口参数

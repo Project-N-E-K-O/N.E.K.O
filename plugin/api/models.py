@@ -77,6 +77,12 @@ class PluginDependency(BaseModel):
         if self.entry is not None and self.custom_event is not None:
             raise ValueError("entry 和 custom_event 不能同时使用")
 
+        # 简化冲突格式（conflicts=true）可不要求 untested
+        if self.conflicts is True:
+            return self
+        if self.untested is None:
+            raise ValueError("使用依赖配置时必须提供 untested 版本范围")
+
         return self
 
 

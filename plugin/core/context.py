@@ -53,7 +53,7 @@ class _BusHub:
 
     @functools.cached_property
     def memory(self) -> "MemoryClient":
-        from plugin.sdk.bus.memory import MemoryClient
+        from plugin.sdk.memory import MemoryClient
 
         return MemoryClient(self._ctx)
 

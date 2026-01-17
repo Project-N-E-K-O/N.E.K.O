@@ -914,7 +914,12 @@ Return only the JSON object, nothing else.
             async with httpx.AsyncClient(timeout=timeout) as client:
                 r = await client.post(runs_endpoint, json=run_body)
                 if not (200 <= r.status_code < 300):
-                    raise RuntimeError(f"/runs returned {r.status_code}: {r.text}")
+                    logger.warning(
+                        "[TaskExecutor] /runs returned non-2xx; status=%s body=%s",
+                        r.status_code,
+                        (r.text or "")[:1000],
+                    )
+                    raise RuntimeError(f"/runs returned {r.status_code}")
                 try:
                     data = r.json()
                 except Exception:
