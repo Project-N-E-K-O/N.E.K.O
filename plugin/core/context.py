@@ -37,7 +37,7 @@ from plugin.settings import (
 if TYPE_CHECKING:
     from plugin.sdk.bus.events import EventClient
     from plugin.sdk.bus.lifecycle import LifecycleClient
-    from plugin.sdk.bus.memory import MemoryClient
+    from plugin.sdk.memory import MemoryClient
     from plugin.sdk.bus.messages import MessageClient
     from loguru import Logger as LoguruLogger
 

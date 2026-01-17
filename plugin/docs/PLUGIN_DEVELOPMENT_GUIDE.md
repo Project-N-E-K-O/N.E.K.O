@@ -995,6 +995,7 @@ class MyPlugin(NekoPluginBase):
 class MyPlugin(NekoPluginBase):
     def __init__(self, ctx):
         super().__init__(ctx)
+        import logging
         # 启用文件日志（同时输出到文件和控制台）
         self.file_logger = self.enable_file_logging(log_level=logging.INFO)
         self.logger = self.file_logger  # 使用文件日志器
@@ -1722,7 +1723,7 @@ import json
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, List, Dict
+from typing import Any, List, Dict, Optional
 from plugin.sdk.base import NekoPluginBase
 from plugin.sdk.decorators import (
     neko_plugin,
@@ -2380,7 +2381,7 @@ A: 可以，使用任何 Python 数据库库（如 `sqlite3`、`psycopg2`、`pym
 
 ### Q11: 如何配置插件依赖？
 
-A: 在 `plugin.toml` 中使用 `[[plugin.dependency]]` 配置依赖。支持三种方式：
+A: 在 `plugin.toml` 中使用 `[[plugin.dependency]]` 配置依赖。支持四种方式：
 
 #### 方式1：依赖特定插件ID
 ```toml
