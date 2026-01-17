@@ -14,6 +14,8 @@ from plugin.settings import BUS_SDK_POLL_INTERVAL_SECONDS
 from plugin.settings import MESSAGE_PLANE_ZMQ_RPC_ENDPOINT
 from .types import BusList, BusOp, BusRecord, GetNode, register_bus_change_listener
 
+import ormsgpack
+
 if TYPE_CHECKING:
     from plugin.core.context import PluginContext
 
@@ -71,10 +73,17 @@ class _MessagePlaneRpcClient:
             return None
         req_id = str(uuid.uuid4())
         req = {"v": 1, "op": str(op), "req_id": req_id, "args": dict(args or {}), "from_plugin": self._plugin_id}
+
+        # Prefer msgpack for performance; fall back to JSON for compatibility.
+        enc = "msgpack"
         try:
-            raw = json.dumps(req, ensure_ascii=False).encode("utf-8")
+            raw = ormsgpack.packb(req)
         except Exception:
-            return None
+            enc = "json"
+            try:
+                raw = json.dumps(req, ensure_ascii=False).encode("utf-8")
+            except Exception:
+                return None
         try:
             sock.send(raw, flags=0)
         except Exception:
@@ -96,10 +105,19 @@ class _MessagePlaneRpcClient:
                 resp_raw = sock.recv(flags=0)
             except Exception:
                 return None
-            try:
-                resp = json.loads(resp_raw.decode("utf-8"))
-            except Exception:
-                resp = None
+
+            # Try decode using the same encoding; also accept the other encoding for server compatibility.
+            resp = None
+            if enc == "msgpack":
+                try:
+                    resp = ormsgpack.unpackb(resp_raw)
+                except Exception:
+                    resp = None
+            if resp is None:
+                try:
+                    resp = json.loads(resp_raw.decode("utf-8"))
+                except Exception:
+                    resp = None
             if not isinstance(resp, dict):
                 continue
             if resp.get("req_id") != req_id:
@@ -335,6 +353,7 @@ class MessageClient:
         since_ts: Optional[float] = None,
         timeout: float = 5.0,
         raw: bool = False,
+        light: bool = False,
         topic: str = "all",
     ) -> MessageList:
         """Fetch messages via message_plane ZMQ RPC.
@@ -366,6 +385,7 @@ class MessageClient:
             "source": source_norm,
             "priority_min": pr_min_norm,
             "since_ts": since_norm,
+            "light": bool(light),
         }
         if isinstance(filter, dict):
             # Only pass through fields supported by message_plane query.
@@ -389,7 +409,11 @@ class MessageClient:
             and bool(strict)
             and topic_norm == "all"
         ):
-            resp = rpc.request(op="bus.get_recent", args={"store": "messages", "topic": "all", "limit": int(max_count)}, timeout=float(timeout))
+            resp = rpc.request(
+                op="bus.get_recent",
+                args={"store": "messages", "topic": "all", "limit": int(max_count), "light": bool(light)},
+                timeout=float(timeout),
+            )
         else:
             resp = rpc.request(op="bus.query", args=args, timeout=float(timeout))
         if not isinstance(resp, dict):
@@ -403,19 +427,59 @@ class MessageClient:
             if isinstance(got, list):
                 items = got
 
-        payloads: List[Dict[str, Any]] = []
-        for ev in items:
-            if not isinstance(ev, dict):
-                continue
-            p = ev.get("payload")
-            if isinstance(p, dict):
-                payloads.append(p)
-
         records: List[MessageRecord] = []
-        if bool(raw):
-            for p in payloads:
-                records.append(MessageRecord.from_raw(p))
+        if bool(light):
+            # Light mode: message_plane returns only seq/index, without payload.
+            for ev in items:
+                if not isinstance(ev, dict):
+                    continue
+                idx = ev.get("index")
+                if not isinstance(idx, dict):
+                    idx = {}
+                try:
+                    record_type = idx.get("type") or "MESSAGE"
+                except Exception:
+                    record_type = "MESSAGE"
+                try:
+                    pid = idx.get("plugin_id")
+                except Exception:
+                    pid = None
+                try:
+                    src = idx.get("source")
+                except Exception:
+                    src = None
+                try:
+                    pr_i = int(idx.get("priority") or 0)
+                except Exception:
+                    pr_i = 0
+                try:
+                    mid = idx.get("id")
+                except Exception:
+                    mid = None
+                records.append(
+                    MessageRecord(
+                        kind="message",
+                        type=str(record_type),
+                        timestamp=None,
+                        plugin_id=str(pid) if pid is not None else None,
+                        source=str(src) if src is not None else None,
+                        priority=pr_i,
+                        content=None,
+                        metadata={},
+                        raw={"index": idx, "seq": ev.get("seq"), "ts": ev.get("ts")},
+                        message_id=str(mid) if mid is not None else None,
+                        message_type=str(record_type) if record_type is not None else None,
+                        description=None,
+                    )
+                )
         else:
+            payloads: List[Dict[str, Any]] = []
+            for ev in items:
+                if not isinstance(ev, dict):
+                    continue
+                p = ev.get("payload")
+                if isinstance(p, dict):
+                    payloads.append(p)
             for p in payloads:
                 records.append(MessageRecord.from_raw(p))
 
@@ -558,7 +622,14 @@ class MessageClient:
         timeout: float = 5.0,
         raw: bool = False,
     ) -> MessageList:
+        # Prefer message_plane with msgpack encoding; when raw=True and the request is a simple
+        # "recent" fetch, use light-index mode to avoid transferring full payloads.
         try:
+            light = False
+            if bool(raw):
+                if (plugin_id is None or str(plugin_id).strip() == "*"):
+                    if priority_min is None and (source is None or not str(source)) and filter is None and since_ts is None:
+                        light = True
             return self.get_message_plane(
                 plugin_id=plugin_id,
                 max_count=max_count,
@@ -569,6 +640,7 @@ class MessageClient:
                 since_ts=since_ts,
                 timeout=timeout,
                 raw=raw,
+                light=bool(light),
                 topic="all",
             )
         except Exception:

@@ -6,6 +6,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import zmq
+import ormsgpack
 from loguru import logger
 
 from plugin.settings import (
@@ -389,7 +390,7 @@ class MessagePlaneRpcServer:
         except Exception:
             pass
 
-    def _recv(self) -> Optional[Tuple[list[bytes], Dict[str, Any]]]:
+    def _recv(self) -> Optional[Tuple[list[bytes], Dict[str, Any], str]]:
         try:
             parts = self._sock.recv_multipart()
         except Exception:
@@ -397,16 +398,52 @@ class MessagePlaneRpcServer:
         if len(parts) < 2:
             return None
         raw = parts[-1]
+        enc = "json"
         try:
             msg = json.loads(raw.decode("utf-8"))
         except Exception:
-            msg = {}
+            try:
+                msg = ormsgpack.unpackb(raw)
+                enc = "msgpack"
+            except Exception:
+                msg = {}
         envelope = parts[:-1]
-        return envelope, msg
+        return envelope, msg, enc
 
-    def _send(self, envelope: list[bytes], msg: Dict[str, Any]) -> None:
-        payload = json.dumps(msg, ensure_ascii=False).encode("utf-8")
+    def _send(self, envelope: list[bytes], msg: Dict[str, Any], *, enc: str) -> None:
+        if enc == "msgpack":
+            payload = ormsgpack.packb(msg)
+        else:
+            payload = json.dumps(msg, ensure_ascii=False).encode("utf-8")
         self._sock.send_multipart([*envelope, payload])
+
+    def _light_item(self, ev: Dict[str, Any]) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        try:
+            out["seq"] = ev.get("seq")
+        except Exception:
+            pass
+        try:
+            out["ts"] = ev.get("ts")
+        except Exception:
+            pass
+        try:
+            out["store"] = ev.get("store")
+        except Exception:
+            pass
+        try:
+            out["topic"] = ev.get("topic")
+        except Exception:
+            pass
+        try:
+            idx = ev.get("index")
+        except Exception:
+            idx = None
+        if isinstance(idx, dict):
+            out["index"] = idx
+        else:
+            out["index"] = {}
+        return out
 
     def _handle(self, req: Dict[str, Any]) -> Dict[str, Any]:
         req_id = str(req.get("req_id") or "")
@@ -478,6 +515,7 @@ class MessagePlaneRpcServer:
             if st is None:
                 return err_response(req_id, "invalid store")
             topic = str(args.get("topic") or "")
+            light = bool(args.get("light", False))
             limit = args.get("limit", 200)
             try:
                 limit_i = int(limit)
@@ -487,12 +525,20 @@ class MessagePlaneRpcServer:
                 return err_response(req_id, "topic is required")
             if limit_i > MESSAGE_PLANE_GET_RECENT_MAX_LIMIT:
                 limit_i = MESSAGE_PLANE_GET_RECENT_MAX_LIMIT
-            return ok_response(req_id, {"store": st.name, "topic": topic, "items": st.get_recent(topic, limit_i)})
+            items = st.get_recent(topic, limit_i)
+            if light:
+                try:
+                    items = [self._light_item(ev) for ev in items]
+                except Exception:
+                    items = []
+            return ok_response(req_id, {"store": st.name, "topic": topic, "items": items, "light": bool(light)})
 
         if op == "bus.get_since":
             st = self._resolve_store(args)
             if st is None:
                 return err_response(req_id, "invalid store")
+
+            light = bool(args.get("light", False))
 
             topic_raw = args.get("topic")
             topic = None
@@ -514,6 +560,11 @@ class MessagePlaneRpcServer:
                 after_i = 0
 
             items = st.get_since(topic=topic, after_seq=after_i, limit=limit_i)
+            if light:
+                try:
+                    items = [self._light_item(ev) for ev in items]
+                except Exception:
+                    items = []
             return ok_response(
                 req_id,
                 {
@@ -521,6 +572,7 @@ class MessagePlaneRpcServer:
                     "topic": topic,
                     "after_seq": after_i,
                     "items": items,
+                    "light": bool(light),
                 },
             )
 
@@ -528,6 +580,8 @@ class MessagePlaneRpcServer:
             st = self._resolve_store(args)
             if st is None:
                 return err_response(req_id, "invalid store")
+
+            light = bool(args.get("light", False))
 
             topic_raw = args.get("topic")
             topic = None
@@ -553,12 +607,18 @@ class MessagePlaneRpcServer:
                 until_ts=args.get("until_ts"),
                 limit=limit_i,
             )
+            if light:
+                try:
+                    items = [self._light_item(ev) for ev in items]
+                except Exception:
+                    items = []
             return ok_response(
                 req_id,
                 {
                     "store": st.name,
                     "topic": topic,
                     "items": items,
+                    "light": bool(light),
                 },
             )
 
@@ -571,16 +631,23 @@ class MessagePlaneRpcServer:
                 plan = args.get("trace")
             if not isinstance(plan, dict):
                 return err_response(req_id, "plan is required")
+            light = bool(args.get("light", False))
             items = self._eval_plan(st, plan)
             if items is None:
                 return err_response(req_id, "unsupported plan")
             if len(items) > MESSAGE_PLANE_GET_RECENT_MAX_LIMIT:
                 items = list(items)[:MESSAGE_PLANE_GET_RECENT_MAX_LIMIT]
+            if light:
+                try:
+                    items = [self._light_item(ev) for ev in list(items)]
+                except Exception:
+                    items = []
             return ok_response(
                 req_id,
                 {
                     "store": st.name,
                     "items": items,
+                    "light": bool(light),
                 },
             )
 
@@ -601,14 +668,14 @@ class MessagePlaneRpcServer:
             recvd = self._recv()
             if recvd is None:
                 continue
-            envelope, req = recvd
+            envelope, req, enc = recvd
             try:
                 resp = self._handle(req)
             except Exception as e:
                 req_id = str(req.get("req_id") or "") if isinstance(req, dict) else ""
                 resp = err_response(req_id, f"internal error: {e}")
             try:
-                self._send(envelope, resp)
+                self._send(envelope, resp, enc=enc)
             except Exception:
                 pass
 

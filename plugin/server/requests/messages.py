@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Dict
 
@@ -43,7 +44,8 @@ async def handle_message_get(request: Dict[str, Any], send_response: SendRespons
     raw = request.get("raw", False)
 
     try:
-        messages = get_messages_from_queue(
+        messages = await asyncio.to_thread(
+            get_messages_from_queue,
             plugin_id=plugin_id,
             max_count=int(max_count) if max_count is not None else None,
             priority_min=int(priority_min) if priority_min is not None else None,
