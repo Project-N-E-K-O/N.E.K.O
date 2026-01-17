@@ -353,14 +353,19 @@ class MessageClient:
         if pid_norm == "":
             pid_norm = None
 
+        topic_norm = str(topic) if isinstance(topic, str) and topic else "all"
+        source_norm = str(source) if isinstance(source, str) and source else None
+        pr_min_norm = int(priority_min) if priority_min is not None else None
+        since_norm = float(since_ts) if since_ts is not None else None
+
         args: Dict[str, Any] = {
             "store": "messages",
-            "topic": str(topic) if isinstance(topic, str) and topic else "all",
+            "topic": topic_norm,
             "limit": int(max_count) if max_count is not None else 50,
             "plugin_id": pid_norm,
-            "source": str(source) if isinstance(source, str) and source else None,
-            "priority_min": int(priority_min) if priority_min is not None else None,
-            "since_ts": float(since_ts) if since_ts is not None else None,
+            "source": source_norm,
+            "priority_min": pr_min_norm,
+            "since_ts": since_norm,
         }
         if isinstance(filter, dict):
             # Only pass through fields supported by message_plane query.
@@ -372,7 +377,21 @@ class MessageClient:
             pass
 
         rpc = _MessagePlaneRpcClient(plugin_id=getattr(self.ctx, "plugin_id", ""), endpoint=str(MESSAGE_PLANE_ZMQ_RPC_ENDPOINT))
-        resp = rpc.request(op="bus.query", args=args, timeout=float(timeout))
+
+        # Fast path: for the common "recent messages" case with no filters, use get_recent which
+        # avoids full-store scan/sort in message_plane.
+        if (
+            pid_norm is None
+            and source_norm is None
+            and pr_min_norm is None
+            and since_norm is None
+            and filter is None
+            and bool(strict)
+            and topic_norm == "all"
+        ):
+            resp = rpc.request(op="bus.get_recent", args={"store": "messages", "topic": "all", "limit": int(max_count)}, timeout=float(timeout))
+        else:
+            resp = rpc.request(op="bus.query", args=args, timeout=float(timeout))
         if not isinstance(resp, dict):
             raise TimeoutError(f"message_plane bus.query timed out after {timeout}s")
         if not resp.get("ok"):

@@ -129,6 +129,20 @@ class PluginContext:
             except Exception:
                 pass
 
+        mp_batcher = getattr(self, "_message_plane_push_batcher", None)
+        if mp_batcher is not None:
+            try:
+                mp_batcher.stop(timeout=2.0)
+            except Exception as e:
+                try:
+                    self.logger.debug(f"Message plane batcher stop failed (best-effort): {e}")
+                except Exception:
+                    pass
+            try:
+                self._message_plane_push_batcher = None
+            except Exception:
+                pass
+
     def __del__(self) -> None:  # pragma: no cover - best-effort safety net
         try:
             self.close()
@@ -585,9 +599,67 @@ class PluginContext:
         if zmq is not None:
             try:
                 from plugin.settings import MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT
+                from plugin.settings import (
+                    PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE,
+                    PLUGIN_ZMQ_MESSAGE_PUSH_FLUSH_INTERVAL_MS,
+                )
 
                 endpoint = str(MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT)
                 if endpoint:
+                    if bool(fast_mode):
+                        lock = getattr(self, "_push_lock", None)
+                        if lock is None:
+                            new_lock = threading.Lock()
+                            try:
+                                object.__setattr__(self, "_push_lock", new_lock)
+                                lock = new_lock
+                            except Exception:
+                                self._push_lock = new_lock
+                                lock = new_lock
+
+                        with lock:
+                            batcher = getattr(self, "_message_plane_push_batcher", None)
+                            if batcher is None:
+                                from plugin.zeromq_ipc import MessagePlaneIngestBatcher
+
+                                batcher = MessagePlaneIngestBatcher(
+                                    from_plugin=self.plugin_id,
+                                    endpoint=endpoint,
+                                    batch_size=int(PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE),
+                                    flush_interval_ms=int(PLUGIN_ZMQ_MESSAGE_PUSH_FLUSH_INTERVAL_MS),
+                                )
+                                batcher.start()
+                                try:
+                                    object.__setattr__(self, "_message_plane_push_batcher", batcher)
+                                except Exception:
+                                    self._message_plane_push_batcher = batcher
+
+                            payload = {
+                                "type": "MESSAGE_PUSH",
+                                "message_id": str(uuid.uuid4()),
+                                "plugin_id": self.plugin_id,
+                                "source": source,
+                                "description": description,
+                                "priority": priority,
+                                "message_type": message_type,
+                                "content": content,
+                                "binary_data": binary_data,
+                                "binary_url": binary_url,
+                                "metadata": metadata or {},
+                                "unsafe": bool(unsafe),
+                                "time": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                            }
+                            item = {"store": "messages", "topic": "all", "payload": payload}
+                            batcher.enqueue(item)
+                            if PLUGIN_LOG_CTX_MESSAGE_PUSH:
+                                try:
+                                    self.logger.debug(
+                                        f"Plugin {self.plugin_id} pushed message (message_plane.fast): {source} - {description}"
+                                    )
+                                except Exception:
+                                    pass
+                            return
+
                     tls = getattr(self, "_message_plane_ingest_tls", None)
                     if tls is None:
                         tls = threading.local()

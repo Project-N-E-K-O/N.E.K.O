@@ -40,7 +40,7 @@ query = "hello"
 timeout = 5.0
 
 [debug.messages]
-enable = true
+enable = false
 delay_seconds = 2.0
 plugin_id = "*"
 max_count = 50

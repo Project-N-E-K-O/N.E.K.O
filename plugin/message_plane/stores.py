@@ -4,6 +4,7 @@ import time
 import threading
 from collections import defaultdict, deque
 from dataclasses import dataclass
+from itertools import islice
 from typing import Any, Deque, Dict, Optional
 
 
@@ -119,7 +120,10 @@ class TopicStore:
                 return []
             if limit >= len(dq):
                 return list(dq)
-            return list(dq)[-limit:]
+            # Avoid copying the entire deque when only the tail is needed.
+            tail_rev = list(islice(reversed(dq), int(limit)))
+            tail_rev.reverse()
+            return tail_rev
 
     def get_since(self, *, topic: Optional[str], after_seq: int, limit: int) -> list[Dict[str, Any]]:
         nn = int(limit)
