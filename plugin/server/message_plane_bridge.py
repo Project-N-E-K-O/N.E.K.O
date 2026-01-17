@@ -79,6 +79,23 @@ class _Bridge:
         except Exception:
             return
 
+    def enqueue_snapshot(self, *, store: str, topic: str, items: List[Dict[str, Any]], mode: str = "replace") -> None:
+        if not self._enabled:
+            return
+        msg = {
+            "kind": "snapshot",
+            "from": "control_plane",
+            "ts": time.time(),
+            "store": str(store),
+            "topic": str(topic),
+            "mode": str(mode),
+            "items": list(items) if isinstance(items, list) else [],
+        }
+        try:
+            self._q.put_nowait(msg)
+        except Exception:
+            return
+
     def _wait_tcp_ready(self, endpoint: str) -> None:
         parsed = _parse_tcp_endpoint(endpoint)
         if parsed is None:
@@ -147,3 +164,7 @@ def stop_bridge() -> None:
 
 def publish_record(*, store: str, record: Dict[str, Any], topic: str = "all") -> None:
     _bridge.enqueue_delta(store=store, topic=topic, payload=record)
+
+
+def publish_snapshot(*, store: str, records: List[Dict[str, Any]], topic: str = "all", mode: str = "replace") -> None:
+    _bridge.enqueue_snapshot(store=store, topic=topic, items=records, mode=mode)

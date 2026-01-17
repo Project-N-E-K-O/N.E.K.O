@@ -254,12 +254,12 @@ class TopicStore:
             self.items[t] = dq
             self.meta[t] = {"created_at": now, "last_ts": now, "count_total": 0}
 
-        out: list[Dict[str, Any]] = []
-        for rec in records:
-            if not isinstance(rec, dict):
-                continue
-            out.append(self.publish(t, rec))
-        return out
+            out: list[Dict[str, Any]] = []
+            for rec in records:
+                if not isinstance(rec, dict):
+                    continue
+                out.append(self.publish(t, rec))
+            return out
 
 
 @dataclass

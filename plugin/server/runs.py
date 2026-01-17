@@ -213,6 +213,15 @@ _runs_last_emit_at: Dict[str, float] = {}
 _runs_emit_min_interval_s: float = 0.2
 
 
+def _publish_bus_record(*, store: str, record: Dict[str, Any]) -> None:
+    try:
+        from plugin.server.message_plane_bridge import publish_record
+
+        publish_record(store=str(store), record=dict(record), topic="all")
+    except Exception:
+        pass
+
+
 def set_run_store(store: RunStore) -> None:
     global _run_store
     _run_store = store
@@ -229,6 +238,12 @@ def _emit_runs(op: str, rec: RunRecord) -> None:
     except Exception:
         rev = None
     payload: Dict[str, Any] = {
+        "source": "runs",
+        "kind": "runs",
+        "type": str(op),
+        "priority": 0,
+        "timestamp": rec.updated_at,
+        "id": rec.run_id,
         "run_id": rec.run_id,
         "status": rec.status,
         "progress": rec.progress,
@@ -248,6 +263,10 @@ def _emit_runs(op: str, rec: RunRecord) -> None:
         payload["entry_id"] = rec.entry_id
     except Exception:
         pass
+    try:
+        _publish_bus_record(store="runs", record=payload)
+    except Exception:
+        pass
     state.bus_change_hub.emit("runs", str(op), payload)
 
 
@@ -257,12 +276,28 @@ def _emit_export(op: str, item: ExportItem) -> None:
     except Exception:
         rev = None
     payload: Dict[str, Any] = {
+        "source": "export",
+        "kind": "export",
+        "type": str(op),
+        "priority": 0,
+        "timestamp": item.created_at,
+        "id": item.export_item_id,
         "run_id": item.run_id,
         "export_item_id": item.export_item_id,
-        "type": item.type,
+        "export_type": item.type,
         "created_at": item.created_at,
         "rev": rev,
     }
+    try:
+        r = get_run(item.run_id)
+        if r is not None:
+            payload["plugin_id"] = r.plugin_id
+    except Exception:
+        pass
+    try:
+        _publish_bus_record(store="export", record=payload)
+    except Exception:
+        pass
     state.bus_change_hub.emit("export", str(op), payload)
 
 

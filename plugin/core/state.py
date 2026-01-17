@@ -658,6 +658,36 @@ class PluginRuntimeState:
             snap = list(self._lifecycle_store)
         return reversed(snap)
 
+    def sync_message_plane_messages(self) -> int:
+        try:
+            from plugin.server.message_plane_bridge import publish_snapshot
+
+            items = self.list_message_records()
+            publish_snapshot(store="messages", records=[dict(x) for x in items if isinstance(x, dict)], topic="all", mode="replace")
+            return int(len(items))
+        except Exception:
+            return 0
+
+    def sync_message_plane_events(self) -> int:
+        try:
+            from plugin.server.message_plane_bridge import publish_snapshot
+
+            items = self.list_event_records()
+            publish_snapshot(store="events", records=[dict(x) for x in items if isinstance(x, dict)], topic="all", mode="replace")
+            return int(len(items))
+        except Exception:
+            return 0
+
+    def sync_message_plane_lifecycle(self) -> int:
+        try:
+            from plugin.server.message_plane_bridge import publish_snapshot
+
+            items = self.list_lifecycle_records()
+            publish_snapshot(store="lifecycle", records=[dict(x) for x in items if isinstance(x, dict)], topic="all", mode="replace")
+            return int(len(items))
+        except Exception:
+            return 0
+
     def delete_message(self, message_id: str) -> bool:
         if not isinstance(message_id, str) or not message_id:
             return False
