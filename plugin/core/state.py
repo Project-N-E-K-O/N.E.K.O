@@ -276,6 +276,12 @@ class PluginRuntimeState:
                 return
             self._message_store.append(record)
         try:
+            from plugin.server.message_plane_bridge import publish_record
+
+            publish_record(store="messages", record=dict(record), topic="all")
+        except Exception:
+            pass
+        try:
             rev = self._bump_bus_rev("messages")
             payload: Dict[str, Any] = {"rev": rev}
             if isinstance(mid, str) and mid:
@@ -316,6 +322,14 @@ class PluginRuntimeState:
                 kept.append(rec)
         if not kept:
             return 0
+        try:
+            from plugin.server.message_plane_bridge import publish_record
+
+            for rec in kept:
+                if isinstance(rec, dict):
+                    publish_record(store="messages", record=dict(rec), topic="all")
+        except Exception:
+            pass
         for rec in kept:
             try:
                 rev = self._bump_bus_rev("messages")
@@ -448,6 +462,12 @@ class PluginRuntimeState:
                 return
             self._event_store.append(record)
         try:
+            from plugin.server.message_plane_bridge import publish_record
+
+            publish_record(store="events", record=dict(record), topic="all")
+        except Exception:
+            pass
+        try:
             rev = self._bump_bus_rev("events")
             self.bus_change_hub.emit("events", "add", {"record": dict(record), "rev": rev})
         except Exception:
@@ -472,6 +492,14 @@ class PluginRuntimeState:
                 kept.append(rec)
         if not kept:
             return 0
+        try:
+            from plugin.server.message_plane_bridge import publish_record
+
+            for rec in kept:
+                if isinstance(rec, dict):
+                    publish_record(store="events", record=dict(rec), topic="all")
+        except Exception:
+            pass
         for rec in kept:
             try:
                 rev = self._bump_bus_rev("events")
@@ -488,6 +516,12 @@ class PluginRuntimeState:
             if isinstance(lid, str) and lid in self._deleted_lifecycle_ids:
                 return
             self._lifecycle_store.append(record)
+        try:
+            from plugin.server.message_plane_bridge import publish_record
+
+            publish_record(store="lifecycle", record=dict(record), topic="all")
+        except Exception:
+            pass
         try:
             rev = self._bump_bus_rev("lifecycle")
             self.bus_change_hub.emit("lifecycle", "add", {"record": dict(record), "rev": rev})
@@ -513,6 +547,14 @@ class PluginRuntimeState:
                 kept.append(rec)
         if not kept:
             return 0
+        try:
+            from plugin.server.message_plane_bridge import publish_record
+
+            for rec in kept:
+                if isinstance(rec, dict):
+                    publish_record(store="lifecycle", record=dict(rec), topic="all")
+        except Exception:
+            pass
         for rec in kept:
             try:
                 rev = self._bump_bus_rev("lifecycle")

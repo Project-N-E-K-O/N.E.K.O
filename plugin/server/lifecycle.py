@@ -21,6 +21,7 @@ from plugin.server.plugin_router import plugin_router
 from plugin.server.bus_subscriptions import bus_subscription_manager
 from plugin.server.auth import generate_admin_code, set_admin_code
 from plugin.server.services import _enqueue_lifecycle, start_bus_ingestion_loop, stop_bus_ingestion_loop
+from plugin.server.message_plane_bridge import start_bridge, stop_bridge
 from plugin.server.utils import now_iso
 from plugin.settings import (
     PLUGIN_CONFIG_ROOT,
@@ -156,6 +157,11 @@ async def startup() -> None:
     # Optional: background ingestion loop for bus queues (feature flag).
     await start_bus_ingestion_loop()
 
+    try:
+        start_bridge()
+    except Exception:
+        pass
+
     _enqueue_lifecycle({"type": "server_startup_ready", "plugin_id": "server", "time": now_iso()})
     
     # 启动所有插件的通信资源管理器
@@ -209,6 +215,11 @@ async def _shutdown_internal() -> None:
     """内部关闭逻辑"""
     t0 = time.time()
     _enqueue_lifecycle({"type": "server_shutdown_begin", "plugin_id": "server", "time": now_iso()})
+
+    try:
+        stop_bridge()
+    except Exception:
+        pass
 
     # Stop ingestion loop early to flush queues before tearing down comm resources.
     try:
