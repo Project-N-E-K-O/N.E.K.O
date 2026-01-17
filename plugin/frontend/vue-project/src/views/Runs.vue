@@ -131,7 +131,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { useI18n } from 'vue-i18n'
@@ -243,6 +243,10 @@ async function handleSelect(row: any) {
 
 onMounted(async () => {
   await handleRefresh()
+})
+
+onUnmounted(() => {
+  runsStore.disconnect()
 })
 </script>
 

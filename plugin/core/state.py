@@ -387,6 +387,15 @@ class PluginRuntimeState:
                         raise RuntimeError("deleted_message_ids changed")
                     self._message_store.extend(kept_fast)
 
+                try:
+                    from plugin.server.message_plane_bridge import publish_record
+
+                    for rec in kept_fast:
+                        if isinstance(rec, dict):
+                            publish_record(store="messages", record=dict(rec), topic="all")
+                except Exception:
+                    pass
+
                 rev = self._bump_bus_rev("messages")
                 payload_fast: Dict[str, Any] = {
                     "rev": rev,
@@ -439,6 +448,14 @@ class PluginRuntimeState:
                     self._message_store.append(rec)
         if not kept:
             return 0
+        try:
+            from plugin.server.message_plane_bridge import publish_record
+
+            for rec in kept:
+                if isinstance(rec, dict):
+                    publish_record(store="messages", record=dict(rec), topic="all")
+        except Exception:
+            pass
         try:
             rev = self._bump_bus_rev("messages")
             payload: Dict[str, Any] = {

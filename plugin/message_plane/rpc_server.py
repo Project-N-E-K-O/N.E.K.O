@@ -464,7 +464,7 @@ class MessagePlaneRpcServer:
             try:
                 payload_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             except Exception:
-                payload_bytes = b"{}"
+                return err_response(req_id, "payload not JSON-serializable")
             if len(payload_bytes) > MESSAGE_PLANE_PAYLOAD_MAX_BYTES:
                 return err_response(req_id, "payload too large")
 

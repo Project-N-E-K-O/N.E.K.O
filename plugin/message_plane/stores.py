@@ -190,9 +190,18 @@ class TopicStore:
         src = str(source) if isinstance(source, str) and source else None
         kd = str(kind) if isinstance(kind, str) and kind else None
         tp = str(type) if isinstance(type, str) and type else None
-        pmin = int(priority_min) if priority_min is not None else None
-        s_ts = float(since_ts) if since_ts is not None else None
-        u_ts = float(until_ts) if until_ts is not None else None
+        try:
+            pmin = int(priority_min) if priority_min is not None else None
+        except (ValueError, TypeError):
+            pmin = None
+        try:
+            s_ts = float(since_ts) if since_ts is not None else None
+        except (ValueError, TypeError):
+            s_ts = None
+        try:
+            u_ts = float(until_ts) if until_ts is not None else None
+        except (ValueError, TypeError):
+            u_ts = None
 
         out: list[Dict[str, Any]] = []
         for ev in snapshots:
