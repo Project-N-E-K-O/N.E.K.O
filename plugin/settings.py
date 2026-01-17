@@ -246,6 +246,22 @@ PLUGIN_ZMQ_MESSAGE_PUSH_SYNC_TIMEOUT = float(os.getenv("NEKO_PLUGIN_ZMQ_MESSAGE_
 # Env: NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT, default="tcp://127.0.0.1:38766"
 PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT = os.getenv("NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT", "tcp://127.0.0.1:38766")
 
+# ========== Message Plane (High-Frequency Bus) ==========
+
+# Message plane ZeroMQ RPC 端点（用于高频 bus 的请求/响应，例如 get/reload/filter 等）
+# Env: NEKO_MESSAGE_PLANE_ZMQ_RPC_ENDPOINT, default="tcp://127.0.0.1:38865"
+MESSAGE_PLANE_ZMQ_RPC_ENDPOINT = os.getenv(
+    "NEKO_MESSAGE_PLANE_ZMQ_RPC_ENDPOINT",
+    os.getenv("NEKO_MESSAGE_PLANE_RPC", "tcp://127.0.0.1:38865"),
+)
+
+# Message plane ZeroMQ PUB 端点（用于高频 bus 的订阅/推送，例如 watcher、export progress 等）
+# Env: NEKO_MESSAGE_PLANE_ZMQ_PUB_ENDPOINT, default="tcp://127.0.0.1:38866"
+MESSAGE_PLANE_ZMQ_PUB_ENDPOINT = os.getenv(
+    "NEKO_MESSAGE_PLANE_ZMQ_PUB_ENDPOINT",
+    os.getenv("NEKO_MESSAGE_PLANE_PUB", "tcp://127.0.0.1:38866"),
+)
+
 # PUSH 批量大小（条数）
 # Env: NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE, default=256
 PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE = _get_int_env("NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE", 256)
