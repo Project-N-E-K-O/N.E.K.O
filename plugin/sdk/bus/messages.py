@@ -66,13 +66,23 @@ class _MessagePlaneRpcClient:
                 pass
         return sock
 
+    def _next_req_id(self) -> str:
+        if self._tls is not None:
+            try:
+                n = int(getattr(self._tls, "req_seq", 0) or 0) + 1
+                self._tls.req_seq = n
+                return f"{self._plugin_id}:{n}"
+            except Exception:
+                pass
+        return str(uuid.uuid4())
+
     def request(self, *, op: str, args: Dict[str, Any], timeout: float) -> Optional[Dict[str, Any]]:
         if zmq is None:
             return None
         sock = self._get_sock()
         if sock is None:
             return None
-        req_id = str(uuid.uuid4())
+        req_id = self._next_req_id()
         req = {"v": 1, "op": str(op), "req_id": req_id, "args": dict(args or {}), "from_plugin": self._plugin_id}
 
         # Prefer msgpack for performance; fall back to JSON for compatibility.
@@ -89,19 +99,16 @@ class _MessagePlaneRpcClient:
             sock.send(raw, flags=0)
         except Exception:
             return None
-        poller = zmq.Poller()
-        poller.register(sock, zmq.POLLIN)
         deadline = time.time() + max(0.0, float(timeout))
         while True:
             remaining = deadline - time.time()
             if remaining <= 0:
                 return None
             try:
-                events = dict(poller.poll(timeout=int(remaining * 1000)))
+                if sock.poll(timeout=int(remaining * 1000), flags=zmq.POLLIN) == 0:
+                    continue
             except Exception:
                 return None
-            if sock not in events:
-                continue
             try:
                 resp_raw = sock.recv(flags=0)
             except Exception:
@@ -623,37 +630,13 @@ class MessageClient:
         timeout: float = 5.0,
         raw: bool = False,
     ) -> MessageList:
-        # Prefer message_plane with msgpack encoding; when raw=True and the request is a simple
-        # "recent" fetch, use light-index mode to avoid transferring full payloads.
-        try:
-            light = False
-            if bool(raw):
-                if (plugin_id is None or str(plugin_id).strip() == "*"):
-                    if priority_min is None and (source is None or not str(source)) and filter is None and since_ts is None:
-                        light = True
-            return self.get_message_plane(
-                plugin_id=plugin_id,
-                max_count=max_count,
-                priority_min=priority_min,
-                source=source,
-                filter=filter,
-                strict=strict,
-                since_ts=since_ts,
-                timeout=timeout,
-                raw=raw,
-                light=bool(light),
-                topic="all",
-            )
-        except Exception:
-            if bool(MESSAGE_PLANE_STRICT):
-                raise
-            pass
+        # Fastest path: for the common "recent" read used by load testing, prefer local cache
+        # (no IPC round-trip) when the request is effectively "latest N across all plugins".
         if bool(raw) and (plugin_id is None or str(plugin_id).strip() == "*"):
             if priority_min is None and (source is None or not str(source)) and filter is None and since_ts is None:
                 c = _ensure_local_cache()
                 cached = c.tail(int(max_count) if max_count is not None else 50)
                 if cached:
-                    # Local-cache fast path: avoid IPC round-trip.
                     cached_records: List[MessageRecord] = []
                     for item in cached:
                         if isinstance(item, dict):
@@ -695,6 +678,32 @@ class MessageClient:
                                 )
                             )
                     return MessageList(cached_records, plugin_id="*", ctx=self.ctx, trace=None, plan=None)
+
+        # Prefer message_plane with msgpack encoding; when raw=True and the request is a simple
+        # "recent" fetch, use light-index mode to avoid transferring full payloads.
+        try:
+            light = False
+            if bool(raw):
+                if (plugin_id is None or str(plugin_id).strip() == "*"):
+                    if priority_min is None and (source is None or not str(source)) and filter is None and since_ts is None:
+                        light = True
+            return self.get_message_plane(
+                plugin_id=plugin_id,
+                max_count=max_count,
+                priority_min=priority_min,
+                source=source,
+                filter=filter,
+                strict=strict,
+                since_ts=since_ts,
+                timeout=timeout,
+                raw=raw,
+                light=bool(light),
+                topic="all",
+            )
+        except Exception:
+            if bool(MESSAGE_PLANE_STRICT):
+                raise
+            pass
         if hasattr(self.ctx, "_enforce_sync_call_policy"):
             self.ctx._enforce_sync_call_policy("bus.messages.get")
 

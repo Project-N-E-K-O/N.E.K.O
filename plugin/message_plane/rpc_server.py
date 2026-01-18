@@ -384,12 +384,39 @@ class MessagePlaneRpcServer:
             type_ = p.get("type")
             kind_ = p.get("kind")
 
+            topic = p.get("topic")
+            if topic is None:
+                topic = "all"
+            else:
+                try:
+                    topic = str(topic)
+                except Exception:
+                    topic = "all"
+            if not isinstance(topic, str) or not topic:
+                topic = "all"
+
+            pid_norm = plugin_id if isinstance(plugin_id, str) and plugin_id.strip() else None
+            src_norm = source if isinstance(source, str) and source.strip() else None
+            kind_norm = kind_ if isinstance(kind_, str) and kind_.strip() else None
+            type_norm = type_ if isinstance(type_, str) and type_.strip() else None
+
+            # Fast path: when there is no filtering, use get_recent which avoids scanning.
+            if (
+                pid_norm is None
+                and src_norm is None
+                and kind_norm is None
+                and type_norm is None
+                and priority_min is None
+                and since_ts is None
+            ):
+                return st.get_recent(str(topic), limit_i)
+
             return st.query(
-                topic="*",
-                plugin_id=plugin_id if isinstance(plugin_id, str) and plugin_id.strip() else None,
-                source=source if isinstance(source, str) and source.strip() else None,
-                kind=kind_ if isinstance(kind_, str) and kind_.strip() else None,
-                type_=type_ if isinstance(type_, str) and type_.strip() else None,
+                topic=str(topic),
+                plugin_id=pid_norm,
+                source=src_norm,
+                kind=kind_norm,
+                type_=type_norm,
                 priority_min=priority_min,
                 since_ts=since_ts,
                 until_ts=None,

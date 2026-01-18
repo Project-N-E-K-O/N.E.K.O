@@ -27,6 +27,8 @@ from typing import (
     cast,
 )
 
+import uuid
+
 if TYPE_CHECKING:
     from plugin.sdk.bus.events import EventList
     from plugin.sdk.bus.lifecycle import LifecycleList
@@ -1556,6 +1558,208 @@ class BusList(Generic[TRecord]):
         if self._plan is None:
             raise NonReplayableTraceError("reload is unavailable when fast_mode=True or plan is missing")
 
+        def _collect_get_nodes(node: TraceNode) -> List[GetNode]:
+            if isinstance(node, GetNode):
+                return [node]
+            if isinstance(node, UnaryNode):
+                return _collect_get_nodes(node.child)
+            if isinstance(node, BinaryNode):
+                return _collect_get_nodes(node.left) + _collect_get_nodes(node.right)
+            return []
+
+        def _serialize_plan(node: TraceNode) -> Optional[Dict[str, Any]]:
+            try:
+                if isinstance(node, GetNode):
+                    return {"kind": "get", "op": "get", "params": dict(node.params or {})}
+                if isinstance(node, UnaryNode):
+                    child = _serialize_plan(node.child)
+                    if child is None:
+                        return None
+                    return {
+                        "kind": "unary",
+                        "op": str(node.op),
+                        "params": dict(node.params or {}),
+                        "child": child,
+                    }
+                if isinstance(node, BinaryNode):
+                    left = _serialize_plan(node.left)
+                    right = _serialize_plan(node.right)
+                    if left is None or right is None:
+                        return None
+                    return {
+                        "kind": "binary",
+                        "op": str(node.op),
+                        "params": dict(node.params or {}),
+                        "left": left,
+                        "right": right,
+                    }
+            except Exception:
+                return None
+            return None
+
+        def _message_plane_replay(*, bus: str, plan: TraceNode, timeout: float = 1.0) -> Optional[List[Dict[str, Any]]]:
+            try:
+                import time as _time
+                import json as _json
+                import ormsgpack as _ormsgpack
+                try:
+                    import zmq as _zmq
+                except Exception:
+                    _zmq = None
+                if _zmq is None:
+                    return None
+                from plugin.settings import MESSAGE_PLANE_ZMQ_RPC_ENDPOINT
+
+                plan_dict = _serialize_plan(plan)
+                if plan_dict is None:
+                    return None
+                endpoint = str(MESSAGE_PLANE_ZMQ_RPC_ENDPOINT)
+                if not endpoint:
+                    return None
+
+                sock = None
+                try:
+                    sock = getattr(ctx, "_mp_replay_sock", None)
+                except Exception:
+                    sock = None
+                if sock is None:
+                    zctx = _zmq.Context.instance()
+                    sock = zctx.socket(_zmq.DEALER)
+                    try:
+                        ident = f"mp-replay:{getattr(ctx, 'plugin_id', '')}:{int(_time.time() * 1000)}".encode("utf-8")
+                        sock.setsockopt(_zmq.IDENTITY, ident)
+                    except Exception:
+                        pass
+                    try:
+                        sock.setsockopt(_zmq.LINGER, 0)
+                    except Exception:
+                        pass
+                    sock.connect(endpoint)
+                    try:
+                        setattr(ctx, "_mp_replay_sock", sock)
+                    except Exception:
+                        pass
+
+                req_id = f"replay:{getattr(ctx, 'plugin_id', '')}:{uuid.uuid4()}"
+                req = {
+                    "v": 1,
+                    "op": "bus.replay",
+                    "req_id": req_id,
+                    "from_plugin": getattr(ctx, "plugin_id", ""),
+                    "args": {"store": str(bus), "plan": plan_dict, "light": False},
+                }
+                try:
+                    raw = _ormsgpack.packb(req)
+                except Exception:
+                    raw = _json.dumps(req, ensure_ascii=False).encode("utf-8")
+                try:
+                    sock.send(raw, flags=0)
+                except Exception:
+                    return None
+
+                deadline = _time.time() + max(0.0, float(timeout))
+                while True:
+                    remaining = deadline - _time.time()
+                    if remaining <= 0:
+                        return None
+                    try:
+                        if sock.poll(timeout=int(remaining * 1000), flags=_zmq.POLLIN) == 0:
+                            continue
+                    except Exception:
+                        return None
+                    try:
+                        resp_raw = sock.recv(flags=0)
+                    except Exception:
+                        return None
+                    resp = None
+                    try:
+                        resp = _ormsgpack.unpackb(resp_raw)
+                    except Exception:
+                        try:
+                            resp = _json.loads(resp_raw.decode("utf-8"))
+                        except Exception:
+                            resp = None
+                    if not isinstance(resp, dict):
+                        continue
+                    if resp.get("req_id") != req_id:
+                        continue
+                    if not resp.get("ok"):
+                        return None
+                    result = resp.get("result")
+                    if not isinstance(result, dict):
+                        return None
+                    items = result.get("items")
+                    if not isinstance(items, list):
+                        return None
+                    out: List[Dict[str, Any]] = []
+                    for ev in items:
+                        if isinstance(ev, dict):
+                            out.append(ev)
+                    return out
+            except Exception:
+                return None
+
+        # Full reload: prefer server-side replay in message_plane to avoid expensive Python-side list ops.
+        if not incremental:
+            get_nodes = _collect_get_nodes(self._plan)
+            if get_nodes:
+                seed0 = get_nodes[0]
+                seed_bus = str(seed0.params.get("bus") or "").strip()
+                if seed_bus in ("messages", "events", "lifecycle"):
+                    same_bus = True
+                    for gn in get_nodes[1:]:
+                        if str(gn.params.get("bus") or "").strip() != seed_bus:
+                            same_bus = False
+                            break
+                    if same_bus:
+                        # Timeout comes from the original GetNode when present.
+                        timeout_s = 1.0
+                        try:
+                            params0 = dict(seed0.params.get("params") or {})
+                            t0 = params0.get("timeout")
+                            if t0 is not None:
+                                timeout_s = float(t0)
+                        except Exception:
+                            timeout_s = 1.0
+
+                        items = _message_plane_replay(bus=seed_bus, plan=self._plan, timeout=timeout_s)
+                        if items is not None:
+                            payloads: List[Dict[str, Any]] = []
+                            for ev in items:
+                                p = ev.get("payload")
+                                if isinstance(p, dict):
+                                    payloads.append(p)
+
+                            try:
+                                if seed_bus == "messages":
+                                    from plugin.sdk.bus.messages import MessageRecord
+
+                                    recs = [MessageRecord.from_raw(p) for p in payloads]
+                                elif seed_bus == "events":
+                                    from plugin.sdk.bus.events import EventRecord
+
+                                    recs = [EventRecord.from_raw(p) for p in payloads]
+                                else:
+                                    from plugin.sdk.bus.lifecycle import LifecycleRecord
+
+                                    recs = [LifecycleRecord.from_raw(p) for p in payloads]
+                            except Exception:
+                                recs = []  # type: ignore[assignment]
+
+                            if inplace:
+                                self._items = list(recs)  # type: ignore[list-item]
+                                self._ctx = ctx
+                                self._cache_valid = True
+                                return self
+                            out = self.__class__(
+                                list(recs),  # type: ignore[arg-type]
+                                ctx=ctx,
+                                trace=self._trace,
+                                plan=self._plan,
+                                fast_mode=self._fast_mode,
+                            )
+                            return out
+
         # Experimental: incremental reload for replayable plans.
         # Strategy:
         # - Identify the underlying GetNode seed (bus + params).
@@ -1563,15 +1767,6 @@ class BusList(Generic[TRecord]):
         # - On incremental reload, fetch only delta (since_ts) from bus, merge into base snapshot.
         # - Replay the full plan locally against the updated base snapshot.
         if incremental:
-            def _collect_get_nodes(node: TraceNode) -> List[GetNode]:
-                if isinstance(node, GetNode):
-                    return [node]
-                if isinstance(node, UnaryNode):
-                    return _collect_get_nodes(node.child)
-                if isinstance(node, BinaryNode):
-                    return _collect_get_nodes(node.left) + _collect_get_nodes(node.right)
-                return []
-
             def _seed_key(bus: str, params: Dict[str, Any]) -> Dict[str, Any]:
                 # since_ts is runtime cursor and should not be part of identity.
                 p = dict(params)
