@@ -1,0 +1,14 @@
+from __future__ import annotations
+
+from enum import Enum
+
+
+class ErrorCode(str, Enum):
+    VALIDATION_ERROR = "VALIDATION_ERROR"
+    DEPENDENCY_MISSING = "DEPENDENCY_MISSING"
+    NOT_READY = "NOT_READY"
+    RATE_LIMITED = "RATE_LIMITED"
+    TIMEOUT = "TIMEOUT"
+    NOT_FOUND = "NOT_FOUND"
+    INTERNAL = "INTERNAL"
+    INVALID_RESPONSE = "INVALID_RESPONSE"
