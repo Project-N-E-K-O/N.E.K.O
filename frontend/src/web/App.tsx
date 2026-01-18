@@ -88,6 +88,12 @@ function App(_props: AppProps) {
   const chatMessageIdCounter = useRef(0);
   // Buffer for accumulating streaming gemini_response text
   const assistantTextBuffer = useRef<string>("");
+  // Track client message IDs for de-duplication (messages sent optimistically)
+  const sentClientMessageIds = useRef<Set<string>>(new Set());
+  // Track whether text session has been started (Legacy protocol compatibility)
+  const [isTextSessionActive, setIsTextSessionActive] = useState(false);
+  // Resolver for waiting on session_started response
+  const sessionStartedResolverRef = useRef<((value: boolean) => void) | null>(null);
 
   // Generate unique message ID
   const generateMessageId = useCallback(() => {
@@ -119,6 +125,24 @@ function App(_props: AppProps) {
   const handleRealtimeJson = useCallback((json: unknown) => {
     const msg = json as Record<string, unknown>;
     const type = msg?.type as string | undefined;
+
+    // Check for clientMessageId to de-duplicate server echoes of optimistically added messages
+    const clientMessageId = msg?.clientMessageId as string | undefined;
+    if (clientMessageId && sentClientMessageIds.current.has(clientMessageId)) {
+      // This is a server echo of a message we already added optimistically - skip it
+      sentClientMessageIds.current.delete(clientMessageId);
+      return;
+    }
+
+    // Handle session_started (Legacy protocol)
+    if (type === "session_started") {
+      setIsTextSessionActive(true);
+      if (sessionStartedResolverRef.current) {
+        sessionStartedResolverRef.current(true);
+        sessionStartedResolverRef.current = null;
+      }
+      return;
+    }
 
     // Handle different message types from server
     if (type === "transcript" || type === "user_transcript") {
@@ -316,6 +340,103 @@ function App(_props: AppProps) {
     setRealtimeState("closed");
   }, [cleanupAudio, cleanupRealtime]);
 
+  // Ref to track pending connection wait abort controller
+  const connectionWaitAbortRef = useRef<AbortController | null>(null);
+
+  // Wait for WebSocket connection with listener-based approach (cancellable)
+  const waitForConnection = useCallback((timeoutMs: number = 5000): Promise<void> => {
+    return new Promise((resolve, reject) => {
+      const client = realtimeRef.current;
+      if (!client) {
+        reject(new Error("Realtime client not initialized"));
+        return;
+      }
+
+      // Already connected
+      if (client.getState() === "open") {
+        resolve();
+        return;
+      }
+
+      // Create abort controller for cancellation
+      const abortController = new AbortController();
+      connectionWaitAbortRef.current = abortController;
+
+      let settled = false;
+      let offOpen: (() => void) | null = null;
+      let offError: (() => void) | null = null;
+      let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+      const cleanup = () => {
+        if (offOpen) { try { offOpen(); } catch { /* ignore */ } }
+        if (offError) { try { offError(); } catch { /* ignore */ } }
+        if (timeoutId) clearTimeout(timeoutId);
+        if (connectionWaitAbortRef.current === abortController) {
+          connectionWaitAbortRef.current = null;
+        }
+      };
+
+      const settle = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (error) {
+          reject(error);
+        } else {
+          resolve();
+        }
+      };
+
+      // Listen for abort signal
+      abortController.signal.addEventListener("abort", () => {
+        settle(new Error("Connection wait aborted"));
+      });
+
+      // Listen for open event
+      offOpen = client.on("open", () => {
+        settle();
+      });
+
+      // Listen for error event
+      offError = client.on("error", () => {
+        settle(new Error("Connection error"));
+      });
+
+      // Set timeout
+      timeoutId = setTimeout(() => {
+        settle(new Error("Connection timeout"));
+      }, timeoutMs);
+    });
+  }, []);
+
+  // Ensure text session is started (Legacy protocol compatibility)
+  const ensureTextSession = useCallback(async (): Promise<boolean> => {
+    if (isTextSessionActive) return true;
+
+    const client = realtimeRef.current;
+    if (!client || realtimeState !== "open") return false;
+
+    return new Promise<boolean>((resolve) => {
+      // Set up resolver
+      sessionStartedResolverRef.current = resolve;
+
+      // Send start_session (Legacy protocol)
+      client.sendJson({
+        action: "start_session",
+        input_type: "text",
+        new_session: false,
+      });
+
+      // Timeout after 15 seconds
+      setTimeout(() => {
+        if (sessionStartedResolverRef.current === resolve) {
+          sessionStartedResolverRef.current = null;
+          resolve(false);
+        }
+      }, 15000);
+    });
+  }, [isTextSessionActive, realtimeState]);
+
   // Handle mic toggle: start/stop voice session
   const handleToggleMic = useCallback(async (next: boolean) => {
     setToolbarMicEnabled(next);
@@ -326,21 +447,8 @@ function App(_props: AppProps) {
         // Ensure WebSocket is connected first
         if (realtimeState !== "open") {
           handleStartChat();
-          // Wait for connection to establish
-          await new Promise<void>((resolve, reject) => {
-            const checkInterval = setInterval(() => {
-              const state = realtimeRef.current?.getState();
-              if (state === "open") {
-                clearInterval(checkInterval);
-                resolve();
-              }
-            }, 100);
-            // Timeout after 5 seconds
-            setTimeout(() => {
-              clearInterval(checkInterval);
-              reject(new Error("Connection timeout"));
-            }, 5000);
-          });
+          // Wait for connection using listener-based approach
+          await waitForConnection(5000);
         }
 
         const svc = ensureAudioService();
@@ -352,6 +460,10 @@ function App(_props: AppProps) {
       } catch (e: any) {
         console.error("[App] startVoiceSession failed:", e);
         setToolbarMicEnabled(false);
+        if (e?.message === "Connection wait aborted") {
+          // User cancelled, no toast needed
+          return;
+        }
         if (e?.name === "NotAllowedError") {
           toastRef.current?.show(tOrDefault(t, "webapp.toast.micDenied", "麦克风权限被拒绝"), 3000);
         } else if (e?.name === "NotFoundError") {
@@ -361,7 +473,11 @@ function App(_props: AppProps) {
         }
       }
     } else {
-      // Stop voice session
+      // Stop voice session - also abort any pending connection wait
+      if (connectionWaitAbortRef.current) {
+        connectionWaitAbortRef.current.abort();
+        connectionWaitAbortRef.current = null;
+      }
       try {
         const svc = audioRef.current;
         if (svc) {
@@ -373,7 +489,7 @@ function App(_props: AppProps) {
         console.error("[App] stopVoiceSession failed:", e);
       }
     }
-  }, [realtimeState, handleStartChat, ensureAudioService, getIsMobile, t]);
+  }, [realtimeState, handleStartChat, waitForConnection, ensureAudioService, getIsMobile, t]);
 
   // Drive mouth animation based on output amplitude
   useEffect(() => {
@@ -387,6 +503,11 @@ function App(_props: AppProps) {
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      // Abort any pending connection wait
+      if (connectionWaitAbortRef.current) {
+        connectionWaitAbortRef.current.abort();
+        connectionWaitAbortRef.current = null;
+      }
       cleanupAudio();
       cleanupRealtime({ disconnect: true });
     };
@@ -470,21 +591,64 @@ function App(_props: AppProps) {
         <ChatContainer
           externalMessages={chatMessages}
           connectionStatus={realtimeState}
-          onSendMessage={(text, images) => {
-            // Send text message via WebSocket if connected
-            if (realtimeRef.current && realtimeState === "open") {
-              realtimeRef.current.sendJson({
-                action: "send_text",
-                text,
-                images, // Include any attached images
-              });
-            } else {
-              // If not connected, try to connect first then send
+          onSendMessage={async (text, images) => {
+            const client = realtimeRef.current;
+
+            // If not connected, try to connect first
+            if (!client || realtimeState !== "open") {
               toastRef.current?.show(
                 tOrDefault(t, "webapp.toast.notConnected", "未连接到服务器，正在尝试连接..."),
                 2000
               );
               handleStartChat();
+              return;
+            }
+
+            // Ensure text session is started (Legacy protocol)
+            const sessionOk = await ensureTextSession();
+            if (!sessionOk) {
+              toastRef.current?.show(
+                tOrDefault(t, "webapp.toast.sessionFailed", "会话初始化失败，请重试"),
+                3000
+              );
+              return;
+            }
+
+            // Send screenshots first (each as separate stream_data message)
+            if (images && images.length > 0) {
+              for (const imgBase64 of images) {
+                client.sendJson({
+                  action: "stream_data",
+                  data: imgBase64,
+                  input_type: getIsMobile() ? "camera" : "screen",
+                });
+              }
+              // Optimistically add screenshot indicator
+              const screenshotMsg: ChatMessage = {
+                id: generateMessageId(),
+                role: "user",
+                content: `📸 [已发送${images.length}张截图]`,
+                createdAt: Date.now(),
+              };
+              setChatMessages((prev) => [...prev, screenshotMsg]);
+            }
+
+            // Send text message (using stream_data action for Legacy compatibility)
+            if (text.trim()) {
+              client.sendJson({
+                action: "stream_data",
+                data: text,
+                input_type: "text",
+              });
+
+              // Optimistically add the user's message
+              const userMsg: ChatMessage = {
+                id: generateMessageId(),
+                role: "user",
+                content: text,
+                createdAt: Date.now(),
+              };
+              setChatMessages((prev) => [...prev, userMsg]);
             }
           }}
         />
