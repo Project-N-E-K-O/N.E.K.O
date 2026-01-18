@@ -223,7 +223,7 @@ class PluginRouter:
         shutdown_event = self._ensure_shutdown_event()
         shutdown_event.set()
         try:
-            await asyncio.wait_for(self._router_task, timeout=5.0)
+            await asyncio.wait_for(self._router_task, timeout=1.0)
         except asyncio.TimeoutError:
             logger.warning("Plugin router task did not stop in time")
             self._router_task.cancel()
@@ -231,7 +231,11 @@ class PluginRouter:
             self._router_task = None
             if self._zmq_task is not None:
                 try:
-                    await asyncio.wait_for(self._zmq_task, timeout=2.0)
+                    try:
+                        self._zmq_task.cancel()
+                    except Exception:
+                        pass
+                    await asyncio.wait_for(self._zmq_task, timeout=0.5)
                 except asyncio.TimeoutError:
                     try:
                         self._zmq_task.cancel()
@@ -248,7 +252,11 @@ class PluginRouter:
 
             if self._push_pull_task is not None:
                 try:
-                    await asyncio.wait_for(self._push_pull_task, timeout=2.0)
+                    try:
+                        self._push_pull_task.cancel()
+                    except Exception:
+                        pass
+                    await asyncio.wait_for(self._push_pull_task, timeout=0.5)
                 except asyncio.TimeoutError:
                     try:
                         self._push_pull_task.cancel()
@@ -267,16 +275,12 @@ class PluginRouter:
             if self._executor is not None:
                 executor = self._executor
                 try:
-                    await asyncio.wait_for(
-                        asyncio.to_thread(executor.shutdown, wait=True, cancel_futures=True),
-                        timeout=2.0,
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning("Plugin router executor did not stop in time, forcing shutdown")
                     try:
                         executor.shutdown(wait=False, cancel_futures=True)
                     except TypeError:
                         executor.shutdown(wait=False)
+                except Exception:
+                    pass
                 self._executor = None
             logger.info("Plugin router stopped")
 

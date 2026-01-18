@@ -525,9 +525,32 @@ async def _shutdown_internal() -> None:
     try:
         loop = asyncio.get_running_loop()
         try:
-            await asyncio.wait_for(loop.shutdown_default_executor(), timeout=1.5)
+            executor = getattr(loop, "_default_executor", None)
+            if executor is not None:
+                try:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                except TypeError:
+                    executor.shutdown(wait=False)
+                try:
+                    setattr(loop, "_default_executor", None)
+                except Exception:
+                    pass
+            else:
+                await asyncio.wait_for(loop.shutdown_default_executor(), timeout=1.5)
         except asyncio.TimeoutError:
-            pass
+            try:
+                executor = getattr(loop, "_default_executor", None)
+                if executor is not None:
+                    try:
+                        executor.shutdown(wait=False, cancel_futures=True)
+                    except TypeError:
+                        executor.shutdown(wait=False)
+                    try:
+                        setattr(loop, "_default_executor", None)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
         except Exception:
             pass
     except Exception:
