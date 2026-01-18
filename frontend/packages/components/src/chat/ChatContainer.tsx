@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import type { ChatMessage, PendingScreenshot } from "./types";
 import MessageList from "./MessageList";
 import ChatInput from "./ChatInput";
@@ -16,13 +16,32 @@ function generateId(): string {
   });
 }
 
-export default function ChatContainer() {
+export interface ChatContainerProps {
+  /** External messages to display (will be merged with internal messages) */
+  externalMessages?: ChatMessage[];
+  /** Callback when user sends a message via input */
+  onSendMessage?: (text: string, images?: string[]) => void;
+  /** Connection status for text chat mode */
+  connectionStatus?: "idle" | "connecting" | "open" | "closing" | "closed" | "reconnecting";
+  /** Whether to disable the input (e.g., when disconnected) */
+  disabled?: boolean;
+  /** Custom status text to show in the header */
+  statusText?: string;
+}
+
+export default function ChatContainer({
+  externalMessages,
+  onSendMessage,
+  connectionStatus = "idle",
+  disabled = false,
+  statusText,
+}: ChatContainerProps) {
   const t = useT();
 
   /** 是否缩小 */
   const [collapsed, setCollapsed] = useState(false);
 
-  const [messages, setMessages] = useState<ChatMessage[]>([
+  const [internalMessages, setInternalMessages] = useState<ChatMessage[]>([
     {
       id: "sys-1",
       role: "system",
@@ -35,25 +54,40 @@ export default function ChatContainer() {
     },
   ]);
 
+  // Merge internal and external messages, sorted by createdAt
+  const [messages, setMessages] = useState<ChatMessage[]>(internalMessages);
+
+  useEffect(() => {
+    const all = [...internalMessages, ...(externalMessages || [])];
+    all.sort((a, b) => a.createdAt - b.createdAt);
+    setMessages(all);
+  }, [internalMessages, externalMessages]);
+
   const [pendingScreenshots, setPendingScreenshots] =
     useState<PendingScreenshot[]>([]);
 
   function handleSendText(text: string) {
     if (!text.trim() && pendingScreenshots.length === 0) return;
 
+    const images: string[] = [];
     const newMessages: ChatMessage[] = [];
     let timestamp = Date.now();
 
     pendingScreenshots.forEach((p) => {
-      newMessages.push({
-        id: generateId(),
-        role: "user",
-        image: p.base64,
-        createdAt: timestamp++,
-      });
+      images.push(p.base64);
+      // Only add to internal messages if no external handler (standalone mode)
+      if (!onSendMessage) {
+        newMessages.push({
+          id: generateId(),
+          role: "user",
+          image: p.base64,
+          createdAt: timestamp++,
+        });
+      }
     });
 
-    if (text.trim()) {
+    if (text.trim() && !onSendMessage) {
+      // Only add to internal messages if no external handler (standalone mode)
       newMessages.push({
         id: generateId(),
         role: "user",
@@ -62,7 +96,15 @@ export default function ChatContainer() {
       });
     }
 
-    setMessages((prev) => [...prev, ...newMessages]);
+    // Call external handler if provided
+    if (onSendMessage) {
+      onSendMessage(text.trim(), images.length > 0 ? images : undefined);
+    }
+
+    // Update internal messages only in standalone mode
+    if (newMessages.length > 0) {
+      setInternalMessages((prev) => [...prev, ...newMessages]);
+    }
     setPendingScreenshots([]);
   }
 
@@ -109,6 +151,41 @@ export default function ChatContainer() {
     } finally {
       if (stream) stream.getTracks().forEach((track) => track.stop());
       video.srcObject = null;
+    }
+  }
+
+  /** Get connection status indicator color */
+  function getStatusColor(): string {
+    switch (connectionStatus) {
+      case "open":
+        return "#52c41a"; // green
+      case "connecting":
+      case "reconnecting":
+      case "closing":
+        return "#faad14"; // yellow
+      case "closed":
+        return "#ff4d4f"; // red
+      default:
+        return "#d9d9d9"; // gray
+    }
+  }
+
+  /** Get connection status text */
+  function getStatusText(): string {
+    if (statusText) return statusText;
+    switch (connectionStatus) {
+      case "open":
+        return tOrDefault(t, "chat.status.connected", "已连接");
+      case "connecting":
+        return tOrDefault(t, "chat.status.connecting", "连接中...");
+      case "reconnecting":
+        return tOrDefault(t, "chat.status.reconnecting", "重连中...");
+      case "closing":
+        return tOrDefault(t, "chat.status.closing", "断开中...");
+      case "closed":
+        return tOrDefault(t, "chat.status.disconnected", "已断开");
+      default:
+        return tOrDefault(t, "chat.status.idle", "待连接");
     }
   }
 
@@ -175,9 +252,34 @@ export default function ChatContainer() {
           flexShrink: 0,
         }}
       >
-        <span style={{ fontWeight: 600 }}>
-          {tOrDefault(t, "chat.title", "💬 Chat")}
-        </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontWeight: 600 }}>
+            {tOrDefault(t, "chat.title", "💬 Chat")}
+          </span>
+          {/* Connection status indicator */}
+          {onSendMessage && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+                fontSize: 12,
+                color: "#666",
+              }}
+            >
+              <span
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: "50%",
+                  background: getStatusColor(),
+                  display: "inline-block",
+                }}
+              />
+              <span>{getStatusText()}</span>
+            </div>
+          )}
+        </div>
 
         <button
           type="button"
@@ -208,6 +310,7 @@ export default function ChatContainer() {
         onTakePhoto={handleScreenshot}
         pendingScreenshots={pendingScreenshots}
         setPendingScreenshots={setPendingScreenshots}
+        disabled={disabled}
       />
     </div>
   );
