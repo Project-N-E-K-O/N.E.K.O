@@ -110,8 +110,12 @@ function ChatApp() {
     }
   }, [addChatMessage]);
 
+  // 使用 ref 存储消息处理函数，避免 useEffect 依赖变化导致 WebSocket 重连
+  const handleServerMessageRef = useRef<(json: unknown) => void>(() => {});
+
   // 处理服务器消息（与 Legacy 协议一致）
-  const handleServerMessage = useCallback((json: unknown) => {
+  // 注意：此函数会被更新到 ref 中，不作为 useEffect 的依赖
+  handleServerMessageRef.current = (json: unknown) => {
     const msg = json as Record<string, unknown>;
     const type = msg?.type as string | undefined;
 
@@ -140,9 +144,9 @@ function ChatApp() {
         flushAssistantBuffer();
       }
     }
-  }, [addChatMessage, flushAssistantBuffer]);
+  };
 
-  // 初始化 WebSocket 客户端
+  // 初始化 WebSocket 客户端（仅在组件挂载时运行一次）
   useEffect(() => {
     const client = createRealtimeClient({
       path: "/ws/lanlan_name",
@@ -153,7 +157,8 @@ function ChatApp() {
     clientRef.current = client;
 
     const offState = client.on("state", ({ state }) => setConnectionStatus(state));
-    const offJson = client.on("json", ({ json }) => handleServerMessage(json));
+    // 通过 ref 间接调用，确保始终使用最新的处理函数
+    const offJson = client.on("json", ({ json }) => handleServerMessageRef.current(json));
 
     client.connect();
 
@@ -162,7 +167,7 @@ function ChatApp() {
       offJson();
       client.disconnect();
     };
-  }, [handleServerMessage]);
+  }, []); // 空依赖数组：仅在挂载时创建客户端，避免重连
 
   // 检测是否为移动端
   const isMobile = useCallback(() => {

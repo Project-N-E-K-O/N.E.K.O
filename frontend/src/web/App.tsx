@@ -94,6 +94,8 @@ function App(_props: AppProps) {
   const [isTextSessionActive, setIsTextSessionActive] = useState(false);
   // Resolver for waiting on session_started response
   const sessionStartedResolverRef = useRef<((value: boolean) => void) | null>(null);
+  // Timeout ref for ensureTextSession to prevent leaks on unmount
+  const sessionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Generate unique message ID
   const generateMessageId = useCallback(() => {
@@ -417,6 +419,12 @@ function App(_props: AppProps) {
     if (!client || realtimeState !== "open") return false;
 
     return new Promise<boolean>((resolve) => {
+      // Clear any existing timeout before creating a new one
+      if (sessionTimeoutRef.current) {
+        clearTimeout(sessionTimeoutRef.current);
+        sessionTimeoutRef.current = null;
+      }
+
       // Set up resolver
       sessionStartedResolverRef.current = resolve;
 
@@ -428,11 +436,12 @@ function App(_props: AppProps) {
       });
 
       // Timeout after 15 seconds
-      setTimeout(() => {
+      sessionTimeoutRef.current = setTimeout(() => {
         if (sessionStartedResolverRef.current === resolve) {
           sessionStartedResolverRef.current = null;
           resolve(false);
         }
+        sessionTimeoutRef.current = null;
       }, 15000);
     });
   }, [isTextSessionActive, realtimeState]);
@@ -503,6 +512,11 @@ function App(_props: AppProps) {
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      // Clear session timeout to prevent leaks
+      if (sessionTimeoutRef.current) {
+        clearTimeout(sessionTimeoutRef.current);
+        sessionTimeoutRef.current = null;
+      }
       // Abort any pending connection wait
       if (connectionWaitAbortRef.current) {
         connectionWaitAbortRef.current.abort();
@@ -616,16 +630,21 @@ function App(_props: AppProps) {
 
             // Send screenshots first (each as separate stream_data message)
             if (images && images.length > 0) {
+              // Generate ID for optimistic message and register for deduplication
+              const screenshotMsgId = generateMessageId();
+              sentClientMessageIds.current.add(screenshotMsgId);
+
               for (const imgBase64 of images) {
                 client.sendJson({
                   action: "stream_data",
                   data: imgBase64,
                   input_type: getIsMobile() ? "camera" : "screen",
+                  clientMessageId: screenshotMsgId,
                 });
               }
               // Optimistically add screenshot indicator
               const screenshotMsg: ChatMessage = {
-                id: generateMessageId(),
+                id: screenshotMsgId,
                 role: "user",
                 content: `📸 [已发送${images.length}张截图]`,
                 createdAt: Date.now(),
@@ -635,15 +654,20 @@ function App(_props: AppProps) {
 
             // Send text message (using stream_data action for Legacy compatibility)
             if (text.trim()) {
+              // Generate ID for optimistic message and register for deduplication
+              const userMsgId = generateMessageId();
+              sentClientMessageIds.current.add(userMsgId);
+
               client.sendJson({
                 action: "stream_data",
                 data: text,
                 input_type: "text",
+                clientMessageId: userMsgId,
               });
 
               // Optimistically add the user's message
               const userMsg: ChatMessage = {
-                id: generateMessageId(),
+                id: userMsgId,
                 role: "user",
                 content: text,
                 createdAt: Date.now(),

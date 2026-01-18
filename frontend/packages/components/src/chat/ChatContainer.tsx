@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useCallback, useMemo } from "react";
 import type { ChatMessage, PendingScreenshot } from "./types";
 import MessageList from "./MessageList";
 import ChatInput from "./ChatInput";
@@ -63,12 +63,10 @@ export default function ChatContainer({
   ]);
 
   // Merge internal and external messages, sorted by createdAt
-  const [messages, setMessages] = useState<ChatMessage[]>(internalMessages);
-
-  useEffect(() => {
+  const messages = useMemo(() => {
     const all = [...internalMessages, ...(externalMessages || [])];
     all.sort((a, b) => a.createdAt - b.createdAt);
-    setMessages(all);
+    return all;
   }, [internalMessages, externalMessages]);
 
   const [pendingScreenshots, setPendingScreenshots] =
@@ -137,8 +135,10 @@ export default function ChatContainer({
         // fallback to next attempt
       }
     }
-    throw new Error("无法获取摄像头权限");
-  }, []);
+    throw new Error(
+      tOrDefault(t, "chat.cannot_get_camera", "Unable to access camera")
+    );
+  }, [t]);
 
   /**
    * 捕获视频帧到 canvas 并返回 base64
