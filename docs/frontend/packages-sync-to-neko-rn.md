@@ -80,7 +80,7 @@
 
 因此：
 
-- **它不等于“可直接运行在 iOS/Android RN 的组件库”**
+- **它不等于"可直接运行在 iOS/Android RN 的组件库"**
 - 同步到 `N.E.K.O.-RN` 的价值主要是：复用 types/逻辑、在 Expo Web 或测试环境共享、或为未来 RN 版组件预留结构
 
 若要真正支持 RN：
@@ -88,6 +88,35 @@
 - 需要在 `components` 内新增 `index.native.ts` 与 RN 组件实现（用 `react-native` primitives）
 - 在 `package.json` 增加 `react-native` 条件入口（与 `request/realtime` 类似）
 - 对 Web-only 组件：RN 入口不要导出或导出占位实现，避免误用
+
+#### 4.1 Chat 组件同步注意事项（2026-01-18 新增）
+
+`ChatContainer` 组件新增了 WebSocket 集成支持，涉及以下接口变更：
+
+```typescript
+export interface ChatContainerProps {
+  externalMessages?: ChatMessage[];
+  onSendMessage?: (text: string, images?: string[]) => void;
+  connectionStatus?: "idle" | "connecting" | "open" | "closing" | "closed" | "reconnecting";
+  disabled?: boolean;
+  statusText?: string;
+}
+```
+
+**RN 同步要点**：
+
+- **类型定义**：`ChatContainerProps` 和 `ChatMessage` 类型可直接复用
+- **Web-only API**：截图功能使用 `navigator.mediaDevices.getDisplayMedia`，RN 侧需要替换实现或禁用
+- **样式**：当前使用内联样式，RN 侧需转换为 StyleSheet 或保持内联（React Native 支持有限内联样式）
+- **连接状态指示器**：颜色逻辑可复用，但渲染实现需适配 RN View 组件
+
+**建议同步策略**：
+
+1. 先同步类型定义和业务逻辑（消息合并、状态管理）
+2. RN 侧创建 `ChatContainer.native.tsx` 实现 UI 层
+3. 使用 `package.json` 条件导出区分 Web/Native 入口
+
+详细规范参见：[Chat Text Conversation Feature Spec](frontend/spec/chat-text-conversation.md)
 
 ---
 

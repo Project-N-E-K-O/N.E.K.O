@@ -13,6 +13,7 @@ frontend/packages/components/
 │   ├── Modal/               # 模态框系统
 │   ├── StatusToast/         # 状态提示
 │   ├── Live2DRightToolbar/  # Live2D 右侧工具栏
+│   ├── chat/                # 聊天组件
 │   ├── i18n/                # 国际化支持
 │   └── index.ts             # 统一导出
 └── package.json
@@ -53,6 +54,72 @@ export interface Live2DAgentState {
 ```
 
 **重要**：`statusText` 和 `disabled` 是**必需字段**（不是可选的），这与 `hooks/useLive2DAgentBackend.ts` 的返回类型保持一致。
+
+### 5. ChatContainer
+
+聊天容器组件，支持文本对话功能，可与 WebSocket 实时通信集成。
+
+#### 子组件
+
+- `ChatContainer` - 主容器，包含消息列表和输入区域
+- `ChatInput` - 文本输入组件，支持截图功能
+- `MessageList` - 消息列表渲染组件
+
+#### 类型定义
+
+```typescript
+export interface ChatContainerProps {
+  /** External messages to display (will be merged with internal messages) */
+  externalMessages?: ChatMessage[];
+
+  /** Callback when user sends a message via input */
+  onSendMessage?: (text: string, images?: string[]) => void;
+
+  /** Connection status for text chat mode */
+  connectionStatus?: "idle" | "connecting" | "open" | "closing" | "closed" | "reconnecting";
+
+  /** Whether to disable the input (e.g., when disconnected) */
+  disabled?: boolean;
+
+  /** Custom status text to show in the header */
+  statusText?: string;
+}
+
+export type ChatMessage = {
+  id: string;
+  role: "system" | "user" | "assistant";
+  createdAt: number;
+} & (
+  | { content: string; image?: string }
+  | { content?: string; image: string }
+);
+```
+
+#### 使用模式
+
+**独立模式**（无后端集成）：
+```tsx
+<ChatContainer />
+```
+
+**外部集成模式**（与 WebSocket 集成）：
+```tsx
+<ChatContainer
+  externalMessages={chatMessages}
+  connectionStatus={realtimeState}
+  onSendMessage={(text, images) => {
+    client.sendJson({ action: "send_text", text, images });
+  }}
+/>
+```
+
+#### 行为说明
+
+- **外部模式**：当提供 `onSendMessage` 时，用户消息不会添加到内部状态，应由外部通过 `externalMessages` 返回
+- **独立模式**：当不提供 `onSendMessage` 时，消息在组件内部管理
+- **连接状态**：当提供 `onSendMessage` 时，header 会显示连接状态指示器
+
+详细文档参见：[Chat Text Conversation Feature Spec](../spec/chat-text-conversation.md)
 
 ## 类型一致性原则
 
@@ -145,3 +212,4 @@ npm run build:components
 - [packages README](/Users/noahwang/projects/N.E.K.O/docs/frontend/packages/README.md)
 - [多平台支持](/Users/noahwang/projects/N.E.K.O/docs/frontend/packages-multi-platform.md)
 - [RN 同步指南](/Users/noahwang/projects/N.E.K.O/docs/frontend/packages-sync-to-neko-rn.md)
+- [Chat Text Conversation Spec](../spec/chat-text-conversation.md)

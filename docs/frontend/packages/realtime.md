@@ -63,6 +63,103 @@
 
 ---
 
+#### 与 ChatContainer 集成示例
+
+以下示例展示如何将 `@project_neko/realtime` 与 `@project_neko/components` 的 `ChatContainer` 组件集成，实现实时文本对话：
+
+```tsx
+import { useState, useEffect, useRef, useCallback } from "react";
+import { ChatContainer } from "@project_neko/components";
+import type { ChatMessage } from "@project_neko/components";
+import { createRealtimeClient, buildWebSocketUrlFromBase } from "@project_neko/realtime";
+import type { RealtimeClient, RealtimeConnectionState } from "@project_neko/realtime";
+
+function ChatApp() {
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [connectionStatus, setConnectionStatus] = useState<RealtimeConnectionState>("idle");
+  const clientRef = useRef<RealtimeClient | null>(null);
+  const messageIdRef = useRef(0);
+
+  // 生成消息 ID
+  const generateMessageId = useCallback(() => {
+    messageIdRef.current += 1;
+    return `msg-${Date.now()}-${messageIdRef.current}`;
+  }, []);
+
+  // 添加消息到列表
+  const addChatMessage = useCallback((role: ChatMessage["role"], content: string) => {
+    const msg: ChatMessage = {
+      id: generateMessageId(),
+      role,
+      content,
+      createdAt: Date.now(),
+    };
+    setChatMessages((prev) => [...prev, msg]);
+  }, [generateMessageId]);
+
+  // 处理服务器消息
+  const handleServerMessage = useCallback((json: unknown) => {
+    const msg = json as Record<string, unknown>;
+    const type = msg?.type as string | undefined;
+
+    if (type === "transcript" || type === "user_transcript") {
+      const content = (msg.content || msg.text) as string;
+      if (content) addChatMessage("user", content);
+    } else if (type === "assistant_text" || type === "response.done") {
+      const content = (msg.content || msg.text || msg.transcript) as string;
+      if (content) addChatMessage("assistant", content);
+    }
+  }, [addChatMessage]);
+
+  // 初始化 WebSocket 客户端
+  useEffect(() => {
+    const client = createRealtimeClient({
+      path: "/ws/chat",
+      buildUrl: (path) => buildWebSocketUrlFromBase("ws://localhost:48911", path),
+      heartbeat: { intervalMs: 30_000, payload: { action: "ping" } },
+      reconnect: { enabled: true },
+    });
+    clientRef.current = client;
+
+    const offState = client.on("state", ({ state }) => setConnectionStatus(state));
+    const offJson = client.on("json", ({ json }) => handleServerMessage(json));
+
+    client.connect();
+
+    return () => {
+      offState();
+      offJson();
+      client.disconnect();
+    };
+  }, [handleServerMessage]);
+
+  return (
+    <ChatContainer
+      externalMessages={chatMessages}
+      connectionStatus={connectionStatus}
+      onSendMessage={(text, images) => {
+        if (clientRef.current && connectionStatus === "open") {
+          clientRef.current.sendJson({
+            action: "send_text",
+            text,
+            images,
+          });
+        }
+      }}
+    />
+  );
+}
+```
+
+关键要点：
+- **连接状态同步**：将 `realtimeState` 传递给 `ChatContainer` 以显示连接指示器
+- **消息处理**：通过 `json` 事件接收服务器消息，解析后添加到 `externalMessages`
+- **发送消息**：通过 `onSendMessage` 回调使用 `client.sendJson()` 发送
+
+详细规范参见：[Chat Text Conversation Feature Spec](../spec/chat-text-conversation.md)
+
+---
+
 #### Sync to N.E.K.O.-RN Notes
 
 - RN 侧同步目录：`N.E.K.O.-RN/packages/project-neko-realtime`。
