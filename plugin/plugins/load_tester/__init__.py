@@ -636,6 +636,7 @@ class LoadTestPlugin(NekoPluginBase):
                 max_count=int(max_count),
                 timeout=float(timeout),
                 raw=True,
+                no_fallback=True,
             )
 
         def _build_log_args(duration: float, stats: Dict[str, Any], workers: int):

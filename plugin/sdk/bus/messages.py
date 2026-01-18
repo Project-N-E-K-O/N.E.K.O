@@ -349,7 +349,7 @@ def _ensure_local_cache() -> _LocalMessageCache:
 class MessageClient:
     ctx: "PluginContext"
 
-    def get_message_plane(
+    def _get_via_message_plane(
         self,
         *,
         plugin_id: Optional[str] = None,
@@ -364,11 +364,7 @@ class MessageClient:
         light: bool = False,
         topic: str = "all",
     ) -> MessageList:
-        """Fetch messages via message_plane ZMQ RPC.
-
-        This is an additive API used for integration testing; it does NOT replace the existing
-        control-plane transport.
-        """
+        """Fetch messages via message_plane ZMQ RPC."""
         if zmq is None:
             raise RuntimeError("pyzmq is not available")
 
@@ -413,19 +409,21 @@ class MessageClient:
             and source_norm is None
             and pr_min_norm is None
             and since_norm is None
-            and filter is None
+            and (not filter)
             and bool(strict)
             and topic_norm == "all"
         ):
+            op_name = "bus.get_recent"
             resp = rpc.request(
                 op="bus.get_recent",
                 args={"store": "messages", "topic": "all", "limit": int(max_count), "light": bool(light)},
                 timeout=float(timeout),
             )
         else:
+            op_name = "bus.query"
             resp = rpc.request(op="bus.query", args=args, timeout=float(timeout))
         if not isinstance(resp, dict):
-            raise TimeoutError(f"message_plane bus.query timed out after {timeout}s")
+            raise TimeoutError(f"message_plane {op_name} timed out after {timeout}s")
         if not resp.get("ok"):
             raise RuntimeError(str(resp.get("error") or "message_plane error"))
         result = resp.get("result")
@@ -629,6 +627,7 @@ class MessageClient:
         since_ts: Optional[float] = None,
         timeout: float = 5.0,
         raw: bool = False,
+        no_fallback: bool = False,
     ) -> MessageList:
         # Fastest path: for the common "recent" read used by load testing, prefer local cache
         # (no IPC round-trip) when the request is effectively "latest N across all plugins".
@@ -687,7 +686,7 @@ class MessageClient:
                 if (plugin_id is None or str(plugin_id).strip() == "*"):
                     if priority_min is None and (source is None or not str(source)) and filter is None and since_ts is None:
                         light = True
-            return self.get_message_plane(
+            return self._get_via_message_plane(
                 plugin_id=plugin_id,
                 max_count=max_count,
                 priority_min=priority_min,
@@ -701,6 +700,8 @@ class MessageClient:
                 topic="all",
             )
         except Exception:
+            if bool(no_fallback):
+                raise
             if bool(MESSAGE_PLANE_STRICT):
                 raise
             pass

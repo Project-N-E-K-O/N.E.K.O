@@ -116,14 +116,32 @@ class TopicStore:
         t = str(topic)
         if limit <= 0:
             return []
+
+        # Optimistic fast path: avoid waiting behind the publish lock under heavy ingest.
+        # Deque iteration can raise if mutated concurrently; retry a few times then fall back.
+        dq = self.items.get(t)
+        if not dq:
+            return []
+        limit_i = int(limit)
+        for _ in range(3):
+            try:
+                if limit_i >= len(dq):
+                    return list(dq)
+                tail_rev = list(islice(reversed(dq), limit_i))
+                tail_rev.reverse()
+                return tail_rev
+            except RuntimeError:
+                continue
+            except Exception:
+                break
+
         with self._lock:
             dq = self.items.get(t)
             if not dq:
                 return []
-            if limit >= len(dq):
+            if limit_i >= len(dq):
                 return list(dq)
-            # Avoid copying the entire deque when only the tail is needed.
-            tail_rev = list(islice(reversed(dq), int(limit)))
+            tail_rev = list(islice(reversed(dq), limit_i))
             tail_rev.reverse()
             return tail_rev
 

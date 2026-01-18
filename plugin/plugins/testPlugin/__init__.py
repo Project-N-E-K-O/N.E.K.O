@@ -189,13 +189,14 @@ class HelloPlugin(NekoPluginBase):
 
             mp_list = None
             try:
-                mp_list = self.ctx.bus.messages.get_message_plane(
+                mp_list = self.ctx.bus.messages.get(
                     plugin_id=plugin_id or None,
                     max_count=max_count,
                     priority_min=pri_opt,
                     source=source or None,
                     timeout=timeout,
                     raw=True,
+                    no_fallback=True,
                 )
             except Exception as e:
                 mp_list = {"error": str(e)}
