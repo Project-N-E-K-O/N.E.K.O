@@ -135,12 +135,82 @@ export interface PendingScreenshot {
 
 ## 7. 行为规范（Behavior）
 
+### WebSocket 消息协议（与 Legacy 实现一致）
+
+为保持与 `templates/index.html` + `static/app.js` 的兼容性，WebSocket 消息格式必须遵循以下规范：
+
+#### 发送消息（客户端 → 服务器）
+
+1. **Session 初始化**（首次发送消息前）：
+   ```json
+   {
+     "action": "start_session",
+     "input_type": "text",
+     "new_session": false
+   }
+   ```
+
+2. **发送文本消息**：
+   ```json
+   {
+     "action": "stream_data",
+     "data": "用户输入的文本",
+     "input_type": "text"
+   }
+   ```
+
+3. **发送截图**（每张截图单独发送）：
+   ```json
+   {
+     "action": "stream_data",
+     "data": "data:image/png;base64,xxxxx",
+     "input_type": "screen"
+   }
+   ```
+   - 桌面端使用 `input_type: "screen"`
+   - 移动端使用 `input_type: "camera"`
+
+#### 接收消息（服务器 → 客户端）
+
+1. **Session 启动确认**：
+   ```json
+   { "type": "session_started" }
+   ```
+
+2. **AI 流式响应**：
+   ```json
+   {
+     "type": "gemini_response",
+     "text": "响应文本片段",
+     "isNewMessage": true
+   }
+   ```
+   - `isNewMessage: true` 表示新一轮回复的开始
+
+3. **用户语音转录**（语音模式）：
+   ```json
+   {
+     "type": "user_transcript",
+     "text": "用户语音转录文本"
+   }
+   ```
+
+4. **系统消息**：
+   ```json
+   {
+     "type": "system",
+     "data": "turn end"
+   }
+   ```
+   - `data: "turn end"` 表示当前轮次结束，应 flush 累积的 AI 响应
+
 ### 消息发送行为
 
 - **规则 1**：当提供 `onSendMessage` 回调时（外部模式），用户消息不添加到内部状态，由外部通过 `externalMessages` 返回
 - **规则 2**：当未提供 `onSendMessage` 时（独立模式），用户消息添加到内部状态
 - **规则 3**：消息按 `createdAt` 时间戳排序显示
 - **规则 4**：截图作为 `images` 数组传递给 `onSendMessage`
+- **规则 4.1**：宿主层负责将 images 数组转换为多个 `stream_data` 消息逐一发送
 
 ### 连接状态显示
 
@@ -154,6 +224,35 @@ export interface PendingScreenshot {
 ### 输入禁用
 
 - **规则 7**：当 `disabled=true` 时，输入框和按钮变灰且不可交互
+
+### 截图/拍照功能
+
+截图功能根据平台自动选择不同的媒体采集方式：
+
+#### 桌面端截图（getDisplayMedia）
+
+- **规则 8**：桌面端使用 `navigator.mediaDevices.getDisplayMedia` API 截取屏幕
+- **规则 9**：截图发送时 `input_type` 为 `"screen"`
+- **规则 10**：支持用户选择截取整个屏幕、窗口或标签页
+
+#### 移动端拍照（getUserMedia）
+
+- **规则 11**：移动端使用 `navigator.mediaDevices.getUserMedia` API 调用摄像头拍照
+- **规则 12**：摄像头选择优先级：后置摄像头（environment）> 前置摄像头（user）> 任意可用摄像头
+- **规则 13**：拍照发送时 `input_type` 为 `"camera"`
+- **规则 14**：iOS Safari 需要设置 `video.playsInline = true` 和 `video.muted = true`
+
+#### 图片处理
+
+- **规则 15**：图片尺寸限制为最大 1280x720，等比缩放
+- **规则 16**：使用 JPEG 格式，压缩质量 0.8，以减小传输体积
+- **规则 17**：最多允许添加 5 张待发送截图（MAX_SCREENSHOTS = 5）
+
+#### 错误处理
+
+- **规则 18**：用户取消截图/拍照时（NotAllowedError/AbortError）静默忽略，不显示错误
+- **规则 19**：其他错误显示 alert 提示
+- **规则 20**：无论成功/失败，都必须在 finally 块中停止媒体流并清理资源
 
 ---
 
@@ -244,41 +343,178 @@ stateDiagram-v2
 
 ## 14. 使用示例
 
-### 基本集成
+### 基本集成（与 Legacy 协议兼容）
 
 ```tsx
+import { useState, useEffect, useRef, useCallback } from "react";
 import { ChatContainer } from "@project_neko/components";
-import { createRealtimeClient } from "@project_neko/realtime";
+import type { ChatMessage } from "@project_neko/components";
+import { createRealtimeClient, buildWebSocketUrlFromBase } from "@project_neko/realtime";
+import type { RealtimeClient, RealtimeConnectionState } from "@project_neko/realtime";
 
-function App() {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+function ChatApp() {
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [connectionStatus, setConnectionStatus] = useState<RealtimeConnectionState>("idle");
+  const [isTextSessionActive, setIsTextSessionActive] = useState(false);
   const clientRef = useRef<RealtimeClient | null>(null);
+  const messageIdRef = useRef(0);
+  const assistantTextBuffer = useRef<string>("");
+
+  // 生成消息 ID
+  const generateMessageId = useCallback(() => {
+    messageIdRef.current += 1;
+    return `msg-${Date.now()}-${messageIdRef.current}`;
+  }, []);
+
+  // 添加消息到列表
+  const addChatMessage = useCallback((role: ChatMessage["role"], content: string) => {
+    const msg: ChatMessage = {
+      id: generateMessageId(),
+      role,
+      content,
+      createdAt: Date.now(),
+    };
+    setChatMessages((prev) => [...prev, msg]);
+  }, [generateMessageId]);
+
+  // Flush 累积的 AI 响应
+  const flushAssistantBuffer = useCallback(() => {
+    const text = assistantTextBuffer.current.trim();
+    if (text) {
+      addChatMessage("assistant", text);
+      assistantTextBuffer.current = "";
+    }
+  }, [addChatMessage]);
+
+  // 处理服务器消息（与 Legacy 协议一致）
+  const handleServerMessage = useCallback((json: unknown) => {
+    const msg = json as Record<string, unknown>;
+    const type = msg?.type as string | undefined;
+
+    if (type === "session_started") {
+      // Session 启动成功
+      setIsTextSessionActive(true);
+    } else if (type === "gemini_response") {
+      // AI 流式响应
+      const text = msg.text as string | undefined;
+      const isNewMessage = msg.isNewMessage as boolean | undefined;
+
+      if (isNewMessage && assistantTextBuffer.current) {
+        flushAssistantBuffer();
+      }
+      if (text) {
+        assistantTextBuffer.current += text;
+      }
+    } else if (type === "user_transcript") {
+      // 用户语音转录
+      const content = msg.text as string;
+      if (content) addChatMessage("user", content);
+    } else if (type === "system") {
+      // 系统消息
+      const data = msg.data as string | undefined;
+      if (data === "turn end") {
+        flushAssistantBuffer();
+      }
+    }
+  }, [addChatMessage, flushAssistantBuffer]);
 
   // 初始化 WebSocket 客户端
   useEffect(() => {
-    const client = createRealtimeClient({ path: "/ws/chat" });
+    const client = createRealtimeClient({
+      path: "/ws/lanlan_name",
+      buildUrl: (path) => buildWebSocketUrlFromBase("ws://localhost:48911", path),
+      heartbeat: { intervalMs: 30_000, payload: { action: "ping" } },
+      reconnect: { enabled: true },
+    });
     clientRef.current = client;
 
-    client.on("state", ({ state }) => setConnectionStatus(state));
-    client.on("json", ({ json }) => {
-      // 处理服务器响应，添加到 messages
-    });
+    const offState = client.on("state", ({ state }) => setConnectionStatus(state));
+    const offJson = client.on("json", ({ json }) => handleServerMessage(json));
 
     client.connect();
-    return () => client.disconnect();
+
+    return () => {
+      offState();
+      offJson();
+      client.disconnect();
+    };
+  }, [handleServerMessage]);
+
+  // 检测是否为移动端
+  const isMobile = useCallback(() => {
+    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+      navigator.userAgent
+    );
   }, []);
+
+  // 发送文本 session 初始化
+  const ensureTextSession = useCallback(async () => {
+    if (isTextSessionActive) return true;
+
+    const client = clientRef.current;
+    if (!client || connectionStatus !== "open") return false;
+
+    return new Promise<boolean>((resolve) => {
+      // 监听 session_started
+      const off = client.on("json", ({ json }) => {
+        const msg = json as Record<string, unknown>;
+        if (msg?.type === "session_started") {
+          off();
+          setIsTextSessionActive(true);
+          resolve(true);
+        }
+      });
+
+      // 发送 start_session
+      client.sendJson({
+        action: "start_session",
+        input_type: "text",
+        new_session: false,
+      });
+
+      // 超时处理
+      setTimeout(() => {
+        off();
+        resolve(false);
+      }, 15000);
+    });
+  }, [isTextSessionActive, connectionStatus]);
 
   return (
     <ChatContainer
-      externalMessages={messages}
+      externalMessages={chatMessages}
       connectionStatus={connectionStatus}
-      onSendMessage={(text, images) => {
-        clientRef.current?.sendJson({
-          action: "send_text",
-          text,
-          images,
-        });
+      onSendMessage={async (text, images) => {
+        const client = clientRef.current;
+        if (!client || connectionStatus !== "open") return;
+
+        // 确保 session 已启动
+        const sessionOk = await ensureTextSession();
+        if (!sessionOk) return;
+
+        // 先发送截图（每张单独发送）
+        if (images && images.length > 0) {
+          for (const imgBase64 of images) {
+            client.sendJson({
+              action: "stream_data",
+              data: imgBase64,
+              input_type: isMobile() ? "camera" : "screen",
+            });
+          }
+          // 乐观添加截图提示
+          addChatMessage("user", `📸 [已发送${images.length}张截图]`);
+        }
+
+        // 再发送文本
+        if (text.trim()) {
+          client.sendJson({
+            action: "stream_data",
+            data: text,
+            input_type: "text",
+          });
+          // 乐观添加用户消息
+          addChatMessage("user", text);
+        }
       }}
     />
   );

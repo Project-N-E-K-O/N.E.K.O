@@ -1,8 +1,16 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import type { ChatMessage, PendingScreenshot } from "./types";
 import MessageList from "./MessageList";
 import ChatInput from "./ChatInput";
 import { useT, tOrDefault } from "../i18n";
+
+/** 检测是否为移动端 */
+function isMobile(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+    navigator.userAgent
+  );
+}
 
 /** 生成跨环境安全的 id */
 function generateId(): string {
@@ -108,46 +116,137 @@ export default function ChatContainer({
     setPendingScreenshots([]);
   }
 
+  /**
+   * 获取移动端摄像头流（优先后置摄像头，fallback 前置/any）
+   * 参考 legacy app.js getMobileCameraStream 实现
+   */
+  const getMobileCameraStream = useCallback(async (): Promise<MediaStream> => {
+    const attempts = [
+      {
+        label: "rear",
+        constraints: { video: { facingMode: { ideal: "environment" } } },
+      },
+      { label: "front", constraints: { video: { facingMode: "user" } } },
+      { label: "any", constraints: { video: true } },
+    ];
+
+    for (const attempt of attempts) {
+      try {
+        return await navigator.mediaDevices.getUserMedia(attempt.constraints);
+      } catch {
+        // fallback to next attempt
+      }
+    }
+    throw new Error("无法获取摄像头权限");
+  }, []);
+
+  /**
+   * 捕获视频帧到 canvas 并返回 base64
+   * 参考 legacy app.js captureCanvasFrame 实现，限制最大尺寸为 1280x720
+   */
+  const captureCanvasFrame = useCallback(
+    (video: HTMLVideoElement, jpegQuality: number = 0.8) => {
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return null;
+
+      let targetWidth = video.videoWidth;
+      let targetHeight = video.videoHeight;
+      const MAX_WIDTH = 1280;
+      const MAX_HEIGHT = 720;
+
+      // 等比缩放到最大尺寸内
+      if (targetWidth > MAX_WIDTH || targetHeight > MAX_HEIGHT) {
+        const widthRatio = MAX_WIDTH / targetWidth;
+        const heightRatio = MAX_HEIGHT / targetHeight;
+        const ratio = Math.min(widthRatio, heightRatio);
+        targetWidth = Math.floor(targetWidth * ratio);
+        targetHeight = Math.floor(targetHeight * ratio);
+      }
+
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
+      ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
+
+      // 使用 JPEG 格式以减小体积
+      return canvas.toDataURL("image/jpeg", jpegQuality);
+    },
+    []
+  );
+
+  /**
+   * 截图/拍照处理函数
+   * - 桌面端：使用 getDisplayMedia 截取屏幕
+   * - 移动端：使用 getUserMedia 拍照
+   */
   async function handleScreenshot() {
-    if (!navigator.mediaDevices?.getDisplayMedia) {
-      alert(
-        tOrDefault(
-          t,
-          "chat.screenshot.unsupported",
-          "您的浏览器不支持截图"
-        )
-      );
-      return;
+    const mobile = isMobile();
+
+    // 检查 API 支持
+    if (mobile) {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        alert(
+          tOrDefault(t, "chat.screenshot.unsupported", "您的浏览器不支持拍照")
+        );
+        return;
+      }
+    } else {
+      if (!navigator.mediaDevices?.getDisplayMedia) {
+        alert(
+          tOrDefault(t, "chat.screenshot.unsupported", "您的浏览器不支持截图")
+        );
+        return;
+      }
     }
 
     let stream: MediaStream | null = null;
     const video = document.createElement("video");
 
     try {
-      stream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
-        audio: false,
-      });
+      // 根据平台获取媒体流
+      if (mobile) {
+        stream = await getMobileCameraStream();
+      } else {
+        stream = await navigator.mediaDevices.getDisplayMedia({
+          video: { cursor: "always" } as MediaTrackConstraints,
+          audio: false,
+        });
+      }
+
       video.srcObject = stream;
+      video.playsInline = true; // iOS Safari 需要
+      video.muted = true;
       await video.play();
 
-      const canvas = document.createElement("canvas");
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
+      // 等待视频尺寸可用
+      await new Promise<void>((resolve) => {
+        if (video.videoWidth > 0 && video.videoHeight > 0) {
+          resolve();
+        } else {
+          video.onloadedmetadata = () => resolve();
+        }
+      });
 
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
+      const base64 = captureCanvasFrame(video);
+      if (!base64) {
         alert(tOrDefault(t, "chat.screenshot.failed", "截图失败"));
         return;
       }
 
-      ctx.drawImage(video, 0, 0);
-      const base64 = canvas.toDataURL("image/png");
-
-      setPendingScreenshots((prev) => [
-        ...prev,
-        { id: generateId(), base64 },
-      ]);
+      setPendingScreenshots((prev) => [...prev, { id: generateId(), base64 }]);
+    } catch (err: any) {
+      // 用户取消不报错
+      if (err?.name === "NotAllowedError" || err?.name === "AbortError") {
+        return;
+      }
+      console.error("[ChatContainer] Screenshot error:", err);
+      alert(
+        tOrDefault(
+          t,
+          "chat.screenshot.failed",
+          mobile ? "拍照失败" : "截图失败"
+        )
+      );
     } finally {
       if (stream) stream.getTracks().forEach((track) => track.stop());
       video.srcObject = null;

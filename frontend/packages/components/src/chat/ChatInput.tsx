@@ -2,6 +2,14 @@ import React, { useState } from "react";
 import { useT, tOrDefault } from "../i18n";
 import type { PendingScreenshot } from "./types";
 
+/** 检测是否为移动端 */
+function isMobile(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+    navigator.userAgent
+  );
+}
+
 interface Props {
   onSend: (text: string) => void;
   onTakePhoto?: () => Promise<void>;
@@ -223,7 +231,9 @@ export default function ChatInput({
                 opacity: disabled ? 0.6 : 1,
               }}
             >
-              {tOrDefault(t, "chat.screenshot.button", "截图")}
+              {isMobile()
+                ? tOrDefault(t, "chat.screenshot.buttonMobile", "拍照")
+                : tOrDefault(t, "chat.screenshot.button", "截图")}
             </button>
           )}
         </div>

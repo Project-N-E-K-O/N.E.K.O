@@ -65,7 +65,9 @@
 
 #### 与 ChatContainer 集成示例
 
-以下示例展示如何将 `@project_neko/realtime` 与 `@project_neko/components` 的 `ChatContainer` 组件集成，实现实时文本对话：
+以下示例展示如何将 `@project_neko/realtime` 与 `@project_neko/components` 的 `ChatContainer` 组件集成，实现实时文本对话。
+
+**重要**：消息协议必须与 `templates/index.html` + `static/app.js`（Legacy 实现）保持一致。
 
 ```tsx
 import { useState, useEffect, useRef, useCallback } from "react";
@@ -77,8 +79,10 @@ import type { RealtimeClient, RealtimeConnectionState } from "@project_neko/real
 function ChatApp() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [connectionStatus, setConnectionStatus] = useState<RealtimeConnectionState>("idle");
+  const [isTextSessionActive, setIsTextSessionActive] = useState(false);
   const clientRef = useRef<RealtimeClient | null>(null);
   const messageIdRef = useRef(0);
+  const assistantTextBuffer = useRef<string>("");
 
   // 生成消息 ID
   const generateMessageId = useCallback(() => {
@@ -97,24 +101,51 @@ function ChatApp() {
     setChatMessages((prev) => [...prev, msg]);
   }, [generateMessageId]);
 
-  // 处理服务器消息
+  // Flush 累积的 AI 响应
+  const flushAssistantBuffer = useCallback(() => {
+    const text = assistantTextBuffer.current.trim();
+    if (text) {
+      addChatMessage("assistant", text);
+      assistantTextBuffer.current = "";
+    }
+  }, [addChatMessage]);
+
+  // 处理服务器消息（与 Legacy 协议一致）
   const handleServerMessage = useCallback((json: unknown) => {
     const msg = json as Record<string, unknown>;
     const type = msg?.type as string | undefined;
 
-    if (type === "transcript" || type === "user_transcript") {
-      const content = (msg.content || msg.text) as string;
+    if (type === "session_started") {
+      // Session 启动成功
+      setIsTextSessionActive(true);
+    } else if (type === "gemini_response") {
+      // AI 流式响应
+      const text = msg.text as string | undefined;
+      const isNewMessage = msg.isNewMessage as boolean | undefined;
+
+      if (isNewMessage && assistantTextBuffer.current) {
+        flushAssistantBuffer();
+      }
+      if (text) {
+        assistantTextBuffer.current += text;
+      }
+    } else if (type === "user_transcript") {
+      // 用户语音转录
+      const content = msg.text as string;
       if (content) addChatMessage("user", content);
-    } else if (type === "assistant_text" || type === "response.done") {
-      const content = (msg.content || msg.text || msg.transcript) as string;
-      if (content) addChatMessage("assistant", content);
+    } else if (type === "system") {
+      // 系统消息
+      const data = msg.data as string | undefined;
+      if (data === "turn end") {
+        flushAssistantBuffer();
+      }
     }
-  }, [addChatMessage]);
+  }, [addChatMessage, flushAssistantBuffer]);
 
   // 初始化 WebSocket 客户端
   useEffect(() => {
     const client = createRealtimeClient({
-      path: "/ws/chat",
+      path: "/ws/lanlan_name",
       buildUrl: (path) => buildWebSocketUrlFromBase("ws://localhost:48911", path),
       heartbeat: { intervalMs: 30_000, payload: { action: "ping" } },
       reconnect: { enabled: true },
@@ -133,17 +164,76 @@ function ChatApp() {
     };
   }, [handleServerMessage]);
 
+  // 检测是否为移动端
+  const isMobile = useCallback(() => {
+    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+      navigator.userAgent
+    );
+  }, []);
+
+  // 发送文本 session 初始化（与 Legacy 一致）
+  const ensureTextSession = useCallback(async () => {
+    if (isTextSessionActive) return true;
+
+    const client = clientRef.current;
+    if (!client || connectionStatus !== "open") return false;
+
+    return new Promise<boolean>((resolve) => {
+      const off = client.on("json", ({ json }) => {
+        const msg = json as Record<string, unknown>;
+        if (msg?.type === "session_started") {
+          off();
+          setIsTextSessionActive(true);
+          resolve(true);
+        }
+      });
+
+      // 发送 start_session（Legacy 协议）
+      client.sendJson({
+        action: "start_session",
+        input_type: "text",
+        new_session: false,
+      });
+
+      setTimeout(() => {
+        off();
+        resolve(false);
+      }, 15000);
+    });
+  }, [isTextSessionActive, connectionStatus]);
+
   return (
     <ChatContainer
       externalMessages={chatMessages}
       connectionStatus={connectionStatus}
-      onSendMessage={(text, images) => {
-        if (clientRef.current && connectionStatus === "open") {
-          clientRef.current.sendJson({
-            action: "send_text",
-            text,
-            images,
+      onSendMessage={async (text, images) => {
+        const client = clientRef.current;
+        if (!client || connectionStatus !== "open") return;
+
+        // 确保 session 已启动
+        const sessionOk = await ensureTextSession();
+        if (!sessionOk) return;
+
+        // 先发送截图（每张单独发送，使用 stream_data action）
+        if (images && images.length > 0) {
+          for (const imgBase64 of images) {
+            client.sendJson({
+              action: "stream_data",
+              data: imgBase64,
+              input_type: isMobile() ? "camera" : "screen",
+            });
+          }
+          addChatMessage("user", `📸 [已发送${images.length}张截图]`);
+        }
+
+        // 再发送文本（使用 stream_data action）
+        if (text.trim()) {
+          client.sendJson({
+            action: "stream_data",
+            data: text,
+            input_type: "text",
           });
+          addChatMessage("user", text);
         }
       }}
     />
@@ -152,9 +242,35 @@ function ChatApp() {
 ```
 
 关键要点：
-- **连接状态同步**：将 `realtimeState` 传递给 `ChatContainer` 以显示连接指示器
-- **消息处理**：通过 `json` 事件接收服务器消息，解析后添加到 `externalMessages`
-- **发送消息**：通过 `onSendMessage` 回调使用 `client.sendJson()` 发送
+- **Session 初始化**：首次发送消息前需要发送 `start_session` action
+- **消息格式**：使用 `action: "stream_data"` + `input_type: "text"/"screen"/"camera"`
+- **流式响应**：累积 `gemini_response` 消息，在 `turn end` 时 flush
+- **连接状态同步**：将 `connectionStatus` 传递给 `ChatContainer` 以显示连接指示器
+
+#### 截图/拍照发送流程
+
+`ChatContainer` 组件内置了截图/拍照功能，根据平台自动选择采集方式：
+
+| 平台 | API | input_type |
+|------|-----|------------|
+| 桌面端 | `navigator.mediaDevices.getDisplayMedia` | `"screen"` |
+| 移动端 | `navigator.mediaDevices.getUserMedia` | `"camera"` |
+
+**图片处理规范**：
+- 最大尺寸：1280×720（等比缩放）
+- 格式：JPEG（质量 0.8）
+- 每次最多 5 张待发送截图
+
+**发送协议**：
+```json
+{
+  "action": "stream_data",
+  "data": "data:image/jpeg;base64,/9j/4AAQ...",
+  "input_type": "screen"  // 或 "camera"
+}
+```
+
+**注意**：每张截图作为单独的 `stream_data` 消息发送，而非批量发送。
 
 详细规范参见：[Chat Text Conversation Feature Spec](../spec/chat-text-conversation.md)
 
