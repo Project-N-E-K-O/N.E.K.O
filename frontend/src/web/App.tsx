@@ -630,21 +630,25 @@ function App(_props: AppProps) {
 
             // Send screenshots first (each as separate stream_data message)
             if (images && images.length > 0) {
-              // Generate ID for optimistic message and register for deduplication
-              const screenshotMsgId = generateMessageId();
-              sentClientMessageIds.current.add(screenshotMsgId);
+              // Generate unique ID per image for proper deduplication
+              const imageMessageIds: string[] = [];
 
-              for (const imgBase64 of images) {
+              for (let i = 0; i < images.length; i++) {
+                const imgMsgId = generateMessageId();
+                imageMessageIds.push(imgMsgId);
+                sentClientMessageIds.current.add(imgMsgId);
+
                 client.sendJson({
                   action: "stream_data",
-                  data: imgBase64,
+                  data: images[i],
                   input_type: getIsMobile() ? "camera" : "screen",
-                  clientMessageId: screenshotMsgId,
+                  clientMessageId: imgMsgId,
                 });
               }
-              // Optimistically add screenshot indicator
+
+              // Optimistically add screenshot indicator (use first image ID as message ID)
               const screenshotMsg: ChatMessage = {
-                id: screenshotMsgId,
+                id: imageMessageIds[0],
                 role: "user",
                 content: `📸 [已发送${images.length}张截图]`,
                 createdAt: Date.now(),
