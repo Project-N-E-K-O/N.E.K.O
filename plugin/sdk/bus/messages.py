@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 from plugin.core.state import state
 from plugin.settings import PLUGIN_LOG_BUS_SDK_TIMEOUT_WARNINGS
 from plugin.settings import BUS_SDK_POLL_INTERVAL_SECONDS
-from plugin.settings import MESSAGE_PLANE_STRICT
 from plugin.settings import MESSAGE_PLANE_ZMQ_RPC_ENDPOINT
 from .types import BusList, BusOp, BusRecord, GetNode, register_bus_change_listener
 
@@ -685,7 +684,7 @@ class MessageClient:
             if (plugin_id is None or str(plugin_id).strip() == "*"):
                 if priority_min is None and (source is None or not str(source)) and filter is None and since_ts is None:
                     light = True
-        return self._get_via_message_plane(
+        msg_list = self._get_via_message_plane(
             plugin_id=plugin_id,
             max_count=max_count,
             priority_min=priority_min,
@@ -695,6 +694,5 @@ class MessageClient:
             since_ts=since_ts,
             timeout=timeout,
             raw=raw,
-            light=bool(light),
-            topic="all",
         )
+        return msg_list

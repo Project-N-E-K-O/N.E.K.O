@@ -8,7 +8,6 @@ from queue import Empty
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 
 from plugin.core.state import state
-from plugin.settings import MESSAGE_PLANE_STRICT
 from plugin.settings import MESSAGE_PLANE_ZMQ_RPC_ENDPOINT
 from plugin.settings import BUS_SDK_POLL_INTERVAL_SECONDS
 from .types import BusList, BusOp, BusRecord, GetNode, parse_iso_timestamp

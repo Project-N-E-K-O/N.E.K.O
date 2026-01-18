@@ -629,16 +629,12 @@ class PluginContext:
         # Prefer writing messages directly to message_plane ingest to isolate high-frequency writes
         # from the control plane and rely on ZMQ backpressure.
         if zmq is not None:
-            mp_strict = True
             try:
                 from plugin.settings import MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT
-                from plugin.settings import MESSAGE_PLANE_STRICT
                 from plugin.settings import (
                     PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE,
                     PLUGIN_ZMQ_MESSAGE_PUSH_FLUSH_INTERVAL_MS,
                 )
-
-                mp_strict = bool(MESSAGE_PLANE_STRICT)
 
                 endpoint = str(MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT)
                 if endpoint:

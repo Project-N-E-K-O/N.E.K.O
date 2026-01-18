@@ -238,10 +238,6 @@ PLUGIN_BUS_CHANGE_LOG_DEDUP_WINDOW_SECONDS = _get_float_env(
     "NEKO_PLUGIN_BUS_CHANGE_LOG_DEDUP_WINDOW_SECONDS", 1.0
 )
 
-# ZeroMQ 快速消息推送同步等待超时（秒）
-# Env: NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_SYNC_TIMEOUT, default=3600.0
-PLUGIN_ZMQ_MESSAGE_PUSH_SYNC_TIMEOUT = float(os.getenv("NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_SYNC_TIMEOUT", "3600.0") or 3600.0)
-
 # ZeroMQ PUSH 端点（用于插件向主进程推送消息）
 # Env: NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT, default="tcp://127.0.0.1:38766"
 PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT = os.getenv("NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT", "tcp://127.0.0.1:38766")
@@ -269,10 +265,6 @@ MESSAGE_PLANE_ZMQ_PUB_ENDPOINT = os.getenv(
 MESSAGE_PLANE_RUN_MODE = os.getenv("NEKO_MESSAGE_PLANE_RUN_MODE", "external").strip().lower()
 if MESSAGE_PLANE_RUN_MODE not in ("embedded", "external"):
     MESSAGE_PLANE_RUN_MODE = "external"
-
-# 当 message_plane 已配置但不可用时，是否禁止回退到控制面（直接失败）
-# Env: NEKO_MESSAGE_PLANE_STRICT, default=False
-MESSAGE_PLANE_STRICT = _get_bool_env("NEKO_MESSAGE_PLANE_STRICT", False)
 
 MESSAGE_PLANE_VALIDATE_MODE = os.getenv("NEKO_MESSAGE_PLANE_VALIDATE_MODE", "strict").lower()
 if MESSAGE_PLANE_VALIDATE_MODE not in ("off", "warn", "strict"):
@@ -328,10 +320,6 @@ PLUGIN_ZMQ_PUSH_WORKERS = _get_int_env("NEKO_PLUGIN_ZMQ_PUSH_WORKERS", 4)
 # ZeroMQ PUSH consumer 内部队列上限（用于 recv/unpack 与 handler worker 解耦）
 # Env: NEKO_PLUGIN_ZMQ_PUSH_QUEUE_MAX, default=1024
 PLUGIN_ZMQ_PUSH_QUEUE_MAX = _get_int_env("NEKO_PLUGIN_ZMQ_PUSH_QUEUE_MAX", 1024)
-
-# 是否打印 HTTP 层触发插件入口的日志
-# Env: NEKO_PLUGIN_LOG_HTTP_PLUGIN_TRIGGER, default=False
-PLUGIN_LOG_HTTP_PLUGIN_TRIGGER = _get_bool_env("NEKO_PLUGIN_LOG_HTTP_PLUGIN_TRIGGER", False)
 
 # 同步调用在 handler 中的全局策略（"warn" / "reject"）
 # Env: NEKO_PLUGIN_SYNC_CALL_POLICY, default="warn"
@@ -534,7 +522,6 @@ __all__ = [
     "PLUGIN_LOG_SERVER_DEBUG",
     "PLUGIN_MESSAGE_FORWARD_LOG_DEDUP_WINDOW_SECONDS",
     "PLUGIN_BUS_CHANGE_LOG_DEDUP_WINDOW_SECONDS",
-    "PLUGIN_LOG_HTTP_PLUGIN_TRIGGER",
     "SYNC_CALL_IN_HANDLER_POLICY",
     
     # 插件Logger配置
