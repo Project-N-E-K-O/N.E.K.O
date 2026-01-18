@@ -2,6 +2,14 @@ import React, { useState } from "react";
 import { useT, tOrDefault } from "../i18n";
 import type { PendingScreenshot } from "./types";
 
+/** 检测是否为移动端 */
+function isMobile(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+    navigator.userAgent
+  );
+}
+
 interface Props {
   onSend: (text: string) => void;
   onTakePhoto?: () => Promise<void>;
@@ -9,6 +17,8 @@ interface Props {
   setPendingScreenshots?: React.Dispatch<
     React.SetStateAction<PendingScreenshot[]>
   >;
+  /** Whether to disable the input */
+  disabled?: boolean;
 }
 
 const MAX_SCREENSHOTS = 5;
@@ -18,6 +28,7 @@ export default function ChatInput({
   onTakePhoto,
   pendingScreenshots,
   setPendingScreenshots,
+  disabled = false,
 }: Props) {
   const t = useT();
   const [value, setValue] = useState("");
@@ -148,7 +159,8 @@ export default function ChatInput({
         {/* Textarea */}
         <textarea
           value={value}
-          onChange={(e) => setValue(e.target.value)}
+          onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setValue(e.target.value)}
+          disabled={disabled}
           aria-label={tOrDefault(t, "chat.input.label", "聊天输入框")}
           placeholder={tOrDefault(
             t,
@@ -161,15 +173,17 @@ export default function ChatInput({
             border: "1px solid rgba(0,0,0,0.1)",
             borderRadius: 6,
             padding: "10px 12px",
-            background: "rgba(255,255,255,0.8)",
+            background: disabled ? "rgba(240,240,240,0.8)" : "rgba(255,255,255,0.8)",
             fontFamily: "inherit",
             fontSize: "0.9rem",
             lineHeight: "1.4",
             height: "100%",          // ⭐关键
             boxSizing: "border-box", // ⭐关键
+            opacity: disabled ? 0.6 : 1,
+            cursor: disabled ? "not-allowed" : "text",
           }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
+          onKeyDown={(e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+            if (e.key === "Enter" && !e.shiftKey && !disabled) {
               e.preventDefault();
               handleSend();
             }
@@ -187,14 +201,16 @@ export default function ChatInput({
         >
           <button
             onClick={handleSend}
+            disabled={disabled}
             style={{
               flex: 1, // ⭐均分高度
-              background: "#44b7fe",
+              background: disabled ? "#a0d4f7" : "#44b7fe",
               color: "white",
               border: "none",
               borderRadius: 6,
-              cursor: "pointer",
+              cursor: disabled ? "not-allowed" : "pointer",
               fontSize: "0.9rem",
+              opacity: disabled ? 0.6 : 1,
             }}
           >
             {tOrDefault(t, "chat.send", "发送")}
@@ -203,17 +219,21 @@ export default function ChatInput({
           {onTakePhoto && (
             <button
               onClick={handleTakePhoto}
+              disabled={disabled}
               style={{
                 flex: 1, // ⭐均分高度
-                background: "rgba(255,255,255,0.8)",
+                background: disabled ? "rgba(240,240,240,0.8)" : "rgba(255,255,255,0.8)",
                 border: "1px solid #44b7fe",
                 color: "#44b7fe",
                 borderRadius: 6,
-                cursor: "pointer",
+                cursor: disabled ? "not-allowed" : "pointer",
                 fontSize: "0.8rem",
+                opacity: disabled ? 0.6 : 1,
               }}
             >
-              {tOrDefault(t, "chat.screenshot.button", "截图")}
+              {isMobile()
+                ? tOrDefault(t, "chat.screenshot.buttonMobile", "拍照")
+                : tOrDefault(t, "chat.screenshot.button", "截图")}
             </button>
           )}
         </div>

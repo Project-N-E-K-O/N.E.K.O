@@ -80,7 +80,7 @@
 
 因此：
 
-- **它不等于“可直接运行在 iOS/Android RN 的组件库”**
+- **它不等于"可直接运行在 iOS/Android RN 的组件库"**
 - 同步到 `N.E.K.O.-RN` 的价值主要是：复用 types/逻辑、在 Expo Web 或测试环境共享、或为未来 RN 版组件预留结构
 
 若要真正支持 RN：
@@ -88,6 +88,48 @@
 - 需要在 `components` 内新增 `index.native.ts` 与 RN 组件实现（用 `react-native` primitives）
 - 在 `package.json` 增加 `react-native` 条件入口（与 `request/realtime` 类似）
 - 对 Web-only 组件：RN 入口不要导出或导出占位实现，避免误用
+
+#### 4.1 Chat 组件同步注意事项（2026-01-18 更新）
+
+`ChatContainer` 组件新增了 WebSocket 集成支持，涉及以下接口变更：
+
+```typescript
+export interface ChatContainerProps {
+  externalMessages?: ChatMessage[];
+  onSendMessage?: (text: string, images?: string[]) => void;
+  connectionStatus?: "idle" | "connecting" | "open" | "closing" | "closed" | "reconnecting";
+  disabled?: boolean;
+  statusText?: string;
+}
+```
+
+**WebSocket 消息协议（与 Legacy 一致）**：
+
+宿主层（App.tsx）需要使用与 `templates/index.html` + `static/app.js` 一致的消息格式：
+
+1. **Session 初始化**：首次发送消息前需发送 `{ action: "start_session", input_type: "text", new_session: false }`
+2. **发送文本**：`{ action: "stream_data", data: "文本内容", input_type: "text" }`
+3. **发送截图**：`{ action: "stream_data", data: "base64", input_type: "screen" | "camera" }`
+4. **接收 AI 响应**：累积 `gemini_response` 消息，在 `system.data === "turn end"` 时 flush
+
+**RN 同步要点**：
+
+- **类型定义**：`ChatContainerProps` 和 `ChatMessage` 类型可直接复用
+- **Web-only API**：
+  - 桌面截图使用 `navigator.mediaDevices.getDisplayMedia`
+  - 移动端拍照使用 `navigator.mediaDevices.getUserMedia`（优先后置摄像头）
+  - RN 侧需要使用 `react-native-camera` 或 `expo-camera` 替换实现
+- **图片尺寸限制**：截图/拍照默认限制最大 1280x720，使用 JPEG 格式（0.8 质量）以减小体积
+- **样式**：当前使用内联样式，RN 侧需转换为 StyleSheet 或保持内联（React Native 支持有限内联样式）
+- **连接状态指示器**：颜色逻辑可复用，但渲染实现需适配 RN View 组件
+
+**建议同步策略**：
+
+1. 先同步类型定义和业务逻辑（消息合并、状态管理）
+2. RN 侧创建 `ChatContainer.native.tsx` 实现 UI 层
+3. 使用 `package.json` 条件导出区分 Web/Native 入口
+
+详细规范参见：[Chat Text Conversation Feature Spec](spec/chat-text-conversation.md)
 
 ---
 
