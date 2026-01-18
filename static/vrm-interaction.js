@@ -134,15 +134,36 @@ class VRMInteraction {
             const deltaY = e.clientY - this.previousMousePosition.y;
 
             if (this.dragMode === 'pan' && this.manager.currentModel && this.manager.currentModel.scene) {
-                // 平移速度
-                const panSpeed = 0.01;
-                const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.manager.camera.quaternion);
-                const up = new THREE.Vector3(0, 1, 0).applyQuaternion(this.manager.camera.quaternion);
+                // 动态计算平移速度：根据相机距离和FOV，使鼠标移动距离与屏幕上模型移动距离同步
+                // 这样无论缩放级别如何，鼠标移动100像素，模型在屏幕上也移动100像素
+                const camera = this.manager.camera;
+                const renderer = this.manager.renderer;
 
-                // 计算新位置
+                // 计算相机到模型中心的距离
+                const modelCenter = this.manager.currentModel.scene.position.clone();
+                const cameraDistance = camera.position.distanceTo(modelCenter);
+
+                // 计算在当前距离下，屏幕视口对应的世界空间尺寸
+                const fov = camera.fov * (Math.PI / 180); // 转换为弧度
+                const screenHeight = renderer.domElement.clientHeight;
+                const screenWidth = renderer.domElement.clientWidth;
+
+                // 在相机距离处，视口的世界空间高度
+                const worldHeight = 2 * Math.tan(fov / 2) * cameraDistance;
+                // 根据宽高比计算世界空间宽度
+                const worldWidth = worldHeight * (screenWidth / screenHeight);
+
+                // 计算每像素对应的世界空间距离
+                const pixelToWorldX = worldWidth / screenWidth;
+                const pixelToWorldY = worldHeight / screenHeight;
+
+                const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+                const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+
+                // 计算新位置：鼠标移动的像素 × 每像素对应的世界空间距离
                 const newPosition = this.manager.currentModel.scene.position.clone();
-                newPosition.add(right.multiplyScalar(deltaX * panSpeed));
-                newPosition.add(up.multiplyScalar(-deltaY * panSpeed));
+                newPosition.add(right.multiplyScalar(deltaX * pixelToWorldX));
+                newPosition.add(up.multiplyScalar(-deltaY * pixelToWorldY));
 
                 // 使用边界限制
                 const finalPosition = this.clampModelPosition(newPosition);
@@ -394,13 +415,13 @@ class VRMInteraction {
     }
 
     /**
-     * 【视锥体中心点限制 + 非对称边界】
+     * 【基于可见像素的边界限制】
      * 
-     * 注意：此函数使用 distanceTo(position) 估算视平面尺寸并将 NDC 差值映射回世界偏移。
-     * 这种近似方法在大 FOV/非典型相机位置时可能会有体感漂移。
+     * 计算模型包围盒在屏幕上的可见区域，只在可见像素小于阈值时才进行校正。
+     * 这样无论模型放多大，只要屏幕上还能看到足够的部分，就不会强制限制位置。
      **/
     clampModelPosition(position) {
-        if (!this.manager.camera || !this.manager.renderer) {
+        if (!this.manager.camera || !this.manager.renderer || !this.manager.currentModel?.vrm) {
             return position;
         }
 
@@ -410,61 +431,121 @@ class VRMInteraction {
         }
 
         const camera = this.manager.camera;
+        const renderer = this.manager.renderer;
+        const vrm = this.manager.currentModel.vrm;
 
-        // 1. 将目标位置(世界坐标)投影到屏幕空间(NDC)
-        const ndc = position.clone().project(camera);
+        // 最小可见像素阈值（低于此值才会校正），与 Live2D 保持一致
+        const MIN_VISIBLE_PIXELS = 50;
 
-        // 2. 设定边界
-        // X轴 (左右)：对称，保留 5% 边距
-        const limitX = 0.95;
+        try {
+            // 1. 临时将模型移动到目标位置，计算包围盒
+            const originalPosition = vrm.scene.position.clone();
+            vrm.scene.position.copy(position);
+            vrm.scene.updateMatrixWorld(true);
 
-        // Y轴 (上下)：非对称设置
-        // -1.6: 放宽底部限制，允许脚底稍微移出屏幕下方，手感更自由
-        //  0.2: 顶部依然保持严格，防止头飞出去
-        const limitYBottom = -1.6;
-        const limitYTop = 0.2;
+            // 2. 计算模型在目标位置的包围盒
+            const box = new THREE.Box3().setFromObject(vrm.scene);
 
+            // 恢复原始位置
+            vrm.scene.position.copy(originalPosition);
+            vrm.scene.updateMatrixWorld(true);
 
-        let clampedX = ndc.x;
-        let clampedY = ndc.y;
+            // 3. 获取包围盒的 8 个顶点并投影到屏幕空间
+            const corners = [
+                new THREE.Vector3(box.min.x, box.min.y, box.min.z),
+                new THREE.Vector3(box.max.x, box.min.y, box.min.z),
+                new THREE.Vector3(box.min.x, box.max.y, box.min.z),
+                new THREE.Vector3(box.max.x, box.max.y, box.min.z),
+                new THREE.Vector3(box.min.x, box.min.y, box.max.z),
+                new THREE.Vector3(box.max.x, box.min.y, box.max.z),
+                new THREE.Vector3(box.min.x, box.max.y, box.max.z),
+                new THREE.Vector3(box.max.x, box.max.y, box.max.z),
+            ];
 
-        // 执行限制
-        if (clampedX < -limitX) clampedX = -limitX;
-        if (clampedX > limitX) clampedX = limitX;
-        if (clampedY < limitYBottom) clampedY = limitYBottom; // 底部限制
-        if (clampedY > limitYTop) clampedY = limitYTop;       // 顶部限制 (防飞出)
+            const canvasRect = renderer.domElement.getBoundingClientRect();
+            const screenWidth = canvasRect.width;
+            const screenHeight = canvasRect.height;
 
-        // 3. 如果没有超出范围，直接返回
-        if (Math.abs(clampedX - ndc.x) < 0.0001 && Math.abs(clampedY - ndc.y) < 0.0001) {
+            // 计算模型在屏幕上的边界框
+            let modelMinX = Infinity, modelMaxX = -Infinity;
+            let modelMinY = Infinity, modelMaxY = -Infinity;
+
+            corners.forEach(corner => {
+                const projected = corner.clone().project(camera);
+                const screenX = (projected.x * 0.5 + 0.5) * screenWidth;
+                const screenY = (-projected.y * 0.5 + 0.5) * screenHeight;
+                modelMinX = Math.min(modelMinX, screenX);
+                modelMaxX = Math.max(modelMaxX, screenX);
+                modelMinY = Math.min(modelMinY, screenY);
+                modelMaxY = Math.max(modelMaxY, screenY);
+            });
+
+            // 4. 计算模型在屏幕内的可见区域
+            const visibleMinX = Math.max(0, modelMinX);
+            const visibleMaxX = Math.min(screenWidth, modelMaxX);
+            const visibleMinY = Math.max(0, modelMinY);
+            const visibleMaxY = Math.min(screenHeight, modelMaxY);
+
+            const visibleWidth = Math.max(0, visibleMaxX - visibleMinX);
+            const visibleHeight = Math.max(0, visibleMaxY - visibleMinY);
+            const visiblePixels = visibleWidth * visibleHeight;
+
+            // 5. 如果可见区域足够大，不做任何限制
+            if (visiblePixels >= MIN_VISIBLE_PIXELS) {
+                return position;
+            }
+
+            // 6. 可见区域太小，需要将模型拉回
+            // 计算需要移动的方向和距离，使模型至少有 MIN_VISIBLE_PIXELS 可见
+            const modelCenterX = (modelMinX + modelMaxX) / 2;
+            const modelCenterY = (modelMinY + modelMaxY) / 2;
+            const screenCenterX = screenWidth / 2;
+            const screenCenterY = screenHeight / 2;
+
+            // 计算需要移动的屏幕像素
+            let moveX = 0, moveY = 0;
+
+            // 如果模型完全在屏幕左侧外
+            if (modelMaxX < MIN_VISIBLE_PIXELS) {
+                moveX = MIN_VISIBLE_PIXELS - modelMaxX;
+            }
+            // 如果模型完全在屏幕右侧外
+            else if (modelMinX > screenWidth - MIN_VISIBLE_PIXELS) {
+                moveX = (screenWidth - MIN_VISIBLE_PIXELS) - modelMinX;
+            }
+
+            // 如果模型完全在屏幕上方外
+            if (modelMaxY < MIN_VISIBLE_PIXELS) {
+                moveY = MIN_VISIBLE_PIXELS - modelMaxY;
+            }
+            // 如果模型完全在屏幕下方外
+            else if (modelMinY > screenHeight - MIN_VISIBLE_PIXELS) {
+                moveY = (screenHeight - MIN_VISIBLE_PIXELS) - modelMinY;
+            }
+
+            // 7. 将屏幕像素移动距离转换为世界空间距离
+            const modelCenter = position.clone();
+            const cameraDistance = camera.position.distanceTo(modelCenter);
+            const fov = camera.fov * (Math.PI / 180);
+            const worldHeight = 2 * Math.tan(fov / 2) * cameraDistance;
+            const worldWidth = worldHeight * (screenWidth / screenHeight);
+
+            const pixelToWorldX = worldWidth / screenWidth;
+            const pixelToWorldY = worldHeight / screenHeight;
+
+            const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+            const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+
+            const correctedPos = position.clone();
+            correctedPos.add(right.multiplyScalar(moveX * pixelToWorldX));
+            correctedPos.add(up.multiplyScalar(-moveY * pixelToWorldY)); // Y 轴反向
+
+            return correctedPos;
+
+        } catch (error) {
+            console.warn('[VRM Interaction] 边界检测失败，跳过限制:', error);
             return position;
         }
-
-        // 4. 计算偏移量并反解（使用近似方法）
-        // 注意：此方法使用 distanceTo(position) 估算视平面尺寸，在大 FOV/非典型相机位置时可能有误差
-        // 计算当前深度下，屏幕视平面的物理尺寸
-        const distance = camera.position.distanceTo(position);
-        const vFov = camera.fov * Math.PI / 180;
-        const planeHeightAtDistance = 2 * Math.tan(vFov / 2) * distance;
-        const planeWidthAtDistance = planeHeightAtDistance * camera.aspect;
-
-        // 计算 NDC 的差值
-        const deltaNdcX = clampedX - ndc.x;
-        const deltaNdcY = clampedY - ndc.y;
-
-        // 转换为世界坐标偏移量
-        const worldOffsetX = (deltaNdcX / 2.0) * planeWidthAtDistance;
-        const worldOffsetY = (deltaNdcY / 2.0) * planeHeightAtDistance;
-
-        // 获取相机的右向量和上向量
-        const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
-        const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
-
-        // 应用偏移
-        const correctedPos = position.clone();
-        correctedPos.add(right.multiplyScalar(worldOffsetX));
-        correctedPos.add(up.multiplyScalar(worldOffsetY));
-
-        return correctedPos;
     }
 
 
