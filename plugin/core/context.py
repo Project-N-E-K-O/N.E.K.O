@@ -802,9 +802,9 @@ class PluginContext:
                         except Exception:
                             pass
                     return
-            except Exception:
-                # Never fall back to control-plane on message_plane failure: it can amplify overload.
-                raise
+            finally:
+                # Note: Never fall back to control-plane on message_plane failure: it can amplify overload.
+                pass
 
         raise RuntimeError("message_plane is not available for push_message")
 

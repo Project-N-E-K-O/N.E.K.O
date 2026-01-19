@@ -29,6 +29,34 @@ from .stores import StoreRegistry, TopicStore
 from .validation import validate_rpc_envelope
 
 
+_MAX_USER_REGEX_LEN = 128
+_MAX_REGEX_TEXT_LEN = 1024
+_REGEX_TIMEOUT_SECONDS = 0.02
+
+
+def _maybe_match_regex(pattern: str, value: Any, *, strict: bool) -> Optional[bool]:
+    if not isinstance(pattern, str) or not pattern:
+        return None
+    if len(pattern) > _MAX_USER_REGEX_LEN:
+        return False if strict else None
+    s = str(value or "")
+    if len(s) > _MAX_REGEX_TEXT_LEN:
+        s = s[:_MAX_REGEX_TEXT_LEN]
+
+    if safe_regex is not None:
+        try:
+            return bool(safe_regex.search(pattern, s, timeout=_REGEX_TIMEOUT_SECONDS))
+        except Exception:
+            return False if strict else None
+
+    if any(ch in pattern for ch in ("*", "+", "{", "}", "(", ")", "|", "[", "]", "?", "\\")):
+        return False if strict else None
+    try:
+        return bool(re.search(pattern, s))
+    except re.error:
+        return False if strict else None
+
+
 class MessagePlaneRpcServer:
     def __init__(
         self,
@@ -124,35 +152,6 @@ class MessagePlaneRpcServer:
             if isinstance(flt, dict):
                 p = {**p, **flt}
 
-            _MAX_USER_REGEX_LEN = 128
-            _MAX_REGEX_TEXT_LEN = 1024
-            _REGEX_TIMEOUT_SECONDS = 0.02
-
-            def _maybe_match_regex(pattern: str, value: Any) -> Optional[bool]:
-                if not isinstance(pattern, str) or not pattern:
-                    return None
-                if len(pattern) > _MAX_USER_REGEX_LEN:
-                    return False if strict else None
-                s = str(value or "")
-                if len(s) > _MAX_REGEX_TEXT_LEN:
-                    s = s[:_MAX_REGEX_TEXT_LEN]
-
-                # Prefer the third-party `regex` module which supports timeouts.
-                if safe_regex is not None:
-                    try:
-                        return bool(safe_regex.search(pattern, s, timeout=_REGEX_TIMEOUT_SECONDS))
-                    except Exception:
-                        # regex.error / TimeoutError / etc.
-                        return False if strict else None
-
-                # Fallback to stdlib re: no timeout support. Be conservative to avoid ReDoS.
-                if any(ch in pattern for ch in ("*", "+", "{", "}", "(", ")", "|", "[", "]", "?", "\\")):
-                    return False if strict else None
-                try:
-                    return bool(re.search(pattern, s))
-                except re.error:
-                    return False if strict else None
-
             def _match(ev: Dict[str, Any]) -> bool:
                 idx = ev.get("index") if isinstance(ev, dict) else None
                 payload = ev.get("payload") if isinstance(ev, dict) else None
@@ -211,7 +210,7 @@ class MessagePlaneRpcServer:
                         val = idx.get(key)
                     if val is None and isinstance(payload, dict):
                         val = payload.get(key)
-                    verdict = _maybe_match_regex(pat, val)
+                    verdict = _maybe_match_regex(pat, val, strict=strict)
                     if verdict is None:
                         continue
                     if not verdict:
@@ -221,7 +220,7 @@ class MessagePlaneRpcServer:
                     content = None
                     if isinstance(payload, dict):
                         content = payload.get("content")
-                    verdict = _maybe_match_regex(content_re, content)
+                    verdict = _maybe_match_regex(content_re, content, strict=strict)
                     if verdict is not None and not verdict:
                         return False
 
@@ -290,11 +289,12 @@ class MessagePlaneRpcServer:
             strict = bool(params.get("strict", True))
             if not field or not pattern:
                 return items
-            try:
-                rr = re.compile(pattern)
-            except re.error:
-                if strict:
-                    return []
+            # Validate user pattern once. In strict mode, reject invalid/unsafe patterns.
+            # In non-strict mode, keep original behavior: do not filter (return items).
+            pattern_ok = _maybe_match_regex(pattern, "", strict=strict)
+            if pattern_ok is False:
+                return [] if strict else items
+            if pattern_ok is None:
                 return items
             matched_regex: List[Dict[str, Any]] = []
             for ev in items:
@@ -305,7 +305,8 @@ class MessagePlaneRpcServer:
                     got = idx.get(field)
                 elif isinstance(payload, dict) and field in payload:
                     got = payload.get(field)
-                if rr.search(str(got or "")):
+                verdict = _maybe_match_regex(pattern, got, strict=strict)
+                if verdict:
                     matched_regex.append(ev)
             return matched_regex
 
@@ -314,7 +315,6 @@ class MessagePlaneRpcServer:
     def _apply_binary_op(self, left: List[Dict[str, Any]], right: List[Dict[str, Any]], *, op: str) -> Optional[List[Dict[str, Any]]]:
         if op not in ("merge", "intersection", "difference"):
             return None
-        left_keys = [self._dedupe_key(x) for x in left]
         right_keys = [self._dedupe_key(x) for x in right]
         set_right = set(right_keys)
         if op == "merge":

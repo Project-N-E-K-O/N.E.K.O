@@ -43,6 +43,11 @@ class LoadTestPlugin(NekoPluginBase):
                 # 避免 join 异常中断清理
                 pass
 
+        try:
+            self.ctx.close()
+        except Exception:
+            pass
+
     def _unwrap_ok_data(self, value: Any) -> Any:
         if isinstance(value, dict) and "data" in value:
             return value.get("data")
@@ -586,10 +591,6 @@ class LoadTestPlugin(NekoPluginBase):
             ),
             build_log_args=_build_log_args,
         )
-        try:
-            self.ctx.close()
-        except Exception:
-            pass
         return ok(data=stats)
 
     @plugin_entry(
@@ -662,10 +663,6 @@ class LoadTestPlugin(NekoPluginBase):
             ),
             build_log_args=_build_log_args,
         )
-        try:
-            self.ctx.close()
-        except Exception:
-            pass
         return ok(data=stats)
 
     @plugin_entry(
