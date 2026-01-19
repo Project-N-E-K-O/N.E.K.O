@@ -49,6 +49,7 @@ __pycache__/
 .env.production.local
 .ruff_cache
 .agent
+*.code-workspace
 
 # Rust: ignore target and cargo artifacts
 /launcher/target/
