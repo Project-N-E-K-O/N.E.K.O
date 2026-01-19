@@ -84,6 +84,9 @@ class BusChangeHub:
             try:
                 cb(str(op), dict(payload or {}))
             except Exception:
+                logging.getLogger("user_plugin_server").debug(
+                    f"BusChangeHub callback failed for bus={b}", exc_info=True
+                )
                 continue
 
 
@@ -645,56 +648,62 @@ class GlobalState:
                 pass
             raise RuntimeError(f"Failed to connect message_plane RPC: {e}") from e
 
-        req_id = str(uuid.uuid4())
-        req = {
-            "v": 1,
-            "op": "bus.get_recent",
-            "req_id": req_id,
-            "from_plugin": "control_plane",
-            "args": {"store": "messages", "topic": "all", "limit": int(limit), "light": False},
-        }
-        raw = ormsgpack.packb(req)
         try:
-            sock.send(raw, flags=0)
-        except Exception as e:
-            raise RuntimeError(f"Failed to send message_plane RPC request: {e}") from e
+            req_id = str(uuid.uuid4())
+            req = {
+                "v": 1,
+                "op": "bus.get_recent",
+                "req_id": req_id,
+                "from_plugin": "control_plane",
+                "args": {"store": "messages", "topic": "all", "limit": int(limit), "light": False},
+            }
+            raw = ormsgpack.packb(req)
+            try:
+                sock.send(raw, flags=0)
+            except Exception as e:
+                raise RuntimeError(f"Failed to send message_plane RPC request: {e}") from e
 
-        deadline = time.time() + max(0.0, float(timeout))
-        while True:
-            remaining = deadline - time.time()
-            if remaining <= 0:
-                raise TimeoutError(f"message_plane bus.get_recent timed out after {timeout}s")
-            try:
-                if sock.poll(timeout=int(remaining * 1000), flags=zmq.POLLIN) == 0:
+            deadline = time.time() + max(0.0, float(timeout))
+            while True:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    raise TimeoutError(f"message_plane bus.get_recent timed out after {timeout}s")
+                try:
+                    if sock.poll(timeout=int(remaining * 1000), flags=zmq.POLLIN) == 0:
+                        continue
+                except Exception as e:
+                    raise RuntimeError(f"message_plane RPC poll failed: {e}") from e
+                try:
+                    resp_raw = sock.recv(flags=0)
+                except Exception as e:
+                    raise RuntimeError(f"message_plane RPC recv failed: {e}") from e
+                try:
+                    resp = ormsgpack.unpackb(resp_raw)
+                except Exception:
                     continue
-            except Exception as e:
-                raise RuntimeError(f"message_plane RPC poll failed: {e}") from e
+                if not isinstance(resp, dict):
+                    continue
+                if resp.get("req_id") != req_id:
+                    continue
+                if resp.get("error"):
+                    raise RuntimeError(format_rpc_error(resp.get("error")))
+                if not resp.get("ok"):
+                    raise RuntimeError(format_rpc_error(resp.get("error") or "message_plane error"))
+                result = resp.get("result")
+                if isinstance(result, dict) and isinstance(result.get("items"), list):
+                    items = list(result.get("items") or [])
+                else:
+                    items = []
+                out: List[Dict[str, Any]] = []
+                for it in items:
+                    if isinstance(it, dict):
+                        out.append(dict(it))
+                return out
+        finally:
             try:
-                resp_raw = sock.recv(flags=0)
-            except Exception as e:
-                raise RuntimeError(f"message_plane RPC recv failed: {e}") from e
-            try:
-                resp = ormsgpack.unpackb(resp_raw)
+                sock.close(0)
             except Exception:
-                continue
-            if not isinstance(resp, dict):
-                continue
-            if resp.get("req_id") != req_id:
-                continue
-            if resp.get("error"):
-                raise RuntimeError(format_rpc_error(resp.get("error")))
-            if not resp.get("ok"):
-                raise RuntimeError(format_rpc_error(resp.get("error") or "message_plane error"))
-            result = resp.get("result")
-            if isinstance(result, dict) and isinstance(result.get("items"), list):
-                items = list(result.get("items") or [])
-            else:
-                items = []
-            out: List[Dict[str, Any]] = []
-            for it in items:
-                if isinstance(it, dict):
-                    out.append(dict(it))
-            return out
+                pass
 
     def refresh_messages_cache_from_message_plane(
         self,

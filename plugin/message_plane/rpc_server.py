@@ -42,6 +42,28 @@ _MAX_REGEX_TEXT_LEN = 1024
 _REGEX_TIMEOUT_SECONDS = 0.02
 
 
+def _validate_regex_pattern(pattern: str, *, strict: bool) -> Optional[bool]:
+    if not isinstance(pattern, str) or not pattern:
+        return None
+    if len(pattern) > _MAX_USER_REGEX_LEN:
+        return False if strict else None
+    
+    if safe_regex is not None:
+        try:
+            safe_regex.compile(pattern, timeout=_REGEX_TIMEOUT_SECONDS)
+            return True
+        except Exception:
+            return False if strict else None
+    
+    if any(ch in pattern for ch in ("*", "+", "{", "}", "(", ")", "|", "[", "]", "?", "\\")):
+        return False if strict else None
+    try:
+        re.compile(pattern)
+        return True
+    except re.error:
+        return False if strict else None
+
+
 def _maybe_match_regex(pattern: str, value: Any, *, strict: bool) -> Optional[bool]:
     if not isinstance(pattern, str) or not pattern:
         return None
@@ -297,9 +319,7 @@ class MessagePlaneRpcServer:
             strict = bool(params.get("strict", True))
             if not field or not pattern:
                 return items
-            # Validate user pattern once. In strict mode, reject invalid/unsafe patterns.
-            # In non-strict mode, keep original behavior: do not filter (return items).
-            pattern_ok = _maybe_match_regex(pattern, "", strict=strict)
+            pattern_ok = _validate_regex_pattern(pattern, strict=strict)
             if pattern_ok is False:
                 return [] if strict else items
             if pattern_ok is None:
@@ -510,6 +530,8 @@ class MessagePlaneRpcServer:
         return out
 
     def _handle(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(req, dict):
+            return err_response("", "invalid rpc envelope")
         req_id = str(req.get("req_id") or "")
         env, err = validate_rpc_envelope(req, mode=MESSAGE_PLANE_VALIDATE_MODE)
         if err is not None:
