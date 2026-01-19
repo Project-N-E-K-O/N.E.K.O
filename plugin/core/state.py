@@ -37,6 +37,8 @@ try:
 except Exception:  # pragma: no cover
     ormsgpack = None
 
+from plugin.sdk.message_plane_transport import format_rpc_error
+
 
 MAX_DELETED_BUS_IDS = 20000
 
@@ -680,9 +682,9 @@ class GlobalState:
             if resp.get("req_id") != req_id:
                 continue
             if resp.get("error"):
-                raise RuntimeError(str(resp.get("error")))
+                raise RuntimeError(format_rpc_error(resp.get("error")))
             if not resp.get("ok"):
-                raise RuntimeError(str(resp.get("error") or "message_plane error"))
+                raise RuntimeError(format_rpc_error(resp.get("error") or "message_plane error"))
             result = resp.get("result")
             if isinstance(result, dict) and isinstance(result.get("items"), list):
                 items = list(result.get("items") or [])

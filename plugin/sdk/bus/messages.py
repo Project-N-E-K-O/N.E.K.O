@@ -12,6 +12,7 @@ from plugin.settings import MESSAGE_PLANE_ZMQ_RPC_ENDPOINT
 from .types import BusList, BusOp, BusRecord, GetNode, register_bus_change_listener
 
 from plugin.sdk.message_plane_transport import MessagePlaneRpcClient as _MessagePlaneRpcClient
+from plugin.sdk.message_plane_transport import format_rpc_error
 
 if TYPE_CHECKING:
     from plugin.core.context import PluginContext
@@ -307,7 +308,7 @@ class MessageClient:
         if not isinstance(resp, dict):
             raise TimeoutError(f"message_plane {op_name} timed out after {timeout}s")
         if not resp.get("ok"):
-            raise RuntimeError(str(resp.get("error") or "message_plane error"))
+            raise RuntimeError(format_rpc_error(resp.get("error")))
         result = resp.get("result")
         items: List[Any] = []
         if isinstance(result, dict):
@@ -431,7 +432,7 @@ class MessageClient:
             if not isinstance(resp, dict):
                 raise TimeoutError(f"message_plane bus.get_since timed out after {timeout}s")
             if not resp.get("ok"):
-                raise RuntimeError(str(resp.get("error") or "message_plane error"))
+                raise RuntimeError(format_rpc_error(resp.get("error")))
             result = resp.get("result")
             items: List[Any] = []
             if isinstance(result, dict):

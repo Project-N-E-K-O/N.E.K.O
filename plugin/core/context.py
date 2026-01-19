@@ -781,6 +781,7 @@ class PluginContext:
                         "time": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                     }
                     msg = {
+                        "v": 1,
                         "kind": "delta_batch",
                         "from": str(self.plugin_id),
                         "ts": time.time(),

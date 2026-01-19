@@ -3,32 +3,31 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, Tuple
 
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import ValidationError
 from pydantic.type_adapter import TypeAdapter
 
-from .protocol import PROTOCOL_VERSION
+from .protocol import PROTOCOL_VERSION, RpcEnvelope
 
 
-class _RpcEnvelope(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    v: Optional[int] = None
-    op: str = Field(min_length=1, max_length=128)
-    req_id: str = Field(min_length=1, max_length=64)
-    args: Dict[str, Any] = Field(default_factory=dict)
-    from_plugin: Optional[str] = Field(default=None, max_length=128)
-
-
-_ENVELOPE_ADAPTER: TypeAdapter[_RpcEnvelope] = TypeAdapter(_RpcEnvelope)
+_ENVELOPE_ADAPTER: TypeAdapter[RpcEnvelope] = TypeAdapter(RpcEnvelope)
 
 
 def validate_rpc_envelope(
     req: Any,
     *,
     mode: str,
-) -> Tuple[Optional[_RpcEnvelope], Optional[str]]:
+) -> Tuple[Optional[RpcEnvelope], Optional[str]]:
     if mode == "off":
         return None, None
+
+    # Progressive freeze: in warn mode, tolerate legacy clients that omitted protocol version.
+    # We normalize the request before validation to avoid changing the authoritative schema.
+    if mode == "warn" and isinstance(req, dict) and "v" not in req:
+        try:
+            req = dict(req)
+            req["v"] = PROTOCOL_VERSION
+        except Exception:
+            pass
 
     try:
         env = _ENVELOPE_ADAPTER.validate_python(req)

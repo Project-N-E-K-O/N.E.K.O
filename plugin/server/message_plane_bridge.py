@@ -62,6 +62,7 @@ class _Bridge:
         if not self._enabled:
             return
         msg = {
+            "v": 1,
             "kind": "delta_batch",
             "from": "control_plane",
             "ts": time.time(),
@@ -83,6 +84,7 @@ class _Bridge:
         if not self._enabled:
             return
         msg = {
+            "v": 1,
             "kind": "snapshot",
             "from": "control_plane",
             "ts": time.time(),

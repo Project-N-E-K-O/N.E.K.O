@@ -12,6 +12,7 @@ from plugin.settings import BUS_SDK_POLL_INTERVAL_SECONDS
 from .types import BusList, BusOp, BusRecord, GetNode, parse_iso_timestamp
 
 from plugin.sdk.message_plane_transport import MessagePlaneRpcClient as _MessagePlaneRpcClient
+from plugin.sdk.message_plane_transport import format_rpc_error
 
 if TYPE_CHECKING:
     from plugin.core.context import PluginContext
@@ -178,9 +179,9 @@ class LifecycleClient:
         if not isinstance(mp_resp, dict):
             raise TimeoutError(f"message_plane {op_name} timed out after {timeout}s")
         if mp_resp.get("error"):
-            raise RuntimeError(str(mp_resp.get("error")))
+            raise RuntimeError(format_rpc_error(mp_resp.get("error")))
         if not mp_resp.get("ok"):
-            raise RuntimeError(str(mp_resp.get("error") or "message_plane error"))
+            raise RuntimeError(format_rpc_error(mp_resp.get("error")))
 
         result = mp_resp.get("result")
         items: List[Any] = []

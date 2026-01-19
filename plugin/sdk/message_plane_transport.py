@@ -130,3 +130,21 @@ class MessagePlaneRpcClient:
             # Keep the rest of the response flexible (result/error payload) for forward compatibility,
             # but guarantee that we only return well-formed envelopes.
             return resp
+
+
+def format_rpc_error(err: Any) -> str:
+    if err is None:
+        return "message_plane error"
+    if isinstance(err, str):
+        return err
+    if isinstance(err, dict):
+        code = err.get("code")
+        msg = err.get("message")
+        if isinstance(code, str) and isinstance(msg, str):
+            return f"{code}: {msg}" if code else msg
+        if isinstance(msg, str):
+            return msg
+    try:
+        return str(err)
+    except Exception:
+        return "message_plane error"

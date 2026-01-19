@@ -23,7 +23,15 @@ from plugin.settings import (
     MESSAGE_PLANE_VALIDATE_MODE,
 )
 
-from .protocol import PROTOCOL_VERSION, err_response, ok_response
+from pydantic import ValidationError
+
+from .protocol import (
+    PROTOCOL_VERSION,
+    BusGetRecentArgs,
+    BusQueryArgs,
+    err_response,
+    ok_response,
+)
 from .pub_server import MessagePlanePubServer
 from .stores import StoreRegistry, TopicStore
 from .validation import validate_rpc_envelope
@@ -520,6 +528,8 @@ class MessagePlaneRpcServer:
             if not isinstance(args, dict):
                 args = {}
 
+        validate_mode = str(MESSAGE_PLANE_VALIDATE_MODE or "off")
+
         if op in ("ping", "health"):
             return ok_response(req_id, {"ok": True, "ts": time.time()})
 
@@ -567,6 +577,15 @@ class MessagePlaneRpcServer:
             return ok_response(req_id, {"accepted": True, "event": event})
 
         if op == "bus.get_recent":
+            if validate_mode in ("warn", "strict"):
+                try:
+                    _ = BusGetRecentArgs.model_validate(args)
+                except ValidationError as e:
+                    if validate_mode == "warn":
+                        logger.warning("[message_plane] invalid args for {}: {}", op, e)
+                    else:
+                        return err_response(req_id, "invalid args", code="BAD_ARGS", details={"op": op})
+
             st = self._resolve_store(args)
             if st is None:
                 return err_response(req_id, "invalid store")
@@ -633,6 +652,15 @@ class MessagePlaneRpcServer:
             )
 
         if op == "bus.query":
+            if validate_mode in ("warn", "strict"):
+                try:
+                    _ = BusQueryArgs.model_validate(args)
+                except ValidationError as e:
+                    if validate_mode == "warn":
+                        logger.warning("[message_plane] invalid args for {}: {}", op, e)
+                    else:
+                        return err_response(req_id, "invalid args", code="BAD_ARGS", details={"op": op})
+
             st = self._resolve_store(args)
             if st is None:
                 return err_response(req_id, "invalid store")
@@ -679,6 +707,37 @@ class MessagePlaneRpcServer:
             )
 
         if op == "bus.replay":
+            # Progressive freeze (low overhead): bus.replay is a hot path for BusList.reload.
+            # Avoid pydantic validation here; do minimal shape checks only.
+            if validate_mode == "strict":
+                st_raw = args.get("store") or args.get("bus")
+                if not isinstance(st_raw, str) or not st_raw:
+                    return err_response(req_id, "invalid args", code="BAD_ARGS", details={"op": op, "field": "store"})
+                plan_raw = args.get("plan")
+                if plan_raw is None:
+                    plan_raw = args.get("trace")
+                if not isinstance(plan_raw, dict):
+                    return err_response(req_id, "invalid args", code="BAD_ARGS", details={"op": op, "field": "plan"})
+                limit_raw = args.get("limit")
+                if limit_raw is not None:
+                    try:
+                        if int(limit_raw) <= 0:
+                            return err_response(
+                                req_id,
+                                "invalid args",
+                                code="BAD_ARGS",
+                                details={"op": op, "field": "limit"},
+                            )
+                    except Exception:
+                        return err_response(req_id, "invalid args", code="BAD_ARGS", details={"op": op, "field": "limit"})
+            elif validate_mode == "warn":
+                try:
+                    plan_raw = args.get("plan") or args.get("trace")
+                    if not isinstance(plan_raw, dict):
+                        logger.warning("[message_plane] invalid args for {}: missing/invalid plan", op)
+                except Exception:
+                    pass
+
             st = self._resolve_store(args)
             if st is None:
                 return err_response(req_id, "invalid store")

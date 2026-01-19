@@ -494,6 +494,7 @@ class MessagePlaneIngestBatcher:
 
             try:
                 payload = {
+                    "v": 1,
                     "kind": "delta_batch",
                     "from": self._from_plugin,
                     "ts": time.time(),
