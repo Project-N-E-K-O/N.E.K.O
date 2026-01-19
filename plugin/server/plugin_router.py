@@ -16,7 +16,6 @@ from plugin.server.requests.registry import build_request_handlers
 from plugin.settings import (
     PLUGIN_ZMQ_IPC_ENABLED,
     PLUGIN_ZMQ_IPC_ENDPOINT,
-    PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT,
 )
 
 
@@ -27,8 +26,6 @@ class PluginRouter:
         self._router_task: Optional[asyncio.Task] = None
         self._zmq_task: Optional[asyncio.Task] = None
         self._zmq_server: Any = None
-        self._push_pull_task: Optional[asyncio.Task] = None
-        self._push_pull_server: Any = None
         self._shutdown_event: Optional[asyncio.Event] = None  # 延迟初始化，在 start() 中创建
         self._pending_requests: Dict[str, asyncio.Future] = {}
         # 创建共享的线程池执行器，用于在后台线程中执行阻塞的队列操作
@@ -74,144 +71,6 @@ class PluginRouter:
                 self._zmq_server = None
                 self._zmq_task = None
                 logger.opt(exception=True).exception("Failed to start ZeroMQ IPC server: {}", e)
-
-        if PLUGIN_ZMQ_IPC_ENABLED:
-            try:
-                from plugin.zeromq_ipc import ZmqMessagePushPullConsumer
-                from plugin.server.services import (
-                    push_messages_to_queue_batch,
-                    validate_and_advance_push_seq_batch,
-                    validate_and_advance_push_seq_range,
-                )
-
-                async def _handle_push_batch(msg: Dict[str, Any]) -> None:
-                    from_plugin = msg.get("from_plugin")
-                    if not isinstance(from_plugin, str) or not from_plugin:
-                        return
-                    items = msg.get("items")
-                    if not isinstance(items, list):
-                        return
-
-                    declared_count = msg.get("count")
-                    if isinstance(declared_count, int) and int(declared_count) != len(items):
-                        logger.warning(
-                            "[MESSAGE_PUSH_BATCH] count mismatch from={} declared={} actual={}",
-                            from_plugin,
-                            declared_count,
-                            len(items),
-                        )
-
-                    # Prefer O(1) seq validation using batch header.
-                    first_seq = msg.get("first_seq")
-                    last_seq = msg.get("last_seq")
-                    seq_ok = False
-                    try:
-                        if first_seq is not None and last_seq is not None and isinstance(declared_count, int):
-                            validate_and_advance_push_seq_range(
-                                plugin_id=str(from_plugin),
-                                first_seq=int(first_seq),
-                                last_seq=int(last_seq),
-                                count=int(declared_count),
-                            )
-                            seq_ok = True
-                    except Exception:
-                        seq_ok = False
-
-                    # Fallback: build seq_list only when range validation is not available.
-                    if not seq_ok:
-                        seq_list: list[int] = []
-                        for it in items:
-                            if not isinstance(it, dict):
-                                continue
-                            s = it.get("seq")
-                            if isinstance(s, int):
-                                seq_list.append(int(s))
-                            else:
-                                try:
-                                    if s is not None:
-                                        seq_list.append(int(s))
-                                except Exception:
-                                    pass
-                        if seq_list:
-                            if first_seq is not None:
-                                try:
-                                    if int(first_seq) != int(seq_list[0]):
-                                        logger.warning(
-                                            "[MESSAGE_PUSH_BATCH] first_seq mismatch from={} declared={} actual={}",
-                                            from_plugin,
-                                            first_seq,
-                                            seq_list[0],
-                                        )
-                                except Exception:
-                                    pass
-                            if last_seq is not None:
-                                try:
-                                    if int(last_seq) != int(seq_list[-1]):
-                                        logger.warning(
-                                            "[MESSAGE_PUSH_BATCH] last_seq mismatch from={} declared={} actual={}",
-                                            from_plugin,
-                                            last_seq,
-                                            seq_list[-1],
-                                        )
-                                except Exception:
-                                    pass
-                            for i in range(1, len(seq_list)):
-                                if seq_list[i] <= seq_list[i - 1]:
-                                    logger.warning(
-                                        "[MESSAGE_PUSH_BATCH] seq not strictly increasing from={} prev={} curr={}",
-                                        from_plugin,
-                                        seq_list[i - 1],
-                                        seq_list[i],
-                                    )
-                                    break
-                            try:
-                                validate_and_advance_push_seq_batch(plugin_id=str(from_plugin), seq_list=seq_list)
-                            except Exception:
-                                pass
-
-                    batch_items: list[Dict[str, Any]] = []
-                    for it in items:
-                        if not isinstance(it, dict):
-                            continue
-                        meta_raw = it.get("metadata")
-                        if isinstance(meta_raw, dict):
-                            needs_fix = False
-                            try:
-                                for k in meta_raw.keys():
-                                    if not isinstance(k, str):
-                                        needs_fix = True
-                                        break
-                            except Exception:
-                                needs_fix = True
-
-                            if needs_fix:
-                                meta: Dict[str, Any] = {}
-                                for k, v in meta_raw.items():
-                                    try:
-                                        kk = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
-                                    except Exception:
-                                        kk = str(k)
-                                    meta[kk] = v
-                                it = dict(it)
-                                it["metadata"] = meta
-                        batch_items.append(it)
-
-                    try:
-                        push_messages_to_queue_batch(
-                            plugin_id=str(from_plugin),
-                            items=batch_items,
-                            mode="zmq-fast",
-                        )
-                    except Exception:
-                        return
-
-                self._push_pull_server = ZmqMessagePushPullConsumer(PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT, _handle_push_batch)
-                self._push_pull_task = asyncio.create_task(self._push_pull_server.serve_forever(shutdown_event))
-                logger.info("ZeroMQ PUSH server started at {}", PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT)
-            except Exception as e:
-                self._push_pull_server = None
-                self._push_pull_task = None
-                logger.opt(exception=True).exception("Failed to start ZeroMQ PUSH server: {}", e)
         logger.info("Plugin router started")
     
     async def stop(self) -> None:
@@ -239,19 +98,6 @@ class PluginRouter:
                 except Exception:
                     pass
                 self._zmq_server = None
-
-        if self._push_pull_task is not None:
-            try:
-                self._push_pull_task.cancel()
-            except Exception:
-                pass
-            self._push_pull_task = None
-            if self._push_pull_server is not None:
-                try:
-                    self._push_pull_server.close()
-                except Exception:
-                    pass
-                self._push_pull_server = None
 
         # 关闭线程池执行器
         if self._executor is not None:

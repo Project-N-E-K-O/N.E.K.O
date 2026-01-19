@@ -18,10 +18,6 @@ from fastapi import HTTPException
 from loguru import logger as loguru_logger
 
 from plugin.core.state import state
-from plugin.api.models import (
-    PluginPushMessageResponse,
-)
-from plugin.api.models import PluginPushMessageRequest
 from plugin.api.exceptions import (
     PluginError,
     PluginTimeoutError,
@@ -34,201 +30,11 @@ from plugin.utils.logging import format_log_text as _format_log_text
 from plugin.settings import (
     PLUGIN_EXECUTION_TIMEOUT,
     MESSAGE_QUEUE_DEFAULT_MAX_COUNT,
-    MESSAGE_SCHEMA_STRICT,
-    MESSAGE_SCHEMA_ALLOW_UNSAFE,
-    MESSAGE_SCHEMA_WARN_UNKNOWN_FIELDS,
 )
 from plugin.sdk.errors import ErrorCode
 from plugin.sdk.responses import fail, is_envelope
 
 logger = loguru_logger
-
-_mq_full_last_warn_ts: float = 0.0
-_mq_full_dropped: int = 0
-
-_msg_push_last_info_ts: float = 0.0
-_msg_push_suppressed: int = 0
-
-_msg_schema_unknown_last_warn_ts: float = 0.0
-_msg_schema_unknown_suppressed: int = 0
-_msg_schema_unknown_last_fields: Optional[tuple[str, ...]] = None
-
-_push_seq_lock = threading.Lock()
-_push_expected_seq: Dict[str, int] = {}
-
-
-def validate_and_advance_push_seq(*, plugin_id: str, seq: int) -> None:
-    pid = str(plugin_id)
-    try:
-        seq_i = int(seq)
-    except Exception:
-        return
-    with _push_seq_lock:
-        expected = _push_expected_seq.get(pid)
-        if expected is None:
-            _push_expected_seq[pid] = seq_i + 1
-            return
-        if seq_i != int(expected):
-            logger.opt(exception=True).warning(
-                "[MESSAGE PUSH] seq mismatch: plugin={} expected={} got={}",
-                pid,
-                int(expected),
-                seq_i,
-            )
-            _push_expected_seq[pid] = seq_i + 1
-            return
-        _push_expected_seq[pid] = int(expected) + 1
-
-
-def validate_and_advance_push_seq_batch(*, plugin_id: str, seq_list: List[int]) -> None:
-    pid = str(plugin_id)
-    if not seq_list:
-        return
-    try:
-        seqs = [int(s) for s in seq_list]
-    except Exception as e:
-        raise ValueError(f"invalid seq_list: {e}") from e
-    try:
-        expected = int(_push_expected_seq.get(pid, 0))
-    except Exception:
-        expected = 0
-    first = int(seqs[0])
-    if first != expected:
-        raise ValueError(f"push seq mismatch: expected={expected} got={first}")
-    for i in range(1, len(seqs)):
-        if int(seqs[i]) != int(seqs[i - 1]) + 1:
-            raise ValueError(f"push seq not contiguous at index={i} prev={seqs[i-1]} got={seqs[i]}")
-    _push_expected_seq[pid] = int(seqs[-1]) + 1
-
-
-def validate_and_advance_push_seq_range(*, plugin_id: str, first_seq: int, last_seq: int, count: int) -> None:
-    pid = str(plugin_id)
-    try:
-        first_i = int(first_seq)
-        last_i = int(last_seq)
-        n = int(count)
-    except Exception as e:
-        raise ValueError(f"invalid seq range args: {e}") from e
-    if n <= 0:
-        return
-    if last_i < first_i:
-        raise ValueError(f"invalid seq range: first={first_i} last={last_i}")
-    if (last_i - first_i + 1) != n:
-        raise ValueError(f"seq range length mismatch: first={first_i} last={last_i} count={n}")
-    try:
-        expected = int(_push_expected_seq.get(pid, 0))
-    except Exception:
-        expected = 0
-    if first_i != expected:
-        raise ValueError(f"push seq mismatch: expected={expected} got={first_i}")
-    _push_expected_seq[pid] = int(last_i) + 1
-
-
-_BUS_INGESTION_ENABLED = os.getenv("NEKO_BUS_INGESTION_LOOP", "1").lower() in ("1", "true", "yes", "on")
-_bus_ingest_stop: Optional[asyncio.Event] = None
-_bus_ingest_task: Optional[asyncio.Task[None]] = None
-
-
-def _warn_unknown_message_fields(*, unknown: List[str], mode: str) -> None:
-    if not MESSAGE_SCHEMA_WARN_UNKNOWN_FIELDS:
-        return
-    if not unknown:
-        return
-    global _msg_schema_unknown_last_warn_ts, _msg_schema_unknown_suppressed, _msg_schema_unknown_last_fields
-    try:
-        fields_key = tuple(sorted(set(str(x) for x in unknown if x)))
-    except Exception:
-        fields_key = None
-    _msg_schema_unknown_suppressed += 1
-    now_ts = time.time()
-    if (now_ts - float(_msg_schema_unknown_last_warn_ts)) < 1.0 and _msg_schema_unknown_last_fields == fields_key:
-        return
-    _msg_schema_unknown_last_warn_ts = float(now_ts)
-    _msg_schema_unknown_last_fields = fields_key
-    n = int(_msg_schema_unknown_suppressed)
-    _msg_schema_unknown_suppressed = 0
-    try:
-        logger.warning(
-            "[MESSAGE SCHEMA] Unknown fields detected (mode={} fields={} count={})",
-            str(mode),
-            list(fields_key or ()),
-            n,
-        )
-    except Exception:
-        pass
-
-
-def _validate_message_payload(payload: Dict[str, Any], *, mode: str) -> Dict[str, Any]:
-    """Validate message payload.
-
-    - Default: strict enabled, reject invalid/missing required fields.
-    - If payload['unsafe']=True and MESSAGE_SCHEMA_ALLOW_UNSAFE is enabled: skip strict validation,
-      but still enforce minimal invariants to keep runtime stable.
-    - Unknown fields: warn (rate-limited) but do not reject.
-    """
-    if not isinstance(payload, dict):
-        raise ValueError("message payload must be a dict")
-
-    allowed = {
-        # envelope / runtime fields (not part of SDK schema but present in bus records)
-        "type",
-        "message_id",
-        "time",
-        "_bus_stored",
-
-        "plugin_id",
-        "source",
-        "description",
-        "priority",
-        "message_type",
-        "content",
-        "binary_data",
-        "binary_url",
-        "metadata",
-        "unsafe",
-    }
-    try:
-        unknown = [k for k in payload.keys() if k not in allowed]
-    except Exception:
-        unknown = []
-    _warn_unknown_message_fields(unknown=unknown, mode=mode)
-
-    unsafe = bool(payload.get("unsafe"))
-    if unsafe and MESSAGE_SCHEMA_ALLOW_UNSAFE:
-        # Minimal invariants (do not allow runtime errors downstream)
-        plugin_id = payload.get("plugin_id")
-        source = payload.get("source")
-        message_type = payload.get("message_type")
-        if not isinstance(plugin_id, str) or not plugin_id:
-            raise ValueError("plugin_id is required")
-        if not isinstance(source, str) or not source:
-            raise ValueError("source is required")
-        if not isinstance(message_type, str) or not message_type:
-            raise ValueError("message_type is required")
-        md = payload.get("metadata")
-        if md is not None and not isinstance(md, dict):
-            raise ValueError("metadata must be a dict")
-        return payload
-
-    if not MESSAGE_SCHEMA_STRICT:
-        return payload
-
-    # Strict path: use Pydantic to validate types + cross-field constraints.
-    data = {
-        "plugin_id": payload.get("plugin_id"),
-        "source": payload.get("source"),
-        "description": payload.get("description", ""),
-        "priority": payload.get("priority", 0),
-        "message_type": payload.get("message_type"),
-        "content": payload.get("content"),
-        "binary_data": payload.get("binary_data"),
-        "binary_url": payload.get("binary_url"),
-        "metadata": payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
-        "unsafe": False,
-    }
-    req = PluginPushMessageRequest.model_validate(data)
-    out = req.model_dump()
-    return out
 
 
 def _parse_iso_ts(value: Any) -> Optional[float]:
@@ -254,62 +60,6 @@ def _parse_iso_ts(value: Any) -> Optional[float]:
         return dt.timestamp()
     except Exception:
         return None
-
-
-def _drain_bus_queue_once(q: Any, limit: int) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    if q is None:
-        return out
-    n = int(limit)
-    if n <= 0:
-        return out
-    for _ in range(n):
-        try:
-            item = q.get_nowait()
-        except (asyncio.QueueEmpty, _queue.Empty):
-            break
-        except Exception:
-            break
-        if isinstance(item, dict):
-            out.append(item)
-    return out
-
-
-def _ingest_normalize_and_store_message(msg: Dict[str, Any]) -> None:
-    if msg.get("_bus_stored") is True:
-        return
-    if not isinstance(msg.get("message_id"), str) or not msg.get("message_id"):
-        msg = dict(msg)
-        msg["message_id"] = str(uuid.uuid4())
-    if not isinstance(msg.get("time"), str) or not msg.get("time"):
-        msg = dict(msg)
-        msg["time"] = now_iso()
-    state.append_message_record(msg)
-
-
-def _ingest_normalize_message(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    if not isinstance(msg, dict):
-        return None
-    if msg.get("_bus_stored") is True:
-        return None
-    # Validate early to avoid polluting the bus store.
-    try:
-        _ = _validate_message_payload(msg, mode="ingest")
-    except Exception as e:
-        try:
-            logger.warning("[MESSAGE SCHEMA] Dropped invalid message in ingest: {}", e)
-        except Exception:
-            pass
-        return None
-    out = msg
-    if not isinstance(out.get("message_id"), str) or not out.get("message_id"):
-        out = dict(out)
-        out["message_id"] = str(uuid.uuid4())
-    if not isinstance(out.get("time"), str) or not out.get("time"):
-        if out is msg:
-            out = dict(out)
-        out["time"] = now_iso()
-    return out
 
 
 def _ingest_normalize_and_store_event(ev: Dict[str, Any]) -> None:
@@ -374,124 +124,7 @@ def _ingest_normalize_lifecycle(ev: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return out
 
 
-def _bus_ingest_flush_once(limit_per_queue: int = 4096) -> int:
-    drained = 0
-    msgs_raw = _drain_bus_queue_once(getattr(state, "message_queue", None), limit_per_queue)
-    if msgs_raw:
-        msgs: List[Dict[str, Any]] = []
-        for m in msgs_raw:
-            nm = _ingest_normalize_message(m)
-            if nm is not None:
-                msgs.append(nm)
-        if msgs:
-            try:
-                drained += int(getattr(state, "extend_message_records")(msgs))
-            except Exception:
-                for m in msgs:
-                    _ingest_normalize_and_store_message(m)
-                    drained += 1
-
-    evs_raw = _drain_bus_queue_once(getattr(state, "event_queue", None), limit_per_queue)
-    if evs_raw:
-        evs: List[Dict[str, Any]] = []
-        for e in evs_raw:
-            ne = _ingest_normalize_event(e)
-            if ne is not None:
-                evs.append(ne)
-        if evs:
-            try:
-                drained += int(getattr(state, "extend_event_records")(evs))
-            except Exception:
-                for e in evs:
-                    _ingest_normalize_and_store_event(e)
-                    drained += 1
-
-    lfs_raw = _drain_bus_queue_once(getattr(state, "lifecycle_queue", None), limit_per_queue)
-    if lfs_raw:
-        lfs: List[Dict[str, Any]] = []
-        for e in lfs_raw:
-            ne = _ingest_normalize_lifecycle(e)
-            if ne is not None:
-                lfs.append(ne)
-        if lfs:
-            try:
-                drained += int(getattr(state, "extend_lifecycle_records")(lfs))
-            except Exception:
-                for e in lfs:
-                    _ingest_normalize_and_store_lifecycle(e)
-                    drained += 1
-    return drained
-
-
-async def start_bus_ingestion_loop() -> None:
-    global _bus_ingest_stop, _bus_ingest_task
-    if not _BUS_INGESTION_ENABLED:
-        return
-    if _bus_ingest_task is not None and not _bus_ingest_task.done():
-        return
-    _bus_ingest_stop = asyncio.Event()
-
-    async def _loop() -> None:
-        assert _bus_ingest_stop is not None
-        last_stats_ts = time.monotonic()
-        drained_in_window = 0
-        while not _bus_ingest_stop.is_set():
-            drained = 0
-            t0 = time.monotonic()
-            # Time-bounded flush to avoid starving the event loop.
-            while True:
-                drained += _bus_ingest_flush_once(limit_per_queue=2048)
-                if drained == 0:
-                    break
-                if (time.monotonic() - t0) >= 0.005:
-                    break
-
-            drained_in_window += drained
-            now = time.monotonic()
-            if (now - last_stats_ts) >= 5.0:
-                last_stats_ts = now
-                try:
-                    qsz = None
-                    try:
-                        qsz = int(state.message_queue.qsize())
-                    except Exception:
-                        qsz = None
-                    logger.debug(
-                        "[bus.ingest] drained_5s={} message_queue_size={}",
-                        int(drained_in_window),
-                        qsz,
-                    )
-                except Exception:
-                    pass
-                drained_in_window = 0
-
-            if drained > 0:
-                await asyncio.sleep(0)
-            else:
-                await asyncio.sleep(0.005)
-
-    _bus_ingest_task = asyncio.create_task(_loop(), name="bus-ingestion-loop")
-
-
-async def stop_bus_ingestion_loop() -> None:
-    global _bus_ingest_stop, _bus_ingest_task
-    if _bus_ingest_stop is not None:
-        try:
-            _bus_ingest_stop.set()
-        except Exception:
-            pass
-    if _bus_ingest_task is not None:
-        try:
-            await _bus_ingest_task
-        except Exception:
-            pass
-    _bus_ingest_stop = None
-    _bus_ingest_task = None
-    # Final flush to minimize loss on shutdown.
-    try:
-        _bus_ingest_flush_once(limit_per_queue=1000000)
-    except Exception:
-        pass
+ 
 
 
 def _b64_bytes(value: Any) -> Optional[str]:
@@ -860,17 +493,17 @@ def get_messages_from_queue(
     if max_count is None:
         max_count = MESSAGE_QUEUE_DEFAULT_MAX_COUNT
 
-    if not _BUS_INGESTION_ENABLED:
-        # Drain queue into store (queue is an ingestion channel; store is the authoritative history)
-        while True:
-            try:
-                msg = state.message_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-
-            if not isinstance(msg, dict):
-                continue
-            _ingest_normalize_and_store_message(msg)
+    # messages are authoritative in message_plane; control-plane keeps a cache refreshed on demand.
+    try:
+        state.refresh_messages_cache_from_message_plane(
+            limit=int(max_count) if max_count is not None else 100,
+            timeout=1.0,
+            ttl_seconds=0.5,
+            force=False,
+        )
+    except Exception:
+        # Best-effort: if message_plane is unavailable, serve the last cached snapshot.
+        pass
 
     # Optimize common case: scan from the tail and expand window until we have enough matches.
     # Worst-case still falls back to full scan, preserving semantics.
@@ -1086,16 +719,6 @@ def get_events_from_queue(
     if max_count is None:
         max_count = MESSAGE_QUEUE_DEFAULT_MAX_COUNT
 
-    if not _BUS_INGESTION_ENABLED:
-        while True:
-            try:
-                ev = state.event_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-            if not isinstance(ev, dict):
-                continue
-            _ingest_normalize_and_store_event(ev)
-
     store_size = 0
     try:
         store_size = int(state.event_store_len())
@@ -1218,16 +841,6 @@ def get_lifecycle_from_queue(
     if max_count is None:
         max_count = MESSAGE_QUEUE_DEFAULT_MAX_COUNT
 
-    if not _BUS_INGESTION_ENABLED:
-        while True:
-            try:
-                ev = state.lifecycle_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-            if not isinstance(ev, dict):
-                continue
-            _ingest_normalize_and_store_lifecycle(ev)
-
     store_size = 0
     try:
         store_size = int(state.lifecycle_store_len())
@@ -1348,230 +961,6 @@ def delete_event_from_store(event_id: str) -> bool:
 
 def delete_lifecycle_from_store(lifecycle_id: str) -> bool:
     return state.delete_lifecycle(lifecycle_id)
-
-
-def push_message_to_queue(
-    plugin_id: str,
-    source: str,
-    message_type: str,
-    description: str = "",
-    priority: int = 0,
-    content: Optional[str] = None,
-    binary_data: Optional[bytes] = None,
-    binary_url: Optional[str] = None,
-    metadata: Optional[Dict[str, Any]] = None,
-    unsafe: bool = False,
-    mode: str = "unknown",
-) -> str:
-    """
-    将消息推送到队列
-    
-    Returns:
-        message_id
-    """
-    message_id = str(uuid.uuid4())
-    message = {
-        "type": "MESSAGE_PUSH",
-        "message_id": message_id,
-        "plugin_id": plugin_id,
-        "source": source,
-        "description": description,
-        "priority": priority,
-        "message_type": message_type,
-        "content": content,
-        "binary_data": binary_data,
-        "binary_url": binary_url,
-        "metadata": metadata or {},
-        "unsafe": bool(unsafe),
-        "time": now_iso(),
-        "_bus_stored": True,
-    }
-
-    # Validate schema (strict by default; may be bypassed when unsafe is enabled).
-    try:
-        validated = _validate_message_payload(message, mode=str(mode))
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-    # Apply validated values back to the stored message to keep bus records consistent.
-    # (Keep envelope fields like type/message_id/time as-is.)
-    try:
-        if isinstance(validated, dict):
-            message["plugin_id"] = validated.get("plugin_id", message.get("plugin_id"))
-            message["source"] = validated.get("source", message.get("source"))
-            message["description"] = validated.get("description", message.get("description"))
-            message["priority"] = validated.get("priority", message.get("priority"))
-            message["message_type"] = validated.get("message_type", message.get("message_type"))
-            message["content"] = validated.get("content", message.get("content"))
-            message["binary_data"] = validated.get("binary_data", message.get("binary_data"))
-            message["binary_url"] = validated.get("binary_url", message.get("binary_url"))
-            message["metadata"] = validated.get("metadata", message.get("metadata")) or {}
-    except Exception:
-        pass
-    
-    try:
-        state.message_queue.put_nowait(message)
-        state.append_message_record(message)
-        global _msg_push_last_info_ts, _msg_push_suppressed
-        now_ts = time.time()
-        _msg_push_suppressed += 1
-        if now_ts - float(_msg_push_last_info_ts) >= 1.0:
-            _msg_push_last_info_ts = float(now_ts)
-            n = int(_msg_push_suppressed)
-            _msg_push_suppressed = 0
-            if n <= 1:
-                loguru_logger.info(
-                    f"[MESSAGE PUSH] mode={mode} Plugin: {plugin_id} | "
-                    f"Source: {source} | "
-                    f"Type: {message_type} | "
-                    f"Priority: {priority} | "
-                    f"Description: {description} | "
-                    f"Content: {_format_log_text(content or '')}"
-                )
-            else:
-                loguru_logger.info(
-                    f"[MESSAGE PUSH] mode={mode} Plugin: {plugin_id} | "
-                    f"Source: {source} | "
-                    f"Type: {message_type} | "
-                    f"Priority: {priority} | "
-                    f"Description: {description} | "
-                    f"Content: {_format_log_text(content or '')} (x{n})"
-                )
-    except asyncio.QueueFull:
-        # 队列满时，尝试移除最旧的消息
-        try:
-            state.message_queue.get_nowait()
-            state.message_queue.put_nowait(message)
-            global _mq_full_last_warn_ts, _mq_full_dropped
-            _mq_full_dropped += 1
-            now_ts = time.time()
-            if now_ts - float(_mq_full_last_warn_ts) >= 1.0:
-                _mq_full_last_warn_ts = float(now_ts)
-                dropped = int(_mq_full_dropped)
-                _mq_full_dropped = 0
-                if dropped <= 1:
-                    loguru_logger.warning("Message queue full, dropped oldest message")
-                else:
-                    loguru_logger.warning("Message queue full, dropped oldest message (x{})", dropped)
-        except (asyncio.QueueEmpty, AttributeError, RuntimeError) as e:
-            logger.error(f"Failed to enqueue message, queue full and cleanup failed: {e}")
-            raise HTTPException(
-                status_code=503,
-                detail="Message queue is full, please try again later"
-            ) from e
-    except (AttributeError, RuntimeError) as e:
-        logger.error(f"Message queue error: {e}")
-        raise HTTPException(
-            status_code=503,
-            detail="Message queue is not available"
-        ) from e
-    except Exception as e:
-        logger.exception(f"Unexpected error in push_message_to_queue: {type(e).__name__}")
-        raise HTTPException(
-            status_code=503,
-            detail="Failed to enqueue message"
-        ) from e
-    
-    return message_id
-
-
-def push_messages_to_queue_batch(
-    *,
-    plugin_id: str,
-    items: List[Dict[str, Any]],
-    mode: str = "unknown",
-) -> int:
-    if not isinstance(items, list) or not items:
-        return 0
-
-    pid = str(plugin_id)
-    now_s = now_iso()
-    fast = str(mode) == "zmq-fast"
-    out_records: List[Dict[str, Any]] = []
-    for it in items:
-        if not isinstance(it, dict):
-            continue
-        mid = it.get("message_id")
-        if not isinstance(mid, str) or not mid:
-            mid = str(uuid.uuid4())
-        t = it.get("time")
-        if not isinstance(t, str) or not t:
-            t = now_s
-        msg = {
-            "type": "MESSAGE_PUSH",
-            "message_id": mid,
-            "plugin_id": pid,
-            "source": it.get("source") if isinstance(it.get("source"), str) else "",
-            "description": it.get("description") if isinstance(it.get("description"), str) else "",
-            "priority": it.get("priority", 0),
-            "message_type": it.get("message_type") if isinstance(it.get("message_type"), str) else "",
-            "content": it.get("content"),
-            "binary_data": it.get("binary_data"),
-            "binary_url": it.get("binary_url"),
-            "metadata": it.get("metadata") if isinstance(it.get("metadata"), dict) else {},
-            "unsafe": True,
-            "time": t,
-            "_bus_stored": True,
-        }
-        if fast:
-            # Fast path: avoid per-item pydantic/field-scan overhead.
-            # Enforce minimal invariants inline.
-            if not msg.get("source") or not msg.get("message_type"):
-                continue
-            if not isinstance(msg.get("metadata"), dict):
-                msg["metadata"] = {}
-        else:
-            try:
-                _ = _validate_message_payload(msg, mode=str(mode))
-            except Exception:
-                continue
-        out_records.append(msg)
-
-    if not out_records:
-        return 0
-
-    if not fast:
-        try:
-            for rec in out_records:
-                try:
-                    state.message_queue.put_nowait(rec)
-                except Exception:
-                    break
-        except Exception:
-            pass
-
-    stored = 0
-    try:
-        # For fast mode, avoid per-message bus_change notifications.
-        # A single coalesced notification (single rev bump) drastically reduces overhead.
-        if str(mode) == "zmq-fast":
-            stored = int(state.extend_message_records_coalesced(out_records))
-        else:
-            stored = int(state.extend_message_records(out_records))
-    except Exception:
-        try:
-            for rec in out_records:
-                state.append_message_record(rec)
-                stored += 1
-        except Exception:
-            stored = int(stored)
-
-    try:
-        global _msg_push_last_info_ts, _msg_push_suppressed
-        now_ts = time.time()
-        _msg_push_suppressed += int(stored)
-        if now_ts - float(_msg_push_last_info_ts) >= 1.0:
-            _msg_push_last_info_ts = float(now_ts)
-            n = int(_msg_push_suppressed)
-            _msg_push_suppressed = 0
-            loguru_logger.info(
-                f"[MESSAGE PUSH] mode={mode} Plugin: {pid} | "
-                f"Content: (batch x{n})"
-            )
-    except Exception:
-        pass
-
-    return int(stored)
 
 
 def _enqueue_event(event: Dict[str, Any]) -> None:

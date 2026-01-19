@@ -238,10 +238,6 @@ PLUGIN_BUS_CHANGE_LOG_DEDUP_WINDOW_SECONDS = _get_float_env(
     "NEKO_PLUGIN_BUS_CHANGE_LOG_DEDUP_WINDOW_SECONDS", 1.0
 )
 
-# ZeroMQ PUSH 端点（用于插件向主进程推送消息）
-# Env: NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT, default="tcp://127.0.0.1:38766"
-PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT = os.getenv("NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_ENDPOINT", "tcp://127.0.0.1:38766")
-
 # ========== Message Plane (High-Frequency Bus) ==========
 
 # Message plane ZeroMQ RPC 端点（用于高频 bus 的请求/响应，例如 get/reload/filter 等）
@@ -312,14 +308,6 @@ PLUGIN_ZMQ_MESSAGE_PUSH_BATCH_SIZE = _get_int_env("NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_
 # PUSH 刷新间隔（毫秒），小批量高频发送或大批量低频发送的折中参数
 # Env: NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_FLUSH_INTERVAL_MS, default=5
 PLUGIN_ZMQ_MESSAGE_PUSH_FLUSH_INTERVAL_MS = _get_int_env("NEKO_PLUGIN_ZMQ_MESSAGE_PUSH_FLUSH_INTERVAL_MS", 5)
-
-# ZeroMQ PUSH consumer 并行 worker 数（主进程接收 MESSAGE_PUSH_BATCH 时使用）
-# Env: NEKO_PLUGIN_ZMQ_PUSH_WORKERS, default=1
-PLUGIN_ZMQ_PUSH_WORKERS = _get_int_env("NEKO_PLUGIN_ZMQ_PUSH_WORKERS", 4)
-
-# ZeroMQ PUSH consumer 内部队列上限（用于 recv/unpack 与 handler worker 解耦）
-# Env: NEKO_PLUGIN_ZMQ_PUSH_QUEUE_MAX, default=1024
-PLUGIN_ZMQ_PUSH_QUEUE_MAX = _get_int_env("NEKO_PLUGIN_ZMQ_PUSH_QUEUE_MAX", 1024)
 
 # 同步调用在 handler 中的全局策略（"warn" / "reject"）
 # Env: NEKO_PLUGIN_SYNC_CALL_POLICY, default="warn"

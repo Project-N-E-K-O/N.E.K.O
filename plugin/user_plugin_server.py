@@ -93,10 +93,7 @@ except Exception:
     pass
 
 from plugin.core.state import state
-from plugin.api.models import (
-    PluginPushMessageRequest,
-    PluginPushMessageResponse,
-)
+from plugin.api.models import PluginPushMessageResponse
 from plugin.runtime.registry import get_plugins as registry_get_plugins
 from plugin.runtime.status import status_manager
 from plugin.server.exceptions import register_exception_handlers
@@ -105,7 +102,6 @@ from plugin.server.services import (
     build_plugin_list,
     trigger_plugin,
     get_messages_from_queue,
-    push_message_to_queue,
 )
 from plugin.server.lifecycle import startup, shutdown
 from plugin.server.utils import now_iso
@@ -562,50 +558,6 @@ async def get_plugin_messages(
     except Exception as e:
         logger.exception("Failed to get plugin messages: Unexpected error")
         raise handle_plugin_error(e, "Failed to get plugin messages", 500) from e
-
-
-@app.post("/plugin/push", response_model=PluginPushMessageResponse)
-async def plugin_push_message(payload: PluginPushMessageRequest):
-    """
-    接收插件推送的消息（HTTP端点，主要用于外部调用或测试）
-    
-    注意：插件通常通过进程间通信直接推送，此端点作为备用。
-    """
-    try:
-        # 验证插件是否存在
-        with state.plugins_lock:
-            plugin_exists = payload.plugin_id in state.plugins
-        if not plugin_exists:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Plugin '{payload.plugin_id}' is not registered"
-            )
-        
-        # 推送消息到队列
-        message_id = push_message_to_queue(
-            plugin_id=payload.plugin_id,
-            source=payload.source,
-            message_type=payload.message_type,
-            description=payload.description,
-            priority=payload.priority,
-            content=payload.content,
-            binary_data=payload.binary_data,
-            binary_url=payload.binary_url,
-            metadata=payload.metadata,
-        )
-        
-        return PluginPushMessageResponse(
-            success=True,
-            message_id=message_id,
-            received_at=now_iso(),
-        )
-    except HTTPException:
-        raise
-    except (PluginError, ValueError, AttributeError, KeyError) as e:
-        raise handle_plugin_error(e, "plugin_push", 500) from e
-    except Exception as e:
-        logger.exception("plugin_push: Unexpected error")
-        raise handle_plugin_error(e, "plugin_push", 500) from e
 
 
 @app.get("/ui", response_class=HTMLResponse)

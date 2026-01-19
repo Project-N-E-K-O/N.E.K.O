@@ -4,22 +4,88 @@
 提供插件系统的全局运行时状态管理。
 """
 import asyncio
+import itertools
+import json
 import logging
+import os
+import queue
+import re
+import signal
 import threading
 import time
+import uuid
 from collections import deque
-import itertools
 import multiprocessing
 from typing import Any, Callable, Deque, Dict, List, Optional, Set, Tuple, cast
 
 from plugin.sdk.events import EventHandler
-from plugin.settings import EVENT_QUEUE_MAX, LIFECYCLE_QUEUE_MAX, MESSAGE_QUEUE_MAX
+from plugin.settings import (
+    BUS_SDK_POLL_INTERVAL_SECONDS,
+    EVENT_QUEUE_MAX,
+    LIFECYCLE_QUEUE_MAX,
+    MESSAGE_PLANE_ZMQ_RPC_ENDPOINT,
+    MESSAGE_QUEUE_MAX,
+)
+
+try:
+    import zmq
+except Exception:  # pragma: no cover
+    zmq = None
+
+try:
+    import ormsgpack
+except Exception:  # pragma: no cover
+    ormsgpack = None
 
 
 MAX_DELETED_BUS_IDS = 20000
 
 
 class BusChangeHub:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._subs: Dict[str, Dict[int, Callable[[str, Dict[str, Any]], None]]] = {}
+        self._next_id = 1
+
+    def subscribe(self, bus: str, cb: Callable[[str, Dict[str, Any]], None]) -> Callable[[], None]:
+        b = str(bus).strip()
+        if not b:
+            raise ValueError("bus is required")
+        if not callable(cb):
+            raise TypeError("callback must be callable")
+        with self._lock:
+            sid = int(self._next_id)
+            self._next_id += 1
+            d = self._subs.setdefault(b, {})
+            d[sid] = cb
+
+        def _unsub() -> None:
+            with self._lock:
+                m = self._subs.get(b)
+                if not m:
+                    return
+                m.pop(sid, None)
+                if not m:
+                    self._subs.pop(b, None)
+
+        return _unsub
+
+    def emit(self, bus: str, op: str, payload: Dict[str, Any]) -> None:
+        b = str(bus).strip()
+        if not b:
+            return
+        with self._lock:
+            subs = list((self._subs.get(b) or {}).values())
+        if not subs:
+            return
+        for cb in subs:
+            try:
+                cb(str(op), dict(payload or {}))
+            except Exception:
+                continue
+
+
+class GlobalState:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._next_id = 1
@@ -31,41 +97,6 @@ class BusChangeHub:
             "export": {},
         }
 
-    def subscribe(self, bus: str, callback: Callable[[str, Dict[str, Any]], None]) -> Callable[[], None]:
-        b = str(bus).strip()
-        if b not in self._subs:
-            raise ValueError(f"Unknown bus: {bus!r}")
-        with self._lock:
-            sid = self._next_id
-            self._next_id += 1
-            self._subs[b][sid] = callback
-
-        def _unsub() -> None:
-            with self._lock:
-                self._subs.get(b, {}).pop(sid, None)
-
-        return _unsub
-
-    def emit(self, bus: str, op: str, payload: Dict[str, Any]) -> None:
-        b = str(bus).strip()
-        if b not in self._subs:
-            return
-        with self._lock:
-            callbacks = list(self._subs[b].values())
-        for cb in callbacks:
-            try:
-                cb(str(op), dict(payload) if isinstance(payload, dict) else {})
-            except Exception:
-                logging.getLogger("user_plugin_server").debug(
-                    f"BusChangeHub callback error for bus={bus}, op={op}", exc_info=True
-                )
-                continue
-
-
-class PluginRuntimeState:
-    """插件运行时状态"""
-    
-    def __init__(self):
         self.plugins: Dict[str, Dict[str, Any]] = {}
         self.plugin_instances: Dict[str, Any] = {}
         self.event_handlers: Dict[str, EventHandler] = {}
@@ -124,6 +155,9 @@ class PluginRuntimeState:
         self._user_context_store: Dict[str, Deque[Dict[str, Any]]] = {}
         self._user_context_default_maxlen: int = 200
         self._user_context_ttl_seconds: float = 60.0 * 60.0
+
+        self._message_plane_rpc_lock = threading.Lock()
+        self._message_plane_rpc: Optional[Any] = None
 
     def _bump_bus_rev(self, bus: str) -> int:
         b = str(bus).strip()
@@ -275,12 +309,8 @@ class PluginRuntimeState:
             if isinstance(mid, str) and mid in self._deleted_message_ids:
                 return
             self._message_store.append(record)
-        try:
-            from plugin.server.message_plane_bridge import publish_record
-
-            publish_record(store="messages", record=dict(record), topic="all")
-        except Exception:
-            pass
+        # NOTE: messages are authoritative in message_plane. The control-plane keeps only a cache.
+        # Do NOT mirror/forward control-plane messages into message_plane.
         try:
             rev = self._bump_bus_rev("messages")
             payload: Dict[str, Any] = {"rev": rev}
@@ -322,14 +352,8 @@ class PluginRuntimeState:
                 kept.append(rec)
         if not kept:
             return 0
-        try:
-            from plugin.server.message_plane_bridge import publish_record
-
-            for rec in kept:
-                if isinstance(rec, dict):
-                    publish_record(store="messages", record=dict(rec), topic="all")
-        except Exception:
-            pass
+        # NOTE: messages are authoritative in message_plane. The control-plane keeps only a cache.
+        # Do NOT mirror/forward control-plane messages into message_plane.
         for rec in kept:
             try:
                 rev = self._bump_bus_rev("messages")
@@ -387,14 +411,8 @@ class PluginRuntimeState:
                         raise RuntimeError("deleted_message_ids changed")
                     self._message_store.extend(kept_fast)
 
-                try:
-                    from plugin.server.message_plane_bridge import publish_record
-
-                    for rec in kept_fast:
-                        if isinstance(rec, dict):
-                            publish_record(store="messages", record=dict(rec), topic="all")
-                except Exception:
-                    pass
+                # NOTE: messages are authoritative in message_plane. The control-plane keeps only a cache.
+                # Do NOT mirror/forward control-plane messages into message_plane.
 
                 rev = self._bump_bus_rev("messages")
                 payload_fast: Dict[str, Any] = {
@@ -448,14 +466,8 @@ class PluginRuntimeState:
                     self._message_store.append(rec)
         if not kept:
             return 0
-        try:
-            from plugin.server.message_plane_bridge import publish_record
-
-            for rec in kept:
-                if isinstance(rec, dict):
-                    publish_record(store="messages", record=dict(rec), topic="all")
-        except Exception:
-            pass
+        # NOTE: messages are authoritative in message_plane. The control-plane keeps only a cache.
+        # Do NOT mirror/forward control-plane messages into message_plane.
         try:
             rev = self._bump_bus_rev("messages")
             payload: Dict[str, Any] = {
@@ -599,6 +611,149 @@ class PluginRuntimeState:
             except Exception:
                 return list(self._message_store)
 
+    def _ensure_messages_cache_state(self) -> None:
+        # Lazily create cache metadata to avoid touching __init__ layout.
+        if not hasattr(self, "_messages_cache_last_sync_ts"):
+            try:
+                object.__setattr__(self, "_messages_cache_last_sync_ts", 0.0)
+            except Exception:
+                self._messages_cache_last_sync_ts = 0.0  # type: ignore[attr-defined]
+        if not hasattr(self, "_messages_cache_sync_lock"):
+            lock = threading.Lock()
+            try:
+                object.__setattr__(self, "_messages_cache_sync_lock", lock)
+            except Exception:
+                self._messages_cache_sync_lock = lock  # type: ignore[attr-defined]
+
+    def _message_plane_rpc_get_recent_messages(self, *, limit: int, timeout: float) -> List[Dict[str, Any]]:
+        if zmq is None or ormsgpack is None:
+            raise RuntimeError("message_plane RPC requires pyzmq and ormsgpack")
+        ctx = zmq.Context.instance()
+        sock = ctx.socket(zmq.DEALER)
+        try:
+            sock.setsockopt(zmq.LINGER, 0)
+        except Exception:
+            pass
+        try:
+            sock.connect(str(MESSAGE_PLANE_ZMQ_RPC_ENDPOINT))
+        except Exception as e:
+            try:
+                sock.close(0)
+            except Exception:
+                pass
+            raise RuntimeError(f"Failed to connect message_plane RPC: {e}") from e
+
+        req_id = str(uuid.uuid4())
+        req = {
+            "v": 1,
+            "op": "bus.get_recent",
+            "req_id": req_id,
+            "from_plugin": "control_plane",
+            "args": {"store": "messages", "topic": "all", "limit": int(limit), "light": False},
+        }
+        raw = ormsgpack.packb(req)
+        try:
+            sock.send(raw, flags=0)
+        except Exception as e:
+            raise RuntimeError(f"Failed to send message_plane RPC request: {e}") from e
+
+        deadline = time.time() + max(0.0, float(timeout))
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                raise TimeoutError(f"message_plane bus.get_recent timed out after {timeout}s")
+            try:
+                if sock.poll(timeout=int(remaining * 1000), flags=zmq.POLLIN) == 0:
+                    continue
+            except Exception as e:
+                raise RuntimeError(f"message_plane RPC poll failed: {e}") from e
+            try:
+                resp_raw = sock.recv(flags=0)
+            except Exception as e:
+                raise RuntimeError(f"message_plane RPC recv failed: {e}") from e
+            try:
+                resp = ormsgpack.unpackb(resp_raw)
+            except Exception:
+                continue
+            if not isinstance(resp, dict):
+                continue
+            if resp.get("req_id") != req_id:
+                continue
+            if resp.get("error"):
+                raise RuntimeError(str(resp.get("error")))
+            if not resp.get("ok"):
+                raise RuntimeError(str(resp.get("error") or "message_plane error"))
+            result = resp.get("result")
+            if isinstance(result, dict) and isinstance(result.get("items"), list):
+                items = list(result.get("items") or [])
+            else:
+                items = []
+            out: List[Dict[str, Any]] = []
+            for it in items:
+                if isinstance(it, dict):
+                    out.append(dict(it))
+            return out
+
+    def refresh_messages_cache_from_message_plane(
+        self,
+        *,
+        limit: int,
+        timeout: float,
+        ttl_seconds: float = 0.5,
+        force: bool = False,
+    ) -> int:
+        """Refresh control-plane messages cache from message_plane (authoritative).
+
+        This is intentionally low-frequency: guarded by TTL + mutex to prevent UI request storms.
+        """
+        self._ensure_messages_cache_state()
+        try:
+            last_ts = float(getattr(self, "_messages_cache_last_sync_ts", 0.0) or 0.0)
+        except Exception:
+            last_ts = 0.0
+
+        now_ts = time.time()
+        if not force and ttl_seconds is not None and ttl_seconds > 0 and (now_ts - last_ts) < float(ttl_seconds):
+            try:
+                return int(self.message_store_len())
+            except Exception:
+                return 0
+
+        lock = getattr(self, "_messages_cache_sync_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            try:
+                object.__setattr__(self, "_messages_cache_sync_lock", lock)
+            except Exception:
+                self._messages_cache_sync_lock = lock  # type: ignore[attr-defined]
+
+        with lock:
+            # Double-check under lock.
+            try:
+                last_ts2 = float(getattr(self, "_messages_cache_last_sync_ts", 0.0) or 0.0)
+            except Exception:
+                last_ts2 = 0.0
+            now_ts2 = time.time()
+            if not force and ttl_seconds is not None and ttl_seconds > 0 and (now_ts2 - last_ts2) < float(ttl_seconds):
+                try:
+                    return int(self.message_store_len())
+                except Exception:
+                    return 0
+
+            items = self._message_plane_rpc_get_recent_messages(limit=int(limit), timeout=float(timeout))
+            with self._bus_store_lock:
+                try:
+                    self._message_store.clear()
+                except Exception:
+                    self._message_store = deque(maxlen=self._message_store.maxlen)
+                for rec in items:
+                    self._message_store.append(rec)
+            try:
+                object.__setattr__(self, "_messages_cache_last_sync_ts", float(time.time()))
+            except Exception:
+                self._messages_cache_last_sync_ts = float(time.time())  # type: ignore[attr-defined]
+            return int(len(items))
+
     def message_store_len(self) -> int:
         with self._bus_store_lock:
             return len(self._message_store)
@@ -659,12 +814,16 @@ class PluginRuntimeState:
         return reversed(snap)
 
     def sync_message_plane_messages(self) -> int:
+        # Reverse sync: messages are authoritative in message_plane; control_plane keeps a cache.
         try:
-            from plugin.server.message_plane_bridge import publish_snapshot
-
-            items = self.list_message_records()
-            publish_snapshot(store="messages", records=[dict(x) for x in items if isinstance(x, dict)], topic="all", mode="replace")
-            return int(len(items))
+            return int(
+                self.refresh_messages_cache_from_message_plane(
+                    limit=500,
+                    timeout=1.0,
+                    ttl_seconds=0.0,
+                    force=True,
+                )
+            )
         except Exception:
             return 0
 
@@ -1087,6 +1246,9 @@ class PluginRuntimeState:
             return [dict(x) for x in items if isinstance(x, dict)]
 
 
+# Backward-compatible export name
+PluginRuntimeState = GlobalState
+
 # 全局状态实例
-state = PluginRuntimeState()
+state = GlobalState()
 
