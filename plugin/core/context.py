@@ -674,9 +674,20 @@ class PluginContext:
                                 except Exception:
                                     self._message_plane_push_batcher = batcher
 
+                            # Fast path: use counter instead of UUID, use float timestamp instead of ISO
+                            msg_counter = getattr(self, "_msg_counter", None)
+                            if msg_counter is None:
+                                import itertools
+                                msg_counter = itertools.count(1)
+                                try:
+                                    object.__setattr__(self, "_msg_counter", msg_counter)
+                                except Exception:
+                                    self._msg_counter = msg_counter
+                            
+                            # Ultra-fast path: minimize allocations
                             payload = {
                                 "type": "MESSAGE_PUSH",
-                                "message_id": str(uuid.uuid4()),
+                                "message_id": f"{self.plugin_id}:{next(msg_counter)}",
                                 "plugin_id": self.plugin_id,
                                 "source": source,
                                 "description": description,
@@ -685,9 +696,9 @@ class PluginContext:
                                 "content": content,
                                 "binary_data": binary_data,
                                 "binary_url": binary_url,
-                                "metadata": metadata or {},
-                                "unsafe": bool(unsafe),
-                                "time": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                                "metadata": metadata if metadata is not None else {},
+                                "unsafe": unsafe,
+                                "time": time.time(),
                             }
                             item = {"store": "messages", "topic": "all", "payload": payload}
                             try:

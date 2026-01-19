@@ -128,7 +128,14 @@ class LifecycleClient:
         if hasattr(self.ctx, "_enforce_sync_call_policy"):
             self.ctx._enforce_sync_call_policy("bus.lifecycle.get")
 
-        rpc = _MessagePlaneRpcClient(plugin_id=getattr(self.ctx, "plugin_id", ""), endpoint=str(MESSAGE_PLANE_ZMQ_RPC_ENDPOINT))
+        # Reuse RPC client to avoid creating new ZMQ socket on every call
+        rpc = getattr(self.ctx, "_mp_rpc_client", None)
+        if rpc is None:
+            rpc = _MessagePlaneRpcClient(plugin_id=getattr(self.ctx, "plugin_id", ""), endpoint=str(MESSAGE_PLANE_ZMQ_RPC_ENDPOINT))
+            try:
+                self.ctx._mp_rpc_client = rpc
+            except Exception:
+                pass
 
         args: Dict[str, Any] = {
             "store": "lifecycle",

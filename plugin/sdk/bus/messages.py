@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from plugin.core.context import PluginContext
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class MessageRecord(BusRecord):
     message_id: Optional[str] = None
     message_type: Optional[str] = None
@@ -26,58 +26,39 @@ class MessageRecord(BusRecord):
 
     @staticmethod
     def from_raw(raw: Dict[str, Any]) -> "MessageRecord":
-        payload = dict(raw) if isinstance(raw, dict) else {"content": raw}
-
-        # Prefer ISO timestamp if provided; keep a best-effort float timestamp for filtering.
-        ts_raw = payload.get("timestamp") or payload.get("time")
-        timestamp: Optional[float] = None
-        if isinstance(ts_raw, (int, float)):
-            timestamp = float(ts_raw)
-
-        plugin_id = payload.get("plugin_id")
-        plugin_id = str(plugin_id) if plugin_id is not None else None
-
-        source = payload.get("source")
-        source = str(source) if source is not None else None
-
-        priority = payload.get("priority", 0)
-        try:
-            priority = int(priority)
-        except (ValueError, TypeError):
-            priority = 0
-
-        content = payload.get("content")
-        content = str(content) if content is not None else None
-
-        metadata = payload.get("metadata")
-        if not isinstance(metadata, dict):
-            metadata = {}
-
-        message_id = payload.get("message_id")
-        message_id = str(message_id) if message_id is not None else None
-
-        message_type = payload.get("message_type")
-        message_type = str(message_type) if message_type is not None else None
-
-        description = payload.get("description")
-        description = str(description) if description is not None else None
-
-        # Use message_type as record type to align filtering with actual content type.
-        record_type = str(message_type or payload.get("type") or "MESSAGE")
+        # Ultra-fast path: minimize dict.get() calls and type conversions
+        # Batch get all fields at once
+        ts_raw = raw.get("timestamp") or raw.get("time")
+        plugin_id = raw.get("plugin_id")
+        source = raw.get("source")
+        priority = raw.get("priority", 0)
+        content = raw.get("content")
+        metadata = raw.get("metadata")
+        message_id = raw.get("message_id")
+        message_type = raw.get("message_type")
+        description = raw.get("description")
+        
+        # Fast type conversions
+        timestamp: Optional[float] = float(ts_raw) if isinstance(ts_raw, (int, float)) else None
+        priority_int = priority if isinstance(priority, int) else 0
+        metadata_dict = metadata if isinstance(metadata, dict) else {}
+        
+        # Use message_type as record type
+        record_type = message_type or raw.get("type") or "MESSAGE"
 
         return MessageRecord(
             kind="message",
-            type=record_type,
+            type=str(record_type),
             timestamp=timestamp,
-            plugin_id=plugin_id,
-            source=source,
-            priority=priority,
-            content=content,
-            metadata=metadata,
-            raw=payload,
-            message_id=message_id,
-            message_type=message_type,
-            description=description,
+            plugin_id=str(plugin_id) if plugin_id is not None else None,
+            source=str(source) if source is not None else None,
+            priority=priority_int,
+            content=str(content) if content is not None else None,
+            metadata=metadata_dict,
+            raw=raw,
+            message_id=str(message_id) if message_id is not None else None,
+            message_type=str(message_type) if message_type is not None else None,
+            description=str(description) if description is not None else None,
         )
 
     def dump(self) -> Dict[str, Any]:
@@ -283,7 +264,14 @@ class MessageClient:
             # message_plane query is strict by nature; keep the parameter for API parity.
             pass
 
-        rpc = _MessagePlaneRpcClient(plugin_id=getattr(self.ctx, "plugin_id", ""), endpoint=str(MESSAGE_PLANE_ZMQ_RPC_ENDPOINT))
+        # Reuse RPC client to avoid creating new ZMQ socket on every call
+        rpc = getattr(self.ctx, "_mp_rpc_client", None)
+        if rpc is None:
+            rpc = _MessagePlaneRpcClient(plugin_id=getattr(self.ctx, "plugin_id", ""), endpoint=str(MESSAGE_PLANE_ZMQ_RPC_ENDPOINT))
+            try:
+                self.ctx._mp_rpc_client = rpc
+            except Exception:
+                pass
 
         # Fast path: for the common "recent messages" case with no filters, use get_recent which
         # avoids full-store scan/sort in message_plane.
@@ -319,58 +307,46 @@ class MessageClient:
         records: List[MessageRecord] = []
         if bool(light):
             # Light mode: message_plane returns only seq/index, without payload.
+            # Ultra-fast path: minimize str() calls and allocations
             for ev in items:
                 if not isinstance(ev, dict):
                     continue
                 idx = ev.get("index")
                 if not isinstance(idx, dict):
                     idx = {}
-                try:
-                    record_type = idx.get("type") or "MESSAGE"
-                except Exception:
-                    record_type = "MESSAGE"
-                try:
-                    pid = idx.get("plugin_id")
-                except Exception:
-                    pid = None
-                try:
-                    src = idx.get("source")
-                except Exception:
-                    src = None
-                try:
-                    pr_i = int(idx.get("priority") or 0)
-                except Exception:
-                    pr_i = 0
-                try:
-                    mid = idx.get("id")
-                except Exception:
-                    mid = None
+                
+                # Batch extract all fields
+                record_type = idx.get("type") or "MESSAGE"
+                pid = idx.get("plugin_id")
+                src = idx.get("source")
+                priority_raw = idx.get("priority")
+                pr_i = int(priority_raw or 0) if isinstance(priority_raw, (int, float)) else 0
+                mid = idx.get("id")
+                
+                # Avoid creating intermediate dict for raw
                 records.append(
                     MessageRecord(
                         kind="message",
-                        type=str(record_type),
+                        type=record_type if isinstance(record_type, str) else str(record_type),
                         timestamp=None,
-                        plugin_id=str(pid) if pid is not None else None,
-                        source=str(src) if src is not None else None,
+                        plugin_id=pid if isinstance(pid, str) else (str(pid) if pid is not None else None),
+                        source=src if isinstance(src, str) else (str(src) if src is not None else None),
                         priority=pr_i,
                         content=None,
                         metadata={},
                         raw={"index": idx, "seq": ev.get("seq"), "ts": ev.get("ts")},
-                        message_id=str(mid) if mid is not None else None,
-                        message_type=str(record_type) if record_type is not None else None,
+                        message_id=mid if isinstance(mid, str) else (str(mid) if mid is not None else None),
+                        message_type=record_type if isinstance(record_type, str) else str(record_type),
                         description=None,
                     )
                 )
         else:
-            payloads: List[Dict[str, Any]] = []
             for ev in items:
                 if not isinstance(ev, dict):
                     continue
                 p = ev.get("payload")
                 if isinstance(p, dict):
-                    payloads.append(p)
-            for p in payloads:
-                records.append(MessageRecord.from_raw(p))
+                    records.append(MessageRecord.from_raw(p))
 
         get_params = {
             "plugin_id": plugin_id,
@@ -575,5 +551,6 @@ class MessageClient:
             since_ts=since_ts,
             timeout=timeout,
             raw=raw,
+            light=light,
         )
         return msg_list

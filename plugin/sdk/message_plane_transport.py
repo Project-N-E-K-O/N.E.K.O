@@ -69,24 +69,21 @@ class MessagePlaneRpcClient:
         if sock is None:
             return None
         req_id = self._next_req_id()
-        req = {"v": 1, "op": str(op), "req_id": req_id, "args": dict(args or {}), "from_plugin": self._plugin_id}
+        # Fast path: avoid str() and dict() calls, assume inputs are already correct types
+        req = {"v": 1, "op": op, "req_id": req_id, "args": args, "from_plugin": self._plugin_id}
 
-        enc = "msgpack"
+        # Always use msgpack (Rust backend only supports msgpack)
         try:
             raw = ormsgpack.packb(req)
         except Exception:
-            enc = "json"
-            try:
-                raw = json.dumps(req, ensure_ascii=False).encode("utf-8")
-            except Exception:
-                return None
+            return None
 
         try:
             sock.send(raw, flags=0)
         except Exception:
             return None
 
-        deadline = time.time() + max(0.0, float(timeout))
+        deadline = time.time() + timeout
         while True:
             remaining = deadline - time.time()
             if remaining <= 0:
@@ -101,34 +98,22 @@ class MessagePlaneRpcClient:
             except Exception:
                 return None
 
-            resp = None
-            if enc == "msgpack":
-                try:
-                    resp = ormsgpack.unpackb(resp_raw)
-                except Exception:
-                    resp = None
-            if resp is None:
-                try:
-                    resp = json.loads(resp_raw.decode("utf-8"))
-                except Exception:
-                    resp = None
+            # Always try msgpack first (Rust backend uses msgpack)
+            try:
+                resp = ormsgpack.unpackb(resp_raw)
+            except Exception:
+                continue
 
+            # Fast validation: check type and required fields in one go
             if not isinstance(resp, dict):
                 continue
-
             if resp.get("req_id") != req_id:
                 continue
-
-            v = resp.get("v")
-            if not isinstance(v, int) or v != 1:
+            if resp.get("v") != 1:
+                continue
+            if not isinstance(resp.get("ok"), bool):
                 continue
 
-            ok = resp.get("ok")
-            if not isinstance(ok, bool):
-                continue
-
-            # Keep the rest of the response flexible (result/error payload) for forward compatibility,
-            # but guarantee that we only return well-formed envelopes.
             return resp
 
 
