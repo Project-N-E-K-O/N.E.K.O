@@ -1293,18 +1293,35 @@
                     if (isFreeVersion) {
                         // 免费版本：只禁用API Key输入框和辅助API选择框
                         if (assistApiSelect) assistApiSelect.disabled = true;
-                        if (apiKeyInput) apiKeyInput.disabled = true;
+                        if (apiKeyInput) {
+                            apiKeyInput.disabled = true;
+                            apiKeyInput.required = false;
+                        }
 
                         // 核心API选择框保持可用，以便用户可以切换回付费版本
                         if (coreApiSelect) coreApiSelect.disabled = false;
 
                         // 辅助API Key输入框保持可用，允许保存额外Key
                         setAssistApiInputsDisabled(false);
-                    } else {
-                        // 付费版本：启用所有控件
+                    } else if (isCustomEnabled) {
+                        // 自定义API模式：启用所有控件，但取消API Key的必填限制
                         if (coreApiSelect) coreApiSelect.disabled = false;
                         if (assistApiSelect) assistApiSelect.disabled = false;
-                        if (apiKeyInput) apiKeyInput.disabled = false;
+                        if (apiKeyInput) {
+                            apiKeyInput.disabled = false;
+                            apiKeyInput.required = false;
+                        }
+
+                        // 启用所有辅助API Key输入框（统一处理）
+                        setAssistApiInputsDisabled(false);
+                    } else {
+                        // 付费版本且未启用自定义API：启用所有控件，API Key为必填
+                        if (coreApiSelect) coreApiSelect.disabled = false;
+                        if (assistApiSelect) assistApiSelect.disabled = false;
+                        if (apiKeyInput) {
+                            apiKeyInput.disabled = false;
+                            apiKeyInput.required = true;
+                        }
 
                         // 启用所有辅助API Key输入框（统一处理）
                         setAssistApiInputsDisabled(false);
