@@ -25,6 +25,9 @@ class MessagePlaneRpcClient:
             self._tls = threading.local()
         except Exception:
             self._tls = None
+        
+        # Connection warmup: establish connection early to reduce first-request latency
+        self._warmup()
 
     def _get_sock(self):
         if self._tls is not None:
@@ -50,11 +53,21 @@ class MessagePlaneRpcClient:
         except Exception:
             pass
         try:
-            sock.setsockopt(zmq.RCVHWM, 1000)
+            # Increase buffer sizes for better throughput
+            sock.setsockopt(zmq.RCVBUF, 2*1024*1024)  # 2MB receive buffer
         except Exception:
             pass
         try:
-            sock.setsockopt(zmq.SNDHWM, 1000)
+            sock.setsockopt(zmq.SNDBUF, 2*1024*1024)  # 2MB send buffer
+        except Exception:
+            pass
+        try:
+            # Increase high water mark for better burst performance
+            sock.setsockopt(zmq.RCVHWM, 10000)
+        except Exception:
+            pass
+        try:
+            sock.setsockopt(zmq.SNDHWM, 10000)
         except Exception:
             pass
         sock.connect(self._endpoint)
@@ -82,8 +95,14 @@ class MessagePlaneRpcClient:
         if sock is None:
             return None
         req_id = self._next_req_id()
-        # Fast path: avoid str() and dict() calls, assume inputs are already correct types
-        req = {"v": 1, "op": op, "req_id": req_id, "args": args, "from_plugin": self._plugin_id}
+        # Fast path: pre-allocate dict with exact size to avoid rehashing
+        req = {
+            "v": 1,
+            "op": op,
+            "req_id": req_id,
+            "args": args,
+            "from_plugin": self._plugin_id
+        }
 
         # Always use msgpack (Rust backend only supports msgpack)
         try:
@@ -92,7 +111,8 @@ class MessagePlaneRpcClient:
             return None
 
         try:
-            sock.send(raw, flags=0)
+            # Zero-copy send for better performance
+            sock.send(raw, flags=0, copy=False, track=False)
         except Exception:
             return None
 
@@ -117,17 +137,105 @@ class MessagePlaneRpcClient:
             except Exception:
                 continue
 
-            # Fast validation: check type and required fields in one go
+            # Fast validation: extract all fields once and validate together
+            if isinstance(resp, dict):
+                _req_id = resp.get("req_id")
+                _v = resp.get("v")
+                _ok = resp.get("ok")
+                if _req_id == req_id and _v == 1 and isinstance(_ok, bool):
+                    return resp
+
+    def _warmup(self) -> None:
+        """Warmup connection by sending a lightweight ping request."""
+        try:
+            # Establish connection early to avoid first-request overhead
+            sock = self._get_sock()
+            if sock is None:
+                return
+            # Send a ping request with short timeout
+            self.request(op="ping", args={}, timeout=0.5)
+        except Exception:
+            # Warmup failure is not critical, just skip
+            pass
+
+    def batch_request(self, requests: list[Dict[str, Any]], *, timeout: float = 5.0) -> list[Optional[Dict[str, Any]]]:
+        """Send multiple requests in batch for better throughput.
+        
+        Args:
+            requests: List of {"op": str, "args": dict} requests
+            timeout: Timeout for all requests
+            
+        Returns:
+            List of responses (None for failed requests)
+        """
+        if zmq is None or not requests:
+            return [None] * len(requests)
+        
+        sock = self._get_sock()
+        if sock is None:
+            return [None] * len(requests)
+        
+        # Prepare all requests
+        req_ids = []
+        for i, req_data in enumerate(requests):
+            req_id = self._next_req_id()
+            req_ids.append(req_id)
+            req = {
+                "v": 1,
+                "op": req_data.get("op", ""),
+                "req_id": req_id,
+                "args": req_data.get("args", {}),
+                "from_plugin": self._plugin_id
+            }
+            
+            try:
+                raw = ormsgpack.packb(req)
+            except Exception:
+                continue
+            
+            try:
+                # Send with SNDMORE flag for all but last request
+                flags = zmq.SNDMORE if i < len(requests) - 1 else 0
+                sock.send(raw, flags=flags, copy=False, track=False)
+            except Exception:
+                pass
+        
+        # Collect responses
+        responses = [None] * len(requests)
+        deadline = time.time() + timeout
+        received = set()
+        
+        while len(received) < len(req_ids):
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            
+            try:
+                if sock.poll(timeout=int(remaining * 1000), flags=zmq.POLLIN) == 0:
+                    continue
+            except Exception:
+                break
+            
+            try:
+                resp_raw = sock.recv(flags=0)
+            except Exception:
+                break
+            
+            try:
+                resp = ormsgpack.unpackb(resp_raw)
+            except Exception:
+                continue
+            
             if not isinstance(resp, dict):
                 continue
-            if resp.get("req_id") != req_id:
-                continue
-            if resp.get("v") != 1:
-                continue
-            if not isinstance(resp.get("ok"), bool):
-                continue
-
-            return resp
+            
+            resp_id = resp.get("req_id")
+            if resp_id in req_ids:
+                idx = req_ids.index(resp_id)
+                responses[idx] = resp
+                received.add(resp_id)
+        
+        return responses
 
 
 def format_rpc_error(err: Any) -> str:

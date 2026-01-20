@@ -261,6 +261,7 @@ MESSAGE_PLANE_RUST_BIN = os.getenv("NEKO_MESSAGE_PLANE_RUST_BIN", "neko-message-
 MESSAGE_PLANE_WORKERS = _get_int_env("NEKO_MESSAGE_PLANE_WORKERS", 0)
 
 # Message plane ZeroMQ RPC 端点（用于高频 bus 的请求/响应，例如 get/reload/filter 等）
+# 使用 TCP 回环（127.0.0.1），在某些系统上比 IPC 更快
 # Env: NEKO_MESSAGE_PLANE_ZMQ_RPC_ENDPOINT, default="tcp://127.0.0.1:38865"
 MESSAGE_PLANE_ZMQ_RPC_ENDPOINT = os.getenv(
     "NEKO_MESSAGE_PLANE_ZMQ_RPC_ENDPOINT",
@@ -268,6 +269,7 @@ MESSAGE_PLANE_ZMQ_RPC_ENDPOINT = os.getenv(
 )
 
 # Message plane ZeroMQ PUB 端点（用于高频 bus 的订阅/推送，例如 watcher、export progress 等）
+# 使用 TCP 回环（127.0.0.1），在某些系统上比 IPC 更快
 # Env: NEKO_MESSAGE_PLANE_ZMQ_PUB_ENDPOINT, default="tcp://127.0.0.1:38866"
 MESSAGE_PLANE_ZMQ_PUB_ENDPOINT = os.getenv(
     "NEKO_MESSAGE_PLANE_ZMQ_PUB_ENDPOINT",

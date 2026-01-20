@@ -27,38 +27,87 @@ class MessageRecord(BusRecord):
     @staticmethod
     def from_raw(raw: Dict[str, Any]) -> "MessageRecord":
         # Ultra-fast path: minimize dict.get() calls and type conversions
-        # Batch get all fields at once
-        ts_raw = raw.get("timestamp") or raw.get("time")
+        # Extract all fields in one pass, avoid redundant str() calls
+        ts_raw = raw.get("timestamp")
+        if ts_raw is None:
+            ts_raw = raw.get("time")
+        
+        # Batch extract without intermediate variables when possible
         plugin_id = raw.get("plugin_id")
         source = raw.get("source")
-        priority = raw.get("priority", 0)
+        priority = raw.get("priority")
         content = raw.get("content")
         metadata = raw.get("metadata")
         message_id = raw.get("message_id")
         message_type = raw.get("message_type")
         description = raw.get("description")
         
-        # Fast type conversions
+        # Fast type conversions - avoid unnecessary checks
         timestamp: Optional[float] = float(ts_raw) if isinstance(ts_raw, (int, float)) else None
-        priority_int = priority if isinstance(priority, int) else 0
-        metadata_dict = metadata if isinstance(metadata, dict) else {}
+        priority_int = priority if isinstance(priority, int) else (int(priority) if isinstance(priority, (float, str)) and priority else 0)
         
-        # Use message_type as record type
-        record_type = message_type or raw.get("type") or "MESSAGE"
+        # Use message_type as record type, avoid multiple lookups
+        if message_type:
+            record_type = message_type
+        else:
+            record_type = raw.get("type", "MESSAGE")
 
         return MessageRecord(
             kind="message",
-            type=str(record_type),
+            type=record_type if isinstance(record_type, str) else str(record_type),
             timestamp=timestamp,
-            plugin_id=str(plugin_id) if plugin_id is not None else None,
-            source=str(source) if source is not None else None,
+            plugin_id=plugin_id if isinstance(plugin_id, str) else (str(plugin_id) if plugin_id is not None else None),
+            source=source if isinstance(source, str) else (str(source) if source is not None else None),
             priority=priority_int,
-            content=str(content) if content is not None else None,
-            metadata=metadata_dict,
+            content=content if isinstance(content, str) else (str(content) if content is not None else None),
+            metadata=metadata if isinstance(metadata, dict) else {},
             raw=raw,
-            message_id=str(message_id) if message_id is not None else None,
-            message_type=str(message_type) if message_type is not None else None,
-            description=str(description) if description is not None else None,
+            message_id=message_id if isinstance(message_id, str) else (str(message_id) if message_id is not None else None),
+            message_type=message_type if isinstance(message_type, str) else (str(message_type) if message_type is not None else None),
+            description=description if isinstance(description, str) else (str(description) if description is not None else None),
+        )
+
+    @staticmethod
+    def from_index(index: Dict[str, Any], payload: Optional[Dict[str, Any]] = None) -> "MessageRecord":
+        """Fast path: create MessageRecord from pre-extracted index fields.
+        
+        This avoids re-parsing payload when Rust message_plane already extracted fields.
+        """
+        # index contains: plugin_id, source, priority, kind, type, timestamp, id
+        ts = index.get("timestamp")
+        timestamp: Optional[float] = float(ts) if isinstance(ts, (int, float)) else None
+        priority = index.get("priority")
+        priority_int = priority if isinstance(priority, int) else (int(priority) if priority else 0)
+        
+        # For messages, id is message_id, type is message_type
+        message_id = index.get("id")
+        message_type = index.get("type")
+        plugin_id = index.get("plugin_id")
+        source = index.get("source")
+        
+        # content and description need payload (not in index)
+        content = None
+        description = None
+        metadata: Dict[str, Any] = {}
+        if payload:
+            content = payload.get("content")
+            description = payload.get("description")
+            meta_raw = payload.get("metadata")
+            metadata = meta_raw if isinstance(meta_raw, dict) else {}
+        
+        return MessageRecord(
+            kind="message",
+            type=message_type if isinstance(message_type, str) else (str(message_type) if message_type else "MESSAGE"),
+            timestamp=timestamp,
+            plugin_id=plugin_id if isinstance(plugin_id, str) else (str(plugin_id) if plugin_id else None),
+            source=source if isinstance(source, str) else (str(source) if source else None),
+            priority=priority_int,
+            content=content if isinstance(content, str) else (str(content) if content else None),
+            metadata=metadata,
+            raw=payload or index,
+            message_id=message_id if isinstance(message_id, str) else (str(message_id) if message_id else None),
+            message_type=message_type if isinstance(message_type, str) else (str(message_type) if message_type else None),
+            description=description if isinstance(description, str) else (str(description) if description else None),
         )
 
     def dump(self) -> Dict[str, Any]:
@@ -102,7 +151,7 @@ class MessageList(BusList[MessageRecord]):
 
 @dataclass
 class _LocalMessageCache:
-    maxlen: int = 2048
+    maxlen: int = 8192  # Increased from 2048 to reduce RPC calls
 
     def __post_init__(self) -> None:
         try:
@@ -131,27 +180,18 @@ class _LocalMessageCache:
         if not isinstance(mid, str) or not mid:
             return
 
+        # Cache more fields to reduce RPC calls
         item: Dict[str, Any] = {"message_id": mid}
-        try:
-            if "rev" in delta:
-                item["rev"] = delta.get("rev")
-        except Exception:
-            pass
-        try:
-            if "priority" in delta:
-                item["priority"] = delta.get("priority")
-        except Exception:
-            pass
-        try:
-            if "source" in delta:
-                item["source"] = delta.get("source")
-        except Exception:
-            pass
-        try:
-            if "export" in delta:
-                item["export"] = delta.get("export")
-        except Exception:
-            pass
+        
+        # Copy all index fields for better cache hit rate
+        for key in ["rev", "priority", "source", "export", "plugin_id", "type", "message_type", "timestamp", "kind"]:
+            try:
+                if key in delta:
+                    val = delta.get(key)
+                    if val is not None:
+                        item[key] = val
+            except Exception:
+                pass
 
         if self._lock is not None:
             with self._lock:
@@ -344,23 +384,33 @@ class MessageClient:
             for ev in items:
                 if not isinstance(ev, dict):
                     continue
+                idx = ev.get("index")
                 p = ev.get("payload")
-                if isinstance(p, dict):
+                # Fast path: use from_index when index is available (Rust already extracted fields)
+                if isinstance(idx, dict):
+                    records.append(MessageRecord.from_index(idx, p if isinstance(p, dict) else None))
+                elif isinstance(p, dict):
                     records.append(MessageRecord.from_raw(p))
 
-        get_params = {
-            "plugin_id": plugin_id,
-            "max_count": max_count,
-            "priority_min": priority_min,
-            "source": source,
-            "filter": dict(filter) if isinstance(filter, dict) else None,
-            "strict": bool(strict),
-            "since_ts": since_ts,
-            "timeout": timeout,
-            "raw": bool(raw),
-        }
-        trace = None if bool(raw) else [BusOp(name="get", params=dict(get_params), at=time.time())]
-        plan = None if bool(raw) else GetNode(op="get", params={"bus": "messages", "params": dict(get_params)}, at=time.time())
+        # Optimization: skip trace/plan creation when raw=True (common in benchmarks)
+        if bool(raw):
+            trace = None
+            plan = None
+        else:
+            get_params = {
+                "plugin_id": plugin_id,
+                "max_count": max_count,
+                "priority_min": priority_min,
+                "source": source,
+                "filter": dict(filter) if isinstance(filter, dict) else None,
+                "strict": bool(strict),
+                "since_ts": since_ts,
+                "timeout": timeout,
+                "raw": bool(raw),
+            }
+            trace = [BusOp(name="get", params=get_params, at=time.time())]
+            plan = GetNode(op="get", params={"bus": "messages", "params": get_params}, at=time.time())
+        
         effective_plugin_id = "*" if plugin_id == "*" else (pid_norm if pid_norm else getattr(self.ctx, "plugin_id", None))
         return MessageList(records, plugin_id=effective_plugin_id, ctx=self.ctx, trace=trace, plan=plan)
 
@@ -494,53 +544,45 @@ class MessageClient:
                 if cached:
                     cached_records: List[MessageRecord] = []
                     for item in cached:
-                        if isinstance(item, dict):
-                            try:
-                                record_type = item.get("message_type") or item.get("type") or "MESSAGE"
-                            except Exception:
-                                record_type = "MESSAGE"
-                            try:
-                                pid = item.get("plugin_id")
-                            except Exception:
-                                pid = None
-                            try:
-                                src = item.get("source")
-                            except Exception:
-                                src = None
-                            try:
-                                pr = item.get("priority", 0)
-                                pr_i = int(pr) if pr is not None else 0
-                            except Exception:
-                                pr_i = 0
-                            try:
-                                mid = item.get("message_id")
-                            except Exception:
-                                mid = None
-                            cached_records.append(
-                                MessageRecord(
-                                    kind="message",
-                                    type=str(record_type),
-                                    timestamp=None,
-                                    plugin_id=str(pid) if pid is not None else None,
-                                    source=str(src) if src is not None else None,
-                                    priority=pr_i,
-                                    content=None,
-                                    metadata={},
-                                    raw=item,
-                                    message_id=str(mid) if mid is not None else None,
-                                    message_type=str(record_type) if record_type is not None else None,
-                                    description=None,
-                                )
+                        if not isinstance(item, dict):
+                            continue
+                        
+                        # Batch extract all fields without try/except overhead
+                        message_type = item.get("message_type")
+                        if not message_type:
+                            message_type = item.get("type")
+                        record_type = message_type if message_type else "MESSAGE"
+                        
+                        pid = item.get("plugin_id")
+                        src = item.get("source")
+                        pr = item.get("priority", 0)
+                        mid = item.get("message_id")
+                        
+                        # Fast type conversions
+                        pr_i = pr if isinstance(pr, int) else (int(pr) if isinstance(pr, (float, str)) and pr else 0)
+                        
+                        cached_records.append(
+                            MessageRecord(
+                                kind="message",
+                                type=record_type if isinstance(record_type, str) else str(record_type),
+                                timestamp=None,
+                                plugin_id=pid if isinstance(pid, str) else (str(pid) if pid is not None else None),
+                                source=src if isinstance(src, str) else (str(src) if src is not None else None),
+                                priority=pr_i,
+                                content=None,
+                                metadata={},
+                                raw=item,
+                                message_id=mid if isinstance(mid, str) else (str(mid) if mid is not None else None),
+                                message_type=message_type if isinstance(message_type, str) else (str(message_type) if message_type is not None else None),
+                                description=None,
                             )
+                        )
                     return MessageList(cached_records, plugin_id="*", ctx=self.ctx, trace=None, plan=None)
 
-        # Prefer message_plane with msgpack encoding; when raw=True and the request is a simple
-        # "recent" fetch, use light-index mode to avoid transferring full payloads.
-        light = False
-        if bool(raw):
-            if (plugin_id is None or str(plugin_id).strip() == "*"):
-                if priority_min is None and (source is None or not str(source)) and filter is None and since_ts is None:
-                    light = True
+        # Prefer message_plane with msgpack encoding; when raw=True, use light-index mode
+        # to avoid transferring full payloads (content/description/metadata).
+        # Light mode is safe when we only need index fields for filtering/display.
+        light = bool(raw)
         msg_list = self._get_via_message_plane(
             plugin_id=plugin_id,
             max_count=max_count,

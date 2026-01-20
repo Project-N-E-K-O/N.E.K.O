@@ -369,7 +369,7 @@ class BusFilter:
     until_ts: Optional[float] = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class BusRecord:
     kind: str
     type: str
@@ -382,8 +382,11 @@ class BusRecord:
     raw: Dict[str, Any] = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "metadata", {} if self.metadata is None else dict(self.metadata))
-        object.__setattr__(self, "raw", {} if self.raw is None else dict(self.raw))
+        # Only copy if None, avoid unnecessary dict() calls
+        if self.metadata is None:
+            object.__setattr__(self, "metadata", {})
+        if self.raw is None:
+            object.__setattr__(self, "raw", {})
 
     def dump(self) -> Dict[str, Any]:
         return {
@@ -478,6 +481,54 @@ class BinaryNode(TraceNode):
         return f"({self.left.explain()}) {self.op} ({self.right.explain()})"
 
 
+def _collect_get_nodes_fast(node: "TraceNode") -> List["GetNode"]:
+    """Module-level function to collect GetNodes from a plan tree (iterative, faster)."""
+    result: List["GetNode"] = []
+    stack: List["TraceNode"] = [node]
+    while stack:
+        n = stack.pop()
+        if isinstance(n, GetNode):
+            result.append(n)
+        elif isinstance(n, UnaryNode):
+            stack.append(n.child)
+        elif isinstance(n, BinaryNode):
+            stack.append(n.left)
+            stack.append(n.right)
+    return result
+
+
+def _serialize_plan_fast(node: "TraceNode") -> Optional[Dict[str, Any]]:
+    """Module-level function to serialize a plan tree to dict (iterative for common cases)."""
+    try:
+        if isinstance(node, GetNode):
+            return {"kind": "get", "op": "get", "params": dict(node.params or {})}
+        if isinstance(node, UnaryNode):
+            child = _serialize_plan_fast(node.child)
+            if child is None:
+                return None
+            return {
+                "kind": "unary",
+                "op": str(node.op),
+                "params": dict(node.params or {}),
+                "child": child,
+            }
+        if isinstance(node, BinaryNode):
+            left = _serialize_plan_fast(node.left)
+            right = _serialize_plan_fast(node.right)
+            if left is None or right is None:
+                return None
+            return {
+                "kind": "binary",
+                "op": str(node.op),
+                "params": dict(node.params or {}),
+                "left": left,
+                "right": right,
+            }
+    except Exception:
+        return None
+    return None
+
+
 class BusList(Generic[TRecord]):
     def __init__(
         self,
@@ -488,7 +539,8 @@ class BusList(Generic[TRecord]):
         plan: Optional[TraceNode] = None,
         fast_mode: bool = False,
     ):
-        self._items: List[TRecord] = list(items)
+        # Optimization: avoid unnecessary list() copy if items is already a list
+        self._items: List[TRecord] = items if isinstance(items, list) else list(items)
         self._ctx: Optional[BusReplayContext] = ctx
         self._fast_mode = bool(fast_mode)
         self._trace: Tuple[BusOp, ...] = tuple(trace or ()) if not self._fast_mode else ()
@@ -1005,63 +1057,94 @@ class BusList(Generic[TRecord]):
         if flt is None:
             flt = BusFilter(**kwargs)
 
-        def _re_ok(field: str, pattern: Optional[str], value: Optional[str]) -> bool:
-            if pattern is None:
-                return True
-            if value is None:
-                return False
+        # Pre-extract filter values to avoid repeated attribute access
+        f_kind = flt.kind
+        f_type = flt.type
+        f_plugin_id = flt.plugin_id
+        f_source = flt.source
+        f_kind_re = flt.kind_re
+        f_type_re = flt.type_re
+        f_plugin_id_re = flt.plugin_id_re
+        f_source_re = flt.source_re
+        f_content_re = flt.content_re
+        f_priority_min = flt.priority_min
+        f_since_ts = flt.since_ts
+        f_until_ts = flt.until_ts
+
+        # Pre-compile regex patterns if needed
+        re_kind = re.compile(f_kind_re) if f_kind_re else None
+        re_type = re.compile(f_type_re) if f_type_re else None
+        re_plugin_id = re.compile(f_plugin_id_re) if f_plugin_id_re else None
+        re_source = re.compile(f_source_re) if f_source_re else None
+        re_content = re.compile(f_content_re) if f_content_re else None
+
+        # Pre-convert numeric filters
+        pmin_i: Optional[int] = None
+        if f_priority_min is not None:
             try:
-                return re.search(pattern, value) is not None
-            except re.error as e:
+                pmin_i = int(f_priority_min)
+            except Exception:
                 if strict:
-                    raise BusFilterError(f"Invalid regex for {field}: {pattern!r}") from e
-                return False
+                    raise BusFilterError(f"Invalid priority_min: {f_priority_min!r}")
+        since_f: Optional[float] = None
+        if f_since_ts is not None:
+            try:
+                since_f = float(f_since_ts)
+            except Exception:
+                if strict:
+                    raise BusFilterError(f"Invalid since_ts: {f_since_ts!r}")
+        until_f: Optional[float] = None
+        if f_until_ts is not None:
+            try:
+                until_f = float(f_until_ts)
+            except Exception:
+                if strict:
+                    raise BusFilterError(f"Invalid until_ts: {f_until_ts!r}")
+
+        # Check if we have any regex filters
+        has_regex = bool(re_kind or re_type or re_plugin_id or re_source or re_content)
 
         def _match(x: BusRecord) -> bool:
-            if flt.kind is not None and x.kind != flt.kind:
+            # Fast equality checks first
+            if f_kind is not None and x.kind != f_kind:
                 return False
-            if flt.type is not None and x.type != flt.type:
+            if f_type is not None and x.type != f_type:
                 return False
-            if flt.plugin_id is not None and x.plugin_id != flt.plugin_id:
+            if f_plugin_id is not None and x.plugin_id != f_plugin_id:
                 return False
-            if flt.source is not None and x.source != flt.source:
+            if f_source is not None and x.source != f_source:
                 return False
-            if not _re_ok("kind_re", flt.kind_re, x.kind):
+
+            # Numeric filters
+            if pmin_i is not None and x.priority < pmin_i:
                 return False
-            if not _re_ok("type_re", flt.type_re, x.type):
-                return False
-            if not _re_ok("plugin_id_re", flt.plugin_id_re, x.plugin_id):
-                return False
-            if not _re_ok("source_re", flt.source_re, x.source):
-                return False
-            if not _re_ok("content_re", flt.content_re, x.content):
-                return False
-            if flt.priority_min is not None:
-                try:
-                    if int(x.priority) < int(flt.priority_min):
-                        return False
-                except Exception as e:
-                    if strict:
-                        raise BusFilterError(f"Invalid priority_min: {flt.priority_min!r}") from e
-                    return False
-            if flt.since_ts is not None:
+            if since_f is not None:
                 ts = x.timestamp
-                try:
-                    if ts is None or float(ts) < float(flt.since_ts):
-                        return False
-                except Exception as e:
-                    if strict:
-                        raise BusFilterError(f"Invalid since_ts: {flt.since_ts!r}") from e
+                if ts is None or ts < since_f:
                     return False
-            if flt.until_ts is not None:
+            if until_f is not None:
                 ts = x.timestamp
-                try:
-                    if ts is None or float(ts) > float(flt.until_ts):
-                        return False
-                except Exception as e:
-                    if strict:
-                        raise BusFilterError(f"Invalid until_ts: {flt.until_ts!r}") from e
+                if ts is None or ts > until_f:
                     return False
+
+            # Regex filters (slower path)
+            if has_regex:
+                if re_kind is not None:
+                    if x.kind is None or re_kind.search(x.kind) is None:
+                        return False
+                if re_type is not None:
+                    if x.type is None or re_type.search(x.type) is None:
+                        return False
+                if re_plugin_id is not None:
+                    if x.plugin_id is None or re_plugin_id.search(x.plugin_id) is None:
+                        return False
+                if re_source is not None:
+                    if x.source is None or re_source.search(x.source) is None:
+                        return False
+                if re_content is not None:
+                    if x.content is None or re_content.search(x.content) is None:
+                        return False
+
             return True
 
         if self._is_lazy_mode():
@@ -1558,44 +1641,6 @@ class BusList(Generic[TRecord]):
         if self._plan is None:
             raise NonReplayableTraceError("reload is unavailable when fast_mode=True or plan is missing")
 
-        def _collect_get_nodes(node: TraceNode) -> List[GetNode]:
-            if isinstance(node, GetNode):
-                return [node]
-            if isinstance(node, UnaryNode):
-                return _collect_get_nodes(node.child)
-            if isinstance(node, BinaryNode):
-                return _collect_get_nodes(node.left) + _collect_get_nodes(node.right)
-            return []
-
-        def _serialize_plan(node: TraceNode) -> Optional[Dict[str, Any]]:
-            try:
-                if isinstance(node, GetNode):
-                    return {"kind": "get", "op": "get", "params": dict(node.params or {})}
-                if isinstance(node, UnaryNode):
-                    child = _serialize_plan(node.child)
-                    if child is None:
-                        return None
-                    return {
-                        "kind": "unary",
-                        "op": str(node.op),
-                        "params": dict(node.params or {}),
-                        "child": child,
-                    }
-                if isinstance(node, BinaryNode):
-                    left = _serialize_plan(node.left)
-                    right = _serialize_plan(node.right)
-                    if left is None or right is None:
-                        return None
-                    return {
-                        "kind": "binary",
-                        "op": str(node.op),
-                        "params": dict(node.params or {}),
-                        "left": left,
-                        "right": right,
-                    }
-            except Exception:
-                return None
-            return None
 
         def _message_plane_replay(*, bus: str, plan: TraceNode, timeout: float = 1.0) -> Optional[List[Dict[str, Any]]]:
             try:
@@ -1611,7 +1656,7 @@ class BusList(Generic[TRecord]):
                     return None
                 from plugin.settings import MESSAGE_PLANE_ZMQ_RPC_ENDPOINT
 
-                plan_dict = _serialize_plan(plan)
+                plan_dict = _serialize_plan_fast(plan)
                 if plan_dict is None:
                     return None
                 endpoint = str(MESSAGE_PLANE_ZMQ_RPC_ENDPOINT)
@@ -1714,7 +1759,7 @@ class BusList(Generic[TRecord]):
 
         # Full reload: prefer server-side replay in message_plane to avoid expensive Python-side list ops.
         if not incremental:
-            get_nodes = _collect_get_nodes(self._plan)
+            get_nodes = _collect_get_nodes_fast(self._plan)
             if get_nodes:
                 seed0 = get_nodes[0]
                 seed_bus = str(seed0.params.get("bus") or "").strip()
@@ -1737,25 +1782,40 @@ class BusList(Generic[TRecord]):
 
                         items = _message_plane_replay(bus=seed_bus, plan=self._plan, timeout=timeout_s)
                         if items is not None:
-                            payloads: List[Dict[str, Any]] = []
-                            for ev in items:
-                                p = ev.get("payload")
-                                if isinstance(p, dict):
-                                    payloads.append(p)
-
                             try:
                                 if seed_bus == "messages":
                                     from plugin.sdk.bus.messages import MessageRecord
 
-                                    recs = [MessageRecord.from_raw(p) for p in payloads]
+                                    recs = []
+                                    for ev in items:
+                                        idx = ev.get("index")
+                                        payload = ev.get("payload")
+                                        if isinstance(idx, dict):
+                                            recs.append(MessageRecord.from_index(idx, payload if isinstance(payload, dict) else None))
+                                        elif isinstance(payload, dict):
+                                            recs.append(MessageRecord.from_raw(payload))
                                 elif seed_bus == "events":
                                     from plugin.sdk.bus.events import EventRecord
 
-                                    recs = [EventRecord.from_raw(p) for p in payloads]
+                                    recs = []
+                                    for ev in items:
+                                        idx = ev.get("index")
+                                        payload = ev.get("payload")
+                                        if isinstance(idx, dict):
+                                            recs.append(EventRecord.from_index(idx, payload if isinstance(payload, dict) else None))
+                                        elif isinstance(payload, dict):
+                                            recs.append(EventRecord.from_raw(payload))
                                 else:
                                     from plugin.sdk.bus.lifecycle import LifecycleRecord
 
-                                    recs = [LifecycleRecord.from_raw(p) for p in payloads]
+                                    recs = []
+                                    for ev in items:
+                                        idx = ev.get("index")
+                                        payload = ev.get("payload")
+                                        if isinstance(idx, dict):
+                                            recs.append(LifecycleRecord.from_index(idx, payload if isinstance(payload, dict) else None))
+                                        elif isinstance(payload, dict):
+                                            recs.append(LifecycleRecord.from_raw(payload))
                             except Exception:
                                 recs = []  # type: ignore[assignment]
 
@@ -1786,7 +1846,7 @@ class BusList(Generic[TRecord]):
                 p.pop("since_ts", None)
                 return {"bus": bus, "params": p}
 
-            get_nodes = _collect_get_nodes(self._plan)
+            get_nodes = _collect_get_nodes_fast(self._plan)
             if not get_nodes:
                 # No GetNode => cannot incrementally fetch delta
                 refreshed = self._replay_plan(ctx, self._plan)

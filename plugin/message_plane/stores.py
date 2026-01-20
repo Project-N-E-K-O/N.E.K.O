@@ -125,11 +125,12 @@ class TopicStore:
         limit_i = int(limit)
         for _ in range(3):
             try:
-                if limit_i >= len(dq):
+                dq_len = len(dq)
+                if limit_i >= dq_len:
                     return list(dq)
-                tail_rev = list(islice(reversed(dq), limit_i))
-                tail_rev.reverse()
-                return tail_rev
+                # More efficient: directly slice from the end without multiple reversals
+                start_idx = dq_len - limit_i
+                return [dq[i] for i in range(start_idx, dq_len)]
             except RuntimeError:
                 continue
             except Exception:
@@ -139,11 +140,11 @@ class TopicStore:
             dq = self.items.get(t)
             if not dq:
                 return []
-            if limit_i >= len(dq):
+            dq_len = len(dq)
+            if limit_i >= dq_len:
                 return list(dq)
-            tail_rev = list(islice(reversed(dq), limit_i))
-            tail_rev.reverse()
-            return tail_rev
+            start_idx = dq_len - limit_i
+            return [dq[i] for i in range(start_idx, dq_len)]
 
     def get_since(self, *, topic: Optional[str], after_seq: int, limit: int) -> list[Dict[str, Any]]:
         nn = int(limit)
@@ -155,28 +156,29 @@ class TopicStore:
             after = 0
 
         topic_q = None if topic is None else str(topic)
+        out: list[Dict[str, Any]] = []
+        
         with self._lock:
             if topic_q is None or topic_q.strip() in ("", "*"):
                 topics = list(self.items.keys())
             else:
                 topics = [topic_q]
-            snapshots: list[Dict[str, Any]] = []
+            
+            # Filter while iterating, avoid copying entire deque
             for t in topics:
                 dq = self.items.get(t)
                 if not dq:
                     continue
-                snapshots.extend(list(dq))
-
-        out: list[Dict[str, Any]] = []
-        for ev in snapshots:
-            try:
-                if int(ev.get("seq", 0)) > after:
-                    out.append(ev)
-            except Exception:
-                logging.getLogger("user_plugin_server").debug(
-                    "[message_plane] skip event due to invalid seq: %r", ev, exc_info=True
-                )
-                continue
+                
+                for ev in dq:
+                    try:
+                        if int(ev.get("seq", 0)) > after:
+                            out.append(ev)
+                    except Exception:
+                        logging.getLogger("user_plugin_server").debug(
+                            "[message_plane] skip event due to invalid seq: %r", ev, exc_info=True
+                        )
+                        continue
 
         out.sort(key=lambda e: int(e.get("seq") or 0))
         if nn >= len(out):
@@ -201,18 +203,8 @@ class TopicStore:
             return []
 
         topic_q = None if topic is None else str(topic)
-        with self._lock:
-            if topic_q is None or topic_q.strip() in ("", "*"):
-                topics = list(self.items.keys())
-            else:
-                topics = [topic_q]
-            snapshots: list[Dict[str, Any]] = []
-            for t in topics:
-                dq = self.items.get(t)
-                if not dq:
-                    continue
-                snapshots.extend(list(dq))
-
+        
+        # Pre-normalize filter values outside the lock
         pid = str(plugin_id) if isinstance(plugin_id, str) and plugin_id else None
         src = str(source) if isinstance(source, str) and source else None
         kd = str(kind) if isinstance(kind, str) and kind else None
@@ -231,39 +223,52 @@ class TopicStore:
             u_ts = None
 
         out: list[Dict[str, Any]] = []
-        for ev in snapshots:
-            idx = ev.get("index")
-            if not isinstance(idx, dict):
-                continue
+        
+        with self._lock:
+            if topic_q is None or topic_q.strip() in ("", "*"):
+                topics = list(self.items.keys())
+            else:
+                topics = [topic_q]
+            
+            # Filter while iterating, avoid copying entire deque
+            for t in topics:
+                dq = self.items.get(t)
+                if not dq:
+                    continue
+                
+                for ev in dq:
+                    idx = ev.get("index")
+                    if not isinstance(idx, dict):
+                        continue
 
-            if pid is not None and idx.get("plugin_id") != pid:
-                continue
-            if src is not None and idx.get("source") != src:
-                continue
-            if kd is not None and idx.get("kind") != kd:
-                continue
-            if tp is not None and idx.get("type") != tp:
-                continue
-            if pmin is not None:
-                try:
-                    if int(idx.get("priority") or 0) < pmin:
+                    if pid is not None and idx.get("plugin_id") != pid:
                         continue
-                except Exception:
-                    continue
-            if s_ts is not None:
-                try:
-                    if float(idx.get("timestamp") or 0.0) < s_ts:
+                    if src is not None and idx.get("source") != src:
                         continue
-                except Exception:
-                    continue
-            if u_ts is not None:
-                try:
-                    if float(idx.get("timestamp") or 0.0) > u_ts:
+                    if kd is not None and idx.get("kind") != kd:
                         continue
-                except Exception:
-                    continue
+                    if tp is not None and idx.get("type") != tp:
+                        continue
+                    if pmin is not None:
+                        try:
+                            if int(idx.get("priority") or 0) < pmin:
+                                continue
+                        except Exception:
+                            continue
+                    if s_ts is not None:
+                        try:
+                            if float(idx.get("timestamp") or 0.0) < s_ts:
+                                continue
+                        except Exception:
+                            continue
+                    if u_ts is not None:
+                        try:
+                            if float(idx.get("timestamp") or 0.0) > u_ts:
+                                continue
+                        except Exception:
+                            continue
 
-            out.append(ev)
+                    out.append(ev)
 
         out.sort(key=lambda e: int(e.get("seq") or 0), reverse=True)
         if nn >= len(out):

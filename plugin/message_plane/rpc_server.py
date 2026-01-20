@@ -182,81 +182,117 @@ class MessagePlaneRpcServer:
             if isinstance(flt, dict):
                 p = {**p, **flt}
 
-            def _match(ev: Dict[str, Any]) -> bool:
-                idx = ev.get("index") if isinstance(ev, dict) else None
-                payload = ev.get("payload") if isinstance(ev, dict) else None
-                for k in ("plugin_id", "source", "kind", "type"):
-                    v = p.get(k)
-                    if v is None:
-                        continue
-                    if isinstance(idx, dict) and idx.get(k) == v:
-                        continue
-                    if isinstance(payload, dict) and payload.get(k) == v:
-                        continue
-                    return False
+            # Pre-extract filter values to avoid repeated dict lookups
+            f_plugin_id = p.get("plugin_id")
+            f_source = p.get("source")
+            f_kind = p.get("kind")
+            f_type = p.get("type")
+            f_pmin = p.get("priority_min")
+            f_since_ts = p.get("since_ts")
+            f_until_ts = p.get("until_ts")
+            f_plugin_id_re = p.get("plugin_id_re")
+            f_source_re = p.get("source_re")
+            f_kind_re = p.get("kind_re")
+            f_type_re = p.get("type_re")
+            f_content_re = p.get("content_re")
 
-                pmin = p.get("priority_min")
-                if pmin is not None:
+            # Pre-convert numeric filters
+            pmin_i: Optional[int] = None
+            if f_pmin is not None:
+                try:
+                    pmin_i = int(f_pmin)
+                except Exception:
+                    pass
+            since_f: Optional[float] = None
+            if f_since_ts is not None:
+                try:
+                    since_f = float(f_since_ts)
+                except Exception:
+                    pass
+            until_f: Optional[float] = None
+            if f_until_ts is not None:
+                try:
+                    until_f = float(f_until_ts)
+                except Exception:
+                    pass
+
+            # Check if we have any regex filters
+            has_regex = bool(f_plugin_id_re or f_source_re or f_kind_re or f_type_re or f_content_re)
+
+            matched: List[Dict[str, Any]] = []
+            for ev in items:
+                if not isinstance(ev, dict):
+                    continue
+                idx = ev.get("index")
+                idx_is_dict = isinstance(idx, dict)
+
+                # Fast path: check simple equality filters using index only
+                if f_plugin_id is not None:
+                    if not (idx_is_dict and idx.get("plugin_id") == f_plugin_id):
+                        payload = ev.get("payload")
+                        if not (isinstance(payload, dict) and payload.get("plugin_id") == f_plugin_id):
+                            continue
+                if f_source is not None:
+                    if not (idx_is_dict and idx.get("source") == f_source):
+                        payload = ev.get("payload")
+                        if not (isinstance(payload, dict) and payload.get("source") == f_source):
+                            continue
+                if f_kind is not None:
+                    if not (idx_is_dict and idx.get("kind") == f_kind):
+                        payload = ev.get("payload")
+                        if not (isinstance(payload, dict) and payload.get("kind") == f_kind):
+                            continue
+                if f_type is not None:
+                    if not (idx_is_dict and idx.get("type") == f_type):
+                        payload = ev.get("payload")
+                        if not (isinstance(payload, dict) and payload.get("type") == f_type):
+                            continue
+
+                # Priority filter
+                if pmin_i is not None:
                     try:
-                        pmin_i = int(pmin)
+                        pri = int(idx.get("priority") or 0) if idx_is_dict else 0
                     except Exception:
-                        pmin_i = None
-                    if pmin_i is not None:
-                        try:
-                            pri = int(idx.get("priority") or 0) if isinstance(idx, dict) else 0
-                        except Exception:
-                            pri = 0
-                        if pri < pmin_i:
-                            return False
+                        pri = 0
+                    if pri < pmin_i:
+                        continue
 
-                since_ts = p.get("since_ts")
-                if since_ts is not None:
+                # Timestamp filters
+                if since_f is not None or until_f is not None:
                     try:
-                        s = float(since_ts)
-                        t = float(idx.get("timestamp") or 0.0) if isinstance(idx, dict) else 0.0
-                        if t < s:
-                            return False
+                        t = float(idx.get("timestamp") or 0.0) if idx_is_dict else 0.0
                     except Exception:
-                        return False
-
-                until_ts = p.get("until_ts")
-                if until_ts is not None:
-                    try:
-                        u = float(until_ts)
-                        t = float(idx.get("timestamp") or 0.0) if isinstance(idx, dict) else 0.0
-                        if t > u:
-                            return False
-                    except Exception:
-                        return False
-
-                for prefix, key in (("plugin_id", "plugin_id"), ("source", "source"), ("kind", "kind"), ("type", "type")):
-                    pat = p.get(f"{prefix}_re")
-                    if pat is None:
+                        t = 0.0
+                    if since_f is not None and t < since_f:
                         continue
-                    if not isinstance(pat, str) or not pat:
+                    if until_f is not None and t > until_f:
                         continue
-                    val = None
-                    if isinstance(idx, dict):
-                        val = idx.get(key)
-                    if val is None and isinstance(payload, dict):
-                        val = payload.get(key)
-                    verdict = _maybe_match_regex(pat, val, strict=strict)
-                    if verdict is None:
+
+                # Regex filters (slower path, only if needed)
+                if has_regex:
+                    payload = ev.get("payload")
+                    payload_is_dict = isinstance(payload, dict)
+                    skip = False
+                    for pat, key in ((f_plugin_id_re, "plugin_id"), (f_source_re, "source"), (f_kind_re, "kind"), (f_type_re, "type")):
+                        if not pat or not isinstance(pat, str):
+                            continue
+                        val = idx.get(key) if idx_is_dict else None
+                        if val is None and payload_is_dict:
+                            val = payload.get(key)
+                        verdict = _maybe_match_regex(pat, val, strict=strict)
+                        if verdict is not None and not verdict:
+                            skip = True
+                            break
+                    if skip:
                         continue
-                    if not verdict:
-                        return False
-                content_re = p.get("content_re")
-                if isinstance(content_re, str) and content_re:
-                    content = None
-                    if isinstance(payload, dict):
-                        content = payload.get("content")
-                    verdict = _maybe_match_regex(content_re, content, strict=strict)
-                    if verdict is not None and not verdict:
-                        return False
+                    if f_content_re and isinstance(f_content_re, str):
+                        content = payload.get("content") if payload_is_dict else None
+                        verdict = _maybe_match_regex(f_content_re, content, strict=strict)
+                        if verdict is not None and not verdict:
+                            continue
 
-                return True
-
-            return [ev for ev in items if _match(ev)]
+                matched.append(ev)
+            return matched
 
         if op == "where_eq":
             field = str(params.get("field") or "").strip()
@@ -587,9 +623,12 @@ class MessagePlaneRpcServer:
                 payload = {"value": payload}
 
             try:
-                payload_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                payload_bytes = ormsgpack.packb(payload)
             except Exception:
-                return err_response(req_id, "payload not JSON-serializable")
+                try:
+                    payload_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                except Exception:
+                    return err_response(req_id, "payload not JSON-serializable")
             if len(payload_bytes) > MESSAGE_PLANE_PAYLOAD_MAX_BYTES:
                 return err_response(req_id, "payload too large")
 

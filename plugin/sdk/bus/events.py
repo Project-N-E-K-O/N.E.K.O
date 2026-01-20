@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from plugin.core.context import PluginContext
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class EventRecord(BusRecord):
     event_id: Optional[str] = None
     entry_id: Optional[str] = None
@@ -26,56 +26,87 @@ class EventRecord(BusRecord):
 
     @staticmethod
     def from_raw(raw: Dict[str, Any]) -> "EventRecord":
-        payload = dict(raw) if isinstance(raw, dict) else {"raw": raw}
+        # Fast path: avoid dict copy if already dict
+        payload = raw if isinstance(raw, dict) else {"raw": raw}
 
+        # Batch extract all fields
         ev_type = payload.get("type")
-        ev_type = str(ev_type) if ev_type is not None else "EVENT"
-
-        ts = parse_iso_timestamp(payload.get("timestamp") or payload.get("received_at") or payload.get("time"))
-
+        ts_raw = payload.get("timestamp")
+        if ts_raw is None:
+            ts_raw = payload.get("received_at")
+        if ts_raw is None:
+            ts_raw = payload.get("time")
+        
         plugin_id = payload.get("plugin_id")
-        plugin_id = str(plugin_id) if plugin_id is not None else None
-
         source = payload.get("source")
-        source = str(source) if source is not None else None
-
         priority = payload.get("priority", 0)
-        try:
-            priority = int(priority)
-        except (ValueError, TypeError):
-            priority = 0
-
         entry_id = payload.get("entry_id")
-        entry_id = str(entry_id) if entry_id is not None else None
-
-        event_id = payload.get("trace_id") or payload.get("event_id")
-        event_id = str(event_id) if event_id is not None else None
-
+        event_id = payload.get("trace_id")
+        if event_id is None:
+            event_id = payload.get("event_id")
         args = payload.get("args")
-        if not isinstance(args, dict):
-            args = None
-
         content = payload.get("content")
+        metadata = payload.get("metadata")
+
+        # Fast type conversions
+        ts = parse_iso_timestamp(ts_raw)
+        priority_int = priority if isinstance(priority, int) else (int(priority) if isinstance(priority, (float, str)) and priority else 0)
+
+        # Avoid redundant str() calls
         if content is None and entry_id:
             content = entry_id
-        content = str(content) if content is not None else None
-
-        metadata = payload.get("metadata")
-        if not isinstance(metadata, dict):
-            metadata = {}
 
         return EventRecord(
             kind="event",
-            type=str(ev_type),
+            type=ev_type if isinstance(ev_type, str) else (str(ev_type) if ev_type is not None else "EVENT"),
             timestamp=ts,
-            plugin_id=plugin_id,
-            source=source,
-            priority=priority,
-            content=content,
-            metadata=metadata,
+            plugin_id=plugin_id if isinstance(plugin_id, str) else (str(plugin_id) if plugin_id is not None else None),
+            source=source if isinstance(source, str) else (str(source) if source is not None else None),
+            priority=priority_int,
+            content=content if isinstance(content, str) else (str(content) if content is not None else None),
+            metadata=metadata if isinstance(metadata, dict) else {},
             raw=payload,
-            event_id=event_id,
-            entry_id=entry_id,
+            event_id=event_id if isinstance(event_id, str) else (str(event_id) if event_id is not None else None),
+            entry_id=entry_id if isinstance(entry_id, str) else (str(entry_id) if entry_id is not None else None),
+            args=args if isinstance(args, dict) else None,
+        )
+
+    @staticmethod
+    def from_index(index: Dict[str, Any], payload: Optional[Dict[str, Any]] = None) -> "EventRecord":
+        """Fast path: create EventRecord from pre-extracted index fields."""
+        ts = index.get("timestamp")
+        timestamp: Optional[float] = float(ts) if isinstance(ts, (int, float)) else None
+        priority = index.get("priority")
+        priority_int = priority if isinstance(priority, int) else (int(priority) if priority else 0)
+        
+        event_id = index.get("id")
+        plugin_id = index.get("plugin_id")
+        source = index.get("source")
+        ev_type = index.get("type")
+        
+        entry_id = None
+        args = None
+        content = None
+        metadata: Dict[str, Any] = {}
+        if payload:
+            entry_id = payload.get("entry_id")
+            args = payload.get("args") if isinstance(payload.get("args"), dict) else None
+            content = payload.get("content")
+            meta_raw = payload.get("metadata")
+            metadata = meta_raw if isinstance(meta_raw, dict) else {}
+        
+        return EventRecord(
+            kind="event",
+            type=ev_type if isinstance(ev_type, str) else (str(ev_type) if ev_type else "EVENT"),
+            timestamp=timestamp,
+            plugin_id=plugin_id if isinstance(plugin_id, str) else (str(plugin_id) if plugin_id else None),
+            source=source if isinstance(source, str) else (str(source) if source else None),
+            priority=priority_int,
+            content=content if isinstance(content, str) else (str(content) if content else None),
+            metadata=metadata,
+            raw=payload or index,
+            event_id=event_id if isinstance(event_id, str) else (str(event_id) if event_id else None),
+            entry_id=entry_id if isinstance(entry_id, str) else (str(entry_id) if entry_id else None),
             args=args,
         )
 
@@ -205,9 +236,15 @@ class EventClient:
         ev_records: List[EventRecord] = []
         for item in items:
             if isinstance(item, dict):
-                ev_records.append(EventRecord.from_raw(item))
-            else:
-                ev_records.append(EventRecord.from_raw({"raw": item}))
+                idx = item.get("index")
+                p = item.get("payload")
+                # Fast path: use from_index when available
+                if isinstance(idx, dict):
+                    ev_records.append(EventRecord.from_index(idx, p if isinstance(p, dict) else None))
+                elif isinstance(p, dict):
+                    ev_records.append(EventRecord.from_raw(p))
+                else:
+                    ev_records.append(EventRecord.from_raw(item))
 
         get_params = {
             "plugin_id": plugin_id,
