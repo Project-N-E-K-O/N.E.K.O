@@ -253,8 +253,13 @@ async def health():
 @app.get("/available")
 async def available():
     """返回可用性和基本统计"""
-    with state.plugins_lock:
-        plugins_count = len(state.plugins)
+    loop = asyncio.get_running_loop()
+    
+    def _get_count():
+        with state.plugins_lock:
+            return len(state.plugins)
+    
+    plugins_count = await loop.run_in_executor(None, _get_count)
     return {
         "status": "ok",
         "available": True,
@@ -272,34 +277,38 @@ async def server_info(_: str = require_admin):
     """
     from plugin.sdk.version import SDK_VERSION
     
-    with state.plugins_lock:
-        plugins_count = len(state.plugins)
-        registered_plugins = list(state.plugins.keys())
+    loop = asyncio.get_running_loop()
     
-    with state.plugin_hosts_lock:
-        running_plugins_count = len(state.plugin_hosts)
-        running_plugins = list(state.plugin_hosts.keys())
-        # 检查每个运行插件的进程状态
-        running_details = {}
-        for pid, host in state.plugin_hosts.items():
-            if hasattr(host, 'process') and host.process:
-                running_details[pid] = {
-                    "pid": host.process.pid,
-                    "alive": host.process.is_alive(),
-                    "exitcode": host.process.exitcode
+    def _get_info():
+        with state.plugins_lock:
+            plugins_count = len(state.plugins)
+            registered_plugins = list(state.plugins.keys())
+        
+        with state.plugin_hosts_lock:
+            running_plugins_count = len(state.plugin_hosts)
+            running_plugins = list(state.plugin_hosts.keys())
+            # 检查每个运行插件的进程状态
+        running_plugins_status = {}
+        for pid in running_plugins:
+            host = state.plugin_hosts.get(pid)
+            if host:
+                running_plugins_status[pid] = {
+                    "alive": host.is_alive() if hasattr(host, 'is_alive') else False,
+                    "pid": host.process.pid if hasattr(host, 'process') and host.process else None
                 }
-            else:
-                running_details[pid] = {"error": "No process object"}
+        
+        return {
+            "plugins_count": plugins_count,
+            "registered_plugins": registered_plugins,
+            "running_plugins_count": running_plugins_count,
+            "running_plugins": running_plugins,
+            "running_plugins_status": running_plugins_status,
+        }
     
-    return {
-        "sdk_version": SDK_VERSION,
-        "plugins_count": plugins_count,
-        "registered_plugins": registered_plugins,
-        "running_plugins_count": running_plugins_count,
-        "running_plugins": running_plugins,
-        "running_details": running_details,
-        "time": now_iso()
-    }
+    info = await loop.run_in_executor(None, _get_info)
+    info["sdk_version"] = SDK_VERSION
+    info["time"] = now_iso()
+    return info
 
 
 @app.get("/plugin/status")
@@ -775,41 +784,50 @@ async def get_plugin_metrics(plugin_id: str, _: str = require_admin):
     如果插件不存在，返回 404。
     """
     try:
-        # 检查插件是否已注册（在 state.plugins 中）
-        with state.plugins_lock:
-            plugin_registered = plugin_id in state.plugins
+        loop = asyncio.get_running_loop()
         
-        # 检查插件是否正在运行（在 state.plugin_hosts 中）
-        with state.plugin_hosts_lock:
-            plugin_running = plugin_id in state.plugin_hosts
-            if plugin_running:
-                host = state.plugin_hosts[plugin_id]
-                # 检查进程状态
-                process_alive = False
-                if hasattr(host, "process") and host.process:
-                    process_alive = host.process.is_alive()
-                    if process_alive:
-                        logger.debug(
-                            f"Plugin {plugin_id} is running (pid: {host.process.pid})"
-                        )
+        def _check_plugin():
+            # 检查插件是否已注册（在 state.plugins 中）
+            with state.plugins_lock:
+                plugin_registered = plugin_id in state.plugins
+            
+            # 检查插件是否正在运行（在 state.plugin_hosts 中）
+            with state.plugin_hosts_lock:
+                plugin_running = plugin_id in state.plugin_hosts
+                if plugin_running:
+                    host = state.plugin_hosts[plugin_id]
+                    # 检查进程状态
+                    process_alive = False
+                    if hasattr(host, "process") and host.process:
+                        process_alive = host.process.is_alive()
+                        if process_alive:
+                            logger.debug(
+                                f"Plugin {plugin_id} is running (pid: {host.process.pid})"
+                            )
+                        else:
+                            # 进程已退出，记录退出码
+                            exitcode = getattr(host.process, 'exitcode', None)
+                            logger.debug(
+                                f"Plugin {plugin_id} process is not alive (exitcode: {exitcode}, pid: {host.process.pid if hasattr(host.process, 'pid') else 'N/A'})"
+                            )
                     else:
-                        # 进程已退出，记录退出码
-                        exitcode = getattr(host.process, 'exitcode', None)
-                        logger.debug(
-                            f"Plugin {plugin_id} process is not alive (exitcode: {exitcode}, pid: {host.process.pid if hasattr(host.process, 'pid') else 'N/A'})"
-                        )
+                        logger.debug(f"Plugin {plugin_id} host has no process object")
                 else:
-                    logger.debug(f"Plugin {plugin_id} host has no process object")
-            else:
-                host = None
-                process_alive = False
-                # 调试：列出所有正在运行的插件
-                all_running_plugins = list(state.plugin_hosts.keys())
-                logger.info(
-                    f"Plugin {plugin_id} is registered but not in plugin_hosts. "
-                    f"Currently tracked plugins in plugin_hosts: {all_running_plugins}. "
-                    f"Plugin may need to be started manually via /plugin/{plugin_id}/start"
-                )
+                    host = None
+                    process_alive = False
+                    # 调试：列出所有正在运行的插件
+                    all_running_plugins = list(state.plugin_hosts.keys())
+                    return plugin_registered, plugin_running, host, process_alive, all_running_plugins
+                return plugin_registered, plugin_running, host, process_alive, None
+        
+        plugin_registered, plugin_running, host, process_alive, all_running_plugins = await loop.run_in_executor(None, _check_plugin)
+        
+        if all_running_plugins is not None:
+            logger.info(
+                f"Plugin {plugin_id} is registered but not in plugin_hosts. "
+                f"Currently tracked plugins in plugin_hosts: {all_running_plugins}. "
+                f"Plugin may need to be started manually via /plugin/{plugin_id}/start"
+            )
         
         # 如果插件未注册，返回 404
         if not plugin_registered:
