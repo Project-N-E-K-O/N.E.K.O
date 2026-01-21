@@ -81,6 +81,18 @@ class PluginConfig:
             raise PluginConfigError(f"Invalid config inner type: {type(inner)}", operation=operation)
         return inner
 
+    def _is_in_event_loop(self) -> bool:
+        """检测当前是否在事件循环中运行。
+        
+        Returns:
+            True 如果当前在事件循环中，False 如果在 worker 线程或无事件循环环境
+        """
+        try:
+            asyncio.get_running_loop()
+            return True
+        except RuntimeError:
+            return False
+
     def _run_sync(self, coro: Any, *, operation: str) -> Any:
         """Run an async config coroutine from sync context.
 
@@ -98,7 +110,7 @@ class PluginConfig:
             operation=operation,
         )
 
-    async def dump(self, *, timeout: float = 5.0) -> Dict[str, Any]:
+    async def _dump_async(self, *, timeout: float = 5.0) -> Dict[str, Any]:
         if not hasattr(self.ctx, "get_own_config"):
             raise PluginConfigError("ctx.get_own_config is not available", operation="dump")
         try:
@@ -107,8 +119,15 @@ class PluginConfig:
             raise PluginConfigError(f"Failed to read config: {e}", operation="dump") from e
         return self._unwrap(cfg, operation="dump")
 
+    def dump(self, *, timeout: float = 5.0):
+        """智能代理：自动检测执行环境，选择同步或异步执行方式。"""
+        coro = self._dump_async(timeout=timeout)
+        if self._is_in_event_loop():
+            return coro
+        return asyncio.run(coro)
+
     def dump_sync(self, *, timeout: float = 5.0) -> Dict[str, Any]:
-        return self._run_sync(self.dump(timeout=timeout), operation="dump")
+        return self._run_sync(self._dump_async(timeout=timeout), operation="dump")
 
     async def dump_base(self, *, timeout: float = 5.0) -> Dict[str, Any]:
         """Return base config (plugin.toml without profile overlay)."""
@@ -173,7 +192,7 @@ class PluginConfig:
         """
 
         if profile_name is None:
-            return await self.dump(timeout=timeout)
+            return await self._dump_async(timeout=timeout)
 
         if not hasattr(self.ctx, "get_own_effective_config"):
             raise PluginConfigError("ctx.get_own_effective_config is not available", operation="dump_effective")
@@ -189,8 +208,8 @@ class PluginConfig:
     def dump_effective_sync(self, profile_name: Optional[str] = None, *, timeout: float = 5.0) -> Dict[str, Any]:
         return self._run_sync(self.dump_effective(profile_name, timeout=timeout), operation="dump_effective")
 
-    async def get(self, path: str, default: Any = _MISSING, *, timeout: float = 5.0) -> Any:
-        cfg = await self.dump(timeout=timeout)
+    async def _get_async(self, path: str, default: Any = _MISSING, *, timeout: float = 5.0) -> Any:
+        cfg = await self._dump_async(timeout=timeout)
         try:
             return _get_by_path(cfg, path)
         except PluginConfigError:
@@ -198,17 +217,24 @@ class PluginConfig:
                 raise
             return default
 
+    def get(self, path: str, default: Any = _MISSING, *, timeout: float = 5.0):
+        """智能代理：自动检测执行环境，选择同步或异步执行方式。"""
+        coro = self._get_async(path, default=default, timeout=timeout)
+        if self._is_in_event_loop():
+            return coro
+        return asyncio.run(coro)
+
     def get_sync(self, path: str, default: Any = _MISSING, *, timeout: float = 5.0) -> Any:
-        return self._run_sync(self.get(path, default=default, timeout=timeout), operation="get")
+        return self._run_sync(self._get_async(path, default=default, timeout=timeout), operation="get")
 
     async def require(self, path: str, *, timeout: float = 5.0) -> Any:
-        cfg = await self.dump(timeout=timeout)
+        cfg = await self._dump_async(timeout=timeout)
         return _get_by_path(cfg, path)
 
     def require_sync(self, path: str, *, timeout: float = 5.0) -> Any:
         return self._run_sync(self.require(path, timeout=timeout), operation="require")
 
-    async def update(self, patch: Dict[str, Any], *, timeout: float = 10.0) -> Dict[str, Any]:
+    async def _update_async(self, patch: Dict[str, Any], *, timeout: float = 10.0) -> Dict[str, Any]:
         if not isinstance(patch, dict):
             raise PluginConfigError("patch must be a dict", operation="update")
         if not hasattr(self.ctx, "update_own_config"):
@@ -219,19 +245,33 @@ class PluginConfig:
             raise PluginConfigError(f"Failed to update config: {e}", operation="update") from e
         return self._unwrap(updated, operation="update")
 
-    def update_sync(self, patch: Dict[str, Any], *, timeout: float = 10.0) -> Dict[str, Any]:
-        return self._run_sync(self.update(patch, timeout=timeout), operation="update")
+    def update(self, patch: Dict[str, Any], *, timeout: float = 10.0):
+        """智能代理：自动检测执行环境，选择同步或异步执行方式。"""
+        coro = self._update_async(patch, timeout=timeout)
+        if self._is_in_event_loop():
+            return coro
+        return asyncio.run(coro)
 
-    async def set(self, path: str, value: Any, *, timeout: float = 10.0) -> Dict[str, Any]:
+    def update_sync(self, patch: Dict[str, Any], *, timeout: float = 10.0) -> Dict[str, Any]:
+        return self._run_sync(self._update_async(patch, timeout=timeout), operation="update")
+
+    async def _set_async(self, path: str, value: Any, *, timeout: float = 10.0) -> Dict[str, Any]:
         patch: Dict[str, Any] = {}
         _set_by_path(patch, path, value)
-        return await self.update(patch, timeout=timeout)
+        return await self._update_async(patch, timeout=timeout)
+
+    def set(self, path: str, value: Any, *, timeout: float = 10.0):
+        """智能代理：自动检测执行环境，选择同步或异步执行方式。"""
+        coro = self._set_async(path, value, timeout=timeout)
+        if self._is_in_event_loop():
+            return coro
+        return asyncio.run(coro)
 
     def set_sync(self, path: str, value: Any, *, timeout: float = 10.0) -> Dict[str, Any]:
-        return self._run_sync(self.set(path, value, timeout=timeout), operation="set")
+        return self._run_sync(self._set_async(path, value, timeout=timeout), operation="set")
 
     async def get_section(self, path: str, *, timeout: float = 5.0) -> Dict[str, Any]:
-        value = await self.get(path, default=None, timeout=timeout)
+        value = await self._get_async(path, default=None, timeout=timeout)
         if value is None:
             return {}
         if not isinstance(value, dict):

@@ -6,7 +6,7 @@ import time
 from typing import Any, Dict
 
 from plugin.sdk.base import NekoPluginBase
-from plugin.sdk.decorators import lifecycle, neko_plugin, plugin_entry, custom_event
+from plugin.sdk.decorators import lifecycle, neko_plugin, plugin_entry, custom_event, worker
 from plugin.sdk import ok, SystemInfo
 from plugin.sdk.memory import MemoryClient
 
@@ -689,51 +689,61 @@ class HelloPlugin(NekoPluginBase):
             "required": [],
         },
     )
-    async def hello_run(self, name: str = "world", sleep_seconds: float = 0.6, **kwargs):
+    @worker(timeout=30.0)
+    def hello_run(self, name: str = "world", sleep_seconds: float = 0.6, **kwargs):
         s = 0.1
         try:
             s = max(0.0, float(sleep_seconds))
         except Exception:
             s = 0.1
 
-        await self.ctx.run_update(
+        # worker 线程中无法通过 contextvars 获取 run_id，需从 kwargs 显式提取
+        run_id = (kwargs.get("_ctx") or {}).get("run_id")
+
+        self.ctx.run_update(
+            run_id=run_id,
             progress=0.0,
             stage="start",
             message="hello_run started",
             step=0,
             step_total=3,
         )
-        await asyncio.sleep(s)
+        time.sleep(s)
 
-        await self.ctx.run_update(
+        self.ctx.run_update(
+            run_id=run_id,
             progress=0.33,
             stage="working",
             message=f"preparing greeting for {name}",
             step=1,
             step_total=3,
         )
-        await self.ctx.export_push_text(
+        self.ctx.export_push_text(
+            run_id=run_id,
             text=f"Hello, {name}! (from testPlugin hello_run)",
             description="hello message",
             metadata={"plugin_id": self.ctx.plugin_id, "entry_id": "hello_run"},
         )
-        await asyncio.sleep(s)
+        time.sleep(s)
 
-        await self.ctx.run_update(
+        self.ctx.run_update(
+            run_id=run_id,
             progress=0.66,
             stage="working",
             message="doing some work...",
             step=2,
             step_total=3,
         )
-        await asyncio.sleep(s)
+        time.sleep(s)
 
-        await self.ctx.export_push_text(
+        self.ctx.export_push_text(
+            run_id=run_id,
             text=f"Done. timestamp={int(time.time())}",
             description="done marker",
             metadata={"kind": "done"},
         )
-        await self.ctx.run_update(
+        self.ctx.run_update(
+            run_id=run_id,
             progress=1.0,
             stage="done",
             message="hello_run finished",

@@ -254,6 +254,18 @@ class PluginContext:
             raise RuntimeError("run_id is required (this entry may not be triggered via /runs)")
         return rid
 
+    def _is_in_event_loop(self) -> bool:
+        """检测当前是否在事件循环中运行。
+        
+        Returns:
+            True 如果当前在事件循环中，False 如果在 worker 线程或无事件循环环境
+        """
+        try:
+            asyncio.get_running_loop()
+            return True
+        except RuntimeError:
+            return False
+
     def _run_coro_sync(self, coro: Any, *, operation: str) -> Any:
         """Run a coroutine from sync context.
 
@@ -289,7 +301,7 @@ class PluginContext:
             # 其他未知异常
             self.logger.exception(f"Unexpected error updating status for plugin {self.plugin_id}")
 
-    async def export_push_text(
+    async def _export_push_text_async(
         self,
         *,
         run_id: Optional[str] = None,
@@ -313,6 +325,23 @@ class PluginContext:
             wrap_result=True,
         )
 
+    def export_push_text(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        text: str,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout: float = 5.0,
+    ):
+        """智能代理：自动检测执行环境，选择同步或异步执行方式。"""
+        coro = self._export_push_text_async(
+            run_id=run_id, text=text, description=description, metadata=metadata, timeout=timeout
+        )
+        if self._is_in_event_loop():
+            return coro
+        return asyncio.run(coro)
+
     async def export_push_binary_async(
         self,
         *,
@@ -323,7 +352,7 @@ class PluginContext:
         metadata: Optional[Dict[str, Any]] = None,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
-        return await self.export_push_binary(
+        return await self._export_push_binary_async(
             run_id=run_id,
             binary_data=binary_data,
             mime=mime,
@@ -343,7 +372,7 @@ class PluginContext:
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
         return self._run_coro_sync(
-            self.export_push_binary(
+            self._export_push_binary_async(
                 run_id=run_id,
                 binary_data=binary_data,
                 mime=mime,
@@ -355,15 +384,15 @@ class PluginContext:
         )
 
     async def export_push_text_async(self, *, run_id: Optional[str] = None, text: str, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
-        return await self.export_push_text(run_id=run_id, text=text, description=description, metadata=metadata, timeout=timeout)
+        return await self._export_push_text_async(run_id=run_id, text=text, description=description, metadata=metadata, timeout=timeout)
 
     def export_push_text_sync(self, *, run_id: Optional[str] = None, text: str, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
         return self._run_coro_sync(
-            self.export_push_text(run_id=run_id, text=text, description=description, metadata=metadata, timeout=timeout),
+            self._export_push_text_async(run_id=run_id, text=text, description=description, metadata=metadata, timeout=timeout),
             operation="export_push_text",
         )
 
-    async def export_push_binary_url(
+    async def _export_push_binary_url_async(
         self,
         *,
         run_id: Optional[str] = None,
@@ -389,16 +418,34 @@ class PluginContext:
             wrap_result=True,
         )
 
+    def export_push_binary_url(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        binary_url: str,
+        mime: Optional[str] = None,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout: float = 5.0,
+    ):
+        """智能代理：自动检测执行环境，选择同步或异步执行方式。"""
+        coro = self._export_push_binary_url_async(
+            run_id=run_id, binary_url=binary_url, mime=mime, description=description, metadata=metadata, timeout=timeout
+        )
+        if self._is_in_event_loop():
+            return coro
+        return asyncio.run(coro)
+
     async def export_push_binary_url_async(self, *, run_id: Optional[str] = None, binary_url: str, mime: Optional[str] = None, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
-        return await self.export_push_binary_url(run_id=run_id, binary_url=binary_url, mime=mime, description=description, metadata=metadata, timeout=timeout)
+        return await self._export_push_binary_url_async(run_id=run_id, binary_url=binary_url, mime=mime, description=description, metadata=metadata, timeout=timeout)
 
     def export_push_binary_url_sync(self, *, run_id: Optional[str] = None, binary_url: str, mime: Optional[str] = None, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
         return self._run_coro_sync(
-            self.export_push_binary_url(run_id=run_id, binary_url=binary_url, mime=mime, description=description, metadata=metadata, timeout=timeout),
+            self._export_push_binary_url_async(run_id=run_id, binary_url=binary_url, mime=mime, description=description, metadata=metadata, timeout=timeout),
             operation="export_push_binary_url",
         )
 
-    async def export_push_url(
+    async def _export_push_url_async(
         self,
         *,
         run_id: Optional[str] = None,
@@ -422,16 +469,33 @@ class PluginContext:
             wrap_result=True,
         )
 
+    def export_push_url(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        url: str,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout: float = 5.0,
+    ):
+        """智能代理：自动检测执行环境，选择同步或异步执行方式。"""
+        coro = self._export_push_url_async(
+            run_id=run_id, url=url, description=description, metadata=metadata, timeout=timeout
+        )
+        if self._is_in_event_loop():
+            return coro
+        return asyncio.run(coro)
+
     async def export_push_url_async(self, *, run_id: Optional[str] = None, url: str, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
-        return await self.export_push_url(run_id=run_id, url=url, description=description, metadata=metadata, timeout=timeout)
+        return await self._export_push_url_async(run_id=run_id, url=url, description=description, metadata=metadata, timeout=timeout)
 
     def export_push_url_sync(self, *, run_id: Optional[str] = None, url: str, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
         return self._run_coro_sync(
-            self.export_push_url(run_id=run_id, url=url, description=description, metadata=metadata, timeout=timeout),
+            self._export_push_url_async(run_id=run_id, url=url, description=description, metadata=metadata, timeout=timeout),
             operation="export_push_url",
         )
 
-    async def export_push_binary(
+    async def _export_push_binary_async(
         self,
         *,
         run_id: Optional[str] = None,
@@ -464,7 +528,25 @@ class PluginContext:
             wrap_result=True,
         )
 
-    async def run_update(
+    def export_push_binary(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        binary_data: bytes,
+        mime: Optional[str] = None,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout: float = 5.0,
+    ):
+        """智能代理：自动检测执行环境，选择同步或异步执行方式。"""
+        coro = self._export_push_binary_async(
+            run_id=run_id, binary_data=binary_data, mime=mime, description=description, metadata=metadata, timeout=timeout
+        )
+        if self._is_in_event_loop():
+            return coro
+        return asyncio.run(coro)
+
+    async def _run_update_async(
         self,
         *,
         run_id: Optional[str] = None,
@@ -504,6 +586,35 @@ class PluginContext:
             wrap_result=True,
         )
 
+    def run_update(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        progress: Optional[float] = None,
+        stage: Optional[str] = None,
+        message: Optional[str] = None,
+        step: Optional[int] = None,
+        step_total: Optional[int] = None,
+        eta_seconds: Optional[float] = None,
+        metrics: Optional[Dict[str, Any]] = None,
+        timeout: float = 5.0,
+    ):
+        """智能代理：自动检测执行环境，选择同步或异步执行方式。"""
+        coro = self._run_update_async(
+            run_id=run_id,
+            progress=progress,
+            stage=stage,
+            message=message,
+            step=step,
+            step_total=step_total,
+            eta_seconds=eta_seconds,
+            metrics=metrics,
+            timeout=timeout,
+        )
+        if self._is_in_event_loop():
+            return coro
+        return asyncio.run(coro)
+
     async def run_update_async(
         self,
         *,
@@ -517,7 +628,7 @@ class PluginContext:
         metrics: Optional[Dict[str, Any]] = None,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
-        return await self.run_update(
+        return await self._run_update_async(
             run_id=run_id,
             progress=progress,
             stage=stage,
@@ -543,7 +654,7 @@ class PluginContext:
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
         return self._run_coro_sync(
-            self.run_update(
+            self._run_update_async(
                 run_id=run_id,
                 progress=progress,
                 stage=stage,
@@ -557,7 +668,7 @@ class PluginContext:
             operation="run_update",
         )
 
-    async def run_progress(
+    async def _run_progress_async(
         self,
         *,
         run_id: Optional[str] = None,
@@ -566,13 +677,30 @@ class PluginContext:
         message: Optional[str] = None,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
-        return await self.run_update(
+        return await self._run_update_async(
             run_id=run_id,
             progress=float(progress),
             stage=stage,
             message=message,
             timeout=float(timeout),
         )
+
+    def run_progress(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        progress: float,
+        stage: Optional[str] = None,
+        message: Optional[str] = None,
+        timeout: float = 5.0,
+    ):
+        """智能代理：自动检测执行环境，选择同步或异步执行方式。"""
+        coro = self._run_progress_async(
+            run_id=run_id, progress=progress, stage=stage, message=message, timeout=timeout
+        )
+        if self._is_in_event_loop():
+            return coro
+        return asyncio.run(coro)
 
     async def run_progress_async(
         self,
@@ -583,7 +711,7 @@ class PluginContext:
         message: Optional[str] = None,
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
-        return await self.run_progress(run_id=run_id, progress=progress, stage=stage, message=message, timeout=timeout)
+        return await self._run_progress_async(run_id=run_id, progress=progress, stage=stage, message=message, timeout=timeout)
 
     def run_progress_sync(
         self,
@@ -595,7 +723,7 @@ class PluginContext:
         timeout: float = 5.0,
     ) -> Dict[str, Any]:
         return self._run_coro_sync(
-            self.run_progress(run_id=run_id, progress=progress, stage=stage, message=message, timeout=timeout),
+            self._run_progress_async(run_id=run_id, progress=progress, stage=stage, message=message, timeout=timeout),
             operation="run_progress",
         )
 
