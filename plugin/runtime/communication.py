@@ -439,10 +439,8 @@ class PluginCommunicationResourceManager:
                         self.logger.debug(
                             f"Setting result for req_id {req_id}, Future is not done yet"
                         )
-                        if res.get("success"):
-                            future.set_result(res)
-                        else:
-                            future.set_exception(Exception(res.get("error", "Unknown error")))
+                        # 始终回传结果，让调用方统一处理成功/失败
+                        future.set_result(res)
                         # 设置结果后，从字典中移除
                         self._pending_futures.pop(req_id, None)
                         self.logger.debug(f"Result set and Future removed for req_id {req_id}")

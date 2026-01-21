@@ -15,6 +15,9 @@ except ImportError:
 import uuid
 import threading
 import functools
+
+# 模块级初始化锁，用于 _push_lock 的双检初始化
+_PUSH_LOCK_INIT = threading.Lock()
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -340,7 +343,7 @@ class PluginContext:
         )
         if self._is_in_event_loop():
             return coro
-        return asyncio.run(coro)
+        return self._run_coro_sync(coro, operation="export_push_text")
 
     async def export_push_binary_async(
         self,
@@ -434,7 +437,7 @@ class PluginContext:
         )
         if self._is_in_event_loop():
             return coro
-        return asyncio.run(coro)
+        return self._run_coro_sync(coro, operation="export_push_binary_url")
 
     async def export_push_binary_url_async(self, *, run_id: Optional[str] = None, binary_url: str, mime: Optional[str] = None, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
         return await self._export_push_binary_url_async(run_id=run_id, binary_url=binary_url, mime=mime, description=description, metadata=metadata, timeout=timeout)
@@ -484,7 +487,7 @@ class PluginContext:
         )
         if self._is_in_event_loop():
             return coro
-        return asyncio.run(coro)
+        return self._run_coro_sync(coro, operation="export_push_url")
 
     async def export_push_url_async(self, *, run_id: Optional[str] = None, url: str, description: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
         return await self._export_push_url_async(run_id=run_id, url=url, description=description, metadata=metadata, timeout=timeout)
@@ -544,7 +547,7 @@ class PluginContext:
         )
         if self._is_in_event_loop():
             return coro
-        return asyncio.run(coro)
+        return self._run_coro_sync(coro, operation="export_push_binary")
 
     async def _run_update_async(
         self,
@@ -613,7 +616,7 @@ class PluginContext:
         )
         if self._is_in_event_loop():
             return coro
-        return asyncio.run(coro)
+        return self._run_coro_sync(coro, operation="run_update")
 
     async def run_update_async(
         self,
@@ -700,7 +703,7 @@ class PluginContext:
         )
         if self._is_in_event_loop():
             return coro
-        return asyncio.run(coro)
+        return self._run_coro_sync(coro, operation="run_progress")
 
     async def run_progress_async(
         self,
@@ -769,13 +772,15 @@ class PluginContext:
                     if bool(fast_mode):
                         lock = getattr(self, "_push_lock", None)
                         if lock is None:
-                            new_lock = threading.Lock()
-                            try:
-                                object.__setattr__(self, "_push_lock", new_lock)
-                                lock = new_lock
-                            except Exception:
-                                self._push_lock = new_lock
-                                lock = new_lock
+                            with _PUSH_LOCK_INIT:
+                                lock = getattr(self, "_push_lock", None)
+                                if lock is None:
+                                    new_lock = threading.Lock()
+                                    try:
+                                        object.__setattr__(self, "_push_lock", new_lock)
+                                    except Exception:
+                                        self._push_lock = new_lock
+                                    lock = new_lock
 
                         with lock:
                             batcher = getattr(self, "_message_plane_push_batcher", None)

@@ -851,7 +851,7 @@ class MessagePlaneRpcServer:
             envelope, req, enc = recvd
             try:
                 resp = self._handle(req)
-            except Exception as e:
+            except Exception:
                 req_id = str(req.get("req_id") or "") if isinstance(req, dict) else ""
                 logger.exception("[message_plane] rpc handler error for req_id={}", req_id)
                 resp = err_response(req_id, "internal error")

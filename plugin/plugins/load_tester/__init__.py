@@ -1691,11 +1691,11 @@ class LoadTestPlugin(NekoPluginBase):
             if any(len(r) != expected_len for r in rows):
                 raise ValueError("Invalid summary table: row length mismatch")
 
-            cols = list(zip(*[headers, *rows]))
+            cols = list(zip(*[headers, *rows], strict=True))
             widths = [max(len(str(x)) for x in col) for col in cols]
 
             def _line(parts: list[str]) -> str:
-                return " | ".join(p.ljust(w) for p, w in zip(parts, widths))
+                return " | ".join(p.ljust(w) for p, w in zip(parts, widths, strict=True))
 
             sep = "-+-".join("-" * w for w in widths)
             table = "\n".join([

@@ -325,6 +325,25 @@ class HelloPlugin(NekoPluginBase):
 
     @lifecycle(id="shutdown")
     def shutdown(self, **_) -> Any:
+        # 停止调试定时器（如果存在）
+        try:
+            cfg = self._read_local_toml()
+            debug_cfg = cfg.get("debug") if isinstance(cfg.get("debug"), dict) else {}
+            timer_cfg = debug_cfg.get("timer") if isinstance(debug_cfg.get("timer"), dict) else {}
+            timer_id = str(timer_cfg.get("timer_id", debug_cfg.get("timer_id", ""))).strip()
+            if timer_id:
+                try:
+                    self.plugins.call_entry(
+                        "timer_service:stop_timer",
+                        {"timer_id": timer_id},
+                        timeout=5.0,
+                    )
+                    self.file_logger.info("Debug timer stopped: timer_id={}", timer_id)
+                except Exception as e:
+                    self.file_logger.warning("Failed to stop debug timer: {}", e)
+        except Exception:
+            pass
+
         for w in list(getattr(self, "_active_watchers", []) or []):
             try:
                 w.stop()
