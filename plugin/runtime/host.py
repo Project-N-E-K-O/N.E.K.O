@@ -17,9 +17,11 @@ from queue import Empty
 from loguru import logger as loguru_logger
 
 from plugin.sdk.events import EVENT_META_ATTR, EventHandler
+from plugin.sdk.decorators import WORKER_MODE_ATTR
 from plugin.core.state import state
 from plugin.core.context import PluginContext
 from plugin.runtime.communication import PluginCommunicationResourceManager
+from plugin.runtime.worker import WorkerExecutor
 from plugin.api.models import HealthCheckResponse
 from plugin.api.exceptions import (
     PluginLifecycleError,
@@ -357,6 +359,10 @@ def _plugin_process_runner(
                         t.start()
                         logger.info("Started auto custom event '{}' (type: {})", eid, event_type)
 
+        # 初始化 Worker 执行器
+        worker_executor = WorkerExecutor(max_workers=4, queue_size=100)
+        logger.info("[Plugin Process] Worker executor initialized with {} workers", 4)
+
         # 命令循环
         while True:
             try:
@@ -554,7 +560,60 @@ def _plugin_process_runner(
                     except (ValueError, TypeError) as e:
                         logger.debug("[Plugin Process] Failed to inspect signature: {}", e)
                     
-                    if asyncio.iscoroutinefunction(method):
+                    # 检查是否有 worker 标记
+                    worker_config = getattr(method, WORKER_MODE_ATTR, None)
+                    
+                    if worker_config is not None:
+                        # Worker 模式：提交到线程池
+                        logger.debug("[Plugin Process] Method has worker mode, submitting to worker pool")
+                        timeout = worker_config.timeout
+                        
+                        try:
+                            # 提交任务到 worker 线程池
+                            future = worker_executor.submit(
+                                task_id=req_id,
+                                handler=method,
+                                args=(),
+                                kwargs=args,
+                                timeout=timeout
+                            )
+                            
+                            # 等待结果（会阻塞当前线程，但这是在命令循环线程里）
+                            # 为了不阻塞命令循环，我们在单独线程里等待
+                            def _wait_worker_result():
+                                try:
+                                    with ctx._handler_scope(f"plugin_entry.{entry_id}"), ctx._run_scope(run_id):
+                                        result = worker_executor.wait_for_result(future, timeout)
+                                    ret_payload["success"] = True
+                                    ret_payload["data"] = result
+                                except TimeoutError as e:
+                                    logger.error("Worker task {} timed out", entry_id)
+                                    ret_payload["error"] = str(e)
+                                except Exception as e:
+                                    logger.exception("Worker task {} failed", entry_id)
+                                    ret_payload["error"] = f"Worker error: {str(e)}"
+                                finally:
+                                    # 发送响应
+                                    res_queue.put(ret_payload)
+                            
+                            # 在单独线程里等待 worker 结果
+                            threading.Thread(
+                                target=_wait_worker_result,
+                                daemon=True,
+                                name=f"WorkerWaiter-{req_id[:8]}"
+                            ).start()
+                            
+                            # 立即继续处理下一个命令
+                            continue
+                            
+                        except Exception as e:
+                            # 提交失败，立即返回错误
+                            logger.exception("Failed to submit worker task {}", entry_id)
+                            ret_payload["error"] = f"Failed to submit worker task: {str(e)}"
+                            res_queue.put(ret_payload)
+                            continue
+                    
+                    elif asyncio.iscoroutinefunction(method):
                         logger.debug("[Plugin Process] Method is async, running in thread to avoid blocking command loop")
                         # 关键修复：在独立线程中运行异步方法，避免阻塞命令循环
                         # 这样命令循环可以继续处理其他命令（包括响应命令）

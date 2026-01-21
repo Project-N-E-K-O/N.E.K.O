@@ -3,9 +3,20 @@
 
 提供插件开发所需的装饰器。
 """
+from dataclasses import dataclass
 from typing import Type, Callable, Literal
 from .base import PluginMeta, NEKO_PLUGIN_TAG
 from .events import EventMeta, EVENT_META_ATTR
+
+# Worker 装饰器的属性名
+WORKER_MODE_ATTR = "_neko_worker_mode"
+
+
+@dataclass
+class WorkerConfig:
+    """Worker 配置"""
+    timeout: float = 30.0
+    priority: int = 0
 
 
 def neko_plugin(cls):
@@ -49,6 +60,51 @@ def on_event(
         setattr(fn, EVENT_META_ATTR, meta)
         return fn
     return decorator
+
+
+def worker(timeout: float = 30.0, priority: int = 0):
+    """
+    Worker 模式装饰器
+    
+    标记函数应该在 worker 线程池中执行，而不是在命令循环线程中执行。
+    可以叠加在 @plugin_entry、@lifecycle、@bus_subscribe 等装饰器上。
+    
+    Args:
+        timeout: 超时时间（秒），默认 30.0
+        priority: 优先级（数字越大优先级越高），默认 0
+    
+    Example:
+        @worker(timeout=30.0)
+        @plugin_entry(id="sync_task")
+        def sync_task(self, param: str):
+            # 同步代码，会在 worker 线程池中执行
+            return ok(data={"result": param})
+    """
+    def decorator(func: Callable) -> Callable:
+        # 附加 worker 配置到函数
+        config = WorkerConfig(timeout=timeout, priority=priority)
+        setattr(func, WORKER_MODE_ATTR, config)
+        # 返回原函数（不包装）
+        return func
+    return decorator
+
+
+class PluginDecorators:
+    """插件装饰器命名空间，支持 @plugin.worker 等语法"""
+    
+    @staticmethod
+    def worker(timeout: float = 30.0, priority: int = 0):
+        """Worker 模式装饰器"""
+        return worker(timeout=timeout, priority=priority)
+    
+    @staticmethod
+    def entry(**kwargs):
+        """Plugin entry 装饰器（别名）"""
+        return plugin_entry(**kwargs)
+
+
+# 创建全局实例
+plugin = PluginDecorators()
 
 
 def plugin_entry(
