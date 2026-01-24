@@ -112,12 +112,13 @@ def _plugin_process_runner(
     logger.remove()
     # 绑定插件ID到logger上下文
     logger = logger.bind(plugin_id=plugin_id)
-    # 添加控制台输出
+    # 添加控制台输出（强制启用颜色）
     logger.add(
         sys.stdout,
         format=f"<green>{{time:YYYY-MM-DD HH:mm:ss}}</green> | <level>{{level: <8}}</level> | [Proc-{_sanitize_plugin_id(plugin_id)}] <level>{{message}}</level>",
         level="INFO",
         colorize=True,
+        enqueue=False,
     )
     # 添加文件输出（使用项目根目录的log目录）
     safe_pid = _sanitize_plugin_id(plugin_id)
@@ -158,7 +159,8 @@ def _plugin_process_runner(
                     try:
                         level = record.levelname
                         msg = record.getMessage()
-                        logger.opt(depth=6, exception=record.exc_info).log(level, msg)
+                        # 不使用depth参数，避免显示模块路径信息
+                        logger.opt(exception=record.exc_info).log(level, msg)
                     except Exception:
                         pass
 

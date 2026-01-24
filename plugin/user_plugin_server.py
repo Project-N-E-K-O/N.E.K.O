@@ -15,6 +15,15 @@ from pathlib import Path
 
 from loguru import logger as logger
 
+# 移除默认handler并配置简洁格式
+logger.remove()
+logger.add(
+    sys.stdout,
+    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>",
+    level="INFO",
+    colorize=True,
+)
+
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
@@ -73,12 +82,8 @@ class _LoguruInterceptHandler(logging.Handler):
         except Exception:
             level = record.levelno
 
-        frame, depth = logging.currentframe(), 2
-        while frame and frame.f_code.co_filename == logging.__file__:
-            frame = frame.f_back
-            depth += 1
-
-        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+        # 不使用depth参数，避免显示模块路径信息
+        logger.opt(exception=record.exc_info).log(level, record.getMessage())
 
 
 try:

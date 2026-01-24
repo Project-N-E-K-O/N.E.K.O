@@ -248,11 +248,8 @@ async def startup() -> None:
             def emit(self, record: logging.LogRecord) -> None:
                 try:
                     level = record.levelname
-                    frame, depth = logging.currentframe(), 2
-                    while frame and frame.f_code.co_filename == logging.__file__:
-                        frame = frame.f_back
-                        depth += 1
-                    logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+                    msg = record.getMessage()
+                    logger.opt(exception=record.exc_info).log(level, msg)
                 except Exception:
                     pass
 

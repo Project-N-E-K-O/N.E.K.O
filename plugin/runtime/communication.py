@@ -6,17 +6,16 @@
 from __future__ import annotations
 
 import asyncio
-import logging
-import os
 import time
+import traceback
 import uuid
-from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from queue import Empty
+from datetime import datetime, timezone
+from queue import Empty, Queue
 from typing import Any, Dict, Optional
 
-from multiprocessing import Queue
+from loguru import logger as loguru_logger
 
 from plugin.settings import (
     COMMUNICATION_THREAD_POOL_MAX_WORKERS,
@@ -52,7 +51,7 @@ class PluginCommunicationResourceManager:
     res_queue: Queue
     status_queue: Queue
     message_queue: Queue
-    logger: logging.Logger = field(default_factory=lambda: logging.getLogger("plugin.communication"))
+    logger: Any = field(default_factory=lambda: loguru_logger.bind(component="communication"))
     
     # 异步相关资源
     _pending_futures: Dict[str, asyncio.Future] = field(default_factory=dict)

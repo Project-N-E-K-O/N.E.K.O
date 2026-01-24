@@ -6,9 +6,10 @@ import threading
 import queue
 import os
 import uuid
-import logging
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
+
+from loguru import logger
 
 import ormsgpack
 
@@ -29,8 +30,8 @@ if _ZMQ_ENABLED:
 
         # ZeroMQ IPC is enabled but pyzmq is missing; emit an explicit error log
         try:
-            logging.getLogger("plugin.zmq").error(
-                "ZeroMQ IPC is enabled (NEKO_PLUGIN_ZMQ_IPC_ENABLED) but pyzmq is not available: %s",
+            logger.bind(component="zmq").error(
+                "ZeroMQ IPC is enabled (NEKO_PLUGIN_ZMQ_IPC_ENABLED) but pyzmq is not available: {}",
                 type(e).__name__,
             )
         except Exception:
@@ -91,8 +92,8 @@ class ZmqIpcClient:
             sock.send_multipart([req_id.encode("utf-8"), _dumps(request)], flags=0)
         except Exception as e:
             try:
-                logging.getLogger("plugin.zmq.client").warning(
-                    "[ZmqIpcClient] send_multipart failed for plugin=%s req_id=%s error=%s: %s",
+                logger.bind(component="zmq.client").warning(
+                    "[ZmqIpcClient] send_multipart failed for plugin={} req_id={} error={}: {}",
                     self.plugin_id,
                     req_id,
                     type(e).__name__,
@@ -222,8 +223,8 @@ class ZmqIpcServer:
                 now_ts = time.time()
                 if now_ts - float(self._last_log_ts) >= 5.0:
                     self._last_log_ts = float(now_ts)
-                    logging.getLogger("plugin.router").debug(
-                        "[ZeroMQ IPC] recv=%d last_type=%s from=%s",
+                    logger.bind(component="router").debug(
+                        "[ZeroMQ IPC] recv={} last_type={} from={}",
                         int(self._recv_count),
                         str(request.get("type")),
                         str(request.get("from_plugin")),

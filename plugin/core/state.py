@@ -6,7 +6,6 @@
 import asyncio
 import itertools
 import json
-import logging
 import os
 import queue
 import re
@@ -17,6 +16,8 @@ import uuid
 from collections import deque
 import multiprocessing
 from typing import Any, Callable, Deque, Dict, List, Optional, Set, Tuple, cast
+
+from loguru import logger
 
 from plugin.sdk.events import EventHandler
 from plugin.settings import (
@@ -84,7 +85,7 @@ class BusChangeHub:
             try:
                 cb(str(op), dict(payload or {}))
             except Exception:
-                logging.getLogger("user_plugin_server").debug(
+                logger.bind(component="server").debug(
                     f"BusChangeHub callback failed for bus={b}", exc_info=True
                 )
                 continue
@@ -295,11 +296,11 @@ class GlobalState:
                     if existing is not None:
                         ev = existing
                 except Exception:
-                    logging.getLogger("user_plugin_server").debug(
+                    logger.bind(component="server").debug(
                         f"Failed to retrieve response event for request_id={rid}", exc_info=True
                     )
             except Exception:
-                logging.getLogger("user_plugin_server").debug(
+                logger.bind(component="server").debug(
                     f"Failed to store response event for request_id={rid}", exc_info=True
                 )
             return ev
@@ -1028,7 +1029,7 @@ class GlobalState:
                 event_map = self.plugin_response_event_map
                 event_map.pop(rid, None)
             except Exception:
-                logging.getLogger("user_plugin_server").debug(
+                logger.bind(component="server").debug(
                     f"Failed to remove response event for request_id={request_id}", exc_info=True
                 )
             return None
@@ -1037,7 +1038,7 @@ class GlobalState:
             event_map.pop(rid, None)
         except Exception:
 
-            logging.getLogger("user_plugin_server").debug(
+            logger.bind(component="server").debug(
                 f"Failed to remove response event for request_id={request_id}", exc_info=True
             )
         # 返回实际的响应数据
@@ -1126,7 +1127,7 @@ class GlobalState:
                 event_map = self.plugin_response_event_map
                 event_map.pop(rid, None)
             except Exception:
-                logging.getLogger("user_plugin_server").debug(
+                logger.bind(component="server").debug(
                     f"Failed to remove response event for request_id={request_id}", exc_info=True
                 )
             return None
@@ -1153,8 +1154,7 @@ class GlobalState:
                     expired_ids.append(request_id)
         except Exception as e:
             # 如果迭代失败，返回已找到的过期ID数量
-            logger = logging.getLogger("user_plugin_server")
-            logger.debug(f"Error iterating expired responses: {e}")
+            logger.bind(component="server").debug(f"Error iterating expired responses: {e}")
         
         # 删除过期的响应
         resp_map = self.plugin_response_map
@@ -1187,11 +1187,9 @@ class GlobalState:
                 self._plugin_comm_queue.cancel_join_thread()  # 防止卡住
                 self._plugin_comm_queue.close()
                 # self._plugin_comm_queue.join_thread() # 不需要 join，已经 cancel 了
-                logger = logging.getLogger("user_plugin_server")
-                logger.debug("Plugin communication queue closed")
+                logger.bind(component="server").debug("Plugin communication queue closed")
             except Exception as e:
-                logger = logging.getLogger("user_plugin_server")
-                logger.warning(f"Error closing plugin communication queue: {e}")
+                logger.bind(component="server").warning(f"Error closing plugin communication queue: {e}")
         
         # 清理响应映射和 Manager
         if self._plugin_response_map_manager is not None:
@@ -1202,11 +1200,9 @@ class GlobalState:
                 self._plugin_response_event_map = None
                 self._plugin_response_notify_event = None
                 self._plugin_response_map_manager = None
-                logger = logging.getLogger("user_plugin_server")
-                logger.debug("Plugin response map manager shut down")
+                logger.bind(component="server").debug("Plugin response map manager shut down")
             except Exception as e:
-                logger = logging.getLogger("user_plugin_server")
-                logger.debug(f"Error shutting down plugin response map manager: {e}")
+                logger.bind(component="server").debug(f"Error shutting down plugin response map manager: {e}")
 
     def cleanup_plugin_comm_resources(self) -> None:
         """Backward-compatible alias for shutdown code paths."""

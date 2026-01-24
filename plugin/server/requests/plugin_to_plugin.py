@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import logging
 from typing import Any, Dict
+
+from loguru import logger
 
 from plugin.core.state import state
 
 
-logger = logging.getLogger("plugin.router")
+logger = logger.bind(component="router")
 
 
 async def handle_plugin_to_plugin(request: Dict[str, Any], send_response) -> None:

@@ -1,22 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from dataclasses import dataclass, field
 import threading
-from datetime import datetime, timezone
 from typing import Any, Dict, Optional
+
+from loguru import logger as loguru_logger
 
 from plugin.settings import (
     STATUS_CONSUMER_SHUTDOWN_TIMEOUT,
     STATUS_MESSAGE_DEFAULT_MAX_COUNT,
     STATUS_CONSUMER_SLEEP_INTERVAL,
 )
-
-
-def _now_iso() -> str:
-    """统一的 ISO 时间戳生成"""
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+from plugin.utils.time_utils import now_iso
 
 
 @dataclass
@@ -28,7 +24,7 @@ class PluginStatusManager:
     - 状态存储和查询
     - 状态消费后台任务管理
     """
-    logger: logging.Logger = field(default_factory=lambda: logging.getLogger("plugin.status"))
+    logger: Any = field(default_factory=lambda: loguru_logger.bind(component="status"))
     _plugin_status: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     
@@ -55,7 +51,7 @@ class PluginStatusManager:
             self._plugin_status[plugin_id] = {
                 "plugin_id": plugin_id,
                 "status": status,
-                "updated_at": _now_iso(),
+                "updated_at": now_iso(),
                 "source": source,
             }
         self.logger.debug("插件id:%s  插件状态已更新 (来源: %s)", plugin_id, source)
@@ -83,7 +79,7 @@ class PluginStatusManager:
             return {
                 "plugin_id": pid,
                 "status": {"status": status},
-                "updated_at": _now_iso(),
+                "updated_at": now_iso(),
                 "source": "main_process_synthetic",
             }
 

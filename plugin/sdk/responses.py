@@ -1,23 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Union
 
 from .errors import ErrorCode
-
-
-def _now_iso() -> str:
-    """内部函数:获取当前UTC时间的ISO格式字符串"""
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def now_iso() -> str:
-    """获取当前UTC时间的ISO格式字符串
-    
-    Returns:
-        ISO 8601格式的时间字符串,例如: "2024-01-24T12:00:00Z"
-    """
-    return _now_iso()
+from plugin.utils.time_utils import now_iso
 
 
 def ok(
@@ -63,7 +49,7 @@ def ok(
         "data": data,
         "message": message,
         "error": None,
-        "time": time or _now_iso(),
+        "time": time or now_iso(),
         "trace_id": trace_id,
     }
     if meta:
@@ -129,7 +115,7 @@ def fail(
             "details": details,
             "retriable": retriable,
         },
-        "time": time or _now_iso(),
+        "time": time or now_iso(),
         "trace_id": trace_id,
     }
     if meta:

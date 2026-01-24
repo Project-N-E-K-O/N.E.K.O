@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import logging
 from typing import Any, Dict
+
+from loguru import logger
 
 from plugin.server.requests.typing import SendResponse
 from plugin.server.services import (
@@ -11,7 +12,7 @@ from plugin.server.services import (
 )
 
 
-logger = logging.getLogger("plugin.router")
+logger = logger.bind(component="router")
 
 
 async def handle_message_del(request: Dict[str, Any], send_response: SendResponse) -> None:

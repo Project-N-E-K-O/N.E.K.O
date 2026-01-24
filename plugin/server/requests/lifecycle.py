@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-import logging
 from typing import Any, Dict
+
+from loguru import logger
 
 from plugin.server.requests.typing import SendResponse
 from plugin.server.services import get_lifecycle_from_queue
 
 
-logger = logging.getLogger("plugin.router")
+logger = logger.bind(component="router")
 
 
 async def handle_lifecycle_get(request: Dict[str, Any], send_response: SendResponse) -> None:
