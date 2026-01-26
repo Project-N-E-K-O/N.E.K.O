@@ -1181,17 +1181,37 @@ async def delete_voice(voice_id: str):
         
         if deleted:
             # 清理所有角色中使用该音色的引用
+            _config_manager = get_config_manager()
+            session_manager = get_session_manager()
             characters = _config_manager.load_characters()
             cleaned_count = 0
+            affected_active_names = []
             
             if '猫娘' in characters:
                 for name in characters['猫娘']:
                     if characters['猫娘'][name].get('voice_id') == voice_id:
                         characters['猫娘'][name]['voice_id'] = ''
                         cleaned_count += 1
+                        
+                        # 检查该角色是否是当前活跃的 session
+                        if name in session_manager and session_manager[name].is_active:
+                            affected_active_names.append(name)
             
             if cleaned_count > 0:
                 _config_manager.save_characters(characters)
+                
+                # 对于受影响的活跃角色，通知并结束 session
+                for name in affected_active_names:
+                    logger.info(f"检测到活跃角色 {name} 的 voice_id 已被删除，准备刷新...")
+                    # 1. 发送刷新通知
+                    await send_reload_page_notice(session_manager[name], "音色已删除，页面即将刷新")
+                    # 2. 结束 session
+                    try:
+                        await session_manager[name].end_session(by_server=True)
+                        logger.info(f"已结束受影响角色 {name} 的 session")
+                    except Exception as e:
+                        logger.error(f"结束受影响角色 {name} 的 session 时出错: {e}")
+
                 # 自动重新加载配置
                 initialize_character_data = get_initialize_character_data()
                 await initialize_character_data()

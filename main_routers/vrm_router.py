@@ -29,7 +29,7 @@ MAX_FILE_SIZE = 200 * 1024 * 1024  # 200MB
 CHUNK_SIZE = 1024 * 1024  # 1MB chunks for streaming
 
 
-def safe_vrm_path(vrm_dir: Path, filename: str, subdir: str = None) -> tuple[Path | None, str]:
+def safe_vrm_path(vrm_dir: Path, filename: str, subdir: str | None = None) -> tuple[Path | None, str]:
     """安全地构造和验证 VRM 目录内的路径，防止路径穿越攻击。
     
     Args:
@@ -198,12 +198,7 @@ async def upload_vrm_animation(file: UploadFile = File(...)):
                 "error": path_error
             })
         
-        # 检查文件是否已存在
-        if target_file_path.exists():
-            return JSONResponse(status_code=400, content={
-                "success": False,
-                "error": f"文件 {filename} 已存在"
-            })
+        
         
         # 边读边写，避免将整个文件加载到内存
         total_size = 0

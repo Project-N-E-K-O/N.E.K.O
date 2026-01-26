@@ -1,7 +1,4 @@
-*:focus {
-outline: none !important;
-box-shadow: none !important;
-}
+@import url('base.css');
 
 html,
 body {
@@ -158,6 +155,39 @@ display: flex;
 justify-content: space-between;
 align-items: center;
 margin-bottom: 24px;
+}
+
+.header-tips-container {
+    display: flex;
+    align-items: center;
+    color: #40C5F1;
+    gap: 8px;
+}
+
+.exclamation-icon {
+    width: 48px;
+    height: 48px;
+}
+
+.required-star {
+    color: red;
+}
+
+.delete-icon, .add-icon, .key-icon {
+    width: 24px;
+    height: 24px;
+    vertical-align: middle;
+    margin-right: 4px;
+}
+
+.key-icon {
+    width: 36px;
+    height: 36px;
+    margin-right: 6px;
+}
+
+#add-catgirl-btn {
+    margin-top: 12px;
 }
 
 .master-section-header .tips {
@@ -473,7 +503,6 @@ opacity: 0.95;
 /* 小号按钮 */
 .btn.sm {
 padding: 0 12px;
-font-size: 0.8rem;
 border-radius: 999px;
 margin-right: 0;
 /* 新增：强制设置最小宽度，并让文字居中 */

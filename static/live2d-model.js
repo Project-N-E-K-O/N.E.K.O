@@ -602,7 +602,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                     const params = this.persistentExpressionParamsByName[name];
                     if (Array.isArray(params)) {
                         for (const p of params) {
-                            if (window.LIPSYNC_PARAMS.includes(p.Id)) continue;
+                            if (lipSyncParams.includes(p.Id)) continue;
                             try {
                                 currentCoreModel.setParameterValueById(p.Id, p.Value);
                             } catch (_) {}

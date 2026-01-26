@@ -1,3 +1,6 @@
+// 允许的来源列表
+const ALLOWED_ORIGINS = [window.location.origin];
+
 // 自动调整textarea高度
 function autoResizeTextarea(textarea) {
 // 重置高度为auto以计算正确的高度
@@ -13,7 +16,9 @@ const paddingBottom = parseInt(style.paddingBottom) || 0;
 const scrollHeight = textarea.scrollHeight;
 const contentHeight = scrollHeight - paddingTop - paddingBottom;
 // 三行高度的估算：line-height*3
-const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight);
+const computedLineHeight = parseFloat(style.lineHeight);
+const fontSize = parseFloat(style.fontSize) || 14;
+const lineHeight = isNaN(computedLineHeight) ? fontSize * 1.2 : computedLineHeight;
 const threeLinesHeight = lineHeight * 3;
 const maxContentHeight = threeLinesHeight;
 const newContentHeight = Math.min(maxContentHeight, contentHeight);
@@ -31,37 +36,53 @@ textarea.style.overflowY = 'hidden';
 
 // 辅助函数：为textarea附加自动调整高度的功能
 function attachTextareaAutoResize(textarea) {
-if (!textarea) return;
+    if (!textarea) return;
 
-// 初始化高度
-autoResizeTextarea(textarea);
+    // 初始化高度
+    autoResizeTextarea(textarea);
 
-// 添加输入和焦点事件监听器
-textarea.addEventListener('input', function () {
-autoResizeTextarea(this);
-});
-textarea.addEventListener('focus', function () {
-autoResizeTextarea(this);
-});
+    // 检查是否已经附加过事件监听器，防止重复绑定
+    if (textarea.dataset.autoResizeAttached === 'true') {
+        return;
+    }
+
+    // 添加输入和焦点事件监听器
+    textarea.addEventListener('input', function () {
+        autoResizeTextarea(this);
+    });
+    textarea.addEventListener('focus', function () {
+        autoResizeTextarea(this);
+    });
+
+    // 标记已附加
+    textarea.dataset.autoResizeAttached = 'true';
 }
 
 // 初始化所有textarea的自动调整功能
 function initAutoResizeTextareas() {
-const textareas = document.querySelectorAll('textarea');
-textareas.forEach(textarea => {
-// 初始调整
-autoResizeTextarea(textarea);
+    const textareas = document.querySelectorAll('textarea');
+    textareas.forEach(textarea => {
+        // 初始调整
+        autoResizeTextarea(textarea);
 
-// 监听输入事件
-textarea.addEventListener('input', function () {
-autoResizeTextarea(this);
-});
+        // 检查是否已经附加过事件监听器，防止重复绑定
+        if (textarea.dataset.autoResizeAttached === 'true') {
+            return;
+        }
 
-// 监听focus事件，确保获得焦点时也调整高度
-textarea.addEventListener('focus', function () {
-autoResizeTextarea(this);
-});
-});
+        // 监听输入事件
+        textarea.addEventListener('input', function () {
+            autoResizeTextarea(this);
+        });
+
+        // 监听focus事件，确保获得焦点时也调整高度
+        textarea.addEventListener('focus', function () {
+            autoResizeTextarea(this);
+        });
+
+        // 标记已附加
+        textarea.dataset.autoResizeAttached = 'true';
+    });
 }
 
 // 折叠面板切换
@@ -253,7 +274,7 @@ const details = block.querySelector('.catgirl-details');
 if (btn && details && details.style.display === 'none') {
 // 展开这个猫娘
 details.style.display = 'block';
-btn.textContent = '▼';
+btn.style.transform = 'rotate(180deg)';
 showCatgirlForm(expandedCatgirlName, details);
 }
 }
@@ -1224,15 +1245,14 @@ form.insertBefore(wrapper, form.querySelector('.fold'));
 formShowActionButtons();
 
 // 为新添加的输入元素添加事件监听
-const newTextarea = row.querySelector('textarea');
+const newTextarea = fieldRow.querySelector('textarea');
 newTextarea.addEventListener('change', formShowActionButtons);
 newTextarea.addEventListener('input', formShowActionButtons);
 
 // 为新增的textarea添加自动调整高度功能
-// 为新增的textarea添加自动调整高度功能
 attachTextareaAutoResize(newTextarea);
 
-const newDeleteBtn = row.querySelector('button');
+const newDeleteBtn = fieldRow.querySelector('button');
 newDeleteBtn.addEventListener('click', formShowActionButtons);
 };
 
@@ -1429,7 +1449,7 @@ const toggle = advancedSettingsFold.querySelector('.fold-toggle');
 if (advancedSettingsFold && toggle) {
 advancedSettingsFold.classList.add('open');
 const arrow = toggle.querySelector('.arrow');
-if (arrow) arrow.textContent = '▼';
++if (arrow) arrow.style.transform = 'rotate(180deg)';
 }
 }
 }, 0);
@@ -1595,13 +1615,14 @@ iframe.style.margin = '50px auto';
 iframe.style.borderRadius = '8px';
 // 监听关闭消息
 window.addEventListener('message', function handler(e) {
-if (e.data && e.data.type === 'close_api_key_settings') {
-const modalToRemove = document.getElementById('api-key-settings-modal');
-if (modalToRemove) {
-document.body.removeChild(modalToRemove);
-}
-window.removeEventListener('message', handler);
-}
+    if (!ALLOWED_ORIGINS.includes(e.origin)) return;
+    if (e.data && e.data.type === 'close_api_key_settings') {
+        const modalToRemove = document.getElementById('api-key-settings-modal');
+        if (modalToRemove) {
+            document.body.removeChild(modalToRemove);
+        }
+        window.removeEventListener('message', handler);
+    }
 });
 modal.appendChild(iframe);
 document.body.appendChild(modal);
@@ -1644,14 +1665,15 @@ iframe.style.margin = '60px auto';
 iframe.style.borderRadius = '8px';
 // 监听voice_id变更，注册页面可在window.parent.postMessage通知
 window.addEventListener('message', function handler(e) {
-if (e.data && e.data.type === 'voice_id_updated') {
-const modalToRemove = document.getElementById(modalId);
-if (modalToRemove) {
-document.body.removeChild(modalToRemove);
-}
-window.removeEventListener('message', handler);
-loadCharacterData();
-}
+    if (!ALLOWED_ORIGINS.includes(e.origin)) return;
+    if (e.data && e.data.type === 'voice_id_updated') {
+        const modalToRemove = document.getElementById(modalId);
+        if (modalToRemove) {
+            document.body.removeChild(modalToRemove);
+        }
+        window.removeEventListener('message', handler);
+        loadCharacterData();
+    }
 });
 modal.appendChild(iframe);
 document.body.appendChild(modal);
@@ -1694,10 +1716,12 @@ beaconSent = true;
 
 try {
 // 使用navigator.sendBeacon确保信号不被拦截
-const success = navigator.sendBeacon('/api/beacon/shutdown', JSON.stringify({
+const payload = JSON.stringify({
 timestamp: Date.now(),
 action: 'shutdown'
-}));
+});
+const blob = new Blob([payload], { type: 'application/json' });
+const success = navigator.sendBeacon('/api/beacon/shutdown', blob);
 
 if (success) {
 console.log('Beacon信号已发送');
@@ -1721,11 +1745,12 @@ console.log('Beacon发送异常:', e);
 
 // 监听API Key变更事件
 window.addEventListener('message', function (event) {
-if (event.data && event.data.type === 'api_key_changed') {
-// API Key已更改，刷新角色数据以显示更新后的Voice ID状态
-console.log('API Key已更改，正在刷新角色数据...');
-loadCharacterData();
-}
+    if (!ALLOWED_ORIGINS.includes(event.origin)) return;
+    if (event.data && event.data.type === 'api_key_changed') {
+        // API Key已更改，刷新角色数据以显示更新后的Voice ID状态
+        console.log('API Key已更改，正在刷新角色数据...');
+        loadCharacterData();
+    }
 });
 
 // 监听页面关闭事件
@@ -1790,13 +1815,39 @@ await showAlert(window.t ? window.t('character.switchError') : '切换猫娘时�
 
 
 
+// 初始化页面事件监听
+function setupPageEventListeners() {
+    // 关闭页面按钮
+    const closeBtn = document.getElementById('close-chara-manager-btn');
+    if (closeBtn) {
+        closeBtn.addEventListener('click', closeCharaManagerPage);
+    }
+
+    // API Key 设置按钮
+    const apiKeyBtn = document.getElementById('api-key-settings-btn');
+    if (apiKeyBtn) {
+        apiKeyBtn.addEventListener('click', openApiKeySettings);
+    }
+
+    // 新增猫娘按钮
+    const addCatgirlBtn = document.getElementById('add-catgirl-btn');
+    if (addCatgirlBtn) {
+        addCatgirlBtn.addEventListener('click', function() {
+            showCatgirlForm(null);
+        });
+    }
+}
+
 // 页面加载时拉取数据，并在后台异步扫描工坊角色卡
 async function initPage() {
 // 1. 先快速加载已有的本地角色数据
 // 我们不等待工坊扫描，先让页面呈现出来
 await loadCharacterData();
+
+// 2. 初始化页面事件监听
+setupPageEventListeners();
             
-// 2. 延迟执行工坊角色卡扫描
+// 3. 延迟执行工坊角色卡扫描
 // 使用 setTimeout 将其放到任务队列末尾，并等待几秒钟，让浏览器优先处理页面渲染和交互
 setTimeout(() => {
 console.log('[工坊扫描] 开始异步扫描工坊角色卡...');

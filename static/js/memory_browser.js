@@ -338,9 +338,10 @@ try {
 const resp = await fetch('/api/memory/review_config');
 const data = await resp.json();
 const checkbox = document.getElementById('review-toggle-checkbox');
-const textSpan = document.getElementById('review-toggle-text');
 
+if (checkbox) {
 checkbox.checked = data.enabled;
+}
 updateToggleText(data.enabled);
 } catch (e) {
 console.error('加载审阅配置失败:', e);
@@ -349,6 +350,7 @@ console.error('加载审阅配置失败:', e);
 
 function updateToggleText(enabled) {
 const textSpan = document.getElementById('review-toggle-text');
+if (!textSpan) return;
 if (enabled) {
 textSpan.setAttribute('data-i18n', 'memory.enabled');
 textSpan.textContent = window.t ? window.t('memory.enabled') : '已开启';
@@ -372,14 +374,18 @@ updateToggleText(enabled);
 } else {
 // 如果保存失败，恢复原来的状态
 const checkbox = document.getElementById('review-toggle-checkbox');
+if (checkbox) {
 checkbox.checked = !enabled;
+}
 updateToggleText(!enabled);
 }
 } catch (e) {
 console.error('更新审阅配置失败:', e);
 // 如果请求失败，恢复原来的状态
 const checkbox = document.getElementById('review-toggle-checkbox');
+if (checkbox) {
 checkbox.checked = !enabled;
+}
 updateToggleText(!enabled);
 }
 }

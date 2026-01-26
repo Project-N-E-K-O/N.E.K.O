@@ -2,6 +2,11 @@
 // 使用 @wasm-audio-decoders/ogg-opus-decoder
 // https://github.com/eshaz/wasm-audio-decoders/tree/main/src/ogg-opus-decoder
 // 库已在 index.html 中预加载，全局变量为 window["ogg-opus-decoder"]
+
+// [Performance] 全局调试开关
+window.DEBUG_AUDIO = false;
+window.DEBUG_LIPSYNC = false;
+
 let oggOpusDecoder = null;
 let oggOpusDecoderReady = null;
 
@@ -342,7 +347,10 @@ function init_app() {
             // 调试：记录所有收到的消息类型
             if (event.data instanceof Blob) {
                 // 处理二进制音频数据
-                console.log("[WebSocket] 收到二进制音频块, 大小:", event.data.size, "bytes");
+                // [Performance] 减少高频二进制数据的日志输出
+                if (window.DEBUG_AUDIO) {
+                    console.log("[WebSocket] 收到二进制音频块, 大小:", event.data.size, "bytes");
+                }
                 handleAudioBlob(event.data);
                 return;
             }
@@ -369,7 +377,9 @@ function init_app() {
                     // 只清空播放队列，不重置解码器（避免丢失新音频的头信息）
                     clearAudioQueueWithoutDecoderReset();
                 } else if (response.type === 'audio_chunk') {
-                    console.log('[WebSocket] 收到 audio_chunk 头信息:', response);
+                    if (window.DEBUG_AUDIO) {
+                        console.log('[WebSocket] 收到 audio_chunk 头信息:', response);
+                    }
                     // 精确打断控制：根据 speech_id 决定是否接收此音频
                     const speechId = response.speech_id;
                     
@@ -3209,7 +3219,9 @@ function init_app() {
         console.log('[Audio] initializeGlobalAnalyser called, audioPlayerContext:', !!audioPlayerContext);
         if (audioPlayerContext) {
             if (audioPlayerContext.state === 'suspended') {
-                audioPlayerContext.resume();
+                audioPlayerContext.resume().catch(err => {
+                    console.warn('[Audio] resume() failed:', err);
+                });
             }
             if (!globalAnalyser) {
                 try {
@@ -3229,11 +3241,17 @@ function init_app() {
         }
     }
 
+    // 口型平滑状态闭包变量
+    let _lastMouthOpen = 0;
+
     function startLipSync(model, analyser) {
         console.log('[LipSync] 开始口型同步', { hasModel: !!model, hasAnalyser: !!analyser });
         if (animationFrameId) {
             cancelAnimationFrame(animationFrameId);
         }
+        
+        // 重置平滑状态
+        _lastMouthOpen = 0;
         
         // 使用频域数据 (Frequency Data) 而不是时域数据，这样对人声更敏感
         analyser.fftSize = 512; // 较小的 FFT 窗口可以提高实时性
@@ -3267,13 +3285,14 @@ function init_app() {
             mouthOpen = mouthOpen * 0.5;
             
             // 柔化处理：大幅增加平滑度，让动作更“肉”一点，避免快速开合
-            if (this._lastMouthOpen === undefined) this._lastMouthOpen = 0;
-            mouthOpen = this._lastMouthOpen * 0.7 + mouthOpen * 0.3;
-            this._lastMouthOpen = mouthOpen;
+            mouthOpen = _lastMouthOpen * 0.7 + mouthOpen * 0.3;
+            _lastMouthOpen = mouthOpen;
 
             // 每60帧输出一次调试日志
             if (logCounter++ % 60 === 0) {
-                console.log('[LipSync] avg_freq:', average.toFixed(2), 'mouthOpen:', mouthOpen.toFixed(4));
+                if (window.DEBUG_LIPSYNC) {
+                    console.log('[LipSync] avg_freq:', average.toFixed(2), 'mouthOpen:', mouthOpen.toFixed(4));
+                }
             }
             
             if (window.LanLan1 && typeof window.LanLan1.setMouth === 'function') {

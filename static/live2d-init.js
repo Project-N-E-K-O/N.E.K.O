@@ -7,6 +7,10 @@ window.live2dManager = new Live2DManager();
 
 // 监听模型加载事件，自动更新全局引用（修复口型同步失效问题）
 window.live2dManager.onModelLoaded = (model) => {
+    if (!window.LanLan1) {
+        console.warn('[Live2D Init] LanLan1 尚未初始化，跳过全局引用更新');
+        return;
+    }
     window.LanLan1.live2dModel = model;
     window.LanLan1.currentModel = model;
     window.LanLan1.emotionMapping = window.live2dManager.getEmotionMapping();

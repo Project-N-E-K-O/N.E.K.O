@@ -26,7 +26,7 @@
             if (document.querySelector(`script[src^="${moduleSrc}"]`)) continue;
 
             const script = document.createElement('script');
-            script.src = `${moduleSrc}?v=${Date.now()}`;
+            script.src = `${moduleSrc}?v=1.0.0`;
             await new Promise((resolve) => {
                 script.onload = resolve;
                 script.onerror = resolve; // 即使失败也继续，防止死锁

@@ -1,7 +1,4 @@
-*:focus {
-    outline: none !important;
-    box-shadow: none !important;
-}
+@import url('base.css');
 
 html,
 body {
@@ -86,27 +83,7 @@ body {
     z-index: -1;
     color: var(--button-text-stroke-color);
     -webkit-text-stroke: 1px var(--button-text-stroke-color);
-    text-shadow: 
-        2px 0 0 var(--button-text-stroke-color), 
-        0 2px 0 var(--button-text-stroke-color), 
-        -2px 0 0 var(--button-text-stroke-color), 
-        0 -2px 0 var(--button-text-stroke-color),
-        1.4px 1.4px 0 var(--button-text-stroke-color), 
-        -1.4px 1.4px 0 var(--button-text-stroke-color), 
-        1.4px -1.4px 0 var(--button-text-stroke-color), 
-        -1.4px -1.4px 0 var(--button-text-stroke-color),
-        1.8px 0.8px 0 var(--button-text-stroke-color), 
-        -1.8px 0.8px 0 var(--button-text-stroke-color), 
-        1.8px -0.8px 0 var(--button-text-stroke-color), 
-        -1.8px -0.8px 0 var(--button-text-stroke-color),
-        0.8px 1.8px 0 var(--button-text-stroke-color), 
-        -0.8px 1.8px 0 var(--button-text-stroke-color), 
-        0.8px -1.8px 0 var(--button-text-stroke-color), 
-        -0.8px -1.8px 0 var(--button-text-stroke-color),
-        1px 0 0 var(--button-text-stroke-color), 
-        -1px 0 0 var(--button-text-stroke-color), 
-        0 1px 0 var(--button-text-stroke-color), 
-        0 -1px 0 var(--button-text-stroke-color);
+    text-shadow: var(--text-stroke-shadow);
     white-space: nowrap;
 }
 
@@ -221,6 +198,27 @@ body {
     --button-text-size: 20px;
     --button-text-stroke-color: #22b3ff;
     --button-text-stroke-width: 2px;
+    --text-stroke-shadow: 
+        2px 0 0 var(--button-text-stroke-color), 
+        0 2px 0 var(--button-text-stroke-color), 
+        -2px 0 0 var(--button-text-stroke-color), 
+        0 -2px 0 var(--button-text-stroke-color),
+        1.4px 1.4px 0 var(--button-text-stroke-color), 
+        -1.4px 1.4px 0 var(--button-text-stroke-color), 
+        1.4px -1.4px 0 var(--button-text-stroke-color), 
+        -1.4px -1.4px 0 var(--button-text-stroke-color),
+        1.8px 0.8px 0 var(--button-text-stroke-color), 
+        -1.8px 0.8px 0 var(--button-text-stroke-color), 
+        1.8px -0.8px 0 var(--button-text-stroke-color), 
+        -1.8px -0.8px 0 var(--button-text-stroke-color),
+        0.8px 1.8px 0 var(--button-text-stroke-color), 
+        -0.8px 1.8px 0 var(--button-text-stroke-color), 
+        0.8px -1.8px 0 var(--button-text-stroke-color), 
+        -0.8px -1.8px 0 var(--button-text-stroke-color),
+        1px 0 0 var(--button-text-stroke-color), 
+        -1px 0 0 var(--button-text-stroke-color), 
+        0 1px 0 var(--button-text-stroke-color), 
+        0 -1px 0 var(--button-text-stroke-color);
 }
 
 .file-input-label .file-text {
@@ -247,27 +245,7 @@ body {
     z-index: -1;
     color: var(--button-text-stroke-color);
     -webkit-text-stroke: 1px var(--button-text-stroke-color);
-    text-shadow: 
-        2px 0 0 var(--button-text-stroke-color), 
-        0 2px 0 var(--button-text-stroke-color), 
-        -2px 0 0 var(--button-text-stroke-color), 
-        0 -2px 0 var(--button-text-stroke-color),
-        1.4px 1.4px 0 var(--button-text-stroke-color), 
-        -1.4px 1.4px 0 var(--button-text-stroke-color), 
-        1.4px -1.4px 0 var(--button-text-stroke-color), 
-        -1.4px -1.4px 0 var(--button-text-stroke-color),
-        1.8px 0.8px 0 var(--button-text-stroke-color), 
-        -1.8px 0.8px 0 var(--button-text-stroke-color), 
-        1.8px -0.8px 0 var(--button-text-stroke-color), 
-        -1.8px -0.8px 0 var(--button-text-stroke-color),
-        0.8px 1.8px 0 var(--button-text-stroke-color), 
-        -0.8px 1.8px 0 var(--button-text-stroke-color), 
-        0.8px -1.8px 0 var(--button-text-stroke-color), 
-        -0.8px -1.8px 0 var(--button-text-stroke-color),
-        1px 0 0 var(--button-text-stroke-color), 
-        -1px 0 0 var(--button-text-stroke-color), 
-        0 1px 0 var(--button-text-stroke-color), 
-        0 -1px 0 var(--button-text-stroke-color);
+    text-shadow: var(--text-stroke-shadow);
 }
 
 /* 【上层】：负责内部渐变 */
@@ -522,27 +500,7 @@ body {
     z-index: -1;
     color: var(--button-text-stroke-color);
     -webkit-text-stroke: 1px var(--button-text-stroke-color);
-    text-shadow: 
-        2px 0 0 var(--button-text-stroke-color), 
-        0 2px 0 var(--button-text-stroke-color), 
-        -2px 0 0 var(--button-text-stroke-color), 
-        0 -2px 0 var(--button-text-stroke-color),
-        1.4px 1.4px 0 var(--button-text-stroke-color), 
-        -1.4px 1.4px 0 var(--button-text-stroke-color), 
-        1.4px -1.4px 0 var(--button-text-stroke-color), 
-        -1.4px -1.4px 0 var(--button-text-stroke-color),
-        1.8px 0.8px 0 var(--button-text-stroke-color), 
-        -1.8px 0.8px 0 var(--button-text-stroke-color), 
-        1.8px -0.8px 0 var(--button-text-stroke-color), 
-        -1.8px -0.8px 0 var(--button-text-stroke-color),
-        0.8px 1.8px 0 var(--button-text-stroke-color), 
-        -0.8px 1.8px 0 var(--button-text-stroke-color), 
-        0.8px -1.8px 0 var(--button-text-stroke-color), 
-        -0.8px -1.8px 0 var(--button-text-stroke-color),
-        1px 0 0 var(--button-text-stroke-color), 
-        -1px 0 0 var(--button-text-stroke-color), 
-        0 1px 0 var(--button-text-stroke-color), 
-        0 -1px 0 var(--button-text-stroke-color);
+    text-shadow: var(--text-stroke-shadow);
 }
 
 /* 【上层】：负责内部渐变 */

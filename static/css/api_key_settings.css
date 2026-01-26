@@ -17,10 +17,7 @@
     }
 }
 
-*:focus {
-outline: none !important;
-box-shadow: none !important;
-}
+@import url('base.css');
 
 html,
 body {

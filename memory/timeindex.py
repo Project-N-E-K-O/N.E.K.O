@@ -17,19 +17,21 @@ class TimeIndexedMemory:
         for i in time_store:
             self.engine[i] = create_engine(f"sqlite:///{time_store[i]}")
             connection_string = f"sqlite:///{time_store[i]}"
-
-            _ = SQLChatMessageHistory(
-                connection_string=connection_string,
-                session_id="",
-                table_name=TIME_ORIGINAL_TABLE_NAME,
-            )
-
-            _ = SQLChatMessageHistory(
-                connection_string=connection_string,
-                session_id="",
-                table_name=TIME_COMPRESSED_TABLE_NAME,
-            )
+            self._ensure_tables_exist(connection_string)
             self.check_table_schema(i)
+
+    def _ensure_tables_exist(self, connection_string: str) -> None:
+        """确保原始表和压缩表存在喵~"""
+        _ = SQLChatMessageHistory(
+            connection=connection_string,
+            session_id="",
+            table_name=TIME_ORIGINAL_TABLE_NAME,
+        )
+        _ = SQLChatMessageHistory(
+            connection=connection_string,
+            session_id="",
+            table_name=TIME_COMPRESSED_TABLE_NAME,
+        )
 
     def add_timestamp_column(self, lanlan_name):
         with self.engine[lanlan_name].connect() as conn:
@@ -67,40 +69,24 @@ class TimeIndexedMemory:
                 db_path = time_store[lanlan_name]
                 self.engine[lanlan_name] = create_engine(f"sqlite:///{db_path}")
                 connection_string = f"sqlite:///{db_path}"
-                _ = SQLChatMessageHistory(
-                    connection_string=connection_string,
-                    session_id="",
-                    table_name=TIME_ORIGINAL_TABLE_NAME,
-                )
-                _ = SQLChatMessageHistory(
-                    connection_string=connection_string,
-                    session_id="",
-                    table_name=TIME_COMPRESSED_TABLE_NAME,
-                )
+                self._ensure_tables_exist(connection_string)
                 self.check_table_schema(lanlan_name)
                 logger.info(f"[TimeIndexedMemory] 为角色 {lanlan_name} 创建数据库引擎: {db_path}")
         except Exception as e:
             logger.error(f"检查角色配置失败: {e}")
             # 即使配置检查失败，也尝试使用默认路径
+            time_store = {}  # 确保 time_store 存在
             try:
                 config_mgr = get_config_manager()
                 # 确保memory目录存在
                 config_mgr.ensure_memory_directory()
                 memory_base = str(config_mgr.memory_dir)
                 default_path = os.path.join(memory_base, f'time_indexed_{lanlan_name}')
+                time_store[lanlan_name] = default_path  # 添加到 time_store
                 if lanlan_name not in self.engine:
                     self.engine[lanlan_name] = create_engine(f"sqlite:///{default_path}")
                     connection_string = f"sqlite:///{default_path}"
-                    _ = SQLChatMessageHistory(
-                        connection_string=connection_string,
-                        session_id="",
-                        table_name=TIME_ORIGINAL_TABLE_NAME,
-                    )
-                    _ = SQLChatMessageHistory(
-                        connection_string=connection_string,
-                        session_id="",
-                        table_name=TIME_COMPRESSED_TABLE_NAME,
-                    )
+                    self._ensure_tables_exist(connection_string)
                     self.check_table_schema(lanlan_name)
                     logger.info(f"[TimeIndexedMemory] 使用默认路径创建数据库: {default_path}")
             except Exception as e2:
@@ -116,13 +102,13 @@ class TimeIndexedMemory:
 
         connection_string = f"sqlite:///{time_store[lanlan_name]}"
         origin_history = SQLChatMessageHistory(
-            connection_string=connection_string,
+            connection=connection_string,
             session_id=event_id,
             table_name=TIME_ORIGINAL_TABLE_NAME,
         )
 
         compressed_history = SQLChatMessageHistory(
-            connection_string=connection_string,
+            connection=connection_string,
             session_id=event_id,
             table_name=TIME_COMPRESSED_TABLE_NAME,
         )

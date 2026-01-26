@@ -679,7 +679,46 @@
 
             // 如果翻译文本包含 HTML 标签（如 <br>、<img> 等），使用 innerHTML，否则使用 textContent
             if (text.includes('<br>') || text.includes('<BR>') || text.includes('<br/>') || text.includes('<img>') || text.includes('<IMG>') || text.includes('<img ')) {
-                element.innerHTML = text;
+                // 安全过滤：仅允许 <br> 和 <img> 标签，且 <img> 仅允许安全属性
+                const tempDiv = document.createElement('div');
+                tempDiv.innerHTML = text;
+                
+                // 递归清理节点
+                const sanitize = (node) => {
+                    const children = Array.from(node.childNodes);
+                    children.forEach(child => {
+                        if (child.nodeType === 1) { // Element node
+                            const tagName = child.tagName.toUpperCase();
+                            if (tagName !== 'BR' && tagName !== 'IMG') {
+                                // 不允许的标签，替换为其文本内容
+                                const textNode = document.createTextNode(child.textContent);
+                                node.replaceChild(textNode, child);
+                            } else if (tagName === 'IMG') {
+                                // 检查属性
+                                Array.from(child.attributes).forEach(attr => {
+                                    const attrName = attr.name.toLowerCase();
+                                    if (attrName === 'src') {
+                                        // 验证 src，防止 javascript: 协议
+                                        if (attr.value.trim().toLowerCase().startsWith('javascript:')) {
+                                            child.removeAttribute(attrName);
+                                        }
+                                    } else if (attrName !== 'alt' && attrName !== 'style' && attrName !== 'class') {
+                                        // 仅允许 alt, style, class 属性
+                                        child.removeAttribute(attrName);
+                                    }
+                                    // 移除所有事件处理器
+                                    if (attrName.startsWith('on')) {
+                                        child.removeAttribute(attrName);
+                                    }
+                                });
+                            }
+                            sanitize(child);
+                        }
+                    });
+                };
+                
+                sanitize(tempDiv);
+                element.innerHTML = tempDiv.innerHTML;
             } else {
                 element.textContent = text;
             }

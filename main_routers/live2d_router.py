@@ -960,7 +960,7 @@ async def upload_file_to_model(model_name: str, file: UploadFile = File(...), fi
             return JSONResponse(status_code=400, content={"success": False, "error": "无效的文件类型，必须是motion或expression"})
         
         # 查找模型目录
-        model_dir, url_prefix = find_model_directory(model_name)
+        model_dir, _url_prefix = find_model_directory(model_name)
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
@@ -991,7 +991,7 @@ async def upload_file_to_model(model_name: str, file: UploadFile = File(...), fi
         })
         
     except Exception as e:
-        logger.error(f"上传文件失败: {e}")
+        logger.exception(f"上传文件失败: {e}")
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 

@@ -1,7 +1,5 @@
-*:focus {
-outline: none !important;
-box-shadow: none !important;
-}
+@import url('base.css');
+
 html, body {
 min-height: 100vh; 
 margin: 0; 
@@ -98,12 +96,20 @@ align-items: center;
 .tag {
 display: inline-flex;
 align-items: center;
+gap: 4px;
+padding: 4px 10px;
+border-radius: 12px;
+font-size: 13px;
+font-weight: 500;
+transition: background-color 0.2s ease;
+}
+
+#notes-tags-container .tag, #character-card-tags-container .tag {
 background-color: #007bff;
 color: white;
 padding: 4px 8px;
 border-radius: 16px;
 font-size: 14px;
-font-weight: 500;
 }
         
 .tag-remove {
@@ -491,19 +497,12 @@ gap: 8px;
 margin-bottom: 15px;
 }
 
-.tag {
+.tags-container .tag {
 background: #d5f1ff;
 color: #333;
-padding: 6px 12px;
-border-radius: 16px;
-font-size: 13px;
-display: flex;
-align-items: center;
-gap: 5px;
-transition: background 0.2s;
 }
 
-.tag:hover {
+.tags-container .tag:hover {
 background: #b8e5ff;
 }
 
@@ -857,6 +856,13 @@ min-height: 220px;
 position: relative;
 cursor: pointer;
 }
+
+.workshop-card {
+    border-radius: 16px;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.08);
+    transition: all 0.3s ease;
+    min-height: 380px;
+}
         
 /* Fluent Design 卡片悬停效果 */
 .card:hover, .workshop-card:hover {
@@ -873,6 +879,8 @@ display: flex;
 justify-content: space-between;
 align-items: center;
 background: linear-gradient(to bottom, rgba(255, 255, 255, 1), rgba(254, 254, 254, 1));
+position: relative;
+overflow: hidden;
 }
         
 .card-header h3 {
@@ -916,32 +924,25 @@ display: -webkit-box;
 }
         
 /* 标签容器样式 */
-.tags-container {
+.cards-container .tags-container {
 display: flex;
 flex-wrap: wrap;
 gap: 8px;
 margin-top: auto;
 padding-top: 8px;
 }
-        
-/* 标签样式 */
-.tag {
+
+.cards-container .tag {
 background-color: rgba(0, 120, 212, 0.1);
 color: #0078d4;
-padding: 4px 10px;
-border-radius: 12px;
 font-size: 12px;
 font-weight: 400;
-display: inline-flex;
-align-items: center;
-gap: 4px;
-transition: background-color 0.2s ease;
 }
-        
-.tag:hover {
+
+.cards-container .tag:hover {
 background-color: rgba(0, 120, 212, 0.15);
 }
-        
+
 /* 标签移除按钮 */
 .tag-remove {
 cursor: pointer;
@@ -1045,26 +1046,6 @@ overflow: hidden;
 
 /* 删除重复的status-badge定义，只保留下方的统一样式 */
 
-.status-subscribed {
-background-color: #e6f3ff;
-color: #0066cc;
-}
-
-.status-downloading {
-background-color: #fff2cc;
-color: #cc7700;
-}
-
-.status-needs-update {
-background-color: #fff2cc;
-color: #cc7700;
-}
-
-.status-installed {
-background-color: #e6ffe6;
-color: #008000;
-}
-
 .author-info {
 display: flex;
 align-items: center;
@@ -1094,7 +1075,6 @@ flex-direction: column;
 gap: 4px;
 }
 
-/* 统一的状态徽章样式 */
 .status-badge {
 display: inline-block;
 padding: 4px 10px;
@@ -1107,69 +1087,6 @@ background: #f0f0f0;
 color: #666;
 text-align: center;
 box-sizing: border-box;
-}
-
-/* 为卡片头部的状态徽章添加定位样式 */
-.card-header .status-badge {
-position: absolute;
-top: 10px;
-right: 10px;
-margin: 0;
-z-index: 10;
-padding: 2px 8px;
-font-size: 11px;
-border-radius: 12px;
-}
-
-/* 调整卡片高度以适应新结构 */
-.workshop-card {
-background: #fff;
-border-radius: 16px;
-box-shadow: 0 6px 16px rgba(0, 0, 0, 0.08);
-overflow: hidden;
-transition: all 0.3s ease;
-display: flex;
-flex-direction: column;
-height: auto;
-min-height: 380px;
-}
-
-/* 卡片头部样式 */
-.card-header {
-position: relative;
-overflow: hidden;
-}
-
-/* 卡片信息网格布局 */
-.card-info-grid {
-display: grid;
-grid-template-columns: repeat(2, 1fr);
-gap: 10px;
-margin-bottom: 8px;
-}
-
-.card-info-item {
-display: flex;
-flex-direction: column;
-gap: 2px;
-}
-        
-.info-label, .card-info-label {
-font-size: 12px;
-color: #888;
-font-weight: 500;
-}
-        
-.card-info-item span:not(.info-label):not(.card-info-label) {
-font-size: 14px;
-font-weight: 600;
-color: #333;
-}
-        
-.info-value {
-font-size: 14px;
-color: #333;
-font-weight: 400;
 }
 
 .status-subscribed {
@@ -1210,6 +1127,50 @@ opacity: 1;
 100% {
 opacity: 0.7;
 }
+}
+
+/* 为卡片头部的状态徽章添加定位样式 */
+.card-header .status-badge {
+position: absolute;
+top: 10px;
+right: 10px;
+margin: 0;
+z-index: 10;
+padding: 2px 8px;
+font-size: 11px;
+border-radius: 12px;
+}
+
+/* 卡片信息网格布局 */
+.card-info-grid {
+display: grid;
+grid-template-columns: repeat(2, 1fr);
+gap: 10px;
+margin-bottom: 8px;
+}
+
+.card-info-item {
+display: flex;
+flex-direction: column;
+gap: 2px;
+}
+        
+.info-label, .card-info-label {
+font-size: 12px;
+color: #888;
+font-weight: 500;
+}
+        
+.card-info-item span:not(.info-label):not(.card-info-label) {
+font-size: 14px;
+font-weight: 600;
+color: #333;
+}
+        
+.info-value {
+font-size: 14px;
+color: #333;
+font-weight: 400;
 }
 
 /* 安装路径样式 */
@@ -1462,7 +1423,6 @@ display: flex !important;
 .modal-content {
 background: #fff;
 border-radius: 12px;
-box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
 width: 100%;
 max-width: 800px;
 max-height: 85vh;

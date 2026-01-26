@@ -15,28 +15,28 @@
     <div class="container">
         <div class="container-header">
             <h2 data-i18n="character.manager" data-text="角色管理">角色管理</h2>
-            <button class="close-btn" onclick="closeCharaManagerPage()" title="关闭"><img src="/static/icons/close_button.png" alt="关闭" style="width: 32px; height: 32px;"></button>
+            <button class="close-btn" id="close-chara-manager-btn" title="关闭"><img src="/static/icons/close_button.png" alt="关闭"></button>
         </div>
         <div class="section" id="master-section">
-            <div class="master-section-header" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px;">
+            <div class="master-section-header">
                 
-                <div style="display: flex; align-items: center; color: #40C5F1; gap: 8px;">
-                    <img src="/static/icons/exclamation.png" alt="" style="width: 48px; height: 48px;">
+                <div class="header-tips-container">
+                    <img src="/static/icons/exclamation.png" alt="" class="exclamation-icon">
                     
-                    <div class="tips" data-i18n="character.masterProfile" style="color: #40C5F1; font-weight: 500; font-size: 0.95rem; margin: 0;">
+                    <div class="tips" data-i18n="character.masterProfile">
                         主人档案(唯一):档案名为必填项,其他均为可选项,可自行删减。
                     </div>
                 </div>
         
-                <button class="btn sm api-key-btn" onclick="openApiKeySettings()" data-i18n="character.apiKeySettings">
-                    <img src="/static/icons/key.png" alt="" style="width: 36px; height: 36px; vertical-align: middle; margin-right: 6px;"> API Key 设置
+                <button class="btn sm api-key-btn" id="api-key-settings-btn" data-i18n="character.apiKeySettings">
+                    <img src="/static/icons/key.png" alt="" class="key-icon"> API Key 设置
                 </button>
             </div>
             <div class="master-card">
                 <div class="master-card-body">
                     <form id="master-form">
                         <div class="field-row-wrapper">
-                            <label><span data-i18n="character.profileName">档案名</span><span style="color:red"
+                            <label><span data-i18n="character.profileName">档案名</span><span class="required-star"
                                     data-i18n="character.required">*</span></label>
                             <div class="field-row">
                                 <input type="text" name="档案名" required>
@@ -47,28 +47,28 @@
                                 <div class="field-row">
                                     <textarea name="性别" rows="1" placeholder="可输入详细描述"></textarea>
                                 </div>
-                                <button type="button" class="btn sm delete" onclick="deleteMasterField(this)"
-                                    data-i18n="character.deleteField"><img src="/static/icons/delete.png" alt="" style="width: 24px; height: 24px; vertical-align: middle; margin-right: 4px;"> 删除设定</button>
+                                <button type="button" class="btn sm delete"
+                                    data-i18n="character.deleteField"><img src="/static/icons/delete.png" alt="" class="delete-icon"> 删除设定</button>
                             </div>
                             <div class="field-row-wrapper">
                                 <label data-i18n="character.nickname">昵称</label>
                                 <div class="field-row">
                                     <textarea name="昵称" rows="1" placeholder="可输入详细描述"></textarea>
                                 </div>
-                                <button type="button" class="btn sm delete" onclick="deleteMasterField(this)"
-                                    data-i18n="character.deleteField"><img src="/static/icons/delete.png" alt="" style="width: 24px; height: 24px; vertical-align: middle; margin-right: 4px;"> 删除设定</button>
+                                <button type="button" class="btn sm delete"
+                                    data-i18n="character.deleteField"><img src="/static/icons/delete.png" alt="" class="delete-icon"> 删除设定</button>
                             </div>
                         </form>
                     </div>
                 </div>
             </div>
             <div class="section" id="catgirl-section">
-                <div class="catgirl-section-header" style="display: flex; align-items: center; color: #40C5F1; gap: 8px; margin-bottom: 24px;">
-                    <img src="/static/icons/exclamation.png" alt="" style="width: 48px; height: 48px;">
-                    <span data-i18n="character.catgirlProfile" style="color: #40C5F1; font-weight: 500; font-size: 0.95rem; margin: 0;">猫娘档案:进阶设定包含Live2D形象、语音ID等。</span>
+                <div class="catgirl-section-header">
+                    <img src="/static/icons/exclamation.png" alt="" class="exclamation-icon">
+                    <span data-i18n="character.catgirlProfile" class="tips">猫娘档案:进阶设定包含Live2D形象、语音ID等。</span>
                 </div>
                 <div id="catgirl-list"></div>
-                <button class="btn add sm" id="add-catgirl-btn" data-i18n="character.addCatgirl" style="margin-top: 12px;"><img src="/static/icons/add.png" alt="" style="width: 24px; height: 24px; vertical-align: middle; margin-right: 4px;"> 新增猫娘</button>
+                <button class="btn add sm" id="add-catgirl-btn" data-i18n="character.addCatgirl"><img src="/static/icons/add.png" alt="" class="add-icon"> 新增猫娘</button>
             </div>
         </div>
     </div>

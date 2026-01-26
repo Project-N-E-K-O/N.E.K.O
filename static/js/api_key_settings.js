@@ -12,10 +12,31 @@ statusDiv.style.display = 'none';
 }
 }
 
-function showCurrentApiKey(message) {
-const currentApiKeyDiv = document.getElementById('current-api-key');
-currentApiKeyDiv.innerHTML = '<img src="/static/icons/exclamation.png" alt="" style="width: 48px; height: 48px; vertical-align: middle;">' + message;
-currentApiKeyDiv.style.display = 'flex';
+function showCurrentApiKey(message, rawKey = '', hasKey = false) {
+    const currentApiKeyDiv = document.getElementById('current-api-key');
+    if (!currentApiKeyDiv) return;
+
+    // 清空现有内容
+    currentApiKeyDiv.textContent = '';
+
+    // 创建图标
+    const img = document.createElement('img');
+    img.src = '/static/icons/exclamation.png';
+    img.alt = '';
+    img.style.width = '48px';
+    img.style.height = '48px';
+    img.style.verticalAlign = 'middle';
+    currentApiKeyDiv.appendChild(img);
+
+    // 创建文本节点
+    const textNode = document.createTextNode(message);
+    currentApiKeyDiv.appendChild(textNode);
+
+    // 存储状态到 dataset
+    currentApiKeyDiv.dataset.apiKey = rawKey;
+    currentApiKeyDiv.dataset.hasKey = hasKey ? 'true' : 'false';
+
+    currentApiKeyDiv.style.display = 'flex';
 }
 
 async function clearVoiceIds() {
@@ -154,18 +175,18 @@ try {
 const response = await fetch('/api/config/core_api');
 if (response.ok) {
 const data = await response.json();
-// 设置API Key显示
-if (data.enableCustomApi) {
-showCurrentApiKey(window.t ? window.t('api.currentUsingCustomApi') : '🔧 当前使用：自定义API模式');
-} else if (data.api_key) {
-if (data.api_key === 'free-access' || data.coreApi === 'free' || data.assistApi === 'free') {
-showCurrentApiKey(window.t ? window.t('api.currentUsingFreeVersion') : '当前使用：免费版（无需API Key）');
-} else {
-showCurrentApiKey(window.t ? window.t('api.currentApiKey', { key: data.api_key }) : `当前API Key: ${data.api_key}`);
-}
-} else {
-showCurrentApiKey(window.t ? window.t('api.currentNoApiKey') : '当前暂未设置API Key');
-}
+            // 设置API Key显示
+            if (data.enableCustomApi) {
+                showCurrentApiKey(window.t ? window.t('api.currentUsingCustomApi') : '🔧 当前使用：自定义API模式', '', true);
+            } else if (data.api_key) {
+                if (data.api_key === 'free-access' || data.coreApi === 'free' || data.assistApi === 'free') {
+                    showCurrentApiKey(window.t ? window.t('api.currentUsingFreeVersion') : '当前使用：免费版（无需API Key）', 'free-access', true);
+                } else {
+                    showCurrentApiKey(window.t ? window.t('api.currentApiKey', { key: data.api_key }) : `当前API Key: ${data.api_key}`, data.api_key, true);
+                }
+            } else {
+                showCurrentApiKey(window.t ? window.t('api.currentNoApiKey') : '当前暂未设置API Key', '', false);
+            }
 
 // 设置核心API Key输入框的值（重要：必须在显示提示后设置）
 if (apiKeyInput && data.api_key) {
@@ -333,12 +354,12 @@ setTimeout(() => {
 toggleCustomApi();
 }, 100);
 }
-} else {
-showCurrentApiKey('获取当前API Key失败');
-}
-} catch (error) {
-showCurrentApiKey('获取当前API Key时出错');
-}
+        } else {
+            showCurrentApiKey('获取当前API Key失败', '', false);
+        }
+    } catch (error) {
+        showCurrentApiKey('获取当前API Key时出错', '', false);
+    }
 
 // 返回Promise，以便调用者可以在获取完成后执行其他操作
 return Promise.resolve();

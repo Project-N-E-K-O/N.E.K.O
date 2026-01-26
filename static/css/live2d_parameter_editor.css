@@ -16,12 +16,10 @@ font-display: swap;
 /* 按钮圆角参数 */
 :root {
 --button-border-radius: 24px;
+--parameters-list-width: 270px;
 }
 
-*:focus {
-outline: none !important;
-box-shadow: none !important;
-}
+@import url('base.css');
 
 html,
 body {
@@ -193,15 +191,15 @@ font-size: 14px;
 background: #fff;
 }
 
-/* 参数列表包装器 - 带圆角边框和背景 */
+/* 参数列表包装器 - 带圆角边框 and 背景 */
 .parameters-list-wrapper {
 flex: 1;
 min-height: 0;
 display: flex;
 flex-direction: column;
 position: relative;
-width: 270px !important;
-max-width: 270px !important;
+width: var(--parameters-list-width);
+max-width: var(--parameters-list-width);
 border: 3px solid #96e8ff;
 border-radius: 20px;
 background: linear-gradient(135deg, rgba(240, 248, 255, 0.95), rgba(230, 245, 255, 0.95));

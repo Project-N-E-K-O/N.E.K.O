@@ -18,6 +18,9 @@
         :root {
             --button-border-radius: 24px;  /* 调整这个值（单位：px）来匹配背景图片的圆角，建议范围：10px - 25px */
             --delete-button-border-radius: 24px;  /* 删除按钮的圆角（单位：px），可单独调整，建议范围：15px - 50px（圆形按钮） */
+            --button-text-size: 20px; /* 【统一控制】所有按钮文字大小，修改这个值即可 */
+            --button-text-stroke-color: #22b3ff; /* 描边颜色 */
+            --button-text-stroke-width: 2px; /* 描边宽度（视觉上的） */
         }
 
         /* 可访问性改进：保留键盘导航的焦点指示
@@ -327,13 +330,7 @@
             filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
         }
         
-        /* CSS文字样式 - 使用多层text-shadow模拟描边，更容易控制字体大小 */
-        :root {
-            --button-text-size: 20px; /* 【统一控制】所有按钮文字大小，修改这个值即可 */
-            --button-text-stroke-color: #22b3ff; /* 描边颜色 */
-            --button-text-stroke-width: 2px; /* 描边宽度（视觉上的） */
-        }
-        
+        /* 导入模型按钮样式（参考返回主页按钮模式） */
         .button-text {
             position: relative;
             z-index: 20;
@@ -1850,14 +1847,6 @@
             vertical-align: middle;
         }
 
-        .lighting-control input[type="range"]::-webkit-slider-runnable-track {
-            width: 100%;
-            height: 6px;
-            cursor: pointer;
-            background: #ddd;
-            border-radius: 3px;
-        }
-
         .lighting-control input[type="range"]::-webkit-slider-thumb {
             -webkit-appearance: none;
             appearance: none;
@@ -2116,12 +2105,6 @@
         }
         /* SVG文字样式 - 用于实现圆角描边端点 */
         /* CSS文字样式 - 使用高密度阴影矩阵实现圆润描边（参考 live2d-ui77.html） */
-        :root {
-            --button-text-size: 20px;
-            --button-text-stroke-color: #22b3ff;
-            --button-text-stroke-width: 2px;
-        }
-        
         .round-stroke-text {
             position: relative;
             z-index: 20;

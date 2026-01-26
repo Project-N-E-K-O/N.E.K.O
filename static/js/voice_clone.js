@@ -1,3 +1,6 @@
+// 允许的来源列表
+const ALLOWED_ORIGINS = [window.location.origin];
+
 // 关闭页面函数
 function closeVoiceClonePage() {
     if (window.opener) {
@@ -5,7 +8,7 @@ function closeVoiceClonePage() {
         window.close();
     } else if (window.parent && window.parent !== window) {
         // 如果在 iframe 中，通知父窗口关闭
-        window.parent.postMessage({ type: 'close_voice_clone' }, '*');
+        window.parent.postMessage({ type: 'close_voice_clone' }, window.location.origin);
     } else {
         // 否则尝试关闭窗口
         // 注意：如果是用户直接访问的页面，浏览器可能不允许关闭
@@ -214,15 +217,18 @@ const fileInput = document.getElementById('audioFile');
 const refLanguage = document.getElementById('refLanguage').value;
 const prefix = document.getElementById('prefix').value.trim();
 const resultDiv = document.getElementById('result');
-resultDiv.innerHTML = '';
+
+// 清空现有内容并重置类名
+resultDiv.textContent = '';
 resultDiv.className = 'result';
+
 if (!fileInput.files.length || !prefix) {
-resultDiv.innerHTML = window.t ? window.t('voice.pleaseUploadFile') : '请上传音频文件并填写前缀';
-resultDiv.className = 'result error';
-return;
+    resultDiv.textContent = window.t ? window.t('voice.pleaseUploadFile') : '请上传音频文件并填写前缀';
+    resultDiv.className = 'result error';
+    return;
 }
 setFormDisabled(true);
-resultDiv.innerHTML = window.t ? window.t('voice.registering') : '正在注册声音，请稍后！';
+resultDiv.textContent = window.t ? window.t('voice.registering') : '正在注册声音，请稍后！';
 resultDiv.className = 'result';
 const formData = new FormData();
 formData.append('file', fileInput.files[0]);
@@ -243,50 +249,67 @@ return data;
 })
 .then(data => {
 if (data.voice_id) {
-resultDiv.innerHTML = window.t ? window.t('voice.registerSuccess', { voiceId: data.voice_id }) : '注册成功！voice_id: ' + data.voice_id;
-// 刷新音色列表
-setTimeout(() => {
-if (typeof loadVoices === 'function') {
-loadVoices();
-}
-}, 1000);
-// 自动更新voice_id到后端
-const lanlanName = document.getElementById('lanlan_name').value;
-if (lanlanName) {
-fetch(`/api/characters/catgirl/voice_id/${encodeURIComponent(lanlanName)}`, {
-method: 'PUT',
-headers: { 'Content-Type': 'application/json' },
-body: JSON.stringify({ voice_id: data.voice_id })
-}).then(resp => {
-if (!resp.ok) {
-throw new Error(`API returned ${resp.status}`);
-}
-return resp.json();
-}).then(res => {
-if (!res.success) {
-const errorMsg = res.error || (window.t ? window.t('common.unknownError') : '未知错误');
-resultDiv.innerHTML += '<br><span class="error">' + (window.t ? window.t('voice.voiceIdSaveFailed', { error: errorMsg }) : 'voice_id自动保存失败: ' + errorMsg) + '</span>';
+    resultDiv.textContent = window.t ? window.t('voice.registerSuccess', { voiceId: data.voice_id }) : '注册成功！voice_id: ' + data.voice_id;
+    // 刷新音色列表
+    setTimeout(() => {
+        if (typeof loadVoices === 'function') {
+            loadVoices();
+        }
+    }, 1000);
+    // 自动更新voice_id到后端
+    const lanlanName = document.getElementById('lanlan_name').value;
+    if (lanlanName) {
+        fetch(`/api/characters/catgirl/voice_id/${encodeURIComponent(lanlanName)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ voice_id: data.voice_id })
+        }).then(resp => {
+            if (!resp.ok) {
+                throw new Error(`API returned ${resp.status}`);
+            }
+            return resp.json();
+        }).then(res => {
+            if (!res.success) {
+                const errorMsg = res.error || (window.t ? window.t('common.unknownError') : '未知错误');
+                const errorSpan = document.createElement('span');
+                errorSpan.className = 'error';
+                errorSpan.textContent = (window.t ? window.t('voice.voiceIdSaveFailed', { error: errorMsg }) : 'voice_id自动保存失败: ' + errorMsg);
+                resultDiv.appendChild(document.createElement('br'));
+                resultDiv.appendChild(errorSpan);
+            } else {
+                const successMsg = document.createElement('span');
+                successMsg.textContent = (window.t ? window.t('voice.voiceIdSaved') : 'voice_id已自动保存到角色');
+                resultDiv.appendChild(document.createElement('br'));
+                resultDiv.appendChild(successMsg);
+
+                // 如果session被结束，页面会自动刷新
+                const statusSpan = document.createElement('span');
+                statusSpan.style.color = 'blue';
+                if (res.session_restarted) {
+                    statusSpan.textContent = (window.t ? window.t('voice.pageWillRefresh') : '当前页面即将自动刷新以应用新语音');
+                } else {
+                    statusSpan.textContent = (window.t ? window.t('voice.voiceWillTakeEffect') : '新语音将在下次对话时生效');
+                }
+                resultDiv.appendChild(document.createElement('br'));
+                resultDiv.appendChild(statusSpan);
+
+                // 通知父页面voice_id已更新
+                if (window.parent !== window) {
+                    window.parent.postMessage({ type: 'voice_id_updated', voice_id: data.voice_id, session_restarted: res.session_restarted }, window.location.origin);
+                }
+            }
+        }).catch(e => {
+            const errorSpan = document.createElement('span');
+            errorSpan.className = 'error';
+            errorSpan.textContent = (window.t ? window.t('voice.voiceIdSaveRequestError') : 'voice_id自动保存请求出错');
+            resultDiv.appendChild(document.createElement('br'));
+            resultDiv.appendChild(errorSpan);
+        });
+    }
 } else {
-resultDiv.innerHTML += '<br>' + (window.t ? window.t('voice.voiceIdSaved') : 'voice_id已自动保存到角色');
-// 如果session被结束，页面会自动刷新
-if (res.session_restarted) {
-resultDiv.innerHTML += '<br><span style="color: blue;">' + (window.t ? window.t('voice.pageWillRefresh') : '当前页面即将自动刷新以应用新语音') + '</span>';
-} else {
-resultDiv.innerHTML += '<br><span style="color: blue;">' + (window.t ? window.t('voice.voiceWillTakeEffect') : '新语音将在下次对话时生效') + '</span>';
-}
-// 通知父页面voice_id已更新
-if (window.parent !== window) {
-window.parent.postMessage({ type: 'voice_id_updated', voice_id: data.voice_id, session_restarted: res.session_restarted }, '*');
-}
-}
-}).catch(e => {
-resultDiv.innerHTML += '<br><span class="error">' + (window.t ? window.t('voice.voiceIdSaveRequestError') : 'voice_id自动保存请求出错') + '</span>';
-});
-}
-} else {
-const errorMsg = data.error || (window.t ? window.t('common.unknownError') : '未知错误');
-resultDiv.innerHTML = window.t ? window.t('voice.registerFailed', { error: errorMsg }) : '注册失败：' + errorMsg;
-resultDiv.className = 'result error';
+    const errorMsg = data.error || (window.t ? window.t('common.unknownError') : '未知错误');
+    resultDiv.textContent = window.t ? window.t('voice.registerFailed', { error: errorMsg }) : '注册失败：' + errorMsg;
+    resultDiv.className = 'result error';
 }
 setFormDisabled(false);
 })
@@ -300,25 +323,35 @@ setFormDisabled(false);
 
 // 监听API Key变更事件
 window.addEventListener('message', function (event) {
-if (event.data.type === 'api_key_changed') {
-// API Key已更改，可以在这里添加其他需要的处理逻辑
-console.log('API Key已更改，音色注册页面已收到通知');
-// 刷新音色列表
-loadVoices();
-}
+    if (!ALLOWED_ORIGINS.includes(event.origin)) return;
+    if (event.data.type === 'api_key_changed') {
+        // API Key已更改，可以在这里添加其他需要的处理逻辑
+        console.log('API Key已更改，音色注册页面已收到通知');
+        // 刷新音色列表
+        loadVoices();
+    }
 });
 
 // 加载音色列表
 async function loadVoices() {
 const container = document.getElementById('voice-list-container');
-const loadingDiv = document.getElementById('voice-list-loading');
 const refreshBtn = document.getElementById('refresh-voices-btn');
             
 if (!container) return;
             
 // 显示加载状态
 const loadingText = window.t ? window.t('voice.loading') : '加载中...';
-container.innerHTML = `<div style="text-align: center; color: #999; padding: 20px;" id="voice-list-loading"><span>${loadingText}</span></div>`;
+container.textContent = '';
+const loadingDiv = document.createElement('div');
+loadingDiv.style.textAlign = 'center';
+loadingDiv.style.color = '#999';
+loadingDiv.style.padding = '20px';
+loadingDiv.id = 'voice-list-loading';
+const loadingSpan = document.createElement('span');
+loadingSpan.textContent = loadingText;
+loadingDiv.appendChild(loadingSpan);
+container.appendChild(loadingDiv);
+
 if (refreshBtn) refreshBtn.disabled = true;
             
 try {
@@ -330,12 +363,18 @@ const data = await response.json();
                 
 if (!data.voices || Object.keys(data.voices).length === 0) {
 const noVoicesText = window.t ? window.t('voice.noVoices') : '暂无已注册音色';
-container.innerHTML = `<div class="voice-list-empty"><span>${noVoicesText}</span></div>`;
+container.textContent = '';
+const emptyDiv = document.createElement('div');
+emptyDiv.className = 'voice-list-empty';
+const emptySpan = document.createElement('span');
+emptySpan.textContent = noVoicesText;
+emptyDiv.appendChild(emptySpan);
+container.appendChild(emptyDiv);
 return;
 }
                 
 // 清空容器
-container.innerHTML = '';
+container.textContent = '';
                 
 // 按创建时间排序（如果有）
 const voicesArray = Object.entries(data.voices).map(([voiceId, voiceData]) => ({
@@ -367,7 +406,7 @@ dateStr = date.toLocaleString('zh-CN', {
 year: 'numeric', 
 month: '2-digit', 
 day: '2-digit',
-hour: '2-digit',
+hour: '2-digit', 
 minute: '2-digit'
 });
 } catch (e) {
@@ -378,16 +417,34 @@ minute: '2-digit'
 const deleteBtn = document.createElement('button');
 deleteBtn.className = 'voice-delete-btn';
 const deleteText = window.t ? window.t('voice.delete') : '删除';
-deleteBtn.innerHTML = `<img src="/static/icons/delete.png" alt="">${deleteText}`;
+const deleteImg = document.createElement('img');
+deleteImg.src = '/static/icons/delete.png';
+deleteImg.alt = '';
+deleteBtn.appendChild(deleteImg);
+deleteBtn.appendChild(document.createTextNode(deleteText));
 deleteBtn.onclick = () => deleteVoice(voiceId, displayName);
                     
-item.innerHTML = `
-<div class="voice-info">
-<div class="voice-name">${displayName}</div>
-<div class="voice-id">ID: ${voiceId}</div>
-${dateStr ? `<div class="voice-date">${dateStr}</div>` : ''}
-</div>
-`;
+const infoDiv = document.createElement('div');
+infoDiv.className = 'voice-info';
+
+const nameDiv = document.createElement('div');
+nameDiv.className = 'voice-name';
+nameDiv.textContent = displayName;
+infoDiv.appendChild(nameDiv);
+
+const idDiv = document.createElement('div');
+idDiv.className = 'voice-id';
+idDiv.textContent = `ID: ${voiceId}`;
+infoDiv.appendChild(idDiv);
+
+if (dateStr) {
+    const dateDiv = document.createElement('div');
+    dateDiv.className = 'voice-date';
+    dateDiv.textContent = dateStr;
+    infoDiv.appendChild(dateDiv);
+}
+
+item.appendChild(infoDiv);
 item.appendChild(deleteBtn);
                     
 container.appendChild(item);
@@ -396,7 +453,14 @@ container.appendChild(item);
 } catch (error) {
 console.error('加载音色列表失败:', error);
 const loadErrorText = window.t ? window.t('voice.loadError') : '加载失败，请稍后重试';
-container.innerHTML = `<div class="voice-list-empty" style="color: #f44336;"><span>${loadErrorText}</span></div>`;
+container.textContent = '';
+const errorDiv = document.createElement('div');
+errorDiv.className = 'voice-list-empty';
+errorDiv.style.color = '#f44336';
+const errorSpan = document.createElement('span');
+errorSpan.textContent = loadErrorText;
+errorDiv.appendChild(errorSpan);
+container.appendChild(errorDiv);
 } finally {
 if (refreshBtn) refreshBtn.disabled = false;
 }
@@ -415,14 +479,22 @@ return;
 const container = document.getElementById('voice-list-container');
 const refreshBtn = document.getElementById('refresh-voices-btn');
             
+if (!container) return;
+
 // 禁用刷新按钮
 if (refreshBtn) refreshBtn.disabled = true;
             
 // 显示删除中状态
 const originalContent = container.innerHTML;
-container.innerHTML = `<div style="text-align: center; color: #999; padding: 20px;">
-<span>${window.t ? window.t('voice.deleting') : '删除中...'}</span>
-</div>`;
+container.textContent = '';
+const deletingDiv = document.createElement('div');
+deletingDiv.style.textAlign = 'center';
+deletingDiv.style.color = '#999';
+deletingDiv.style.padding = '20px';
+const deletingSpan = document.createElement('span');
+deletingSpan.textContent = window.t ? window.t('voice.deleting') : '删除中...';
+deletingDiv.appendChild(deletingSpan);
+container.appendChild(deletingDiv);
             
 try {
 const response = await fetch(`/api/characters/voices/${encodeURIComponent(voiceId)}`, {
@@ -438,13 +510,13 @@ await loadVoices();
 // 显示成功消息
 const resultDiv = document.getElementById('result');
 if (resultDiv) {
-resultDiv.innerHTML = window.t 
+resultDiv.textContent = window.t 
 ? window.t('voice.deleteSuccess', { name: voiceName }) 
 : `音色"${voiceName}"已成功删除`;
 resultDiv.className = 'result';
 // 3秒后清除消息
 setTimeout(() => {
-resultDiv.innerHTML = '';
+resultDiv.textContent = '';
 }, 3000);
 }
 } else {

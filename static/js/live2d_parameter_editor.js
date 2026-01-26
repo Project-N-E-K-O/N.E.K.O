@@ -412,8 +412,15 @@ modelSelectText.textContent = text;
 modelSelectText.setAttribute('data-text', text);
 }
 
+// 缓存模型列表，避免重复请求
+let cachedModelList = null;
+
 async function loadModelList() {
 try {
+if (cachedModelList) {
+    renderModelList(cachedModelList);
+    return;
+}
 const response = await fetch('/api/live2d/models');
 const data = await response.json();
 
@@ -427,6 +434,18 @@ models = data.models;
 models = data.models;
 }
 
+cachedModelList = models;
+renderModelList(models);
+} catch (error) {
+console.error('加载模型列表失败:', error);
+modelSelect.innerHTML = `<option value="">${t('live2d.parameterEditor.loading', '加载中...')}</option>`;
+updateModelDropdown();
+updateModelSelectButtonText();
+showStatus(t('live2d.parameterEditor.modelListLoadFailed', '加载模型列表失败: {{error}}', { error: error.message }), 3000);
+}
+}
+
+function renderModelList(models) {
 if (models.length > 0) {
 modelSelect.innerHTML = `<option value="">${t('live2d.parameterEditor.pleaseSelectModelOption', '请选择模型')}</option>`;
 models.forEach(model => {
@@ -443,13 +462,6 @@ modelSelect.innerHTML = `<option value="">${t('live2d.parameterEditor.noModels',
 updateModelDropdown();
 updateModelSelectButtonText();
 showStatus(t('live2d.parameterEditor.noModelsFound', '未找到模型'), 3000);
-}
-} catch (error) {
-console.error('加载模型列表失败:', error);
-modelSelect.innerHTML = `<option value="">${t('live2d.parameterEditor.loading', '加载中...')}</option>`;
-updateModelDropdown();
-updateModelSelectButtonText();
-showStatus(t('live2d.parameterEditor.modelListLoadFailed', '加载模型列表失败: {{error}}', { error: error.message }), 3000);
 }
 }
 
@@ -491,18 +503,22 @@ await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
 // 加载参数信息
 await loadParameterInfo(modelName);
 
-// 获取模型信息
+// 获取模型信息（优先使用缓存）
+let models = cachedModelList;
+if (!models) {
 const modelsResponse = await fetch('/api/live2d/models');
 const modelsData = await modelsResponse.json();
 
 // 处理API返回格式（可能是数组或对象）
-let models = [];
+models = [];
 if (Array.isArray(modelsData)) {
 models = modelsData;
 } else if (modelsData.success && Array.isArray(modelsData.models)) {
 models = modelsData.models;
 } else if (modelsData.models && Array.isArray(modelsData.models)) {
 models = modelsData.models;
+}
+cachedModelList = models;
 }
 
 const modelInfo = models.find(m => m.name === modelName);

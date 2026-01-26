@@ -124,6 +124,9 @@ console.error('获取页面配置失败:', data.error);
 lanlan_config.lanlan_name = "";
 cubism4Model = "";
 vrmModel = "";
+window.lanlan_config = lanlan_config;
+window.cubism4Model = "";
+window.vrmModel = "";
 return false;
 }
 } catch (error) {
@@ -132,6 +135,9 @@ console.error('加载页面配置时出错:', error);
 lanlan_config.lanlan_name = "";
 cubism4Model = "";
 vrmModel = "";
+window.lanlan_config = lanlan_config;
+window.cubism4Model = "";
+window.vrmModel = "";
 return false;
 }
 }
