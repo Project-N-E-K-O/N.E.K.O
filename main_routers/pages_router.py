@@ -49,15 +49,6 @@ async def live2d_parameter_editor(request: Request):
         "request": request
     })
 
-@router.get("/live2d_emotion_manager", response_class=HTMLResponse)
-async def live2d_emotion_manager(request: Request):
-    """Live2D情感映射管理器页面"""
-    templates = get_templates()
-    return templates.TemplateResponse("templates/live2d_emotion_manager.html", {
-        "request": request
-    })
-
-
 @router.get('/chara_manager', response_class=HTMLResponse)
 async def chara_manager(request: Request):
     """渲染主控制页面"""

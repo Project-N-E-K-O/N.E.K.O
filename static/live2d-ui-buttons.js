@@ -572,7 +572,15 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
                 // 创建三角按钮（用于触发弹出框）- Fluent Design
                 const triggerBtn = document.createElement('div');
                 triggerBtn.className = 'live2d-trigger-btn';
-                triggerBtn.innerText = '▶';
+                // 使用图片图标替代文字符号
+                const triggerImg = document.createElement('img');
+                triggerImg.src = '/static/icons/play_trigger_icon.png' + iconVersion;
+                triggerImg.alt = '▶';
+                Object.assign(triggerImg.style, {
+                    width: '22px', height: '22px', objectFit: 'contain',
+                    pointerEvents: 'none', imageRendering: '-webkit-optimize-contrast', imageRendering: 'crisp-edges'
+                });
+                triggerBtn.appendChild(triggerImg);
                 Object.assign(triggerBtn.style, {
                     width: '24px',
                     height: '24px',
@@ -583,8 +591,6 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    fontSize: '13px',
-                    color: '#44b7fe',  // 主题浅蓝色
                     cursor: 'pointer',
                     userSelect: 'none',
                     boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04), 0 4px 8px rgba(0, 0, 0, 0.08)',

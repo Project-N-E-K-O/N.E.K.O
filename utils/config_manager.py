@@ -527,6 +527,24 @@ class ConfigManager:
         voice_storage[audio_api_key][voice_id] = voice_data
         self.save_voice_storage(voice_storage)
 
+    def delete_voice_for_current_api(self, voice_id):
+        """删除当前 AUDIO_API_KEY 下的指定音色"""
+        core_config = self.get_core_config()
+        audio_api_key = core_config.get('AUDIO_API_KEY', '')
+
+        if not audio_api_key:
+            raise ValueError("未配置 AUDIO_API_KEY")
+
+        voice_storage = self.load_voice_storage()
+        if audio_api_key not in voice_storage:
+            return False
+
+        if voice_id in voice_storage[audio_api_key]:
+            del voice_storage[audio_api_key][voice_id]
+            self.save_voice_storage(voice_storage)
+            return True
+        return False
+
     def validate_voice_id(self, voice_id):
         """校验 voice_id 是否在当前 AUDIO_API_KEY 下有效"""
         if not voice_id:

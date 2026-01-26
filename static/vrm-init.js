@@ -2,6 +2,49 @@
  * VRM Init - 全局导出和自动初始化
  */
 
+// --- VRM 模块加载逻辑 ---
+(async function initVRMModules() {
+    // 如果已经加载过模块，或者是在模型管理页面（由 model_manager.js 负责加载），则不再重复加载
+    if (window.vrmModuleLoaded) return;
+
+    const loadModules = async () => {
+        console.log('[VRM] 开始加载依赖模块');
+        const vrmModules = [
+            '/static/vrm-orientation.js',
+            '/static/vrm-core.js',
+            '/static/vrm-expression.js',
+            '/static/vrm-animation.js',
+            '/static/vrm-interaction.js',
+            '/static/vrm-manager.js',
+            '/static/vrm-ui-popup.js',
+            '/static/vrm-ui-buttons.js'
+            // 注意：不包含 vrm-init.js 本身，因为它已经运行了
+        ];
+
+        for (const moduleSrc of vrmModules) {
+            // 检查脚本是否已存在（通过 src 检查）
+            if (document.querySelector(`script[src^="${moduleSrc}"]`)) continue;
+
+            const script = document.createElement('script');
+            script.src = `${moduleSrc}?v=${Date.now()}`;
+            await new Promise((resolve) => {
+                script.onload = resolve;
+                script.onerror = resolve; // 即使失败也继续，防止死锁
+                document.body.appendChild(script);
+            });
+        }
+        window.vrmModuleLoaded = true;
+        window.dispatchEvent(new CustomEvent('vrm-modules-ready'));
+    };
+
+    // 如果 THREE 还没好，就等事件；好了就直接加载
+    if (typeof window.THREE === 'undefined') {
+        window.addEventListener('three-ready', loadModules, { once: true });
+    } else {
+        loadModules();
+    }
+})();
+
 // 全局路径配置对象 (带默认值作为保底)
 window.VRM_PATHS = {
     user_vrm: '/user_vrm',

@@ -677,7 +677,12 @@
                 return;
             }
 
-            element.textContent = text;
+            // 如果翻译文本包含 HTML 标签（如 <br>、<img> 等），使用 innerHTML，否则使用 textContent
+            if (text.includes('<br>') || text.includes('<BR>') || text.includes('<br/>') || text.includes('<img>') || text.includes('<IMG>') || text.includes('<img ')) {
+                element.innerHTML = text;
+            } else {
+                element.textContent = text;
+            }
         });
 
         // 更新所有带有 data-i18n-placeholder 属性的元素

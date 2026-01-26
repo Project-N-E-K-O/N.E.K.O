@@ -16,15 +16,16 @@ class TimeIndexedMemory:
         _, _, _, _, _, _, _, time_store, _, _ = get_config_manager().get_character_data()
         for i in time_store:
             self.engine[i] = create_engine(f"sqlite:///{time_store[i]}")
+            connection_string = f"sqlite:///{time_store[i]}"
 
             _ = SQLChatMessageHistory(
-                connection=self.engine[i],
+                connection_string=connection_string,
                 session_id="",
                 table_name=TIME_ORIGINAL_TABLE_NAME,
             )
 
             _ = SQLChatMessageHistory(
-                connection=self.engine[i],
+                connection_string=connection_string,
                 session_id="",
                 table_name=TIME_COMPRESSED_TABLE_NAME,
             )
@@ -65,13 +66,14 @@ class TimeIndexedMemory:
                 # 创建数据库引擎和表
                 db_path = time_store[lanlan_name]
                 self.engine[lanlan_name] = create_engine(f"sqlite:///{db_path}")
+                connection_string = f"sqlite:///{db_path}"
                 _ = SQLChatMessageHistory(
-                    connection=self.engine[lanlan_name],
+                    connection_string=connection_string,
                     session_id="",
                     table_name=TIME_ORIGINAL_TABLE_NAME,
                 )
                 _ = SQLChatMessageHistory(
-                    connection=self.engine[lanlan_name],
+                    connection_string=connection_string,
                     session_id="",
                     table_name=TIME_COMPRESSED_TABLE_NAME,
                 )
@@ -88,13 +90,14 @@ class TimeIndexedMemory:
                 default_path = os.path.join(memory_base, f'time_indexed_{lanlan_name}')
                 if lanlan_name not in self.engine:
                     self.engine[lanlan_name] = create_engine(f"sqlite:///{default_path}")
+                    connection_string = f"sqlite:///{default_path}"
                     _ = SQLChatMessageHistory(
-                        connection=self.engine[lanlan_name],
+                        connection_string=connection_string,
                         session_id="",
                         table_name=TIME_ORIGINAL_TABLE_NAME,
                     )
                     _ = SQLChatMessageHistory(
-                        connection=self.engine[lanlan_name],
+                        connection_string=connection_string,
                         session_id="",
                         table_name=TIME_COMPRESSED_TABLE_NAME,
                     )
@@ -111,14 +114,15 @@ class TimeIndexedMemory:
             logger.error(f"角色 '{lanlan_name}' 的数据库引擎不存在")
             return
 
+        connection_string = f"sqlite:///{time_store[lanlan_name]}"
         origin_history = SQLChatMessageHistory(
-            connection=self.engine[lanlan_name],
+            connection_string=connection_string,
             session_id=event_id,
             table_name=TIME_ORIGINAL_TABLE_NAME,
         )
 
         compressed_history = SQLChatMessageHistory(
-            connection=self.engine[lanlan_name],
+            connection_string=connection_string,
             session_id=event_id,
             table_name=TIME_COMPRESSED_TABLE_NAME,
         )

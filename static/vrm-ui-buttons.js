@@ -83,7 +83,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
     this._uiWindowHandlers.push({ event: 'resize', handler: applyResponsiveFloatingLayout });
     window.addEventListener('resize', applyResponsiveFloatingLayout);
 
-    const iconVersion = '?v=' + (window.APP_VERSION || '1.0.0');
+    const iconVersion = '?v=' + Date.now();
     const buttonConfigs = [
         { id: 'mic', emoji: '🎤', title: window.t ? window.t('buttons.voiceControl') : '语音控制', titleKey: 'buttons.voiceControl', hasPopup: true, toggle: true, separatePopupTrigger: true, iconOff: '/static/icons/mic_icon_off.png' + iconVersion, iconOn: '/static/icons/mic_icon_on.png' + iconVersion },
         { id: 'screen', emoji: '🖥️', title: window.t ? window.t('buttons.screenShare') : '屏幕分享', titleKey: 'buttons.screenShare', hasPopup: true, toggle: true, separatePopupTrigger: true, iconOff: '/static/icons/screen_icon_off.png' + iconVersion, iconOn: '/static/icons/screen_icon_on.png' + iconVersion },
@@ -112,7 +112,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
             width: '48px', height: '48px', borderRadius: '50%', background: 'rgba(255, 255, 255, 0.65)',
             backdropFilter: 'saturate(180%) blur(20px)', border: '1px solid rgba(255, 255, 255, 0.18)',
             display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px',
-            cursor: 'pointer', userSelect: 'none', boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04)',
+            cursor: 'pointer', userSelect: 'none', boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04), 0 4px 8px rgba(0, 0, 0, 0.08)',
             transition: 'all 0.1s ease', pointerEvents: 'auto'
         });
 
@@ -125,11 +125,11 @@ VRMManager.prototype.setupFloatingButtons = function () {
 
             imgOff = document.createElement('img');
             imgOff.src = config.iconOff; imgOff.alt = config.emoji;
-            Object.assign(imgOff.style, { position: 'absolute', width: '48px', height: '48px', objectFit: 'contain', pointerEvents: 'none', opacity: '1', transition: 'opacity 0.3s ease' });
+            Object.assign(imgOff.style, { position: 'absolute', width: '48px', height: '48px', objectFit: 'contain', pointerEvents: 'none', opacity: '1', transition: 'opacity 0.3s ease', imageRendering: '-webkit-optimize-contrast', imageRendering: 'crisp-edges' });
 
             imgOn = document.createElement('img');
             imgOn.src = config.iconOn; imgOn.alt = config.emoji;
-            Object.assign(imgOn.style, { position: 'absolute', width: '48px', height: '48px', objectFit: 'contain', pointerEvents: 'none', opacity: '0', transition: 'opacity 0.3s ease' });
+            Object.assign(imgOn.style, { position: 'absolute', width: '48px', height: '48px', objectFit: 'contain', pointerEvents: 'none', opacity: '0', transition: 'opacity 0.3s ease', imageRendering: '-webkit-optimize-contrast', imageRendering: 'crisp-edges' });
 
             imgContainer.appendChild(imgOff);
             imgContainer.appendChild(imgOn);
@@ -145,6 +145,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
             // 悬停效果
             btn.addEventListener('mouseenter', () => {
                 btn.style.transform = 'scale(1.05)';
+                btn.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.08), 0 8px 16px rgba(0, 0, 0, 0.08)';
                 btn.style.background = 'rgba(255, 255, 255, 0.8)';
 
                 // 检查是否有单独的弹窗触发器且弹窗已打开
@@ -159,6 +160,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
 
             btn.addEventListener('mouseleave', () => {
                 btn.style.transform = 'scale(1)';
+                btn.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.04), 0 4px 8px rgba(0, 0, 0, 0.08)';
                 const isActive = btn.dataset.active === 'true';
                 const popup = document.getElementById(`vrm-popup-${config.id}`);
                 const isPopupVisible = popup && popup.style.display === 'flex' && popup.style.opacity === '1';
@@ -235,16 +237,24 @@ VRMManager.prototype.setupFloatingButtons = function () {
 
             const popup = this.createPopup(config.id);
             const triggerBtn = document.createElement('div');
-            triggerBtn.innerText = '▶';
+            // 使用图片图标替代文字符号
+            const triggerImg = document.createElement('img');
+            triggerImg.src = '/static/icons/play_trigger_icon.png' + iconVersion;
+            triggerImg.alt = '▶';
+            Object.assign(triggerImg.style, {
+                width: '22px', height: '22px', objectFit: 'contain',
+                pointerEvents: 'none', imageRendering: '-webkit-optimize-contrast', imageRendering: 'crisp-edges'
+            });
             Object.assign(triggerBtn.style, {
                 width: '24px', height: '24px', borderRadius: '50%',
                 background: 'rgba(255, 255, 255, 0.65)', backdropFilter: 'saturate(180%) blur(20px)',
                 border: '1px solid rgba(255, 255, 255, 0.18)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: '13px', color: '#44b7fe', cursor: 'pointer', userSelect: 'none',
-                boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04)', transition: 'all 0.1s ease', pointerEvents: 'auto',
+                cursor: 'pointer', userSelect: 'none',
+                boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04), 0 4px 8px rgba(0, 0, 0, 0.08)', transition: 'all 0.1s ease', pointerEvents: 'auto',
                 marginLeft: '-10px'
             });
+            triggerBtn.appendChild(triggerImg);
 
             const stopTriggerEvent = (e) => { e.stopPropagation(); };
             ['pointerdown', 'mousedown', 'touchstart'].forEach(evt => triggerBtn.addEventListener(evt, stopTriggerEvent));
@@ -439,15 +449,19 @@ VRMManager.prototype.setupFloatingButtons = function () {
         width: '64px', height: '64px', borderRadius: '50%', background: 'rgba(255, 255, 255, 0.65)',
         backdropFilter: 'saturate(180%) blur(20px)', border: '1px solid rgba(255, 255, 255, 0.18)',
         display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
-        boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04)', transition: 'all 0.1s ease', pointerEvents: 'auto', position: 'relative'
+        boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.04)', transition: 'all 0.1s ease', pointerEvents: 'auto', position: 'relative'
     });
 
     returnBtn.addEventListener('mouseenter', () => {
-        returnBtn.style.transform = 'scale(1.05)'; returnBtn.style.background = 'rgba(255, 255, 255, 0.8)';
+        returnBtn.style.transform = 'scale(1.05)';
+        returnBtn.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.08)';
+        returnBtn.style.background = 'rgba(255, 255, 255, 0.8)';
         returnImgOff.style.opacity = '0'; returnImgOn.style.opacity = '1';
     });
     returnBtn.addEventListener('mouseleave', () => {
-        returnBtn.style.transform = 'scale(1)'; returnBtn.style.background = 'rgba(255, 255, 255, 0.65)';
+        returnBtn.style.transform = 'scale(1)';
+        returnBtn.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.04)';
+        returnBtn.style.background = 'rgba(255, 255, 255, 0.65)';
         returnImgOff.style.opacity = '1'; returnImgOn.style.opacity = '0';
     });
     returnBtn.addEventListener('click', (e) => {

@@ -1172,6 +1172,48 @@ async def register_voice(request: Request):
         }, status_code=500)
 
 
+@router.delete('/voices/{voice_id}')
+async def delete_voice(voice_id: str):
+    """删除指定音色"""
+    try:
+        _config_manager = get_config_manager()
+        deleted = _config_manager.delete_voice_for_current_api(voice_id)
+        
+        if deleted:
+            # 清理所有角色中使用该音色的引用
+            characters = _config_manager.load_characters()
+            cleaned_count = 0
+            
+            if '猫娘' in characters:
+                for name in characters['猫娘']:
+                    if characters['猫娘'][name].get('voice_id') == voice_id:
+                        characters['猫娘'][name]['voice_id'] = ''
+                        cleaned_count += 1
+            
+            if cleaned_count > 0:
+                _config_manager.save_characters(characters)
+                # 自动重新加载配置
+                initialize_character_data = get_initialize_character_data()
+                await initialize_character_data()
+            
+            logger.info(f"已删除音色 '{voice_id}'，并清理了 {cleaned_count} 个角色的引用")
+            return {
+                "success": True,
+                "message": f"音色已删除，已清理 {cleaned_count} 个角色的引用"
+            }
+        else:
+            return JSONResponse({
+                'success': False,
+                'error': '音色不存在或删除失败'
+            }, status_code=404)
+    except Exception as e:
+        logger.error(f"删除音色时出错: {e}")
+        return JSONResponse({
+            'success': False,
+            'error': f'删除音色失败: {str(e)}'
+        }, status_code=500)
+
+
 @router.post('/voice_clone')
 async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref_language: str = Form(default="ch")):
     """

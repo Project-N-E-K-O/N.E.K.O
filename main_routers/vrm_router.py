@@ -29,11 +29,20 @@ MAX_FILE_SIZE = 200 * 1024 * 1024  # 200MB
 CHUNK_SIZE = 1024 * 1024  # 1MB chunks for streaming
 
 
-def safe_vrm_path(vrm_dir: Path, filename: str) -> tuple[Path | None, str]:
-    """安全地构造和验证 VRM 目录内的路径，防止路径穿越攻击。"""
+def safe_vrm_path(vrm_dir: Path, filename: str, subdir: str = None) -> tuple[Path | None, str]:
+    """安全地构造和验证 VRM 目录内的路径，防止路径穿越攻击。
+    
+    Args:
+        vrm_dir: VRM根目录
+        filename: 文件名
+        subdir: 子目录（如 'animation'），可选
+    """
     try:
         # 使用 pathlib 构造路径
-        target_path = vrm_dir / filename
+        if subdir:
+            target_path = vrm_dir / subdir / filename
+        else:
+            target_path = vrm_dir / filename
         
         # 解析为绝对路径（解析 ..、符号链接等）
         resolved_path = target_path.resolve()
@@ -154,6 +163,104 @@ async def upload_vrm_model(file: UploadFile = File(...)):
         
     except Exception as e:
         logger.error(f"上传VRM模型失败: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+
+@router.post('/upload_animation')
+async def upload_vrm_animation(file: UploadFile = File(...)):
+    """上传VRM动作文件到用户文档目录"""
+    try:
+        if not file:
+            return JSONResponse(status_code=400, content={"success": False, "error": "没有上传文件"})
+        
+        # 检查文件扩展名
+        filename = file.filename
+        if not filename or not filename.lower().endswith('.vrma'):
+            return JSONResponse(status_code=400, content={"success": False, "error": "动作文件必须是.vrma格式"})
+        
+        # 只取文件名，避免上传时夹带子目录
+        filename = Path(filename).name
+        
+        # 获取用户文档的vrm目录下的animation子目录
+        config_mgr = get_config_manager()
+        if not config_mgr.ensure_vrm_directory():
+            return JSONResponse(status_code=500, content={"success": False, "error": "VRM目录创建失败"})
+        user_vrm_dir = config_mgr.vrm_dir
+        anim_dir = user_vrm_dir / "animation"
+        anim_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 使用安全路径函数防止路径穿越（使用vrm_dir作为根目录，animation作为子目录）
+        target_file_path, path_error = safe_vrm_path(user_vrm_dir, filename, 'animation')
+        if target_file_path is None:
+            logger.warning(f"路径穿越尝试被阻止: {filename!r} - {path_error}")
+            return JSONResponse(status_code=400, content={
+                "success": False,
+                "error": path_error
+            })
+        
+        # 检查文件是否已存在
+        if target_file_path.exists():
+            return JSONResponse(status_code=400, content={
+                "success": False,
+                "error": f"文件 {filename} 已存在"
+            })
+        
+        # 边读边写，避免将整个文件加载到内存
+        total_size = 0
+        try:
+            with open(target_file_path, 'xb') as f:
+                while True:
+                    chunk = await file.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    total_size += len(chunk)
+                    if total_size > MAX_FILE_SIZE:
+                        raise ValueError("FILE_TOO_LARGE")
+                    f.write(chunk)
+        except FileExistsError:
+            return JSONResponse(status_code=400, content={
+                "success": False,
+                "error": f"文件 {filename} 已存在"
+            })
+        except ValueError as ve:
+            if str(ve) == "FILE_TOO_LARGE":
+                try:
+                    target_file_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                logger.warning(f"文件过大: {filename} ({total_size / (1024*1024):.2f}MB > {MAX_FILE_SIZE / (1024*1024)}MB)")
+                return JSONResponse(status_code=400, content={
+                    "success": False,
+                    "error": f"文件过大，最大允许 {MAX_FILE_SIZE // (1024*1024)}MB"
+                })
+            raise
+        except Exception as e:
+            logger.error(f"读取或写入上传文件失败: {e}")
+            try:
+                target_file_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return JSONResponse(status_code=500, content={
+                "success": False,
+                "error": f"保存文件失败: {str(e)}"
+            })
+        finally:
+            try:
+                await file.close()
+            except Exception:
+                pass
+        
+        logger.info(f"成功上传VRM动作文件: {filename} -> {target_file_path} (大小: {total_size / (1024*1024):.2f}MB)")
+        
+        return JSONResponse(content={
+            "success": True,
+            "message": f"动作文件 {filename} 上传成功",
+            "filename": filename,
+            "file_path": f"{VRM_USER_PATH}/animation/{filename}"
+        })
+        
+    except Exception as e:
+        logger.error(f"上传VRM动作文件失败: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 

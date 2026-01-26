@@ -65,6 +65,9 @@ class Live2DManager {
         this._lockIconTicker = null;
         this._lockIconElement = null;
 
+        // 口型同步
+        this.mouthValue = 0; // 嘴巴开合值（0=闭嘴，1=张嘴）
+
         // 浮动按钮系统
         this._floatingButtonsTicker = null;
         this._floatingButtonsContainer = null;
