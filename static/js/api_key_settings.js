@@ -521,8 +521,11 @@ assistApi = 'free';
 }
 }
 
-// 处理API Key：读取用户输入（暂不在这里转换免费版展示文本，统一在保存层处理）
+// 处理API Key：读取用户输入并去除免费版展示文本
 let apiKey = apiKeyInput.value ? apiKeyInput.value.trim() : '';
+if (isFreeVersionText(apiKey)) {
+    apiKey = '';
+}
 const assistApiKeyQwen = document.getElementById('assistApiKeyInputQwen') ? document.getElementById('assistApiKeyInputQwen').value.trim() : '';
 const assistApiKeyOpenai = document.getElementById('assistApiKeyInputOpenai') ? document.getElementById('assistApiKeyInputOpenai').value.trim() : '';
 const assistApiKeyGlm = document.getElementById('assistApiKeyInputGlm') ? document.getElementById('assistApiKeyInputGlm').value.trim() : '';
@@ -563,6 +566,8 @@ const ttsVoiceId = document.getElementById('ttsVoiceId') ? document.getElementBy
 
 const mcpToken = document.getElementById('mcpTokenInput') ? document.getElementById('mcpTokenInput').value.trim() : '';
 
+const apiKeyForSave = (coreApi === 'free' || assistApi === 'free') ? 'free-access' : apiKey;
+
 // 免费版和启用自定义API时不需要API Key检查
 if (!enableCustomApi && coreApi !== 'free' && assistApi !== 'free' && !apiKey) {
 showStatus(window.t ? window.t('api.pleaseEnterApiKeyError') : '请输入API Key', 'error');
@@ -573,8 +578,8 @@ return;
 const currentApiKeyDiv = document.getElementById('current-api-key');
 if (currentApiKeyDiv && currentApiKeyDiv.dataset.hasKey === 'true') {
 // 已有API Key，显示警告弹窗
-pendingApiKey = {
-apiKey, coreApi, assistApi,
+            pendingApiKey = {
+                apiKey: apiKeyForSave, coreApi, assistApi,
 assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon,
 summaryModelProvider, summaryModelUrl, summaryModelId, summaryModelApiKey,
 correctionModelProvider, correctionModelUrl, correctionModelId, correctionModelApiKey,
@@ -587,8 +592,8 @@ mcpToken, enableCustomApi
 showWarningModal();
 } else {
 // 没有现有API Key，直接保存
-await saveApiKey({
-apiKey, coreApi, assistApi,
+        await saveApiKey({
+            apiKey: apiKeyForSave, coreApi, assistApi,
 assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon,
 summaryModelProvider, summaryModelUrl, summaryModelId, summaryModelApiKey,
 correctionModelProvider, correctionModelUrl, correctionModelId, correctionModelApiKey,
@@ -602,11 +607,11 @@ mcpToken, enableCustomApi
 });
 
 async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, summaryModelProvider, summaryModelUrl, summaryModelId, summaryModelApiKey, correctionModelProvider, correctionModelUrl, correctionModelId, correctionModelApiKey, emotionModelProvider, emotionModelUrl, emotionModelId, emotionModelApiKey, visionModelProvider, visionModelUrl, visionModelId, visionModelApiKey, omniModelProvider, omniModelUrl, omniModelId, omniModelApiKey, ttsModelProvider, ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId, mcpToken, enableCustomApi }) {
-// 统一处理免费版 API Key 的保存值：如果核心或辅助 API 为 free，则保存值应为 'free-access'
-if (!enableCustomApi && (coreApi === 'free' || assistApi === 'free')) {
-// 无论用户在 UI 中看到的是翻译文本还是空字符串，保存时都使用 'free-access'
-apiKey = 'free-access';
-}
+    // 统一处理免费版 API Key 的保存值：如果核心或辅助 API 为 free，则保存值应为 'free-access'
+    if (coreApi === 'free' || assistApi === 'free') {
+        // 无论用户在 UI 中看到的是翻译文本或空值，保存时都使用 'free-access'
+        apiKey = 'free-access';
+    }
 
 // 确保apiKey是有效的字符串（启用自定义API或免费版时不需要API Key）
 if (!enableCustomApi && coreApi !== 'free' && assistApi !== 'free' && (!apiKey || typeof apiKey !== 'string')) {

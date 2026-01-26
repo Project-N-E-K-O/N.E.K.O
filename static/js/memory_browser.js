@@ -5,6 +5,7 @@
     let currentMemoryFile = null;
     let chatData = [];
     let currentCatName = '';
+    let memoryFileRequestId = 0;
 
     async function loadMemoryFileList() {
 const ul = document.getElementById('memory-file-list');
@@ -172,12 +173,13 @@ const memoPrefix = window.t ? window.t('memory.previousMemo') : '先前对话的
 chatData[idx].text = memoPrefix + value;
 }
     async function selectMemoryFile(filename, li, catName) {
+        const requestId = ++memoryFileRequestId;
         currentMemoryFile = filename;
         currentCatName = catName || (li ? li.getAttribute('data-catname') : '');
         Array.from(document.getElementById('memory-file-list').children).forEach(x => x.classList.remove('selected'));
         if (li) li.classList.add('selected');
         const editDiv = document.getElementById('memory-chat-edit');
-        
+
         // 清空并使用 textContent 设置加载中状态
         editDiv.textContent = '';
         const loadingDiv = document.createElement('div');
@@ -185,14 +187,23 @@ chatData[idx].text = memoPrefix + value;
         loadingDiv.textContent = window.t ? window.t('memory.loading') : '加载中...';
         editDiv.appendChild(loadingDiv);
 
-        document.getElementById('save-row').style.display = 'flex';
+        const saveRow = document.getElementById('save-row');
+        if (saveRow) {
+            saveRow.style.display = 'flex';
+        }
 try {
 // 直接获取原始JSON内容
-const resp = await fetch('/api/memory/recent_file?filename=' + encodeURIComponent(filename));
-const data = await resp.json();
+            const resp = await fetch('/api/memory/recent_file?filename=' + encodeURIComponent(filename));
+            const data = await resp.json();
+            if (requestId !== memoryFileRequestId) {
+                return;
+            }
 if (data.content) {
 let arr = [];
 try { arr = JSON.parse(data.content); } catch (e) { arr = []; }
+                if (requestId !== memoryFileRequestId) {
+                    return;
+                }
 chatData = arr.map(item => {
 if (item.type === 'system') {
 return { role: 'system', text: item.data && item.data.content ? item.data.content : '' };
@@ -209,12 +220,18 @@ return { role: item.type, text };
 return null;
 }
 }).filter(Boolean);
-renderChatEdit();
+                renderChatEdit();
 } else {
+                if (requestId !== memoryFileRequestId) {
+                    return;
+                }
 chatData = [];
 editDiv.innerHTML = '<div style="color:#888; padding: 20px; text-align: center;">' + (window.t ? window.t('memory.noChatContent') : '无聊天内容') + '</div>';
 }
 } catch (e) {
+            if (requestId !== memoryFileRequestId) {
+                return;
+            }
 chatData = [];
 editDiv.innerHTML = '<div style="color:#e74c3c; padding: 20px; text-align: center;">' + (window.t ? window.t('memory.loadFailed') : '加载失败') + '</div>';
 }
