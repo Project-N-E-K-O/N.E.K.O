@@ -57,9 +57,6 @@ ul.innerHTML = `<li style="color:#e74c3c; padding: 8px;">${window.t ? window.t('
 }
 }
 
-let chatData = [];
-let currentCatName = '';
-
 function renderChatEdit() {
 const div = document.getElementById('memory-chat-edit');
 // 清空并使用 DOM API 渲染每一条消息，避免将未转义的用户数据插入到 HTML 中

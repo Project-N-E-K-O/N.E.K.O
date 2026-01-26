@@ -60,6 +60,43 @@ function showCurrentApiKey(message, rawKey = '', hasKey = false) {
     currentApiKeyDiv.style.display = 'flex';
 }
 
+// 清空 API 服务商下拉框
+function clearApiProviderSelects() {
+    const coreSelect = document.getElementById('coreApiSelect');
+    const assistSelect = document.getElementById('assistApiSelect');
+    if (coreSelect) {
+        coreSelect.innerHTML = '';
+        coreSelect.value = '';
+    }
+    if (assistSelect) {
+        assistSelect.innerHTML = '';
+        assistSelect.value = '';
+    }
+}
+
+// 等待下拉选项加载完成再设置值，避免单次 setTimeout 竞态
+function waitForOptions(select, targetValue, { maxAttempts = 20, interval = 50 } = {}) {
+    if (!select || !targetValue) return;
+
+    let attempts = 0;
+    const checkAndSet = () => {
+        if (select.options.length > 0) {
+            const optionExists = Array.from(select.options).some(opt => opt.value === targetValue);
+            if (optionExists) {
+                select.value = targetValue;
+                return;
+            }
+        }
+
+        if (attempts < maxAttempts) {
+            attempts += 1;
+            setTimeout(checkAndSet, interval);
+        }
+    };
+
+    checkAndSet();
+}
+
 async function clearVoiceIds() {
 try {
 const response = await fetch('/api/characters/clear_voice_ids', {
@@ -97,8 +134,7 @@ option.value = provider.key;
 const translationKey = `api.coreProviderNames.${provider.key}`;
 if (window.t) {
 const translatedName = window.t(translationKey);
-// 如果翻译键存在且不是键本身，使用翻译；否则使用原始名称
-console.log(translatedName);
+
 option.textContent = (translatedName !== translationKey) ? translatedName : provider.name;
 } else {
 option.textContent = provider.name;
@@ -127,52 +163,24 @@ assistSelect.appendChild(option);
 });
 }
 
-console.log('API服务商选项加载成功');
 return true;
 } else {
-console.error('加载API服务商配置失败:', data.error);
-// 加载失败时，确保下拉框为空
-const coreSelect = document.getElementById('coreApiSelect');
-const assistSelect = document.getElementById('assistApiSelect');
-if (coreSelect) {
-coreSelect.innerHTML = '';
-coreSelect.value = '';
-}
-if (assistSelect) {
-assistSelect.innerHTML = '';
-assistSelect.value = '';
-}
-return false;
+        console.error('加载API服务商配置失败:', data.error);
+        // 加载失败时，确保下拉框为空
+        clearApiProviderSelects();
+        return false;
 }
 } else {
 console.error('获取API服务商配置失败，HTTP状态:', response.status);
-// 加载失败时，确保下拉框为空
-const coreSelect = document.getElementById('coreApiSelect');
-const assistSelect = document.getElementById('assistApiSelect');
-if (coreSelect) {
-coreSelect.innerHTML = '';
-coreSelect.value = '';
-}
-if (assistSelect) {
-assistSelect.innerHTML = '';
-assistSelect.value = '';
-}
-return false;
+        // 加载失败时，确保下拉框为空
+        clearApiProviderSelects();
+        return false;
 }
 } catch (error) {
 console.error('加载API服务商配置时出错:', error);
-// 加载失败时，确保下拉框为空
-const coreSelect = document.getElementById('coreApiSelect');
-const assistSelect = document.getElementById('assistApiSelect');
-if (coreSelect) {
-coreSelect.innerHTML = '';
-coreSelect.value = '';
-}
-if (assistSelect) {
-assistSelect.innerHTML = '';
-assistSelect.value = '';
-}
-return false;
+    // 加载失败时，确保下拉框为空
+    clearApiProviderSelects();
+    return false;
 }
 }
 
@@ -220,44 +228,26 @@ apiKeyInput.value = data.api_key;
 }
 // 设置高级设定的值（确保下拉框已加载选项）
 if (data.coreApi && coreApiSelect) {
-// 检查选项是否已加载
-if (coreApiSelect.options.length > 0) {
-// 验证选项值是否存在
-const optionExists = Array.from(coreApiSelect.options).some(opt => opt.value === data.coreApi);
-if (optionExists) {
-coreApiSelect.value = data.coreApi;
-}
-} else {
-// 如果选项未加载，等待一下再设置
-setTimeout(() => {
-if (coreApiSelect.options.length > 0) {
-const optionExists = Array.from(coreApiSelect.options).some(opt => opt.value === data.coreApi);
-if (optionExists) {
-coreApiSelect.value = data.coreApi;
-}
-}
-}, 100);
-}
+    if (coreApiSelect.options.length > 0) {
+        // 验证选项值是否存在
+        const optionExists = Array.from(coreApiSelect.options).some(opt => opt.value === data.coreApi);
+        if (optionExists) {
+            coreApiSelect.value = data.coreApi;
+        }
+    } else {
+        waitForOptions(coreApiSelect, data.coreApi);
+    }
 }
 if (data.assistApi && assistApiSelect) {
-// 检查选项是否已加载
-if (assistApiSelect.options.length > 0) {
-// 验证选项值是否存在
-const optionExists = Array.from(assistApiSelect.options).some(opt => opt.value === data.assistApi);
-if (optionExists) {
-assistApiSelect.value = data.assistApi;
-}
-} else {
-// 如果选项未加载，等待一下再设置
-setTimeout(() => {
-if (assistApiSelect.options.length > 0) {
-const optionExists = Array.from(assistApiSelect.options).some(opt => opt.value === data.assistApi);
-if (optionExists) {
-assistApiSelect.value = data.assistApi;
-}
-}
-}, 100);
-}
+    if (assistApiSelect.options.length > 0) {
+        // 验证选项值是否存在
+        const optionExists = Array.from(assistApiSelect.options).some(opt => opt.value === data.assistApi);
+        if (optionExists) {
+            assistApiSelect.value = data.assistApi;
+        }
+    } else {
+        waitForOptions(assistApiSelect, data.assistApi);
+    }
 }
 if (typeof data.assistApiKeyQwen === 'string' && document.getElementById('assistApiKeyInputQwen')) {
 document.getElementById('assistApiKeyInputQwen').value = data.assistApiKeyQwen;
@@ -376,14 +366,11 @@ toggleCustomApi();
 }, 100);
 }
         } else {
-            showCurrentApiKey('获取当前API Key失败', '', false);
+            showCurrentApiKey(window.t ? window.t('get_current_api_key_failed') : '获取当前API Key失败', '', false);
         }
     } catch (error) {
-        showCurrentApiKey('获取当前API Key时出错', '', false);
+        showCurrentApiKey(window.t ? window.t('error_getting_current_api_key') : '获取当前API Key时出错', '', false);
     }
-
-// 返回Promise，以便调用者可以在获取完成后执行其他操作
-return Promise.resolve();
 }
 
 // 全局变量存储待保存的API Key
@@ -1155,8 +1142,9 @@ throw new Error('加载API服务商选项失败');
 // 第二步：加载当前API配置
 await loadCurrentApiKey();
 
-// 第三步：等待所有配置加载完成，然后初始化UI状态
-await new Promise(resolve => setTimeout(resolve, 300));
+    // 第三步：等待所有配置加载完成，然后初始化UI状态
+    const UI_SETTLE_DELAY = 300; // 等待 DOM 变更和下拉渲染稳定
+    await new Promise(resolve => setTimeout(resolve, UI_SETTLE_DELAY));
 
 // 初始化tooltips
 initTooltips();

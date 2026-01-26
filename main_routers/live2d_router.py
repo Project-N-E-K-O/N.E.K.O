@@ -948,9 +948,18 @@ async def upload_file_to_model(model_name: str, file: UploadFile = File(...), fi
         
         # 限制文件大小 (例如 50MB)
         MAX_UPLOAD_SIZE = 50 * 1024 * 1024
-        content = await file.read()
-        if len(content) > MAX_UPLOAD_SIZE:
-            return JSONResponse(status_code=400, content={"success": False, "error": f"文件过大，最大允许 {MAX_UPLOAD_SIZE // (1024*1024)}MB"})
+        chunk_size = 64 * 1024
+        file_content = bytearray()
+        try:
+            while True:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                file_content.extend(chunk)
+                if len(file_content) > MAX_UPLOAD_SIZE:
+                    return JSONResponse(status_code=400, content={"success": False, "error": f"文件过大，最大允许 {MAX_UPLOAD_SIZE // (1024*1024)}MB"})
+        finally:
+            await file.close()
         
         # 验证文件类型和 JSON 格式
         filename = file.filename
@@ -967,7 +976,7 @@ async def upload_file_to_model(model_name: str, file: UploadFile = File(...), fi
         
         # 验证 JSON 格式
         try:
-            json.loads(content.decode('utf-8'))
+            json.loads(file_content.decode('utf-8'))
         except (json.JSONDecodeError, UnicodeDecodeError):
             return JSONResponse(status_code=400, content={"success": False, "error": "文件内容不是有效的 JSON 格式"})
 
@@ -983,14 +992,12 @@ async def upload_file_to_model(model_name: str, file: UploadFile = File(...), fi
         # 只取文件名，避免路径穿越
         safe_filename = pathlib.Path(filename).name
         
-        # 检查文件是否已存在
         target_file_path = target_dir / safe_filename
-        if target_file_path.exists():
+        try:
+            with open(target_file_path, 'xb') as f:
+                f.write(file_content)
+        except FileExistsError:
             return JSONResponse(status_code=400, content={"success": False, "error": f"文件 {safe_filename} 已存在"})
-        
-        # 保存文件
-        with open(target_file_path, 'wb') as f:
-            f.write(content)
         
         logger.info(f"成功上传{file_type}文件到模型 {model_name}: {safe_filename}")
         

@@ -23,6 +23,19 @@
         ];
 
         // 并行加载所有模块喵~
+        const failedModules = [];
+        const appendScriptSafely = (script) => {
+            const attachScript = () => {
+                const parent = document.head || document.body || document.documentElement;
+                parent.appendChild(script);
+            };
+            if (!document.head && !document.body) {
+                document.addEventListener('DOMContentLoaded', attachScript, { once: true });
+            } else {
+                attachScript();
+            }
+        };
+
         const loadPromises = vrmModules.map(moduleSrc => {
             // 检查脚本是否已存在
             if (document.querySelector(`script[src^="${moduleSrc}"]`)) {
@@ -38,15 +51,23 @@
                 };
                 script.onerror = () => {
                     console.error(`[VRM] 模块加载失败: ${moduleSrc}`);
+                    failedModules.push(moduleSrc);
                     resolve(); // 即使失败也继续，防止 Promise.all 阻塞
                 };
-                document.body.appendChild(script);
+                appendScriptSafely(script);
             });
         });
 
         await Promise.all(loadPromises);
-        window.vrmModuleLoaded = true;
-        window.dispatchEvent(new CustomEvent('vrm-modules-ready'));
+        if (failedModules.length === 0) {
+            window.vrmModuleLoaded = true;
+            window.dispatchEvent(new CustomEvent('vrm-modules-ready'));
+        } else {
+            window.vrmModuleLoaded = false;
+            window.dispatchEvent(new CustomEvent('vrm-modules-failed', {
+                detail: { failedModules }
+            }));
+        }
     };
 
     // 如果 THREE 还没好，就等事件；好了就直接加载
