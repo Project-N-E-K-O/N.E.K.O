@@ -21,16 +21,21 @@ function getTargetOrigin() {
 }
 
 function showStatus(message, type = 'info') {
-const statusDiv = document.getElementById('status');
-statusDiv.textContent = message;
-statusDiv.className = `status ${type}`;
-statusDiv.style.display = 'block';
+    const statusDiv = document.getElementById('status');
+    if (!statusDiv) {
+        console.warn('[API Key Settings] status element not found');
+        return;
+    }
 
-if (type === 'success') {
-setTimeout(() => {
-statusDiv.style.display = 'none';
-}, 3000);
-}
+    statusDiv.textContent = message;
+    statusDiv.className = `status ${type}`;
+    statusDiv.style.display = 'block';
+
+    if (type === 'success') {
+        setTimeout(() => {
+            statusDiv.style.display = 'none';
+        }, 3000);
+    }
 }
 
 function showCurrentApiKey(message, rawKey = '', hasKey = false) {
@@ -725,12 +730,12 @@ document.getElementById('warning-modal').style.display = 'none';
 // 不在这里清空 pendingApiKey，让调用者决定何时清空
 }
 
-function confirmApiKeyChange() {
+async function confirmApiKeyChange() {
 if (pendingApiKey && typeof pendingApiKey === 'object') {
 const apiKeyToSave = pendingApiKey; // 保存当前值
 closeWarningModal();
 pendingApiKey = null; // 清空全局变量
-saveApiKey(apiKeyToSave); // 使用保存的值
+        await saveApiKey(apiKeyToSave); // 使用保存的值
 } else {
 showStatus(window.t ? window.t('api.apiKeyInvalidRetry') : 'API Key无效，请重新输入', 'error');
 closeWarningModal();
