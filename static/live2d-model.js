@@ -683,7 +683,7 @@ Live2DManager.prototype.setMouth = function(value) {
     this.mouthValue = v;
     
     // 调试日志（每100次调用输出一次）
-    if (!this._setMouthCallCount) this._setMouthCallCount = 0;
+    if (typeof this._setMouthCallCount === 'undefined') this._setMouthCallCount = 0;
     this._setMouthCallCount++;
     const shouldLog = this._setMouthCallCount % 100 === 1;
     

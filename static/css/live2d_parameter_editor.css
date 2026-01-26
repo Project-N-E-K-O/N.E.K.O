@@ -1,3 +1,5 @@
+@import url('base.css');
+
 /* 定义本地字体 */
 @font-face {
 font-family: 'Comic Neue';
@@ -18,8 +20,6 @@ font-display: swap;
 --button-border-radius: 24px;
 --parameters-list-width: 270px;
 }
-
-@import url('base.css');
 
 html,
 body {

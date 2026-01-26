@@ -4,8 +4,8 @@
 // 库已在 index.html 中预加载，全局变量为 window["ogg-opus-decoder"]
 
 // [Performance] 全局调试开关
-window.DEBUG_AUDIO = false;
-window.DEBUG_LIPSYNC = false;
+window.DEBUG_AUDIO = typeof window.DEBUG_AUDIO !== 'undefined' ? window.DEBUG_AUDIO : false;
+window.DEBUG_LIPSYNC = typeof window.DEBUG_LIPSYNC !== 'undefined' ? window.DEBUG_LIPSYNC : false;
 
 let oggOpusDecoder = null;
 let oggOpusDecoderReady = null;
@@ -2975,8 +2975,10 @@ function init_app() {
         while (nextChunkTime < audioPlayerContext.currentTime + scheduleAheadTime) {
             if (audioBufferQueue.length > 0) {
                 const { buffer: nextBuffer } = audioBufferQueue.shift();
-                console.log('ctx', audioPlayerContext.sampleRate,
-                    'buf', nextBuffer.sampleRate);
+                if (window.DEBUG_AUDIO) {
+                    console.log('ctx', audioPlayerContext.sampleRate,
+                        'buf', nextBuffer.sampleRate);
+                }
 
                 const source = audioPlayerContext.createBufferSource();
                 source.buffer = nextBuffer;
@@ -2987,12 +2989,14 @@ function init_app() {
                 }
 
                 if (hasAnalyser && !lipSyncActive) {
-                    console.log('[Audio] 尝试启动口型同步:', {
-                        hasLanLan1: !!window.LanLan1,
-                        hasLive2dModel: !!(window.LanLan1 && window.LanLan1.live2dModel),
-                        hasVrmManager: !!window.vrmManager,
-                        hasVrmModel: !!(window.vrmManager && window.vrmManager.currentModel)
-                    });
+                    if (window.DEBUG_AUDIO) {
+                        console.log('[Audio] 尝试启动口型同步:', {
+                            hasLanLan1: !!window.LanLan1,
+                            hasLive2dModel: !!(window.LanLan1 && window.LanLan1.live2dModel),
+                            hasVrmManager: !!window.vrmManager,
+                            hasVrmModel: !!(window.vrmManager && window.vrmManager.currentModel)
+                        });
+                    }
                     if (window.LanLan1 && window.LanLan1.live2dModel) {
                         startLipSync(window.LanLan1.live2dModel, globalAnalyser);
                         lipSyncActive = true;
@@ -3003,7 +3007,9 @@ function init_app() {
                             lipSyncActive = true;
                         }
                     } else {
-                        console.warn('[Audio] 无法启动口型同步：没有可用的模型');
+                        if (window.DEBUG_AUDIO) {
+                            console.warn('[Audio] 无法启动口型同步：没有可用的模型');
+                        }
                     }
                 }
 
@@ -3216,7 +3222,6 @@ function init_app() {
     }
 
     function initializeGlobalAnalyser() {
-        console.log('[Audio] initializeGlobalAnalyser called, audioPlayerContext:', !!audioPlayerContext);
         if (audioPlayerContext) {
             if (audioPlayerContext.state === 'suspended') {
                 audioPlayerContext.resume().catch(err => {
@@ -3235,9 +3240,14 @@ function init_app() {
             }
             // 无论是否新建，都同步一次全局引用
             syncAudioGlobals();
-            console.log('[Audio] globalAnalyser 状态:', !!globalAnalyser);
+            
+            if (window.DEBUG_AUDIO) {
+                console.debug('[Audio] globalAnalyser 状态:', !!globalAnalyser);
+            }
         } else {
-            console.warn('[Audio] audioPlayerContext 未初始化，无法创建分析器');
+            if (window.DEBUG_AUDIO) {
+                console.warn('[Audio] audioPlayerContext 未初始化，无法创建分析器');
+            }
         }
     }
 

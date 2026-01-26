@@ -7,6 +7,8 @@
     // 如果已经加载过模块，或者是在模型管理页面（由 model_manager.js 负责加载），则不再重复加载
     if (window.vrmModuleLoaded) return;
 
+    const VRM_VERSION = '1.0.0';
+
     const loadModules = async () => {
         console.log('[VRM] 开始加载依赖模块');
         const vrmModules = [
@@ -18,21 +20,31 @@
             '/static/vrm-manager.js',
             '/static/vrm-ui-popup.js',
             '/static/vrm-ui-buttons.js'
-            // 注意：不包含 vrm-init.js 本身，因为它已经运行了
         ];
 
-        for (const moduleSrc of vrmModules) {
-            // 检查脚本是否已存在（通过 src 检查）
-            if (document.querySelector(`script[src^="${moduleSrc}"]`)) continue;
+        // 并行加载所有模块喵~
+        const loadPromises = vrmModules.map(moduleSrc => {
+            // 检查脚本是否已存在
+            if (document.querySelector(`script[src^="${moduleSrc}"]`)) {
+                return Promise.resolve();
+            }
 
-            const script = document.createElement('script');
-            script.src = `${moduleSrc}?v=1.0.0`;
-            await new Promise((resolve) => {
-                script.onload = resolve;
-                script.onerror = resolve; // 即使失败也继续，防止死锁
+            return new Promise((resolve) => {
+                const script = document.createElement('script');
+                script.src = `${moduleSrc}?v=${VRM_VERSION}`;
+                script.onload = () => {
+                    console.log(`[VRM] 模块加载成功: ${moduleSrc}`);
+                    resolve();
+                };
+                script.onerror = () => {
+                    console.error(`[VRM] 模块加载失败: ${moduleSrc}`);
+                    resolve(); // 即使失败也继续，防止 Promise.all 阻塞
+                };
                 document.body.appendChild(script);
             });
-        }
+        });
+
+        await Promise.all(loadPromises);
         window.vrmModuleLoaded = true;
         window.dispatchEvent(new CustomEvent('vrm-modules-ready'));
     };

@@ -1449,7 +1449,7 @@ const toggle = advancedSettingsFold.querySelector('.fold-toggle');
 if (advancedSettingsFold && toggle) {
 advancedSettingsFold.classList.add('open');
 const arrow = toggle.querySelector('.arrow');
-+if (arrow) arrow.style.transform = 'rotate(180deg)';
+if (arrow) arrow.style.transform = 'rotate(180deg)';
 }
 }
 }, 0);
@@ -1940,7 +1940,7 @@ function closeCharaManagerPage() {
         window.close();
     } else if (window.parent && window.parent !== window) {
         // 如果在 iframe 中，通知父窗口关闭
-        window.parent.postMessage({ type: 'close_chara_manager' }, '*');
+        window.parent.postMessage({ type: 'close_chara_manager' }, window.location.origin);
     } else {
         // 否则尝试关闭窗口
         // 注意：如果是用户直接访问的页面，浏览器可能不允许关闭

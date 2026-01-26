@@ -946,7 +946,13 @@ async def upload_file_to_model(model_name: str, file: UploadFile = File(...), fi
         if not file:
             return JSONResponse(status_code=400, content={"success": False, "error": "没有上传文件"})
         
-        # 验证文件类型
+        # 限制文件大小 (例如 50MB)
+        MAX_UPLOAD_SIZE = 50 * 1024 * 1024
+        content = await file.read()
+        if len(content) > MAX_UPLOAD_SIZE:
+            return JSONResponse(status_code=400, content={"success": False, "error": f"文件过大，最大允许 {MAX_UPLOAD_SIZE // (1024*1024)}MB"})
+        
+        # 验证文件类型和 JSON 格式
         filename = file.filename
         if file_type == "motion":
             if not filename or not filename.lower().endswith('.motion3.json'):
@@ -959,6 +965,12 @@ async def upload_file_to_model(model_name: str, file: UploadFile = File(...), fi
         else:
             return JSONResponse(status_code=400, content={"success": False, "error": "无效的文件类型，必须是motion或expression"})
         
+        # 验证 JSON 格式
+        try:
+            json.loads(content.decode('utf-8'))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return JSONResponse(status_code=400, content={"success": False, "error": "文件内容不是有效的 JSON 格式"})
+
         # 查找模型目录
         model_dir, _url_prefix = find_model_directory(model_name)
         if not model_dir or not os.path.exists(model_dir):
@@ -978,7 +990,6 @@ async def upload_file_to_model(model_name: str, file: UploadFile = File(...), fi
         
         # 保存文件
         with open(target_file_path, 'wb') as f:
-            content = await file.read()
             f.write(content)
         
         logger.info(f"成功上传{file_type}文件到模型 {model_name}: {safe_filename}")

@@ -72,13 +72,13 @@ class TimeIndexedMemory:
                 self._ensure_tables_exist(connection_string)
                 self.check_table_schema(lanlan_name)
                 logger.info(f"[TimeIndexedMemory] 为角色 {lanlan_name} 创建数据库引擎: {db_path}")
-        except Exception as e:
-            logger.error(f"检查角色配置失败: {e}")
+        except Exception:
+            logger.exception(f"检查角色配置失败: {lanlan_name}")
             # 即使配置检查失败，也尝试使用默认路径
             time_store = {}  # 确保 time_store 存在
             try:
                 config_mgr = get_config_manager()
-                # 确保memory目录存在
+                # 确保 memory 目录存在
                 config_mgr.ensure_memory_directory()
                 memory_base = str(config_mgr.memory_dir)
                 default_path = os.path.join(memory_base, f'time_indexed_{lanlan_name}')
@@ -89,8 +89,8 @@ class TimeIndexedMemory:
                     self._ensure_tables_exist(connection_string)
                     self.check_table_schema(lanlan_name)
                     logger.info(f"[TimeIndexedMemory] 使用默认路径创建数据库: {default_path}")
-            except Exception as e2:
-                logger.error(f"创建默认数据库失败: {e2}")
+            except Exception:
+                logger.exception(f"创建默认数据库失败: {lanlan_name}")
                 return
         
         if timestamp is None:

@@ -1,5 +1,12 @@
-let currentMemoryFile = null;
-async function loadMemoryFileList() {
+(function() {
+    'use strict';
+
+    const PARENT_ORIGIN = window.location.origin;
+    let currentMemoryFile = null;
+    let chatData = [];
+    let currentCatName = '';
+
+    async function loadMemoryFileList() {
 const ul = document.getElementById('memory-file-list');
 ul.innerHTML = `<li style="color:#888; padding: 8px;">${window.t ? window.t('memory.loading') : '加载中...'}</li>`;
 try {
@@ -167,14 +174,21 @@ function updateSystemContent(idx, value) {
 const memoPrefix = window.t ? window.t('memory.previousMemo') : '先前对话的备忘录: ';
 chatData[idx].text = memoPrefix + value;
 }
-async function selectMemoryFile(filename, li, catName) {
-currentMemoryFile = filename;
-currentCatName = catName || (li ? li.getAttribute('data-catname') : '');
-Array.from(document.getElementById('memory-file-list').children).forEach(x => x.classList.remove('selected'));
-if (li) li.classList.add('selected');
-const editDiv = document.getElementById('memory-chat-edit');
-editDiv.innerHTML = '<div style="color:#888; padding: 20px; text-align: center;">' + (window.t ? window.t('memory.loading') : '加载中...') + '</div>';
-document.getElementById('save-row').style.display = 'flex';
+    async function selectMemoryFile(filename, li, catName) {
+        currentMemoryFile = filename;
+        currentCatName = catName || (li ? li.getAttribute('data-catname') : '');
+        Array.from(document.getElementById('memory-file-list').children).forEach(x => x.classList.remove('selected'));
+        if (li) li.classList.add('selected');
+        const editDiv = document.getElementById('memory-chat-edit');
+        
+        // 清空并使用 textContent 设置加载中状态
+        editDiv.textContent = '';
+        const loadingDiv = document.createElement('div');
+        loadingDiv.style.cssText = 'color:#888; padding: 20px; text-align: center;';
+        loadingDiv.textContent = window.t ? window.t('memory.loading') : '加载中...';
+        editDiv.appendChild(loadingDiv);
+
+        document.getElementById('save-row').style.display = 'flex';
 try {
 // 直接获取原始JSON内容
 const resp = await fetch('/api/memory/recent_file?filename=' + encodeURIComponent(filename));
@@ -198,7 +212,6 @@ return { role: item.type, text };
 return null;
 }
 }).filter(Boolean);
-console.log(chatData);
 renderChatEdit();
 } else {
 chatData = [];
@@ -243,7 +256,7 @@ if (data.need_refresh && window.parent) {
 window.parent.postMessage({
 type: 'memory_edited',
 catgirl_name: data.catgirl_name
-}, '*');
+}, PARENT_ORIGIN);
 }
 } else {
 const errorMsg = data.error || (window.t ? window.t('common.unknownError') : '未知错误');
@@ -273,7 +286,7 @@ function closeMemoryBrowser() {
         window.close();
     } else if (window.parent && window.parent !== window) {
         // 如果在 iframe 中，通知父窗口关闭
-        window.parent.postMessage({ type: 'close_memory_browser' }, '*');
+        window.parent.postMessage({ type: 'close_memory_browser' }, PARENT_ORIGIN);
     } else {
         // 否则尝试关闭窗口
         // 注意：如果是用户直接访问的页面，浏览器可能不允许关闭
@@ -360,33 +373,35 @@ textSpan.textContent = window.t ? window.t('memory.disabled') : '已关闭';
 }
 }
 
-async function toggleReview(enabled) {
-try {
-const resp = await fetch('/api/memory/review_config', {
-method: 'POST',
-headers: { 'Content-Type': 'application/json' },
-body: JSON.stringify({ enabled: enabled })
-});
-const data = await resp.json();
+    async function toggleReview(enabled) {
+        try {
+            const resp = await fetch('/api/memory/review_config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: enabled })
+            });
+            const data = await resp.json();
 
-if (data.success) {
-updateToggleText(enabled);
-} else {
-// 如果保存失败，恢复原来的状态
-const checkbox = document.getElementById('review-toggle-checkbox');
-if (checkbox) {
-checkbox.checked = !enabled;
-}
-updateToggleText(!enabled);
-}
-} catch (e) {
-console.error('更新审阅配置失败:', e);
-// 如果请求失败，恢复原来的状态
-const checkbox = document.getElementById('review-toggle-checkbox');
-if (checkbox) {
-checkbox.checked = !enabled;
-}
-updateToggleText(!enabled);
-}
-}
+            if (data.success) {
+                updateToggleText(enabled);
+            } else {
+                // 如果保存失败，恢复原来的状态
+                const checkbox = document.getElementById('review-toggle-checkbox');
+                if (checkbox) {
+                    checkbox.checked = !enabled;
+                }
+                updateToggleText(!enabled);
+            }
+        } catch (e) {
+            console.error('更新审阅配置失败:', e);
+            // 如果请求失败，恢复原来的状态
+            const checkbox = document.getElementById('review-toggle-checkbox');
+            if (checkbox) {
+                checkbox.checked = !enabled;
+            }
+            updateToggleText(!enabled);
+        }
+    }
+
+})();
 

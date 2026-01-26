@@ -83,7 +83,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
     this._uiWindowHandlers.push({ event: 'resize', handler: applyResponsiveFloatingLayout });
     window.addEventListener('resize', applyResponsiveFloatingLayout);
 
-    const iconVersion = '?v=1.0.0';
+    const iconVersion = window.APP_VERSION ? `?v=${window.APP_VERSION}` : '?v=1.0.0';
     const buttonConfigs = [
         { id: 'mic', emoji: '🎤', title: window.t ? window.t('buttons.voiceControl') : '语音控制', titleKey: 'buttons.voiceControl', hasPopup: true, toggle: true, separatePopupTrigger: true, iconOff: '/static/icons/mic_icon_off.png' + iconVersion, iconOn: '/static/icons/mic_icon_on.png' + iconVersion },
         { id: 'screen', emoji: '🖥️', title: window.t ? window.t('buttons.screenShare') : '屏幕分享', titleKey: 'buttons.screenShare', hasPopup: true, toggle: true, separatePopupTrigger: true, iconOff: '/static/icons/screen_icon_off.png' + iconVersion, iconOn: '/static/icons/screen_icon_on.png' + iconVersion },

@@ -1,4 +1,25 @@
 
+
+// 允许的来源列表
+const ALLOWED_ORIGINS = [window.location.origin];
+
+// 获取目标来源（用于 postMessage）
+function getTargetOrigin() {
+    // 优先尝试从 document.referrer 获取来源，如果不存在或无效，则回退到当前来源
+    try {
+        if (document.referrer) {
+            const refOrigin = new URL(document.referrer).origin;
+            // 只有在允许列表中的来源才被视为有效的目标
+            if (ALLOWED_ORIGINS.includes(refOrigin)) {
+                return refOrigin;
+            }
+        }
+    } catch (e) {
+        // URL 解析失败，忽略
+    }
+    return window.location.origin;
+}
+
 function showStatus(message, type = 'info') {
 const statusDiv = document.getElementById('status');
 statusDiv.textContent = message;
@@ -563,7 +584,7 @@ return;
 
 // 检查是否已有API Key，如果有则显示警告
 const currentApiKeyDiv = document.getElementById('current-api-key');
-if (currentApiKeyDiv.style.display !== 'none') {
+if (currentApiKeyDiv && currentApiKeyDiv.dataset.hasKey === 'true') {
 // 已有API Key，显示警告弹窗
 pendingApiKey = {
 apiKey, coreApi, assistApi,
@@ -666,11 +687,12 @@ document.getElementById('apiKeyInput').value = '';
 // 清除本地Voice ID记录
 await clearVoiceIds();
 // 通知其他页面API Key已更改
+const targetOrigin = getTargetOrigin();
 if (window.parent !== window) {
 window.parent.postMessage({
 type: 'api_key_changed',
 timestamp: Date.now()
-}, '*');
+}, targetOrigin);
 } else {
 // 如果是直接打开的页面，广播给所有子窗口
 const iframes = document.querySelectorAll('iframe');
@@ -679,7 +701,7 @@ try {
 iframe.contentWindow.postMessage({
 type: 'api_key_changed',
 timestamp: Date.now()
-}, '*');
+}, targetOrigin);
 } catch (e) {
 // 跨域iframe会抛出异常，忽略
 }
@@ -869,57 +891,50 @@ autoFillCoreApiKey();
 
 // 自动填充核心API Key到核心API Key输入框
 function autoFillCoreApiKey() {
-const coreApiSelect = document.getElementById('coreApiSelect');
-const assistApiSelect = document.getElementById('assistApiSelect');
-const apiKeyInput = document.getElementById('apiKeyInput');
+    const coreApiSelect = document.getElementById('coreApiSelect');
+    const apiKeyInput = document.getElementById('apiKeyInput');
 
-if (!coreApiSelect || !assistApiSelect || !apiKeyInput) return;
+    if (!coreApiSelect || !apiKeyInput) return;
 
-const selectedCoreApi = coreApiSelect.value;
-const selectedAssistApi = assistApiSelect.value;
+    const selectedCoreApi = coreApiSelect.value;
 
-// 如果选择的是免费版，不需要填充
-if (selectedCoreApi === 'free') {
-return;
-}
+    // 如果选择的是免费版，不需要填充
+    if (selectedCoreApi === 'free') {
+        return;
+    }
 
-// 获取当前核心API Key输入框的值
-const currentApiKey = apiKeyInput.value.trim();
+    // 获取当前核心API Key输入框的值
+    const currentApiKey = apiKeyInput.value.trim();
 
-// 如果核心API Key输入框为空，尝试自动填充
-if (!currentApiKey) {
-let sourceApiKey = '';
+    // 如果核心API Key输入框为空，尝试自动填充
+    if (!currentApiKey || isFreeVersionText(currentApiKey)) {
+        let sourceApiKey = '';
 
-// 策略1：从current-api-key获取
-const currentApiKeyDiv = document.getElementById('current-api-key');
-if (currentApiKeyDiv && currentApiKeyDiv.style.display !== 'none') {
-const currentApiKeyText = currentApiKeyDiv.textContent.trim();
-// 从current-api-key文本中提取API Key
-if (currentApiKeyText.includes('当前API Key:')) {
-// 格式："当前API Key: sk-xxx..."
-const match = currentApiKeyText.match(/当前API Key:\s*([^\s]+)/);
-if (match && match[1]) {
-sourceApiKey = match[1];
-}
-}
-}
+        // 策略1：从 current-api-key 的 dataset 获取
+        const currentApiKeyDiv = document.getElementById('current-api-key');
+        if (currentApiKeyDiv && currentApiKeyDiv.dataset.hasKey === 'true') {
+            const savedKey = currentApiKeyDiv.dataset.apiKey;
+            if (savedKey && savedKey !== 'free-access') {
+                sourceApiKey = savedKey;
+            }
+        }
 
-// 如果找到了有效的API Key，自动填充到核心API Key输入框
-if (sourceApiKey) {
-apiKeyInput.value = sourceApiKey;
-console.log(`已自动将API Key填充到核心API Key输入框`);
+        // 如果找到了有效的API Key，自动填充到核心API Key输入框
+        if (sourceApiKey) {
+            apiKeyInput.value = sourceApiKey;
+            console.log(`已自动将API Key填充到核心API Key输入框`);
 
-// 显示提示信息
-const autoFillMsg = window.t ? window.t('api.autoFillCoreApiKey') : '已自动填充核心API Key';
-showStatus(autoFillMsg, 'info');
-setTimeout(() => {
-const statusDiv = document.getElementById('status');
-if (statusDiv.textContent.includes(autoFillMsg)) {
-statusDiv.style.display = 'none';
-}
-}, 2000);
-}
-}
+            // 显示提示信息
+            const autoFillMsg = window.t ? window.t('api.autoFillCoreApiKey') : '已自动填充核心API Key';
+            showStatus(autoFillMsg, 'info');
+            setTimeout(() => {
+                const statusDiv = document.getElementById('status');
+                if (statusDiv.textContent.includes(autoFillMsg)) {
+                    statusDiv.style.display = 'none';
+                }
+            }, 2000);
+        }
+    }
 }
 
 // Beacon功能 - 页面关闭时发送信号给服务器（仅在直接打开时发送，iframe中不发送）
@@ -1293,7 +1308,7 @@ function closeSettingsPage() {
         window.close();
     } else if (window.parent && window.parent !== window) {
         // 如果在 iframe 中，通知父窗口关闭
-        window.parent.postMessage({ type: 'close_api_key_settings' }, '*');
+        window.parent.postMessage({ type: 'close_api_key_settings' }, getTargetOrigin());
     } else {
         // 否则尝试关闭窗口
         // 注意：如果是用户直接访问的页面，浏览器可能不允许关闭

@@ -336,9 +336,28 @@ return key;
 function showStatus(message, duration = 0) {
 let statusTextSpan = document.getElementById('status-text');
 if (!statusTextSpan) {
-// 如果结构被破坏了，重新创建
-statusDiv.innerHTML = `<img src="/static/icons/reminder_icon.png?v=1" alt="提示" class="reminder-icon" style="height: 16px; width: 16px; vertical-align: middle; margin-right: 6px; display: inline-block; image-rendering: crisp-edges;"><span id="status-text">${message}</span>`;
-statusTextSpan = document.getElementById('status-text');
+// 如果结构被破坏了，重新创建 (使用 DOM API 避免 XSS)
+statusDiv.textContent = '';
+const icon = document.createElement('img');
+icon.src = '/static/icons/reminder_icon.png?v=1';
+icon.alt = '提示';
+icon.className = 'reminder-icon';
+Object.assign(icon.style, {
+    height: '16px',
+    width: '16px',
+    verticalAlign: 'middle',
+    marginRight: '6px',
+    display: 'inline-block',
+    imageRendering: 'crisp-edges'
+});
+
+const newSpan = document.createElement('span');
+newSpan.id = 'status-text';
+newSpan.textContent = message;
+
+statusDiv.appendChild(icon);
+statusDiv.appendChild(newSpan);
+statusTextSpan = newSpan;
 } else {
 statusTextSpan.textContent = message;
 }
@@ -348,7 +367,25 @@ const readyText = t('live2d.parameterEditor.ready', '就绪');
 if (statusTextSpan) {
 statusTextSpan.textContent = readyText;
 } else {
-statusDiv.innerHTML = `<img src="/static/icons/reminder_icon.png?v=1" alt="提示" class="reminder-icon" style="height: 16px; width: 16px; vertical-align: middle; margin-right: 6px; display: inline-block; image-rendering: crisp-edges;"><span id="status-text">${readyText}</span>`;
+// 兜底重建
+statusDiv.textContent = '';
+const icon = document.createElement('img');
+icon.src = '/static/icons/reminder_icon.png?v=1';
+icon.alt = '提示';
+icon.className = 'reminder-icon';
+Object.assign(icon.style, {
+    height: '16px',
+    width: '16px',
+    verticalAlign: 'middle',
+    marginRight: '6px',
+    display: 'inline-block',
+    imageRendering: 'crisp-edges'
+});
+const newSpan = document.createElement('span');
+newSpan.id = 'status-text';
+newSpan.textContent = readyText;
+statusDiv.appendChild(icon);
+statusDiv.appendChild(newSpan);
 }
 }, duration);
 }

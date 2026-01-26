@@ -698,12 +698,15 @@
                                 Array.from(child.attributes).forEach(attr => {
                                     const attrName = attr.name.toLowerCase();
                                     if (attrName === 'src') {
-                                        // 验证 src，防止 javascript: 协议
-                                        if (attr.value.trim().toLowerCase().startsWith('javascript:')) {
+                                        // 验证协议，防止 javascript: 和 data: 等潜在危险协议
+                                        // 使用正则匹配，处理可能存在的空白字符（如制表符、换行符等）
+                                        const val = attr.value.trim().toLowerCase();
+                                        const blockedProtocols = /^(javascript|data|vbscript|file):/i;
+                                        if (blockedProtocols.test(val.replace(/[\x00-\x20\s]/g, ''))) {
                                             child.removeAttribute(attrName);
                                         }
-                                    } else if (attrName !== 'alt' && attrName !== 'style' && attrName !== 'class') {
-                                        // 仅允许 alt, style, class 属性
+                                    } else if (attrName !== 'alt' && attrName !== 'class') {
+                                        // 仅允许 alt, class 属性 (移除 style 属性以防注入)
                                         child.removeAttribute(attrName);
                                     }
                                     // 移除所有事件处理器
