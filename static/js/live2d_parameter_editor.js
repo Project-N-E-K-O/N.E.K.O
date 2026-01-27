@@ -773,140 +773,80 @@ return { min, max, default: defaultVal };
 
 // 显示参数列表（按分组，显示所有参数）
 function displayParameters() {
-if (!live2dModel || !live2dModel.internalModel || !live2dModel.internalModel.coreModel) {
-return;
-}
-
-const coreModel = live2dModel.internalModel.coreModel;
-
-// 按分组组织参数
-const groupedParams = {};
-
-// 如果有参数信息，使用它；否则从模型读取
-if (parameterInfo && parameterInfo.length > 0) {
-for (const param of parameterInfo) {
-// 只显示重要参数
-if (!isParameterImportant(param.id, param.name)) {
-continue;
-}
-
-const groupId = param.groupId || 'Other';
-// 参数分组名称翻译映射
-const groupNameMap = {
-'Face': '面部',
-'Eye': '眼睛',
-'Eyebrow': '眉毛',
-'Mouth': '嘴巴',
-'Arm': '手臂',
-'Body': '身体',
-'Hair': '头发',
-'Other': '其他'
-};
-let groupName = parameterGroups[groupId] ? parameterGroups[groupId].name : groupId;
-// 如果分组名称是英文，尝试翻译
-if (groupNameMap[groupName]) {
-groupName = groupNameMap[groupName];
-} else if (groupNameMap[groupId]) {
-groupName = groupNameMap[groupId];
-}
-
-if (!groupedParams[groupName]) {
-groupedParams[groupName] = [];
-}
-
-try {
-const idx = coreModel.getParameterIndex(param.id);
-if (idx >= 0) {
-groupedParams[groupName].push({
-id: param.id,
-name: getParameterChineseName(param.name), // 使用中文名称
-index: idx
-});
-}
-} catch (e) {
-// 参数不存在，跳过
-}
-}
-} else {
-// 如果没有参数信息，从模型读取所有参数
-const paramCount = coreModel.getParameterCount();
-for (let i = 0; i < paramCount; i++) {
-try {
-let paramId = null;
-let paramName = null;
-try {
-paramId = coreModel.getParameterId(i);
-paramName = paramId; // 如果没有名称，使用ID
-} catch (e) {
-paramId = `param_${i}`;
-paramName = paramId;
-}
-
-// 只显示重要参数
-if (!isParameterImportant(paramId, paramName)) {
-continue;
-}
-
-const groupName = '其他'; // 固定使用中文
-if (!groupedParams[groupName]) {
-groupedParams[groupName] = [];
-}
-groupedParams[groupName].push({
-id: paramId,
-name: getParameterChineseName(paramName), // 转换为中文名称
-index: i
-});
-} catch (e) {
-console.warn(`处理参数 ${i} 失败:`, e);
-}
-}
-}
-
-// 渲染参数列表
-function displayParameters() {
     if (!live2dModel || !live2dModel.internalModel || !live2dModel.internalModel.coreModel) {
         return;
     }
 
     const coreModel = live2dModel.internalModel.coreModel;
-    const paramCount = coreModel.getParameterCount();
+
+    // 按分组组织参数
     const groupedParams = {};
 
-    for (let i = 0; i < paramCount; i++) {
-        try {
-            let paramId = null;
-            try {
-                paramId = coreModel.getParameterId(i);
-            } catch (e) {
-                paramId = `param_${i}`;
-            }
-
-            // 检查是否应该显示该参数
-            if (!shouldShowParameter(paramId, paramId)) {
+    // 如果有参数信息，使用它；否则从模型读取
+    if (parameterInfo && parameterInfo.length > 0) {
+        for (const param of parameterInfo) {
+            // 只显示重要参数
+            if (!isParameterImportant(param.id, param.name)) {
                 continue;
             }
 
-            const paramName = paramId;
-            let groupFound = false;
-
-            // 查找所属分组
-            for (const [groupName, params] of Object.entries(parameterGroups)) {
-                if (params.includes(paramId)) {
-                    if (!groupedParams[groupName]) {
-                        groupedParams[groupName] = [];
-                    }
-                    groupedParams[groupName].push({
-                        id: paramId,
-                        name: getParameterChineseName(paramName), // 转换为中文名称
-                        index: i
-                    });
-                    groupFound = true;
-                    break;
-                }
+            const groupId = param.groupId || 'Other';
+            // 参数分组名称翻译映射
+            const groupNameMap = {
+                'Face': '面部',
+                'Eye': '眼睛',
+                'Eyebrow': '眉毛',
+                'Mouth': '嘴巴',
+                'Arm': '手臂',
+                'Body': '身体',
+                'Hair': '头发',
+                'Other': '其他'
+            };
+            let groupName = parameterGroups[groupId] ? parameterGroups[groupId].name : groupId;
+            // 如果分组名称是英文，尝试翻译
+            if (groupNameMap[groupName]) {
+                groupName = groupNameMap[groupName];
+            } else if (groupNameMap[groupId]) {
+                groupName = groupNameMap[groupId];
             }
 
-            // 如果没有分组，归入“其他”
-            if (!groupFound) {
+            if (!groupedParams[groupName]) {
+                groupedParams[groupName] = [];
+            }
+
+            try {
+                const idx = coreModel.getParameterIndex(param.id);
+                if (idx >= 0) {
+                    groupedParams[groupName].push({
+                        id: param.id,
+                        name: getParameterChineseName(param.name), // 使用中文名称
+                        index: idx
+                    });
+                }
+            } catch (e) {
+                // 参数不存在，跳过
+            }
+        }
+    } else {
+        // 如果没有参数信息，从模型读取所有参数
+        const paramCount = coreModel.getParameterCount();
+        for (let i = 0; i < paramCount; i++) {
+            try {
+                let paramId = null;
+                let paramName = null;
+                try {
+                    paramId = coreModel.getParameterId(i);
+                    paramName = paramId; // 如果没有名称，使用ID
+                } catch (e) {
+                    paramId = `param_${i}`;
+                    paramName = paramId;
+                }
+
+                // 只显示重要参数
+                if (!isParameterImportant(paramId, paramName)) {
+                    continue;
+                }
+
                 const groupName = '其他'; // 固定使用中文
                 if (!groupedParams[groupName]) {
                     groupedParams[groupName] = [];
@@ -916,9 +856,9 @@ function displayParameters() {
                     name: getParameterChineseName(paramName), // 转换为中文名称
                     index: i
                 });
+            } catch (e) {
+                console.warn(`处理参数 ${i} 失败:`, e);
             }
-        } catch (e) {
-            console.warn(`处理参数 ${i} 失败:`, e);
         }
     }
 
