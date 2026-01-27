@@ -470,7 +470,6 @@ VRMManager.prototype._createSettingsMenuItems = function (popup) {
             e.stopPropagation();
             if (item.action === 'navigate') {
                 let finalUrl = item.url || item.urlBase;
-                // 使用固定窗口名称，浏览器会自动重用同名窗口，避免重复打开
                 const windowName = `neko_${item.id}`;
                 
                 if (item.id === 'vrm-manage' && item.urlBase) {
@@ -480,11 +479,9 @@ VRMManager.prototype._createSettingsMenuItems = function (popup) {
                 } else if (item.id === 'voice-clone' && item.url) {
                     const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                     finalUrl = `${item.url}?lanlan_name=${encodeURIComponent(lanlanName)}`;
-                    const newWin = window.open(finalUrl, windowName, 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no');
-                    if (newWin) newWin.opener = null;
+                    window.openOrFocusWindow(finalUrl, windowName);
                 } else {
-                    const newWin = window.open(finalUrl, windowName, 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no');
-                    if (newWin) newWin.opener = null;
+                    window.openOrFocusWindow(finalUrl, windowName);
                 }
             }
         });

@@ -28,6 +28,22 @@ console.warn('翻译失败:', key, e);
 }
 });
 }
+
+// 更新所有 round-stroke-text 元素的 data-text 属性（用于 CSS 伪元素显示）
+document.querySelectorAll('.round-stroke-text[data-i18n]').forEach(el => {
+const key = el.getAttribute('data-i18n');
+if (key && window.t && typeof window.t === 'function') {
+try {
+const translated = window.t(key);
+if (translated && translated !== key) {
+el.setAttribute('data-text', translated);
+el.textContent = translated;
+}
+} catch (e) {
+console.warn('更新 data-text 失败:', key, e);
+}
+}
+});
             
 // 恢复emptyDiv的data-i18n属性
 if (emptyDiv && emptyI18nKey) {

@@ -541,7 +541,7 @@
   },
   "live2d": {
     "manager": "Live2D 模型管理",
-    "selectModel": "选择Live2D模型：",
+    "selectModel": "选择模型",
     "pleaseSelect": "请选择模型",
     "pleaseSelectModel": "选择模型",
     "selectMotion": "选择动作",
@@ -679,9 +679,9 @@
     },
     "loadError": "错误: {{error}}",
     "parameterEditor": {
-      "title": "Live2D 参数编辑器（捏脸系统）",
+      "title": "捏脸系统",
       "backToMain": "← 返回L2D设置",
-      "backToL2DManager": "← 返回L2D管理器",
+      "backToL2DManager": "返回",
       "selectModel": "选择模型:",
       "loading": "加载中...",
       "resetAll": "重置全部",

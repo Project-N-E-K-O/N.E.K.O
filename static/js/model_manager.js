@@ -49,7 +49,9 @@
                     iconClass: config.iconClass,
                     iconSrc: config.iconSrc,
                     defaultText: config.defaultText || '选择',
+                    defaultTextKey: config.defaultTextKey || null,  // i18n key for dynamic translation
                     iconAlt: config.iconAlt || config.defaultText,
+                    iconAltKey: config.iconAltKey || null,  // i18n key for icon alt
                     onChange: config.onChange || (() => {}),
                     getText: config.getText || ((option) => option.textContent),
                     shouldSkipOption: config.shouldSkipOption || ((option) => {
@@ -108,10 +110,19 @@
                     if (!this.textSpan) return;
                 }
                 
-                let text = this.config.defaultText;
+                // 动态获取翻译文本（如果配置了 i18n key）
+                let defaultText = this.config.defaultText;
+                if (this.config.defaultTextKey && window.t && typeof window.t === 'function') {
+                    const translated = window.t(this.config.defaultTextKey);
+                    if (translated && translated !== this.config.defaultTextKey) {
+                        defaultText = translated;
+                    }
+                }
+                
+                let text = defaultText;
                 // 如果配置了 alwaysShowDefault，始终显示默认文字
                 if (this.config.alwaysShowDefault) {
-                    text = this.config.defaultText;
+                    text = defaultText;
                 } else if (this.select) {
                     if (this.select.value) {
                         // 有选择的值，显示选中的选项
@@ -656,6 +667,7 @@
                         iconClass: 'model-type-icon',
                         iconSrc: '/static/icons/model_type_icon.png?v=1',
                         defaultText: window.i18next?.t('live2d.modelType') || '模型类型',
+                        defaultTextKey: 'live2d.modelType',
                         iconAlt: window.i18next?.t('live2d.modelType') || '模型类型',
                         alwaysShowDefault: true
                     });
@@ -739,6 +751,7 @@
                         iconClass: 'persistent-expression-icon',
                         iconSrc: '/static/icons/persistent_expression_icon.png?v=1',
                         defaultText: window.i18next?.t('live2d.selectPersistentExpression') || '常驻表情',
+                        defaultTextKey: 'live2d.selectPersistentExpression',
                         iconAlt: window.i18next?.t('live2d.selectPersistentExpression') || '常驻表情',
                         alwaysShowDefault: true,  // 始终显示默认文字，不显示选中的选项
                         disabled: true  // 禁用下拉功能，仅作展示

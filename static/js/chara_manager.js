@@ -334,12 +334,24 @@ wrapper.className = 'field-row-wrapper';
 
 // 创建label元素（在wrapper中）
 const label = document.createElement('label');
-label.textContent = field.labelText;
+// 创建文本span以支持i18n
+const labelTextSpan = document.createElement('span');
+// 根据字段名设置对应的i18n key
+const i18nKeyMap = {
+    '档案名': 'character.profileName',
+    '性别': 'character.gender',
+    '昵称': 'character.nickname'
+};
+if (i18nKeyMap[field.name]) {
+    labelTextSpan.setAttribute('data-i18n', i18nKeyMap[field.name]);
+}
+labelTextSpan.textContent = field.labelText;
+label.appendChild(labelTextSpan);
 if (field.required) {
 const requiredStar = document.createElement('span');
 requiredStar.style.color = 'red';
 requiredStar.setAttribute('data-i18n', 'character.required');
-requiredStar.textContent = '*';
+requiredStar.textContent = (window.t && typeof window.t === 'function') ? window.t('character.required') : '*';
 label.appendChild(requiredStar);
 }
 wrapper.appendChild(label);
@@ -842,7 +854,9 @@ const baseWrapper = document.createElement('div');
 baseWrapper.className = 'field-row-wrapper';
 
 const baseLabel = document.createElement('label');
-baseLabel.innerHTML = '<span data-i18n="character.profileName">档案名</span><span style="color:red" data-i18n="character.required">*</span>';
+const profileNameText = (window.t && typeof window.t === 'function') ? window.t('character.profileName') : '档案名';
+const requiredText = (window.t && typeof window.t === 'function') ? window.t('character.required') : '*';
+baseLabel.innerHTML = `<span data-i18n="character.profileName">${profileNameText}</span><span style="color:red" data-i18n="character.required">${requiredText}</span>`;
 baseWrapper.appendChild(baseLabel);
 
 const fieldRow = document.createElement('div');

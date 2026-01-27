@@ -541,6 +541,34 @@ body {
     padding-top: 20px;
 }
 
+/* ==================== 中文模式下按钮居中对齐 ==================== */
+html[lang="zh-CN"] .file-input-label,
+html[lang="zh-CN"] .register-voice-btn {
+    width: 220px !important; /* 缩短宽度 */
+    min-width: 220px !important;
+    justify-content: center !important; /* 内容整体居中 */
+    padding: 12px 15px !important; /* 对称内边距 */
+}
+
+html[lang="zh-CN"] .file-input-label .file-icon,
+html[lang="zh-CN"] .register-voice-btn .register-icon {
+    display: inline-block !important;
+    position: static !important; /* 移除绝对定位，使其参与 flex 布局 */
+    transform: none !important;
+    margin-right: 10px !important; /* 固定图标与文字的间距 */
+    height: 28px !important; /* 稍微缩小图标以适应缩短的按钮 */
+    width: auto !important;
+}
+
+html[lang="zh-CN"] .file-input-label .file-text,
+html[lang="zh-CN"] .register-voice-btn .register-text {
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+    flex: none !important; /* 不拉伸，确保整体居中 */
+    text-align: left !important;
+    font-size: 18px !important; /* 稍微缩小字号 */
+}
+
 .voice-list-item {
     display: flex;
     align-items: center;

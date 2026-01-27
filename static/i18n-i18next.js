@@ -406,6 +406,8 @@
                 }
 
                 console.log('[i18n] ✅ 初始化成功（手动加载模式）');
+                // 设置 HTML lang 属性，用于 CSS 语言特定样式
+                document.documentElement.lang = i18next.language;
                 updatePageTexts();
                 window.dispatchEvent(new CustomEvent('localechange'));
                 exportNormalFunctions();
@@ -510,6 +512,8 @@
                     const finalizeInit = () => {
                         if (initialized) return;
                         initialized = true;
+                        // 设置 HTML lang 属性，用于 CSS 语言特定样式
+                        document.documentElement.lang = i18next.language;
                         updatePageTexts();
                         window.dispatchEvent(new CustomEvent('localechange'));
                         exportNormalFunctions();
@@ -602,6 +606,8 @@
         i18next.on('languageChanged', (lng) => {
             // 保存语言选择到 localStorage
             localStorage.setItem('i18nextLng', lng);
+            // 更新 HTML lang 属性，用于 CSS 语言特定样式
+            document.documentElement.lang = lng;
             updatePageTexts();
             updateLive2DDynamicTexts();
             window.dispatchEvent(new CustomEvent('localechange'));

@@ -230,7 +230,7 @@
             justify-content: flex-start;
             text-align: left !important;
             width: auto !important; 
-            min-width: 270px; 
+            min-width: 150px; 
             max-width: 100% !important;  
             position: relative;
             transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease !important;
@@ -310,7 +310,7 @@
             justify-content: flex-start;
             text-align: left !important;
             width: auto !important;  
-            min-width: 270px;  
+            min-width: 150px;  
             max-width: 100% !important;  
             flex-shrink: 0 !important;  
             position: relative;
@@ -405,7 +405,8 @@
             align-items: center;
             justify-content: flex-start;
             text-align: left !important;
-            width: 270px !important;
+            width: auto !important;
+            min-width: 150px;
             max-width: 100% !important;
             position: relative;
             cursor: pointer;
@@ -468,7 +469,7 @@
             position: absolute;
             top: 100%;
             left: 0;
-            width: auto;
+            width: 100%; /* 让下拉框宽度与包装容器（即按钮宽度）一致 */
             min-width: 270px;
             background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
             backdrop-filter: blur(10px);
@@ -530,7 +531,8 @@
             align-items: center;
             justify-content: flex-start;
             text-align: left !important;
-            width: 270px !important;
+            width: auto !important;
+            min-width: 150px;
             max-width: 100% !important;
             position: relative;
             cursor: pointer;
@@ -593,7 +595,7 @@
             position: absolute;
             top: 100%;
             left: 0;
-            width: auto;
+            width: 100%;
             min-width: 270px;
             max-height: 300px;
             overflow-y: auto;
@@ -658,7 +660,8 @@
             align-items: center;
             justify-content: flex-start;
             text-align: left !important;
-            width: 270px !important;
+            width: auto !important;
+            min-width: 150px;
             max-width: 100% !important;
             flex-shrink: 0 !important;
             position: relative;
@@ -792,7 +795,8 @@
             align-items: center;
             justify-content: flex-start;
             text-align: left !important;
-            width: 270px !important;
+            width: auto !important;
+            min-width: 150px;
             max-width: 100% !important;
             position: relative;
             cursor: pointer;
@@ -816,7 +820,8 @@
         #expression-select-btn span:not(.dropdown-arrow) {
             position: relative;
             z-index: 20;
-            margin-left: 90px;
+            margin-left: 0;
+            margin-right: 30px;
             flex: 1;
             font-size: var(--button-text-size);
         }
@@ -1065,7 +1070,8 @@
             align-items: center;
             justify-content: flex-start;
             text-align: left !important;
-            width: 270px !important;
+            width: auto !important;
+            min-width: 150px;
             max-width: 100% !important;
             position: relative;
             cursor: pointer;
@@ -1186,7 +1192,8 @@
             align-items: center;
             justify-content: flex-start;
             text-align: left !important;
-            width: 270px !important;
+            width: auto !important;
+            min-width: 150px;
             max-width: 100% !important;
             flex-shrink: 0 !important;
             position: relative;
@@ -1297,25 +1304,24 @@
             background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
             background-color: transparent !important;
             border: none !important;
-            border-radius: var(--button-border-radius) !important;
+            border-radius: 999px !important;
             overflow: hidden !important;
             height: auto;
-            min-height: 48px;
-            padding: 13px 13px !important;
-            padding-left: 10px !important;
-            padding-right: 10px !important;
+            min-height: 54px;
+            padding: 10px 25px 10px 60px !important;
             color: white;
             font-weight: bold;
-            display: flex !important;
+            display: inline-flex !important;
             align-items: center;
             justify-content: flex-start;
             text-align: left !important;
-            width: 270px !important;
-            min-width: 270px !important;
-            max-width: 270px !important;
+            width: auto !important;
+            min-width: 150px;
+            max-width: 100% !important;
             flex-shrink: 0 !important;
             position: relative;
             cursor: pointer;
+            box-sizing: border-box;
         }
 
         #vrm-expression-select-btn .vrm-expression-select-icon {
@@ -1335,7 +1341,8 @@
         #vrm-expression-select-btn span:not(.dropdown-arrow) {
             position: relative;
             z-index: 20;
-            margin-left: 90px;
+            margin-left: 0;
+            margin-right: 30px;
             flex: 1;
             font-size: var(--button-text-size);
             white-space: nowrap;
@@ -1468,23 +1475,23 @@
             background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
             background-color: transparent !important;
             border: none !important;
-            border-radius: var(--button-border-radius) !important;
+            border-radius: 999px !important;
             overflow: hidden !important;
             height: auto;
-            min-height: 48px;
-            padding: 13px 13px !important;
-            padding-left: 10px !important;
-            padding-right: 10px !important;
+            min-height: 54px;
+            padding: 10px 25px 10px 60px !important;
             color: white;
             font-weight: bold;
-            display: flex !important;
+            display: inline-flex !important;
             align-items: center;
             justify-content: flex-start;
             text-align: left !important;
-            width: 270px !important;
-            max-width: none !important;
+            width: auto !important;
+            min-width: 150px;
+            max-width: 100% !important;
             position: relative;
             cursor: pointer;
+            box-sizing: border-box;
         }
 
         #persistent-expression-select-btn:disabled {
@@ -1665,13 +1672,6 @@
             opacity: 0.95 !important;
         }
 
-        #save-position-btn:hover:not(:disabled) span {
-            /* 与情感配置按钮保持一致：悬停时保持 round-stroke-text 的样式
-             * 不需要特殊处理，round-stroke-text 类会自动处理悬停效果
-             */
-        }
-
-
         /* 参数编辑器按钮样式（参考导入模型按钮模式） */
         #parameter-editor-btn {
             background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
@@ -1689,7 +1689,7 @@
             justify-content: flex-start;
             text-align: left !important;
             width: auto !important;
-            min-width: 270px !important;
+            min-width: 150px;
             max-width: 100% !important;
             position: relative;
             box-sizing: border-box;
@@ -2127,7 +2127,9 @@
             color: transparent;
             overflow: hidden;
             max-width: 100%;
-            word-break: break-word;
+            white-space: nowrap;  /* 防止文字换行导致伪元素错位 */
+            text-overflow: ellipsis;  /* 文字过长时显示省略号 */
+            text-align: center;  /* 文字在 span 内居中 */
         }
         
         /* 【下层】：负责圆润描边 - 高密度阴影矩阵 */
@@ -2141,7 +2143,8 @@
             z-index: -1; /* 放在最底层 */
             color: var(--button-text-stroke-color); /* 描边本体颜色 */
             overflow: hidden;
-            word-break: break-word;
+            white-space: nowrap;  /* 与父元素保持一致，防止换行 */
+            text-align: center;  /* 与父元素保持一致 */
             
             /* 技巧：为了防止文字本身和阴影之间有极细微的缝隙，先加一个极细的 text-stroke */
             -webkit-text-stroke: 1px var(--button-text-stroke-color);
@@ -2196,7 +2199,8 @@
             /* 确保上层没有阴影 */
             text-shadow: none;
             overflow: hidden;
-            word-break: break-word;
+            white-space: nowrap;  /* 与父元素保持一致，防止换行 */
+            text-align: center;  /* 与父元素保持一致 */
         }
         
         /* 特殊按钮：无图标，文字居中 */
@@ -2498,5 +2502,77 @@
         .vrm-lighting-content {
             scrollbar-width: thin;
             scrollbar-color: #96e8ff #f0f8ff;
+        }
+
+        /* ==================== 中文模式下按钮固定宽度 ==================== */
+        /* 中文文字较短，固定宽度更整齐美观 */
+        html[lang="zh-CN"] #backToMainBtn,
+        html[lang="zh-CN"] #upload-btn,
+        html[lang="zh-CN"] #model-type-select-btn,
+        html[lang="zh-CN"] #live2d-model-select-btn,
+        html[lang="zh-CN"] #motion-select-btn,
+        html[lang="zh-CN"] #expression-select-btn,
+        html[lang="zh-CN"] #persistent-expression-select-btn,
+        html[lang="zh-CN"] #vrm-model-select-btn,
+        html[lang="zh-CN"] #vrm-animation-select-btn,
+        html[lang="zh-CN"] #vrm-expression-select-btn,
+        html[lang="zh-CN"] #parameter-editor-btn {
+            width: 270px !important;
+            min-width: 270px !important;
+            padding: 10px 25px !important;  /* 对称 padding，与保存设置按钮一致 */
+            justify-content: center !important;  /* 内容居中 */
+        }
+        
+        /* 中文模式下 span 的 margin 清零 */
+        html[lang="zh-CN"] #backToMainBtn span:not(.dropdown-arrow),
+        html[lang="zh-CN"] #upload-btn span:not(.dropdown-arrow),
+        html[lang="zh-CN"] #model-type-select-btn span:not(.dropdown-arrow),
+        html[lang="zh-CN"] #live2d-model-select-btn span:not(.dropdown-arrow),
+        html[lang="zh-CN"] #motion-select-btn span:not(.dropdown-arrow),
+        html[lang="zh-CN"] #expression-select-btn span:not(.dropdown-arrow),
+        html[lang="zh-CN"] #persistent-expression-select-btn span:not(.dropdown-arrow),
+        html[lang="zh-CN"] #vrm-model-select-btn span:not(.dropdown-arrow),
+        html[lang="zh-CN"] #vrm-animation-select-btn span:not(.dropdown-arrow),
+        html[lang="zh-CN"] #vrm-expression-select-btn span:not(.dropdown-arrow),
+        html[lang="zh-CN"] #parameter-editor-btn span:not(.dropdown-arrow) {
+            margin-left: 0 !important;
+            margin-right: 0 !important;
+            flex: none !important;  /* 不拉伸，让 justify-content 生效 */
+        }
+
+        /* ==================== 英文模式下按钮固定宽度 ==================== */
+        /* 英文文字较长，使用稍大的固定宽度保持整齐 */
+        html[lang="en"] #backToMainBtn,
+        html[lang="en"] #upload-btn,
+        html[lang="en"] #model-type-select-btn,
+        html[lang="en"] #live2d-model-select-btn,
+        html[lang="en"] #motion-select-btn,
+        html[lang="en"] #expression-select-btn,
+        html[lang="en"] #persistent-expression-select-btn,
+        html[lang="en"] #vrm-model-select-btn,
+        html[lang="en"] #vrm-animation-select-btn,
+        html[lang="en"] #vrm-expression-select-btn,
+        html[lang="en"] #parameter-editor-btn {
+            width: 290px !important;
+            min-width: 290px !important;
+            padding: 10px 25px !important;
+            justify-content: center !important;
+        }
+        
+        /* 英文模式下 span 的 margin 清零 */
+        html[lang="en"] #backToMainBtn span:not(.dropdown-arrow),
+        html[lang="en"] #upload-btn span:not(.dropdown-arrow),
+        html[lang="en"] #model-type-select-btn span:not(.dropdown-arrow),
+        html[lang="en"] #live2d-model-select-btn span:not(.dropdown-arrow),
+        html[lang="en"] #motion-select-btn span:not(.dropdown-arrow),
+        html[lang="en"] #expression-select-btn span:not(.dropdown-arrow),
+        html[lang="en"] #persistent-expression-select-btn span:not(.dropdown-arrow),
+        html[lang="en"] #vrm-model-select-btn span:not(.dropdown-arrow),
+        html[lang="en"] #vrm-animation-select-btn span:not(.dropdown-arrow),
+        html[lang="en"] #vrm-expression-select-btn span:not(.dropdown-arrow),
+        html[lang="en"] #parameter-editor-btn span:not(.dropdown-arrow) {
+            margin-left: 0 !important;
+            margin-right: 0 !important;
+            flex: none !important;
         }
     

@@ -484,7 +484,7 @@
   },
   "live2d": {
     "manager": "Live2D Model Manager",
-    "selectModel": "Select Live2D Model:",
+    "selectModel": "Select Model",
     "pleaseSelect": "Please select a model",
     "pleaseSelectModel": "Please select a model",
     "selectMotion": "Select Motion",
@@ -622,9 +622,9 @@
     },
     "loadError": "Error: {{error}}",
     "parameterEditor": {
-      "title": "Live2D Parameter Editor",
+      "title": "Face Editor",
       "backToMain": "← Back to L2D Settings",
-      "backToL2DManager": "← Back to L2D Manager",
+      "backToL2DManager": "Back",
       "selectModel": "Select Model:",
       "loading": "Loading...",
       "resetAll": "Reset All",

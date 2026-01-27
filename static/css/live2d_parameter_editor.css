@@ -615,6 +615,7 @@ z-index: 20;
 margin-left: 80px;
 margin-right: 80px;
 flex: 1;
+text-align: center;
 font-size: var(--button-text-size);
 background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
 -webkit-background-clip: text;
@@ -639,6 +640,7 @@ position: relative;
 z-index: 20;
 margin-left: 80px;
 flex: 1;
+text-align: center;
 font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
 font-weight: bold;
 font-size: var(--button-text-size) !important;
@@ -700,8 +702,11 @@ text-shadow: none;
 /* 特殊按钮：无图标，文字居中 */
 .round-stroke-text-center {
 margin-left: 0 !important;
+margin-right: 0 !important;
 justify-content: center;
 display: flex;
+text-align: center;
+width: 100%;
 }
 
 /* 重置全部按钮样式 - 与模型管理页面情感配置按钮一致 */
@@ -803,8 +808,10 @@ filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgb
 #model-select-btn span {
 position: relative;
 z-index: 20;
-margin-left: 90px;
+margin-left: 80px;
+margin-right: 80px;
 flex: 1;
+text-align: center;
 font-size: var(--button-text-size);
 }
 
