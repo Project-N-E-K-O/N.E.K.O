@@ -20,14 +20,15 @@ padding: 0 20px;
 }
 
 #sidebar {
-display: flex;
-flex-direction: column;
-gap: 10px;
-min-width: 280px;
-width: 280px;
-padding: 15px;
-background: #fff;
-border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 280px;
+    width: 300px;
+    padding: 15px;
+    background: #fff;
+    border-radius: 12px;
+    box-sizing: border-box;
 }
 
 .main-content {

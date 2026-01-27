@@ -56,8 +56,8 @@
     <div id="main-content">
         <div class="container">
         <div class="container-header">
-            <h2 data-i18n="api.settings" data-text="API Key 设置">API Key 设置</h2>
-            <button class="close-btn" onclick="closeSettingsPage()" title="关闭"><img src="/static/icons/close_button.png" alt="关闭" style="width: 32px; height: 32px;"></button>
+            <h2 data-i18n="api.settings" data-text="API Key Settings">API Key 设置</h2>
+            <button class="close-btn" onclick="closeSettingsPage()" data-i18n-title="common.close"><img src="/static/icons/close_button.png" data-i18n-alt="common.close" style="width: 32px; height: 32px;"></button>
         </div>
             <div class="container-content">
             <div class="api-key-info">
@@ -114,7 +114,7 @@
 
                         <div style="margin-top: 20px;">
                             <button type="submit" id="save-settings-btn">
-                                <img src="/static/icons/import_model_button_icon.png" alt="保存" class="button-icon">
+                                <img src="/static/icons/import_model_button_icon.png" data-i18n-alt="common.save" class="button-icon">
                                 <span data-i18n="api.saveSettings">保存设置</span>
                             </button>
                         </div>
@@ -127,7 +127,7 @@
 
             <div id="advanced-section" class="section" style="margin-top: 0;">
                 <button id="advanced-toggle-btn" onclick="toggleAdvancedOptions()">
-                    <img src="/static/icons/dropdown_arrow.png" alt="下拉" class="dropdown-icon">
+                    <img src="/static/icons/dropdown_arrow.png" data-i18n-alt="common.expand" class="dropdown-icon">
                     <span data-i18n="api.advancedOptions">高级选项（可选）</span>
                 </button>
                 <div id="advanced-options" style="display: none;">
@@ -248,7 +248,7 @@
                     <!-- 用户自定义API配置（位于高级选项内部最下方） -->
                     <div id="custom-api-section">
                         <button id="custom-api-toggle-btn" onclick="toggleCustomApiSection()">
-                            <img src="/static/icons/dropdown_arrow.png" alt="下拉" class="dropdown-icon">
+                            <img src="/static/icons/dropdown_arrow.png" data-i18n-alt="common.expand" class="dropdown-icon">
                             <span data-i18n="api.customApiConfig">自定义API配置</span>
                         </button>
                         <div id="custom-api-options"
@@ -283,7 +283,7 @@
                                 <div class="model-config-container">
                                     <div class="model-header" onclick="toggleModelConfig('summary')">
                                         <span class="model-title">
-                                            <img src="/static/icons/summary_model_icon.png" alt="摘要" class="model-title-icon">
+                                            <img src="/static/icons/summary_model_icon.png" data-i18n-alt="api.summaryModelConfig" class="model-title-icon">
                                             <span data-i18n="api.summaryModelConfig">摘要模型配置</span>
                                         </span>
                                         <span class="toggle-icon">▼</span>
@@ -322,7 +322,7 @@
                                 <div class="model-config-container">
                                     <div class="model-header" onclick="toggleModelConfig('correction')">
                                         <span class="model-title">
-                                            <img src="/static/icons/correction_model_icon.png" alt="纠错" class="model-title-icon">
+                                            <img src="/static/icons/correction_model_icon.png" data-i18n-alt="api.correctionModelConfig" class="model-title-icon">
                                             <span data-i18n="api.correctionModelConfig">纠错模型配置</span>
                                         </span>
                                         <span class="toggle-icon">▼</span>
@@ -361,7 +361,7 @@
                                 <div class="model-config-container">
                                     <div class="model-header" onclick="toggleModelConfig('emotion')">
                                         <span class="model-title">
-                                            <img src="/static/icons/emotion_model_icon.png" alt="情感" class="model-title-icon">
+                                            <img src="/static/icons/emotion_model_icon.png" data-i18n-alt="api.emotionModelConfig" class="model-title-icon">
                                             <span data-i18n="api.emotionModelConfig">情感模型配置</span>
                                         </span>
                                         <span class="toggle-icon">▼</span>
@@ -400,7 +400,7 @@
                                 <div class="model-config-container">
                                     <div class="model-header" onclick="toggleModelConfig('vision')">
                                         <span class="model-title">
-                                            <img src="/static/icons/vision_model_icon.png" alt="视觉" class="model-title-icon">
+                                            <img src="/static/icons/vision_model_icon.png" data-i18n-alt="api.visionModelConfig" class="model-title-icon">
                                             <span data-i18n="api.visionModelConfig">视觉模型配置</span>
                                         </span>
                                         <span class="toggle-icon">▼</span>
@@ -439,7 +439,7 @@
                                 <div class="model-config-container">
                                     <div class="model-header" onclick="toggleModelConfig('omni')">
                                         <span class="model-title">
-                                            <img src="/static/icons/omni_model_icon.png" alt="全模态" class="model-title-icon">
+                                            <img src="/static/icons/omni_model_icon.png" data-i18n-alt="api.realtimeModelConfig" class="model-title-icon">
                                             <span data-i18n="api.realtimeModelConfig">实时模型配置</span>
                                         </span>
                                         <span class="toggle-icon">▼</span>
@@ -478,7 +478,7 @@
                                 <div class="model-config-container">
                                     <div class="model-header" onclick="toggleModelConfig('tts')">
                                         <span class="model-title">
-                                            <img src="/static/icons/tts_model_icon.png" alt="TTS" class="model-title-icon">
+                                            <img src="/static/icons/tts_model_icon.png" data-i18n-alt="api.ttsModelConfig" class="model-title-icon">
                                             <span data-i18n="api.ttsModelConfig">TTS模型配置</span>
                                         </span>
                                         <span class="toggle-icon">▼</span>

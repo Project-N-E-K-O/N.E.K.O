@@ -12,9 +12,9 @@
 <body>
     <div class="container">
         <div class="container-header">
-            <h2 data-i18n="voice.title" data-text="音色注册 请使用阿里云api">音色注册 请使用阿里云api</h2>
-            <button class="close-page-btn" onclick="closeVoiceClonePage()" title="关闭页面">
-                <img src="/static/icons/close_button.png" alt="关闭">
+            <h2 data-i18n="voice.title" data-text="Voice Registration">音色注册 请使用阿里云api</h2>
+            <button class="close-page-btn" onclick="closeVoiceClonePage()" data-i18n-title="common.close">
+                <img src="/static/icons/close_button.png" data-i18n-alt="common.close">
             </button>
         </div>
         <div class="container-content">
@@ -25,8 +25,8 @@
             <div class="file-input-wrapper">
                 <input type="file" id="audioFile" accept="audio/*">
                 <label for="audioFile" class="file-input-label" id="fileInputLabel">
-                    <img src="/static/icons/import_model_button_icon.png?v=1" alt="选择文件" class="file-icon">
-                    <span class="file-text" data-text="选择文件" data-i18n="voice.chooseFile">选择文件</span>
+                    <img src="/static/icons/import_model_button_icon.png?v=1" data-i18n-alt="voice.chooseFile" class="file-icon">
+                    <span class="file-text" data-i18n="voice.chooseFile" data-text="Choose File">选择文件</span>
                 </label>
                 <div id="fileNameDisplay" class="file-name-display"></div>
             </div>
@@ -54,8 +54,8 @@
             <input type="hidden" id="lanlan_name" value="">
 
             <button class="register-voice-btn" onclick="registerVoice()">
-                <img src="/static/icons/sound.png" alt="注册音色" class="register-icon">
-                <span class="register-text" data-text="注册音色" data-i18n="voice.register">注册音色</span>
+                <img src="/static/icons/sound.png" data-i18n-alt="voice.register" class="register-icon">
+                <span class="register-text" data-i18n="voice.register" data-text="Register Voice">注册音色</span>
             </button>
 
             <div class="result" id="result"></div>

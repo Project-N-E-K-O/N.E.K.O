@@ -218,22 +218,23 @@
             background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
             background-color: transparent !important;
             border: none !important;
-            border-radius: var(--button-border-radius) !important;  
+            border-radius: 999px !important;
             overflow: hidden !important;  
             height: auto;
-            min-height: 48px;  
-            padding: 13px 13px !important;  
-            padding-right: 8px !important;
+            min-height: 54px;  
+            padding: 10px 25px 10px 60px !important;
             color: white;
             font-weight: bold;
-            display: flex !important;
+            display: inline-flex !important;
             align-items: center;
             justify-content: flex-start;
             text-align: left !important;
-            width: 270px !important; 
-            max-width: none !important;  
+            width: auto !important; 
+            min-width: 270px; 
+            max-width: 100% !important;  
             position: relative;
             transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease !important;
+            box-sizing: border-box;
         }
         
         #backToMainBtn .back-icon {
@@ -262,8 +263,8 @@
         #backToMainBtn span {
             position: relative;
             z-index: 20;  
-            margin-left: 90px;
-            margin-right: 80px;
+            margin: 0 !important;
+            margin-right: 40px !important;
             flex: 1;
             font-size: var(--button-text-size);
             background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
@@ -273,6 +274,7 @@
             color: transparent;
             font-weight: bold;
             white-space: nowrap;
+            line-height: 1.2;
         }
 
         #backToMainBtn:hover:not(:disabled) {
@@ -296,22 +298,20 @@
             background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
             background-color: transparent !important;
             border: none !important;
-            border-radius: var(--button-border-radius) !important;
+            border-radius: 999px !important;
             overflow: hidden !important;  
             height: auto;  
-            min-height: 48px;  
-            padding: 13px 13px !important;  
-            padding-left: 10px !important;  
-            padding-right: 10px !important;  
+            min-height: 54px;  
+            padding: 10px 25px 10px 60px !important;  
             color: white;
             font-weight: bold;
-            display: flex !important;
+            display: inline-flex !important;
             align-items: center;
             justify-content: flex-start;
             text-align: left !important;
-            width: 270px !important;  
-            min-width: 270px !important;  
-            max-width: 270px !important;  
+            width: auto !important;  
+            min-width: 270px;  
+            max-width: 100% !important;  
             flex-shrink: 0 !important;  
             position: relative;
             box-sizing: border-box !important;
@@ -334,7 +334,8 @@
         .button-text {
             position: relative;
             z-index: 20;
-            margin-left: 90px;
+            margin: 0 !important;
+            margin-right: 15px !important;
             flex: 1;
             font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
             font-weight: bold;
@@ -344,6 +345,7 @@
             background-clip: text;
             -webkit-text-fill-color: transparent;
             color: transparent;
+            line-height: 1.2;
             
             /* 多层text-shadow模拟描边效果（圆角通过轻微模糊实现） */
             text-shadow: 
@@ -392,23 +394,22 @@
             background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
             background-color: transparent !important;
             border: none !important;
-            border-radius: var(--button-border-radius) !important;
+            border-radius: 999px !important;
             overflow: hidden !important;
             height: auto;
-            min-height: 48px;
-            padding: 13px 13px !important;
-            padding-left: 10px !important;
-            padding-right: 10px !important;
+            min-height: 54px;
+            padding: 10px 25px 10px 60px !important;
             color: white;
             font-weight: bold;
-            display: flex !important;
+            display: inline-flex !important;
             align-items: center;
             justify-content: flex-start;
             text-align: left !important;
             width: 270px !important;
-            max-width: none !important;
+            max-width: 100% !important;
             position: relative;
             cursor: pointer;
+            box-sizing: border-box;
         }
 
         #model-type-select-btn .model-type-icon {
@@ -428,7 +429,8 @@
         #model-type-select-btn span:not(.dropdown-arrow) {
             position: relative;
             z-index: 20;
-            margin-left: 90px;
+            margin-left: 0;
+            margin-right: 30px;
             flex: 1;
             font-size: var(--button-text-size);
         }
@@ -466,7 +468,8 @@
             position: absolute;
             top: 100%;
             left: 0;
-            width: 270px;
+            width: auto;
+            min-width: 270px;
             background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
             backdrop-filter: blur(10px);
             -webkit-backdrop-filter: blur(10px);
@@ -516,23 +519,22 @@
             background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
             background-color: transparent !important;
             border: none !important;
-            border-radius: var(--button-border-radius) !important;
+            border-radius: 999px !important;
             overflow: hidden !important;
             height: auto;
-            min-height: 48px;
-            padding: 13px 13px !important;
-            padding-left: 10px !important;
-            padding-right: 10px !important;
+            min-height: 54px;
+            padding: 10px 25px 10px 60px !important;
             color: white;
             font-weight: bold;
-            display: flex !important;
+            display: inline-flex !important;
             align-items: center;
             justify-content: flex-start;
             text-align: left !important;
             width: 270px !important;
-            max-width: none !important;
+            max-width: 100% !important;
             position: relative;
             cursor: pointer;
+            box-sizing: border-box;
         }
 
         #live2d-model-select-btn .live2d-model-select-icon {
@@ -552,7 +554,8 @@
         #live2d-model-select-btn span:not(.dropdown-arrow) {
             position: relative;
             z-index: 20;
-            margin-left: 90px;
+            margin-left: 0;
+            margin-right: 30px;
             flex: 1;
             font-size: var(--button-text-size);
         }
@@ -590,7 +593,8 @@
             position: absolute;
             top: 100%;
             left: 0;
-            width: 270px;
+            width: auto;
+            min-width: 270px;
             max-height: 300px;
             overflow-y: auto;
             background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
@@ -643,25 +647,23 @@
             background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
             background-color: transparent !important;
             border: none !important;
-            border-radius: var(--button-border-radius) !important;
+            border-radius: 999px !important;
             overflow: hidden !important;
             height: auto;
-            min-height: 48px;
-            padding: 13px 13px !important;
-            padding-left: 10px !important;
-            padding-right: 10px !important;
+            min-height: 54px;
+            padding: 10px 25px 10px 60px !important;
             color: white;
             font-weight: bold;
-            display: flex !important;
+            display: inline-flex !important;
             align-items: center;
             justify-content: flex-start;
             text-align: left !important;
             width: 270px !important;
-            min-width: 270px !important;
-            max-width: 270px !important;
+            max-width: 100% !important;
             flex-shrink: 0 !important;
             position: relative;
             cursor: pointer;
+            box-sizing: border-box;
         }
 
         #motion-select-btn .motion-select-icon {
@@ -681,7 +683,8 @@
         #motion-select-btn span:not(.dropdown-arrow) {
             position: relative;
             z-index: 20;
-            margin-left: 90px;
+            margin-left: 0;
+            margin-right: 30px;
             flex: 1;
             font-size: var(--button-text-size);
         }
@@ -724,7 +727,8 @@
             position: absolute;
             top: 100%;
             left: 0;
-            width: 270px;
+            width: auto;
+            min-width: 270px;
             max-height: 300px;
             overflow-y: auto;
             background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
@@ -777,25 +781,22 @@
             background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
             background-color: transparent !important;
             border: none !important;
-            border-radius: var(--button-border-radius) !important;
+            border-radius: 999px !important;
             overflow: hidden !important;
             height: auto;
-            min-height: 48px;
-            padding: 13px 13px !important;
-            padding-left: 10px !important;
-            padding-right: 10px !important;
+            min-height: 54px;
+            padding: 10px 25px 10px 60px !important;
             color: white;
             font-weight: bold;
-            display: flex !important;
+            display: inline-flex !important;
             align-items: center;
             justify-content: flex-start;
             text-align: left !important;
             width: 270px !important;
-            min-width: 270px !important;
-            max-width: 270px !important;
-            flex-shrink: 0 !important;
+            max-width: 100% !important;
             position: relative;
             cursor: pointer;
+            box-sizing: border-box;
         }
 
         #expression-select-btn .expression-select-icon {
@@ -858,7 +859,8 @@
             position: absolute;
             top: 100%;
             left: 0;
-            width: 270px;
+            width: auto;
+            min-width: 270px;
             max-height: 300px;
             overflow-y: auto;
             background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
@@ -1052,23 +1054,22 @@
             background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
             background-color: transparent !important;
             border: none !important;
-            border-radius: var(--button-border-radius) !important;
+            border-radius: 999px !important;
             overflow: hidden !important;
             height: auto;
-            min-height: 48px;
-            padding: 13px 13px !important;
-            padding-left: 10px !important;
-            padding-right: 10px !important;
+            min-height: 54px;
+            padding: 10px 25px 10px 60px !important;
             color: white;
             font-weight: bold;
-            display: flex !important;
+            display: inline-flex !important;
             align-items: center;
             justify-content: flex-start;
             text-align: left !important;
             width: 270px !important;
-            max-width: none !important;
+            max-width: 100% !important;
             position: relative;
             cursor: pointer;
+            box-sizing: border-box;
         }
 
         #vrm-model-select-btn .vrm-model-select-icon {
@@ -1088,7 +1089,8 @@
         #vrm-model-select-btn span:not(.dropdown-arrow) {
             position: relative;
             z-index: 20;
-            margin-left: 90px;
+            margin-left: 0;
+            margin-right: 30px;
             flex: 1;
             font-size: var(--button-text-size);
         }
@@ -1119,7 +1121,8 @@
             position: absolute;
             top: 100%;
             left: 0;
-            width: 270px;
+            width: auto;
+            min-width: 270px;
             max-height: 300px;
             overflow-y: auto;
             background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
@@ -1172,25 +1175,23 @@
             background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
             background-color: transparent !important;
             border: none !important;
-            border-radius: var(--button-border-radius) !important;
+            border-radius: 999px !important;
             overflow: hidden !important;
             height: auto;
-            min-height: 48px;
-            padding: 13px 13px !important;
-            padding-left: 10px !important;
-            padding-right: 10px !important;
+            min-height: 54px;
+            padding: 10px 25px 10px 60px !important;
             color: white;
             font-weight: bold;
-            display: flex !important;
+            display: inline-flex !important;
             align-items: center;
             justify-content: flex-start;
             text-align: left !important;
             width: 270px !important;
-            min-width: 270px !important;
-            max-width: 270px !important;
+            max-width: 100% !important;
             flex-shrink: 0 !important;
             position: relative;
             cursor: pointer;
+            box-sizing: border-box;
         }
 
         #vrm-animation-select-btn .vrm-animation-select-icon {
@@ -1210,7 +1211,8 @@
         #vrm-animation-select-btn span:not(.dropdown-arrow) {
             position: relative;
             z-index: 20;
-            margin-left: 90px;
+            margin-left: 0;
+            margin-right: 30px;
             flex: 1;
             font-size: var(--button-text-size);
         }
@@ -1241,7 +1243,8 @@
             position: absolute;
             top: 100%;
             left: 0;
-            width: 270px;
+            width: auto;
+            min-width: 270px;
             max-height: 300px;
             overflow-y: auto;
             background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
@@ -1512,7 +1515,8 @@
         #persistent-expression-select-btn span:not(.dropdown-arrow) {
             position: relative;
             z-index: 20;
-            margin-left: 90px;
+            margin-left: 0;
+            margin-right: 30px;
             flex: 1;
             font-size: var(--button-text-size);
         }
@@ -1541,7 +1545,8 @@
             position: absolute;
             top: 100%;
             left: 0;
-            width: 270px;
+            width: auto;
+            min-width: 270px;
             max-height: 300px;
             overflow-y: auto;
             background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
@@ -1621,20 +1626,23 @@
             background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
             background-color: transparent !important;
             border: none !important;
-            border-radius: var(--button-border-radius) !important;
+            border-radius: 999px !important;
             overflow: hidden !important;
             color: white !important;
             /* 宽度和flex由JavaScript动态控制（Live2D模式135px，VRM模式270px） */
             /* 不在这里设置固定宽度，避免覆盖JavaScript的动态设置 */
             height: auto;
-            min-height: 48px;
-            padding: 13px 13px !important;
+            min-height: 54px;
+            padding: 10px 25px !important;
             font-weight: bold !important;
             /* 确保按钮容器属性一致（与情感配置按钮完全一致） */
-            display: flex !important;
+            display: inline-flex !important;
             align-items: center !important;
             justify-content: center !important;
             transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease !important;
+            width: auto !important;
+            min-width: 135px;
+            box-sizing: border-box;
         }
 
         #save-position-btn span {
@@ -1669,22 +1677,22 @@
             background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
             background-color: transparent !important;
             border: none !important;
-            border-radius: var(--button-border-radius) !important;
+            border-radius: 999px !important;
             overflow: hidden !important;
             height: auto;
-            min-height: 48px;
-            padding: 13px 13px !important;
-            padding-left: 10px !important;
-            padding-right: 10px !important;
+            min-height: 54px;
+            padding: 10px 25px 10px 60px !important;
             color: white;
             font-weight: bold;
-            display: flex !important;
+            display: inline-flex !important;
             align-items: center;
             justify-content: flex-start;
             text-align: left !important;
-            width: 270px !important;
-            max-width: none !important;
+            width: auto !important;
+            min-width: 270px !important;
+            max-width: 100% !important;
             position: relative;
+            box-sizing: border-box;
         }
 
         #parameter-editor-btn .parameter-editor-icon {
@@ -1704,7 +1712,8 @@
         #parameter-editor-btn span {
             position: relative;
             z-index: 20;
-            margin-left: 90px;
+            margin-left: 0;
+            margin-right: 15px;
             flex: 1;
             font-size: var(--button-text-size);
         }
@@ -2108,14 +2117,17 @@
         .round-stroke-text {
             position: relative;
             z-index: 20;
-            margin-left: 90px;
+            margin-left: 0;
             flex: 1;
             font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
             font-weight: bold;
             font-size: var(--button-text-size) !important;
-            letter-spacing: 1px;
+            letter-spacing: 0.5px;
             /* 保持文字占位大小，颜色透明 */
             color: transparent;
+            overflow: hidden;
+            max-width: 100%;
+            word-break: break-word;
         }
         
         /* 【下层】：负责圆润描边 - 高密度阴影矩阵 */
@@ -2128,6 +2140,8 @@
             height: 100%;
             z-index: -1; /* 放在最底层 */
             color: var(--button-text-stroke-color); /* 描边本体颜色 */
+            overflow: hidden;
+            word-break: break-word;
             
             /* 技巧：为了防止文字本身和阴影之间有极细微的缝隙，先加一个极细的 text-stroke */
             -webkit-text-stroke: 1px var(--button-text-stroke-color);
@@ -2181,6 +2195,8 @@
             
             /* 确保上层没有阴影 */
             text-shadow: none;
+            overflow: hidden;
+            word-break: break-word;
         }
         
         /* 特殊按钮：无图标，文字居中 */
@@ -2313,8 +2329,9 @@
         /* VRM打光设置方框样式（参考参数列表方框） */
         .vrm-lighting-wrapper {
             position: relative;
-            width: 270px !important;
-            max-width: 270px !important;
+            width: auto !important;
+            min-width: 270px !important;
+            max-width: 320px !important;
             border: 3px solid #96e8ff;
             border-radius: 20px;
             background: linear-gradient(135deg, rgba(240, 248, 255, 0.95), rgba(230, 245, 255, 0.95));

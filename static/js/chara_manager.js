@@ -258,45 +258,55 @@ return false;
 let expandedCatgirlName = null;
 
 async function loadCharacterData() {
-const resp = await fetch('/api/characters');
-characterData = await resp.json();
-renderMaster();
-renderCatgirls();
-updateSwitchButtons();
+    try {
+        const resp = await fetch('/api/characters');
+        if (!resp.ok) {
+            throw new Error(`HTTP error! status: ${resp.status}`);
+        }
+        characterData = await resp.json();
+        renderMaster();
+        renderCatgirls();
+        updateSwitchButtons();
 
-// 如果有之前展开的猫娘，自动展开它
-if (expandedCatgirlName) {
-const catgirls = characterData['猫娘'] || {};
-if (catgirls[expandedCatgirlName]) {
-// 使用 setTimeout 确保 DOM 已经渲染完成
-setTimeout(() => {
-// 遍历所有猫娘块，找到匹配的
-const blocks = document.querySelectorAll('.catgirl-block');
-blocks.forEach(block => {
-const titleSpan = block.querySelector('.catgirl-title');
-if (titleSpan && titleSpan.textContent === expandedCatgirlName) {
-const btn = block.querySelector('.catgirl-expand');
-const details = block.querySelector('.catgirl-details');
-if (btn && details && details.style.display === 'none') {
-// 展开这个猫娘
-details.style.display = 'block';
-btn.style.transform = 'rotate(180deg)';
-showCatgirlForm(expandedCatgirlName, details);
-}
-}
-});
-}, 0);
-} else {
-// 如果猫娘不存在了，清除记录
-expandedCatgirlName = null;
-}
+        // 如果有之前展开的猫娘，自动展开它
+        if (expandedCatgirlName) {
+            const catgirls = characterData['猫娘'] || {};
+            if (catgirls[expandedCatgirlName]) {
+                // 使用 setTimeout 确保 DOM 已经渲染完成
+                setTimeout(() => {
+                    // 遍历所有猫娘块，找到匹配的
+                    const blocks = document.querySelectorAll('.catgirl-block');
+                    blocks.forEach(block => {
+                        const titleSpan = block.querySelector('.catgirl-title');
+                        if (titleSpan && titleSpan.textContent === expandedCatgirlName) {
+                            const btn = block.querySelector('.catgirl-expand');
+                            const details = block.querySelector('.catgirl-details');
+                            if (btn && details && details.style.display === 'none') {
+                                // 展开这个猫娘
+                                details.style.display = 'block';
+                                btn.style.transform = 'rotate(180deg)';
+                                showCatgirlForm(expandedCatgirlName, details);
+                            }
+                        }
+                    });
+                }, 0);
+            } else {
+                // 如果猫娘不存在了，清除记录
+                expandedCatgirlName = null;
+            }
+        }
+    } catch (error) {
+        console.error('加载角色数据失败:', error);
+        if (window.showAlert) {
+            window.showAlert(window.t ? window.t('character.loadFailed') : '加载角色数据失败');
+        }
+    }
 }
 
 // 初始化textarea自动调整高度功能
 setTimeout(() => {
-initAutoResizeTextareas();
+    initAutoResizeTextareas();
 }, 100);
-}
 
 // 渲染主人表单
 function renderMaster() {
@@ -580,14 +590,21 @@ if (cancelBtn) cancelBtn.style.display = 'none';
 
 if (!window._addMasterFieldHandler) {
 var masterFormEl = document.getElementById('master-form');
-if (masterFormEl) {
-// 添加按钮区域，初始隐藏保存和取消按钮
-// 确保使用 innerHTML 以支持图标
-const addFieldText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/add.png" alt="" class="add-icon"> <span data-i18n="character.addMasterField">${window.t('character.addMasterField')}</span>` : '<img src="/static/icons/add.png" alt="" class="add-icon"> 新增设定';
-const saveMasterText = window.t ? window.t('character.saveMaster') : '保存主人设定';
-const cancelText = window.t ? window.t('character.cancel') : '取消';
-masterFormEl.insertAdjacentHTML('beforeend', `<div style="display:flex;justify-content:flex-end;align-items:center;gap:8px;margin-top:8px"><button type="button" class="btn sm add" id="add-master-field-btn" style="min-width:120px">${addFieldText}</button><button type="submit" class="btn sm" id="save-master-btn" style="display:none;min-width:120px">${saveMasterText}</button><button type="button" class="btn sm" id="cancel-master-btn" style="display:none;min-width:120px">${cancelText}</button></div>`);
-}
+    if (masterFormEl) {
+        // 添加按钮区域，初始隐藏保存和取消按钮
+        // 确保使用 data-i18n 属性，以便在语言切换时自动更新
+        const addFieldText = `<img src="/static/icons/add.png" alt="" class="add-icon"> <span data-i18n="character.addMasterField">${window.t ? window.t('character.addMasterField') : '新增设定'}</span>`;
+        const saveMasterText = `<span data-i18n="character.saveMaster">${window.t ? window.t('character.saveMaster') : '保存主人设定'}</span>`;
+        const cancelText = `<span data-i18n="character.cancel">${window.t ? window.t('character.cancel') : '取消'}</span>`;
+        
+        masterFormEl.insertAdjacentHTML('beforeend', `
+            <div style="display:flex;justify-content:flex-end;align-items:center;gap:8px;margin-top:8px">
+                <button type="button" class="btn sm add" id="add-master-field-btn" style="min-width:120px">${addFieldText}</button>
+                <button type="submit" class="btn sm" id="save-master-btn" style="display:none;min-width:120px">${saveMasterText}</button>
+                <button type="button" class="btn sm" id="cancel-master-btn" style="display:none;min-width:120px">${cancelText}</button>
+            </div>
+        `);
+    }
 
 // 设置事件监听
 setupMasterFormListeners();
@@ -1945,6 +1962,11 @@ const titleH2 = document.querySelector('.container-header h2');
 if (titleH2) {
 titleObserver.observe(titleH2, { childList: true, characterData: true, subtree: true });
 }
+
+// 页面卸载时断开观察器
+window.addEventListener('unload', () => {
+    if (titleObserver) titleObserver.disconnect();
+});
 
 // 主人保存按钮也用.btn.sm
 const masterSaveBtn = document.querySelector('#master-form button[type="submit"]');

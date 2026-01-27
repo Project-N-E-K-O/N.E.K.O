@@ -259,14 +259,14 @@ overflow: visible;
 
 /* 标签在胶囊框外面 */
 .field-row-wrapper label {
-min-width: 80px;
-font-weight: 700;
-color: #40C5F1;
-font-size: 1.2rem;
-flex-shrink: 0;
-display: flex;
-align-items: center;
-line-height: 1.5;
+    min-width: 110px; /* 增加最小宽度以适应英文 */
+    font-weight: 700;
+    color: #40C5F1;
+    font-size: 1.2rem;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    line-height: 1.5;
 }
 
 .field-row-wrapper label span[style*="color:red"] {
@@ -285,7 +285,7 @@ background: #fff;
 transition: border-color 0.2s;
 min-height: 30px;
 overflow: visible;
-min-width: 200px;
+min-width: 150px; /* 减小最小宽度，让 flex 更自由 */
 position: relative;
 }
         
@@ -404,7 +404,8 @@ margin-left: 8px;
 .field-row-wrapper > .btn.sm {
 flex-shrink: 0;
 margin-left: 8px;
-min-width: 120px;
+min-width: 100px; /* 减小强制最小宽度，改用 padding 支撑 */
+padding: 0 15px;
 }
 
 /* 强制限制按钮内图标的大小，防止被动态脚本或i18n覆盖 */
@@ -533,16 +534,16 @@ opacity: 0.95;
 
 /* 小号按钮 */
 .btn.sm {
-padding: 0 12px;
+padding: 0 15px;
 border-radius: 999px;
 margin-right: 0;
-/* 新增：强制设置最小宽度，并让文字居中 */
-min-width: 120px;       /* 统一按钮宽度 */
+/* 修改：不再强制 120px，而是根据内容自适应 */
+min-width: 80px;       
 justify-content: center; /* 确保文字和图标在按钮中间 */
-/* --- 新增/修改这两行 --- */
 height: 30px;       /* 强制设置高度，确保大家都一样高 */
 line-height: 1;     /* 防止文字行高把按钮撑大 */
-font-size: 0.8rem;  /* 如果觉得 30px 太挤，字体可以微调为 0.75rem */
+font-size: 0.8rem;  
+width: auto;
 }
 
 .btn.sm.delete {
@@ -706,15 +707,17 @@ overflow: hidden;
 }
 
 .catgirl-header {
-background: #f0f8ff;
-color: #40C5F1;
-padding: 12px 20px;
-display: flex;
-align-items: center;
-justify-content: space-between;
-margin-bottom: 0;
-border-bottom: none;
-position: relative;
+    background: #f0f8ff;
+    color: #40C5F1;
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0;
+    border-bottom: none;
+    position: relative;
+    flex-wrap: wrap;
+    gap: 10px;
 }
 
 .catgirl-expand {
@@ -727,18 +730,25 @@ flex-shrink: 0;
 }
 
 .catgirl-title {
-font-weight: 600;
-font-size: 1.4rem;
-color: #40C5F1;
-position: absolute;
-left: 50%;
-transform: translateX(-50%);
+    font-weight: 600;
+    font-size: 1.4rem;
+    color: #40C5F1;
+    position: static;
+    transform: none;
+    flex: 1;
+    min-width: 100px;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .catgirl-actions {
-display: flex;
-gap: 6px;
-flex-shrink: 0;
+    display: flex;
+    gap: 8px;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+    justify-content: flex-end;
 }
 
 .catgirl-details {

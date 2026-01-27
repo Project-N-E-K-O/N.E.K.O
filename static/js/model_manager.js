@@ -655,8 +655,8 @@
                         textSpanId: 'model-type-text',
                         iconClass: 'model-type-icon',
                         iconSrc: '/static/icons/model_type_icon.png?v=1',
-                        defaultText: '模型类型',
-                        iconAlt: '模型类型',
+                        defaultText: window.i18next?.t('live2d.modelType') || '模型类型',
+                        iconAlt: window.i18next?.t('live2d.modelType') || '模型类型',
                         alwaysShowDefault: true
                     });
                 }
@@ -669,12 +669,13 @@
                         textSpanId: 'live2d-model-select-text',
                         iconClass: 'live2d-model-select-icon',
                         iconSrc: '/static/icons/live2d_model_select_icon.png?v=1',
-                        defaultText: '选择模型',
-                        iconAlt: '选择模型',
+                        defaultText: window.i18next?.t('live2d.selectModel') || '选择模型',
+                        iconAlt: window.i18next?.t('live2d.selectModel') || '选择模型',
                         shouldSkipOption: (option) => {
                             return option.value === '' && (
                                 option.textContent.includes('请选择') || 
-                                option.textContent.includes('选择模型')
+                                option.textContent.includes('选择模型') ||
+                                option.textContent.includes('Select')
                             );
                         },
                         onChange: () => {
@@ -691,12 +692,13 @@
                         textSpanId: 'motion-select-text',
                         iconClass: 'motion-select-icon',
                         iconSrc: '/static/icons/motion_select_icon.png?v=1',
-                        defaultText: '选择动作',
-                        iconAlt: '选择动作',
+                        defaultText: window.i18next?.t('live2d.selectMotion') || '选择动作',
+                        iconAlt: window.i18next?.t('live2d.selectMotion') || '选择动作',
                         shouldSkipOption: (option) => {
                             return option.value === '' && (
                                 option.textContent.includes('请先加载') || 
-                                option.textContent.includes('没有动作')
+                                option.textContent.includes('没有动作') ||
+                                option.textContent.includes('Select')
                             );
                         },
                         onChange: () => {
@@ -713,12 +715,13 @@
                         textSpanId: 'expression-select-text',
                         iconClass: 'expression-select-icon',
                         iconSrc: '/static/icons/parameter_editor_icon.png?v=1',
-                        defaultText: '选择表情',
-                        iconAlt: '选择表情',
+                        defaultText: window.i18next?.t('live2d.selectExpression') || '选择表情',
+                        iconAlt: window.i18next?.t('live2d.selectExpression') || '选择表情',
                         shouldSkipOption: (option) => {
                             return option.value === '' && (
                                 option.textContent.includes('请先加载') || 
-                                option.textContent.includes('没有表情')
+                                option.textContent.includes('没有表情') ||
+                                option.textContent.includes('Select')
                             );
                         },
                         onChange: () => {
@@ -735,8 +738,8 @@
                         textSpanId: 'persistent-expression-text',
                         iconClass: 'persistent-expression-icon',
                         iconSrc: '/static/icons/persistent_expression_icon.png?v=1',
-                        defaultText: '常驻表情',
-                        iconAlt: '常驻表情',
+                        defaultText: window.i18next?.t('live2d.selectPersistentExpression') || '常驻表情',
+                        iconAlt: window.i18next?.t('live2d.selectPersistentExpression') || '常驻表情',
                         alwaysShowDefault: true,  // 始终显示默认文字，不显示选中的选项
                         disabled: true  // 禁用下拉功能，仅作展示
                     });

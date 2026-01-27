@@ -38,7 +38,7 @@ font-family: 'Segoe UI', Arial, sans-serif;
 max-width: 800px;
 margin: 40px auto 0 auto;
 background: #fff;
-border-radius: 20px;
+border-radius: 24px; /* 增加圆角 */
 box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
 padding: 0;
 overflow: hidden;
@@ -330,7 +330,7 @@ border: 1px solid #bee5eb;
 background: #ffffff;
 color: rgba(64, 197, 241, 0.85);
 border: 1px solid #b3e5fc;
-border-radius: 20px;
+border-radius: 24px; /* 增加圆角 */
 padding: 8px 8px;
 font-weight: normal;
 line-height: 1.5;
@@ -343,62 +343,60 @@ min-height: 48px;
 
 /* 高级选项按钮样式 - 参考返回主页按钮 */
 #advanced-toggle-btn {
-background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
-background-color: transparent !important;
-border: none !important;
-border-radius: 25px !important;
-height: auto;
-min-height: 48px;
-padding: 13px 13px !important;
-padding-right: 8px !important;
-color: white;
-font-weight: bold;
-display: flex !important;
-align-items: center;
-justify-content: flex-start;
-text-align: left !important;
-width: 220px !important;
-max-width: none !important;
-position: relative;
-cursor: pointer;
-user-select: none;
-transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease !important;
-margin-bottom: 8px;
+    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    border: none !important;
+    border-radius: 999px !important;
+    height: auto;
+    min-height: 54px;
+    padding: 12px 25px 12px 60px !important;
+    color: white;
+    font-weight: bold;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    text-align: left !important;
+    width: auto !important;
+    min-width: 240px;
+    max-width: 100%;
+    position: relative;
+    cursor: pointer;
+    user-select: none;
+    transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease !important;
+    margin-bottom: 8px;
+    box-sizing: border-box;
 }
 
 #advanced-toggle-btn .dropdown-icon {
-display: block !important;
-position: absolute;
-left: 10px;
-top: 50%;
-transform: translateY(-50%);
-z-index: 10;
-flex-shrink: 0;
-pointer-events: none;
-filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
-width: 48px;
-height: 48px;
-transition: transform 0.2s;
-}
-
-#advanced-toggle-btn.rotated .dropdown-icon {
-transform: translateY(-50%) rotate(90deg);
+    display: block !important;
+    position: absolute;
+    left: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 10;
+    flex-shrink: 0;
+    pointer-events: none;
+    filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
+    width: 44px;
+    height: 44px;
+    transition: transform 0.2s;
 }
 
 #advanced-toggle-btn span {
-position: relative;
-z-index: 20;
-margin-left: 50px;
-margin-right: 40px;
-flex: 1;
-font-size: var(--button-text-size);
-background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
--webkit-background-clip: text;
-background-clip: text;
--webkit-text-fill-color: transparent;
-color: transparent;
-font-weight: bold;
-white-space: nowrap;
+    position: relative;
+    z-index: 20;
+    margin: 0 !important;
+    padding: 0 !important;
+    flex: 1;
+    font-size: var(--button-text-size);
+    background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+    font-weight: bold;
+    white-space: nowrap;
+    line-height: 1.2;
 }
 
 #advanced-toggle-btn:hover:not(:disabled) {
@@ -420,57 +418,59 @@ opacity: 0.95 !important;
 
 /* 保存设置按钮样式 - 与高级选项按钮一致 */
 #save-settings-btn {
-background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
-background-color: transparent !important;
-border: none !important;
-border-radius: 25px !important;
-height: auto;
-min-height: 48px;
-padding: 13px 13px !important;
-padding-right: 8px !important;
-color: white;
-font-weight: bold;
-display: flex !important;
-align-items: center;
-justify-content: flex-start;
-text-align: left !important;
-width: 180px !important;
-max-width: none !important;
-position: relative;
-cursor: pointer;
-user-select: none;
-transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease !important;
+    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    border: none !important;
+    border-radius: 25px !important;
+    height: auto;
+    min-height: 48px;
+    padding: 10px 25px 10px 55px !important;
+    color: white;
+    font-weight: bold;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    text-align: left !important;
+    width: auto !important;
+    min-width: 180px;
+    max-width: 100%;
+    position: relative;
+    cursor: pointer;
+    user-select: none;
+    transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease !important;
+    box-sizing: border-box;
 }
 
 #save-settings-btn .button-icon {
-display: block !important;
-position: absolute;
-left: 10px;
-top: 50%;
-transform: translateY(-50%);
-z-index: 10;
-flex-shrink: 0;
-pointer-events: none;
-filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
-width: 44px;
-height: 44px;
-object-fit: contain;
+    display: block !important;
+    position: absolute;
+    left: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 10;
+    flex-shrink: 0;
+    pointer-events: none;
+    filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
+    width: 44px;
+    height: 44px;
+    object-fit: contain;
 }
 
 #save-settings-btn span {
-position: relative;
-z-index: 20;
-margin-left: 50px;
-margin-right: 40px;
-flex: 1;
-font-size: var(--button-text-size);
-background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
--webkit-background-clip: text;
-background-clip: text;
--webkit-text-fill-color: transparent;
-color: transparent;
-font-weight: bold;
-white-space: nowrap;
+    position: relative;
+    z-index: 20;
+    margin: 0 !important;
+    padding: 0 !important;
+    flex: 1;
+    font-size: var(--button-text-size);
+    background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+    font-weight: bold;
+    white-space: nowrap;
+    line-height: 1.2;
 }
 
 #save-settings-btn:hover:not(:disabled) {
@@ -490,11 +490,11 @@ opacity: 0.95 !important;
 }
 
 .api-key-info {
-background: #e8f4f8;
-border: 1px solid #b3e5fc;
-border-radius: 20px;
-padding: 16px 24px;
-margin-bottom: 24px;
+    background: #e8f4f8;
+    border: 1px solid #b3e5fc;
+    border-radius: 24px; /* 增加圆角 */
+    padding: 16px 24px;
+    margin-bottom: 24px;
 }
 
 .api-key-info h3 {
@@ -528,7 +528,7 @@ display: inline-block;
 background: linear-gradient(to bottom, #4fc3f7, #29b6f6);
 color: #ffffff;
 padding: 4px 10px;
-border-radius: 20px;
+border-radius: 24px; /* 增加圆角 */
 text-decoration: none;
 font-weight: 500;
 font-size: 0.9em;
@@ -647,11 +647,11 @@ background: #333;
 
 /* 高级选项区域卡片样式 */
 #advanced-options {
-background: #f0f9ff;
-border: 1px solid #b3e5fc;
-border-radius: 16px;
-padding: 24px;
-margin-top: 16px;
+    background: #f0f9ff;
+    border: 1px solid #b3e5fc;
+    border-radius: 24px;
+    padding: 24px;
+    margin-top: 16px;
 }
 
 /* 确保高级选项区域内的输入框和下拉框保持白色背景，形成层次感 */
@@ -673,62 +673,60 @@ background: #ffffff;
 
 /* 自定义API配置按钮样式 - 与高级选项按钮一致 */
 #custom-api-toggle-btn {
-background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
-background-color: transparent !important;
-border: none !important;
-border-radius: 25px !important;
-height: auto;
-min-height: 48px;
-padding: 13px 13px !important;
-padding-right: 8px !important;
-color: white;
-font-weight: bold;
-display: flex !important;
-align-items: center;
-justify-content: flex-start;
-text-align: left !important;
-width: 220px !important;
-max-width: none !important;
-position: relative;
-cursor: pointer;
-user-select: none;
-transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease !important;
-margin-bottom: 8px;
+    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    border: none !important;
+    border-radius: 999px !important;
+    height: auto;
+    min-height: 54px;
+    padding: 12px 25px 12px 60px !important;
+    color: white;
+    font-weight: bold;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    text-align: left !important;
+    width: auto !important;
+    min-width: 240px;
+    max-width: 100%;
+    position: relative;
+    cursor: pointer;
+    user-select: none;
+    transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease !important;
+    margin-bottom: 8px;
+    box-sizing: border-box;
 }
 
 #custom-api-toggle-btn .dropdown-icon {
-display: block !important;
-position: absolute;
-left: 10px;
-top: 50%;
-transform: translateY(-50%);
-z-index: 10;
-flex-shrink: 0;
-pointer-events: none;
-filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
-width: 48px;
-height: 48px;
-transition: transform 0.2s;
-}
-
-#custom-api-toggle-btn.rotated .dropdown-icon {
-transform: translateY(-50%) rotate(90deg);
+    display: block !important;
+    position: absolute;
+    left: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 10;
+    flex-shrink: 0;
+    pointer-events: none;
+    filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
+    width: 44px;
+    height: 44px;
+    transition: transform 0.2s;
 }
 
 #custom-api-toggle-btn span {
-position: relative;
-z-index: 20;
-margin-left: 50px;
-margin-right: 40px;
-flex: 1;
-font-size: var(--button-text-size);
-background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
--webkit-background-clip: text;
-background-clip: text;
--webkit-text-fill-color: transparent;
-color: transparent;
-font-weight: bold;
-white-space: nowrap;
+    position: relative;
+    z-index: 20;
+    margin: 0 !important;
+    padding: 0 !important;
+    flex: 1;
+    font-size: var(--button-text-size);
+    background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+    font-weight: bold;
+    white-space: nowrap;
+    line-height: 1.2;
 }
 
 #custom-api-toggle-btn:hover:not(:disabled) {
@@ -755,19 +753,20 @@ margin-top: 0;
 }
 
 .custom-api-toggle-btn {
-display: flex;
-align-items: center;
-padding: 8px 13px;
-padding-right: 8px;
-background: linear-gradient(135deg, #40C5F1 0%, #22b3ff 100%);
-border: none;
-border-radius: 25px;
-cursor: pointer;
-transition: all 0.3s ease;
-user-select: none;
-width: 200px !important;
-max-width: none !important;
-height: auto;
+    display: inline-flex;
+    align-items: center;
+    padding: 10px 30px 10px 15px; /* 增加内边距 */
+    background: linear-gradient(135deg, #40C5F1 0%, #22b3ff 100%);
+    border: none;
+    border-radius: 999px; /* 改为药丸形 */
+    cursor: pointer;
+    transition: all 0.3s ease;
+    user-select: none;
+    width: auto !important;
+    min-width: 220px !important;
+    max-width: 100%;
+    height: auto;
+    box-sizing: border-box;
 }
 
 .custom-api-toggle-btn:hover {
@@ -813,18 +812,18 @@ transform: scale(1);
 }
 
 .custom-api-toggle-text {
-position: relative;
-z-index: 20;
-flex: 1;
-font-size: 16px;
-background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
--webkit-background-clip: text;
-background-clip: text;
--webkit-text-fill-color: transparent;
-color: transparent;
-font-weight: bold;
-white-space: nowrap;
-margin-right: 40px;
+    position: relative;
+    z-index: 20;
+    flex: 1;
+    font-size: 16px;
+    background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+    font-weight: bold;
+    white-space: nowrap;
+    margin-right: 10px;
 }
 
 #enableCustomApi {
@@ -846,22 +845,22 @@ transition: all 0.3s ease-in-out;
 }
 
 .model-config-container {
-margin-bottom: 16px;
-border: 1px solid #e0e0e0;
-border-radius: 8px;
-overflow: hidden;
-transition: all 0.3s ease-in-out;
+    margin-bottom: 16px;
+    border: 1px solid #e0e0e0;
+    border-radius: 24px;
+    overflow: hidden;
+    transition: all 0.3s ease-in-out;
 }
 
 .model-header {
-display: flex;
-justify-content: space-between;
-align-items: center;
-padding: 10px 16px;
-background: linear-gradient(135deg, #40C5F1 0%, #22b3ff 100%);
-border-bottom: 1px solid rgba(255, 255, 255, 0.2);
-cursor: pointer;
-transition: all 0.2s ease-in-out;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 20px; /* 增加内边距 */
+    background: linear-gradient(135deg, #40C5F1 0%, #22b3ff 100%);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+    cursor: pointer;
+    transition: all 0.2s ease-in-out;
 }
 
 .model-header:hover {

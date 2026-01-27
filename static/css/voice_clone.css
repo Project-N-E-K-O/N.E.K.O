@@ -161,9 +161,9 @@ body {
     border-radius: 999px !important;
     overflow: hidden !important;
     height: auto;
-    display: flex !important;
+    display: inline-flex !important;
     align-items: center;
-    justify-content: flex-start;
+    justify-content: center;
     text-align: left !important;
     position: relative;
     cursor: pointer;
@@ -171,20 +171,21 @@ body {
     transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease !important;
     color: white;
     font-weight: bold;
-    padding: 10px 13px !important;
-    padding-right: 13px !important;
-    max-width: none !important;
+    padding: 12px 25px 12px 50px !important;
+    max-width: 100% !important;
+    width: auto !important;
+    box-sizing: border-box;
 }
 
 .file-input-label {
-    min-height: 30px;
-    width: 180px !important;
+    min-height: 54px;
+    min-width: 180px;
     margin-bottom: 20px;
 }
 
 .register-voice-btn {
-    min-height: 36px;
-    width: 200px !important;
+    min-height: 54px;
+    min-width: 200px;
     margin-top: 20px;
 }
 
@@ -212,13 +213,13 @@ body {
 .register-voice-btn .register-icon {
     display: block !important;
     position: absolute;
-    left: 10px;
+    left: 12px;
     top: 50%;
     transform: translateY(-50%);
     z-index: 10;
     flex-shrink: 0;
     pointer-events: none;
-    height: 30px;
+    height: 36px;
     width: auto;
     max-width: 60px;
     image-rendering: crisp-edges;
@@ -257,7 +258,8 @@ body {
 .file-input-label .file-text {
     position: relative;
     z-index: 20;
-    margin-left: 60px;
+    margin: 0 !important;
+    margin-right: 10px !important;
     flex: 1;
     font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
     font-weight: bold;
@@ -265,6 +267,7 @@ body {
     letter-spacing: 1px;
     color: transparent;
     white-space: nowrap;
+    line-height: 1.2;
 }
 
 /* 【下层】：负责圆润描边 - 高密度阴影矩阵 */
@@ -472,7 +475,8 @@ body {
 .register-voice-btn .register-text {
     position: relative;
     z-index: 20;
-    margin-left: 50px;
+    margin: 0 !important;
+    margin-right: 10px !important;
     flex: 1;
     font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
     font-weight: bold;
@@ -480,6 +484,7 @@ body {
     letter-spacing: 1px;
     color: transparent;
     white-space: nowrap;
+    line-height: 1.2;
 }
 
 /* 【下层】：负责圆润描边 - 高密度阴影矩阵 */

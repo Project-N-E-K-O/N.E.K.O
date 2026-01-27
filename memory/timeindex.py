@@ -18,7 +18,7 @@ class TimeIndexedMemory:
         for name in time_store:
             self._ensure_engine_exists(name, time_store[name])
 
-    def _ensure_engine_exists(self, lanlan_name: str, db_path: str = None) -> bool:
+    def _ensure_engine_exists(self, lanlan_name: str, db_path: str | None = None) -> bool:
         """确保指定角色的数据库引擎已初始化喵~"""
         if lanlan_name in self.engines and lanlan_name in self.db_paths:
             return True
@@ -37,7 +37,7 @@ class TimeIndexedMemory:
             self.db_paths[lanlan_name] = db_path
             self.engines[lanlan_name] = create_engine(f"sqlite:///{db_path}")
             connection_string = f"sqlite:///{db_path}"
-            self._ensure_tables_exist(connection_string)
+            self._ensure_tables_exist(connection_string, lanlan_name)
             self.check_table_schema(lanlan_name)
             return True
         except Exception:
@@ -57,7 +57,7 @@ class TimeIndexedMemory:
         for name in list(self.engines.keys()):
             self.dispose_engine(name)
 
-    def _ensure_tables_exist(self, connection_string: str) -> None:
+    def _ensure_tables_exist(self, connection_string: str, lanlan_name: str) -> None:
         """
         确保原始表和压缩表存在喵~
         注意：此方法利用了 SQLChatMessageHistory 构造函数的副作用（自动创建表）。
@@ -73,21 +73,36 @@ class TimeIndexedMemory:
             session_id="",
             table_name=TIME_COMPRESSED_TABLE_NAME,
         )
+        
+        # 验证表是否真的被创建了喵~
+        if lanlan_name in self.engines:
+            with self.engines[lanlan_name].connect() as conn:
+                for table in [TIME_ORIGINAL_TABLE_NAME, TIME_COMPRESSED_TABLE_NAME]:
+                    result = conn.execute(text(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}'"))
+                    if not result.fetchone():
+                        logger.error(f"[TimeIndexedMemory] 表 {table} 未能成功创建喵！")
 
     def add_timestamp_column(self, lanlan_name):
         if lanlan_name not in self.engines:
             logger.warning(f"尝试为不存在的引擎 {lanlan_name} 添加列")
             return
+        
+        original_table = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
+        compressed_table = self._validate_table_name(TIME_COMPRESSED_TABLE_NAME)
+        
         with self.engines[lanlan_name].connect() as conn:
-            conn.execute(text(f"ALTER TABLE {TIME_ORIGINAL_TABLE_NAME} ADD COLUMN timestamp DATETIME"))
-            conn.execute(text(f"ALTER TABLE {TIME_COMPRESSED_TABLE_NAME} ADD COLUMN timestamp DATETIME"))
+            conn.execute(text(f"ALTER TABLE {original_table} ADD COLUMN timestamp DATETIME"))
+            conn.execute(text(f"ALTER TABLE {compressed_table} ADD COLUMN timestamp DATETIME"))
             conn.commit()
 
     def check_table_schema(self, lanlan_name):
         if lanlan_name not in self.engines:
             return
+            
+        original_table = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
+        
         with self.engines[lanlan_name].connect() as conn:
-            result = conn.execute(text(f"PRAGMA table_info({TIME_ORIGINAL_TABLE_NAME})"))
+            result = conn.execute(text(f"PRAGMA table_info({original_table})"))
             columns = result.fetchall()
             for i in columns:
                 if i[1] == 'timestamp':
@@ -106,16 +121,19 @@ class TimeIndexedMemory:
         db_path = self.db_paths[lanlan_name]
         connection_string = f"sqlite:///{db_path}"
         
+        original_table = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
+        compressed_table = self._validate_table_name(TIME_COMPRESSED_TABLE_NAME)
+        
         origin_history = SQLChatMessageHistory(
             connection_string=connection_string,
             session_id=event_id,
-            table_name=TIME_ORIGINAL_TABLE_NAME,
+            table_name=original_table,
         )
 
         compressed_history = SQLChatMessageHistory(
             connection_string=connection_string,
             session_id=event_id,
-            table_name=TIME_COMPRESSED_TABLE_NAME,
+            table_name=compressed_table,
         )
 
         origin_history.add_messages(messages)
@@ -123,11 +141,11 @@ class TimeIndexedMemory:
 
         with self.engines[lanlan_name].connect() as conn:
             conn.execute(
-                text(f"UPDATE {TIME_ORIGINAL_TABLE_NAME} SET timestamp = :timestamp WHERE session_id = :session_id"),
+                text(f"UPDATE {original_table} SET timestamp = :timestamp WHERE session_id = :session_id"),
                 {"timestamp": timestamp, "session_id": event_id}
             )
             conn.execute(
-                text(f"UPDATE {TIME_COMPRESSED_TABLE_NAME} SET timestamp = :timestamp WHERE session_id = :session_id"),
+                text(f"UPDATE {compressed_table} SET timestamp = :timestamp WHERE session_id = :session_id"),
                 {"timestamp": timestamp, "session_id": event_id}
             )
             conn.commit()

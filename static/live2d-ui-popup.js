@@ -637,9 +637,9 @@ Live2DManager.prototype._createSettingsMenuItems = function (popup) {
                 } else if (item.id === 'voice-clone' && item.url) {
                     const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                     finalUrl = `${item.url}?lanlan_name=${encodeURIComponent(lanlanName)}`;
-                    window.open(finalUrl, windowName, 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no');
+                    window.open(finalUrl, windowName, 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no,noopener');
                 } else {
-                    window.open(finalUrl, windowName, 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no');
+                    window.open(finalUrl, windowName, 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no,noopener');
                 }
             }
         });

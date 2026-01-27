@@ -13,10 +13,19 @@
 </head>
 
 <body>
+    <!-- 页面标题栏 -->
+    <div style="max-width: 1400px; margin: 20px auto 0; padding: 0 20px;">
+        <div style="background: #fff; border-radius: 12px 12px 0 0; padding: 15px 20px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+            <h1 style="margin: 0; font-size: 24px; font-weight: 600; color: #333;" data-i18n="steam.workshopManager">Steam 创意工坊管理</h1>
+            <button onclick="window.history.back()" style="background: transparent; border: none; cursor: pointer; padding: 4px; display: flex; align-items: center; justify-content: center; transition: transform 0.2s ease, opacity 0.2s ease; opacity: 0.9;" data-i18n-title="common.close">
+                <img src="/static/icons/close_button.png" data-i18n-alt="common.close" style="width: 32px; height: 32px; object-fit: contain; display: block;">
+            </button>
+        </div>
+    </div>
 
     <!-- 侧边栏 -->
     <!-- 布局容器 -->
-    <div class="layout-container">
+    <div class="layout-container" style="margin-top: 0; padding-top: 0;">
         <!-- 侧边栏 -->
         <div id="sidebar">
             <!-- 主要操作组 -->

@@ -163,12 +163,14 @@ body {
 }
 
 .file-list {
-    width: 220px;
+    width: 240px;
+    min-width: 220px;
     flex-shrink: 0;
     border: 2px solid #b3e5fc;
     border-radius: 20px;
     padding: 20px;
     background: #ffffff;
+    box-sizing: border-box;
 }
 
 .file-list-title,
@@ -196,16 +198,19 @@ body {
 .cat-btn {
     display: block;
     width: 100%;
-    padding: 10px 16px;
+    padding: 10px 15px;
     background: #fff;
     border: 2px solid #e3f4ff;
     border-radius: 50px;
     color: #40C5F1;
-    font-size: 1rem;
+    font-size: 0.95rem;
     cursor: pointer;
     transition: all 0.2s ease;
     text-align: center;
     font-weight: 500;
+    white-space: normal;
+    word-break: break-word;
+    line-height: 1.2;
 }
 
 .cat-btn:hover {

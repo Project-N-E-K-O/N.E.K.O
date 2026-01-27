@@ -677,6 +677,11 @@
                 return;
             }
 
+            // 如果元素有 data-text 属性，也更新它（用于 CSS attr() 显示）
+            if (element.hasAttribute('data-text')) {
+                element.setAttribute('data-text', text);
+            }
+
             // 如果翻译文本包含 HTML 标签（如 <br>、<img> 等），使用 innerHTML，否则使用 textContent
             if (text.includes('<br>') || text.includes('<BR>') || text.includes('<br/>') || text.includes('<img>') || text.includes('<IMG>') || text.includes('<img ')) {
                 // 安全过滤：仅允许 <br> 和 <img> 标签，且 <img> 仅允许安全属性
@@ -783,8 +788,8 @@
         // 更新动态创建的标签
         // _updateLabelText 是附加在父容器（toggleItem 或 menuItem）上的，不是直接在 [data-i18n] 元素上
         // 查找所有可能包含 _updateLabelText 的容器元素
-        // 方法1：查找所有 live2d-popup 和 shared-popup 内的直接子 div（toggleItem 和 menuItem）
-        const popups = document.querySelectorAll('.live2d-popup, .shared-popup');
+        // 方法1：查找所有 live2d-popup, vrm-popup 和 shared-popup 内的直接子 div（toggleItem 和 menuItem）
+        const popups = document.querySelectorAll('.live2d-popup, .vrm-popup, .shared-popup');
         popups.forEach(popup => {
             // 查找 popup 的直接子 div 元素
             Array.from(popup.children).forEach(child => {

@@ -246,6 +246,17 @@ VRMManager.prototype._createToggleItem = function (toggle, popup) {
     label.htmlFor = `vrm-${toggle.id}`;
     toggleItem.setAttribute('aria-label', toggle.label);
 
+    // 更新标签文本的函数
+    const updateLabelText = () => {
+        if (toggle.labelKey && window.t) {
+            label.innerText = window.t(toggle.labelKey);
+            toggleItem.setAttribute('aria-label', window.t(toggle.labelKey));
+        }
+    };
+    if (toggle.labelKey) {
+        toggleItem._updateLabelText = updateLabelText;
+    }
+
     const updateStyle = () => {
         const isChecked = checkbox.checked;
         toggleItem.setAttribute('aria-checked', isChecked ? 'true' : 'false');
@@ -337,6 +348,17 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
     label.style.height = '20px';
     toggleItem.setAttribute('aria-label', toggle.label);
 
+    // 更新标签文本的函数
+    const updateLabelText = () => {
+        if (toggle.labelKey && window.t) {
+            label.innerText = window.t(toggle.labelKey);
+            toggleItem.setAttribute('aria-label', window.t(toggle.labelKey));
+        }
+    };
+    if (toggle.labelKey) {
+        toggleItem._updateLabelText = updateLabelText;
+    }
+
     const updateStyle = () => {
         const isChecked = checkbox.checked;
         toggleItem.setAttribute('aria-checked', isChecked ? 'true' : 'false');
@@ -427,6 +449,20 @@ VRMManager.prototype._createSettingsMenuItems = function (popup) {
         Object.assign(labelText.style, { display: 'flex', alignItems: 'center', lineHeight: '1', height: '24px' });
         menuItem.appendChild(labelText);
 
+        // 存储更新函数
+        if (item.labelKey) {
+            const updateLabelText = () => {
+                if (window.t) {
+                    labelText.textContent = window.t(item.labelKey);
+                    // 同时更新图标 alt 属性
+                    if (item.icon && menuItem.querySelector('img')) {
+                        menuItem.querySelector('img').alt = window.t(item.labelKey);
+                    }
+                }
+            };
+            menuItem._updateLabelText = updateLabelText;
+        }
+
         menuItem.addEventListener('mouseenter', () => menuItem.style.background = 'rgba(68, 183, 254, 0.1)');
         menuItem.addEventListener('mouseleave', () => menuItem.style.background = 'transparent');
 
@@ -444,9 +480,11 @@ VRMManager.prototype._createSettingsMenuItems = function (popup) {
                 } else if (item.id === 'voice-clone' && item.url) {
                     const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                     finalUrl = `${item.url}?lanlan_name=${encodeURIComponent(lanlanName)}`;
-                    window.open(finalUrl, windowName, 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no');
+                    const newWin = window.open(finalUrl, windowName, 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no');
+                    if (newWin) newWin.opener = null;
                 } else {
-                    window.open(finalUrl, windowName, 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no');
+                    const newWin = window.open(finalUrl, windowName, 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no');
+                    if (newWin) newWin.opener = null;
                 }
             }
         });
