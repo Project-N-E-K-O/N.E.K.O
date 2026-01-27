@@ -1001,7 +1001,7 @@ function displayParameters() {
     // 刷新新生成的元素的翻译
     updatePageTranslations();
 }
-}
+
 
 // 模型选择按钮点击事件
 if (modelSelectBtn) {
