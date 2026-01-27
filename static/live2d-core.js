@@ -65,19 +65,8 @@ class Live2DManager {
         this._lockIconTicker = null;
         this._lockIconElement = null;
 
-        // 浮动按钮系统
-        this._floatingButtonsTicker = null;
-        this._floatingButtonsContainer = null;
-        this._floatingButtons = {}; // 存储所有按钮元素
-        this._popupTimers = {}; // 存储弹出框的定时器
-        this._goodbyeClicked = false; // 标记是否点击了"请她离开"
-        this._returnButtonContainer = null; // "请她回来"按钮容器
-
-        // 已打开的设置窗口引用映射（URL -> Window对象）
-        this._openSettingsWindows = {};
-
-        // 口型同步控制
-        this.mouthValue = 0; // 0~1
+        // 口型同步
+        this.mouthValue = 0; // 0~1 (嘴巴开合值)
         this.mouthParameterId = null; // 例如 'ParamMouthOpenY' 或 'ParamO'
         this._mouthOverrideInstalled = false;
         this._origMotionManagerUpdate = null; // 保存原始的 motionManager.update 方法

@@ -359,6 +359,25 @@ class VRMManager {
             if (!this.animation && typeof window.VRMAnimation !== 'undefined') this._initModules();
 
             if (this.currentModel && this.currentModel.vrm) {
+                // 0. 主灯跟随相机（VRoid Hub 风格：面部始终清晰受光）
+                // 核心理念：主光始终从相机方向照向模型，确保正面永远明亮
+                if (this.mainLight && this.camera) {
+                    // VRoid Hub 风格：主光几乎正对相机方向，只有轻微偏移
+                    // 这确保无论从什么角度看，模型正面都是均匀明亮的
+                    const lightOffset = new window.THREE.Vector3(
+                        0.2,   // X: 轻微右偏，产生自然的微弱侧影
+                        0.5,   // Y: 略微偏上，模拟柔和的顶光
+                        1.5    // Z: 在相机前方，确保光线方向正确
+                    );
+                    lightOffset.applyQuaternion(this.camera.quaternion);
+                    this.mainLight.position.copy(this.camera.position).add(lightOffset);
+                    
+                    // 让主光始终指向模型中心（如果有目标）
+                    if (this.currentModel.vrm.scene) {
+                        this.mainLight.target = this.currentModel.vrm.scene;
+                    }
+                }
+
                 // 1. 表情更新
                 if (this.expression) {
                     this.expression.update(delta);

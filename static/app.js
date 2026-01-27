@@ -2,6 +2,11 @@
 // 使用 @wasm-audio-decoders/ogg-opus-decoder
 // https://github.com/eshaz/wasm-audio-decoders/tree/main/src/ogg-opus-decoder
 // 库已在 index.html 中预加载，全局变量为 window["ogg-opus-decoder"]
+
+// [Performance] 全局调试开关
+window.DEBUG_AUDIO = typeof window.DEBUG_AUDIO !== 'undefined' ? window.DEBUG_AUDIO : false;
+window.DEBUG_LIPSYNC = typeof window.DEBUG_LIPSYNC !== 'undefined' ? window.DEBUG_LIPSYNC : false;
+
 let oggOpusDecoder = null;
 let oggOpusDecoderReady = null;
 
@@ -253,6 +258,13 @@ function init_app() {
     const MAX_SCREENSHOT_WIDTH = 1280;
     const MAX_SCREENSHOT_HEIGHT = 720;
 
+    function syncAudioGlobals() {
+        window.audioPlayerContext = audioPlayerContext;
+        window.globalAnalyser = globalAnalyser;
+    }
+
+    syncAudioGlobals();
+
     /**
      * 统一的截图辅助函数：从video元素捕获一帧到canvas，统一720p节流和JPEG压缩
      * @param {HTMLVideoElement} video - 视频源元素
@@ -332,9 +344,13 @@ function init_app() {
         };
 
         socket.onmessage = (event) => {
+            // 调试：记录所有收到的消息类型
             if (event.data instanceof Blob) {
                 // 处理二进制音频数据
-                console.log("收到新的音频块")
+                // [Performance] 减少高频二进制数据的日志输出
+                if (window.DEBUG_AUDIO) {
+                    console.log("[WebSocket] 收到二进制音频块, 大小:", event.data.size, "bytes");
+                }
                 handleAudioBlob(event.data);
                 return;
             }
@@ -361,6 +377,9 @@ function init_app() {
                     // 只清空播放队列，不重置解码器（避免丢失新音频的头信息）
                     clearAudioQueueWithoutDecoderReset();
                 } else if (response.type === 'audio_chunk') {
+                    if (window.DEBUG_AUDIO) {
+                        console.log('[WebSocket] 收到 audio_chunk 头信息:', response);
+                    }
                     // 精确打断控制：根据 speech_id 决定是否接收此音频
                     const speechId = response.speech_id;
                     
@@ -671,7 +690,7 @@ function init_app() {
                                     userLanguage: userLanguage
                                 });
                                 if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-                                    console.warn('💡 提示：翻译功能暂时不可用，但对话可以正常进行');
+                                    console.warn('提示：翻译功能暂时不可用，但对话可以正常进行');
                                 }
                             }
                         })();
@@ -1271,6 +1290,7 @@ function init_app() {
 
             if (!audioPlayerContext) {
                 audioPlayerContext = new (window.AudioContext || window.webkitAudioContext)();
+                syncAudioGlobals();
             }
 
             if (audioPlayerContext.state === 'suspended') {
@@ -1437,6 +1457,7 @@ function init_app() {
             await showCurrentModel(); // 智能显示当前模型
             if (!audioPlayerContext) {
                 audioPlayerContext = new (window.AudioContext || window.webkitAudioContext)();
+                syncAudioGlobals();
             }
 
             // 如果上下文被暂停，则恢复它
@@ -2954,8 +2975,10 @@ function init_app() {
         while (nextChunkTime < audioPlayerContext.currentTime + scheduleAheadTime) {
             if (audioBufferQueue.length > 0) {
                 const { buffer: nextBuffer } = audioBufferQueue.shift();
-                console.log('ctx', audioPlayerContext.sampleRate,
-                    'buf', nextBuffer.sampleRate);
+                if (window.DEBUG_AUDIO) {
+                    console.log('ctx', audioPlayerContext.sampleRate,
+                        'buf', nextBuffer.sampleRate);
+                }
 
                 const source = audioPlayerContext.createBufferSource();
                 source.buffer = nextBuffer;
@@ -2966,6 +2989,14 @@ function init_app() {
                 }
 
                 if (hasAnalyser && !lipSyncActive) {
+                    if (window.DEBUG_AUDIO) {
+                        console.log('[Audio] 尝试启动口型同步:', {
+                            hasLanLan1: !!window.LanLan1,
+                            hasLive2dModel: !!(window.LanLan1 && window.LanLan1.live2dModel),
+                            hasVrmManager: !!window.vrmManager,
+                            hasVrmModel: !!(window.vrmManager && window.vrmManager.currentModel)
+                        });
+                    }
                     if (window.LanLan1 && window.LanLan1.live2dModel) {
                         startLipSync(window.LanLan1.live2dModel, globalAnalyser);
                         lipSyncActive = true;
@@ -2974,6 +3005,10 @@ function init_app() {
                         if (typeof window.vrmManager.animation.startLipSync === 'function') {
                             window.vrmManager.animation.startLipSync(globalAnalyser);
                             lipSyncActive = true;
+                        }
+                    } else {
+                        if (window.DEBUG_AUDIO) {
+                            console.warn('[Audio] 无法启动口型同步：没有可用的模型');
                         }
                     }
                 }
@@ -3035,6 +3070,7 @@ function init_app() {
 
         if (!audioPlayerContext) {
             audioPlayerContext = new (window.AudioContext || window.webkitAudioContext)();
+            syncAudioGlobals();
         }
 
         if (audioPlayerContext.state === 'suspended') {
@@ -3186,28 +3222,89 @@ function init_app() {
     }
 
     function initializeGlobalAnalyser() {
-        if (!globalAnalyser && audioPlayerContext) {
-            globalAnalyser = audioPlayerContext.createAnalyser();
-            globalAnalyser.fftSize = 2048;
-            globalAnalyser.connect(audioPlayerContext.destination);
+        if (audioPlayerContext) {
+            if (audioPlayerContext.state === 'suspended') {
+                audioPlayerContext.resume().catch(err => {
+                    console.warn('[Audio] resume() failed:', err);
+                });
+            }
+            if (!globalAnalyser) {
+                try {
+                    globalAnalyser = audioPlayerContext.createAnalyser();
+                    globalAnalyser.fftSize = 2048;
+                    globalAnalyser.connect(audioPlayerContext.destination);
+                    console.log('[Audio] 全局分析器已创建并连接');
+                } catch (e) {
+                    console.error('[Audio] 创建分析器失败:', e);
+                }
+            }
+            // 无论是否新建，都同步一次全局引用
+            syncAudioGlobals();
+            
+            if (window.DEBUG_AUDIO) {
+                console.debug('[Audio] globalAnalyser 状态:', !!globalAnalyser);
+            }
+        } else {
+            if (window.DEBUG_AUDIO) {
+                console.warn('[Audio] audioPlayerContext 未初始化，无法创建分析器');
+            }
         }
     }
 
+    // 口型平滑状态闭包变量
+    let _lastMouthOpen = 0;
+
     function startLipSync(model, analyser) {
-        const dataArray = new Uint8Array(analyser.fftSize);
+        console.log('[LipSync] 开始口型同步', { hasModel: !!model, hasAnalyser: !!analyser });
+        if (animationFrameId) {
+            cancelAnimationFrame(animationFrameId);
+        }
+        
+        // 重置平滑状态
+        _lastMouthOpen = 0;
+        
+        // 使用频域数据 (Frequency Data) 而不是时域数据，这样对人声更敏感
+        analyser.fftSize = 512; // 较小的 FFT 窗口可以提高实时性
+        const bufferLength = analyser.frequencyBinCount;
+        const dataArray = new Uint8Array(bufferLength);
+        let logCounter = 0;
 
         function animate() {
-            analyser.getByteTimeDomainData(dataArray);
-            // 简单求音量（RMS 或最大振幅）
+            if (!analyser) return;
+            
+            // 获取频域数据
+            analyser.getByteFrequencyData(dataArray);
+            
+            // 计算人声频段 (约 85Hz - 255Hz，但在 FFT 中通常看低中频)
+            // 我们取前 1/4 的频段能量作为嘴巴开合的依据
             let sum = 0;
-            for (let i = 0; i < dataArray.length; i++) {
-                const val = (dataArray[i] - 128) / 128; // 归一化到 -1~1
-                sum += val * val;
+            const count = Math.floor(bufferLength * 0.4); // 取低频部分
+            for (let i = 0; i < count; i++) {
+                sum += dataArray[i];
             }
-            const rms = Math.sqrt(sum / dataArray.length);
-            // 这里可以调整映射关系
-            const mouthOpen = Math.min(1, rms * 8); // 放大到 0~1
-            // 通过统一通道设置嘴巴开合，屏蔽 motion 对嘴巴的控制
+            const average = sum / count;
+            
+            // 映射到 0~1
+            // 阈值调整：进一步提高静默阈值，并压缩动态范围
+            // 假设 30 是环境噪音，150 是大声说话
+            let mouthOpen = (average - 35) / 140; 
+            mouthOpen = Math.max(0, Math.min(1, mouthOpen));
+            
+            // 进一步限制最大张开度，避免出现 O 型嘴 (限制在 0.5 左右)
+            // 0.5 通常是 Live2D 模型比较自然的张嘴程度
+            mouthOpen = mouthOpen * 0.5;
+            
+            // 柔化处理：大幅增加平滑度，让动作更“肉”一点，避免快速开合
+            mouthOpen = _lastMouthOpen * 0.7 + mouthOpen * 0.3;
+            _lastMouthOpen = mouthOpen;
+
+            // 每60帧输出一次调试日志
+            if (logCounter++ % 60 === 0) {
+                if (window.DEBUG_LIPSYNC) {
+                    console.log('[LipSync] avg_freq:', average.toFixed(2), 'mouthOpen:', mouthOpen.toFixed(4));
+                }
+            }
+            
             if (window.LanLan1 && typeof window.LanLan1.setMouth === 'function') {
                 window.LanLan1.setMouth(mouthOpen);
             }
@@ -3219,13 +3316,18 @@ function init_app() {
     }
 
     function stopLipSync(model) {
-        cancelAnimationFrame(animationFrameId);
+        console.log('[LipSync] 停止口型同步');
+        if (animationFrameId) {
+            cancelAnimationFrame(animationFrameId);
+            animationFrameId = null;
+        }
         if (window.LanLan1 && typeof window.LanLan1.setMouth === 'function') {
             window.LanLan1.setMouth(0);
         } else if (model && model.internalModel && model.internalModel.coreModel) {
             // 兜底
             try { model.internalModel.coreModel.setParameterValueById("ParamMouthOpenY", 0); } catch (_) { }
         }
+        lipSyncActive = false;
     }
 
     // 隐藏live2d函数
@@ -7001,14 +7103,14 @@ function init_app() {
                         
                         if (window.vrmManager?.ambientLight && window.vrmManager?.mainLight && 
                             window.vrmManager?.fillLight && window.vrmManager?.rimLight) {
-                            // 使用与 initThreeJS 一致的默认值，确保光照配置的一致性
+                            // VRoid Hub 风格：极高环境光，柔和主光，无辅助光
                             const defaultLighting = {
-                                ambient: 0.4,
-                                main: 1.2,
-                                fill: 0.5,
-                                rim: 0.8,
-                                top: 0.3,
-                                bottom: 0.15
+                                ambient: 1.0,      // 极高环境光，消除所有暗部
+                                main: 0.6,         // 适中主光，配合跟随相机
+                                fill: 0.0,         // 不需要补光
+                                rim: 0.0,          // 不需要外部轮廓光
+                                top: 0.0,          // 不需要顶光
+                                bottom: 0.0        // 不需要底光
                             };
                             
                             if (window.vrmManager.ambientLight) {
@@ -7728,7 +7830,7 @@ async function translateAndShowSubtitle(text) {
         }
         
         if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-            console.warn('💡 提示：字幕翻译功能暂时不可用，但对话可以正常进行');
+            console.warn('提示：字幕翻译功能暂时不可用，但对话可以正常进行');
         }
     } finally {
         currentTranslateAbortController = null;

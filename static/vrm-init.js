@@ -2,6 +2,82 @@
  * VRM Init - 全局导出和自动初始化
  */
 
+// --- VRM 模块加载逻辑 ---
+(async function initVRMModules() {
+    // 如果已经加载过模块，或者是在模型管理页面（由 model_manager.js 负责加载），则不再重复加载
+    if (window.vrmModuleLoaded) return;
+
+    const VRM_VERSION = '1.0.0';
+
+    const loadModules = async () => {
+        console.log('[VRM] 开始加载依赖模块');
+        const vrmModules = [
+            '/static/vrm-orientation.js',
+            '/static/vrm-core.js',
+            '/static/vrm-expression.js',
+            '/static/vrm-animation.js',
+            '/static/vrm-interaction.js',
+            '/static/vrm-manager.js',
+            '/static/vrm-ui-popup.js',
+            '/static/vrm-ui-buttons.js'
+        ];
+
+        // 并行加载所有模块喵~
+        const failedModules = [];
+        const appendScriptSafely = (script) => {
+            const attachScript = () => {
+                const parent = document.head || document.body || document.documentElement;
+                parent.appendChild(script);
+            };
+            if (!document.head && !document.body) {
+                document.addEventListener('DOMContentLoaded', attachScript, { once: true });
+            } else {
+                attachScript();
+            }
+        };
+
+        const loadPromises = vrmModules.map(moduleSrc => {
+            // 检查脚本是否已存在
+            if (document.querySelector(`script[src^="${moduleSrc}"]`)) {
+                return Promise.resolve();
+            }
+
+            return new Promise((resolve) => {
+                const script = document.createElement('script');
+                script.src = `${moduleSrc}?v=${VRM_VERSION}`;
+                script.onload = () => {
+                    console.log(`[VRM] 模块加载成功: ${moduleSrc}`);
+                    resolve();
+                };
+                script.onerror = () => {
+                    console.error(`[VRM] 模块加载失败: ${moduleSrc}`);
+                    failedModules.push(moduleSrc);
+                    resolve(); // 即使失败也继续，防止 Promise.all 阻塞
+                };
+                appendScriptSafely(script);
+            });
+        });
+
+        await Promise.all(loadPromises);
+        if (failedModules.length === 0) {
+            window.vrmModuleLoaded = true;
+            window.dispatchEvent(new CustomEvent('vrm-modules-ready'));
+        } else {
+            window.vrmModuleLoaded = false;
+            window.dispatchEvent(new CustomEvent('vrm-modules-failed', {
+                detail: { failedModules }
+            }));
+        }
+    };
+
+    // 如果 THREE 还没好，就等事件；好了就直接加载
+    if (typeof window.THREE === 'undefined') {
+        window.addEventListener('three-ready', loadModules, { once: true });
+    } else {
+        loadModules();
+    }
+})();
+
 // 全局路径配置对象 (带默认值作为保底)
 window.VRM_PATHS = {
     user_vrm: '/user_vrm',

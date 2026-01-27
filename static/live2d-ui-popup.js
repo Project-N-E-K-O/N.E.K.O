@@ -626,81 +626,19 @@ Live2DManager.prototype._createSettingsMenuItems = function (popup) {
         menuItem.addEventListener('click', (e) => {
             e.stopPropagation();
             if (item.action === 'navigate') {
-                // 动态构建 URL（点击时才获取 lanlan_name）
                 let finalUrl = item.url || item.urlBase;
+                const windowName = `neko_${item.id}`;
+                
                 if (item.id === 'live2d-manage' && item.urlBase) {
-                    // 从 window.lanlan_config 动态获取 lanlan_name
                     const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                     finalUrl = `${item.urlBase}?lanlan_name=${encodeURIComponent(lanlanName)}`;
-                    // 跳转前关闭所有弹窗
-                    if (window.closeAllSettingsWindows) {
-                        window.closeAllSettingsWindows();
-                    }
-                    // Live2D设置页直接跳转
                     window.location.href = finalUrl;
                 } else if (item.id === 'voice-clone' && item.url) {
-                    // 声音克隆页面也需要传递 lanlan_name
                     const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                     finalUrl = `${item.url}?lanlan_name=${encodeURIComponent(lanlanName)}`;
-
-                    // 检查是否已有该URL的窗口打开
-                    if (this._openSettingsWindows[finalUrl]) {
-                        const existingWindow = this._openSettingsWindows[finalUrl];
-                        if (existingWindow && !existingWindow.closed) {
-                            existingWindow.focus();
-                            return;
-                        } else {
-                            delete this._openSettingsWindows[finalUrl];
-                        }
-                    }
-
-                    // 打开新的弹窗前关闭其他已打开的设置窗口，实现全局互斥
-                    this.closeAllSettingsWindows();
-
-                    // 打开新窗口并保存引用
-                    const newWindow = window.open(finalUrl, '_blank', 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no');
-                    if (newWindow) {
-                        this._openSettingsWindows[finalUrl] = newWindow;
-                    }
+                    window.openOrFocusWindow(finalUrl, windowName);
                 } else {
-                    // 其他页面弹出新窗口，但检查是否已打开
-                    // 检查是否已有该URL的窗口打开
-                    if (this._openSettingsWindows[finalUrl]) {
-                        const existingWindow = this._openSettingsWindows[finalUrl];
-                        // 检查窗口是否仍然打开
-                        if (existingWindow && !existingWindow.closed) {
-                            // 聚焦到已存在的窗口
-                            existingWindow.focus();
-                            return;
-                        } else {
-                            // 窗口已关闭，清除引用
-                            delete this._openSettingsWindows[finalUrl];
-                        }
-                    }
-
-                    // 打开新的弹窗前关闭其他已打开的设置窗口，实现全局互斥
-                    this.closeAllSettingsWindows();
-
-                    // 打开新窗口并保存引用
-                    const newWindow = window.open(finalUrl, '_blank', 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no');
-                    if (newWindow) {
-                        this._openSettingsWindows[finalUrl] = newWindow;
-
-                        // 监听窗口关闭事件，清除引用并触发模型重新加载
-                        const checkClosed = setInterval(() => {
-                            if (newWindow.closed) {
-                                delete this._openSettingsWindows[finalUrl];
-                                clearInterval(checkClosed);
-                                
-                                // 窗口关闭后触发主窗口的模型重新加载
-                                // 这是为了处理设置窗口可能修改了模型配置的情况
-                                if (window.showMainUI) {
-                                    console.log('[LivedUI] 设置窗口已关闭，触发模型检查和重新加载');
-                                    window.showMainUI();
-                                }
-                            }
-                        }, 500);
-                    }
+                    window.openOrFocusWindow(finalUrl, windowName);
                 }
             }
         });

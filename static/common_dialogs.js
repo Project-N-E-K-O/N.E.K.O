@@ -459,3 +459,88 @@
     console.log('页面缩放快捷键已禁用');
 })();
 
+/**
+ * 共享窗口管理工具
+ * 用于防止重复打开同一个窗口
+ */
+(function() {
+    'use strict';
+    
+    // 初始化已打开窗口的存储
+    if (!window._openedWindows) {
+        window._openedWindows = {};
+    }
+    
+    /**
+     * 打开或聚焦窗口
+     * 如果同名窗口已存在且未关闭，则聚焦到该窗口
+     * 否则打开新窗口
+     * 
+     * @param {string} url - 要打开的 URL
+     * @param {string} windowName - 窗口名称（用于标识和重用）
+     * @param {string} [features] - 窗口特性（可选，默认为标准设置窗口）
+     * @returns {Window|null} - 返回窗口对象
+     */
+    window.openOrFocusWindow = function(url, windowName, features) {
+        // 默认窗口特性
+        const defaultFeatures = 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no,noopener';
+        features = features || defaultFeatures;
+        
+        // 检查窗口是否已打开且未关闭
+        const existingWindow = window._openedWindows[windowName];
+        if (existingWindow && !existingWindow.closed) {
+            existingWindow.focus();
+            return existingWindow;
+        }
+        
+        // 打开新窗口并存储引用
+        const newWindow = window.open(url, windowName, features);
+        if (newWindow) {
+            window._openedWindows[windowName] = newWindow;
+        }
+        return newWindow;
+    };
+    
+    /**
+     * 关闭指定名称的窗口
+     * 
+     * @param {string} windowName - 窗口名称
+     */
+    window.closeNamedWindow = function(windowName) {
+        const win = window._openedWindows[windowName];
+        if (win && !win.closed) {
+            win.close();
+        }
+        delete window._openedWindows[windowName];
+    };
+    
+    /**
+     * 统一的页面关闭函数
+     * 适用于通过 window.open() 或 iframe 打开的页面
+     * 
+     * @param {string} [closeMessageType] - 发送给父窗口的消息类型（用于 iframe 模式）
+     */
+    window.closeCurrentPage = function(closeMessageType) {
+        if (window.opener) {
+            // 如果是通过 window.open() 打开的，直接关闭
+            window.close();
+        } else if (window.parent && window.parent !== window) {
+            // 如果在 iframe 中，通知父窗口关闭
+            if (closeMessageType) {
+                window.parent.postMessage({ type: closeMessageType }, '*');
+            } else {
+                window.parent.postMessage({ type: 'close_page' }, '*');
+            }
+        } else {
+            // 普通页面，返回上一页或主页
+            if (window.history.length > 1) {
+                window.history.back();
+            } else {
+                window.location.href = '/';
+            }
+        }
+    };
+    
+    console.log('窗口管理工具已加载');
+})();
+

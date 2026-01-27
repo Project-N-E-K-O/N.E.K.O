@@ -939,6 +939,80 @@ async def upload_live2d_model(files: list[UploadFile] = File(...)):
         return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
 
 
+@router.post('/upload_file/{model_name}')
+async def upload_file_to_model(model_name: str, file: UploadFile = File(...), file_type: str = "motion"):
+    """上传单个动作或表情文件到指定模型"""
+    try:
+        if not file:
+            return JSONResponse(status_code=400, content={"success": False, "error": "没有上传文件"})
+        
+        # 限制文件大小 (例如 50MB)
+        MAX_UPLOAD_SIZE = 50 * 1024 * 1024
+        chunk_size = 64 * 1024
+        file_content = bytearray()
+        try:
+            while True:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                file_content.extend(chunk)
+                if len(file_content) > MAX_UPLOAD_SIZE:
+                    return JSONResponse(status_code=400, content={"success": False, "error": f"文件过大，最大允许 {MAX_UPLOAD_SIZE // (1024*1024)}MB"})
+        finally:
+            await file.close()
+        
+        # 验证文件类型和 JSON 格式
+        filename = file.filename
+        if file_type == "motion":
+            if not filename or not filename.lower().endswith('.motion3.json'):
+                return JSONResponse(status_code=400, content={"success": False, "error": "动作文件必须是.motion3.json格式"})
+            target_subdir = "motions"
+        elif file_type == "expression":
+            if not filename or not filename.lower().endswith('.exp3.json'):
+                return JSONResponse(status_code=400, content={"success": False, "error": "表情文件必须是.exp3.json格式"})
+            target_subdir = "expressions"
+        else:
+            return JSONResponse(status_code=400, content={"success": False, "error": "无效的文件类型，必须是motion或expression"})
+        
+        # 验证 JSON 格式
+        try:
+            json.loads(file_content.decode('utf-8'))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return JSONResponse(status_code=400, content={"success": False, "error": "文件内容不是有效的 JSON 格式"})
+
+        # 查找模型目录
+        model_dir, _url_prefix = find_model_directory(model_name)
+        if not model_dir or not os.path.exists(model_dir):
+            return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
+        
+        # 创建目标子目录（如果不存在）
+        target_dir = pathlib.Path(model_dir) / target_subdir
+        target_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 只取文件名，避免路径穿越
+        safe_filename = pathlib.Path(filename).name
+        
+        target_file_path = target_dir / safe_filename
+        try:
+            with open(target_file_path, 'xb') as f:
+                f.write(file_content)
+        except FileExistsError:
+            return JSONResponse(status_code=400, content={"success": False, "error": f"文件 {safe_filename} 已存在"})
+        
+        logger.info(f"成功上传{file_type}文件到模型 {model_name}: {safe_filename}")
+        
+        return JSONResponse(content={
+            "success": True,
+            "message": f"文件 {safe_filename} 上传成功",
+            "filename": safe_filename,
+            "file_path": str(target_file_path.relative_to(model_dir))
+        })
+        
+    except Exception as e:
+        logger.exception(f"上传文件失败: {e}")
+        return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+
+
 @router.get('/open_model_directory/{model_name}')
 def open_model_directory(model_name: str):
     """打开指定Live2D模型的目录"""
