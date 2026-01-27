@@ -77,6 +77,9 @@ let parameterGroups = {};
 let initialParameters = {};
 let currentParameters = {};
 
+// 加载序列号，用于防止异步加载乱序
+let loadSeq = 0;
+
 // 参数名称中文翻译映射
 const parameterNameTranslations = {
 // 面部
@@ -575,96 +578,114 @@ return false;
 
 // 加载模型
 async function loadModel(modelName) {
-if (!modelName) return;
+    if (!modelName) return;
 
-showStatus(t('live2d.parameterEditor.loadingModel', '正在加载模型...'));
+    // 增加加载序列号并捕获当前值
+    const currentLoadSeq = ++loadSeq;
 
-try {
-// 确保 PIXI 应用已初始化
-if (!window.live2dManager.pixi_app) {
-await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
-}
+    showStatus(t('live2d.parameterEditor.loadingModel', '正在加载模型...'));
 
-// 加载参数信息
-await loadParameterInfo(modelName);
+    try {
+        // 确保 PIXI 应用已初始化
+        if (!window.live2dManager.pixi_app) {
+            await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
+        }
+        
+        // 如果序列号已过期，则中断
+        if (currentLoadSeq !== loadSeq) return;
 
-// 获取模型信息（优先使用缓存）
-let models = cachedModelList;
-if (!models) {
-const modelsResponse = await fetch('/api/live2d/models');
-const modelsData = await modelsResponse.json();
+        // 加载参数信息
+        await loadParameterInfo(modelName);
+        if (currentLoadSeq !== loadSeq) return;
 
-// 处理API返回格式（可能是数组或对象）
-models = [];
-if (Array.isArray(modelsData)) {
-models = modelsData;
-} else if (modelsData.success && Array.isArray(modelsData.models)) {
-models = modelsData.models;
-} else if (modelsData.models && Array.isArray(modelsData.models)) {
-models = modelsData.models;
-}
-cachedModelList = models;
-}
+        // 获取模型信息（优先使用缓存）
+        let models = cachedModelList;
+        if (!models) {
+            const modelsResponse = await fetch('/api/live2d/models');
+            const modelsData = await modelsResponse.json();
+            if (currentLoadSeq !== loadSeq) return;
 
-const modelInfo = models.find(m => m.name === modelName);
-if (!modelInfo) {
-throw new Error(t('live2d.parameterEditor.modelNotFound', '模型不存在'));
-}
+            // 处理API返回格式（可能是数组或对象）
+            models = [];
+            if (Array.isArray(modelsData)) {
+                models = modelsData;
+            } else if (modelsData.success && Array.isArray(modelsData.models)) {
+                models = modelsData.models;
+            } else if (modelsData.models && Array.isArray(modelsData.models)) {
+                models = modelsData.models;
+            }
+            cachedModelList = models;
+        }
 
-currentModelInfo = modelInfo;
+        const modelInfo = models.find(m => m.name === modelName);
+        if (!modelInfo) {
+            throw new Error(t('live2d.parameterEditor.modelNotFound', '模型不存在'));
+        }
 
-// 获取模型文件
-const filesResponse = await fetch(`/api/live2d/model_files/${encodeURIComponent(modelName)}`);
-const filesData = await filesResponse.json();
-if (!filesData.success) {
-throw new Error(t('live2d.parameterEditor.cannotGetModelFiles', '无法获取模型文件'));
-}
+        // 检查序列号
+        if (currentLoadSeq !== loadSeq) return;
+        currentModelInfo = modelInfo;
 
-// 构建模型配置
-let modelJsonUrl = modelInfo.path;
-const modelConfigRes = await fetch(modelJsonUrl);
-if (!modelConfigRes.ok) {
-throw new Error(t('live2d.parameterEditor.cannotGetModelConfig', '无法获取模型配置'));
-}
-const modelConfig = await modelConfigRes.json();
-modelConfig.url = modelJsonUrl;
+        // 获取模型文件
+        const filesResponse = await fetch(`/api/live2d/model_files/${encodeURIComponent(modelName)}`);
+        const filesData = await filesResponse.json();
+        if (currentLoadSeq !== loadSeq) return;
+        if (!filesData.success) {
+            throw new Error(t('live2d.parameterEditor.cannotGetModelFiles', '无法获取模型文件'));
+        }
 
-// 加载用户偏好设置
-let modelPreferences = null;
-try {
-const preferences = await window.live2dManager.loadUserPreferences();
-if (preferences && preferences.length > 0) {
-modelPreferences = preferences.find(p => p && p.model_path === modelJsonUrl);
-}
-} catch (e) {
-console.warn('加载用户偏好设置失败:', e);
-}
+        // 构建模型配置
+        let modelJsonUrl = modelInfo.path;
+        const modelConfigRes = await fetch(modelJsonUrl);
+        if (currentLoadSeq !== loadSeq) return;
+        if (!modelConfigRes.ok) {
+            throw new Error(t('live2d.parameterEditor.cannotGetModelConfig', '无法获取模型配置'));
+        }
+        const modelConfig = await modelConfigRes.json();
+        if (currentLoadSeq !== loadSeq) return;
+        modelConfig.url = modelJsonUrl;
 
-// 加载模型（会自动从模型目录加载parameters.json）
-await window.live2dManager.loadModel(modelConfig, {
-loadEmotionMapping: false,
-dragEnabled: true,
-wheelEnabled: true,
-preferences: modelPreferences,
-skipCloseWindows: true  // 参数编辑器页面不需要关闭其他窗口
-});
+        // 加载用户偏好设置
+        let modelPreferences = null;
+        try {
+            const preferences = await window.live2dManager.loadUserPreferences();
+            if (currentLoadSeq !== loadSeq) return;
+            if (preferences && preferences.length > 0) {
+                modelPreferences = preferences.find(p => p && p.model_path === modelJsonUrl);
+            }
+        } catch (e) {
+            console.warn('加载用户偏好设置失败:', e);
+        }
 
-live2dModel = window.live2dManager.getCurrentModel();
+        // 加载模型（会自动从模型目录加载parameters.json）
+        await window.live2dManager.loadModel(modelConfig, {
+            loadEmotionMapping: false,
+            dragEnabled: true,
+            wheelEnabled: true,
+            preferences: modelPreferences,
+            skipCloseWindows: true  // 参数编辑器页面不需要关闭其他窗口
+        });
+        
+        if (currentLoadSeq !== loadSeq) return;
 
-// 记录初始参数（在模型目录参数加载后）
-recordInitialParameters();
+        live2dModel = window.live2dManager.getCurrentModel();
 
-// 显示参数列表
-displayParameters();
+        // 记录初始参数（在模型目录参数加载后）
+        recordInitialParameters();
 
-resetAllBtn.disabled = false;
-saveBtn.disabled = false;
+        // 显示参数列表
+        displayParameters();
 
-showStatus(t('live2d.parameterEditor.modelLoadSuccess', '模型加载成功'), 2000);
-} catch (error) {
-console.error('加载模型失败:', error);
-showStatus(t('live2d.parameterEditor.modelLoadFailed', '加载模型失败: {{error}}', { error: error.message }), 3000);
-}
+        if (resetAllBtn) resetAllBtn.disabled = false;
+        if (saveBtn) saveBtn.disabled = false;
+
+        showStatus(t('live2d.parameterEditor.modelLoadSuccess', '模型加载成功'), 2000);
+    } catch (error) {
+        if (currentLoadSeq === loadSeq) {
+            console.error('加载模型失败:', error);
+            showStatus(t('live2d.parameterEditor.modelLoadFailed', '加载模型失败: {{error}}', { error: error.message }), 3000);
+        }
+    }
 }
 
 // 记录初始参数
@@ -994,114 +1015,122 @@ modelDropdown.style.display = 'none';
 });
 
 // 事件监听
-modelSelect.addEventListener('change', (e) => {
-updateModelSelectButtonText();
-loadModel(e.target.value);
-});
-
-resetAllBtn.addEventListener('click', () => {
-if (!live2dModel || !live2dModel.internalModel || !live2dModel.internalModel.coreModel) return;
-
-const coreModel = live2dModel.internalModel.coreModel;
-const paramCount = coreModel.getParameterCount();
-
-// 将所有参数重置为加载时的初始值
-for (let i = 0; i < paramCount; i++) {
-try {
-let paramId = null;
-try {
-paramId = coreModel.getParameterId(i);
-} catch (e) {
-paramId = `param_${i}`;
+if (modelSelect) {
+    modelSelect.addEventListener('change', (e) => {
+        updateModelSelectButtonText();
+        loadModel(e.target.value);
+    });
 }
 
-let resetValue = 0;
-// 优先使用加载时记录的初始值
-if (initialParameters && initialParameters[paramId] !== undefined) {
-resetValue = initialParameters[paramId];
-} else {
-// 降级到使用模型定义的默认值
-const range = getParameterRange(coreModel, i);
-resetValue = range.default;
+if (resetAllBtn) {
+    resetAllBtn.addEventListener('click', () => {
+        if (!live2dModel || !live2dModel.internalModel || !live2dModel.internalModel.coreModel) return;
+
+        const coreModel = live2dModel.internalModel.coreModel;
+        const paramCount = coreModel.getParameterCount();
+
+        // 将所有参数重置为加载时的初始值
+        for (let i = 0; i < paramCount; i++) {
+            try {
+                let paramId = null;
+                try {
+                    paramId = coreModel.getParameterId(i);
+                } catch (e) {
+                    paramId = `param_${i}`;
+                }
+
+                let resetValue = 0;
+                // 优先使用加载时记录的初始值
+                if (initialParameters && initialParameters[paramId] !== undefined) {
+                    resetValue = initialParameters[paramId];
+                } else {
+                    // 降级到使用模型定义的默认值
+                    const range = getParameterRange(coreModel, i);
+                    resetValue = range.default;
+                }
+
+                coreModel.setParameterValueByIndex(i, resetValue);
+            } catch (e) {
+                console.warn(`重置参数索引 ${i} 失败:`, e);
+            }
+        }
+
+        displayParameters();
+        showStatus(t('live2d.parameterEditor.resetAllParameters', '已重置所有参数'), 2000);
+    });
 }
 
-coreModel.setParameterValueByIndex(i, resetValue);
-} catch (e) {
-console.warn(`重置参数索引 ${i} 失败:`, e);
+if (saveBtn) {
+    saveBtn.addEventListener('click', async () => {
+        if (!currentModelInfo || !live2dModel) return;
+
+        showStatus(t('live2d.parameterEditor.savingParameters', '正在保存参数...'));
+
+        const paramsToSave = {};
+        if (live2dModel.internalModel && live2dModel.internalModel.coreModel) {
+            const coreModel = live2dModel.internalModel.coreModel;
+            const paramCount = coreModel.getParameterCount();
+            for (let i = 0; i < paramCount; i++) {
+                try {
+                    let paramId = null;
+                    try {
+                        paramId = coreModel.getParameterId(i);
+                    } catch (e) {
+                        paramId = `param_${i}`;
+                    }
+                    const value = coreModel.getParameterValueByIndex(i);
+                    paramsToSave[paramId] = value;
+                } catch (e) {
+                    console.warn(`收集参数 ${i} 失败:`, e);
+                }
+            }
+        }
+
+        try {
+            // 同时保存到模型目录的parameters.json文件和用户偏好设置
+            const position = { x: live2dModel.x, y: live2dModel.y };
+            const scale = { x: live2dModel.scale.x, y: live2dModel.scale.y };
+
+            // 1. 保存到模型目录的parameters.json文件
+            const fileResponse = await fetch(`/api/live2d/save_model_parameters/${encodeURIComponent(currentModelInfo.name)}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    parameters: paramsToSave
+                })
+            });
+
+            const fileResult = await fileResponse.json();
+
+            // 2. 同时保存到用户偏好设置（这样主页加载时也能读取到）
+            const prefSuccess = await window.live2dManager.saveUserPreferences(
+                currentModelInfo.path,
+                position,
+                scale,
+                paramsToSave
+            );
+
+            if (fileResult.success && prefSuccess) {
+                showStatus(t('live2d.parameterEditor.parametersSaved', '参数保存成功！'), 2000);
+                // 通知主页重新应用参数
+                sendMessageToMainPage('reload_model_parameters');
+            } else {
+                const errors = [];
+                if (!fileResult.success) errors.push(t('live2d.parameterEditor.modelDirectorySaveFailed', '模型目录文件保存失败'));
+                if (!prefSuccess) errors.push(t('live2d.parameterEditor.userPreferencesSaveFailed', '用户偏好设置保存失败'));
+                showStatus(t('live2d.parameterEditor.parametersSavePartialFailed', '参数保存部分失败: {{errors}}', { errors: errors.join(', ') }), 3000);
+                console.error('参数保存失败:', errors);
+            }
+        } catch (error) {
+            showStatus(t('live2d.parameterEditor.parametersSaveFailed', '参数保存失败: {{error}}', { error: error.message }), 3000);
+            console.error('参数保存失败:', error);
+        }
+    });
 }
-}
-
-displayParameters();
-showStatus(t('live2d.parameterEditor.resetAllParameters', '已重置所有参数'), 2000);
-});
-
-saveBtn.addEventListener('click', async () => {
-if (!currentModelInfo || !live2dModel) return;
-
-showStatus(t('live2d.parameterEditor.savingParameters', '正在保存参数...'));
-
-const paramsToSave = {};
-if (live2dModel.internalModel && live2dModel.internalModel.coreModel) {
-const coreModel = live2dModel.internalModel.coreModel;
-const paramCount = coreModel.getParameterCount();
-for (let i = 0; i < paramCount; i++) {
-try {
-let paramId = null;
-try {
-paramId = coreModel.getParameterId(i);
-} catch (e) {
-paramId = `param_${i}`;
-}
-const value = coreModel.getParameterValueByIndex(i);
-paramsToSave[paramId] = value;
-} catch (e) {
-console.warn(`收集参数 ${i} 失败:`, e);
-}
-}
-}
-
-try {
-// 同时保存到模型目录的parameters.json文件和用户偏好设置
-const position = { x: live2dModel.x, y: live2dModel.y };
-const scale = { x: live2dModel.scale.x, y: live2dModel.scale.y };
-
-// 1. 保存到模型目录的parameters.json文件
-const fileResponse = await fetch(`/api/live2d/save_model_parameters/${encodeURIComponent(currentModelInfo.name)}`, {
-method: 'POST',
-headers: {
-'Content-Type': 'application/json',
-},
-body: JSON.stringify({
-parameters: paramsToSave
-})
-});
-
-const fileResult = await fileResponse.json();
-
-// 2. 同时保存到用户偏好设置（这样主页加载时也能读取到）
-const prefSuccess = await window.live2dManager.saveUserPreferences(
-currentModelInfo.path,
-position,
-scale,
-paramsToSave
-);
-
-if (fileResult.success && prefSuccess) {
-showStatus(t('live2d.parameterEditor.parametersSaved', '参数保存成功！'), 2000);
-// 通知主页重新应用参数
-sendMessageToMainPage('reload_model_parameters');
-} else {
-const errors = [];
-if (!fileResult.success) errors.push(t('live2d.parameterEditor.modelDirectorySaveFailed', '模型目录文件保存失败'));
-if (!prefSuccess) errors.push(t('live2d.parameterEditor.userPreferencesSaveFailed', '用户偏好设置保存失败'));
-showStatus(t('live2d.parameterEditor.parametersSavePartialFailed', '参数保存部分失败: {{errors}}', { errors: errors.join(', ') }), 3000);
-console.error('参数保存失败:', errors);
-}
-} catch (error) {
-showStatus(t('live2d.parameterEditor.parametersSaveFailed', '参数保存失败: {{error}}', { error: error.message }), 3000);
-console.error('参数保存失败:', error);
-}
-});
 
 // 初始化
-loadModelList();
+if (modelSelect) {
+    loadModelList();
+}
