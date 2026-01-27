@@ -483,7 +483,7 @@
      */
     window.openOrFocusWindow = function(url, windowName, features) {
         // 默认窗口特性
-        const defaultFeatures = 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no';
+        const defaultFeatures = 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no,noopener';
         features = features || defaultFeatures;
         
         // 检查窗口是否已打开且未关闭

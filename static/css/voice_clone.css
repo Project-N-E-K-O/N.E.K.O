@@ -265,9 +265,18 @@ body {
     font-weight: bold;
     font-size: var(--button-text-size) !important;
     letter-spacing: 1px;
-    color: transparent;
+    color: var(--button-text-color, inherit);
     white-space: nowrap;
     line-height: 1.2;
+}
+
+.file-input-label .file-text[data-text] {
+    color: transparent;
+}
+
+.file-input-label .file-text:not([data-text])::before,
+.file-input-label .file-text:not([data-text])::after {
+    display: none;
 }
 
 /* 【下层】：负责圆润描边 - 高密度阴影矩阵 */
@@ -482,9 +491,18 @@ body {
     font-weight: bold;
     font-size: var(--button-text-size) !important;
     letter-spacing: 1px;
-    color: transparent;
+    color: var(--button-text-color, inherit);
     white-space: nowrap;
     line-height: 1.2;
+}
+
+.register-voice-btn .register-text[data-text] {
+    color: transparent;
+}
+
+.register-voice-btn .register-text:not([data-text])::before,
+.register-voice-btn .register-text:not([data-text])::after {
+    display: none;
 }
 
 /* 【下层】：负责圆润描边 - 高密度阴影矩阵 */

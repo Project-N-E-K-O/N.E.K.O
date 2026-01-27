@@ -554,7 +554,7 @@ const delBtn = document.createElement('button');
 delBtn.type = 'button';
 delBtn.className = 'btn sm delete';
 // 确保使用 innerHTML 以支持图标
-const deleteFieldText = (window.t && typeof window.t === 'function') ? window.t('character.deleteField') : '<img src="/static/icons/delete.png" alt="" style="width: 24px; height: 24px; vertical-align: middle; margin-right: 4px;"> 删除设定';
+const deleteFieldText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">${window.t('character.deleteField')}</span>` : '<img src="/static/icons/delete.png" alt="" class="delete-icon"> 删除设定';
 delBtn.innerHTML = deleteFieldText;
 delBtn.addEventListener('click', function () { deleteMasterField(this); });
 wrapper.appendChild(delBtn);
@@ -627,27 +627,46 @@ window._addMasterFieldHandler = true;
 // 保存主人
 const masterForm = document.getElementById('master-form');
 masterForm.onsubmit = async function (e) {
-e.preventDefault();
-const data = {};
-for (const [k, v] of new FormData(masterForm).entries()) {
-if (k && v) data[k] = v;
-}
-if (!data['档案名']) {
-await showAlert(window.t ? window.t('character.profileNameRequired') : '档案名为必填项');
-return;
-}
-await fetch('/api/characters/master', {
-method: 'POST',
-headers: { 'Content-Type': 'application/json' },
-body: JSON.stringify(data)
-});
-await loadCharacterData();
+    e.preventDefault();
+    const data = {};
+    for (const [k, v] of new FormData(masterForm).entries()) {
+        if (k && v) data[k] = v;
+    }
+    if (!data['档案名']) {
+        await showAlert(window.t ? window.t('character.profileNameRequired') : '档案名为必填项');
+        return;
+    }
 
-// 隐藏保存和取消按钮
-const saveBtn = masterForm.querySelector('#save-master-btn');
-const cancelBtn = masterForm.querySelector('#cancel-master-btn');
-if (saveBtn) saveBtn.style.display = 'none';
-if (cancelBtn) cancelBtn.style.display = 'none';
+    try {
+        const response = await fetch('/api/characters/master', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+
+        if (!response.ok) {
+            let errorMsg = '保存失败';
+            try {
+                const errorData = await response.json();
+                errorMsg = errorData.detail || errorData.message || errorMsg;
+            } catch (e) {
+                // 如果不是 JSON 响应
+            }
+            throw new Error(errorMsg);
+        }
+
+        await loadCharacterData();
+
+        // 只有在成功保存后才隐藏保存和取消按钮
+        const saveBtn = masterForm.querySelector('#save-master-btn');
+        const cancelBtn = masterForm.querySelector('#cancel-master-btn');
+        if (saveBtn) saveBtn.style.display = 'none';
+        if (cancelBtn) cancelBtn.style.display = 'none';
+    } catch (error) {
+        console.error('保存主人设定时出错:', error);
+        const localizedError = window.t ? window.t('character.saveMasterError') : '保存主人设定失败';
+        await showAlert(`${localizedError}: ${error.message}`);
+    }
 };
 
 // 渲染猫娘列表
@@ -902,7 +921,7 @@ if (!ALL_RESERVED_FIELDS.includes(k)) {
 const wrapper = document.createElement('div');
 wrapper.className = 'field-row-wrapper custom-row';
 // 确保使用 innerHTML 以支持图标
-const deleteFieldText = (window.t && typeof window.t === 'function') ? window.t('character.deleteField') : '<img src="/static/icons/delete.png" alt="" style="width: 24px; height: 24px; vertical-align: middle; margin-right: 4px;"> 删除设定';
+const deleteFieldText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">${window.t('character.deleteField')}</span>` : '<img src="/static/icons/delete.png" alt="" class="delete-icon"> 删除设定';
 
 const labelEl = document.createElement('label');
 labelEl.textContent = k;
@@ -1253,7 +1272,7 @@ const FORBIDDEN_FIELD_NAMES = [
     }
 const wrapper = document.createElement('div');
 wrapper.className = 'field-row-wrapper custom-row';
-const deleteFieldText = window.t ? window.t('character.deleteField') : '<img src="/static/icons/delete.png" alt="" style="width: 24px; height: 24px; vertical-align: middle; margin-right: 4px;"> 删除设定';
+const deleteFieldText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">${window.t('character.deleteField')}</span>` : '<img src="/static/icons/delete.png" alt="" class="delete-icon"> 删除设定';
 
 const labelEl = document.createElement('label');
 labelEl.textContent = key;

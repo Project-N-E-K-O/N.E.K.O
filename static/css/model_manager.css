@@ -2506,17 +2506,17 @@
 
         /* ==================== 中文模式下按钮固定宽度 ==================== */
         /* 中文文字较短，固定宽度更整齐美观 */
-        html[lang="zh-CN"] #backToMainBtn,
-        html[lang="zh-CN"] #upload-btn,
-        html[lang="zh-CN"] #model-type-select-btn,
-        html[lang="zh-CN"] #live2d-model-select-btn,
-        html[lang="zh-CN"] #motion-select-btn,
-        html[lang="zh-CN"] #expression-select-btn,
-        html[lang="zh-CN"] #persistent-expression-select-btn,
-        html[lang="zh-CN"] #vrm-model-select-btn,
-        html[lang="zh-CN"] #vrm-animation-select-btn,
-        html[lang="zh-CN"] #vrm-expression-select-btn,
-        html[lang="zh-CN"] #parameter-editor-btn {
+        html[lang|="zh"] #backToMainBtn,
+        html[lang|="zh"] #upload-btn,
+        html[lang|="zh"] #model-type-select-btn,
+        html[lang|="zh"] #live2d-model-select-btn,
+        html[lang|="zh"] #motion-select-btn,
+        html[lang|="zh"] #expression-select-btn,
+        html[lang|="zh"] #persistent-expression-select-btn,
+        html[lang|="zh"] #vrm-model-select-btn,
+        html[lang|="zh"] #vrm-animation-select-btn,
+        html[lang|="zh"] #vrm-expression-select-btn,
+        html[lang|="zh"] #parameter-editor-btn {
             width: 270px !important;
             min-width: 270px !important;
             padding: 10px 25px !important;  /* 对称 padding，与保存设置按钮一致 */
@@ -2524,17 +2524,17 @@
         }
         
         /* 中文模式下 span 的 margin 清零 */
-        html[lang="zh-CN"] #backToMainBtn span:not(.dropdown-arrow),
-        html[lang="zh-CN"] #upload-btn span:not(.dropdown-arrow),
-        html[lang="zh-CN"] #model-type-select-btn span:not(.dropdown-arrow),
-        html[lang="zh-CN"] #live2d-model-select-btn span:not(.dropdown-arrow),
-        html[lang="zh-CN"] #motion-select-btn span:not(.dropdown-arrow),
-        html[lang="zh-CN"] #expression-select-btn span:not(.dropdown-arrow),
-        html[lang="zh-CN"] #persistent-expression-select-btn span:not(.dropdown-arrow),
-        html[lang="zh-CN"] #vrm-model-select-btn span:not(.dropdown-arrow),
-        html[lang="zh-CN"] #vrm-animation-select-btn span:not(.dropdown-arrow),
-        html[lang="zh-CN"] #vrm-expression-select-btn span:not(.dropdown-arrow),
-        html[lang="zh-CN"] #parameter-editor-btn span:not(.dropdown-arrow) {
+        html[lang|="zh"] #backToMainBtn span:not(.dropdown-arrow),
+        html[lang|="zh"] #upload-btn span:not(.dropdown-arrow),
+        html[lang|="zh"] #model-type-select-btn span:not(.dropdown-arrow),
+        html[lang|="zh"] #live2d-model-select-btn span:not(.dropdown-arrow),
+        html[lang|="zh"] #motion-select-btn span:not(.dropdown-arrow),
+        html[lang|="zh"] #expression-select-btn span:not(.dropdown-arrow),
+        html[lang|="zh"] #persistent-expression-select-btn span:not(.dropdown-arrow),
+        html[lang|="zh"] #vrm-model-select-btn span:not(.dropdown-arrow),
+        html[lang|="zh"] #vrm-animation-select-btn span:not(.dropdown-arrow),
+        html[lang|="zh"] #vrm-expression-select-btn span:not(.dropdown-arrow),
+        html[lang|="zh"] #parameter-editor-btn span:not(.dropdown-arrow) {
             margin-left: 0 !important;
             margin-right: 0 !important;
             flex: none !important;  /* 不拉伸，让 justify-content 生效 */
@@ -2542,17 +2542,17 @@
 
         /* ==================== 英文模式下按钮固定宽度 ==================== */
         /* 英文文字较长，使用稍大的固定宽度保持整齐 */
-        html[lang="en"] #backToMainBtn,
-        html[lang="en"] #upload-btn,
-        html[lang="en"] #model-type-select-btn,
-        html[lang="en"] #live2d-model-select-btn,
-        html[lang="en"] #motion-select-btn,
-        html[lang="en"] #expression-select-btn,
-        html[lang="en"] #persistent-expression-select-btn,
-        html[lang="en"] #vrm-model-select-btn,
-        html[lang="en"] #vrm-animation-select-btn,
-        html[lang="en"] #vrm-expression-select-btn,
-        html[lang="en"] #parameter-editor-btn {
+        html[lang|="en"] #backToMainBtn,
+        html[lang|="en"] #upload-btn,
+        html[lang|="en"] #model-type-select-btn,
+        html[lang|="en"] #live2d-model-select-btn,
+        html[lang|="en"] #motion-select-btn,
+        html[lang|="en"] #expression-select-btn,
+        html[lang|="en"] #persistent-expression-select-btn,
+        html[lang|="en"] #vrm-model-select-btn,
+        html[lang|="en"] #vrm-animation-select-btn,
+        html[lang|="en"] #vrm-expression-select-btn,
+        html[lang|="en"] #parameter-editor-btn {
             width: 290px !important;
             min-width: 290px !important;
             padding: 10px 25px !important;
@@ -2560,17 +2560,17 @@
         }
         
         /* 英文模式下 span 的 margin 清零 */
-        html[lang="en"] #backToMainBtn span:not(.dropdown-arrow),
-        html[lang="en"] #upload-btn span:not(.dropdown-arrow),
-        html[lang="en"] #model-type-select-btn span:not(.dropdown-arrow),
-        html[lang="en"] #live2d-model-select-btn span:not(.dropdown-arrow),
-        html[lang="en"] #motion-select-btn span:not(.dropdown-arrow),
-        html[lang="en"] #expression-select-btn span:not(.dropdown-arrow),
-        html[lang="en"] #persistent-expression-select-btn span:not(.dropdown-arrow),
-        html[lang="en"] #vrm-model-select-btn span:not(.dropdown-arrow),
-        html[lang="en"] #vrm-animation-select-btn span:not(.dropdown-arrow),
-        html[lang="en"] #vrm-expression-select-btn span:not(.dropdown-arrow),
-        html[lang="en"] #parameter-editor-btn span:not(.dropdown-arrow) {
+        html[lang|="en"] #backToMainBtn span:not(.dropdown-arrow),
+        html[lang|="en"] #upload-btn span:not(.dropdown-arrow),
+        html[lang|="en"] #model-type-select-btn span:not(.dropdown-arrow),
+        html[lang|="en"] #live2d-model-select-btn span:not(.dropdown-arrow),
+        html[lang|="en"] #motion-select-btn span:not(.dropdown-arrow),
+        html[lang|="en"] #expression-select-btn span:not(.dropdown-arrow),
+        html[lang|="en"] #persistent-expression-select-btn span:not(.dropdown-arrow),
+        html[lang|="en"] #vrm-model-select-btn span:not(.dropdown-arrow),
+        html[lang|="en"] #vrm-animation-select-btn span:not(.dropdown-arrow),
+        html[lang|="en"] #vrm-expression-select-btn span:not(.dropdown-arrow),
+        html[lang|="en"] #parameter-editor-btn span:not(.dropdown-arrow) {
             margin-left: 0 !important;
             margin-right: 0 !important;
             flex: none !important;

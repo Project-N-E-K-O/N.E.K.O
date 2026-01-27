@@ -491,7 +491,7 @@ cachedModelList = models;
 renderModelList(models);
 } catch (error) {
 console.error('加载模型列表失败:', error);
-modelSelect.innerHTML = `<option value="">${t('live2d.parameterEditor.loading', '加载中...')}</option>`;
+modelSelect.innerHTML = `<option value="">${t('live2d.parameterEditor.loadFailed', '加载失败')}</option>`;
 updateModelDropdown();
 updateModelSelectButtonText();
 showStatus(t('live2d.parameterEditor.modelListLoadFailed', '加载模型列表失败: {{error}}', { error: error.message }), 3000);
