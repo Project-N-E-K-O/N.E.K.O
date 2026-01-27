@@ -863,134 +863,203 @@ console.warn(`处理参数 ${i} 失败:`, e);
 }
 
 // 渲染参数列表
-parametersList.innerHTML = '';
+function displayParameters() {
+    if (!live2dModel || !live2dModel.internalModel || !live2dModel.internalModel.coreModel) {
+        return;
+    }
 
-if (Object.keys(groupedParams).length === 0) {
-parametersList.innerHTML = `<div style="text-align: center; color: #999; padding: 20px;">${t('live2d.parameterEditor.noParametersFound', '未找到匹配的参数')}</div>`;
-return;
-}
+    const coreModel = live2dModel.internalModel.coreModel;
+    const paramCount = coreModel.getParameterCount();
+    const groupedParams = {};
 
-// 按组名排序
-const sortedGroups = Object.keys(groupedParams).sort();
+    for (let i = 0; i < paramCount; i++) {
+        try {
+            let paramId = null;
+            try {
+                paramId = coreModel.getParameterId(i);
+            } catch (e) {
+                paramId = `param_${i}`;
+            }
 
-for (const groupName of sortedGroups) {
-const groupDiv = document.createElement('div');
-groupDiv.className = 'parameter-group';
+            // 检查是否应该显示该参数
+            if (!shouldShowParameter(paramId, paramId)) {
+                continue;
+            }
 
-const groupHeader = document.createElement('div');
-groupHeader.className = 'group-header';
-groupHeader.textContent = groupName;
-groupDiv.appendChild(groupHeader);
+            const paramName = paramId;
+            let groupFound = false;
 
-for (const { id: paramId, name: paramName, index: i } of groupedParams[groupName]) {
-try {
-const currentValue = coreModel.getParameterValueByIndex(i);
-                        
-// 获取参数范围
-const range = getParameterRange(coreModel, i);
-let minValue = range.min;
-let maxValue = range.max;
-const initialValue = initialParameters[paramId] !== undefined ? initialParameters[paramId] : range.default;
+            // 查找所属分组
+            for (const [groupName, params] of Object.entries(parameterGroups)) {
+                if (params.includes(paramId)) {
+                    if (!groupedParams[groupName]) {
+                        groupedParams[groupName] = [];
+                    }
+                    groupedParams[groupName].push({
+                        id: paramId,
+                        name: getParameterChineseName(paramName), // 转换为中文名称
+                        index: i
+                    });
+                    groupFound = true;
+                    break;
+                }
+            }
 
-// 确保当前值在范围内 (或者至少如果当前值超出范围，扩展范围以包含它)
-if (currentValue < minValue) minValue = currentValue;
-if (currentValue > maxValue) maxValue = currentValue;
+            // 如果没有分组，归入“其他”
+            if (!groupFound) {
+                const groupName = '其他'; // 固定使用中文
+                if (!groupedParams[groupName]) {
+                    groupedParams[groupName] = [];
+                }
+                groupedParams[groupName].push({
+                    id: paramId,
+                    name: getParameterChineseName(paramName), // 转换为中文名称
+                    index: i
+                });
+            }
+        } catch (e) {
+            console.warn(`处理参数 ${i} 失败:`, e);
+        }
+    }
 
-const paramItem = document.createElement('div');
-paramItem.className = 'parameter-item';
+    parametersList.innerHTML = '';
 
-const header = document.createElement('div');
-header.className = 'parameter-header';
+    if (Object.keys(groupedParams).length === 0) {
+        const emptyMsg = document.createElement('div');
+        emptyMsg.style.cssText = 'text-align: center; color: #999; padding: 20px;';
+        const emptyText = t('live2d.parameterEditor.noParametersFound', '未找到匹配的参数');
+        emptyMsg.textContent = emptyText;
+        emptyMsg.setAttribute('data-i18n', 'live2d.parameterEditor.noParametersFound');
+        parametersList.appendChild(emptyMsg);
+        return;
+    }
 
-const nameSpan = document.createElement('span');
-nameSpan.className = 'parameter-name';
-// paramName 已经是中文名称了
-nameSpan.textContent = paramName;
+    // 按组名排序
+    const sortedGroups = Object.keys(groupedParams).sort();
 
-header.appendChild(nameSpan);
+    for (const groupName of sortedGroups) {
+        const groupDiv = document.createElement('div');
+        groupDiv.className = 'parameter-group';
 
-const controls = document.createElement('div');
-controls.className = 'parameter-controls';
+        const groupHeader = document.createElement('div');
+        groupHeader.className = 'group-header';
+        groupHeader.textContent = groupName;
+        groupDiv.appendChild(groupHeader);
 
-// 滑块容器 - 在上边
-const sliderWrapper = document.createElement('div');
-sliderWrapper.className = 'parameter-slider-wrapper';
+        for (const { id: paramId, name: paramName, index: i } of groupedParams[groupName]) {
+            try {
+                const currentValue = coreModel.getParameterValueByIndex(i);
+                
+                // 获取参数范围
+                const range = getParameterRange(coreModel, i);
+                let minValue = range.min;
+                let maxValue = range.max;
+                const initialValue = initialParameters[paramId] !== undefined ? initialParameters[paramId] : range.default;
 
-const slider = document.createElement('input');
-slider.type = 'range';
-slider.className = 'parameter-slider';
-slider.min = minValue;
-slider.max = maxValue;
-slider.step = '0.01';
-slider.value = currentValue;
+                // 确保当前值在范围内 (或者至少如果当前值超出范围，扩展范围以包含它)
+                if (currentValue < minValue) minValue = currentValue;
+                if (currentValue > maxValue) maxValue = currentValue;
 
-sliderWrapper.appendChild(slider);
+                const paramItem = document.createElement('div');
+                paramItem.className = 'parameter-item';
 
-// 底部容器 - 数字输入框和重置按钮
-const controlsBottom = document.createElement('div');
-controlsBottom.className = 'parameter-controls-bottom';
+                const header = document.createElement('div');
+                header.className = 'parameter-header';
 
-const input = document.createElement('input');
-input.type = 'number';
-input.className = 'parameter-input';
-input.min = minValue;
-input.max = maxValue;
-input.step = '0.01';
-input.value = currentValue;
+                const nameSpan = document.createElement('span');
+                nameSpan.className = 'parameter-name';
+                // paramName 已经是中文名称了
+                nameSpan.textContent = paramName;
 
-// 重置按钮 - 放在右侧
-const resetBtn = document.createElement('button');
-resetBtn.className = 'btn-reset';
-const resetText = document.createElement('span');
-resetText.className = 'btn-reset-text';
-const resetTextContent = t('live2d.parameterEditor.reset', '重置');
-resetText.textContent = resetTextContent;
-resetText.setAttribute('data-text', resetTextContent);
-resetBtn.appendChild(resetText);
+                header.appendChild(nameSpan);
 
-controlsBottom.appendChild(input);
-controlsBottom.appendChild(resetBtn);
+                const controls = document.createElement('div');
+                controls.className = 'parameter-controls';
 
-const updateParameter = (value) => {
-const numValue = parseFloat(value);
-if (isNaN(numValue)) return;
+                // 滑块容器 - 在上边
+                const sliderWrapper = document.createElement('div');
+                sliderWrapper.className = 'parameter-slider-wrapper';
 
-const clampedValue = Math.max(minValue, Math.min(maxValue, numValue));
-try {
-coreModel.setParameterValueByIndex(i, clampedValue);
-slider.value = clampedValue;
-input.value = clampedValue;
-currentParameters[paramId] = clampedValue;
-} catch (e) {
-console.warn(`更新参数 ${paramId} 失败:`, e);
-}
-};
+                const slider = document.createElement('input');
+                slider.type = 'range';
+                slider.className = 'parameter-slider';
+                slider.min = minValue;
+                slider.max = maxValue;
+                slider.step = '0.01';
+                slider.value = currentValue;
 
-slider.addEventListener('input', (e) => {
-updateParameter(e.target.value);
-});
+                sliderWrapper.appendChild(slider);
 
-input.addEventListener('input', (e) => {
-updateParameter(e.target.value);
-});
+                // 底部容器 - 数字输入框和重置按钮
+                const controlsBottom = document.createElement('div');
+                controlsBottom.className = 'parameter-controls-bottom';
 
-resetBtn.addEventListener('click', () => {
-updateParameter(initialValue);
-});
+                const input = document.createElement('input');
+                input.type = 'number';
+                input.className = 'parameter-input';
+                input.min = minValue;
+                input.max = maxValue;
+                input.step = '0.01';
+                input.value = currentValue;
 
-controls.appendChild(sliderWrapper);
-controls.appendChild(controlsBottom);
+                // 重置按钮 - 放在右侧
+                const resetBtn = document.createElement('button');
+                resetBtn.className = 'btn-reset';
+                const resetText = document.createElement('span');
+                resetText.className = 'btn-reset-text';
+                const resetTextContent = t('live2d.parameterEditor.reset', '重置');
+                resetText.textContent = resetTextContent;
+                resetText.setAttribute('data-i18n', 'live2d.parameterEditor.reset');
+                resetText.setAttribute('data-text', resetTextContent);
+                resetBtn.appendChild(resetText);
 
-paramItem.appendChild(header);
-paramItem.appendChild(controls);
+                controlsBottom.appendChild(input);
+                controlsBottom.appendChild(resetBtn);
 
-groupDiv.appendChild(paramItem);
-} catch (e) {
-console.warn(`显示参数 ${paramId} 失败:`, e);
-}
-}
+                const updateParameter = (value) => {
+                    const numValue = parseFloat(value);
+                    if (isNaN(numValue)) return;
 
-parametersList.appendChild(groupDiv);
+                    const clampedValue = Math.max(minValue, Math.min(maxValue, numValue));
+                    try {
+                        coreModel.setParameterValueByIndex(i, clampedValue);
+                        slider.value = clampedValue;
+                        input.value = clampedValue;
+                        currentParameters[paramId] = clampedValue;
+                    } catch (e) {
+                        console.warn(`更新参数 ${paramId} 失败:`, e);
+                    }
+                };
+
+                slider.addEventListener('input', (e) => {
+                    updateParameter(e.target.value);
+                });
+
+                input.addEventListener('input', (e) => {
+                    updateParameter(e.target.value);
+                });
+
+                resetBtn.addEventListener('click', () => {
+                    updateParameter(initialValue);
+                });
+
+                controls.appendChild(sliderWrapper);
+                controls.appendChild(controlsBottom);
+
+                paramItem.appendChild(header);
+                paramItem.appendChild(controls);
+
+                groupDiv.appendChild(paramItem);
+            } catch (e) {
+                console.warn(`显示参数 ${paramId} 失败:`, e);
+            }
+        }
+
+        parametersList.appendChild(groupDiv);
+    }
+    
+    // 刷新新生成的元素的翻译
+    updatePageTranslations();
 }
 }
 
