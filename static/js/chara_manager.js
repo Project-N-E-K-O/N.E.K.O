@@ -364,7 +364,7 @@ const deleteBtn = document.createElement('button');
 deleteBtn.type = 'button';
 deleteBtn.className = 'btn sm delete';
 // 确保使用 innerHTML 以支持图标
-const deleteFieldText = (window.t && typeof window.t === 'function') ? window.t('character.deleteField') : '<img src="/static/icons/delete.png" alt="" style="width: 24px; height: 24px; vertical-align: middle; margin-right: 4px;"> 删除设定';
+const deleteFieldText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">${window.t('character.deleteField')}</span>` : '<img src="/static/icons/delete.png" alt="" class="delete-icon"> 删除设定';
 deleteBtn.innerHTML = deleteFieldText;
 deleteBtn.addEventListener('click', function () {
 deleteMasterField(this);
@@ -377,7 +377,7 @@ renameBtn.type = 'button';
 renameBtn.className = 'btn sm';
 renameBtn.id = 'rename-master-btn';
 // 确保使用 innerHTML 以支持图标
-const renameText = (window.t && typeof window.t === 'function') ? window.t('character.rename') : '<img src="/static/icons/edit.png" alt="" style="width: 24px; height: 24px; vertical-align: middle; margin-right: 4px;"> 修改名称';
+const renameText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/edit.png" alt="" class="edit-icon"> <span data-i18n="character.rename">${window.t('character.rename')}</span>` : '<img src="/static/icons/edit.png" alt="" class="edit-icon"> 修改名称';
 renameBtn.innerHTML = renameText;
 wrapper.appendChild(renameBtn);
 }
@@ -435,7 +435,7 @@ const deleteBtn = document.createElement('button');
 deleteBtn.type = 'button';
 deleteBtn.className = 'btn sm delete';
 // 确保使用 innerHTML 以支持图标
-const deleteFieldText = (window.t && typeof window.t === 'function') ? window.t('character.deleteField') : '<img src="/static/icons/delete.png" alt="" style="width: 24px; height: 24px; vertical-align: middle; margin-right: 4px;"> 删除设定';
+const deleteFieldText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">${window.t('character.deleteField')}</span>` : '<img src="/static/icons/delete.png" alt="" class="delete-icon"> 删除设定';
 deleteBtn.innerHTML = deleteFieldText;
 deleteBtn.addEventListener('click', function () {
 deleteMasterField(this);
@@ -504,10 +504,10 @@ window.t ? window.t('character.addMasterFieldPrompt') : '请输入新设定的�
 window.t ? window.t('character.addMasterFieldTitle') : '新增主人设定'
 );
 if (!key || ["档案名"].includes(key)) return;
-if (masterFormEl.querySelector(`[name='${key}']`)) {
-await showAlert(window.t ? window.t('character.fieldExists') : '该设定已存在');
-return;
-}
+    if (masterFormEl.querySelector(`[name='${CSS.escape(key)}']`)) {
+        await showAlert(window.t ? window.t('character.fieldExists') : '该设定已存在');
+        return;
+    }
 const wrapper = document.createElement('div');
 wrapper.className = 'field-row-wrapper custom-row';
 
@@ -583,7 +583,7 @@ var masterFormEl = document.getElementById('master-form');
 if (masterFormEl) {
 // 添加按钮区域，初始隐藏保存和取消按钮
 // 确保使用 innerHTML 以支持图标
-const addFieldText = (window.t && typeof window.t === 'function') ? window.t('character.addMasterField') : '<img src="/static/icons/add.png" alt="" style="width: 24px; height: 24px; vertical-align: middle; margin-right: 4px;"> 新增设定';
+const addFieldText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/add.png" alt="" class="add-icon"> <span data-i18n="character.addMasterField">${window.t('character.addMasterField')}</span>` : '<img src="/static/icons/add.png" alt="" class="add-icon"> 新增设定';
 const saveMasterText = window.t ? window.t('character.saveMaster') : '保存主人设定';
 const cancelText = window.t ? window.t('character.cancel') : '取消';
 masterFormEl.insertAdjacentHTML('beforeend', `<div style="display:flex;justify-content:flex-end;align-items:center;gap:8px;margin-top:8px"><button type="button" class="btn sm add" id="add-master-field-btn" style="min-width:120px">${addFieldText}</button><button type="submit" class="btn sm" id="save-master-btn" style="display:none;min-width:120px">${saveMasterText}</button><button type="button" class="btn sm" id="cancel-master-btn" style="display:none;min-width:120px">${cancelText}</button></div>`);
@@ -628,8 +628,6 @@ list.innerHTML = '';
 const catgirls = characterData['猫娘'] || {};
 Object.keys(catgirls).forEach(key => {
 const cat = catgirls[key];
-// 随机颜色
-const color = randomColor();
 const block = document.createElement('div');
 block.className = 'catgirl-block';
 
@@ -667,7 +665,7 @@ switchBtn.id = 'switch-btn-' + key;
 switchBtn.style.background = '#40C5F1';
 switchBtn.style.minWidth = '120px';
 // 确保使用 innerHTML 以支持图标
-const switchText = (window.t && typeof window.t === 'function') ? window.t('character.switchCatgirl') : '<img src="/static/icons/star.png" alt="" style="width: 24px; height: 24px; vertical-align: middle; margin-right: 4px;"> 切换猫娘';
+const switchText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/star.png" alt="" class="star-icon"> <span data-i18n="character.switchCatgirl">${window.t('character.switchCatgirl')}</span>` : '<img src="/static/icons/star.png" alt="" class="star-icon"> 切换猫娘';
 switchBtn.innerHTML = switchText;
 switchBtn.addEventListener('click', function () { switchCatgirl(key); });
 actionsDiv.appendChild(switchBtn);
@@ -676,7 +674,7 @@ const deleteBtn = document.createElement('button');
 deleteBtn.className = 'btn sm delete';
 deleteBtn.style.minWidth = '120px';
 // 确保使用 innerHTML 以支持图标
-const deleteText = (window.t && typeof window.t === 'function') ? window.t('character.deleteCatgirl') : '<img src="/static/icons/delete.png" alt="" style="width: 24px; height: 24px; vertical-align: middle; margin-right: 4px;"> 删除猫娘';
+const deleteText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteCatgirl">${window.t('character.deleteCatgirl')}</span>` : '<img src="/static/icons/delete.png" alt="" class="delete-icon"> 删除猫娘';
 deleteBtn.innerHTML = deleteText;
 deleteBtn.addEventListener('click', function () { deleteCatgirl(key); });
 actionsDiv.appendChild(deleteBtn);
@@ -851,7 +849,7 @@ renameBtn.id = 'rename-catgirl-btn';
 renameBtn.style.marginLeft = '8px';
 renameBtn.style.minWidth = '120px';
 // 确保使用 innerHTML 以支持图标
-const renameText = (window.t && typeof window.t === 'function') ? window.t('character.rename') : '<img src="/static/icons/edit.png" alt="" style="width: 24px; height: 24px; vertical-align: middle; margin-right: 4px;"> 修改名称';
+const renameText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/edit.png" alt="" class="edit-icon"> <span data-i18n="character.rename">${window.t('character.rename')}</span>` : '<img src="/static/icons/edit.png" alt="" class="edit-icon"> 修改名称';
 renameBtn.innerHTML = renameText;
 baseWrapper.appendChild(renameBtn);
 }
@@ -1000,7 +998,7 @@ registerVoiceBtn.className = 'btn sm';
 registerVoiceBtn.style.marginLeft = '8px';
 registerVoiceBtn.style.minWidth = '120px';
 // 确保使用 innerHTML 以支持图标
-const registerVoiceText = (window.t && typeof window.t === 'function') ? window.t('character.registerNewVoice') : '<img src="/static/icons/sound.png" alt="" style="width: 24px; height: 24px; vertical-align: middle; margin-right: 4px;"> 注册新声音';
+const registerVoiceText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/sound.png" alt="" class="sound-icon"> <span data-i18n="character.registerNewVoice">${window.t('character.registerNewVoice')}</span>` : '<img src="/static/icons/sound.png" alt="" class="sound-icon"> 注册新声音';
 registerVoiceBtn.innerHTML = registerVoiceText;
 registerVoiceBtn.addEventListener('click', async function () {
 const catgirlName = form.querySelector('[name="档案名"]').value;
@@ -1084,7 +1082,7 @@ addFieldBtn.className = 'btn sm add';
 addFieldBtn.id = 'add-catgirl-field-btn';
 addFieldBtn.style.minWidth = '120px';
 // 确保使用 innerHTML 以支持图标
-const addFieldText = (window.t && typeof window.t === 'function') ? window.t('character.addField') : '<img src="/static/icons/add.png" alt="" style="width: 24px; height: 24px; vertical-align: middle; margin-right: 4px;"> 新增设定';
+const addFieldText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/add.png" alt="" class="add-icon"> <span data-i18n="character.addField">${window.t('character.addField')}</span>` : '<img src="/static/icons/add.png" alt="" class="add-icon"> 新增设定';
 addFieldBtn.innerHTML = addFieldText;
 btnArea.appendChild(addFieldBtn);
 
@@ -1217,11 +1215,11 @@ const FORBIDDEN_FIELD_NAMES = [
 '描述', '标签', '关键词',
 'live2d_item_id'
 ];
-if (!key || FORBIDDEN_FIELD_NAMES.includes(key)) return;
-if (form.querySelector(`[name='${key}']`)) {
-await showAlert(window.t ? window.t('character.fieldExists') : '该设定已存在');
-return;
-}
+    if (!key || FORBIDDEN_FIELD_NAMES.includes(key)) return;
+    if (form.querySelector(`[name='${CSS.escape(key)}']`)) {
+        await showAlert(window.t ? window.t('character.fieldExists') : '该设定已存在');
+        return;
+    }
 const wrapper = document.createElement('div');
 wrapper.className = 'field-row-wrapper custom-row';
 const deleteFieldText = window.t ? window.t('character.deleteField') : '<img src="/static/icons/delete.png" alt="" style="width: 24px; height: 24px; vertical-align: middle; margin-right: 4px;"> 删除设定';
@@ -1265,10 +1263,12 @@ newDeleteBtn.addEventListener('click', formShowActionButtons);
 
 // 设置删除字段的全局函数
 window.deleteCatgirlField = function (btn) {
-const fieldRow = btn.parentNode;
-const form = fieldRow.closest('form');
-fieldRow.remove();
-showActionButtons(form); // 删除字段后显示操作按钮
+    const wrapper = btn.closest('.field-row-wrapper');
+    if (wrapper) {
+        const form = wrapper.closest('form');
+        wrapper.remove();
+        if (form) showActionButtons(form); // 删除字段后显示操作按钮
+    }
 };
 
 // 在 form.onsubmit 之前添加
@@ -1788,14 +1788,14 @@ Object.keys(catgirls).forEach(name => {
 const switchBtn = document.getElementById(`switch-btn-${name}`);
 if (switchBtn) {
 if (name === currentCatgirl) {
-const currentText = (window.t && typeof window.t === 'function') ? window.t('character.currentCatgirl') : '<img src="/static/icons/star.png" alt="" style="width: 24px; height: 24px; vertical-align: middle; margin-right: 4px;"> 当前猫娘';
+const currentText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/star.png" alt="" class="star-icon"> <span data-i18n="character.currentCatgirl">${window.t('character.currentCatgirl')}</span>` : '<img src="/static/icons/star.png" alt="" class="star-icon"> 当前猫娘';
 switchBtn.innerHTML = currentText;
 switchBtn.style.background = '#40C5F1';
 switchBtn.style.color = '#fff';
 switchBtn.style.minWidth = '120px';
 switchBtn.disabled = true;
 } else {
-const switchText = (window.t && typeof window.t === 'function') ? window.t('character.switchCatgirl') : '<img src="/static/icons/star.png" alt="" style="width: 24px; height: 24px; vertical-align: middle; margin-right: 4px;"> 切换猫娘';
+const switchText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/star.png" alt="" class="star-icon"> <span data-i18n="character.switchCatgirl">${window.t('character.switchCatgirl')}</span>` : '<img src="/static/icons/star.png" alt="" class="star-icon"> 切换猫娘';
 switchBtn.innerHTML = switchText;
 switchBtn.style.background = '#40C5F1';
 switchBtn.style.minWidth = '120px';

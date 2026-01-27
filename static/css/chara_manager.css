@@ -422,10 +422,17 @@ min-width: 120px;
     margin-right: 8px !important;
 }
 
-/* 增大猫娘档案和进阶设定的下拉箭头图标 */
-.catgirl-expand, .fold-toggle .arrow {
-    width: 64px !important;
-    height: 64px !important;
+/* 稍微减小猫娘档案列表的展开箭头图标 */
+.catgirl-expand {
+    width: 48px !important;
+    height: 48px !important;
+    vertical-align: middle !important;
+}
+
+/* 让所有折叠面板（如进阶设定、系统提示词）的下拉图标小一点 */
+.fold-toggle .arrow {
+    width: 32px !important;
+    height: 32px !important;
     vertical-align: middle !important;
 }
 

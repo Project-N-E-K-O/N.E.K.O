@@ -16,12 +16,46 @@ class TimeIndexedMemory:
         self.recent_history_manager = recent_history_manager
         _, _, _, _, _, _, _, time_store, _, _ = get_config_manager().get_character_data()
         for name in time_store:
-            db_path = time_store[name]
-            self.db_paths[name] = db_path
-            self.engines[name] = create_engine(f"sqlite:///{db_path}")
+            self._ensure_engine_exists(name, time_store[name])
+
+    def _ensure_engine_exists(self, lanlan_name: str, db_path: str = None) -> bool:
+        """确保指定角色的数据库引擎已初始化喵~"""
+        if lanlan_name in self.engines and lanlan_name in self.db_paths:
+            return True
+
+        try:
+            if not db_path:
+                _, _, _, _, _, _, _, time_store, _, _ = get_config_manager().get_character_data()
+                if lanlan_name in time_store:
+                    db_path = time_store[lanlan_name]
+                else:
+                    config_mgr = get_config_manager()
+                    config_mgr.ensure_memory_directory()
+                    db_path = os.path.join(str(config_mgr.memory_dir), f'time_indexed_{lanlan_name}')
+                    logger.info(f"[TimeIndexedMemory] 角色 '{lanlan_name}' 不在配置中，使用默认路径: {db_path}")
+
+            self.db_paths[lanlan_name] = db_path
+            self.engines[lanlan_name] = create_engine(f"sqlite:///{db_path}")
             connection_string = f"sqlite:///{db_path}"
             self._ensure_tables_exist(connection_string)
-            self.check_table_schema(name)
+            self.check_table_schema(lanlan_name)
+            return True
+        except Exception:
+            logger.exception(f"初始化角色数据库引擎失败: {lanlan_name}")
+            return False
+
+    def dispose_engine(self, lanlan_name: str):
+        """释放指定角色的数据库引擎资源喵~"""
+        engine = self.engines.pop(lanlan_name, None)
+        if engine:
+            engine.dispose()
+            logger.info(f"[TimeIndexedMemory] 已释放角色 {lanlan_name} 的数据库引擎")
+        self.db_paths.pop(lanlan_name, None)
+
+    def cleanup(self):
+        """清理所有引擎资源喵~"""
+        for name in list(self.engines.keys()):
+            self.dispose_engine(name)
 
     def _ensure_tables_exist(self, connection_string: str) -> None:
         """
@@ -41,12 +75,17 @@ class TimeIndexedMemory:
         )
 
     def add_timestamp_column(self, lanlan_name):
+        if lanlan_name not in self.engines:
+            logger.warning(f"尝试为不存在的引擎 {lanlan_name} 添加列")
+            return
         with self.engines[lanlan_name].connect() as conn:
             conn.execute(text(f"ALTER TABLE {TIME_ORIGINAL_TABLE_NAME} ADD COLUMN timestamp DATETIME"))
             conn.execute(text(f"ALTER TABLE {TIME_COMPRESSED_TABLE_NAME} ADD COLUMN timestamp DATETIME"))
             conn.commit()
 
     def check_table_schema(self, lanlan_name):
+        if lanlan_name not in self.engines:
+            return
         with self.engines[lanlan_name].connect() as conn:
             result = conn.execute(text(f"PRAGMA table_info({TIME_ORIGINAL_TABLE_NAME})"))
             columns = result.fetchall()
@@ -57,36 +96,9 @@ class TimeIndexedMemory:
 
     async def store_conversation(self, event_id, messages, lanlan_name, timestamp=None):
         # 确保数据库引擎和路径存在
-        if lanlan_name not in self.engines or lanlan_name not in self.db_paths:
-            try:
-                _, _, _, _, _, _, _, time_store, _, _ = get_config_manager().get_character_data()
-                
-                if lanlan_name in time_store:
-                    db_path = time_store[lanlan_name]
-                else:
-                    config_mgr = get_config_manager()
-                    config_mgr.ensure_memory_directory()
-                    db_path = os.path.join(str(config_mgr.memory_dir), f'time_indexed_{lanlan_name}')
-                    logger.info(f"[TimeIndexedMemory] 角色 '{lanlan_name}' 不在配置中，使用默认路径: {db_path}")
-                
-                self.db_paths[lanlan_name] = db_path
-                self.engines[lanlan_name] = create_engine(f"sqlite:///{db_path}")
-                self._ensure_tables_exist(f"sqlite:///{db_path}")
-                self.check_table_schema(lanlan_name)
-            except Exception:
-                logger.exception(f"初始化角色数据库失败: {lanlan_name}")
-                # 最后的保底方案：强制使用默认路径
-                try:
-                    config_mgr = get_config_manager()
-                    config_mgr.ensure_memory_directory()
-                    db_path = os.path.join(str(config_mgr.memory_dir), f'time_indexed_{lanlan_name}')
-                    self.db_paths[lanlan_name] = db_path
-                    self.engines[lanlan_name] = create_engine(f"sqlite:///{db_path}")
-                    self._ensure_tables_exist(f"sqlite:///{db_path}")
-                    self.check_table_schema(lanlan_name)
-                except Exception:
-                    logger.error(f"严重错误：无法为角色 {lanlan_name} 创建任何数据库连接")
-                    return
+        if not self._ensure_engine_exists(lanlan_name):
+            logger.error(f"严重错误：无法为角色 {lanlan_name} 创建任何数据库连接")
+            return
 
         if timestamp is None:
             timestamp = datetime.now()
@@ -120,12 +132,20 @@ class TimeIndexedMemory:
             )
             conn.commit()
 
+    def _validate_table_name(self, table_name: str) -> str:
+        """验证表名是否合法，防止 SQL 注入喵~"""
+        allowed_tables = {TIME_ORIGINAL_TABLE_NAME, TIME_COMPRESSED_TABLE_NAME}
+        if table_name not in allowed_tables:
+            raise ValueError(f"不合法的表名: {table_name}")
+        return table_name
+
     def retrieve_summary_by_timeframe(self, lanlan_name, start_time, end_time):
         if lanlan_name not in self.engines:
             return []
+        table_name = self._validate_table_name(TIME_COMPRESSED_TABLE_NAME)
         with self.engines[lanlan_name].connect() as conn:
             result = conn.execute(
-                text(f"SELECT session_id, message FROM {TIME_COMPRESSED_TABLE_NAME} WHERE timestamp BETWEEN :start_time AND :end_time"),
+                text(f"SELECT session_id, message FROM {table_name} WHERE timestamp BETWEEN :start_time AND :end_time"),
                 {"start_time": start_time, "end_time": end_time}
             )
             return result.fetchall()
@@ -133,10 +153,11 @@ class TimeIndexedMemory:
     def retrieve_original_by_timeframe(self, lanlan_name, start_time, end_time):
         if lanlan_name not in self.engines:
             return []
+        table_name = self._validate_table_name(TIME_ORIGINAL_TABLE_NAME)
         # 查询指定时间范围内的对话
         with self.engines[lanlan_name].connect() as conn:
             result = conn.execute(
-                text(f"SELECT session_id, message FROM {TIME_ORIGINAL_TABLE_NAME} WHERE timestamp BETWEEN :start_time AND :end_time"),
+                text(f"SELECT session_id, message FROM {table_name} WHERE timestamp BETWEEN :start_time AND :end_time"),
                 {"start_time": start_time, "end_time": end_time}
             )
             return result.fetchall()
