@@ -783,6 +783,33 @@ VRMManager.prototype._startUIUpdateLoop = function () {
                 // 在移动端，跳过设置 left/top，保持 applyResponsiveFloatingLayout 设置的 bottom/right
                 // 桌面端正常设置 left/top 进行动态定位
                 if (!isMobile) {
+                    // 获取头部位置用于定位
+                    let headNode = null;
+                    if (vrm.humanoid) {
+                        headNode = vrm.humanoid.getNormalizedBoneNode('head');
+                        if (!headNode) headNode = vrm.humanoid.getNormalizedBoneNode('neck');
+                    }
+                    if (!headNode) headNode = vrm.scene;
+
+                    headNode.updateWorldMatrix(true, false);
+                    const btnPos = new window.THREE.Vector3();
+                    headNode.getWorldPosition(btnPos);
+                    // 减小偏移量，让按钮更靠近模型
+                    btnPos.x += 0.2;   // 从 0.35 减小到 0.2，更靠近模型
+                    btnPos.y += 0.05;  // 从 0.1 减小到 0.05，更靠近模型
+                    btnPos.project(this.camera);
+
+                    // 锁图标位置计算（使用头部位置）
+                    const lockPos = new window.THREE.Vector3();
+                    headNode.getWorldPosition(lockPos);
+                    lockPos.x += 0.1;
+                    lockPos.y -= 0.55;
+                    lockPos.project(this.camera);
+
+                    // 统一使用 canvasRect 的宽高计算屏幕坐标，确保在缩放/嵌入场景下定位准确
+                    const screenX = (btnPos.x * 0.5 + 0.5) * canvasWidth;
+                    const screenY = (-(btnPos.y * 0.5) + 0.5) * canvasHeight;
+
                     // 计算目标位置（应用偏移，减小垂直偏移让按钮更靠近模型）
                     // 注意：screenX/screenY 是相对于 canvas 的坐标，需要加上 canvas 的偏移量
                     const targetX = canvasRect.left + screenX;
@@ -807,56 +834,54 @@ VRMManager.prototype._startUIUpdateLoop = function () {
                     const maxY = windowHeight - actualToolbarHeight - minMargin;
                     const clampedY = Math.max(minY, Math.min(targetY, maxY));
 
-                    buttonsContainer.style.left = `${clampedX}px`;
-                    buttonsContainer.style.top = `${clampedY}px`;
+                    // 平滑跟随：如果当前位置和目标位置差异较小，则不更新，减少抖动
+                    const currentLeft = parseFloat(buttonsContainer.style.left) || 0;
+                    const currentTop = parseFloat(buttonsContainer.style.top) || 0;
+                    const dist = Math.sqrt(Math.pow(clampedX - currentLeft, 2) + Math.pow(clampedY - currentTop, 2));
+
+                    // 只有当移动距离超过 0.5 像素时才更新位置，减少微小抖动
+                    if (dist > 0.5) {
+                        buttonsContainer.style.left = `${clampedX}px`;
+                        buttonsContainer.style.top = `${clampedY}px`;
+                    }
+
+                    // 更新锁位置（使用与按钮相同的缩放比例）
+                    // 只有在非返回状态下才更新锁图标位置和显示
+                    if (lockIcon && !this._isInReturnState) {
+                        // 统一使用 canvasRect 的宽高计算屏幕坐标
+                        const lockScreenX = (lockPos.x * 0.5 + 0.5) * canvasWidth;
+                        const lockScreenY = (-(lockPos.y * 0.5) + 0.5) * canvasHeight;
+                        // 加上 canvas 的偏移量，转换为窗口坐标
+                        const targetLockX = canvasRect.left + lockScreenX;
+                        const targetLockY = canvasRect.top + lockScreenY;
+
+                        // 应用缩放到锁图标（使用与按钮相同的缩放比例）
+                        const baseLockIconSize = 44;  // 锁图标基准尺寸 44px x 44px
+                        lockIcon.style.transformOrigin = 'center center';
+                        lockIcon.style.transform = `scale(${scale})`;
+
+                        // 使用缩放后的实际尺寸（用于边界限制）
+                        const actualLockIconSize = baseLockIconSize * scale;
+
+                        // 屏幕边缘限制（使用窗口尺寸）
+                        const maxLockX = windowWidth - actualLockIconSize - minMargin;
+                        const maxLockY = windowHeight - actualLockIconSize - minMargin;
+                        const clampedLockX = Math.max(minMargin, Math.min(targetLockX, maxLockX));
+                        const clampedLockY = Math.max(minMargin, Math.min(targetLockY, maxLockY));
+
+                        // 平滑跟随锁图标
+                        const currentLockLeft = parseFloat(lockIcon.style.left) || 0;
+                        const currentLockTop = parseFloat(lockIcon.style.top) || 0;
+                        const lockDist = Math.sqrt(Math.pow(clampedLockX - currentLockLeft, 2) + Math.pow(clampedLockY - currentLockTop, 2));
+
+                        if (lockDist > 0.5) {
+                            lockIcon.style.left = `${clampedLockX}px`;
+                            lockIcon.style.top = `${clampedLockY}px`;
+                        }
+                        lockIcon.style.display = 'block';
+                    }
                 }
                 // 不要在这里设置 display，让鼠标检测逻辑和初始显示逻辑来控制显示/隐藏（与 Live2D 保持一致） 
-            }
-
-            // 更新锁位置（使用与按钮相同的缩放比例）
-            // 只有在非返回状态下才更新锁图标位置和显示
-            if (lockIcon && !this._isInReturnState) {
-                // 获取头部位置用于锁图标定位
-                let headNode = null;
-                if (vrm.humanoid) {
-                    headNode = vrm.humanoid.getNormalizedBoneNode('head');
-                    if (!headNode) headNode = vrm.humanoid.getNormalizedBoneNode('neck');
-                }
-                if (!headNode) headNode = vrm.scene;
-
-                headNode.updateWorldMatrix(true, false);
-                const lockPos = new window.THREE.Vector3();
-                headNode.getWorldPosition(lockPos);
-                lockPos.x += 0.1;
-                lockPos.y -= 0.55;
-                lockPos.project(this.camera);
-                // 统一使用 canvasRect 的宽高计算屏幕坐标
-                const lockScreenX = (lockPos.x * 0.5 + 0.5) * canvasWidth;
-                const lockScreenY = (-(lockPos.y * 0.5) + 0.5) * canvasHeight;
-                // 加上 canvas 的偏移量，转换为窗口坐标
-                const targetLockX = canvasRect.left + lockScreenX;
-                const targetLockY = canvasRect.top + lockScreenY;
-
-                // 应用缩放到锁图标（使用与按钮相同的缩放比例）
-                const baseLockIconSize = 44;  // 锁图标基准尺寸 44px x 44px
-                lockIcon.style.transformOrigin = 'center center';
-                lockIcon.style.transform = `scale(${scale})`;
-
-                // 使用缩放后的实际尺寸（用于边界限制）
-                const actualLockIconSize = baseLockIconSize * scale;
-                const minMargin = 10;  // 最小边距
-                const windowWidth = window.innerWidth;
-                const windowHeight = window.innerHeight;
-
-                // 屏幕边缘限制（使用窗口尺寸）
-                const maxLockX = windowWidth - actualLockIconSize - minMargin;
-                const maxLockY = windowHeight - actualLockIconSize - minMargin;
-                const clampedLockX = Math.max(minMargin, Math.min(targetLockX, maxLockX));
-                const clampedLockY = Math.max(minMargin, Math.min(targetLockY, maxLockY));
-
-                lockIcon.style.left = `${clampedLockX}px`;
-                lockIcon.style.top = `${clampedLockY}px`;
-                lockIcon.style.display = 'block';
             }
         } catch (error) {
             // 忽略单帧异常，继续更新循环（开发模式下记录）

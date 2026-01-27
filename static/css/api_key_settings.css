@@ -19,6 +19,11 @@
 
 @import url('base.css');
 
+/* 按钮文字大小变量 */
+:root {
+--button-text-size: 20px;  /* 统一控制按钮文字大小 */
+}
+
 html,
 body {
 height: 100%;
@@ -386,7 +391,7 @@ z-index: 20;
 margin-left: 50px;
 margin-right: 40px;
 flex: 1;
-font-size: 20px;
+font-size: var(--button-text-size);
 background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
 -webkit-background-clip: text;
 background-clip: text;
@@ -458,7 +463,7 @@ z-index: 20;
 margin-left: 50px;
 margin-right: 40px;
 flex: 1;
-font-size: 20px;
+font-size: var(--button-text-size);
 background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
 -webkit-background-clip: text;
 background-clip: text;
@@ -716,7 +721,7 @@ z-index: 20;
 margin-left: 50px;
 margin-right: 40px;
 flex: 1;
-font-size: 20px;
+font-size: var(--button-text-size);
 background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
 -webkit-background-clip: text;
 background-clip: text;

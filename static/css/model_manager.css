@@ -265,7 +265,7 @@
             margin-left: 90px;
             margin-right: 80px;
             flex: 1;
-            font-size: 20px;
+            font-size: var(--button-text-size);
             background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
             -webkit-background-clip: text;
             background-clip: text;
@@ -430,7 +430,7 @@
             z-index: 20;
             margin-left: 90px;
             flex: 1;
-            font-size: 20px;
+            font-size: var(--button-text-size);
         }
 
         #model-type-select-btn .dropdown-arrow {
@@ -554,7 +554,7 @@
             z-index: 20;
             margin-left: 90px;
             flex: 1;
-            font-size: 20px;
+            font-size: var(--button-text-size);
         }
 
         #live2d-model-select-btn .dropdown-arrow {
@@ -683,7 +683,7 @@
             z-index: 20;
             margin-left: 90px;
             flex: 1;
-            font-size: 20px;
+            font-size: var(--button-text-size);
         }
 
         #motion-select-btn .dropdown-arrow {
@@ -817,7 +817,7 @@
             z-index: 20;
             margin-left: 90px;
             flex: 1;
-            font-size: 20px;
+            font-size: var(--button-text-size);
         }
 
         #expression-select-btn .dropdown-arrow {
@@ -1090,7 +1090,7 @@
             z-index: 20;
             margin-left: 90px;
             flex: 1;
-            font-size: 20px;
+            font-size: var(--button-text-size);
         }
 
         #vrm-model-select-btn:hover:not(:disabled) {
@@ -1212,7 +1212,7 @@
             z-index: 20;
             margin-left: 90px;
             flex: 1;
-            font-size: 20px;
+            font-size: var(--button-text-size);
         }
 
         #vrm-animation-select-btn:hover:not(:disabled) {
@@ -1334,7 +1334,7 @@
             z-index: 20;
             margin-left: 90px;
             flex: 1;
-            font-size: 20px;
+            font-size: var(--button-text-size);
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
@@ -1514,7 +1514,7 @@
             z-index: 20;
             margin-left: 90px;
             flex: 1;
-            font-size: 20px;
+            font-size: var(--button-text-size);
         }
 
         #persistent-expression-select-btn .dropdown-arrow {
@@ -1638,7 +1638,7 @@
         }
 
         #save-position-btn span {
-            font-size: 20px !important;
+            font-size: var(--button-text-size) !important;
         }
 
         #save-position-btn:hover:not(:disabled) {
@@ -1706,7 +1706,7 @@
             z-index: 20;
             margin-left: 90px;
             flex: 1;
-            font-size: 20px;
+            font-size: var(--button-text-size);
         }
 
         #parameter-editor-btn:hover:not(:disabled) {
@@ -2389,7 +2389,7 @@
             z-index: 20;
             font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
             font-weight: bold;
-            font-size: 20px !important;
+            font-size: var(--button-text-size) !important;
             letter-spacing: 1px;
             color: transparent;
             transform: translateY(-2px);

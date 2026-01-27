@@ -285,8 +285,10 @@ body {
 .file-name-display {
     display: block;
     margin-top: 10px;
+    margin-left: 24px; /* 向右移动一点 */
     color: #40C5F1;
     font-size: 14px;
+    font-weight: 500;
 }
 
 .field-row {

@@ -648,6 +648,7 @@ const titleSpan = document.createElement('span');
 titleSpan.className = 'catgirl-title';
 titleSpan.style.color = '#40C5F1';
 titleSpan.style.fontWeight = '600';
+titleSpan.style.fontSize = '1.4rem';
 titleSpan.textContent = key;
 header.appendChild(titleSpan);
 

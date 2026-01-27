@@ -15,10 +15,11 @@ font-weight: 700;
 font-style: normal;
 font-display: swap;
 }
-/* 按钮圆角参数 */
+/* 按钮圆角参数和文字大小 */
 :root {
 --button-border-radius: 24px;
 --parameters-list-width: 270px;
+--button-text-size: 20px;  /* 统一控制按钮文字大小 */
 }
 
 html,
@@ -274,7 +275,7 @@ position: relative;
 z-index: 20;
 font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
 font-weight: bold;
-font-size: 20px !important;
+font-size: var(--button-text-size) !important;
 letter-spacing: 1px;
 color: transparent;
 transform: translateY(-2px);
@@ -614,7 +615,7 @@ z-index: 20;
 margin-left: 80px;
 margin-right: 80px;
 flex: 1;
-font-size: 20px;
+font-size: var(--button-text-size);
 background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
 -webkit-background-clip: text;
 background-clip: text;
@@ -640,7 +641,7 @@ margin-left: 80px;
 flex: 1;
 font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
 font-weight: bold;
-font-size: 20px !important;
+font-size: var(--button-text-size) !important;
 letter-spacing: 1px;
 color: transparent;
 }
@@ -720,7 +721,7 @@ font-weight: bold !important;
 }
 
 #reset-all-btn span {
-font-size: 20px !important;
+font-size: var(--button-text-size) !important;
 }
 
 #reset-all-btn:hover:not(:disabled) {
@@ -748,7 +749,7 @@ font-weight: bold !important;
 }
 
 #save-btn span {
-font-size: 20px !important;
+font-size: var(--button-text-size) !important;
 }
 
 #save-btn:hover:not(:disabled) {
@@ -804,7 +805,7 @@ position: relative;
 z-index: 20;
 margin-left: 90px;
 flex: 1;
-font-size: 20px;
+font-size: var(--button-text-size);
 }
 
 #model-select-btn:hover:not(:disabled) {

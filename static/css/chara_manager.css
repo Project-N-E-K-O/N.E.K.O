@@ -165,25 +165,26 @@ margin-bottom: 24px;
 }
 
 .exclamation-icon {
-    width: 48px;
-    height: 48px;
+    width: 64px;
+    height: 64px;
 }
 
 .required-star {
     color: red;
 }
 
-.delete-icon, .add-icon, .key-icon {
-    width: 24px;
-    height: 24px;
+.delete-icon, .add-icon {
+    width: 20px;
+    height: 20px;
     vertical-align: middle;
     margin-right: 4px;
 }
 
 .key-icon {
-    width: 36px;
-    height: 36px;
-    margin-right: 6px;
+    width: 48px;
+    height: 48px;
+    vertical-align: middle;
+    margin-right: 8px;
 }
 
 #add-catgirl-btn {
@@ -192,8 +193,8 @@ margin-bottom: 24px;
 
 .master-section-header .tips {
 margin: 0;
-color: #666;
-font-size: 0.85rem;
+color: #40C5F1;
+font-size: 1.1rem;
 flex: 1;
 }
 
@@ -220,6 +221,7 @@ align-items: center;
 color: #40C5F1;
 gap: 8px;
 margin-bottom: 24px;
+line-height: 1; /* 确保容器行高不影响对齐 */
 }
 
 .catgirl-card {
@@ -403,6 +405,28 @@ margin-left: 8px;
 flex-shrink: 0;
 margin-left: 8px;
 min-width: 120px;
+}
+
+/* 强制限制按钮内图标的大小，防止被动态脚本或i18n覆盖 */
+.btn.sm img {
+    width: 20px !important;
+    height: 20px !important;
+    margin-right: 4px !important;
+    vertical-align: middle !important;
+}
+
+/* API Key 按钮内的图标需要大一点，且不受上面的强制限制影响 */
+.btn.api-key-btn img {
+    width: 64px !important;
+    height: 64px !important;
+    margin-right: 8px !important;
+}
+
+/* 增大猫娘档案和进阶设定的下拉箭头图标 */
+.catgirl-expand, .fold-toggle .arrow {
+    width: 64px !important;
+    height: 64px !important;
+    vertical-align: middle !important;
 }
 
 /* 在进阶设定中，确保按钮对齐 */
@@ -697,7 +721,7 @@ flex-shrink: 0;
 
 .catgirl-title {
 font-weight: 600;
-font-size: 1rem;
+font-size: 1.4rem;
 color: #40C5F1;
 position: absolute;
 left: 50%;
@@ -734,9 +758,10 @@ margin-right: 0;
 }
 
 .tips {
-color: #666;
-font-size: 0.85rem;
-margin-bottom: 12px;
+color: #40C5F1;
+font-size: 1.1rem;
+margin-bottom: 0; /* 移除底部外边距，防止干扰垂直居中 */
+line-height: 1.5;
 }
 
 /* 确保按钮在胶囊行内正确对齐 */
@@ -748,10 +773,10 @@ align-items: center;
 
 /* API Key 按钮特殊样式 */
 .btn.api-key-btn {
-background: #40C5F1;
-padding: 12px 24px;
-font-size: 0.95rem;
-min-height: 44px;
+    background: #40C5F1;
+    padding: 12px 24px;
+    font-size: 0.95rem;
+    min-height: 44px;
 }
 
 /* 当前猫娘指示条 */

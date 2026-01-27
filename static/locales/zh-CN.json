@@ -808,7 +808,7 @@
     "gender": "性别",
     "nickname": "昵称",
     "apiKeySettings": "<img src=\"/static/icons/key.png\" alt=\"\" style=\"width: 36px; height: 36px; vertical-align: middle; margin-right: 6px;\"> API Key 设置",
-    "masterProfile": "主人档案（唯一）：档案名为必填项，其他均为可选项，可自行删减。",
+    "masterProfile": "主人档案（唯一）：档案名为必填项，其他均为可选项。",
     "profileName": "档案名",
     "required": "*",
     "deleteField": "<img src=\"/static/icons/delete.png\" alt=\"\" style=\"width: 24px; height: 24px; vertical-align: middle; margin-right: 4px;\"> 删除设定",

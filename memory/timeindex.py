@@ -23,12 +23,12 @@ class TimeIndexedMemory:
     def _ensure_tables_exist(self, connection_string: str) -> None:
         """确保原始表和压缩表存在喵~"""
         _ = SQLChatMessageHistory(
-            connection=connection_string,
+            connection_string=connection_string,
             session_id="",
             table_name=TIME_ORIGINAL_TABLE_NAME,
         )
         _ = SQLChatMessageHistory(
-            connection=connection_string,
+            connection_string=connection_string,
             session_id="",
             table_name=TIME_COMPRESSED_TABLE_NAME,
         )
@@ -102,13 +102,13 @@ class TimeIndexedMemory:
 
         connection_string = f"sqlite:///{time_store[lanlan_name]}"
         origin_history = SQLChatMessageHistory(
-            connection=connection_string,
+            connection_string=connection_string,
             session_id=event_id,
             table_name=TIME_ORIGINAL_TABLE_NAME,
         )
 
         compressed_history = SQLChatMessageHistory(
-            connection=connection_string,
+            connection_string=connection_string,
             session_id=event_id,
             table_name=TIME_COMPRESSED_TABLE_NAME,
         )
