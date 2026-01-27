@@ -1490,19 +1490,14 @@
             min-width: 150px;
             max-width: 100% !important;
             position: relative;
-            cursor: pointer;
+            cursor: default !important;  /* 鼠标样式改为默认 */
             box-sizing: border-box;
+            pointer-events: none !important;  /* 禁用所有鼠标事件 */
         }
 
         #persistent-expression-select-btn:disabled {
             opacity: 0.6;
-            cursor: not-allowed;
-        }
-
-        /* 常驻表情选择器按钮 - 仅作展示，不可点击 */
-        #persistent-expression-select-btn {
-            pointer-events: none !important;  /* 禁用所有鼠标事件 */
-            cursor: default !important;  /* 鼠标样式改为默认 */
+            cursor: not-allowed !important;
         }
 
         #persistent-expression-select-btn .persistent-expression-icon {

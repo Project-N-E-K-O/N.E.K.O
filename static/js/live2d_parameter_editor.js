@@ -218,50 +218,71 @@ return true;
 
 // 获取参数的中文名称
 function getParameterChineseName(englishName) {
-// 规范化输入，防止 null/undefined 调用字符串方法
-const safeName = englishName ? String(englishName) : '';
+    // 规范化输入，防止 null/undefined 调用字符串方法
+    const safeName = englishName ? String(englishName) : '';
 
-// 直接匹配
-if (parameterNameTranslations[safeName]) {
-return parameterNameTranslations[safeName];
-}
+    // 直接匹配
+    if (parameterNameTranslations[safeName]) {
+        return parameterNameTranslations[safeName];
+    }
 
-// 部分匹配（处理带前缀的情况）
-for (const [key, value] of Object.entries(parameterNameTranslations)) {
-if (safeName.includes(key) || key.includes(safeName)) {
-return value;
-}
-}
+    // 转义正则特殊字符
+    const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-// 智能翻译常见单词
-let translated = safeName;
-translated = translated.replace(/Eye\s+L/gi, '左眼');
-translated = translated.replace(/Eye\s+R/gi, '右眼');
-translated = translated.replace(/Arm\s+L/gi, '左臂');
-translated = translated.replace(/Arm\s+R/gi, '右臂');
-translated = translated.replace(/Hand\s+L/gi, '左手');
-translated = translated.replace(/Hand\s+R/gi, '右手');
-translated = translated.replace(/Eyebrow\s+L/gi, '左眉');
-translated = translated.replace(/Eyebrow\s+R/gi, '右眉');
-translated = translated.replace(/Rotation/gi, '旋转');
-translated = translated.replace(/Angle/gi, '角度');
-translated = translated.replace(/Scale/gi, '缩放');
-translated = translated.replace(/Open/gi, '开合');
-translated = translated.replace(/Smile/gi, '微笑');
-translated = translated.replace(/Form/gi, '形状');
-translated = translated.replace(/Deformation/gi, '变形');
-translated = translated.replace(/Shoulder/gi, '肩膀');
-translated = translated.replace(/Elbow/gi, '手肘');
-translated = translated.replace(/Wrist/gi, '手腕');
-translated = translated.replace(/Body/gi, '身体');
-translated = translated.replace(/Hair/gi, '头发');
-translated = translated.replace(/Mouth/gi, '嘴巴');
-translated = translated.replace(/Face/gi, '面部');
-translated = translated.replace(/Effect/gi, '特效');
-translated = translated.replace(/Color/gi, '颜色');
-translated = translated.replace(/_/g, ' ');
+    // 部分匹配（处理带前缀的情况）
+    for (const [key, value] of Object.entries(parameterNameTranslations)) {
+        // 跳过长度小于2的键，避免单字母误匹配
+        if (key.length < 2) continue;
+        
+        // 使用单词边界匹配，避免子字符串误匹配（如 "A" 匹配 "Angle"）
+        const regex = new RegExp('\\b' + escapeRegex(key) + '\\b', 'i');
+        if (regex.test(safeName)) {
+            return value;
+        }
+    }
 
-return translated || safeName;
+    // 智能翻译常见单词
+    let translated = safeName;
+    
+    // 使用单词边界匹配，确保只替换完整的单词
+    const wordReplace = (text, eng, chi) => {
+        return text.replace(new RegExp('\\b' + escapeRegex(eng) + '\\b', 'gi'), chi);
+    };
+
+    translated = wordReplace(translated, 'Eye L', '左眼');
+    translated = wordReplace(translated, 'Eye R', '右眼');
+    translated = wordReplace(translated, 'Arm L', '左臂');
+    translated = wordReplace(translated, 'Arm R', '右臂');
+    translated = wordReplace(translated, 'Hand L', '左手');
+    translated = wordReplace(translated, 'Hand R', '右手');
+    translated = wordReplace(translated, 'Eyebrow L', '左眉');
+    translated = wordReplace(translated, 'Eyebrow R', '右眉');
+    translated = wordReplace(translated, 'Rotation', '旋转');
+    translated = wordReplace(translated, 'Angle', '角度');
+    translated = wordReplace(translated, 'Scale', '缩放');
+    translated = wordReplace(translated, 'Open', '开合');
+    translated = wordReplace(translated, 'Smile', '微笑');
+    translated = wordReplace(translated, 'Form', '形状');
+    translated = wordReplace(translated, 'Deformation', '变形');
+    translated = wordReplace(translated, 'Shoulder', '肩膀');
+    translated = wordReplace(translated, 'Elbow', '手肘');
+    translated = wordReplace(translated, 'Wrist', '手腕');
+    translated = wordReplace(translated, 'Body', '身体');
+    translated = wordReplace(translated, 'Hair', '头发');
+    translated = wordReplace(translated, 'Mouth', '嘴巴');
+    translated = wordReplace(translated, 'Face', '面部');
+    translated = wordReplace(translated, 'Effect', '特效');
+    translated = wordReplace(translated, 'Color', '颜色');
+
+    // 处理嘴型 A/I/U/E/O，使用单词边界和分组
+    translated = translated.replace(/\b(A|I|U|E|O)\b/gi, (match) => {
+        const mouthMap = { 'A': '啊', 'I': '一', 'U': '五', 'E': '额', 'O': '哦' };
+        return mouthMap[match.toUpperCase()] || match;
+    });
+
+    translated = translated.replace(/_/g, ' ');
+
+    return translated || safeName;
 }
 
 const modelSelect = document.getElementById('model-select');
@@ -273,6 +294,9 @@ const resetAllBtn = document.getElementById('reset-all-btn');
 const saveBtn = document.getElementById('save-btn');
 const statusDiv = document.getElementById('status');
 const backToMainBtn = document.getElementById('backToMainBtn');
+
+// 状态栏定时器 ID
+let statusTimeoutId = null;
 
 // ===== 跨页面通信系统 =====
 // 使用 BroadcastChannel（如果可用）或 localStorage 作为后备
@@ -350,61 +374,69 @@ return key;
 }
 
 function showStatus(message, duration = 0) {
-let statusTextSpan = document.getElementById('status-text');
-if (!statusTextSpan) {
-// 如果结构被破坏了，重新创建 (使用 DOM API 避免 XSS)
-statusDiv.textContent = '';
-const icon = document.createElement('img');
-icon.src = '/static/icons/reminder_icon.png?v=1';
-icon.alt = '提示';
-icon.className = 'reminder-icon';
-Object.assign(icon.style, {
-    height: '16px',
-    width: '16px',
-    verticalAlign: 'middle',
-    marginRight: '6px',
-    display: 'inline-block',
-    imageRendering: 'crisp-edges'
-});
+    // 清除之前的定时器，防止状态被旧的定时器重置
+    if (statusTimeoutId) {
+        clearTimeout(statusTimeoutId);
+        statusTimeoutId = null;
+    }
 
-const newSpan = document.createElement('span');
-newSpan.id = 'status-text';
-newSpan.textContent = message;
+    let statusTextSpan = document.getElementById('status-text');
+    if (!statusTextSpan) {
+        // 如果结构被破坏了，重新创建 (使用 DOM API 避免 XSS)
+        statusDiv.textContent = '';
+        const icon = document.createElement('img');
+        icon.src = '/static/icons/reminder_icon.png?v=1';
+        icon.alt = '提示';
+        icon.className = 'reminder-icon';
+        Object.assign(icon.style, {
+            height: '16px',
+            width: '16px',
+            verticalAlign: 'middle',
+            marginRight: '6px',
+            display: 'inline-block',
+            imageRendering: 'crisp-edges'
+        });
 
-statusDiv.appendChild(icon);
-statusDiv.appendChild(newSpan);
-statusTextSpan = newSpan;
-} else {
-statusTextSpan.textContent = message;
-}
-if (duration > 0) {
-setTimeout(() => {
-const readyText = t('live2d.parameterEditor.ready', '就绪');
-if (statusTextSpan) {
-statusTextSpan.textContent = readyText;
-} else {
-// 兜底重建
-statusDiv.textContent = '';
-const icon = document.createElement('img');
-icon.src = '/static/icons/reminder_icon.png?v=1';
-icon.alt = '提示';
-icon.className = 'reminder-icon';
-Object.assign(icon.style, {
-    height: '16px',
-    width: '16px',
-    verticalAlign: 'middle',
-    marginRight: '6px',
-    display: 'inline-block',
-    imageRendering: 'crisp-edges'
-});
-const newSpan = document.createElement('span');
-newSpan.id = 'status-text';
-newSpan.textContent = readyText;
-statusDiv.appendChild(icon);
-statusDiv.appendChild(newSpan);
-}
-}, duration);
-}
+        const newSpan = document.createElement('span');
+        newSpan.id = 'status-text';
+        newSpan.textContent = message;
+
+        statusDiv.appendChild(icon);
+        statusDiv.appendChild(newSpan);
+        statusTextSpan = newSpan;
+    } else {
+        statusTextSpan.textContent = message;
+    }
+
+    if (duration > 0) {
+        statusTimeoutId = setTimeout(() => {
+            statusTimeoutId = null;
+            const readyText = t('live2d.parameterEditor.ready', '就绪');
+            if (statusTextSpan) {
+                statusTextSpan.textContent = readyText;
+            } else {
+                // 兜底重建
+                statusDiv.textContent = '';
+                const icon = document.createElement('img');
+                icon.src = '/static/icons/reminder_icon.png?v=1';
+                icon.alt = '提示';
+                icon.className = 'reminder-icon';
+                Object.assign(icon.style, {
+                    height: '16px',
+                    width: '16px',
+                    verticalAlign: 'middle',
+                    marginRight: '6px',
+                    display: 'inline-block',
+                    imageRendering: 'crisp-edges'
+                });
+                const newSpan = document.createElement('span');
+                newSpan.id = 'status-text';
+                newSpan.textContent = readyText;
+                statusDiv.appendChild(icon);
+                statusDiv.appendChild(newSpan);
+            }
+        }, duration);
+    }
 }
 
 // 返回L2D设置界面
