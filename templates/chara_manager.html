@@ -15,7 +15,9 @@
     <div class="container">
         <div class="container-header">
             <h2 data-i18n="character.manager" data-text="角色管理">角色管理</h2>
-            <button class="close-btn" id="close-chara-manager-btn" title="关闭"><img src="/static/icons/close_button.png" alt="关闭"></button>
+            <button type="button" class="close-btn" id="close-chara-manager-btn" title="关闭" aria-label="关闭">
+                <img src="/static/icons/close_button.png" alt="关闭">
+            </button>
         </div>
         <div class="section" id="master-section">
             <div class="master-section-header">
@@ -28,8 +30,8 @@
                     </div>
                 </div>
         
-                <button class="btn sm api-key-btn" id="api-key-settings-btn" data-i18n="character.apiKeySettings">
-                    <img src="/static/icons/key.png" alt="" class="key-icon"> API Key 设置
+                <button type="button" class="btn sm api-key-btn" id="api-key-settings-btn" aria-label="API Key 设置">
+                    <img src="/static/icons/key.png" alt="" class="key-icon"> <span data-i18n="character.apiKeySettings">API Key 设置</span>
                 </button>
             </div>
             <div class="master-card">
@@ -68,7 +70,9 @@
                     <span data-i18n="character.catgirlProfile" class="tips">猫娘档案:进阶设定包含Live2D形象、语音ID等。</span>
                 </div>
                 <div id="catgirl-list"></div>
-                <button class="btn add sm" id="add-catgirl-btn" data-i18n="character.addCatgirl"><img src="/static/icons/add.png" alt="" class="add-icon"> 新增猫娘</button>
+                <button type="button" class="btn add sm" id="add-catgirl-btn" data-i18n="character.addCatgirl" aria-label="新增猫娘">
+                    <img src="/static/icons/add.png" alt="" class="add-icon"> 新增猫娘
+                </button>
             </div>
         </div>
     </div>

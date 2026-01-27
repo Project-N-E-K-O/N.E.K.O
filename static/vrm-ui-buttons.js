@@ -236,11 +236,14 @@ VRMManager.prototype.setupFloatingButtons = function () {
             }
 
             const popup = this.createPopup(config.id);
-            const triggerBtn = document.createElement('div');
+            const triggerBtn = document.createElement('button');
+            triggerBtn.type = 'button';
+            triggerBtn.setAttribute('aria-label', 'Open popup');
             // 使用图片图标替代文字符号
             const triggerImg = document.createElement('img');
             triggerImg.src = '/static/icons/play_trigger_icon.png' + iconVersion;
-            triggerImg.alt = '▶';
+            triggerImg.alt = '';
+            triggerImg.setAttribute('aria-hidden', 'true');
             Object.assign(triggerImg.style, {
                 width: '22px', height: '22px', objectFit: 'contain',
                 pointerEvents: 'none', imageRendering: 'crisp-edges'
@@ -596,6 +599,14 @@ VRMManager.prototype._startUIUpdateLoop = function () {
         return; // 循环已在运行
     }
 
+    // 复用对象以减少 GC 压力
+    const headPos = new window.THREE.Vector3();
+    const footPos = new window.THREE.Vector3();
+    const centerPos = new window.THREE.Vector3();
+    const lockPos = new window.THREE.Vector3();
+    const box = new window.THREE.Box3();
+    const size = new window.THREE.Vector3();
+
     // 计算可见按钮数量（移动端隐藏 agent 和 goodbye 按钮）
     const getVisibleButtonCount = () => {
         const buttonConfigs = [
@@ -691,7 +702,6 @@ VRMManager.prototype._startUIUpdateLoop = function () {
 
                 if (headNode) {
                     headNode.updateWorldMatrix(true, false);
-                    const headPos = new window.THREE.Vector3();
                     headNode.getWorldPosition(headPos);
                     headPos.project(this.camera);
                     headScreenY = (-headPos.y * 0.5 + 0.5) * canvasHeight;
@@ -706,18 +716,15 @@ VRMManager.prototype._startUIUpdateLoop = function () {
 
                 if (footNode) {
                     footNode.updateWorldMatrix(true, false);
-                    const footPos = new window.THREE.Vector3();
                     footNode.getWorldPosition(footPos);
                     footPos.project(this.camera);
                     footScreenY = (-footPos.y * 0.5 + 0.5) * canvasHeight;
                 } else {
                     // 如果没有脚部骨骼，使用场景包围盒估算
-                    const box = new window.THREE.Box3().setFromObject(vrm.scene);
-                    const size = new window.THREE.Vector3();
+                    box.setFromObject(vrm.scene);
                     box.getSize(size);
                     // 估算：假设模型高度约为包围盒高度的 80%（排除头发等）
                     const estimatedModelHeight = size.y * 0.8;
-                    const centerPos = new window.THREE.Vector3();
                     box.getCenter(centerPos);
                     centerPos.project(this.camera);
                     const centerScreenY = (-centerPos.y * 0.5 + 0.5) * canvasHeight;
@@ -728,8 +735,7 @@ VRMManager.prototype._startUIUpdateLoop = function () {
                 modelScreenHeight = Math.abs(headScreenY - footScreenY);
             } else {
                 // 如果没有 humanoid，使用场景包围盒
-                const box = new window.THREE.Box3().setFromObject(vrm.scene);
-                const size = new window.THREE.Vector3();
+                box.setFromObject(vrm.scene);
                 box.getSize(size);
                 modelScreenHeight = size.y * 0.8; // 估算
             }
@@ -758,15 +764,14 @@ VRMManager.prototype._startUIUpdateLoop = function () {
                 if (!headNode) headNode = vrm.scene;
 
                 headNode.updateWorldMatrix(true, false);
-                const btnPos = new window.THREE.Vector3();
-                headNode.getWorldPosition(btnPos);
+                headNode.getWorldPosition(headPos);
                 // 减小偏移量，让按钮更靠近模型
-                btnPos.x += 0.2;   // 从 0.35 减小到 0.2，更靠近模型
-                btnPos.y += 0.05;  // 从 0.1 减小到 0.05，更靠近模型
-                btnPos.project(this.camera);
+                headPos.x += 0.2;   // 从 0.35 减小到 0.2，更靠近模型
+                headPos.y += 0.05;  // 从 0.1 减小到 0.05，更靠近模型
+                headPos.project(this.camera);
                 // 统一使用 canvasRect 的宽高计算屏幕坐标，确保在缩放/嵌入场景下定位准确
-                const screenX = (btnPos.x * 0.5 + 0.5) * canvasWidth;
-                const screenY = (-(btnPos.y * 0.5) + 0.5) * canvasHeight;
+                const screenX = (headPos.x * 0.5 + 0.5) * canvasWidth;
+                const screenY = (-(headPos.y * 0.5) + 0.5) * canvasHeight;
 
                 // 检测移动端布局（与 applyResponsiveFloatingLayout 保持一致）
                 const isMobile = window.isMobileWidth();
@@ -783,32 +788,11 @@ VRMManager.prototype._startUIUpdateLoop = function () {
                 // 在移动端，跳过设置 left/top，保持 applyResponsiveFloatingLayout 设置的 bottom/right
                 // 桌面端正常设置 left/top 进行动态定位
                 if (!isMobile) {
-                    // 获取头部位置用于定位
-                    let headNode = null;
-                    if (vrm.humanoid) {
-                        headNode = vrm.humanoid.getNormalizedBoneNode('head');
-                        if (!headNode) headNode = vrm.humanoid.getNormalizedBoneNode('neck');
-                    }
-                    if (!headNode) headNode = vrm.scene;
-
-                    headNode.updateWorldMatrix(true, false);
-                    const btnPos = new window.THREE.Vector3();
-                    headNode.getWorldPosition(btnPos);
-                    // 减小偏移量，让按钮更靠近模型
-                    btnPos.x += 0.2;   // 从 0.35 减小到 0.2，更靠近模型
-                    btnPos.y += 0.05;  // 从 0.1 减小到 0.05，更靠近模型
-                    btnPos.project(this.camera);
-
                     // 锁图标位置计算（使用头部位置）
-                    const lockPos = new window.THREE.Vector3();
                     headNode.getWorldPosition(lockPos);
                     lockPos.x += 0.1;
                     lockPos.y -= 0.55;
                     lockPos.project(this.camera);
-
-                    // 统一使用 canvasRect 的宽高计算屏幕坐标，确保在缩放/嵌入场景下定位准确
-                    const screenX = (btnPos.x * 0.5 + 0.5) * canvasWidth;
-                    const screenY = (-(btnPos.y * 0.5) + 0.5) * canvasHeight;
 
                     // 计算目标位置（应用偏移，减小垂直偏移让按钮更靠近模型）
                     // 注意：screenX/screenY 是相对于 canvas 的坐标，需要加上 canvas 的偏移量

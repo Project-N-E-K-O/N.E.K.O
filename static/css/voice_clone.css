@@ -152,31 +152,64 @@ body {
     height: 0;
 }
 
-.file-input-label {
+/* 共享按钮基础样式 */
+.file-input-label,
+.register-voice-btn {
     background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
     background-color: transparent !important;
     border: 2px solid rgba(255, 255, 255, 0.8) !important;
     border-radius: 999px !important;
     overflow: hidden !important;
     height: auto;
-    min-height: 30px;
-    padding: 10px 13px !important;
-    padding-right: 13px !important;
-    color: white;
-    font-weight: bold;
     display: flex !important;
     align-items: center;
     justify-content: flex-start;
     text-align: left !important;
-    width: 180px !important;
-    max-width: none !important;
     position: relative;
     cursor: pointer;
     box-shadow: 0 0 8px rgba(255, 255, 255, 0.5), 0 0 16px rgba(173, 216, 230, 0.4) !important;
     transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease !important;
+    color: white;
+    font-weight: bold;
+    padding: 10px 13px !important;
+    padding-right: 13px !important;
+    max-width: none !important;
 }
 
-.file-input-label .file-icon {
+.file-input-label {
+    min-height: 30px;
+    width: 180px !important;
+    margin-bottom: 20px;
+}
+
+.register-voice-btn {
+    min-height: 36px;
+    width: 200px !important;
+    margin-top: 20px;
+}
+
+.file-input-label:hover,
+.register-voice-btn:hover {
+    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    border: 2px solid rgba(255, 255, 255, 0.9) !important;
+    opacity: 0.9;
+    transform: translateY(-1px);
+    box-shadow: 0 0 12px rgba(255, 255, 255, 0.6), 0 0 20px rgba(173, 216, 230, 0.5), 0 2px 6px rgba(0, 0, 0, 0.1) !important;
+}
+
+.file-input-label:active,
+.register-voice-btn:active {
+    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    border: 2px solid rgba(255, 255, 255, 0.8) !important;
+    transform: translateY(1px) scale(0.98) !important;
+    box-shadow: 0 0 8px rgba(255, 255, 255, 0.5), 0 0 16px rgba(173, 216, 230, 0.4), 0 1px 3px rgba(0, 0, 0, 0.15) !important;
+    opacity: 0.95 !important;
+}
+
+.file-input-label .file-icon,
+.register-voice-btn .register-icon {
     display: block !important;
     position: absolute;
     left: 10px;
@@ -434,48 +467,6 @@ body {
     color: #40C5F1;
     margin-top: -4px;
     margin-bottom: 8px;
-}
-
-/* 注册音色按钮样式 - 与选择文件按钮完全一致 */
-.register-voice-btn {
-    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
-    background-color: transparent !important;
-    border: 2px solid rgba(255, 255, 255, 0.8) !important;
-    border-radius: 999px !important;
-    overflow: hidden !important;
-    height: auto;
-    min-height: 36px;
-    padding: 10px 13px !important;
-    padding-right: 13px !important;
-    color: white;
-    font-weight: bold;
-    display: flex !important;
-    align-items: center;
-    justify-content: flex-start;
-    text-align: left !important;
-    width: 200px !important;
-    max-width: none !important;
-    position: relative;
-    cursor: pointer;
-    box-shadow: 0 0 8px rgba(255, 255, 255, 0.5), 0 0 16px rgba(173, 216, 230, 0.4) !important;
-    transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease !important;
-}
-
-.register-voice-btn .register-icon {
-    display: block !important;
-    position: absolute;
-    left: 10px;
-    top: 50%;
-    transform: translateY(-50%);
-    z-index: 10;
-    flex-shrink: 0;
-    pointer-events: none;
-    height: 30px;
-    width: auto;
-    max-width: 60px;
-    image-rendering: crisp-edges;
-    object-fit: contain;
-    filter: drop-shadow(0 2px 4px rgba(34, 179, 255, 0.3)) drop-shadow(0 1px 2px rgba(34, 179, 255, 0.2));
 }
 
 .register-voice-btn .register-text {

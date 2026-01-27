@@ -211,20 +211,26 @@ const RESERVED_FIELDS = [
 'live2d_item_id'
 ];
                     
-// 转换为符合catgirl API格式的数据（不包含保留字段）
-const catgirlFormat = {
-'档案名': charaData['档案名']
-};
-                    
-// 跳过的字段：档案名（已处理）、保留字段
-const skipKeys = ['档案名', ...RESERVED_FIELDS];
-                    
-// 添加所有非保留字段
-for (const [key, value] of Object.entries(charaData)) {
-if (!skipKeys.includes(key) && value !== undefined && value !== null && value !== '') {
-catgirlFormat[key] = value;
-}
-}
+    // 转换为符合catgirl API格式的数据（不包含保留字段）
+    const catgirlFormat = {
+        '档案名': charaData['档案名']
+    };
+
+    // 跳过的字段：档案名（已处理）、保留字段
+    const skipKeys = ['档案名', ...RESERVED_FIELDS];
+    const dangerousKeys = ['__proto__', 'constructor', 'prototype'];
+
+    // 添加所有非保留字段，并防止原型污染
+    for (const [key, value] of Object.entries(charaData)) {
+        if (Object.prototype.hasOwnProperty.call(charaData, key) &&
+            !skipKeys.includes(key) &&
+            !dangerousKeys.includes(key) &&
+            value !== undefined &&
+            value !== null &&
+            value !== '') {
+            catgirlFormat[key] = value;
+        }
+    }
                     
 // 重要：如果角色卡有 live2d 字段，需要同时保存 live2d_item_id
 // 这样首页加载时才能正确构建工坊模型的路径
@@ -1589,95 +1595,105 @@ existingModal.style.display = 'block';
 return;
 }
 
-// 创建弹窗容器
-let modal = document.createElement('div');
-modal.id = 'api-key-settings-modal';
-modal.style.position = 'fixed';
-modal.style.left = '0';
-modal.style.top = '0';
-modal.style.width = '100vw';
-modal.style.height = '100vh';
-modal.style.background = 'rgba(0,0,0,0.4)';
-modal.style.zIndex = '9999';
-modal.onclick = function (e) {
-if (e.target === modal) {
-document.body.removeChild(modal);
-}
-};
-// 创建iframe
-let iframe = document.createElement('iframe');
-iframe.src = '/api_key';
-iframe.style.width = '800px';
-iframe.style.height = '720px';
-iframe.style.border = 'none';
-iframe.style.background = '#fff';
-iframe.style.display = 'block';
-iframe.style.margin = '50px auto';
-iframe.style.borderRadius = '8px';
-// 监听关闭消息
-window.addEventListener('message', function handler(e) {
-    if (!ALLOWED_ORIGINS.includes(e.origin)) return;
-    if (e.data && e.data.type === 'close_api_key_settings') {
-        const modalToRemove = document.getElementById('api-key-settings-modal');
-        if (modalToRemove) {
-            document.body.removeChild(modalToRemove);
+    // 创建弹窗容器
+    let modal = document.createElement('div');
+    modal.id = 'api-key-settings-modal';
+    modal.style.position = 'fixed';
+    modal.style.left = '0';
+    modal.style.top = '0';
+    modal.style.width = '100vw';
+    modal.style.height = '100vh';
+    modal.style.background = 'rgba(0,0,0,0.4)';
+    modal.style.zIndex = '9999';
+
+    // 监听关闭消息
+    const apiKeyMessageHandler = function (e) {
+        if (!ALLOWED_ORIGINS.includes(e.origin)) return;
+        if (e.data && e.data.type === 'close_api_key_settings') {
+            const modalToRemove = document.getElementById('api-key-settings-modal');
+            if (modalToRemove) {
+                document.body.removeChild(modalToRemove);
+            }
+            window.removeEventListener('message', apiKeyMessageHandler);
         }
-        window.removeEventListener('message', handler);
-    }
-});
-modal.appendChild(iframe);
-document.body.appendChild(modal);
+    };
+
+    modal.onclick = function (e) {
+        if (e.target === modal) {
+            window.removeEventListener('message', apiKeyMessageHandler);
+            document.body.removeChild(modal);
+        }
+    };
+    // 创建iframe
+    let iframe = document.createElement('iframe');
+    iframe.src = '/api_key';
+    iframe.style.width = '800px';
+    iframe.style.height = '720px';
+    iframe.style.border = 'none';
+    iframe.style.background = '#fff';
+    iframe.style.display = 'block';
+    iframe.style.margin = '50px auto';
+    iframe.style.borderRadius = '8px';
+
+    window.addEventListener('message', apiKeyMessageHandler);
+    modal.appendChild(iframe);
+    document.body.appendChild(modal);
 }
 
 function openVoiceClone(lanlanName) {
-// 检查是否已有弹窗存在（根据lanlanName区分）
-const modalId = 'voice-clone-modal-' + encodeURIComponent(lanlanName);
-const existingModal = document.getElementById(modalId);
-if (existingModal) {
-// 如果已存在，聚焦到该弹窗
-existingModal.style.display = 'block';
-return;
-}
-
-// 创建弹窗容器
-let modal = document.createElement('div');
-modal.id = modalId;
-modal.style.position = 'fixed';
-modal.style.left = '0';
-modal.style.top = '0';
-modal.style.width = '100vw';
-modal.style.height = '100vh';
-modal.style.background = 'rgba(0,0,0,0.4)';
-modal.style.zIndex = '9999';
-modal.onclick = function (e) {
-if (e.target === modal) {
-document.body.removeChild(modal);
-}
-};
-// 创建iframe
-let iframe = document.createElement('iframe');
-iframe.src = 'voice_clone?lanlan_name=' + encodeURIComponent(lanlanName);
-iframe.style.width = '600px';
-iframe.style.height = '400px';
-iframe.style.border = 'none';
-iframe.style.background = '#fff';
-iframe.style.display = 'block';
-iframe.style.margin = '60px auto';
-iframe.style.borderRadius = '8px';
-// 监听voice_id变更，注册页面可在window.parent.postMessage通知
-window.addEventListener('message', function handler(e) {
-    if (!ALLOWED_ORIGINS.includes(e.origin)) return;
-    if (e.data && e.data.type === 'voice_id_updated') {
-        const modalToRemove = document.getElementById(modalId);
-        if (modalToRemove) {
-            document.body.removeChild(modalToRemove);
-        }
-        window.removeEventListener('message', handler);
-        loadCharacterData();
+    // 检查是否已有弹窗存在（根据lanlanName区分）
+    const modalId = 'voice-clone-modal-' + encodeURIComponent(lanlanName);
+    const existingModal = document.getElementById(modalId);
+    if (existingModal) {
+        // 如果已存在，聚焦到该弹窗
+        existingModal.style.display = 'block';
+        return;
     }
-});
-modal.appendChild(iframe);
-document.body.appendChild(modal);
+
+    // 创建弹窗容器
+    let modal = document.createElement('div');
+    modal.id = modalId;
+    modal.style.position = 'fixed';
+    modal.style.left = '0';
+    modal.style.top = '0';
+    modal.style.width = '100vw';
+    modal.style.height = '100vh';
+    modal.style.background = 'rgba(0,0,0,0.4)';
+    modal.style.zIndex = '9999';
+
+    // 监听voice_id变更，注册页面可在window.parent.postMessage通知
+    const voiceCloneMessageHandler = function (e) {
+        if (!ALLOWED_ORIGINS.includes(e.origin)) return;
+        if (e.data && e.data.type === 'voice_id_updated') {
+            const modalToRemove = document.getElementById(modalId);
+            if (modalToRemove) {
+                document.body.removeChild(modalToRemove);
+            }
+            window.removeEventListener('message', voiceCloneMessageHandler);
+            loadCharacterData();
+        }
+    };
+
+    modal.onclick = function (e) {
+        if (e.target === modal) {
+            window.removeEventListener('message', voiceCloneMessageHandler);
+            document.body.removeChild(modal);
+        }
+    };
+    // 创建iframe
+    let iframe = document.createElement('iframe');
+    iframe.src = 'voice_clone?lanlan_name=' + encodeURIComponent(lanlanName);
+    iframe.style.width = '600px';
+    iframe.style.height = '400px';
+    iframe.style.border = 'none';
+    iframe.style.background = '#fff';
+    iframe.style.display = 'block';
+    iframe.style.margin = '60px auto';
+    iframe.style.borderRadius = '8px';
+
+    window.addEventListener('message', voiceCloneMessageHandler);
+    modal.appendChild(iframe);
+    document.body.appendChild(modal);
 }
 
 // 解除声音注册
