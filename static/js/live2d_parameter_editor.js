@@ -64,6 +64,7 @@ document.addEventListener('DOMContentLoaded', function () {
         updatePageTranslations();
         updateModelSelectButtonText();
         updateModelDropdown();
+        updateModelPlaceholder();
     });
 
     // 延迟更新（等待i18next完全初始化）
@@ -550,6 +551,22 @@ function renderModelList(models) {
         updateModelDropdown();
         updateModelSelectButtonText();
         showStatus(t('live2d.parameterEditor.noModelsFound', '未找到模型'), 3000);
+    }
+}
+
+// 更新模型选择器的占位符文本
+function updateModelPlaceholder() {
+    const placeholderOption = modelSelect.querySelector('option[value=""]');
+    if (placeholderOption) {
+        // 检查当前占位符文本，根据内容决定使用哪个翻译键
+        const currentText = placeholderOption.textContent;
+        if (currentText.includes('暂无') || currentText.includes('No models')) {
+            placeholderOption.textContent = t('live2d.parameterEditor.noModels', '暂无模型');
+        } else if (currentText.includes('加载') || currentText.includes('Loading')) {
+            placeholderOption.textContent = t('live2d.parameterEditor.loading', '加载中...');
+        } else {
+            placeholderOption.textContent = t('live2d.parameterEditor.pleaseSelectModelOption', '选择模型');
+        }
     }
 }
 
