@@ -469,7 +469,13 @@ body {
 .editor-actions {
     margin-top: 20px;
     display: flex;
-    justify-content: flex-end;
+    align-items: center;
+    gap: 16px;
+}
+
+.actions-right {
+    margin-left: auto;
+    display: flex;
     gap: 12px;
     align-items: center;
 }
@@ -519,7 +525,6 @@ body {
 
 
 #save-status {
-    margin-left: 12px;
     font-size: 0.9em;
     color: #40C5F1;
 }
