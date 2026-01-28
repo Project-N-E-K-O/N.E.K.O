@@ -1490,9 +1490,9 @@
             min-width: 150px;
             max-width: 100% !important;
             position: relative;
-            cursor: default !important;  /* 鼠标样式改为默认 */
+            cursor: pointer !important;  /* 改为可点击的鼠标样式 */
             box-sizing: border-box;
-            pointer-events: none !important;  /* 禁用所有鼠标事件 */
+            /* 移除 pointer-events: none，让按钮可以点击 */
         }
 
         #persistent-expression-select-btn:disabled {

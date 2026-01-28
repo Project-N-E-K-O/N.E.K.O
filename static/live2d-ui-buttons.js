@@ -310,7 +310,7 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
                 height: '48px',
                 objectFit: 'contain',
                 pointerEvents: 'none',
-                opacity: '1',
+                opacity: '0.75',
                 transition: 'opacity 0.3s ease'
             });
 
@@ -719,7 +719,7 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
         height: '64px',
         objectFit: 'contain',
         pointerEvents: 'none',
-        opacity: '1',
+        opacity: '0.75',
         transition: 'opacity 0.3s ease'
     });
 

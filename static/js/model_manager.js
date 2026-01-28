@@ -58,8 +58,8 @@ class DropdownManager {
                 const value = option.value;
                 const text = option.textContent;
                 return value === '' && (
-                    text.includes('请先加载') || 
-                    text.includes('请选择') || 
+                    text.includes('请先加载') ||
+                    text.includes('请选择') ||
                     text.includes('没有') ||
                     text.includes('加载中')
                 );
@@ -67,17 +67,17 @@ class DropdownManager {
             disabled: config.disabled || false,
             ...config
         };
-        
+
         this.button = document.getElementById(this.config.buttonId);
         this.select = document.getElementById(this.config.selectId);
         this.dropdown = document.getElementById(this.config.dropdownId);
         this.textSpan = null;
-        
+
         if (!this.button) {
             console.warn(`[DropdownManager] Button not found: ${this.config.buttonId}`);
             return;
         }
-        
+
         this.init();
     }
     
@@ -125,25 +125,21 @@ class DropdownManager {
         if (this.config.alwaysShowDefault) {
             text = defaultText;
         } else if (this.select) {
-            console.log('[DropdownManager] select.value:', this.select.value, 'options.length:', this.select.options.length);
             if (this.select.value) {
                 // 有选择的值，显示选中的选项
                 const selectedOption = this.select.options[this.select.selectedIndex];
                 if (selectedOption) {
                     text = this.config.getText(selectedOption);
-                    console.log('[DropdownManager] 显示选中的选项:', text);
                 }
             } else if (this.select.options.length > 0) {
                 // 没有选择，但有选项，显示第一个选项（跳过空值选项）
                 const firstOption = Array.from(this.select.options).find(opt => opt.value !== '');
                 if (firstOption) {
                     text = this.config.getText(firstOption);
-                    console.log('[DropdownManager] 显示第一个选项:', text);
                 }
             }
         }
 
-        console.log('[DropdownManager] 最终设置的文本:', text, 'buttonId:', this.config.buttonId);
         this.textSpan.textContent = text;
         this.textSpan.setAttribute('data-text', text);
     }
@@ -238,7 +234,6 @@ class DropdownManager {
         this.button.addEventListener('click', (e) => {
             e.stopPropagation();
             if (this.button.disabled) {
-                console.log(`[DropdownManager] Button disabled: ${this.config.buttonId}`);
                 return;
             }
             this.toggleDropdown();
@@ -705,9 +700,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     updateLive2DModelSelectButtonText();
                 }
             });
-            console.log('[Model Manager] live2dModelManager 初始化完成:', live2dModelManager);
         }
-        
+
         if (!motionManager) {
             motionManager = new DropdownManager({
                 buttonId: 'motion-select-btn',
@@ -753,7 +747,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             });
         }
-        
+
         if (!persistentExpressionManager) {
             persistentExpressionManager = new DropdownManager({
                 buttonId: 'persistent-expression-select-btn',
@@ -765,8 +759,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 defaultText: window.i18next?.t('live2d.selectPersistentExpression') || '常驻表情',
                 defaultTextKey: 'live2d.selectPersistentExpression',
                 iconAlt: window.i18next?.t('live2d.selectPersistentExpression') || '常驻表情',
-                alwaysShowDefault: true,  // 始终显示默认文字，不显示选中的选项
-                disabled: true  // 禁用下拉功能，仅作展示
+                alwaysShowDefault: true  // 始终显示默认文字，不显示选中的选项
+                // 移除 disabled: true，让按钮可以正常使用
             });
         }
     }
@@ -1615,7 +1609,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!vrmModelSelect) return;
 
             if (models.length > 0) {
-                vrmModelSelect.innerHTML = ''; // 不添加第一个"选择模型"选项
+                // 添加第一个"选择模型"选项
+                vrmModelSelect.innerHTML = `<option value="">${t('live2d.selectModel', '选择模型')}</option>`;
                 models.forEach(model => {
                     const option = document.createElement('option');
 
@@ -1661,10 +1656,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (vrmModelSelectBtn) {
                     vrmModelSelectBtn.disabled = false;
                 }
-                // 如果没有选择，自动选择第一个模型
-                if (vrmModelSelect.options.length > 0 && !vrmModelSelect.value) {
-                    vrmModelSelect.value = vrmModelSelect.options[0].value;
-                }
+                // 不自动选择模型，让用户手动选择
                 updateVRMModelDropdown();
                 updateVRMModelSelectButtonText();
                 showStatus(t('live2d.vrmModelListLoaded', 'VRM 模型列表加载成功'), 2000);
@@ -1688,6 +1680,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         vrmModelDropdown.innerHTML = '';
         const options = vrmModelSelect.querySelectorAll('option');
         options.forEach((option) => {
+            // 跳过空值选项（"选择模型"）
+            if (!option.value) return;
+
             const item = document.createElement('div');
             item.className = 'dropdown-item';
             item.dataset.value = option.value;
@@ -2240,8 +2235,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (vrmExpressionSelectBtn) {
                 vrmExpressionSelectBtn.disabled = false;
             }
-            // 【新增】启用播放按钮
-            if (triggerVrmExpressionBtn) triggerVrmExpressionBtn.disabled = false;
+            // 播放按钮保持禁用，直到用户选择一个表情
+            if (triggerVrmExpressionBtn) triggerVrmExpressionBtn.disabled = true;
             updateVRMExpressionDropdown();
             updateVRMExpressionSelectButtonText();
         } else {
@@ -2312,16 +2307,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (vrmExpressionSelect) {
         vrmExpressionSelect.addEventListener('change', async (e) => {
             const selectedValue = e.target.value;
-            
+
             // 如果选择的是第一个选项（空值，即"选择表情"），显示提示（VRM表情通常是内置的）
             if (selectedValue === '') {
                 showStatus(t('live2d.vrmExpression.builtInOnly', 'VRM表情通常是模型内置的，无法单独上传'), 3000);
                 // 重置选择器到第一个选项（保持显示"选择表情"）
                 e.target.value = '';
                 updateVRMExpressionSelectButtonText(); // 更新按钮文字为"选择表情"
+                // 禁用播放按钮
+                if (triggerVrmExpressionBtn) {
+                    triggerVrmExpressionBtn.disabled = true;
+                }
                 return;
             }
-            
+
             updateVRMExpressionSelectButtonText();
             const expressionName = e.target.value;
             if (expressionName && triggerVrmExpressionBtn) {
@@ -2839,8 +2838,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 motionSelect.disabled = false;
                 const motionSelectBtn = document.getElementById('motion-select-btn');
                 if (motionSelectBtn) motionSelectBtn.disabled = false;
-                playMotionBtn.disabled = false;
+                // 播放按钮保持禁用，直到用户选择一个动作
+                playMotionBtn.disabled = true;
             }
+
+            // 表情播放按钮也保持禁用，直到用户选择一个表情
+            playExpressionBtn.disabled = true;
+
             // 启用其他控件
             setControlsDisabled(false);
             showStatus(t('live2d.modelLoadSuccess', `模型 ${modelName} 加载成功`, { model: modelName }));
@@ -2853,7 +2857,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     playMotionBtn.addEventListener('click', () => {
-        if (!live2dModel || !motionSelect.value) return;
+        // 检查是否加载了模型
+        if (!live2dModel) {
+            showStatus(t('live2d.pleaseLoadModel', '请先加载模型'), 2000);
+            return;
+        }
+
+        // 检查是否选择了动作
+        if (!motionSelect.value) {
+            showStatus(t('live2d.pleaseSelectMotion', '请先选择动作'), 2000);
+            return;
+        }
 
         // 检查是否有动作文件
         if (currentModelFiles.motion_files.length === 0) {
@@ -2896,7 +2910,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 当选择新动作时，重置播放状态
     motionSelect.addEventListener('change', async (e) => {
         const selectedValue = e.target.value;
-        
+
         // 如果选择的是第一个选项（空值，即"增加动作"），触发文件选择器
         if (selectedValue === '') {
             const motionFileUpload = document.getElementById('motion-file-upload');
@@ -2905,20 +2919,24 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             // 重置选择器到第一个选项（保持显示"增加动作"）
             e.target.value = '';
+            // 禁用播放按钮
+            playMotionBtn.disabled = true;
             return;
         }
-        
+
         isMotionPlaying = false;
         // 确保图标仍然是播放图标
         updateMotionPlayButtonIcon();
         updateMotionSelectButtonText();
+        // 启用播放按钮
+        playMotionBtn.disabled = false;
     });
 
     // 当表情选择器值改变时，更新按钮文字
     if (expressionSelect) {
         expressionSelect.addEventListener('change', async (e) => {
             const selectedValue = e.target.value;
-            
+
             // 如果选择的是第一个选项（空值，即"增加表情"），触发文件选择器
             if (selectedValue === '') {
                 const expressionFileUpload = document.getElementById('expression-file-upload');
@@ -2927,10 +2945,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
                 // 重置选择器到第一个选项（保持显示"增加表情"）
                 e.target.value = '';
+                // 禁用播放按钮
+                playExpressionBtn.disabled = true;
                 return;
             }
-            
+
             updateExpressionSelectButtonText();
+            // 启用播放按钮
+            playExpressionBtn.disabled = false;
         });
     }
 
@@ -2943,8 +2965,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // 重新获取当前模型，确保使用最新引用
         const currentModel = window.live2dManager ? window.live2dManager.getCurrentModel() : live2dModel;
-        if (!currentModel || !expressionSelect.value) {
+        if (!currentModel) {
             showStatus(t('live2d.pleaseLoadModel', '请先加载模型'), 2000);
+            return;
+        }
+
+        if (!expressionSelect.value) {
+            showStatus(t('live2d.pleaseSelectExpression', '请先选择表情'), 2000);
             return;
         }
 
@@ -3795,16 +3822,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         // 确保选择框的值是空的（因为按钮始终显示默认文字）
         persistentSelect.value = '';
 
-        // 更新下拉菜单
-        if (persistentDropdown) {
-            persistentDropdown.innerHTML = '';
-            exp3Files.forEach(file => {
-                const item = document.createElement('div');
-                item.className = 'dropdown-item';
-                item.setAttribute('data-value', file);
-                item.textContent = file.split('/').pop().replace('.exp3.json', '');
-                persistentDropdown.appendChild(item);
-            });
+        // 使用 DropdownManager 更新下拉菜单（这样会自动绑定点击事件）
+        if (persistentExpressionManager) {
+            persistentExpressionManager.updateDropdown();
         }
 
         // 启用按钮和选择器
