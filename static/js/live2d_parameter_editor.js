@@ -340,6 +340,7 @@ function sendMessageToMainPage(action) {
             newValue: JSON.stringify(message)
         }));
     } catch (e) {
+        console.error('Cross-page communication failed in sendMessageToMainPage:', e);
     }
 }
 
