@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass
 from queue import Empty
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Union, Coroutine
 
 from plugin.core.state import state
 from plugin.settings import PLUGIN_LOG_BUS_SDK_TIMEOUT_WARNINGS
@@ -255,6 +256,14 @@ def _ensure_local_cache() -> _LocalMessageCache:
 @dataclass
 class MessageClient:
     ctx: "PluginContext"
+    
+    def _is_in_event_loop(self) -> bool:
+        """检测当前是否在事件循环中运行"""
+        try:
+            asyncio.get_running_loop()
+            return True
+        except RuntimeError:
+            return False
 
     def _get_via_message_plane(
         self,
@@ -413,6 +422,154 @@ class MessageClient:
         
         effective_plugin_id = "*" if plugin_id == "*" else (pid_norm if pid_norm else getattr(self.ctx, "plugin_id", None))
         return MessageList(records, plugin_id=effective_plugin_id, ctx=self.ctx, trace=trace, plan=plan)
+    
+    async def _get_via_message_plane_async(
+        self,
+        *,
+        plugin_id: Optional[str] = None,
+        max_count: int = 50,
+        priority_min: Optional[int] = None,
+        source: Optional[str] = None,
+        filter: Optional[Dict[str, Any]] = None,
+        strict: bool = True,
+        since_ts: Optional[float] = None,
+        timeout: float = 5.0,
+        raw: bool = False,
+        light: bool = False,
+        topic: str = "all",
+    ) -> MessageList:
+        """异步版本:通过 message_plane ZMQ RPC 获取消息"""
+        pid_norm: Optional[str] = None
+        if isinstance(plugin_id, str):
+            pid_norm = plugin_id.strip()
+        if pid_norm == "*":
+            pid_norm = None
+        if pid_norm == "":
+            pid_norm = None
+
+        topic_norm = str(topic) if isinstance(topic, str) and topic else "all"
+        source_norm = str(source) if isinstance(source, str) and source else None
+        pr_min_norm = int(priority_min) if priority_min is not None else None
+        since_norm = float(since_ts) if since_ts is not None else None
+
+        args: Dict[str, Any] = {
+            "store": "messages",
+            "topic": topic_norm,
+            "limit": int(max_count) if max_count is not None else 50,
+            "plugin_id": pid_norm,
+            "source": source_norm,
+            "priority_min": pr_min_norm,
+            "since_ts": since_norm,
+            "light": bool(light),
+        }
+        if isinstance(filter, dict):
+            for k in ("kind", "type", "plugin_id", "source", "priority_min", "since_ts", "until_ts"):
+                if k in filter and args.get(k) is None:
+                    args[k] = filter.get(k)
+        if not bool(strict):
+            pass
+
+        rpc = getattr(self.ctx, "_mp_rpc_client", None)
+        if rpc is None:
+            rpc = _MessagePlaneRpcClient(plugin_id=getattr(self.ctx, "plugin_id", ""), endpoint=str(MESSAGE_PLANE_ZMQ_RPC_ENDPOINT))
+            try:
+                self.ctx._mp_rpc_client = rpc
+            except Exception:
+                pass
+
+        if (
+            pid_norm is None
+            and source_norm is None
+            and pr_min_norm is None
+            and since_norm is None
+            and (not filter)
+            and bool(strict)
+            and topic_norm == "all"
+        ):
+            op_name = "bus.get_recent"
+            resp = await rpc.request_async(
+                op="bus.get_recent",
+                args={"store": "messages", "topic": "all", "limit": int(max_count), "light": bool(light)},
+                timeout=float(timeout),
+            )
+        else:
+            op_name = "bus.query"
+            resp = await rpc.request_async(op="bus.query", args=args, timeout=float(timeout))
+        
+        if not isinstance(resp, dict):
+            raise TimeoutError(f"message_plane {op_name} timed out after {timeout}s")
+        if not resp.get("ok"):
+            raise RuntimeError(format_rpc_error(resp.get("error")))
+        result = resp.get("result")
+        items: List[Any] = []
+        if isinstance(result, dict):
+            got = result.get("items")
+            if isinstance(got, list):
+                items = got
+
+        records: List[MessageRecord] = []
+        if bool(light):
+            for ev in items:
+                if not isinstance(ev, dict):
+                    continue
+                idx = ev.get("index")
+                if not isinstance(idx, dict):
+                    idx = {}
+                
+                record_type = idx.get("type") or "MESSAGE"
+                pid = idx.get("plugin_id")
+                src = idx.get("source")
+                priority_raw = idx.get("priority")
+                pr_i = int(priority_raw or 0) if isinstance(priority_raw, (int, float)) else 0
+                mid = idx.get("id")
+                
+                records.append(
+                    MessageRecord(
+                        kind="message",
+                        type=record_type if isinstance(record_type, str) else str(record_type),
+                        timestamp=None,
+                        plugin_id=pid if isinstance(pid, str) else (str(pid) if pid is not None else None),
+                        source=src if isinstance(src, str) else (str(src) if src is not None else None),
+                        priority=pr_i,
+                        content=None,
+                        metadata={},
+                        raw={"index": idx, "seq": ev.get("seq"), "ts": ev.get("ts")},
+                        message_id=mid if isinstance(mid, str) else (str(mid) if mid is not None else None),
+                        message_type=record_type if isinstance(record_type, str) else str(record_type),
+                        description=None,
+                    )
+                )
+        else:
+            for ev in items:
+                if not isinstance(ev, dict):
+                    continue
+                idx = ev.get("index")
+                p = ev.get("payload")
+                if isinstance(idx, dict):
+                    records.append(MessageRecord.from_index(idx, p if isinstance(p, dict) else None))
+                elif isinstance(p, dict):
+                    records.append(MessageRecord.from_raw(p))
+
+        if bool(raw):
+            trace = None
+            plan = None
+        else:
+            get_params = {
+                "plugin_id": plugin_id,
+                "max_count": max_count,
+                "priority_min": priority_min,
+                "source": source,
+                "filter": dict(filter) if isinstance(filter, dict) else None,
+                "strict": bool(strict),
+                "since_ts": since_ts,
+                "timeout": timeout,
+                "raw": bool(raw),
+            }
+            trace = [BusOp(name="get", params=get_params, at=time.time())]
+            plan = GetNode(op="get", params={"bus": "messages", "params": get_params}, at=time.time())
+        
+        effective_plugin_id = "*" if plugin_id == "*" else (pid_norm if pid_norm else getattr(self.ctx, "plugin_id", None))
+        return MessageList(records, plugin_id=effective_plugin_id, ctx=self.ctx, trace=trace, plan=plan)
 
     def get_message_plane_all(
         self,
@@ -522,7 +679,7 @@ class MessageClient:
         plan = None if bool(raw) else GetNode(op="get", params={"bus": "messages", "params": dict(get_params)}, at=time.time())
         return MessageList(records, plugin_id=effective_plugin_id, ctx=self.ctx, trace=trace, plan=plan)
 
-    def get(
+    def get_sync(
         self,
         plugin_id: Optional[str] = None,
         max_count: int = 50,
@@ -535,6 +692,7 @@ class MessageClient:
         raw: bool = False,
         no_fallback: bool = False,
     ) -> MessageList:
+        """同步版本:获取消息列表"""
         # Fastest path: for the common "recent" read used by load testing, prefer local cache
         # (no IPC round-trip) when the request is effectively "latest N across all plugins".
         if bool(raw) and (plugin_id is None or str(plugin_id).strip() == "*"):
@@ -596,3 +754,117 @@ class MessageClient:
             light=light,
         )
         return msg_list
+    
+    async def get_async(
+        self,
+        plugin_id: Optional[str] = None,
+        max_count: int = 50,
+        priority_min: Optional[int] = None,
+        source: Optional[str] = None,
+        filter: Optional[Dict[str, Any]] = None,
+        strict: bool = True,
+        since_ts: Optional[float] = None,
+        timeout: float = 5.0,
+        raw: bool = False,
+        no_fallback: bool = False,
+    ) -> MessageList:
+        """异步版本:获取消息列表"""
+        # Fast path: local cache for raw queries
+        if bool(raw) and (plugin_id is None or str(plugin_id).strip() == "*"):
+            if priority_min is None and (source is None or not str(source)) and filter is None and since_ts is None:
+                c = _ensure_local_cache()
+                cached = c.tail(int(max_count) if max_count is not None else 50)
+                if cached:
+                    cached_records: List[MessageRecord] = []
+                    for item in cached:
+                        if not isinstance(item, dict):
+                            continue
+                        
+                        message_type = item.get("message_type")
+                        if not message_type:
+                            message_type = item.get("type")
+                        record_type = message_type if message_type else "MESSAGE"
+                        
+                        pid = item.get("plugin_id")
+                        src = item.get("source")
+                        pr = item.get("priority", 0)
+                        mid = item.get("message_id")
+                        
+                        pr_i = pr if isinstance(pr, int) else (int(pr) if isinstance(pr, (float, str)) and pr else 0)
+                        
+                        cached_records.append(
+                            MessageRecord(
+                                kind="message",
+                                type=record_type if isinstance(record_type, str) else str(record_type),
+                                timestamp=None,
+                                plugin_id=pid if isinstance(pid, str) else (str(pid) if pid is not None else None),
+                                source=src if isinstance(src, str) else (str(src) if src is not None else None),
+                                priority=pr_i,
+                                content=None,
+                                metadata={},
+                                raw=item,
+                                message_id=mid if isinstance(mid, str) else (str(mid) if mid is not None else None),
+                                message_type=message_type if isinstance(message_type, str) else (str(message_type) if message_type is not None else None),
+                                description=None,
+                            )
+                        )
+                    return MessageList(cached_records, plugin_id="*", ctx=self.ctx, trace=None, plan=None)
+
+        light = bool(raw)
+        msg_list = await self._get_via_message_plane_async(
+            plugin_id=plugin_id,
+            max_count=max_count,
+            priority_min=priority_min,
+            source=source,
+            filter=filter,
+            strict=strict,
+            since_ts=since_ts,
+            timeout=timeout,
+            raw=raw,
+            light=light,
+        )
+        return msg_list
+    
+    def get(
+        self,
+        plugin_id: Optional[str] = None,
+        max_count: int = 50,
+        priority_min: Optional[int] = None,
+        source: Optional[str] = None,
+        filter: Optional[Dict[str, Any]] = None,
+        strict: bool = True,
+        since_ts: Optional[float] = None,
+        timeout: float = 5.0,
+        raw: bool = False,
+        no_fallback: bool = False,
+    ) -> Union[MessageList, Coroutine[Any, Any, MessageList]]:
+        """智能版本:自动检测执行环境,选择同步或异步执行方式
+        
+        Returns:
+            在事件循环中返回协程,否则返回 MessageList
+        """
+        if self._is_in_event_loop():
+            return self.get_async(
+                plugin_id=plugin_id,
+                max_count=max_count,
+                priority_min=priority_min,
+                source=source,
+                filter=filter,
+                strict=strict,
+                since_ts=since_ts,
+                timeout=timeout,
+                raw=raw,
+                no_fallback=no_fallback,
+            )
+        return self.get_sync(
+            plugin_id=plugin_id,
+            max_count=max_count,
+            priority_min=priority_min,
+            source=source,
+            filter=filter,
+            strict=strict,
+            since_ts=since_ts,
+            timeout=timeout,
+            raw=raw,
+            no_fallback=no_fallback,
+        )

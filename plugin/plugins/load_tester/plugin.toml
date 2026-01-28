@@ -23,7 +23,7 @@ auto_start = false
 [load_test]
 duration_seconds = 5
 log_summary = true
-worker_threads = 4
+worker_threads = 1
 use_multiprocess = true
 timeout = 1
 sleep_seconds = 2

@@ -1139,19 +1139,15 @@ class PluginContext:
                     pass
         raise TimeoutError(f"{request_type} timed out after {timeout}s")
     
-    def trigger_plugin_event(
+    def trigger_plugin_event_sync(
         self,
         target_plugin_id: str,
         event_type: str,
         event_id: str,
         args: Dict[str, Any],
-        timeout: float = 10.0  # 增加超时时间以应对命令循环可能的延迟
+        timeout: float = 10.0
     ) -> Dict[str, Any]:
-        """
-        触发其他插件的自定义事件（插件间通信）
-        
-        这是插件间功能复用的机制，使用 Queue 而不是 HTTP。
-        处理流程和 plugin_entry 一样，在单线程的命令循环中执行。
+        """同步版本:触发其他插件的自定义事件（插件间通信）
         
         Args:
             target_plugin_id: 目标插件ID
@@ -1162,11 +1158,6 @@ class PluginContext:
             
         Returns:
             事件处理器的返回结果
-            
-        Raises:
-            RuntimeError: 如果通信队列不可用
-            TimeoutError: 如果超时
-            Exception: 如果事件执行失败
         """
         try:
             return self._send_request_and_wait(
@@ -1195,8 +1186,75 @@ class PluginContext:
             raise TimeoutError(
                 f"Plugin {target_plugin_id} event {event_type}.{event_id} timed out after {timeout}s"
             ) from e
+    
+    async def trigger_plugin_event_async(
+        self,
+        target_plugin_id: str,
+        event_type: str,
+        event_id: str,
+        args: Dict[str, Any],
+        timeout: float = 10.0
+    ) -> Dict[str, Any]:
+        """异步版本:触发其他插件的自定义事件（插件间通信）"""
+        try:
+            return await self._send_request_and_wait_async(
+                method_name="trigger_plugin_event",
+                request_type="PLUGIN_TO_PLUGIN",
+                request_data={
+                    "to_plugin": target_plugin_id,
+                    "event_type": event_type,
+                    "event_id": event_id,
+                    "args": args,
+                },
+                timeout=timeout,
+                wrap_result=False,
+                send_log_template=(
+                    "[PluginContext] Sent plugin communication request: {from_plugin} -> {to_plugin}, "
+                    "event={event_type}.{event_id}, req_id={request_id}"
+                ),
+                error_log_template="Failed to send plugin communication request: {error}",
+                warn_on_orphan_response=True,
+                orphan_warning_template=(
+                    "[PluginContext] Timeout reached, but response was found (likely delayed). "
+                    "Cleaned up orphan response for req_id={request_id}"
+                ),
+            )
+        except TimeoutError as e:
+            raise TimeoutError(
+                f"Plugin {target_plugin_id} event {event_type}.{event_id} timed out after {timeout}s"
+            ) from e
+    
+    def trigger_plugin_event(
+        self,
+        target_plugin_id: str,
+        event_type: str,
+        event_id: str,
+        args: Dict[str, Any],
+        timeout: float = 10.0
+    ):
+        """智能版本:自动检测执行环境,选择同步或异步执行方式
+        
+        Returns:
+            在事件循环中返回协程,否则返回结果字典
+        """
+        if self._is_in_event_loop():
+            return self.trigger_plugin_event_async(
+                target_plugin_id=target_plugin_id,
+                event_type=event_type,
+                event_id=event_id,
+                args=args,
+                timeout=timeout,
+            )
+        return self.trigger_plugin_event_sync(
+            target_plugin_id=target_plugin_id,
+            event_type=event_type,
+            event_id=event_id,
+            args=args,
+            timeout=timeout,
+        )
 
-    def query_plugins(self, filters: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
+    def query_plugins_sync(self, filters: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
+        """同步版本:查询插件列表"""
         try:
             return self._send_request_and_wait(
                 method_name="query_plugins",
@@ -1209,6 +1267,31 @@ class PluginContext:
             )
         except TimeoutError as e:
             raise TimeoutError(f"Plugin query timed out after {timeout}s") from e
+    
+    async def query_plugins_async(self, filters: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
+        """异步版本:查询插件列表"""
+        try:
+            return await self._send_request_and_wait_async(
+                method_name="query_plugins",
+                request_type="PLUGIN_QUERY",
+                request_data={"filters": filters or {}},
+                timeout=timeout,
+                wrap_result=True,
+                send_log_template="[PluginContext] Sent plugin query request: from={from_plugin}, req_id={request_id}",
+                error_log_template="Failed to send plugin query request: {error}",
+            )
+        except TimeoutError as e:
+            raise TimeoutError(f"Plugin query timed out after {timeout}s") from e
+    
+    def query_plugins(self, filters: Optional[Dict[str, Any]] = None, timeout: float = 5.0):
+        """智能版本:自动检测执行环境,选择同步或异步执行方式
+        
+        Returns:
+            在事件循环中返回协程,否则返回结果字典
+        """
+        if self._is_in_event_loop():
+            return self.query_plugins_async(filters=filters, timeout=timeout)
+        return self.query_plugins_sync(filters=filters, timeout=timeout)
 
     async def get_own_config(self, timeout: float = 5.0) -> Dict[str, Any]:
         try:
@@ -1309,7 +1392,8 @@ class PluginContext:
         except TimeoutError as e:
             raise TimeoutError(f"System config get timed out after {timeout}s") from e
 
-    def query_memory(self, lanlan_name: str, query: str, timeout: float = 5.0) -> Dict[str, Any]:
+    def query_memory_sync(self, lanlan_name: str, query: str, timeout: float = 5.0) -> Dict[str, Any]:
+        """同步版本:查询内存数据"""
         try:
             return self._send_request_and_wait(
                 method_name="query_memory",
@@ -1324,6 +1408,33 @@ class PluginContext:
             )
         except TimeoutError as e:
             raise TimeoutError(f"Memory query timed out after {timeout}s") from e
+    
+    async def query_memory_async(self, lanlan_name: str, query: str, timeout: float = 5.0) -> Dict[str, Any]:
+        """异步版本:查询内存数据"""
+        try:
+            return await self._send_request_and_wait_async(
+                method_name="query_memory",
+                request_type="MEMORY_QUERY",
+                request_data={
+                    "lanlan_name": lanlan_name,
+                    "query": query,
+                },
+                timeout=timeout,
+                wrap_result=True,
+                error_log_template=None,
+            )
+        except TimeoutError as e:
+            raise TimeoutError(f"Memory query timed out after {timeout}s") from e
+    
+    def query_memory(self, lanlan_name: str, query: str, timeout: float = 5.0):
+        """智能版本:自动检测执行环境,选择同步或异步执行方式
+        
+        Returns:
+            在事件循环中返回协程,否则返回结果字典
+        """
+        if self._is_in_event_loop():
+            return self.query_memory_async(lanlan_name=lanlan_name, query=query, timeout=timeout)
+        return self.query_memory_sync(lanlan_name=lanlan_name, query=query, timeout=timeout)
 
     async def update_own_config(self, updates: Dict[str, Any], timeout: float = 10.0) -> Dict[str, Any]:
         if not isinstance(updates, dict):
