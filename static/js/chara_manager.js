@@ -101,7 +101,7 @@ if (!window._charaManagerFoldHandler) {
                 // 动态切换箭头（图片旋转）
                 let arrow = toggle.querySelector('.arrow');
                 if (arrow && arrow.tagName === 'IMG') {
-                    arrow.style.transform = fold.classList.contains('open') ? 'rotate(180deg)' : 'rotate(0deg)';
+                    arrow.style.transform = fold.classList.contains('open') ? 'rotate(0deg)' : 'rotate(-90deg)';
                 }
 
                 // 立即保存高级设置下拉栏状态
@@ -185,7 +185,7 @@ async function autoScanWorkshopCharacterCards() {
     }
     return hasNewCards;
 }
-        
+
 // 导入单个工坊角色卡文件，返回是否成功添加
 async function importWorkshopCharaFile(filePath, itemId) {
     try {
@@ -965,6 +965,7 @@ function showCatgirlForm(key, container) {
     arrowSpan.style.height = '32px';
     arrowSpan.style.verticalAlign = 'middle';
     arrowSpan.style.transition = 'transform 0.2s';
+    arrowSpan.style.transform = 'rotate(-90deg)';
     foldToggle.appendChild(arrowSpan);
     foldToggle.appendChild(document.createTextNode(' '));
     const toggleText = document.createTextNode(window.t ? window.t('character.advancedSettings') : '进阶设定');
@@ -1089,6 +1090,7 @@ function showCatgirlForm(key, container) {
     sysArrow.style.height = '32px';
     sysArrow.style.verticalAlign = 'middle';
     sysArrow.style.transition = 'transform 0.2s';
+    sysArrow.style.transform = 'rotate(-90deg)';
     sysToggle.appendChild(sysArrow);
     innerFold.appendChild(sysToggle);
     const sysContent = document.createElement('div');
@@ -1352,10 +1354,15 @@ function showCatgirlForm(key, container) {
     // 立即调用加载音色
     loadVoices();
 
+
+
+
+
     form.onsubmit = async function (e) {
         e.preventDefault();
         // 防止重复提交
         if (form.dataset.submitting === 'true') {
+            console.log('表单正在提交中，忽略重复提交');
             return;
         }
         form.dataset.submitting = 'true';
@@ -1421,6 +1428,7 @@ function showCatgirlForm(key, container) {
                 }
             }
 
+            console.log('提交数据:', data);
             const response = await fetch('/api/characters/catgirl' + (isNew ? '' : '/' + encodeURIComponent(key)), {
                 method: isNew ? 'POST' : 'PUT',
                 headers: { 'Content-Type': 'application/json' },
@@ -1447,6 +1455,7 @@ function showCatgirlForm(key, container) {
             }
 
             const result = await response.json();
+            console.log('保存结果:', result);
 
             if (result.success === false) {
                 await showAlert(result.error || (window.t ? window.t('character.saveFailed') : '保存失败'));
@@ -1499,7 +1508,7 @@ function showCatgirlForm(key, container) {
                     if (advancedSettingsFold && toggle) {
                         advancedSettingsFold.classList.add('open');
                         const arrow = toggle.querySelector('.arrow');
-                        if (arrow) arrow.style.transform = 'rotate(180deg)';
+                        if (arrow) arrow.style.transform = 'rotate(0deg)';
                     }
                 }
             }, 0);
@@ -1684,60 +1693,27 @@ function openApiKeySettings() {
 }
 
 function openVoiceClone(lanlanName) {
-    // 检查是否已有弹窗存在（根据lanlanName区分）
-    const modalId = 'voice-clone-modal-' + encodeURIComponent(lanlanName);
-    const existingModal = document.getElementById(modalId);
-    if (existingModal) {
-        // 如果已存在，聚焦到该弹窗
-        existingModal.style.display = 'block';
-        return;
+    // 使用 window.openOrFocusWindow 打开独立窗口
+    const url = '/voice_clone?lanlan_name=' + encodeURIComponent(lanlanName);
+    const windowName = 'neko_voice_clone_' + encodeURIComponent(lanlanName);
+
+    // 计算窗口位置，使其居中显示
+    const width = 700;
+    const height = 750;
+    const left = Math.max(0, Math.floor((screen.width - width) / 2));
+    const top = Math.max(0, Math.floor((screen.height - height) / 2));
+
+    const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+
+    if (typeof window.openOrFocusWindow === 'function') {
+        window.openOrFocusWindow(url, windowName, features);
+    } else {
+        // 兼容处理：如果 openOrFocusWindow 不存在，直接使用 window.open
+        window.open(url, windowName, features);
     }
-
-    // 创建弹窗容器
-    let modal = document.createElement('div');
-    modal.id = modalId;
-    modal.style.position = 'fixed';
-    modal.style.left = '0';
-    modal.style.top = '0';
-    modal.style.width = '100vw';
-    modal.style.height = '100vh';
-    modal.style.background = 'rgba(0,0,0,0.4)';
-    modal.style.zIndex = '9999';
-
-    // 监听voice_id变更，注册页面可在window.parent.postMessage通知
-    const voiceCloneMessageHandler = function (e) {
-        if (!ALLOWED_ORIGINS.includes(e.origin)) return;
-        if (e.data && e.data.type === 'voice_id_updated') {
-            const modalToRemove = document.getElementById(modalId);
-            if (modalToRemove) {
-                document.body.removeChild(modalToRemove);
-            }
-            window.removeEventListener('message', voiceCloneMessageHandler);
-            loadCharacterData();
-        }
-    };
-
-    modal.onclick = function (e) {
-        if (e.target === modal) {
-            window.removeEventListener('message', voiceCloneMessageHandler);
-            document.body.removeChild(modal);
-        }
-    };
-    // 创建iframe
-    let iframe = document.createElement('iframe');
-    iframe.src = 'voice_clone?lanlan_name=' + encodeURIComponent(lanlanName);
-    iframe.style.width = '600px';
-    iframe.style.height = '400px';
-    iframe.style.border = 'none';
-    iframe.style.background = '#fff';
-    iframe.style.display = 'block';
-    iframe.style.margin = '60px auto';
-    iframe.style.borderRadius = '8px';
-
-    window.addEventListener('message', voiceCloneMessageHandler);
-    modal.appendChild(iframe);
-    document.body.appendChild(modal);
 }
+
+
 
 // 解除声音注册
 window.unregisterVoice = async function (catgirlName) {
@@ -1783,7 +1759,9 @@ function sendBeacon() {
         const blob = new Blob([payload], { type: 'application/json' });
         const success = navigator.sendBeacon('/api/beacon/shutdown', blob);
 
-        if (!success) {
+        if (success) {
+            console.log('Beacon信号已发送');
+        } else {
             console.warn('Beacon发送失败，尝试使用fetch');
             // 备用方案：使用fetch
             fetch('/api/beacon/shutdown', {
@@ -1794,10 +1772,10 @@ function sendBeacon() {
                     action: 'shutdown'
                 }),
                 keepalive: true // 确保请求在页面关闭时仍能发送
-            }).catch(() => {});
+            }).catch(err => console.log('备用beacon发送失败:', err));
         }
     } catch (e) {
-        // 忽略异常
+        console.log('Beacon发送异常:', e);
     }
 }
 
@@ -1890,7 +1868,7 @@ function setupPageEventListeners() {
     // 新增猫娘按钮
     const addCatgirlBtn = document.getElementById('add-catgirl-btn');
     if (addCatgirlBtn) {
-        addCatgirlBtn.addEventListener('click', function() {
+        addCatgirlBtn.addEventListener('click', function () {
             showCatgirlForm(null);
         });
     }
@@ -1908,11 +1886,14 @@ async function initPage() {
     // 3. 延迟执行工坊角色卡扫描
     // 使用 setTimeout 将其放到任务队列末尾，并等待几秒钟，让浏览器优先处理页面渲染和交互
     setTimeout(() => {
+        console.log('[工坊扫描] 开始异步扫描工坊角色卡...');
         autoScanWorkshopCharacterCards().then(async (hasNewCards) => {
             if (hasNewCards) {
+                console.log('[工坊扫描] 发现新角色卡，正在更新列表...');
                 // 发现新卡时才刷新数据
                 await loadCharacterData();
             } else {
+                console.log('[工坊扫描] 未发现新角色卡');
             }
         }).catch(err => {
             console.error('[工坊扫描] 扫描过程中发生错误:', err);

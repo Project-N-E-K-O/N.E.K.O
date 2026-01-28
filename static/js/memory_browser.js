@@ -1,4 +1,4 @@
-(function() {
+(function () {
     'use strict';
 
     const PARENT_ORIGIN = window.location.origin;
@@ -44,17 +44,14 @@
                     // 如果是当前猫娘，自动选择
                     if (currentCatgirl && catName === currentCatgirl && !foundCurrentCatgirl) {
                         foundCurrentCatgirl = true;
-                        // 使用requestAnimationFrame确保DOM已渲染
-                        requestAnimationFrame(() => {
+                        // 延迟一下确保DOM已渲染
+                        setTimeout(() => {
                             selectMemoryFile(f, li, catName);
-                        });
+                        }, 100);
                     }
                 });
             } else {
-                const li = document.createElement('li');
-                li.style.cssText = 'color:#888; padding: 8px;';
-                li.textContent = window.t ? window.t('memory.noFiles') : '无文件';
-                ul.appendChild(li);
+                ul.innerHTML = `<li style="color:#888; padding: 8px;">${window.t ? window.t('memory.noFiles') : '无文件'}</li>`;
             }
         } catch (e) {
             ul.innerHTML = `<li style="color:#e74c3c; padding: 8px;">${window.t ? window.t('memory.loadFailed') : '加载失败'}</li>`;
@@ -160,7 +157,16 @@
         chatData.splice(idx, 1);
         renderChatEdit();
     }
-
+    // 新增：AI输入框内容变更时，自动拼接时间戳
+    function updateAIContent(idx, value) {
+        const msg = chatData[idx];
+        const m = msg.text.match(/^(\[[^\]]+\])/);
+        if (m) {
+            chatData[idx].text = m[1] + value;
+        } else {
+            chatData[idx].text = value;
+        }
+    }
     function updateSystemContent(idx, value) {
         // 存储时加上前缀
         const memoPrefix = window.t ? window.t('memory.previousMemo') : '先前对话的备忘录: ';
@@ -220,22 +226,14 @@
                     return;
                 }
                 chatData = [];
-                const emptyDiv = document.createElement('div');
-                emptyDiv.style.cssText = 'color:#888; padding: 20px; text-align: center;';
-                emptyDiv.textContent = window.t ? window.t('memory.noChatContent') : '无聊天内容';
-                editDiv.innerHTML = '';
-                editDiv.appendChild(emptyDiv);
+                editDiv.innerHTML = '<div style="color:#888; padding: 20px; text-align: center;">' + (window.t ? window.t('memory.noChatContent') : '无聊天内容') + '</div>';
             }
         } catch (e) {
             if (requestId !== memoryFileRequestId) {
                 return;
             }
             chatData = [];
-            const errorDiv = document.createElement('div');
-            errorDiv.style.cssText = 'color:#e74c3c; padding: 20px; text-align: center;';
-            errorDiv.textContent = window.t ? window.t('memory.loadFailed') : '加载失败';
-            editDiv.innerHTML = '';
-            editDiv.appendChild(errorDiv);
+            editDiv.innerHTML = '<div style="color:#e74c3c; padding: 20px; text-align: center;">' + (window.t ? window.t('memory.loadFailed') : '加载失败') + '</div>';
         }
     }
     document.getElementById('save-memory-btn').onclick = async function () {
@@ -282,14 +280,12 @@
             showSaveStatus(window.t ? window.t('memory.saveFailedGeneral') : '保存失败', false);
         }
     };
-
     document.getElementById('clear-memory-btn').onclick = function () {
         // 只保留 system 类型（备忘录），其余全部清除
         chatData = chatData.filter(msg => msg.role === 'system');
         renderChatEdit();
         showSaveStatus(window.t ? window.t('memory.clearedMemory') : '已清空近期记忆，未保存', false);
     };
-
     function showSaveStatus(msg, success) {
         const el = document.getElementById('save-status');
         el.textContent = msg;
@@ -298,72 +294,73 @@
             setTimeout(() => { el.textContent = ''; }, 3000);
         }
     }
-function closeMemoryBrowser() {
-    if (window.opener) {
-        // 如果是通过 window.open() 打开的，直接关闭
-        window.close();
-    } else if (window.parent && window.parent !== window) {
-        // 如果在 iframe 中，通知父窗口关闭
-        window.parent.postMessage({ type: 'close_memory_browser' }, PARENT_ORIGIN);
-    } else {
-        // 否则尝试关闭窗口
-        // 注意：如果是用户直接访问的页面，浏览器可能不允许关闭
-        // 在这种情况下，可以尝试返回上一页或显示提示
-        if (window.history.length > 1) {
-            window.history.back();
-        } else {
+    function closeMemoryBrowser() {
+        if (window.opener) {
+            // 如果是通过 window.open() 打开的，直接关闭
             window.close();
-            // 如果 window.close() 失败（页面仍然存在），可以显示提示
-            setTimeout(() => {
-                if (!window.closed) {
-                    // 窗口未能关闭，返回主页
-                    window.location.href = '/';
-                }
-            }, 100);
+        } else if (window.parent && window.parent !== window) {
+            // 如果在 iframe 中，通知父窗口关闭
+            window.parent.postMessage({ type: 'close_memory_browser' }, PARENT_ORIGIN);
+        } else {
+            // 否则尝试关闭窗口
+            // 注意：如果是用户直接访问的页面，浏览器可能不允许关闭
+            // 在这种情况下，可以尝试返回上一页或显示提示
+            if (window.history.length > 1) {
+                window.history.back();
+            } else {
+                window.close();
+                // 如果 window.close() 失败（页面仍然存在），可以显示提示
+                setTimeout(() => {
+                    if (!window.closed) {
+                        // 窗口未能关闭，返回主页
+                        window.location.href = '/';
+                    }
+                }, 100);
+            }
         }
     }
-}
-// 页面加载时隐藏保存按钮
-document.addEventListener('DOMContentLoaded', function () {
-    loadMemoryFileList();
-    loadReviewConfig();
-    document.getElementById('save-row').style.display = 'none';
+    // 将函数暴露到全局作用域，供 HTML onclick 调用
+    window.closeMemoryBrowser = closeMemoryBrowser;
+    // 页面加载时隐藏保存按钮
+    document.addEventListener('DOMContentLoaded', function () {
+        loadMemoryFileList();
+        loadReviewConfig();
+        document.getElementById('save-row').style.display = 'none';
 
-    // 监听checkbox变化
-    const checkbox = document.getElementById('review-toggle-checkbox');
-    if (checkbox) {
-        checkbox.addEventListener('change', function() {
-            toggleReview(this.checked);
-        });
-    }
+        // 监听checkbox变化
+        const checkbox = document.getElementById('review-toggle-checkbox');
+        if (checkbox) {
+            checkbox.addEventListener('change', function () {
+                toggleReview(this.checked);
+            });
+        }
 
-    // 监听i18n语言变化
-    if (window.i18n) {
-        window.i18n.on('languageChanged', function() {
-            const checkbox = document.getElementById('review-toggle-checkbox');
-            if (checkbox) {
-                updateToggleText(checkbox.checked);
-            }
-        });
-    }
+        // 监听i18n语言变化
+        if (window.i18n) {
+            window.i18n.on('languageChanged', function () {
+                const checkbox = document.getElementById('review-toggle-checkbox');
+                if (checkbox) {
+                    updateToggleText(checkbox.checked);
+                }
+            });
+        }
 
-    // Electron白屏修复
-    if (document.body) {
-        void document.body.offsetHeight;
-        const currentOpacity = document.body.style.opacity || '1';
-        document.body.style.opacity = '0.99';
-        requestAnimationFrame(() => {
-            document.body.style.opacity = currentOpacity;
-        });
-    }
-});
+        // Electron白屏修复
+        if (document.body) {
+            void document.body.offsetHeight;
+            const currentOpacity = document.body.style.opacity || '1';
+            document.body.style.opacity = '0.99';
+            requestAnimationFrame(() => {
+                document.body.style.opacity = currentOpacity;
+            });
+        }
+    });
 
-    // Electron白屏修复：强制触发重绘以解决某些情况下页面不显示的问题
-    // 通过访问offsetHeight属性强制浏览器重新计算布局
     window.addEventListener('load', function () {
         // 再次强制重绘以确保资源加载后显示
         if (document.body) void document.body.offsetHeight;
     });
+
 
     async function loadReviewConfig() {
         try {
