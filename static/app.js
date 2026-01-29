@@ -3256,6 +3256,11 @@ function init_app() {
                         data: dataUrl,
                         input_type: input_type,
                     }));
+
+                    // 刷新最后使用时间，防止活跃屏幕分享被误释放
+                    if (stream === screenCaptureStream) {
+                        screenCaptureStreamLastUsed = Date.now();
+                    }
                 }
             }, 1000);
         } // 每1000ms一帧
