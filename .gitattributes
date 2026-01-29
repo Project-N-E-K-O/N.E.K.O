@@ -1,0 +1,12 @@
+# 行尾配置：统一使用 LF，确保跨平台兼容性
+* text=auto eol=lf
+
+# Windows 特定文件使用 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 构建产物标记为 linguist-generated，避免被统计为代码
+# 覆盖 static/bundles/ 下的所有文件与子目录
+static/bundles/** linguist-generated=true
+frontend/vendor/** linguist-generated=true

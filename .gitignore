@@ -1,3 +1,5 @@
+# 构建产物
+static/bundles/
 # 忽略敏感配置
 core_config.txt
 test.py
@@ -58,6 +60,8 @@ node_modules/
 *.cache/
 dist/
 build/
+frontend/coverage/
+frontend/packages/request/coverage/
 
 # Python venvs and wheels
 *.egg-info/

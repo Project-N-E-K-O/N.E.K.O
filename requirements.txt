@@ -119,6 +119,8 @@ humanize==4.15.0
     # via audiolab
 hyperframe==6.1.0
     # via h2
+ifaddr==0.2.0
+    # via n-e-k-o (pyproject.toml)
 idna==3.11
     # via
     #   anyio
@@ -224,6 +226,8 @@ pillow==12.0.0
     #   n-e-k-o (pyproject.toml)
     #   matplotlib
     #   pytesseract
+qrcode==8.2
+    # via n-e-k-o (pyproject.toml)
 propcache==0.4.1
     # via
     #   aiohttp

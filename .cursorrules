@@ -1,0 +1,564 @@
+# N.E.K.O 项目 Cursor IDE 维护规则
+
+## 项目结构说明
+
+本项目包含三个主要的前端相关目录，需要遵循不同的维护规范：
+
+1. **`frontend/`** - 现代前端项目（React 19 + TypeScript + Vite）
+2. **`templates/`** - HTML 模板文件（服务端渲染模板）
+3. **`static/`** - 静态资源文件（包含原生 JS 和构建产物）
+
+---
+
+## 一、frontend/ 目录维护规则
+
+### 1.1 技术栈约束
+- **框架**: React 19.1.1（React App 使用标准 React；组件库 UMD 构建需使用经典 JSX 转换以兼容 React UMD）
+- **构建工具**: Vite 7.1.7
+- **语言**: TypeScript 5.9.2（严格模式）
+- **包管理**: npm workspaces
+
+### 1.2 代码规范
+- **组件开发**:
+  - 所有组件必须使用 TypeScript，提供完整的类型定义
+  - 使用函数式组件 + Hooks，避免类组件
+  - 组件必须导出类型定义（如 `StatusToastHandle`、`ModalHandle`）
+  - 组件样式使用独立的 `.css` 文件，避免内联样式（除非是动态样式）
+  - 组件库必须支持 UMD 格式，外部化 `react` 和 `react-dom`
+
+- **类型导入规范（重要！）**:
+  - **从 `@project_neko/common` 导入类型时，必须使用 `import type`**
+  - TypeScript 类型定义在编译成 JavaScript 后会被移除，混合导入会导致运行时错误
+  - ✅ 正确写法：
+    ```typescript
+    import { TinyEmitter, noop } from "@project_neko/common";
+    import type { Unsubscribe, ApiResponse } from "@project_neko/common";
+    ```
+  - ❌ 错误写法：
+    ```typescript
+    import { TinyEmitter, Unsubscribe } from "@project_neko/common"; // 运行时错误！
+    ```
+  - 详见：`docs/frontend/FIX-type-import-from-common-2026-01-10.md`
+
+- **路径别名**:
+  - 使用 `@project_neko/components` 引用组件库
+  - 使用 `@project_neko/common` 引用公共工具
+  - 使用 `@project_neko/request` 引用请求库
+  - 使用 `@project_neko/realtime` 引用 Realtime/WebSocket 库
+  - 路径别名在 `tsconfig.json` 和 `vite.web.config.ts` 中已配置
+
+- **构建产物**:
+  - **packages 的库构建产物**输出到仓库根 `static/bundles/`（ES + UMD）
+  - **React WebApp（frontend/src）**构建产物输出到 `frontend/dist/webapp`（用于开发/调试，避免与静态资源混淆）
+  - 组件库必须同时产出 ES 和 UMD 格式，UMD 外部化 `react` 与 `react-dom`
+  - UMD 全局变量命名：`ProjectNekoComponents`、`ProjectNekoRequest`、`ProjectNekoCommon`、`ProjectNekoRealtime`、`ProjectNekoBridge`
+  - sourcemap：当前配置为**开发模式生成**（`--mode development`），生产模式默认不生成；如需排查线上问题，优先用开发构建复现或临时开启 sourcemap（需同步评估体积/泄露风险）
+
+### 1.3 文件组织
+
+#### 组件库 (`packages/components/`)
+- 每个组件一个目录或文件，包含 `.tsx` 和 `.css`
+- 通过 `index.ts` 统一导出
+- 组件必须支持 ref 转发（使用 `forwardRef`）
+
+**当前组件**:
+- `Button` - 基础按钮，支持 `primary`/`secondary`/`success`/`danger` 变体
+- `StatusToast` - 状态提示气泡，支持自定义持续时间和静态资源基址
+- `Modal` - 模态框系统，包含 `AlertDialog`/`ConfirmDialog`/`PromptDialog`
+
+#### 请求库 (`packages/request/`)
+- 支持 Web 和 React Native 双平台
+- 提供 Token 自动刷新机制
+- 使用 `WebTokenStorage` 和 `NativeTokenStorage` 抽象存储层
+
+**导出入口**:
+- `index.ts` - 通用入口
+- `index.web.ts` - Web 端入口（带默认实例）
+- `index.native.ts` - React Native 入口
+
+#### 桥接层 (`packages/web-bridge/`)
+- 将 React 组件暴露到 `window` 对象
+- 提供 `window.showStatusToast()`、`window.showAlert()` 等 API
+- 自动绑定默认请求客户端到 `window.request`
+- 加载 UMD 时自动执行 `autoBindDefaultRequest()`
+
+#### 通用工具 (`packages/common/`)
+- `ApiResponse<T>` - 标准 API 响应类型
+- `noop()` - 空函数工具
+
+### 1.4 开发流程
+- **开发命令**: 使用 `cd frontend && npm run dev:web`（PowerShell: `cd frontend; npm run dev:web`）
+- **构建命令**: 使用 `cd frontend && npm run build`（完整构建流程）
+- **类型检查**: 使用 `cd frontend && npm run typecheck`
+- **环境变量**: 使用 `.env` 文件配置 `VITE_API_BASE_URL`、`VITE_STATIC_SERVER_URL`、`VITE_WEBSOCKET_URL`
+
+**构建顺序**（由 `npm run build` 自动执行）:
+1. `clean:bundles` - 清空 `static/bundles/`
+2. `build:request` - 构建请求库
+3. `build:common` - 构建通用工具
+4. `build:realtime` - 构建 Realtime/WebSocket 库
+5. `build:components` - 构建组件库
+6. `build:web-bridge` - 构建桥接层
+7. `build:web` - 构建 Web 应用入口（产物在 `frontend/dist/webapp`）
+8. `copy:react-umd` - 复制 React/ReactDOM UMD 文件到 `static/bundles/`
+
+### 1.5 禁止事项
+- ❌ 不要直接修改 `static/bundles/` 中的构建产物（这些文件由构建流程自动生成）
+- ❌ 不要使用 React 19 的新 JSX 转换（必须使用经典转换以确保 UMD 兼容）
+- ❌ 不要在组件中使用内联样式（除非是动态计算的样式值）
+- ❌ 不要直接导入 `react` 和 `react-dom` 的源码（UMD 构建时会外部化）
+- ❌ 不要从 `@project_neko/common` 混合导入类型和值（使用 `import type` 分离类型导入）
+
+### 1.6 packages 分层与 i18n 规则（过渡期：HTML/JS + bundles；终态：React App）
+
+> 背景：`frontend/packages/*` 中的代码既要被旧 `templates/ + static/*.js`（通过 `static/bundles/*.js` 的 UMD）使用，也要被新的 `frontend/src` React App 使用。
+> 因此必须遵循 **“宿主无关（host-agnostic）优先”** 的分层：React App 是一个“宿主”，旧 HTML/JS 也是一个“宿主”。
+
+#### 1.6.1 总原则（必须遵守）
+- ✅ **packages 默认不得假设宿主环境**：除非明确属于桥接层，否则不应强依赖 DOM / `window` / React Provider。
+- ✅ **i18n 不在底层库做“翻译字符串”**：底层库只输出 **可翻译信息**（`code + params`），由宿主决定如何翻译/展示。
+- ✅ **兼容性复杂度集中到 `packages/web-bridge`**：跨界/兼容逻辑不要分散到其它包。
+
+#### 1.6.2 `packages/common` / `packages/request` / `packages/realtime`（必须不依赖 React）
+- ✅ **禁止依赖 React**：不得引入 `react`、不得要求 Provider、不得依赖 JSX。
+- ✅ **禁止耦合 DOM**：不得读写 DOM、不得假设浏览器 API（除非是明确的 web-only 入口文件，并在文档中写清楚）。
+- ✅ **i18n 处理方式**：
+  - **推荐**：返回结构化错误/状态（例如 `{ code: "SESSION_TIMEOUT", params: {...} }`）。
+  - **可选**：接受可选的 `t(key, params?)` 回调（函数依赖注入），库本身不初始化 i18n、不持有全局单例。
+  - **禁止**：在这些包内引入 `i18next` / `react-i18next` / `react-intl` 等并自行初始化。
+
+#### 1.6.3 `packages/components`（可完全 React 化，但必须可被 UMD/HTML 使用）
+- ✅ **允许使用标准 React i18n**（如 `react-i18next` / `react-intl`），用于 React App 的“正统”用法。
+- ✅ **但组件库必须提供“无 Provider 运行路径”**（用于旧 HTML/JS + UMD bundles）：
+  - 组件库内部应统一通过一个最小契约获取翻译函数：`t(key, params?) => string`。
+  - **优先级建议**：组件库 Provider 注入的 `t` → `window.t`（若存在）→ 回退到 key/默认文案。
+  - 组件库不得强制要求宿主一定提供某种 Provider（否则旧页面通过 `<script src="/static/bundles/components.js">` 会直接崩溃）。
+- ✅ **翻译资源归宿主**：
+  - 旧页面翻译资源在 `static/locales/*.json`（通过 `static/i18n-i18next.js` 暴露 `window.t`）。
+  - React App 可按其 i18n 体系加载资源，但要与组件库的 `t` 契约对齐。
+  - **禁止**：把整套业务翻译资源硬打进组件库 bundles（会导致双实例、体积膨胀、与宿主语言状态分裂）。
+
+#### 1.6.4 `packages/web-bridge`（唯一允许“跨界”的地方）
+- ✅ **职责**：把 React 组件能力（如 Toast/Modal）与基础能力（request/realtime）暴露到 `window`，供旧页面使用。
+- ✅ **允许读写 `window` / 监听全局事件**（这是桥接层的边界）。
+- ✅ **i18n 桥接建议**：
+  - 旧页面以 `window.t` 为主（由 `static/i18n-i18next.js` 提供），并通过 `localechange` 事件通知语言变化。
+  - `web-bridge` 在挂载 React 组件树时应把宿主的 `t` 注入到组件库（Provider 包裹或等价机制），并在 `localechange` 时触发 re-render，保证 UMD 场景语言可切换。
+
+#### 1.6.5 迁移节奏建议（不强制，但推荐）
+- **阶段 0**：旧页面继续使用 `static/i18n-i18next.js`（`window.t` + `localechange`），组件库保持 `window.t` fallback。
+- **阶段 1**：React App 使用标准 React i18n；如需让 UMD 组件在同页生效，可把 React 的 `t` 同步到 `window.t`（仅作为兼容层）。
+- **阶段 2**：逐步把组件库里散落的 `window.t?.(...)` 收敛到组件库 i18n 适配层（例如 `useT()`），但保留 window fallback。
+- **阶段 3**：当旧页面被替换后，再评估是否移除 `window.t` 依赖/或将旧页面 i18n 也迁移成 bundles 形式。
+
+#### 1.6.6 Code Review 检查点（新增）
+- [ ] `common/request/realtime` 是否引入了 React / DOM / i18n 初始化？（应为否）
+- [ ] `components` 是否在无 Provider 时仍能运行？是否提供 `window.t` fallback？
+- [ ] 是否把 i18n 兼容/全局事件监听集中在 `web-bridge`，而不是散落在其它包？
+- [ ] 旧模板脚本顺序是否确保 `window.t` 在需要时已就绪？
+- [ ] 从 `@project_neko/common` 导入类型时，是否使用了 `import type`？（避免运行时错误）
+
+---
+
+## 二、templates/ 目录维护规则
+
+### 2.1 文件性质
+- 这些是服务端 HTML 模板文件，由 Python Flask/Jinja2 渲染
+- **现状**：模板主要仍引用 `static/*.js` 的 legacy 脚本（未全面迁移到 bundles）
+- **迁移目标**：逐步将页面迁移为引用 `static/bundles/` 中的构建产物（UMD），并通过 `packages/web-bridge` 暴露统一 window API
+- 模板可能包含内联样式和脚本（历史遗留，逐步迁移）
+
+### 2.2 模板文件列表
+| 文件 | 用途 |
+|------|------|
+| `index.html` | 主页面，包含 Live2D 显示和交互 |
+| `viewer.html` | 查看器页面 |
+| `chara_manager.html` | 角色管理器 |
+| `l2d_manager.html` | Live2D 模型管理器 |
+| `live2d_emotion_manager.html` | Live2D 情绪配置管理 |
+| `live2d_parameter_editor.html` | Live2D 参数编辑器 |
+| `memory_browser.html` | 记忆浏览器 |
+| `steam_workshop_manager.html` | Steam 创意工坊管理 |
+| `subtitle.html` | 字幕显示页面 |
+
+### 2.3 脚本引用顺序
+当某个模板页**迁移为 bundles/UMD** 用法时，建议遵循以下顺序（避免全局 API/依赖未就绪）：
+
+```html
+<!-- 0. i18n（若页面/组件需要 window.t；建议尽早加载） -->
+<script src="/static/i18n-i18next.js"></script>
+
+<!-- 1. 请求库（不依赖 React，可先加载） -->
+<script src="/static/bundles/request.js"></script>
+
+<!-- 2. 桥接层（封装全局工具，自动绑定 window.request） -->
+<script src="/static/bundles/web-bridge.js"></script>
+
+<!-- 3. React/ReactDOM UMD（组件库依赖） -->
+<script src="/static/bundles/react.production.min.js"></script>
+<script src="/static/bundles/react-dom.production.min.js"></script>
+
+<!-- 4. 组件库样式 -->
+<link rel="stylesheet" href="/static/bundles/components.css">
+
+<!-- 5. 组件库 UMD -->
+<script src="/static/bundles/components.js"></script>
+
+<!-- 6. 其他工具库 -->
+<script src="/static/common_dialogs.js"></script>
+```
+
+### 2.4 全局 API 使用
+
+#### 状态提示
+```javascript
+window.showStatusToast(message, duration);
+// 示例: window.showStatusToast("操作成功", 3000);
+```
+
+#### 模态对话框
+```javascript
+// Alert（警告框）
+await window.showAlert(message, title);
+
+// Confirm（确认框）
+const ok = await window.showConfirm(message, title, {
+  okText: "确定",
+  cancelText: "取消",
+  danger: false
+});
+
+// Prompt（输入框）
+const value = await window.showPrompt(message, defaultValue, title);
+```
+
+#### HTTP 请求
+```javascript
+// GET 请求
+const data = await window.request.get("/api/endpoint", { params: { key: value } });
+
+// POST 请求
+const result = await window.request.post("/api/endpoint", { body: data });
+
+// URL 构建
+const apiUrl = window.buildApiUrl("/api/endpoint");
+const staticUrl = window.buildStaticUrl("/static/resource.png");
+const wsUrl = window.buildWebSocketUrl("/ws/chat");
+```
+
+#### 国际化
+```javascript
+// 翻译文本
+const text = window.t("key.path", { param: value });
+```
+
+### 2.5 维护原则
+- ✅ **保持向后兼容**: 修改模板时确保不影响现有功能
+- ✅ **逐步迁移**: 将内联脚本逐步迁移到 `static/` 目录的独立 JS 文件
+- ✅ **样式隔离**: 模板中的内联样式应使用唯一的选择器，避免全局污染
+- ✅ **引用检查**: 修改脚本引用时，确保所有依赖的构建产物已正确构建
+
+### 2.6 禁止事项
+- ❌ 不要改变脚本引用顺序（会导致依赖加载失败）
+- ❌ 不要直接修改构建产物路径（除非同时更新构建配置）
+- ❌ 不要在内联脚本中使用 ES6+ 语法（除非目标浏览器支持）
+- ❌ 不要移除必要的全局变量初始化（如 `window._openSettingsWindows`）
+
+---
+
+## 三、static/*.js 目录维护规则
+
+### 3.1 文件分类
+
+#### 构建产物（禁止手动编辑）
+```
+static/bundles/
+├── components.js / components.es.js  # 组件库
+├── components.css                     # 组件库样式
+├── request.js / request.es.js         # 请求库
+├── common.js / common.es.js           # 通用工具
+├── realtime.js / realtime.es.js       # Realtime/WebSocket 库
+├── web-bridge.js / web-bridge.es.js   # 桥接层
+├── react.production.min.js            # React UMD
+├── react-dom.production.min.js        # ReactDOM UMD
+└── *.map                              # Source maps
+```
+
+#### 原生 JS 文件（可手动维护）
+| 文件 | 用途 |
+|------|------|
+| `app.js` | 应用初始化、窗口管理、状态提示显示 |
+| `common_dialogs.js` | 异步模态对话框系统（作为 React Modal 的备用） |
+| `common_ui.js` | 通用 UI 工具函数 |
+| `i18n-i18next.js` | i18next 国际化初始化和语言检测 |
+| `live2d-core.js` | Live2DManager 类，核心功能 |
+| `live2d-model.js` | 模型加载和管理 |
+| `live2d-emotion.js` | 情绪/表情切换 |
+| `live2d-interaction.js` | 用户交互处理 |
+| `live2d-ui-buttons.js` | UI 浮动按钮 |
+| `live2d-ui-drag.js` | 拖拽功能 |
+| `live2d-ui-hud.js` | HUD 显示 |
+| `live2d-ui-popup.js` | 弹出窗口管理 |
+| `live2d-init.js` | Live2D 初始化入口 |
+| `audio-loader.js` | 音频加载器 |
+| `audio-processor.js` | 音频处理器（Web Audio API） |
+
+#### 第三方库
+```
+static/libs/
+├── i18next.min.js           # i18next 核心
+├── i18nextHttpBackend.min.js # i18next HTTP 后端
+├── live2d.min.js            # Live2D SDK
+├── live2dcubismcore.min.js  # Live2D Cubism Core
+├── pixi.min.js              # PixiJS
+└── index.min.js             # pixi-live2d-display
+```
+
+### 3.2 原生 JS 文件维护规范
+
+#### 编码规范
+- **兼容性**: 使用 ES5 语法，确保在旧版浏览器中运行
+- **全局变量**: 使用 `window` 对象暴露全局 API，避免污染全局命名空间
+- **模块化**: 尽量将功能拆分为独立函数，避免全局变量冲突
+- **注释**: 使用清晰的注释说明函数用途和参数
+- **IIFE**: 使用立即执行函数表达式封装私有逻辑
+
+```javascript
+// 推荐写法
+(function() {
+    'use strict';
+    
+    // 私有变量
+    var privateVar = 'value';
+    
+    // 暴露到全局
+    window.myFunction = function() {
+        // ...
+    };
+})();
+```
+
+#### 防御性编程
+```javascript
+// 检查 DOM 元素是否存在
+var element = document.getElementById('myElement');
+if (element) {
+    element.addEventListener('click', handleClick);
+}
+
+// 检查全局 API 是否可用
+if (window.showStatusToast) {
+    window.showStatusToast('消息', 3000);
+}
+
+// 检查 i18n 是否就绪
+var text = (window.t && typeof window.t === 'function') 
+    ? window.t('key') 
+    : '默认文本';
+```
+
+### 3.3 与前端构建产物的集成
+
+#### 优先使用桥接 API
+原生 JS 应优先使用 `window.showStatusToast()`、`window.request` 等桥接 API，而非重复实现。
+
+```javascript
+// ✅ 推荐: 使用桥接 API
+window.showStatusToast('保存成功', 2000);
+window.request.post('/api/save', { data: myData });
+
+// ❌ 避免: 重复实现
+fetch('/api/save', { method: 'POST', body: JSON.stringify(myData) });
+```
+
+#### 全局命名空间
+使用唯一的命名空间避免冲突：
+```javascript
+// Live2D 相关功能挂载到 window.live2dManager
+window.live2dManager = new Live2DManager();
+
+// 弹窗窗口引用挂载到 window._openSettingsWindows
+window._openSettingsWindows = window._openSettingsWindows || {};
+```
+
+### 3.4 文件命名规范
+- **工具库**: 使用描述性名称，如 `common_dialogs.js`、`common_ui.js`
+- **功能模块**: 使用功能前缀，如 `live2d-core.js`、`live2d-emotion.js`
+- **构建产物**: 由构建工具自动命名，遵循 `packages/*/vite.config.ts` 中的配置
+
+### 3.5 禁止事项
+- ❌ **绝对不要手动编辑** `static/bundles/` 中的任何文件（这些是构建产物）
+- ❌ 不要在原生 JS 中使用 ES6+ 模块语法（`import`/`export`）
+- ❌ 不要直接操作 DOM 元素而不检查是否存在（使用防御性编程）
+- ❌ 不要使用可能冲突的全局变量名（优先使用命名空间，如 `window.live2dManager`）
+
+---
+
+## 四、全局 API 参考
+
+### 4.1 window 对象上的 API
+
+```typescript
+interface Window {
+  // === 状态提示 ===
+  showStatusToast: (message: string, duration?: number) => void;
+
+  // === 模态对话框 ===
+  showAlert: (message: string, title?: string | null) => Promise<boolean>;
+  showConfirm: (message: string, title?: string | null, options?: {
+    okText?: string;
+    cancelText?: string;
+    danger?: boolean;
+  }) => Promise<boolean>;
+  showPrompt: (message: string, defaultValue?: string, title?: string | null) => Promise<string | null>;
+
+  // === HTTP 请求 ===
+  request: AxiosInstance;  // Axios 实例，支持 get/post/put/delete 等方法
+
+  // === URL 构建 ===
+  buildApiUrl: (path: string) => string;
+  buildStaticUrl: (path: string) => string;
+  buildWebSocketUrl: (path: string) => string;
+  fetchWithBaseUrl: (path: string, init?: RequestInit) => Promise<Response>;
+
+  // === 基址配置 ===
+  API_BASE_URL: string;
+  STATIC_SERVER_URL: string;
+  WEBSOCKET_URL: string;
+
+  // === 国际化 ===
+  t: (key: string, params?: Record<string, unknown>) => string;
+
+  // === Live2D ===
+  live2dManager: Live2DManager;
+
+  // === 窗口管理 ===
+  _openSettingsWindows: Record<string, Window>;
+  closeAllSettingsWindows: () => void;
+
+  // === 配置 ===
+  lanlan_config: { lanlan_name?: string; };
+}
+```
+
+### 4.2 事件系统
+
+```javascript
+// 请求客户端就绪
+window.addEventListener('requestReady', () => {
+  console.log('window.request 已可用');
+});
+
+// 状态提示组件就绪
+window.addEventListener('statusToastReady', () => {
+  console.log('window.showStatusToast 已可用');
+});
+
+// Modal 组件就绪
+window.addEventListener('modalReady', () => {
+  console.log('window.showAlert/showConfirm/showPrompt 已可用');
+});
+
+// React 就绪（所有 React 组件挂载完成）
+window.addEventListener('react-ready', () => {
+  console.log('React 组件已全部就绪');
+});
+```
+
+---
+
+## 五、通用维护原则
+
+### 5.1 修改流程
+1. **修改前端代码**: 在 `frontend/` 目录中修改源码
+2. **重新构建**: 运行 `cd frontend && npm run build` 生成新的构建产物
+3. **更新模板**: 如有必要，更新 `templates/` 中的 HTML 模板
+4. **测试验证**: 确保所有功能正常工作
+
+### 5.2 版本兼容性
+- **React 版本**: 当前使用 React 19.1.1，但 UMD 使用 React 18（React 19 已移除 UMD 发布）
+- **浏览器兼容**: 确保构建产物在目标浏览器中正常运行
+- **API 变更**: 修改组件 API 时，确保更新桥接层和模板中的调用
+
+### 5.3 代码审查检查点
+- [ ] 构建产物是否正确生成到 `static/bundles/`
+- [ ] 模板中的脚本引用顺序是否正确
+- [ ] 全局 API 是否正常工作（`window.showStatusToast`、`window.request` 等）
+- [ ] TypeScript 类型检查是否通过
+- [ ] 没有手动修改构建产物
+- [ ] 向后兼容性是否保持
+
+### 5.4 文档更新
+- 修改组件 API 时，更新 `frontend/README.md`
+- 修改构建流程时，更新相关文档
+- 添加新功能时，在代码中添加清晰的注释
+
+---
+
+## 六、常见问题处理
+
+### Q: 如何添加新的 React 组件？
+A: 
+1. 在 `frontend/packages/components/src/` 中创建组件文件（`.tsx` + `.css`）
+2. 在 `frontend/packages/components/index.ts` 中导出组件和类型
+3. 运行 `cd frontend && npm run build:components` 构建
+4. 在模板中使用 `window.ProjectNekoComponents.ComponentName` 或在桥接层中暴露到 `window`
+
+### Q: 如何将新组件暴露到 window？
+A:
+1. 在 `frontend/packages/web-bridge/src/index.ts` 中添加绑定函数
+2. 在 `frontend/packages/web-bridge/src/global.ts` 中声明 TypeScript 类型
+3. 运行 `cd frontend && npm run build:web-bridge` 重新构建桥接层
+
+### Q: 如何修改原生 JS 文件？
+A:
+1. 直接编辑 `static/*.js` 文件（非 `bundles/` 目录）
+2. 确保使用 ES5 语法
+3. 测试功能是否正常
+4. 如有必要，更新相关模板文件
+
+### Q: 构建产物没有更新怎么办？
+A:
+1. 检查构建命令是否成功执行
+2. 运行 `cd frontend && npm run clean:bundles` 清理旧文件
+3. 重新运行 `cd frontend && npm run build`
+4. 检查 `static/bundles/` 目录权限
+
+### Q: 模板中如何使用新的组件？
+A:
+1. 确保组件已构建到 `static/bundles/components.js`
+2. 在模板中按正确顺序引用脚本（见 2.3 节）
+3. 使用 `window.ProjectNekoComponents.ComponentName` 或通过桥接层 API 使用
+
+### Q: 如何添加新的国际化文本？
+A:
+1. 在 `static/locales/zh-CN.json` 和 `static/locales/en.json` 中添加翻译键值
+2. 在代码中使用 `window.t('key.path')` 获取翻译文本
+3. 确保两个语言文件的键结构一致
+
+---
+
+## 七、紧急修复流程
+
+如果发现生产环境问题：
+
+1. **定位问题**: 确定问题在 `frontend/`、`templates/` 还是 `static/*.js`
+2. **快速修复**: 
+   - 前端问题：修改源码 → 重新构建
+   - 模板问题：直接修改 HTML 模板
+   - 原生 JS 问题：直接修改 `static/*.js`（非 `bundles/`）
+3. **验证**: 在本地测试修复效果
+4. **部署**: 按照项目部署流程更新生产环境
+
+---
+
+## 八、相关文档
+
+- `frontend/README.md` - 前端项目详细文档
+- `README.MD` - 项目总览
+- `docker/README_Docker.md` - Docker 部署文档
+
+---
+
+**最后更新**: 2025-12-11
+**维护者**: 项目团队

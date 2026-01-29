@@ -1,0 +1,28 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2020"],
+    "jsx": "react-jsx"
+  },
+  "include": [
+    "index.native.ts",
+    "createClient.ts",
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "types/**/*.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "coverage",
+    "__mocks__/**",
+    "**/__tests__/**",
+    "**/*.test.*",
+    "index.ts",
+    "index.web.ts",
+    "src/**/*.web.ts",
+    "src/**/webStorage.ts"
+  ]
+}
+
+

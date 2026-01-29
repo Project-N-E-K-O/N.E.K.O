@@ -42,8 +42,9 @@ from threading import Thread, Event as ThreadEvent # noqa
 from queue import Queue # noqa
 import atexit # noqa
 import httpx # noqa
-from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT # noqa
+from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT, MAIN_SERVER_HOST, DEV_MODE # noqa
 from utils.config_manager import get_config_manager # noqa
+from fastapi.middleware.cors import CORSMiddleware # noqa
 # 导入创意工坊工具模块
 from utils.workshop_utils import ( # noqa
     get_workshop_root,
@@ -51,6 +52,7 @@ from utils.workshop_utils import ( # noqa
 )
 # 导入创意工坊路由中的函数
 from main_routers.workshop_router import get_subscribed_workshop_items # noqa
+from main_routers.ip_qrcode_router import router as ip_qrcode_router
 
 # 确定 templates 目录位置（使用 _get_app_root）
 template_dir = _get_app_root()
@@ -345,6 +347,14 @@ lock = asyncio.Lock()
 # --- FastAPI App Setup ---
 app = FastAPI()
 
+# 配置 CORS 中间件
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],      # 允许所有源（生产环境建议配置具体域名）
+    allow_credentials=False,  # 允许携带凭证（cookies, authorization headers等）
+    allow_methods=["*"],      # 允许所有HTTP方法
+    allow_headers=["*"],      # 允许所有请求头
+)
 
 
 class CustomStaticFiles(StaticFiles):
@@ -453,6 +463,7 @@ app.include_router(memory_router)
 app.include_router(websocket_router)
 app.include_router(agent_router)
 app.include_router(system_router)
+app.include_router(ip_qrcode_router)
 app.include_router(pages_router)  # Mount last for catch-all routes
 
 # 后台预加载任务
@@ -769,7 +780,9 @@ if __name__ == "__main__":
     # Use os.path.abspath to show full path clearly
     logger.info(f"Serving static files from: {os.path.abspath('static')}")
     logger.info(f"Serving index.html from: {os.path.abspath('templates/index.html')}")
-    logger.info(f"Access UI at: http://127.0.0.1:{MAIN_SERVER_PORT} (or your network IP:{MAIN_SERVER_PORT})")
+    logger.info(f"Server mode: {'DEV' if DEV_MODE else 'PROD'}; bind host: {MAIN_SERVER_HOST}; port: {MAIN_SERVER_PORT}")
+    display_host = MAIN_SERVER_HOST if MAIN_SERVER_HOST != "0.0.0.0" else "localhost/your-network-ip"
+    logger.info(f"Access UI at: http://{display_host}:{MAIN_SERVER_PORT}")
     logger.info("-----------------------------")
 
     # 使用统一的速率限制日志过滤器
@@ -784,7 +797,7 @@ if __name__ == "__main__":
     # 1) 配置 UVicorn
     config = uvicorn.Config(
         app=app,
-        host="127.0.0.1",
+        host=MAIN_SERVER_HOST,
         port=MAIN_SERVER_PORT,
         log_level="info",
         loop="asyncio",
@@ -819,7 +832,7 @@ if __name__ == "__main__":
 
     # 4) 启动服务器（阻塞，直到 server.should_exit=True）
     logger.info("--- Starting FastAPI Server ---")
-    logger.info(f"Access UI at: http://127.0.0.1:{MAIN_SERVER_PORT}/{args.page}")
+    logger.info(f"Access UI at: http://{display_host}:{MAIN_SERVER_PORT}/{args.page}")
     
     try:
         server.run()

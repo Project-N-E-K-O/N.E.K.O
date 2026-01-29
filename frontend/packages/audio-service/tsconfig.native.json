@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2020"]
+  },
+  "include": [
+    "index.native.ts",
+    "src/**/*.ts",
+    "types/**/*.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "index.ts",
+    "index.web.ts",
+    "src/web/**"
+  ]
+}
+
