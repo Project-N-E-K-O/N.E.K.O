@@ -234,6 +234,51 @@ function init_app() {
     let screenCaptureStream = null; // 暂存屏幕共享stream，不再需要每次都弹窗选择共享区域，方便自动重连
     let screenCaptureStreamLastUsed = null; // 记录屏幕流最后使用时间，用于闲置自动释放
     let screenCaptureStreamIdleTimer = null; // 闲置释放定时器
+
+    // 屏幕流闲置释放的统一 helper 函数
+    function scheduleScreenCaptureIdleCheck() {
+        // 清除现有定时器
+        if (screenCaptureStreamIdleTimer) {
+            clearTimeout(screenCaptureStreamIdleTimer);
+            screenCaptureStreamIdleTimer = null;
+        }
+
+        // 如果没有屏幕流，不需要调度
+        if (!screenCaptureStream || !screenCaptureStreamLastUsed) {
+            return;
+        }
+
+        const IDLE_TIMEOUT = 5 * 60 * 1000; // 5分钟
+        const CHECK_INTERVAL = 60 * 1000; // 每分钟检查一次
+
+        screenCaptureStreamIdleTimer = setTimeout(() => {
+            if (screenCaptureStream && screenCaptureStreamLastUsed) {
+                const idleTime = Date.now() - screenCaptureStreamLastUsed;
+                if (idleTime >= IDLE_TIMEOUT) {
+                    // 达到闲置阈值，释放资源
+                    console.log(safeT('console.screenShareIdleDetected', 'Screen share idle detected, releasing resources'));
+                    try {
+                        if (screenCaptureStream instanceof MediaStream) {
+                            const vt = screenCaptureStream.getVideoTracks?.()?.[0];
+                            if (vt) vt.onended = null;
+                            screenCaptureStream.getTracks().forEach(track => {
+                                try { track.stop(); } catch (_) {}
+                            });
+                        }
+                    } catch (e) {
+                        console.warn(safeT('console.screenShareAutoReleaseFailed', 'Screen share auto-release failed'), e);
+                    } finally {
+                        screenCaptureStream = null;
+                        screenCaptureStreamLastUsed = null;
+                        screenCaptureStreamIdleTimer = null;
+                    }
+                } else {
+                    // 未达到阈值，继续调度下一次检查
+                    scheduleScreenCaptureIdleCheck();
+                }
+            }
+        }, CHECK_INTERVAL);
+    }
     // 新增：当前选择的麦克风设备ID
     let selectedMicrophoneId = null;
 
@@ -1519,39 +1564,11 @@ function init_app() {
                     }
                 }
             }
-            
-            // 更新最后使用时间并重置闲置定时器
+
+            // 更新最后使用时间并调度闲置检查
             screenCaptureStreamLastUsed = Date.now();
-            if (screenCaptureStreamIdleTimer) {
-                clearTimeout(screenCaptureStreamIdleTimer);
-                screenCaptureStreamIdleTimer = null;
-            }
-            
-            // 设置闲置自动释放定时器（5分钟未使用则释放）
-            screenCaptureStreamIdleTimer = setTimeout(() => {
-                if (screenCaptureStream && screenCaptureStreamLastUsed) {
-                    const idleTime = Date.now() - screenCaptureStreamLastUsed;
-                    if (idleTime >= 5 * 60 * 1000) { // 5分钟
-                        console.log(window.t('console.screenShareIdleDetected'));
-                        try {
-                            if (screenCaptureStream instanceof MediaStream) {
-                                const vt = screenCaptureStream.getVideoTracks?.()?.[0];
-                                if (vt) vt.onended = null;
-                                screenCaptureStream.getTracks().forEach(track => {
-                                    try { track.stop(); } catch (_) {}
-                                });
-                            }
-                        } catch (e) {
-                            console.warn(window.t('console.screenShareAutoReleaseFailed'), e);
-                        } finally {
-                            screenCaptureStream = null;
-                            screenCaptureStreamLastUsed = null;
-                            screenCaptureStreamIdleTimer = null;
-                        }
-                    }
-                }
-            }, 5 * 60 * 1000); // 5分钟后检查
-            
+            scheduleScreenCaptureIdleCheck();
+
             startScreenVideoStreaming(screenCaptureStream, isMobile() ? 'camera' : 'screen');
 
             micButton.disabled = true;
@@ -3183,37 +3200,10 @@ function init_app() {
     }
 
     function startScreenVideoStreaming(stream, input_type) {
-        // 更新最后使用时间（每次使用屏幕流时都更新）
+        // 更新最后使用时间并调度闲置检查
         if (stream === screenCaptureStream) {
             screenCaptureStreamLastUsed = Date.now();
-            // 重置闲置定时器
-            if (screenCaptureStreamIdleTimer) {
-                clearTimeout(screenCaptureStreamIdleTimer);
-            }
-            // 重新设置闲置定时器（5分钟未使用则释放）
-            screenCaptureStreamIdleTimer = setTimeout(() => {
-                if (screenCaptureStream && screenCaptureStreamLastUsed) {
-                    const idleTime = Date.now() - screenCaptureStreamLastUsed;
-                    if (idleTime >= 5 * 60 * 1000) { // 5分钟
-                        console.log(window.t('console.screenShareIdleDetected'));
-                        try {
-                            if (screenCaptureStream instanceof MediaStream) {
-                                const vt = screenCaptureStream.getVideoTracks?.()?.[0];
-                                if (vt) vt.onended = null;
-                                screenCaptureStream.getTracks().forEach(track => {
-                                    try { track.stop(); } catch (_) {}
-                                });
-                            }
-                        } catch (e) {
-                            console.warn(window.t('console.screenShareAutoReleaseFailed'), e);
-                        } finally {
-                            screenCaptureStream = null;
-                            screenCaptureStreamLastUsed = null;
-                            screenCaptureStreamIdleTimer = null;
-                        }
-                    }
-                }
-            }, 5 * 60 * 1000); // 5分钟后检查
+            scheduleScreenCaptureIdleCheck();
         }
         
         const video = document.createElement('video');
