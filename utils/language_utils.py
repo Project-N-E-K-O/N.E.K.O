@@ -153,7 +153,8 @@ def initialize_global_language() -> str:
         # 优先级1：尝试从 Steam 获取
         steam_lang = _get_steam_language()
         if steam_lang:
-            _global_language = steam_lang
+            # 归一化 Steam 语言代码为短格式
+            _global_language = normalize_language_code(steam_lang, format='short')
             logger.info(f"全局语言已初始化（来自Steam）: {_global_language}")
             _global_language_initialized = True
             return _global_language
@@ -285,7 +286,15 @@ def normalize_language_code(lang: str, format: str = 'short') -> str:
     # 先检查是否是 Steam 语言代码
     if lang_lower in STEAM_LANG_MAP:
         normalized = STEAM_LANG_MAP[lang_lower]
-        if format == 'full' and normalized == 'zh':
+        # 对 Steam 映射结果也应用短格式归一化
+        if format == 'short':
+            if normalized.startswith('zh'):
+                return 'zh'
+            elif normalized.startswith('ja'):
+                return 'ja'
+            elif normalized.startswith('en'):
+                return 'en'
+        elif format == 'full' and normalized == 'zh':
             return 'zh-CN'
         return normalized
     

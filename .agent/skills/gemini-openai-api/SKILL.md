@@ -15,10 +15,10 @@ https://generativelanguage.googleapis.com/v1beta/openai/
 
 ## 模型配置
 
-| 用途 | 推荐模型 |
-|------|---------|
-| Summary / Correction / Vision | `gemini-3-flash-preview` |
-| Emotion Analysis | `gemini-2.5-flash` |
+| 用途                          | 推荐模型                   |
+|-------------------------------|---------------------------|
+| Summary / Correction / Vision | `gemini-3-flash-preview`  |
+| Emotion Analysis              | `gemini-2.5-flash`        |
 
 ## 控制 Thinking
 

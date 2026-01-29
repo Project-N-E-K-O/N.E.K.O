@@ -124,10 +124,14 @@ async def emotion_analysis(request: Request):
         
         # 解析响应
         result_text = response.choices[0].message.content.strip()
-        
+
         # 处理 markdown 代码块格式（Gemini 可能返回 ```json {...} ``` 格式）
-        if result_text.startswith("```"):
-            # 移除开头的 ```json 或 ```
+        # 首先尝试使用正则表达式提取第一个代码块
+        code_block_match = re.search(r"```(?:json)?\s*(.+?)\s*```", result_text, flags=re.S)
+        if code_block_match:
+            result_text = code_block_match.group(1).strip()
+        elif result_text.startswith("```"):
+            # 回退到原有的行分割逻辑
             lines = result_text.split("\n")
             if lines[0].startswith("```"):
                 lines = lines[1:]  # 移除第一行

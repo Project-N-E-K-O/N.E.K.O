@@ -228,7 +228,7 @@
     "scanFailed": "扫描失败: {{error}}",
     "workshopScanError": "扫描时出错: {{error}}",
     "validatingFolder": "正在验证文件夹: {{path}}",
-    "validatingFolderPath": "正在验证文件夹: {{path}}",
+    "validatingFolderPathWithName": "正在验证文件夹: {{path}}",
     "previewImageNotFound": "未找到预览图片",
     "previewImageNotProvided": "未提供预览图片，系统将尝试自动生成",
     "itemDetailsFailed": "物品详情加载失败: {{error}}",

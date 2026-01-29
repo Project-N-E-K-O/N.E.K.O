@@ -404,19 +404,24 @@ class OmniRealtimeClient:
             
             # 配置会话
             config = {
-                "response_modalities": ["AUDIO"],
                 "system_instruction": instructions,
                 "media_resolution": types.MediaResolution.MEDIA_RESOLUTION_LOW,
                 "tools": [types.Tool(google_search=types.GoogleSearch())],
                 "generation_config": {"temperature": 1.1},
-                "input_audio_transcription": {},
-                "output_audio_transcription": {},
-                "speech_config": types.SpeechConfig(
+            }
+
+            # 根据 native_audio 参数配置音频相关选项
+            if native_audio:
+                config["response_modalities"] = ["AUDIO"]
+                config["input_audio_transcription"] = {}
+                config["output_audio_transcription"] = {}
+                config["speech_config"] = types.SpeechConfig(
                     voice_config=types.VoiceConfig(
                         prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Leda")
                     )
-                ),
-            }
+                )
+            else:
+                config["response_modalities"] = ["TEXT"]
             
             # 建立 Live 连接 - connect() 返回 async context manager
             logger.info(f"Connecting to Gemini Live API with model: {self.model}")

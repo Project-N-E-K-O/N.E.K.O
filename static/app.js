@@ -10,6 +10,11 @@ window.DEBUG_LIPSYNC = typeof window.DEBUG_LIPSYNC !== 'undefined' ? window.DEBU
 let oggOpusDecoder = null;
 let oggOpusDecoderReady = null;
 
+// 安全的翻译函数，如果 window.t 不可用则返回回退文本
+function safeT(key, fallback) {
+    return window.t ? window.t(key) : fallback;
+}
+
 async function getOggOpusDecoder() {
     if (oggOpusDecoder) return oggOpusDecoder;
     if (oggOpusDecoderReady) {
@@ -17,7 +22,7 @@ async function getOggOpusDecoder() {
             const result = await oggOpusDecoderReady;
             if (result !== null) return result;
         } catch (e) {
-            console.warn(window.t('console.oggOpusInitFailed'), e);
+            console.warn(safeT('console.oggOpusInitFailed', 'Ogg Opus decoder initialization failed'), e);
         }
         oggOpusDecoderReady = null;
     }
@@ -25,18 +30,18 @@ async function getOggOpusDecoder() {
     oggOpusDecoderReady = (async () => {
         const module = window["ogg-opus-decoder"];
         if (!module || !module.OggOpusDecoder) {
-            console.error(window.t('console.oggOpusNotLoaded'));
+            console.error(safeT('console.oggOpusNotLoaded', 'Ogg Opus decoder not loaded'));
             return null;
         }
 
         try {
             const decoder = new module.OggOpusDecoder();
             await decoder.ready;
-            console.log(window.t('console.oggOpusReady'));
+            console.log(safeT('console.oggOpusReady', 'Ogg Opus decoder ready'));
             oggOpusDecoder = decoder;
             return decoder;
         } catch (e) {
-            console.error(window.t('console.oggOpusCreateFailed'), e);
+            console.error(safeT('console.oggOpusCreateFailed', 'Failed to create Ogg Opus decoder'), e);
             return null;
         }
     })();
@@ -49,7 +54,7 @@ async function getOggOpusDecoder() {
         // Promise reject 会"毒化缓存"，需要清空缓存允许重试
         oggOpusDecoderReady = null;
         oggOpusDecoder = null;
-        console.warn(window.t('console.oggOpusInitRejected'), e);
+        console.warn(safeT('console.oggOpusInitRejected', 'Ogg Opus decoder initialization rejected'), e);
         return null;
     }
 }
@@ -62,7 +67,7 @@ async function resetOggOpusDecoder() {
             // reset() 是异步的，用于重置解码器状态以处理新的音频流
             await oggOpusDecoder.reset();
         } catch (e) {
-            console.warn(window.t('console.oggOpusResetFailed'), e);
+            console.warn(safeT('console.oggOpusResetFailed', 'Failed to reset Ogg Opus decoder'), e);
             oggOpusDecoder = null;
             oggOpusDecoderReady = null;
         }
