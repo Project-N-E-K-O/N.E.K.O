@@ -430,7 +430,8 @@
       "qwen": "Qwen-Omni（阿里，速度最快，推荐⭐）",
       "openai": "GPT-Realtime（OpenAI）",
       "glm": "GLM-realtime（智谱）",
-      "step": "Step-2-Audio（阶跃星辰）"
+      "step": "Step-2-Audio（阶跃星辰）",
+      "gemini": "Gemini Live（谷歌，效果最好，国内版不支持）"
     },
     "assistProviderNames": {
       "free": "免费版（猫娘专属福利）",

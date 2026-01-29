@@ -111,7 +111,8 @@ async def emotion_analysis(request: Request):
             "model": model,
             "messages": messages,
             "temperature": 0.3,
-            "max_completion_tokens": 20
+            # Gemini 模型可能返回 markdown 格式，需要更多 token
+            "max_completion_tokens": 40
         }
         
         # 只有在需要时才添加 extra_body
@@ -123,6 +124,16 @@ async def emotion_analysis(request: Request):
         
         # 解析响应
         result_text = response.choices[0].message.content.strip()
+        
+        # 处理 markdown 代码块格式（Gemini 可能返回 ```json {...} ``` 格式）
+        if result_text.startswith("```"):
+            # 移除开头的 ```json 或 ```
+            lines = result_text.split("\n")
+            if lines[0].startswith("```"):
+                lines = lines[1:]  # 移除第一行
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]  # 移除最后一行
+            result_text = "\n".join(lines).strip()
         
         # 尝试解析JSON响应
         try:

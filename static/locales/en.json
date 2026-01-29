@@ -370,19 +370,20 @@
     },
     "coreProviderNames": {
       "free": "Free Version (Catgirl Exclusive Benefit, Smartest, Supports Web Search)",
-    "qwen": "Qwen-Omni (Alibaba, Fastest Speed, Recommended)",
-    "openai": "GPT-Realtime (OpenAI)",
-    "glm": "GLM-realtime (GLM)",
-    "step": "Step-2-Audio (StepFun)"
-  },
-  "assistProviderNames": {
-    "free": "Free Version (Catgirl Exclusive Benefit)",
-    "qwen": "Alibaba (Qwen, Most Complete Features, Recommended)",
-    "openai": "OpenAI (ChatGPT)",
-    "glm": "GLM",
-    "step": "StepFun",
-    "silicon": "SiliconFlow (Good Value, Recommended)"
-  },
+      "qwen": "Qwen-Omni (Alibaba, Fastest Speed, Recommended)",
+      "openai": "GPT-Realtime (OpenAI)",
+      "glm": "GLM-realtime (GLM)",
+      "step": "Step-2-Audio (StepFun)",
+      "gemini": "Gemini Live (Google, the BEST in the market)"
+    },
+    "assistProviderNames": {
+      "free": "Free Version (Catgirl Exclusive Benefit)",
+      "qwen": "Alibaba (Qwen, Most Complete Features, Recommended)",
+      "openai": "OpenAI (ChatGPT)",
+      "glm": "GLM",
+      "step": "StepFun",
+      "silicon": "SiliconFlow (Good Value, Recommended)"
+    },
     "freeVersionNoApiKey": "Free version does not require API Key",
     "pleaseEnterApiKey": "Please enter your API Key",
     "freeVersionOnlyWhenCoreFree": "Free Version (Only available when Core API is Free Version)",

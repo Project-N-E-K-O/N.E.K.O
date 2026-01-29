@@ -14,6 +14,15 @@ from utils.config_manager import get_config_manager
 from utils.audio_processor import AudioProcessor
 from utils.frontend_utils import calculate_text_similarity
 
+# Gemini Live API SDK
+try:
+    from google import genai
+    from google.genai import types
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+    genai = None
+
 # Setup logger for this module
 logger = logging.getLogger(__name__)
 
@@ -171,6 +180,14 @@ class OmniRealtimeClient:
         
         # Audio processing lock to ensure sequential processing in thread pool
         self._audio_processing_lock = asyncio.Lock()
+        
+        # Gemini Live API specific attributes
+        self._is_gemini = self._api_type.lower() == 'gemini'
+        self._gemini_client = None  # genai.Client instance
+        self._gemini_session = None  # Live session from SDK
+        self._gemini_context_manager = None  # For proper cleanup
+        self._gemini_current_transcript = ""  # Current response transcript for Gemini
+        self._gemini_user_transcript = ""  # Accumulated user input transcript
 
     async def process_audio_chunk_async(self, audio_chunk: bytes) -> bytes:
         """
@@ -242,6 +259,13 @@ class OmniRealtimeClient:
 
     async def connect(self, instructions: str, native_audio=True) -> None:
         """Establish WebSocket connection with the Realtime API."""
+        
+        # Gemini uses google-genai SDK, not raw WebSocket
+        if self._is_gemini:
+            await self._connect_gemini(instructions, native_audio)
+            return
+        
+        # WebSocket-based APIs (GLM, Qwen, GPT, Step, Free)
         url = f"{self.base_url}?model={self.model}" if self.model != "free-model" else self.base_url
         headers = {
             "Authorization": f"Bearer {self.api_key}"
@@ -368,10 +392,67 @@ class OmniRealtimeClient:
             self.instructions = instructions
         else:
             raise ValueError(f"Invalid turn detection mode: {self.turn_detection_mode}")
+    
+    async def _connect_gemini(self, instructions: str, native_audio: bool = True) -> None:
+        """Establish connection with Gemini Live API using google-genai SDK."""
+        if not GEMINI_AVAILABLE or genai is None:
+            raise RuntimeError("google-genai SDK not installed. Please install it with: pip install google-genai")
+        
+        try:
+            # 创建 Gemini 客户端
+            self._gemini_client = genai.Client(api_key=self.api_key, http_options={"api_version": "v1alpha"})
+            
+            # 配置会话
+            config = {
+                "response_modalities": ["AUDIO"],
+                "system_instruction": instructions,
+                "media_resolution": types.MediaResolution.MEDIA_RESOLUTION_LOW,
+                "tools": [types.Tool(google_search=types.GoogleSearch())],
+                "generation_config": {"temperature": 1.1},
+                "input_audio_transcription": {},
+                "output_audio_transcription": {},
+                "speech_config": types.SpeechConfig(
+                    voice_config=types.VoiceConfig(
+                        prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Leda")
+                    )
+                ),
+            }
+            
+            # 建立 Live 连接 - connect() 返回 async context manager
+            logger.info(f"Connecting to Gemini Live API with model: {self.model}")
+            self._gemini_context_manager = self._gemini_client.aio.live.connect(
+                model=self.model,
+                config=config,
+            )
+            # 手动进入 async context manager
+            self._gemini_session = await self._gemini_context_manager.__aenter__()
+            
+            # 设置 ws 为 session，用于兼容性检查
+            self.ws = self._gemini_session
+            
+            self._last_speech_time = time.time()
+            self.instructions = instructions
+            logger.info("✅ Gemini Live API connected successfully")
+            
+        except Exception as e:
+            error_msg = f"Failed to connect to Gemini Live API: {e}"
+            logger.error(error_msg)
+            self._fatal_error_occurred = True
+            if self.on_connection_error:
+                await self.on_connection_error(error_msg)
+            raise
 
     async def send_event(self, event) -> None:
         # 检查是否已发生致命错误，直接跳过发送
         if self._fatal_error_occurred:
+            return
+        
+        # Gemini 不使用 WebSocket 风格的事件发送
+        # 而是使用 session.send_client_content() 或 session.send_realtime_input()
+        if self._is_gemini:
+            # Gemini 的事件通过专用方法处理，这里直接返回
+            # 对于 session.update / conversation.item.create 等事件，Gemini 不支持
+            logger.debug(f"Gemini mode: skipping WebSocket event {event.get('type', 'unknown')}")
             return
         
         # Backpressure: 检查是否处于节流状态
@@ -453,6 +534,11 @@ class OmniRealtimeClient:
                 self._silence_reset_pending = False
                 await self.clear_audio_buffer()
         
+        # Gemini uses different API
+        if self._is_gemini:
+            await self._stream_audio_gemini(audio_chunk)
+            return
+        
         audio_b64 = base64.b64encode(audio_chunk).decode()
 
         append_event = {
@@ -460,6 +546,22 @@ class OmniRealtimeClient:
             "audio": audio_b64
         }
         await self.send_event(append_event)
+    
+    async def _stream_audio_gemini(self, audio_chunk: bytes) -> None:
+        """Send audio data to Gemini Live API."""
+        if not self._gemini_session:
+            return
+        
+        try:
+            # 发送实时音频输入
+            await self._gemini_session.send_realtime_input(
+                audio={"data": audio_chunk, "mime_type": "audio/pcm"}
+            )
+            self._last_speech_time = time.time()
+        except Exception as e:
+            logger.error(f"Error sending audio to Gemini: {e}")
+            if "closed" in str(e).lower():
+                self._fatal_error_occurred = True
 
     async def _analyze_image_with_vision_model(self, image_b64: str) -> str:
         """Use VISION_MODEL to analyze image and return description."""
@@ -591,6 +693,11 @@ class OmniRealtimeClient:
         """Request a response from the API. First adds message to conversation, then creates response."""
         if skipped:
             self._skip_until_next_response = True
+        
+        # Gemini 使用 send_client_content 发送文本内容
+        if self._is_gemini:
+            await self._create_response_gemini(instructions)
+            return
 
         if "qwen" in self.model:
             await self.update_session({"instructions": self.instructions + '\n' + instructions})
@@ -617,6 +724,28 @@ class OmniRealtimeClient:
             # 然后调用 response.create，不带 instructions（避免替换 session instructions）
             logger.info("Creating response without instructions override")
             await self.send_event({"type": "response.create"})
+    
+    async def _create_response_gemini(self, instructions: str) -> None:
+        """Send text content to Gemini and trigger response."""
+        if not self._gemini_session:
+            logger.warning("Gemini session not available for create_response")
+            return
+        
+        try:
+            # Gemini 使用 send_client_content 发送文本
+            from google.genai import types as genai_types
+            
+            content = genai_types.Content(
+                parts=[genai_types.Part(text=instructions)],
+                role="user"
+            )
+            await self._gemini_session.send_client_content(
+                turns=[content],
+                turn_complete=True
+            )
+            logger.info("Gemini: sent client content, waiting for response")
+        except Exception as e:
+            logger.error(f"Error sending client content to Gemini: {e}")
 
     async def cancel_response(self) -> None:
         """Cancel the current response."""
@@ -680,6 +809,11 @@ class OmniRealtimeClient:
         self._is_first_transcript_chunk = True
 
     async def handle_messages(self) -> None:
+        # Gemini uses different message handling
+        if self._is_gemini:
+            await self._handle_messages_gemini()
+            return
+            
         try:
             if not self.ws:
                 logger.error("WebSocket connection is not established")
@@ -851,6 +985,11 @@ class OmniRealtimeClient:
             except Exception as e:
                 logger.error(f"Error saving debug audio: {e}")
         
+        # Gemini uses different cleanup
+        if self._is_gemini:
+            await self._close_gemini()
+            return
+        
         if self.ws:
             try:
                 # 尝试关闭websocket连接
@@ -862,3 +1001,126 @@ class OmniRealtimeClient:
                 logger.info("WebSocket connection closed")
         else:
             logger.warning("WebSocket connection is already closed or None")
+    
+    async def _close_gemini(self) -> None:
+        """Close Gemini Live API session."""
+        if self._gemini_context_manager:
+            try:
+                await self._gemini_context_manager.__aexit__(None, None, None)
+            except Exception as e:
+                logger.error(f"Error closing Gemini session: {e}")
+            finally:
+                self._gemini_session = None
+                self._gemini_context_manager = None
+                self.ws = None
+                logger.info("Gemini Live API session closed")
+    
+    async def _handle_messages_gemini(self) -> None:
+        """Handle messages from Gemini Live API."""
+        if not self._gemini_session:
+            logger.error("Gemini session not established")
+            return
+        
+        try:
+            while not self._fatal_error_occurred:
+                try:
+                    # 接收响应流
+                    turn = self._gemini_session.receive()
+                    async for response in turn:
+                        await self._process_gemini_response(response)
+                except asyncio.CancelledError:
+                    logger.info("Gemini message handler cancelled")
+                    break
+                except Exception as e:
+                    error_msg = str(e)
+                    if "closed" in error_msg.lower():
+                        logger.info("Gemini session closed")
+                        break
+                    else:
+                        logger.error(f"Error receiving Gemini response: {e}")
+                        if self.on_connection_error:
+                            await self.on_connection_error(error_msg)
+                        break
+        except Exception as e:
+            logger.error(f"Gemini message handler error: {e}")
+    
+    async def _process_gemini_response(self, response) -> None:
+        """Process a single Gemini response event."""
+        try:
+            # 处理工具调用
+            if hasattr(response, 'tool_call') and response.tool_call:
+                logger.info(f"Gemini tool call: {response.tool_call}")
+            
+            # 检查是否有服务器内容
+            if response.server_content:
+                server_content = response.server_content
+                
+                # 处理用户输入转录 - 只累积，不立即发送（避免碎片化显示）
+                if hasattr(server_content, 'input_transcription') and server_content.input_transcription:
+                    input_trans = server_content.input_transcription
+                    if hasattr(input_trans, 'text') and input_trans.text:
+                        self._gemini_user_transcript += input_trans.text
+                
+                # 检查是否有 AI 内容（model_turn 或 output_transcription）
+                has_ai_content = (
+                    server_content.model_turn or 
+                    (hasattr(server_content, 'output_transcription') and server_content.output_transcription)
+                )
+                
+                # ⚠️ 重要：检测 turn 开始 - 无论是 model_turn 还是 output_transcription 先到
+                if has_ai_content and not self._is_responding:
+                    # 在AI开始响应前，发送累积的用户输入
+                    if self._gemini_user_transcript and self.on_input_transcript:
+                        await self.on_input_transcript(self._gemini_user_transcript)
+                        logger.info(f"[Gemini] 用户: {self._gemini_user_transcript}")
+                        self._gemini_user_transcript = ""  # 清空累积
+                    
+                    self._is_responding = True
+                    self._is_first_text_chunk = True  # 重置第一个 chunk 标记
+                    self._gemini_current_transcript = ""  # 清空累积
+                    if self.on_new_message:
+                        await self.on_new_message()
+                
+                # 处理输出转录 - 流式发送每个 chunk 到前端
+                if hasattr(server_content, 'output_transcription') and server_content.output_transcription:
+                    output_trans = server_content.output_transcription
+                    if hasattr(output_trans, 'text') and output_trans.text:
+                        text = output_trans.text
+                        self._gemini_current_transcript += text
+                        # 流式发送到前端（第一个 chunk 标记 is_first=True）
+                        if self.on_text_delta:
+                            await self.on_text_delta(text, self._is_first_text_chunk)
+                            self._is_first_text_chunk = False
+                
+                # 处理模型输出 (音频)
+                if server_content.model_turn:
+                    for part in server_content.model_turn.parts:
+                        # 跳过 thinking/thought 部分
+                        if hasattr(part, 'thought') and part.thought:
+                            continue
+                        
+                        # 处理音频
+                        if hasattr(part, 'inline_data') and part.inline_data:
+                            if isinstance(part.inline_data.data, bytes):
+                                if self.on_audio_delta:
+                                    await self.on_audio_delta(part.inline_data.data)
+                
+                # 检查是否 turn 完成
+                if server_content.turn_complete:
+                    self._is_responding = False
+                    # 不再调用 on_output_transcript（已通过 on_text_delta 流式发送）
+                    if self.on_response_done:
+                        await self.on_response_done()
+                
+                # 检查是否被中断
+                if hasattr(server_content, 'interrupted') and server_content.interrupted:
+                    self._interrupted = True
+                    self._is_responding = False
+                    # 被中断时也发送已累积的用户输入
+                    if self._gemini_user_transcript and self.on_input_transcript:
+                        await self.on_input_transcript(self._gemini_user_transcript)
+                        self._gemini_user_transcript = ""
+                    logger.info("Gemini response was interrupted by user")
+        
+        except Exception as e:
+            logger.error(f"Error processing Gemini response: {e}")

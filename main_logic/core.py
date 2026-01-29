@@ -882,7 +882,7 @@ class LLMSessionManager:
                 # 语音模式：使用 OmniRealtimeClient
                 realtime_config = self._config_manager.get_model_api_config('realtime')
                 self.session = OmniRealtimeClient(
-                    base_url=realtime_config['base_url'],
+                    base_url=realtime_config.get('base_url', ''),  # Gemini 不需要 base_url
                     api_key=realtime_config['api_key'],
                     model=realtime_config['model'],
                     on_text_delta=self.handle_text_data,
