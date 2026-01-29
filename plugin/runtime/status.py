@@ -1,22 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional
 import threading
+from typing import Any, Dict, Optional
+
+from loguru import logger as loguru_logger
 
 from plugin.settings import (
     STATUS_CONSUMER_SHUTDOWN_TIMEOUT,
     STATUS_MESSAGE_DEFAULT_MAX_COUNT,
     STATUS_CONSUMER_SLEEP_INTERVAL,
 )
-
-
-def _now_iso() -> str:
-    """统一的 ISO 时间戳生成"""
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+from plugin.utils.time_utils import now_iso
 
 
 @dataclass
@@ -28,7 +24,7 @@ class PluginStatusManager:
     - 状态存储和查询
     - 状态消费后台任务管理
     """
-    logger: logging.Logger = field(default_factory=lambda: logging.getLogger("plugin.status"))
+    logger: Any = field(default_factory=lambda: loguru_logger.bind(component="status"))
     _plugin_status: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     
@@ -55,7 +51,7 @@ class PluginStatusManager:
             self._plugin_status[plugin_id] = {
                 "plugin_id": plugin_id,
                 "status": status,
-                "updated_at": _now_iso(),
+                "updated_at": now_iso(),
                 "source": source,
             }
         self.logger.debug("插件id:%s  插件状态已更新 (来源: %s)", plugin_id, source)
@@ -70,10 +66,44 @@ class PluginStatusManager:
         - plugin_id 为 None：返回 {plugin_id: status, ...}
         - 否则只返回该插件状态（可能为空 dict）
         """
+        from plugin.core.state import state
         with self._lock:
-            if plugin_id is None:
-                return {pid: s.copy() for pid, s in self._plugin_status.items()}
-            return self._plugin_status.get(plugin_id, {}).copy()
+            cached = {pid: s.copy() for pid, s in self._plugin_status.items()}
+
+        # 遵循锁顺序规范：plugins_lock -> plugin_hosts_lock
+        with state.plugins_lock:
+            registered_plugin_ids = list(state.plugins.keys())
+        with state.plugin_hosts_lock:
+            plugin_hosts_snapshot = dict(state.plugin_hosts)
+
+        def _build_synthetic(pid: str, status: str) -> Dict[str, Any]:
+            return {
+                "plugin_id": pid,
+                "status": {"status": status},
+                "updated_at": now_iso(),
+                "source": "main_process_synthetic",
+            }
+
+        for pid in registered_plugin_ids:
+            cached.setdefault(pid, _build_synthetic(pid, "stopped"))
+
+        for pid, host in plugin_hosts_snapshot.items():
+            alive = False
+            try:
+                is_alive = getattr(host, "is_alive", None)
+                if callable(is_alive):
+                    alive = bool(is_alive())
+            except Exception as e:
+                self.logger.debug("检查插件 %s 存活状态时出错: %s", pid, e)
+                alive = False
+
+            existing = cached.get(pid)
+            if existing is None or existing.get("source") == "main_process_synthetic":
+                cached[pid] = _build_synthetic(pid, "running" if alive else "crashed")
+
+        if plugin_id is None:
+            return cached
+        return cached.get(plugin_id, _build_synthetic(plugin_id, "stopped"))
 
     async def start_status_consumer(self, plugin_hosts_getter: callable) -> None:
         """

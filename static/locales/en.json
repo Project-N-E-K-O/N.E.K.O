@@ -744,6 +744,20 @@
     "autoReviewNote": "When enabled, the system will automatically organize and optimize memory content to improve conversation quality",
     "saveFailedStatus": "Save failed"
   },
+  "plugins": {
+    "title": "Plugins",
+    "noPlugins": "No plugins registered",
+    "filterPlaceholder": "Filter plugins (supports regex, matches ID/name/description)",
+    "filterWhitelist": "Whitelist",
+    "filterBlacklist": "Blacklist",
+    "invalidRegex": "Invalid regular expression",
+    "hoverToShowFilter": "Hover to show filter options…",
+    "argsJson": "Args (JSON)",
+    "invalidJsonArgs": "Invalid JSON args",
+    "currentEffectiveConfig": "Current effective config",
+    "profilePreview": "Preview after applying profile",
+    "editProfileOverlay": "Edit current profile override config"
+  },
   "character": {
     "manager": "Character Manager",
     "name": "Name",
