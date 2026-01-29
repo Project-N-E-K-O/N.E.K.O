@@ -12,12 +12,20 @@ let oggOpusDecoderReady = null;
 
 // 安全的翻译函数，如果 window.t 不可用或翻译缺失则返回回退文本
 function safeT(key, fallback, params) {
-    if (!window.t) return fallback;
+    if (!window.t) {
+        console.error(`[safeT] window.t is not available, using fallback for key: ${key}`);
+        return fallback;
+    }
     try {
         const result = params ? window.t(key, params) : window.t(key);
         // 如果翻译结果等于 key 本身，说明翻译缺失，使用回退文本
-        return (result === key) ? fallback : result;
+        if (result === key) {
+            console.error(`[safeT] Translation missing for key: ${key}, using fallback`);
+            return fallback;
+        }
+        return result;
     } catch (e) {
+        console.error(`[safeT] Error translating key: ${key}`, e);
         return fallback;
     }
 }
