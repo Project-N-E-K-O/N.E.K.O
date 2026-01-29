@@ -10,9 +10,16 @@ window.DEBUG_LIPSYNC = typeof window.DEBUG_LIPSYNC !== 'undefined' ? window.DEBU
 let oggOpusDecoder = null;
 let oggOpusDecoderReady = null;
 
-// 安全的翻译函数，如果 window.t 不可用则返回回退文本
-function safeT(key, fallback) {
-    return window.t ? window.t(key) : fallback;
+// 安全的翻译函数，如果 window.t 不可用或翻译缺失则返回回退文本
+function safeT(key, fallback, params) {
+    if (!window.t) return fallback;
+    try {
+        const result = params ? window.t(key, params) : window.t(key);
+        // 如果翻译结果等于 key 本身，说明翻译缺失，使用回退文本
+        return (result === key) ? fallback : result;
+    } catch (e) {
+        return fallback;
+    }
 }
 
 async function getOggOpusDecoder() {

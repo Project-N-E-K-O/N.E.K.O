@@ -69,8 +69,20 @@
             if (msg.role === 'system') {
                 let text = msg.text || '';
                 // 去掉任何现有的前缀（支持多语言切换时的旧前缀）
-                // 移除任何以 ": " 结尾的短前缀（最多50个字符）
-                text = text.replace(/^\s*.{1,50}:\s*/, '');
+                // 定义已知的备忘录前缀列表
+                const knownPrefixes = [
+                    '先前对话的备忘录: ',
+                    'Previous conversation memo: ',
+                    '前回の会話のメモ: ',
+                    '先前對話的備忘錄: '
+                ];
+                // 尝试移除已知前缀
+                for (const prefix of knownPrefixes) {
+                    if (text.startsWith(prefix)) {
+                        text = text.slice(prefix.length);
+                        break;
+                    }
+                }
 
                 const contentWrapper = document.createElement('div');
                 contentWrapper.className = 'chat-item-content';
@@ -168,8 +180,20 @@
     }
     function updateSystemContent(idx, value) {
         // 存储时先移除任何现有的前缀，然后加上当前语言的前缀
-        // 移除任何以 ": " 结尾的短前缀（最多50个字符）
-        value = value.replace(/^\s*.{1,50}:\s*/, '');
+        // 定义已知的备忘录前缀列表
+        const knownPrefixes = [
+            '先前对话的备忘录: ',
+            'Previous conversation memo: ',
+            '前回の会話のメモ: ',
+            '先前對話的備忘錄: '
+        ];
+        // 尝试移除已知前缀
+        for (const prefix of knownPrefixes) {
+            if (value.startsWith(prefix)) {
+                value = value.slice(prefix.length);
+                break;
+            }
+        }
         const memoPrefix = window.t ? window.t('memory.previousMemo') : '先前对话的备忘录: ';
         chatData[idx].text = memoPrefix + value;
     }
