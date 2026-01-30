@@ -51,7 +51,7 @@
 
 ### 成就流程
 
-```
+```text
 触发点 (app.js 等)
     ↓
 window.unlockAchievement('ACH_NAME')

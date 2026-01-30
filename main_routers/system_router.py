@@ -229,60 +229,6 @@ async def set_achievement_status(name: str):
         return JSONResponse(content={"success": False, "error": "Steamworks未初始化"}, status_code=503)
 
 
-@router.post('/steam/clear-achievement/{name}')
-async def clear_achievement(name: str):
-    """清除指定成就（测试用）"""
-    steamworks = get_steamworks()
-    if steamworks is not None:
-        try:
-            steamworks.UserStats.RequestCurrentStats()
-            for _ in range(5):
-                steamworks.run_callbacks()
-                await asyncio.sleep(0.05)
-
-            result = steamworks.UserStats.ClearAchievement(name)
-            if result:
-                steamworks.UserStats.StoreStats()
-                steamworks.run_callbacks()
-                logger.info(f"成就已清除: {name}")
-                return JSONResponse(content={"success": True, "message": f"成就 {name} 已清除"})
-            else:
-                logger.warning(f"清除成就失败: {name}")
-                return JSONResponse(content={"success": False, "error": f"清除成就失败: {name}"}, status_code=500)
-        except Exception as e:
-            logger.error(f"清除成就失败: {e}")
-            return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
-    else:
-        return JSONResponse(content={"success": False, "error": "Steamworks未初始化"}, status_code=503)
-
-
-@router.post('/steam/reset-stat/{stat_name}')
-async def reset_stat(stat_name: str):
-    """重置指定统计值为 0（测试用）"""
-    steamworks = get_steamworks()
-    if steamworks is not None:
-        try:
-            steamworks.UserStats.RequestCurrentStats()
-            for _ in range(5):
-                steamworks.run_callbacks()
-                await asyncio.sleep(0.05)
-
-            result = steamworks.UserStats.SetStat(stat_name, 0)
-            if result:
-                steamworks.UserStats.StoreStats()
-                steamworks.run_callbacks()
-                logger.info(f"统计已重置: {stat_name} = 0")
-                return JSONResponse(content={"success": True, "message": f"统计 {stat_name} 已重置为 0"})
-            else:
-                logger.warning(f"重置统计失败: {stat_name}")
-                return JSONResponse(content={"success": False, "error": f"重置统计失败: {stat_name}"}, status_code=500)
-        except Exception as e:
-            logger.error(f"重置统计失败: {e}")
-            return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
-    else:
-        return JSONResponse(content={"success": False, "error": "Steamworks未初始化"}, status_code=503)
-
-
 @router.post('/steam/update-playtime')
 async def update_playtime(request: Request):
     """更新游戏时长统计（PLAY_TIME_SECONDS）"""
@@ -291,6 +237,20 @@ async def update_playtime(request: Request):
         try:
             data = await request.json()
             seconds_to_add = data.get('seconds', 10)
+
+            # 验证 seconds 参数
+            try:
+                seconds_to_add = int(seconds_to_add)
+                if seconds_to_add < 0:
+                    return JSONResponse(
+                        content={"success": False, "error": "seconds must be non-negative"},
+                        status_code=400
+                    )
+            except (ValueError, TypeError):
+                return JSONResponse(
+                    content={"success": False, "error": "seconds must be a valid integer"},
+                    status_code=400
+                )
 
             # 请求当前统计数据
             steamworks.UserStats.RequestCurrentStats()
@@ -314,7 +274,7 @@ async def update_playtime(request: Request):
 
                 if result:
                     # 存储统计数据
-                    store_result = steamworks.UserStats.StoreStats()
+                    steamworks.UserStats.StoreStats()
                     steamworks.run_callbacks()
 
                     logger.debug(f"游戏时长已更新: {current_playtime}s -> {new_playtime}s (+{seconds_to_add}s)")
@@ -345,38 +305,6 @@ async def update_playtime(request: Request):
 
         except Exception as e:
             logger.error(f"更新游戏时长失败: {e}")
-            return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
-    else:
-        return JSONResponse(content={"success": False, "error": "Steamworks未初始化"}, status_code=503)
-
-
-@router.get('/steam/get-stat/{stat_name}')
-async def get_stat(stat_name: str):
-    """获取指定的 Steam 统计值"""
-    steamworks = get_steamworks()
-    if steamworks is not None:
-        try:
-            steamworks.UserStats.RequestCurrentStats()
-            for _ in range(5):
-                steamworks.run_callbacks()
-                await asyncio.sleep(0.05)
-
-            try:
-                value = steamworks.UserStats.GetStatInt(stat_name)
-                return JSONResponse(content={
-                    "success": True,
-                    "stat_name": stat_name,
-                    "value": value
-                })
-            except Exception as e:
-                logger.warning(f"获取统计 {stat_name} 失败: {e}")
-                return JSONResponse(content={
-                    "success": False,
-                    "error": f"统计 {stat_name} 不存在或未配置",
-                    "value": 0
-                })
-        except Exception as e:
-            logger.error(f"获取统计失败: {e}")
             return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
     else:
         return JSONResponse(content={"success": False, "error": "Steamworks未初始化"}, status_code=503)

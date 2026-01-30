@@ -7931,7 +7931,11 @@ function init_app() {
 
             // 【成就】解锁换肤成就
             if (window.unlockAchievement) {
-                await window.unlockAchievement('ACH_CHANGE_SKIN');
+                try {
+                    await window.unlockAchievement('ACH_CHANGE_SKIN');
+                } catch (err) {
+                    console.error('解锁换肤成就失败:', err);
+                }
             }
 
         } catch (error) {

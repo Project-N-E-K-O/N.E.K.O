@@ -276,17 +276,8 @@
 
         // 检查时间相关成就
         checkTimeBasedAchievements() {
-            const hour = new Date().getHours();
-
-            // 深夜猫头鹰 (2-5点)
-            if (hour >= 2 && hour < 5 && !this.isUnlocked('ACH_NIGHT_OWL')) {
-                this.unlockAchievement('ACH_NIGHT_OWL');
-            }
-
-            // 早起的鸟儿 (5-7点)
-            if (hour >= 5 && hour < 7 && !this.isUnlocked('ACH_EARLY_BIRD')) {
-                this.unlockAchievement('ACH_EARLY_BIRD');
-            }
+            // 预留方法，用于未来添加时间相关成就
+            // 例如：深夜猫头鹰、早起的鸟儿等
         }
 
         // 获取当前统计数据
