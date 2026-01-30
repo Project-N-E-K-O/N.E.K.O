@@ -240,16 +240,22 @@
         // 启动游戏时长追踪（用于 Steam 统计 PLAY_TIME_SECONDS）
         startPlayTimeTracking() {
             // 使用递归 setTimeout 避免重叠调用
+            let prevTs = Date.now(); // 记录上次更新的时间戳
+
             const updatePlayTime = async () => {
+                const now = Date.now();
+                // 计算实际经过的秒数（毫秒转秒，至少1秒）
+                const elapsedSeconds = Math.max(1, Math.floor((now - prevTs) / 1000));
+
                 try {
-                    // 调用后端 API 更新 Steam 统计
+                    // 调用后端 API 更新 Steam 统计，发送实际经过的秒数
                     const response = await fetch('/api/steam/update-playtime', {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json'
                         },
                         body: JSON.stringify({
-                            seconds: 10  // 每次增加10秒
+                            seconds: elapsedSeconds
                         })
                     });
 
@@ -265,6 +271,8 @@
                     // 网络错误或其他问题，静默失败
                     console.debug('更新游戏时长失败:', error.message);
                 } finally {
+                    // 更新时间戳为当前时间
+                    prevTs = Date.now();
                     // 无论成功或失败，都在10秒后继续下一次更新
                     setTimeout(updatePlayTime, 10000);
                 }
