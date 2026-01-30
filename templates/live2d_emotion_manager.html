@@ -551,16 +551,39 @@
                 const data = await response.json();
 
                 if (data.success && data.config) {
+                    const config = data.config;
+
+                    // 后端返回的格式可能是:
+                    // 1. { motions: { emotion: [files] }, expressions: { emotion: [files] } }
+                    // 2. 或者旧格式 { emotion: { motion: "...", expression: "..." } }
+
                     emotions.forEach(emotion => {
                         const motionSelect = document.querySelector(`.emotion-motion-select[data-emotion="${emotion}"]`);
                         const expressionSelect = document.querySelector(`.emotion-expression-select[data-emotion="${emotion}"]`);
 
-                        if (motionSelect && data.config[emotion]) {
-                            motionSelect.value = data.config[emotion].motion || '';
+                        // 尝试新格式
+                        if (config.motions && config.motions[emotion]) {
+                            const motionFiles = config.motions[emotion];
+                            if (motionSelect && motionFiles.length > 0) {
+                                motionSelect.value = motionFiles[0];
+                            }
                         }
 
-                        if (expressionSelect && data.config[emotion]) {
-                            expressionSelect.value = data.config[emotion].expression || '';
+                        if (config.expressions && config.expressions[emotion]) {
+                            const expressionFiles = config.expressions[emotion];
+                            if (expressionSelect && expressionFiles.length > 0) {
+                                expressionSelect.value = expressionFiles[0];
+                            }
+                        }
+
+                        // 兼容旧格式
+                        if (config[emotion]) {
+                            if (motionSelect && config[emotion].motion) {
+                                motionSelect.value = config[emotion].motion;
+                            }
+                            if (expressionSelect && config[emotion].expression) {
+                                expressionSelect.value = config[emotion].expression;
+                            }
                         }
                     });
 
@@ -578,15 +601,26 @@
                 return;
             }
 
-            const config = {};
+            // 构建后端期望的格式: { motions: { emotion: [files] }, expressions: { emotion: [files] } }
+            const config = {
+                motions: {},
+                expressions: {}
+            };
+
             emotions.forEach(emotion => {
                 const motionSelect = document.querySelector(`.emotion-motion-select[data-emotion="${emotion}"]`);
                 const expressionSelect = document.querySelector(`.emotion-expression-select[data-emotion="${emotion}"]`);
 
-                config[emotion] = {
-                    motion: motionSelect ? motionSelect.value : '',
-                    expression: expressionSelect ? expressionSelect.value : ''
-                };
+                const motionValue = motionSelect ? motionSelect.value : '';
+                const expressionValue = expressionSelect ? expressionSelect.value : '';
+
+                // 只有选择了文件才添加到配置中
+                if (motionValue) {
+                    config.motions[emotion] = [motionValue];
+                }
+                if (expressionValue) {
+                    config.expressions[emotion] = [expressionValue];
+                }
             });
 
             try {
