@@ -1398,6 +1398,21 @@ function uploadItem() {
                     console.error('无法打开Steam overlay:', e);
                 }
 
+                // 【成就】解锁创意工坊成就
+                if (window.parent && window.parent.unlockAchievement) {
+                    window.parent.unlockAchievement('ACH_WORKSHOP_USE').catch(err => {
+                        console.error('解锁创意工坊成就失败:', err);
+                    });
+                } else if (window.opener && window.opener.unlockAchievement) {
+                    window.opener.unlockAchievement('ACH_WORKSHOP_USE').catch(err => {
+                        console.error('解锁创意工坊成就失败:', err);
+                    });
+                } else if (window.unlockAchievement) {
+                    window.unlockAchievement('ACH_WORKSHOP_USE').catch(err => {
+                        console.error('解锁创意工坊成就失败:', err);
+                    });
+                }
+
                 // 延迟关闭modal并跳转到角色卡页面
                 setTimeout(() => {
                     // 关闭上传modal

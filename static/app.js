@@ -2845,6 +2845,13 @@ function init_app() {
                 const screenshotCount = screenshotItems.length;
                 appendMessage(`📸 [已发送${screenshotCount}张截图]`, 'user', true);
 
+                // 【成就】解锁发送图片成就
+                if (window.unlockAchievement) {
+                    window.unlockAchievement('ACH_SEND_IMAGE').catch(err => {
+                        console.error('解锁发送图片成就失败:', err);
+                    });
+                }
+
                 // 清空截图列表
                 screenshotsList.innerHTML = '';
                 screenshotThumbnailContainer.classList.remove('show');
@@ -2864,6 +2871,14 @@ function init_app() {
 
                 // 在聊天界面显示用户消息
                 appendMessage(text, 'user', true);
+
+                // 【成就】检测"喵"相关内容
+                if (window.incrementAchievementCounter) {
+                    const meowPattern = /喵|miao|meow|nya|にゃ/i;
+                    if (meowPattern.test(text)) {
+                        window.incrementAchievementCounter('meowCount');
+                    }
+                }
 
                 // 如果是用户第一次输入，更新状态并检查成就
                 if (isFirstUserInput) {
@@ -7913,6 +7928,11 @@ function init_app() {
             }
 
             showStatusToast(window.t ? window.t('app.switchedCatgirl', { name: newCatgirl }) : `已切换到 ${newCatgirl}`, 3000);
+
+            // 【成就】解锁换肤成就
+            if (window.unlockAchievement) {
+                await window.unlockAchievement('ACH_CHANGE_SKIN');
+            }
 
         } catch (error) {
             console.error('[猫娘切换] 失败:', error);
