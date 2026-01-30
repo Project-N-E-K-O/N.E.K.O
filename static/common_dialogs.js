@@ -482,21 +482,29 @@
      * @returns {Window|null} - 返回窗口对象
      */
     window.openOrFocusWindow = function(url, windowName, features) {
-        // 默认窗口特性
-        const defaultFeatures = 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no,noopener';
+        // 默认窗口特性（移除 noopener 以便获取窗口引用）
+        const defaultFeatures = 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no';
         features = features || defaultFeatures;
-        
+
         // 检查窗口是否已打开且未关闭
         const existingWindow = window._openedWindows[windowName];
         if (existingWindow && !existingWindow.closed) {
             existingWindow.focus();
             return existingWindow;
         }
-        
+
         // 打开新窗口并存储引用
         const newWindow = window.open(url, windowName, features);
         if (newWindow) {
             window._openedWindows[windowName] = newWindow;
+
+            // 监听窗口关闭事件，清理引用
+            const checkClosed = setInterval(() => {
+                if (newWindow.closed) {
+                    clearInterval(checkClosed);
+                    delete window._openedWindows[windowName];
+                }
+            }, 1000);
         }
         return newWindow;
     };

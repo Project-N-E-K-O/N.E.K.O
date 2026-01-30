@@ -803,12 +803,21 @@ Live2DManager.prototype._createMenuItem = function (item, isSubmenuItem = false)
         menuItem.style.background = 'transparent';
     });
 
+    // 防抖标志：防止快速多次点击导致多开窗口
+    let isOpening = false;
+
     menuItem.addEventListener('click', (e) => {
         e.stopPropagation();
+
+        // 如果正在打开窗口，忽略后续点击
+        if (isOpening) {
+            return;
+        }
+
         if (item.action === 'navigate') {
             let finalUrl = item.url || item.urlBase;
             const windowName = `neko_${item.id}`;
-            
+
             if (item.id === 'live2d-manage' && item.urlBase) {
                 const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                 finalUrl = `${item.urlBase}?lanlan_name=${encodeURIComponent(lanlanName)}`;
@@ -816,9 +825,18 @@ Live2DManager.prototype._createMenuItem = function (item, isSubmenuItem = false)
             } else if (item.id === 'voice-clone' && item.url) {
                 const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                 finalUrl = `${item.url}?lanlan_name=${encodeURIComponent(lanlanName)}`;
+
+                // 设置防抖标志
+                isOpening = true;
                 window.openOrFocusWindow(finalUrl, windowName);
+                // 500ms后重置标志，允许再次点击
+                setTimeout(() => { isOpening = false; }, 500);
             } else {
+                // 设置防抖标志
+                isOpening = true;
                 window.openOrFocusWindow(finalUrl, windowName);
+                // 500ms后重置标志，允许再次点击
+                setTimeout(() => { isOpening = false; }, 500);
             }
         }
     });
