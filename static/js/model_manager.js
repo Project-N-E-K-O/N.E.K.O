@@ -4462,6 +4462,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                     currentModelInfo = model_info;
                     modelSelect.value = model_name;
 
+                    // 更新按钮文字
+                    if (typeof updateLive2DModelSelectButtonText === 'function') {
+                        updateLive2DModelSelectButtonText();
+                    }
+
                     // 加载模型
                     await loadModel(model_name, model_info, model_info.item_id);
 
