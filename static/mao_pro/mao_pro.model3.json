@@ -46,12 +46,8 @@
         "File": "expressions/exp_08.exp3.json"
       },
       {
-        "Name": "Idle_exp_03",
-        "File": "expressions/exp_03.exp3.json"
-      },
-      {
-        "Name": "常驻_exp_04",
-        "File": "expressions/exp_04.exp3.json"
+        "Name": "Idle_exp_02",
+        "File": "expressions/exp_02.exp3.json"
       }
     ],
     "Motions": {
@@ -119,10 +115,7 @@
         "expressions/exp_08.exp3.json"
       ],
       "Idle": [
-        "expressions/exp_03.exp3.json"
-      ],
-      "常驻": [
-        "expressions/exp_04.exp3.json"
+        "expressions/exp_02.exp3.json"
       ]
     }
   }
