@@ -590,7 +590,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const playMotionBtn = document.getElementById('play-motion-btn');
     const playExpressionBtn = document.getElementById('play-expression-btn');
     const savePositionBtn = document.getElementById('save-position-btn');
-    
+    const emotionConfigBtn = document.getElementById('emotion-config-btn');
+
     // 初始化保存设置按钮的样式
     // 注意：按钮宽度统一设置为270px（Live2D和VRM模式一致）
     // switchModelDisplay() 会根据实际模式设置正确的宽度
@@ -1292,24 +1293,23 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (parameterEditorGroup) parameterEditorGroup.style.display = 'flex';
             // Live2D模式下：显示保存设置按钮组
             const emotionManagerGroup = document.getElementById('emotion-manager-group');
+            const emotionConfigGroup = document.getElementById('emotion-config-group');
             if (emotionManagerGroup) {
                 emotionManagerGroup.style.display = 'flex';
-                // 显示保存设置按钮，并设置为270px宽度（与VRM模式一致）
+                // 显示保存设置按钮
                 const savePositionBtn = document.getElementById('save-position-btn');
                 const savePositionWrapper = document.getElementById('save-position-wrapper');
                 if (savePositionBtn) {
                     savePositionBtn.style.display = 'flex';
-                    // 设置为270px宽度，与VRM模式保持一致
-                    savePositionBtn.style.setProperty('width', '270px', 'important');
-                    savePositionBtn.style.setProperty('flex', '0 0 270px', 'important');
-                    savePositionBtn.style.setProperty('max-width', '270px', 'important');
-                    savePositionBtn.style.setProperty('min-width', '270px', 'important');
                 }
-                // 父容器设置为100%，与VRM模式一致
                 if (savePositionWrapper) {
                     savePositionWrapper.style.setProperty('width', '100%', 'important');
                     savePositionWrapper.style.setProperty('max-width', '270px', 'important');
                 }
+            }
+            // 显示情感配置按钮组
+            if (emotionConfigGroup) {
+                emotionConfigGroup.style.display = 'flex';
             }
 
             // 更新上传按钮提示文本（Live2D模式）
@@ -1447,6 +1447,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
             // VRM模式下：显示保存设置按钮
             const emotionManagerGroup = document.getElementById('emotion-manager-group');
+            const emotionConfigGroup = document.getElementById('emotion-config-group');
             if (emotionManagerGroup) {
                 // 显示保存设置按钮，并设置为270px宽度（占据整个容器）
                 const savePositionBtn = document.getElementById('save-position-btn');
@@ -1464,6 +1465,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                     savePositionWrapper.style.setProperty('max-width', '270px', 'important');
                 }
                 emotionManagerGroup.style.display = 'flex';
+            }
+            // 隐藏情感配置按钮组（VRM模式下不需要）
+            if (emotionConfigGroup) {
+                emotionConfigGroup.style.display = 'none';
             }
             // 隐藏常驻表情组（VRM模式下不需要）
             const persistentExpressionGroup = document.getElementById('persistent-expression-group');
@@ -3080,6 +3085,22 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
     });
+
+    // 情感配置按钮
+    if (emotionConfigBtn) {
+        emotionConfigBtn.addEventListener('click', () => {
+            // 打开情感映射管理器页面
+            const width = 900;
+            const height = 800;
+            const left = (screen.width - width) / 2;
+            const top = (screen.height - height) / 2;
+            window.open(
+                '/live2d_emotion_manager',
+                'emotionManager',
+                `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
+            );
+        });
+    }
 
     // 返回主页/关闭按钮
     backToMainBtn.addEventListener('click', async () => {

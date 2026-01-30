@@ -850,7 +850,27 @@
     "deleteFailed": "失败 {{count}} 个",
     "switchingToDefault": "当前模型已删除，正在切换到默认模型...",
     "userDocuments": "用户文档",
-    "localUpload": "本地上传"
+    "localUpload": "本地上传",
+    "emotionConfig": "情感配置",
+    "emotionMapping": {
+      "title": "情感映射管理",
+      "description": "配置不同情绪下的动作和表情",
+      "happy": "开心 (Happy)",
+      "sad": "悲伤 (Sad)",
+      "angry": "生气 (Angry)",
+      "neutral": "平静 (Neutral)",
+      "surprised": "惊讶 (Surprised)",
+      "idle": "待机 (Idle)",
+      "selectMotion": "选择动作文件",
+      "selectExpression": "选择表情文件",
+      "save": "保存情感映射",
+      "reset": "重置",
+      "loaded": "情感映射配置已加载",
+      "loadFailed": "加载情感映射配置失败",
+      "saved": "情感映射配置已保存",
+      "saveFailed": "保存情感映射配置失败",
+      "noModelSelected": "请先选择一个模型"
+    }
   },
   "voice": {
     "title": "音色注册",

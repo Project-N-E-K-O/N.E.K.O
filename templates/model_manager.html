@@ -190,11 +190,17 @@
         </div>
 
         <div class="control-group" id="emotion-manager-group">
-            <div id="save-position-wrapper" style="display:flex; gap: 0; width: fit-content;">
-                <button id="save-position-btn" class="btn btn-primary btn-icon" disabled data-i18n-title="live2d.saveSettings">
+            <div id="save-position-wrapper" style="display:flex; gap: 0; width: 100%; max-width: 270px;">
+                <button id="save-position-btn" class="btn btn-primary btn-icon" disabled data-i18n-title="live2d.saveSettings" style="width: 100%;">
                     <span class="round-stroke-text round-stroke-text-center" id="save-position-text" data-i18n="live2d.saveSettings" data-text="Save Settings">保存设置</span>
                 </button>
             </div>
+        </div>
+
+        <div class="control-group" id="emotion-config-group" style="display:none;">
+            <button id="emotion-config-btn" class="btn btn-primary btn-icon" style="width: 100%; max-width: 270px;" data-i18n-title="live2d.emotionConfig">
+                <span class="round-stroke-text round-stroke-text-center" data-i18n="live2d.emotionConfig" data-text="Emotion Config">情感配置</span>
+            </button>
         </div>
 
         <!-- VRM 打光设置 (已简化为二次元风格) -->

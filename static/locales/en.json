@@ -832,7 +832,27 @@
     "deleteFailed": "Failed to delete {{count}} models",
     "switchingToDefault": "Current model deleted, switching to default model...",
     "userDocuments": "User Documents",
-    "localUpload": "Local Upload"
+    "localUpload": "Local Upload",
+    "emotionConfig": "Emotion Config",
+    "emotionMapping": {
+      "title": "Emotion Mapping Manager",
+      "description": "Configure motions and expressions for different emotions",
+      "happy": "Happy",
+      "sad": "Sad",
+      "angry": "Angry",
+      "neutral": "Neutral",
+      "surprised": "Surprised",
+      "idle": "Idle",
+      "selectMotion": "Select Motion File",
+      "selectExpression": "Select Expression File",
+      "save": "Save Emotion Mapping",
+      "reset": "Reset",
+      "loaded": "Emotion mapping loaded",
+      "loadFailed": "Failed to load emotion mapping",
+      "saved": "Emotion mapping saved",
+      "saveFailed": "Failed to save emotion mapping",
+      "noModelSelected": "Please select a model first"
+    }
   },
   "voice": {
     "title": "Voice Registration",
