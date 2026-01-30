@@ -272,9 +272,18 @@ try {
 }
 
 // 用于页面间通信的事件处理
-function sendMessageToMainPage(action) {
+function sendMessageToMainPage(action, payload = {}) {
     try {
+        const safePayload = {};
+        if (payload && typeof payload === 'object') {
+            for (const [key, value] of Object.entries(payload)) {
+                if (key === 'action' || key === 'timestamp') continue;
+                safePayload[key] = value;
+            }
+        }
+
         const message = {
+            ...safePayload,
             action: action,
             timestamp: Date.now()
         };
@@ -308,6 +317,10 @@ function sendMessageToMainPage(action) {
 
 // 全局变量：跟踪未保存的更改
 window.hasUnsavedChanges = false;
+
+// 仅当本页确实保存过配置时，才触发主界面重载（避免退出就把主界面模型/位置“复位”）
+window._modelManagerHasSaved = false;
+window._modelManagerLanlanName = new URLSearchParams(window.location.search).get('lanlan_name') || '';
 /**
  * ===== 代码质量改进：路径处理统一化 (DRY 原则) =====
  * 
@@ -1589,6 +1602,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         modelTypeSelect.addEventListener('change', async (e) => {
             const type = e.target.value;
 
+            // 关键修复：自定义下拉会手动 dispatch change，即使值未变也会触发。
+            // 避免重复执行 switchModelDisplay() 导致 Live2D 画布/PIXI 被重置但模型未重新加载。
+            if (type === currentModelType) {
+                if (modelTypeManager) {
+                    modelTypeManager.updateButtonText();
+                }
+                return;
+            }
+
             // 检查语音模式状态
             const voiceStatus = await checkVoiceModeStatus();
             if (voiceStatus.isCurrent && voiceStatus.isVoiceMode) {
@@ -1599,6 +1621,38 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             await switchModelDisplay(type);
+
+            // 从 VRM 切回 Live2D 时，确保当前 Live2D 模型会被加载出来
+            //（switchModelDisplay 会重建 PIXI，但不会自动触发 model-select 的 change）
+            if (type === 'live2d') {
+                try {
+                    const hasModelLoaded = !!(window.live2dManager && window.live2dManager.currentModel);
+                    if (!hasModelLoaded) {
+                        // 优先使用当前下拉框选中项；没有则选择第一个可用模型
+                        let modelName = modelSelect ? modelSelect.value : '';
+                        if (!modelName && modelSelect && modelSelect.options && modelSelect.options.length > 0) {
+                            modelName = modelSelect.options[0].value;
+                            modelSelect.value = modelName;
+                        }
+
+                        if (modelName) {
+                            const modelInfo = (currentModelInfo && currentModelInfo.name === modelName)
+                                ? currentModelInfo
+                                : (Array.isArray(availableModels) ? availableModels.find(m => m.name === modelName) : null);
+
+                            if (modelInfo) {
+                                const selectedOption = modelSelect ? modelSelect.options[modelSelect.selectedIndex] : null;
+                                const modelSteamId = selectedOption ? selectedOption.dataset.itemId : modelInfo.item_id;
+                                await loadModel(modelName, modelInfo, modelSteamId);
+                            } else {
+                                console.warn('[模型管理] 切回 Live2D 时未找到模型信息，跳过自动加载:', modelName);
+                            }
+                        }
+                    }
+                } catch (autoLoadError) {
+                    console.warn('[模型管理] 切回 Live2D 自动加载模型失败:', autoLoadError);
+                }
+            }
         });
     }
 
@@ -3051,6 +3105,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (modelSuccess) {
                 showStatus(t('live2d.settingsSaved', '模型设置保存成功!'), 2000);
                 window.hasUnsavedChanges = false;
+                window._modelManagerHasSaved = true;
                 // 不在保存时立即通知主页，而是在返回主页时通知
                 // if (window.opener && !window.opener.closed) {
                 //     try {
@@ -3072,12 +3127,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (positionSuccess && modelSuccess) {
                 showStatus(t('live2d.settingsSaved', '位置和模型设置保存成功!'), 2000);
                 window.hasUnsavedChanges = false; // 保存成功后重置标志
+                window._modelManagerHasSaved = true;
                 // 不在保存时立即通知主页，而是在返回主页时通知
                 // sendMessageToMainPage('reload_model');
             } else if (positionSuccess) {
                 showStatus(t('live2d.positionSavedModelFailed', '位置保存成功，模型设置保存失败!'), 2000);
+                // 位置偏好已保存，主界面如触发重载可恢复位置；但仅在用户退出时才通知
+                window._modelManagerHasSaved = true;
             } else if (modelSuccess) {
                 showStatus(t('live2d.modelSavedPositionFailed', '模型设置保存成功，位置保存失败!'), 2000);
+                window._modelManagerHasSaved = true;
                 // 不在保存时立即通知主页，而是在返回主页时通知
                 // sendMessageToMainPage('reload_model');
             } else {
@@ -3129,9 +3188,27 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // 根据窗口类型执行不同的操作
         if (isPopupWindow) {
-            // 如果是弹出窗口，在关闭前发送刷新消息
-            // 使用 sendMessageToMainPage 统一发送消息（包含 BroadcastChannel 和 postMessage）
-            sendMessageToMainPage('reload_model');
+            // 如果是弹出窗口：只有在本页确实保存过设置时才刷新主界面模型
+            // 否则不触发重载，避免“退出即复位/回默认模型”
+            if (window._modelManagerHasSaved) {
+                // 发送前确保 lanlan_name 已解析并缓存，避免主界面按角色过滤时因空值丢弃消息
+                if (!window._modelManagerLanlanName || window._modelManagerLanlanName.trim() === '') {
+                    try {
+                        const resolvedLanlanName = await getLanlanName();
+                        if (resolvedLanlanName && resolvedLanlanName.trim() !== '') {
+                            window._modelManagerLanlanName = resolvedLanlanName;
+                        }
+                    } catch (e) {
+                        console.warn('[模型管理] 获取 lanlan_name 失败，跳过缓存:', e);
+                    }
+                }
+
+                if (window._modelManagerLanlanName && window._modelManagerLanlanName.trim() !== '') {
+                    sendMessageToMainPage('reload_model', { lanlan_name: window._modelManagerLanlanName || '' });
+                } else {
+                    console.warn('[模型管理] lanlan_name 为空，跳过 reload_model 通知以避免主界面过滤失败');
+                }
+            }
             // 延迟一点确保消息发送
             setTimeout(() => {
                 window.close();

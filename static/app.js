@@ -890,7 +890,7 @@ function init_app() {
 
                 switch (event.data.action) {
                     case 'reload_model':
-                        await handleModelReload();
+                        await handleModelReload(event.data?.lanlan_name);
                         break;
                     case 'hide_main_ui':
                         handleHideMainUI();
@@ -906,7 +906,14 @@ function init_app() {
     }
 
     // 模型重载处理函数
-    async function handleModelReload() {
+    async function handleModelReload(targetLanlanName = '') {
+        // 如果消息携带了 lanlan_name，且与当前页面角色不一致，则忽略（避免配置其它角色时影响当前主界面）
+        const currentLanlanName = window.lanlan_config?.lanlan_name || '';
+        if (targetLanlanName && currentLanlanName && targetLanlanName !== currentLanlanName) {
+            console.log('[Model] 忽略来自其它角色的模型重载请求:', { targetLanlanName, currentLanlanName });
+            return;
+        }
+
         // 并发控制：如果已有重载正在进行，记录待处理的请求并等待
         if (window._modelReloadInFlight) {
             console.log('[Model] 模型重载已在进行中，等待完成后重试');
@@ -929,7 +936,11 @@ function init_app() {
 
         try {
             // 1. 重新获取页面配置
-            const response = await fetch('/api/config/page_config');
+            const nameForConfig = targetLanlanName || currentLanlanName;
+            const pageConfigUrl = nameForConfig
+                ? `/api/config/page_config?lanlan_name=${encodeURIComponent(nameForConfig)}`
+                : '/api/config/page_config';
+            const response = await fetch(pageConfigUrl);
             const data = await response.json();
 
             if (data.success) {
@@ -1053,14 +1064,26 @@ function init_app() {
                                 await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
                             }
 
-                            const modelConfig = {
-                                model: newModelPath,
-                                width: 800,
-                                height: 800,
-                                position: [0, 0],
-                                scale: 1.0
-                            };
-                            await window.live2dManager.loadModel(modelConfig);
+                            // 关键修复：应用用户已保存的偏好（位置/缩放/参数等），避免从模型管理页返回后“复位”
+                            let modelPreferences = null;
+                            try {
+                                const preferences = await window.live2dManager.loadUserPreferences();
+                                modelPreferences = preferences ? preferences.find(p => p && p.model_path === newModelPath) : null;
+                            } catch (prefError) {
+                                console.warn('[Model] 读取 Live2D 用户偏好失败，将继续加载模型:', prefError);
+                            }
+
+                            // loadModel 支持直接传入模型路径字符串（与 live2d-init.js 一致）
+                            await window.live2dManager.loadModel(newModelPath, {
+                                preferences: modelPreferences,
+                                isMobile: window.innerWidth <= 768
+                            });
+
+                            // 同步全局引用，保持兼容旧接口
+                            if (window.LanLan1) {
+                                window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
+                                window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
+                            }
                         } else {
                             console.error('[Model] Live2D 管理器初始化失败');
                         }
@@ -1218,7 +1241,7 @@ function init_app() {
 
         if (event.data && (event.data.action === 'model_saved' || event.data.action === 'reload_model')) {
             console.log('[Model] 通过 postMessage 收到模型重载通知');
-            await handleModelReload();
+            await handleModelReload(event.data?.lanlan_name);
         }
     });
 
