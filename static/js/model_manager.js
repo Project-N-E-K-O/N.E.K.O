@@ -274,10 +274,18 @@ try {
 // 用于页面间通信的事件处理
 function sendMessageToMainPage(action, payload = {}) {
     try {
+        const safePayload = {};
+        if (payload && typeof payload === 'object') {
+            for (const [key, value] of Object.entries(payload)) {
+                if (key === 'action' || key === 'timestamp') continue;
+                safePayload[key] = value;
+            }
+        }
+
         const message = {
+            ...safePayload,
             action: action,
-            timestamp: Date.now(),
-            ...(payload && typeof payload === 'object' ? payload : {})
+            timestamp: Date.now()
         };
 
         // 优先使用 BroadcastChannel
