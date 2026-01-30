@@ -277,6 +277,19 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
 
     let isDragging = false;
     let dragStartPos = new PIXI.Point();
+    const activePointers = new Set();
+
+    // 维护活跃触点集合，用于准确检测多点触控
+    const handlePointerDown = (e) => {
+        if (e.pointerType === 'touch') {
+            activePointers.add(e.pointerId);
+        }
+    };
+    const handlePointerUp = (e) => {
+        if (e.pointerType === 'touch') {
+            activePointers.delete(e.pointerId);
+        }
+    };
 
     // 使用 live2d-ui-drag.js 中的共享工具函数（按钮 pointer-events 管理）
     const disableButtonPointerEvents = () => {
@@ -320,8 +333,13 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         // 获取原始浏览器事件
         const originalEvent = event.data.originalEvent;
 
-        // 检测是否为触摸事件，且是多点触摸（双指缩放）
-        if (originalEvent && originalEvent.touches && originalEvent.touches.length > 1) {
+        // 检测多点触控（双指缩放等）
+        // PointerEvent 模式下使用 activePointers 集合判断
+        // TouchEvent 模式下（如果存在）使用 touches 判断
+        const isMultiTouch = (activePointers.size > 1) || 
+                           (originalEvent && originalEvent.touches && originalEvent.touches.length > 1);
+        
+        if (isMultiTouch) {
             // 多点触摸时不启动拖拽
             return;
         }
@@ -375,7 +393,8 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     const onDragMove = (event) => {
         if (isDragging) {
             // 再次检查是否变成多点触摸
-            if (event.touches && event.touches.length > 1) {
+            // PointerEvent 不含 touches 属性，需使用 activePointers 集合
+            if (activePointers.size > 1 || (event.touches && event.touches.length > 1)) {
                 onDragEnd();
                 return;
             }
@@ -402,6 +421,13 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     };
 
     // 清理旧的监听器
+    if (this._handlePointerDown) {
+        window.removeEventListener('pointerdown', this._handlePointerDown);
+    }
+    if (this._handlePointerUp) {
+        window.removeEventListener('pointerup', this._handlePointerUp);
+        window.removeEventListener('pointercancel', this._handlePointerUp);
+    }
     if (this._dragEndListener) {
         window.removeEventListener('pointerup', this._dragEndListener);
         window.removeEventListener('pointercancel', this._dragEndListener);
@@ -414,11 +440,16 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     }
 
     // 保存新的监听器引用
+    this._handlePointerDown = handlePointerDown;
+    this._handlePointerUp = handlePointerUp;
     this._dragEndListener = onDragEnd;
     this._dragMouseUpListener = onDragEnd;
     this._dragMoveListener = onDragMove;
 
     // 使用 window 监听拖拽结束和移动，确保即使移出 canvas 也能响应
+    window.addEventListener('pointerdown', handlePointerDown);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
     window.addEventListener('pointerup', onDragEnd);
     window.addEventListener('pointercancel', onDragEnd);
     window.addEventListener('pointermove', onDragMove);
