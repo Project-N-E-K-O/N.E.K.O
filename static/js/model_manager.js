@@ -3109,18 +3109,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // 根据窗口类型执行不同的操作
         if (isPopupWindow) {
             // 如果是弹出窗口，在关闭前发送刷新消息
-            if (window.opener && !window.opener.closed) {
-                try {
-                    window.opener.postMessage({
-                        action: 'reload_model',
-                        timestamp: Date.now()
-                    }, window.location.origin);
-                    console.log('[消息发送] 窗口关闭前发送 reload_model 消息');
-                } catch (e) {
-                    console.warn('发送关闭消息失败:', e);
-                }
-            }
-            // 同时通过 BroadcastChannel 发送（如果可用）
+            // 使用 sendMessageToMainPage 统一发送消息（包含 BroadcastChannel 和 postMessage）
             sendMessageToMainPage('reload_model');
             // 延迟一点确保消息发送
             setTimeout(() => {

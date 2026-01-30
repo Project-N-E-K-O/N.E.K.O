@@ -907,6 +907,24 @@ function init_app() {
 
     // 模型重载处理函数
     async function handleModelReload() {
+        // 并发控制：如果已有重载正在进行，记录待处理的请求并等待
+        if (window._modelReloadInFlight) {
+            console.log('[Model] 模型重载已在进行中，等待完成后重试');
+            window._pendingModelReload = true;
+            await window._modelReloadPromise;
+            return;
+        }
+
+        // 设置重载标志
+        window._modelReloadInFlight = true;
+        window._pendingModelReload = false;
+
+        // 创建 Promise 供其他调用者等待
+        let resolveReload;
+        window._modelReloadPromise = new Promise(resolve => {
+            resolveReload = resolve;
+        });
+
         console.log('[Model] 开始热切换模型');
 
         try {
@@ -924,6 +942,13 @@ function init_app() {
                     newType: newModelType,
                     newPath: newModelPath
                 });
+
+                // 验证模型路径：如果为空，保持当前状态不变
+                if (!newModelPath) {
+                    console.warn('[Model] 模型路径为空，保持当前模型不变');
+                    showStatusToast(window.t ? window.t('app.modelPathEmpty') : '模型路径为空', 2000);
+                    return;
+                }
 
                 // 2. 更新全局配置
                 if (window.lanlan_config) {
@@ -944,45 +969,43 @@ function init_app() {
                     }
 
                     // 显示并重新加载 VRM 模型
-                    if (newModelPath) {
-                        console.log('[Model] 加载 VRM 模型:', newModelPath);
+                    console.log('[Model] 加载 VRM 模型:', newModelPath);
 
-                        // 显示 VRM 容器
-                        const vrmContainer = document.getElementById('vrm-container');
-                        if (vrmContainer) {
-                            vrmContainer.classList.remove('hidden');
-                            vrmContainer.style.display = 'block';
-                            vrmContainer.style.visibility = 'visible';
-                            vrmContainer.style.removeProperty('pointer-events');
+                    // 显示 VRM 容器
+                    const vrmContainer = document.getElementById('vrm-container');
+                    if (vrmContainer) {
+                        vrmContainer.classList.remove('hidden');
+                        vrmContainer.style.display = 'block';
+                        vrmContainer.style.visibility = 'visible';
+                        vrmContainer.style.removeProperty('pointer-events');
+                    }
+
+                    // 显示 VRM canvas
+                    const vrmCanvas = document.getElementById('vrm-canvas');
+                    if (vrmCanvas) {
+                        vrmCanvas.style.visibility = 'visible';
+                        vrmCanvas.style.pointerEvents = 'auto';
+                    }
+
+                    // 检查 VRM 管理器是否已初始化
+                    if (!window.vrmManager) {
+                        console.log('[Model] VRM 管理器未初始化，等待初始化完成');
+                        // 等待 VRM 初始化完成
+                        if (typeof initVRMModel === 'function') {
+                            await initVRMModel();
                         }
+                    }
 
-                        // 显示 VRM canvas
-                        const vrmCanvas = document.getElementById('vrm-canvas');
-                        if (vrmCanvas) {
-                            vrmCanvas.style.visibility = 'visible';
-                            vrmCanvas.style.pointerEvents = 'auto';
+                    // 加载新模型
+                    if (window.vrmManager) {
+                        await window.vrmManager.loadModel(newModelPath);
+
+                        // 应用光照配置（如果有）
+                        if (window.lanlan_config?.lighting && typeof window.applyVRMLighting === 'function') {
+                            window.applyVRMLighting(window.lanlan_config.lighting, window.vrmManager);
                         }
-
-                        // 检查 VRM 管理器是否已初始化
-                        if (!window.vrmManager) {
-                            console.log('[Model] VRM 管理器未初始化，等待初始化完成');
-                            // 等待 VRM 初始化完成
-                            if (typeof initVRMModel === 'function') {
-                                await initVRMModel();
-                            }
-                        }
-
-                        // 加载新模型
-                        if (window.vrmManager) {
-                            await window.vrmManager.loadModel(newModelPath);
-
-                            // 应用光照配置（如果有）
-                            if (window.lanlan_config?.lighting && typeof window.applyVRMLighting === 'function') {
-                                window.applyVRMLighting(window.lanlan_config.lighting, window.vrmManager);
-                            }
-                        } else {
-                            console.error('[Model] VRM 管理器初始化失败');
-                        }
+                    } else {
+                        console.error('[Model] VRM 管理器初始化失败');
                     }
                 } else {
                     // Live2D 模式
@@ -1053,6 +1076,18 @@ function init_app() {
         } catch (error) {
             console.error('[Model] 模型热切换失败:', error);
             showStatusToast(window.t ? window.t('app.modelSwitchFailed') : '模型切换失败', 3000);
+        } finally {
+            // 清理重载标志
+            window._modelReloadInFlight = false;
+            resolveReload();
+
+            // 如果有待处理的重载请求，执行一次
+            if (window._pendingModelReload) {
+                console.log('[Model] 执行待处理的模型重载请求');
+                window._pendingModelReload = false;
+                // 使用 setTimeout 避免递归调用栈过深
+                setTimeout(() => handleModelReload(), 100);
+            }
         }
     }
 
@@ -1169,6 +1204,18 @@ function init_app() {
 
     // 监听模型保存通知（从 model_manager 窗口发送 - postMessage 后备方案）
     window.addEventListener('message', async function (event) {
+        // 安全检查：验证消息来源
+        if (event.origin !== window.location.origin) {
+            console.warn('[Security] 拒绝来自不同源的消息:', event.origin);
+            return;
+        }
+
+        // 验证消息来源是否为预期的窗口（opener 或其他已知窗口）
+        if (event.source && event.source !== window.opener && !event.source.parent) {
+            console.warn('[Security] 拒绝来自未知窗口的消息');
+            return;
+        }
+
         if (event.data && (event.data.action === 'model_saved' || event.data.action === 'reload_model')) {
             console.log('[Model] 通过 postMessage 收到模型重载通知');
             await handleModelReload();
