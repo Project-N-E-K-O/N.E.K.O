@@ -187,6 +187,12 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
         return;
     }
 
+    // 清理可能存在的旧浮动按钮容器，防止重复创建
+    const existingContainer = document.getElementById('live2d-floating-buttons');
+    if (existingContainer) {
+        existingContainer.remove();
+    }
+
     // 创建按钮容器
     const buttonsContainer = document.createElement('div');
     buttonsContainer.id = 'live2d-floating-buttons';
