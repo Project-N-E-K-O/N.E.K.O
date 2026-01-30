@@ -326,6 +326,7 @@ MODELS_EXTRA_BODY_MAP = {
     "step-2-mini": {"tools":[{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
     # Gemini 系列
     "gemini-2.5-flash": EXTRA_BODY_GEMINI,  # 禁用 thinking
+    "gemini-2.5-flash-lite": EXTRA_BODY_GEMINI,  # 禁用 thinking
     "gemini-3-flash-preview": EXTRA_BODY_GEMINI_3,  # 低级别 thinking
 }
 

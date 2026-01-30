@@ -491,6 +491,7 @@
     "stepFeature": "階躍星辰：性價比很高，但並發、速率限製極其嚴格，不支持Agent模式",
     "openaiFeature": "OpenAI：國內無法使用，價格貴，智能水平高",
     "siliconFeature": "矽基流動：有免費額度，性價比高，功能少，隻作為輔助API使用",
+    "geminiFeature": "Gemini：智能和性價比極高，但國內版不支持",
     "configSuggestion": "配置建議：",
     "freeVersionSuggestion": "免費版：完全免費，無需API Key，適閤新手體驗（不支持自定義語音、Agent模式）",
     "coreApiSuggestion": "核心API：負責對話功能，建議根據預算和需求選擇",
@@ -501,6 +502,7 @@
     "glmCore": "智譜：模型已經暫時下架，無法使用",
     "stepCore": "階躍星辰：完全免費，智能水平高，但速率限製太嚴苛、因此不建議使用",
     "openaiCore": "OpenAI：智能水平最高，但國內無法使用且價格昂貴",
+    "geminiCore": "Gemini：智能和性價比極高，但國內版不支持",
     "assistApiTitle": "輔助API負責記憶管理、文本對話、Agent模式和自定義語音：",
     "freeVersionAssist": "免費版：完全免費，但不支持自定義語音和Agent模式",
     "aliAssist": "阿裏：推薦選擇，支持自定義語音和Agent模式",
@@ -508,12 +510,14 @@
     "stepAssist": "階躍星辰：價格便宜，但並發、RPM限製極其嚴重，不建議使用",
     "siliconAssist": "矽基流動：性價比高，支持Agent模式",
     "openaiAssist": "OpenAI：記憶管理能力強",
+    "geminiAssist": "Gemini：智能和性價比極高，但國內版不支持",
     "assistApiNote": "注意：隻有阿裏支持自定義語音功能。不建議使用智譜和階躍星辰。",
     "assistApiKeyQwen": "輔助API Key - 阿裏",
     "assistApiKeyOpenai": "輔助API Key - OpenAI",
     "assistApiKeyGlm": "輔助API Key - 智譜",
     "assistApiKeyStep": "輔助API Key - 階躍星辰",
     "assistApiKeySilicon": "輔助API Key - 矽基流動",
+    "assistApiKeyGemini": "輔助API Key - Gemini",
     "assistApiKeyHint": "（僅當輔助API為{{provider}}時需要填寫）",
     "assistApiKeyPlaceholder": "可選，默認為核心API Key",
     "providerNames": {
@@ -521,14 +525,16 @@
       "openai": "OpenAI",
       "glm": "智譜",
       "step": "階躍星辰",
-      "silicon": "矽基流動"
+      "silicon": "矽基流動",
+      "gemini": "Gemini"
     },
     "coreProviderNames": {
       "free": "免費版（貓娘專屬福利，支持聯網搜索）",
       "qwen": "Qwen-Omni（阿裏，速度最快，推薦⭐）",
       "openai": "GPT-Realtime（OpenAI）",
       "glm": "GLM-realtime（智譜）",
-      "step": "Step-2-Audio（階躍星辰）"
+      "step": "Step-2-Audio（階躍星辰）",
+      "gemini": "Gemini Live（谷歌，效果最好，國內版不支持）"
     },
     "assistProviderNames": {
       "free": "免費版（貓娘專屬福利）",
@@ -536,7 +542,8 @@
       "openai": "OpenAI (ChatGPT)",
       "glm": "智譜 (GLM)",
       "step": "階躍星辰 (StepFun)",
-      "silicon": "矽基流動 (SiliconFlow，性價比高，推薦⭐)"
+      "silicon": "矽基流動 (SiliconFlow，性價比高，推薦⭐)",
+      "gemini": "Gemini（谷歌，智能極高，國內版不支持）"
     },
     "freeVersionNoApiKey": "免費版無需API Key",
     "pleaseEnterApiKey": "請輸入您的API Key",
@@ -546,6 +553,7 @@
     "glmRecommendation": "智譜的音視頻對話模型GLM-Realtime已暫時下架，無法作為核心API使用",
     "openaiRecommendation": "OpenAI作為核心API時，建議輔助API選擇阿裏以支持自定義語音功能",
     "stepRecommendation": "階躍星辰作為核心API時，建議輔助API選擇阿裏以支持自定義語音功能",
+    "geminiRecommendation": "Gemini作為核心API時，建議輔助API選擇阿裏以支持自定義語音功能",
     "assistApiTooltipTitle": "輔助API負責記憶管理、文本對話和自定義語音：",
     "currentSuggestion": "當前建議：",
     "configSuggestionFull": "配置建議：",

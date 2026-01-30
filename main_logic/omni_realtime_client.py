@@ -1033,7 +1033,8 @@ class OmniRealtimeClient:
                     break
                 except Exception as e:
                     error_msg = str(e)
-                    if "closed" in error_msg.lower():
+                    # 检测正常关闭：包含 "closed" 或者是 WebSocket 1000 正常关闭码
+                    if "closed" in error_msg.lower() or "1000" in error_msg:
                         logger.info("Gemini session closed")
                         break
                     else:
@@ -1059,7 +1060,7 @@ class OmniRealtimeClient:
                 if hasattr(server_content, 'input_transcription') and server_content.input_transcription:
                     input_trans = server_content.input_transcription
                     if hasattr(input_trans, 'text') and input_trans.text:
-                        self._gemini_user_transcript += input_trans.text
+                        self._gemini_user_transcript += input_trans.text.replace(' ', '')
                 
                 # 检查是否有 AI 内容（model_turn 或 output_transcription）
                 has_ai_content = (
@@ -1071,8 +1072,7 @@ class OmniRealtimeClient:
                 if has_ai_content and not self._is_responding:
                     # 在AI开始响应前，发送累积的用户输入
                     if self._gemini_user_transcript and self.on_input_transcript:
-                        await self.on_input_transcript(self._gemini_user_transcript)
-                        logger.info(f"[Gemini] 用户: {self._gemini_user_transcript}")
+                        await self.on_input_transcript(self._gemini_user_transcript.replace(' ', ''))
                         self._gemini_user_transcript = ""  # 清空累积
                     
                     self._is_responding = True
@@ -1118,7 +1118,7 @@ class OmniRealtimeClient:
                     self._is_responding = False
                     # 被中断时也发送已累积的用户输入
                     if self._gemini_user_transcript and self.on_input_transcript:
-                        await self.on_input_transcript(self._gemini_user_transcript)
+                        await self.on_input_transcript(self._gemini_user_transcript.replace(' ', ''))
                         self._gemini_user_transcript = ""
                     logger.info("Gemini response was interrupted by user")
         

@@ -638,6 +638,59 @@ class ConfigManager:
 
     # --- Core config helpers ---
 
+    # Cache for region check to avoid repeated calls (None = not checked, True/False = result)
+    _region_cache = None
+    
+    def _check_non_mainland(self) -> bool:
+        """Check if user is non-mainland China (cached, lazy evaluation)."""
+        # Return cached result if available
+        if ConfigManager._region_cache is not None:
+            return ConfigManager._region_cache
+        
+        # Default to mainland (no replacement) until we can verify
+        result = False
+        
+        try:
+            # Check if shared_state module is already imported to avoid import during startup
+            import sys
+            if 'main_routers.shared_state' not in sys.modules:
+                # Module not loaded yet, skip check for now (will retry next time)
+                return False
+            
+            from main_routers.shared_state import get_steamworks
+            steamworks = get_steamworks()
+            
+            if steamworks is None:
+                # No Steam environment = default to non-mainland
+                result = True
+            else:
+                ip_country = steamworks.Utils.GetIPCountry()
+                if isinstance(ip_country, bytes):
+                    ip_country = ip_country.decode('utf-8')
+                # CN = mainland (False), else = non-mainland (True)
+                result = (ip_country.upper() != 'CN') if ip_country else True
+            
+            # Only cache if we got a definitive answer
+            ConfigManager._region_cache = result
+        except Exception:
+            # On any error, don't cache and default to mainland (no replacement)
+            pass
+        
+        return result
+    
+    def _adjust_free_api_url(self, url: str, is_free: bool) -> str:
+        """Internal URL adjustment for free API users based on region."""
+        if not url or 'lanlan.tech' not in url:
+            return url
+        
+        try:
+            if self._check_non_mainland():
+                return url.replace('lanlan.tech', 'lanlan.app')
+        except Exception:
+            pass
+        
+        return url
+
     def get_core_config(self):
         """动态读取核心配置"""
         # 从 config 模块导入所有默认配置值
@@ -698,6 +751,7 @@ class ConfigManager:
             'ASSIST_API_KEY_GLM': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_STEP': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_SILICON': DEFAULT_CORE_API_KEY,
+            'ASSIST_API_KEY_GEMINI': DEFAULT_CORE_API_KEY,
             'COMPUTER_USE_MODEL': DEFAULT_COMPUTER_USE_MODEL,
             'COMPUTER_USE_GROUND_MODEL': DEFAULT_COMPUTER_USE_GROUND_MODEL,
             'COMPUTER_USE_MODEL_URL': DEFAULT_COMPUTER_USE_MODEL_URL,
@@ -755,6 +809,7 @@ class ConfigManager:
         config['ASSIST_API_KEY_GLM'] = core_cfg.get('assistApiKeyGlm', '') or config['CORE_API_KEY']
         config['ASSIST_API_KEY_STEP'] = core_cfg.get('assistApiKeyStep', '') or config['CORE_API_KEY']
         config['ASSIST_API_KEY_SILICON'] = core_cfg.get('assistApiKeySilicon', '') or config['CORE_API_KEY']
+        config['ASSIST_API_KEY_GEMINI'] = core_cfg.get('assistApiKeyGemini', '') or config['CORE_API_KEY']
 
         if core_cfg.get('mcpToken'):
             config['MCP_ROUTER_API_KEY'] = core_cfg['mcpToken']
@@ -880,6 +935,10 @@ class ConfigManager:
             # TTS Voice ID 作为角色 voice_id 的回退
             if core_cfg.get('ttsVoiceId') is not None:
                 config['TTS_VOICE_ID'] = core_cfg.get('ttsVoiceId', '')
+
+        for key, value in config.items():
+            if key.endswith('_URL') and isinstance(value, str):
+                config[key] = self._adjust_free_api_url(value, True)
 
         return config
 

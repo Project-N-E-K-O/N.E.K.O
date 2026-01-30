@@ -1,4 +1,9 @@
 
+// 全局变量：是否为中国大陆用户
+let isMainlandChinaUser = false;
+
+// 需要对大陆用户隐藏的 API 服务商
+const RESTRICTED_PROVIDERS = ['openai', 'gemini'];
 
 // 允许的来源列表
 const ALLOWED_ORIGINS = [window.location.origin];
@@ -63,6 +68,54 @@ function showCurrentApiKey(message, rawKey = '', hasKey = false) {
     currentApiKeyDiv.dataset.hasKey = hasKey ? 'true' : 'false';
 
     currentApiKeyDiv.style.display = 'flex';
+}
+
+// 检测用户是否为中国大陆用户
+// 逻辑：如果存在 Steam 语言设置（即有 Steam 环境），则检查 GeoIP
+// 如果不存在 Steam 语言设置（无 Steam 环境），默认为非大陆用户
+async function checkMainlandChinaUser() {
+    try {
+        const response = await fetch('/api/config/steam_language', {
+            method: 'GET',
+            headers: { 'Content-Type': 'application/json' },
+            signal: AbortSignal.timeout(3000) // 3 秒超时
+        });
+
+        if (!response.ok) {
+            console.log('[Region] Steam 语言 API 响应异常:', response.status);
+            return false;
+        }
+
+        const data = await response.json();
+        
+        // 如果 API 返回成功且有 is_mainland_china 字段
+        if (data.is_mainland_china === true) {
+            console.log('[Region] 检测到中国大陆用户（基于 Steam 环境 + GeoIP）');
+            return true;
+        }
+        
+        // 其他情况（无 Steam 环境、非大陆 IP）默认为非大陆用户
+        console.log('[Region] 非中国大陆用户，ip_country:', data.ip_country);
+        return false;
+    } catch (error) {
+        // 网络错误或超时，默认为非大陆用户
+        console.log('[Region] 检测区域时出错，默认为非大陆用户:', error.message);
+        return false;
+    }
+}
+
+// 隐藏大陆用户不可用的辅助 API Key 输入框
+function hideRestrictedAssistApiKeyInputs() {
+    if (!isMainlandChinaUser) return;
+    
+    // 隐藏 OpenAI 和 Gemini 辅助 API Key 输入框
+    const restrictedInputIds = ['assistApiKeyInputOpenai', 'assistApiKeyInputGemini'];
+    restrictedInputIds.forEach(inputId => {
+        const inputRow = document.getElementById(inputId)?.closest('.field-row');
+        if (inputRow) {
+            inputRow.style.display = 'none';
+        }
+    });
 }
 
 // 清空 API 服务商下拉框
@@ -140,6 +193,12 @@ async function loadApiProviders() {
                     coreSelect.innerHTML = ''; // 清空现有选项
                     const coreList = Array.isArray(data.core_api_providers) ? data.core_api_providers : [];
                     coreList.forEach(provider => {
+                        // 如果是大陆用户，过滤掉受限的服务商
+                        if (isMainlandChinaUser && RESTRICTED_PROVIDERS.includes(provider.key)) {
+                            console.log(`[Region] 隐藏核心API选项: ${provider.key}（大陆用户）`);
+                            return; // 跳过此选项
+                        }
+                        
                         const option = document.createElement('option');
                         option.value = provider.key;
                         // 使用翻译键获取显示名称
@@ -160,6 +219,12 @@ async function loadApiProviders() {
                     assistSelect.innerHTML = ''; // 清空现有选项
                     const assistList = Array.isArray(data.assist_api_providers) ? data.assist_api_providers : [];
                     assistList.forEach(provider => {
+                        // 如果是大陆用户，过滤掉受限的服务商
+                        if (isMainlandChinaUser && RESTRICTED_PROVIDERS.includes(provider.key)) {
+                            console.log(`[Region] 隐藏辅助API选项: ${provider.key}（大陆用户）`);
+                            return; // 跳过此选项
+                        }
+                        
                         const option = document.createElement('option');
                         option.value = provider.key;
                         // 使用翻译键获取显示名称
@@ -174,6 +239,9 @@ async function loadApiProviders() {
                         assistSelect.appendChild(option);
                     });
                 }
+                
+                // 隐藏大陆用户不可用的辅助 API Key 输入框
+                hideRestrictedAssistApiKeyInputs();
 
                 return true;
             } else {
@@ -278,6 +346,7 @@ async function loadCurrentApiKey() {
             setInputValue('assistApiKeyInputGlm', data.assistApiKeyGlm, assistApiKeyPlaceholder);
             setInputValue('assistApiKeyInputStep', data.assistApiKeyStep, assistApiKeyPlaceholder);
             setInputValue('assistApiKeyInputSilicon', data.assistApiKeySilicon, assistApiKeyPlaceholder);
+            setInputValue('assistApiKeyInputGemini', data.assistApiKeyGemini, assistApiKeyPlaceholder);
 
             // 加载用户自定义API配置
             setInputValue('summaryModelProvider', data.summaryModelProvider);
@@ -489,6 +558,7 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
     const assistApiKeyGlm = document.getElementById('assistApiKeyInputGlm') ? document.getElementById('assistApiKeyInputGlm').value.trim() : '';
     const assistApiKeyStep = document.getElementById('assistApiKeyInputStep') ? document.getElementById('assistApiKeyInputStep').value.trim() : '';
     const assistApiKeySilicon = document.getElementById('assistApiKeyInputSilicon') ? document.getElementById('assistApiKeyInputSilicon').value.trim() : '';
+    const assistApiKeyGemini = document.getElementById('assistApiKeyInputGemini') ? document.getElementById('assistApiKeyInputGemini').value.trim() : '';
 
     // 获取用户自定义API配置
     const summaryModelProvider = document.getElementById('summaryModelProvider') ? document.getElementById('summaryModelProvider').value.trim() : '';
@@ -538,7 +608,7 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
         // 已有API Key，显示警告弹窗
         pendingApiKey = {
             apiKey: apiKeyForSave, coreApi, assistApi,
-            assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon,
+            assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini,
             summaryModelProvider, summaryModelUrl, summaryModelId, summaryModelApiKey,
             correctionModelProvider, correctionModelUrl, correctionModelId, correctionModelApiKey,
             emotionModelProvider, emotionModelUrl, emotionModelId, emotionModelApiKey,
@@ -552,7 +622,7 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
         // 没有现有API Key，直接保存
         await saveApiKey({
             apiKey: apiKeyForSave, coreApi, assistApi,
-            assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon,
+            assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini,
             summaryModelProvider, summaryModelUrl, summaryModelId, summaryModelApiKey,
             correctionModelProvider, correctionModelUrl, correctionModelId, correctionModelApiKey,
             emotionModelProvider, emotionModelUrl, emotionModelId, emotionModelApiKey,
@@ -564,7 +634,7 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
     }
 });
 
-async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, summaryModelProvider, summaryModelUrl, summaryModelId, summaryModelApiKey, correctionModelProvider, correctionModelUrl, correctionModelId, correctionModelApiKey, emotionModelProvider, emotionModelUrl, emotionModelId, emotionModelApiKey, visionModelProvider, visionModelUrl, visionModelId, visionModelApiKey, omniModelProvider, omniModelUrl, omniModelId, omniModelApiKey, ttsModelProvider, ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId, mcpToken, enableCustomApi }) {
+async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini, summaryModelProvider, summaryModelUrl, summaryModelId, summaryModelApiKey, correctionModelProvider, correctionModelUrl, correctionModelId, correctionModelApiKey, emotionModelProvider, emotionModelUrl, emotionModelId, emotionModelApiKey, visionModelProvider, visionModelUrl, visionModelId, visionModelApiKey, omniModelProvider, omniModelUrl, omniModelId, omniModelApiKey, ttsModelProvider, ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId, mcpToken, enableCustomApi }) {
     // 统一处理免费版 API Key 的保存值：如果核心或辅助 API 为 free，则保存值应为 'free-access'
     if (coreApi === 'free' || assistApi === 'free') {
         // 无论用户在 UI 中看到的是翻译文本或空值，保存时都使用 'free-access'
@@ -592,6 +662,7 @@ async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assist
                 assistApiKeyGlm: assistApiKeyGlm || undefined,
                 assistApiKeyStep: assistApiKeyStep || undefined,
                 assistApiKeySilicon: assistApiKeySilicon || undefined,
+                assistApiKeyGemini: assistApiKeyGemini || undefined,
                 summaryModelProvider: summaryModelProvider || undefined,
                 summaryModelUrl: summaryModelUrl || undefined,
                 summaryModelId: summaryModelId || undefined,
@@ -798,9 +869,43 @@ function updateAssistApiRecommendation() {
         // 启用所有辅助API输入框（统一处理，启用时清理显示为免费版的占位值）
         setAssistApiInputsDisabled(false);
 
-        // 如果当前选择的是免费版，自动切换到推荐的API
-        if (selectedAssistApi === 'free') {
-            assistApiSelect.value = 'qwen'; // 默认切换到阿里
+        // 辅助API Key输入框映射
+        const assistApiKeyInputMap = {
+            'qwen': 'assistApiKeyInputQwen',
+            'openai': 'assistApiKeyInputOpenai',
+            'glm': 'assistApiKeyInputGlm',
+            'step': 'assistApiKeyInputStep',
+            'silicon': 'assistApiKeyInputSilicon',
+            'gemini': 'assistApiKeyInputGemini'
+        };
+
+        // 检查辅助API是否有对应的API Key
+        function hasAssistApiKey(assistApi) {
+            if (assistApi === 'free') return false;
+            const inputId = assistApiKeyInputMap[assistApi];
+            if (!inputId) return false;
+            const input = document.getElementById(inputId);
+            return input && input.value && input.value.trim() !== '';
+        }
+
+        // 如果当前 assist 是免费版或没有对应的 Key，自动跟随 core
+        let newAssistApi = selectedAssistApi;
+        if (selectedAssistApi === 'free' || !hasAssistApiKey(selectedAssistApi)) {
+            // 检查 core API 是否在 assist 选项中可用
+            const coreOption = assistApiSelect.querySelector(`option[value="${selectedCoreApi}"]`);
+            if (coreOption && !coreOption.disabled) {
+                newAssistApi = selectedCoreApi;
+                if (selectedAssistApi !== 'free') {
+                    console.log(`[API Settings] 辅助API ${selectedAssistApi} 没有Key，自动跟随核心API: ${selectedCoreApi}`);
+                }
+            } else {
+                // core 不在 assist 选项中，默认使用 qwen
+                newAssistApi = 'qwen';
+            }
+        }
+        
+        if (newAssistApi !== selectedAssistApi) {
+            assistApiSelect.value = newAssistApi;
         }
 
         switch (selectedCoreApi) {
@@ -816,6 +921,9 @@ function updateAssistApiRecommendation() {
             case 'step':
                 recommendation = window.t ? window.t('api.stepRecommendation') : '阶跃星辰作为核心API时，建议辅助API选择阿里以支持自定义语音功能';
                 break;
+            case 'gemini':
+                recommendation = window.t ? window.t('api.geminiRecommendation') : 'Gemini作为核心API时，建议辅助API选择阿里以支持自定义语音功能';
+                break;
         }
     }
 
@@ -830,6 +938,7 @@ function updateAssistApiRecommendation() {
             • <span>${window.t ? window.t('api.stepAssist') : '阶跃星辰：价格相对便宜'}</span><br>
             • <span>${window.t ? window.t('api.siliconAssist') : '硅基流动：性价比高'}</span><br>
             • <span>${window.t ? window.t('api.openaiAssist') : 'OpenAI：记忆管理能力强'}</span><br>
+            • <span>${window.t ? window.t('api.geminiAssist') : 'Gemini：智能和性价比极高，但国内版不支持'}</span><br>
             <strong>${window.t ? window.t('api.assistApiNote') : '注意：只有阿里支持自定义语音功能'}</strong><br>
             <strong>${window.t ? window.t('api.currentSuggestion') : '当前建议：'}</strong>${recommendation}
         `;
@@ -1097,7 +1206,11 @@ async function initializePage() {
         // 等待 i18n 初始化完成
         await waitForI18n();
 
-        // 第一步：加载API服务商选项
+        // 检测用户是否为中国大陆用户（用于过滤 OpenAI/Gemini 选项）
+        isMainlandChinaUser = await checkMainlandChinaUser();
+        console.log(`[Region] 用户区域检测完成: isMainlandChinaUser = ${isMainlandChinaUser}`);
+
+        // 第一步：加载API服务商选项（会根据 isMainlandChinaUser 过滤选项）
         const providersLoaded = await loadApiProviders();
 
         if (!providersLoaded) {

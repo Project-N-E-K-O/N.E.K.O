@@ -475,6 +475,7 @@
     "stepFeature": "StepFun: Has free quota, very good value, but does not support Agent mode",
     "openaiFeature": "OpenAI: Not available in China, expensive, high intelligence level",
     "siliconFeature": "SiliconFlow: Has free quota, good value, limited features, only for Assist API",
+    "geminiFeature": "Gemini: Excellent intelligence and value, but not available in China domestic version",
     "configSuggestion": "Configuration Suggestions:",
     "freeVersionSuggestion": "Free Version: Completely free, no API Key needed, suitable for beginners (custom voice and Agent mode not supported)",
     "coreApiSuggestion": "Core API: Handles conversation functionality, choose based on budget and needs",
@@ -485,6 +486,7 @@
     "glmCore": "GLM: Model has been temporarily discontinued, unavailable",
     "stepCore": "StepFun: Completely free, high intelligence level, but rate limits are too strict, not recommended",
     "openaiCore": "OpenAI: Highest intelligence level, but not available in China and expensive",
+    "geminiCore": "Gemini: Excellent intelligence and value, but not available in China domestic version",
     "assistApiTitle": "Assist API handles memory management, text chat, Agent mode, and custom voice:",
     "freeVersionAssist": "Free Version: Completely free, no API Key needed, but custom voice not supported",
     "aliAssist": "Alibaba: Recommended choice, supports custom voice and Agent mode",
@@ -492,12 +494,14 @@
     "stepAssist": "StepFun: Cheap, but concurrency/RPM limits are extremely strict, not recommended",
     "siliconAssist": "SiliconFlow: Good value, supports Agent mode",
     "openaiAssist": "OpenAI: Strong memory management capability",
+    "geminiAssist": "Gemini: Excellent intelligence and value, but not available in China domestic version",
     "assistApiNote": "Note: Only Alibaba supports custom voice functionality. GLM and StepFun are not recommended.",
     "assistApiKeyQwen": "Assist API Key - Alibaba",
     "assistApiKeyOpenai": "Assist API Key - OpenAI",
     "assistApiKeyGlm": "Assist API Key - GLM",
     "assistApiKeyStep": "Assist API Key - StepFun",
     "assistApiKeySilicon": "Assist API Key - SiliconFlow",
+    "assistApiKeyGemini": "Assist API Key - Gemini",
     "assistApiKeyHint": "(Only required when Assist API is {{provider}})",
     "assistApiKeyPlaceholder": "Optional, defaults to Core API Key",
     "providerNames": {
@@ -505,7 +509,8 @@
       "openai": "OpenAI",
       "glm": "GLM",
       "step": "StepFun",
-      "silicon": "SiliconFlow"
+      "silicon": "SiliconFlow",
+      "gemini": "Gemini"
     },
     "coreProviderNames": {
       "free": "Free Version (N.E.K.O. Exclusive Benefit, Supports Web Search)",
@@ -521,7 +526,8 @@
       "openai": "OpenAI (ChatGPT)",
       "glm": "GLM",
       "step": "StepFun",
-      "silicon": "SiliconFlow (Good Value, Recommended)"
+      "silicon": "SiliconFlow (Good Value, Recommended)",
+      "gemini": "Gemini (Google, High Intelligence, not available in China)"
     },
     "freeVersionNoApiKey": "Free version does not require API Key",
     "pleaseEnterApiKey": "Please enter your API Key",
@@ -531,6 +537,7 @@
     "glmRecommendation": "GLM's audio/video chat model GLM-Realtime has been temporarily discontinued and cannot be used as Core API",
     "openaiRecommendation": "When OpenAI is the Core API, it's recommended to select Alibaba as Assist API to support custom voice functionality",
     "stepRecommendation": "When StepFun is the Core API, it's recommended to select Alibaba as Assist API to support custom voice functionality",
+    "geminiRecommendation": "When Gemini is the Core API, it's recommended to select Alibaba as Assist API to support custom voice functionality",
     "assistApiTooltipTitle": "Assist API handles memory management, text chat, and custom voice:",
     "currentSuggestion": "Current Suggestion:",
     "configSuggestionFull": "Configuration Suggestions:",

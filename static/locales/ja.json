@@ -474,6 +474,7 @@
     "stepFeature": "StepFun: 無料枠あり、コスパ良。Agentモード非対応",
     "openaiFeature": "OpenAI: 中国内利用不可、高価、知能レベル高",
     "siliconFeature": "SiliconFlow: 無料枠あり、コスパ良、機能限定、Assist APIのみ",
+    "geminiFeature": "Gemini: 知能・コスパ共に極めて優秀、中国国内版は非対応",
     "configSuggestion": "設定の提案:",
     "freeVersionSuggestion": "無料版: 完全無料、キー不要、初心者向け（カスタム音声/Agent不可）",
     "coreApiSuggestion": "Core API: 会話機能を担当。予算とニーズで選択",
@@ -484,6 +485,7 @@
     "glmCore": "GLM: モデル一時停止中のため利用不可",
     "stepCore": "StepFun: 完全無料、高知能だが制限厳しいため非推奨",
     "openaiCore": "OpenAI: 最高知能だが中国内不可・高価",
+    "geminiCore": "Gemini: 知能・コスパ共に極めて優秀、中国国内版は非対応",
     "assistApiTitle": "Assist API（記憶/テキスト/Agent/カスタム音声担当）:",
     "freeVersionAssist": "無料版: 完全無料、キー不要（カスタム音声不可）",
     "aliAssist": "Alibaba: 推奨。カスタム音声とAgentモード対応",
@@ -491,12 +493,14 @@
     "stepAssist": "StepFun: 安価だが制限が厳しいため非推奨",
     "siliconAssist": "SiliconFlow: コスパ良、Agentモード対応",
     "openaiAssist": "OpenAI: 記憶管理能力が高い",
+    "geminiAssist": "Gemini: 知能・コスパ共に極めて優秀、中国国内版は非対応",
     "assistApiNote": "注: カスタム音声機能はAlibabaのみ対応です。GLMとStepFunは非推奨です。",
     "assistApiKeyQwen": "Assist APIキー - Alibaba",
     "assistApiKeyOpenai": "Assist APIキー - OpenAI",
     "assistApiKeyGlm": "Assist APIキー - GLM",
     "assistApiKeyStep": "Assist APIキー - StepFun",
     "assistApiKeySilicon": "Assist APIキー - SiliconFlow",
+    "assistApiKeyGemini": "Assist APIキー - Gemini",
     "assistApiKeyHint": "（Assist APIが {{provider}} の場合のみ必要）",
     "assistApiKeyPlaceholder": "任意（空欄ならCore APIキーを使用）",
     "providerNames": {
@@ -504,14 +508,16 @@
       "openai": "OpenAI",
       "glm": "GLM",
       "step": "StepFun",
-      "silicon": "SiliconFlow"
+      "silicon": "SiliconFlow",
+      "gemini": "Gemini"
     },
     "coreProviderNames": {
       "free": "無料版（猫娘特典、Web検索対応）",
       "qwen": "Qwen-Omni（Alibaba、最速、推奨）",
       "openai": "GPT-Realtime（OpenAI）",
       "glm": "GLM-realtime（GLM）",
-      "step": "Step-2-Audio（StepFun）"
+      "step": "Step-2-Audio（StepFun）",
+      "gemini": "Gemini Live（Google、最高レベル、中国国内版非対応）"
     },
     "assistProviderNames": {
       "free": "無料版（猫娘特典）",
@@ -519,7 +525,8 @@
       "openai": "OpenAI（ChatGPT）",
       "glm": "GLM",
       "step": "StepFun",
-      "silicon": "SiliconFlow（高コスパ、推奨）"
+      "silicon": "SiliconFlow（高コスパ、推奨）",
+      "gemini": "Gemini（Google、高知能、中国国内版非対応）"
     },
     "freeVersionNoApiKey": "無料版はAPIキー不要です",
     "pleaseEnterApiKey": "APIキーを入力してください",
@@ -529,6 +536,7 @@
     "glmRecommendation": "GLMの音声動画モデルGLM-Realtimeは一時停止中のため、Core APIとして使用できません",
     "openaiRecommendation": "Core APIがOpenAIの場合、カスタム音声機能を使うにはAssist APIにAlibabaを選択してください",
     "stepRecommendation": "Core APIがStepFunの場合、カスタム音声機能を使うにはAssist APIにAlibabaを選択してください",
+    "geminiRecommendation": "Core APIがGeminiの場合、カスタム音声機能を使うにはAssist APIにAlibabaを選択してください",
     "assistApiTooltipTitle": "Assist APIは記憶管理、テキストチャット、カスタム音声を担当:",
     "currentSuggestion": "現在の提案:",
     "configSuggestionFull": "設定の提案:",

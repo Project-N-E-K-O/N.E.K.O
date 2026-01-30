@@ -493,6 +493,7 @@
     "stepFeature": "阶跃星辰：性价比很高，但并发、速率限制极其严格，不支持Agent模式",
     "openaiFeature": "OpenAI：国内无法使用，价格贵，智能水平高",
     "siliconFeature": "硅基流动：有免费额度，性价比高，功能少，只作为辅助API使用",
+    "geminiFeature": "Gemini：智能和性价比极高，但国内版不支持",
     "configSuggestion": "配置建议：",
     "freeVersionSuggestion": "免费版：完全免费，无需API Key，适合新手体验（不支持自定义语音、Agent模式）",
     "coreApiSuggestion": "核心API：负责对话功能，建议根据预算和需求选择",
@@ -503,6 +504,7 @@
     "glmCore": "智谱：模型已经暂时下架，无法使用",
     "stepCore": "阶跃星辰：完全免费，智能水平高，但速率限制太严苛、因此不建议使用",
     "openaiCore": "OpenAI：智能水平最高，但国内无法使用且价格昂贵",
+    "geminiCore": "Gemini：智能和性价比极高，但国内版不支持",
     "assistApiTitle": "辅助API负责记忆管理、文本对话、Agent模式和自定义语音：",
     "freeVersionAssist": "免费版：完全免费，但不支持自定义语音和Agent模式",
     "aliAssist": "阿里：推荐选择，支持自定义语音和Agent模式",
@@ -510,12 +512,14 @@
     "stepAssist": "阶跃星辰：价格便宜，但并发、RPM限制极其严重，不建议使用",
     "siliconAssist": "硅基流动：性价比高，支持Agent模式",
     "openaiAssist": "OpenAI：记忆管理能力强",
+    "geminiAssist": "Gemini：智能和性价比极高，但国内版不支持",
     "assistApiNote": "注意：只有阿里支持自定义语音功能。不建议使用智谱和阶跃星辰。",
     "assistApiKeyQwen": "辅助API Key - 阿里",
     "assistApiKeyOpenai": "辅助API Key - OpenAI",
     "assistApiKeyGlm": "辅助API Key - 智谱",
     "assistApiKeyStep": "辅助API Key - 阶跃星辰",
     "assistApiKeySilicon": "辅助API Key - 硅基流动",
+    "assistApiKeyGemini": "辅助API Key - Gemini",
     "assistApiKeyHint": "（仅当辅助API为{{provider}}时需要填写）",
     "assistApiKeyPlaceholder": "可选，默认为核心API Key",
     "providerNames": {
@@ -523,7 +527,8 @@
       "openai": "OpenAI",
       "glm": "智谱",
       "step": "阶跃星辰",
-      "silicon": "硅基流动"
+      "silicon": "硅基流动",
+      "gemini": "Gemini"
     },
     "coreProviderNames": {
       "free": "免费版（猫娘专属福利，支持联网搜索）",
@@ -539,7 +544,8 @@
       "openai": "OpenAI (ChatGPT)",
       "glm": "智谱 (GLM)",
       "step": "阶跃星辰 (StepFun)",
-      "silicon": "硅基流动 (SiliconFlow，性价比高，推荐⭐)"
+      "silicon": "硅基流动 (SiliconFlow，性价比高，推荐⭐)",
+      "gemini": "Gemini（谷歌，智能极高，国内版不支持）"
     },
     "freeVersionNoApiKey": "免费版无需API Key",
     "pleaseEnterApiKey": "请输入您的API Key",
@@ -549,6 +555,7 @@
     "glmRecommendation": "智谱的音视频对话模型GLM-Realtime已暂时下架，无法作为核心API使用",
     "openaiRecommendation": "OpenAI作为核心API时，建议辅助API选择阿里以支持自定义语音功能",
     "stepRecommendation": "阶跃星辰作为核心API时，建议辅助API选择阿里以支持自定义语音功能",
+    "geminiRecommendation": "Gemini作为核心API时，建议辅助API选择阿里以支持自定义语音功能",
     "assistApiTooltipTitle": "辅助API负责记忆管理、文本对话和自定义语音：",
     "currentSuggestion": "当前建议：",
     "configSuggestionFull": "配置建议：",
