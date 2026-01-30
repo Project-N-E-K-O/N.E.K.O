@@ -230,8 +230,8 @@
 
         // 启动游戏时长追踪（用于 Steam 统计 PLAY_TIME_SECONDS）
         startPlayTimeTracking() {
-            // 每10秒更新一次 Steam 统计
-            setInterval(async () => {
+            // 使用递归 setTimeout 避免重叠调用
+            const updatePlayTime = async () => {
                 try {
                     // 调用后端 API 更新 Steam 统计
                     const response = await fetch('/api/steam/update-playtime', {
@@ -255,8 +255,14 @@
                 } catch (error) {
                     // 网络错误或其他问题，静默失败
                     console.debug('更新游戏时长失败:', error.message);
+                } finally {
+                    // 无论成功或失败，都在10秒后继续下一次更新
+                    setTimeout(updatePlayTime, 10000);
                 }
-            }, 10000); // 每10秒更新一次
+            };
+
+            // 启动第一次更新
+            setTimeout(updatePlayTime, 10000);
         }
 
         // 检查游戏时长相关成就

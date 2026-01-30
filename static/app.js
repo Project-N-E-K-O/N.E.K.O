@@ -2876,7 +2876,11 @@ function init_app() {
                 if (window.incrementAchievementCounter) {
                     const meowPattern = /喵|miao|meow|nya|にゃ/i;
                     if (meowPattern.test(text)) {
-                        window.incrementAchievementCounter('meowCount');
+                        try {
+                            window.incrementAchievementCounter('meowCount');
+                        } catch (error) {
+                            console.debug('增加喵喵计数失败:', error);
+                        }
                     }
                 }
 
