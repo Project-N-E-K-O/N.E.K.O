@@ -79,12 +79,11 @@
             this.counters = this.loadCounters();
             this.unlockedAchievements = this.loadUnlockedAchievements();
             this.sessionStartTime = Date.now();
+            this.pendingAchievements = new Set(); // 防竞态：追踪正在解锁的成就
 
             // 启动时长追踪（用于 Steam 统计）
             this.startPlayTimeTracking();
 
-            // 检查时间相关成就
-            this.checkPlayTimeAchievements();
         }
 
         // 加载计数器
@@ -146,6 +145,15 @@
                 return true;
             }
 
+            // 检查是否正在解锁（防竞态）
+            if (this.pendingAchievements.has(achievementName)) {
+                console.log(`成就正在解锁中: ${achievementName}`);
+                return false;
+            }
+
+            // 标记为正在解锁
+            this.pendingAchievements.add(achievementName);
+
             try {
                 console.log(`尝试解锁成就: ${achievementName} - ${ACHIEVEMENTS[achievementName].description}`);
 
@@ -175,6 +183,9 @@
             } catch (error) {
                 console.error(`成就解锁错误: ${achievementName}`, error);
                 return false;
+            } finally {
+                // 移除 pending 标记
+                this.pendingAchievements.delete(achievementName);
             }
         }
 
@@ -206,7 +217,7 @@
         }
 
         // 检查计数器相关成就
-        checkCounterAchievements(counterName) {
+        async checkCounterAchievements(counterName) {
             const currentValue = this.counters[counterName];
 
             // 遍历所有成就，检查是否达到阈值
@@ -215,18 +226,11 @@
                     achievement.threshold &&
                     currentValue >= achievement.threshold &&
                     !this.isUnlocked(key)) {
-                    this.unlockAchievement(key);
+                    await this.unlockAchievement(key);
                 }
             }
         }
 
-        // 启动时长追踪
-        startTimeTracking() {
-            // 每分钟更新一次时长
-            setInterval(() => {
-                this.incrementCounter('totalTimeMinutes', 1);
-            }, 60000); // 60秒
-        }
 
         // 启动游戏时长追踪（用于 Steam 统计 PLAY_TIME_SECONDS）
         startPlayTimeTracking() {
@@ -247,7 +251,7 @@
                     if (response.ok) {
                         const data = await response.json();
                         // 检查时间相关成就
-                        this.checkPlayTimeAchievements(data.totalPlayTime);
+                        await this.checkPlayTimeAchievements(data.totalPlayTime);
                     } else if (response.status === 503) {
                         // Steam 未初始化，静默失败（不显示错误）
                         console.debug('Steam 未初始化，跳过时长更新');
@@ -266,7 +270,7 @@
         }
 
         // 检查游戏时长相关成就
-        checkPlayTimeAchievements(currentPlayTime) {
+        async checkPlayTimeAchievements(currentPlayTime) {
             if (!currentPlayTime) return;
 
             // 遍历所有基于 Steam 统计的成就
@@ -275,15 +279,9 @@
                     achievement.threshold &&
                     currentPlayTime >= achievement.threshold &&
                     !this.isUnlocked(key)) {
-                    this.unlockAchievement(key);
+                    await this.unlockAchievement(key);
                 }
             }
-        }
-
-        // 检查时间相关成就
-        checkTimeBasedAchievements() {
-            // 预留方法，用于未来添加时间相关成就
-            // 例如：深夜猫头鹰、早起的鸟儿等
         }
 
         // 获取当前统计数据
