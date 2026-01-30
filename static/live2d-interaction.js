@@ -1188,6 +1188,17 @@ Live2DManager.prototype.cleanupEventListeners = function () {
         this._dragMoveListener = null;
     }
 
+    // 清理多点触控追踪监听器
+    if (this._handlePointerDown) {
+        window.removeEventListener('pointerdown', this._handlePointerDown);
+        this._handlePointerDown = null;
+    }
+    if (this._handlePointerUp) {
+        window.removeEventListener('pointerup', this._handlePointerUp);
+        window.removeEventListener('pointercancel', this._handlePointerUp);
+        this._handlePointerUp = null;
+    }
+
     // 清理鼠标跟踪监听器
     if (this._mouseTrackingListener) {
         window.removeEventListener('pointermove', this._mouseTrackingListener);
