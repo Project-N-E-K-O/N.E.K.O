@@ -183,6 +183,26 @@ class Live2DManager {
         }
     }
 
+    /**
+     * 暂停渲染循环（用于节省资源，例如进入模型管理界面时）
+     */
+    pauseRendering() {
+        if (this.pixi_app && this.pixi_app.ticker) {
+            this.pixi_app.ticker.stop();
+            console.log('[Live2D Core] 渲染循环已暂停');
+        }
+    }
+
+    /**
+     * 恢复渲染循环（从暂停状态恢复）
+     */
+    resumeRendering() {
+        if (this.pixi_app && this.pixi_app.ticker) {
+            this.pixi_app.ticker.start();
+            console.log('[Live2D Core] 渲染循环已恢复');
+        }
+    }
+
     // 加载用户偏好
     async loadUserPreferences() {
         try {

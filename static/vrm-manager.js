@@ -426,6 +426,27 @@ class VRMManager {
         this.enablePhysics = enable;
     }
 
+    /**
+     * 暂停渲染循环（用于节省资源，例如进入模型管理界面时）
+     */
+    pauseRendering() {
+        if (this._animationFrameId) {
+            cancelAnimationFrame(this._animationFrameId);
+            this._animationFrameId = null;
+            console.log('[VRM Manager] 渲染循环已暂停');
+        }
+    }
+
+    /**
+     * 恢复渲染循环（从暂停状态恢复）
+     */
+    resumeRendering() {
+        if (!this._animationFrameId) {
+            this.startAnimateLoop();
+            console.log('[VRM Manager] 渲染循环已恢复');
+        }
+    }
+
     async loadModel(modelUrl, options = {}) {
         this._initModules();
         if (!this.core) this.core = new window.VRMCore(this);

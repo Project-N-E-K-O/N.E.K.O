@@ -3046,20 +3046,19 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (modelSuccess) {
                 showStatus(t('live2d.settingsSaved', '模型设置保存成功!'), 2000);
                 window.hasUnsavedChanges = false;
-                // 立即通知角色管理页面刷新（使用 postMessage）
-                if (window.opener && !window.opener.closed) {
-                    try {
-                        window.opener.postMessage({
-                            action: 'model_saved',
-                            timestamp: Date.now()
-                        }, window.location.origin);
-                        console.log('[消息发送] VRM模型保存成功，立即发送 model_saved 消息');
-                    } catch (e) {
-                        console.warn('发送保存成功消息失败:', e);
-                    }
-                }
-                // 通知主页重新加载模型
-                sendMessageToMainPage('reload_model');
+                // 不在保存时立即通知主页，而是在返回主页时通知
+                // if (window.opener && !window.opener.closed) {
+                //     try {
+                //         window.opener.postMessage({
+                //             action: 'model_saved',
+                //             timestamp: Date.now()
+                //         }, window.location.origin);
+                //         console.log('[消息发送] VRM模型保存成功，立即发送 model_saved 消息');
+                //     } catch (e) {
+                //         console.warn('发送保存成功消息失败:', e);
+                //     }
+                // }
+                // sendMessageToMainPage('reload_model');
             } else {
                 showStatus(t('live2d.saveFailedGeneral', '保存失败!'), 2000);
             }
@@ -3068,14 +3067,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (positionSuccess && modelSuccess) {
                 showStatus(t('live2d.settingsSaved', '位置和模型设置保存成功!'), 2000);
                 window.hasUnsavedChanges = false; // 保存成功后重置标志
-                // 通知主页重新加载模型
-                sendMessageToMainPage('reload_model');
+                // 不在保存时立即通知主页，而是在返回主页时通知
+                // sendMessageToMainPage('reload_model');
             } else if (positionSuccess) {
                 showStatus(t('live2d.positionSavedModelFailed', '位置保存成功，模型设置保存失败!'), 2000);
             } else if (modelSuccess) {
                 showStatus(t('live2d.modelSavedPositionFailed', '模型设置保存成功，位置保存失败!'), 2000);
-                // 即使位置保存失败，模型设置成功也应该通知主页重新加载
-                sendMessageToMainPage('reload_model');
+                // 不在保存时立即通知主页，而是在返回主页时通知
+                // sendMessageToMainPage('reload_model');
             } else {
                 showStatus(t('live2d.saveFailedGeneral', '保存失败!'), 2000);
             }
@@ -3113,14 +3112,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (window.opener && !window.opener.closed) {
                 try {
                     window.opener.postMessage({
-                        action: 'model_saved',
+                        action: 'reload_model',
                         timestamp: Date.now()
                     }, window.location.origin);
-                    console.log('[消息发送] 窗口关闭前发送 model_saved 消息');
+                    console.log('[消息发送] 窗口关闭前发送 reload_model 消息');
                 } catch (e) {
                     console.warn('发送关闭消息失败:', e);
                 }
             }
+            // 同时通过 BroadcastChannel 发送（如果可用）
+            sendMessageToMainPage('reload_model');
             // 延迟一点确保消息发送
             setTimeout(() => {
                 window.close();

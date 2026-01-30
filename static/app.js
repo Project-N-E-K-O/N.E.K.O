@@ -874,6 +874,286 @@ function init_app() {
     // 初始化连接
     connectWebSocket();
 
+    // 初始化 BroadcastChannel 用于跨页面通信（与 model_manager 通信）
+    let nekoBroadcastChannel = null;
+    try {
+        if (typeof BroadcastChannel !== 'undefined') {
+            nekoBroadcastChannel = new BroadcastChannel('neko_page_channel');
+            console.log('[BroadcastChannel] 主页面 BroadcastChannel 已初始化');
+
+            nekoBroadcastChannel.onmessage = async function(event) {
+                if (!event.data || !event.data.action) {
+                    return;
+                }
+
+                console.log('[BroadcastChannel] 收到消息:', event.data.action);
+
+                switch (event.data.action) {
+                    case 'reload_model':
+                        await handleModelReload();
+                        break;
+                    case 'hide_main_ui':
+                        handleHideMainUI();
+                        break;
+                    case 'show_main_ui':
+                        handleShowMainUI();
+                        break;
+                }
+            };
+        }
+    } catch (e) {
+        console.log('[BroadcastChannel] 初始化失败，将使用 postMessage 后备方案:', e);
+    }
+
+    // 模型重载处理函数
+    async function handleModelReload() {
+        console.log('[Model] 开始热切换模型');
+
+        try {
+            // 1. 重新获取页面配置
+            const response = await fetch('/api/config/page_config');
+            const data = await response.json();
+
+            if (data.success) {
+                const newModelPath = data.model_path || '';
+                const newModelType = (data.model_type || 'live2d').toLowerCase();
+                const oldModelType = window.lanlan_config?.model_type || 'live2d';
+
+                console.log('[Model] 模型切换:', {
+                    oldType: oldModelType,
+                    newType: newModelType,
+                    newPath: newModelPath
+                });
+
+                // 2. 更新全局配置
+                if (window.lanlan_config) {
+                    window.lanlan_config.model_type = newModelType;
+                }
+
+                // 3. 根据模型类型切换
+                if (newModelType === 'vrm') {
+                    window.vrmModel = newModelPath;
+                    window.cubism4Model = '';
+
+                    // 隐藏 Live2D
+                    console.log('[Model] 隐藏 Live2D 模型');
+                    const live2dContainer = document.getElementById('live2d-container');
+                    if (live2dContainer) {
+                        live2dContainer.style.display = 'none';
+                        live2dContainer.classList.add('hidden');
+                    }
+
+                    // 显示并重新加载 VRM 模型
+                    if (newModelPath) {
+                        console.log('[Model] 加载 VRM 模型:', newModelPath);
+
+                        // 显示 VRM 容器
+                        const vrmContainer = document.getElementById('vrm-container');
+                        if (vrmContainer) {
+                            vrmContainer.classList.remove('hidden');
+                            vrmContainer.style.display = 'block';
+                            vrmContainer.style.visibility = 'visible';
+                            vrmContainer.style.removeProperty('pointer-events');
+                        }
+
+                        // 显示 VRM canvas
+                        const vrmCanvas = document.getElementById('vrm-canvas');
+                        if (vrmCanvas) {
+                            vrmCanvas.style.visibility = 'visible';
+                            vrmCanvas.style.pointerEvents = 'auto';
+                        }
+
+                        // 检查 VRM 管理器是否已初始化
+                        if (!window.vrmManager) {
+                            console.log('[Model] VRM 管理器未初始化，等待初始化完成');
+                            // 等待 VRM 初始化完成
+                            if (typeof initVRMModel === 'function') {
+                                await initVRMModel();
+                            }
+                        }
+
+                        // 加载新模型
+                        if (window.vrmManager) {
+                            await window.vrmManager.loadModel(newModelPath);
+
+                            // 应用光照配置（如果有）
+                            if (window.lanlan_config?.lighting && typeof window.applyVRMLighting === 'function') {
+                                window.applyVRMLighting(window.lanlan_config.lighting, window.vrmManager);
+                            }
+                        } else {
+                            console.error('[Model] VRM 管理器初始化失败');
+                        }
+                    }
+                } else {
+                    // Live2D 模式
+                    window.cubism4Model = newModelPath;
+                    window.vrmModel = '';
+
+                    // 隐藏 VRM
+                    console.log('[Model] 隐藏 VRM 模型');
+                    const vrmContainer = document.getElementById('vrm-container');
+                    if (vrmContainer) {
+                        vrmContainer.style.display = 'none';
+                        vrmContainer.classList.add('hidden');
+                    }
+                    const vrmCanvas = document.getElementById('vrm-canvas');
+                    if (vrmCanvas) {
+                        vrmCanvas.style.visibility = 'hidden';
+                        vrmCanvas.style.pointerEvents = 'none';
+                    }
+
+                    // 显示并重新加载 Live2D 模型
+                    if (newModelPath) {
+                        console.log('[Model] 加载 Live2D 模型:', newModelPath);
+
+                        // 显示 Live2D 容器
+                        const live2dContainer = document.getElementById('live2d-container');
+                        if (live2dContainer) {
+                            live2dContainer.classList.remove('hidden');
+                            live2dContainer.style.display = 'block';
+                        }
+
+                        // 检查 Live2D 管理器是否已初始化
+                        if (!window.live2dManager) {
+                            console.log('[Model] Live2D 管理器未初始化，等待初始化完成');
+                            // 等待 Live2D 初始化完成
+                            if (typeof initLive2DModel === 'function') {
+                                await initLive2DModel();
+                            }
+                        }
+
+                        // 加载新模型
+                        if (window.live2dManager) {
+                            // 确保 PIXI 应用已初始化
+                            if (!window.live2dManager.pixi_app) {
+                                console.log('[Model] PIXI 应用未初始化，正在初始化...');
+                                await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
+                            }
+
+                            const modelConfig = {
+                                model: newModelPath,
+                                width: 800,
+                                height: 800,
+                                position: [0, 0],
+                                scale: 1.0
+                            };
+                            await window.live2dManager.loadModel(modelConfig);
+                        } else {
+                            console.error('[Model] Live2D 管理器初始化失败');
+                        }
+                    }
+                }
+
+                // 4. 显示成功提示
+                showStatusToast(window.t ? window.t('app.modelSwitched') : '模型已切换', 2000);
+            } else {
+                console.error('[Model] 获取页面配置失败:', data.error);
+                showStatusToast(window.t ? window.t('app.modelSwitchFailed') : '模型切换失败', 3000);
+            }
+        } catch (error) {
+            console.error('[Model] 模型热切换失败:', error);
+            showStatusToast(window.t ? window.t('app.modelSwitchFailed') : '模型切换失败', 3000);
+        }
+    }
+
+    // 隐藏主界面模型渲染（进入模型管理界面时调用）
+    function handleHideMainUI() {
+        console.log('[UI] 隐藏主界面并暂停渲染');
+
+        try {
+            // 隐藏 Live2D
+            const live2dContainer = document.getElementById('live2d-container');
+            if (live2dContainer) {
+                live2dContainer.style.display = 'none';
+                live2dContainer.classList.add('hidden');
+            }
+
+            const live2dCanvas = document.getElementById('live2d-canvas');
+            if (live2dCanvas) {
+                live2dCanvas.style.visibility = 'hidden';
+                live2dCanvas.style.pointerEvents = 'none';
+            }
+
+            // 隐藏 VRM
+            const vrmContainer = document.getElementById('vrm-container');
+            if (vrmContainer) {
+                vrmContainer.style.display = 'none';
+                vrmContainer.classList.add('hidden');
+            }
+
+            const vrmCanvas = document.getElementById('vrm-canvas');
+            if (vrmCanvas) {
+                vrmCanvas.style.visibility = 'hidden';
+                vrmCanvas.style.pointerEvents = 'none';
+            }
+
+            // 暂停渲染循环以节省资源
+            if (window.vrmManager && typeof window.vrmManager.pauseRendering === 'function') {
+                window.vrmManager.pauseRendering();
+            }
+
+            if (window.live2dManager && typeof window.live2dManager.pauseRendering === 'function') {
+                window.live2dManager.pauseRendering();
+            }
+        } catch (error) {
+            console.error('[UI] 隐藏主界面失败:', error);
+        }
+    }
+
+    // 显示主界面模型渲染（返回主页时调用）
+    function handleShowMainUI() {
+        console.log('[UI] 显示主界面并恢复渲染');
+
+        try {
+            const currentModelType = window.lanlan_config?.model_type || 'live2d';
+            console.log('[UI] 当前模型类型:', currentModelType);
+
+            if (currentModelType === 'vrm') {
+                // 显示 VRM
+                const vrmContainer = document.getElementById('vrm-container');
+                if (vrmContainer) {
+                    vrmContainer.style.display = 'block';
+                    vrmContainer.classList.remove('hidden');
+                    console.log('[UI] VRM 容器已显示，display:', vrmContainer.style.display);
+                }
+
+                const vrmCanvas = document.getElementById('vrm-canvas');
+                if (vrmCanvas) {
+                    vrmCanvas.style.visibility = 'visible';
+                    vrmCanvas.style.pointerEvents = 'auto';
+                    console.log('[UI] VRM canvas 已显示，visibility:', vrmCanvas.style.visibility);
+                }
+
+                // 恢复 VRM 渲染循环
+                if (window.vrmManager && typeof window.vrmManager.resumeRendering === 'function') {
+                    window.vrmManager.resumeRendering();
+                }
+            } else {
+                // 显示 Live2D
+                const live2dContainer = document.getElementById('live2d-container');
+                if (live2dContainer) {
+                    live2dContainer.style.display = 'block';
+                    live2dContainer.classList.remove('hidden');
+                    console.log('[UI] Live2D 容器已显示，display:', live2dContainer.style.display);
+                }
+
+                const live2dCanvas = document.getElementById('live2d-canvas');
+                if (live2dCanvas) {
+                    live2dCanvas.style.visibility = 'visible';
+                    live2dCanvas.style.pointerEvents = 'auto';
+                    console.log('[UI] Live2D canvas 已显示，visibility:', live2dCanvas.style.visibility);
+                }
+
+                // 恢复 Live2D 渲染循环
+                if (window.live2dManager && typeof window.live2dManager.resumeRendering === 'function') {
+                    window.live2dManager.resumeRendering();
+                }
+            }
+        } catch (error) {
+            console.error('[UI] 显示主界面失败:', error);
+        }
+    }
+
     // 监听记忆编辑通知（从 memory_browser iframe 发送）
     window.addEventListener('message', function (event) {
         if (event.data && event.data.type === 'memory_edited') {
@@ -884,6 +1164,14 @@ function init_app() {
             }
             // 显示提示
             showStatusToast(window.t ? window.t('memory.refreshed') : '记忆已更新，下次对话将使用新记忆', 4000);
+        }
+    });
+
+    // 监听模型保存通知（从 model_manager 窗口发送 - postMessage 后备方案）
+    window.addEventListener('message', async function (event) {
+        if (event.data && (event.data.action === 'model_saved' || event.data.action === 'reload_model')) {
+            console.log('[Model] 通过 postMessage 收到模型重载通知');
+            await handleModelReload();
         }
     });
 
@@ -7683,6 +7971,9 @@ window.addEventListener('message', function (event) {
             window.showStatusToast(window.t ? window.t('app.voiceUpdated', { name: lanlan_config.lanlan_name }) : `${lanlan_config.lanlan_name}的语音已更新`, 3000);
         }
     }
+
+    // 旧的模型热切换代码已移至前面的 handleModelReload 函数
+    // 不再需要这里的重复监听器
 });
 
 // 字幕提示框功能
