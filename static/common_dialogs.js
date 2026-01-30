@@ -502,7 +502,11 @@
             const checkClosed = setInterval(() => {
                 if (newWindow.closed) {
                     clearInterval(checkClosed);
-                    delete window._openedWindows[windowName];
+                    // 只有当缓存的引用仍然是这个窗口时才删除
+                    // 防止在1秒内重新打开同名窗口时误删新窗口的引用
+                    if (window._openedWindows[windowName] === newWindow) {
+                        delete window._openedWindows[windowName];
+                    }
                 }
             }, 1000);
         }
