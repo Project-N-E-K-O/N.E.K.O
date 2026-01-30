@@ -850,7 +850,26 @@
     "deleteFailed": "失敗 {{count}} 個",
     "switchingToDefault": "當前模型已刪除，正在切換到默認模型...",
     "userDocuments": "用戶文檔",
-    "localUpload": "本地上傳"
+    "localUpload": "本地上傳",
+    "emotionMapping": {
+      "title": "情感映射管理",
+      "description": "配置不同情緒下的動作和錶情",
+      "happy": "開心 (Happy)",
+      "sad": "悲傷 (Sad)",
+      "angry": "生氣 (Angry)",
+      "neutral": "平靜 (Neutral)",
+      "surprised": "驚訝 (Surprised)",
+      "Idle": "待機 (Idle)",
+      "selectMotion": "選擇動作文件",
+      "selectExpression": "選擇錶情文件",
+      "save": "保存情感映射",
+      "reset": "重置",
+      "loaded": "情感映射配置已加載",
+      "loadFailed": "加載情感映射配置失敗",
+      "saved": "情感映射配置已保存",
+      "saveFailed": "保存情感映射配置失敗",
+      "noModelSelected": "請先選擇一個模型"
+    }
   },
   "voice": {
     "title": "音色注冊",
@@ -1121,6 +1140,10 @@
     "return": "請她迴來"
   },
   "settings": {
+    "interval": {
+      "chatIntervalBase": "聊天間隔基準",
+      "visionInterval": "視覺間隔"
+    },
     "menu": {
       "live2dSettings": "Live2D設置",
       "modelSettings": "角色外形",

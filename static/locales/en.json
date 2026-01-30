@@ -842,7 +842,7 @@
       "angry": "Angry",
       "neutral": "Neutral",
       "surprised": "Surprised",
-      "idle": "Idle",
+      "Idle": "Idle",
       "selectMotion": "Select Motion File",
       "selectExpression": "Select Expression File",
       "save": "Save Emotion Mapping",

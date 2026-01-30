@@ -860,7 +860,7 @@
       "angry": "生气 (Angry)",
       "neutral": "平静 (Neutral)",
       "surprised": "惊讶 (Surprised)",
-      "idle": "待机 (Idle)",
+      "Idle": "待机 (Idle)",
       "selectMotion": "选择动作文件",
       "selectExpression": "选择表情文件",
       "save": "保存情感映射",

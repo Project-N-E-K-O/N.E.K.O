@@ -833,7 +833,26 @@
     "deleteFailed": "{{count}} 個のモデルの削除に失敗しました",
     "switchingToDefault": "現在のモデルが削除されたため、デフォルトモデルに切り替えます...",
     "userDocuments": "ユーザードキュメント",
-    "localUpload": "ローカルアップロード"
+    "localUpload": "ローカルアップロード",
+    "emotionMapping": {
+      "title": "感情マッピング管理",
+      "description": "異なる感情に対するモーションと表情を設定",
+      "happy": "嬉しい (Happy)",
+      "sad": "悲しい (Sad)",
+      "angry": "怒り (Angry)",
+      "neutral": "平静 (Neutral)",
+      "surprised": "驚き (Surprised)",
+      "Idle": "待機 (Idle)",
+      "selectMotion": "モーションファイルを選択",
+      "selectExpression": "表情ファイルを選択",
+      "save": "感情マッピングを保存",
+      "reset": "リセット",
+      "loaded": "感情マッピング設定を読み込みました",
+      "loadFailed": "感情マッピング設定の読み込みに失敗しました",
+      "saved": "感情マッピング設定を保存しました",
+      "saveFailed": "感情マッピング設定の保存に失敗しました",
+      "noModelSelected": "まずモデルを選択してください"
+    }
   },
   "voice": {
     "title": "ボイス登録",
