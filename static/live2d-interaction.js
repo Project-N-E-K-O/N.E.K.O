@@ -674,9 +674,45 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             }
             const bounds = model.getBounds();
 
-            const dx = Math.max(bounds.left - pointer.x, 0, pointer.x - bounds.right);
-            const dy = Math.max(bounds.top - pointer.y, 0, pointer.y - bounds.bottom);
-            const distance = Math.sqrt(dx * dx + dy * dy);
+            // 使用椭圆近似检测（基于完整模型边界，椭圆可以部分在屏幕外）
+            const centerX = (bounds.left + bounds.right) / 2;
+            const centerY = (bounds.top + bounds.bottom) / 2;
+            const width = bounds.right - bounds.left;
+            const height = bounds.bottom - bounds.top;
+
+            let distance;
+            // 防止除零：当宽度或高度接近零时，回退到矩形距离计算
+            if (width < 1 || height < 1) {
+                const dx = Math.max(bounds.left - pointer.x, 0, pointer.x - bounds.right);
+                const dy = Math.max(bounds.top - pointer.y, 0, pointer.y - bounds.bottom);
+                distance = Math.sqrt(dx * dx + dy * dy);
+            } else {
+                // 椭圆半径比例（相对于边界框）
+                const ellipseRadiusX = width * 0.35;
+                const ellipseRadiusY = height * 0.45;
+
+                // 计算点到椭圆的归一化距离
+                const normalizedX = (pointer.x - centerX) / ellipseRadiusX;
+                const normalizedY = (pointer.y - centerY) / ellipseRadiusY;
+                const ellipseDistance = Math.sqrt(normalizedX * normalizedX + normalizedY * normalizedY);
+
+                // 将椭圆距离转换为像素距离（用于阈值比较）
+                // ellipseDistance <= 1 表示在椭圆内部，distance = 0
+                // ellipseDistance > 1 表示在椭圆外部，distance 为超出椭圆边缘的等效像素距离
+                distance = ellipseDistance <= 1 ? 0 : (ellipseDistance - 1) * Math.min(ellipseRadiusX, ellipseRadiusY);
+            }
+
+            // 额外检查：鼠标必须在模型可见区域附近
+            const isPointerNearVisibleModel = pointer.x >= bounds.left - threshold && pointer.x <= bounds.right + threshold &&
+                                              pointer.y >= Math.max(bounds.top, 0) - threshold && pointer.y <= Math.min(bounds.bottom, window.innerHeight) + threshold;
+            
+            // 如果鼠标不在屏幕内或不在模型可见区域附近，视为远离模型
+            if (!isPointerNearVisibleModel) {
+                this.isFocusing = false;
+                startHideTimer();
+                setLockedHoverFade(false);
+                return;
+            }
             // 只有在锁定、按住 Ctrl 键且鼠标在模型附近时才变淡
             const shouldFade = this.isLocked && ctrlKeyPressed && distance < HoverFadethreshold;
             setLockedHoverFade(shouldFade);

@@ -651,6 +651,7 @@
     "selectModel": "モデル",
     "pleaseSelect": "モデルを選択してください",
     "pleaseSelectModel": "モデルを選択してください",
+    "pleaseSelectMotion": "モーションを選択してください",
     "selectMotion": "モーション",
     "selectExpression": "表情",
     "addMotion": "モーション追加",
