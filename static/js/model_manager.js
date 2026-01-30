@@ -3183,7 +3183,23 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 如果是弹出窗口：只有在本页确实保存过设置时才刷新主界面模型
             // 否则不触发重载，避免“退出即复位/回默认模型”
             if (window._modelManagerHasSaved) {
-                sendMessageToMainPage('reload_model', { lanlan_name: window._modelManagerLanlanName || '' });
+                // 发送前确保 lanlan_name 已解析并缓存，避免主界面按角色过滤时因空值丢弃消息
+                if (!window._modelManagerLanlanName || window._modelManagerLanlanName.trim() === '') {
+                    try {
+                        const resolvedLanlanName = await getLanlanName();
+                        if (resolvedLanlanName && resolvedLanlanName.trim() !== '') {
+                            window._modelManagerLanlanName = resolvedLanlanName;
+                        }
+                    } catch (e) {
+                        console.warn('[模型管理] 获取 lanlan_name 失败，跳过缓存:', e);
+                    }
+                }
+
+                if (window._modelManagerLanlanName && window._modelManagerLanlanName.trim() !== '') {
+                    sendMessageToMainPage('reload_model', { lanlan_name: window._modelManagerLanlanName || '' });
+                } else {
+                    console.warn('[模型管理] lanlan_name 为空，跳过 reload_model 通知以避免主界面过滤失败');
+                }
             }
             // 延迟一点确保消息发送
             setTimeout(() => {
