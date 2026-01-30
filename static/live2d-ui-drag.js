@@ -12,41 +12,46 @@
      * 在拖动开始时调用，防止按钮拦截拖动事件
      */
     function disableButtonPointerEvents() {
-        // 收集所有按钮元素（包括浮动按钮和三角触发按钮）
-        const buttons = document.querySelectorAll('.live2d-floating-btn, .live2d-trigger-btn, [id^="live2d-btn-"]');
+        // 收集所有按钮元素和锁图标
+        const buttons = document.querySelectorAll('.live2d-floating-btn, .live2d-trigger-btn, [id^="live2d-btn-"], #live2d-lock-icon');
         buttons.forEach(btn => {
             if (btn) {
-                // 如果已经保存过，说明正在拖拽中，跳过
-                if (btn.hasAttribute('data-prev-pointer-events')) {
-                    return;
-                }
-                // 保存当前的pointerEvents值
+                if (btn.hasAttribute('data-prev-pointer-events')) return;
                 const currentValue = btn.style.pointerEvents || '';
                 btn.setAttribute('data-prev-pointer-events', currentValue);
                 btn.style.pointerEvents = 'none';
             }
         });
         
-        // 收集并处理所有按钮包装器元素（包括三角按钮的包装器）
+        // 收集所有可能的 UI 容器
+        const containers = document.querySelectorAll('#live2d-floating-buttons, #live2d-return-button-container, .live2d-popup-wrapper');
+        containers.forEach(container => {
+            if (container) {
+                if (container.hasAttribute('data-prev-pointer-events')) return;
+                const currentValue = container.style.pointerEvents || '';
+                container.setAttribute('data-prev-pointer-events', currentValue);
+                container.style.pointerEvents = 'none';
+            }
+        });
+
+        // 收集并处理所有按钮包装器元素
         const wrappers = new Set();
         buttons.forEach(btn => {
             if (btn && btn.parentElement) {
-                // 排除返回按钮和其容器，避免破坏其拖拽行为
-                if (btn.id === 'live2d-btn-return' || 
-                    (btn.parentElement && btn.parentElement.id === 'live2d-return-button-container')) {
-                    return;
-                }
+                // 排除特定的容器（如果需要）
+                if (btn.id === 'live2d-btn-return') return;
                 wrappers.add(btn.parentElement);
             }
         });
         
         wrappers.forEach(wrapper => {
+            if (wrapper.hasAttribute('data-prev-pointer-events')) return;
             const currentValue = wrapper.style.pointerEvents || '';
             wrapper.setAttribute('data-prev-pointer-events', currentValue);
             wrapper.style.pointerEvents = 'none';
         });
         
-        // 禁用所有弹窗元素的 pointer-events，避免拖拽时与弹窗冲突
+        // 禁用所有弹窗
         const popups = document.querySelectorAll('.live2d-popup, [id^="live2d-popup-"]');
         popups.forEach(popup => {
             if (popup) {

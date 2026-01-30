@@ -291,17 +291,48 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         }
     };
 
+    const disableMicPointerEvents = () => {
+        const micButton = document.getElementById('live2d-btn-mic');
+        if (!micButton) return;
+        if (micButton.hasAttribute('data-prev-pointer-events')) return;
+        if (micButton.hasAttribute('data-mic-prev-pointer-events')) return;
+        const currentValue = micButton.style.pointerEvents || '';
+        micButton.setAttribute('data-mic-prev-pointer-events', currentValue);
+        micButton.style.pointerEvents = 'none';
+    };
+
+    const restoreMicPointerEvents = () => {
+        const micButton = document.getElementById('live2d-btn-mic');
+        if (!micButton) return;
+        if (!micButton.hasAttribute('data-mic-prev-pointer-events')) return;
+        const prevValue = micButton.getAttribute('data-mic-prev-pointer-events');
+        if (prevValue === '') {
+            micButton.style.pointerEvents = '';
+        } else {
+            micButton.style.pointerEvents = prevValue;
+        }
+        micButton.removeAttribute('data-mic-prev-pointer-events');
+    };
+
     model.on('pointerdown', (event) => {
         if (this.isLocked) return;
 
-        // 检测是否为触摸事件，且是多点触摸（双指缩放）
+        // 获取原始浏览器事件
         const originalEvent = event.data.originalEvent;
+
+        // 检测是否为触摸事件，且是多点触摸（双指缩放）
         if (originalEvent && originalEvent.touches && originalEvent.touches.length > 1) {
             // 多点触摸时不启动拖拽
             return;
         }
 
+        // 阻止原生行为，防止浏览器尝试拖拽按钮内部的图片或文字
+        if (originalEvent && originalEvent.cancelable) {
+            originalEvent.preventDefault();
+        }
+
         isDragging = true;
+        model.dragging = true;
         this.isFocusing = false; // 拖拽时禁用聚焦
         const globalPos = event.data.global;
         dragStartPos.x = globalPos.x - model.x;
@@ -310,14 +341,17 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
 
         // 开始拖动时，临时禁用按钮的 pointer-events
         disableButtonPointerEvents();
+        disableMicPointerEvents();
     });
 
     const onDragEnd = async () => {
         if (isDragging) {
             isDragging = false;
+            model.dragging = false;
             document.getElementById('live2d-canvas').style.cursor = 'grab';
 
             // 拖拽结束后恢复按钮的 pointer-events
+            restoreMicPointerEvents();
             restoreButtonPointerEvents();
 
             // 检测是否需要切换屏幕（多屏幕支持）
@@ -342,9 +376,18 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         if (isDragging) {
             // 再次检查是否变成多点触摸
             if (event.touches && event.touches.length > 1) {
-                // 如果变成多点触摸，停止拖拽
-                isDragging = false;
-                document.getElementById('live2d-canvas').style.cursor = 'grab';
+                onDragEnd();
+                return;
+            }
+
+            if (!model || model.destroyed || !model.parent || this.currentModel !== model) {
+                onDragEnd();
+                return;
+            }
+
+            const isMouseRelease = typeof event.buttons === 'number' && event.buttons === 0 && (!event.pointerType || event.pointerType === 'mouse');
+            if (isMouseRelease) {
+                onDragEnd();
                 return;
             }
 
@@ -363,18 +406,23 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         window.removeEventListener('pointerup', this._dragEndListener);
         window.removeEventListener('pointercancel', this._dragEndListener);
     }
+    if (this._dragMouseUpListener) {
+        document.removeEventListener('mouseup', this._dragMouseUpListener);
+    }
     if (this._dragMoveListener) {
         window.removeEventListener('pointermove', this._dragMoveListener);
     }
 
     // 保存新的监听器引用
     this._dragEndListener = onDragEnd;
+    this._dragMouseUpListener = onDragEnd;
     this._dragMoveListener = onDragMove;
 
     // 使用 window 监听拖拽结束和移动，确保即使移出 canvas 也能响应
     window.addEventListener('pointerup', onDragEnd);
     window.addEventListener('pointercancel', onDragEnd);
     window.addEventListener('pointermove', onDragMove);
+    document.addEventListener('mouseup', onDragEnd);
 };
 
 // 设置滚轮缩放
@@ -1099,6 +1147,10 @@ Live2DManager.prototype.cleanupEventListeners = function () {
         window.removeEventListener('pointerup', this._dragEndListener);
         window.removeEventListener('pointercancel', this._dragEndListener);
         this._dragEndListener = null;
+    }
+    if (this._dragMouseUpListener) {
+        document.removeEventListener('mouseup', this._dragMouseUpListener);
+        this._dragMouseUpListener = null;
     }
     if (this._dragMoveListener) {
         window.removeEventListener('pointermove', this._dragMoveListener);
