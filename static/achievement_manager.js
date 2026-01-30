@@ -204,12 +204,17 @@
 
         // 增加计数器
         incrementCounter(counterName, amount = 1) {
+            const delta = Number(amount);
+            if (!Number.isFinite(delta)) {
+                console.warn(`无效的成就计数增量: ${counterName} = ${amount}`);
+                return;
+            }
             // 如果计数器不存在，自动创建
             if (!this.counters.hasOwnProperty(counterName)) {
                 this.counters[counterName] = 0;
             }
 
-            this.counters[counterName] += amount;
+            this.counters[counterName] += delta;
             this.saveCounters();
 
             // 检查相关成就
