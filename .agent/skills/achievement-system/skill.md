@@ -161,16 +161,16 @@ location.reload();
 
 ```javascript
 // 解锁成就
-await window.unlockAchievement(achievementName: string): Promise<boolean>
+await window.unlockAchievement(achievementName)
 
 // 增加计数器
-window.incrementAchievementCounter(counterName: string, amount?: number): void
+window.incrementAchievementCounter(counterName, amount)
 
 // 获取统计信息
-window.getAchievementStats(): Object
+window.getAchievementStats()
 
 // 检查是否已解锁
-window.achievementManager.isUnlocked(achievementName: string): boolean
++window.achievementManager.isUnlocked(achievementName)
 ```
 
 ### 事件监听
