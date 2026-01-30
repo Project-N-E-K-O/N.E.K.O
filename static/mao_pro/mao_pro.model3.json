@@ -36,9 +36,41 @@
       {
         "Name": "exp_exp_08",
         "File": "expressions/exp_08.exp3.json"
+      },
+      {
+        "Name": "happy_exp_01",
+        "File": "expressions/exp_01.exp3.json"
+      },
+      {
+        "Name": "angry_exp_08",
+        "File": "expressions/exp_08.exp3.json"
+      },
+      {
+        "Name": "Idle_exp_03",
+        "File": "expressions/exp_03.exp3.json"
+      },
+      {
+        "Name": "常驻_exp_04",
+        "File": "expressions/exp_04.exp3.json"
       }
     ],
-    "Motions": {}
+    "Motions": {
+      "happy": [
+        {
+          "File": "motions/mtn_01.motion3.json"
+        }
+      ],
+      "angry": [
+        {
+          "File": "motions/special_03.motion3.json"
+        }
+      ],
+      "Idle": [
+        {
+          "File": "motions/mtn_03.motion3.json"
+        }
+      ]
+    }
   },
   "Groups": [
     {
@@ -68,29 +100,30 @@
     }
   ],
   "EmotionMapping": {
-    "happy": {
-      "motion": "motions/mtn_01.motion3.json",
-      "expression": ""
+    "motions": {
+      "happy": [
+        "motions/mtn_01.motion3.json"
+      ],
+      "angry": [
+        "motions/special_03.motion3.json"
+      ],
+      "Idle": [
+        "motions/mtn_03.motion3.json"
+      ]
     },
-    "sad": {
-      "motion": "",
-      "expression": ""
-    },
-    "angry": {
-      "motion": "",
-      "expression": ""
-    },
-    "neutral": {
-      "motion": "",
-      "expression": ""
-    },
-    "surprised": {
-      "motion": "",
-      "expression": ""
-    },
-    "Idle": {
-      "motion": "",
-      "expression": ""
+    "expressions": {
+      "happy": [
+        "expressions/exp_01.exp3.json"
+      ],
+      "angry": [
+        "expressions/exp_08.exp3.json"
+      ],
+      "Idle": [
+        "expressions/exp_03.exp3.json"
+      ],
+      "常驻": [
+        "expressions/exp_04.exp3.json"
+      ]
     }
   }
 }

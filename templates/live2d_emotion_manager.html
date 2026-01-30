@@ -461,17 +461,16 @@
         // 加载模型列表
         async function loadModelList() {
             try {
-                const response = await fetch('/api/live2d/models?simple=true');
-                const data = await response.json();
+                const response = await fetch('/api/live2d/models');
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                const models = await response.json();
 
-                if (data.success && data.models) {
+                if (Array.isArray(models) && models.length > 0) {
                     modelSelect.innerHTML = '<option value="">请选择模型</option>';
 
-                    // 如果返回的是模型名称数组，需要重新获取完整信息
-                    const fullResponse = await fetch('/api/live2d/models');
-                    const fullModels = await fullResponse.json();
-
-                    fullModels.forEach(model => {
+                    models.forEach(model => {
                         const option = document.createElement('option');
                         option.value = model.name;
                         option.textContent = model.name;
@@ -479,7 +478,7 @@
                         modelSelect.appendChild(option);
                     });
                 } else {
-                    showStatus('加载模型列表失败', 'error');
+                    showStatus('没有找到可用的模型', 'error');
                 }
             } catch (error) {
                 console.error('加载模型列表失败:', error);
@@ -500,6 +499,9 @@
                 }
 
                 const response = await fetch(apiUrl);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
                 const data = await response.json();
 
                 if (data.success) {
@@ -508,7 +510,7 @@
                     populateSelects();
                     emotionConfig.style.display = 'block';
                 } else {
-                    showStatus('加载模型文件失败', 'error');
+                    showStatus('加载模型文件失败: ' + (data.error || '未知错误'), 'error');
                 }
             } catch (error) {
                 console.error('加载模型文件失败:', error);

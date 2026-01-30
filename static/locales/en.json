@@ -657,7 +657,7 @@
     "addExpression": "Add Expression",
     "selectPersistentExpression": "Select Persistent Expression",
     "noMotionFiles": "No motion files",
-    "emotionConfig": "Emotion Configuration",
+    "emotionConfig": "Emotion Config",
     "saveSettings": "Save Settings",
     "persistentExpression": "Persistent Expression (expression only):",
     "pleaseLoadModel": "Please load a model",
@@ -833,7 +833,6 @@
     "switchingToDefault": "Current model deleted, switching to default model...",
     "userDocuments": "User Documents",
     "localUpload": "Local Upload",
-    "emotionConfig": "Emotion Config",
     "emotionMapping": {
       "title": "Emotion Mapping Manager",
       "description": "Configure motions and expressions for different emotions",

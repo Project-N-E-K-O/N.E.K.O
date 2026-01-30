@@ -851,7 +851,6 @@
     "switchingToDefault": "当前模型已删除，正在切换到默认模型...",
     "userDocuments": "用户文档",
     "localUpload": "本地上传",
-    "emotionConfig": "情感配置",
     "emotionMapping": {
       "title": "情感映射管理",
       "description": "配置不同情绪下的动作和表情",
