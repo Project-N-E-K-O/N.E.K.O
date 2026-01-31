@@ -1193,6 +1193,15 @@ function showCatgirlForm(key, container) {
                 await showAlert(window.t ? window.t('character.fillProfileNameFirst') : '请先填写猫娘档案名，然后再设置模型');
                 return;
             }
+
+            // 如果是新建角色，检查角色是否已经创建
+            if (isNew) {
+                if (!characterData['猫娘'] || !characterData['猫娘'][catgirlName]) {
+                    await showAlert(window.t ? window.t('character.createCharacterFirstForModel') : '请先点击"确认新猫娘"按钮保存角色，然后再设置模型');
+                    return;
+                }
+            }
+
             const url = `/model_manager?lanlan_name=${encodeURIComponent(catgirlName)}`;
 
             // 检查是否已有该URL的窗口打开

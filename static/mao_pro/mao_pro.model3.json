@@ -42,18 +42,35 @@
         "File": "expressions/exp_01.exp3.json"
       },
       {
+        "Name": "sad_exp_03",
+        "File": "expressions/exp_03.exp3.json"
+      },
+      {
         "Name": "angry_exp_08",
         "File": "expressions/exp_08.exp3.json"
       },
       {
-        "Name": "Idle_exp_02",
-        "File": "expressions/exp_02.exp3.json"
+        "Name": "neutral_exp_05",
+        "File": "expressions/exp_05.exp3.json"
+      },
+      {
+        "Name": "surprised_exp_07",
+        "File": "expressions/exp_07.exp3.json"
+      },
+      {
+        "Name": "Idle_exp_06",
+        "File": "expressions/exp_06.exp3.json"
       }
     ],
     "Motions": {
       "happy": [
         {
-          "File": "motions/mtn_01.motion3.json"
+          "File": "motions/mtn_02.motion3.json"
+        }
+      ],
+      "sad": [
+        {
+          "File": "motions/special_02.motion3.json"
         }
       ],
       "angry": [
@@ -61,9 +78,19 @@
           "File": "motions/special_03.motion3.json"
         }
       ],
-      "Idle": [
+      "neutral": [
         {
           "File": "motions/mtn_03.motion3.json"
+        }
+      ],
+      "surprised": [
+        {
+          "File": "motions/special_01.motion3.json"
+        }
+      ],
+      "Idle": [
+        {
+          "File": "motions/mtn_04.motion3.json"
         }
       ]
     }
@@ -98,26 +125,43 @@
   "EmotionMapping": {
     "motions": {
       "happy": [
-        "motions/mtn_01.motion3.json"
+        "motions/mtn_02.motion3.json"
+      ],
+      "sad": [
+        "motions/special_02.motion3.json"
       ],
       "angry": [
         "motions/special_03.motion3.json"
       ],
-      "Idle": [
+      "neutral": [
         "motions/mtn_03.motion3.json"
+      ],
+      "surprised": [
+        "motions/special_01.motion3.json"
+      ],
+      "Idle": [
+        "motions/mtn_04.motion3.json"
       ]
     },
     "expressions": {
       "happy": [
         "expressions/exp_01.exp3.json"
       ],
+      "sad": [
+        "expressions/exp_03.exp3.json"
+      ],
       "angry": [
         "expressions/exp_08.exp3.json"
       ],
-      "Idle": [
-        "expressions/exp_02.exp3.json"
+      "neutral": [
+        "expressions/exp_05.exp3.json"
       ],
-      "常驻": []
+      "surprised": [
+        "expressions/exp_07.exp3.json"
+      ],
+      "Idle": [
+        "expressions/exp_06.exp3.json"
+      ]
     }
   }
 }
