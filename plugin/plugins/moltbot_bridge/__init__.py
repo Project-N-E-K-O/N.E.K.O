@@ -485,6 +485,22 @@ class MoltbotBridgePlugin(NekoPluginBase):
                     if partial_text:
                         # 有部分响应，视为成功但标记为不完整
                         self.logger.info(f"Response incomplete after {effective_timeout}s, returning partial: {len(partial_text)} chars")
+                        
+                        # 即使是部分响应也通过 export 输出
+                        try:
+                            await self.ctx.export_push_text_async(
+                                text=partial_text,
+                                description=f"Moltbot partial response (timeout) for session: {session_key}",
+                                metadata={
+                                    "source": "moltbot_bridge",
+                                    "session_key": session_key,
+                                    "moltbot_run_id": run_id,
+                                    "incomplete": True,
+                                },
+                            )
+                        except Exception as export_err:
+                            self.logger.warning(f"Failed to export partial result: {export_err}")
+                        
                         return ok(data={
                             "success": True,
                             "response": partial_text,
@@ -504,6 +520,22 @@ class MoltbotBridgePlugin(NekoPluginBase):
                 if response_data.get("success"):
                     final_text = response_data.get("text", "")
                     self.logger.info(f"Got response ({len(final_text)} chars): {final_text[:100]}...")
+                    
+                    # 通过 export 输出最终结果
+                    try:
+                        export_result = await self.ctx.export_push_text_async(
+                            text=final_text,
+                            description=f"Moltbot response for session: {session_key}",
+                            metadata={
+                                "source": "moltbot_bridge",
+                                "session_key": session_key,
+                                "moltbot_run_id": run_id,
+                            },
+                        )
+                        self.logger.info(f"Export pushed: {export_result}")
+                    except Exception as export_err:
+                        self.logger.warning(f"Failed to export result: {export_err}")
+                    
                     return ok(data={
                         "success": True,
                         "response": final_text,

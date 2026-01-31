@@ -10,7 +10,7 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 from typing import cast
 from datetime import datetime
 from contextlib import contextmanager
@@ -20,6 +20,9 @@ from loguru import logger
 from fastapi import HTTPException
 
 from plugin.settings import PLUGIN_CONFIG_ROOT
+
+# Schema 验证开关（可通过环境变量禁用）
+_SCHEMA_VALIDATION_ENABLED = os.getenv("NEKO_CONFIG_SCHEMA_VALIDATION", "true").lower() in ("true", "1", "yes", "on")
 
 # 跨平台文件锁支持
 msvcrt = None
@@ -184,12 +187,13 @@ def get_plugin_config_path(plugin_id: str) -> Path:
     return config_file
 
 
-def load_plugin_config(plugin_id: str) -> Dict[str, Any]:
+def load_plugin_config(plugin_id: str, *, validate: bool = True) -> Dict[str, Any]:
     """
     加载插件配置
     
     Args:
         plugin_id: 插件ID
+        validate: 是否进行 Schema 验证（默认 True）
     
     Returns:
         配置数据
@@ -205,6 +209,15 @@ def load_plugin_config(plugin_id: str) -> Dict[str, Any]:
     try:
         with open(config_path, 'rb') as f:
             config_data = tomllib.load(f)
+
+        # Schema 验证（可通过环境变量或参数禁用）
+        if validate and _SCHEMA_VALIDATION_ENABLED:
+            validation_errors = _validate_config_schema(config_data, plugin_id)
+            if validation_errors:
+                logger.warning(
+                    "Plugin {}: config schema validation warnings: {}",
+                    plugin_id, validation_errors
+                )
 
         # Apply optional user profile overlay defined in plugin.toml.
         # The [plugin] section remains server-facing and is not overridden by
@@ -299,6 +312,76 @@ def deep_merge(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
         else:
             result[key] = value
     return result
+
+
+def _validate_config_schema(config_data: Dict[str, Any], plugin_id: str) -> Optional[List[Dict[str, Any]]]:
+    """
+    验证插件配置的 Schema
+    
+    Args:
+        config_data: 配置数据字典
+        plugin_id: 插件ID（用于日志）
+    
+    Returns:
+        验证错误列表，如果验证通过则返回 None
+    """
+    try:
+        from plugin.server.config_schema import validate_plugin_config, ConfigValidationError
+    except ImportError:
+        # Schema 验证模块不可用，跳过验证
+        logger.debug("Plugin {}: config_schema module not available, skipping validation", plugin_id)
+        return None
+    
+    try:
+        validate_plugin_config(config_data)
+        return None  # 验证通过
+    except ConfigValidationError as e:
+        # 返回详细错误信息（作为警告，不阻止加载）
+        return e.details if e.details else [{"msg": e.message, "field": e.field}]
+    except Exception as e:
+        # 其他错误，记录但不阻止
+        logger.debug(
+            "Plugin {}: schema validation skipped due to error: {}",
+            plugin_id, str(e)
+        )
+        return None
+
+
+def validate_config_strict(config_data: Dict[str, Any], plugin_id: str) -> None:
+    """
+    严格验证插件配置（验证失败会抛出异常）
+    
+    Args:
+        config_data: 配置数据字典
+        plugin_id: 插件ID
+    
+    Raises:
+        HTTPException: 验证失败时抛出 400 错误
+    """
+    try:
+        from plugin.server.config_schema import validate_plugin_config, ConfigValidationError
+    except ImportError as ie:
+        raise HTTPException(
+            status_code=500,
+            detail="配置验证模块不可用"
+        ) from ie
+    
+    try:
+        validate_plugin_config(config_data)
+    except ConfigValidationError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"配置验证失败: {e.message}" + (f" (字段: {e.field})" if e.field else "")
+        ) from e
+    except Exception as e:
+        logger.warning(
+            "Plugin {}: strict schema validation error: {}",
+            plugin_id, str(e)
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=f"配置验证错误: {str(e)}"
+        ) from e
 
 
 def _resolve_profile_path(path_str: str, base_dir: Path) -> Optional[Path]:
