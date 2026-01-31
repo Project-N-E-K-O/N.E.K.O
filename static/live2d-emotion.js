@@ -240,15 +240,17 @@ Live2DManager.prototype.playMotion = async function(emotion) {
         return;
     }
 
-    // 检查是否有对应的动作配置
-    let hasMotion = false;
+    // 获取动作文件列表
+    let motions = null;
     if (this.emotionMapping && this.emotionMapping.motions && this.emotionMapping.motions[emotion]) {
-        hasMotion = true;
+        // 使用 EmotionMapping.motions: ["motions/xxx.motion3.json", ...]
+        motions = this.emotionMapping.motions[emotion].map(f => ({ File: f }));
     } else if (this.fileReferences && this.fileReferences.Motions && this.fileReferences.Motions[emotion]) {
-        hasMotion = true;
+        // 回退到 FileReferences.Motions
+        motions = this.fileReferences.Motions[emotion];
     }
 
-    if (!hasMotion) {
+    if (!motions || motions.length === 0) {
         console.warn(`未找到情感 ${emotion} 对应的动作，但将保持表情`);
         // 如果没有找到对应的motion，设置一个短定时器以确保expression能够显示
         this.motionTimer = setTimeout(() => {
@@ -256,6 +258,10 @@ Live2DManager.prototype.playMotion = async function(emotion) {
         }, 500);
         return;
     }
+
+    // 随机选择一个动作文件
+    const choice = this.getRandomElement(motions);
+    if (!choice || !choice.File) return;
 
     try {
         // 清除之前的动作定时器
@@ -278,8 +284,79 @@ Live2DManager.prototype.playMotion = async function(emotion) {
             this.motionTimer = null;
         }
 
-        // 播放简单动作
+        // 构建完整的motion路径
+        const motionPath = this.resolveAssetPath(choice.File);
+        console.log(`播放动作文件: ${motionPath}`);
+
+        // 尝试使用 Live2D 的 motion API 播放
+        try {
+            // 方法1: 尝试使用 motion 组名播放
+            if (this.currentModel.motion && this.fileReferences && this.fileReferences.Motions && this.fileReferences.Motions[emotion]) {
+                const motion = await this.currentModel.motion(emotion);
+                if (motion) {
+                    console.log(`成功使用 motion() API 播放: ${emotion}`);
+                    // 获取motion持续时间
+                    let motionDuration = 5000;
+                    try {
+                        const response = await fetch(motionPath);
+                        if (response.ok) {
+                            const motionData = await response.json();
+                            if (motionData.Meta && motionData.Meta.Duration) {
+                                motionDuration = motionData.Meta.Duration * 1000;
+                            }
+                        }
+                    } catch (error) {
+                        console.warn('无法获取motion持续时间，使用默认值');
+                    }
+
+                    this.motionTimer = setTimeout(() => {
+                        this.motionTimer = null;
+                        this.clearEmotionEffects();
+                    }, motionDuration);
+                    return;
+                }
+            }
+
+            // 方法2: 尝试直接加载 motion 文件
+            if (this.currentModel.internalModel && this.currentModel.internalModel.motionManager) {
+                const motionManager = this.currentModel.internalModel.motionManager;
+
+                // 加载 motion 文件
+                const response = await fetch(motionPath);
+                if (response.ok) {
+                    const motionData = await response.json();
+
+                    // 使用 motionManager 的 startMotion 方法
+                    if (motionManager.startMotion) {
+                        const motion = await motionManager.startMotion(
+                            emotion,
+                            0, // index
+                            3  // priority (高优先级)
+                        );
+
+                        if (motion) {
+                            console.log(`成功使用 startMotion() 播放: ${motionPath}`);
+                            const motionDuration = (motionData.Meta && motionData.Meta.Duration)
+                                ? motionData.Meta.Duration * 1000
+                                : 5000;
+
+                            this.motionTimer = setTimeout(() => {
+                                this.motionTimer = null;
+                                this.clearEmotionEffects();
+                            }, motionDuration);
+                            return;
+                        }
+                    }
+                }
+            }
+        } catch (error) {
+            console.warn('Live2D motion API 播放失败:', error);
+        }
+
+        // 方法3: 回退到简单动作
+        console.log(`回退到简单动作: ${emotion}`);
         this.playSimpleMotion(emotion);
+
     } catch (error) {
         console.error('播放动作失败:', error);
         this.playSimpleMotion(emotion);
