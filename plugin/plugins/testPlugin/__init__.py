@@ -34,8 +34,10 @@ class HelloPlugin(NekoPluginBase):
         time.sleep(0.8)
         try:
             cfg = self._read_local_toml()
-            debug_cfg = cfg.get("debug") if isinstance(cfg.get("debug"), dict) else {}
-            timer_cfg = debug_cfg.get("timer") if isinstance(debug_cfg.get("timer"), dict) else {}
+            raw_debug_cfg = cfg.get("debug")
+            debug_cfg = raw_debug_cfg if isinstance(raw_debug_cfg, dict) else {}
+            raw_timer_cfg = debug_cfg.get("timer")
+            timer_cfg = raw_timer_cfg if isinstance(raw_timer_cfg, dict) else {}
 
             enabled = bool(
                 timer_cfg.get("enable")
@@ -92,8 +94,10 @@ class HelloPlugin(NekoPluginBase):
         time.sleep(0.8)
         try:
             cfg = self._read_local_toml()
-            debug_cfg = cfg.get("debug") if isinstance(cfg.get("debug"), dict) else {}
-            config_cfg = debug_cfg.get("config") if isinstance(debug_cfg.get("config"), dict) else {}
+            raw_debug_cfg = cfg.get("debug")
+            debug_cfg = raw_debug_cfg if isinstance(raw_debug_cfg, dict) else {}
+            raw_config_cfg = debug_cfg.get("config")
+            config_cfg = raw_config_cfg if isinstance(raw_config_cfg, dict) else {}
             enabled = bool(config_cfg.get("enable", False))
             if not enabled:
                 return
@@ -118,8 +122,10 @@ class HelloPlugin(NekoPluginBase):
         time.sleep(0.8)
         try:
             cfg = self._read_local_toml()
-            debug_cfg = cfg.get("debug") if isinstance(cfg.get("debug"), dict) else {}
-            mem_cfg = debug_cfg.get("memory") if isinstance(debug_cfg.get("memory"), dict) else {}
+            raw_debug_cfg = cfg.get("debug")
+            debug_cfg = raw_debug_cfg if isinstance(raw_debug_cfg, dict) else {}
+            raw_mem_cfg = debug_cfg.get("memory")
+            mem_cfg = raw_mem_cfg if isinstance(raw_mem_cfg, dict) else {}
             enabled = bool(mem_cfg.get("enable", False))
             if not enabled:
                 return

@@ -136,7 +136,7 @@ class PluginContextProtocol(Protocol):
         event_id: str,
         args: Dict[str, Any],
         timeout: float = 10.0
-    ) -> Dict[str, Any]:
+    ) -> Union[Dict[str, Any], Coroutine[Any, Any, Dict[str, Any]]]:
         """触发其他插件的事件
         
         Args:
@@ -151,7 +151,9 @@ class PluginContextProtocol(Protocol):
         """
         ...
     
-    def query_plugins(self, filters: Optional[Dict[str, Any]] = None, timeout: float = 5.0) -> Dict[str, Any]:
+    def query_plugins(
+        self, filters: Optional[Dict[str, Any]] = None, timeout: float = 5.0
+    ) -> Union[Dict[str, Any], Coroutine[Any, Any, Dict[str, Any]]]:
         """查询插件列表
         
         Args:
