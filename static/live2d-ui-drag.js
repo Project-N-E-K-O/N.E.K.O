@@ -45,19 +45,17 @@
         mainContainers.forEach(container => wrappers.add(container));
         
         wrappers.forEach(wrapper => {
-            const currentValue = wrapper.style.pointerEvents || '';
-            wrapper.setAttribute('data-prev-pointer-events', currentValue);
-            wrapper.style.pointerEvents = 'none';
+            if (wrapper && !wrapper.hasAttribute('data-prev-pointer-events')) {
+                const currentValue = wrapper.style.pointerEvents || '';
+                wrapper.setAttribute('data-prev-pointer-events', currentValue);
+                wrapper.style.pointerEvents = 'none';
+            }
         });
         
         // 禁用所有弹窗元素的 pointer-events，避免拖拽时与弹窗冲突
         const popups = document.querySelectorAll('.live2d-popup, [id^="live2d-popup-"], .vrm-popup, [id^="vrm-popup-"]');
         popups.forEach(popup => {
-            if (popup) {
-                // 如果已经保存过，说明正在拖拽中，跳过
-                if (popup.hasAttribute('data-prev-pointer-events')) {
-                    return;
-                }
+            if (popup && !popup.hasAttribute('data-prev-pointer-events')) {
                 const currentValue = popup.style.pointerEvents || '';
                 popup.setAttribute('data-prev-pointer-events', currentValue);
                 popup.style.pointerEvents = 'none';
