@@ -201,6 +201,14 @@ class VRMInteraction {
             }
         };
 
+        const restorePointerEventsOnBlur = () => {
+            if (window.DragHelpers && window.DragHelpers.restoreButtonPointerEvents) {
+                window.DragHelpers.restoreButtonPointerEvents();
+            }
+        };
+        window.addEventListener('blur', restorePointerEventsOnBlur);
+        this._dragBlurHandler = restorePointerEventsOnBlur;
+
         // 5. 鼠标进入
         this.mouseEnterHandler = () => {
             canvas.style.cursor = 'grab';
@@ -423,6 +431,10 @@ class VRMInteraction {
             canvas.removeEventListener('wheel', this.wheelHandler, this._wheelListenerOptions || { capture: true });
             this.wheelHandler = null;
             this._wheelListenerOptions = null;
+        }
+        if (this._dragBlurHandler) {
+            window.removeEventListener('blur', this._dragBlurHandler);
+            this._dragBlurHandler = null;
         }
     }
 
