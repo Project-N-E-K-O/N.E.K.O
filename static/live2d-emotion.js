@@ -259,9 +259,31 @@ Live2DManager.prototype.playMotion = async function(emotion) {
         return;
     }
 
-    // 随机选择一个动作文件
-    const choice = this.getRandomElement(motions);
-    if (!choice || !choice.File) return;
+    // 随机选择一个动作文件和索引
+    const selectedIndex = Math.floor(Math.random() * motions.length);
+    const choice = motions[selectedIndex];
+    if (!choice || !choice.File) {
+        // 清理定时器后再返回
+        if (this.motionTimer) {
+            if (this.motionTimer.type === 'animation') {
+                cancelAnimationFrame(this.motionTimer.id);
+            } else if (this.motionTimer.type === 'timeout') {
+                clearTimeout(this.motionTimer.id);
+            } else if (this.motionTimer.type === 'motion') {
+                try {
+                    if (this.motionTimer.id && this.motionTimer.id.stop) {
+                        this.motionTimer.id.stop();
+                    }
+                } catch (motionError) {
+                    console.warn('停止motion失败:', motionError);
+                }
+            } else {
+                clearTimeout(this.motionTimer);
+            }
+            this.motionTimer = null;
+        }
+        return;
+    }
 
     try {
         // 清除之前的动作定时器
@@ -290,11 +312,12 @@ Live2DManager.prototype.playMotion = async function(emotion) {
 
         // 尝试使用 Live2D 的 motion API 播放
         try {
-            // 方法1: 尝试使用 motion 组名播放
+            // 方法1: 尝试使用 motion 组名播放指定索引的motion
             if (this.currentModel.motion && this.fileReferences && this.fileReferences.Motions && this.fileReferences.Motions[emotion]) {
-                const motion = await this.currentModel.motion(emotion);
+                // 使用选中的索引播放特定的motion文件
+                const motion = await this.currentModel.motion(emotion, selectedIndex);
                 if (motion) {
-                    console.log(`成功使用 motion() API 播放: ${emotion}`);
+                    console.log(`成功使用 motion() API 播放: ${emotion}[${selectedIndex}]`);
                     // 获取motion持续时间
                     let motionDuration = 5000;
                     try {
@@ -309,10 +332,15 @@ Live2DManager.prototype.playMotion = async function(emotion) {
                         console.warn('无法获取motion持续时间，使用默认值');
                     }
 
-                    this.motionTimer = setTimeout(() => {
-                        this.motionTimer = null;
-                        this.clearEmotionEffects();
+                    // 使用局部变量保存timerId，防止旧定时器误清除新动作
+                    const timerId = setTimeout(() => {
+                        // 验证当前timer是否仍是这个timerId
+                        if (this.motionTimer === timerId) {
+                            this.motionTimer = null;
+                            this.clearEmotionEffects();
+                        }
                     }, motionDuration);
+                    this.motionTimer = timerId;
                     return;
                 }
             }
@@ -326,24 +354,29 @@ Live2DManager.prototype.playMotion = async function(emotion) {
                 if (response.ok) {
                     const motionData = await response.json();
 
-                    // 使用 motionManager 的 startMotion 方法
+                    // 使用 motionManager 的 startMotion 方法，使用实际选择的索引
                     if (motionManager.startMotion) {
                         const motion = await motionManager.startMotion(
                             emotion,
-                            0, // index
+                            selectedIndex, // 使用实际选择的索引而不是硬编码的0
                             3  // priority (高优先级)
                         );
 
                         if (motion) {
-                            console.log(`成功使用 startMotion() 播放: ${motionPath}`);
+                            console.log(`成功使用 startMotion() 播放: ${motionPath} [index=${selectedIndex}]`);
                             const motionDuration = (motionData.Meta && motionData.Meta.Duration)
                                 ? motionData.Meta.Duration * 1000
                                 : 5000;
 
-                            this.motionTimer = setTimeout(() => {
-                                this.motionTimer = null;
-                                this.clearEmotionEffects();
+                            // 使用局部变量保存timerId，防止旧定时器误清除新动作
+                            const timerId = setTimeout(() => {
+                                // 验证当前timer是否仍是这个timerId
+                                if (this.motionTimer === timerId) {
+                                    this.motionTimer = null;
+                                    this.clearEmotionEffects();
+                                }
                             }, motionDuration);
+                            this.motionTimer = timerId;
                             return;
                         }
                     }
