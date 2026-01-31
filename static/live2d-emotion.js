@@ -284,10 +284,9 @@ Live2DManager.prototype.playMotion = async function(emotion) {
             this.motionTimer = null;
         }
 
+        
         // 播放简单动作
         this.playSimpleMotion(emotion);
-        return;
-
     } catch (error) {
         console.error('播放动作失败:', error);
         this.playSimpleMotion(emotion);

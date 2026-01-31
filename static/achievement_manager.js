@@ -245,7 +245,8 @@
             const updatePlayTime = async () => {
                 const now = Date.now();
                 // 计算实际经过的秒数（毫秒转秒，至少1秒）
-                const elapsedSeconds = Math.max(1, Math.floor((now - prevTs) / 1000));
+                // 限制单次最多发送3600秒（1小时），防止累积过多
+                const elapsedSeconds = Math.min(3600, Math.max(1, Math.floor((now - prevTs) / 1000)));
 
                 try {
                     // 调用后端 API 更新 Steam 统计，发送实际经过的秒数

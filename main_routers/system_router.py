@@ -252,7 +252,7 @@ async def update_playtime(request: Request):
                     status_code=400
                 )
 
-            # 注意：不需要每次都调用 RequestCurrentStats()
+            # 注意:不需要每次都调用 RequestCurrentStats()
             # RequestCurrentStats() 应该只在应用启动时调用一次
             # 频繁调用可能导致性能问题和同步延迟
             # 这里直接获取和更新统计值即可

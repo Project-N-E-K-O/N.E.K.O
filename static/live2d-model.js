@@ -353,7 +353,7 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     }
 
     // 模型加载完成后，延迟播放Idle情绪（给模型一些时间完全初始化）
-    if (this.emotionMapping && (this.emotionMapping.motions['Idle'] || this.emotionMapping.expressions['Idle'])) {
+    if (this.emotionMapping && (this.emotionMapping.motions?.['Idle'] || this.emotionMapping.expressions?.['Idle'])) {
         // 使用 setTimeout 延迟500ms，确保模型完全初始化
         setTimeout(async () => {
             try {
