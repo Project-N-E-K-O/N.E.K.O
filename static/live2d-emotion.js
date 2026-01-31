@@ -240,18 +240,15 @@ Live2DManager.prototype.playMotion = async function(emotion) {
         return;
     }
 
-    // 优先使用 EmotionMapping（更可靠，且后端已同步更新 FileReferences）
-    let motions = null;
-
+    // 检查是否有对应的动作配置
+    let hasMotion = false;
     if (this.emotionMapping && this.emotionMapping.motions && this.emotionMapping.motions[emotion]) {
-        // 使用 EmotionMapping.motions: ["motions/xxx.motion3.json", ...]
-        motions = this.emotionMapping.motions[emotion].map(f => ({ File: f }));
+        hasMotion = true;
     } else if (this.fileReferences && this.fileReferences.Motions && this.fileReferences.Motions[emotion]) {
-        // 回退到 FileReferences.Motions（兼容旧版本）
-        motions = this.fileReferences.Motions[emotion];
+        hasMotion = true;
     }
 
-    if (!motions || motions.length === 0) {
+    if (!hasMotion) {
         console.warn(`未找到情感 ${emotion} 对应的动作，但将保持表情`);
         // 如果没有找到对应的motion，设置一个短定时器以确保expression能够显示
         this.motionTimer = setTimeout(() => {
@@ -259,9 +256,6 @@ Live2DManager.prototype.playMotion = async function(emotion) {
         }, 500);
         return;
     }
-
-    const choice = this.getRandomElement(motions);
-    if (!choice || !choice.File) return;
 
     try {
         // 清除之前的动作定时器
@@ -284,7 +278,6 @@ Live2DManager.prototype.playMotion = async function(emotion) {
             this.motionTimer = null;
         }
 
-        
         // 播放简单动作
         this.playSimpleMotion(emotion);
     } catch (error) {

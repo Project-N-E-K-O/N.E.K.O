@@ -58,8 +58,8 @@
         "File": "expressions/exp_07.exp3.json"
       },
       {
-        "Name": "Idle_exp_06",
-        "File": "expressions/exp_06.exp3.json"
+        "Name": "Idle_exp_08",
+        "File": "expressions/exp_08.exp3.json"
       }
     ],
     "Motions": {
@@ -90,7 +90,7 @@
       ],
       "Idle": [
         {
-          "File": "motions/mtn_04.motion3.json"
+          "File": "motions/special_01.motion3.json"
         }
       ]
     }
@@ -140,7 +140,7 @@
         "motions/special_01.motion3.json"
       ],
       "Idle": [
-        "motions/mtn_04.motion3.json"
+        "motions/special_01.motion3.json"
       ]
     },
     "expressions": {
@@ -160,7 +160,7 @@
         "expressions/exp_07.exp3.json"
       ],
       "Idle": [
-        "expressions/exp_06.exp3.json"
+        "expressions/exp_08.exp3.json"
       ]
     }
   }
