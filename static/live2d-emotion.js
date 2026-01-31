@@ -389,16 +389,26 @@ Live2DManager.prototype.playMotion = async function(emotion) {
                     motionManager.definitions[emotion] = [];
                 }
 
-                // 将MotionSpec注入到motionManager的definitions中（而不是motionData）
-                const injectedIndex = motionManager.definitions[emotion].length;
-                const motionSpec = { File: choice.File };
-                motionManager.definitions[emotion].push(motionSpec);
+                // 检查是否已存在相同File的MotionSpec，避免无限增长
+                let injectedIndex = motionManager.definitions[emotion].findIndex(
+                    spec => spec && spec.File === choice.File
+                );
+
+                if (injectedIndex === -1) {
+                    // 不存在，创建新的MotionSpec并添加
+                    injectedIndex = motionManager.definitions[emotion].length;
+                    const motionSpec = { File: choice.File };
+                    motionManager.definitions[emotion].push(motionSpec);
+                    console.log(`添加新的MotionSpec到definitions: ${choice.File} [index=${injectedIndex}]`);
+                } else {
+                    console.log(`复用已存在的MotionSpec: ${choice.File} [index=${injectedIndex}]`);
+                }
 
                 // 使用 motionManager 的 startMotion 方法，使用注入后的索引
                 if (motionManager.startMotion) {
                     const motion = await motionManager.startMotion(
                         emotion,
-                        injectedIndex, // 使用注入后的索引
+                        injectedIndex, // 使用注入后的索引（可能是新的或复用的）
                         3  // priority (高优先级)
                     );
 
