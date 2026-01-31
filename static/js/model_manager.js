@@ -2905,9 +2905,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 playMotionBtn.disabled = false;
             }
 
-            // 表情播放按钮保持可用：未选择表情时由点击逻辑提示“请先选择表情”
-            // 若没有任何表情文件，则禁用播放按钮
-            playExpressionBtn.disabled = !(currentModelFiles.expression_files && currentModelFiles.expression_files.length > 0);
+            // 表情播放按钮：仅当有表情文件且已选择有效表情时启用
+            playExpressionBtn.disabled = !(
+                currentModelFiles.expression_files &&
+                currentModelFiles.expression_files.length > 0 &&
+                expressionSelect &&
+                expressionSelect.value
+            );
 
             // 启用其他控件
             setControlsDisabled(false);
@@ -3009,14 +3013,24 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
                 // 重置选择器到第一个选项（保持显示"增加表情"）
                 e.target.value = '';
-                // 播放按钮保持可用：未选择表情时点击会提示
-                playExpressionBtn.disabled = false;
+                // 仅当有表情文件且已选择有效表情时启用
+                const hasExpressions = !!(
+                    currentModelFiles &&
+                    currentModelFiles.expression_files &&
+                    currentModelFiles.expression_files.length > 0
+                );
+                playExpressionBtn.disabled = !(hasExpressions && e.target.value);
                 return;
             }
 
             updateExpressionSelectButtonText();
-            // 播放按钮保持可用
-            playExpressionBtn.disabled = false;
+            // 仅当有表情文件且已选择有效表情时启用
+            const hasExpressions = !!(
+                currentModelFiles &&
+                currentModelFiles.expression_files &&
+                currentModelFiles.expression_files.length > 0
+            );
+            playExpressionBtn.disabled = !(hasExpressions && e.target.value);
         });
     }
 
