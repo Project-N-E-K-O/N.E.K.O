@@ -211,7 +211,7 @@ class DropdownManager {
     }
     
     static hideAll() {
-        DropdownManager.instances.forEach(instance => instance.hideDropdown());
+        DropdownManager.instances.forEach(instance => { instance.hideDropdown(); });
     }
 
     async showDropdown() {
@@ -235,13 +235,13 @@ class DropdownManager {
         }
     }
     
-    toggleDropdown() {
+    async toggleDropdown() {
         if (this.config.disabled) return;
         const isVisible = this.dropdown && this.dropdown.style.display === 'block';
         if (isVisible) {
             this.hideDropdown();
         } else {
-            this.showDropdown();
+            await this.showDropdown();
         }
     }
     
@@ -252,7 +252,7 @@ class DropdownManager {
             if (this.button.disabled) {
                 return;
             }
-            this.toggleDropdown();
+            this.toggleDropdown().catch(err => console.error('[DropdownManager] toggle failed:', err));
         });
         document.addEventListener('click', (e) => {
             if (!this.button.contains(e.target) && !this.dropdown.contains(e.target)) {
