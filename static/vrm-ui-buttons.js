@@ -127,15 +127,26 @@ VRMManager.prototype.setupFloatingButtons = function () {
             const imgContainer = document.createElement('div');
             Object.assign(imgContainer.style, { position: 'relative', width: '48px', height: '48px', display: 'flex', alignItems: 'center', justifyContent: 'center' });
 
+            const iconBaseStyle = {
+                position: 'absolute',
+                width: '48px',
+                height: '48px',
+                objectFit: 'contain',
+                pointerEvents: 'none',
+                transition: 'opacity 0.3s ease',
+                imageRendering: 'crisp-edges',
+                userSelect: 'none'
+            };
+
             imgOff = document.createElement('img');
             imgOff.src = config.iconOff; imgOff.alt = config.emoji;
             imgOff.draggable = false;
-            Object.assign(imgOff.style, { position: 'absolute', width: '48px', height: '48px', objectFit: 'contain', pointerEvents: 'none', opacity: '1', transition: 'opacity 0.3s ease', imageRendering: 'crisp-edges', userSelect: 'none' });
+            Object.assign(imgOff.style, { ...iconBaseStyle, opacity: '1' });
 
             imgOn = document.createElement('img');
             imgOn.src = config.iconOn; imgOn.alt = config.emoji;
             imgOn.draggable = false;
-            Object.assign(imgOn.style, { position: 'absolute', width: '48px', height: '48px', objectFit: 'contain', pointerEvents: 'none', opacity: '0', transition: 'opacity 0.3s ease', imageRendering: 'crisp-edges', userSelect: 'none' });
+            Object.assign(imgOn.style, { ...iconBaseStyle, opacity: '0' });
 
             imgContainer.appendChild(imgOff);
             imgContainer.appendChild(imgOn);

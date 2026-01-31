@@ -13,7 +13,7 @@
      */
     function disableButtonPointerEvents() {
         // 收集所有按钮元素和锁图标
-        const buttons = document.querySelectorAll('.live2d-floating-btn, .live2d-trigger-btn, [id^="live2d-btn-"], #live2d-lock-icon');
+        const buttons = document.querySelectorAll('.live2d-floating-btn, .vrm-floating-btn, .live2d-trigger-btn, [id^="live2d-btn-"], [id^="vrm-btn-"], #live2d-lock-icon, #vrm-lock-icon');
         buttons.forEach(btn => {
             if (btn) {
                 if (btn.hasAttribute('data-prev-pointer-events')) return;
@@ -24,7 +24,7 @@
         });
         
         // 收集所有可能的 UI 容器
-        const containers = document.querySelectorAll('#live2d-floating-buttons, #live2d-return-button-container, .live2d-popup-wrapper');
+        const containers = document.querySelectorAll('#live2d-floating-buttons, #vrm-floating-buttons, #live2d-return-button-container, #vrm-return-button-container, .live2d-popup-wrapper, .vrm-popup-wrapper');
         containers.forEach(container => {
             if (container) {
                 if (container.hasAttribute('data-prev-pointer-events')) return;
@@ -39,7 +39,7 @@
         buttons.forEach(btn => {
             if (btn && btn.parentElement) {
                 // 排除特定的容器（如果需要）
-                if (btn.id === 'live2d-btn-return') return;
+                if (btn.id === 'live2d-btn-return' || btn.id === 'vrm-btn-return') return;
                 wrappers.add(btn.parentElement);
             }
         });
@@ -54,7 +54,7 @@
         });
         
         // 禁用所有弹窗
-        const popups = document.querySelectorAll('.live2d-popup, [id^="live2d-popup-"]');
+        const popups = document.querySelectorAll('.live2d-popup, [id^="live2d-popup-"], .vrm-popup, [id^="vrm-popup-"]');
         popups.forEach(popup => {
             if (popup) {
                 // 如果已经保存过，说明正在拖拽中，跳过

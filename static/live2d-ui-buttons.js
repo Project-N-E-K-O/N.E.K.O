@@ -298,33 +298,30 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
                 justifyContent: 'center'
             });
 
-            // 创建off状态图片（默认显示）
-            imgOff = document.createElement('img');
-            imgOff.src = config.iconOff;
-            imgOff.alt = config.title;
-            Object.assign(imgOff.style, {
+            const iconBaseStyle = {
                 position: 'absolute',
                 width: '48px',
                 height: '48px',
                 objectFit: 'contain',
                 pointerEvents: 'none',
-                opacity: '0.75',
-                transition: 'opacity 0.3s ease'
-            });
+                transition: 'opacity 0.3s ease',
+                imageRendering: 'crisp-edges',
+                userSelect: 'none'
+            };
+
+            // 创建off状态图片（默认显示）
+            imgOff = document.createElement('img');
+            imgOff.src = config.iconOff;
+            imgOff.alt = config.title;
+            imgOff.draggable = false;
+            Object.assign(imgOff.style, { ...iconBaseStyle, opacity: '0.75' });
 
             // 创建on状态图片（默认隐藏）
             imgOn = document.createElement('img');
             imgOn.src = config.iconOn;
             imgOn.alt = config.title;
-            Object.assign(imgOn.style, {
-                position: 'absolute',
-                width: '48px',
-                height: '48px',
-                objectFit: 'contain',
-                pointerEvents: 'none',
-                opacity: '0',
-                transition: 'opacity 0.3s ease'
-            });
+            imgOn.draggable = false;
+            Object.assign(imgOn.style, { ...iconBaseStyle, opacity: '0' });
 
             imgContainer.appendChild(imgOff);
             imgContainer.appendChild(imgOn);
@@ -334,11 +331,14 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
             const img = document.createElement('img');
             img.src = config.icon;
             img.alt = config.title;
+            img.draggable = false;
             Object.assign(img.style, {
                 width: '48px',
                 height: '48px',
                 objectFit: 'contain',
-                pointerEvents: 'none'
+                pointerEvents: 'none',
+                imageRendering: 'crisp-edges',
+                userSelect: 'none'
             });
             btn.appendChild(img);
         } else if (config.emoji) {

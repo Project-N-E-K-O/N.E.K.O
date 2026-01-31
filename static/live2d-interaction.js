@@ -343,12 +343,6 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
 
     const onDragMove = (event) => {
         if (model.dragging) {
-            // 再次检查是否变成多点触摸
-            if (event.touches && event.touches.length > 1) {
-                onDragEnd();
-                return;
-            }
-
             if (!model || model.destroyed || !model.parent || this.currentModel !== model) {
                 onDragEnd();
                 return;

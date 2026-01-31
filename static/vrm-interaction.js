@@ -110,6 +110,12 @@ class VRMInteraction {
                 this.dragMode = 'pan';
                 this.previousMousePosition = { x: e.clientX, y: e.clientY };
                 canvas.style.cursor = 'move';
+                
+                // 禁用按钮的指针事件，防止拖拽过程中被按钮拦截
+                if (window.DragHelpers && window.DragHelpers.disableButtonPointerEvents) {
+                    window.DragHelpers.disableButtonPointerEvents();
+                }
+
                 e.preventDefault();
                 e.stopPropagation();
             }
@@ -178,11 +184,17 @@ class VRMInteraction {
         // 3. 鼠标释放
         this.mouseUpHandler = async (e) => {
             if (this.isDragging) {
-                e.preventDefault();
-                +               e.stopPropagation();
                 this.isDragging = false;
                 this.dragMode = null;
                 canvas.style.cursor = 'grab';
+
+                // 恢复按钮的指针事件
+                if (window.DragHelpers && window.DragHelpers.restoreButtonPointerEvents) {
+                    window.DragHelpers.restoreButtonPointerEvents();
+                }
+
+                e.preventDefault();
+                e.stopPropagation();
 
                 // 拖动结束后保存位置
                 await this._savePositionAfterInteraction();
