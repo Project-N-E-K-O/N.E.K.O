@@ -132,10 +132,13 @@ class DropdownManager {
                     text = this.config.getText(selectedOption);
                 }
             } else if (this.select.options.length > 0) {
-                // 没有选择，但有选项，显示第一个选项（跳过空值选项）
-                const firstOption = Array.from(this.select.options).find(opt => opt.value !== '');
-                if (firstOption) {
-                    text = this.config.getText(firstOption);
+                // 没有选择，但有选项：显示第一个“可显示”的选项
+                // 这里不能简单跳过空值选项，否则会导致动作/表情在未选择时显示第一个文件名
+                //（看起来像自动选中），而不是“增加动作/增加表情”。
+                const firstDisplayOption = Array.from(this.select.options)
+                    .find(opt => !this.config.shouldSkipOption(opt));
+                if (firstDisplayOption) {
+                    text = this.config.getText(firstDisplayOption);
                 }
             }
         }
