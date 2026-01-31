@@ -1005,6 +1005,7 @@
     "saveError": "保存時發生錯誤: {{error}}",
     "fillProfileNameFirstForLive2D": "請先填寫貓娘檔案名，然後再設置Live2D模型",
     "createCharacterFirst": "請先點擊\"確認新貓娘\"按鈕創建角色，然後再設置Live2D模型",
+    "createCharacterFirstForModel": "請先點擊\"確認新貓娘\"按鈕保存角色，然後再設置模型",
     "fillProfileNameFirstForVoice": "請先填寫貓娘檔案名，然後再注冊音色",
     "createCharacterFirstForVoice": "請先點擊\"確認新貓娘\"按鈕創建角色，然後再注冊音色",
     "allowPopups": "請允許彈窗！",

@@ -988,6 +988,7 @@
     "saveError": "An error occurred while saving: {{error}}",
     "fillProfileNameFirstForLive2D": "Please fill in the neko profile name first, then set the Live2D model",
     "createCharacterFirst": "Please click the \"Confirm New Character\" button to create the character first, then set the Live2D model",
+    "createCharacterFirstForModel": "Please click the \"Confirm New Character\" button to create the character first, then set the model",
     "fillProfileNameFirstForVoice": "Please fill in the neko profile name first, then register the voice",
     "createCharacterFirstForVoice": "Please click the \"Confirm New Character\" button to create the character first, then register the voice",
     "allowPopups": "Please allow popups!",
