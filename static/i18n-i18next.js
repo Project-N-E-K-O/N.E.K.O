@@ -28,6 +28,10 @@
     // 支持的语言列表
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja'];
 
+    // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
+    // 更新语言包内容时可以递增此值
+    const LOCALE_VERSION = '2026-01-31-1';
+
     // 获取浏览器语言（同步，作为 fallback）
     function getBrowserLanguage() {
         // 1. 检查 localStorage
@@ -347,7 +351,7 @@
                 getInitialLanguage(),  // 异步获取语言（优先 Steam）
                 ...SUPPORTED_LANGUAGES.map(async (lang) => {
                     try {
-                        const response = await fetch(`/static/locales/${lang}.json`);
+                        const response = await fetch(`/static/locales/${lang}.json?v=${encodeURIComponent(LOCALE_VERSION)}`);
                         if (response.ok) {
                             const translations = await response.json();
                             console.log(`[i18n] ✅ ${lang} 翻译文件加载成功`);
@@ -477,7 +481,7 @@
                     ns: ['translation'],
                     defaultNS: 'translation',
                     backend: {
-                        loadPath: '/static/locales/{{lng}}.json',
+                        loadPath: `/static/locales/{{lng}}.json?v=${encodeURIComponent(LOCALE_VERSION)}`,
                         parse: function (data) {
                             try {
                                 return JSON.parse(data);

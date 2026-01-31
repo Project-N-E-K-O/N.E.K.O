@@ -1066,7 +1066,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     function t(key, fallback, params = {}) {
         try {
             if (window.t && typeof window.t === 'function') {
-                return window.t(key, params);
+                const translated = window.t(key, params);
+                // i18next 在缺失 key 时通常会直接返回 key 本身，这里统一回退到 fallback
+                if (translated && translated !== key) {
+                    return translated;
+                }
             }
         } catch (e) {
             console.error(`[i18n] Translation failed for key "${key}":`, e);
@@ -2917,12 +2921,17 @@ document.addEventListener('DOMContentLoaded', async () => {
                 motionSelect.disabled = false;
                 const motionSelectBtn = document.getElementById('motion-select-btn');
                 if (motionSelectBtn) motionSelectBtn.disabled = false;
-                // 播放按钮保持禁用，直到用户选择一个动作
-                playMotionBtn.disabled = true;
+                // 播放按钮保持可用：未选择动作时由点击逻辑提示“请先选择动作”
+                playMotionBtn.disabled = false;
             }
 
-            // 表情播放按钮也保持禁用，直到用户选择一个表情
-            playExpressionBtn.disabled = true;
+            // 表情播放按钮：仅当有表情文件且已选择有效表情时启用
+            playExpressionBtn.disabled = !(
+                currentModelFiles.expression_files &&
+                currentModelFiles.expression_files.length > 0 &&
+                expressionSelect &&
+                expressionSelect.value
+            );
 
             // 启用其他控件
             setControlsDisabled(false);
@@ -2998,8 +3007,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             // 重置选择器到第一个选项（保持显示"增加动作"）
             e.target.value = '';
-            // 禁用播放按钮
-            playMotionBtn.disabled = true;
+            // 播放按钮保持可用：未选择动作时点击会提示
+            playMotionBtn.disabled = false;
             return;
         }
 
@@ -3007,7 +3016,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // 确保图标仍然是播放图标
         updateMotionPlayButtonIcon();
         updateMotionSelectButtonText();
-        // 启用播放按钮
+        // 播放按钮保持可用
         playMotionBtn.disabled = false;
     });
 
@@ -3024,14 +3033,24 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
                 // 重置选择器到第一个选项（保持显示"增加表情"）
                 e.target.value = '';
-                // 禁用播放按钮
-                playExpressionBtn.disabled = true;
+                // 仅当有表情文件且已选择有效表情时启用
+                const hasExpressions = !!(
+                    currentModelFiles &&
+                    currentModelFiles.expression_files &&
+                    currentModelFiles.expression_files.length > 0
+                );
+                playExpressionBtn.disabled = !(hasExpressions && e.target.value);
                 return;
             }
 
             updateExpressionSelectButtonText();
-            // 启用播放按钮
-            playExpressionBtn.disabled = false;
+            // 仅当有表情文件且已选择有效表情时启用
+            const hasExpressions = !!(
+                currentModelFiles &&
+                currentModelFiles.expression_files &&
+                currentModelFiles.expression_files.length > 0
+            );
+            playExpressionBtn.disabled = !(hasExpressions && e.target.value);
         });
     }
 
