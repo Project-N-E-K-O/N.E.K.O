@@ -371,6 +371,11 @@ class VRMExpression {
         });
     }
 
+    resetBaseExpression() {
+        this.autoReturnToNeutral = true; // 恢复自动回到 neutral
+        this.setBaseExpression('neutral');
+    }
+
     setBaseExpression(name) {
         // 彻底关闭自动切换，防止干扰
         this.autoChangeMood = false;

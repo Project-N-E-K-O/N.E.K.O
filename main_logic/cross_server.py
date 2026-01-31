@@ -301,9 +301,9 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                                 await resp.read()  # 确保响应被完全读取
                                         logger.debug(f"[{lanlan_name}] 已发送对话到analyzer进行分析")
                                 except asyncio.TimeoutError:
-                                    logger.warning(f"[{lanlan_name}] 发送到analyzer超时")
+                                    logger.debug(f"[{lanlan_name}] 发送到analyzer超时")
                                 except Exception as e:
-                                    logger.warning(f"[{lanlan_name}] 发送到analyzer失败: {e}")
+                                    logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e}")
                                 
                                 # Turn end时不保存聊天记录，只在session end或renew session时保存
 
@@ -344,9 +344,9 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                                 await resp.read()  # 确保响应被完全读取
                                         logger.debug(f"[{lanlan_name}] 已发送对话到analyzer进行分析 (session end)")
                                 except asyncio.TimeoutError:
-                                    logger.warning(f"[{lanlan_name}] 发送到analyzer超时 (session end)")
+                                    logger.debug(f"[{lanlan_name}] 发送到analyzer超时 (session end)")
                                 except Exception as e:
-                                    logger.warning(f"[{lanlan_name}] 发送到analyzer失败: {e} (session end)")
+                                    logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e} (session end)")
                                 
                                 # 清理连续的assistant消息（主动搭话未被响应时只保留最后一条）
                                 chat_history = cleanup_consecutive_assistant_messages(chat_history)

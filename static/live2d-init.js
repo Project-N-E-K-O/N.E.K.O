@@ -5,6 +5,18 @@
 // 创建全局 Live2D 管理器实例
 window.live2dManager = new Live2DManager();
 
+// 监听模型加载事件，自动更新全局引用（修复口型同步失效问题）
+window.live2dManager.onModelLoaded = (model) => {
+    if (!window.LanLan1) {
+        console.warn('[Live2D Init] LanLan1 尚未初始化，跳过全局引用更新');
+        return;
+    }
+    window.LanLan1.live2dModel = model;
+    window.LanLan1.currentModel = model;
+    window.LanLan1.emotionMapping = window.live2dManager.getEmotionMapping();
+    console.log('[Live2D Init] 全局模型引用已更新');
+};
+
 // 兼容性：保持原有的全局变量，但增加 VRM/Live2D 双模态调度逻辑
 window.LanLan1 = window.LanLan1 || {};
 
@@ -188,19 +200,18 @@ async function initLive2DModel() {
     // 检查是否在 model_manager 页面且当前选择的是 VRM 模型
     const isModelManagerPage = window.location.pathname.includes('model_manager');
     if (isModelManagerPage) {
-        // 优先使用模型类型选择器（radio/checkbox）来检测当前活跃的模型类型（更健壮）
-        const activeModelType = document.querySelector('input[name="modelType"]:checked')?.value;
+        // 兼容 model_manager.html：当前使用的是 <select id="model-type-select"> (live2d/vrm)
+        const modelTypeSelect = document.getElementById('model-type-select');
+        const activeModelType = modelTypeSelect?.value || localStorage.getItem('modelType');
         if (activeModelType === 'vrm') {
-            console.log('[Live2D Init] 模型管理页面当前选择的是 VRM 模型（通过 modelType 选择器），跳过 Live2D 初始化');
+            console.log('[Live2D Init] 模型管理页面当前选择的是 VRM 模型，跳过 Live2D 初始化');
             return;
         }
-        
+
         // 回退方案：检查选择器状态（防御性编程，处理边界情况）
-        const vrmModelSelect = document.querySelector('#vrmModelSelect');
-        const live2dModelSelect = document.querySelector('#live2dModelSelect');
-        
-        // 如果 VRM 模型选择器存在且有选中值，且 Live2D 选择器没有选中值，说明当前是 VRM 模式
-        // 注意：这里假设两个选择器是互斥的，如果同时有值，优先检查 modelType 选择器
+        // 注意：model_manager 页面实际 ID 分别为 #vrm-model-select 与 #model-select
+        const vrmModelSelect = document.getElementById('vrm-model-select');
+        const live2dModelSelect = document.getElementById('model-select');
         if (vrmModelSelect && vrmModelSelect.value && (!live2dModelSelect || !live2dModelSelect.value)) {
             console.log('[Live2D Init] 模型管理页面当前选择的是 VRM 模型（通过选择器状态），跳过 Live2D 初始化');
             return;

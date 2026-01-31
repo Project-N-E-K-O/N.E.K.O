@@ -189,18 +189,81 @@ class VRMCore {
     }
 
     /**
-     * 优化材质设置
+     * 优化材质设置 - VRoid Hub 风格
+     * 核心理念：柔和的阴影过渡、明亮的阴影颜色、减少对比度
      */
     optimizeMaterials() {
         if (!this.manager.currentModel || !this.manager.currentModel.vrm || !this.manager.currentModel.vrm.scene) return;
         
         this.manager.currentModel.vrm.scene.traverse((object) => {
             if (object.isMesh || object.isSkinnedMesh) {
-                object.castShadow = true;
-                object.receiveShadow = true;
-                const objectName = object.name.toLowerCase();
-                if (objectName.includes('face') || objectName.includes('skin') || objectName.includes('head')) {
-                    object.receiveShadow = false;
+                // VRoid Hub 风格：禁用阴影投射和接收，使用纯粹的 MToon 着色
+                object.castShadow = false;
+                object.receiveShadow = false;
+
+                // 优化 MToon 材质以获得 VRoid Hub 风格的柔和二次元效果
+                if (object.material) {
+                    const materials = Array.isArray(object.material) ? object.material : [object.material];
+                    materials.forEach(mat => {
+                        // 检查是否为 MToon 材质
+                        if (mat.version === 'mtoon' || mat.isMToonMaterial || (mat.userData && mat.userData.vrmMaterialProperties)) {
+                            // === VRoid Hub 风格核心参数 ===
+                            
+                            // 1. 阴影过渡柔和度（关键参数）
+                            // VRoid Hub 使用非常柔和的过渡，几乎看不到明显的阴影边界
+                            // 0.0 = 完全平滑渐变，1.0 = 硬边二值化
+                            if (mat.shadingToonyFactor !== undefined) {
+                                mat.shadingToonyFactor = 0.3; // VRoid Hub 风格：柔和过渡
+                            }
+                            
+                            // 2. 阴影偏移（控制受光面积）
+                            // 正值 = 更多区域被照亮，负值 = 更多阴影
+                            // VRoid Hub 倾向于让更多区域受光，减少暗部
+                            if (mat.shadingShiftFactor !== undefined) {
+                                mat.shadingShiftFactor = 0.15; // 增加受光面积，脸部更明亮
+                            }
+                            
+                            // 3. 自动提亮阴影颜色（shadeColor）
+                            // VRoid Hub 的阴影不是黑色/灰色，而是主色调的较淡版本
+                            if (mat.shadeColorFactor !== undefined && mat.uniforms?.litFactor?.value) {
+                                const litColor = mat.uniforms.litFactor.value;
+                                const shadeColor = mat.shadeColorFactor;
+                                
+                                // 计算当前阴影颜色与主色调的关系
+                                // 如果阴影颜色太暗（与主色差距过大），自动提亮
+                                const brightness = (c) => (c.r + c.g + c.b) / 3;
+                                const litBrightness = brightness(litColor);
+                                const shadeBrightness = brightness(shadeColor);
+                                
+                                // 如果阴影亮度低于主色的 60%，进行提亮处理
+                                if (litBrightness > 0 && shadeBrightness < litBrightness * 0.6) {
+                                    // 目标：让阴影亮度达到主色的 70-80%
+                                    const targetBrightness = litBrightness * 0.75;
+                                    const factor = targetBrightness / Math.max(shadeBrightness, 0.01);
+                                    
+                                    // 混合提亮：保持色相，提升亮度
+                                    shadeColor.r = Math.min(1, shadeColor.r * factor * 0.8 + litColor.r * 0.2);
+                                    shadeColor.g = Math.min(1, shadeColor.g * factor * 0.8 + litColor.g * 0.2);
+                                    shadeColor.b = Math.min(1, shadeColor.b * factor * 0.8 + litColor.b * 0.2);
+                                }
+                            }
+                            
+                            // 4. 边缘光（Rim Light）- 轻微增强轮廓
+                            if (mat.rimLightingMixFactor !== undefined) {
+                                mat.rimLightingMixFactor = 0.3; // 轻微边缘光，不要太强
+                            }
+                            
+                            // 5. 参数化边缘光设置（如果材质支持）
+                            if (mat.parametricRimFresnelPowerFactor !== undefined) {
+                                mat.parametricRimFresnelPowerFactor = 3.0; // 控制边缘光范围
+                            }
+                            if (mat.parametricRimLiftFactor !== undefined) {
+                                mat.parametricRimLiftFactor = 0.1; // 边缘光基础强度
+                            }
+                            
+                            mat.needsUpdate = true;
+                        }
+                    });
                 }
             }
         });
@@ -332,8 +395,9 @@ class VRMCore {
         }
         
         // 使用 Cineon 色调映射，提亮暗部，降低整体对比度，更接近 VRoid Hub 效果
-        this.manager.renderer.toneMapping = THREE.CineonToneMapping; 
-        this.manager.renderer.toneMappingExposure = 1.3;
+        // 建议使用 LinearToneMapping 或 NoToneMapping 以获得更纯净的二次元感
+        this.manager.renderer.toneMapping = THREE.LinearToneMapping; 
+        this.manager.renderer.toneMappingExposure = 1.0;
 
         const canvas = this.manager.renderer.domElement;
         canvas.style.setProperty('pointer-events', 'auto', 'important');
@@ -360,51 +424,57 @@ class VRMCore {
         this.manager.scene.add(this.manager.camera);
 
         // 使用光照配置（如果提供），否则使用默认值
-        // VRoid Hub 风格：高环境光、柔和方向光
+        // VRoid Hub 风格：极高环境光、主灯跟随摄像机、无阴影
         const defaultLighting = {
-            ambient: 1.0,
-            main: 0.5,
-            fill: 0.3,
-            rim: 0.1,
-            top: 0.15,
-            bottom: 0.2
+            ambient: 1.0,      // VRoid Hub 风格：极高环境光，几乎消除所有暗部
+            main: 0.6,         // 主光适中，主要靠环境光提亮
+            fill: 0.0,         // 不需要补光
+            rim: 0.0,          // 不需要外部轮廓光（MToon 内建处理）
+            top: 0.0,          // 不需要顶光
+            bottom: 0.0        // 不需要底光
         };
         const lighting = lightingConfig || defaultLighting;
 
-        // 环境光：高强度消除死黑阴影
-        const hemisphereLight = new THREE.HemisphereLight(0xffffff, 0xcccccc, lighting.ambient ?? defaultLighting.ambient);
+        // 环境光：使用 HemisphereLight，天空色和地面色都接近白色
+        // VRoid Hub 风格：极高强度，几乎消除所有暗部，让模型看起来柔和明亮
+        const hemisphereLight = new THREE.HemisphereLight(
+            0xffffff,   // 天空色：纯白
+            0xf0f0f0,   // 地面色：接近白色，减少底部阴影
+            lighting.ambient ?? defaultLighting.ambient
+        );
         this.manager.scene.add(hemisphereLight);
         this.manager.ambientLight = hemisphereLight;
 
-        // 主光：正前方略偏上，消除鼻底和脖子深重阴影
+        // 主光：会在渲染循环中跟随相机，这里只设置初始位置
+        // VRoid Hub 风格：正面柔和照明，位置会动态更新
         const mainLight = new THREE.DirectionalLight(0xffffff, lighting.main ?? defaultLighting.main);
-        mainLight.position.set(0.2, 1.0, 3.0);
-        mainLight.castShadow = false;
+        mainLight.position.set(0, 1.0, 3.0);
+        mainLight.castShadow = false;  // VRoid Hub 不使用实时阴影
         this.manager.scene.add(mainLight);
         this.manager.mainLight = mainLight;
 
-        // 补光：轻微补充
+        // 补光：保留但默认关闭
         const fillLight = new THREE.DirectionalLight(0xffffff, lighting.fill ?? defaultLighting.fill);
         fillLight.position.set(-2, 1, 2);
         fillLight.castShadow = false;
         this.manager.scene.add(fillLight);
         this.manager.fillLight = fillLight;
 
-        // 轮廓光：关闭以减少边缘杂光
+        // 轮廓光：保留但默认关闭（MToon 材质有内建边缘光）
         const rimLight = new THREE.DirectionalLight(0xffffff, lighting.rim ?? defaultLighting.rim);
         rimLight.position.set(0, 1, -2);
         rimLight.castShadow = false;
         this.manager.scene.add(rimLight);
         this.manager.rimLight = rimLight;
 
-        // 顶光：微弱
+        // 顶光：保留但默认关闭
         const topLight = new THREE.DirectionalLight(0xffffff, lighting.top ?? defaultLighting.top);
         topLight.position.set(0, 3, 0);
         topLight.castShadow = false;
         this.manager.scene.add(topLight);
         this.manager.topLight = topLight;
 
-        // 底部补光：关闭
+        // 底部补光：保留但默认关闭
         const bottomLight = new THREE.DirectionalLight(0xffffff, lighting.bottom ?? defaultLighting.bottom);
         bottomLight.position.set(0, -1, 1);
         bottomLight.castShadow = false;

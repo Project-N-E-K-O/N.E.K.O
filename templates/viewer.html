@@ -282,10 +282,11 @@
 <body>
     <div id="chat-container">
         <div id="chat-header">
-            <span id="chat-title" data-i18n="chat.viewerTitle">💬 对话 (观看模式)</span>
+            <img src="/static/icons/chat_icon.png" alt="对话" style="width: 25px; height: 25px; object-fit: contain; margin-right: 6px; vertical-align: middle; image-rendering: -webkit-optimize-contrast; image-rendering: crisp-edges;">
+            <span id="chat-title" data-i18n="chat.viewerTitle">对话 (观看模式)</span>
         </div>
         <button id="toggle-chat-btn" data-i18n-title="common.minimize" title="最小化"><img
-                src="/static/icons/minimize_icon.png" alt="最小化" data-i18n-alt="common.minimize"
+                src='/static/icons/expand_icon.png' alt="最小化" data-i18n-alt="common.minimize"
                 style="width: 24px; height: 24px; object-fit: contain; pointer-events: none;"></button>
         <div id="chat-content-wrapper">
             <div id="chatContainer"></div>
@@ -393,6 +394,7 @@
 
                 // 动态加载 live2d 模块（按顺序加载拆分后的文件）
                 const live2dModules = [
+                    '/static/common_dialogs.js',
                     '/static/live2d-core.js',
                     '/static/live2d-emotion.js',
                     '/static/live2d-model.js',
@@ -449,7 +451,7 @@
                 // 更新图标为最小化图标
                 let iconImg = toggleChatBtn.querySelector('img');
                 if (iconImg) {
-                    iconImg.src = '/static/icons/minimize_icon.png';
+                    iconImg.src = '/static/icons/expand_icon.png';
                     iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
                 }
                 toggleChatBtn.title = window.t ? window.t('common.minimize') : '最小化';

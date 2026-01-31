@@ -152,6 +152,7 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyGlm": "",
     "assistApiKeyStep": "",
     "assistApiKeySilicon": "",
+    "assistApiKeyGemini": "",
     "mcpToken": "",
 }
 
@@ -182,6 +183,10 @@ DEFAULT_CORE_API_PROFILES = {
     'step': {
         'CORE_URL': "wss://api.stepfun.com/v1/realtime",
         'CORE_MODEL': "step-audio-2",
+    },
+    'gemini': {
+        # Gemini uses google-genai SDK, not raw WebSocket
+        'CORE_MODEL': "gemini-2.5-flash-native-audio-preview-12-2025",
     },
 }
 
@@ -261,6 +266,18 @@ DEFAULT_ASSIST_API_PROFILES = {
         'COMPUTER_USE_GROUND_MODEL': "zai-org/GLM-4.6V",
         'COMPUTER_USE_GROUND_URL': "https://api.siliconflow.cn/v1",
     },
+    'gemini': {
+        'OPENROUTER_URL': "https://generativelanguage.googleapis.com/v1beta/openai/",
+        'SUMMARY_MODEL': "gemini-3-flash-preview",
+        'CORRECTION_MODEL': "gemini-3-flash-preview",
+        'EMOTION_MODEL': "gemini-2.5-flash",
+        'VISION_MODEL': "gemini-3-flash-preview",
+        # Gemini VL 模型支持 Computer Use
+        'COMPUTER_USE_MODEL': "gemini-3-flash-preview",
+        'COMPUTER_USE_MODEL_URL': "https://generativelanguage.googleapis.com/v1beta/openai/",
+        'COMPUTER_USE_GROUND_MODEL': "gemini-3-flash-preview",
+        'COMPUTER_USE_GROUND_URL': "https://generativelanguage.googleapis.com/v1beta/openai/",
+    },
 }
 
 DEFAULT_ASSIST_API_KEY_FIELDS = {
@@ -269,6 +286,7 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'glm': 'ASSIST_API_KEY_GLM',
     'step': 'ASSIST_API_KEY_STEP',
     'silicon': 'ASSIST_API_KEY_SILICON',
+    'gemini': 'ASSIST_API_KEY_GEMINI',
 }
 
 DEFAULT_CONFIG_DATA = {
@@ -286,6 +304,8 @@ TIME_COMPRESSED_TABLE_NAME = "time_indexed_compressed"
 # 不同模型供应商需要的 extra_body 格式
 EXTRA_BODY_OPENAI = {"enable_thinking": False}
 EXTRA_BODY_CLAUDE = {"thinking": {"type": "disabled"}}
+EXTRA_BODY_GEMINI = {"extra_body": {"google": {"thinking_config": {"thinking_budget": 0}}}}
+EXTRA_BODY_GEMINI_3 = {"extra_body": {"google": {"thinking_config": {"thinking_level": "low", "include_thoughts": False}}}}
 
 # 模型到 extra_body 的映射
 MODELS_EXTRA_BODY_MAP = {
@@ -298,11 +318,16 @@ MODELS_EXTRA_BODY_MAP = {
     # GLM 系列
     "glm-4.5-air": EXTRA_BODY_CLAUDE,
     "glm-4.6v-flash": EXTRA_BODY_CLAUDE,
+    "glm-4.7-flash": EXTRA_BODY_CLAUDE,
     "glm-4.6v": EXTRA_BODY_CLAUDE,
     # Silicon (zai-org) - 使用 Qwen 格式
     "zai-org/GLM-4.6V": EXTRA_BODY_OPENAI,
     "free-model": {"tools":[{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
     "step-2-mini": {"tools":[{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
+    # Gemini 系列
+    "gemini-2.5-flash": EXTRA_BODY_GEMINI,  # 禁用 thinking
+    "gemini-2.5-flash-lite": EXTRA_BODY_GEMINI,  # 禁用 thinking
+    "gemini-3-flash-preview": EXTRA_BODY_GEMINI_3,  # 低级别 thinking
 }
 
 
@@ -344,6 +369,7 @@ __all__ = [
     'get_extra_body',
     'EXTRA_BODY_OPENAI',
     'EXTRA_BODY_CLAUDE',
+    'EXTRA_BODY_GEMINI',
     'MAIN_SERVER_PORT',
     'MEMORY_SERVER_PORT',
     'MONITOR_SERVER_PORT',

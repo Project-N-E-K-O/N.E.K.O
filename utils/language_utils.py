@@ -111,7 +111,7 @@ def _get_steam_language() -> Optional[str]:
         # Steam 语言代码到我们的语言代码的映射
         STEAM_TO_LANG_MAP = {
             'schinese': 'zh',
-            'tchinese': 'zh',
+            'tchinese': 'zh-TW',
             'english': 'en',
             'japanese': 'ja',
             'ja': 'ja'
@@ -153,7 +153,8 @@ def initialize_global_language() -> str:
         # 优先级1：尝试从 Steam 获取
         steam_lang = _get_steam_language()
         if steam_lang:
-            _global_language = steam_lang
+            # 归一化 Steam 语言代码为短格式
+            _global_language = normalize_language_code(steam_lang, format='short')
             logger.info(f"全局语言已初始化（来自Steam）: {_global_language}")
             _global_language_initialized = True
             return _global_language
@@ -277,7 +278,7 @@ def normalize_language_code(lang: str, format: str = 'short') -> str:
     # 参考: https://partner.steamgames.com/doc/store/localization/languages
     STEAM_LANG_MAP = {
         'schinese': 'zh',      # 简体中文
-        'tchinese': 'zh',      # 繁体中文（映射到简体中文）
+        'tchinese': 'zh-TW',   # 繁体中文
         'english': 'en',       # 英文
         'japanese': 'ja',      # 日语
     }
@@ -285,13 +286,25 @@ def normalize_language_code(lang: str, format: str = 'short') -> str:
     # 先检查是否是 Steam 语言代码
     if lang_lower in STEAM_LANG_MAP:
         normalized = STEAM_LANG_MAP[lang_lower]
-        if format == 'full' and normalized == 'zh':
+        # 对 Steam 映射结果也应用短格式归一化
+        if format == 'short':
+            if normalized.startswith('zh'):
+                return 'zh'
+            elif normalized.startswith('ja'):
+                return 'ja'
+            elif normalized.startswith('en'):
+                return 'en'
+        elif format == 'full' and normalized == 'zh':
             return 'zh-CN'
         return normalized
     
     # 标准语言代码处理
     if lang_lower.startswith('zh'):
-        return 'zh' if format == 'short' else 'zh-CN'
+        # 区分简体和繁体中文
+        if 'tw' in lang_lower or 'hant' in lang_lower or 'hk' in lang_lower:
+            return 'zh-TW' if format == 'full' else 'zh'
+        else:
+            return 'zh' if format == 'short' else 'zh-CN'
     elif lang_lower.startswith('ja'):
         return 'ja'
     elif lang_lower.startswith('en'):

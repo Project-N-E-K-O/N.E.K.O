@@ -274,6 +274,10 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         }
     }
 
+    // 记录模型的初始参数（用于expression重置）
+    // 必须在应用常驻表情之前记录，否则记录的是已应用常驻表情后的状态
+    this.recordInitialParameters();
+
     // 设置常驻表情
     try { await this.syncEmotionMappingWithServer({ replacePersistentOnly: true }); } catch(_) {}
     await this.setupPersistentExpressions();
@@ -286,9 +290,6 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
             console.warn('[Live2D Model] 常驻表情应用完成回调执行失败:', callbackError);
         }
     }
-
-    // 记录模型的初始参数（用于expression重置）
-    this.recordInitialParameters();
     
     // 加载并应用模型目录中的parameters.json文件（优先级最高）
     // 先加载参数，然后再安装口型覆盖（这样coreModel.update就能访问到savedModelParameters）
@@ -349,6 +350,19 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
             this.pixi_app.ticker.start();
             console.log('[Live2D Model] Ticker 已启动');
         }
+    }
+
+    // 模型加载完成后，延迟播放Idle情绪（给模型一些时间完全初始化）
+    if (this.emotionMapping && (this.emotionMapping.motions?.['Idle'] || this.emotionMapping.expressions?.['Idle'])) {
+        // 使用 setTimeout 延迟500ms，确保模型完全初始化
+        setTimeout(async () => {
+            try {
+                console.log('[Live2D Model] 模型加载完成，开始播放Idle情绪');
+                await this.setEmotion('Idle');
+            } catch (error) {
+                console.warn('[Live2D Model] 播放Idle情绪失败:', error);
+            }
+        }, 500);
     }
 
     // 调用回调函数
@@ -422,17 +436,18 @@ Live2DManager.prototype.installMouthOverride = function() {
     }
 
     // 口型参数列表（这些参数不会被常驻表情覆盖）- 使用文件顶部定义的 LIPSYNC_PARAMS 常量
-    const lipSyncParams = window.LIPSYNC_PARAMS;
+    const lipSyncParams = window.LIPSYNC_PARAMS || ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
     const visibilityParams = ['ParamOpacity', 'ParamVisibility'];
     
     // 缓存参数索引，避免每帧查询
     const mouthParamIndices = {};
-    for (const id of ['ParamMouthOpenY', 'ParamO']) {
+    for (const id of lipSyncParams) {
         try {
             const idx = coreModel.getParameterIndex(id);
             if (idx >= 0) mouthParamIndices[id] = idx;
         } catch (_) {}
     }
+    console.log('[Live2D MouthOverride] 找到的口型参数:', Object.keys(mouthParamIndices).join(', ') || '无');
     
     // 覆盖 1: motionManager.update - 在动作更新后立即覆盖参数
     if (internalModel.motionManager && typeof internalModel.motionManager.update === 'function') {
@@ -601,7 +616,7 @@ Live2DManager.prototype.installMouthOverride = function() {
                     const params = this.persistentExpressionParamsByName[name];
                     if (Array.isArray(params)) {
                         for (const p of params) {
-                            if (window.LIPSYNC_PARAMS.includes(p.Id)) continue;
+                            if (lipSyncParams.includes(p.Id)) continue;
                             try {
                                 currentCoreModel.setParameterValueById(p.Id, p.Value);
                             } catch (_) {}
@@ -680,20 +695,43 @@ Live2DManager.prototype.installMouthOverride = function() {
 Live2DManager.prototype.setMouth = function(value) {
     const v = Math.max(0, Math.min(1, Number(value) || 0));
     this.mouthValue = v;
+    
+    // 调试日志（每100次调用输出一次）
+    if (typeof this._setMouthCallCount === 'undefined') this._setMouthCallCount = 0;
+    this._setMouthCallCount++;
+    const shouldLog = this._setMouthCallCount % 100 === 1;
+    
     // 即时写入一次，best-effort 同步
     try {
         if (this.currentModel && this.currentModel.internalModel) {
             const coreModel = this.currentModel.internalModel.coreModel;
-            const mouthIds = ['ParamMouthOpenY', 'ParamO'];
+            // 使用完整的 LIPSYNC_PARAMS 列表，确保覆盖所有可能的口型参数
+            const mouthIds = window.LIPSYNC_PARAMS || ['ParamMouthOpenY', 'ParamMouthForm', 'ParamMouthOpen', 'ParamA', 'ParamI', 'ParamU', 'ParamE', 'ParamO'];
+            let paramsSet = [];
             for (const id of mouthIds) {
                 try {
-                    if (coreModel.getParameterIndex(id) !== -1) {
+                    const idx = coreModel.getParameterIndex(id);
+                    if (idx !== -1) {
+                        // 对于 ParamMouthForm，通常表示嘴型（-1到1），不需要设置为 mouthValue
+                        // ParamMouthOpenY, ParamMouthOpen, ParamA, ParamI, ParamU, ParamE, ParamO 都与张嘴程度相关
+                        if (id === 'ParamMouthForm') {
+                            // ParamMouthForm 保持不变或设置为中性值
+                            continue;
+                        }
                         coreModel.setParameterValueById(id, this.mouthValue, 1);
+                        paramsSet.push(id);
                     }
                 } catch (_) {}
             }
+            if (shouldLog) {
+                console.log('[Live2D setMouth] value:', v.toFixed(3), 'params set:', paramsSet.join(', '));
+            }
+        } else if (shouldLog) {
+            console.warn('[Live2D setMouth] 模型未就绪');
         }
-    } catch (_) {}
+    } catch (e) {
+        if (shouldLog) console.error('[Live2D setMouth] 错误:', e);
+    }
 };
 
 // 应用模型设置

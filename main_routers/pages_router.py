@@ -49,6 +49,7 @@ async def live2d_parameter_editor(request: Request):
         "request": request
     })
 
+
 @router.get("/live2d_emotion_manager", response_class=HTMLResponse)
 async def live2d_emotion_manager(request: Request):
     """Live2D情感映射管理器页面"""

@@ -1,1029 +1,683 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title data-i18n="emotion.manager">Live2D 情感映射管理器</title>
-    <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
-    <script src="/static/i18n-i18next.js"></script>
-    <script src="/static/common_dialogs.js"></script>
+    <title>Live2D 情感映射管理器 - Project N.E.K.O.</title>
     <style>
+        :root {
+            /* 品牌核心色 */
+            --color-n-main: #40C5F1;
+            --color-n-deep: #22b3ff;
+            --color-n-light: #e3f4ff;
+            --color-n-border: #b3e5fc;
+
+            /* 语义状态色 */
+            --color-success: #2ecc71;
+            --color-error: #ff5252;
+            --color-warning: #f39c12;
+
+            /* 文字色 */
+            --color-text-main: #40C5F1;
+            --color-text-dark: #222222;
+            --color-text-muted: #666666;
+
+            /* 圆角与间距 */
+            --radius-capsule: 50px;
+            --radius-card: 20px;
+            --spacing-sm: 8px;
+            --spacing-md: 12px;
+            --spacing-lg: 16px;
+            --spacing-xl: 24px;
+        }
+
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
 
-        *:focus {
-            outline: none !important;
-            box-shadow: none !important; 
+        body {
+            font-family: 'Source Han Sans CN', 'Noto Sans SC', '微软雅黑', 'Segoe UI', Arial, sans-serif;
+            background: var(--color-n-light);
+            color: var(--color-text-dark);
+            padding: var(--spacing-xl);
+            min-height: 100vh;
         }
 
-        body {
-             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-             background-attachment: fixed;
-             min-height: 100vh;
-             padding: 10px;
-             margin: 0;
-         }
+        .container {
+            max-width: 900px;
+            margin: 40px auto;
+            background: white;
+            border-radius: var(--radius-card);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
 
-                 .container {
-             max-width: 1400px;
-             margin: 0 auto;
-             background: white;
-             border-radius: 15px;
-             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
-             overflow: hidden;
-             min-height: calc(100vh - 20px);
-             display: flex;
-             flex-direction: column;
-         }
+        .header {
+            background: var(--color-n-main);
+            padding: 24px;
+            border-radius: var(--radius-card) var(--radius-card) 0 0;
+        }
 
-                 .header {
-             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-             color: white;
-             padding: 15px;
-             text-align: center;
-             flex-shrink: 0;
-             opacity: 0.9;
-         }
+        .header h1 {
+            position: relative;
+            color: transparent;
+            font-size: 28px;
+            font-weight: bold;
+            margin-bottom: var(--spacing-sm);
+            display: inline-block;
+            --button-text-stroke-color: var(--color-n-deep);
+        }
 
-                 .header h1 {
-             font-size: 1.6em;
-             margin-bottom: 5px;
-             font-weight: 500;
-         }
+        .header h1::before {
+            content: attr(data-text);
+            position: absolute;
+            left: 0;
+            top: 0;
+            -webkit-text-stroke: 1px var(--button-text-stroke-color);
+            text-shadow:
+                2px 0 0 var(--button-text-stroke-color), -2px 0 0 var(--button-text-stroke-color),
+                0 2px 0 var(--button-text-stroke-color), 0 -2px 0 var(--button-text-stroke-color),
+                1px 1px 0 var(--button-text-stroke-color), -1px -1px 0 var(--button-text-stroke-color),
+                1px -1px 0 var(--button-text-stroke-color), -1px 1px 0 var(--button-text-stroke-color),
+                2px 2px 0 var(--button-text-stroke-color), -2px -2px 0 var(--button-text-stroke-color),
+                2px -2px 0 var(--button-text-stroke-color), -2px 2px 0 var(--button-text-stroke-color);
+            z-index: -1;
+        }
 
-                 .header p {
-             font-size: 0.9em;
-             opacity: 0.8;
-         }
+        .header h1::after {
+            content: attr(data-text);
+            position: absolute;
+            left: 0;
+            top: 0;
+            background: linear-gradient(to bottom, #96e8ff, #e3f4ff, #ffffff);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            z-index: 10;
+        }
 
-                 .content {
-             padding: 20px;
-             flex: 1;
-             overflow: hidden;
-             display: flex;
-             flex-direction: column;
-             position: relative;
-         }
+        .header p {
+            color: white;
+            font-size: 14px;
+            margin: 0;
+        }
 
-        
+        .container-content {
+            padding: var(--spacing-xl);
+        }
+
+        .field-row {
+            margin-bottom: var(--spacing-lg);
+        }
+
+        .field-row label {
+            display: block;
+            color: var(--color-text-main);
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: var(--spacing-sm);
+        }
+
+        .field-row select {
+            width: 100%;
+            padding: 12px 16px;
+            background: white;
+            border: 2px solid var(--color-n-border);
+            border-radius: var(--radius-capsule);
+            color: var(--color-text-main);
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2340C5F1' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 16px center;
+            padding-right: 40px;
+        }
+
+        .field-row select:hover {
+            border-color: var(--color-n-main);
+            transform: translateY(-1px);
+        }
+
+        .field-row select:focus {
+            outline: none;
+            border-color: var(--color-n-main);
+            box-shadow: 0 0 0 3px rgba(64, 197, 241, 0.15);
+        }
+
+        .emotion-section {
+            margin-bottom: var(--spacing-xl);
+            padding: var(--spacing-lg);
+            background: var(--color-n-light);
+            border-radius: var(--radius-card);
+            border: 2px solid var(--color-n-border);
+        }
+
+        .emotion-header {
+            color: var(--color-text-main);
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: var(--spacing-md);
+            display: flex;
+            align-items: center;
+            gap: var(--spacing-sm);
+        }
+
+        .emotion-header::before {
+            content: '';
+            width: 4px;
+            height: 20px;
+            background: var(--color-n-main);
+            border-radius: 2px;
+        }
+
+        .select-group {
+            margin-bottom: var(--spacing-md);
+        }
+
+        .select-group:last-child {
+            margin-bottom: 0;
+        }
+
+        .select-group label {
+            display: block;
+            color: var(--color-text-muted);
+            font-size: 13px;
+            margin-bottom: 6px;
+        }
+
+        .button-group {
+            display: flex;
+            gap: var(--spacing-md);
+            margin-top: var(--spacing-xl);
+        }
 
         .btn {
-            padding: 12px 24px;
+            flex: 1;
+            padding: 14px 24px;
             border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 14px;
+            border-radius: var(--radius-capsule);
+            font-size: 16px;
             font-weight: 600;
-            transition: all 0.3s ease;
-            text-decoration: none;
-            display: inline-block;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        }
+
+        .btn:active {
+            transform: translateY(1px) scale(0.98);
         }
 
         .btn-primary {
-            background: #667eea;
+            background: linear-gradient(135deg, var(--color-n-main) 0%, var(--color-n-deep) 100%);
             color: white;
-        }
-
-        .btn-primary:hover {
-            background: #5a6fd8;
-            transform: translateY(-2px);
-        }
-
-        .btn-success {
-            background: #28a745;
-            color: white;
-        }
-
-        .btn-success:hover {
-            background: #218838;
-            transform: translateY(-2px);
-        }
-
-        .btn-danger {
-            background: #dc3545;
-            color: white;
-        }
-
-        .btn-danger:hover {
-            background: #c82333;
-            transform: translateY(-2px);
         }
 
         .btn-secondary {
-            background: #6c757d;
-            color: white;
+            background: white;
+            color: var(--color-text-main);
+            border: 2px solid var(--color-n-border);
         }
 
         .btn-secondary:hover {
-            background: #5a6268;
-            transform: translateY(-2px);
+            border-color: var(--color-n-main);
+            background: var(--color-n-light);
         }
 
-        .btn-info {
-            background: #17a2b8;
-            color: white;
-        }
-
-        .btn-info:hover {
-            background: #138496;
-            transform: translateY(-2px);
-        }
-
-                 .model-selector {
-             display: flex;
-             gap: 15px;
-             margin-bottom: 15px;
-             align-items: center;
-             flex-wrap: wrap;
-             flex-shrink: 0;
-         }
-
-        .model-selector select {
-            padding: 10px 15px;
-            border: 2px solid #e9ecef;
-            border-radius: 8px;
+        .status-message {
+            margin-top: var(--spacing-lg);
+            padding: var(--spacing-md);
+            border-radius: var(--radius-card);
             font-size: 14px;
-            min-width: 200px;
+            display: none;
+            animation: slideIn 0.3s ease;
         }
 
-        .model-selector select:focus {
-            outline: none;
-            border-color: #667eea;
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
         }
 
-                 .emotion-grid {
-             display: grid;
-             grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-             gap: 12px;
-             flex: 1;
-             margin-top: 10px;
-         }
-
-                 .emotion-card {
-             background: #f8f9fa;
-             border-radius: 12px;
-             padding: 12px;
-             border: 2px solid #e9ecef;
-             transition: all 0.3s ease;
-         }
-
-        .emotion-card:hover {
-            border-color: #667eea;
-            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.1);
+        .status-success {
+            background: rgba(46, 204, 113, 0.1);
+            border: 2px solid var(--color-success);
+            color: var(--color-success);
         }
 
-                 .emotion-card h3 {
-             color: #495057;
-             margin-bottom: 10px;
-             font-size: 1em;
-             display: flex;
-             align-items: center;
-             gap: 8px;
-             padding: 6px 0;
-             border-bottom: 1px solid #dee2e6;
-         }
-
-                 .emotion-icon {
-             width: 20px;
-             height: 20px;
-             border-radius: 50%;
-             display: flex;
-             align-items: center;
-             justify-content: center;
-             font-size: 11px;
-             font-weight: bold;
-             color: white;
-         }
-
-        .emotion-icon.happy { background: #ffc107; }
-        .emotion-icon.sad { background: #17a2b8; }
-        .emotion-icon.angry { background: #dc3545; }
-        .emotion-icon.neutral { background: #6c757d; }
-        .emotion-icon.surprised { background: #fd7e14; }
-
-                 .file-list {
-             margin-top: 12px;
-         }
-
-                 .file-item {
-             display: flex;
-             align-items: center;
-             justify-content: space-between;
-             padding: 4px 8px;
-             background: white;
-             border-radius: 6px;
-             margin-bottom: 4px;
-             border: 1px solid #dee2e6;
-         }
-
-        .file-item:hover {
-            background: #f8f9fa;
+        .status-error {
+            background: rgba(255, 82, 82, 0.1);
+            border: 2px solid var(--color-error);
+            color: var(--color-error);
         }
 
-                 .file-name {
-             flex: 1;
-             font-size: 12px;
-             color: #495057;
-         }
-
-        .file-actions {
-            display: flex;
-            gap: 5px;
+        .status-info {
+            background: rgba(64, 197, 241, 0.1);
+            border: 2px solid var(--color-n-main);
+            color: var(--color-text-main);
         }
-
-                 .btn-small {
-             padding: 6px 12px;
-             font-size: 12px;
-             border-radius: 4px;
-             min-height: 28px;
-             display: inline-flex;
-             align-items: center;
-             justify-content: center;
-         }
-
-                 .add-file-section {
-             margin-top: 8px;
-             padding-top: 8px;
-             border-top: 1px solid #dee2e6;
-         }
-
-                 .file-input-group {
-             display: flex;
-             gap: 8px;
-             margin-bottom: 4px;
-             align-items: center;
-             min-height: 36px;
-         }
-
-        .file-input-group input {
-            flex: 1;
-            padding: 8px 12px;
-            border: 1px solid #ced4da;
-            border-radius: 6px;
-            font-size: 14px;
-        }
-
-        .file-input-group input:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-
-                 .file-select {
-             flex: 1;
-             padding: 6px 10px;
-             border: 1px solid #ced4da;
-             border-radius: 6px;
-             font-size: 13px;
-             background: white;
-             min-width: 0; /* 防止flex项目溢出 */
-         }
-
-        .file-select:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-
-        /* 确保添加按钮不被挤压 */
-        .file-input-group .btn-small {
-            flex-shrink: 0;
-            min-width: 50px;
-            white-space: nowrap;
-        }
-
-                 .toast-container {
-             position: fixed;
-             top: 20px;
-             right: 20px;
-             z-index: 1000;
-             max-width: 400px;
-         }
-
-         .toast {
-             padding: 12px 16px;
-             border-radius: 8px;
-             margin-bottom: 10px;
-             font-weight: 500;
-             font-size: 14px;
-             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-             transform: translateX(100%);
-             transition: transform 0.3s ease;
-             opacity: 0;
-         }
-
-         .toast.show {
-             transform: translateX(0);
-             opacity: 1;
-         }
-
-         .toast-success {
-             background: #d4edda;
-             color: #155724;
-             border: 1px solid #c3e6cb;
-         }
-
-         .toast-error {
-             background: #f8d7da;
-             color: #721c24;
-             border: 1px solid #f5c6cb;
-         }
-
-         .toast-info {
-             background: #d1ecf1;
-             color: #0c5460;
-             border: 1px solid #bee5eb;
-         }
-
-         .toast-warning {
-             background: #fff3cd;
-             color: #856404;
-             border: 1px solid #ffeaa7;
-         }
-
-                            .status-indicator {
-             position: absolute;
-             top: 70px;
-             left: 20px;
-             display: flex;
-             align-items: center;
-             gap: 8px;
-             font-size: 12px;
-             color: #6c757d;
-             padding: 6px 10px;
-             background: #f8f9fa;
-             border-radius: 6px;
-             border: 1px solid #e9ecef;
-             z-index: 10;
-             max-width: 400px;
-             box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-         }
-
-         .status-dot {
-             width: 8px;
-             height: 8px;
-             border-radius: 50%;
-             animation: pulse 2s infinite;
-         }
-
-         .status-dot.success { background: #28a745; }
-         .status-dot.error { background: #dc3545; }
-         .status-dot.info { background: #17a2b8; }
-         .status-dot.warning { background: #ffc107; }
-
-         @keyframes pulse {
-             0% { opacity: 1; }
-             50% { opacity: 0.5; }
-             100% { opacity: 1; }
-         }
 
         .loading {
-            display: inline-block;
-            width: 20px;
-            height: 20px;
-            border: 3px solid #f3f3f3;
-            border-top: 3px solid #667eea;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
+            text-align: center;
+            padding: 40px;
+            color: var(--color-text-muted);
         }
 
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+        .loading::after {
+            content: '...';
+            animation: dots 1.5s steps(4, end) infinite;
         }
 
-                 .hidden {
-             display: none;
-         }
-
-         
-
-                 .model-info {
-             background: #e9ecef;
-             padding: 12px;
-             border-radius: 8px;
-             margin-bottom: 15px;
-             flex-shrink: 0;
-         }
-
-        .model-info h4 {
-            margin-bottom: 10px;
-            color: #495057;
+        @keyframes dots {
+            0%, 20% { content: '.'; }
+            40% { content: '..'; }
+            60%, 100% { content: '...'; }
         }
 
-        .model-info p {
-            margin-bottom: 5px;
-            font-size: 14px;
-            color: #6c757d;
+        @media (max-width: 600px) {
+            body {
+                padding: var(--spacing-md);
+            }
+
+            .container {
+                padding: var(--spacing-lg);
+            }
+
+            .header h1 {
+                font-size: 24px;
+            }
+
+            .button-group {
+                flex-direction: column;
+            }
         }
-
-
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1 data-i18n="emotion.manager">🎭 Live2D 情感映射管理器</h1>
-            <p data-i18n="emotion.description">管理和配置Live2D角色的动作与表情映射</p>
+            <h1 data-text="Live2D 情感映射管理器">Live2D 情感映射管理器</h1>
+            <p>配置不同情绪下的动作和表情</p>
         </div>
 
-                 <div class="content">
-                          <div class="model-selector">
-                 <label for="model-select" data-i18n="emotion.selectModel">选择Live2D模型：</label>
-                 <select id="model-select" onchange="loadModelMapping()">
-                     <option value="" data-i18n="emotion.pleaseSelect">请选择模型</option>
-                 </select>
-                 <button class="btn btn-success" onclick="saveMapping()" data-i18n="emotion.saveConfig">保存配置</button>
-                 <button class="btn btn-secondary" onclick="resetMapping()" data-i18n="emotion.reset">重置</button>
-             </div>
-             
-             <div id="model-status-indicator" class="status-indicator hidden">
-                 <span class="status-dot info"></span>
-                 <span id="model-status-text" data-i18n="emotion.loading">加载中...</span>
-             </div>
-
-            <div id="model-info" class="model-info hidden">
-                <h4 data-i18n="emotion.modelInfo">模型信息</h4>
-                <p id="model-path"></p>
-                <p id="model-status"></p>
+        <div class="container-content">
+            <div class="field-row">
+                <label for="model-select">选择 Live2D 模型</label>
+                <select id="model-select">
+                    <option value="">加载中...</option>
+                </select>
             </div>
 
-            <div id="emotion-grid" class="emotion-grid">
-                <!-- 情感卡片将通过JavaScript动态生成 -->
+            <div id="emotion-config" style="display: none;">
+            <!-- Happy -->
+            <div class="emotion-section">
+                <div class="emotion-header">开心 (Happy)</div>
+                <div class="select-group">
+                    <label>动作文件</label>
+                    <select class="emotion-motion-select" data-emotion="happy">
+                        <option value="">选择动作文件</option>
+                    </select>
+                </div>
+                <div class="select-group">
+                    <label>表情文件</label>
+                    <select class="emotion-expression-select" data-emotion="happy">
+                        <option value="">选择表情文件</option>
+                    </select>
+                </div>
             </div>
 
-            
+            <!-- Sad -->
+            <div class="emotion-section">
+                <div class="emotion-header">悲伤 (Sad)</div>
+                <div class="select-group">
+                    <label>动作文件</label>
+                    <select class="emotion-motion-select" data-emotion="sad">
+                        <option value="">选择动作文件</option>
+                    </select>
+                </div>
+                <div class="select-group">
+                    <label>表情文件</label>
+                    <select class="emotion-expression-select" data-emotion="sad">
+                        <option value="">选择表情文件</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Angry -->
+            <div class="emotion-section">
+                <div class="emotion-header">生气 (Angry)</div>
+                <div class="select-group">
+                    <label>动作文件</label>
+                    <select class="emotion-motion-select" data-emotion="angry">
+                        <option value="">选择动作文件</option>
+                    </select>
+                </div>
+                <div class="select-group">
+                    <label>表情文件</label>
+                    <select class="emotion-expression-select" data-emotion="angry">
+                        <option value="">选择表情文件</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Neutral -->
+            <div class="emotion-section">
+                <div class="emotion-header">平静 (Neutral)</div>
+                <div class="select-group">
+                    <label>动作文件</label>
+                    <select class="emotion-motion-select" data-emotion="neutral">
+                        <option value="">选择动作文件</option>
+                    </select>
+                </div>
+                <div class="select-group">
+                    <label>表情文件</label>
+                    <select class="emotion-expression-select" data-emotion="neutral">
+                        <option value="">选择表情文件</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Surprised -->
+            <div class="emotion-section">
+                <div class="emotion-header">惊讶 (Surprised)</div>
+                <div class="select-group">
+                    <label>动作文件</label>
+                    <select class="emotion-motion-select" data-emotion="surprised">
+                        <option value="">选择动作文件</option>
+                    </select>
+                </div>
+                <div class="select-group">
+                    <label>表情文件</label>
+                    <select class="emotion-expression-select" data-emotion="surprised">
+                        <option value="">选择表情文件</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Idle -->
+            <div class="emotion-section">
+                <div class="emotion-header">待机 (Idle)</div>
+                <div class="select-group">
+                    <label>动作文件</label>
+                    <select class="emotion-motion-select" data-emotion="Idle">
+                        <option value="">选择动作文件</option>
+                    </select>
+                </div>
+                <div class="select-group">
+                    <label>表情文件</label>
+                    <select class="emotion-expression-select" data-emotion="Idle">
+                        <option value="">选择表情文件</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="button-group">
+                <button id="save-btn" class="btn btn-primary">保存配置</button>
+                <button id="reset-btn" class="btn btn-secondary">重置</button>
+            </div>
+
+            <div id="status-message" class="status-message"></div>
         </div>
-         </div>
+        </div>
+    </div>
 
-     <div id="toast-container" class="toast-container"></div>
+    <script>
+        const modelSelect = document.getElementById('model-select');
+        const emotionConfig = document.getElementById('emotion-config');
+        const saveBtn = document.getElementById('save-btn');
+        const resetBtn = document.getElementById('reset-btn');
+        const statusMessage = document.getElementById('status-message');
 
-     <script>
-        let currentModelConfig = {};
-        let availableModels = [];
-        let currentModel = '';
-        let currentModelFiles = { motion_files: [], expression_files: [] };
-        let emotionMappingConfig = {}; // 存储情绪映射配置
+        const emotions = ['happy', 'sad', 'angry', 'neutral', 'surprised', 'Idle'];
+        let currentModelInfo = null;
+        let availableMotions = [];
+        let availableExpressions = [];
 
-        // 页面加载时初始化
-        document.addEventListener('DOMContentLoaded', function() {
-            loadAvailableModels();
-            
-            // Electron白屏修复
-            if (document.body) {
-                void document.body.offsetHeight;
-                const currentOpacity = document.body.style.opacity || '1';
-                document.body.style.opacity = '0.99';
-                requestAnimationFrame(() => {
-                    document.body.style.opacity = currentOpacity;
-                });
-            }
-        });
-        
-        // 备用：load事件再次触发
-        window.addEventListener('load', function() {
-            if (document.body) void document.body.offsetHeight;
-        });
+        // 显示状态消息
+        function showStatus(message, type = 'info') {
+            statusMessage.textContent = message;
+            statusMessage.className = `status-message status-${type}`;
+            statusMessage.style.display = 'block';
 
-        // 全局错误处理
-        window.addEventListener('error', function(e) {
-            console.error('JavaScript error:', e.error);
-            showStatus('JavaScript错误: ' + e.error.message, 'error');
-        });
+            setTimeout(() => {
+                statusMessage.style.display = 'none';
+            }, 3000);
+        }
 
-        
-
-        // 加载可用的模型列表
-        async function loadAvailableModels() {
+        // 加载模型列表
+        async function loadModelList() {
             try {
-                const modelsResponse = await fetch('/api/live2d/models?simple=true');
-                const modelsData = await modelsResponse.json();
-                
-                if (modelsData.success) {
-                    availableModels = modelsData.models;
-                    showStatus(`自动识别到 ${availableModels.length} 个Live2D模型`, 'success');
-                } else {
-                    showStatus('加载可用模型列表失败: ' + modelsData.error, 'error');
-                    return;
+                const response = await fetch('/api/live2d/models');
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
                 }
-                
-                updateModelSelector();
+                const models = await response.json();
+
+                if (Array.isArray(models) && models.length > 0) {
+                    modelSelect.innerHTML = '<option value="">请选择模型</option>';
+
+                    models.forEach(model => {
+                        const option = document.createElement('option');
+                        option.value = model.name;
+                        option.textContent = model.name;
+                        option.dataset.info = JSON.stringify(model);
+                        modelSelect.appendChild(option);
+                    });
+                } else {
+                    showStatus('没有找到可用的模型', 'error');
+                }
             } catch (error) {
-                showStatus('加载模型列表时出错: ' + error.message, 'error');
+                console.error('加载模型列表失败:', error);
+                showStatus('加载模型列表失败: ' + error.message, 'error');
             }
         }
 
-        // 更新模型选择器
-        function updateModelSelector() {
-            const select = document.getElementById('model-select');
-            select.innerHTML = `<option value="">${window.t ? window.t('live2d.pleaseSelectModel') : '请选择模型'}</option>`;
-            
-            availableModels.forEach(model => {
-                const option = document.createElement('option');
-                option.value = model;
-                option.textContent = model;
-                select.appendChild(option);
+        // 加载模型文件列表
+        async function loadModelFiles(modelName, modelInfo) {
+            try {
+                let apiUrl = '';
+                if (modelInfo.source === 'user_mods') {
+                    apiUrl = `/api/live2d/model_files/${encodeURIComponent(modelName)}`;
+                } else if (modelInfo.item_id) {
+                    apiUrl = `/api/live2d/model_files_by_id/${modelInfo.item_id}`;
+                } else {
+                    apiUrl = `/api/live2d/model_files/${encodeURIComponent(modelName)}`;
+                }
+
+                const response = await fetch(apiUrl);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                const data = await response.json();
+
+                if (data.success) {
+                    availableMotions = data.motion_files || [];
+                    availableExpressions = data.expression_files || [];
+                    populateSelects();
+                    emotionConfig.style.display = 'block';
+                } else {
+                    showStatus('加载模型文件失败: ' + (data.error || '未知错误'), 'error');
+                }
+            } catch (error) {
+                console.error('加载模型文件失败:', error);
+                showStatus('加载模型文件失败: ' + error.message, 'error');
+            }
+        }
+
+        // 填充下拉菜单
+        function populateSelects() {
+            emotions.forEach(emotion => {
+                const motionSelect = document.querySelector(`.emotion-motion-select[data-emotion="${emotion}"]`);
+                const expressionSelect = document.querySelector(`.emotion-expression-select[data-emotion="${emotion}"]`);
+
+                if (motionSelect) {
+                    motionSelect.innerHTML = '<option value="">选择动作文件</option>';
+                    availableMotions.forEach(motion => {
+                        const option = document.createElement('option');
+                        option.value = motion;
+                        option.textContent = motion.split('/').pop();
+                        motionSelect.appendChild(option);
+                    });
+                }
+
+                if (expressionSelect) {
+                    expressionSelect.innerHTML = '<option value="">选择表情文件</option>';
+                    availableExpressions.forEach(expression => {
+                        const option = document.createElement('option');
+                        option.value = expression;
+                        option.textContent = expression.split('/').pop();
+                        expressionSelect.appendChild(option);
+                    });
+                }
             });
         }
 
-        async function loadModelMapping() {
-             const modelSelect = document.getElementById('model-select');
-             const selectedModel = modelSelect.value;
-             
-             if (!selectedModel) {
-                 showStatus(window.t ? window.t('emotion.pleaseSelectModel') : '请先选择一个模型', 'error');
-                 return;
-             }
+        // 加载情感映射配置
+        async function loadEmotionMapping(modelName) {
+            try {
+                const response = await fetch(`/api/live2d/emotion_mapping/${encodeURIComponent(modelName)}`);
+                const data = await response.json();
 
-             try {
-                 const statusIndicator = document.getElementById('model-status-indicator');
-                 const statusText = document.getElementById('model-status-text');
-                 const statusDot = statusIndicator.querySelector('.status-dot');
-                 
-                 statusIndicator.classList.remove('hidden');
-                 statusText.textContent = window.t ? window.t('emotion.loadingConfig') : '正在加载配置和模型文件...';
-                 statusDot.className = 'status-dot info';
-                 
-                 const [configResponse, filesResponse, emotionMappingResponse] = await Promise.all([
-                     fetch(`/api/live2d/model_config/${selectedModel}`),
-                     fetch(`/api/live2d/model_files/${selectedModel}`),
-                     fetch(`/api/live2d/emotion_mapping/${selectedModel}`)
-                 ]);
-                 
-                 const configData = await configResponse.json();
-                 const filesData = await filesResponse.json();
-                 const emotionMappingData = await emotionMappingResponse.json();
-                 
-                 if (configData.success) {
-                     currentModelConfig = configData.config;
-                     currentModel = selectedModel;
-                     
-                     if (filesData.success) {
-                         currentModelFiles = {
-                             motion_files: filesData.motion_files,
-                             expression_files: filesData.expression_files
-                         };
-                         
-                         statusText.textContent = window.t ? window.t('emotion.loaded', {motionCount: filesData.motion_files.length, expressionCount: filesData.expression_files.length}) : `已加载，发现 ${filesData.motion_files.length} 个动作文件和 ${filesData.expression_files.length} 个表情文件`;
-                         statusDot.className = 'status-dot success';
-                         
-                         setTimeout(() => {
-                             statusIndicator.classList.add('hidden');
-                         }, 3000);
-                         
-                     } else {
-                         currentModelFiles = { motion_files: [], expression_files: [] };
-                         statusText.textContent = window.t ? window.t('emotion.configLoaded') : '配置加载成功，但无法获取模型文件';
-                         statusDot.className = 'status-dot warning';
-                         
-                         setTimeout(() => {
-                             statusIndicator.classList.add('hidden');
-                         }, 3000);
-                     }
+                if (data.success && data.config) {
+                    const config = data.config;
 
-                    if (emotionMappingData.success) {
-                        emotionMappingConfig[currentModel] = emotionMappingData.config || { motions: {}, expressions: {} };
-                    } else {
-                        emotionMappingConfig[currentModel] = { motions: {}, expressions: {} };
-                        showStatus(window.t ? window.t('emotion.loadEmotionFailed', {error: emotionMappingData.error}) : '加载情绪映射配置失败: ' + emotionMappingData.error, 'error');
-                    }
-                     
-                     // 自动为没有映射的模型添加映射
-                     autoAddModelMapping(selectedModel);
-                     
-                     renderEmotionGrid();
-                     showModelInfo();
-                 } else {
-                     statusText.textContent = window.t ? window.t('emotion.loadConfigFailed', {error: configData.error || window.t('common.unknownError')}) : '加载配置失败: ' + (configData.error || '未知错误');
-                     statusDot.className = 'status-dot error';
-                     
-                     setTimeout(() => {
-                         statusIndicator.classList.add('hidden');
-                     }, 3000);
-                 }
-             } catch (error) {
-                 const statusIndicator = document.getElementById('model-status-indicator');
-                 const statusText = document.getElementById('model-status-text');
-                 const statusDot = statusIndicator.querySelector('.status-dot');
-                 
-                 statusIndicator.classList.remove('hidden');
-                 statusText.textContent = window.t ? window.t('emotion.loadConfigError', {error: error.message}) : '加载配置时出错: ' + error.message;
-                 statusDot.className = 'status-dot error';
-                 
-                 setTimeout(() => {
-                     statusIndicator.classList.add('hidden');
-                 }, 3000);
-             }
-         }
+                    // 后端返回的格式可能是:
+                    // 1. { motions: { emotion: [files] }, expressions: { emotion: [files] } }
+                    // 2. 或者旧格式 { emotion: { motion: "...", expression: "..." } }
 
-        // 渲染情感网格
-        function renderEmotionGrid() {
-            const grid = document.getElementById('emotion-grid');
-            grid.innerHTML = '';
+                    emotions.forEach(emotion => {
+                        const motionSelect = document.querySelector(`.emotion-motion-select[data-emotion="${emotion}"]`);
+                        const expressionSelect = document.querySelector(`.emotion-expression-select[data-emotion="${emotion}"]`);
 
-            const emotions = ['happy', 'sad', 'angry', 'neutral', 'surprised', 'Idle'];
-            const emotionNames = {
-                'happy': '开心',
-                'sad': '悲伤', 
-                'angry': '愤怒',
-                'neutral': '中性',
-                'surprised': '惊讶',
-                'Idle': '待机'
+                        // 尝试新格式
+                        if (config.motions && config.motions[emotion]) {
+                            const motionFiles = config.motions[emotion];
+                            if (motionSelect && motionFiles.length > 0) {
+                                motionSelect.value = motionFiles[0];
+                            }
+                        }
+
+                        if (config.expressions && config.expressions[emotion]) {
+                            const expressionFiles = config.expressions[emotion];
+                            if (expressionSelect && expressionFiles.length > 0) {
+                                expressionSelect.value = expressionFiles[0];
+                            }
+                        }
+
+                        // 兼容旧格式
+                        if (config[emotion]) {
+                            if (motionSelect && config[emotion].motion) {
+                                motionSelect.value = config[emotion].motion;
+                            }
+                            if (expressionSelect && config[emotion].expression) {
+                                expressionSelect.value = config[emotion].expression;
+                            }
+                        }
+                    });
+
+                    showStatus('配置加载成功', 'success');
+                }
+            } catch (error) {
+                console.error('加载情感映射配置失败:', error);
+            }
+        }
+
+        // 保存情感映射配置
+        async function saveEmotionMapping() {
+            if (!currentModelInfo) {
+                showStatus('请先选择模型', 'error');
+                return;
+            }
+
+            // 构建后端期望的格式: { motions: { emotion: [files] }, expressions: { emotion: [files] } }
+            const config = {
+                motions: {},
+                expressions: {}
             };
 
             emotions.forEach(emotion => {
-                const card = createEmotionCard(emotion, emotionNames[emotion]);
-                grid.appendChild(card);
+                const motionSelect = document.querySelector(`.emotion-motion-select[data-emotion="${emotion}"]`);
+                const expressionSelect = document.querySelector(`.emotion-expression-select[data-emotion="${emotion}"]`);
+
+                const motionValue = motionSelect ? motionSelect.value : '';
+                const expressionValue = expressionSelect ? expressionSelect.value : '';
+
+                // 只有选择了文件才添加到配置中
+                if (motionValue) {
+                    config.motions[emotion] = [motionValue];
+                }
+                if (expressionValue) {
+                    config.expressions[emotion] = [expressionValue];
+                }
             });
-        }
-
-        // 自动为没有映射的模型添加映射
-        function autoAddModelMapping(modelName) {
-            // 如果该模型在情绪映射配置中不存在，则自动添加
-            if (!emotionMappingConfig[modelName]) {
-                emotionMappingConfig[modelName] = {
-                    motions: {},
-                    expressions: {}
-                };
-                showStatus(window.t ? window.t('emotion.autoCreatedMapping', {model: modelName}) : `已为模型 ${modelName} 自动创建情绪映射配置`, 'success');
-            }
-        }
-
-        // 创建情感卡片
-        function createEmotionCard(emotion, emotionName) {
-            const card = document.createElement('div');
-            card.className = 'emotion-card';
-            card.id = `emotion-${emotion}`;
-
-            // 从情绪映射配置中获取文件列表
-            const modelMapping = emotionMappingConfig[currentModel] || { motions: {}, expressions: {} };
-            const motions = modelMapping.motions[emotion] || [];
-            const expressions = modelMapping.expressions[emotion] || [];
-
-            // 获取可用的文件列表
-            const availableMotions = currentModelFiles.motion_files || [];
-            const availableExpressions = currentModelFiles.expression_files || [];
-            
-            // 过滤掉已添加的文件
-            const unusedMotions = availableMotions.filter(file => !motions.includes(file));
-            const unusedExpressions = availableExpressions.filter(file => !expressions.includes(file));
-
-            card.innerHTML = `
-                <h3>
-                    <span class="emotion-icon ${emotion}">${emotionName.charAt(0)}</span>
-                    ${emotionName}
-                </h3>
-                
-                <div class="file-list">
-                    <h4>${window.t ? window.t('emotion.motionFiles', {count: motions.length}) : `动作文件 (${motions.length})`}</h4>
-                    <div id="motions-${emotion}">
-                        ${motions.map(file => createFileItem(file, emotion, 'motions')).join('')}
-                    </div>
-                    <div class="add-file-section">
-                        <div class="file-input-group">
-                            <select id="motions-select-${emotion}" class="file-select">
-                                <option value="">${window.t ? window.t('emotion.selectMotionFile') : '选择动作文件'}</option>
-                                ${unusedMotions.map(file => `<option value="${file}">${file}</option>`).join('')}
-                            </select>
-                            <button class="btn btn-small btn-primary" onclick="addFileFromSelect('${emotion}', 'motions')" ${unusedMotions.length === 0 ? 'disabled' : ''} type="button">${window.t ? window.t('emotion.add') : '添加'}</button>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="file-list">
-                    <h4>${window.t ? window.t('emotion.expressionFiles', {count: expressions.length}) : `表情文件 (${expressions.length})`}</h4>
-                    <div id="expressions-${emotion}">
-                        ${expressions.map(file => createFileItem(file, emotion, 'expressions')).join('')}
-                    </div>
-                    <div class="add-file-section">
-                        <div class="file-input-group">
-                            <select id="expressions-select-${emotion}" class="file-select">
-                                <option value="">${window.t ? window.t('emotion.selectExpressionFile') : '选择表情文件'}</option>
-                                ${unusedExpressions.map(file => `<option value="${file}">${file}</option>`).join('')}
-                            </select>
-                            <button class="btn btn-small btn-primary" onclick="addFileFromSelect('${emotion}', 'expressions')" ${unusedExpressions.length === 0 ? 'disabled' : ''} type="button">${window.t ? window.t('emotion.add') : '添加'}</button>
-                        </div>
-                    </div>
-                </div>
-            `;
-
-            return card;
-        }
-
-        // 创建文件项
-        function createFileItem(fileName, emotion, type) {
-            return `
-                <div class="file-item">
-                    <span class="file-name">${fileName}</span>
-                    <div class="file-actions">
-                        <button class="btn btn-small btn-danger" onclick="removeFile('${emotion}', '${type}', '${fileName}')">${window.t ? window.t('emotion.delete') : '删除'}</button>
-                    </div>
-                </div>
-            `;
-        }
-
-        // 从下拉框添加文件
-        function addFileFromSelect(emotion, type) {
-            const select = document.getElementById(`${type}-select-${emotion}`);
-            const fileName = select.value;
-            
-            if (!fileName) {
-                showStatus(window.t ? window.t('emotion.pleaseSelectFile') : '请选择一个文件', 'error');
-                return;
-            }
-
-            // 确保当前模型在情绪映射配置中存在
-            if (!emotionMappingConfig[currentModel]) {
-                emotionMappingConfig[currentModel] = { motions: {}, expressions: {} };
-            }
-
-            if (type === 'motions') {
-                if (!emotionMappingConfig[currentModel].motions[emotion]) {
-                    emotionMappingConfig[currentModel].motions[emotion] = [];
-                }
-                emotionMappingConfig[currentModel].motions[emotion].push(fileName);
-            } else {
-                if (!emotionMappingConfig[currentModel].expressions[emotion]) {
-                    emotionMappingConfig[currentModel].expressions[emotion] = [];
-                }
-                emotionMappingConfig[currentModel].expressions[emotion].push(fileName);
-            }
-
-            select.value = '';
-            renderEmotionGrid();
-            const addedMsg = type === 'motions' 
-                ? (window.t ? window.t('emotion.addedMotionFile', {file: fileName}) : `已添加动作文件: ${fileName}`)
-                : (window.t ? window.t('emotion.addedExpressionFile', {file: fileName}) : `已添加表情文件: ${fileName}`);
-            showStatus(addedMsg, 'success');
-        }
-
-        // 删除文件
-        function removeFile(emotion, type, fileName) {
-            const modelMapping = emotionMappingConfig[currentModel];
-            if (!modelMapping) return;
-
-            if (type === 'motions') {
-                const motions = modelMapping.motions[emotion];
-                if (motions) {
-                    const index = motions.indexOf(fileName);
-                    if (index > -1) {
-                        motions.splice(index, 1);
-                    }
-                }
-            } else {
-                const expressions = modelMapping.expressions[emotion];
-                if (expressions) {
-                    const index = expressions.indexOf(fileName);
-                    if (index > -1) {
-                        expressions.splice(index, 1);
-                    }
-                }
-            }
-            renderEmotionGrid();
-            const removedMsg = type === 'motions'
-                ? (window.t ? window.t('emotion.removedMotionFile', {file: fileName}) : `已删除动作文件: ${fileName}`)
-                : (window.t ? window.t('emotion.removedExpressionFile', {file: fileName}) : `已删除表情文件: ${fileName}`);
-            showStatus(removedMsg, 'success');
-        }
-
-        // 保存映射配置
-        async function saveMapping() {
-            if (!currentModel) {
-                showStatus(window.t ? window.t('emotion.pleaseSelectModel') : '请先选择一个模型', 'error');
-                return;
-            }
 
             try {
-                showStatus(window.t ? window.t('emotion.savingConfig') : '正在保存配置...', 'info');
-                
-                // 在保存前，先从后端获取最新的配置，以保留常驻表情设置
-                let latestPersistent = null;
-                try {
-                    const latestRes = await fetch(`/api/live2d/emotion_mapping/${currentModel}`);
-                    const latestData = await latestRes.json();
-                    if (latestData && latestData.success && latestData.config && 
-                        latestData.config.expressions && latestData.config.expressions['常驻']) {
-                        latestPersistent = latestData.config.expressions['常驻'];
-                    }
-                } catch (e) {
-                    console.warn('获取最新常驻表情配置失败:', e);
-                }
-                
-                // 准备保存的配置
-                const configToSave = JSON.parse(JSON.stringify(emotionMappingConfig[currentModel] || { motions: {}, expressions: {} }));
-                
-                // 确保保留常驻表情（优先使用后端最新的，如果本地有也保留）
-                if (latestPersistent && latestPersistent.length > 0) {
-                    if (!configToSave.expressions) configToSave.expressions = {};
-                    configToSave.expressions['常驻'] = latestPersistent;
-                } else if (emotionMappingConfig[currentModel]?.expressions?.['常驻']) {
-                    if (!configToSave.expressions) configToSave.expressions = {};
-                    configToSave.expressions['常驻'] = emotionMappingConfig[currentModel].expressions['常驻'];
-                }
-                
-                // 保存情绪映射配置
-                const emotionResponse = await fetch(`/api/live2d/emotion_mapping/${currentModel}`, {
+                const response = await fetch(`/api/live2d/emotion_mapping/${encodeURIComponent(currentModelInfo.name)}`, {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json',
+                        'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify(configToSave)
+                    body: JSON.stringify(config)
                 });
 
-                const emotionData = await emotionResponse.json();
-                
-                if (emotionData.success) {
-                    showStatus(window.t ? window.t('emotion.configSaved') : '配置保存成功', 'success');
+                const data = await response.json();
+
+                if (data.success) {
+                    showStatus('配置保存成功！', 'success');
                 } else {
-                    showStatus(window.t ? window.t('emotion.saveConfigFailed', {error: emotionData.error}) : '保存配置失败: ' + emotionData.error, 'error');
+                    showStatus('保存失败: ' + (data.error || '未知错误'), 'error');
                 }
             } catch (error) {
-                showStatus(window.t ? window.t('emotion.saveConfigError', {error: error.message}) : '保存配置时出错: ' + error.message, 'error');
+                console.error('保存情感映射配置失败:', error);
+                showStatus('保存失败: ' + error.message, 'error');
             }
         }
 
-        // 重置映射
-        async function resetMapping() {
-            const confirmMsg = window.t ? window.t('emotion.confirmReset') : '确定要重置当前配置吗？这将清空所有动作和表情文件。';
-            const confirmTitle = window.t ? window.t('emotion.resetConfig') : '重置配置';
-            if (await showConfirm(confirmMsg, confirmTitle, {danger: true})) {
-                if (!emotionMappingConfig[currentModel]) {
-                    emotionMappingConfig[currentModel] = { motions: {}, expressions: {} };
-                }
-                // 保留常驻表情设置，只重置情感组
-                const preservedPersistent = emotionMappingConfig[currentModel].expressions && 
-                    emotionMappingConfig[currentModel].expressions['常驻'] ? 
-                    [...emotionMappingConfig[currentModel].expressions['常驻']] : null;
-                
-                emotionMappingConfig[currentModel].motions = { "Idle": [] };
-                emotionMappingConfig[currentModel].expressions = {};
-                
-                // 恢复常驻表情
-                if (preservedPersistent && preservedPersistent.length > 0) {
-                    emotionMappingConfig[currentModel].expressions['常驻'] = preservedPersistent;
-                }
-                
-                renderEmotionGrid();
-                showStatus(window.t ? window.t('emotion.configReset') : '配置已重置', 'success');
-            }
+        // 重置配置
+        function resetConfig() {
+            emotions.forEach(emotion => {
+                const motionSelect = document.querySelector(`.emotion-motion-select[data-emotion="${emotion}"]`);
+                const expressionSelect = document.querySelector(`.emotion-expression-select[data-emotion="${emotion}"]`);
+
+                if (motionSelect) motionSelect.value = '';
+                if (expressionSelect) expressionSelect.value = '';
+            });
+
+            showStatus('已重置配置', 'info');
         }
 
-                 // 显示模型信息
-         function showModelInfo() {
-             const info = document.getElementById('model-info');
-             const path = document.getElementById('model-path');
-             const status = document.getElementById('model-status');
-             
-             info.classList.remove('hidden');
-             path.textContent = window.t ? window.t('emotion.model', {model: currentModel}) : `模型: ${currentModel}`;
-             
-             // 显示模型文件的总数量，而不是已配置的数量
-             const totalMotionFiles = currentModelFiles.motion_files.length;
-             const totalExpressionFiles = currentModelFiles.expression_files.length;
-             status.textContent = window.t ? window.t('emotion.motionExpressionCount', {motionCount: totalMotionFiles, expressionCount: totalExpressionFiles}) : `动作文件: ${totalMotionFiles} | 表情文件: ${totalExpressionFiles}`;
-         }
-         
-                 // 显示toast通知
-         function showStatus(message, type) {
-             const toastContainer = document.getElementById('toast-container');
-             const toast = document.createElement('div');
-             toast.className = `toast toast-${type}`;
-             toast.textContent = message;
-             
-             toastContainer.appendChild(toast);
-             
-             // 触发动画
-             setTimeout(() => {
-                 toast.classList.add('show');
-             }, 10);
-             
-             // 自动移除
-             setTimeout(() => {
-                 toast.classList.remove('show');
-                 setTimeout(() => {
-                     if (toast.parentNode) {
-                         toast.parentNode.removeChild(toast);
-                     }
-                 }, 300);
-             }, 3000);
-         }
+        // 事件监听
+        modelSelect.addEventListener('change', async (e) => {
+            const selectedOption = e.target.options[e.target.selectedIndex];
+            if (selectedOption.value && selectedOption.dataset.info) {
+                currentModelInfo = JSON.parse(selectedOption.dataset.info);
+                await loadModelFiles(currentModelInfo.name, currentModelInfo);
+                await loadEmotionMapping(currentModelInfo.name);
+            } else {
+                emotionConfig.style.display = 'none';
+                currentModelInfo = null;
+            }
+        });
 
-                   // 打开Live2D动作预览器
-          function openPreview() {
-              // 创建模态框
-              const modal = document.createElement('div');
-              modal.id = 'preview-modal';
-              modal.style.cssText = `
-                  position: fixed;
-                  top: 0;
-                  left: 0;
-                  width: 100%;
-                  height: 100%;
-                  background: rgba(0, 0, 0, 0.8);
-                  z-index: 9999;
-                  display: flex;
-                  justify-content: center;
-                  align-items: center;
-                  opacity: 0;
-                  transition: opacity 0.3s ease;
-              `;
-              
-              // 创建预览容器
-              const previewContainer = document.createElement('div');
-              previewContainer.style.cssText = `
-                  background: white;
-                  border-radius: 15px;
-                  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-                  width: 95%;
-                  height: 95%;
-                  max-width: 1400px;
-                  max-height: 900px;
-                  position: relative;
-                  overflow: hidden;
-                  transform: scale(0.9);
-                  transition: transform 0.3s ease;
-              `;
-              
-              // 创建提示信息
-              const tipElement = document.createElement('div');
-              tipElement.innerHTML = window.t ? window.t('emotion.clickToClosePreview') : '💡 点击空白处关闭预览';
-              tipElement.style.cssText = `
-                  position: absolute;
-                  top: 15px;
-                  left: 50%;
-                  transform: translateX(-50%);
-                  background: rgba(0, 0, 0, 0.7);
-                  color: white;
-                  padding: 8px 16px;
-                  border-radius: 20px;
-                  font-size: 14px;
-                  font-weight: 500;
-                  z-index: 10000;
-                  opacity: 0.9;
-                  transition: opacity 0.3s ease;
-              `;
-              
-              // 创建iframe
-              const iframe = document.createElement('iframe');
-              iframe.src = '/live2d_preview';
-              iframe.style.cssText = `
-                  width: 100%;
-                  height: 100%;
-                  border: none;
-                  border-radius: 15px;
-              `;
-              
-              // 组装模态框
-              previewContainer.appendChild(tipElement);
-              previewContainer.appendChild(iframe);
-              modal.appendChild(previewContainer);
-              document.body.appendChild(modal);
-              
-              // 显示动画
-              setTimeout(() => {
-                  modal.style.opacity = '1';
-                  previewContainer.style.transform = 'scale(1)';
-              }, 10);
-              
-              // 3秒后隐藏提示
-              setTimeout(() => {
-                  tipElement.style.opacity = '0';
-                  setTimeout(() => {
-                      if (tipElement.parentNode) {
-                          tipElement.parentNode.removeChild(tipElement);
-                      }
-                  }, 300);
-              }, 3000);
-              
-              // 关闭功能
-              function closeModal() {
-                  modal.style.opacity = '0';
-                  previewContainer.style.transform = 'scale(0.9)';
-                  setTimeout(() => {
-                      if (modal.parentNode) {
-                          modal.parentNode.removeChild(modal);
-                      }
-                  }, 300);
-              }
-              
-              modal.onclick = (e) => {
-                  if (e.target === modal) {
-                      closeModal();
-                  }
-              };
-              
-              // ESC键关闭
-              const escHandler = (e) => {
-                  if (e.key === 'Escape') {
-                      closeModal();
-                      document.removeEventListener('keydown', escHandler);
-                  }
-              };
-              document.addEventListener('keydown', escHandler);
-          }
+        saveBtn.addEventListener('click', saveEmotionMapping);
+        resetBtn.addEventListener('click', resetConfig);
+
+        // 初始化
+        loadModelList();
     </script>
 </body>
-</html> 
+</html>

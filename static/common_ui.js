@@ -94,7 +94,7 @@ if (toggleBtn) {
                 iconImg.alt = window.t ? window.t('common.expand') : '展开';
                 toggleBtn.title = window.t ? window.t('common.expand') : '展开';
             } else {
-                iconImg.src = '/static/icons/minimize_icon.png';
+                iconImg.src = '/static/icons/expand_icon.png';
                 iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
                 toggleBtn.title = window.t ? window.t('common.minimize') : '最小化';
                 setTimeout(scrollToBottom, 300);
@@ -133,7 +133,7 @@ if (toggleBtn) {
             toggleBtn.title = window.t ? window.t('common.expand') : '展开';
         } else {
             // 刚刚还原展开，显示最小化图标（减号）
-            iconImg.src = '/static/icons/minimize_icon.png';
+            iconImg.src = '/static/icons/expand_icon.png';
             iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
             toggleBtn.title = window.t ? window.t('common.minimize') : '最小化';
             // 还原后滚动到底部
@@ -376,7 +376,7 @@ document.addEventListener('DOMContentLoaded', () => {
             toggleBtn.title = window.t ? window.t('common.expand') : '展开';
         } else {
             // 展开状态，显示最小化图标（减号）
-            iconImg.src = '/static/icons/minimize_icon.png';
+            iconImg.src = '/static/icons/expand_icon.png';
             iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
             toggleBtn.title = window.t ? window.t('common.minimize') : '最小化';
             scrollToBottom(); // 初始加载时滚动一次

@@ -1,0 +1,27 @@
+/* 共享基础样式 - 包含无障碍焦点样式 */
+
+/* 移除所有元素的默认焦点轮廓，但仅在支持 :focus-visible 的浏览器中通过 :focus-visible 恢复 */
+*:focus {
+    outline: none;
+}
+
+/* 为键盘导航提供可见的焦点指示器 */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[role="button"]:focus-visible,
+[tabindex]:not([tabindex="-1"]):focus-visible {
+    outline: 2px solid #40C5F1;
+    outline-offset: 2px;
+    box-shadow: 0 0 0 4px rgba(64, 197, 241, 0.2);
+}
+
+/* 针对某些特殊按钮或链接的自定义焦点样式 */
+.btn:focus-visible,
+.close-btn:focus-visible,
+.model-header:focus-visible {
+    outline: 2px solid #40C5F1;
+    outline-offset: 2px;
+}
