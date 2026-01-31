@@ -48,8 +48,12 @@ VRMManager.prototype.setupFloatingButtons = function () {
     });
     this._floatingButtonsContainer = buttonsContainer;
 
-    const stopContainerEvent = (e) => { e.stopPropagation(); };
-    ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend'].forEach(evt => {
+    const stopContainerEvent = (e) => {
+        if (e.type === 'pointerdown' || e.type === 'mousedown' || e.type === 'touchstart') {
+            e.stopPropagation();
+        }
+    };
+    ['pointerdown', 'mousedown', 'touchstart'].forEach(evt => {
         buttonsContainer.addEventListener(evt, stopContainerEvent);
     });
 
@@ -125,11 +129,13 @@ VRMManager.prototype.setupFloatingButtons = function () {
 
             imgOff = document.createElement('img');
             imgOff.src = config.iconOff; imgOff.alt = config.emoji;
-            Object.assign(imgOff.style, { position: 'absolute', width: '48px', height: '48px', objectFit: 'contain', pointerEvents: 'none', opacity: '1', transition: 'opacity 0.3s ease', imageRendering: 'crisp-edges' });
+            imgOff.draggable = false;
+            Object.assign(imgOff.style, { position: 'absolute', width: '48px', height: '48px', objectFit: 'contain', pointerEvents: 'none', opacity: '1', transition: 'opacity 0.3s ease', imageRendering: 'crisp-edges', userSelect: 'none' });
 
             imgOn = document.createElement('img');
             imgOn.src = config.iconOn; imgOn.alt = config.emoji;
-            Object.assign(imgOn.style, { position: 'absolute', width: '48px', height: '48px', objectFit: 'contain', pointerEvents: 'none', opacity: '0', transition: 'opacity 0.3s ease', imageRendering: 'crisp-edges' });
+            imgOn.draggable = false;
+            Object.assign(imgOn.style, { position: 'absolute', width: '48px', height: '48px', objectFit: 'contain', pointerEvents: 'none', opacity: '0', transition: 'opacity 0.3s ease', imageRendering: 'crisp-edges', userSelect: 'none' });
 
             imgContainer.appendChild(imgOff);
             imgContainer.appendChild(imgOn);

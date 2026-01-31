@@ -271,11 +271,7 @@ Live2DManager.prototype._checkAndPerformSnap = async function (model, options = 
 // 设置拖拽功能
 Live2DManager.prototype.setupDragAndDrop = function (model) {
     model.interactive = true;
-    // 移除 stage.hitArea = screen，避免阻挡背景点击
-    // this.pixi_app.stage.interactive = true;
-    // this.pixi_app.stage.hitArea = this.pixi_app.screen;
-
-    let isDragging = false;
+    
     let dragStartPos = new PIXI.Point();
 
     // 使用 live2d-ui-drag.js 中的共享工具函数（按钮 pointer-events 管理）
@@ -289,29 +285,6 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         if (window.DragHelpers) {
             window.DragHelpers.restoreButtonPointerEvents();
         }
-    };
-
-    const disableMicPointerEvents = () => {
-        const micButton = document.getElementById('live2d-btn-mic');
-        if (!micButton) return;
-        if (micButton.hasAttribute('data-prev-pointer-events')) return;
-        if (micButton.hasAttribute('data-mic-prev-pointer-events')) return;
-        const currentValue = micButton.style.pointerEvents || '';
-        micButton.setAttribute('data-mic-prev-pointer-events', currentValue);
-        micButton.style.pointerEvents = 'none';
-    };
-
-    const restoreMicPointerEvents = () => {
-        const micButton = document.getElementById('live2d-btn-mic');
-        if (!micButton) return;
-        if (!micButton.hasAttribute('data-mic-prev-pointer-events')) return;
-        const prevValue = micButton.getAttribute('data-mic-prev-pointer-events');
-        if (prevValue === '') {
-            micButton.style.pointerEvents = '';
-        } else {
-            micButton.style.pointerEvents = prevValue;
-        }
-        micButton.removeAttribute('data-mic-prev-pointer-events');
     };
 
     model.on('pointerdown', (event) => {
@@ -331,7 +304,6 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             originalEvent.preventDefault();
         }
 
-        isDragging = true;
         model.dragging = true;
         this.isFocusing = false; // 拖拽时禁用聚焦
         const globalPos = event.data.global;
@@ -341,17 +313,14 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
 
         // 开始拖动时，临时禁用按钮的 pointer-events
         disableButtonPointerEvents();
-        disableMicPointerEvents();
     });
 
     const onDragEnd = async () => {
-        if (isDragging) {
-            isDragging = false;
+        if (model.dragging) {
             model.dragging = false;
             document.getElementById('live2d-canvas').style.cursor = 'grab';
 
             // 拖拽结束后恢复按钮的 pointer-events
-            restoreMicPointerEvents();
             restoreButtonPointerEvents();
 
             // 检测是否需要切换屏幕（多屏幕支持）
@@ -373,7 +342,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     };
 
     const onDragMove = (event) => {
-        if (isDragging) {
+        if (model.dragging) {
             // 再次检查是否变成多点触摸
             if (event.touches && event.touches.length > 1) {
                 onDragEnd();
