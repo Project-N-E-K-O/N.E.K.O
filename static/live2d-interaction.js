@@ -271,8 +271,12 @@ Live2DManager.prototype._checkAndPerformSnap = async function (model, options = 
 // 设置拖拽功能
 Live2DManager.prototype.setupDragAndDrop = function (model) {
     model.interactive = true;
+    model.dragging = false;
     
     let dragStartPos = new PIXI.Point();
+    // 用于跟踪活动的指针 ID，以支持多点触控检测
+    this.activePointerIds = this.activePointerIds || new Set();
+    this.activePointerIds.clear();
 
     // 使用 live2d-ui-drag.js 中的共享工具函数（按钮 pointer-events 管理）
     const disableButtonPointerEvents = () => {
@@ -293,8 +297,13 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         // 获取原始浏览器事件
         const originalEvent = event.data.originalEvent;
 
+        // 跟踪指针 ID
+        if (originalEvent && typeof originalEvent.pointerId === 'number') {
+            this.activePointerIds.add(originalEvent.pointerId);
+        }
+
         // 检测是否为触摸事件，且是多点触摸（双指缩放）
-        if (originalEvent && originalEvent.touches && originalEvent.touches.length > 1) {
+        if (this.activePointerIds.size > 1) {
             // 多点触摸时不启动拖拽
             return;
         }
@@ -315,7 +324,17 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         disableButtonPointerEvents();
     });
 
-    const onDragEnd = async () => {
+    const onDragEnd = async (event) => {
+        // 移除指针 ID
+        if (event && typeof event.pointerId === 'number') {
+            this.activePointerIds.delete(event.pointerId);
+        } else if (event && event.type === 'mouseup') {
+            // mouseup 通常对应主要的鼠标指针
+            // 如果 Set 中只有一个元素且类型是鼠标，可以尝试清除
+            // 但最安全的是在 pointerdown 中始终能获取到 ID
+            this.activePointerIds.clear();
+        }
+
         if (model.dragging) {
             model.dragging = false;
             document.getElementById('live2d-canvas').style.cursor = 'grab';
@@ -343,14 +362,20 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
 
     const onDragMove = (event) => {
         if (model.dragging) {
+            // 检查是否变成多点触摸
+            if (this.activePointerIds.size > 1) {
+                onDragEnd(event);
+                return;
+            }
+
             if (!model || model.destroyed || !model.parent || this.currentModel !== model) {
-                onDragEnd();
+                onDragEnd(event);
                 return;
             }
 
             const isMouseRelease = typeof event.buttons === 'number' && event.buttons === 0 && (!event.pointerType || event.pointerType === 'mouse');
             if (isMouseRelease) {
-                onDragEnd();
+                onDragEnd(event);
                 return;
             }
 
