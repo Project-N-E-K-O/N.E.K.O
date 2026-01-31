@@ -40,10 +40,19 @@ export const useConnectionStore = defineStore('connection', () => {
   function startHealthCheck() {
     if (healthCheckTimer) return
     
+    // 动态获取 API 基础 URL
+    const getApiBaseUrl = () => {
+      // 开发环境使用代理，生产环境使用完整 URL
+      const envUrl = import.meta.env.VITE_API_BASE_URL
+      if (envUrl) return envUrl
+      return import.meta.env.DEV ? '' : window.location.origin
+    }
+    
     const checkHealth = async () => {
       try {
         // 使用短超时的健康检查请求
-        const response = await fetch('/health', {
+        const baseUrl = getApiBaseUrl()
+        const response = await fetch(`${baseUrl}/health`, {
           method: 'GET',
           signal: AbortSignal.timeout(5000) // 5秒超时
         })

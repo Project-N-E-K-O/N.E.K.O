@@ -24,8 +24,9 @@ async def handle_plugin_to_plugin(request: Dict[str, Any], send_response) -> Non
         f"[PluginRouter] Routing request: {from_plugin} -> {to_plugin}, "
         f"event={event_type}.{event_id}, req_id={request_id}"
     )
-    with state.plugin_hosts_lock:
-        host = state.plugin_hosts.get(to_plugin)
+    # 使用缓存快照避免锁竞争
+    hosts_snapshot = state.get_plugin_hosts_snapshot_cached(timeout=1.0)
+    host = hosts_snapshot.get(to_plugin)
     if not host:
         error_msg = f"Plugin '{to_plugin}' not found"
         logger.error(f"[PluginRouter] {error_msg}")

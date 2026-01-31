@@ -273,7 +273,7 @@ async def startup() -> None:
     
     # 清理旧的状态（防止重启时残留）
     _enqueue_lifecycle({"type": "server_startup_begin", "plugin_id": "server", "time": now_iso()})
-    with state.plugin_hosts_lock:
+    with state.acquire_plugin_hosts_write_lock():
         # 关闭所有旧的插件进程
         for plugin_id, host in list(state.plugin_hosts.items()):
             try:
@@ -285,10 +285,10 @@ async def startup() -> None:
                 logger.debug(f"Error cleaning up old plugin {plugin_id}: {e}")
         state.plugin_hosts.clear()
     
-    with state.plugins_lock:
+    with state.acquire_plugins_write_lock():
         state.plugins.clear()
     
-    with state.event_handlers_lock:
+    with state.acquire_event_handlers_write_lock():
         state.event_handlers.clear()
     
     logger.debug("Cleared old plugin state")
@@ -312,12 +312,12 @@ async def startup() -> None:
     # 加载插件
     load_plugins_from_toml(PLUGIN_CONFIG_ROOT, logger, _factory)
 
-    with state.plugin_hosts_lock:
+    with state.acquire_plugin_hosts_read_lock():
         for pid in list(state.plugin_hosts.keys()):
             _enqueue_lifecycle({"type": "plugin_loaded", "plugin_id": pid, "time": now_iso()})
     
     # 立即检查 plugin_hosts 状态（诊断日志，使用 debug 级别）
-    with state.plugin_hosts_lock:
+    with state.acquire_plugin_hosts_read_lock():
         plugin_hosts_after_load = dict(state.plugin_hosts)
         logger.debug(
             "Plugin hosts immediately after load_plugins_from_toml: {} plugins, keys: {}",
@@ -325,12 +325,12 @@ async def startup() -> None:
             list(plugin_hosts_after_load.keys())
         )
     
-    with state.plugins_lock:
+    with state.acquire_plugins_read_lock():
         plugin_keys = list(state.plugins.keys())
     logger.debug("Plugin registry after startup: {}", plugin_keys)
     
     # 再次检查 plugin_hosts（可能在 register_plugin 调用后发生变化）
-    with state.plugin_hosts_lock:
+    with state.acquire_plugin_hosts_read_lock():
         plugin_hosts_after_plugins = dict(state.plugin_hosts)
         logger.debug(
             "Plugin hosts after plugins registry: {} plugins, keys: {}",
@@ -361,7 +361,7 @@ async def startup() -> None:
     _enqueue_lifecycle({"type": "server_startup_ready", "plugin_id": "server", "time": now_iso()})
     
     # 启动所有插件的通信资源管理器
-    with state.plugin_hosts_lock:
+    with state.acquire_plugin_hosts_read_lock():
         plugin_hosts_copy = dict(state.plugin_hosts)
         logger.info("Found {} plugins in plugin_hosts: {}", len(plugin_hosts_copy), list(plugin_hosts_copy.keys()))
     
@@ -387,7 +387,7 @@ async def startup() -> None:
     # 启动性能指标收集器
     # 注意：需要在锁保护下获取 plugin_hosts
     def get_plugin_hosts():
-        with state.plugin_hosts_lock:
+        with state.acquire_plugin_hosts_read_lock():
             return dict(state.plugin_hosts)  # 返回副本，避免长时间持有锁
     
     await metrics_collector.start(
@@ -526,7 +526,7 @@ def _log_shutdown_diagnostics() -> None:
     """记录关闭时的诊断信息，用于排查超时问题"""
     try:
         # 记录当前插件状态
-        with state.plugin_hosts_lock:
+        with state.acquire_plugin_hosts_read_lock():
             plugin_hosts_snapshot = dict(state.plugin_hosts)
         
         if plugin_hosts_snapshot:

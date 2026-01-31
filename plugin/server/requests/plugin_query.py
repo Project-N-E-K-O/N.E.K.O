@@ -26,11 +26,9 @@ async def handle_plugin_query(request: Dict[str, Any], send_response) -> None:
     include_events = bool(filters.get("include_events", False))
 
     try:
-        with state.plugins_lock:
-            plugins_snapshot = {pid: meta.copy() for pid, meta in state.plugins.items()}
-
-        with state.event_handlers_lock:
-            event_handlers_snapshot = dict(state.event_handlers)
+        # 使用缓存快照避免锁竞争
+        plugins_snapshot = state.get_plugins_snapshot_cached(timeout=1.0)
+        event_handlers_snapshot = state.get_event_handlers_snapshot_cached(timeout=1.0)
 
         statuses_snapshot = status_manager.get_plugin_status()
         status_by_pid: Dict[str, str] = {}

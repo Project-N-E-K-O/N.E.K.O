@@ -14,6 +14,12 @@ export const usePluginStore = defineStore('plugin', () => {
   const selectedPluginId = ref<string | null>(null)
   const loading = ref(false)
   const error = ref<string | null>(null)
+  
+  // 防止请求堆积：正在进行的请求
+  let pendingFetchPlugins: Promise<void> | null = null
+  let pendingFetchStatus: Promise<void> | null = null
+  // 请求超时自动清理（防止请求堆积）
+  const REQUEST_TIMEOUT = 15000 // 15秒
 
   // 计算属性
   const selectedPlugin = computed(() => {
@@ -65,32 +71,83 @@ export const usePluginStore = defineStore('plugin', () => {
 
   // 操作
   async function fetchPlugins() {
+    // 防止请求堆积
+    if (pendingFetchPlugins) {
+      return pendingFetchPlugins
+    }
+    
     loading.value = true
     error.value = null
-    try {
-      const response = await getPlugins()
-      plugins.value = response.plugins || []
-    } catch (err: any) {
-      error.value = err.message || '获取插件列表失败'
-      console.error('Failed to fetch plugins:', err)
-    } finally {
-      loading.value = false
-    }
+    
+    // 设置超时自动清理，防止请求堆积
+    const timeoutId = setTimeout(() => {
+      if (pendingFetchPlugins) {
+        console.warn('[Plugin Store] fetchPlugins timeout, clearing pending request')
+        pendingFetchPlugins = null
+        loading.value = false
+      }
+    }, REQUEST_TIMEOUT)
+    
+    pendingFetchPlugins = (async () => {
+      try {
+        const response = await getPlugins()
+        plugins.value = response.plugins || []
+      } catch (err: any) {
+        error.value = err.message || '获取插件列表失败'
+        console.error('Failed to fetch plugins:', err)
+      } finally {
+        clearTimeout(timeoutId)
+        loading.value = false
+        pendingFetchPlugins = null
+      }
+    })()
+    
+    return pendingFetchPlugins
   }
 
   async function fetchPluginStatus(pluginId?: string) {
-    try {
-      const response = await getPluginStatus(pluginId)
-      if (pluginId) {
-        // 单个插件状态
-        pluginStatuses.value[pluginId] = response as PluginStatusData
-      } else {
-        // 所有插件状态
-        const statuses = response as { plugins: Record<string, PluginStatusData> }
-        pluginStatuses.value = statuses.plugins || {}
+    // 只对全量状态请求做防抖（单个插件状态请求不做限制）
+    if (!pluginId && pendingFetchStatus) {
+      return pendingFetchStatus
+    }
+    
+    // 设置超时自动清理（仅对全量请求）
+    let timeoutId: ReturnType<typeof setTimeout> | null = null
+    if (!pluginId) {
+      timeoutId = setTimeout(() => {
+        if (pendingFetchStatus) {
+          console.warn('[Plugin Store] fetchPluginStatus timeout, clearing pending request')
+          pendingFetchStatus = null
+        }
+      }, REQUEST_TIMEOUT)
+    }
+    
+    const doFetch = async () => {
+      try {
+        const response = await getPluginStatus(pluginId)
+        if (pluginId) {
+          // 单个插件状态
+          pluginStatuses.value[pluginId] = response as PluginStatusData
+        } else {
+          // 所有插件状态
+          const statuses = response as { plugins: Record<string, PluginStatusData> }
+          pluginStatuses.value = statuses.plugins || {}
+        }
+      } catch (err: any) {
+        console.error('Failed to fetch plugin status:', err)
+      } finally {
+        if (timeoutId) clearTimeout(timeoutId)
+        if (!pluginId) {
+          pendingFetchStatus = null
+        }
       }
-    } catch (err: any) {
-      console.error('Failed to fetch plugin status:', err)
+    }
+    
+    if (!pluginId) {
+      pendingFetchStatus = doFetch()
+      return pendingFetchStatus
+    } else {
+      return doFetch()
     }
   }
 

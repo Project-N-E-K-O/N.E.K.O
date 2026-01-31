@@ -43,6 +43,86 @@ MAX_DELETED_BUS_IDS = 20000
 DEFAULT_LOCK_TIMEOUT = 10.0
 
 
+class RWLock:
+    """
+    读写锁实现
+    
+    允许多个读操作并发执行，但写操作是互斥的。
+    写操作会等待所有读操作完成，读操作会等待写操作完成。
+    """
+    
+    def __init__(self):
+        self._read_ready = threading.Condition(threading.Lock())
+        self._readers = 0
+        self._writers_waiting = 0
+        self._writer_active = False
+    
+    def acquire_read(self, timeout: float = DEFAULT_LOCK_TIMEOUT) -> bool:
+        """获取读锁"""
+        deadline = time.time() + timeout
+        with self._read_ready:
+            while self._writer_active or self._writers_waiting > 0:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return False
+                if not self._read_ready.wait(timeout=remaining):
+                    return False
+            self._readers += 1
+        return True
+    
+    def release_read(self):
+        """释放读锁"""
+        with self._read_ready:
+            self._readers -= 1
+            if self._readers == 0:
+                self._read_ready.notify_all()
+    
+    def acquire_write(self, timeout: float = DEFAULT_LOCK_TIMEOUT) -> bool:
+        """获取写锁"""
+        deadline = time.time() + timeout
+        with self._read_ready:
+            self._writers_waiting += 1
+            try:
+                while self._readers > 0 or self._writer_active:
+                    remaining = deadline - time.time()
+                    if remaining <= 0:
+                        return False
+                    if not self._read_ready.wait(timeout=remaining):
+                        return False
+                self._writer_active = True
+            finally:
+                self._writers_waiting -= 1
+        return True
+    
+    def release_write(self):
+        """释放写锁"""
+        with self._read_ready:
+            self._writer_active = False
+            self._read_ready.notify_all()
+    
+    @contextmanager
+    def read_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT, name: str = "unknown"):
+        """读锁上下文管理器"""
+        if not self.acquire_read(timeout):
+            logger.error(f"Failed to acquire read lock '{name}' within {timeout}s")
+            raise TimeoutError(f"Failed to acquire read lock '{name}' within {timeout}s")
+        try:
+            yield
+        finally:
+            self.release_read()
+    
+    @contextmanager
+    def write_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT, name: str = "unknown"):
+        """写锁上下文管理器"""
+        if not self.acquire_write(timeout):
+            logger.error(f"Failed to acquire write lock '{name}' within {timeout}s")
+            raise TimeoutError(f"Failed to acquire write lock '{name}' within {timeout}s")
+        try:
+            yield
+        finally:
+            self.release_write()
+
+
 @contextmanager
 def timed_lock(lock: threading.Lock, timeout: float = DEFAULT_LOCK_TIMEOUT, name: str = "unknown"):
     """
@@ -143,6 +223,13 @@ class GlobalState:
         self.plugin_status: Dict[str, Dict[str, Any]] = {}
         self.plugin_hosts: Dict[str, Any] = {}
         self.plugin_status_lock = threading.Lock()
+        
+        # 使用读写锁替代互斥锁，允许多个读操作并发
+        self._plugins_rwlock = RWLock()
+        self._plugin_hosts_rwlock = RWLock()
+        self._event_handlers_rwlock = RWLock()
+        
+        # 保留原有互斥锁以保持向后兼容（逐步迁移）
         self.plugins_lock = threading.Lock()  # 保护 plugins 字典的线程安全
         self.plugin_hosts_lock = threading.Lock()  # 保护 plugin_hosts 字典的线程安全
         self.event_handlers_lock = threading.Lock()  # 保护 event_handlers 字典的线程安全
@@ -211,24 +298,62 @@ class GlobalState:
     # 带超时的锁上下文管理器（用于防止死锁）
     @contextmanager
     def acquire_plugins_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT):
-        """获取 plugins_lock（带超时）"""
+        """获取 plugins_lock（带超时）- 已废弃，请使用 acquire_plugins_write_lock"""
         with timed_lock(self.plugins_lock, timeout, "plugins_lock"):
             yield
 
     @contextmanager
     def acquire_plugin_hosts_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT):
-        """获取 plugin_hosts_lock（带超时）"""
+        """获取 plugin_hosts_lock（带超时）- 已废弃，请使用 acquire_plugin_hosts_write_lock"""
         with timed_lock(self.plugin_hosts_lock, timeout, "plugin_hosts_lock"):
             yield
 
     @contextmanager
     def acquire_event_handlers_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT):
-        """获取 event_handlers_lock（带超时）"""
+        """获取 event_handlers_lock（带超时）- 已废弃，请使用 acquire_event_handlers_write_lock"""
         with timed_lock(self.event_handlers_lock, timeout, "event_handlers_lock"):
+            yield
+    
+    # RWLock 写锁上下文管理器（用于修改操作）
+    @contextmanager
+    def acquire_plugins_write_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT):
+        """获取 plugins 写锁（用于修改操作）"""
+        with self._plugins_rwlock.write_lock(timeout, "plugins_write"):
+            yield
+    
+    @contextmanager
+    def acquire_plugin_hosts_write_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT):
+        """获取 plugin_hosts 写锁（用于修改操作）"""
+        with self._plugin_hosts_rwlock.write_lock(timeout, "plugin_hosts_write"):
+            yield
+    
+    @contextmanager
+    def acquire_event_handlers_write_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT):
+        """获取 event_handlers 写锁（用于修改操作）"""
+        with self._event_handlers_rwlock.write_lock(timeout, "event_handlers_write"):
+            yield
+    
+    # RWLock 读锁上下文管理器（用于读取操作）
+    @contextmanager
+    def acquire_plugins_read_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT):
+        """获取 plugins 读锁（用于读取操作，允许并发）"""
+        with self._plugins_rwlock.read_lock(timeout, "plugins_read"):
+            yield
+    
+    @contextmanager
+    def acquire_plugin_hosts_read_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT):
+        """获取 plugin_hosts 读锁（用于读取操作，允许并发）"""
+        with self._plugin_hosts_rwlock.read_lock(timeout, "plugin_hosts_read"):
+            yield
+    
+    @contextmanager
+    def acquire_event_handlers_read_lock(self, timeout: float = DEFAULT_LOCK_TIMEOUT):
+        """获取 event_handlers 读锁（用于读取操作，允许并发）"""
+        with self._event_handlers_rwlock.read_lock(timeout, "event_handlers_read"):
             yield
 
     def get_plugins_snapshot(self, timeout: float = 2.0) -> Dict[str, Dict[str, Any]]:
-        """获取 plugins 的快照（线程安全，带超时）
+        """获取 plugins 的快照（使用读写锁的读锁，允许并发读取）
         
         Args:
             timeout: 锁获取超时时间（秒），默认2秒
@@ -239,17 +364,16 @@ class GlobalState:
         Note:
             超时会返回空字典而非抛异常
         """
-        acquired = self.plugins_lock.acquire(timeout=timeout)
-        if not acquired:
-            logger.warning("Failed to acquire plugins_lock within {}s, returning empty snapshot", timeout)
+        if not self._plugins_rwlock.acquire_read(timeout=timeout):
+            logger.warning("Failed to acquire plugins read lock within {}s, returning empty snapshot", timeout)
             return {}
         try:
             return dict(self.plugins)
         finally:
-            self.plugins_lock.release()
+            self._plugins_rwlock.release_read()
 
     def get_plugin_hosts_snapshot(self, timeout: float = 2.0) -> Dict[str, Any]:
-        """获取 plugin_hosts 的快照（线程安全，带超时）
+        """获取 plugin_hosts 的快照（使用读写锁的读锁，允许并发读取）
         
         Args:
             timeout: 锁获取超时时间（秒），默认2秒
@@ -260,17 +384,16 @@ class GlobalState:
         Note:
             超时会返回空字典而非抛异常
         """
-        acquired = self.plugin_hosts_lock.acquire(timeout=timeout)
-        if not acquired:
-            logger.warning("Failed to acquire plugin_hosts_lock within {}s, returning empty snapshot", timeout)
+        if not self._plugin_hosts_rwlock.acquire_read(timeout=timeout):
+            logger.warning("Failed to acquire plugin_hosts read lock within {}s, returning empty snapshot", timeout)
             return {}
         try:
             return dict(self.plugin_hosts)
         finally:
-            self.plugin_hosts_lock.release()
+            self._plugin_hosts_rwlock.release_read()
 
     def get_event_handlers_snapshot(self, timeout: float = 2.0) -> Dict[str, EventHandler]:
-        """获取 event_handlers 的快照（线程安全，带超时）
+        """获取 event_handlers 的快照（使用读写锁的读锁，允许并发读取）
         
         Args:
             timeout: 锁获取超时时间（秒），默认2秒
@@ -281,14 +404,13 @@ class GlobalState:
         Note:
             超时会返回空字典而非抛异常
         """
-        acquired = self.event_handlers_lock.acquire(timeout=timeout)
-        if not acquired:
-            logger.warning("Failed to acquire event_handlers_lock within {}s, returning empty snapshot", timeout)
+        if not self._event_handlers_rwlock.acquire_read(timeout=timeout):
+            logger.warning("Failed to acquire event_handlers read lock within {}s, returning empty snapshot", timeout)
             return {}
         try:
             return dict(self.event_handlers)
         finally:
-            self.event_handlers_lock.release()
+            self._event_handlers_rwlock.release_read()
     
     def get_plugins_snapshot_cached(self, timeout: float = 2.0, force: bool = False) -> Dict[str, Dict[str, Any]]:
         """获取 plugins 的快照（带缓存，减少锁竞争）

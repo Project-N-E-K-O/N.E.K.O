@@ -14,9 +14,19 @@ export const useMetricsStore = defineStore('metrics', () => {
   const metricsHistory = ref<Record<string, PluginMetrics[]>>({})
   const loading = ref(false)
   const error = ref<string | null>(null)
+  
+  // 防止请求堆积：正在进行的请求
+  let pendingFetchAll: Promise<any> | null = null
+  // 请求超时自动清理（防止请求堆积）
+  const REQUEST_TIMEOUT = 15000 // 15秒
 
   // 操作
   async function fetchAllMetrics() {
+    // 如果已有请求正在进行，直接返回该请求的结果（防止请求堆积）
+    if (pendingFetchAll) {
+      return pendingFetchAll
+    }
+    
     // 检查认证状态
     const authStore = useAuthStore()
     if (!authStore.isAuthenticated) {
@@ -37,27 +47,44 @@ export const useMetricsStore = defineStore('metrics', () => {
     
     loading.value = true
     error.value = null
-    try {
-      const response = await getAllMetrics()
-      const metricsList: PluginMetrics[] = Array.isArray((response as any)?.metrics)
-        ? ((response as any).metrics as PluginMetrics[])
-        : []
-      allMetrics.value = metricsList
-      
-      // 更新当前指标
-      metricsList.forEach((metric: PluginMetrics) => {
-        currentMetrics.value[metric.plugin_id] = metric
-      })
-      
-      // 返回响应以便提取全局指标
-      return response
-    } catch (err: any) {
-      error.value = err?.message || 'FETCH_METRICS_FAILED'
-      console.error('Failed to fetch metrics:', err)
-      throw err
-    } finally {
-      loading.value = false
-    }
+    
+    // 设置超时自动清理，防止请求堆积
+    const timeoutId = setTimeout(() => {
+      if (pendingFetchAll) {
+        console.warn('[Metrics Store] fetchAllMetrics timeout, clearing pending request')
+        pendingFetchAll = null
+        loading.value = false
+      }
+    }, REQUEST_TIMEOUT)
+    
+    // 创建请求并保存引用（防止请求堆积）
+    pendingFetchAll = (async () => {
+      try {
+        const response = await getAllMetrics()
+        const metricsList: PluginMetrics[] = Array.isArray((response as any)?.metrics)
+          ? ((response as any).metrics as PluginMetrics[])
+          : []
+        allMetrics.value = metricsList
+        
+        // 更新当前指标
+        metricsList.forEach((metric: PluginMetrics) => {
+          currentMetrics.value[metric.plugin_id] = metric
+        })
+        
+        // 返回响应以便提取全局指标
+        return response
+      } catch (err: any) {
+        error.value = err?.message || 'FETCH_METRICS_FAILED'
+        console.error('Failed to fetch metrics:', err)
+        throw err
+      } finally {
+        clearTimeout(timeoutId)
+        loading.value = false
+        pendingFetchAll = null  // 请求完成后清除引用
+      }
+    })()
+    
+    return pendingFetchAll
   }
 
   async function fetchPluginMetrics(pluginId: string) {

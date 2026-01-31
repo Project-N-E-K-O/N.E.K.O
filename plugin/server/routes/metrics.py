@@ -21,36 +21,41 @@ router = APIRouter()
 @router.get("/plugin/metrics")
 async def get_all_plugin_metrics(_: str = require_admin):
     try:
-        metrics = metrics_collector.get_current_metrics()
+        loop = asyncio.get_running_loop()
         
-        if not isinstance(metrics, list):
-            logger.warning(f"get_current_metrics returned non-list: {type(metrics)}")
-            metrics = []
+        def _get_metrics():
+            metrics = metrics_collector.get_current_metrics()
+            
+            if not isinstance(metrics, list):
+                logger.warning(f"get_current_metrics returned non-list: {type(metrics)}")
+                return []
+            
+            safe_metrics = []
+            for m in metrics:
+                if isinstance(m, dict):
+                    safe_metrics.append(m)
+                else:
+                    logger.warning(f"Invalid metric format: {type(m)}")
+            
+            total_cpu = sum(float(m.get("cpu_percent", 0.0)) for m in safe_metrics)
+            total_memory_mb = sum(float(m.get("memory_mb", 0.0)) for m in safe_metrics)
+            total_memory_percent = sum(float(m.get("memory_percent", 0.0)) for m in safe_metrics)
+            total_threads = sum(int(m.get("num_threads", 0)) for m in safe_metrics)
+            
+            return {
+                "metrics": safe_metrics,
+                "count": len(safe_metrics),
+                "global": {
+                    "total_cpu_percent": round(total_cpu, 2),
+                    "total_memory_mb": round(total_memory_mb, 2),
+                    "total_memory_percent": round(total_memory_percent, 2),
+                    "total_threads": total_threads,
+                    "active_plugins": len([m for m in safe_metrics if m.get("pid") is not None])
+                },
+                "time": now_iso()
+            }
         
-        safe_metrics = []
-        for m in metrics:
-            if isinstance(m, dict):
-                safe_metrics.append(m)
-            else:
-                logger.warning(f"Invalid metric format: {type(m)}")
-        
-        total_cpu = sum(float(m.get("cpu_percent", 0.0)) for m in safe_metrics)
-        total_memory_mb = sum(float(m.get("memory_mb", 0.0)) for m in safe_metrics)
-        total_memory_percent = sum(float(m.get("memory_percent", 0.0)) for m in safe_metrics)
-        total_threads = sum(int(m.get("num_threads", 0)) for m in safe_metrics)
-        
-        return {
-            "metrics": safe_metrics,
-            "count": len(safe_metrics),
-            "global": {
-                "total_cpu_percent": round(total_cpu, 2),
-                "total_memory_mb": round(total_memory_mb, 2),
-                "total_memory_percent": round(total_memory_percent, 2),
-                "total_threads": total_threads,
-                "active_plugins": len([m for m in safe_metrics if m.get("pid") is not None])
-            },
-            "time": now_iso()
-        }
+        return await loop.run_in_executor(_api_executor, _get_metrics)
     except (PluginError, ValueError, AttributeError) as e:
         logger.warning(f"Failed to get plugin metrics: {e}")
         return {

@@ -282,7 +282,7 @@ async def start_plugin(plugin_id: str, restore_state: bool = False) -> Dict[str,
                 # 移除刚注册的 host
                 # 先在锁内获取并移除 host，然后在锁外关闭进程（避免在持有锁时执行 async 操作）
                 existing_host = None
-                with state.plugin_hosts_lock:
+                with state.acquire_plugin_hosts_write_lock():
                     if plugin_id in state.plugin_hosts:
                         existing_host = state.plugin_hosts.pop(plugin_id)
                 
@@ -316,7 +316,7 @@ async def start_plugin(plugin_id: str, restore_state: bool = False) -> Dict[str,
                 plugin_id = resolved_id
             
             # 现在可以安全地注册到 plugin_hosts（register_plugin 已完成，不会再获取锁）
-            with state.plugin_hosts_lock:
+            with state.acquire_plugin_hosts_write_lock():
                 # 再次检查是否有冲突
                 if plugin_id in state.plugin_hosts:
                     existing_host = state.plugin_hosts.get(plugin_id)
@@ -336,7 +336,7 @@ async def start_plugin(plugin_id: str, restore_state: bool = False) -> Dict[str,
         except Exception as e:
             logger.exception("Failed to initialize plugin {} after process start", plugin_id)
             try:
-                with state.plugin_hosts_lock:
+                with state.acquire_plugin_hosts_write_lock():
                     existing_host = state.plugin_hosts.pop(plugin_id, None)
                 if existing_host is not None:
                     await existing_host.shutdown(timeout=1.0)
@@ -401,12 +401,12 @@ async def stop_plugin(plugin_id: str) -> Dict[str, Any]:
         await host.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
         
         # 从状态中移除
-        with state.plugin_hosts_lock:
+        with state.acquire_plugin_hosts_write_lock():
             if plugin_id in state.plugin_hosts:
                 del state.plugin_hosts[plugin_id]
         
         # 清理事件处理器
-        with state.event_handlers_lock:
+        with state.acquire_event_handlers_write_lock():
             keys_to_remove = [
                 key for key in list(state.event_handlers.keys())
                 if key.startswith(f"{plugin_id}.") or key.startswith(f"{plugin_id}:")
@@ -508,7 +508,7 @@ async def freeze_plugin(plugin_id: str) -> Dict[str, Any]:
         
         if result.get("success"):
             # 从运行状态中移除
-            with state.plugin_hosts_lock:
+            with state.acquire_plugin_hosts_write_lock():
                 if plugin_id in state.plugin_hosts:
                     del state.plugin_hosts[plugin_id]
             
@@ -571,7 +571,7 @@ async def reload_all_plugins() -> Dict[str, Any]:
     }
     
     # 获取所有运行中的插件 ID
-    with state.plugin_hosts_lock:
+    with state.acquire_plugin_hosts_read_lock():
         running_plugin_ids = list(state.plugin_hosts.keys())
     
     if not running_plugin_ids:

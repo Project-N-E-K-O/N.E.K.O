@@ -110,8 +110,9 @@ class BusSubscriptionManager:
             if until > now_m:
                 return
 
-            with state.plugin_hosts_lock:
-                host = state.plugin_hosts.get(plugin_id)
+            # 使用缓存快照避免锁竞争
+            hosts_snapshot = state.get_plugin_hosts_snapshot_cached(timeout=1.0)
+            host = hosts_snapshot.get(plugin_id)
             if not host:
                 return
 

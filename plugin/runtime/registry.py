@@ -144,7 +144,7 @@ def _find_plugins_by_entry(entry_id: str) -> List[tuple[str, Dict[str, Any]]]:
     """
     matching_plugins = []
     
-    with state.event_handlers_lock:
+    with state.acquire_event_handlers_read_lock():
         event_handlers_copy = dict(state.event_handlers)
     
     # 查找所有提供该入口点的插件
@@ -164,7 +164,7 @@ def _find_plugins_by_entry(entry_id: str) -> List[tuple[str, Dict[str, Any]]]:
                 found_plugin_ids.add(parts[0])
     
     # 获取这些插件的元数据
-    with state.plugins_lock:
+    with state.acquire_plugins_read_lock():
         for pid in found_plugin_ids:
             if pid in state.plugins:
                 meta = state.plugins[pid]
@@ -189,7 +189,7 @@ def _find_plugins_by_custom_event(event_type: str, event_id: str) -> List[tuple[
     """
     matching_plugins = []
     
-    with state.event_handlers_lock:
+    with state.acquire_event_handlers_read_lock():
         event_handlers_copy = dict(state.event_handlers)
     
     # 查找所有提供该自定义事件的插件
@@ -206,7 +206,7 @@ def _find_plugins_by_custom_event(event_type: str, event_id: str) -> List[tuple[
                         found_plugin_ids.add(pid)
     
     # 获取这些插件的元数据
-    with state.plugins_lock:
+    with state.acquire_plugins_read_lock():
         for pid in found_plugin_ids:
             if pid in state.plugins:
                 meta = state.plugins[pid]
@@ -244,7 +244,7 @@ def _check_plugin_dependency(
     """
     logger = _wrap_logger(logger)
     def _runtime_enabled(pid: str) -> bool:
-        with state.plugins_lock:
+        with state.acquire_plugins_read_lock():
             meta = state.plugins.get(pid)
         if isinstance(meta, dict) and meta.get("runtime_enabled") is False:
             return False
@@ -266,7 +266,7 @@ def _check_plugin_dependency(
     
     if dependency.providers:
         # 方式3：多个候选插件（任一满足即可）
-        with state.plugins_lock:
+        with state.acquire_plugins_read_lock():
             for provider_id in dependency.providers:
                 meta = state.plugins.get(provider_id)
                 if meta is None:
@@ -304,7 +304,7 @@ def _check_plugin_dependency(
                 return False, f"Invalid entry format: '{entry_spec}', expected 'plugin_id:entry_id' or 'entry_id'"
             target_plugin_id, target_entry_id = parts
 
-            with state.plugins_lock:
+            with state.acquire_plugins_read_lock():
                 if target_plugin_id not in state.plugins:
                     return False, f"Dependency entry '{entry_spec}': plugin '{target_plugin_id}' not found"
 
@@ -315,7 +315,7 @@ def _check_plugin_dependency(
                     f"Dependency entry '{entry_spec}': plugin '{target_plugin_id}' does not provide entry '{target_entry_id}'"
                 )
 
-            with state.plugins_lock:
+            with state.acquire_plugins_read_lock():
                 plugins_to_check = [(target_plugin_id, state.plugins[target_plugin_id])]
         else:
             # 格式：entry_id（任意插件提供该入口）
@@ -359,7 +359,7 @@ def _check_plugin_dependency(
                     return False, f"Invalid custom_event format: '{custom_event_spec}', expected 'event_type:event_id' or 'plugin_id:event_type:event_id'"
                 event_type, event_id = rest.split(":", 1)
                 # 先在锁内检查插件是否存在，并读取元数据（避免后续嵌套 plugins_lock 导致死锁）
-                with state.plugins_lock:
+                with state.acquire_plugins_read_lock():
                     dep_meta = state.plugins.get(target_plugin_id)
                 if dep_meta is None:
                     return False, f"Dependency custom_event '{custom_event_spec}': plugin '{target_plugin_id}' not found"
@@ -393,7 +393,7 @@ def _check_plugin_dependency(
     elif dependency.id:
         # 方式1：依赖特定插件ID
         dep_id = dependency.id
-        with state.plugins_lock:
+        with state.acquire_plugins_read_lock():
             if dep_id not in state.plugins:
                 return False, f"Dependency plugin '{dep_id}' not found"
             dep_plugin_meta = state.plugins[dep_id]
@@ -623,7 +623,7 @@ def _parse_plugin_dependencies(
 
 def get_plugins() -> List[Dict[str, Any]]:
     """Return list of plugin dicts (in-process access)."""
-    with state.plugins_lock:
+    with state.acquire_plugins_read_lock():
         return list(state.plugins.values())
 
 
@@ -691,7 +691,7 @@ def _get_existing_plugin_info(plugin_id: str) -> Optional[Dict[str, Any]]:
     
     # 锁顺序规范: plugins_lock -> plugin_hosts_lock -> event_handlers_lock
     # 先从 plugins 获取插件元数据
-    with state.plugins_lock:
+    with state.acquire_plugins_read_lock():
         if plugin_id in state.plugins:
             plugin_meta_raw = state.plugins[plugin_id]
             if isinstance(plugin_meta_raw, dict):
@@ -712,7 +712,7 @@ def _get_existing_plugin_info(plugin_id: str) -> Optional[Dict[str, Any]]:
                     result["entry_point"] = meta_entry_point
     
     # 再从 plugin_hosts 获取运行时信息（可能更新）
-    with state.plugin_hosts_lock:
+    with state.acquire_plugin_hosts_read_lock():
         if plugin_id in state.plugin_hosts:
             host = state.plugin_hosts[plugin_id]
             config_path = getattr(host, 'config_path', None)
@@ -776,9 +776,9 @@ def _resolve_plugin_id_conflict(
         except (OSError, RuntimeError):
             cur_path = Path(config_path)
 
-    with state.plugins_lock:
+    with state.acquire_plugins_read_lock():
         plugins_snapshot = dict(state.plugins)
-    with state.plugin_hosts_lock:
+    with state.acquire_plugin_hosts_read_lock():
         hosts_snapshot = dict(state.plugin_hosts)
 
     def _resolve_existing_path(v: Any) -> Optional[Path]:
@@ -923,7 +923,7 @@ def register_plugin(
             dependencies=plugin.dependencies,
         )
     
-    with state.plugins_lock:
+    with state.acquire_plugins_write_lock():
         plugin_dump = plugin.model_dump()
         if config_path is not None:
             plugin_dump["config_path"] = str(config_path)
@@ -948,7 +948,7 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
             etype = getattr(event_meta, "event_type", None) or "plugin_entry"
             eid = getattr(event_meta, "id", name)
             handler_obj = EventHandler(meta=event_meta, handler=member)
-            with state.event_handlers_lock:
+            with state.acquire_event_handlers_write_lock():
                 if etype == "plugin_entry":
                     state.event_handlers[f"{pid}.{eid}"] = handler_obj
                     state.event_handlers[f"{pid}:plugin_entry:{eid}"] = handler_obj
@@ -980,7 +980,7 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
                 input_schema=ent.get("input_schema", {}) if isinstance(ent, dict) else {},
             )
             eh = EventHandler(meta=cast(Any, entry_meta), handler=handler_fn)
-            with state.event_handlers_lock:
+            with state.acquire_event_handlers_write_lock():
                 state.event_handlers[f"{pid}.{eid}"] = eh
                 state.event_handlers[f"{pid}:plugin_entry:{eid}"] = eh
         except (AttributeError, KeyError, TypeError) as e:
@@ -1504,7 +1504,7 @@ def load_plugins_from_toml(
                 entry_point=entry,
             )
             if resolved_id is not None:
-                with state.plugins_lock:
+                with state.acquire_plugins_write_lock():
                     meta = state.plugins.get(resolved_id)
                     if isinstance(meta, dict):
                         meta["runtime_enabled"] = False
@@ -1546,7 +1546,7 @@ def load_plugins_from_toml(
 
         # 检查插件是否已经加载（通过检查 config_path 是否相同）
         # 如果同一个配置文件已经被加载，直接跳过
-        with state.plugin_hosts_lock:
+        with state.acquire_plugin_hosts_read_lock():
             if pid in state.plugin_hosts:
                 existing_host = state.plugin_hosts[pid]
                 existing_config_path = getattr(existing_host, 'config_path', None)
@@ -1610,11 +1610,11 @@ def load_plugins_from_toml(
 
         # 在创建 host 之前，先检查插件是否已注册
         # 如果已注册，检查是否已有运行的 host
-        with state.plugins_lock:
+        with state.acquire_plugins_read_lock():
             plugin_already_registered = pid in state.plugins
         
         if plugin_already_registered:
-            with state.plugin_hosts_lock:
+            with state.acquire_plugin_hosts_read_lock():
                 if pid in state.plugin_hosts:
                     existing_host = state.plugin_hosts[pid]
                     if hasattr(existing_host, 'is_alive') and existing_host.is_alive():
@@ -1675,7 +1675,7 @@ def load_plugins_from_toml(
                     logger.debug("Updated host plugin_id to '{}'", pid)
                 
                 skip_register = False
-                with state.plugin_hosts_lock:
+                with state.acquire_plugin_hosts_write_lock():
                     # 检查是否已经存在（防止重复注册）
                     if pid in state.plugin_hosts:
                         existing_host = state.plugin_hosts[pid]
@@ -1782,7 +1782,7 @@ def load_plugins_from_toml(
         # 对于 manual-start-only 插件（auto_start=false），host 允许为 None，此时不应要求在 plugin_hosts 中存在。
         host_still_exists = False
         if host is not None:
-            with state.plugin_hosts_lock:
+            with state.acquire_plugin_hosts_read_lock():
                 host_still_exists = pid in state.plugin_hosts
                 if not host_still_exists:
                     logger.error(
@@ -1800,7 +1800,7 @@ def load_plugins_from_toml(
 
         # Mark runtime flags for dependency/conflict filtering.
         if resolved_id is not None:
-            with state.plugins_lock:
+            with state.acquire_plugins_write_lock():
                 meta = state.plugins.get(resolved_id)
                 if isinstance(meta, dict):
                     meta["runtime_enabled"] = True
@@ -1814,7 +1814,7 @@ def load_plugins_from_toml(
         
         # 验证 register_plugin 调用后 host 是否还在
         if host is not None:
-            with state.plugin_hosts_lock:
+            with state.acquire_plugin_hosts_read_lock():
                 host_after_register = pid in state.plugin_hosts
                 all_keys_after = list(state.plugin_hosts.keys())
                 if host_still_exists and not host_after_register:
@@ -1839,7 +1839,7 @@ def load_plugins_from_toml(
             )
             existing_host = None
             # 移除刚注册的 host
-            with state.plugin_hosts_lock:
+            with state.acquire_plugin_hosts_write_lock():
                 if pid in state.plugin_hosts:
                     existing_host = state.plugin_hosts.pop(pid)
 
@@ -1886,7 +1886,7 @@ def load_plugins_from_toml(
                 pid, resolved_id
             )
             # 更新 plugin_hosts 中的键
-            with state.plugin_hosts_lock:
+            with state.acquire_plugin_hosts_write_lock():
                 if pid in state.plugin_hosts:
                     host = state.plugin_hosts.pop(pid)
                     state.plugin_hosts[resolved_id] = host
@@ -1905,7 +1905,7 @@ def load_plugins_from_toml(
                     state._plugin_response_queues[resolved_id] = q
 
             # 迁移 event handler 映射，确保通过新 plugin_id 能找到处理器
-            with state.event_handlers_lock:
+            with state.acquire_event_handlers_write_lock():
                 handlers_to_migrate = [
                     k
                     for k in list(state.event_handlers.keys())

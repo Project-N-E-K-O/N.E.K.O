@@ -60,6 +60,11 @@ class MetricsCollector:
         self._lock = threading.Lock()
         self._task: Optional[asyncio.Task] = None
         self._plugin_hosts_getter: Optional[Callable] = None
+        
+        # 缓存机制：减少锁竞争
+        self._cache: List[Dict[str, Any]] = []
+        self._cache_timestamp: float = 0.0
+        self._cache_ttl: float = 0.5  # 500ms 缓存
     
     async def start(self, plugin_hosts_getter: Callable):
         """启动指标收集任务"""
@@ -203,25 +208,35 @@ class MetricsCollector:
             return None
     
     def get_current_metrics(self, plugin_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """获取当前性能指标"""
-        with self._lock:
-            if plugin_id:
+        """获取当前性能指标（带缓存，减少锁竞争）"""
+        import time
+        now = time.time()
+        
+        if plugin_id:
+            # 单个插件查询，直接获取锁
+            with self._lock:
                 history = self._metrics_history.get(plugin_id, [])
                 if history:
                     return [self._metrics_to_dict(history[-1])]
-                # 调试：记录为什么找不到指标
                 available_ids = list(self._metrics_history.keys())
                 logger.debug(
                     f"Metrics not found for plugin_id '{plugin_id}'. "
                     f"Available plugin_ids in metrics_history: {available_ids}"
                 )
                 return []
-            else:
-                # 返回所有插件的最新指标
+        else:
+            # 全量查询，使用缓存减少锁竞争
+            if self._cache and (now - self._cache_timestamp) < self._cache_ttl:
+                return self._cache
+            
+            with self._lock:
                 result = []
                 for _plugin_id, history in self._metrics_history.items():
                     if history:
                         result.append(self._metrics_to_dict(history[-1]))
+                # 更新缓存
+                self._cache = result
+                self._cache_timestamp = now
                 logger.debug(f"get_current_metrics (all): found {len(result)} plugins with metrics")
                 return result
     
