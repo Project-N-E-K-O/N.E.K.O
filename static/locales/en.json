@@ -652,6 +652,7 @@
     "pleaseSelect": "Please select a model",
     "pleaseSelectModel": "Please select a model",
     "pleaseSelectMotion": "Please select a motion first",
+    "pleaseSelectExpression": "Please select an expression first",
     "selectMotion": "Animation",
     "selectExpression": "Expression",
     "addMotion": "Add Motion",
