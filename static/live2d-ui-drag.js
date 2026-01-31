@@ -38,15 +38,15 @@
         const wrappers = new Set();
         buttons.forEach(btn => {
             if (btn && btn.parentElement) {
-                // 排除特定的容器和 document.body
-                if (btn.id === 'live2d-btn-return' || btn.parentElement === document.body) {
-                    return;
-                }
+                // 排除特定的容器（如果需要）
+                if (btn.id === 'live2d-btn-return') return;
                 wrappers.add(btn.parentElement);
             }
         });
         
         wrappers.forEach(wrapper => {
+            // 排除 document.body，避免全局影响
+            if (wrapper === document.body) return;
             if (wrapper.hasAttribute('data-prev-pointer-events')) return;
             const currentValue = wrapper.style.pointerEvents || '';
             wrapper.setAttribute('data-prev-pointer-events', currentValue);
@@ -87,27 +87,10 @@
         });
     }
 
-    /**
-     * 为元素绑定“按下即停止冒泡”的处理器
-     * 用于防止点击 UI 元素时触发底层的模型拖拽
-     */
-    function attachPointerDownStopEvents(element) {
-        if (!element) return;
-        const stopHandler = (e) => {
-            if (e.type === 'pointerdown' || e.type === 'mousedown' || e.type === 'touchstart') {
-                e.stopPropagation();
-            }
-        };
-        element.addEventListener('pointerdown', stopHandler);
-        element.addEventListener('mousedown', stopHandler);
-        element.addEventListener('touchstart', stopHandler);
-    }
-
     // 挂载到全局 window 对象，供其他脚本使用
     window.DragHelpers = {
         disableButtonPointerEvents: disableButtonPointerEvents,
-        restoreButtonPointerEvents: restoreButtonPointerEvents,
-        attachPointerDownStopEvents: attachPointerDownStopEvents
+        restoreButtonPointerEvents: restoreButtonPointerEvents
     };
 })();
 
