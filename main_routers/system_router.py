@@ -252,11 +252,10 @@ async def update_playtime(request: Request):
                     status_code=400
                 )
 
-            # 请求当前统计数据
-            steamworks.UserStats.RequestCurrentStats()
-            for _ in range(5):
-                steamworks.run_callbacks()
-                await asyncio.sleep(0.05)
+            # 注意:不需要每次都调用 RequestCurrentStats()
+            # RequestCurrentStats() 应该只在应用启动时调用一次
+            # 频繁调用可能导致性能问题和同步延迟
+            # 这里直接获取和更新统计值即可
 
             # 获取当前游戏时长（如果统计不存在，从 0 开始）
             try:

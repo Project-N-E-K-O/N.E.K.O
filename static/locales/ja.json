@@ -1035,6 +1035,7 @@
     "saveError": "保存中にエラーが発生しました: {{error}}",
     "fillProfileNameFirstForLive2D": "まず neko プロフィール名を入力してから、Live2D モデルを設定してください",
     "createCharacterFirst": "まず「新しいキャラクターを確認」ボタンをクリックしてキャラクターを作成してから、Live2D モデルを設定してください",
+    "createCharacterFirstForModel": "まず「新しいキャラクターを確認」ボタンをクリックしてキャラクターを作成してから、モデルを設定してください",
     "fillProfileNameFirstForVoice": "まず neko プロフィール名を入力してから、ボイスを登録してください",
     "createCharacterFirstForVoice": "まず「新しいキャラクターを確認」ボタンをクリックしてキャラクターを作成してから、ボイスを登録してください",
     "allowPopups": "ポップアップを許可してください！",
