@@ -240,38 +240,31 @@ Live2DManager.prototype.playMotion = async function(emotion) {
         return;
     }
 
-    // 优先使用 Cubism 原生 Motion Group（FileReferences.Motions）
-    let motions = null;
-    if (this.fileReferences && this.fileReferences.Motions && this.fileReferences.Motions[emotion]) {
-        motions = this.fileReferences.Motions[emotion]; // 形如 [{ File: "motions/xxx.motion3.json" }, ...]
-    } else if (this.emotionMapping && this.emotionMapping.motions && this.emotionMapping.motions[emotion]) {
-        // 兼容 EmotionMapping.motions: ["motions/xxx.motion3.json", ...]
-        motions = this.emotionMapping.motions[emotion].map(f => ({ File: f }));
+    // 检查是否有对应的动作配置
+    let hasMotion = false;
+    if (this.emotionMapping && this.emotionMapping.motions && this.emotionMapping.motions[emotion]) {
+        hasMotion = true;
+    } else if (this.fileReferences && this.fileReferences.Motions && this.fileReferences.Motions[emotion]) {
+        hasMotion = true;
     }
-    if (!motions || motions.length === 0) {
+
+    if (!hasMotion) {
         console.warn(`未找到情感 ${emotion} 对应的动作，但将保持表情`);
         // 如果没有找到对应的motion，设置一个短定时器以确保expression能够显示
-        // 并且不设置回调来清除效果，让表情一直持续
         this.motionTimer = setTimeout(() => {
             this.motionTimer = null;
-        }, 500); // 500ms应该足够让expression稳定显示
+        }, 500);
         return;
     }
-    
-    const choice = this.getRandomElement(motions);
-    if (!choice || !choice.File) return;
-    
+
     try {
         // 清除之前的动作定时器
         if (this.motionTimer) {
-            console.log('检测到前一个motion正在播放，正在停止...');
-            
             if (this.motionTimer.type === 'animation') {
                 cancelAnimationFrame(this.motionTimer.id);
             } else if (this.motionTimer.type === 'timeout') {
                 clearTimeout(this.motionTimer.id);
             } else if (this.motionTimer.type === 'motion') {
-                // 停止motion播放
                 try {
                     if (this.motionTimer.id && this.motionTimer.id.stop) {
                         this.motionTimer.id.stop();
@@ -283,83 +276,12 @@ Live2DManager.prototype.playMotion = async function(emotion) {
                 clearTimeout(this.motionTimer);
             }
             this.motionTimer = null;
-            console.log('前一个motion已停止');
         }
-        
-        // 尝试使用Live2D模型的原生motion播放功能
-        try {
-            // 构建完整的motion路径（相对模型根目录）
-            const motionPath = this.resolveAssetPath(choice.File);
-            console.log(`尝试播放motion: ${motionPath}`);
-            
-            // 方法1: 直接使用模型的motion播放功能
-            if (this.currentModel.motion) {
-                try {
-                    console.log(`尝试播放motion: ${choice.File}`);
-                    
-                    // 使用情感名称作为motion组名，这样可以确保播放正确的motion
-                    console.log(`尝试使用情感组播放motion: ${emotion}`);
-                    
-                    const motion = await this.currentModel.motion(emotion);
-                    
-                    if (motion) {
-                        console.log(`成功开始播放motion（情感组: ${emotion}，预期文件: ${choice.File}）`);
-                        
-                        // 获取motion的实际持续时间
-                        let motionDuration = 5000; // 默认5秒
-                        
-                        // 尝试从motion文件获取持续时间
-                        try {
-                            const response = await fetch(motionPath);
-                            if (response.ok) {
-                                const motionData = await response.json();
-                                if (motionData.Meta && motionData.Meta.Duration) {
-                                    motionDuration = motionData.Meta.Duration * 1000;
-                                }
-                            }
-                        } catch (error) {
-                            console.warn('无法获取motion持续时间，使用默认值');
-                        }
-                        
-                        console.log(`预期motion持续时间: ${motionDuration}ms`);
-                        
-                        // 设置定时器在motion结束后清理motion参数（但保留expression）
-                        this.motionTimer = setTimeout(() => {
-                            console.log(`motion播放完成（预期文件: ${choice.File}），清除motion参数但保留expression`);
-                            this.motionTimer = null;
-                            this.clearEmotionEffects(); // 只清除motion参数，不清除expression
-                        }, motionDuration);
-                        
-                        return; // 成功播放，直接返回
-                    } else {
-                        console.warn('motion播放失败');
-                    }
-                } catch (error) {
-                    console.warn('模型motion方法失败:', error);
-                }
-            }
-            
-            // 方法2: 备用方案 - 如果方法1失败，尝试其他方法
-            if (!this.motionTimer) {
-                console.log('方法1失败，尝试备用方案');
-                
-                // 这里可以添加其他备用方案，但目前方法1已经工作
-                console.warn('所有motion播放方法都失败，回退到简单动作');
-                this.playSimpleMotion(emotion);
-            }
-            
-            // 如果所有方法都失败，回退到简单动作
-            console.warn(`无法播放motion: ${choice.File}，回退到简单动作`);
-            this.playSimpleMotion(emotion);
-            
-        } catch (error) {
-            console.error('motion播放过程中出错:', error);
-            this.playSimpleMotion(emotion);
-        }
-        
+
+        // 播放简单动作
+        this.playSimpleMotion(emotion);
     } catch (error) {
         console.error('播放动作失败:', error);
-        // 回退到简单动作
         this.playSimpleMotion(emotion);
     }
 };
