@@ -261,25 +261,28 @@
 
                     if (response.ok) {
                         const data = await response.json();
+                        // 只有在成功更新后才更新时间戳，避免时间丢失
+                        prevTs = now;
                         // 检查时间相关成就
                         await this.checkPlayTimeAchievements(data.totalPlayTime);
                     } else if (response.status === 503) {
                         // Steam 未初始化，静默失败（不显示错误）
                         console.debug('Steam 未初始化，跳过时长更新');
+                        // Steam 未初始化时也更新时间戳，避免累积过多时间
+                        prevTs = now;
                     }
+                    // 如果响应不是 ok 且不是 503，不更新时间戳，下次会重试
                 } catch (error) {
-                    // 网络错误或其他问题，静默失败
+                    // 网络错误或其他问题，不更新时间戳，下次会重试发送这段时间
                     console.debug('更新游戏时长失败:', error.message);
                 } finally {
-                    // 更新时间戳为当前时间
-                    prevTs = Date.now();
                     // 无论成功或失败，都在10秒后继续下一次更新
                     setTimeout(updatePlayTime, 10000);
                 }
             };
 
-            // 启动第一次更新
-            setTimeout(updatePlayTime, 10000);
+            // 立即启动第一次更新，不等待10秒
+            updatePlayTime();
         }
 
         // 检查游戏时长相关成就
