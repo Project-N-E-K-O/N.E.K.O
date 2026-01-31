@@ -130,6 +130,11 @@ class VRMInteraction {
                     this.isDragging = false;
                     this.dragMode = null;
                     canvas.style.cursor = 'grab';
+
+                    // 拖拽异常中断时恢复按钮的指针事件
+                    if (window.DragHelpers && window.DragHelpers.restoreButtonPointerEvents) {
+                        window.DragHelpers.restoreButtonPointerEvents();
+                    }
                 }
                 return;
             }
@@ -208,6 +213,18 @@ class VRMInteraction {
         };
         window.addEventListener('blur', restorePointerEventsOnBlur);
         this._dragBlurHandler = restorePointerEventsOnBlur;
+
+        const restorePointerEventsOnLockChange = () => {
+            // 当退出指针锁定或锁定失败时，确保恢复 UI 交互
+            if (!document.pointerLockElement) {
+                if (window.DragHelpers && window.DragHelpers.restoreButtonPointerEvents) {
+                    window.DragHelpers.restoreButtonPointerEvents();
+                }
+            }
+        };
+        document.addEventListener('pointerlockchange', restorePointerEventsOnLockChange);
+        document.addEventListener('pointerlockerror', restorePointerEventsOnLockChange);
+        this._dragLockChangeHandler = restorePointerEventsOnLockChange;
 
         // 5. 鼠标进入
         this.mouseEnterHandler = () => {
@@ -361,6 +378,10 @@ class VRMInteraction {
             if (this.manager.renderer) {
                 this.manager.renderer.domElement.style.cursor = 'grab';
             }
+            // 锁定中断拖拽时恢复按钮的指针事件
+            if (window.DragHelpers && window.DragHelpers.restoreButtonPointerEvents) {
+                window.DragHelpers.restoreButtonPointerEvents();
+            }
         }
     }
 
@@ -393,6 +414,15 @@ class VRMInteraction {
      */
     cleanupDragAndZoom() {
         if (!this.manager.renderer) return;
+
+        // 如果正在拖拽，先恢复 UI 交互
+        if (this.isDragging) {
+            this.isDragging = false;
+            this.dragMode = null;
+            if (window.DragHelpers && window.DragHelpers.restoreButtonPointerEvents) {
+                window.DragHelpers.restoreButtonPointerEvents();
+            }
+        }
 
         // 清理初始化定时器（如果存在）
         if (this._initTimerId !== null) {
@@ -435,6 +465,11 @@ class VRMInteraction {
         if (this._dragBlurHandler) {
             window.removeEventListener('blur', this._dragBlurHandler);
             this._dragBlurHandler = null;
+        }
+        if (this._dragLockChangeHandler) {
+            document.removeEventListener('pointerlockchange', this._dragLockChangeHandler);
+            document.removeEventListener('pointerlockerror', this._dragLockChangeHandler);
+            this._dragLockChangeHandler = null;
         }
     }
 

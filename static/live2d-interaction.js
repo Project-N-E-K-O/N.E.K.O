@@ -400,17 +400,42 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     if (this._dragMoveListener) {
         window.removeEventListener('pointermove', this._dragMoveListener);
     }
+    if (this._dragBlurListener) {
+        window.removeEventListener('blur', this._dragBlurListener);
+    }
+    if (this._dragLockChangeListener) {
+        document.removeEventListener('pointerlockchange', this._dragLockChangeListener);
+        document.removeEventListener('pointerlockerror', this._dragLockChangeListener);
+    }
 
     // 保存新的监听器引用
     this._dragEndListener = onDragEnd;
     this._dragMouseUpListener = onDragEnd;
     this._dragMoveListener = onDragMove;
+    
+    const restoreOnAbort = () => {
+        if (model.dragging) {
+            onDragEnd();
+        } else {
+            // 即使没有在拖拽，也确保恢复（以防万一状态不同步）
+            restoreButtonPointerEvents();
+        }
+    };
+    this._dragBlurListener = restoreOnAbort;
+    this._dragLockChangeListener = () => {
+        if (!document.pointerLockElement) {
+            restoreOnAbort();
+        }
+    };
 
     // 使用 window 监听拖拽结束和移动，确保即使移出 canvas 也能响应
     window.addEventListener('pointerup', onDragEnd);
     window.addEventListener('pointercancel', onDragEnd);
     window.addEventListener('pointermove', onDragMove);
     document.addEventListener('mouseup', onDragEnd);
+    window.addEventListener('blur', this._dragBlurListener);
+    document.addEventListener('pointerlockchange', this._dragLockChangeListener);
+    document.addEventListener('pointerlockerror', this._dragLockChangeListener);
 };
 
 // 设置滚轮缩放
