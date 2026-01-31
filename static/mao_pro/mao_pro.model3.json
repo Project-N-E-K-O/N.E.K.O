@@ -62,38 +62,7 @@
         "File": "expressions/exp_08.exp3.json"
       }
     ],
-    "Motions": {
-      "happy": [
-        {
-          "File": "motions/mtn_02.motion3.json"
-        }
-      ],
-      "sad": [
-        {
-          "File": "motions/special_02.motion3.json"
-        }
-      ],
-      "angry": [
-        {
-          "File": "motions/special_03.motion3.json"
-        }
-      ],
-      "neutral": [
-        {
-          "File": "motions/mtn_03.motion3.json"
-        }
-      ],
-      "surprised": [
-        {
-          "File": "motions/special_01.motion3.json"
-        }
-      ],
-      "Idle": [
-        {
-          "File": "motions/special_01.motion3.json"
-        }
-      ]
-    }
+    "Motions": {}
   },
   "Groups": [
     {
@@ -123,45 +92,7 @@
     }
   ],
   "EmotionMapping": {
-    "motions": {
-      "happy": [
-        "motions/mtn_02.motion3.json"
-      ],
-      "sad": [
-        "motions/special_02.motion3.json"
-      ],
-      "angry": [
-        "motions/special_03.motion3.json"
-      ],
-      "neutral": [
-        "motions/mtn_03.motion3.json"
-      ],
-      "surprised": [
-        "motions/special_01.motion3.json"
-      ],
-      "Idle": [
-        "motions/special_01.motion3.json"
-      ]
-    },
-    "expressions": {
-      "happy": [
-        "expressions/exp_01.exp3.json"
-      ],
-      "sad": [
-        "expressions/exp_03.exp3.json"
-      ],
-      "angry": [
-        "expressions/exp_08.exp3.json"
-      ],
-      "neutral": [
-        "expressions/exp_05.exp3.json"
-      ],
-      "surprised": [
-        "expressions/exp_07.exp3.json"
-      ],
-      "Idle": [
-        "expressions/exp_08.exp3.json"
-      ]
-    }
+    "motions": {},
+    "expressions": {}
   }
 }
