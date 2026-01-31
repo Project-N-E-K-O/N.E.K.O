@@ -45,8 +45,12 @@ class MoltbotBridgePlugin(NekoPluginBase):
         self._active_ws_connections: Dict[str, WebSocket] = {}
         self._ws_lock = threading.Lock()
         
-        # 存储待处理的响应
+        # 存储待处理的响应 (runId -> response data)
         self._pending_responses: Dict[str, Dict[str, Any]] = {}
+        # 等待响应的事件 (runId -> threading.Event) - 使用线程安全的 Event
+        self._response_events: Dict[str, threading.Event] = {}
+        # 流式文本累积 (runId -> accumulated text)
+        self._streaming_text: Dict[str, str] = {}
         
         self.logger.info("MoltbotBridgePlugin initialized")
     
@@ -158,38 +162,76 @@ class MoltbotBridgePlugin(NekoPluginBase):
                         # Moltbot Gateway 的 AI 响应事件
                         run_id = message.get("runId")
                         session_key = message.get("sessionKey")
-                        state = message.get("state")  # delta, final, error, aborted
+                        event_state = message.get("state")  # delta, final, error, aborted
                         agent_message = message.get("message")
                         text_content = message.get("text")  # 已提取的文本内容
                         error_message = message.get("errorMessage")
                         
                         self.logger.info(
-                            f"Agent event: state={state}, runId={run_id}, sessionKey={session_key}"
+                            f"Agent event: state={event_state}, runId={run_id}, sessionKey={session_key}"
                         )
                         
-                        if state == "delta":
-                            # 流式响应片段
-                            if text_content:
-                                self.logger.info(f"Delta text: {text_content[:100]}...")
+                        if event_state == "delta":
+                            # 流式响应片段 - Gateway 返回的是累积式文本，直接替换
+                            if text_content and run_id:
+                                self._streaming_text[run_id] = text_content
+                                self.logger.info(f"Delta text: {len(text_content)} chars")
                         
-                        elif state == "final":
+                        elif event_state == "final":
                             # 最终响应
                             self.logger.info(f"Final response received for runId={run_id}")
-                            if text_content:
-                                self.logger.info(f"Final text: {text_content[:200]}...")
-                                # 存储最终响应，供后续查询
-                                self._pending_responses[run_id] = {
-                                    "text": text_content,
-                                    "message": agent_message,
-                                    "session_key": session_key,
-                                    "timestamp": time.time()
-                                }
+                            
+                            # 优先使用累积的流式文本，如果没有则使用 final 的 text
+                            final_text = self._streaming_text.get(run_id, "") or text_content or ""
+                            
+                            if final_text:
+                                self.logger.info(f"Final text ({len(final_text)} chars): {final_text[:200]}...")
+                            
+                            # 存储最终响应
+                            self._pending_responses[run_id] = {
+                                "text": final_text,
+                                "message": agent_message,
+                                "session_key": session_key,
+                                "timestamp": time.time(),
+                                "success": True
+                            }
+                            
+                            # 清理流式文本
+                            self._streaming_text.pop(run_id, None)
+                            
+                            # 触发等待事件 (threading.Event 是线程安全的)
+                            if run_id in self._response_events:
+                                self.logger.info(f"Triggering event for runId={run_id}")
+                                self._response_events[run_id].set()
                         
-                        elif state == "error":
+                        elif event_state == "error":
                             self.logger.error(f"Agent error for runId={run_id}: {error_message}")
+                            # 存储错误响应
+                            if run_id:
+                                self._pending_responses[run_id] = {
+                                    "text": "",
+                                    "error": error_message,
+                                    "session_key": session_key,
+                                    "timestamp": time.time(),
+                                    "success": False
+                                }
+                                self._streaming_text.pop(run_id, None)
+                                if run_id in self._response_events:
+                                    self._response_events[run_id].set()
                         
-                        elif state == "aborted":
+                        elif event_state == "aborted":
                             self.logger.warning(f"Agent aborted for runId={run_id}")
+                            if run_id:
+                                self._pending_responses[run_id] = {
+                                    "text": self._streaming_text.get(run_id, ""),
+                                    "error": "aborted",
+                                    "session_key": session_key,
+                                    "timestamp": time.time(),
+                                    "success": False
+                                }
+                                self._streaming_text.pop(run_id, None)
+                                if run_id in self._response_events:
+                                    self._response_events[run_id].set()
                     
                     elif msg_type == "agent_error":
                         # Moltbot Gateway 的错误事件
@@ -359,6 +401,7 @@ class MoltbotBridgePlugin(NekoPluginBase):
         id="chat_with_moltbot",
         name="Chat with Moltbot",
         description="与 Moltbot 进行持续对话(支持多轮对话历史)",
+        timeout=120,  # 自定义超时 120 秒，覆盖默认的 10 秒
         input_schema={
             "type": "object",
             "properties": {
@@ -369,13 +412,18 @@ class MoltbotBridgePlugin(NekoPluginBase):
                 "session_key": {
                     "type": "string",
                     "description": "会话标识,相同的 session_key 会保持对话历史"
+                },
+                "timeout": {
+                    "type": "number",
+                    "description": "等待响应的超时时间(秒)",
+                    "default": 120
                 }
             },
             "required": ["message", "session_key"]
         }
     )
-    async def chat_with_moltbot(self, message: str, session_key: str, **_):
-        """与 Moltbot 进行持续对话,直接调用 /neko/chat 端点"""
+    async def chat_with_moltbot(self, message: str, session_key: str, timeout: float = 120, **_):
+        """与 Moltbot 进行持续对话,通过 WebSocket 等待流式响应"""
         import aiohttp
         
         try:
@@ -384,32 +432,106 @@ class MoltbotBridgePlugin(NekoPluginBase):
             
             self.logger.info(f"Sending chat to Moltbot: {message[:50]}... (session={session_key})")
             
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
+            # 发送请求获取 runId
+            run_id = None
+            async with aiohttp.ClientSession() as http_session:
+                async with http_session.post(
                     url,
                     json={
                         "message": message,
                         "sessionKey": session_key
                     },
                     headers={"Content-Type": "application/json"},
-                    timeout=aiohttp.ClientTimeout(total=120)
+                    timeout=aiohttp.ClientTimeout(total=30)
                 ) as response:
                     result = await response.json()
                     
-                    if response.status == 200 and result.get("ok"):
-                        self.logger.info(f"Moltbot response: {result.get('response', '')[:100]}...")
-                        return ok(data={
-                            "success": True,
-                            "response": result.get("response", ""),
-                            "session_key": result.get("sessionKey", session_key)
-                        })
+                    # 202 Accepted 也是成功的响应
+                    if response.status in (200, 202) and result.get("ok"):
+                        run_id = result.get("runId")
+                        self.logger.info(f"Chat request accepted, runId={run_id}")
                     else:
                         error_msg = result.get("error", f"HTTP {response.status}")
-                        self.logger.error(f"Moltbot chat failed: {error_msg}")
+                        self.logger.error(f"Moltbot chat request failed: {error_msg}")
                         return ok(data={
                             "success": False,
                             "error": error_msg
                         })
+            
+            if not run_id:
+                return ok(data={
+                    "success": False,
+                    "error": "No runId returned from Gateway"
+                })
+            
+            # 创建等待事件 (threading.Event 用于跨线程通信)
+            self._response_events[run_id] = threading.Event()
+            
+            try:
+                # 等待 WebSocket 收到响应 (使用线程安全的 wait)
+                # 注意：已通过 @plugin_entry(timeout=120) 设置框架超时为 120 秒
+                effective_timeout = timeout
+                self.logger.info(f"Waiting for response (runId={run_id}, timeout={effective_timeout}s)...")
+                
+                # 使用 asyncio.to_thread 在线程池中等待，避免阻塞事件循环
+                event_set = await asyncio.to_thread(
+                    self._response_events[run_id].wait, 
+                    effective_timeout
+                )
+                
+                if not event_set:
+                    # 超时，返回已累积的部分响应
+                    partial_text = self._streaming_text.get(run_id, "")
+                    if partial_text:
+                        # 有部分响应，视为成功但标记为不完整
+                        self.logger.info(f"Response incomplete after {effective_timeout}s, returning partial: {len(partial_text)} chars")
+                        return ok(data={
+                            "success": True,
+                            "response": partial_text,
+                            "session_key": session_key,
+                            "incomplete": True
+                        })
+                    else:
+                        self.logger.warning(f"Response timeout after {effective_timeout}s, no content")
+                        return ok(data={
+                            "success": False,
+                            "error": f"Response timeout after {effective_timeout}s"
+                        })
+                
+                # 获取响应
+                response_data = self._pending_responses.get(run_id, {})
+                
+                if response_data.get("success"):
+                    final_text = response_data.get("text", "")
+                    self.logger.info(f"Got response ({len(final_text)} chars): {final_text[:100]}...")
+                    return ok(data={
+                        "success": True,
+                        "response": final_text,
+                        "session_key": response_data.get("session_key", session_key)
+                    })
+                else:
+                    error_msg = response_data.get("error", "Unknown error")
+                    self.logger.error(f"Response error: {error_msg}")
+                    return ok(data={
+                        "success": False,
+                        "error": error_msg,
+                        "partial_response": response_data.get("text", "")
+                    })
+                    
+            except asyncio.TimeoutError:
+                # 超时，返回已累积的部分响应
+                partial_text = self._streaming_text.get(run_id, "")
+                self.logger.warning(f"Response timeout after {timeout}s, partial: {len(partial_text)} chars")
+                return ok(data={
+                    "success": False,
+                    "error": f"Response timeout after {timeout}s",
+                    "partial_response": partial_text
+                })
+            finally:
+                # 清理
+                self._response_events.pop(run_id, None)
+                self._pending_responses.pop(run_id, None)
+                self._streaming_text.pop(run_id, None)
                         
         except Exception as e:
             self.logger.exception("Failed to chat with Moltbot")

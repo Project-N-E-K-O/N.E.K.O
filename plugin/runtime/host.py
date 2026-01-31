@@ -287,6 +287,7 @@ def _plugin_process_runner(
             return persist_mode == "auto"
 
         entry_map: Dict[str, Any] = {}
+        entry_meta_map: Dict[str, Any] = {}  # 存储 EventMeta 用于获取自定义配置（如 timeout）
         events_by_type: Dict[str, Dict[str, Any]] = {}
 
         # 扫描方法映射
@@ -302,6 +303,7 @@ def _plugin_process_runner(
             if event_meta:
                 eid = getattr(event_meta, "id", name)
                 entry_map[eid] = member
+                entry_meta_map[eid] = event_meta  # 存储 EventMeta 用于获取自定义配置
                 etype = getattr(event_meta, "event_type", "plugin_entry")
                 events_by_type.setdefault(etype, {})
                 events_by_type[etype][eid] = member
@@ -772,15 +774,35 @@ def _plugin_process_runner(
                         thread.start()
                         
                         # 等待异步方法完成（允许超时）
+                        # 从 EventMeta.extra 获取自定义超时，如果没有则使用默认值
+                        entry_meta = entry_meta_map.get(entry_id)
+                        custom_timeout = None
+                        if entry_meta:
+                            extra = getattr(entry_meta, "extra", None) or {}
+                            custom_timeout = extra.get("timeout")
+                        
+                        # 确定实际超时时间
+                        if custom_timeout is not None:
+                            if custom_timeout <= 0:
+                                # 0 或负数表示禁用超时（无限等待）
+                                timeout_seconds = None
+                                logger.debug("[Plugin Process] Timeout disabled for entry {}", entry_id)
+                            else:
+                                timeout_seconds = custom_timeout
+                                logger.debug("[Plugin Process] Using custom timeout {}s for entry {}", timeout_seconds, entry_id)
+                        else:
+                            timeout_seconds = PLUGIN_TRIGGER_TIMEOUT
+                        
                         start_time = time.time()
-                        timeout_seconds = PLUGIN_TRIGGER_TIMEOUT
                         check_interval = 0.01  # 10ms
                         
                         while not result_container["done"]:
-                            if time.time() - start_time > timeout_seconds:
+                            # 如果 timeout_seconds 为 None，则不检查超时
+                            if timeout_seconds is not None and time.time() - start_time > timeout_seconds:
                                 logger.error(
-                                    "Async method {} execution timed out",
+                                    "Async method {} execution timed out after {}s",
                                     entry_id,
+                                    timeout_seconds,
                                 )
                                 raise TimeoutError(
                                     f"Async method execution timed out after {timeout_seconds}s"

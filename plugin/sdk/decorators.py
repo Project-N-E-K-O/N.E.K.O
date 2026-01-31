@@ -136,6 +136,7 @@ def plugin_entry(
     auto_start: bool = False,
     persist: bool | None = None,
     checkpoint: bool | None = None,  # 向后兼容别名
+    timeout: float | None = None,  # 自定义超时时间（秒），None 表示使用默认值
     extra: dict | None = None,
 ) -> Callable:
     """
@@ -148,7 +149,16 @@ def plugin_entry(
             - True: 强制启用状态保存
             - False: 强制禁用状态保存
         checkpoint: persist 的向后兼容别名
+        timeout: 自定义超时时间（秒）
+            - None: 使用默认超时（PLUGIN_TRIGGER_TIMEOUT，默认 10 秒）
+            - 0 或负数: 禁用超时检测（无限等待）
+            - 正数: 使用指定的超时时间
     """
+    # 将 timeout 存储到 extra 中
+    effective_extra = dict(extra) if extra else {}
+    if timeout is not None:
+        effective_extra["timeout"] = timeout
+    
     return on_event(
         event_type="plugin_entry",
         id=id,
@@ -159,7 +169,7 @@ def plugin_entry(
         auto_start=auto_start,
         persist=persist,
         checkpoint=checkpoint,
-        extra=extra,
+        extra=effective_extra if effective_extra else None,
     )
 
 
