@@ -11,7 +11,7 @@ from plugin.api.exceptions import PluginError
 from plugin.runtime.status import status_manager
 from plugin.server.infrastructure.error_handler import handle_plugin_error
 from plugin.server.services import build_plugin_list
-from plugin.server.management import start_plugin, stop_plugin, reload_plugin
+from plugin.server.management import start_plugin, stop_plugin, reload_plugin, reload_all_plugins
 from plugin.server.infrastructure.utils import now_iso
 from plugin.server.infrastructure.auth import require_admin
 from plugin.server.infrastructure.executor import _api_executor
@@ -103,3 +103,22 @@ async def reload_plugin_endpoint(plugin_id: str, _: str = require_admin):
     except Exception as e:
         logger.exception(f"Failed to reload plugin {plugin_id}: Unexpected error")
         raise handle_plugin_error(e, f"Failed to reload plugin {plugin_id}", 500) from e
+
+
+@router.post("/plugins/reload")
+async def reload_all_plugins_endpoint(_: str = require_admin):
+    """
+    重载所有插件
+    
+    停止所有运行中的插件，然后重新加载。
+    用于前端全局重载按钮。
+    """
+    try:
+        return await reload_all_plugins()
+    except HTTPException:
+        raise
+    except (PluginError, OSError, TimeoutError) as e:
+        raise handle_plugin_error(e, "Failed to reload all plugins", 500) from e
+    except Exception as e:
+        logger.exception("Failed to reload all plugins: Unexpected error")
+        raise handle_plugin_error(e, "Failed to reload all plugins", 500) from e

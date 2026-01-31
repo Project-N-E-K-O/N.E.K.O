@@ -544,6 +544,125 @@ async def freeze_plugin(plugin_id: str) -> Dict[str, Any]:
         ) from e
 
 
+async def reload_all_plugins() -> Dict[str, Any]:
+    """
+    重载所有插件（并行优化版）
+    
+    1. 并行停止所有运行中的插件
+    2. 并行启动所有插件
+    
+    Returns:
+        操作结果，包含成功和失败的插件列表
+    """
+    import time as time_module
+    _start_time = time_module.perf_counter()
+    
+    logger.info("Reloading all plugins (parallel mode)...")
+    _enqueue_lifecycle({
+        "type": "plugins_reload_all_requested",
+        "time": now_iso(),
+    })
+    
+    results: Dict[str, Any] = {
+        "success": True,
+        "reloaded": [],
+        "failed": [],
+        "skipped": [],
+    }
+    
+    # 获取所有运行中的插件 ID
+    with state.plugin_hosts_lock:
+        running_plugin_ids = list(state.plugin_hosts.keys())
+    
+    if not running_plugin_ids:
+        results["message"] = "No running plugins to reload"
+        return results
+    
+    logger.info(f"Found {len(running_plugin_ids)} running plugins to reload: {running_plugin_ids}")
+    
+    # Phase 1: 并行停止所有插件
+    logger.info("[reload_all] Phase 1: Stopping all plugins in parallel...")
+    stop_tasks = []
+    for plugin_id in running_plugin_ids:
+        stop_tasks.append(_safe_stop_plugin(plugin_id))
+    
+    stop_results = await asyncio.gather(*stop_tasks, return_exceptions=True)
+    
+    # 收集成功停止的插件
+    plugins_to_start = []
+    for plugin_id, result in zip(running_plugin_ids, stop_results):
+        if isinstance(result, Exception):
+            logger.error(f"Failed to stop plugin {plugin_id}: {result}")
+            results["failed"].append({
+                "plugin_id": plugin_id,
+                "error": f"Stop failed: {str(result)}"
+            })
+        else:
+            plugins_to_start.append(plugin_id)
+    
+    logger.info(f"[reload_all] Phase 1 done: {len(plugins_to_start)} stopped, {len(results['failed'])} failed ({time_module.perf_counter() - _start_time:.3f}s)")
+    
+    # Phase 2: 并行启动所有插件
+    if plugins_to_start:
+        logger.info("[reload_all] Phase 2: Starting all plugins in parallel...")
+        start_tasks = []
+        for plugin_id in plugins_to_start:
+            start_tasks.append(_safe_start_plugin(plugin_id))
+        
+        start_results = await asyncio.gather(*start_tasks, return_exceptions=True)
+        
+        for plugin_id, result in zip(plugins_to_start, start_results):
+            if isinstance(result, Exception):
+                logger.error(f"Failed to start plugin {plugin_id}: {result}")
+                results["failed"].append({
+                    "plugin_id": plugin_id,
+                    "error": f"Start failed: {str(result)}"
+                })
+            else:
+                results["reloaded"].append(plugin_id)
+                logger.info(f"Plugin {plugin_id} reloaded successfully")
+    
+    total_time = time_module.perf_counter() - _start_time
+    
+    # 如果有失败的插件，标记整体为部分成功
+    if results["failed"]:
+        results["success"] = False
+        results["message"] = f"Reloaded {len(results['reloaded'])} plugins, {len(results['failed'])} failed (took {total_time:.3f}s)"
+    else:
+        results["message"] = f"Successfully reloaded {len(results['reloaded'])} plugins (took {total_time:.3f}s)"
+    
+    logger.info(f"[reload_all] Completed in {total_time:.3f}s")
+    
+    _enqueue_lifecycle({
+        "type": "plugins_reload_all_completed",
+        "time": now_iso(),
+        "data": {
+            "reloaded_count": len(results["reloaded"]),
+            "failed_count": len(results["failed"]),
+            "duration_seconds": round(total_time, 3),
+        },
+    })
+    
+    return results
+
+
+async def _safe_stop_plugin(plugin_id: str) -> bool:
+    """安全停止插件，捕获异常"""
+    try:
+        await stop_plugin(plugin_id)
+        return True
+    except HTTPException as e:
+        if e.status_code == 404:  # 插件不存在，视为已停止
+            return True
+        raise
+
+
+async def _safe_start_plugin(plugin_id: str) -> bool:
+    """安全启动插件，捕获异常"""
+    await start_plugin(plugin_id)
+    return True
+
+
 async def unfreeze_plugin(plugin_id: str) -> Dict[str, Any]:
     """
     解冻插件：启动进程并恢复状态

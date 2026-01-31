@@ -1,6 +1,7 @@
 """
 配置管理路由
 """
+import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -24,6 +25,7 @@ from plugin.server.config_service import (
     set_plugin_active_profile,
 )
 from plugin.server.infrastructure.auth import require_admin
+from plugin.server.infrastructure.executor import _api_executor
 
 router = APIRouter()
 
@@ -225,7 +227,9 @@ def validate_config_updates(plugin_id: str, updates: dict) -> None:
 @router.get("/plugin/{plugin_id}/config")
 async def get_plugin_config_endpoint(plugin_id: str, _: str = require_admin):
     try:
-        return load_plugin_config(plugin_id)
+        # 使用线程池执行文件 I/O，避免阻塞事件循环
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(_api_executor, load_plugin_config, plugin_id)
     except HTTPException:
         raise
     except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
@@ -238,7 +242,8 @@ async def get_plugin_config_endpoint(plugin_id: str, _: str = require_admin):
 @router.get("/plugin/{plugin_id}/config/toml")
 async def get_plugin_config_toml_endpoint(plugin_id: str, _: str = require_admin):
     try:
-        return load_plugin_config_toml(plugin_id)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(_api_executor, load_plugin_config_toml, plugin_id)
     except HTTPException:
         raise
     except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
@@ -252,7 +257,8 @@ async def get_plugin_config_toml_endpoint(plugin_id: str, _: str = require_admin
 async def update_plugin_config_endpoint(plugin_id: str, payload: ConfigUpdateRequest, _: str = require_admin):
     try:
         validate_config_updates(plugin_id, payload.config)
-        return replace_plugin_config(plugin_id, payload.config)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(_api_executor, replace_plugin_config, plugin_id, payload.config)
     except HTTPException:
         raise
     except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
@@ -265,7 +271,8 @@ async def update_plugin_config_endpoint(plugin_id: str, payload: ConfigUpdateReq
 @router.post("/plugin/{plugin_id}/config/parse_toml")
 async def parse_toml_to_config_endpoint(plugin_id: str, payload: ConfigTomlParseRequest, _: str = require_admin):
     try:
-        return parse_toml_to_config(plugin_id, payload.toml)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(_api_executor, parse_toml_to_config, plugin_id, payload.toml)
     except HTTPException:
         raise
     except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
@@ -278,7 +285,8 @@ async def parse_toml_to_config_endpoint(plugin_id: str, payload: ConfigTomlParse
 @router.post("/plugin/{plugin_id}/config/render_toml")
 async def render_config_to_toml_endpoint(plugin_id: str, payload: ConfigTomlRenderRequest, _: str = require_admin):
     try:
-        return render_config_to_toml(plugin_id, payload.config)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(_api_executor, render_config_to_toml, plugin_id, payload.config)
     except HTTPException:
         raise
     except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
@@ -291,7 +299,8 @@ async def render_config_to_toml_endpoint(plugin_id: str, payload: ConfigTomlRend
 @router.put("/plugin/{plugin_id}/config/toml")
 async def update_plugin_config_toml_endpoint(plugin_id: str, payload: ConfigTomlUpdateRequest, _: str = require_admin):
     try:
-        return update_plugin_config_toml(plugin_id, payload.toml)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(_api_executor, update_plugin_config_toml, plugin_id, payload.toml)
     except HTTPException:
         raise
     except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
@@ -304,7 +313,8 @@ async def update_plugin_config_toml_endpoint(plugin_id: str, payload: ConfigToml
 @router.get("/plugin/{plugin_id}/config/base")
 async def get_plugin_base_config_endpoint(plugin_id: str, _: str = require_admin):
     try:
-        return load_plugin_base_config(plugin_id)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(_api_executor, load_plugin_base_config, plugin_id)
     except HTTPException:
         raise
     except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
@@ -317,7 +327,8 @@ async def get_plugin_base_config_endpoint(plugin_id: str, _: str = require_admin
 @router.get("/plugin/{plugin_id}/config/profiles")
 async def get_plugin_profiles_state_endpoint(plugin_id: str, _: str = require_admin):
     try:
-        return get_plugin_profiles_state(plugin_id)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(_api_executor, get_plugin_profiles_state, plugin_id)
     except HTTPException:
         raise
     except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
@@ -330,7 +341,8 @@ async def get_plugin_profiles_state_endpoint(plugin_id: str, _: str = require_ad
 @router.get("/plugin/{plugin_id}/config/profiles/{profile_name}")
 async def get_plugin_profile_config_endpoint(plugin_id: str, profile_name: str, _: str = require_admin):
     try:
-        return get_plugin_profile_config(plugin_id, profile_name)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(_api_executor, get_plugin_profile_config, plugin_id, profile_name)
     except HTTPException:
         raise
     except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
@@ -348,11 +360,15 @@ async def upsert_plugin_profile_config_endpoint(
     _: str = require_admin,
 ):
     try:
-        return upsert_plugin_profile_config(
-            plugin_id=plugin_id,
-            profile_name=profile_name,
-            config=payload.config,
-            make_active=payload.make_active,
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            _api_executor,
+            lambda: upsert_plugin_profile_config(
+                plugin_id=plugin_id,
+                profile_name=profile_name,
+                config=payload.config,
+                make_active=payload.make_active,
+            )
         )
     except HTTPException:
         raise
@@ -366,7 +382,8 @@ async def upsert_plugin_profile_config_endpoint(
 @router.delete("/plugin/{plugin_id}/config/profiles/{profile_name}")
 async def delete_plugin_profile_config_endpoint(plugin_id: str, profile_name: str, _: str = require_admin):
     try:
-        return delete_plugin_profile_config(plugin_id, profile_name)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(_api_executor, delete_plugin_profile_config, plugin_id, profile_name)
     except HTTPException:
         raise
     except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
@@ -379,7 +396,8 @@ async def delete_plugin_profile_config_endpoint(plugin_id: str, profile_name: st
 @router.post("/plugin/{plugin_id}/config/profiles/{profile_name}/activate")
 async def set_plugin_active_profile_endpoint(plugin_id: str, profile_name: str, _: str = require_admin):
     try:
-        return set_plugin_active_profile(plugin_id, profile_name)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(_api_executor, set_plugin_active_profile, plugin_id, profile_name)
     except HTTPException:
         raise
     except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:

@@ -87,26 +87,28 @@ async def get_plugin_metrics(plugin_id: str, _: str = require_admin):
         loop = asyncio.get_running_loop()
         
         def _check_plugin():
-            with state.plugins_lock:
-                plugin_registered = plugin_id in state.plugins
+            # 使用缓存快照避免锁竞争
+            plugins_snapshot = state.get_plugins_snapshot_cached(timeout=1.0)
+            hosts_snapshot = state.get_plugin_hosts_snapshot_cached(timeout=1.0)
             
-            with state.plugin_hosts_lock:
-                plugin_running = plugin_id in state.plugin_hosts
-                if plugin_running:
-                    host = state.plugin_hosts[plugin_id]
-                    process_alive = hasattr(host, "process") and host.process is not None
-                    if process_alive:
-                        logger.debug(
-                            f"Plugin {plugin_id} is running (pid: {host.process.pid if hasattr(host.process, 'pid') else 'unknown'})"
-                        )
-                    else:
-                        logger.debug(f"Plugin {plugin_id} host has no process object")
+            plugin_registered = plugin_id in plugins_snapshot
+            plugin_running = plugin_id in hosts_snapshot
+            
+            if plugin_running:
+                host = hosts_snapshot.get(plugin_id)
+                process_alive = hasattr(host, "process") and host.process is not None
+                if process_alive:
+                    logger.debug(
+                        f"Plugin {plugin_id} is running (pid: {host.process.pid if hasattr(host.process, 'pid') else 'unknown'})"
+                    )
                 else:
-                    host = None
-                    process_alive = False
-                    all_running_plugins = list(state.plugin_hosts.keys())
-                    return plugin_registered, plugin_running, host, process_alive, all_running_plugins
+                    logger.debug(f"Plugin {plugin_id} host has no process object")
                 return plugin_registered, plugin_running, host, process_alive, None
+            else:
+                host = None
+                process_alive = False
+                all_running_plugins = list(hosts_snapshot.keys())
+                return plugin_registered, plugin_running, host, process_alive, all_running_plugins
         
         plugin_registered, plugin_running, host, process_alive, all_running_plugins = await loop.run_in_executor(_api_executor, _check_plugin)
         

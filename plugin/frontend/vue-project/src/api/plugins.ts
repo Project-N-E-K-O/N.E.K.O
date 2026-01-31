@@ -53,6 +53,19 @@ export function reloadPlugin(pluginId: string): Promise<{ success: boolean; plug
 }
 
 /**
+ * 重载所有插件（批量 API，后端并行处理）
+ */
+export function reloadAllPlugins(): Promise<{
+  success: boolean
+  reloaded: string[]
+  failed: { plugin_id: string; error: string }[]
+  skipped: string[]
+  message: string
+}> {
+  return post('/plugins/reload')
+}
+
+/**
  * 获取插件消息
  */
 export function getPluginMessages(params?: {

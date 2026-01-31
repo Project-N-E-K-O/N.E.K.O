@@ -70,11 +70,11 @@ class PluginStatusManager:
         with self._lock:
             cached = {pid: s.copy() for pid, s in self._plugin_status.items()}
 
-        # 遵循锁顺序规范：plugins_lock -> plugin_hosts_lock
-        with state.plugins_lock:
-            registered_plugin_ids = list(state.plugins.keys())
-        with state.plugin_hosts_lock:
-            plugin_hosts_snapshot = dict(state.plugin_hosts)
+        # 使用缓存快照避免锁竞争
+        plugins_snapshot = state.get_plugins_snapshot_cached(timeout=1.0)
+        hosts_snapshot = state.get_plugin_hosts_snapshot_cached(timeout=1.0)
+        registered_plugin_ids = list(plugins_snapshot.keys())
+        plugin_hosts_snapshot = hosts_snapshot
 
         def _build_synthetic(pid: str, status: str) -> Dict[str, Any]:
             return {

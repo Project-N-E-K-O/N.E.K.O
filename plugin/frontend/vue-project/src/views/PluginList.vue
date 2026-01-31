@@ -12,6 +12,15 @@
             >
               {{ showMetrics ? $t('plugins.hideMetrics') : $t('plugins.showMetrics') }}
             </el-button>
+            <el-button
+              type="warning"
+              :icon="RefreshRight"
+              :loading="reloadingAll"
+              :disabled="runningPlugins.length === 0"
+              @click="handleReloadAll"
+            >
+              {{ $t('plugins.reloadAll') }}
+            </el-button>
             <el-button type="primary" :icon="Refresh" @click="handleRefresh" :loading="loading">
               {{ $t('common.refresh') }}
             </el-button>
@@ -67,17 +76,23 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { Refresh, DataAnalysis } from '@element-plus/icons-vue'
+import { Refresh, DataAnalysis, RefreshRight } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
 import PluginCard from '@/components/plugin/PluginCard.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
+import { reloadAllPlugins } from '@/api/plugins'
 import { METRICS_REFRESH_INTERVAL } from '@/utils/constants'
+import { useI18n } from 'vue-i18n'
 
 const router = useRouter()
 const pluginStore = usePluginStore()
 const metricsStore = useMetricsStore()
+const { t } = useI18n()
+
+const reloadingAll = ref(false)
 
 const rawPlugins = computed(() => pluginStore.pluginsWithStatus)
 const filterVisible = ref(false)
@@ -175,6 +190,60 @@ function stopMetricsAutoRefresh() {
 
 function handlePluginClick(pluginId: string) {
   router.push(`/plugins/${pluginId}`)
+}
+
+// 获取运行中的插件列表
+const runningPlugins = computed(() => {
+  return rawPlugins.value.filter(p => p.status === 'running' && p.enabled !== false)
+})
+
+// 全局重载所有运行中的插件（使用后端批量 API）
+async function handleReloadAll() {
+  const plugins = runningPlugins.value
+  if (plugins.length === 0) return
+
+  try {
+    await ElMessageBox.confirm(
+      t('plugins.reloadAllConfirm', { count: plugins.length }),
+      t('common.confirm'),
+      {
+        confirmButtonText: t('common.confirm'),
+        cancelButtonText: t('common.cancel'),
+        type: 'warning'
+      }
+    )
+  } catch {
+    return
+  }
+
+  reloadingAll.value = true
+
+  try {
+    // 使用后端批量 API，避免锁竞争导致超时
+    const result = await reloadAllPlugins()
+    
+    const successCount = result.reloaded.length
+    const failCount = result.failed.length
+
+    // 记录失败的插件
+    result.failed.forEach(item => {
+      console.error(`Failed to reload plugin ${item.plugin_id}:`, item.error)
+    })
+
+    if (failCount === 0) {
+      ElMessage.success(t('plugins.reloadAllSuccess', { count: successCount }))
+    } else {
+      ElMessage.warning(t('plugins.reloadAllPartial', { success: successCount, fail: failCount }))
+    }
+  } catch (error) {
+    console.error('Failed to reload all plugins:', error)
+    ElMessage.error(t('messages.reloadFailed'))
+  } finally {
+    reloadingAll.value = false
+  }
+
+  // 刷新列表
+  await handleRefresh()
 }
 
 onMounted(async () => {

@@ -24,8 +24,9 @@ async def available():
     loop = asyncio.get_running_loop()
     
     def _get_count():
-        with state.plugins_lock:
-            return len(state.plugins)
+        # 使用缓存快照避免锁竞争
+        plugins_snapshot = state.get_plugins_snapshot_cached(timeout=1.0)
+        return len(plugins_snapshot)
     
     plugins_count = await loop.run_in_executor(_api_executor, _get_count)
     return {
@@ -41,16 +42,17 @@ async def server_info(_: str = require_admin):
     loop = asyncio.get_running_loop()
     
     def _get_info():
-        with state.plugins_lock:
-            plugins_count = len(state.plugins)
-            registered_plugins = list(state.plugins.keys())
+        # 使用缓存快照避免锁竞争
+        plugins_snapshot = state.get_plugins_snapshot_cached(timeout=1.0)
+        hosts_snapshot = state.get_plugin_hosts_snapshot_cached(timeout=1.0)
         
-        with state.plugin_hosts_lock:
-            running_plugins_count = len(state.plugin_hosts)
-            running_plugins = list(state.plugin_hosts.keys())
+        plugins_count = len(plugins_snapshot)
+        registered_plugins = list(plugins_snapshot.keys())
+        running_plugins_count = len(hosts_snapshot)
+        running_plugins = list(hosts_snapshot.keys())
+        
         running_plugins_status = {}
-        for pid in running_plugins:
-            host = state.plugin_hosts.get(pid)
+        for pid, host in hosts_snapshot.items():
             if host:
                 running_plugins_status[pid] = {
                     "alive": True,

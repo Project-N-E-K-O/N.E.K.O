@@ -48,3 +48,9 @@ console.log('✅ Mounting app to #app...')
 app.mount('#app')
 
 console.log('✅ App mounted successfully!')
+
+// 启动连接健康检查
+import { useConnectionStore } from './stores/connection'
+const connectionStore = useConnectionStore()
+connectionStore.startHealthCheck()
+console.log('✅ Health check started!')
