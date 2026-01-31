@@ -38,19 +38,19 @@
         "File": "expressions/exp_08.exp3.json"
       },
       {
+        "Name": "happy_exp_01",
+        "File": "expressions/exp_01.exp3.json"
+      },
+      {
+        "Name": "sad_exp_03",
+        "File": "expressions/exp_03.exp3.json"
+      },
+      {
+        "Name": "angry_exp_08",
+        "File": "expressions/exp_08.exp3.json"
+      },
+      {
         "Name": "neutral_exp_05",
-        "File": "expressions/exp_05.exp3.json"
-      },
-      {
-        "Name": "happy_exp_04",
-        "File": "expressions/exp_04.exp3.json"
-      },
-      {
-        "Name": "sad_exp_05",
-        "File": "expressions/exp_05.exp3.json"
-      },
-      {
-        "Name": "angry_exp_05",
         "File": "expressions/exp_05.exp3.json"
       },
       {
@@ -58,8 +58,8 @@
         "File": "expressions/exp_07.exp3.json"
       },
       {
-        "Name": "Idle_exp_01",
-        "File": "expressions/exp_01.exp3.json"
+        "Name": "Idle_exp_08",
+        "File": "expressions/exp_08.exp3.json"
       }
     ],
     "Motions": {}
