@@ -333,6 +333,9 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             // 如果 Set 中只有一个元素且类型是鼠标，可以尝试清除
             // 但最安全的是在 pointerdown 中始终能获取到 ID
             this.activePointerIds.clear();
+        } else if (!event) {
+            // 如果没有事件对象（可能是由于 blur 或其他中断手动调用），清空所有指针
+            this.activePointerIds.clear();
         }
 
         if (model.dragging) {
