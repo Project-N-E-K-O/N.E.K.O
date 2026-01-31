@@ -977,6 +977,127 @@ def cogtts_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
         logger.error(f"CogTTS Worker启动失败: {e}")
 
 
+def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
+    """
+    Gemini TTS worker（用于默认音色）
+    使用 Google GenAI SDK 的 TTS 模型（gemini-2.5-flash-preview-tts）
+    注意：Gemini TTS 不支持流式输入也不支持流式输出
+    因此需要累积文本后一次性发送，并一次性接收完整音频
+    
+    Args:
+        request_queue: 多进程请求队列，接收(speech_id, text)元组
+        response_queue: 多进程响应队列，发送音频数据（也用于发送就绪信号）
+        audio_api_key: API密钥（Gemini API Key）
+        voice_id: 音色ID，默认使用"Leda"（支持多种预置音色）
+    """
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError:
+        logger.error("❌ 无法导入 google-genai 库，Gemini TTS 不可用")
+        response_queue.put(("__ready__", False))
+        # 模仿 dummy_tts：持续清空队列但不生成音频
+        while True:
+            try:
+                sid, _ = request_queue.get()
+                if sid is None:
+                    continue
+            except Exception:
+                break
+        return
+    
+    # 使用默认音色 "Leda"
+    if not voice_id:
+        voice_id = "Leda"
+    
+    # 初始化 Gemini 客户端
+    try:
+        client = genai.Client(api_key=audio_api_key)
+    except Exception as e:
+        logger.error(f"❌ Gemini 客户端初始化失败: {e}")
+        response_queue.put(("__ready__", False))
+        while True:
+            try:
+                sid, _ = request_queue.get()
+                if sid is None:
+                    continue
+            except Exception:
+                break
+        return
+    
+    # Gemini TTS 是基于 HTTP 的，无需建立持久连接，直接发送就绪信号
+    logger.info("Gemini TTS 已就绪，发送就绪信号")
+    response_queue.put(("__ready__", True))
+    
+    current_speech_id = None
+    text_buffer = []  # 累积文本缓冲区
+    
+    while True:
+        try:
+            sid, tts_text = request_queue.get()
+        except Exception:
+            break
+        
+        # 新的语音ID，清空缓冲区并重新开始
+        if current_speech_id != sid and sid is not None:
+            current_speech_id = sid
+            text_buffer = []
+        
+        if sid is None:
+            # 收到终止信号，合成累积的文本
+            if text_buffer and current_speech_id is not None:
+                full_text = "".join(text_buffer)
+                if full_text.strip():
+                    try:
+                        # 使用 Gemini TTS API 进行合成
+                        response = client.models.generate_content(
+                            model="gemini-2.5-flash-preview-tts",
+                            contents=full_text,
+                            config=types.GenerateContentConfig(
+                                response_modalities=["AUDIO"],
+                                speech_config=types.SpeechConfig(
+                                    voice_config=types.VoiceConfig(
+                                        prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                            voice_name=voice_id,
+                                        )
+                                    )
+                                ),
+                            )
+                        )
+                        
+                        # 提取音频数据
+                        if (response.candidates and 
+                            response.candidates[0].content and 
+                            response.candidates[0].content.parts):
+                            audio_data = response.candidates[0].content.parts[0].inline_data.data
+                            
+                            if audio_data:
+                                # Gemini TTS 返回 PCM 16-bit @ 24000Hz
+                                audio_array = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
+                                
+                                # 使用 soxr 进行高质量重采样 24000Hz -> 48000Hz
+                                resampled = soxr.resample(audio_array, 24000, 48000, quality='HQ')
+                                
+                                # 转回 int16 格式
+                                resampled_int16 = (resampled * 32768.0).clip(-32768, 32767).astype(np.int16)
+                                response_queue.put(resampled_int16.tobytes())
+                                logger.debug(f"Gemini TTS 合成完成，音频长度: {len(resampled_int16)} 采样点")
+                        else:
+                            logger.warning("Gemini TTS 返回空响应")
+                            
+                    except Exception as e:
+                        logger.error(f"Gemini TTS 合成失败: {e}")
+            
+            # 清空缓冲区
+            text_buffer = []
+            current_speech_id = None
+            continue
+        
+        # 累积文本到缓冲区（不立即发送）
+        if tts_text and tts_text.strip():
+            text_buffer.append(tts_text)
+
+
 def dummy_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """
     空的TTS worker（用于不支持TTS的core_api）
@@ -1039,6 +1160,8 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False):
         return step_realtime_tts_worker
     elif core_api_type == 'glm':
         return cogtts_tts_worker
+    elif core_api_type == 'gemini':
+        return gemini_tts_worker
     else:
         logger.error(f"{core_api_type}不支持原生TTS，请使用自定义语音")
         return dummy_tts_worker

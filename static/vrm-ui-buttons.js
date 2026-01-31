@@ -83,7 +83,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
     this._uiWindowHandlers.push({ event: 'resize', handler: applyResponsiveFloatingLayout });
     window.addEventListener('resize', applyResponsiveFloatingLayout);
 
-    const iconVersion = '?v=' + (window.APP_VERSION || '1.0.0');
+    const iconVersion = window.APP_VERSION ? `?v=${window.APP_VERSION}` : '?v=1.0.0';
     const buttonConfigs = [
         { id: 'mic', emoji: '🎤', title: window.t ? window.t('buttons.voiceControl') : '语音控制', titleKey: 'buttons.voiceControl', hasPopup: true, toggle: true, separatePopupTrigger: true, iconOff: '/static/icons/mic_icon_off.png' + iconVersion, iconOn: '/static/icons/mic_icon_on.png' + iconVersion },
         { id: 'screen', emoji: '🖥️', title: window.t ? window.t('buttons.screenShare') : '屏幕分享', titleKey: 'buttons.screenShare', hasPopup: true, toggle: true, separatePopupTrigger: true, iconOff: '/static/icons/screen_icon_off.png' + iconVersion, iconOn: '/static/icons/screen_icon_on.png' + iconVersion },
@@ -112,7 +112,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
             width: '48px', height: '48px', borderRadius: '50%', background: 'rgba(255, 255, 255, 0.65)',
             backdropFilter: 'saturate(180%) blur(20px)', border: '1px solid rgba(255, 255, 255, 0.18)',
             display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px',
-            cursor: 'pointer', userSelect: 'none', boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04)',
+            cursor: 'pointer', userSelect: 'none', boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04), 0 4px 8px rgba(0, 0, 0, 0.08)',
             transition: 'all 0.1s ease', pointerEvents: 'auto'
         });
 
@@ -125,11 +125,11 @@ VRMManager.prototype.setupFloatingButtons = function () {
 
             imgOff = document.createElement('img');
             imgOff.src = config.iconOff; imgOff.alt = config.emoji;
-            Object.assign(imgOff.style, { position: 'absolute', width: '48px', height: '48px', objectFit: 'contain', pointerEvents: 'none', opacity: '1', transition: 'opacity 0.3s ease' });
+            Object.assign(imgOff.style, { position: 'absolute', width: '48px', height: '48px', objectFit: 'contain', pointerEvents: 'none', opacity: '1', transition: 'opacity 0.3s ease', imageRendering: 'crisp-edges' });
 
             imgOn = document.createElement('img');
             imgOn.src = config.iconOn; imgOn.alt = config.emoji;
-            Object.assign(imgOn.style, { position: 'absolute', width: '48px', height: '48px', objectFit: 'contain', pointerEvents: 'none', opacity: '0', transition: 'opacity 0.3s ease' });
+            Object.assign(imgOn.style, { position: 'absolute', width: '48px', height: '48px', objectFit: 'contain', pointerEvents: 'none', opacity: '0', transition: 'opacity 0.3s ease', imageRendering: 'crisp-edges' });
 
             imgContainer.appendChild(imgOff);
             imgContainer.appendChild(imgOn);
@@ -145,6 +145,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
             // 悬停效果
             btn.addEventListener('mouseenter', () => {
                 btn.style.transform = 'scale(1.05)';
+                btn.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.08), 0 8px 16px rgba(0, 0, 0, 0.08)';
                 btn.style.background = 'rgba(255, 255, 255, 0.8)';
 
                 // 检查是否有单独的弹窗触发器且弹窗已打开
@@ -159,6 +160,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
 
             btn.addEventListener('mouseleave', () => {
                 btn.style.transform = 'scale(1)';
+                btn.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.04), 0 4px 8px rgba(0, 0, 0, 0.08)';
                 const isActive = btn.dataset.active === 'true';
                 const popup = document.getElementById(`vrm-popup-${config.id}`);
                 const isPopupVisible = popup && popup.style.display === 'flex' && popup.style.opacity === '1';
@@ -234,17 +236,28 @@ VRMManager.prototype.setupFloatingButtons = function () {
             }
 
             const popup = this.createPopup(config.id);
-            const triggerBtn = document.createElement('div');
-            triggerBtn.innerText = '▶';
+            const triggerBtn = document.createElement('button');
+            triggerBtn.type = 'button';
+            triggerBtn.setAttribute('aria-label', 'Open popup');
+            // 使用图片图标替代文字符号
+            const triggerImg = document.createElement('img');
+            triggerImg.src = '/static/icons/play_trigger_icon.png' + iconVersion;
+            triggerImg.alt = '';
+            triggerImg.setAttribute('aria-hidden', 'true');
+            Object.assign(triggerImg.style, {
+                width: '22px', height: '22px', objectFit: 'contain',
+                pointerEvents: 'none', imageRendering: 'crisp-edges'
+            });
             Object.assign(triggerBtn.style, {
                 width: '24px', height: '24px', borderRadius: '50%',
                 background: 'rgba(255, 255, 255, 0.65)', backdropFilter: 'saturate(180%) blur(20px)',
                 border: '1px solid rgba(255, 255, 255, 0.18)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: '13px', color: '#44b7fe', cursor: 'pointer', userSelect: 'none',
-                boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04)', transition: 'all 0.1s ease', pointerEvents: 'auto',
+                cursor: 'pointer', userSelect: 'none',
+                boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04), 0 4px 8px rgba(0, 0, 0, 0.08)', transition: 'all 0.1s ease', pointerEvents: 'auto',
                 marginLeft: '-10px'
             });
+            triggerBtn.appendChild(triggerImg);
 
             const stopTriggerEvent = (e) => { e.stopPropagation(); };
             ['pointerdown', 'mousedown', 'touchstart'].forEach(evt => triggerBtn.addEventListener(evt, stopTriggerEvent));
@@ -439,15 +452,19 @@ VRMManager.prototype.setupFloatingButtons = function () {
         width: '64px', height: '64px', borderRadius: '50%', background: 'rgba(255, 255, 255, 0.65)',
         backdropFilter: 'saturate(180%) blur(20px)', border: '1px solid rgba(255, 255, 255, 0.18)',
         display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
-        boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04)', transition: 'all 0.1s ease', pointerEvents: 'auto', position: 'relative'
+        boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.04)', transition: 'all 0.1s ease', pointerEvents: 'auto', position: 'relative'
     });
 
     returnBtn.addEventListener('mouseenter', () => {
-        returnBtn.style.transform = 'scale(1.05)'; returnBtn.style.background = 'rgba(255, 255, 255, 0.8)';
+        returnBtn.style.transform = 'scale(1.05)';
+        returnBtn.style.boxShadow = '0 4px 8px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.08)';
+        returnBtn.style.background = 'rgba(255, 255, 255, 0.8)';
         returnImgOff.style.opacity = '0'; returnImgOn.style.opacity = '1';
     });
     returnBtn.addEventListener('mouseleave', () => {
-        returnBtn.style.transform = 'scale(1)'; returnBtn.style.background = 'rgba(255, 255, 255, 0.65)';
+        returnBtn.style.transform = 'scale(1)';
+        returnBtn.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.04)';
+        returnBtn.style.background = 'rgba(255, 255, 255, 0.65)';
         returnImgOff.style.opacity = '1'; returnImgOn.style.opacity = '0';
     });
     returnBtn.addEventListener('click', (e) => {
@@ -582,6 +599,14 @@ VRMManager.prototype._startUIUpdateLoop = function () {
         return; // 循环已在运行
     }
 
+    // 复用对象以减少 GC 压力
+    const headPos = new window.THREE.Vector3();
+    const footPos = new window.THREE.Vector3();
+    const centerPos = new window.THREE.Vector3();
+    const lockPos = new window.THREE.Vector3();
+    const box = new window.THREE.Box3();
+    const size = new window.THREE.Vector3();
+
     // 计算可见按钮数量（移动端隐藏 agent 和 goodbye 按钮）
     const getVisibleButtonCount = () => {
         const buttonConfigs = [
@@ -677,7 +702,6 @@ VRMManager.prototype._startUIUpdateLoop = function () {
 
                 if (headNode) {
                     headNode.updateWorldMatrix(true, false);
-                    const headPos = new window.THREE.Vector3();
                     headNode.getWorldPosition(headPos);
                     headPos.project(this.camera);
                     headScreenY = (-headPos.y * 0.5 + 0.5) * canvasHeight;
@@ -692,18 +716,15 @@ VRMManager.prototype._startUIUpdateLoop = function () {
 
                 if (footNode) {
                     footNode.updateWorldMatrix(true, false);
-                    const footPos = new window.THREE.Vector3();
                     footNode.getWorldPosition(footPos);
                     footPos.project(this.camera);
                     footScreenY = (-footPos.y * 0.5 + 0.5) * canvasHeight;
                 } else {
                     // 如果没有脚部骨骼，使用场景包围盒估算
-                    const box = new window.THREE.Box3().setFromObject(vrm.scene);
-                    const size = new window.THREE.Vector3();
+                    box.setFromObject(vrm.scene);
                     box.getSize(size);
                     // 估算：假设模型高度约为包围盒高度的 80%（排除头发等）
                     const estimatedModelHeight = size.y * 0.8;
-                    const centerPos = new window.THREE.Vector3();
                     box.getCenter(centerPos);
                     centerPos.project(this.camera);
                     const centerScreenY = (-centerPos.y * 0.5 + 0.5) * canvasHeight;
@@ -714,8 +735,7 @@ VRMManager.prototype._startUIUpdateLoop = function () {
                 modelScreenHeight = Math.abs(headScreenY - footScreenY);
             } else {
                 // 如果没有 humanoid，使用场景包围盒
-                const box = new window.THREE.Box3().setFromObject(vrm.scene);
-                const size = new window.THREE.Vector3();
+                box.setFromObject(vrm.scene);
                 box.getSize(size);
                 modelScreenHeight = size.y * 0.8; // 估算
             }
@@ -744,15 +764,14 @@ VRMManager.prototype._startUIUpdateLoop = function () {
                 if (!headNode) headNode = vrm.scene;
 
                 headNode.updateWorldMatrix(true, false);
-                const btnPos = new window.THREE.Vector3();
-                headNode.getWorldPosition(btnPos);
+                headNode.getWorldPosition(headPos);
                 // 减小偏移量，让按钮更靠近模型
-                btnPos.x += 0.2;   // 从 0.35 减小到 0.2，更靠近模型
-                btnPos.y += 0.05;  // 从 0.1 减小到 0.05，更靠近模型
-                btnPos.project(this.camera);
+                headPos.x += 0.2;   // 从 0.35 减小到 0.2，更靠近模型
+                headPos.y += 0.05;  // 从 0.1 减小到 0.05，更靠近模型
+                headPos.project(this.camera);
                 // 统一使用 canvasRect 的宽高计算屏幕坐标，确保在缩放/嵌入场景下定位准确
-                const screenX = (btnPos.x * 0.5 + 0.5) * canvasWidth;
-                const screenY = (-(btnPos.y * 0.5) + 0.5) * canvasHeight;
+                const screenX = (headPos.x * 0.5 + 0.5) * canvasWidth;
+                const screenY = (-(headPos.y * 0.5) + 0.5) * canvasHeight;
 
                 // 检测移动端布局（与 applyResponsiveFloatingLayout 保持一致）
                 const isMobile = window.isMobileWidth();
@@ -769,6 +788,12 @@ VRMManager.prototype._startUIUpdateLoop = function () {
                 // 在移动端，跳过设置 left/top，保持 applyResponsiveFloatingLayout 设置的 bottom/right
                 // 桌面端正常设置 left/top 进行动态定位
                 if (!isMobile) {
+                    // 锁图标位置计算（使用头部位置）
+                    headNode.getWorldPosition(lockPos);
+                    lockPos.x += 0.1;
+                    lockPos.y -= 0.55;
+                    lockPos.project(this.camera);
+
                     // 计算目标位置（应用偏移，减小垂直偏移让按钮更靠近模型）
                     // 注意：screenX/screenY 是相对于 canvas 的坐标，需要加上 canvas 的偏移量
                     const targetX = canvasRect.left + screenX;
@@ -793,56 +818,54 @@ VRMManager.prototype._startUIUpdateLoop = function () {
                     const maxY = windowHeight - actualToolbarHeight - minMargin;
                     const clampedY = Math.max(minY, Math.min(targetY, maxY));
 
-                    buttonsContainer.style.left = `${clampedX}px`;
-                    buttonsContainer.style.top = `${clampedY}px`;
+                    // 平滑跟随：如果当前位置和目标位置差异较小，则不更新，减少抖动
+                    const currentLeft = parseFloat(buttonsContainer.style.left) || 0;
+                    const currentTop = parseFloat(buttonsContainer.style.top) || 0;
+                    const dist = Math.sqrt(Math.pow(clampedX - currentLeft, 2) + Math.pow(clampedY - currentTop, 2));
+
+                    // 只有当移动距离超过 0.5 像素时才更新位置，减少微小抖动
+                    if (dist > 0.5) {
+                        buttonsContainer.style.left = `${clampedX}px`;
+                        buttonsContainer.style.top = `${clampedY}px`;
+                    }
+
+                    // 更新锁位置（使用与按钮相同的缩放比例）
+                    // 只有在非返回状态下才更新锁图标位置和显示
+                    if (lockIcon && !this._isInReturnState) {
+                        // 统一使用 canvasRect 的宽高计算屏幕坐标
+                        const lockScreenX = (lockPos.x * 0.5 + 0.5) * canvasWidth;
+                        const lockScreenY = (-(lockPos.y * 0.5) + 0.5) * canvasHeight;
+                        // 加上 canvas 的偏移量，转换为窗口坐标
+                        const targetLockX = canvasRect.left + lockScreenX;
+                        const targetLockY = canvasRect.top + lockScreenY;
+
+                        // 应用缩放到锁图标（使用与按钮相同的缩放比例）
+                        const baseLockIconSize = 44;  // 锁图标基准尺寸 44px x 44px
+                        lockIcon.style.transformOrigin = 'center center';
+                        lockIcon.style.transform = `scale(${scale})`;
+
+                        // 使用缩放后的实际尺寸（用于边界限制）
+                        const actualLockIconSize = baseLockIconSize * scale;
+
+                        // 屏幕边缘限制（使用窗口尺寸）
+                        const maxLockX = windowWidth - actualLockIconSize - minMargin;
+                        const maxLockY = windowHeight - actualLockIconSize - minMargin;
+                        const clampedLockX = Math.max(minMargin, Math.min(targetLockX, maxLockX));
+                        const clampedLockY = Math.max(minMargin, Math.min(targetLockY, maxLockY));
+
+                        // 平滑跟随锁图标
+                        const currentLockLeft = parseFloat(lockIcon.style.left) || 0;
+                        const currentLockTop = parseFloat(lockIcon.style.top) || 0;
+                        const lockDist = Math.sqrt(Math.pow(clampedLockX - currentLockLeft, 2) + Math.pow(clampedLockY - currentLockTop, 2));
+
+                        if (lockDist > 0.5) {
+                            lockIcon.style.left = `${clampedLockX}px`;
+                            lockIcon.style.top = `${clampedLockY}px`;
+                        }
+                        lockIcon.style.display = 'block';
+                    }
                 }
                 // 不要在这里设置 display，让鼠标检测逻辑和初始显示逻辑来控制显示/隐藏（与 Live2D 保持一致） 
-            }
-
-            // 更新锁位置（使用与按钮相同的缩放比例）
-            // 只有在非返回状态下才更新锁图标位置和显示
-            if (lockIcon && !this._isInReturnState) {
-                // 获取头部位置用于锁图标定位
-                let headNode = null;
-                if (vrm.humanoid) {
-                    headNode = vrm.humanoid.getNormalizedBoneNode('head');
-                    if (!headNode) headNode = vrm.humanoid.getNormalizedBoneNode('neck');
-                }
-                if (!headNode) headNode = vrm.scene;
-
-                headNode.updateWorldMatrix(true, false);
-                const lockPos = new window.THREE.Vector3();
-                headNode.getWorldPosition(lockPos);
-                lockPos.x += 0.1;
-                lockPos.y -= 0.55;
-                lockPos.project(this.camera);
-                // 统一使用 canvasRect 的宽高计算屏幕坐标
-                const lockScreenX = (lockPos.x * 0.5 + 0.5) * canvasWidth;
-                const lockScreenY = (-(lockPos.y * 0.5) + 0.5) * canvasHeight;
-                // 加上 canvas 的偏移量，转换为窗口坐标
-                const targetLockX = canvasRect.left + lockScreenX;
-                const targetLockY = canvasRect.top + lockScreenY;
-
-                // 应用缩放到锁图标（使用与按钮相同的缩放比例）
-                const baseLockIconSize = 44;  // 锁图标基准尺寸 44px x 44px
-                lockIcon.style.transformOrigin = 'center center';
-                lockIcon.style.transform = `scale(${scale})`;
-
-                // 使用缩放后的实际尺寸（用于边界限制）
-                const actualLockIconSize = baseLockIconSize * scale;
-                const minMargin = 10;  // 最小边距
-                const windowWidth = window.innerWidth;
-                const windowHeight = window.innerHeight;
-
-                // 屏幕边缘限制（使用窗口尺寸）
-                const maxLockX = windowWidth - actualLockIconSize - minMargin;
-                const maxLockY = windowHeight - actualLockIconSize - minMargin;
-                const clampedLockX = Math.max(minMargin, Math.min(targetLockX, maxLockX));
-                const clampedLockY = Math.max(minMargin, Math.min(targetLockY, maxLockY));
-
-                lockIcon.style.left = `${clampedLockX}px`;
-                lockIcon.style.top = `${clampedLockY}px`;
-                lockIcon.style.display = 'block';
             }
         } catch (error) {
             // 忽略单帧异常，继续更新循环（开发模式下记录）

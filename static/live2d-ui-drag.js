@@ -292,6 +292,9 @@ Live2DManager.prototype.setupReturnButtonContainerDrag = function (returnButtonC
 
 // 显示弹出框（1秒后自动隐藏），支持点击切换
 Live2DManager.prototype.showPopup = function (buttonId, popup) {
+    // 确保 _popupTimers 已初始化
+    this._popupTimers = this._popupTimers || {};
+
     // 检查当前状态
     const isVisible = popup.style.display === 'flex' && popup.style.opacity === '1';
 

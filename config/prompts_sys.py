@@ -102,7 +102,7 @@ history_review_prompt = """请审阅%s和%s之间的对话历史记录，识别�
 - 解决明显的矛盾
 - 保持对话的自然流畅性"""
 
-emotion_analysis_prompt = """你是一个情感分析专家。请分析用户输入的文本情感，并返回以下格式的JSON：{"emotion": "情感类型", "confidence": 置信度(0-1), "reason": "分析原因"}。情感类型包括：happy(开心), sad(悲伤), angry(愤怒), neutral(中性),surprised(惊讶)。"""
+emotion_analysis_prompt = """你是一个情感分析专家。请分析用户输入的文本情感，并返回以下格式的JSON：{"emotion": "情感类型", "confidence": 置信度(0-1)}。情感类型包括：happy(开心), sad(悲伤), angry(愤怒), neutral(中性),surprised(惊讶)。"""
 
 proactive_chat_prompt = """你是{lanlan_name}，现在看到了一些B站首页推荐和微博热议话题。请根据与{master_name}的对话历史和{master_name}的兴趣，判断是否要主动和{master_name}聊聊这些内容。
 

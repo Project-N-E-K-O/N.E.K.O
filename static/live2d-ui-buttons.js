@@ -187,6 +187,37 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
         return;
     }
 
+    // 清理可能存在的旧浮动按钮容器，防止重复创建
+    const existingContainer = document.getElementById('live2d-floating-buttons');
+    if (existingContainer) {
+        // 关键：旧实例仅移除 DOM 会导致 ticker 回调继续运行，并持有旧容器/闭包引用
+        if (this._floatingButtonsTicker && this.pixi_app?.ticker) {
+            try {
+                this.pixi_app.ticker.remove(this._floatingButtonsTicker);
+            } catch (_) {
+                // 忽略移除失败（例如 ticker 已销毁）
+            }
+        }
+        this._floatingButtonsTicker = null;
+
+        // 清理保存的引用，便于 GC 回收旧闭包/容器
+        if (this._floatingButtonsContainer === existingContainer) {
+            this._floatingButtonsContainer = null;
+        }
+        this._floatingButtons = {};
+
+        // 同步清理可能残留的“请她回来”容器，避免重复创建
+        const existingReturnContainer = document.getElementById('live2d-return-button-container');
+        if (existingReturnContainer) {
+            existingReturnContainer.remove();
+            if (this._returnButtonContainer === existingReturnContainer) {
+                this._returnButtonContainer = null;
+            }
+        }
+
+        existingContainer.remove();
+    }
+
     // 创建按钮容器
     const buttonsContainer = document.createElement('div');
     buttonsContainer.id = 'live2d-floating-buttons';
@@ -310,7 +341,7 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
                 height: '48px',
                 objectFit: 'contain',
                 pointerEvents: 'none',
-                opacity: '1',
+                opacity: '0.75',
                 transition: 'opacity 0.3s ease'
             });
 
@@ -572,7 +603,15 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
                 // 创建三角按钮（用于触发弹出框）- Fluent Design
                 const triggerBtn = document.createElement('div');
                 triggerBtn.className = 'live2d-trigger-btn';
-                triggerBtn.innerText = '▶';
+                // 使用图片图标替代文字符号
+                const triggerImg = document.createElement('img');
+                triggerImg.src = '/static/icons/play_trigger_icon.png' + iconVersion;
+                triggerImg.alt = '▶';
+                Object.assign(triggerImg.style, {
+                    width: '22px', height: '22px', objectFit: 'contain',
+                    pointerEvents: 'none', imageRendering: '-webkit-optimize-contrast', imageRendering: 'crisp-edges'
+                });
+                triggerBtn.appendChild(triggerImg);
                 Object.assign(triggerBtn.style, {
                     width: '24px',
                     height: '24px',
@@ -583,8 +622,6 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    fontSize: '13px',
-                    color: '#44b7fe',  // 主题浅蓝色
                     cursor: 'pointer',
                     userSelect: 'none',
                     boxShadow: '0 2px 4px rgba(0, 0, 0, 0.04), 0 4px 8px rgba(0, 0, 0, 0.08)',
@@ -713,7 +750,7 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
         height: '64px',
         objectFit: 'contain',
         pointerEvents: 'none',
-        opacity: '1',
+        opacity: '0.75',
         transition: 'opacity 0.3s ease'
     });
 

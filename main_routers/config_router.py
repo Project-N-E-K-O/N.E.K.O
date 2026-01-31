@@ -163,18 +163,34 @@ async def set_preferred_model(request: Request):
 
 @router.get("/steam_language")
 async def get_steam_language():
-    """获取 Steam 客户端的语言设置，用于前端 i18n 初始化"""
+    """获取 Steam 客户端的语言设置和 GeoIP 信息，用于前端 i18n 初始化和区域检测
+    
+    返回字段：
+    - success: 是否成功
+    - steam_language: Steam 原始语言设置
+    - i18n_language: 归一化的 i18n 语言代码
+    - ip_country: 用户 IP 所在国家代码（如 "CN"）
+    - is_mainland_china: 是否为中国大陆用户（基于语言设置存在 + IP 为 CN）
+    
+    判断逻辑：
+    - 如果存在 Steam 语言设置（即有 Steam 环境），则检查 GeoIP
+    - 如果 IP 国家代码为 "CN"，则标记为中国大陆用户
+    - 如果不存在 Steam 语言设置（无 Steam 环境），默认为非大陆用户
+    """
     from utils.language_utils import normalize_language_code
     
     try:
         steamworks = get_steamworks()
         
         if steamworks is None:
+            # 没有 Steam 环境，默认为非大陆用户
             return {
                 "success": False,
                 "error": "Steamworks 未初始化",
                 "steam_language": None,
-                "i18n_language": None
+                "i18n_language": None,
+                "ip_country": None,
+                "is_mainland_china": False  # 无 Steam 环境，默认非大陆
             }
         
         # 获取 Steam 当前游戏语言
@@ -188,10 +204,48 @@ async def get_steam_language():
         i18n_language = normalize_language_code(steam_language, format='full')
         logger.info(f"[i18n] Steam 语言映射: '{steam_language}' -> '{i18n_language}'")
         
+        # 获取用户 IP 所在国家（用于判断是否为中国大陆用户）
+        ip_country = None
+        is_mainland_china = False
+        
+        try:
+            # 使用 Steam Utils API 获取用户 IP 所在国家
+            raw_ip_country = steamworks.Utils.GetIPCountry()
+            
+            # 醒目调试日志
+            print("=" * 60)
+            print(f"[GeoIP API DEBUG] Raw GetIPCountry() returned: {repr(raw_ip_country)}")
+            
+            if isinstance(raw_ip_country, bytes):
+                ip_country = raw_ip_country.decode('utf-8')
+                print(f"[GeoIP API DEBUG] Decoded from bytes: '{ip_country}'")
+            else:
+                ip_country = raw_ip_country
+            
+            # 转为大写以便比较
+            if ip_country:
+                ip_country = ip_country.upper()
+                # 判断是否为中国大陆（国家代码为 "CN"）
+                is_mainland_china = (ip_country == "CN")
+                print(f"[GeoIP API DEBUG] Country (upper): '{ip_country}'")
+                print(f"[GeoIP API DEBUG] Is mainland China: {is_mainland_china}")
+            else:
+                print(f"[GeoIP API DEBUG] Country is empty/None")
+            print("=" * 60)
+            
+            logger.info(f"[GeoIP] 用户 IP 国家: {ip_country}, 是否大陆: {is_mainland_china}")
+        except Exception as geo_error:
+            print(f"[GeoIP API DEBUG] Exception: {geo_error}")
+            logger.warning(f"[GeoIP] 获取用户 IP 国家失败: {geo_error}，默认为非大陆用户")
+            ip_country = None
+            is_mainland_china = False
+        
         return {
             "success": True,
             "steam_language": steam_language,
-            "i18n_language": i18n_language
+            "i18n_language": i18n_language,
+            "ip_country": ip_country,
+            "is_mainland_china": is_mainland_china
         }
         
     except Exception as e:
@@ -200,7 +254,9 @@ async def get_steam_language():
             "success": False,
             "error": str(e),
             "steam_language": None,
-            "i18n_language": None
+            "i18n_language": None,
+            "ip_country": None,
+            "is_mainland_china": False  # 发生错误时，默认非大陆
         }
 
 
@@ -262,6 +318,7 @@ async def get_core_config_api():
             "assistApiKeyGlm": core_cfg.get('assistApiKeyGlm', ''),
             "assistApiKeyStep": core_cfg.get('assistApiKeyStep', ''),
             "assistApiKeySilicon": core_cfg.get('assistApiKeySilicon', ''),
+            "assistApiKeyGemini": core_cfg.get('assistApiKeyGemini', ''),
             "mcpToken": core_cfg.get('mcpToken', ''),  
             "enableCustomApi": core_cfg.get('enableCustomApi', False),  
             # 自定义API相关字段
@@ -369,6 +426,8 @@ async def update_core_config(request: Request):
             core_cfg['assistApiKeyStep'] = data['assistApiKeyStep']
         if 'assistApiKeySilicon' in data:
             core_cfg['assistApiKeySilicon'] = data['assistApiKeySilicon']
+        if 'assistApiKeyGemini' in data:
+            core_cfg['assistApiKeyGemini'] = data['assistApiKeyGemini']
         if 'mcpToken' in data:
             core_cfg['mcpToken'] = data['mcpToken']
         if 'enableCustomApi' in data:

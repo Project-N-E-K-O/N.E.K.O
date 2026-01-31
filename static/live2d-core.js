@@ -65,19 +65,8 @@ class Live2DManager {
         this._lockIconTicker = null;
         this._lockIconElement = null;
 
-        // 浮动按钮系统
-        this._floatingButtonsTicker = null;
-        this._floatingButtonsContainer = null;
-        this._floatingButtons = {}; // 存储所有按钮元素
-        this._popupTimers = {}; // 存储弹出框的定时器
-        this._goodbyeClicked = false; // 标记是否点击了"请她离开"
-        this._returnButtonContainer = null; // "请她回来"按钮容器
-
-        // 已打开的设置窗口引用映射（URL -> Window对象）
-        this._openSettingsWindows = {};
-
-        // 口型同步控制
-        this.mouthValue = 0; // 0~1
+        // 口型同步
+        this.mouthValue = 0; // 0~1 (嘴巴开合值)
         this.mouthParameterId = null; // 例如 'ParamMouthOpenY' 或 'ParamO'
         this._mouthOverrideInstalled = false;
         this._origMotionManagerUpdate = null; // 保存原始的 motionManager.update 方法
@@ -191,6 +180,26 @@ class Live2DManager {
             this.pixi_app = null;
             this.isInitialized = false;
             throw error;
+        }
+    }
+
+    /**
+     * 暂停渲染循环（用于节省资源，例如进入模型管理界面时）
+     */
+    pauseRendering() {
+        if (this.pixi_app && this.pixi_app.ticker) {
+            this.pixi_app.ticker.stop();
+            console.log('[Live2D Core] 渲染循环已暂停');
+        }
+    }
+
+    /**
+     * 恢复渲染循环（从暂停状态恢复）
+     */
+    resumeRendering() {
+        if (this.pixi_app && this.pixi_app.ticker) {
+            this.pixi_app.ticker.start();
+            console.log('[Live2D Core] 渲染循环已恢复');
         }
     }
 

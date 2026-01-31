@@ -373,7 +373,7 @@ main() {
     
     echo "🎉🎉 All systems operational!"
     echo "🌐 Web UI accessible via Nginx at: http://localhost:${NGINX_PORT}"
-    echo "💡 Use CTRL+C to stop all services"
+    echo "Use CTRL+C to stop all services"
     
     # 等待所有进程
     wait

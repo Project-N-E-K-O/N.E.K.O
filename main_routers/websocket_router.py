@@ -79,7 +79,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 await websocket.close()
                 break
             if session_id[lanlan_name] != this_session_id:
-                await session_manager[lanlan_name].send_status("{lanlan_name}正在前往另一个终端...")
+                await session_manager[lanlan_name].send_status(f"{lanlan_name}正在前往另一个终端...")
                 await websocket.close()
                 break
             message = json.loads(data)
