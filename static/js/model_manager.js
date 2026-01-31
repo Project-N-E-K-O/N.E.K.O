@@ -40,6 +40,8 @@
  * 封装所有选项条的通用功能，减少重复代码
  */
 class DropdownManager {
+    static instances = [];
+
     constructor(config) {
         this.config = {
             buttonId: config.buttonId,
@@ -78,6 +80,7 @@ class DropdownManager {
             return;
         }
 
+        DropdownManager.instances.push(this);
         this.init();
     }
     
@@ -210,25 +213,38 @@ class DropdownManager {
         }
     }
     
-    showDropdown() {
+    static hideAll() {
+        DropdownManager.instances.forEach(instance => { instance.hideDropdown(); });
+    }
+
+    async showDropdown() {
         if (!this.dropdown || this.config.disabled) return;
+        
+        // 在显示当前下拉菜单前，先隐藏所有其他的下拉菜单
+        DropdownManager.hideAll();
+        
+        // 如果有 onBeforeShow 回调，先执行它
+        if (typeof this.config.onBeforeShow === 'function') {
+            await this.config.onBeforeShow();
+        }
+        
         this.updateDropdown();
         this.dropdown.style.display = 'block';
     }
-    
+
     hideDropdown() {
         if (this.dropdown) {
             this.dropdown.style.display = 'none';
         }
     }
     
-    toggleDropdown() {
+    async toggleDropdown() {
         if (this.config.disabled) return;
         const isVisible = this.dropdown && this.dropdown.style.display === 'block';
         if (isVisible) {
             this.hideDropdown();
         } else {
-            this.showDropdown();
+            await this.showDropdown();
         }
     }
     
@@ -239,7 +255,7 @@ class DropdownManager {
             if (this.button.disabled) {
                 return;
             }
-            this.toggleDropdown();
+            this.toggleDropdown().catch(err => console.error('[DropdownManager] toggle failed:', err));
         });
         document.addEventListener('click', (e) => {
             if (!this.button.contains(e.target) && !this.dropdown.contains(e.target)) {
@@ -675,6 +691,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     let motionManager = null;
     let expressionManager = null;
     let persistentExpressionManager = null;
+    let vrmModelManager = null;
+    let vrmAnimationManager = null;
+    let vrmExpressionManager = null;
     
     // 延迟初始化管理器（确保 DOM 已加载）
     function initDropdownManagers() {
@@ -778,6 +797,93 @@ document.addEventListener('DOMContentLoaded', async () => {
                 iconAlt: window.i18next?.t('live2d.selectPersistentExpression') || '常驻表情',
                 alwaysShowDefault: true  // 始终显示默认文字，不显示选中的选项
                 // 移除 disabled: true，让按钮可以正常使用
+            });
+        }
+
+        if (!vrmModelManager) {
+            vrmModelManager = new DropdownManager({
+                buttonId: 'vrm-model-select-btn',
+                selectId: 'vrm-model-select',
+                dropdownId: 'vrm-model-dropdown',
+                textSpanId: 'vrm-model-select-text',
+                iconClass: 'vrm-model-select-icon',
+                iconSrc: '/static/icons/live2d_model_select_icon.png?v=1',
+                defaultText: window.i18next?.t('live2d.selectVRMModel') || '选择模型',
+                iconAlt: window.i18next?.t('live2d.selectVRMModel') || '选择模型',
+                alwaysShowDefault: false,
+                shouldSkipOption: (option) => {
+                    return option.value === '' && (
+                        option.textContent.includes('加载中') ||
+                        option.textContent.includes('Select')
+                    );
+                },
+                onChange: () => {
+                    if (typeof updateVRMModelSelectButtonText === 'function') {
+                        updateVRMModelSelectButtonText();
+                    }
+                }
+            });
+        }
+
+        if (!vrmAnimationManager) {
+            vrmAnimationManager = new DropdownManager({
+                buttonId: 'vrm-animation-select-btn',
+                selectId: 'vrm-animation-select',
+                dropdownId: 'vrm-animation-dropdown',
+                textSpanId: 'vrm-animation-select-text',
+                iconClass: 'vrm-animation-select-icon',
+                iconSrc: '/static/icons/motion_select_icon.png?v=1',
+                defaultText: window.i18next?.t('live2d.vrmAnimation.selectAnimation') || '选择动作',
+                iconAlt: window.i18next?.t('live2d.vrmAnimation.selectAnimation') || '选择动作',
+                shouldSkipOption: (option) => {
+                    return option.value === '' && (
+                        option.textContent.includes('请先加载') ||
+                        option.textContent.includes('没有动作') ||
+                        option.textContent.includes('Select')
+                    );
+                },
+                onBeforeShow: async () => {
+                    // 首次点击时加载动作列表
+                    if (!animationsLoaded && currentModelType === 'vrm') {
+                        animationsLoaded = true; // 防止重复加载
+                        try {
+                            await loadVRMAnimations(false);
+                        } catch (error) {
+                            console.error('加载VRM动作列表失败:', error);
+                            animationsLoaded = false; // 加载失败时重置标记，允许重试
+                        }
+                    }
+                },
+                onChange: () => {
+                    if (typeof updateVRMAnimationSelectButtonText === 'function') {
+                        updateVRMAnimationSelectButtonText();
+                    }
+                }
+            });
+        }
+
+        if (!vrmExpressionManager) {
+            vrmExpressionManager = new DropdownManager({
+                buttonId: 'vrm-expression-select-btn',
+                selectId: 'vrm-expression-select',
+                dropdownId: 'vrm-expression-dropdown',
+                textSpanId: 'vrm-expression-select-text',
+                iconClass: 'vrm-expression-select-icon',
+                iconSrc: '/static/icons/parameter_editor_icon.png?v=1',
+                defaultText: window.i18next?.t('live2d.vrmExpression.selectExpression') || '选择表情',
+                iconAlt: window.i18next?.t('live2d.vrmExpression.selectExpression') || '选择表情',
+                shouldSkipOption: (option) => {
+                    return option.value === '' && (
+                        option.textContent.includes('请先加载') ||
+                        option.textContent.includes('没有表情') ||
+                        option.textContent.includes('Select')
+                    );
+                },
+                onChange: () => {
+                    if (typeof updateVRMExpressionSelectButtonText === 'function') {
+                        updateVRMExpressionSelectButtonText();
+                    }
+                }
             });
         }
     }
@@ -1771,32 +1877,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 更新VRM模型选择器按钮文字
     function updateVRMModelSelectButtonText() {
-        if (!vrmModelSelectText || !vrmModelSelect) return;
-        const selectedOption = vrmModelSelect.options[vrmModelSelect.selectedIndex];
-        // 如果没有选择，显示第一个选项的文字（如果有），否则显示默认文字
-        let text;
-        if (selectedOption) {
-            text = selectedOption.textContent;
-        } else if (vrmModelSelect.options.length > 0) {
-            text = vrmModelSelect.options[0].textContent;
-        } else {
-            text = t('live2d.pleaseSelectModel', '选择模型');
+        if (vrmModelManager) {
+            vrmModelManager.updateButtonText();
         }
-        vrmModelSelectText.textContent = text;
-        vrmModelSelectText.setAttribute('data-text', text);
     }
 
-    // VRM模型选择按钮点击事件
-    if (vrmModelSelectBtn) {
-        vrmModelSelectBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            if (vrmModelDropdown) {
-                const isVisible = vrmModelDropdown.style.display !== 'none';
-                vrmModelDropdown.style.display = isVisible ? 'none' : 'block';
-            }
-        });
-    }
-
+    // VRM模型选择按钮点击事件已由 DropdownManager 处理
 
     // VRM 模型选择事件
     if (vrmModelSelect) {
@@ -2132,41 +2218,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 更新VRM动作选择器按钮文字
     function updateVRMAnimationSelectButtonText() {
-        if (!vrmAnimationSelectText || !vrmAnimationSelect) return;
-        const selectedValue = vrmAnimationSelect.value;
-        let text;
-        if (!selectedValue || selectedValue === '') {
-            // 没有选择时，显示默认文字"选择动作"
-            text = t('live2d.vrmAnimation.selectAnimation', '选择动作');
-        } else {
-            // 有选择时，显示选中选项的文字
-            const selectedOption = vrmAnimationSelect.options[vrmAnimationSelect.selectedIndex];
-            text = selectedOption ? selectedOption.textContent : t('live2d.vrmAnimation.selectAnimation', '选择动作');
+        if (vrmAnimationManager) {
+            vrmAnimationManager.updateButtonText();
         }
-        vrmAnimationSelectText.textContent = text;
-        vrmAnimationSelectText.setAttribute('data-text', text);
     }
 
-    // VRM动作选择按钮点击事件
-    if (vrmAnimationSelectBtn) {
-        vrmAnimationSelectBtn.addEventListener('click', async (e) => {
-            e.stopPropagation();
-            // 首次点击时加载动作列表
-            if (!animationsLoaded && currentModelType === 'vrm') {
-                animationsLoaded = true; // 防止重复加载
-                try {
-                    await loadVRMAnimations(false);
-                } catch (error) {
-                    console.error('加载VRM动作列表失败:', error);
-                    animationsLoaded = false; // 加载失败时重置标记，允许重试
-                }
-            }
-            if (vrmAnimationDropdown) {
-                const isVisible = vrmAnimationDropdown.style.display !== 'none';
-                vrmAnimationDropdown.style.display = isVisible ? 'none' : 'block';
-            }
-        });
-    }
+    // VRM动作选择按钮点击事件已由 DropdownManager 处理
 
     // VRM 动作选择事件 - 首次点击时加载动作列表（保留原有逻辑作为备用）
     if (vrmAnimationSelect) {
@@ -2344,30 +2401,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 更新VRM表情选择器按钮文字
     function updateVRMExpressionSelectButtonText() {
-        if (!vrmExpressionSelectText || !vrmExpressionSelect) return;
-        const selectedValue = vrmExpressionSelect.value;
-        let text;
-        if (!selectedValue || selectedValue === '') {
-            // 没有选择时，显示默认文字"选择表情"
-            text = t('live2d.vrmExpression.selectExpression', '选择表情');
-        } else {
-            // 有选择时，显示选中选项的文字
-            const selectedOption = vrmExpressionSelect.options[vrmExpressionSelect.selectedIndex];
-            text = selectedOption ? selectedOption.textContent : t('live2d.vrmExpression.selectExpression', '选择表情');
+        if (vrmExpressionManager) {
+            vrmExpressionManager.updateButtonText();
         }
-        vrmExpressionSelectText.textContent = text;
-        vrmExpressionSelectText.setAttribute('data-text', text);
     }
-    // VRM表情选择按钮点击事件
-    if (vrmExpressionSelectBtn) {
-        vrmExpressionSelectBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            if (vrmExpressionDropdown) {
-                const isVisible = vrmExpressionDropdown.style.display !== 'none';
-                vrmExpressionDropdown.style.display = isVisible ? 'none' : 'block';
-            }
-        });
-    }
+    // VRM表情选择按钮点击事件已由 DropdownManager 处理
 
     // VRM表情选择事件
     if (vrmExpressionSelect) {
@@ -2457,25 +2495,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    // 点击外部关闭下拉菜单
-    document.addEventListener('click', (e) => {
-        if (vrmModelDropdown && vrmModelSelectBtn && 
-            !vrmModelDropdown.contains(e.target) && 
-            !vrmModelSelectBtn.contains(e.target)) {
-            vrmModelDropdown.style.display = 'none';
-        }
-        if (vrmAnimationDropdown && vrmAnimationSelectBtn && 
-            !vrmAnimationDropdown.contains(e.target) && 
-            !vrmAnimationSelectBtn.contains(e.target)) {
-            vrmAnimationDropdown.style.display = 'none';
-        }
-        if (vrmExpressionDropdown && vrmExpressionSelectBtn && 
-            !vrmExpressionDropdown.contains(e.target) && 
-            !vrmExpressionSelectBtn.contains(e.target)) {
-            vrmExpressionDropdown.style.display = 'none';
-        }
-    });
-
+    // 点击外部关闭下拉菜单已由 DropdownManager 处理
 
     // VRM 打光控制 (已简化)
     const ambientLightSlider = document.getElementById('ambient-light-slider');
