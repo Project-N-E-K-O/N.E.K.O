@@ -142,6 +142,8 @@ class VRMInteraction {
                     this.isDragging = false;
                     this.dragMode = null;
                     canvas.style.cursor = 'grab';
+                    // 恢复按钮的 pointer-events
+                    this._restoreButtonPointerEvents();
                 }
                 return;
             }
@@ -362,6 +364,8 @@ class VRMInteraction {
             if (this.manager.renderer) {
                 this.manager.renderer.domElement.style.cursor = 'grab';
             }
+            // 恢复按钮的 pointer-events
+            this._restoreButtonPointerEvents();
         }
     }
 
@@ -999,6 +1003,8 @@ class VRMInteraction {
     dispose() {
         this.enableMouseTracking(false);
         this.cleanupDragAndZoom();
+        // 确保拖拽相关的 pointer-events 被恢复
+        this._restoreButtonPointerEvents();
         // 确保初始化定时器被清理（即使 renderer 不存在）
         if (this._initTimerId !== null) {
             clearTimeout(this._initTimerId);
