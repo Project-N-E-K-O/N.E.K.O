@@ -50,6 +50,21 @@ class VRMInteraction {
 
 
     /**
+     * 使用 live2d-ui-drag.js 中的共享工具函数（按钮 pointer-events 管理）
+     */
+    _disableButtonPointerEvents() {
+        if (window.DragHelpers) {
+            window.DragHelpers.disableButtonPointerEvents();
+        }
+    }
+
+    _restoreButtonPointerEvents() {
+        if (window.DragHelpers) {
+            window.DragHelpers.restoreButtonPointerEvents();
+        }
+    }
+
+    /**
      * 【修改】初始化拖拽和缩放功能
      * 已移除所有导致报错的 LookAt/mouseNDC 代码
      */
@@ -112,6 +127,9 @@ class VRMInteraction {
                 canvas.style.cursor = 'move';
                 e.preventDefault();
                 e.stopPropagation();
+
+                // 开始拖动时，临时禁用按钮的 pointer-events
+                this._disableButtonPointerEvents();
             }
         };
 
@@ -179,10 +197,13 @@ class VRMInteraction {
         this.mouseUpHandler = async (e) => {
             if (this.isDragging) {
                 e.preventDefault();
-                +               e.stopPropagation();
+                e.stopPropagation();
                 this.isDragging = false;
                 this.dragMode = null;
                 canvas.style.cursor = 'grab';
+
+                // 拖拽结束后恢复按钮的 pointer-events
+                this._restoreButtonPointerEvents();
 
                 // 拖动结束后保存位置
                 await this._savePositionAfterInteraction();
