@@ -314,10 +314,22 @@ Live2DManager.prototype.playMotion = async function(emotion) {
         try {
             // 方法1: 尝试使用 motion 组名播放指定索引的motion
             if (this.currentModel.motion && this.fileReferences && this.fileReferences.Motions && this.fileReferences.Motions[emotion]) {
-                // 使用选中的索引播放特定的motion文件
-                const motion = await this.currentModel.motion(emotion, selectedIndex);
+                // 解决索引不匹配问题：找到choice.File在FileReferences中的实际索引
+                let fileRefIndex = selectedIndex;
+                if (this.emotionMapping && this.emotionMapping.motions && this.emotionMapping.motions[emotion]) {
+                    // 如果使用的是EmotionMapping，需要找到对应文件在FileReferences中的索引
+                    const fileRefMotions = this.fileReferences.Motions[emotion];
+                    fileRefIndex = fileRefMotions.findIndex(m => m.File === choice.File);
+                    if (fileRefIndex === -1) {
+                        console.warn(`在FileReferences中未找到文件: ${choice.File}`);
+                        fileRefIndex = 0; // 回退到第一个
+                    }
+                }
+
+                // 使用FileReferences的索引播放特定的motion文件
+                const motion = await this.currentModel.motion(emotion, fileRefIndex);
                 if (motion) {
-                    console.log(`成功使用 motion() API 播放: ${emotion}[${selectedIndex}]`);
+                    console.log(`成功使用 motion() API 播放: ${emotion}[${fileRefIndex}] - ${choice.File}`);
                     // 获取motion持续时间
                     let motionDuration = 5000;
                     try {
@@ -345,7 +357,7 @@ Live2DManager.prototype.playMotion = async function(emotion) {
                 }
             }
 
-            // 方法2: 尝试直接加载 motion 文件
+            // 方法2: 尝试直接加载 motion 文件并通过motionManager播放
             if (this.currentModel.internalModel && this.currentModel.internalModel.motionManager) {
                 const motionManager = this.currentModel.internalModel.motionManager;
 
@@ -354,16 +366,28 @@ Live2DManager.prototype.playMotion = async function(emotion) {
                 if (response.ok) {
                     const motionData = await response.json();
 
-                    // 使用 motionManager 的 startMotion 方法，使用实际选择的索引
+                    // 确保motionManager有definitions容器
+                    if (!motionManager.definitions) {
+                        motionManager.definitions = {};
+                    }
+                    if (!motionManager.definitions[emotion]) {
+                        motionManager.definitions[emotion] = [];
+                    }
+
+                    // 将加载的motion数据注入到motionManager的definitions中
+                    const injectedIndex = motionManager.definitions[emotion].length;
+                    motionManager.definitions[emotion].push(motionData);
+
+                    // 使用 motionManager 的 startMotion 方法，使用注入后的索引
                     if (motionManager.startMotion) {
                         const motion = await motionManager.startMotion(
                             emotion,
-                            selectedIndex, // 使用实际选择的索引而不是硬编码的0
+                            injectedIndex, // 使用注入后的索引
                             3  // priority (高优先级)
                         );
 
                         if (motion) {
-                            console.log(`成功使用 startMotion() 播放: ${motionPath} [index=${selectedIndex}]`);
+                            console.log(`成功使用 startMotion() 播放: ${motionPath} [injectedIndex=${injectedIndex}]`);
                             const motionDuration = (motionData.Meta && motionData.Meta.Duration)
                                 ? motionData.Meta.Duration * 1000
                                 : 5000;
