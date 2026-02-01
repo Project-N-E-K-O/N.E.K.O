@@ -562,15 +562,25 @@ Return only the JSON object, nothing else.
         self, 
         messages: List[Dict[str, str]], 
         lanlan_name: Optional[str] = None,
-        agent_flags: Optional[Dict[str, bool]] = None
+        agent_flags: Optional[Dict[str, bool]] = None,
+        conversation_id: Optional[str] = None
     ) -> Optional[TaskResult]:
         """
         并行评估 MCP 和 ComputerUse，然后执行任务
         
         优先级: MCP > ComputerUse > UserPlugin
+        
+        Args:
+            messages: 对话消息列表
+            lanlan_name: 角色名
+            agent_flags: agent 功能开关
+            conversation_id: 对话ID，用于关联触发事件和对话上下文
         """
         import uuid
         task_id = str(uuid.uuid4())
+        
+        # 保存 conversation_id 供后续使用
+        self._current_conversation_id = conversation_id
         
         if agent_flags is None:
             agent_flags = {"mcp_enabled": False, "computer_use_enabled": False}
@@ -893,12 +903,16 @@ Return only the JSON object, nothing else.
             else:
                 safe_args = {}
             try:
-                if lanlan_name:
-                    ctx_obj = safe_args.get("_ctx")
-                    if not isinstance(ctx_obj, dict):
-                        ctx_obj = {}
-                    if "lanlan_name" not in ctx_obj:
-                        ctx_obj["lanlan_name"] = lanlan_name
+                # 构建 _ctx 对象，包含 lanlan_name 和 conversation_id
+                ctx_obj = safe_args.get("_ctx")
+                if not isinstance(ctx_obj, dict):
+                    ctx_obj = {}
+                if lanlan_name and "lanlan_name" not in ctx_obj:
+                    ctx_obj["lanlan_name"] = lanlan_name
+                # 添加 conversation_id，用于关联触发事件和对话上下文
+                if hasattr(self, "_current_conversation_id") and self._current_conversation_id:
+                    ctx_obj["conversation_id"] = self._current_conversation_id
+                if ctx_obj:
                     safe_args["_ctx"] = ctx_obj
             except Exception:
                 pass

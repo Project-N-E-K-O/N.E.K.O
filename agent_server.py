@@ -349,13 +349,18 @@ async def _computer_use_scheduler_loop():
             await asyncio.sleep(0.1)
 
 
-async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str]):
+async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None):
     """
     [简化版] 使用 DirectTaskExecutor 一步完成：分析对话 + 判断执行方式 + 执行任务
     
     简化链条:
     - 旧: Analyzer(LLM#1) → Planner(LLM#2) → 子进程Processor(LLM#3) → MCP调用
     - 新: DirectTaskExecutor(LLM#1) → MCP调用
+    
+    Args:
+        messages: 对话消息列表
+        lanlan_name: 角色名
+        conversation_id: 对话ID，用于关联触发事件和对话上下文
     """
     if not Modules.task_executor:
         logger.warning("[TaskExecutor] task_executor not initialized, skipping")
@@ -373,7 +378,8 @@ async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_na
         result = await Modules.task_executor.analyze_and_execute(
             messages=messages,
             lanlan_name=lanlan_name,
-            agent_flags=Modules.agent_flags
+            agent_flags=Modules.agent_flags,
+            conversation_id=conversation_id
         )
 
         # testUserPlugin: log after analysis decision if user_plugin_enabled is true
@@ -928,7 +934,9 @@ async def analyze_and_plan(payload: Dict[str, Any]):
         pass  # Defensive: catch edge cases in flag access
 
     # Fire-and-forget background processing and scheduling
-    asyncio.create_task(_background_analyze_and_plan(messages, (payload or {}).get("lanlan_name")))
+    lanlan_name = (payload or {}).get("lanlan_name")
+    conversation_id = (payload or {}).get("conversation_id")
+    asyncio.create_task(_background_analyze_and_plan(messages, lanlan_name, conversation_id))
     return {"success": True, "status": "processed", "accepted_at": _now_iso()}
 
 

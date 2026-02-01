@@ -252,6 +252,25 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 # 清理连续的assistant消息（主动搭话未被响应时只保留最后一条）
                                 chat_history = cleanup_consecutive_assistant_messages(chat_history)
                                 
+                                # 发布对话到 message_plane，供插件订阅（非阻塞，失败不影响主流程）
+                                if config.get('message_plane', True):
+                                    try:
+                                        # 构造最近的消息摘要
+                                        recent_renew = []
+                                        for item in chat_history[-6:]:
+                                            if item.get('role') in ['user', 'assistant']:
+                                                try:
+                                                    txt = item['content'][0]['text'] if item.get('content') else ''
+                                                except Exception:
+                                                    txt = ''
+                                                if txt:
+                                                    recent_renew.append({'role': item.get('role'), 'text': txt})
+                                        if recent_renew:
+                                            from main_logic.conversation_bridge import publish_conversation
+                                            publish_conversation(recent_renew, lanlan_name, "renew_session")
+                                    except Exception:
+                                        pass  # 静默失败
+                                
                                 logger.info(f"[{lanlan_name}] 热重置：聊天历史长度 {len(chat_history)} 条消息")
                                 try:
                                     async with aiohttp.ClientSession() as session:
@@ -278,6 +297,12 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 text_output_cache = ''
                                 if config['monitor'] and sync_ws:
                                     await sync_ws.send_json({'type': 'turn end'})
+                                
+                                # 生成 conversation_id，用于关联触发事件和对话上下文
+                                # 格式: {timestamp_ms}_{sequence:05d}_{random_suffix:04x}
+                                from main_logic.conversation_bridge import generate_conversation_id
+                                conversation_id = generate_conversation_id()
+                                
                                 # 非阻塞地向tool_server发送最近对话，供分析器识别潜在任务
                                 try:
                                     # 构造最近的消息摘要
@@ -295,15 +320,24 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                         async with aiohttp.ClientSession() as session:
                                             async with session.post(
                                                 f"http://localhost:{TOOL_SERVER_PORT}/analyze_and_plan",
-                                                json={'messages': recent, 'lanlan_name': lanlan_name},
+                                                json={'messages': recent, 'lanlan_name': lanlan_name, 'conversation_id': conversation_id},
                                                 timeout=aiohttp.ClientTimeout(total=5.0)
                                             ) as resp:
                                                 await resp.read()  # 确保响应被完全读取
-                                        logger.debug(f"[{lanlan_name}] 已发送对话到analyzer进行分析")
+                                        logger.debug(f"[{lanlan_name}] 已发送对话到analyzer进行分析 (conversation_id={conversation_id[:8]}...)")
                                 except asyncio.TimeoutError:
                                     logger.debug(f"[{lanlan_name}] 发送到analyzer超时")
                                 except Exception as e:
                                     logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e}")
+                                
+                                # 发布对话到 message_plane，供插件订阅（非阻塞，失败不影响主流程）
+                                # conversation_id 用于关联触发事件和对话上下文
+                                if config.get('message_plane', True) and recent:
+                                    try:
+                                        from main_logic.conversation_bridge import publish_conversation
+                                        publish_conversation(recent, lanlan_name, "turn_end", conversation_id)
+                                    except Exception:
+                                        pass  # 静默失败
                                 
                                 # Turn end时不保存聊天记录，只在session end或renew session时保存
 
@@ -320,6 +354,11 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                     chat_history.append(
                                         {'role': 'assistant', 'content': [{'type': 'text', 'text': text_output_cache}]})
                                 text_output_cache = ''
+                                
+                                # 生成 conversation_id，用于关联触发事件和对话上下文
+                                # 格式: {timestamp_ms}_{sequence:05d}_{random_suffix:04x}
+                                from main_logic.conversation_bridge import generate_conversation_id
+                                session_end_conversation_id = generate_conversation_id()
                                 
                                 # 向tool_server发送最近对话，供分析器识别潜在任务（与turn end逻辑相同）
                                 try:
@@ -338,15 +377,24 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                         async with aiohttp.ClientSession() as session:
                                             async with session.post(
                                                 f"http://localhost:{TOOL_SERVER_PORT}/analyze_and_plan",
-                                                json={'messages': recent, 'lanlan_name': lanlan_name},
+                                                json={'messages': recent, 'lanlan_name': lanlan_name, 'conversation_id': session_end_conversation_id},
                                                 timeout=aiohttp.ClientTimeout(total=5.0)
                                             ) as resp:
                                                 await resp.read()  # 确保响应被完全读取
-                                        logger.debug(f"[{lanlan_name}] 已发送对话到analyzer进行分析 (session end)")
+                                        logger.debug(f"[{lanlan_name}] 已发送对话到analyzer进行分析 (session end, conversation_id={session_end_conversation_id[:8]}...)")
                                 except asyncio.TimeoutError:
                                     logger.debug(f"[{lanlan_name}] 发送到analyzer超时 (session end)")
                                 except Exception as e:
                                     logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e} (session end)")
+                                
+                                # 发布对话到 message_plane，供插件订阅（非阻塞，失败不影响主流程）
+                                # conversation_id 用于关联触发事件和对话上下文
+                                if config.get('message_plane', True) and recent:
+                                    try:
+                                        from main_logic.conversation_bridge import publish_conversation
+                                        publish_conversation(recent, lanlan_name, "session_end", session_end_conversation_id)
+                                    except Exception:
+                                        pass  # 静默失败
                                 
                                 # 清理连续的assistant消息（主动搭话未被响应时只保留最后一条）
                                 chat_history = cleanup_consecutive_assistant_messages(chat_history)
@@ -480,6 +528,13 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                     rdr.cancel()
                 except Exception:
                     pass
+        
+        # 停止 conversation_bridge
+        try:
+            from main_logic.conversation_bridge import stop_conversation_bridge
+            stop_conversation_bridge()
+        except Exception:
+            pass
 
     try:
         loop.run_until_complete(maintain_connection(chat_history, lanlan_name))
