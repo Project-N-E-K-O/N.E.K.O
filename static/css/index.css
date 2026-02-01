@@ -257,8 +257,9 @@ opacity: 0;
 visibility: hidden;
 }
 
-#live2d-container.locked-hover-fade {
-opacity: 0.12;
+#live2d-container.locked-hover-fade,
+#vrm-container.locked-hover-fade {
+    opacity: 0.12;
 }
 
 #live2d-canvas {

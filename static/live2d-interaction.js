@@ -476,7 +476,7 @@ Live2DManager.prototype.setupTouchZoom = function (model) {
 
 // 启用鼠标跟踪以检测与模型的接近度
 Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
-    const { threshold = 70, HoverFadethreshold = 5 } = options;
+    const { threshold = 70, HoverFadethreshold = 40 } = options; // 增加默认变淡阈值，从 5px 增加到 40px
 
     // 使用实例属性保存定时器，便于在其他地方访问
     if (this._hideButtonsTimer) {
@@ -596,10 +596,17 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
 
     // 方法2：同时保留 window 的 pointermove 监听（适用于普通浏览器）
     const onPointerMove = (event) => {
-        // 直接从事件中读取 Ctrl 键状态（更可靠）
-        const ctrlKeyPressed = event.ctrlKey || event.metaKey; // 支持 Mac 的 Cmd 键
-        // 同时更新备用状态变量
-        isCtrlPressed = ctrlKeyPressed;
+        // 更新 Ctrl 键状态：综合事件中的状态和本地状态
+        // 如果是真实事件，更新本地状态；如果是模拟事件，本地状态保持不变（除非事件里带了 Ctrl）
+        if (event.isTrusted) {
+            isCtrlPressed = event.ctrlKey || event.metaKey;
+        } else if (event.ctrlKey || event.metaKey) {
+            // 如果模拟事件带了 Ctrl 键，也更新本地状态以供后续逻辑使用
+            isCtrlPressed = true;
+        }
+
+        // 最终用于变淡判断的 Ctrl 状态
+        const ctrlKeyPressed = event.ctrlKey || event.metaKey || isCtrlPressed;
 
         // 检查模型是否存在，防止切换模型时出现错误
         if (!model) {
