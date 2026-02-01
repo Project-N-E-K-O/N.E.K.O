@@ -183,6 +183,9 @@ function attachProfileNameLimiter(inputEl) {
     if (!inputEl || inputEl.dataset.profileNameLimiterAttached === 'true') return;
     inputEl.dataset.profileNameLimiterAttached = 'true';
 
+    // IME 组合输入期间不要修改 value/selection，否则可能打断中文输入
+    let composing = false;
+
     // 仅作为辅助上限；真正限制由计数单位逻辑实现
     try {
         inputEl.maxLength = PROFILE_NAME_MAX_UNITS;
@@ -193,6 +196,7 @@ function attachProfileNameLimiter(inputEl) {
     // 删除输入框提示（placeholder/title 由需求移除），这里只做长度限制与超限反馈
 
     const enforce = () => {
+        if (composing) return;
         if (inputEl.readOnly || inputEl.disabled) return;
         const before = inputEl.value;
         const beforeUnits = profileNameCountUnits(before);
@@ -216,8 +220,14 @@ function attachProfileNameLimiter(inputEl) {
     };
 
     inputEl.addEventListener('input', enforce);
-    // 中文输入法：composition 期间 input 事件可能不稳定，结束时再强制一次
-    inputEl.addEventListener('compositionend', enforce);
+    inputEl.addEventListener('compositionstart', () => {
+        composing = true;
+    });
+    // 中文输入法：composition 期间不要强制截断，结束时再强制一次
+    inputEl.addEventListener('compositionend', () => {
+        composing = false;
+        enforce();
+    });
     enforce();
 }
 
