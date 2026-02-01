@@ -90,7 +90,7 @@ QQグループ：1022939659
 
 ### 1. docker-composeを使用したデプロイ（現在唯一のDockerデプロイ方法）
 
-#### docker-compose.yml（現在amd64アーキテクチャイメージのみ利用可能）
+#### docker-compose.yml
 ```yaml
 version: '3.8'
 
@@ -262,6 +262,4 @@ N.E.K.O/
 
 - ネイティブツール呼び出しを改善。
 
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=wehos/N.E.K.O.&type=Date)](https://www.star-history.com/#wehos/N.E.K.O.&Date)
+## Star History[![Star History Chart](https://api.star-history.com/svg?repos=wehos/N.E.K.O.&type=Date)](https://www.star-history.com/#wehos/N.E.K.O.&Date)

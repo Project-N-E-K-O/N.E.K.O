@@ -33,9 +33,15 @@ class ImportantSettingsManager:
 
         for i in self.settings_file:
             try:
+                # 系统保留字段 - 不应该被记忆系统读取
                 self.lanlan_basic_config[i].pop('system_prompt', None)
                 self.lanlan_basic_config[i].pop('live2d', None)
                 self.lanlan_basic_config[i].pop('voice_id', None)
+                # 工坊保留字段 - 由工坊系统管理，不应该被记忆系统读取
+                for workshop_field in ['原始数据', '文件路径', '创意工坊物品ID', 
+                                       'description', 'tags', 'name',
+                                       '描述', '标签', '关键词', 'live2d_item_id']:
+                    self.lanlan_basic_config[i].pop(workshop_field, None)
                 with open(self.settings_file[i], 'r', encoding='utf-8') as f:
                     self.settings[i] = json.load(f)
             except (FileNotFoundError, json.JSONDecodeError):

@@ -48,6 +48,9 @@ class ConfigManager:
         self.config_dir = self.app_docs_dir / "config"
         self.memory_dir = self.app_docs_dir / "memory"
         self.live2d_dir = self.app_docs_dir / "live2d"
+        # VRM模型存储在用户文档目录下（与Live2D保持一致）
+        self.vrm_dir = self.app_docs_dir / "vrm"
+        self.vrm_animation_dir = self.vrm_dir / "animation"  # VRMA动画文件目录
         self.workshop_dir = self.app_docs_dir / "workshop"
         self.chara_dir = self.app_docs_dir / "character_cards"
 
@@ -194,23 +197,28 @@ class ConfigManager:
         self._log(f"[ConfigManager] ⚠ All document directories failed, using fallback: {fallback}")
         return fallback
     
-    def _get_project_config_directory(self):
-        """获取项目的config目录"""
+    def _get_project_root(self):
+        """获取项目根目录（私有方法）"""
         if getattr(sys, 'frozen', False):
             # 如果是打包后的exe（PyInstaller）
-            # 单文件模式：数据文件在 _MEIPASS 临时目录
-            # 多文件模式：数据文件在 exe 同目录
             if hasattr(sys, '_MEIPASS'):
                 # 单文件模式：使用临时解压目录
-                app_dir = Path(sys._MEIPASS)
+                return Path(sys._MEIPASS)
             else:
                 # 多文件模式：使用 exe 同目录
-                app_dir = Path(sys.executable).parent
+                return Path(sys.executable).parent
         else:
-            # 如果是脚本运行
-            app_dir = Path.cwd()
-        
-        return app_dir / "config"
+            # 开发模式：使用当前工作目录
+            return Path.cwd()
+    
+    @property
+    def project_root(self):
+        """获取项目根目录（公共属性）"""
+        return self._get_project_root()
+    
+    def _get_project_config_directory(self):
+        """获取项目的config目录"""
+        return self._get_project_root() / "config"
     
     def _get_project_memory_directory(self):
         """获取项目的memory/store目录"""
@@ -236,7 +244,7 @@ class ConfigManager:
             # 先确保父目录（docs_dir）存在
             if not self.docs_dir.exists():
                 print(f"Warning: Documents directory does not exist: {self.docs_dir}", file=sys.stderr)
-                print(f"Warning: Attempting to create documents directory...", file=sys.stderr)
+                print("Warning: Attempting to create documents directory...", file=sys.stderr)
                 try:
                     # 尝试创建父目录（可能需要创建多级）
                     dirs_to_create = []
@@ -305,6 +313,21 @@ class ConfigManager:
             print(f"Warning: Failed to create live2d directory: {e}", file=sys.stderr)
             return False
         
+    def ensure_vrm_directory(self):
+        """确保用户文档目录下的vrm目录和animation子目录存在"""
+        try:
+            # 先确保app_docs_dir存在
+            if not self._ensure_app_docs_directory():
+                return False
+            # 创建vrm目录
+            self.vrm_dir.mkdir(parents=True, exist_ok=True)
+            # 创建animation子目录
+            self.vrm_animation_dir.mkdir(parents=True, exist_ok=True)
+            return True
+        except Exception as e:
+            print(f"Warning: Failed to create vrm directory: {e}", file=sys.stderr)
+            return False
+        
     def ensure_chara_directory(self):
         """确保我的文档下的character_cards目录存在"""
         try:
@@ -358,7 +381,7 @@ class ConfigManager:
         """
         # 确保目录存在
         if not self.ensure_config_directory():
-            print(f"Warning: Cannot create config directory, using project config", file=sys.stderr)
+            print("Warning: Cannot create config directory, using project config", file=sys.stderr)
             return
         
         # 显示项目配置目录位置（调试用）
@@ -398,7 +421,7 @@ class ConfigManager:
         """
         # 确保目录存在
         if not self.ensure_memory_directory():
-            self._log(f"Warning: Cannot create memory directory, using project memory")
+            self._log("Warning: Cannot create memory directory, using project memory")
             return
         
         # 如果项目memory/store目录不存在，跳过
@@ -504,6 +527,24 @@ class ConfigManager:
         voice_storage[audio_api_key][voice_id] = voice_data
         self.save_voice_storage(voice_storage)
 
+    def delete_voice_for_current_api(self, voice_id):
+        """删除当前 AUDIO_API_KEY 下的指定音色"""
+        core_config = self.get_core_config()
+        audio_api_key = core_config.get('AUDIO_API_KEY', '')
+
+        if not audio_api_key:
+            raise ValueError("未配置 AUDIO_API_KEY")
+
+        voice_storage = self.load_voice_storage()
+        if audio_api_key not in voice_storage:
+            return False
+
+        if voice_id in voice_storage[audio_api_key]:
+            del voice_storage[audio_api_key][voice_id]
+            self.save_voice_storage(voice_storage)
+            return True
+        return False
+
     def validate_voice_id(self, voice_id):
         """校验 voice_id 是否在当前 AUDIO_API_KEY 下有效"""
         if not voice_id:
@@ -597,6 +638,66 @@ class ConfigManager:
 
     # --- Core config helpers ---
 
+    # Cache for region check to avoid repeated calls (None = not checked, True/False = result)
+    _region_cache = None
+    
+    def _check_non_mainland(self) -> bool:
+        """Check if user is non-mainland China (cached, lazy evaluation)."""
+        # Return cached result if available
+        if ConfigManager._region_cache is not None:
+            return ConfigManager._region_cache
+        
+        try:
+            # Skip if shared_state not loaded yet (avoid circular import during startup)
+            if 'main_routers.shared_state' not in sys.modules:
+                return False  # Don't cache, retry next time
+            
+            from main_routers.shared_state import get_steamworks
+            steamworks = get_steamworks()
+            
+            if steamworks is None:
+                # Steam not initialized yet, don't cache, retry next time
+                return False
+            
+            ip_country = steamworks.Utils.GetIPCountry()
+            if isinstance(ip_country, bytes):
+                ip_country = ip_country.decode('utf-8')
+            
+            # 醒目日志
+            print("=" * 60, file=sys.stderr)
+            print(f"[GeoIP DEBUG] Steam GetIPCountry() returned: '{ip_country}'", file=sys.stderr)
+            print(f"[GeoIP DEBUG] Country code (upper): '{ip_country.upper() if ip_country else 'EMPTY'}'", file=sys.stderr)
+            
+            # CN = mainland (False), else = non-mainland (True)
+            # If ip_country is empty, default to mainland (False)
+            result = (ip_country.upper() != 'CN') if ip_country else False
+            
+            print(f"[GeoIP DEBUG] Is non-mainland: {result}", file=sys.stderr)
+            print(f"[GeoIP DEBUG] URL replacement: {'lanlan.tech -> lanlan.app' if result else 'NO CHANGE'}", file=sys.stderr)
+            print("=" * 60, file=sys.stderr)
+            
+            # Cache only when we get a definitive answer
+            ConfigManager._region_cache = result
+            return result
+            
+        except Exception as e:
+            # On any error, don't cache and default to mainland (no replacement)
+            print(f"[GeoIP DEBUG] Exception: {e}", file=sys.stderr)
+            return False
+    
+    def _adjust_free_api_url(self, url: str, is_free: bool) -> str:
+        """Internal URL adjustment for free API users based on region."""
+        if not url or 'lanlan.tech' not in url:
+            return url
+        
+        try:
+            if self._check_non_mainland():
+                return url.replace('lanlan.tech', 'lanlan.app')
+        except Exception:
+            pass
+        
+        return url
+
     def get_core_config(self):
         """动态读取核心配置"""
         # 从 config 模块导入所有默认配置值
@@ -657,6 +758,7 @@ class ConfigManager:
             'ASSIST_API_KEY_GLM': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_STEP': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_SILICON': DEFAULT_CORE_API_KEY,
+            'ASSIST_API_KEY_GEMINI': DEFAULT_CORE_API_KEY,
             'COMPUTER_USE_MODEL': DEFAULT_COMPUTER_USE_MODEL,
             'COMPUTER_USE_GROUND_MODEL': DEFAULT_COMPUTER_USE_GROUND_MODEL,
             'COMPUTER_USE_MODEL_URL': DEFAULT_COMPUTER_USE_MODEL_URL,
@@ -714,6 +816,7 @@ class ConfigManager:
         config['ASSIST_API_KEY_GLM'] = core_cfg.get('assistApiKeyGlm', '') or config['CORE_API_KEY']
         config['ASSIST_API_KEY_STEP'] = core_cfg.get('assistApiKeyStep', '') or config['CORE_API_KEY']
         config['ASSIST_API_KEY_SILICON'] = core_cfg.get('assistApiKeySilicon', '') or config['CORE_API_KEY']
+        config['ASSIST_API_KEY_GEMINI'] = core_cfg.get('assistApiKeyGemini', '') or config['CORE_API_KEY']
 
         if core_cfg.get('mcpToken'):
             config['MCP_ROUTER_API_KEY'] = core_cfg['mcpToken']
@@ -786,15 +889,63 @@ class ConfigManager:
         enable_custom_api = core_cfg.get('enableCustomApi', False)
         config['ENABLE_CUSTOM_API'] = enable_custom_api
         
-        # 只有在启用自定义API时才允许覆盖视觉模型相关字段
+        # 只有在启用自定义API时才允许覆盖各模型相关字段
         if enable_custom_api:
+            # Summary（摘要）模型自定义配置映射
+            if core_cfg.get('summaryModelApiKey') is not None:
+                config['SUMMARY_MODEL_API_KEY'] = core_cfg.get('summaryModelApiKey', '') or config.get('SUMMARY_MODEL_API_KEY', '')
+            if core_cfg.get('summaryModelUrl') is not None:
+                config['SUMMARY_MODEL_URL'] = core_cfg.get('summaryModelUrl', '') or config.get('SUMMARY_MODEL_URL', '')
+            if core_cfg.get('summaryModelId') is not None:
+                config['SUMMARY_MODEL'] = core_cfg.get('summaryModelId', '') or config.get('SUMMARY_MODEL', '')
+            
+            # Correction（纠错）模型自定义配置映射
+            if core_cfg.get('correctionModelApiKey') is not None:
+                config['CORRECTION_MODEL_API_KEY'] = core_cfg.get('correctionModelApiKey', '') or config.get('CORRECTION_MODEL_API_KEY', '')
+            if core_cfg.get('correctionModelUrl') is not None:
+                config['CORRECTION_MODEL_URL'] = core_cfg.get('correctionModelUrl', '') or config.get('CORRECTION_MODEL_URL', '')
+            if core_cfg.get('correctionModelId') is not None:
+                config['CORRECTION_MODEL'] = core_cfg.get('correctionModelId', '') or config.get('CORRECTION_MODEL', '')
+            
+            # Emotion（情感分析）模型自定义配置映射
+            if core_cfg.get('emotionModelApiKey') is not None:
+                config['EMOTION_MODEL_API_KEY'] = core_cfg.get('emotionModelApiKey', '') or config.get('EMOTION_MODEL_API_KEY', '')
+            if core_cfg.get('emotionModelUrl') is not None:
+                config['EMOTION_MODEL_URL'] = core_cfg.get('emotionModelUrl', '') or config.get('EMOTION_MODEL_URL', '')
+            if core_cfg.get('emotionModelId') is not None:
+                config['EMOTION_MODEL'] = core_cfg.get('emotionModelId', '') or config.get('EMOTION_MODEL', '')
+            
+            # Vision（视觉）模型自定义配置映射
             if core_cfg.get('visionModelApiKey') is not None:
                 config['VISION_MODEL_API_KEY'] = core_cfg.get('visionModelApiKey', '') or config.get('VISION_MODEL_API_KEY', '')
             if core_cfg.get('visionModelUrl') is not None:
                 config['VISION_MODEL_URL'] = core_cfg.get('visionModelUrl', '') or config.get('VISION_MODEL_URL', '')
             if core_cfg.get('visionModelId') is not None:
-                # 将 core_cfg 中的 visionModelId 映射到内部的 VISION_MODEL（模型ID）
                 config['VISION_MODEL'] = core_cfg.get('visionModelId', '') or config.get('VISION_MODEL', '')
+            
+            # Omni/Realtime（全模态/实时）模型自定义配置映射
+            if core_cfg.get('omniModelApiKey') is not None:
+                config['REALTIME_MODEL_API_KEY'] = core_cfg.get('omniModelApiKey', '') or config.get('REALTIME_MODEL_API_KEY', '')
+            if core_cfg.get('omniModelUrl') is not None:
+                config['REALTIME_MODEL_URL'] = core_cfg.get('omniModelUrl', '') or config.get('REALTIME_MODEL_URL', '')
+            if core_cfg.get('omniModelId') is not None:
+                config['REALTIME_MODEL'] = core_cfg.get('omniModelId', '') or config.get('REALTIME_MODEL', '')
+            
+            # TTS 自定义配置映射
+            if core_cfg.get('ttsModelApiKey') is not None:
+                config['TTS_MODEL_API_KEY'] = core_cfg.get('ttsModelApiKey', '') or config.get('TTS_MODEL_API_KEY', '')
+            if core_cfg.get('ttsModelUrl') is not None:
+                config['TTS_MODEL_URL'] = core_cfg.get('ttsModelUrl', '') or config.get('TTS_MODEL_URL', '')
+            if core_cfg.get('ttsModelId') is not None:
+                config['TTS_MODEL'] = core_cfg.get('ttsModelId', '') or config.get('TTS_MODEL', '')
+            
+            # TTS Voice ID 作为角色 voice_id 的回退
+            if core_cfg.get('ttsVoiceId') is not None:
+                config['TTS_VOICE_ID'] = core_cfg.get('ttsVoiceId', '')
+
+        for key, value in config.items():
+            if key.endswith('_URL') and isinstance(value, str):
+                config[key] = self._adjust_free_api_url(value, True)
 
         return config
 
@@ -888,7 +1039,7 @@ class ConfigManager:
             custom_key = core_config.get(mapping['custom_key'], '')
             
             # 自定义配置完整时使用自定义配置
-            if custom_model and custom_url and custom_key:
+            if custom_model and custom_url:
                 return {
                     'model': custom_model,
                     'api_key': custom_key,

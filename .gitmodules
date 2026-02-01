@@ -1,0 +1,3 @@
+[submodule "local_server/cosyvoice_server/CosyVoice"]
+	path = local_server/cosyvoice_server/CosyVoice
+	url = https://github.com/wehos/CosyVoice-v3

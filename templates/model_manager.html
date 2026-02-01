@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n="live2d.manager">模型管理器 - Project N.E.K.O.</title>
+    <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
+    <script src="/static/i18n-i18next.js"></script>
+    <script src="/static/common_dialogs.js"></script>
+    <link rel="stylesheet" href="/static/css/model_manager.css">
+</head>
+
+<body>
+
+
+    <div id="sidebar">
+        <div class="control-group">
+            <button id="backToMainBtn" class="btn btn-primary" data-i18n-title="live2d.backToMain">
+                <img src="/static/icons/back_to_main_button.png?v=1" data-i18n-alt="live2d.backToMain" class="back-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
+                <span class="round-stroke-text" id="back-text" data-i18n="live2d.backToMain" data-text="Back to Main">返回主页</span>
+                <img src="/static/icons/paw_ui.png?v=1" alt="" class="paw-icon" style="height: 70px; width: auto; max-width: 60px; image-rendering: crisp-edges; margin-left: auto; flex-shrink: 0; object-fit: contain; display: inline-block;">
+            </button>
+        </div>
+
+        <div class="control-group">
+            <input type="file" id="model-upload" webkitdirectory directory multiple style="display: none;">
+            <input type="file" id="vrm-file-upload" accept=".vrm" style="display: none;">
+            <input type="file" id="motion-file-upload" accept=".motion3.json" style="display: none;">
+            <input type="file" id="expression-file-upload" accept=".exp3.json" style="display: none;">
+            <input type="file" id="vrm-animation-file-upload" accept=".vrma" style="display: none;">
+            <div style="display: flex; gap: 0; align-items: center;">
+                <button id="upload-btn" class="btn btn-primary" data-i18n-title="live2d.importModel">
+                    <img src="/static/icons/import_model_button_icon.png?v=1" data-i18n-alt="live2d.importModel" class="import-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
+                    <span class="round-stroke-text" id="upload-text" data-i18n="live2d.importModel" data-text="Import Model:">导入模型</span>
+                </button>
+                <button id="delete-model-btn" class="btn btn-danger" data-i18n-title="live2d.deleteModel" aria-label="Delete imported models">
+                    <img src="/static/icons/delete_model_button.png?v=1" data-i18n-alt="live2d.deleteModel">
+                </button>
+            </div>
+            <div id="upload-status" style="font-size:12px; color:#666; margin-top:4px;"></div>
+        </div>
+
+        <div class="control-group">
+            <div id="model-type-select-wrapper" style="position: relative;">
+                <button id="model-type-select-btn" class="btn btn-primary" type="button" data-i18n-title="live2d.modelType">
+                    <img src="/static/icons/model_type_icon.png?v=1" data-i18n-alt="live2d.modelType" class="model-type-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
+                    <span class="round-stroke-text" id="model-type-text" data-i18n="live2d.modelType" data-text="Model Type:">模型类型</span>
+                </button>
+                <select id="model-type-select" class="control-select" style="display: none;">
+                    <option value="live2d">Live2D</option>
+                    <option value="vrm">VRM</option>
+                </select>
+                <div id="model-type-dropdown" class="model-type-dropdown" style="display: none;">
+                    <div class="dropdown-item" data-value="live2d"><span class="dropdown-item-text" data-text="Live2D">Live2D</span></div>
+                    <div class="dropdown-item" data-value="vrm"><span class="dropdown-item-text" data-text="VRM">VRM</span></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="control-group" id="live2d-model-group">
+            <div id="live2d-model-select-wrapper" style="position: relative;">
+                <button id="live2d-model-select-btn" class="btn btn-primary" type="button" data-i18n-title="live2d.selectModel">
+                    <img src="/static/icons/live2d_model_select_icon.png?v=1" data-i18n-alt="live2d.selectModel" class="live2d-model-select-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
+                    <span class="round-stroke-text" id="live2d-model-select-text" data-text="选择模型">选择模型</span>
+                </button>
+                <select id="model-select" class="control-select" style="display: none;">
+                    <option data-i18n="common.loading">加载中...</option>
+                </select>
+                <div id="live2d-model-dropdown" class="live2d-model-dropdown" style="display: none;">
+                    <!-- 下拉菜单项将动态生成 -->
+                </div>
+            </div>
+        </div>
+
+        <div class="control-group" id="vrm-model-group" style="display:none;">
+            <div id="vrm-model-select-wrapper" style="position: relative;">
+                <button id="vrm-model-select-btn" class="btn btn-primary" type="button" data-i18n-title="live2d.selectVRMModel">
+                    <img src="/static/icons/live2d_model_select_icon.png?v=1" data-i18n-alt="live2d.selectVRMModel" class="vrm-model-select-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
+                    <span class="round-stroke-text" id="vrm-model-select-text" data-text="Select VRM Model:">选择模型</span>
+                </button>
+                <select id="vrm-model-select" class="control-select" style="display: none;">
+                    <option data-i18n="common.loading">加载中...</option>
+                </select>
+                <div id="vrm-model-dropdown" class="vrm-model-dropdown" style="display: none;">
+                    <!-- 下拉菜单项将动态生成 -->
+                </div>
+            </div>
+        </div>
+
+        <!-- VRM动作预览 -->
+        <div class="control-group" id="vrm-animation-group" style="display:none;">
+            <div class="action-group">
+                <div id="vrm-animation-select-wrapper" style="position: relative; display: flex; flex: 1;">
+                    <button id="vrm-animation-select-btn" class="btn btn-primary" type="button" disabled data-i18n-title="live2d.vrmAnimation.selectAnimation">
+                        <img src="/static/icons/motion_select_icon.png?v=1" data-i18n-alt="live2d.vrmAnimation.selectAnimation" class="vrm-animation-select-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
+                        <span class="round-stroke-text" id="vrm-animation-select-text" data-i18n="live2d.vrmAnimation.selectAnimation" data-text="Select Animation">选择动作</span>
+                    </button>
+                    <select id="vrm-animation-select" class="control-select" style="display: none;" disabled>
+                        <option value="" data-i18n="live2d.vrmAnimation.selectAnimation">选择动作</option>
+                    </select>
+                    <div id="vrm-animation-dropdown" class="vrm-animation-dropdown" style="display: none;">
+                        <!-- 下拉菜单项将动态生成 -->
+                    </div>
+                </div>
+                <button id="play-vrm-animation-btn" class="btn btn-primary" type="button" disabled style="flex-shrink: 0;">
+                    <img src="/static/icons/motion_play_icon.png?v=1" alt="播放" class="vrm-animation-play-icon" style="height: 40px; width: auto; image-rendering: crisp-edges;">
+                </button>
+            </div>
+        </div>
+        <div class="control-group" id="vrm-expression-group" style="display:none;">
+            <div style="display: flex; gap: 0; align-items: center;">
+                <div id="vrm-expression-select-wrapper" style="position: relative; display: flex; flex: 1;">
+                    <button id="vrm-expression-select-btn" class="btn btn-primary" type="button" disabled data-i18n-title="live2d.vrmExpression.selectExpression">
+                        <img src="/static/icons/parameter_editor_icon.png?v=1" data-i18n-alt="live2d.vrmExpression.selectExpression" class="vrm-expression-select-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
+                        <span class="round-stroke-text" id="vrm-expression-select-text" data-i18n="live2d.vrmExpression.selectExpression" data-text="Select Expression">选择表情</span>
+                    </button>
+                    <select id="vrm-expression-select" class="control-select" style="display: none;" disabled>
+                        <option value="" data-i18n="live2d.vrmExpression.selectExpression">选择表情</option>
+                    </select>
+                    <div id="vrm-expression-dropdown" class="vrm-expression-dropdown" style="display: none;">
+                        <!-- 下拉菜单项将动态生成 -->
+                    </div>
+                </div>
+                <button id="trigger-vrm-expression-btn" class="btn btn-primary" type="button" disabled>
+                    <img src="/static/icons/motion_play_icon.png?v=1" alt="播放" class="vrm-expression-play-icon">
+                </button>
+            </div>
+        </div>
+
+
+        <div class="control-group">
+            <div style="display: flex; gap: 0; align-items: center;">
+                <div id="motion-select-wrapper" style="position: relative;">
+                    <button id="motion-select-btn" class="btn btn-primary" type="button" disabled data-i18n-title="live2d.selectMotion">
+                        <img src="/static/icons/motion_select_icon.png?v=1" data-i18n-alt="live2d.selectMotion" class="motion-select-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
+                        <span class="round-stroke-text" id="motion-select-text" data-i18n="live2d.selectMotion" data-text="Select Motion">选择动作</span>
+                    </button>
+                    <select id="motion-select" class="control-select" style="display: none;" disabled>
+                        <option value="" data-i18n="live2d.pleaseLoadModel">请先加载模型</option>
+                    </select>
+                    <div id="motion-dropdown" class="motion-dropdown" style="display: none;">
+                        <!-- 下拉菜单项将动态生成 -->
+                    </div>
+                </div>
+                <button id="play-motion-btn" class="btn btn-primary" type="button" disabled>
+                    <img src="/static/icons/motion_play_icon.png?v=3" alt="播放" class="motion-play-icon">
+                </button>
+            </div>
+        </div>
+
+        <div class="control-group">
+            <div style="display: flex; gap: 0; align-items: center;">
+                <div id="expression-select-wrapper" style="position: relative; display: flex; flex: 1;">
+                    <button id="expression-select-btn" class="btn btn-primary" type="button" disabled data-i18n-title="live2d.selectExpression">
+                        <img src="/static/icons/parameter_editor_icon.png?v=1" data-i18n-alt="live2d.selectExpression" class="expression-select-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
+                        <span class="round-stroke-text" id="expression-select-text" data-i18n="live2d.selectExpression" data-text="Select Expression">选择表情</span>
+                    </button>
+                    <select id="expression-select" class="control-select" style="display: none;" disabled>
+                        <option value="" data-i18n="live2d.pleaseLoadModel">请先加载模型</option>
+                    </select>
+                    <div id="expression-dropdown" class="expression-dropdown" style="display: none;">
+                        <!-- 下拉菜单项将动态生成 -->
+                    </div>
+                </div>
+                <button id="play-expression-btn" class="btn btn-primary" type="button" disabled>
+                    <img src="/static/icons/motion_play_icon.png?v=1" alt="播放" class="expression-play-icon">
+                </button>
+            </div>
+        </div>
+
+        <div class="control-group" id="persistent-expression-group">
+            <div id="persistent-expression-select-wrapper" style="position: relative;">
+                <button id="persistent-expression-select-btn" class="btn btn-primary" type="button" disabled data-i18n-title="live2d.selectPersistentExpression">
+                    <img src="/static/icons/persistent_expression_icon.png?v=1" data-i18n-alt="live2d.selectPersistentExpression" class="persistent-expression-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
+                    <span class="round-stroke-text" id="persistent-expression-text" data-i18n="live2d.selectPersistentExpression" data-text="Select Persistent Expression">常驻表情</span>
+                </button>
+                <select id="persistent-expression-select" class="control-select" style="display: none;" disabled>
+                    <option value="" data-i18n="live2d.selectPersistentExpression">选择常驻表情</option>
+                </select>
+                <div id="persistent-expression-dropdown" class="persistent-expression-dropdown" style="display: none;">
+                    <!-- 下拉菜单项将动态生成 -->
+                </div>
+            </div>
+            <p class="persistent-hint-box" data-i18n="live2d.persistentHint">
+                常驻表情会一直生效；此处仅能选择 .exp3.json。
+            </p>
+            <div id="persistent-list" style="display: none;"></div>
+        </div>
+
+        <div class="control-group" id="emotion-manager-group">
+            <div id="save-position-wrapper" style="display:flex; gap: 0; width: 100%; max-width: 270px;">
+                <button id="save-position-btn" class="btn btn-primary btn-icon" disabled data-i18n-title="live2d.saveSettings" style="width: 100%;">
+                    <span class="round-stroke-text round-stroke-text-center" id="save-position-text" data-i18n="live2d.saveSettings" data-text="Save Settings">保存设置</span>
+                </button>
+            </div>
+        </div>
+
+        <div class="control-group" id="emotion-config-group" style="display:none;">
+            <button id="emotion-config-btn" class="btn btn-primary btn-icon" style="width: 100%; max-width: 270px;" data-i18n-title="live2d.emotionConfig">
+                <span class="round-stroke-text round-stroke-text-center" data-i18n="live2d.emotionConfig" data-text="Emotion Config">情感配置</span>
+            </button>
+        </div>
+
+        <!-- VRM 打光设置 (已简化为二次元风格) -->
+        <div class="control-group" id="vrm-lighting-group" style="display:none;">
+        <div id="vrm-lighting-wrapper" class="vrm-lighting-wrapper">
+            <div class="vrm-lighting-header">
+                <span class="vrm-lighting-header-text" data-i18n="vrm.lighting.title">VRM打光设置</span>
+            </div>
+            <div id="vrm-lighting-content" class="vrm-lighting-content">
+                <div class="lighting-control">
+            <label for="ambient-light-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.ambientLight">环境光强度</label>
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <input type="range" id="ambient-light-slider" min="0" max="1.0" step="0.01" value="0.7"
+                    style="flex: 1;">
+                <span id="ambient-light-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">0.70</span>
+            </div>
+        </div>
+
+        <div class="lighting-control">
+            <label for="main-light-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.mainLight">主光源强度</label>
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <input type="range" id="main-light-slider" min="0" max="2.5" step="0.01" value="0.8"
+                    style="flex: 1;">
+                <span id="main-light-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">0.80</span>
+            </div>
+        </div>
+
+        <!-- 辅助光已隐藏，由 MToon Shader 自动处理 -->
+        <div class="lighting-control hidden-simplified" style="display: none;">
+            <label for="fill-light-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.fillLight">补光强度</label>
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <input type="range" id="fill-light-slider" min="0" max="1.0" step="0.01" value="0.0"
+                    style="flex: 1;">
+                <span id="fill-light-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">0.00</span>
+            </div>
+        </div>
+
+        <div class="lighting-control hidden-simplified" style="display: none;">
+            <label for="rim-light-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.rimLight">轮廓光强度</label>
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <input type="range" id="rim-light-slider" min="0" max="1.5" step="0.05" value="0.0"
+                    style="flex: 1;">
+                <span id="rim-light-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">0.00</span>
+            </div>
+        </div>
+
+        <div class="lighting-control hidden-simplified" style="display: none;">
+            <label for="top-light-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.topLight">顶光强度</label>
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <input type="range" id="top-light-slider" min="0" max="1.0" step="0.01" value="0.0"
+                    style="flex: 1;">
+                <span id="top-light-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">0.00</span>
+            </div>
+        </div>
+
+        <div class="lighting-control hidden-simplified" style="display: none;">
+            <label for="bottom-light-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.bottomLight">底光强度</label>
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <input type="range" id="bottom-light-slider" min="0" max="0.5" step="0.01" value="0.0"
+                    style="flex: 1;">
+                <span id="bottom-light-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">0.00</span>
+            </div>
+        </div>
+
+        <div class="lighting-control">
+            <label for="exposure-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.exposure">曝光</label>
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <input type="range" id="exposure-slider" min="0.5" max="2.5" step="0.05" value="1.0"
+                    style="flex: 1;">
+                <span id="exposure-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">1.00</span>
+            </div>
+        </div>
+
+            <div class="lighting-control">
+                <label for="tonemapping-select" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.toneMapping">色调映射</label>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <select id="tonemapping-select" style="flex: 1; padding: 5px; border-radius: 4px; opacity: 0.85; color: #4f8cff;">
+                        <option value="0" style="color: #4f8cff;">None (无)</option>
+                        <option value="1" selected style="color: #4f8cff;">Linear (线性)</option>
+                        <option value="2" style="color: #4f8cff;">Reinhard</option>
+                        <option value="3" style="color: #4f8cff;">Cineon (电影)</option>
+                        <option value="4" style="color: #4f8cff;">ACES Filmic</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+        </div>
+        </div>
+
+        <div class="control-group" id="parameter-editor-group">
+            <a id="parameter-editor-btn" href="/live2d_parameter_editor" class="btn btn-primary"
+                style="text-decoration: none; display: block;" data-i18n-title="live2d.parameterEditor.title">
+                <img src="/static/icons/parameter_editor_icon.png?v=1" data-i18n-alt="live2d.parameterEditor.title" class="parameter-editor-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
+                <span class="round-stroke-text" id="parameter-editor-text" data-i18n="live2d.parameterEditor.title" data-text="Face Editor">捏脸系统</span>
+            </a>
+        </div>
+
+        <div id="status">
+            <img src="/static/icons/reminder_icon.png?v=1" alt="提示" class="reminder-icon" style="height: 16px; width: 16px; vertical-align: middle; margin-right: 6px; display: inline-block; image-rendering: crisp-edges;">
+            <span id="status-text" data-i18n="status.initializing">正在初始化...</span>
+        </div>
+    </div>
+
+    <div id="live2d-container"><canvas id="live2d-canvas"></canvas></div>
+    <div id="vrm-container" class="hidden"></div>
+
+    <div id="delete-model-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 data-i18n="live2d.deleteModelTitle">删除已导入模型</h3>
+                <button class="modal-close" id="close-delete-modal">&times;</button>
+            </div>
+            <div class="delete-warning" data-i18n="live2d.deleteWarning">
+                以下列出了所有已导入的用户模型。请选择要删除的模型。注意：此操作不可恢复。
+            </div>
+            <div class="model-list-container" id="user-model-list">
+                <div class="empty-message" data-i18n="live2d.noUserModels">暂无可删除的用户模型</div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="cancel-delete-btn" data-i18n="common.cancel">取消</button>
+                <button class="btn btn-danger" id="confirm-delete-btn" data-i18n="live2d.deleteSelected"
+                    disabled>删除选中</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/libs/live2dcubismcore.min.js"></script>
+    <script src="/static/libs/live2d.min.js"></script>
+    <script src="/static/libs/pixi.min.js"></script>
+    <script src="/static/libs/index.min.js"></script>
+    <script src="/static/live2d-core.js"></script>
+    <script src="/static/live2d-emotion.js"></script>
+    <script src="/static/live2d-model.js"></script>
+    <script src="/static/live2d-interaction.js"></script>
+    <script src="/static/live2d-ui-buttons.js"></script>
+    <script src="/static/live2d-ui-popup.js"></script>
+    <script src="/static/live2d-ui-hud.js"></script>
+    <script src="/static/live2d-ui-drag.js"></script>
+    <script src="/static/live2d-init.js"></script>
+    <!-- Three.js 核心库和importmap（用于ES6模块导入）-->
+    <!-- 
+        重要：确保 @pixiv/three-vrm 和 @pixiv/three-vrm-animation 使用相同的 @pixiv/three-vrm-core 版本
+    -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "/static/libs/three.module.js",
+            "three/addons/": "/static/libs/three/addons/",
+            "@pixiv/three-vrm": "/static/libs/three-vrm.module.min.js",
+            "@pixiv/three-vrm-animation": "/static/libs/three-vrm-animation.module.js"
+        }
+    }
+    </script>
+    <!-- 将 THREE 挂载到 window 对象，以便非模块脚本可以使用 -->
+    <script type="module">
+        import * as THREE from 'three';
+        window.THREE = THREE;
+        console.log('[Three.js] ES 模块已加载');
+        // 发送自定义事件，通知其他脚本 THREE 已就绪
+        window.dispatchEvent(new CustomEvent('three-ready'));
+    </script>
+    <!-- VRM模块（按顺序加载，失败不影响Live2D）-->
+
+    <script src="/static/js/model_manager.js"></script>
+</body>
+
+</html>

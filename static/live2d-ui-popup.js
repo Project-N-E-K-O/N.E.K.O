@@ -52,6 +52,14 @@ Live2DManager.prototype.createPopup = function (buttonId) {
         // 麦克风选择列表（将从页面中获取）
         popup.id = 'live2d-popup-mic';
         popup.setAttribute('data-legacy-id', 'live2d-mic-popup');
+    } else if (buttonId === 'screen') {
+        // 屏幕/窗口源选择列表（将从Electron获取）
+        popup.id = 'live2d-popup-screen';
+        // 为屏幕源弹出框设置尺寸，允许纵向滚动但禁止横向滚动
+        popup.style.width = '420px';
+        popup.style.maxHeight = '400px';
+        popup.style.overflowX = 'hidden';
+        popup.style.overflowY = 'auto';
     } else if (buttonId === 'agent') {
         // Agent工具开关组
         this._createAgentPopupContent(popup);
@@ -67,14 +75,38 @@ Live2DManager.prototype.createPopup = function (buttonId) {
 Live2DManager.prototype._createSettingsPopupContent = function (popup) {
     // 先添加 Focus 模式、主动搭话和自主视觉开关（在最上面）
     const settingsToggles = [
+        { id: 'merge-messages', label: window.t ? window.t('settings.toggles.mergeMessages') : '合并消息', labelKey: 'settings.toggles.mergeMessages' },
         { id: 'focus-mode', label: window.t ? window.t('settings.toggles.allowInterrupt') : '允许打断', labelKey: 'settings.toggles.allowInterrupt', storageKey: 'focusModeEnabled', inverted: true }, // inverted表示值与focusModeEnabled相反
-        { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled' },
-        { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '自主视觉', labelKey: 'settings.toggles.proactiveVision', storageKey: 'proactiveVisionEnabled' }
+        { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled', hasInterval: true, intervalKey: 'proactiveChatInterval', defaultInterval: 30 },
+        { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '自主视觉', labelKey: 'settings.toggles.proactiveVision', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: 15 }
     ];
 
     settingsToggles.forEach(toggle => {
         const toggleItem = this._createSettingsToggleItem(toggle, popup);
         popup.appendChild(toggleItem);
+
+        // 为带有时间间隔的开关添加间隔控件（可折叠）
+        if (toggle.hasInterval) {
+            const intervalControl = this._createIntervalControl(toggle);
+            popup.appendChild(intervalControl);
+
+            // 鼠标悬停时展开间隔控件
+            toggleItem.addEventListener('mouseenter', () => {
+                intervalControl._expand();
+            });
+            toggleItem.addEventListener('mouseleave', (e) => {
+                // 如果鼠标移动到间隔控件上，不收缩
+                if (!intervalControl.contains(e.relatedTarget)) {
+                    intervalControl._collapse();
+                }
+            });
+            intervalControl.addEventListener('mouseenter', () => {
+                intervalControl._expand();
+            });
+            intervalControl.addEventListener('mouseleave', () => {
+                intervalControl._collapse();
+            });
+        }
     });
 
     // 手机仅保留两个开关；桌面端追加导航菜单
@@ -91,6 +123,126 @@ Live2DManager.prototype._createSettingsPopupContent = function (popup) {
         // 然后添加导航菜单项
         this._createSettingsMenuItems(popup);
     }
+};
+
+// 创建时间间隔控件（可折叠的滑动条）
+Live2DManager.prototype._createIntervalControl = function (toggle) {
+    const container = document.createElement('div');
+    container.className = `live2d-interval-control-${toggle.id}`;
+    Object.assign(container.style, {
+        display: 'none',  // 初始完全隐藏，不占用空间
+        alignItems: 'center',
+        gap: '2px',
+        padding: '0 12px 0 44px',
+        fontSize: '12px',
+        color: '#666',
+        height: '0',
+        overflow: 'hidden',
+        opacity: '0',
+        transition: 'height 0.2s ease, opacity 0.2s ease, padding 0.2s ease'
+    });
+
+    // 间隔标签（包含"基础"提示，主动搭话会指数退避）
+    const labelText = document.createElement('span');
+    const labelKey = toggle.id === 'proactive-chat' ? 'settings.interval.chatIntervalBase' : 'settings.interval.visionInterval';
+    const defaultLabel = toggle.id === 'proactive-chat' ? '基础间隔' : '读取间隔';
+    labelText.textContent = window.t ? window.t(labelKey) : defaultLabel;
+    labelText.setAttribute('data-i18n', labelKey);
+    Object.assign(labelText.style, {
+        flexShrink: '0',
+        fontSize: '10px'
+    });
+
+    // 滑动条容器
+    const sliderWrapper = document.createElement('div');
+    Object.assign(sliderWrapper.style, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '1px',
+        flexShrink: '0'
+    });
+
+    // 滑动条
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.id = `live2d-${toggle.id}-interval`;
+    const minVal = toggle.id === 'proactive-chat' ? 10 : 5;
+    slider.min = minVal;
+    slider.max = '120';  // 最大120秒
+    slider.step = '5';
+    // 从 window 获取当前值
+    let currentValue = typeof window[toggle.intervalKey] !== 'undefined'
+        ? window[toggle.intervalKey]
+        : toggle.defaultInterval;
+    // 限制在新的最大值范围内
+    if (currentValue > 120) currentValue = 120;
+    slider.value = currentValue;
+    Object.assign(slider.style, {
+        width: '55px',
+        height: '4px',
+        cursor: 'pointer',
+        accentColor: '#44b7fe'
+    });
+
+    // 数值显示
+    const valueDisplay = document.createElement('span');
+    valueDisplay.textContent = `${currentValue}s`;
+    Object.assign(valueDisplay.style, {
+        minWidth: '26px',
+        textAlign: 'right',
+        fontFamily: 'monospace',
+        fontSize: '11px',
+        flexShrink: '0'
+    });
+
+    // 滑动条变化时更新显示和保存设置
+    slider.addEventListener('input', () => {
+        const value = parseInt(slider.value, 10);
+        valueDisplay.textContent = `${value}s`;
+    });
+
+    slider.addEventListener('change', () => {
+        const value = parseInt(slider.value, 10);
+        // 保存到 window 和 localStorage
+        window[toggle.intervalKey] = value;
+        if (typeof window.saveNEKOSettings === 'function') {
+            window.saveNEKOSettings();
+        }
+        console.log(`${toggle.id} 间隔已设置为 ${value} 秒`);
+    });
+
+    // 阻止事件冒泡
+    slider.addEventListener('click', (e) => e.stopPropagation());
+    slider.addEventListener('mousedown', (e) => e.stopPropagation());
+
+    sliderWrapper.appendChild(slider);
+    sliderWrapper.appendChild(valueDisplay);
+    container.appendChild(labelText);
+    container.appendChild(sliderWrapper);
+
+    // 存储展开/收缩方法供外部调用
+    container._expand = () => {
+        container.style.display = 'flex';
+        // 使用 requestAnimationFrame 确保 display 变化后再触发动画
+        requestAnimationFrame(() => {
+            container.style.height = '24px';
+            container.style.opacity = '1';
+            container.style.padding = '4px 12px 8px 44px';
+        });
+    };
+    container._collapse = () => {
+        container.style.height = '0';
+        container.style.opacity = '0';
+        container.style.padding = '0 12px 0 44px';
+        // 动画结束后隐藏
+        setTimeout(() => {
+            if (container.style.opacity === '0') {
+                container.style.display = 'none';
+            }
+        }, 200);
+    };
+
+    return container;
 };
 
 // 创建Agent开关项
@@ -319,8 +471,7 @@ Live2DManager.prototype._createSettingsToggleItem = function (toggle, popup) {
         borderRadius: '6px',
         transition: 'background 0.2s ease',
         fontSize: '13px',
-        whiteSpace: 'nowrap',
-        borderBottom: '1px solid rgba(0,0,0,0.05)'
+        whiteSpace: 'nowrap'
     });
 
     const checkbox = document.createElement('input');
@@ -332,7 +483,11 @@ Live2DManager.prototype._createSettingsToggleItem = function (toggle, popup) {
     });
 
     // 从 window 获取当前状态（如果 app.js 已经初始化）
-    if (toggle.id === 'focus-mode' && typeof window.focusModeEnabled !== 'undefined') {
+    if (toggle.id === 'merge-messages') {
+        if (typeof window.mergeMessagesEnabled !== 'undefined') {
+            checkbox.checked = window.mergeMessagesEnabled;
+        }
+    } else if (toggle.id === 'focus-mode' && typeof window.focusModeEnabled !== 'undefined') {
         // inverted: 允许打断 = !focusModeEnabled（focusModeEnabled为true表示关闭打断）
         checkbox.checked = toggle.inverted ? !window.focusModeEnabled : window.focusModeEnabled;
     } else if (toggle.id === 'proactive-chat' && typeof window.proactiveChatEnabled !== 'undefined') {
@@ -432,7 +587,14 @@ Live2DManager.prototype._createSettingsToggleItem = function (toggle, popup) {
         updateStyle();
 
         // 同步到 app.js 中的对应开关（这样会触发 app.js 的完整逻辑）
-        if (toggle.id === 'focus-mode') {
+        if (toggle.id === 'merge-messages') {
+            window.mergeMessagesEnabled = isChecked;
+
+            // 保存到localStorage
+            if (typeof window.saveNEKOSettings === 'function') {
+                window.saveNEKOSettings();
+            }
+        } else if (toggle.id === 'focus-mode') {
             // inverted: "允许打断"的值需要取反后赋给 focusModeEnabled
             // 勾选"允许打断" = focusModeEnabled为false（允许打断）
             // 取消勾选"允许打断" = focusModeEnabled为true（focus模式，AI说话时静音麦克风）
@@ -465,12 +627,26 @@ Live2DManager.prototype._createSettingsToggleItem = function (toggle, popup) {
                 window.saveNEKOSettings();
             }
 
-            if (isChecked && typeof window.resetProactiveChatBackoff === 'function') {
-                window.resetProactiveChatBackoff();
-            } else if (!isChecked && typeof window.stopProactiveChatSchedule === 'function') {
-                // 只有当主动搭话也关闭时才停止调度
-                if (!window.proactiveChatEnabled) {
-                    window.stopProactiveChatSchedule();
+            if (isChecked) {
+                if (typeof window.resetProactiveChatBackoff === 'function') {
+                    window.resetProactiveChatBackoff();
+                }
+                // 如果正在语音对话中，启动15秒1帧定时器
+                if (typeof window.isRecording !== 'undefined' && window.isRecording) {
+                    if (typeof window.startProactiveVisionDuringSpeech === 'function') {
+                        window.startProactiveVisionDuringSpeech();
+                    }
+                }
+            } else {
+                if (typeof window.stopProactiveChatSchedule === 'function') {
+                    // 只有当主动搭话也关闭时才停止调度
+                    if (!window.proactiveChatEnabled) {
+                        window.stopProactiveChatSchedule();
+                    }
+                }
+                // 停止语音期间的主动视觉定时器
+                if (typeof window.stopProactiveVisionDuringSpeech === 'function') {
+                    window.stopProactiveVisionDuringSpeech();
                 }
             }
             console.log(`主动视觉已${isChecked ? '开启' : '关闭'}`);
@@ -517,153 +693,191 @@ Live2DManager.prototype._createSettingsToggleItem = function (toggle, popup) {
 // 创建设置菜单项
 Live2DManager.prototype._createSettingsMenuItems = function (popup) {
     const settingsItems = [
-        { id: 'live2d-manage', label: window.t ? window.t('settings.menu.live2dSettings') : 'Live2D设置', labelKey: 'settings.menu.live2dSettings', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', urlBase: '/l2d' },
+        { 
+            id: 'character', 
+            label: window.t ? window.t('settings.menu.characterManage') : '角色管理', 
+            labelKey: 'settings.menu.characterManage', 
+            icon: '/static/icons/character_icon.png', 
+            action: 'navigate', 
+            url: '/chara_manager',
+            // 子菜单：通用设置、模型管理、声音克隆
+            submenu: [
+                { id: 'general', label: window.t ? window.t('settings.menu.general') : '通用设置', labelKey: 'settings.menu.general', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', url: '/chara_manager' },
+                { id: 'live2d-manage', label: window.t ? window.t('settings.menu.modelSettings') : '模型管理', labelKey: 'settings.menu.modelSettings', icon: '/static/icons/character_icon.png', action: 'navigate', urlBase: '/model_manager' },
+                { id: 'voice-clone', label: window.t ? window.t('settings.menu.voiceClone') : '声音克隆', labelKey: 'settings.menu.voiceClone', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_clone' }
+            ]
+        },
         { id: 'api-keys', label: window.t ? window.t('settings.menu.apiKeys') : 'API密钥', labelKey: 'settings.menu.apiKeys', icon: '/static/icons/api_key_icon.png', action: 'navigate', url: '/api_key' },
-        { id: 'character', label: window.t ? window.t('settings.menu.characterManage') : '角色管理', labelKey: 'settings.menu.characterManage', icon: '/static/icons/character_icon.png', action: 'navigate', url: '/chara_manager' },
-        { id: 'voice-clone', label: window.t ? window.t('settings.menu.voiceClone') : '声音克隆', labelKey: 'settings.menu.voiceClone', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_clone' },
         { id: 'memory', label: window.t ? window.t('settings.menu.memoryBrowser') : '记忆浏览', labelKey: 'settings.menu.memoryBrowser', icon: '/static/icons/memory_icon.png', action: 'navigate', url: '/memory_browser' },
         { id: 'steam-workshop', label: window.t ? window.t('settings.menu.steamWorkshop') : '创意工坊', labelKey: 'settings.menu.steamWorkshop', icon: '/static/icons/Steam_icon_logo.png', action: 'navigate', url: '/steam_workshop_manager' },
     ];
 
     settingsItems.forEach(item => {
-        const menuItem = document.createElement('div');
-        Object.assign(menuItem.style, {
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            padding: '8px 12px',
-            cursor: 'pointer',
-            borderRadius: '6px',
-            transition: 'background 0.2s ease',
-            fontSize: '13px',
-            whiteSpace: 'nowrap',
-            color: '#333'  // 文本颜色为深灰色
-        });
+        const menuItem = this._createMenuItem(item);
+        popup.appendChild(menuItem);
 
-        // 添加图标（如果有）
-        if (item.icon) {
-            const iconImg = document.createElement('img');
-            iconImg.src = item.icon;
-            iconImg.alt = item.label;
-            Object.assign(iconImg.style, {
-                width: '24px',
-                height: '24px',
-                objectFit: 'contain',
-                flexShrink: '0'
+        // 如果有子菜单，创建可折叠的子菜单容器
+        if (item.submenu && item.submenu.length > 0) {
+            const submenuContainer = this._createSubmenuContainer(item.submenu);
+            popup.appendChild(submenuContainer);
+
+            // 鼠标悬停展开/收缩
+            menuItem.addEventListener('mouseenter', () => {
+                submenuContainer._expand();
             });
-            menuItem.appendChild(iconImg);
-        }
-
-        // 添加文本
-        const labelText = document.createElement('span');
-        labelText.textContent = item.label;
-        if (item.labelKey) {
-            labelText.setAttribute('data-i18n', item.labelKey);
-        }
-        Object.assign(labelText.style, {
-            display: 'flex',
-            alignItems: 'center',
-            lineHeight: '1',
-            height: '24px'  // 与图标高度一致，确保垂直居中
-        });
-        menuItem.appendChild(labelText);
-
-        // 存储更新函数
-        if (item.labelKey) {
-            const updateLabelText = () => {
-                if (window.t) {
-                    labelText.textContent = window.t(item.labelKey);
-                    // 同时更新图标 alt 属性
-                    if (item.icon && menuItem.querySelector('img')) {
-                        menuItem.querySelector('img').alt = window.t(item.labelKey);
-                    }
+            menuItem.addEventListener('mouseleave', (e) => {
+                if (!submenuContainer.contains(e.relatedTarget)) {
+                    submenuContainer._collapse();
                 }
-            };
-            menuItem._updateLabelText = updateLabelText;
+            });
+            submenuContainer.addEventListener('mouseenter', () => {
+                submenuContainer._expand();
+            });
+            submenuContainer.addEventListener('mouseleave', () => {
+                submenuContainer._collapse();
+            });
         }
+    });
+};
 
-        menuItem.addEventListener('mouseenter', () => {
-            menuItem.style.background = 'rgba(68, 183, 254, 0.1)';
+// 创建单个菜单项
+Live2DManager.prototype._createMenuItem = function (item, isSubmenuItem = false) {
+    const menuItem = document.createElement('div');
+    Object.assign(menuItem.style, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        padding: isSubmenuItem ? '6px 12px 6px 36px' : '8px 12px',  // 子菜单项有额外缩进
+        cursor: 'pointer',
+        borderRadius: '6px',
+        transition: 'background 0.2s ease',
+        fontSize: isSubmenuItem ? '12px' : '13px',
+        whiteSpace: 'nowrap',
+        color: '#333'
+    });
+
+    // 添加图标
+    if (item.icon) {
+        const iconImg = document.createElement('img');
+        iconImg.src = item.icon;
+        iconImg.alt = item.label;
+        Object.assign(iconImg.style, {
+            width: isSubmenuItem ? '18px' : '24px',
+            height: isSubmenuItem ? '18px' : '24px',
+            objectFit: 'contain',
+            flexShrink: '0'
         });
-        menuItem.addEventListener('mouseleave', () => {
-            menuItem.style.background = 'transparent';
-        });
+        menuItem.appendChild(iconImg);
+    }
 
-        menuItem.addEventListener('click', (e) => {
-            e.stopPropagation();
-            if (item.action === 'navigate') {
-                // 动态构建 URL（点击时才获取 lanlan_name）
-                let finalUrl = item.url || item.urlBase;
-                if (item.id === 'live2d-manage' && item.urlBase) {
-                    // 从 window.lanlan_config 动态获取 lanlan_name
-                    const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
-                    finalUrl = `${item.urlBase}?lanlan_name=${encodeURIComponent(lanlanName)}`;
-                    // 跳转前关闭所有弹窗
-                    if (window.closeAllSettingsWindows) {
-                        window.closeAllSettingsWindows();
-                    }
-                    // Live2D设置页直接跳转
-                    window.location.href = finalUrl;
-                } else if (item.id === 'voice-clone' && item.url) {
-                    // 声音克隆页面也需要传递 lanlan_name
-                    const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
-                    finalUrl = `${item.url}?lanlan_name=${encodeURIComponent(lanlanName)}`;
+    // 添加文本
+    const labelText = document.createElement('span');
+    labelText.textContent = item.label;
+    if (item.labelKey) {
+        labelText.setAttribute('data-i18n', item.labelKey);
+    }
+    Object.assign(labelText.style, {
+        display: 'flex',
+        alignItems: 'center',
+        lineHeight: '1',
+        height: isSubmenuItem ? '18px' : '24px'
+    });
+    menuItem.appendChild(labelText);
 
-                    // 检查是否已有该URL的窗口打开
-                    if (this._openSettingsWindows[finalUrl]) {
-                        const existingWindow = this._openSettingsWindows[finalUrl];
-                        if (existingWindow && !existingWindow.closed) {
-                            existingWindow.focus();
-                            return;
-                        } else {
-                            delete this._openSettingsWindows[finalUrl];
-                        }
-                    }
-
-                    // 打开新的弹窗前关闭其他已打开的设置窗口，实现全局互斥
-                    this.closeAllSettingsWindows();
-
-                    // 打开新窗口并保存引用
-                    const newWindow = window.open(finalUrl, '_blank', 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no');
-                    if (newWindow) {
-                        this._openSettingsWindows[finalUrl] = newWindow;
-                    }
-                } else {
-                    // 其他页面弹出新窗口，但检查是否已打开
-                    // 检查是否已有该URL的窗口打开
-                    if (this._openSettingsWindows[finalUrl]) {
-                        const existingWindow = this._openSettingsWindows[finalUrl];
-                        // 检查窗口是否仍然打开
-                        if (existingWindow && !existingWindow.closed) {
-                            // 聚焦到已存在的窗口
-                            existingWindow.focus();
-                            return;
-                        } else {
-                            // 窗口已关闭，清除引用
-                            delete this._openSettingsWindows[finalUrl];
-                        }
-                    }
-
-                    // 打开新的弹窗前关闭其他已打开的设置窗口，实现全局互斥
-                    this.closeAllSettingsWindows();
-
-                    // 打开新窗口并保存引用
-                    const newWindow = window.open(finalUrl, '_blank', 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no');
-                    if (newWindow) {
-                        this._openSettingsWindows[finalUrl] = newWindow;
-
-                        // 监听窗口关闭事件，清除引用
-                        const checkClosed = setInterval(() => {
-                            if (newWindow.closed) {
-                                delete this._openSettingsWindows[finalUrl];
-                                clearInterval(checkClosed);
-                            }
-                        }, 500);
-                    }
+    // 存储更新函数
+    if (item.labelKey) {
+        menuItem._updateLabelText = () => {
+            if (window.t) {
+                labelText.textContent = window.t(item.labelKey);
+                if (item.icon && menuItem.querySelector('img')) {
+                    menuItem.querySelector('img').alt = window.t(item.labelKey);
                 }
             }
-        });
+        };
+    }
 
-        popup.appendChild(menuItem);
+    menuItem.addEventListener('mouseenter', () => {
+        menuItem.style.background = 'rgba(68, 183, 254, 0.1)';
     });
+    menuItem.addEventListener('mouseleave', () => {
+        menuItem.style.background = 'transparent';
+    });
+
+    // 防抖标志：防止快速多次点击导致多开窗口
+    let isOpening = false;
+
+    menuItem.addEventListener('click', (e) => {
+        e.stopPropagation();
+
+        // 如果正在打开窗口，忽略后续点击
+        if (isOpening) {
+            return;
+        }
+
+        if (item.action === 'navigate') {
+            let finalUrl = item.url || item.urlBase;
+            const windowName = `neko_${item.id}`;
+
+            if (item.id === 'live2d-manage' && item.urlBase) {
+                const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+                finalUrl = `${item.urlBase}?lanlan_name=${encodeURIComponent(lanlanName)}`;
+                window.location.href = finalUrl;
+            } else if (item.id === 'voice-clone' && item.url) {
+                const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+                finalUrl = `${item.url}?lanlan_name=${encodeURIComponent(lanlanName)}`;
+
+                // 设置防抖标志
+                isOpening = true;
+                window.openOrFocusWindow(finalUrl, windowName);
+                // 500ms后重置标志，允许再次点击
+                setTimeout(() => { isOpening = false; }, 500);
+            } else {
+                // 设置防抖标志
+                isOpening = true;
+                window.openOrFocusWindow(finalUrl, windowName);
+                // 500ms后重置标志，允许再次点击
+                setTimeout(() => { isOpening = false; }, 500);
+            }
+        }
+    });
+
+    return menuItem;
+};
+
+// 创建可折叠的子菜单容器
+Live2DManager.prototype._createSubmenuContainer = function (submenuItems) {
+    const container = document.createElement('div');
+    Object.assign(container.style, {
+        display: 'none',
+        flexDirection: 'column',
+        overflow: 'hidden',
+        height: '0',
+        opacity: '0',
+        transition: 'height 0.2s ease, opacity 0.2s ease'
+    });
+
+    submenuItems.forEach(subItem => {
+        const subMenuItem = this._createMenuItem(subItem, true);
+        container.appendChild(subMenuItem);
+    });
+
+    // 展开/收缩方法
+    container._expand = () => {
+        container.style.display = 'flex';
+        requestAnimationFrame(() => {
+            container.style.height = `${submenuItems.length * 32}px`;
+            container.style.opacity = '1';
+        });
+    };
+    container._collapse = () => {
+        container.style.height = '0';
+        container.style.opacity = '0';
+        setTimeout(() => {
+            if (container.style.opacity === '0') {
+                container.style.display = 'none';
+            }
+        }, 200);
+    };
+
+    return container;
 };

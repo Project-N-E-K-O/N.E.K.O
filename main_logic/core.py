@@ -125,6 +125,9 @@ class LLMSessionManager:
         # 防止并发启动的标志
         self.is_starting_session = False
         
+        # 预热进行中标志：防止预热期间向TTS发送空包
+        self._is_warmup_in_progress = False
+        
         # TTS缓存机制：确保不丢包
         self.tts_ready = False  # TTS是否完全就绪
         self.tts_pending_chunks = []  # 待处理的TTS文本chunk: [(speech_id, text), ...]
@@ -265,6 +268,12 @@ class LLMSessionManager:
             self.tts_pending_chunks.clear()
         
         await self.send_user_activity()
+        
+        # 立即生成新的 speech_id，确保新回复不会使用被打断的 ID
+        # 这样即使 handle_input_transcript 先于 handle_new_message 执行，
+        # 新回复的 audio_chunk 也不会被错误丢弃
+        async with self.lock:
+            self.current_speech_id = str(uuid4())
 
     async def handle_text_data(self, text: str, is_first_chunk: bool = False):
         """文本回调：处理文本显示和TTS（用于文本模式）"""
@@ -315,6 +324,13 @@ class LLMSessionManager:
 
     async def handle_response_complete(self):
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""
+        # 预热期间跳过TTS信号发送（避免local TTS收到空包产生参考prompt音频）
+        if self._is_warmup_in_progress:
+            logger.debug("⏭️ 跳过预热期间的TTS信号发送")
+            # 仍然发送 turn end 消息（不影响其他逻辑）
+            self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+            return
+        
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             logger.info("📨 Response complete (LLM 回复结束)")
             try:
@@ -778,6 +794,14 @@ class LLMSessionManager:
         _,_,_,lanlan_basic_config_updated,_,_,_,_,_,_ = self._config_manager.get_character_data()
         old_voice_id = self.voice_id
         self.voice_id = lanlan_basic_config_updated.get(self.lanlan_name, {}).get('voice_id', '')
+        
+        # 如果角色没有设置 voice_id，尝试使用自定义API配置的 TTS_VOICE_ID 作为回退
+        if not self.voice_id:
+            core_config = self._config_manager.get_core_config()
+            if core_config.get('ENABLE_CUSTOM_API') and core_config.get('TTS_VOICE_ID'):
+                self.voice_id = core_config.get('TTS_VOICE_ID')
+                logger.info(f"🔄 使用自定义TTS回退音色: '{self.voice_id}'")
+        
         if old_voice_id != self.voice_id:
             logger.info(f"🔄 voice_id已更新: '{old_voice_id}' -> '{self.voice_id}'")
         
@@ -798,14 +822,23 @@ class LLMSessionManager:
             # 注意：不清空 pending_input_data，因为可能已有数据在缓存中
         
         # 根据 input_mode 设置 use_tts
+        # 检查是否有自定义 TTS 配置（URL 存在即表示配置了自定义 TTS）
+        core_config = self._config_manager.get_core_config()
+        has_custom_tts_config = (
+            core_config.get('ENABLE_CUSTOM_API') and 
+            core_config.get('TTS_MODEL_URL')
+        )
+        
         if input_mode == 'text':
             # 文本模式总是需要 TTS（使用默认或自定义音色）
             self.use_tts = True
-        elif self.voice_id:
-            # 语音模式下有自定义音色时使用 TTS
+        elif self.voice_id or has_custom_tts_config:
+            # 语音模式下：有自定义音色 或 配置了自定义TTS时，使用外部TTS
             self.use_tts = True
+            if has_custom_tts_config and not self.voice_id:
+                logger.info("🔊 语音模式：检测到自定义TTS配置，将使用自定义TTS覆盖原生语音")
         else:
-            # 语音模式下无自定义音色，使用 realtime API 原生语音
+            # 语音模式下无自定义音色且无自定义TTS配置，使用 realtime API 原生语音
             self.use_tts = False
         
         async with self.lock:
@@ -839,17 +872,23 @@ class LLMSessionManager:
             
             # 启动TTS线程
             if self.tts_thread is None or not self.tts_thread.is_alive():
+                # 判断是否使用自定义 TTS：有 voice_id 或 配置了自定义 TTS URL
+                core_config = self._config_manager.get_core_config()
+                has_custom_tts = bool(self.voice_id) or (
+                    core_config.get('ENABLE_CUSTOM_API') and 
+                    core_config.get('TTS_MODEL_URL')
+                )
+                
                 # 使用工厂函数获取合适的 TTS worker
-                has_custom_voice = bool(self.voice_id)
                 tts_worker = get_tts_worker(
                     core_api_type=self.core_api_type,
-                    has_custom_voice=has_custom_voice
+                    has_custom_voice=has_custom_tts
                 )
                 
                 self.tts_request_queue = Queue()  # TTS request (线程队列)
                 self.tts_response_queue = Queue()  # TTS response (线程队列)
-                # 根据是否有自定义音色选择 TTS API 配置
-                if has_custom_voice:
+                # 根据是否有自定义音色/TTS配置选择 TTS API 配置
+                if has_custom_tts:
                     tts_config = self._config_manager.get_model_api_config('tts_custom')
                 else:
                     tts_config = self._config_manager.get_model_api_config('tts_default')
@@ -861,7 +900,7 @@ class LLMSessionManager:
                 self.tts_thread.start()
                 
                 # 等待TTS进程发送就绪信号（最多等待8秒）
-                tts_type = "自定义音色(CosyVoice)" if has_custom_voice else f"{self.core_api_type}默认TTS"
+                tts_type = "自定义TTS" if has_custom_tts else f"{self.core_api_type}默认TTS"
                 logger.info(f"🎤 TTS进程已启动，等待就绪... (使用: {tts_type})")
                 
                 tts_ready = False
@@ -960,7 +999,7 @@ class LLMSessionManager:
                 # 语音模式：使用 OmniRealtimeClient
                 realtime_config = self._config_manager.get_model_api_config('realtime')
                 self.session = OmniRealtimeClient(
-                    base_url=realtime_config['base_url'],
+                    base_url=realtime_config.get('base_url', ''),  # Gemini 不需要 base_url
                     api_key=realtime_config['api_key'],
                     model=realtime_config['model'],
                     on_text_delta=self.handle_text_data,
@@ -1032,6 +1071,9 @@ class LLMSessionManager:
                         logger.info("🔥 开始预热 Session，prefill instructions...")
                         warmup_start = time.time()
                         
+                        # 设置预热标志，防止预热期间向TTS发送空包
+                        self._is_warmup_in_progress = True
+                        
                         # 创建一个事件来等待预热完成
                         warmup_done_event = asyncio.Event()
                         original_callback = self.session.on_response_done
@@ -1044,19 +1086,22 @@ class LLMSessionManager:
                         
                         await self.session.create_response("", skipped=True)
                         
-                        # 等待预热完成（最多5秒）
+                        # 等待预热完成（最多10秒）
                         try:
-                            await asyncio.wait_for(warmup_done_event.wait(), timeout=5.0)
+                            await asyncio.wait_for(warmup_done_event.wait(), timeout=10.0)
                             warmup_time = time.time() - warmup_start
                             logger.info(f"✅ Session预热完成 (耗时: {warmup_time:.2f}秒)，首轮对话延迟已优化")
                         except asyncio.TimeoutError:
-                            logger.warning("⚠️ Session预热超时（5秒），继续执行...")
+                            logger.warning("⚠️ Session预热超时（10秒），继续执行...")
                         
                         # 恢复原始回调
                         self.session.on_response_done = original_callback
                         
                     except Exception as e:
                         logger.warning(f"⚠️ Session预热失败（不影响正常使用）: {e}")
+                    finally:
+                        # 确保清除预热标志
+                        self._is_warmup_in_progress = False
                 
                 # 启动成功，重置失败计数器
                 self.session_start_failure_count = 0
@@ -1119,16 +1164,21 @@ class LLMSessionManager:
                     await self.send_status(f"💥 连接异常关闭: {error_str}")
             
             await self.cleanup()
+            
+            # 通知前端 session 启动失败，让前端重置状态
+            await self.send_session_failed(input_mode)
         
         finally:
             # 无论成功还是失败，都重置启动标志
             self.is_starting_session = False
 
     async def send_user_activity(self):
+        """发送用户活动信号，附带被打断的 speech_id 用于精确打断控制"""
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 message = {
-                    "type": "user_activity"
+                    "type": "user_activity",
+                    "interrupted_speech_id": self.current_speech_id  # 告诉前端应丢弃哪个 speech_id
                 }
                 await self.websocket.send_json(message)
         except WebSocketDisconnect:
@@ -1161,6 +1211,14 @@ class LLMSessionManager:
             _,_,_,lanlan_basic_config_updated,_,_,_,_,_,_ = self._config_manager.get_character_data()
             old_voice_id = self.voice_id
             self.voice_id = lanlan_basic_config_updated.get(self.lanlan_name, {}).get('voice_id', '')
+            
+            # 如果角色没有设置 voice_id，尝试使用自定义API配置的 TTS_VOICE_ID 作为回退
+            if not self.voice_id:
+                core_config = self._config_manager.get_core_config()
+                if core_config.get('ENABLE_CUSTOM_API') and core_config.get('TTS_VOICE_ID'):
+                    self.voice_id = core_config.get('TTS_VOICE_ID')
+                    logger.info(f"🔄 热切换准备: 使用自定义TTS回退音色: '{self.voice_id}'")
+            
             if old_voice_id != self.voice_id:
                 logger.info(f"🔄 热切换准备: voice_id已更新: '{old_voice_id}' -> '{self.voice_id}'")
             
@@ -1187,7 +1245,7 @@ class LLMSessionManager:
                 # 语音模式：使用 OmniRealtimeClient
                 realtime_config = self._config_manager.get_model_api_config('realtime')
                 self.pending_session = OmniRealtimeClient(
-                    base_url=realtime_config['base_url'],
+                    base_url=realtime_config.get('base_url', ''),
                     api_key=realtime_config['api_key'],
                     model=realtime_config['model'],
                     on_text_delta=self.handle_text_data,
@@ -1704,9 +1762,9 @@ class LLMSessionManager:
         except web_exceptions.ConnectionClosedError as e:
             logger.error(f"💥 Stream: Error sending data to session: {e}")
             if '1011' in str(e):
-                print("💥 备注：检测到1011错误。该错误表示API服务器异常。请首先检查自己的麦克风是否有声音。")
+                self.send_status("💥 备注：检测到1011错误。该错误表示API服务器异常。请首先检查自己的麦克风是否有声音。")
             if '1007' in str(e):
-                print("💥 备注：检测到1007错误。该错误大概率是欠费导致。")
+                self.send_status("💥 备注：检测到1007错误。该错误大概率是欠费导致。")
             await self.disconnected_by_server()
             return
         except Exception as e:
@@ -1794,16 +1852,33 @@ class LLMSessionManager:
             await self.send_status(f"{self.lanlan_name}已离开。")
             logger.info("End Session: Resources cleaned up.")
 
-    async def cleanup(self):
+    async def cleanup(self, expected_websocket=None):
+        """
+        清理 session 资源。
+        
+        Args:
+            expected_websocket: 可选，期望的 websocket 实例。
+                               如果提供且与当前 websocket 不匹配，跳过 cleanup。
+                               用于防止旧连接误清理新连接的资源（竞态条件保护）。
+        """
+        # 验证：如果调用者指定了期望的websocket，但当前websocket已被替换，则跳过cleanup
+        if expected_websocket is not None and self.websocket is not None:
+            if self.websocket != expected_websocket:
+                logger.info("⏭️ cleanup 跳过：当前 websocket 已被新连接替换")
+                return
+        
         await self.end_session(by_server=True)
         # 清理websocket引用，防止保留失效的连接
         # 使用共享锁保护websocket操作，防止与initialize_character_data()中的restore竞争
         if self.websocket_lock:
             async with self.websocket_lock:
-                self.websocket = None
+                # 再次检查：只有当 websocket 仍是我们期望的那个时才清理
+                if expected_websocket is None or self.websocket == expected_websocket:
+                    self.websocket = None
         else:
             # 如果没有设置websocket_lock（旧代码路径），直接清理
-            self.websocket = None
+            if expected_websocket is None or self.websocket == expected_websocket:
+                self.websocket = None
 
     def _get_translation_service(self):
         """获取翻译服务实例（延迟初始化）"""
@@ -1898,6 +1973,17 @@ class LLMSessionManager:
             pass
         except Exception as e:
             logger.error(f"💥 WS Send Session Started Error: {e}")
+    
+    async def send_session_failed(self, input_mode: str): # 通知前端session启动失败
+        """通知前端 session 启动失败，让前端隐藏 preparing banner 并重置状态"""
+        try:
+            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                data = json.dumps({"type": "session_failed", "input_mode": input_mode})
+                await self.websocket.send_text(data)
+        except WebSocketDisconnect:
+            pass
+        except Exception as e:
+            logger.error(f"💥 WS Send Session Failed Error: {e}")
 
     async def send_expressions(self, prompt=""):
         '''这个函数在直播版本中有用，用于控制Live2D模型的表情动作。但是在开源版本目前没有实际用途。'''
@@ -1944,8 +2030,15 @@ class LLMSessionManager:
 
 
     async def send_speech(self, tts_audio):
+        """发送语音数据到前端，先发送 speech_id 头信息用于精确打断控制"""
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                # 先发送 audio_chunk 头信息，包含 speech_id
+                await self.websocket.send_json({
+                    "type": "audio_chunk",
+                    "speech_id": self.current_speech_id
+                })
+                # 然后发送二进制音频数据
                 await self.websocket.send_bytes(tts_audio)
 
                 # 同步到同步服务器

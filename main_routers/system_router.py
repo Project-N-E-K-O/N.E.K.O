@@ -22,7 +22,7 @@ from fastapi.responses import JSONResponse, Response
 from openai import AsyncOpenAI
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import SystemMessage, HumanMessage
 import httpx
 
 from .shared_state import get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
@@ -111,7 +111,8 @@ async def emotion_analysis(request: Request):
             "model": model,
             "messages": messages,
             "temperature": 0.3,
-            "max_completion_tokens": 20
+            # Gemini 模型可能返回 markdown 格式，需要更多 token
+            "max_completion_tokens": 40
         }
         
         # 只有在需要时才添加 extra_body
@@ -123,6 +124,20 @@ async def emotion_analysis(request: Request):
         
         # 解析响应
         result_text = response.choices[0].message.content.strip()
+
+        # 处理 markdown 代码块格式（Gemini 可能返回 ```json {...} ``` 格式）
+        # 首先尝试使用正则表达式提取第一个代码块
+        code_block_match = re.search(r"```(?:json)?\s*(.+?)\s*```", result_text, flags=re.S)
+        if code_block_match:
+            result_text = code_block_match.group(1).strip()
+        elif result_text.startswith("```"):
+            # 回退到原有的行分割逻辑
+            lines = result_text.split("\n")
+            if lines[0].startswith("```"):
+                lines = lines[1:]  # 移除第一行
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]  # 移除最后一行
+            result_text = "\n".join(lines).strip()
         
         # 尝试解析JSON响应
         try:
@@ -209,6 +224,86 @@ async def set_achievement_status(name: str):
                 return JSONResponse(content={"success": True, "message": f"成就 {name} 处理完成"})
         except Exception as e:
             logger.error(f"设置成就失败: {e}")
+            return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
+    else:
+        return JSONResponse(content={"success": False, "error": "Steamworks未初始化"}, status_code=503)
+
+
+@router.post('/steam/update-playtime')
+async def update_playtime(request: Request):
+    """更新游戏时长统计（PLAY_TIME_SECONDS）"""
+    steamworks = get_steamworks()
+    if steamworks is not None:
+        try:
+            data = await request.json()
+            seconds_to_add = data.get('seconds', 10)
+
+            # 验证 seconds 参数
+            try:
+                seconds_to_add = int(seconds_to_add)
+                if seconds_to_add < 0:
+                    return JSONResponse(
+                        content={"success": False, "error": "seconds must be non-negative"},
+                        status_code=400
+                    )
+            except (ValueError, TypeError):
+                return JSONResponse(
+                    content={"success": False, "error": "seconds must be a valid integer"},
+                    status_code=400
+                )
+
+            # 注意:不需要每次都调用 RequestCurrentStats()
+            # RequestCurrentStats() 应该只在应用启动时调用一次
+            # 频繁调用可能导致性能问题和同步延迟
+            # 这里直接获取和更新统计值即可
+
+            # 获取当前游戏时长（如果统计不存在，从 0 开始）
+            try:
+                current_playtime = steamworks.UserStats.GetStatInt('PLAY_TIME_SECONDS')
+            except Exception as e:
+                logger.warning(f"获取 PLAY_TIME_SECONDS 失败，从 0 开始: {e}")
+                current_playtime = 0
+
+            # 增加时长
+            new_playtime = current_playtime + seconds_to_add
+
+            # 设置新的时长
+            try:
+                result = steamworks.UserStats.SetStat('PLAY_TIME_SECONDS', new_playtime)
+
+                if result:
+                    # 存储统计数据
+                    steamworks.UserStats.StoreStats()
+                    steamworks.run_callbacks()
+
+                    logger.debug(f"游戏时长已更新: {current_playtime}s -> {new_playtime}s (+{seconds_to_add}s)")
+
+                    return JSONResponse(content={
+                        "success": True,
+                        "totalPlayTime": new_playtime,
+                        "added": seconds_to_add
+                    })
+                else:
+                    logger.debug("SetStat 返回 False - PLAY_TIME_SECONDS 统计可能未在 Steamworks 后台配置")
+                    # 即使失败也返回成功，避免前端报错
+                    return JSONResponse(content={
+                        "success": True,
+                        "totalPlayTime": new_playtime,
+                        "added": seconds_to_add,
+                        "warning": "Steam stat not configured"
+                    })
+            except Exception as stat_error:
+                logger.warning(f"设置 Steam 统计失败: {stat_error} - 统计可能未在 Steamworks 后台配置")
+                # 即使失败也返回成功，避免前端报错
+                return JSONResponse(content={
+                    "success": True,
+                    "totalPlayTime": new_playtime,
+                    "added": seconds_to_add,
+                    "warning": "Steam stat not configured"
+                })
+
+        except Exception as e:
+            logger.error(f"更新游戏时长失败: {e}")
             return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
     else:
         return JSONResponse(content={"success": False, "error": "Steamworks未初始化"}, status_code=503)
@@ -784,7 +879,7 @@ async def proactive_chat(request: Request):
                 screenshot_content=screenshot_content,
                 memory_context=memory_context
             )
-            logger.info(f"[{lanlan_name}] 使用图片主动对话提示词")
+            logger.info(f"[{lanlan_name}] 使用图片进行主动对话")
         elif use_window_search:
             # 窗口搜索模板：基于当前活跃窗口和百度搜索结果让AI决定是否主动发起对话
             system_prompt = proactive_chat_prompt_window_search.format(
@@ -793,7 +888,7 @@ async def proactive_chat(request: Request):
                 window_context=formatted_window_content,
                 memory_context=memory_context
             )
-            logger.info(f"[{lanlan_name}] 使用窗口搜索主动对话提示词")
+            logger.info(f"[{lanlan_name}] 使用窗口搜索进行主动对话")
         else:
             # 首页推荐模板：基于首页信息流让AI决定是否主动发起对话
             system_prompt = proactive_chat_prompt.format(
@@ -802,7 +897,7 @@ async def proactive_chat(request: Request):
                 trending_content=formatted_content,
                 memory_context=memory_context
             )
-            logger.info(f"[{lanlan_name}] 使用首页推荐主动对话提示词")
+            logger.info(f"[{lanlan_name}] 使用首页推荐进行主动对话")
 
         # 4. 直接使用langchain ChatOpenAI获取AI回复（不创建临时session）
         try:
@@ -829,7 +924,8 @@ async def proactive_chat(request: Request):
                 api_key=correction_api_key,
                 temperature=1.,
                 max_completion_tokens=500,
-                streaming=False  # 不需要流式，直接获取完整响应
+                streaming=False,  # 不需要流式，直接获取完整响应
+                extra_body=get_extra_body(correction_model)
             )
             
             # 发送请求获取AI决策 - Retry策略：重试2次，间隔1秒、2秒
@@ -842,7 +938,7 @@ async def proactive_chat(request: Request):
             for attempt in range(max_retries):
                 try:
                     response = await asyncio.wait_for(
-                        llm.ainvoke([SystemMessage(content=system_prompt)]),
+                        llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content="========请开始========")]),
                         timeout=10.0
                     )
                     response_text = response.content.strip()
@@ -909,7 +1005,7 @@ async def proactive_chat(request: Request):
             except Exception:
                 logger.exception(f"[{lanlan_name}] 在检查回复长度时发生错误")
 
-            if text_length > 100 or response_text.find("|") != -1:
+            if text_length > 100 or response_text.find("|") != -1 or response_text.find("｜") != -1:
                             # --- 使用改写模型清洁输出 ---
                 try:
                     # 使用相同的correction模型进行改写
@@ -919,7 +1015,8 @@ async def proactive_chat(request: Request):
                         api_key=correction_api_key,
                         temperature=0.3,  # 降低温度以获得更稳定的改写结果
                         max_completion_tokens=500,
-                        streaming=False
+                        streaming=False,
+                        extra_body=get_extra_body(correction_model)
                     )
                     
                     # 构造改写提示
@@ -927,13 +1024,13 @@ async def proactive_chat(request: Request):
                     
                     # 调用改写模型
                     rewrite_response = await asyncio.wait_for(
-                        rewrite_llm.ainvoke([SystemMessage(content=rewrite_prompt)]),
+                        rewrite_llm.ainvoke([SystemMessage(content=rewrite_prompt), HumanMessage(content="========请开始========")]),
                         timeout=6.0
                     )
                     response_text = rewrite_response.content.strip()
                     logger.debug(f"[{lanlan_name}] 改写后内容: {response_text[:100]}...")
 
-                    if "主动搭话" in response_text or '|' in response_text or '[PASS]' in response_text or count_words_and_chars(response_text) > 100:
+                    if "主动搭话" in response_text or '|' in response_text or "｜" in response_text or '[PASS]' in response_text or count_words_and_chars(response_text) > 100:
                         logger.warning(f"[{lanlan_name}] AI回复经二次改写后仍失败，放弃主动搭话。")
                         return JSONResponse({
                             "success": True,
@@ -1037,6 +1134,13 @@ async def proactive_chat(request: Request):
                 
                 await mgr.handle_text_data(chunk, is_first_chunk=(i == 0))
                 await asyncio.sleep(0.15)  # 小延迟模拟流式
+            
+            # 发送TTS结束信号，触发TTS的commit（对于Qwen TTS的server_commit模式尤为重要）
+            if mgr.use_tts and mgr.tts_thread and mgr.tts_thread.is_alive():
+                try:
+                    mgr.tts_request_queue.put((None, None))
+                except Exception as e:
+                    logger.warning(f"[{lanlan_name}] 发送TTS结束信号失败: {e}")
             
             # 发送turn end信号（不调用handle_response_complete以避免触发热重置）
             mgr.sync_message_queue.put({'type': 'system', 'data': 'turn end'})

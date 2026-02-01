@@ -42,21 +42,18 @@ def _is_china_region() -> bool:
         True 表示中文区，False 表示非中文区
     """
     try:
-        # 获取系统 locale（使用 locale.getlocale() 替代已弃用的 getdefaultlocale()）
-        # locale.getlocale() 返回 (language_code, encoding) 元组
         system_locale = locale.getlocale()[0]
         if system_locale:
-            # 检查是否是中文 locale
             system_locale_lower = system_locale.lower()
             if system_locale_lower.startswith('zh'):
                 return True
+            if 'chinese' in system_locale_lower and 'china' in system_locale_lower:
+                return True
         
-        # 如果无法从 locale 判断，尝试从系统语言环境变量判断
         lang_env = os.environ.get('LANG', '').lower()
         if lang_env.startswith('zh'):
             return True
         
-        # 默认判断：如果系统 locale 不是中文，则认为是非中文区
         return False
     except Exception as e:
         logger.warning(f"判断系统区域失败: {e}，默认使用非中文区")
@@ -76,16 +73,15 @@ def _get_system_language() -> str:
         system_locale = locale.getlocale()[0]
         if system_locale:
             system_locale_lower = system_locale.lower()
-            if system_locale_lower.startswith('zh'):
+            if system_locale_lower.startswith('zh') or 'chinese' in system_locale_lower:
                 return 'zh'
             elif system_locale_lower.startswith('ja'):
                 return 'ja'
             elif system_locale_lower.startswith('en'):
                 return 'en'
         
-        # 尝试从环境变量获取
         lang_env = os.environ.get('LANG', '').lower()
-        if lang_env.startswith('zh'):
+        if lang_env.startswith('zh') or 'chinese' in lang_env:
             return 'zh'
         elif lang_env.startswith('ja'):
             return 'ja'
@@ -115,7 +111,7 @@ def _get_steam_language() -> Optional[str]:
         # Steam 语言代码到我们的语言代码的映射
         STEAM_TO_LANG_MAP = {
             'schinese': 'zh',
-            'tchinese': 'zh',
+            'tchinese': 'zh-TW',
             'english': 'en',
             'japanese': 'ja',
             'ja': 'ja'
@@ -157,7 +153,8 @@ def initialize_global_language() -> str:
         # 优先级1：尝试从 Steam 获取
         steam_lang = _get_steam_language()
         if steam_lang:
-            _global_language = steam_lang
+            # 归一化 Steam 语言代码为短格式
+            _global_language = normalize_language_code(steam_lang, format='short')
             logger.info(f"全局语言已初始化（来自Steam）: {_global_language}")
             _global_language_initialized = True
             return _global_language
@@ -281,7 +278,7 @@ def normalize_language_code(lang: str, format: str = 'short') -> str:
     # 参考: https://partner.steamgames.com/doc/store/localization/languages
     STEAM_LANG_MAP = {
         'schinese': 'zh',      # 简体中文
-        'tchinese': 'zh',      # 繁体中文（映射到简体中文）
+        'tchinese': 'zh-TW',   # 繁体中文
         'english': 'en',       # 英文
         'japanese': 'ja',      # 日语
     }
@@ -289,13 +286,25 @@ def normalize_language_code(lang: str, format: str = 'short') -> str:
     # 先检查是否是 Steam 语言代码
     if lang_lower in STEAM_LANG_MAP:
         normalized = STEAM_LANG_MAP[lang_lower]
-        if format == 'full' and normalized == 'zh':
+        # 对 Steam 映射结果也应用短格式归一化
+        if format == 'short':
+            if normalized.startswith('zh'):
+                return 'zh'
+            elif normalized.startswith('ja'):
+                return 'ja'
+            elif normalized.startswith('en'):
+                return 'en'
+        elif format == 'full' and normalized == 'zh':
             return 'zh-CN'
         return normalized
     
     # 标准语言代码处理
     if lang_lower.startswith('zh'):
-        return 'zh' if format == 'short' else 'zh-CN'
+        # 区分简体和繁体中文
+        if 'tw' in lang_lower or 'hant' in lang_lower or 'hk' in lang_lower:
+            return 'zh-TW' if format == 'full' else 'zh'
+        else:
+            return 'zh' if format == 'short' else 'zh-CN'
     elif lang_lower.startswith('ja'):
         return 'ja'
     elif lang_lower.startswith('en'):

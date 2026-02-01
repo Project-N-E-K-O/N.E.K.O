@@ -11,7 +11,9 @@ Handles configuration-related API endpoints including:
 
 import json
 import logging
+import os
 
+from pathlib import Path
 from fastapi import APIRouter, Request
 
 from .shared_state import get_config_manager, get_steamworks, get_session_manager, get_initialize_character_data
@@ -22,10 +24,14 @@ from utils.preferences import load_user_preferences, update_model_preferences, v
 router = APIRouter(prefix="/api/config", tags=["config"])
 logger = logging.getLogger("Main")
 
+# VRM 模型路径常量
+VRM_STATIC_PATH = "/static/vrm"  # 项目目录下的 VRM 模型路径
+VRM_USER_PATH = "/user_vrm"  # 用户文档目录下的 VRM 模型路径
+
 
 @router.get("/page_config")
 async def get_page_config(lanlan_name: str = ""):
-    """获取页面配置（lanlan_name 和 model_path）"""
+    """获取页面配置(lanlan_name 和 model_path),支持Live2D和VRM模型"""
     try:
         # 获取角色数据
         _config_manager = get_config_manager()
@@ -34,26 +40,61 @@ async def get_page_config(lanlan_name: str = ""):
         # 如果提供了 lanlan_name 参数，使用它；否则使用当前角色
         target_name = lanlan_name if lanlan_name else her_name
         
-        # 获取 live2d 和 live2d_item_id 字段
-        live2d = lanlan_basic_config.get(target_name, {}).get('live2d', 'mao_pro')
-        live2d_item_id = lanlan_basic_config.get(target_name, {}).get('live2d_item_id', '')
+        # 获取角色配置
+        catgirl_config = lanlan_basic_config.get(target_name, {})
+        model_type = catgirl_config.get('model_type', 'live2d')  # 默认为live2d以保持兼容性
         
-        logger.debug(f"获取页面配置 - 角色: {target_name}, 模型: {live2d}, item_id: {live2d_item_id}")
+        model_path = ""
         
-        # 使用 get_current_live2d_model 函数获取正确的模型信息
-        # 第一个参数是角色名称，第二个参数是item_id
-        model_response = await get_current_live2d_model(target_name, live2d_item_id)
-        # 提取JSONResponse中的内容
-        model_data = model_response.body.decode('utf-8')
-        import json
-        model_json = json.loads(model_data)
-        model_info = model_json.get('model_info', {})
-        model_path = model_info.get('path', '')
+        # 根据模型类型获取模型路径
+        if model_type == 'vrm':
+            # VRM模型：处理路径转换
+            vrm_path = catgirl_config.get('vrm', '')
+            if vrm_path:
+                if vrm_path.startswith('http://') or vrm_path.startswith('https://'):
+                    model_path = vrm_path
+                    logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型HTTP路径: {model_path}")
+                elif vrm_path.startswith('/'):
+                    model_path = vrm_path
+                    logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型绝对路径: {model_path}")
+                else:
+                    filename = os.path.basename(vrm_path)
+                    project_root = _config_manager.project_root
+                    project_vrm_path = project_root / 'static' / 'vrm' / filename
+                    if project_vrm_path.exists():
+                        model_path = f'{VRM_STATIC_PATH}/{filename}'
+                        logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型在项目目录: {vrm_path} -> {model_path}")
+                    else:
+                        user_vrm_dir = _config_manager.vrm_dir
+                        user_vrm_path = user_vrm_dir / filename
+                        if user_vrm_path.exists():
+                            model_path = f'{VRM_USER_PATH}/{filename}'
+                            logger.debug(f"获取页面配置 - 角色: {target_name}, VRM模型在用户目录: {vrm_path} -> {model_path}")
+                        else:
+                            # 文件不存在，返回空路径让前端使用默认模型
+                            model_path = ""
+                            logger.warning(f"获取页面配置 - 角色: {target_name}, VRM模型文件未找到: {filename}")
+            else:
+                logger.warning(f"角色 {target_name} 的VRM模型路径为空")
+        else:
+            # Live2D模型：使用原有逻辑
+            live2d = catgirl_config.get('live2d', 'mao_pro')
+            live2d_item_id = catgirl_config.get('live2d_item_id', '')
+            
+            logger.debug(f"获取页面配置 - 角色: {target_name}, Live2D模型: {live2d}, item_id: {live2d_item_id}")
+        
+            model_response = await get_current_live2d_model(target_name, live2d_item_id)
+            # 提取JSONResponse中的内容
+            model_data = model_response.body.decode('utf-8')
+            model_json = json.loads(model_data)
+            model_info = model_json.get('model_info', {})
+            model_path = model_info.get('path', '')
         
         return {
             "success": True,
             "lanlan_name": target_name,
-            "model_path": model_path
+            "model_path": model_path,
+            "model_type": model_type
         }
     except Exception as e:
         logger.error(f"获取页面配置失败: {str(e)}")
@@ -61,7 +102,8 @@ async def get_page_config(lanlan_name: str = ""):
             "success": False,
             "error": str(e),
             "lanlan_name": "",
-            "model_path": ""
+            "model_path": "",
+            "model_type": ""
         }
 
 
@@ -88,9 +130,11 @@ async def save_preferences(request: Request):
         parameters = data.get('parameters')
         # 获取显示器信息（可选，用于多屏幕位置恢复）
         display = data.get('display')
+        # 获取旋转信息（可选，用于VRM模型朝向）
+        rotation = data.get('rotation')
         
         # 更新偏好
-        if update_model_preferences(data['model_path'], data['position'], data['scale'], parameters, display):
+        if update_model_preferences(data['model_path'], data['position'], data['scale'], parameters, display, rotation):
             return {"success": True, "message": "偏好设置已保存"}
         else:
             return {"success": False, "error": "保存失败"}
@@ -119,18 +163,34 @@ async def set_preferred_model(request: Request):
 
 @router.get("/steam_language")
 async def get_steam_language():
-    """获取 Steam 客户端的语言设置，用于前端 i18n 初始化"""
+    """获取 Steam 客户端的语言设置和 GeoIP 信息，用于前端 i18n 初始化和区域检测
+    
+    返回字段：
+    - success: 是否成功
+    - steam_language: Steam 原始语言设置
+    - i18n_language: 归一化的 i18n 语言代码
+    - ip_country: 用户 IP 所在国家代码（如 "CN"）
+    - is_mainland_china: 是否为中国大陆用户（基于语言设置存在 + IP 为 CN）
+    
+    判断逻辑：
+    - 如果存在 Steam 语言设置（即有 Steam 环境），则检查 GeoIP
+    - 如果 IP 国家代码为 "CN"，则标记为中国大陆用户
+    - 如果不存在 Steam 语言设置（无 Steam 环境），默认为非大陆用户
+    """
     from utils.language_utils import normalize_language_code
     
     try:
         steamworks = get_steamworks()
         
         if steamworks is None:
+            # 没有 Steam 环境，默认为非大陆用户
             return {
                 "success": False,
                 "error": "Steamworks 未初始化",
                 "steam_language": None,
-                "i18n_language": None
+                "i18n_language": None,
+                "ip_country": None,
+                "is_mainland_china": False  # 无 Steam 环境，默认非大陆
             }
         
         # 获取 Steam 当前游戏语言
@@ -144,10 +204,48 @@ async def get_steam_language():
         i18n_language = normalize_language_code(steam_language, format='full')
         logger.info(f"[i18n] Steam 语言映射: '{steam_language}' -> '{i18n_language}'")
         
+        # 获取用户 IP 所在国家（用于判断是否为中国大陆用户）
+        ip_country = None
+        is_mainland_china = False
+        
+        try:
+            # 使用 Steam Utils API 获取用户 IP 所在国家
+            raw_ip_country = steamworks.Utils.GetIPCountry()
+            
+            # 醒目调试日志
+            print("=" * 60)
+            print(f"[GeoIP API DEBUG] Raw GetIPCountry() returned: {repr(raw_ip_country)}")
+            
+            if isinstance(raw_ip_country, bytes):
+                ip_country = raw_ip_country.decode('utf-8')
+                print(f"[GeoIP API DEBUG] Decoded from bytes: '{ip_country}'")
+            else:
+                ip_country = raw_ip_country
+            
+            # 转为大写以便比较
+            if ip_country:
+                ip_country = ip_country.upper()
+                # 判断是否为中国大陆（国家代码为 "CN"）
+                is_mainland_china = (ip_country == "CN")
+                print(f"[GeoIP API DEBUG] Country (upper): '{ip_country}'")
+                print(f"[GeoIP API DEBUG] Is mainland China: {is_mainland_china}")
+            else:
+                print(f"[GeoIP API DEBUG] Country is empty/None")
+            print("=" * 60)
+            
+            logger.info(f"[GeoIP] 用户 IP 国家: {ip_country}, 是否大陆: {is_mainland_china}")
+        except Exception as geo_error:
+            print(f"[GeoIP API DEBUG] Exception: {geo_error}")
+            logger.warning(f"[GeoIP] 获取用户 IP 国家失败: {geo_error}，默认为非大陆用户")
+            ip_country = None
+            is_mainland_china = False
+        
         return {
             "success": True,
             "steam_language": steam_language,
-            "i18n_language": i18n_language
+            "i18n_language": i18n_language,
+            "ip_country": ip_country,
+            "is_mainland_china": is_mainland_china
         }
         
     except Exception as e:
@@ -156,7 +254,9 @@ async def get_steam_language():
             "success": False,
             "error": str(e),
             "steam_language": None,
-            "i18n_language": None
+            "i18n_language": None,
+            "ip_country": None,
+            "is_mainland_china": False  # 发生错误时，默认非大陆
         }
 
 
@@ -218,8 +318,9 @@ async def get_core_config_api():
             "assistApiKeyGlm": core_cfg.get('assistApiKeyGlm', ''),
             "assistApiKeyStep": core_cfg.get('assistApiKeyStep', ''),
             "assistApiKeySilicon": core_cfg.get('assistApiKeySilicon', ''),
-            "mcpToken": core_cfg.get('mcpToken', ''),  # 添加mcpToken字段
-            "enableCustomApi": core_cfg.get('enableCustomApi', False),  # 添加enableCustomApi字段
+            "assistApiKeyGemini": core_cfg.get('assistApiKeyGemini', ''),
+            "mcpToken": core_cfg.get('mcpToken', ''),  
+            "enableCustomApi": core_cfg.get('enableCustomApi', False),  
             # 自定义API相关字段
             "summaryModelProvider": core_cfg.get('summaryModelProvider', ''),
             "summaryModelUrl": core_cfg.get('summaryModelUrl', ''),
@@ -245,6 +346,7 @@ async def get_core_config_api():
             "ttsModelUrl": core_cfg.get('ttsModelUrl', ''),
             "ttsModelId": core_cfg.get('ttsModelId', ''),
             "ttsModelApiKey": core_cfg.get('ttsModelApiKey', ''),
+            "ttsVoiceId": core_cfg.get('ttsVoiceId', ''),
             "success": True
         }
     except Exception as e:
@@ -324,6 +426,8 @@ async def update_core_config(request: Request):
             core_cfg['assistApiKeyStep'] = data['assistApiKeyStep']
         if 'assistApiKeySilicon' in data:
             core_cfg['assistApiKeySilicon'] = data['assistApiKeySilicon']
+        if 'assistApiKeyGemini' in data:
+            core_cfg['assistApiKeyGemini'] = data['assistApiKeyGemini']
         if 'mcpToken' in data:
             core_cfg['mcpToken'] = data['mcpToken']
         if 'enableCustomApi' in data:
@@ -378,6 +482,8 @@ async def update_core_config(request: Request):
             core_cfg['ttsModelId'] = data['ttsModelId']
         if 'ttsModelApiKey' in data:
             core_cfg['ttsModelApiKey'] = data['ttsModelApiKey']
+        if 'ttsVoiceId' in data:
+            core_cfg['ttsVoiceId'] = data['ttsVoiceId']
         
         with open(core_config_path, 'w', encoding='utf-8') as f:
             json.dump(core_cfg, f, indent=2, ensure_ascii=False)

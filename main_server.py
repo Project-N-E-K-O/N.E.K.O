@@ -378,11 +378,30 @@ app.mount("/static", CustomStaticFiles(directory=static_dir), name="static")
 # 挂载用户文档下的live2d目录（只在主进程中执行，子进程不提供HTTP服务）
 if _IS_MAIN_PROCESS:
     _config_manager.ensure_live2d_directory()
+    _config_manager.ensure_vrm_directory()
     _config_manager.ensure_chara_directory()
     user_live2d_path = str(_config_manager.live2d_dir)
     if os.path.exists(user_live2d_path):
         app.mount("/user_live2d", CustomStaticFiles(directory=user_live2d_path), name="user_live2d")
         logger.info(f"已挂载用户Live2D目录: {user_live2d_path}")
+
+    # 挂载VRM动画目录（static/vrm/animation） 必须第一个挂载
+    vrm_animation_path = str(_config_manager.vrm_animation_dir)
+    if os.path.exists(vrm_animation_path):
+        app.mount("/user_vrm/animation", CustomStaticFiles(directory=vrm_animation_path), name="user_vrm_animation")
+        logger.info(f"已挂载VRM动画目录: {vrm_animation_path}")
+
+    # 挂载VRM模型目录（用户文档目录）
+    user_vrm_path = str(_config_manager.vrm_dir)
+    if os.path.exists(user_vrm_path):
+        app.mount("/user_vrm", CustomStaticFiles(directory=user_vrm_path), name="user_vrm")
+        logger.info(f"已挂载VRM目录: {user_vrm_path}")
+    
+    # 挂载项目目录下的static/vrm（作为备用，如果文件在项目目录中）
+    project_vrm_path = os.path.join(static_dir, 'vrm')
+    if os.path.exists(project_vrm_path) and os.path.isdir(project_vrm_path):
+        logger.info(f"项目VRM目录存在: {project_vrm_path} (可通过 /static/vrm/ 访问)")
+    
 
     # 挂载用户mod路径
     user_mod_path = _config_manager.get_workshop_path()
@@ -396,6 +415,7 @@ from main_routers import ( # noqa
     config_router,
     characters_router,
     live2d_router,
+    vrm_router,
     workshop_router,
     memory_router,
     pages_router,
@@ -442,6 +462,7 @@ async def beacon_shutdown():
 app.include_router(config_router)
 app.include_router(characters_router)
 app.include_router(live2d_router)
+app.include_router(vrm_router)
 app.include_router(workshop_router)
 app.include_router(memory_router)
 # Note: pages_router should be mounted last due to catch-all route /{lanlan_name}
@@ -641,7 +662,7 @@ async def _init_and_mount_workshop():
     """
     try:
         # 1. 获取订阅的创意工坊物品列表
-        workshop_items_result = get_subscribed_workshop_items()
+        workshop_items_result = await get_subscribed_workshop_items()
         
         # 2. 提取物品列表传给 utils 层
         subscribed_items = []

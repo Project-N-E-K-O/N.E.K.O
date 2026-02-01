@@ -26,7 +26,11 @@
     window.i18nInitialized = true;
 
     // 支持的语言列表
-    const SUPPORTED_LANGUAGES = ['zh-CN', 'en'];
+    const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja'];
+
+    // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
+    // 更新语言包内容时可以递增此值
+    const LOCALE_VERSION = '2026-01-31-1';
 
     // 获取浏览器语言（同步，作为 fallback）
     function getBrowserLanguage() {
@@ -347,7 +351,7 @@
                 getInitialLanguage(),  // 异步获取语言（优先 Steam）
                 ...SUPPORTED_LANGUAGES.map(async (lang) => {
                     try {
-                        const response = await fetch(`/static/locales/${lang}.json`);
+                        const response = await fetch(`/static/locales/${lang}.json?v=${encodeURIComponent(LOCALE_VERSION)}`);
                         if (response.ok) {
                             const translations = await response.json();
                             console.log(`[i18n] ✅ ${lang} 翻译文件加载成功`);
@@ -406,6 +410,8 @@
                 }
 
                 console.log('[i18n] ✅ 初始化成功（手动加载模式）');
+                // 设置 HTML lang 属性，用于 CSS 语言特定样式
+                document.documentElement.lang = i18next.language;
                 updatePageTexts();
                 window.dispatchEvent(new CustomEvent('localechange'));
                 exportNormalFunctions();
@@ -475,7 +481,7 @@
                     ns: ['translation'],
                     defaultNS: 'translation',
                     backend: {
-                        loadPath: '/static/locales/{{lng}}.json',
+                        loadPath: `/static/locales/{{lng}}.json?v=${encodeURIComponent(LOCALE_VERSION)}`,
                         parse: function (data) {
                             try {
                                 return JSON.parse(data);
@@ -510,6 +516,8 @@
                     const finalizeInit = () => {
                         if (initialized) return;
                         initialized = true;
+                        // 设置 HTML lang 属性，用于 CSS 语言特定样式
+                        document.documentElement.lang = i18next.language;
                         updatePageTexts();
                         window.dispatchEvent(new CustomEvent('localechange'));
                         exportNormalFunctions();
@@ -602,6 +610,8 @@
         i18next.on('languageChanged', (lng) => {
             // 保存语言选择到 localStorage
             localStorage.setItem('i18nextLng', lng);
+            // 更新 HTML lang 属性，用于 CSS 语言特定样式
+            document.documentElement.lang = lng;
             updatePageTexts();
             updateLive2DDynamicTexts();
             window.dispatchEvent(new CustomEvent('localechange'));
@@ -677,7 +687,59 @@
                 return;
             }
 
-            element.textContent = text;
+            // 如果元素有 data-text 属性，也更新它（用于 CSS attr() 显示）
+            if (element.hasAttribute('data-text')) {
+                element.setAttribute('data-text', text);
+            }
+
+            // 如果翻译文本包含 HTML 标签（如 <br>、<img> 等），使用 innerHTML，否则使用 textContent
+            if (text.includes('<br>') || text.includes('<BR>') || text.includes('<br/>') || text.includes('<img>') || text.includes('<IMG>') || text.includes('<img ')) {
+                // 安全过滤：仅允许 <br> 和 <img> 标签，且 <img> 仅允许安全属性
+                const tempDiv = document.createElement('div');
+                tempDiv.innerHTML = text;
+                
+                // 递归清理节点
+                const sanitize = (node) => {
+                    const children = Array.from(node.childNodes);
+                    children.forEach(child => {
+                        if (child.nodeType === 1) { // Element node
+                            const tagName = child.tagName.toUpperCase();
+                            if (tagName !== 'BR' && tagName !== 'IMG') {
+                                // 不允许的标签，替换为其文本内容
+                                const textNode = document.createTextNode(child.textContent);
+                                node.replaceChild(textNode, child);
+                            } else if (tagName === 'IMG') {
+                                // 检查属性
+                                Array.from(child.attributes).forEach(attr => {
+                                    const attrName = attr.name.toLowerCase();
+                                    if (attrName === 'src') {
+                                        // 验证协议，防止 javascript: 和 data: 等潜在危险协议
+                                        // 使用正则匹配，处理可能存在的空白字符（如制表符、换行符等）
+                                        const val = attr.value.trim().toLowerCase();
+                                        const blockedProtocols = /^(javascript|data|vbscript|file):/i;
+                                        if (blockedProtocols.test(val.replace(/[\x00-\x20\s]/g, ''))) {
+                                            child.removeAttribute(attrName);
+                                        }
+                                    } else if (attrName !== 'alt' && attrName !== 'class') {
+                                        // 仅允许 alt, class 属性 (移除 style 属性以防注入)
+                                        child.removeAttribute(attrName);
+                                    }
+                                    // 移除所有事件处理器
+                                    if (attrName.startsWith('on')) {
+                                        child.removeAttribute(attrName);
+                                    }
+                                });
+                            }
+                            sanitize(child);
+                        }
+                    });
+                };
+                
+                sanitize(tempDiv);
+                element.innerHTML = tempDiv.innerHTML;
+            } else {
+                element.textContent = text;
+            }
         });
 
         // 更新所有带有 data-i18n-placeholder 属性的元素
@@ -712,8 +774,8 @@
      * 更新 Live2D 动态文本
      */
     function updateLive2DDynamicTexts() {
-        // 更新浮动按钮的标题（包括 .floating-btn 和 .live2d-floating-btn）
-        const buttons = document.querySelectorAll('.floating-btn, .live2d-floating-btn');
+        // 更新浮动按钮的标题（包括 .floating-btn, .live2d-floating-btn 和 .vrm-floating-btn）
+        const buttons = document.querySelectorAll('.floating-btn, .live2d-floating-btn, .vrm-floating-btn');
         buttons.forEach(btn => {
             const titleKey = btn.getAttribute('data-i18n-title');
             if (titleKey) {
@@ -736,8 +798,8 @@
         // 更新动态创建的标签
         // _updateLabelText 是附加在父容器（toggleItem 或 menuItem）上的，不是直接在 [data-i18n] 元素上
         // 查找所有可能包含 _updateLabelText 的容器元素
-        // 方法1：查找所有 live2d-popup 内的直接子 div（toggleItem 和 menuItem）
-        const popups = document.querySelectorAll('.live2d-popup');
+        // 方法1：查找所有 live2d-popup, vrm-popup 和 shared-popup 内的直接子 div（toggleItem 和 menuItem）
+        const popups = document.querySelectorAll('.live2d-popup, .vrm-popup, .shared-popup');
         popups.forEach(popup => {
             // 查找 popup 的直接子 div 元素
             Array.from(popup.children).forEach(child => {

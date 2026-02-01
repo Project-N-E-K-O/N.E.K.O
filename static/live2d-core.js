@@ -18,6 +18,19 @@ let isEmotionChanging = false; // 防止快速连续点击的标志
 // 全局：判断是否为移动端宽度
 const isMobileWidth = () => window.innerWidth <= 768;
 
+// 口型同步参数列表常量
+// 这些参数用于控制模型的嘴部动作，在处理表情和常驻表情时需要跳过，以避免覆盖实时的口型同步
+window.LIPSYNC_PARAMS = [
+    'ParamMouthOpenY',
+    'ParamMouthForm',
+    'ParamMouthOpen',
+    'ParamA',
+    'ParamI',
+    'ParamU',
+    'ParamE',
+    'ParamO'
+];
+
 // Live2D 管理器类
 class Live2DManager {
     constructor() {
@@ -40,6 +53,9 @@ class Live2DManager {
         this.savedModelParameters = null; // 保存的模型参数（从parameters.json加载），供定时器定期应用
         this._shouldApplySavedParams = false; // 是否应该应用保存的参数
         this._savedParamsTimer = null; // 保存参数应用的定时器
+        
+        // 模型加载锁，防止并发加载导致重复模型叠加
+        this._isLoadingModel = false;
 
         // 常驻表情：使用官方 expression 播放并在清理后自动重放
         this.persistentExpressionNames = [];
@@ -49,19 +65,8 @@ class Live2DManager {
         this._lockIconTicker = null;
         this._lockIconElement = null;
 
-        // 浮动按钮系统
-        this._floatingButtonsTicker = null;
-        this._floatingButtonsContainer = null;
-        this._floatingButtons = {}; // 存储所有按钮元素
-        this._popupTimers = {}; // 存储弹出框的定时器
-        this._goodbyeClicked = false; // 标记是否点击了"请她离开"
-        this._returnButtonContainer = null; // "请她回来"按钮容器
-
-        // 已打开的设置窗口引用映射（URL -> Window对象）
-        this._openSettingsWindows = {};
-
-        // 口型同步控制
-        this.mouthValue = 0; // 0~1
+        // 口型同步
+        this.mouthValue = 0; // 0~1 (嘴巴开合值)
         this.mouthParameterId = null; // 例如 'ParamMouthOpenY' 或 'ParamO'
         this._mouthOverrideInstalled = false;
         this._origMotionManagerUpdate = null; // 保存原始的 motionManager.update 方法
@@ -74,8 +79,10 @@ class Live2DManager {
         // 防抖定时器（用于滚轮缩放等连续操作后保存位置）
         this._savePositionDebounceTimer = null;
 
-        // ⚠️ 已启用自动保存功能：
-        // 在拖动或缩放模型后自动保存位置和缩放
+        // 口型覆盖重新安装标志（防止重复安装）
+        this._reinstallScheduled = false;
+
+        
     }
 
     // 从 FileReferences 推导 EmotionMapping（用于兼容历史数据）
@@ -113,9 +120,33 @@ class Live2DManager {
 
     // 初始化 PIXI 应用
     async initPIXI(canvasId, containerId, options = {}) {
-        if (this.isInitialized) {
+        if (this.isInitialized && this.pixi_app && this.pixi_app.stage) {
             console.warn('Live2D 管理器已经初始化');
             return this.pixi_app;
+        }
+
+        // 如果已初始化但 stage 不存在，重置状态
+        if (this.isInitialized && (!this.pixi_app || !this.pixi_app.stage)) {
+            console.warn('Live2D 管理器标记为已初始化，但 pixi_app 或 stage 不存在，重置状态');
+            if (this.pixi_app && this.pixi_app.destroy) {
+                try {
+                    this.pixi_app.destroy(true);
+                } catch (e) {
+                    console.warn('销毁旧的 pixi_app 时出错:', e);
+                }
+            }
+            this.pixi_app = null;
+            this.isInitialized = false;
+        }
+
+        const canvas = document.getElementById(canvasId);
+        const container = document.getElementById(containerId);
+        
+        if (!canvas) {
+            throw new Error(`找不到 canvas 元素: ${canvasId}`);
+        }
+        if (!container) {
+            throw new Error(`找不到容器元素: ${containerId}`);
         }
 
         const defaultOptions = {
@@ -124,15 +155,52 @@ class Live2DManager {
             backgroundAlpha: 0
         };
 
-        this.pixi_app = new PIXI.Application({
-            view: document.getElementById(canvasId),
-            resizeTo: document.getElementById(containerId),
-            ...defaultOptions,
-            ...options
-        });
+        try {
+            this.pixi_app = new PIXI.Application({
+                view: canvas,
+                resizeTo: container,
+                ...defaultOptions,
+                ...options
+            });
 
-        this.isInitialized = true;
-        return this.pixi_app;
+            // 验证 pixi_app 和 stage 是否创建成功
+            if (!this.pixi_app) {
+                throw new Error('PIXI.Application 创建失败：返回值为 null 或 undefined');
+            }
+            
+            if (!this.pixi_app.stage) {
+                throw new Error('PIXI.Application 创建失败：stage 属性不存在');
+            }
+
+            this.isInitialized = true;
+            console.log('[Live2D Core] PIXI.Application 初始化成功，stage 已创建');
+            return this.pixi_app;
+        } catch (error) {
+            console.error('[Live2D Core] PIXI.Application 初始化失败:', error);
+            this.pixi_app = null;
+            this.isInitialized = false;
+            throw error;
+        }
+    }
+
+    /**
+     * 暂停渲染循环（用于节省资源，例如进入模型管理界面时）
+     */
+    pauseRendering() {
+        if (this.pixi_app && this.pixi_app.ticker) {
+            this.pixi_app.ticker.stop();
+            console.log('[Live2D Core] 渲染循环已暂停');
+        }
+    }
+
+    /**
+     * 恢复渲染循环（从暂停状态恢复）
+     */
+    resumeRendering() {
+        if (this.pixi_app && this.pixi_app.ticker) {
+            this.pixi_app.ticker.start();
+            console.log('[Live2D Core] 渲染循环已恢复');
+        }
     }
 
     // 加载用户偏好
@@ -315,6 +383,13 @@ class Live2DManager {
         const container = document.getElementById('live2d-canvas');
         if (container) {
             container.style.pointerEvents = locked ? 'none' : 'auto';
+        }
+
+        if (!locked) {
+            const live2dContainer = document.getElementById('live2d-container');
+            if (live2dContainer) {
+                live2dContainer.classList.remove('locked-hover-fade');
+            }
         }
 
         // 4. 控制浮动按钮显示（可选）

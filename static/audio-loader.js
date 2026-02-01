@@ -92,10 +92,8 @@ class AudioManager {
                 fadeGain.gain.setValueAtTime(1, m.nextTime + buffer.duration - fadeTime);
                 fadeGain.gain.linearRampToValueAtTime(0, m.nextTime + buffer.duration);
 
-                // 口型
-                if (window[modelId] && window[modelId].live2dModel) {
-                    this.startLipSync(modelId, m.analyser); // 你已有的实现
-                }
+                // 口型同步 - 支持Live2D和VRM（startLipSync内部会自动检测模型类型）
+                this.startLipSync(modelId, m.analyser);
 
                 src.onended = () => {
                     m.playingSources.delete(src);
@@ -149,34 +147,60 @@ class AudioManager {
       }
 
     startLipSync(modelId, analyser) {
-        const model = window[modelId].live2dModel;
-        const dataArray = new Uint8Array(analyser.fftSize);
-        const self = this;
+        // 检测是Live2D还是VRM
+        if (window[modelId] && window[modelId].live2dModel) {
+            // Live2D模型的口型同步
+            const model = window[modelId].live2dModel;
+            const dataArray = new Uint8Array(analyser.fftSize);
 
-        const animate = () => {
-            analyser.getByteTimeDomainData(dataArray);
-            // 简单求音量（RMS 或最大振幅）
-            let sum = 0;
-            for (let i = 0; i < dataArray.length; i++) {
-                const val = (dataArray[i] - 128) / 128; // 归一化到 -1~1
-                sum += val * val;
-            }
-            const rms = Math.sqrt(sum / dataArray.length);
-            // 这里可以调整映射关系
-            const mouthOpen = Math.min(1, rms * 8); // 放大到 0~1
-            // 设置 Live2D 嘴巴参数
-            model.internalModel.coreModel.setParameterValueById("ParamMouthOpenY", Math.max(mouthOpen));
-            this.models.get(modelId).animationFrameId = requestAnimationFrame(animate);
+            const animate = () => {
+                // 检查模型是否仍然有效
+                if (!model || model.destroyed || !model.internalModel?.coreModel) {
+                    return;
+                }
+                analyser.getByteTimeDomainData(dataArray);
+                // 简单求音量（RMS 或最大振幅）
+                let sum = 0;
+                for (let i = 0; i < dataArray.length; i++) {
+                    const val = (dataArray[i] - 128) / 128; // 归一化到 -1~1
+                    sum += val * val;
+                }
+                const rms = Math.sqrt(sum / dataArray.length);
+                // 这里可以调整映射关系
+                const mouthOpen = Math.min(1, rms * 8); // 放大到 0~1
+                // 设置 Live2D 嘴巴参数
+                model.internalModel.coreModel.setParameterValueById("ParamMouthOpenY", mouthOpen);
+                const modelData = this.models.get(modelId);
+                if (modelData) {
+                    modelData.animationFrameId = requestAnimationFrame(animate);
+                }
+             }
+
+            animate();
+        } else if (window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
+            // VRM模型的口型同步
+            window.vrmManager.animation.startLipSync(analyser);
         }
-
-        animate();
     }
 
     stopLipSync(modelId) {
-        const model = window[modelId].live2dModel;
-        cancelAnimationFrame(this.models.get(modelId).animationFrameId);
-        // 关闭嘴巴
-        model.internalModel.coreModel.setParameterValueById("ParamMouthOpenY", 0);
+        // 检测是Live2D还是VRM
+        if (window[modelId] && window[modelId].live2dModel) {
+            // Live2D模型停止口型同步
+            const model = window[modelId].live2dModel;
+            const modelData = this.models.get(modelId);
+            if (modelData?.animationFrameId) {
+                cancelAnimationFrame(modelData.animationFrameId);
+                modelData.animationFrameId = null;
+            }
+            // 关闭嘴巴
+            if (model.internalModel?.coreModel) {
+                model.internalModel.coreModel.setParameterValueById("ParamMouthOpenY", 0);
+            }
+        } else if (window.vrmManager && window.vrmManager.currentModel && window.vrmManager.animation) {
+            // VRM模型停止口型同步
+            window.vrmManager.animation.stopLipSync();
+        }
     }
 }
 

@@ -1,7 +1,95 @@
 /**
  * Live2D UI Drag - 拖拽和弹出框管理
- * 包含弹出框管理、容器拖拽、显示弹出框、折叠功能
+ * 包含弹出框管理、容器拖拽、显示弹出框、折叠功能、按钮事件传播管理
  */
+
+// ===== 拖拽辅助工具 - 按钮事件传播管理 =====
+(function() {
+    'use strict';
+
+    /**
+     * 禁用按钮的 pointer-events
+     * 在拖动开始时调用，防止按钮拦截拖动事件
+     */
+    function disableButtonPointerEvents() {
+        // 收集所有按钮元素（包括 Live2D 和 VRM 的浮动按钮、三角触发按钮、以及锁图标）
+        const buttons = document.querySelectorAll('.live2d-floating-btn, .live2d-trigger-btn, [id^="live2d-btn-"], .vrm-floating-btn, [id^="vrm-btn-"], #live2d-lock-icon, #vrm-lock-icon');
+        buttons.forEach(btn => {
+            if (btn) {
+                // 如果已经保存过，说明正在拖拽中，跳过
+                if (btn.hasAttribute('data-prev-pointer-events')) {
+                    return;
+                }
+                // 保存当前的pointerEvents值
+                const currentValue = btn.style.pointerEvents || '';
+                btn.setAttribute('data-prev-pointer-events', currentValue);
+                btn.style.pointerEvents = 'none';
+            }
+        });
+        
+        // 收集并处理所有按钮包装器元素（包括三角按钮的包装器）
+        const wrappers = new Set();
+        buttons.forEach(btn => {
+            if (btn && btn.parentElement) {
+                // 排除返回按钮和其容器，避免破坏其拖拽行为
+                if (btn.id === 'live2d-btn-return' || btn.id === 'vrm-btn-return' ||
+                    (btn.parentElement && (btn.parentElement.id === 'live2d-return-button-container' || btn.parentElement.id === 'vrm-return-button-container'))) {
+                    return;
+                }
+                wrappers.add(btn.parentElement);
+            }
+        });
+
+        // 额外包含主要按钮容器，防止它们拦截事件冒泡
+        const mainContainers = document.querySelectorAll('#live2d-floating-buttons, #vrm-floating-buttons');
+        mainContainers.forEach(container => wrappers.add(container));
+        
+        wrappers.forEach(wrapper => {
+            if (wrapper && !wrapper.hasAttribute('data-prev-pointer-events')) {
+                const currentValue = wrapper.style.pointerEvents || '';
+                wrapper.setAttribute('data-prev-pointer-events', currentValue);
+                wrapper.style.pointerEvents = 'none';
+            }
+        });
+        
+        // 禁用所有弹窗元素的 pointer-events，避免拖拽时与弹窗冲突
+        const popups = document.querySelectorAll('.live2d-popup, [id^="live2d-popup-"], .vrm-popup, [id^="vrm-popup-"]');
+        popups.forEach(popup => {
+            if (popup && !popup.hasAttribute('data-prev-pointer-events')) {
+                const currentValue = popup.style.pointerEvents || '';
+                popup.setAttribute('data-prev-pointer-events', currentValue);
+                popup.style.pointerEvents = 'none';
+            }
+        });
+    }
+
+    /**
+     * 恢复按钮的 pointer-events
+     * 在拖动结束时调用，恢复按钮的正常点击功能
+     */
+    function restoreButtonPointerEvents() {
+        const elementsToRestore = document.querySelectorAll('[data-prev-pointer-events]');
+        elementsToRestore.forEach(element => {
+            if (element) {
+                const prevValue = element.getAttribute('data-prev-pointer-events');
+                if (prevValue === '') {
+                    element.style.pointerEvents = '';
+                } else {
+                    element.style.pointerEvents = prevValue;
+                }
+                element.removeAttribute('data-prev-pointer-events');
+            }
+        });
+    }
+
+    // 挂载到全局 window 对象，供其他脚本使用
+    window.DragHelpers = {
+        disableButtonPointerEvents: disableButtonPointerEvents,
+        restoreButtonPointerEvents: restoreButtonPointerEvents
+    };
+})();
+
+// ===== 弹出框管理 =====
 
 // 关闭指定按钮对应的弹出框，并恢复按钮状态
 Live2DManager.prototype.closePopupById = function (buttonId) {
@@ -206,6 +294,9 @@ Live2DManager.prototype.setupReturnButtonContainerDrag = function (returnButtonC
 
 // 显示弹出框（1秒后自动隐藏），支持点击切换
 Live2DManager.prototype.showPopup = function (buttonId, popup) {
+    // 确保 _popupTimers 已初始化
+    this._popupTimers = this._popupTimers || {};
+
     // 检查当前状态
     const isVisible = popup.style.display === 'flex' && popup.style.opacity === '1';
 
@@ -223,28 +314,22 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
         // 辅助函数：更新 checkbox 的视觉样式
         const updateCheckboxStyle = (checkbox) => {
             if (!checkbox) return;
-            // toggleItem 是 checkbox 的父元素
             const toggleItem = checkbox.parentElement;
             if (!toggleItem) return;
 
-            // indicator 是 toggleItem 的第二个子元素（第一个是 checkbox，第二个是 indicator）
-            const indicator = toggleItem.children[1];
-            if (!indicator) return;
-
-            // checkmark 是 indicator 的第一个子元素
-            const checkmark = indicator.firstElementChild;
+            const indicator = toggleItem.querySelector('.vrm-toggle-indicator');
+            const checkmark = indicator?.querySelector('.vrm-toggle-checkmark');
+            if (!indicator || !checkmark) return;
 
             if (checkbox.checked) {
-                // 选中状态
                 indicator.style.backgroundColor = '#44b7fe';
                 indicator.style.borderColor = '#44b7fe';
-                if (checkmark) checkmark.style.opacity = '1';
+                checkmark.style.opacity = '1';
                 toggleItem.style.background = 'rgba(68, 183, 254, 0.1)';
             } else {
-                // 未选中状态
                 indicator.style.backgroundColor = 'transparent';
                 indicator.style.borderColor = '#ccc';
-                if (checkmark) checkmark.style.opacity = '0';
+                checkmark.style.opacity = '0';
                 toggleItem.style.background = 'transparent';
             }
         };
@@ -394,8 +479,8 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
             });
         });
 
-        // 设置、agent、麦克风弹出框不自动隐藏，其他的1秒后隐藏
-        if (buttonId !== 'settings' && buttonId !== 'agent' && buttonId !== 'mic') {
+        // 设置、agent、麦克风、屏幕源弹出框不自动隐藏，其他的1秒后隐藏
+        if (buttonId !== 'settings' && buttonId !== 'agent' && buttonId !== 'mic' && buttonId !== 'screen') {
             this._popupTimers[buttonId] = setTimeout(() => {
                 popup.style.opacity = '0';
                 popup.style.transform = popup.style.right === '100%' ? 'translateX(10px)' : 'translateX(-10px)';

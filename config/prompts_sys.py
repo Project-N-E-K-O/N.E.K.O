@@ -102,7 +102,7 @@ history_review_prompt = """请审阅%s和%s之间的对话历史记录，识别�
 - 解决明显的矛盾
 - 保持对话的自然流畅性"""
 
-emotion_analysis_prompt = """你是一个情感分析专家。请分析用户输入的文本情感，并返回以下格式的JSON：{"emotion": "情感类型", "confidence": 置信度(0-1), "reason": "分析原因"}。情感类型包括：happy(开心), sad(悲伤), angry(愤怒), neutral(中性),surprised(惊讶)。"""
+emotion_analysis_prompt = """你是一个情感分析专家。请分析用户输入的文本情感，并返回以下格式的JSON：{"emotion": "情感类型", "confidence": 置信度(0-1)}。情感类型包括：happy(开心), sad(悲伤), angry(愤怒), neutral(中性),surprised(惊讶)。"""
 
 proactive_chat_prompt = """你是{lanlan_name}，现在看到了一些B站首页推荐和微博热议话题。请根据与{master_name}的对话历史和{master_name}的兴趣，判断是否要主动和{master_name}聊聊这些内容。
 
@@ -167,14 +167,13 @@ proactive_chat_prompt_window_search = """你是{lanlan_name}，现在看到了{m
 
 请回复：
 - 如果选择主动搭话，直接说出你想说的话（简短自然即可）。请不要生成思考过程。
-- 如果选择不搭话，只回复"[PASS]"
-"""
+- 如果选择不搭话，只回复"[PASS]"。 """
 
 proactive_chat_rewrite_prompt = """你是一个文本清洁专家。请将以下LLM生成的主动搭话内容进行改写和清洁。
 
-======原始输出======
+======以下为原始输出======
 {raw_output}
-======以上为对话======
+======以上为原始输出======
 
 请按照以下规则处理：
 1. 移除'|' 字符。如果内容包含 '|' 字符（用于提示说话人），请只保留 '|' 后的实际说话内容。如果有多轮对话，只保留第一段。
