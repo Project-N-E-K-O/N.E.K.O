@@ -50,6 +50,21 @@ class VRMInteraction {
 
 
     /**
+     * 使用 live2d-ui-drag.js 中的共享工具函数（按钮 pointer-events 管理）
+     */
+    _disableButtonPointerEvents() {
+        if (window.DragHelpers) {
+            window.DragHelpers.disableButtonPointerEvents();
+        }
+    }
+
+    _restoreButtonPointerEvents() {
+        if (window.DragHelpers) {
+            window.DragHelpers.restoreButtonPointerEvents();
+        }
+    }
+
+    /**
      * 【修改】初始化拖拽和缩放功能
      * 已移除所有导致报错的 LookAt/mouseNDC 代码
      */
@@ -112,6 +127,9 @@ class VRMInteraction {
                 canvas.style.cursor = 'move';
                 e.preventDefault();
                 e.stopPropagation();
+
+                // 开始拖动时，临时禁用按钮的 pointer-events
+                this._disableButtonPointerEvents();
             }
         };
 
@@ -124,6 +142,8 @@ class VRMInteraction {
                     this.isDragging = false;
                     this.dragMode = null;
                     canvas.style.cursor = 'grab';
+                    // 恢复按钮的 pointer-events
+                    this._restoreButtonPointerEvents();
                 }
                 return;
             }
@@ -179,10 +199,13 @@ class VRMInteraction {
         this.mouseUpHandler = async (e) => {
             if (this.isDragging) {
                 e.preventDefault();
-                +               e.stopPropagation();
+                e.stopPropagation();
                 this.isDragging = false;
                 this.dragMode = null;
                 canvas.style.cursor = 'grab';
+
+                // 拖拽结束后恢复按钮的 pointer-events
+                this._restoreButtonPointerEvents();
 
                 // 拖动结束后保存位置
                 await this._savePositionAfterInteraction();
@@ -341,6 +364,8 @@ class VRMInteraction {
             if (this.manager.renderer) {
                 this.manager.renderer.domElement.style.cursor = 'grab';
             }
+            // 恢复按钮的 pointer-events
+            this._restoreButtonPointerEvents();
         }
     }
 
@@ -978,6 +1003,8 @@ class VRMInteraction {
     dispose() {
         this.enableMouseTracking(false);
         this.cleanupDragAndZoom();
+        // 确保拖拽相关的 pointer-events 被恢复
+        this._restoreButtonPointerEvents();
         // 确保初始化定时器被清理（即使 renderer 不存在）
         if (this._initTimerId !== null) {
             clearTimeout(this._initTimerId);
