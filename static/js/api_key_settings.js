@@ -866,6 +866,11 @@ function updateAssistApiRecommendation() {
             freeOption.textContent = window.t ? window.t('api.freeVersionOnlyWhenCoreFree') : '免费版（仅核心API为免费版时可用）';
         }
 
+        // 如果辅助API当前是免费版，自动切换为默认的阿里（qwen）
+        if (selectedAssistApi === 'free') {
+            assistApiSelect.value = 'qwen';
+        }
+
         // 启用所有辅助API输入框（统一处理，启用时清理显示为免费版的占位值）
         setAssistApiInputsDisabled(false);
 
@@ -878,35 +883,6 @@ function updateAssistApiRecommendation() {
             'silicon': 'assistApiKeyInputSilicon',
             'gemini': 'assistApiKeyInputGemini'
         };
-
-        // 检查辅助API是否有对应的API Key
-        function hasAssistApiKey(assistApi) {
-            if (assistApi === 'free') return false;
-            const inputId = assistApiKeyInputMap[assistApi];
-            if (!inputId) return false;
-            const input = document.getElementById(inputId);
-            return input && input.value && input.value.trim() !== '';
-        }
-
-        // 如果当前 assist 是免费版或没有对应的 Key，自动跟随 core
-        let newAssistApi = selectedAssistApi;
-        if (selectedAssistApi === 'free' || !hasAssistApiKey(selectedAssistApi)) {
-            // 检查 core API 是否在 assist 选项中可用
-            const coreOption = assistApiSelect.querySelector(`option[value="${selectedCoreApi}"]`);
-            if (coreOption && !coreOption.disabled) {
-                newAssistApi = selectedCoreApi;
-                if (selectedAssistApi !== 'free') {
-                    console.log(`[API Settings] 辅助API ${selectedAssistApi} 没有Key，自动跟随核心API: ${selectedCoreApi}`);
-                }
-            } else {
-                // core 不在 assist 选项中，默认使用 qwen
-                newAssistApi = 'qwen';
-            }
-        }
-        
-        if (newAssistApi !== selectedAssistApi) {
-            assistApiSelect.value = newAssistApi;
-        }
 
         switch (selectedCoreApi) {
             case 'qwen':
