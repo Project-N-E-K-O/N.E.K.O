@@ -301,6 +301,11 @@ function init_app() {
     let sessionStartedResolver = null; // 用于等待 session_started 消息
     let sessionStartedRejecter = null; // 用于等待 session_failed / timeout 消息
 
+    // 语音模式下用户 transcript 合并相关变量（兜底机制，防止 Gemini 等模型返回碎片化转录造成刷屏）
+    let lastVoiceUserMessage = null;       // 上一个用户消息 DOM 元素
+    let lastVoiceUserMessageTime = 0;      // 上一个用户消息的时间戳
+    const VOICE_TRANSCRIPT_MERGE_WINDOW = 5000; // 合并时间窗口（毫秒），5秒内的连续转录会合并
+
     // 主动搭话功能相关
     let proactiveChatEnabled = false;
     let proactiveVisionEnabled = false;
@@ -431,9 +436,40 @@ function init_app() {
                 if (response.type === 'gemini_response') {
                     // 检查是否是新消息的开始
                     const isNewMessage = response.isNewMessage || false;
+                    
+                    // AI 开始新回复时，重置用户转录合并追踪（避免跨轮次合并）
+                    if (isNewMessage) {
+                        lastVoiceUserMessage = null;
+                        lastVoiceUserMessageTime = 0;
+                    }
+                    
                     appendMessage(response.text, 'gemini', isNewMessage);
                 } else if (response.type === 'user_transcript') {
-                    appendMessage(response.text, 'user', true);
+                    // 语音模式下的用户转录合并机制（兜底，防止 Gemini 等模型碎片化转录刷屏）
+                    const now = Date.now();
+                    const shouldMerge = isRecording && 
+                        lastVoiceUserMessage && 
+                        lastVoiceUserMessage.isConnected &&
+                        (now - lastVoiceUserMessageTime) < VOICE_TRANSCRIPT_MERGE_WINDOW;
+                    
+                    if (shouldMerge) {
+                        // 合并到上一个用户消息气泡（流式追加）
+                        lastVoiceUserMessage.textContent += response.text;
+                        lastVoiceUserMessageTime = now; // 更新时间戳，延续合并窗口
+                    } else {
+                        // 创建新消息
+                        appendMessage(response.text, 'user', true);
+                        
+                        // 在语音模式下追踪这个消息，以便后续合并
+                        if (isRecording) {
+                            // 获取刚创建的用户消息元素（chatContainer 的最后一个 .user 消息）
+                            const userMessages = chatContainer.querySelectorAll('.message.user');
+                            if (userMessages.length > 0) {
+                                lastVoiceUserMessage = userMessages[userMessages.length - 1];
+                                lastVoiceUserMessageTime = now;
+                            }
+                        }
+                    }
                 } else if (response.type === 'user_activity') {
                     interruptedSpeechId = response.interrupted_speech_id || null;
                     pendingDecoderReset = true;  // 标记需要在新 speech_id 到来时重置
@@ -3330,6 +3366,10 @@ function init_app() {
         isRecording = false;
         window.isRecording = false;
         window.currentGeminiMessage = null;
+        
+        // 重置语音模式用户转录合并追踪
+        lastVoiceUserMessage = null;
+        lastVoiceUserMessageTime = 0;
 
         // 停止静音检测
         stopSilenceDetection();
@@ -7375,6 +7415,9 @@ function init_app() {
             window._realisticGeminiQueue = [];
             window._realisticGeminiBuffer = '';
             window._realisticGeminiTimestamp = null;
+            // 重置语音模式用户转录合并追踪
+            lastVoiceUserMessage = null;
+            lastVoiceUserMessageTime = 0;
 
             // 清理连接与状态
             if (autoReconnectTimeoutId) clearTimeout(autoReconnectTimeoutId);

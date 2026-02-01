@@ -1060,7 +1060,7 @@ class OmniRealtimeClient:
                 if hasattr(server_content, 'input_transcription') and server_content.input_transcription:
                     input_trans = server_content.input_transcription
                     if hasattr(input_trans, 'text') and input_trans.text:
-                        self._gemini_user_transcript += input_trans.text.replace(' ', '')
+                        self._gemini_user_transcript += input_trans.text
                 
                 # 检查是否有 AI 内容（model_turn 或 output_transcription）
                 has_ai_content = (
@@ -1072,7 +1072,7 @@ class OmniRealtimeClient:
                 if has_ai_content and not self._is_responding:
                     # 在AI开始响应前，发送累积的用户输入
                     if self._gemini_user_transcript and self.on_input_transcript:
-                        await self.on_input_transcript(self._gemini_user_transcript.replace(' ', ''))
+                        await self.on_input_transcript(self._gemini_user_transcript)
                         self._gemini_user_transcript = ""  # 清空累积
                     
                     self._is_responding = True
@@ -1085,7 +1085,7 @@ class OmniRealtimeClient:
                 if hasattr(server_content, 'output_transcription') and server_content.output_transcription:
                     output_trans = server_content.output_transcription
                     if hasattr(output_trans, 'text') and output_trans.text:
-                        text = output_trans.text.replace(' ', '')  # 去掉空格
+                        text = output_trans.text
                         self._gemini_current_transcript += text
                         # 流式发送到前端（第一个 chunk 标记 is_first=True）
                         if self.on_text_delta:
@@ -1118,7 +1118,7 @@ class OmniRealtimeClient:
                     self._is_responding = False
                     # 被中断时也发送已累积的用户输入
                     if self._gemini_user_transcript and self.on_input_transcript:
-                        await self.on_input_transcript(self._gemini_user_transcript.replace(' ', ''))
+                        await self.on_input_transcript(self._gemini_user_transcript)
                         self._gemini_user_transcript = ""
                     logger.info("Gemini response was interrupted by user")
         
