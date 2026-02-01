@@ -35,6 +35,19 @@ function addNewMessage(messageHTML) {
 // 用于跟踪是否刚刚发生了拖动
 let justDragged = false;
 
+// 展开后回弹（等待布局更新）
+function triggerExpandSnap() {
+    if (!window.ChatDialogSnap || typeof window.ChatDialogSnap.snapIntoScreen !== 'function') return;
+
+    // 双 RAF 确保本帧布局已更新
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => window.ChatDialogSnap.snapIntoScreen({ animate: true }));
+    });
+
+    // 兼容存在过渡/尺寸变化的情况
+    setTimeout(() => window.ChatDialogSnap.snapIntoScreen({ animate: true }), 320);
+}
+
 // 确保DOM加载后再绑定事件
 if (toggleBtn) {
     toggleBtn.addEventListener('click', (event) => {
@@ -99,9 +112,7 @@ if (toggleBtn) {
                 toggleBtn.title = window.t ? window.t('common.minimize') : '最小化';
                 setTimeout(scrollToBottom, 300);
                 // 展开后执行回弹，避免位置越界
-                if (window.ChatDialogSnap && typeof window.ChatDialogSnap.snapIntoScreen === 'function') {
-                    setTimeout(() => window.ChatDialogSnap.snapIntoScreen({ animate: true }), 0);
-                }
+                triggerExpandSnap();
             }
             return; // 移动端已处理，直接返回
         }
@@ -143,9 +154,7 @@ if (toggleBtn) {
             // 还原后滚动到底部
             setTimeout(scrollToBottom, 300); // 给CSS过渡留出时间
             // 展开后执行回弹，避免位置越界
-            if (window.ChatDialogSnap && typeof window.ChatDialogSnap.snapIntoScreen === 'function') {
-                setTimeout(() => window.ChatDialogSnap.snapIntoScreen({ animate: true }), 0);
-            }
+            triggerExpandSnap();
         }
     });
 }
