@@ -226,9 +226,9 @@ class ConversationBridge:
         if not self.start():
             return False
         
-        # 如果没有提供 conversation_id，生成一个
+        # 如果没有提供 conversation_id，使用有序生成器
         if conversation_id is None:
-            conversation_id = str(uuid.uuid4())
+            conversation_id = generate_conversation_id()
         
         # 构造与 plane_bridge.py 相同格式的消息
         # 参考: plugin/server/messaging/plane_bridge.py enqueue_delta()

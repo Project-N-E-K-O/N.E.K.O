@@ -1499,7 +1499,7 @@ class GlobalState:
                     
                     if per_req_ev is not None:
                         # 使用线程事件等待(在线程池中执行)
-                        loop = asyncio.get_event_loop()
+                        loop = asyncio.get_running_loop()
                         ev = per_req_ev  # 捕获变量避免 None 类型问题
                         await loop.run_in_executor(
                             None,
@@ -1513,6 +1513,9 @@ class GlobalState:
                     result = check_and_notify()
                     if result is not None:
                         return result
+                    
+                    # 避免事件已被消费但仍保持 set 导致的空转
+                    await asyncio.sleep(0.005)
             
             return await asyncio.wait_for(wait_with_polling(), timeout=timeout)
         except asyncio.TimeoutError:

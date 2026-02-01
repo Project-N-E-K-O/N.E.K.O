@@ -49,6 +49,7 @@ if TYPE_CHECKING:
     from plugin.sdk.bus.lifecycle import LifecycleClient
     from plugin.sdk.memory import MemoryClient
     from plugin.sdk.bus.messages import MessageClient
+    from plugin.sdk.bus.conversations import ConversationClient
     from loguru import Logger as LoguruLogger
 
 
@@ -192,10 +193,23 @@ class PluginContext:
             pass
 
     def get_user_context(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> Dict[str, Any]:
-        raise RuntimeError(
-            "PluginContext.get_user_context() is no longer supported. "
-            "Use ctx.bus.memory.get(bucket_id=..., limit=..., timeout=...) instead."
-        )
+        """[DEPRECATED] Use ctx.bus.memory.get(bucket_id=..., limit=..., timeout=...) instead."""
+        try:
+            self.logger.warning(
+                "PluginContext.get_user_context() is deprecated; "
+                "use ctx.bus.memory.get(bucket_id=..., limit=..., timeout=...) instead."
+            )
+        except Exception:
+            pass
+        from plugin.sdk.bus.memory import MemoryClient as BusMemoryClient
+        bus_client = BusMemoryClient(self)
+        if self._is_in_event_loop():
+            async def _wrap() -> Dict[str, Any]:
+                result = await bus_client.get_async(bucket_id=bucket_id, limit=limit, timeout=timeout)
+                return {"history": [r.dump() for r in result], "bucket_id": bucket_id}
+            return _wrap()  # type: ignore[return-value]
+        result = bus_client.get_sync(bucket_id=bucket_id, limit=limit, timeout=timeout)
+        return {"history": [r.dump() for r in result], "bucket_id": bucket_id}
 
     def _get_sync_call_in_handler_policy(self) -> str:
         """获取同步调用策略，优先使用插件自身配置，其次使用全局配置。
@@ -958,7 +972,47 @@ class PluginContext:
                 # Note: Never fall back to control-plane on message_plane failure: it can amplify overload.
                 pass
 
-        raise RuntimeError("message_plane is not available for push_message")
+        # message_plane 不可用时，尝试回退到 message_queue（如果可用）
+        if self.message_queue is not None:
+            try:
+                payload = {
+                    "type": "MESSAGE_PUSH",
+                    "message_id": str(uuid.uuid4()),
+                    "plugin_id": self.plugin_id,
+                    "source": source,
+                    "description": description,
+                    "priority": priority,
+                    "message_type": message_type,
+                    "content": content,
+                    "binary_data": binary_data,
+                    "binary_url": binary_url,
+                    "metadata": metadata or {},
+                    "unsafe": bool(unsafe),
+                    "time": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                }
+                self.message_queue.put_nowait(payload)
+                if PLUGIN_LOG_CTX_MESSAGE_PUSH:
+                    try:
+                        self.logger.debug(f"Plugin {self.plugin_id} pushed message (fallback queue): {source} - {description}")
+                    except Exception:
+                        pass
+                return
+            except Exception as e:
+                try:
+                    self.logger.warning(f"[PluginContext] fallback message_queue push failed: {e}")
+                except Exception:
+                    pass
+        
+        # 所有方式都不可用时，记录警告而非抛错（避免插件崩溃）
+        try:
+            self.logger.error(
+                "[PluginContext] push_message failed: message_plane unavailable "
+                "(zmq={}, endpoint={}). Check MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT config.",
+                zmq is not None,
+                bool(getattr(self, "_mp_endpoint_cached", None)),
+            )
+        except Exception:
+            pass
 
     async def push_message_async(
         self,

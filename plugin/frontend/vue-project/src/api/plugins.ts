@@ -28,28 +28,32 @@ export function getPluginStatus(pluginId?: string): Promise<PluginStatusData | {
  * 获取插件健康状态
  */
 export function getPluginHealth(pluginId: string): Promise<PluginHealth> {
-  return get(`/plugin/${pluginId}/health`)
+  const safeId = encodeURIComponent(pluginId)
+  return get(`/plugin/${safeId}/health`)
 }
 
 /**
  * 启动插件
  */
 export function startPlugin(pluginId: string): Promise<{ success: boolean; plugin_id: string; message: string }> {
-  return post(`/plugin/${pluginId}/start`)
+  const safeId = encodeURIComponent(pluginId)
+  return post(`/plugin/${safeId}/start`)
 }
 
 /**
  * 停止插件
  */
 export function stopPlugin(pluginId: string): Promise<{ success: boolean; plugin_id: string; message: string }> {
-  return post(`/plugin/${pluginId}/stop`)
+  const safeId = encodeURIComponent(pluginId)
+  return post(`/plugin/${safeId}/stop`)
 }
 
 /**
  * 重载插件
  */
 export function reloadPlugin(pluginId: string): Promise<{ success: boolean; plugin_id: string; message: string }> {
-  return post(`/plugin/${pluginId}/reload`)
+  const safeId = encodeURIComponent(pluginId)
+  return post(`/plugin/${safeId}/reload`)
 }
 
 /**

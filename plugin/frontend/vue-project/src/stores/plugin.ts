@@ -20,6 +20,9 @@ export const usePluginStore = defineStore('plugin', () => {
   let pendingFetchStatus: Promise<void> | null = null
   // 请求超时自动清理（防止请求堆积）
   const REQUEST_TIMEOUT = 15000 // 15秒
+  // 请求序列号，用于忽略过期响应
+  let fetchPluginsSeq = 0
+  let fetchStatusSeq = 0
 
   // 计算属性
   const selectedPlugin = computed(() => {
@@ -88,17 +91,23 @@ export const usePluginStore = defineStore('plugin', () => {
       }
     }, REQUEST_TIMEOUT)
     
+    const seq = ++fetchPluginsSeq
     pendingFetchPlugins = (async () => {
       try {
         const response = await getPlugins()
+        // 忽略过期响应，防止旧数据覆盖新数据
+        if (seq !== fetchPluginsSeq) return
         plugins.value = response.plugins || []
       } catch (err: any) {
+        if (seq !== fetchPluginsSeq) return
         error.value = err.message || '获取插件列表失败'
         console.error('Failed to fetch plugins:', err)
       } finally {
         clearTimeout(timeoutId)
-        loading.value = false
-        pendingFetchPlugins = null
+        if (seq === fetchPluginsSeq) {
+          loading.value = false
+          pendingFetchPlugins = null
+        }
       }
     })()
     
@@ -122,9 +131,14 @@ export const usePluginStore = defineStore('plugin', () => {
       }, REQUEST_TIMEOUT)
     }
     
+    // 仅对全量请求使用序列号
+    const seq = !pluginId ? ++fetchStatusSeq : 0
+    
     const doFetch = async () => {
       try {
         const response = await getPluginStatus(pluginId)
+        // 忽略过期响应（仅对全量请求）
+        if (!pluginId && seq !== fetchStatusSeq) return
         if (pluginId) {
           // 单个插件状态
           pluginStatuses.value[pluginId] = response as PluginStatusData
@@ -137,7 +151,7 @@ export const usePluginStore = defineStore('plugin', () => {
         console.error('Failed to fetch plugin status:', err)
       } finally {
         if (timeoutId) clearTimeout(timeoutId)
-        if (!pluginId) {
+        if (!pluginId && seq === fetchStatusSeq) {
           pendingFetchStatus = null
         }
       }

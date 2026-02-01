@@ -10,6 +10,7 @@ import asyncio
 import time
 import threading
 import json
+import uuid
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 import uvicorn
@@ -51,8 +52,42 @@ class MoltbotBridgePlugin(NekoPluginBase):
         self._response_events: Dict[str, threading.Event] = {}
         # 流式文本累积 (runId -> accumulated text)
         self._streaming_text: Dict[str, str] = {}
+        # 响应相关共享状态锁
+        self._response_lock = threading.Lock()
+        # 响应最大保留时间（秒）
+        self._response_max_age_seconds: float = 300.0
+        # 上次清理时间
+        self._last_cleanup_time: float = time.time()
         
         self.logger.info("MoltbotBridgePlugin initialized")
+    
+    def _cleanup_old_responses(self, max_age_seconds: Optional[float] = None) -> int:
+        """清理超时的 pending responses，防止内存泄漏
+        
+        Args:
+            max_age_seconds: 最大保留时间，默认使用 self._response_max_age_seconds
+            
+        Returns:
+            清理的条目数量
+        """
+        if max_age_seconds is None:
+            max_age_seconds = self._response_max_age_seconds
+        
+        current_time = time.time()
+        with self._response_lock:
+            expired_keys = [
+                key for key, value in self._pending_responses.items()
+                if current_time - value.get("timestamp", 0) > max_age_seconds
+            ]
+            for key in expired_keys:
+                del self._pending_responses[key]
+                self._response_events.pop(key, None)
+                self._streaming_text.pop(key, None)
+        
+        if expired_keys:
+            self.logger.debug(f"Cleaned up {len(expired_keys)} expired responses")
+        
+        return len(expired_keys)
     
     @lifecycle(id="startup")
     async def startup(self, **_):
@@ -104,7 +139,7 @@ class MoltbotBridgePlugin(NekoPluginBase):
         @app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket):
             """WebSocket 端点供 Moltbot 连接"""
-            connection_id = f"moltbot-{int(time.time() * 1000)}"
+            connection_id = f"moltbot-{uuid.uuid4().hex}"
             
             try:
                 await websocket.accept()
@@ -125,7 +160,15 @@ class MoltbotBridgePlugin(NekoPluginBase):
                 # 消息处理循环
                 while True:
                     data = await websocket.receive_text()
-                    message = json.loads(data)
+                    try:
+                        message = json.loads(data)
+                    except json.JSONDecodeError as e:
+                        self.logger.warning(f"Invalid JSON from {connection_id}: {e}")
+                        await websocket.send_json({
+                            "type": "error",
+                            "error": "Invalid JSON format"
+                        })
+                        continue
                     
                     msg_type = message.get("type")
                     
@@ -161,6 +204,9 @@ class MoltbotBridgePlugin(NekoPluginBase):
                     elif msg_type == "agent_event":
                         # Moltbot Gateway 的 AI 响应事件
                         run_id = message.get("runId")
+                        if not run_id:
+                            self.logger.warning("Agent event missing runId, ignoring")
+                            continue
                         session_key = message.get("sessionKey")
                         event_state = message.get("state")  # delta, final, error, aborted
                         agent_message = message.get("message")
@@ -174,64 +220,73 @@ class MoltbotBridgePlugin(NekoPluginBase):
                         if event_state == "delta":
                             # 流式响应片段 - Gateway 返回的是累积式文本，直接替换
                             if text_content and run_id:
-                                self._streaming_text[run_id] = text_content
+                                with self._response_lock:
+                                    self._streaming_text[run_id] = text_content
                                 self.logger.info(f"Delta text: {len(text_content)} chars")
                         
                         elif event_state == "final":
                             # 最终响应
                             self.logger.info(f"Final response received for runId={run_id}")
                             
+                            # 定期清理过期响应，防止内存泄漏
+                            self._cleanup_old_responses()
+                            
                             # 优先使用累积的流式文本，如果没有则使用 final 的 text
-                            final_text = self._streaming_text.get(run_id, "") or text_content or ""
+                            with self._response_lock:
+                                final_text = self._streaming_text.get(run_id, "") or text_content or ""
                             
                             if final_text:
                                 self.logger.info(f"Final text ({len(final_text)} chars): {final_text[:200]}...")
                             
-                            # 存储最终响应
-                            self._pending_responses[run_id] = {
-                                "text": final_text,
-                                "message": agent_message,
-                                "session_key": session_key,
-                                "timestamp": time.time(),
-                                "success": True
-                            }
-                            
-                            # 清理流式文本
-                            self._streaming_text.pop(run_id, None)
+                            # 存储最终响应并触发事件
+                            with self._response_lock:
+                                self._pending_responses[run_id] = {
+                                    "text": final_text,
+                                    "message": agent_message,
+                                    "session_key": session_key,
+                                    "timestamp": time.time(),
+                                    "success": True
+                                }
+                                self._streaming_text.pop(run_id, None)
+                                event = self._response_events.get(run_id)
                             
                             # 触发等待事件 (threading.Event 是线程安全的)
-                            if run_id in self._response_events:
+                            if event:
                                 self.logger.info(f"Triggering event for runId={run_id}")
-                                self._response_events[run_id].set()
+                                event.set()
                         
                         elif event_state == "error":
                             self.logger.error(f"Agent error for runId={run_id}: {error_message}")
                             # 存储错误响应
                             if run_id:
-                                self._pending_responses[run_id] = {
-                                    "text": "",
-                                    "error": error_message,
-                                    "session_key": session_key,
-                                    "timestamp": time.time(),
-                                    "success": False
-                                }
-                                self._streaming_text.pop(run_id, None)
-                                if run_id in self._response_events:
-                                    self._response_events[run_id].set()
+                                with self._response_lock:
+                                    self._pending_responses[run_id] = {
+                                        "text": "",
+                                        "error": error_message,
+                                        "session_key": session_key,
+                                        "timestamp": time.time(),
+                                        "success": False
+                                    }
+                                    self._streaming_text.pop(run_id, None)
+                                    event = self._response_events.get(run_id)
+                                if event:
+                                    event.set()
                         
                         elif event_state == "aborted":
                             self.logger.warning(f"Agent aborted for runId={run_id}")
                             if run_id:
-                                self._pending_responses[run_id] = {
-                                    "text": self._streaming_text.get(run_id, ""),
-                                    "error": "aborted",
-                                    "session_key": session_key,
-                                    "timestamp": time.time(),
-                                    "success": False
-                                }
-                                self._streaming_text.pop(run_id, None)
-                                if run_id in self._response_events:
-                                    self._response_events[run_id].set()
+                                with self._response_lock:
+                                    self._pending_responses[run_id] = {
+                                        "text": self._streaming_text.get(run_id, ""),
+                                        "error": "aborted",
+                                        "session_key": session_key,
+                                        "timestamp": time.time(),
+                                        "success": False
+                                    }
+                                    self._streaming_text.pop(run_id, None)
+                                    event = self._response_events.get(run_id)
+                                if event:
+                                    event.set()
                     
                     elif msg_type == "agent_error":
                         # Moltbot Gateway 的错误事件
@@ -465,7 +520,14 @@ class MoltbotBridgePlugin(NekoPluginBase):
                 })
             
             # 创建等待事件 (threading.Event 用于跨线程通信)
-            self._response_events[run_id] = threading.Event()
+            with self._response_lock:
+                event = self._response_events.get(run_id)
+                if event is None:
+                    event = threading.Event()
+                    self._response_events[run_id] = event
+                # 若响应已提前到达，直接唤醒等待
+                if run_id in self._pending_responses:
+                    event.set()
             
             try:
                 # 等待 WebSocket 收到响应 (使用线程安全的 wait)
@@ -474,14 +536,12 @@ class MoltbotBridgePlugin(NekoPluginBase):
                 self.logger.info(f"Waiting for response (runId={run_id}, timeout={effective_timeout}s)...")
                 
                 # 使用 asyncio.to_thread 在线程池中等待，避免阻塞事件循环
-                event_set = await asyncio.to_thread(
-                    self._response_events[run_id].wait, 
-                    effective_timeout
-                )
+                event_set = await asyncio.to_thread(event.wait, effective_timeout)
                 
                 if not event_set:
                     # 超时，返回已累积的部分响应
-                    partial_text = self._streaming_text.get(run_id, "")
+                    with self._response_lock:
+                        partial_text = self._streaming_text.get(run_id, "")
                     if partial_text:
                         # 有部分响应，视为成功但标记为不完整
                         self.logger.info(f"Response incomplete after {effective_timeout}s, returning partial: {len(partial_text)} chars")
@@ -515,7 +575,8 @@ class MoltbotBridgePlugin(NekoPluginBase):
                         })
                 
                 # 获取响应
-                response_data = self._pending_responses.get(run_id, {})
+                with self._response_lock:
+                    response_data = dict(self._pending_responses.get(run_id, {}))
                 
                 if response_data.get("success"):
                     final_text = response_data.get("text", "")
@@ -552,7 +613,8 @@ class MoltbotBridgePlugin(NekoPluginBase):
                     
             except asyncio.TimeoutError:
                 # 超时，返回已累积的部分响应
-                partial_text = self._streaming_text.get(run_id, "")
+                with self._response_lock:
+                    partial_text = self._streaming_text.get(run_id, "")
                 self.logger.warning(f"Response timeout after {timeout}s, partial: {len(partial_text)} chars")
                 return ok(data={
                     "success": False,
@@ -561,9 +623,10 @@ class MoltbotBridgePlugin(NekoPluginBase):
                 })
             finally:
                 # 清理
-                self._response_events.pop(run_id, None)
-                self._pending_responses.pop(run_id, None)
-                self._streaming_text.pop(run_id, None)
+                with self._response_lock:
+                    self._response_events.pop(run_id, None)
+                    self._pending_responses.pop(run_id, None)
+                    self._streaming_text.pop(run_id, None)
                         
         except Exception as e:
             self.logger.exception("Failed to chat with Moltbot")

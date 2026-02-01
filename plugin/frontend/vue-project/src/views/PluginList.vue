@@ -27,7 +27,7 @@
           </div>
         </div>
 
-        <div class="filter-bar" @mouseenter="filterVisible = true">
+        <div class="filter-bar" @mouseenter="filterVisible = true" @mouseleave="filterVisible = false">
           <template v-if="filterVisible">
             <el-input
               v-model="filterText"
@@ -151,7 +151,11 @@ async function handleRefresh() {
   await pluginStore.fetchPlugins()
   await pluginStore.fetchPluginStatus()
   if (showMetrics.value) {
-    await metricsStore.fetchAllMetrics()
+    try {
+      await metricsStore.fetchAllMetrics()
+    } catch (error) {
+      console.warn('Failed to refresh metrics:', error)
+    }
   }
 }
 
@@ -189,7 +193,8 @@ function stopMetricsAutoRefresh() {
 }
 
 function handlePluginClick(pluginId: string) {
-  router.push(`/plugins/${pluginId}`)
+  const safeId = encodeURIComponent(pluginId)
+  router.push(`/plugins/${safeId}`)
 }
 
 // 获取运行中的插件列表

@@ -579,8 +579,7 @@ Return only the JSON object, nothing else.
         import uuid
         task_id = str(uuid.uuid4())
         
-        # 保存 conversation_id 供后续使用
-        self._current_conversation_id = conversation_id
+        # conversation_id 通过显式传参传递，避免并发时共享状态串用
         
         if agent_flags is None:
             agent_flags = {"mcp_enabled": False, "computer_use_enabled": False}
@@ -712,7 +711,7 @@ Return only the JSON object, nothing else.
         if up_decision and getattr(up_decision, "has_task", False) and getattr(up_decision, "can_execute", False):
             logger.info(f"[TaskExecutor] ✅ Using UserPlugin: {up_decision.task_description}, plugin_id={getattr(up_decision, 'plugin_id', None)}")
             try:
-                return await self._execute_user_plugin(task_id=task_id, up_decision=up_decision, lanlan_name=lanlan_name)
+                return await self._execute_user_plugin(task_id=task_id, up_decision=up_decision, lanlan_name=lanlan_name, conversation_id=conversation_id)
             except Exception as e:
                 logger.exception("[TaskExecutor] UserPlugin execution failed")
                 return TaskResult(
@@ -830,7 +829,7 @@ Return only the JSON object, nothing else.
                 reason=decision.reason
             )
     
-    async def _execute_user_plugin(self, task_id: str, up_decision: Any, lanlan_name: Optional[str] = None) -> TaskResult:
+    async def _execute_user_plugin(self, task_id: str, up_decision: Any, lanlan_name: Optional[str] = None, conversation_id: Optional[str] = None) -> TaskResult:
         """
         Execute a user plugin via HTTP endpoint or specific plugin_entry.
         up_decision is expected to have attributes: plugin_id, plugin_args, task_description
@@ -910,8 +909,8 @@ Return only the JSON object, nothing else.
                 if lanlan_name and "lanlan_name" not in ctx_obj:
                     ctx_obj["lanlan_name"] = lanlan_name
                 # 添加 conversation_id，用于关联触发事件和对话上下文
-                if hasattr(self, "_current_conversation_id") and self._current_conversation_id:
-                    ctx_obj["conversation_id"] = self._current_conversation_id
+                if conversation_id:
+                    ctx_obj["conversation_id"] = conversation_id
                 if ctx_obj:
                     safe_args["_ctx"] = ctx_obj
             except Exception:
