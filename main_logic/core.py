@@ -196,10 +196,13 @@ class LLMSessionManager:
                     pass
                 self.tts_handler_task = None
 
-            # 重建队列与线程
-            has_custom_voice = bool(self.voice_id)
-            tts_worker = get_tts_worker(core_api_type=self.core_api_type, has_custom_voice=has_custom_voice)
-            if has_custom_voice:
+            # 重建队列与线程（使用与 start_session 一致的自定义TTS判定）
+            core_config = self._config_manager.get_core_config()
+            has_custom_tts = bool(self.voice_id) or (
+                core_config.get('ENABLE_CUSTOM_API') and core_config.get('TTS_MODEL_URL')
+            )
+            tts_worker = get_tts_worker(core_api_type=self.core_api_type, has_custom_voice=has_custom_tts)
+            if has_custom_tts:
                 tts_config = self._config_manager.get_model_api_config('tts_custom')
             else:
                 tts_config = self._config_manager.get_model_api_config('tts_default')

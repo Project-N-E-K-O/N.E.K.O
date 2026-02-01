@@ -1240,18 +1240,30 @@ def gpt_sovits_ws_tts_worker(request_queue, response_queue, audio_api_key, voice
 
                     audio_b64 = None
                     sample_rate = event.get("sample_rate")
+                    event_media_type = event.get("media_type")
                     if "audio" in event:
                         audio_b64 = event.get("audio")
                     elif isinstance(event.get("data"), dict) and "audio" in event["data"]:
                         audio_b64 = event["data"].get("audio")
                         sample_rate = event["data"].get("sample_rate", sample_rate)
+                        event_media_type = event["data"].get("media_type", event_media_type)
                     elif "delta" in event:
                         audio_b64 = event.get("delta")
+                        sample_rate = event.get("sample_rate", sample_rate)
+                        event_media_type = event.get("media_type", event_media_type)
 
                     if audio_b64:
                         try:
                             audio_bytes = base64.b64decode(audio_b64)
-                            handle_pcm_bytes(audio_bytes, sample_rate or current_rate)
+                            is_wav = (event_media_type or "").lower() == "wav" or audio_bytes[:4] == b"RIFF"
+                            if is_wav:
+                                pcm_data, wav_rate = try_extract_wav(audio_bytes)
+                                if pcm_data is not None:
+                                    handle_pcm_bytes(pcm_data, wav_rate or sample_rate or current_rate)
+                                else:
+                                    handle_pcm_bytes(audio_bytes, sample_rate or current_rate)
+                            else:
+                                handle_pcm_bytes(audio_bytes, sample_rate or current_rate)
                         except Exception as e:
                             logger.error(f"处理音频数据时出错: {e}")
             except websockets.exceptions.ConnectionClosed:
