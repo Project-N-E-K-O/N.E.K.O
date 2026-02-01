@@ -543,6 +543,7 @@
     "freeVersionSuggestionFull": "完全無料、キー不要、初心者向け（カスタム音声/Agent不可）",
     "coreApiSuggestionFull": "会話機能を担当（予算とニーズで選択）",
     "assistApiSuggestionFull": "記憶管理/テキスト/カスタム音声を担当（カスタム音声はAlibabaのみ）",
+    "assistApiKeyRequiredHint": "対応する入力欄にAPIを入力すると、そのプロバイダを選択できます",
     "mcpRouterToken": "MCPルータートークン",
     "mcpRouterTokenDesc": "MCPルータートークン説明:",
     "mcpRouterTokenDescText": "MCP機能使用時の認証トークン。ルーターが認証不要なら空欄でOK。",

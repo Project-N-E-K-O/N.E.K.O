@@ -543,6 +543,7 @@
     "freeVersionSuggestionFull": "Completely free, no API Key needed, suitable for beginners (custom voice and Agent mode not supported)",
     "coreApiSuggestionFull": "Handles conversation functionality (choose based on budget and needs)",
     "assistApiSuggestionFull": "Handles memory management, text chat, and custom voice (only Alibaba supports custom voice)",
+    "assistApiKeyRequiredHint": "You need to fill in the API in the corresponding input box before you can select its provider",
     "mcpRouterToken": "MCP Router Token",
     "mcpRouterTokenDesc": "MCP Router Token Description:",
     "mcpRouterTokenDescText": "Authentication token for accessing MCP Router service. Required when MCP functionality is enabled. Leave empty if your MCP Router does not require authentication.",

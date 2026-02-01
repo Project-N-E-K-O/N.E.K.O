@@ -561,6 +561,7 @@
     "freeVersionSuggestionFull": "完全免费，无需API Key，适合新手体验（不支持自定义语音和Agent模式）",
     "coreApiSuggestionFull": "负责对话功能（建议根据预算和需求选择）",
     "assistApiSuggestionFull": "负责记忆管理、文本对话和自定义语音（只有阿里支持自定义语音）",
+    "assistApiKeyRequiredHint": "需在对应的输入框内填写API才能选择其对应的供应商",
     "mcpRouterToken": "MCP Router Token",
     "mcpRouterTokenDesc": "MCP Router Token说明：",
     "mcpRouterTokenDescText": "用于访问MCP Router服务的认证令牌，启用MCP功能时需要填写。如果您的MCP Router不需要认证，可以留空。",
