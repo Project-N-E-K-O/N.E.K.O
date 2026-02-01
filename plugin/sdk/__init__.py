@@ -50,6 +50,7 @@ from .decorators import (
     EntryKind,
 )
 from .base import NekoPluginBase, PluginMeta
+from .router import PluginRouter, PluginRouterError
 from .config import PluginConfig
 from .plugins import Plugins
 from .events import EventMeta, EventHandler, EVENT_META_ATTR
@@ -80,6 +81,8 @@ __all__ = [
     
     # 基类和元数据
     "NekoPluginBase",   # 插件基类
+    "PluginRouter",     # 插件路由器（模块化入口点，支持动态加载/卸载）
+    "PluginRouterError", # 路由器错误
     "PluginMeta",       # 插件元数据
     "PluginConfig",     # 插件配置
     "Plugins",          # 插件间调用

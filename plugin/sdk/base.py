@@ -5,7 +5,9 @@
 """
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, Dict, Any, List
+import asyncio
+import inspect
+from typing import TYPE_CHECKING, Optional, Dict, Any, List, Union
 from .events import EventHandler, EventMeta, EVENT_META_ATTR
 from .config import PluginConfig
 from .plugins import Plugins
@@ -24,6 +26,7 @@ from plugin.settings import (
 
 if TYPE_CHECKING:
     from plugin.core.context import PluginContext
+    from .router import PluginRouter
 
 
 @dataclass
@@ -64,6 +67,11 @@ class NekoPluginBase:
         self._plugin_id = getattr(ctx, "plugin_id", "unknown")
         self.config = PluginConfig(ctx)
         self.plugins = Plugins(ctx)
+        
+        # Router 列表：存储所有通过 include_router 注册的路由器
+        self._routers: List["PluginRouter"] = []
+        # 动态入口点缓存：存储所有 Router 的入口点
+        self._router_entries: Dict[str, EventHandler] = {}
         
         # 初始化冻结 checkpoint 管理器和持久化存储
         config_path = getattr(ctx, "config_path", None)
@@ -138,25 +146,200 @@ class NekoPluginBase:
         schema = getattr(self, "input_schema", None)
         return schema or {}
 
+    def include_router(
+        self,
+        router: "PluginRouter",
+        *,
+        prefix: str = "",
+    ) -> None:
+        """注册一个 PluginRouter（支持动态加载）
+        
+        将 Router 中定义的所有入口点注册到主插件中。
+        Router 中的入口点可以访问主插件的 ctx、config、plugins 等功能。
+        
+        Args:
+            router: PluginRouter 实例
+            prefix: 可选的前缀，会覆盖 Router 自身的 prefix
+        
+        Example:
+            >>> self.include_router(DebugRouter())
+            >>> self.include_router(MemoryRouter(), prefix="mem_")
+        """
+        logger = getattr(self.ctx, "logger", None)
+        
+        # 如果提供了 prefix 参数，覆盖 router 的 prefix
+        if prefix:
+            router.prefix = prefix
+        
+        # 绑定 router 到当前插件
+        router._bind(self)
+        
+        # 收集并注册入口点
+        try:
+            router_entries = router.collect_entries()
+            for entry_id, handler in router_entries.items():
+                if entry_id in self._router_entries:
+                    if logger:
+                        logger.warning(
+                            f"Duplicate entry id '{entry_id}' from router "
+                            f"{router.name} in plugin {self._plugin_id}"
+                        )
+                self._router_entries[entry_id] = handler
+            
+            # 添加到 router 列表
+            self._routers.append(router)
+            
+            # 调用挂载回调（支持 async）
+            try:
+                result = router.on_mount()
+                if inspect.iscoroutine(result):
+                    # 如果是协程，尝试在当前事件循环中运行
+                    try:
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(result)
+                    except RuntimeError:
+                        # 没有运行中的事件循环，同步运行
+                        asyncio.run(result)
+            except Exception as e:
+                if logger:
+                    logger.warning(f"Router {router.name} on_mount failed: {e}")
+            
+            if logger:
+                logger.info(
+                    f"Router '{router.name}' mounted with {len(router_entries)} entries: "
+                    f"{list(router_entries.keys())}"
+                )
+        except Exception as e:
+            # 回滚绑定
+            router._unbind()
+            if logger:
+                logger.error(f"Failed to mount router {router.name}: {e}")
+            raise
+    
+    def exclude_router(
+        self,
+        router: Union["PluginRouter", str],
+    ) -> bool:
+        """卸载一个 PluginRouter（支持动态卸载）
+        
+        移除 Router 中定义的所有入口点。
+        
+        Args:
+            router: PluginRouter 实例或 Router 名称字符串
+        
+        Returns:
+            True 如果成功卸载，False 如果未找到
+        
+        Example:
+            >>> self.exclude_router(my_router)  # 通过实例卸载
+            >>> self.exclude_router("MyRouter")  # 通过名称卸载
+        """
+        logger = getattr(self.ctx, "logger", None)
+        
+        # 查找要卸载的 router
+        target_router: Optional["PluginRouter"] = None
+        if isinstance(router, str):
+            # 通过名称查找
+            for r in self._routers:
+                if r.name == router:
+                    target_router = r
+                    break
+        else:
+            # 直接使用实例
+            if router in self._routers:
+                target_router = router
+        
+        if target_router is None:
+            router_name = router if isinstance(router, str) else router.name
+            if logger:
+                logger.warning(f"Router '{router_name}' not found, cannot exclude")
+            return False
+        
+        # 移除入口点
+        removed_entries = []
+        for entry_id in target_router.entry_ids:
+            if entry_id in self._router_entries:
+                del self._router_entries[entry_id]
+                removed_entries.append(entry_id)
+        
+        # 调用卸载回调（支持 async）
+        try:
+            result = target_router.on_unmount()
+            if inspect.iscoroutine(result):
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(result)
+                except RuntimeError:
+                    asyncio.run(result)
+        except Exception as e:
+            if logger:
+                logger.warning(f"Router {target_router.name} on_unmount failed: {e}")
+        
+        # 解除绑定
+        target_router._unbind()
+        
+        # 从列表中移除
+        self._routers.remove(target_router)
+        
+        if logger:
+            logger.info(
+                f"Router '{target_router.name}' unmounted, removed {len(removed_entries)} entries: "
+                f"{removed_entries}"
+            )
+        
+        return True
+    
+    def get_router(self, name: str) -> Optional["PluginRouter"]:
+        """通过名称获取已注册的 Router
+        
+        Args:
+            name: Router 名称
+        
+        Returns:
+            PluginRouter 实例，如果未找到则返回 None
+        """
+        for r in self._routers:
+            if r.name == name:
+                return r
+        return None
+    
+    def list_routers(self) -> List[str]:
+        """获取所有已注册的 Router 名称列表"""
+        return [r.name for r in self._routers]
+    
     def collect_entries(self) -> Dict[str, EventHandler]:
         """
-        默认实现：扫描自身方法，把带入口标记的都收集起来。
-        （注意：这是插件内部调用的，不是服务器在外面乱扫全模块）
+        收集所有入口点，包括：
+        1. 插件自身的方法（带 @plugin_entry 等装饰器）
+        2. 所有注册的 Router 中的入口点
         """
         entries: Dict[str, EventHandler] = {}
+        logger = getattr(self.ctx, "logger", None)
+        
+        # 1. 收集插件自身的入口点
         for attr_name in dir(self):
-            value = getattr(self, attr_name)
+            if attr_name.startswith("_"):
+                continue
+            try:
+                value = getattr(self, attr_name)
+            except Exception:
+                continue
             if not callable(value):
                 continue
             meta: EventMeta | None = getattr(value, EVENT_META_ATTR, None)
             if meta:
                 if meta.id in entries:
-                    logger = getattr(self, "ctx", None)
-                    if logger:
-                        logger = getattr(logger, "logger", None)
                     if logger:
                         logger.warning(f"Duplicate entry id '{meta.id}' in plugin {self._plugin_id}")
                 entries[meta.id] = EventHandler(meta=meta, handler=value)
+        
+        # 2. 合并 Router 的入口点
+        for entry_id, handler in self._router_entries.items():
+            if entry_id in entries:
+                if logger:
+                    logger.warning(f"Router entry '{entry_id}' conflicts with plugin entry")
+            entries[entry_id] = handler
+        
         return entries
     
     def report_status(self, status: Dict[str, Any]) -> None:

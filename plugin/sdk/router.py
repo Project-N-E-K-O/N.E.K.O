@@ -1,0 +1,534 @@
+"""
+PluginRouter - 插件路由器模块
+
+提供类似 FastAPI Router 的模块化入口点组织方式。
+允许开发者将插件功能拆分到多个独立的 Router 中，提升代码可读性和可维护性。
+
+基本用法::
+
+    from plugin.sdk import PluginRouter, NekoPluginBase, neko_plugin, plugin_entry, ok
+    
+    # 定义一个独立的 Router
+    class DebugRouter(PluginRouter):
+        @plugin_entry(id="config_debug")
+        async def config_debug(self, **_):
+            cfg = await self.config.dump()
+            return ok(data={"config": cfg})
+    
+    # 在主插件中注册 Router
+    @neko_plugin
+    class MyPlugin(NekoPluginBase):
+        def __init__(self, ctx):
+            super().__init__(ctx)
+            self.include_router(DebugRouter())
+            self.include_router(MemoryRouter(), prefix="mem_")
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, Awaitable, ClassVar, Dict, List, Optional, TypeVar, Union
+
+from .events import EventHandler, EventMeta, EVENT_META_ATTR
+
+if TYPE_CHECKING:
+    from .base import NekoPluginBase
+    from .config import PluginConfig
+    from .plugins import Plugins
+    from .store import PluginStore
+    from .database import PluginDatabase
+    from plugin.core.context import PluginContext
+
+# 类型变量
+T = TypeVar("T")
+
+
+class PluginRouterError(RuntimeError):
+    """Router 相关错误
+    
+    常见错误场景:
+    - Router 未绑定到插件就访问属性
+    - 重复绑定 Router
+    - 依赖注入失败
+    - 绑定后修改 prefix
+    """
+    
+    @classmethod
+    def not_bound(cls, router_name: str, action: str = "access properties") -> "PluginRouterError":
+        """创建未绑定错误"""
+        return cls(
+            f"Router '{router_name}' is not bound to a plugin. "
+            f"Cannot {action}. "
+            f"Call plugin.include_router(router) first."
+        )
+    
+    @classmethod
+    def already_bound(cls, router_name: str, plugin_name: str) -> "PluginRouterError":
+        """创建重复绑定错误"""
+        return cls(
+            f"Router '{router_name}' is already bound to plugin '{plugin_name}'. "
+            f"A router can only be bound to one plugin. "
+            f"Create a new router instance if you need to use it in another plugin."
+        )
+    
+    @classmethod
+    def dependency_missing(cls, router_name: str, dep_name: str) -> "PluginRouterError":
+        """创建依赖缺失错误"""
+        return cls(
+            f"Router '{router_name}' requires dependency '{dep_name}', "
+            f"but it's not available in the main plugin. "
+            f"Either add '{dep_name}' to the main plugin or provide a default value in the router."
+        )
+    
+    @classmethod
+    def prefix_change_after_bound(cls, router_name: str) -> "PluginRouterError":
+        """创建绑定后修改 prefix 错误"""
+        return cls(
+            f"Cannot change prefix of router '{router_name}' after it's bound to a plugin. "
+            f"Set the prefix before calling include_router() or pass it as a parameter."
+        )
+
+
+class PluginRouter:
+    """插件路由器基类
+    
+    允许将插件入口点组织到独立的模块中，类似 FastAPI 的 APIRouter。
+    Router 中定义的 @plugin_entry、@lifecycle 等装饰器会被自动收集。
+    支持动态加载和卸载。
+    
+    Attributes:
+        prefix: 入口点 ID 前缀，用于命名空间隔离
+        tags: 标签列表，用于分类和文档
+        name: Router 名称，用于标识和卸载
+        
+    Properties (绑定后可用):
+        ctx: 插件上下文 (PluginContext)
+        config: 配置管理器 (PluginConfig)
+        plugins: 插件间调用 (Plugins)
+        logger: 日志记录器
+        file_logger: 文件日志记录器 (如果主插件启用了)
+        store: KV 存储 (PluginStore)
+        db: 数据库 (PluginDatabase)
+    
+    Example:
+        >>> class MyRouter(PluginRouter):
+        ...     @plugin_entry(id="hello")
+        ...     def hello(self, name: str = "World", **_):
+        ...         self.logger.info(f"Hello {name}")
+        ...         return ok(data={"message": f"Hello, {name}!"})
+        ...
+        >>> # 在主插件中动态加载
+        >>> router = MyRouter()
+        >>> self.include_router(router)
+        >>> # 动态卸载
+        >>> self.exclude_router(router)
+        >>> # 或通过名称卸载
+        >>> self.exclude_router("MyRouter")
+    """
+    
+    def __init__(
+        self,
+        prefix: str = "",
+        tags: Optional[List[str]] = None,
+        name: Optional[str] = None,
+    ):
+        """初始化 Router
+        
+        Args:
+            prefix: 入口点 ID 前缀，会添加到所有入口点 ID 前面
+            tags: 标签列表，用于分类
+            name: Router 名称，用于标识和卸载（默认使用类名）
+        """
+        self._prefix: str = prefix
+        self._tags: List[str] = tags or []
+        self._name: str = name or self.__class__.__name__
+        self._plugin: Optional["NekoPluginBase"] = None
+        self._bound: bool = False
+        self._entry_ids: List[str] = []  # 记录注册的入口点 ID，用于卸载
+    
+    @property
+    def prefix(self) -> str:
+        """获取当前前缀"""
+        return self._prefix
+    
+    @prefix.setter
+    def prefix(self, value: str) -> None:
+        """设置前缀（只能在绑定前设置）"""
+        if self._bound:
+            raise PluginRouterError.prefix_change_after_bound(self._name)
+        self._prefix = value
+    
+    @property
+    def tags(self) -> List[str]:
+        """获取标签列表"""
+        return self._tags
+    
+    @property
+    def name(self) -> str:
+        """获取 Router 名称"""
+        return self._name
+    
+    @property
+    def is_bound(self) -> bool:
+        """检查是否已绑定到插件"""
+        return self._bound
+    
+    @property
+    def entry_ids(self) -> List[str]:
+        """获取已注册的入口点 ID 列表"""
+        return self._entry_ids.copy()
+    
+    def _bind(self, plugin: "NekoPluginBase") -> None:
+        """绑定到主插件（内部方法，由 include_router 调用）
+        
+        Args:
+            plugin: 主插件实例
+        
+        Raises:
+            PluginRouterError: 如果 Router 已经绑定到其他插件
+        """
+        if self._bound:
+            plugin_name = self._plugin.__class__.__name__ if self._plugin else "unknown"
+            raise PluginRouterError.already_bound(self._name, plugin_name)
+        self._plugin = plugin
+        self._bound = True
+        
+        # 注入依赖
+        self._inject_dependencies()
+    
+    def _unbind(self) -> None:
+        """解除与主插件的绑定（内部方法，由 exclude_router 调用）"""
+        self._plugin = None
+        self._bound = False
+        self._entry_ids.clear()
+    
+    def _ensure_bound(self, action: str = "access properties") -> None:
+        """确保 Router 已绑定到插件
+        
+        Args:
+            action: 当前尝试执行的操作，用于错误信息
+        
+        Raises:
+            PluginRouterError: 如果 Router 未绑定
+        """
+        if not self._bound or self._plugin is None:
+            raise PluginRouterError.not_bound(self._name, action)
+    
+    # ========== 代理属性：访问主插件的功能 ==========
+    
+    @property
+    def ctx(self) -> "PluginContext":
+        """获取插件上下文"""
+        self._ensure_bound("access ctx")
+        assert self._plugin is not None
+        return self._plugin.ctx
+    
+    @property
+    def config(self) -> "PluginConfig":
+        """获取配置管理器"""
+        self._ensure_bound("access config")
+        assert self._plugin is not None
+        return self._plugin.config
+    
+    @property
+    def plugins(self) -> "Plugins":
+        """获取插件间调用管理器"""
+        self._ensure_bound("access plugins")
+        assert self._plugin is not None
+        return self._plugin.plugins
+    
+    @property
+    def logger(self) -> Any:
+        """获取日志记录器
+        
+        优先返回 file_logger（如果主插件启用了），否则返回 ctx.logger。
+        """
+        self._ensure_bound("access logger")
+        assert self._plugin is not None
+        # 优先使用 file_logger
+        file_logger = getattr(self._plugin, "file_logger", None)
+        if file_logger is not None:
+            return file_logger
+        return getattr(self._plugin.ctx, "logger", None)
+    
+    @property
+    def file_logger(self) -> Optional[Any]:
+        """获取文件日志记录器
+        
+        Returns:
+            文件日志记录器，如果主插件未启用则返回 None
+        """
+        self._ensure_bound("access file_logger")
+        return getattr(self._plugin, "file_logger", None)
+    
+    @property
+    def store(self) -> Optional["PluginStore"]:
+        """获取 KV 存储
+        
+        Returns:
+            PluginStore 实例，如果未启用则返回 None
+        """
+        self._ensure_bound("access store")
+        return getattr(self._plugin, "store", None)
+    
+    @property
+    def db(self) -> Optional["PluginDatabase"]:
+        """获取数据库
+        
+        Returns:
+            PluginDatabase 实例，如果未启用则返回 None
+        """
+        self._ensure_bound("access db")
+        return getattr(self._plugin, "db", None)
+    
+    @property
+    def plugin_id(self) -> str:
+        """获取插件 ID"""
+        self._ensure_bound("access plugin_id")
+        return getattr(self._plugin, "_plugin_id", "unknown")
+    
+    @property
+    def main_plugin(self) -> "NekoPluginBase":
+        """获取主插件实例
+        
+        用于访问主插件的自定义属性和方法。
+        
+        Example:
+            >>> class MyRouter(PluginRouter):
+            ...     @plugin_entry(id="test")
+            ...     def test(self, **_):
+            ...         # 访问主插件的自定义属性
+            ...         counter = self.main_plugin.counter
+            ...         # 调用主插件的自定义方法
+            ...         self.main_plugin.custom_method()
+            ...         return ok(data={"counter": counter})
+        
+        Returns:
+            主插件实例 (NekoPluginBase)
+        
+        Raises:
+            PluginRouterError: 如果 Router 未绑定到插件
+        """
+        self._ensure_bound()
+        assert self._plugin is not None
+        return self._plugin
+    
+    def get_plugin_attr(self, name: str, default: T = None) -> Union[Any, T]:  # type: ignore[assignment]
+        """安全地获取主插件的属性
+        
+        Args:
+            name: 属性名
+            default: 默认值（属性不存在时返回）
+        
+        Returns:
+            属性值或默认值
+        
+        Example:
+            >>> counter = self.get_plugin_attr("counter", 0)
+            >>> cache = self.get_plugin_attr("_cache")  # 也可以访问私有属性
+        """
+        self._ensure_bound()
+        return getattr(self._plugin, name, default)
+    
+    def has_plugin_attr(self, name: str) -> bool:
+        """检查主插件是否有某个属性
+        
+        Args:
+            name: 属性名
+        
+        Returns:
+            True 如果属性存在
+        """
+        self._ensure_bound()
+        return hasattr(self._plugin, name)
+    
+    # ========== 依赖注入 ==========
+    
+    # 子类可以覆盖这个列表，声明需要的依赖
+    __requires__: ClassVar[List[str]] = []
+    
+    def _inject_dependencies(self) -> None:
+        """注入依赖（内部方法，由 _bind 调用）
+        
+        Raises:
+            PluginRouterError: 如果必需的依赖不存在
+        """
+        for dep_name in self.__requires__:
+            if self.has_plugin_attr(dep_name):
+                setattr(self, dep_name, self.get_plugin_attr(dep_name))
+            else:
+                # 检查 Router 自身是否有默认值
+                if not hasattr(self, dep_name):
+                    raise PluginRouterError.dependency_missing(self._name, dep_name)
+    
+    def get_dependency(self, name: str, default: T = None) -> Union[Any, T]:  # type: ignore[assignment]
+        """获取依赖
+        
+        优先从 Router 自身获取，如果没有则从主插件获取。
+        
+        Args:
+            name: 依赖名称
+            default: 默认值
+        
+        Returns:
+            依赖实例或默认值
+        
+        Example:
+            >>> http_client = self.get_dependency("http_client")
+            >>> cache = self.get_dependency("cache", default={})
+        """
+        # 先检查 Router 自身
+        if hasattr(self, name) and name not in ("_plugin", "_bound", "_prefix", "_tags", "_name", "_entry_ids"):
+            value = getattr(self, name)
+            if value is not None:
+                return value
+        # 再检查主插件
+        return self.get_plugin_attr(name, default)
+    
+    # ========== 便捷方法：代理常用操作 ==========
+    
+    def push_message(
+        self,
+        source: str,
+        message_type: str,
+        description: str = "",
+        priority: int = 0,
+        content: Optional[str] = None,
+        binary_data: Optional[bytes] = None,
+        binary_url: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """推送消息到主进程
+        
+        Args:
+            source: 消息来源标识
+            message_type: 消息类型 ("text" | "url" | "binary" | "binary_url")
+            description: 消息描述
+            priority: 优先级 (0-10)
+            content: 文本内容或 URL
+            binary_data: 二进制数据
+            binary_url: 二进制文件 URL
+            metadata: 额外元数据
+        """
+        self._ensure_bound()
+        self.ctx.push_message(
+            source=source,
+            message_type=message_type,
+            description=description,
+            priority=priority,
+            content=content,
+            binary_data=binary_data,
+            binary_url=binary_url,
+            metadata=metadata,
+        )
+    
+    def report_status(self, status: Dict[str, Any]) -> None:
+        """上报插件状态
+        
+        Args:
+            status: 状态字典
+        """
+        self._ensure_bound()
+        plugin = self._plugin
+        assert plugin is not None  # for type checker
+        if hasattr(plugin, "report_status"):
+            plugin.report_status(status)
+    
+    # ========== 入口点收集 ==========
+    
+    def collect_entries(self) -> Dict[str, EventHandler]:
+        """收集本 Router 中所有带装饰器的入口点
+        
+        Returns:
+            入口点字典，key 为入口点 ID（已添加前缀），value 为 EventHandler
+        """
+        entries: Dict[str, EventHandler] = {}
+        
+        for attr_name in dir(self):
+            # 跳过私有属性和特殊属性
+            if attr_name.startswith("_"):
+                continue
+            
+            try:
+                value = getattr(self, attr_name)
+            except Exception:
+                continue
+            
+            if not callable(value):
+                continue
+            
+            # 检查是否有事件元数据
+            meta: Optional[EventMeta] = getattr(value, EVENT_META_ATTR, None)
+            if meta is None:
+                continue
+            
+            # 添加前缀到入口点 ID
+            entry_id = f"{self._prefix}{meta.id}" if self._prefix else meta.id
+            
+            # 检查重复
+            if entry_id in entries:
+                if self.logger:
+                    self.logger.warning(
+                        f"Duplicate entry id '{entry_id}' in router {self.__class__.__name__}"
+                    )
+            
+            # 创建带前缀的新 meta（如果有前缀）
+            base_extra: Dict[str, Any] = dict(meta.extra) if meta.extra else {}
+            base_extra["_router"] = self.__class__.__name__
+            if self._prefix:
+                base_extra["_original_id"] = meta.id
+            
+            prefixed_meta = EventMeta(
+                event_type=meta.event_type,
+                id=entry_id,
+                name=meta.name,
+                description=meta.description,
+                input_schema=meta.input_schema,
+                kind=meta.kind,
+                auto_start=meta.auto_start,
+                extra=base_extra,
+            )
+            
+            entries[entry_id] = EventHandler(meta=prefixed_meta, handler=value)
+            self._entry_ids.append(entry_id)  # 记录入口点 ID
+        
+        return entries
+    
+    def on_mount(self) -> Union[None, Awaitable[None]]:
+        """Router 被挂载时的回调（子类可重写）
+        
+        在 include_router 成功后调用。
+        可用于初始化 Router 特定的资源。
+        
+        支持同步和异步两种方式::
+        
+            # 同步
+            def on_mount(self):
+                self.cache = {}
+            
+            # 异步
+            async def on_mount(self):
+                await self.init_database()
+        """
+        pass
+    
+    def on_unmount(self) -> Union[None, Awaitable[None]]:
+        """Router 被卸载时的回调（子类可重写）
+        
+        在 exclude_router 成功后调用。
+        可用于清理 Router 特定的资源。
+        
+        支持同步和异步两种方式::
+        
+            # 同步
+            def on_unmount(self):
+                self.cache.clear()
+            
+            # 异步
+            async def on_unmount(self):
+                await self.close_connections()
+        """
+        pass
+    
+    def __repr__(self) -> str:
+        bound_status = f"bound to {self._plugin.__class__.__name__}" if self._bound else "unbound"
+        return f"<{self.__class__.__name__} prefix='{self._prefix}' {bound_status}>"
