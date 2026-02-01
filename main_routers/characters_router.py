@@ -33,6 +33,25 @@ router = APIRouter(prefix="/api/characters", tags=["characters"])
 logger = logging.getLogger("Main")
 
 
+PROFILE_NAME_MAX_UNITS = 20
+
+
+def _profile_name_units(name: str) -> int:
+    # 计数规则与前端保持一致：ASCII(<=0x7F) 计 1，其它字符计 2
+    return sum(1 if ord(ch) <= 0x7F else 2 for ch in name)
+
+
+def _validate_profile_name(name: str) -> str | None:
+    if name is None:
+        return '档案名为必填项'
+    name = str(name).strip()
+    if not name:
+        return '档案名为必填项'
+    if _profile_name_units(name) > PROFILE_NAME_MAX_UNITS:
+        return f'档案名长度不能超过{PROFILE_NAME_MAX_UNITS}单位（ASCII=1，其他=2；PROFILE_NAME_MAX_UNITS={PROFILE_NAME_MAX_UNITS}）'
+    return None
+
+
 async def send_reload_page_notice(session, message_text: str = "语音已更新，页面即将刷新"):
     """
     发送页面刷新通知给前端（通过 WebSocket）
@@ -684,6 +703,11 @@ async def rename_catgirl(old_name: str, request: Request):
     new_name = data.get('new_name') if data else None
     if not new_name:
         return JSONResponse({'success': False, 'error': '新档案名不能为空'}, status_code=400)
+
+    new_name = str(new_name).strip()
+    err = _validate_profile_name(new_name)
+    if err:
+        return JSONResponse({'success': False, 'error': err.replace('档案名', '新档案名')}, status_code=400)
     characters = _config_manager.load_characters()
     if old_name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '原猫娘不存在'}, status_code=404)
@@ -863,8 +887,13 @@ async def reload_character_config():
 @router.post('/master')
 async def update_master(request: Request):
     data = await request.json()
-    if not data or not data.get('档案名'):
+    if not data:
         return JSONResponse({'success': False, 'error': '档案名为必填项'}, status_code=400)
+    profile_name = data.get('档案名')
+    err = _validate_profile_name(profile_name)
+    if err:
+        return JSONResponse({'success': False, 'error': err}, status_code=400)
+    data['档案名'] = str(profile_name).strip()
     _config_manager = get_config_manager()
     initialize_character_data = get_initialize_character_data()
     characters = _config_manager.load_characters()
@@ -878,8 +907,14 @@ async def update_master(request: Request):
 @router.post('/catgirl')
 async def add_catgirl(request: Request):
     data = await request.json()
-    if not data or not data.get('档案名'):
+    if not data:
         return JSONResponse({'success': False, 'error': '档案名为必填项'}, status_code=400)
+
+    profile_name = data.get('档案名')
+    err = _validate_profile_name(profile_name)
+    if err:
+        return JSONResponse({'success': False, 'error': err}, status_code=400)
+    data['档案名'] = str(profile_name).strip()
     
     _config_manager = get_config_manager()
     characters = _config_manager.load_characters()
