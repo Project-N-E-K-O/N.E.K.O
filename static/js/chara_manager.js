@@ -90,6 +90,121 @@ function toggleFold(fold) {
     fold.classList.toggle('open');
 }
 
+// 档案名长度限制：最多 20 个计数单位（纯中文不超过 10 个字）
+// 计数规则：ASCII(<=0x7F) 计 1，其它字符计 2
+const PROFILE_NAME_MAX_UNITS = 20;
+
+const PROFILE_NAME_MAX_HINT_KEY = 'character.profileNameMaxHint';
+const PROFILE_NAME_TOO_LONG_KEY = 'character.profileNameTooLong';
+const NEW_PROFILE_NAME_REQUIRED_KEY = 'character.newProfileNameRequired';
+const NEW_PROFILE_NAME_TOO_LONG_KEY = 'character.newProfileNameTooLong';
+
+function tOrFallback(key, fallback, params) {
+    if (window.t && typeof window.t === 'function') {
+        try {
+            return window.t(key, params || {});
+        } catch (e) {
+            // ignore
+        }
+    }
+    return fallback;
+}
+
+function profileNameCountUnits(str) {
+    if (!str) return 0;
+    let units = 0;
+    for (const ch of String(str)) {
+        units += (ch.charCodeAt(0) <= 0x7F) ? 1 : 2;
+    }
+    return units;
+}
+
+function profileNameTrimToMaxUnits(str, maxUnits) {
+    if (!str) return '';
+    let units = 0;
+    let out = '';
+    for (const ch of String(str)) {
+        const inc = (ch.charCodeAt(0) <= 0x7F) ? 1 : 2;
+        if (units + inc > maxUnits) break;
+        out += ch;
+        units += inc;
+    }
+    return out;
+}
+
+function attachProfileNameLimiter(inputEl) {
+    if (!inputEl || inputEl.dataset.profileNameLimiterAttached === 'true') return;
+    inputEl.dataset.profileNameLimiterAttached = 'true';
+
+    // 仅作为辅助上限；真正限制由计数单位逻辑实现
+    try {
+        inputEl.maxLength = PROFILE_NAME_MAX_UNITS;
+    } catch (e) {
+        // ignore
+    }
+
+    // i18n：确保动态输入框在语言切换时也会被更新
+    if (!inputEl.getAttribute('data-i18n-title')) {
+        inputEl.setAttribute('data-i18n-title', PROFILE_NAME_MAX_HINT_KEY);
+    }
+    if (!inputEl.getAttribute('data-i18n-placeholder')) {
+        inputEl.setAttribute('data-i18n-placeholder', PROFILE_NAME_MAX_HINT_KEY);
+    }
+
+    if (!inputEl.getAttribute('title')) {
+        inputEl.setAttribute('title', tOrFallback(PROFILE_NAME_MAX_HINT_KEY, '最多20个字符'));
+    }
+
+    // 输入框内提示
+    if (!inputEl.getAttribute('placeholder')) {
+        inputEl.setAttribute('placeholder', tOrFallback(PROFILE_NAME_MAX_HINT_KEY, '最多20个字符'));
+    }
+
+    const enforce = () => {
+        if (inputEl.readOnly || inputEl.disabled) return;
+        const before = inputEl.value;
+        const after = profileNameTrimToMaxUnits(before, PROFILE_NAME_MAX_UNITS);
+        if (before !== after) {
+            const caret = (typeof inputEl.selectionStart === 'number') ? inputEl.selectionStart : null;
+            inputEl.value = after;
+            if (caret !== null) {
+                const newPos = Math.min(caret, after.length);
+                try { inputEl.setSelectionRange(newPos, newPos); } catch (e) { /* ignore */ }
+            }
+        }
+
+        // 避免表单提交时绕过（理论上不会超过，但这里保险）
+        const units = profileNameCountUnits(inputEl.value);
+        if (units > PROFILE_NAME_MAX_UNITS) {
+            inputEl.setCustomValidity(tOrFallback(PROFILE_NAME_TOO_LONG_KEY, '档案名长度不能超过20个字符'));
+        } else {
+            inputEl.setCustomValidity('');
+        }
+    };
+
+    inputEl.addEventListener('input', enforce);
+    // 中文输入法：composition 期间 input 事件可能不稳定，结束时再强制一次
+    inputEl.addEventListener('compositionend', enforce);
+    enforce();
+}
+
+// 事件委托：覆盖动态创建的猫娘表单
+if (!window._profileNameLimiterDelegated) {
+    document.body.addEventListener('focusin', function (e) {
+        const target = e.target;
+        if (target && target.matches && target.matches('input[name="档案名"]')) {
+            attachProfileNameLimiter(target);
+        }
+    });
+    document.body.addEventListener('input', function (e) {
+        const target = e.target;
+        if (target && target.matches && target.matches('input[name="档案名"]')) {
+            attachProfileNameLimiter(target);
+        }
+    });
+    window._profileNameLimiterDelegated = true;
+}
+
 // 事件委托，支持所有动态表单的折叠按钮和箭头符号
 if (!window._charaManagerFoldHandler) {
     document.body.addEventListener('click', function (e) {
@@ -887,6 +1002,7 @@ function showCatgirlForm(key, container) {
     nameInput.required = true;
     nameInput.value = key || '';
     if (!isNew) nameInput.readOnly = true;
+    attachProfileNameLimiter(nameInput);
     fieldRow.appendChild(nameInput);
 
     baseWrapper.appendChild(fieldRow);
@@ -1582,7 +1698,29 @@ window.renameMaster = async function (oldName) {
     const newName = await showPrompt(
         window.t ? window.t('character.enterNewProfileName') : '请输入新的主人档案名',
         oldName,
-        window.t ? window.t('character.renameMasterTitle') : '重命名主人'
+        window.t ? window.t('character.renameMasterTitle') : '重命名主人',
+        {
+            placeholder: tOrFallback(PROFILE_NAME_MAX_HINT_KEY, '最多20个字符'),
+            inputAttributes: {
+                maxlength: PROFILE_NAME_MAX_UNITS,
+                'data-i18n-placeholder': PROFILE_NAME_MAX_HINT_KEY,
+                'data-i18n-title': PROFILE_NAME_MAX_HINT_KEY,
+                title: tOrFallback(PROFILE_NAME_MAX_HINT_KEY, '最多20个字符'),
+                autocomplete: 'off'
+            },
+            normalize: (v) => {
+                const trimmed = String(v ?? '').trim();
+                return profileNameTrimToMaxUnits(trimmed, PROFILE_NAME_MAX_UNITS);
+            },
+            validator: (v) => {
+                const trimmed = String(v ?? '').trim();
+                if (!trimmed) return tOrFallback(NEW_PROFILE_NAME_REQUIRED_KEY, '新档案名不能为空');
+                if (profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS) {
+                    return tOrFallback(NEW_PROFILE_NAME_TOO_LONG_KEY, '新档案名长度不能超过20个字符');
+                }
+                return '';
+            }
+        }
     );
     if (!newName || newName === oldName) return;
     if (characterData['主人'][newName]) {
@@ -1623,7 +1761,29 @@ window.renameCatgirl = async function (oldName) {
     const newName = await showPrompt(
         window.t ? window.t('character.enterNewProfileName') : '请输入新的猫娘档案名',
         oldName,
-        window.t ? window.t('character.renameCatgirlTitle') : '重命名猫娘'
+        window.t ? window.t('character.renameCatgirlTitle') : '重命名猫娘',
+        {
+            placeholder: tOrFallback(PROFILE_NAME_MAX_HINT_KEY, '最多20个字符'),
+            inputAttributes: {
+                maxlength: PROFILE_NAME_MAX_UNITS,
+                'data-i18n-placeholder': PROFILE_NAME_MAX_HINT_KEY,
+                'data-i18n-title': PROFILE_NAME_MAX_HINT_KEY,
+                title: tOrFallback(PROFILE_NAME_MAX_HINT_KEY, '最多20个字符'),
+                autocomplete: 'off'
+            },
+            normalize: (v) => {
+                const trimmed = String(v ?? '').trim();
+                return profileNameTrimToMaxUnits(trimmed, PROFILE_NAME_MAX_UNITS);
+            },
+            validator: (v) => {
+                const trimmed = String(v ?? '').trim();
+                if (!trimmed) return tOrFallback(NEW_PROFILE_NAME_REQUIRED_KEY, '新档案名不能为空');
+                if (profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS) {
+                    return tOrFallback(NEW_PROFILE_NAME_TOO_LONG_KEY, '新档案名长度不能超过20个字符');
+                }
+                return '';
+            }
+        }
     );
     if (!newName || newName === oldName) return;
     if (characterData['猫娘'][newName]) {
