@@ -48,7 +48,7 @@ def _validate_profile_name(name: str) -> str | None:
     if not name:
         return '档案名为必填项'
     if _profile_name_units(name) > PROFILE_NAME_MAX_UNITS:
-        return '档案名长度不能超过20个字符'
+        return f'档案名长度不能超过{PROFILE_NAME_MAX_UNITS}单位（ASCII=1，其他=2；PROFILE_NAME_MAX_UNITS={PROFILE_NAME_MAX_UNITS}）'
     return None
 
 
