@@ -1187,6 +1187,7 @@ def gpt_sovits_ws_tts_worker(request_queue, response_queue, audio_api_key, voice
         receive_task = None
         current_speech_id = None
         response_done = asyncio.Event()
+        pending_payloads = []
 
         current_rate = src_rate
         resampler = soxr.ResampleStream(current_rate, 48000, 1, dtype='float32')
@@ -1292,6 +1293,26 @@ def gpt_sovits_ws_tts_worker(request_queue, response_queue, audio_api_key, voice
             receive_task = asyncio.create_task(receive_loop(ws))
             return ws
 
+        async def flush_pending_payloads():
+            nonlocal ws, pending_payloads
+            if not pending_payloads:
+                return
+            try:
+                await create_connection()
+            except Exception as e:
+                logger.error(f"GPT-SoVITS 重连失败: {e}")
+                ws = None
+                return
+            while pending_payloads and ws:
+                pending = pending_payloads[0]
+                try:
+                    await ws.send(json.dumps(pending))
+                    pending_payloads.pop(0)
+                except Exception as e:
+                    logger.error(f"重发TTS文本失败: {e}")
+                    ws = None
+                    break
+
         try:
             await create_connection()
             response_queue.put(("__ready__", True))
@@ -1322,6 +1343,7 @@ def gpt_sovits_ws_tts_worker(request_queue, response_queue, audio_api_key, voice
 
             if current_speech_id != sid:
                 current_speech_id = sid
+                pending_payloads.clear()
                 response_done.clear()
                 try:
                     await create_connection()
@@ -1341,6 +1363,8 @@ def gpt_sovits_ws_tts_worker(request_queue, response_queue, audio_api_key, voice
                 except Exception as e:
                     logger.error(f"发送TTS文本失败: {e}")
                     ws = None
+                    pending_payloads.append(payload)
+                    await flush_pending_payloads()
 
         if receive_task and not receive_task.done():
             receive_task.cancel()
