@@ -1110,7 +1110,7 @@ def gpt_sovits_ws_tts_worker(request_queue, response_queue, audio_api_key, voice
     ws_url = (tts_config.get('base_url') or core_config.get('GPT_SOVITS_WS_URL', '') or '').strip()
     if not ws_url or not (ws_url.startswith('ws://') or ws_url.startswith('wss://')):
         logger.error(f"GPT-SoVITS WebSocket URL 无效: {ws_url or '(empty)'}")
-        response_queue.put(("__ready__", True))
+        response_queue.put(("__ready__", False))
         while True:
             try:
                 sid, _ = request_queue.get()
@@ -1188,6 +1188,7 @@ def gpt_sovits_ws_tts_worker(request_queue, response_queue, audio_api_key, voice
         current_speech_id = None
         response_done = asyncio.Event()
         pending_payloads = []
+        max_pending_payloads = 50
 
         current_rate = src_rate
         resampler = soxr.ResampleStream(current_rate, 48000, 1, dtype='float32')
@@ -1302,6 +1303,7 @@ def gpt_sovits_ws_tts_worker(request_queue, response_queue, audio_api_key, voice
             except Exception as e:
                 logger.error(f"GPT-SoVITS 重连失败: {e}")
                 ws = None
+                pending_payloads.clear()
                 return
             while pending_payloads and ws:
                 pending = pending_payloads[0]
@@ -1364,6 +1366,8 @@ def gpt_sovits_ws_tts_worker(request_queue, response_queue, audio_api_key, voice
                     logger.error(f"发送TTS文本失败: {e}")
                     ws = None
                     pending_payloads.append(payload)
+                    if len(pending_payloads) > max_pending_payloads:
+                        pending_payloads = pending_payloads[-max_pending_payloads:]
                     await flush_pending_payloads()
 
         if receive_task and not receive_task.done():
