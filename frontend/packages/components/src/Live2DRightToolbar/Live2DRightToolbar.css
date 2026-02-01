@@ -1,0 +1,326 @@
+.live2d-right-toolbar {
+  position: fixed;
+  z-index: 99999;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  pointer-events: none;
+}
+
+.live2d-right-toolbar--hidden {
+  display: none;
+}
+
+.live2d-right-toolbar__button {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.65);
+  backdrop-filter: saturate(180%) blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  outline: none;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04), 0 4px 8px rgba(0, 0, 0, 0.08);
+  transition: transform 0.1s ease, box-shadow 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  user-select: none;
+  pointer-events: auto;
+  padding: 0;
+}
+
+.live2d-right-toolbar__button[data-active="true"] {
+  background: rgba(68, 183, 254, 0.9);
+  border-color: rgba(255, 255, 255, 0.35);
+  box-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.04),
+    0 4px 8px rgba(0, 0, 0, 0.08),
+    0 0 0 2px rgba(68, 183, 254, 0.25);
+}
+
+.live2d-right-toolbar__button:hover {
+  transform: scale(1.05);
+  box-shadow:
+    0 4px 8px rgba(0, 0, 0, 0.08),
+    0 8px 16px rgba(0, 0, 0, 0.08),
+    0 0 0 3px rgba(68, 183, 254, 0.35);
+  background: rgba(68, 183, 254, 0.95);
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+.live2d-right-toolbar__button:focus-visible {
+  box-shadow:
+    0 4px 8px rgba(0, 0, 0, 0.08),
+    0 8px 16px rgba(0, 0, 0, 0.08),
+    0 0 0 3px rgba(68, 183, 254, 0.35);
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+.live2d-right-toolbar__icon {
+  width: 76%;
+  height: 76%;
+  object-fit: contain;
+  filter: none;
+  transition: filter 0.15s ease;
+}
+
+.live2d-right-toolbar__button[data-active="true"] .live2d-right-toolbar__icon {
+  filter: brightness(0) invert(1);
+}
+
+.live2d-right-toolbar__button:hover .live2d-right-toolbar__icon {
+  filter: brightness(0) invert(1);
+}
+
+.live2d-right-toolbar__return {
+  width: 64px;
+  height: 64px;
+}
+
+.live2d-right-toolbar__return .live2d-right-toolbar__icon {
+  width: 84%;
+  height: 84%;
+}
+
+.live2d-right-toolbar__item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+ .live2d-right-toolbar__panelTrigger {
+   width: 24px;
+   height: 24px;
+   border-radius: 50%;
+   background: rgba(255, 255, 255, 0.65);
+   backdrop-filter: saturate(180%) blur(20px);
+   border: 1px solid rgba(255, 255, 255, 0.18);
+   outline: none;
+   display: flex;
+   align-items: center;
+   justify-content: center;
+   font-size: 14px;
+   color: #44b7fe;
+   cursor: pointer;
+   user-select: none;
+   pointer-events: auto;
+   margin-left: -10px;
+   transition: transform 0.1s ease, box-shadow 0.15s ease, background 0.15s ease;
+ }
+
+ .live2d-right-toolbar__panelTrigger:hover {
+   transform: scale(1.05);
+   box-shadow: 0 4px 8px rgba(0, 0, 0, 0.08), 0 8px 16px rgba(0, 0, 0, 0.08);
+   background: rgba(255, 255, 255, 0.8);
+ }
+
+ .live2d-right-toolbar__panelTrigger:focus-visible {
+   box-shadow: 0 4px 8px rgba(0, 0, 0, 0.08), 0 8px 16px rgba(0, 0, 0, 0.08), 0 0 0 3px rgba(68, 183, 254, 0.25);
+   border-color: rgba(255, 255, 255, 0.35);
+ }
+
+ .live2d-right-toolbar__panelTrigger[data-active="true"] {
+   background: rgba(68, 183, 254, 0.95);
+   color: #fff;
+   border-color: rgba(255, 255, 255, 0.35);
+ }
+
+ .live2d-right-toolbar__panel {
+   position: absolute;
+   right: 100%;
+   left: auto;
+   top: 0;
+   margin-right: 14px;
+   z-index: 100000;
+   background: rgba(255, 255, 255, 0.65);
+   backdrop-filter: saturate(180%) blur(20px);
+   border: 1px solid rgba(255, 255, 255, 0.18);
+   border-radius: 8px;
+   padding: 12px;
+   display: flex;
+   flex-direction: column;
+   gap: 8px;
+   font-family: "Segoe UI", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+   font-size: 14px;
+   line-height: 1.25;
+   width: 240px;
+   min-width: 240px;
+   max-height: 240px;
+   overflow-y: auto;
+   pointer-events: auto;
+   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08), 0 16px 32px rgba(0, 0, 0, 0.04);
+   animation: live2d-right-toolbar-panel-in 0.24s cubic-bezier(0.1, 0.9, 0.2, 1) both;
+ }
+
+ .live2d-right-toolbar__panel--exit {
+   animation: live2d-right-toolbar-panel-out 0.24s cubic-bezier(0.1, 0.9, 0.2, 1) both;
+ }
+
+ .live2d-right-toolbar__panel--settings {
+   top: -140px;
+   max-height: none;
+   overflow-y: visible;
+ }
+
+ .live2d-right-toolbar__panel--agent {
+   max-height: none;
+   overflow-y: visible;
+ }
+
+ @keyframes live2d-right-toolbar-panel-in {
+   from {
+     opacity: 0;
+     transform: translateX(-18px);
+   }
+   to {
+     opacity: 1;
+     transform: translateX(0);
+   }
+ }
+
+ @keyframes live2d-right-toolbar-panel-out {
+   from {
+     opacity: 1;
+     transform: translateX(0);
+   }
+   to {
+     opacity: 0;
+     transform: translateX(-18px);
+   }
+ }
+
+ @media (prefers-reduced-motion: reduce) {
+   .live2d-right-toolbar__panel {
+     animation: none;
+   }
+
+   .live2d-right-toolbar__panel--exit {
+     animation: none;
+   }
+ }
+
+ .live2d-right-toolbar__status {
+   font-size: 13px;
+   color: #44b7fe;
+   padding: 8px 10px;
+   border-radius: 4px;
+   background: rgba(68, 183, 254, 0.05);
+   margin-bottom: 8px;
+   min-height: 20px;
+   text-align: center;
+ }
+
+ .live2d-right-toolbar__row {
+   display: flex;
+   align-items: center;
+   gap: 10px;
+   padding: 10px 14px;
+   border-radius: 6px;
+   cursor: pointer;
+   user-select: none;
+   transition: background 0.2s ease;
+ }
+
+ .live2d-right-toolbar__row[data-disabled="true"] {
+   opacity: 0.5;
+   cursor: default;
+ }
+
+ .live2d-right-toolbar__row[data-disabled="true"]:hover {
+   background: transparent;
+ }
+
+ .live2d-right-toolbar__row:hover {
+   background: rgba(68, 183, 254, 0.08);
+ }
+
+ .live2d-right-toolbar__checkbox {
+   display: none;
+ }
+
+ .live2d-right-toolbar__indicator {
+   width: 22px;
+   height: 22px;
+   border-radius: 50%;
+   border: 2px solid #ccc;
+   background: transparent;
+   flex-shrink: 0;
+   display: flex;
+   align-items: center;
+   justify-content: center;
+   transition: all 0.2s ease;
+ }
+
+ .live2d-right-toolbar__checkmark {
+   color: #fff;
+   font-size: 13px;
+   font-weight: bold;
+   line-height: 1;
+   opacity: 0;
+   transition: opacity 0.2s ease;
+   user-select: none;
+ }
+
+ .live2d-right-toolbar__checkbox:checked + .live2d-right-toolbar__indicator {
+   background-color: #44b7fe;
+   border-color: #44b7fe;
+ }
+
+ .live2d-right-toolbar__checkbox:checked + .live2d-right-toolbar__indicator .live2d-right-toolbar__checkmark {
+   opacity: 1;
+ }
+
+ .live2d-right-toolbar__checkbox:disabled + .live2d-right-toolbar__indicator {
+   opacity: 0.6;
+ }
+
+ .live2d-right-toolbar__label {
+   font-size: 14px;
+   color: #333;
+   white-space: nowrap;
+ }
+
+ .live2d-right-toolbar__separator {
+   height: 1px;
+   background: rgba(0, 0, 0, 0.1);
+   margin: 4px 0;
+ }
+
+ .live2d-right-toolbar__menuItem {
+   width: 100%;
+   border: none;
+   background: transparent;
+   text-align: left;
+   padding: 10px 14px;
+   border-radius: 6px;
+   cursor: pointer;
+   font-size: 14px;
+   font-family: inherit;
+   color: #333;
+   outline: none;
+   transition: background 0.2s ease;
+ }
+
+ .live2d-right-toolbar__menuItem:focus-visible {
+   background: rgba(68, 183, 254, 0.1);
+ }
+
+ .live2d-right-toolbar__menuItemContent {
+   display: flex;
+   align-items: center;
+   gap: 8px;
+ }
+
+ .live2d-right-toolbar__menuIcon {
+   width: 24px;
+   height: 24px;
+   object-fit: contain;
+   flex-shrink: 0;
+ }
+
+ .live2d-right-toolbar__menuItem:hover {
+   background: rgba(68, 183, 254, 0.1);
+ }

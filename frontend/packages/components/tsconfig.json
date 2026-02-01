@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "lib": ["ES2020", "DOM"],
+    "jsx": "react",
+    "moduleResolution": "node",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "verbatimModuleSyntax": true,
+    "baseUrl": "."
+  },
+  "include": ["./**/*.ts", "./**/*.tsx", "./**/*.css"],
+  "exclude": ["node_modules", "dist"]
+}
+

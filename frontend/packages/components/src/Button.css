@@ -1,0 +1,186 @@
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 15px;
+  border-radius: 8px;
+  border: none;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  color: white;
+  transition: background 0.2s, transform 0.2s, box-shadow 0.2s, opacity 0.2s;
+  text-align: center;
+  user-select: none;
+  -webkit-user-select: none;
+  position: relative;
+  white-space: nowrap;
+}
+
+.btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.btn:disabled {
+  background: #e0e0e0 !important;
+  color: #999 !important;
+  cursor: not-allowed;
+  opacity: 0.7;
+  transform: none !important;
+  box-shadow: none !important;
+}
+
+/* 按钮变体 */
+.btn-primary {
+  background: #44b7fe;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #2662c8;
+}
+
+.btn-secondary {
+  background: #d5f1ff;
+  color: #333;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: #b8e5ff;
+  color: #333;
+}
+
+.btn-secondary.active {
+  background: #44b7fe;
+  color: white;
+}
+
+.btn-success {
+  background: #44b7fe;
+}
+
+.btn-success:hover:not(:disabled) {
+  background: #2662c8;
+}
+
+.btn-danger {
+  background: #ff6b6b;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: #ff4757;
+}
+
+/* 按钮尺寸 */
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 12px;
+  gap: 4px;
+}
+
+.btn-md {
+  padding: 10px 15px;
+  font-size: 14px;
+  gap: 6px;
+}
+
+.btn-lg {
+  padding: 12px 20px;
+  font-size: 16px;
+  gap: 8px;
+}
+
+/* 全宽按钮 */
+.btn-full-width {
+  width: 100%;
+}
+
+/* 加载状态 */
+.btn-loading {
+  pointer-events: none;
+}
+
+.btn-spinner {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+
+.btn-spinner-svg {
+  width: 100%;
+  height: 100%;
+  animation: btn-spin 1s linear infinite;
+}
+
+.btn-spinner-circle {
+  opacity: 0.25;
+}
+
+@keyframes btn-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 图标位置 */
+.btn-icon-left,
+.btn-icon-right {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.btn-icon-left img,
+.btn-icon-right img {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+}
+
+.btn-content {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.btn-content img {
+  width: 16px;
+}
+
+/* 焦点样式 */
+.btn:focus-visible {
+  outline: 2px solid #44b7fe;
+  outline-offset: 2px;
+}
+
+/* 响应式调整 */
+@media (max-width: 600px) {
+  .btn {
+    padding: 8px 12px;
+    font-size: 13px;
+  }
+
+  .btn-sm {
+    padding: 5px 10px;
+    font-size: 11px;
+  }
+
+  .btn-lg {
+    padding: 10px 16px;
+    font-size: 15px;
+  }
+}
+
+
