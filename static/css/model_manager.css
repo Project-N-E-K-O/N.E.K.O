@@ -1683,6 +1683,8 @@
             align-items: center !important;
             justify-content: center !important;
             transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease !important;
+            width: auto !important;
+            min-width: 135px;
             box-sizing: border-box;
         }
 
