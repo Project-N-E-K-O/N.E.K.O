@@ -85,6 +85,12 @@ class _BusHub:
 
         return LifecycleClient(self._ctx)
 
+    @functools.cached_property
+    def conversations(self) -> "ConversationClient":
+        from plugin.sdk.bus.conversations import ConversationClient
+
+        return ConversationClient(self._ctx)
+
 
 @dataclass
 class PluginContext:

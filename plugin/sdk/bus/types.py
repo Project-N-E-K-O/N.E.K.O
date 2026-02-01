@@ -48,6 +48,7 @@ _BUS_LATEST_REV: Dict[str, int] = {
     "messages": 0,
     "events": 0,
     "lifecycle": 0,
+    "conversations": 0,
 }
 _BUS_LATEST_REV_LOCK = _WATCHER_REGISTRY_LOCK
 
@@ -57,6 +58,7 @@ _BUS_CHANGE_LISTENERS: Dict[str, "list[Callable[[str, str, Dict[str, Any]], None
     "messages": [],
     "events": [],
     "lifecycle": [],
+    "conversations": [],
 }
 
 

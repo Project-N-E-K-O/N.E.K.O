@@ -30,7 +30,8 @@ def run_message_plane(
     ingest_ep = ingest_endpoint or MESSAGE_PLANE_ZMQ_INGEST_ENDPOINT
 
     stores = StoreRegistry(default_store="messages")
-    for name in ("messages", "events", "lifecycle", "runs", "export", "memory"):
+    # conversations 是独立的 store，用于存储对话上下文（与 messages 分离）
+    for name in ("messages", "events", "lifecycle", "runs", "export", "memory", "conversations"):
         stores.register(TopicStore(name=name, maxlen=MESSAGE_PLANE_STORE_MAXLEN))
 
     pub_srv = MessagePlanePubServer(endpoint=pub_ep)

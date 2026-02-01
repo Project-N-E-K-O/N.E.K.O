@@ -27,8 +27,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_INGEST_ENDPOINT = "tcp://127.0.0.1:38867"
 
 # 消息配置
-MESSAGE_STORE = "messages"          # 存储名称
-MESSAGE_TOPIC = "conversation"      # 话题名称
+MESSAGE_STORE = "conversations"     # 独立的 conversations store（与 messages 分离）
+MESSAGE_TOPIC = "all"               # 默认话题
 MESSAGE_SOURCE = "main_server"      # 消息来源标识
 MESSAGE_PLUGIN_ID = "neko_core"     # 系统级 plugin_id
 MESSAGE_PRIORITY = 10               # 对话消息优先级

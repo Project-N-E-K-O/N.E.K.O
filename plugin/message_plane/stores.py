@@ -102,6 +102,14 @@ class TopicStore:
                 record_id = v
                 break
 
+        # 从 metadata 中提取 conversation_id（用于对话上下文关联）
+        conversation_id = None
+        metadata = payload.get("metadata")
+        if isinstance(metadata, dict):
+            cid = metadata.get("conversation_id")
+            if isinstance(cid, str) and cid:
+                conversation_id = cid
+
         return {
             "plugin_id": plugin_id,
             "source": source,
@@ -110,6 +118,7 @@ class TopicStore:
             "type": type_,
             "timestamp": ts,
             "id": record_id,
+            "conversation_id": conversation_id,
         }
 
     def get_recent(self, topic: str, limit: int) -> list[Dict[str, Any]]:

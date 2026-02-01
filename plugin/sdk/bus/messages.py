@@ -306,7 +306,8 @@ class MessageClient:
         }
         if isinstance(filter, dict):
             # Only pass through fields supported by message_plane query.
-            for k in ("kind", "type", "plugin_id", "source", "priority_min", "since_ts", "until_ts"):
+            # 支持 conversation_id 过滤
+            for k in ("kind", "type", "plugin_id", "source", "priority_min", "since_ts", "until_ts", "conversation_id"):
                 if k in filter and args.get(k) is None:
                     args[k] = filter.get(k)
         if not bool(strict):
@@ -463,7 +464,8 @@ class MessageClient:
             "light": bool(light),
         }
         if isinstance(filter, dict):
-            for k in ("kind", "type", "plugin_id", "source", "priority_min", "since_ts", "until_ts"):
+            # 支持 conversation_id 过滤
+            for k in ("kind", "type", "plugin_id", "source", "priority_min", "since_ts", "until_ts", "conversation_id"):
                 if k in filter and args.get(k) is None:
                     args[k] = filter.get(k)
         if not bool(strict):
@@ -867,4 +869,38 @@ class MessageClient:
             timeout=timeout,
             raw=raw,
             no_fallback=no_fallback,
+        )
+
+    def get_by_conversation(
+        self,
+        conversation_id: str,
+        *,
+        max_count: int = 50,
+        timeout: float = 5.0,
+        topic: str = "conversation",
+    ) -> Union[MessageList, Coroutine[Any, Any, MessageList]]:
+        """通过 conversation_id 获取对话消息
+        
+        Args:
+            conversation_id: 对话ID（由 cross_server 生成）
+            max_count: 最大返回数量
+            timeout: 超时时间
+            topic: 话题名称，默认为 "conversation"
+            
+        Returns:
+            在事件循环中返回协程，否则返回 MessageList
+            
+        Example:
+            # 在插件 entry 中使用
+            ctx = args.get("_ctx", {})
+            conversation_id = ctx.get("conversation_id")
+            if conversation_id:
+                messages = await self.ctx.bus.messages.get_by_conversation(conversation_id)
+                for msg in messages:
+                    print(f"[{msg.metadata.get('turn_type')}] {msg.content}")
+        """
+        return self.get(
+            filter={"conversation_id": conversation_id},
+            max_count=max_count,
+            timeout=timeout,
         )

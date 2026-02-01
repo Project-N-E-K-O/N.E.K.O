@@ -109,7 +109,8 @@ class MessagePlaneRpcServer:
             self._stores = stores
         else:
             self._stores = StoreRegistry(default_store="messages")
-            for name in ("messages", "events", "lifecycle", "runs", "export", "memory"):
+            # conversations 是独立的 store，用于存储对话上下文（与 messages 分离）
+            for name in ("messages", "events", "lifecycle", "runs", "export", "memory", "conversations"):
                 self._stores.register(TopicStore(name=name, maxlen=store_maxlen))
         self._pub = pub_server
         self._running = False
@@ -191,6 +192,7 @@ class MessagePlaneRpcServer:
             f_source = p.get("source")
             f_kind = p.get("kind")
             f_type = p.get("type")
+            f_conversation_id = p.get("conversation_id")  # 新增：对话ID过滤
             f_pmin = p.get("priority_min")
             f_since_ts = p.get("since_ts")
             f_until_ts = p.get("until_ts")
@@ -250,6 +252,18 @@ class MessagePlaneRpcServer:
                     if not (idx_is_dict and idx.get("type") == f_type):
                         payload = ev.get("payload")
                         if not (isinstance(payload, dict) and payload.get("type") == f_type):
+                            continue
+                
+                # conversation_id 过滤（用于对话上下文关联）
+                if f_conversation_id is not None:
+                    if not (idx_is_dict and idx.get("conversation_id") == f_conversation_id):
+                        # 回退到 payload.metadata.conversation_id
+                        payload = ev.get("payload")
+                        if isinstance(payload, dict):
+                            metadata = payload.get("metadata")
+                            if not (isinstance(metadata, dict) and metadata.get("conversation_id") == f_conversation_id):
+                                continue
+                        else:
                             continue
 
                 # Priority filter

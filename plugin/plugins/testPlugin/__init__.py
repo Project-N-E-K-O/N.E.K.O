@@ -704,6 +704,104 @@ class HelloPlugin(NekoPluginBase):
         }
 
     @plugin_entry(
+        id="conversation_debug",
+        name="Conversation Debug",
+        description="Debug conversations bus: get conversations by conversation_id from _ctx",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "max_count": {
+                    "type": "integer",
+                    "description": "Max conversations to retrieve",
+                    "default": 10,
+                },
+            },
+            "required": [],
+        },
+    )
+    def conversation_debug(self, max_count: int = 10, **kwargs):
+        """测试 conversations bus 获取和过滤功能"""
+        import json
+        
+        # 从 _ctx 获取 conversation_id
+        ctx_data = kwargs.get("_ctx", {})
+        conversation_id = ctx_data.get("conversation_id")
+        lanlan_name = ctx_data.get("lanlan_name")
+        
+        self.file_logger.info(
+            "[conversation_debug] conversation_id={} lanlan_name={}",
+            conversation_id,
+            lanlan_name,
+        )
+        
+        result = {
+            "conversation_id": conversation_id,
+            "lanlan_name": lanlan_name,
+            "conversations": [],
+            "recent_conversations": [],
+        }
+        
+        # 1. 如果有 conversation_id，通过它获取对话
+        if conversation_id:
+            try:
+                conversations = self.ctx.bus.conversations.get_by_id(
+                    conversation_id,
+                    max_count=max_count,
+                )
+                result["conversations"] = []
+                for conv in conversations:
+                    conv_data = {
+                        "conversation_id": conv.conversation_id,
+                        "turn_type": conv.turn_type,
+                        "lanlan_name": conv.lanlan_name,
+                        "message_count": conv.message_count,
+                        "timestamp": conv.timestamp,
+                        "content_preview": (conv.content or "")[:200] + "..." if conv.content and len(conv.content) > 200 else conv.content,
+                    }
+                    result["conversations"].append(conv_data)
+                    self.file_logger.info(
+                        "[conversation_debug] Found conversation: id={} turn_type={} message_count={}",
+                        conv.conversation_id,
+                        conv.turn_type,
+                        conv.message_count,
+                    )
+            except Exception as e:
+                result["conversations_error"] = str(e)
+                self.file_logger.error("[conversation_debug] Failed to get by conversation_id: {}", e)
+        
+        # 2. 获取最近的对话（不过滤）
+        try:
+            recent = self.ctx.bus.conversations.get(max_count=max_count)
+            result["recent_conversations"] = []
+            for conv in recent:
+                conv_data = {
+                    "conversation_id": conv.conversation_id,
+                    "turn_type": conv.turn_type,
+                    "lanlan_name": conv.lanlan_name,
+                    "message_count": conv.message_count,
+                    "timestamp": conv.timestamp,
+                }
+                result["recent_conversations"].append(conv_data)
+            self.file_logger.info(
+                "[conversation_debug] Recent conversations count={}",
+                len(result["recent_conversations"]),
+            )
+        except Exception as e:
+            result["recent_error"] = str(e)
+            self.file_logger.error("[conversation_debug] Failed to get recent: {}", e)
+        
+        # 3. 推送结果到消息总线
+        self.ctx.push_message(
+            source="testPlugin.debug.conversations",
+            message_type="text",
+            description="conversations bus debug result",
+            priority=1,
+            content=json.dumps(result, ensure_ascii=False, indent=2)[:2000],
+        )
+        
+        return ok(data=result)
+
+    @plugin_entry(
         id="hello_run",
         name="Hello (Run Demo)",
         description="HelloWorld demo for new Run protocol: progress updates + export items",
