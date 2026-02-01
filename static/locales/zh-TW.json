@@ -560,6 +560,7 @@
     "freeVersionSuggestionFull": "完全免費，無需API Key，適閤新手體驗（不支持自定義語音和Agent模式）",
     "coreApiSuggestionFull": "負責對話功能（建議根據預算和需求選擇）",
     "assistApiSuggestionFull": "負責記憶管理、文本對話和自定義語音（隻有阿裏支持自定義語音）",
+    "assistApiKeyRequiredHint": "需在對應的輸入框內填寫API才能選擇其對應的供應商",
     "mcpRouterToken": "MCP Router Token",
     "mcpRouterTokenDesc": "MCP Router Token說明：",
     "mcpRouterTokenDescText": "用於訪問MCP Router服務的認證令牌，啓用MCP功能時需要填寫。如果您的MCP Router不需要認證，可以留空。",
