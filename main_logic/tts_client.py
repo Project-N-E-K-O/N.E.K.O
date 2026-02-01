@@ -1098,6 +1098,256 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
             text_buffer.append(tts_text)
 
 
+def gpt_sovits_ws_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
+    """
+    GPT-SoVITS WebSocket TTS worker（用于自定义TTS）
+    通过 WebSocket 发送文本并流式接收音频。
+    """
+    cm = get_config_manager()
+    core_config = cm.get_core_config()
+    tts_config = cm.get_model_api_config('tts_custom')
+
+    ws_url = (tts_config.get('base_url') or core_config.get('GPT_SOVITS_WS_URL', '') or '').strip()
+    if not ws_url or not (ws_url.startswith('ws://') or ws_url.startswith('wss://')):
+        logger.error(f"GPT-SoVITS WebSocket URL 无效: {ws_url or '(empty)'}")
+        response_queue.put(("__ready__", True))
+        while True:
+            try:
+                sid, _ = request_queue.get()
+                if sid is None:
+                    continue
+            except Exception:
+                break
+        return
+
+    src_rate = int(core_config.get('GPT_SOVITS_SAMPLE_RATE', 32000) or 32000)
+    media_type = (core_config.get('GPT_SOVITS_MEDIA_TYPE', 'raw') or 'raw').lower()
+    text_lang = core_config.get('GPT_SOVITS_TEXT_LANG', 'zh') or 'zh'
+    prompt_lang = core_config.get('GPT_SOVITS_PROMPT_LANG', text_lang) or text_lang
+    prompt_text = core_config.get('GPT_SOVITS_PROMPT_TEXT', '') or ''
+    ref_audio_path = core_config.get('GPT_SOVITS_REF_AUDIO_PATH', '') or ''
+    aux_ref_audio_paths = core_config.get('GPT_SOVITS_AUX_REF_AUDIO_PATHS', []) or []
+    speaker = core_config.get('GPT_SOVITS_SPEAKER', '') or ''
+    speed_factor = core_config.get('GPT_SOVITS_SPEED', 1.0) or 1.0
+    fragment_interval = core_config.get('GPT_SOVITS_FRAGMENT_INTERVAL', 0.3) or 0.3
+    text_split_method = core_config.get('GPT_SOVITS_TEXT_SPLIT_METHOD', 'cut5') or 'cut5'
+    top_k = core_config.get('GPT_SOVITS_TOP_K', 5) or 5
+    top_p = core_config.get('GPT_SOVITS_TOP_P', 1.0) or 1.0
+    temperature = core_config.get('GPT_SOVITS_TEMPERATURE', 1.0) or 1.0
+    batch_size = core_config.get('GPT_SOVITS_BATCH_SIZE', 1) or 1
+    batch_threshold = core_config.get('GPT_SOVITS_BATCH_THRESHOLD', 0.75) or 0.75
+    split_bucket = core_config.get('GPT_SOVITS_SPLIT_BUCKET', True)
+    repetition_penalty = core_config.get('GPT_SOVITS_REPETITION_PENALTY', 1.35) or 1.35
+    extra_payload = core_config.get('GPT_SOVITS_EXTRA_PAYLOAD', {}) or {}
+
+    if not isinstance(aux_ref_audio_paths, list):
+        aux_ref_audio_paths = []
+    if not isinstance(extra_payload, dict):
+        try:
+            extra_payload = json.loads(str(extra_payload))
+        except Exception:
+            extra_payload = {}
+
+    if not ref_audio_path and voice_id:
+        if any(sep in voice_id for sep in ['/', '\\']) or '.' in voice_id:
+            ref_audio_path = voice_id
+        else:
+            speaker = voice_id
+
+    headers = {}
+    if audio_api_key:
+        headers["Authorization"] = f"Bearer {audio_api_key}"
+
+    base_payload = {
+        "text_lang": text_lang,
+        "prompt_lang": prompt_lang,
+        "prompt_text": prompt_text,
+        "ref_audio_path": ref_audio_path,
+        "aux_ref_audio_paths": aux_ref_audio_paths,
+        "top_k": top_k,
+        "top_p": top_p,
+        "temperature": temperature,
+        "text_split_method": text_split_method,
+        "batch_size": batch_size,
+        "batch_threshold": batch_threshold,
+        "split_bucket": split_bucket,
+        "speed_factor": speed_factor,
+        "fragment_interval": fragment_interval,
+        "media_type": media_type,
+        "streaming_mode": True,
+        "repetition_penalty": repetition_penalty,
+    }
+    if speaker:
+        base_payload["speaker"] = speaker
+    if extra_payload:
+        base_payload.update(extra_payload)
+
+    async def async_worker():
+        ws = None
+        receive_task = None
+        current_speech_id = None
+        response_done = asyncio.Event()
+
+        current_rate = src_rate
+        resampler = soxr.ResampleStream(current_rate, 48000, 1, dtype='float32')
+
+        def ensure_resampler(rate: int):
+            nonlocal current_rate, resampler
+            if rate and rate != current_rate:
+                current_rate = rate
+                resampler = soxr.ResampleStream(current_rate, 48000, 1, dtype='float32')
+
+        def handle_pcm_bytes(pcm_bytes: bytes, sample_rate: int):
+            if not pcm_bytes:
+                return
+            ensure_resampler(sample_rate)
+            audio_array = np.frombuffer(pcm_bytes, dtype=np.int16)
+            response_queue.put(_resample_audio(audio_array, sample_rate, 48000, resampler))
+
+        def try_extract_wav(pcm_or_wav: bytes):
+            try:
+                with io.BytesIO(pcm_or_wav) as wav_io:
+                    with wave.open(wav_io, 'rb') as wav_file:
+                        pcm_data = wav_file.readframes(wav_file.getnframes())
+                        return pcm_data, wav_file.getframerate()
+            except Exception:
+                return None, None
+
+        async def receive_loop(ws_conn):
+            try:
+                async for message in ws_conn:
+                    if isinstance(message, bytes):
+                        if media_type == "wav" or message[:4] == b"RIFF":
+                            pcm_data, wav_rate = try_extract_wav(message)
+                            if pcm_data is not None:
+                                handle_pcm_bytes(pcm_data, wav_rate or current_rate)
+                                continue
+                        handle_pcm_bytes(message, current_rate)
+                        continue
+
+                    try:
+                        event = json.loads(message)
+                    except Exception:
+                        continue
+
+                    if event.get("type") in ["error", "tts.error"]:
+                        logger.error(f"GPT-SoVITS错误: {event}")
+                        continue
+
+                    if event.get("type") in ["done", "response.done", "tts.done"] or event.get("event") in ["done", "end"]:
+                        response_done.set()
+                        continue
+
+                    audio_b64 = None
+                    sample_rate = event.get("sample_rate")
+                    if "audio" in event:
+                        audio_b64 = event.get("audio")
+                    elif isinstance(event.get("data"), dict) and "audio" in event["data"]:
+                        audio_b64 = event["data"].get("audio")
+                        sample_rate = event["data"].get("sample_rate", sample_rate)
+                    elif "delta" in event:
+                        audio_b64 = event.get("delta")
+
+                    if audio_b64:
+                        try:
+                            audio_bytes = base64.b64decode(audio_b64)
+                            handle_pcm_bytes(audio_bytes, sample_rate or current_rate)
+                        except Exception as e:
+                            logger.error(f"处理音频数据时出错: {e}")
+            except websockets.exceptions.ConnectionClosed:
+                response_done.set()
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.error(f"GPT-SoVITS消息接收出错: {e}")
+
+        async def create_connection():
+            nonlocal ws, receive_task, resampler, current_rate
+            if receive_task and not receive_task.done():
+                receive_task.cancel()
+                try:
+                    await receive_task
+                except asyncio.CancelledError:
+                    pass
+            if ws:
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+            current_rate = src_rate
+            resampler = soxr.ResampleStream(current_rate, 48000, 1, dtype='float32')
+            ws = await websockets.connect(ws_url, additional_headers=headers, ping_interval=None)
+            receive_task = asyncio.create_task(receive_loop(ws))
+            return ws
+
+        try:
+            await create_connection()
+            response_queue.put(("__ready__", True))
+        except Exception as e:
+            logger.error(f"GPT-SoVITS 连接失败: {e}")
+            response_queue.put(("__ready__", False))
+            return
+
+        loop = asyncio.get_running_loop()
+        while True:
+            try:
+                sid, tts_text = await loop.run_in_executor(None, request_queue.get)
+            except Exception:
+                break
+
+            if sid is None:
+                if ws:
+                    try:
+                        response_done.clear()
+                        await ws.send(json.dumps({"event": "end"}))
+                        await asyncio.wait_for(response_done.wait(), timeout=10.0)
+                    except asyncio.TimeoutError:
+                        pass
+                    except Exception as e:
+                        logger.error(f"发送结束信号失败: {e}")
+                current_speech_id = None
+                continue
+
+            if current_speech_id != sid:
+                current_speech_id = sid
+                response_done.clear()
+                try:
+                    await create_connection()
+                except Exception as e:
+                    logger.error(f"GPT-SoVITS 重连失败: {e}")
+                    ws = None
+                    continue
+
+            if not tts_text or not tts_text.strip():
+                continue
+
+            if ws:
+                payload = dict(base_payload)
+                payload["text"] = tts_text
+                try:
+                    await ws.send(json.dumps(payload))
+                except Exception as e:
+                    logger.error(f"发送TTS文本失败: {e}")
+                    ws = None
+
+        if receive_task and not receive_task.done():
+            receive_task.cancel()
+            try:
+                await receive_task
+            except asyncio.CancelledError:
+                pass
+        if ws:
+            try:
+                await ws.close()
+            except Exception:
+                pass
+
+    try:
+        asyncio.run(async_worker())
+    except Exception as e:
+        logger.error(f"GPT-SoVITS Worker启动失败: {e}")
+
+
 def dummy_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """
     空的TTS worker（用于不支持TTS的core_api）
@@ -1143,6 +1393,9 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False):
         tts_config = cm.get_model_api_config('tts_custom')
         # 只有当 is_custom=True（即 ENABLE_CUSTOM_API=true 且用户明确配置了自定义 TTS）时才使用本地 worker
         if tts_config.get('is_custom'):
+            provider = (tts_config.get('model') or '').strip().lower()
+            if provider in ['gpt-sovits', 'gpt_sovits', 'gptsovits']:
+                return gpt_sovits_ws_tts_worker
             return local_cosyvoice_worker
     except Exception as e:
         logger.warning(f'TTS调度器检查报告:{e}')
