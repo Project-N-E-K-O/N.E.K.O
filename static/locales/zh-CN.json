@@ -949,6 +949,20 @@
     "autoReviewNote": "开启后系统将自动整理和优化记忆内容，提高对话质量",
     "saveFailedStatus": "保存失败"
   },
+  "plugins": {
+    "title": "插件列表",
+    "noPlugins": "没有已注册的插件",
+    "filterPlaceholder": "过滤插件（支持正则，匹配 ID/名称/描述）",
+    "filterWhitelist": "白名单",
+    "filterBlacklist": "黑名单",
+    "invalidRegex": "无效的正则表达式",
+    "hoverToShowFilter": "悬停以显示过滤选项…",
+    "argsJson": "参数 (JSON)",
+    "invalidJsonArgs": "无效的 JSON 参数",
+    "currentEffectiveConfig": "当前生效配置",
+    "profilePreview": "应用 Profile 后预览",
+    "editProfileOverlay": "编辑当前 Profile 覆盖配置"
+  },
   "character": {
     "manager": "角色管理",
     "name": "名称",

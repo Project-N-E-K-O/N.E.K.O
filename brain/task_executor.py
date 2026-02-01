@@ -5,6 +5,7 @@ DirectTaskExecutor: 合并 Analyzer + Planner 的功能
 优先使用 MCP,其次使用 ComputerUse,最后使用 UserPlugin
 """
 import json
+import re
 import asyncio
 import logging
 from typing import Dict, Any, List, Optional, Tuple, Callable, Awaitable
@@ -319,7 +320,7 @@ OUTPUT FORMAT (strict JSON):
                         {"role": "user", "content": user_prompt},
                     ],
                     "temperature": 0,
-                    "max_tokens": 400
+                    "max_tokens": 800  # 增加 token 限制, 避免 JSON 被截断
                 }
                 
                 extra_body = get_extra_body(model)
@@ -464,7 +465,7 @@ Return only the JSON object, nothing else.
                         {"role": "user", "content": user_prompt},
                     ],
                     "temperature": 0,
-                    "max_tokens": 400
+                    "max_tokens": 800  # 增加 token 限制, 避免 JSON 被截断
                 }
                 
                 extra_body = get_extra_body(model)
@@ -495,11 +496,47 @@ Return only the JSON object, nothing else.
                     logger.warning("[UserPlugin Assessment] Empty LLM response; cannot parse JSON")
                     return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason="Empty LLM response")
                 
+                # Try to fix common JSON issues before parsing
+                # Remove trailing commas before closing braces/brackets
+                # Fix trailing commas in objects and arrays
+                text = re.sub(r',(\s*[}\]])', r'\1', text)
+                # NOTE: 避免"去注释"误伤字符串内容；只做最小化 JSON 修复
+                # 不删除注释，因为正则表达式会误伤 JSON 字符串中的内容（如 http://、/*...*/）
+                
                 try:
                     decision = json.loads(text)
                 except Exception as e:
-                    logger.exception(f"[UserPlugin Assessment] JSON parse error: {e}; raw_text (truncated): {repr(raw_text)[:2000]}")
-                    return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason=f"JSON parse error: {e}")
+                    # 只在 DEBUG 级别记录 raw_text，避免隐私泄露和日志膨胀
+                    logger.debug(
+                        "[UserPlugin Assessment] JSON parse error; raw_text (truncated): %s",
+                        (repr(raw_text)[:2000] if raw_text is not None else None),
+                    )
+                    # ERROR 级别只记录错误信息，不包含敏感内容
+                    logger.exception("[UserPlugin Assessment] JSON parse error: %s", str(e))
+                    # Try to extract JSON from the text if it's embedded in other text
+                    try:
+                        # Try to find JSON object in the text (improved regex to handle nested objects)
+                        json_match = re.search(r'\{[^{}]*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}[^{}]*)*\}', text)
+                        if json_match:
+                            cleaned_text = json_match.group(0)
+                            # Fix trailing commas again
+                            cleaned_text = re.sub(r',(\s*[}\]])', r'\1', cleaned_text)
+                            decision = json.loads(cleaned_text)
+                            logger.info("[UserPlugin Assessment] Successfully extracted JSON from text")
+                        else:
+                            # JSON extraction failed - return safe default instead of trying to reconstruct
+                            logger.warning("[UserPlugin Assessment] Failed to extract valid JSON from response")
+                            return UserPluginDecision(
+                                has_task=False, 
+                                can_execute=False, 
+                                task_description="", 
+                                plugin_id=None, 
+                                plugin_args=None, 
+                                reason=f"JSON parse error: {e}"
+                            )
+                    except Exception as e2:
+                        logger.warning(f"[UserPlugin Assessment] Failed to extract JSON: {e2}")
+                        return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason=f"JSON parse error: {e}")
                 
                 # return a simple object-like struct, include entry_id if provided by the LLM
                 return UserPluginDecision(
@@ -525,15 +562,24 @@ Return only the JSON object, nothing else.
         self, 
         messages: List[Dict[str, str]], 
         lanlan_name: Optional[str] = None,
-        agent_flags: Optional[Dict[str, bool]] = None
+        agent_flags: Optional[Dict[str, bool]] = None,
+        conversation_id: Optional[str] = None
     ) -> Optional[TaskResult]:
         """
         并行评估 MCP 和 ComputerUse，然后执行任务
         
         优先级: MCP > ComputerUse > UserPlugin
+        
+        Args:
+            messages: 对话消息列表
+            lanlan_name: 角色名
+            agent_flags: agent 功能开关
+            conversation_id: 对话ID，用于关联触发事件和对话上下文
         """
         import uuid
         task_id = str(uuid.uuid4())
+        
+        # conversation_id 通过显式传参传递，避免并发时共享状态串用
         
         if agent_flags is None:
             agent_flags = {"mcp_enabled": False, "computer_use_enabled": False}
@@ -665,9 +711,9 @@ Return only the JSON object, nothing else.
         if up_decision and getattr(up_decision, "has_task", False) and getattr(up_decision, "can_execute", False):
             logger.info(f"[TaskExecutor] ✅ Using UserPlugin: {up_decision.task_description}, plugin_id={getattr(up_decision, 'plugin_id', None)}")
             try:
-                return await self._execute_user_plugin(task_id=task_id, up_decision=up_decision)
+                return await self._execute_user_plugin(task_id=task_id, up_decision=up_decision, lanlan_name=lanlan_name, conversation_id=conversation_id)
             except Exception as e:
-                logger.exception(f"[TaskExecutor] UserPlugin execution failed: {e}")
+                logger.exception("[TaskExecutor] UserPlugin execution failed")
                 return TaskResult(
                     task_id=task_id,
                     has_task=True,
@@ -783,7 +829,7 @@ Return only the JSON object, nothing else.
                 reason=decision.reason
             )
     
-    async def _execute_user_plugin(self, task_id: str, up_decision: Any) -> TaskResult:
+    async def _execute_user_plugin(self, task_id: str, up_decision: Any, lanlan_name: Optional[str] = None, conversation_id: Optional[str] = None) -> TaskResult:
         """
         Execute a user plugin via HTTP endpoint or specific plugin_entry.
         up_decision is expected to have attributes: plugin_id, plugin_args, task_description
@@ -845,94 +891,126 @@ Return only the JSON object, nothing else.
                 tool_args=plugin_args,
                 reason=getattr(up_decision, "reason", "") or "Plugin not found"
             )
-        # Route via /plugin/trigger; use separate top-level entry_id when provided
-        trigger_endpoint = f"http://localhost:{USER_PLUGIN_SERVER_PORT}/plugin/trigger"
-        trigger_body = {"task_id": task_id, "plugin_id": plugin_id, "args": plugin_args or {}}
-        if plugin_entry_id:
-            trigger_body["entry_id"] = plugin_entry_id
-            logger.info("[TaskExecutor] Using explicit plugin_entry_id for trigger: %s", plugin_entry_id)
-        # send trigger (avoid dumping full args at INFO)
-        logger.info(
-            "[TaskExecutor] POST to plugin trigger %s (plugin_id=%s, entry_id=%s, arg_keys=%s)",
-            trigger_endpoint,
-            plugin_id,
-            plugin_entry_id,
-            list(plugin_args.keys()) if isinstance(plugin_args, dict) else str(type(plugin_args)),
-        )
+
+        # New run protocol: default path (POST /runs, return accepted immediately)
         try:
-            import httpx
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                r = await client.post(trigger_endpoint, json=trigger_body)
-                # Treat 2xx as accepted. plugin_server may synchronously execute and return executed_entry
-                if 200 <= r.status_code < 300:
-                    try:
-                        data = r.json()
-                    except Exception:
-                        logger.debug("[TaskExecutor] Failed to parse trigger response as JSON, using text fallback", exc_info=True)
-                        data = {"raw_text": r.text}
-                    logger.info(
-                        "[TaskExecutor] ✅ Trigger accepted for plugin %s (entry_id=%s)",
-                        plugin_id,
-                        plugin_entry_id or trigger_body.get("entry_id"),
+            runs_endpoint = f"http://localhost:{USER_PLUGIN_SERVER_PORT}/runs"
+
+            safe_args: Dict[str, Any]
+            if isinstance(plugin_args, dict):
+                safe_args = dict(plugin_args)
+            else:
+                safe_args = {}
+            try:
+                # 构建 _ctx 对象，包含 lanlan_name 和 conversation_id
+                ctx_obj = safe_args.get("_ctx")
+                if not isinstance(ctx_obj, dict):
+                    ctx_obj = {}
+                if lanlan_name and "lanlan_name" not in ctx_obj:
+                    ctx_obj["lanlan_name"] = lanlan_name
+                # 添加 conversation_id，用于关联触发事件和对话上下文
+                if conversation_id:
+                    ctx_obj["conversation_id"] = conversation_id
+                if ctx_obj:
+                    safe_args["_ctx"] = ctx_obj
+            except Exception:
+                pass
+
+            run_body: Dict[str, Any] = {
+                "task_id": task_id,
+                "plugin_id": plugin_id,
+                "entry_id": plugin_entry_id or "run",
+                "args": safe_args,
+            }
+
+            timeout = httpx.Timeout(10.0, connect=2.0)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                r = await client.post(runs_endpoint, json=run_body)
+                if not (200 <= r.status_code < 300):
+                    logger.warning(
+                        "[TaskExecutor] /runs returned non-2xx; status=%s body=%s",
+                        r.status_code,
+                        (r.text or "")[:1000],
                     )
-                    logger.debug(
-                        "[TaskExecutor] Trigger payload=%r, response=%r",
-                        trigger_body,
-                        data,
+                    raise RuntimeError(f"/runs returned {r.status_code}")
+                try:
+                    data = r.json()
+                except Exception:
+                    logger.error(
+                        "[TaskExecutor] /runs returned non-JSON response; skip fallback to avoid duplicate execution. status=%s body=%s",
+                        r.status_code,
+                        (r.text or "")[:1000],
                     )
-                    plugin_name = data.get("plugin_id") or plugin_id
-                    # Determine executed entry id: prefer explicit returned executed_entry/entry_id, then trigger_body.entry_id
-                    entry_id = None
-                    if isinstance(data, dict):
-                        entry_id = data.get("executed_entry") or data.get("entry_id") or trigger_body.get("entry_id")
-                    # Log decision about entry_id for traceability
-                    logger.debug(f"[TaskExecutor] Resolved entry_id for plugin {plugin_id}: {entry_id} (from response or trigger_body)")
-                    # Return TaskResult with independent entry_id field in result
-                    result_obj = {"accepted": True, "trigger_response": data, "entry_id": entry_id}
-                    # success=True 表示“触发已被接受”，实际执行进度由 plugin_server 跟踪
                     return TaskResult(
                         task_id=task_id,
                         has_task=True,
                         task_description=task_description,
-                        execution_method='user_plugin',
-                        success=True,
-                        result=result_obj,
-                        tool_name=plugin_name,
-                        tool_args=plugin_args,
-                        reason=getattr(up_decision, "reason", "") or "trigger_accepted"
-                    )
-                else:
-                    text = r.text
-                    logger.error(f"[TaskExecutor] ❌ Trigger endpoint returned status {r.status_code}: {text}")
-                    return TaskResult(
-                        task_id=task_id,
-                        has_task=True,
-                        task_description=task_description,
-                        execution_method='user_plugin',
+                        execution_method="user_plugin",
                         success=False,
-                        error=f"Trigger endpoint returned status {r.status_code}",
-                        result={"status_code": r.status_code, "text": text},
+                        error="Invalid /runs response (non-JSON)",
                         tool_name=plugin_id,
                         tool_args=plugin_args,
-                        reason=getattr(up_decision, "reason", "") or "trigger_failed"
+                        reason=getattr(up_decision, "reason", "") or "run_invalid_response",
                     )
-        except Exception as e:
-            logger.exception(f"[TaskExecutor] Trigger call error: {e}")
+
+            run_id = data.get("run_id") if isinstance(data, dict) else None
+            run_token = data.get("run_token") if isinstance(data, dict) else None
+            expires_at = data.get("expires_at") if isinstance(data, dict) else None
+            if not isinstance(run_id, str) or not run_id or not isinstance(run_token, str) or not run_token:
+                logger.error(
+                    "[TaskExecutor] /runs response missing run_id/run_token; skip fallback to avoid duplicate execution. data=%r",
+                    data,
+                )
+                return TaskResult(
+                    task_id=task_id,
+                    has_task=True,
+                    task_description=task_description,
+                    execution_method="user_plugin",
+                    success=False,
+                    error="Invalid /runs response (missing run_id/run_token)",
+                    tool_name=plugin_id,
+                    tool_args=plugin_args,
+                    reason=getattr(up_decision, "reason", "") or "run_invalid_response",
+                )
+
+            result_obj: Dict[str, Any] = {
+                "accepted": True,
+                "run_id": run_id,
+                "run_token": run_token,
+                "expires_at": expires_at,
+                "entry_id": plugin_entry_id or "run",
+            }
             return TaskResult(
                 task_id=task_id,
                 has_task=True,
                 task_description=task_description,
-                execution_method='user_plugin',
+                execution_method="user_plugin",
+                success=True,
+                result=result_obj,
+                tool_name=plugin_id,
+                tool_args=plugin_args,
+                reason=getattr(up_decision, "reason", "") or "run_accepted",
+            )
+        except Exception as e:
+            logger.warning(
+                "[TaskExecutor] /runs execution failed; no legacy fallback. error=%r",
+                e,
+            )
+            return TaskResult(
+                task_id=task_id,
+                has_task=True,
+                task_description=task_description,
+                execution_method="user_plugin",
                 success=False,
                 error=str(e),
                 tool_name=plugin_id,
                 tool_args=plugin_args,
-                reason=getattr(up_decision, "reason", "")
+                reason=getattr(up_decision, "reason", "") or "run_failed",
             )
 
     async def execute_user_plugin_direct(self, task_id: str, plugin_id: str, plugin_args: Dict[str, Any], entry_id: Optional[str] = None) -> TaskResult:
         """
-        Directly execute a plugin entry by calling /plugin/trigger with explicit plugin_id and optional entry_id.
+        Directly execute a plugin entry by calling /runs with explicit plugin_id and optional entry_id.
         This is intended for agent_server to call when it wants to trigger a plugin_entry immediately.
         """
         up_decision_stub = UserPluginDecision(
@@ -944,7 +1022,7 @@ Return only the JSON object, nothing else.
             plugin_args=plugin_args,
             reason="direct_call",
         )
-        return await self._execute_user_plugin(task_id=task_id, up_decision=up_decision_stub)
+        return await self._execute_user_plugin(task_id=task_id, up_decision=up_decision_stub, lanlan_name=None)
     
     async def refresh_capabilities(self) -> Dict[str, Dict[str, Any]]:
         """刷新并返回 MCP 工具能力列表"""

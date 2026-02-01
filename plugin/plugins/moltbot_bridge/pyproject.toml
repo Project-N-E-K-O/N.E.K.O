@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "neko-plugin-moltbot-bridge"
+version = "0.1.0"
+description = "N.E.K.O plugin for Moltbot integration"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "N.E.K.O",
+]
+
+[tool.uv.sources]
+"N.E.K.O" = { path = "../../..", editable = true }
