@@ -12,8 +12,8 @@
      * 在拖动开始时调用，防止按钮拦截拖动事件
      */
     function disableButtonPointerEvents() {
-        // 收集所有按钮元素（包括浮动按钮和三角触发按钮）
-        const buttons = document.querySelectorAll('.live2d-floating-btn, .live2d-trigger-btn, [id^="live2d-btn-"]');
+        // 收集所有按钮元素（包括 Live2D 和 VRM 的浮动按钮、三角触发按钮、以及锁图标）
+        const buttons = document.querySelectorAll('.live2d-floating-btn, .live2d-trigger-btn, [id^="live2d-btn-"], .vrm-floating-btn, [id^="vrm-btn-"], #live2d-lock-icon, #vrm-lock-icon');
         buttons.forEach(btn => {
             if (btn) {
                 // 如果已经保存过，说明正在拖拽中，跳过
@@ -32,28 +32,30 @@
         buttons.forEach(btn => {
             if (btn && btn.parentElement) {
                 // 排除返回按钮和其容器，避免破坏其拖拽行为
-                if (btn.id === 'live2d-btn-return' || 
-                    (btn.parentElement && btn.parentElement.id === 'live2d-return-button-container')) {
+                if (btn.id === 'live2d-btn-return' || btn.id === 'vrm-btn-return' ||
+                    (btn.parentElement && (btn.parentElement.id === 'live2d-return-button-container' || btn.parentElement.id === 'vrm-return-button-container'))) {
                     return;
                 }
                 wrappers.add(btn.parentElement);
             }
         });
+
+        // 额外包含主要按钮容器，防止它们拦截事件冒泡
+        const mainContainers = document.querySelectorAll('#live2d-floating-buttons, #vrm-floating-buttons');
+        mainContainers.forEach(container => wrappers.add(container));
         
         wrappers.forEach(wrapper => {
-            const currentValue = wrapper.style.pointerEvents || '';
-            wrapper.setAttribute('data-prev-pointer-events', currentValue);
-            wrapper.style.pointerEvents = 'none';
+            if (wrapper && !wrapper.hasAttribute('data-prev-pointer-events')) {
+                const currentValue = wrapper.style.pointerEvents || '';
+                wrapper.setAttribute('data-prev-pointer-events', currentValue);
+                wrapper.style.pointerEvents = 'none';
+            }
         });
         
         // 禁用所有弹窗元素的 pointer-events，避免拖拽时与弹窗冲突
-        const popups = document.querySelectorAll('.live2d-popup, [id^="live2d-popup-"]');
+        const popups = document.querySelectorAll('.live2d-popup, [id^="live2d-popup-"], .vrm-popup, [id^="vrm-popup-"]');
         popups.forEach(popup => {
-            if (popup) {
-                // 如果已经保存过，说明正在拖拽中，跳过
-                if (popup.hasAttribute('data-prev-pointer-events')) {
-                    return;
-                }
+            if (popup && !popup.hasAttribute('data-prev-pointer-events')) {
                 const currentValue = popup.style.pointerEvents || '';
                 popup.setAttribute('data-prev-pointer-events', currentValue);
                 popup.style.pointerEvents = 'none';
