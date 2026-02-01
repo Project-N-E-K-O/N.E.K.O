@@ -98,6 +98,10 @@ if (toggleBtn) {
                 iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
                 toggleBtn.title = window.t ? window.t('common.minimize') : '最小化';
                 setTimeout(scrollToBottom, 300);
+                // 展开后执行回弹，避免位置越界
+                if (window.ChatDialogSnap && typeof window.ChatDialogSnap.snapIntoScreen === 'function') {
+                    setTimeout(() => window.ChatDialogSnap.snapIntoScreen({ animate: true }), 0);
+                }
             }
             return; // 移动端已处理，直接返回
         }
@@ -138,6 +142,10 @@ if (toggleBtn) {
             toggleBtn.title = window.t ? window.t('common.minimize') : '最小化';
             // 还原后滚动到底部
             setTimeout(scrollToBottom, 300); // 给CSS过渡留出时间
+            // 展开后执行回弹，避免位置越界
+            if (window.ChatDialogSnap && typeof window.ChatDialogSnap.snapIntoScreen === 'function') {
+                setTimeout(() => window.ChatDialogSnap.snapIntoScreen({ animate: true }), 0);
+            }
         }
     });
 }
@@ -151,6 +159,146 @@ if (toggleBtn) {
     let startMouseY = 0; // 开始拖动时的鼠标Y位置
     let startContainerLeft = 0; // 开始拖动时容器的left值
     let startContainerBottom = 0; // 开始拖动时容器的bottom值
+
+    // 拖动回弹配置（多屏幕切换时使用）
+    const CHAT_SNAP_CONFIG = {
+        margin: 6,
+        duration: 260,
+        easingType: 'easeOutBack'
+    };
+
+    let snapAnimationFrameId = null;
+    let isSnapping = false;
+
+    const EasingFunctions = {
+        easeOutBack: (t) => {
+            const c1 = 1.70158;
+            const c3 = c1 + 1;
+            return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+        },
+        easeOutCubic: (t) => (--t) * t * t + 1
+    };
+
+    async function getDisplayWorkAreaSize() {
+        let width = window.innerWidth;
+        let height = window.innerHeight;
+
+        if (window.electronScreen && window.electronScreen.getCurrentDisplay) {
+            try {
+                const currentDisplay = await window.electronScreen.getCurrentDisplay();
+                if (currentDisplay && currentDisplay.workArea) {
+                    width = currentDisplay.workArea.width || width;
+                    height = currentDisplay.workArea.height || height;
+                } else if (currentDisplay && currentDisplay.width && currentDisplay.height) {
+                    width = currentDisplay.width;
+                    height = currentDisplay.height;
+                }
+            } catch (e) {
+                console.debug('[Chat Snap] 获取屏幕工作区域失败，使用窗口尺寸');
+            }
+        }
+
+        return { width, height };
+    }
+
+    function getChatContainerPosition() {
+        const computedStyle = window.getComputedStyle(chatContainer);
+        const rect = chatContainer.getBoundingClientRect();
+
+        let left = parseFloat(computedStyle.left);
+        if (!Number.isFinite(left)) {
+            left = rect.left;
+        }
+
+        let bottom = parseFloat(computedStyle.bottom);
+        if (!Number.isFinite(bottom)) {
+            bottom = window.innerHeight - rect.bottom;
+        }
+
+        return { left, bottom, rect };
+    }
+
+    function applyChatContainerPosition(left, bottom) {
+        chatContainer.style.left = `${left}px`;
+        chatContainer.style.bottom = `${bottom}px`;
+    }
+
+    function animateChatContainerTo(startLeft, startBottom, targetLeft, targetBottom) {
+        if (snapAnimationFrameId) {
+            cancelAnimationFrame(snapAnimationFrameId);
+        }
+
+        const duration = CHAT_SNAP_CONFIG.duration;
+        const easingFn = EasingFunctions[CHAT_SNAP_CONFIG.easingType] || EasingFunctions.easeOutCubic;
+        const startTime = performance.now();
+
+        isSnapping = true;
+
+        const animate = (currentTime) => {
+            const elapsed = currentTime - startTime;
+            const progress = Math.min(elapsed / duration, 1);
+            const easedProgress = easingFn(progress);
+
+            const newLeft = startLeft + (targetLeft - startLeft) * easedProgress;
+            const newBottom = startBottom + (targetBottom - startBottom) * easedProgress;
+
+            applyChatContainerPosition(newLeft, newBottom);
+
+            if (progress < 1) {
+                snapAnimationFrameId = requestAnimationFrame(animate);
+            } else {
+                applyChatContainerPosition(targetLeft, targetBottom);
+                isSnapping = false;
+                snapAnimationFrameId = null;
+            }
+        };
+
+        snapAnimationFrameId = requestAnimationFrame(animate);
+    }
+
+    async function snapChatContainerIntoScreen({ animate = true } = {}) {
+        if (!chatContainer || isSnapping) return;
+
+        const { rect, left, bottom } = getChatContainerPosition();
+        const { width, height } = await getDisplayWorkAreaSize();
+
+        const maxLeft = Math.max(0, width - rect.width);
+        const maxBottom = Math.max(0, height - rect.height);
+
+        const margin = CHAT_SNAP_CONFIG.margin;
+        let minLeft = 0;
+        let maxLeftAllowed = maxLeft;
+        let minBottom = 0;
+        let maxBottomAllowed = maxBottom;
+
+        if (maxLeft > margin * 2) {
+            minLeft = margin;
+            maxLeftAllowed = maxLeft - margin;
+        }
+        if (maxBottom > margin * 2) {
+            minBottom = margin;
+            maxBottomAllowed = maxBottom - margin;
+        }
+
+        const targetLeft = Math.max(minLeft, Math.min(maxLeftAllowed, left));
+        const targetBottom = Math.max(minBottom, Math.min(maxBottomAllowed, bottom));
+
+        const dx = Math.abs(targetLeft - left);
+        const dy = Math.abs(targetBottom - bottom);
+
+        if (dx < 1 && dy < 1) return;
+
+        if (animate) {
+            animateChatContainerTo(left, bottom, targetLeft, targetBottom);
+        } else {
+            applyChatContainerPosition(targetLeft, targetBottom);
+        }
+    }
+
+    // 暴露给外部（例如展开时触发回弹）
+    window.ChatDialogSnap = {
+        snapIntoScreen: snapChatContainerIntoScreen
+    };
 
     // 获取相关元素
     const chatHeader = document.getElementById('chat-header');
@@ -217,7 +365,9 @@ if (toggleBtn) {
         
         // 限制在视口内
         const maxLeft = window.innerWidth - chatContainer.offsetWidth;
-        const maxBottom = window.innerHeight - chatContainer.offsetHeight;
+        const maxBottomRaw = window.innerHeight - chatContainer.offsetHeight;
+        const topBoundary = CHAT_SNAP_CONFIG.margin;
+        const maxBottom = Math.max(0, maxBottomRaw - topBoundary);
         
         chatContainer.style.left = Math.max(0, Math.min(maxLeft, newLeft)) + 'px';
         chatContainer.style.bottom = Math.max(0, Math.min(maxBottom, newBottom)) + 'px';
@@ -260,6 +410,9 @@ if (toggleBtn) {
                     toggleBtn.click();
                 }, 0);
             }
+
+            // 拖拽结束后：若被拖到另一屏导致越界，回弹到屏幕内侧
+            snapChatContainerIntoScreen({ animate: true });
         }
     }
 
@@ -346,6 +499,11 @@ if (toggleBtn) {
     document.addEventListener('touchmove', onDragMove, { passive: false });
     document.addEventListener('mouseup', endDrag);
     document.addEventListener('touchend', endDrag);
+
+    // 屏幕切换后，确保对话框回弹到新屏幕内侧
+    window.addEventListener('electron-display-changed', () => {
+        snapChatContainerIntoScreen({ animate: true });
+    });
 })();
 
 // --- Sidebar相关代码已移除 ---
