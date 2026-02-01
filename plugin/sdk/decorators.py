@@ -3,10 +3,11 @@
 
 提供插件开发所需的装饰器。
 """
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Type, Callable, Literal, Union, overload, Any, Coroutine, Dict
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Type, Callable, Literal, Union, overload, Any, Coroutine, Dict, List, Optional
 from .base import PluginMeta, NEKO_PLUGIN_TAG
 from .events import EventMeta, EVENT_META_ATTR
+from .hooks import HookMeta, HookHandler, HookTiming, HOOK_META_ATTR
 
 # Worker 装饰器的属性名
 WORKER_MODE_ATTR = "_neko_worker_mode"
@@ -328,4 +329,102 @@ def custom_event(
         auto_start=auto_start,
         extra=ex,
     )
+
+
+def hook(
+    target: str,
+    timing: HookTiming = "before",
+    priority: int = 0,
+    condition: Optional[str] = None,
+) -> Callable:
+    """Hook 装饰器
+    
+    用于声明一个方法为 Hook，可以在目标 entry 执行前/后/周围执行。
+    支持插件内部中间件和跨插件 Hook 两种场景。
+    
+    Args:
+        target: Hook 目标
+            - 插件内: "entry_id" - Hook 当前插件/Router 的指定 entry
+            - 插件内: "*" - Hook 当前插件/Router 的所有 entry
+            - 跨插件: "plugin_id.entry_id" - Hook 其他插件的指定 entry
+        timing: 执行时机
+            - "before": 在目标 entry 执行前执行
+                - 返回 None: 继续执行
+                - 返回 dict: 阻止执行，直接返回该结果
+                - 返回修改后的 params: 修改参数后继续执行
+            - "after": 在目标 entry 执行后执行
+                - 接收 result 参数，可以修改返回值
+            - "around": 包裹目标 entry
+                - 接收 next_handler 参数，可以控制是否执行原始 handler
+            - "replace": 完全替换目标 entry
+                - 接收 original_handler 参数，可以选择性调用
+        priority: 优先级（越大越先执行），默认 0
+        condition: 条件表达式或方法名（可选）
+            - 字符串: 当前类的方法名，返回 True 才执行 Hook
+    
+    Returns:
+        装饰器函数
+    
+    Example - 插件内中间件:
+        >>> class MyRouter(PluginRouter):
+        ...     @hook(target="*", timing="before")
+        ...     async def log_all_calls(self, entry_id: str, params: dict, **_):
+        ...         '''Hook 所有 entry，记录调用日志'''
+        ...         self.logger.info(f"Calling {entry_id} with {params}")
+        ...         return None  # 继续执行
+        ...
+        ...     @hook(target="save", timing="before", priority=10)
+        ...     async def validate_save(self, params: dict, **_):
+        ...         '''验证 save entry 的参数'''
+        ...         if not params.get("data", {}).get("name"):
+        ...             return fail(message="name is required")  # 阻止执行
+        ...         return None
+        ...
+        ...     @hook(target="load", timing="after")
+        ...     async def cache_result(self, entry_id: str, result: dict, **_):
+        ...         '''缓存 load 结果'''
+        ...         self._cache[entry_id] = result
+        ...         return result  # 可以修改返回值
+    
+    Example - 跨插件 Hook (扩展插件):
+        >>> class ExtensionRouter(PluginRouter):
+        ...     @hook(target="core_plugin.save", timing="before")
+        ...     async def extend_save(self, params: dict, **_):
+        ...         '''Hook 其他插件的 save entry'''
+        ...         params["extended"] = True
+        ...         return params  # 修改参数后继续
+        ...
+        ...     @hook(target="core_plugin.save", timing="around")
+        ...     async def wrap_save(self, params: dict, next_handler, **_):
+        ...         '''包裹 save entry'''
+        ...         self.logger.info("Before save")
+        ...         result = await next_handler(params)
+        ...         self.logger.info("After save")
+        ...         return result
+    
+    Note:
+        - Hook 方法的签名根据 timing 不同而不同:
+            - before: (self, entry_id: str, params: dict, **_) -> Optional[dict]
+            - after: (self, entry_id: str, params: dict, result: dict, **_) -> dict
+            - around: (self, entry_id: str, params: dict, next_handler: Callable, **_) -> dict
+            - replace: (self, entry_id: str, params: dict, original_handler: Callable, **_) -> dict
+        - 跨插件 Hook 需要在 plugin.toml 中声明权限
+    """
+    def decorator(fn: Callable) -> Callable:
+        meta = HookMeta(
+            target=target,
+            timing=timing,
+            priority=priority,
+            condition=condition,
+        )
+        setattr(fn, HOOK_META_ATTR, meta)
+        return fn
+    return decorator
+
+
+# 便捷别名
+before_entry = lambda target="*", priority=0, condition=None: hook(target, "before", priority, condition)
+after_entry = lambda target="*", priority=0, condition=None: hook(target, "after", priority, condition)
+around_entry = lambda target="*", priority=0, condition=None: hook(target, "around", priority, condition)
+replace_entry = lambda target, priority=0, condition=None: hook(target, "replace", priority, condition)
 

@@ -290,27 +290,44 @@ def _plugin_process_runner(
         entry_meta_map: Dict[str, Any] = {}  # 存储 EventMeta 用于获取自定义配置（如 timeout）
         events_by_type: Dict[str, Dict[str, Any]] = {}
 
-        # 扫描方法映射
-        for name, member in inspect.getmembers(instance, predicate=callable):
-            if name.startswith("_") and not hasattr(member, EVENT_META_ATTR):
-                continue
-            event_meta = getattr(member, EVENT_META_ATTR, None)
-            if not event_meta:
-                wrapped = getattr(member, "__wrapped__", None)
-                if wrapped is not None:
-                    event_meta = getattr(wrapped, EVENT_META_ATTR, None)
+        # 优先使用 collect_entries() 获取入口点（支持 Hook 包装）
+        if hasattr(instance, "collect_entries") and callable(instance.collect_entries):
+            try:
+                collected = instance.collect_entries(wrap_with_hooks=True)
+                for eid, event_handler in collected.items():
+                    entry_map[eid] = event_handler.handler
+                    entry_meta_map[eid] = event_handler.meta
+                    etype = getattr(event_handler.meta, "event_type", "plugin_entry")
+                    events_by_type.setdefault(etype, {})
+                    events_by_type[etype][eid] = event_handler.handler
+                logger.info("Plugin entries collected via collect_entries(): {}", list(entry_map.keys()))
+            except Exception as e:
+                logger.warning("Failed to collect entries via collect_entries(): {}, falling back to scan", e)
+                entry_map.clear()
+                entry_meta_map.clear()
+                events_by_type.clear()
+        
+        # 如果 collect_entries 失败或不存在，回退到扫描方法
+        if not entry_map:
+            for name, member in inspect.getmembers(instance, predicate=callable):
+                if name.startswith("_") and not hasattr(member, EVENT_META_ATTR):
+                    continue
+                event_meta = getattr(member, EVENT_META_ATTR, None)
+                if not event_meta:
+                    wrapped = getattr(member, "__wrapped__", None)
+                    if wrapped is not None:
+                        event_meta = getattr(wrapped, EVENT_META_ATTR, None)
 
-            if event_meta:
-                eid = getattr(event_meta, "id", name)
-                entry_map[eid] = member
-                entry_meta_map[eid] = event_meta  # 存储 EventMeta 用于获取自定义配置
-                etype = getattr(event_meta, "event_type", "plugin_entry")
-                events_by_type.setdefault(etype, {})
-                events_by_type[etype][eid] = member
-            else:
-                entry_map[name] = member
-
-        logger.info("Plugin instance created. Mapped entries: {}", list(entry_map.keys()))
+                if event_meta:
+                    eid = getattr(event_meta, "id", name)
+                    entry_map[eid] = member
+                    entry_meta_map[eid] = event_meta  # 存储 EventMeta 用于获取自定义配置
+                    etype = getattr(event_meta, "event_type", "plugin_entry")
+                    events_by_type.setdefault(etype, {})
+                    events_by_type[etype][eid] = member
+                else:
+                    entry_map[name] = member
+            logger.info("Plugin instance created. Mapped entries: {}", list(entry_map.keys()))
         
         # 设置入口映射和实例到上下文，用于在等待期间处理命令
         # _cmd_queue 和 _res_queue 已在 PluginContext 构造函数中初始化
@@ -647,6 +664,14 @@ def _plugin_process_runner(
                 try:
                     if not method:
                         raise PluginEntryNotFoundError(plugin_id, entry_id)
+                    
+                    # 调试：检查 method 是否是异步函数
+                    logger.debug(
+                        "[Plugin Process] Method check: asyncio.iscoroutinefunction={}, inspect.iscoroutinefunction={}, type={}",
+                        asyncio.iscoroutinefunction(method),
+                        inspect.iscoroutinefunction(method),
+                        type(method),
+                    )
 
                     run_id = None
                     try:
@@ -708,6 +733,9 @@ def _plugin_process_runner(
                                 try:
                                     with ctx._handler_scope(f"plugin_entry.{entry_id}"), ctx._run_scope(run_id):
                                         result = worker_executor.wait_for_result(future, timeout)
+                                    # 检查结果是否是协程（可能是包装后的异步函数）
+                                    if asyncio.iscoroutine(result):
+                                        result = asyncio.run(result)
                                     ret_payload["success"] = True
                                     ret_payload["data"] = result
                                     # Save state after successful execution (if enabled)
@@ -745,8 +773,8 @@ def _plugin_process_runner(
                             res_queue.put(ret_payload)
                             continue
                     
-                    elif asyncio.iscoroutinefunction(method):
-                        logger.debug("[Plugin Process] Method is async, running in thread to avoid blocking command loop")
+                    elif asyncio.iscoroutinefunction(method) or inspect.iscoroutinefunction(method):
+                        logger.debug("[Plugin Process] Method is async (iscoroutinefunction={}), running in thread", asyncio.iscoroutinefunction(method))
                         # 关键修复：在独立线程中运行异步方法，避免阻塞命令循环
                         # 这样命令循环可以继续处理其他命令（包括响应命令）
                         result_container = {"result": None, "exception": None, "done": False}
@@ -822,9 +850,23 @@ def _plugin_process_runner(
                             )
                             with ctx._handler_scope(f"plugin_entry.{entry_id}"), ctx._run_scope(run_id):
                                 res = method(**args)
-                            logger.debug(
-                                "[Plugin Process] Method call succeeded, result type: {}",
+                            
+                            # 检查返回值是否是协程（可能是包装后的异步函数）
+                            if asyncio.iscoroutine(res):
+                                logger.info("[Plugin Process] Result is coroutine, awaiting it")
+                                res = asyncio.run(res)
+                            
+                            # 再次检查结果中是否包含协程对象
+                            if isinstance(res, dict):
+                                for k, v in res.items():
+                                    if asyncio.iscoroutine(v):
+                                        logger.warning("[Plugin Process] Result dict contains coroutine at key '{}', awaiting it", k)
+                                        res[k] = asyncio.run(v)
+                            
+                            logger.info(
+                                "[Plugin Process] Method call succeeded, result type: {}, result: {}",
                                 type(res),
+                                str(res)[:200],
                             )
                         except TypeError:
                             # 参数不匹配，记录详细信息并抛出

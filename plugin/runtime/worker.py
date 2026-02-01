@@ -4,6 +4,7 @@ Worker 执行器模块
 提供线程池管理和任务队列，用于执行插件的同步代码。
 """
 
+import asyncio
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, Future
@@ -92,6 +93,9 @@ class WorkerExecutor:
             try:
                 # 执行任务
                 result = handler(*args, **kwargs)
+                # 检查结果是否是协程（可能是包装后的异步函数）
+                if asyncio.iscoroutine(result):
+                    result = asyncio.run(result)
                 result_future.set_result(result)
             except Exception as e:
                 result_future.set_exception(e)

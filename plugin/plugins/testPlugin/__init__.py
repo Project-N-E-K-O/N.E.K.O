@@ -7,7 +7,7 @@ from typing import Any, Dict
 
 from plugin.sdk.base import NekoPluginBase
 from plugin.sdk.decorators import lifecycle, neko_plugin, plugin_entry, custom_event, worker
-from plugin.sdk import ok, SystemInfo
+from plugin.sdk import ok, SystemInfo,hook
 from plugin.sdk.memory import MemoryClient
 
 
@@ -884,3 +884,9 @@ class HelloPlugin(NekoPluginBase):
             step_total=3,
         )
         return ok(data={"ok": True, "greeted": name})
+
+    @hook(target="hello_run", timing="after")
+    def after_hello_run(self, entry_id: str, params: dict, **_):
+        """Hook: 在 hello_run 执行前记录日志"""
+        self.file_logger.info("HelloPlugin after hello_run, params={}", params)
+        return None  # 返回 None 表示继续执行

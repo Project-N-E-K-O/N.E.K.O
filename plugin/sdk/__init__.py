@@ -43,12 +43,19 @@ from .decorators import (
     custom_event,
     worker,
     plugin,
+    # Hook 装饰器
+    hook,
+    before_entry,
+    after_entry,
+    around_entry,
+    replace_entry,
     # 类型常量（用于 IDE 识别）
     PERSIST_ATTR,
     CHECKPOINT_ATTR,  # 向后兼容别名
     WORKER_MODE_ATTR,
     EntryKind,
 )
+from .hooks import HookMeta, HookHandler, HookTiming, HOOK_META_ATTR
 from .base import NekoPluginBase, PluginMeta
 from .router import PluginRouter, PluginRouterError
 from .config import PluginConfig
@@ -79,6 +86,17 @@ __all__ = [
     "worker",           # Worker 模式装饰器
     "plugin",           # 插件装饰器命名空间
     
+    # Hook 装饰器（插件内中间件 & 跨插件 Hook）
+    "hook",             # Hook 装饰器
+    "before_entry",     # before 类型 Hook 快捷方式
+    "after_entry",      # after 类型 Hook 快捷方式
+    "around_entry",     # around 类型 Hook 快捷方式
+    "replace_entry",    # replace 类型 Hook 快捷方式
+    "HookMeta",         # Hook 元数据
+    "HookHandler",      # Hook 处理器
+    "HookTiming",       # Hook 时机类型
+    "HOOK_META_ATTR",   # Hook 元数据属性名
+    
     # 基类和元数据
     "NekoPluginBase",   # 插件基类
     "PluginRouter",     # 插件路由器（模块化入口点，支持动态加载/卸载）
@@ -103,6 +121,21 @@ __all__ = [
     "WORKER_MODE_ATTR", # Worker 模式属性名
     "EVENT_META_ATTR",  # 事件元数据属性名
 ]
+
+# Hook 使用示例:
+# from plugin.sdk import PluginRouter, hook, before_entry, after_entry, ok, fail
+#
+# class MyRouter(PluginRouter):
+#     @hook(target="*", timing="before")
+#     async def log_all(self, entry_id, params, **_):
+#         self.logger.info(f"Calling {entry_id}")
+#         return None  # 继续执行
+#
+#     @before_entry(target="save", priority=10)
+#     async def validate(self, params, **_):
+#         if not params.get("name"):
+#             return fail(message="name required")  # 阻止执行
+#         return None
 
 # 便捷导入示例:
 # from plugin.sdk import NekoPluginBase, neko_plugin, plugin_entry, lifecycle, ok
