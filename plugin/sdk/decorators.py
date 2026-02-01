@@ -4,7 +4,7 @@
 提供插件开发所需的装饰器。
 """
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Type, Callable, Literal, Union, overload, Any, Coroutine, Dict, List, Optional
+from typing import TYPE_CHECKING, Type, Callable, Literal, Union, overload, Any, Coroutine, Dict, List, Optional, Protocol, TypeVar, runtime_checkable
 from .base import PluginMeta, NEKO_PLUGIN_TAG
 from .events import EventMeta, EVENT_META_ATTR
 from .hooks import HookMeta, HookHandler, HookTiming, HOOK_META_ATTR
@@ -331,12 +331,107 @@ def custom_event(
     )
 
 
+# ==================== Hook 函数签名类型定义 ====================
+# 使用 Protocol 定义不同 timing 的 Hook 函数签名，让 IDE 提供更好的类型提示
+
+# Hook 函数返回类型
+BeforeHookResult = Optional[Dict[str, Any]]  # None=继续, dict=阻止或修改参数
+AfterHookResult = Dict[str, Any]  # 返回修改后的结果
+AroundHookResult = Dict[str, Any]  # 返回最终结果
+ReplaceHookResult = Dict[str, Any]  # 返回替换后的结果
+
+# Hook 函数类型（用于类型提示）
+BeforeHookFn = Callable[..., Union[BeforeHookResult, Coroutine[Any, Any, BeforeHookResult]]]
+AfterHookFn = Callable[..., Union[AfterHookResult, Coroutine[Any, Any, AfterHookResult]]]
+AroundHookFn = Callable[..., Union[AroundHookResult, Coroutine[Any, Any, AroundHookResult]]]
+ReplaceHookFn = Callable[..., Union[ReplaceHookResult, Coroutine[Any, Any, ReplaceHookResult]]]
+
+_HookFn = TypeVar("_HookFn", bound=Callable[..., Any])
+
+
+@overload
+def hook(
+    target: str,
+    timing: Literal["before"],
+    priority: int = 0,
+    condition: Optional[str] = None,
+) -> Callable[[BeforeHookFn], BeforeHookFn]:
+    """before Hook: 在目标 entry 执行前执行
+    
+    Hook 函数签名: (self, entry_id: str, params: dict, **_) -> Optional[dict]
+    - 返回 None: 继续执行原始 handler
+    - 返回 dict (含 code/message/data): 阻止执行，直接返回该结果
+    - 返回 dict (不含上述字段): 作为修改后的 params 继续执行
+    """
+    ...
+
+
+@overload
+def hook(
+    target: str,
+    timing: Literal["after"],
+    priority: int = 0,
+    condition: Optional[str] = None,
+) -> Callable[[AfterHookFn], AfterHookFn]:
+    """after Hook: 在目标 entry 执行后执行
+    
+    Hook 函数签名: (self, entry_id: str, params: dict, result: dict, **_) -> dict
+    - 接收 result 参数（原始 handler 的返回值）
+    - 返回修改后的结果
+    """
+    ...
+
+
+@overload
+def hook(
+    target: str,
+    timing: Literal["around"],
+    priority: int = 0,
+    condition: Optional[str] = None,
+) -> Callable[[AroundHookFn], AroundHookFn]:
+    """around Hook: 包裹目标 entry
+    
+    Hook 函数签名: (self, entry_id: str, params: dict, next_handler: Callable, **_) -> dict
+    - 接收 next_handler 参数，可以控制是否执行原始 handler
+    - 调用 await next_handler(params) 执行下一个 hook 或原始 handler
+    - 返回最终结果
+    """
+    ...
+
+
+@overload
+def hook(
+    target: str,
+    timing: Literal["replace"],
+    priority: int = 0,
+    condition: Optional[str] = None,
+) -> Callable[[ReplaceHookFn], ReplaceHookFn]:
+    """replace Hook: 完全替换目标 entry
+    
+    Hook 函数签名: (self, entry_id: str, params: dict, original_handler: Callable, **_) -> dict
+    - 接收 original_handler 参数，可以选择性调用原始 handler
+    - 返回替换后的结果
+    """
+    ...
+
+
+@overload
 def hook(
     target: str,
     timing: HookTiming = "before",
     priority: int = 0,
     condition: Optional[str] = None,
-) -> Callable:
+) -> Callable[[_HookFn], _HookFn]:
+    """Hook 装饰器（通用签名）"""
+    ...
+
+
+def hook(
+    target: str,
+    timing: HookTiming = "before",
+    priority: int = 0,
+    condition: Optional[str] = None,
+) -> Callable[[_HookFn], _HookFn]:
     """Hook 装饰器
     
     用于声明一个方法为 Hook，可以在目标 entry 执行前/后/周围执行。
@@ -410,7 +505,7 @@ def hook(
             - replace: (self, entry_id: str, params: dict, original_handler: Callable, **_) -> dict
         - 跨插件 Hook 需要在 plugin.toml 中声明权限
     """
-    def decorator(fn: Callable) -> Callable:
+    def decorator(fn: _HookFn) -> _HookFn:
         meta = HookMeta(
             target=target,
             timing=timing,

@@ -664,14 +664,6 @@ def _plugin_process_runner(
                 try:
                     if not method:
                         raise PluginEntryNotFoundError(plugin_id, entry_id)
-                    
-                    # 调试：检查 method 是否是异步函数
-                    logger.debug(
-                        "[Plugin Process] Method check: asyncio.iscoroutinefunction={}, inspect.iscoroutinefunction={}, type={}",
-                        asyncio.iscoroutinefunction(method),
-                        inspect.iscoroutinefunction(method),
-                        type(method),
-                    )
 
                     run_id = None
                     try:
@@ -851,23 +843,9 @@ def _plugin_process_runner(
                             with ctx._handler_scope(f"plugin_entry.{entry_id}"), ctx._run_scope(run_id):
                                 res = method(**args)
                             
-                            # 检查返回值是否是协程（可能是包装后的异步函数）
+                            # 防御性检查：如果返回值是协程，执行它
                             if asyncio.iscoroutine(res):
-                                logger.info("[Plugin Process] Result is coroutine, awaiting it")
                                 res = asyncio.run(res)
-                            
-                            # 再次检查结果中是否包含协程对象
-                            if isinstance(res, dict):
-                                for k, v in res.items():
-                                    if asyncio.iscoroutine(v):
-                                        logger.warning("[Plugin Process] Result dict contains coroutine at key '{}', awaiting it", k)
-                                        res[k] = asyncio.run(v)
-                            
-                            logger.info(
-                                "[Plugin Process] Method call succeeded, result type: {}, result: {}",
-                                type(res),
-                                str(res)[:200],
-                            )
                         except TypeError:
                             # 参数不匹配，记录详细信息并抛出
                             sig = inspect.signature(method)

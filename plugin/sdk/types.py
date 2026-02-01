@@ -3,8 +3,11 @@
 
 提供Protocol接口定义,用于类型提示和IDE智能补全。
 """
-from typing import Protocol, Dict, Any, Optional, Union, Coroutine, runtime_checkable
+from typing import Protocol, Dict, Any, Optional, Union, Coroutine, runtime_checkable, TYPE_CHECKING
 from pathlib import Path
+
+if TYPE_CHECKING:
+    from plugin.sdk.bus.types import BusHubProtocol
 
 
 @runtime_checkable
@@ -452,8 +455,8 @@ class PluginContextProtocol(Protocol):
         ...
     
     # ==================== 内存查询 ====================
-    def query_memory(self, lanlan_name: str, query: str, timeout: float = 5.0) -> Dict[str, Any]:
-        """查询内存数据
+    def query_memory(self, lanlan_name: str, query: str, timeout: float = 5.0) -> Union[Coroutine[Any, Any, Dict[str, Any]], Dict[str, Any]]:
+        """查询内存数据（智能版本：自动检测执行环境）
         
         Args:
             lanlan_name: lanlan名称
@@ -461,12 +464,29 @@ class PluginContextProtocol(Protocol):
             timeout: 超时时间(秒)
         
         Returns:
-            查询结果
+            在事件循环中返回协程，否则返回结果字典
         """
         ...
     
     # ==================== Bus Hub ====================
     @property
-    def bus(self) -> Any:
-        """总线Hub,提供memory/messages/events/lifecycle客户端"""
+    def bus(self) -> "BusHubProtocol":
+        """总线Hub，提供 memory/messages/events/lifecycle/conversations 客户端
+        
+        Example:
+            # 获取消息
+            messages = ctx.bus.messages.get(max_count=10)
+            
+            # 获取事件
+            events = ctx.bus.events.get(plugin_id="my_plugin")
+            
+            # 获取生命周期事件
+            lifecycle = ctx.bus.lifecycle.get()
+            
+            # 获取内存数据
+            memory = ctx.bus.memory.get(bucket_id="default")
+            
+            # 获取对话上下文
+            conversations = ctx.bus.conversations.get_by_id(conversation_id)
+        """
         ...

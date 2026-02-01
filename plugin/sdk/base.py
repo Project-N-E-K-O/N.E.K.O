@@ -495,6 +495,11 @@ class NekoPluginBase:
                 return h
         return None
     
+    def get_around_hooks(self, entry_id: str) -> List[HookHandler]:
+        """获取 around 类型的 Hook（按优先级排序）"""
+        hooks = self.get_hooks_for_entry(entry_id)
+        return [h for h in hooks if h.meta.timing == "around"]
+    
     def _wrap_handler_with_hooks(self, entry_id: str, original_handler: Callable) -> Callable:
         """包装 handler，在执行前后执行 Hook
         
@@ -529,10 +534,43 @@ class NekoPluginBase:
                 if inspect.iscoroutine(result):
                     result = await result
             else:
-                # 3. 执行原始 handler
-                result = original_handler(**modified_params)
-                if inspect.iscoroutine(result):
-                    result = await result
+                # 3. 构建 around hook 链
+                around_hooks = plugin_ref.get_around_hooks(entry_id)
+                
+                if around_hooks:
+                    # 构建调用链：around_hook_1 -> around_hook_2 -> ... -> original_handler
+                    async def build_chain(hooks_remaining, params):
+                        if not hooks_remaining:
+                            # 链的末端：执行原始 handler
+                            r = original_handler(**params)
+                            if inspect.iscoroutine(r):
+                                r = await r
+                            return r
+                        
+                        # 取出当前 hook
+                        current_hook = hooks_remaining[0]
+                        rest_hooks = hooks_remaining[1:]
+                        
+                        # 创建 next_handler 供 around hook 调用
+                        async def next_handler(p=None):
+                            return await build_chain(rest_hooks, p if p is not None else params)
+                        
+                        # 执行当前 around hook
+                        hook_result = current_hook.handler(
+                            entry_id=entry_id,
+                            params=params,
+                            next_handler=next_handler,
+                        )
+                        if inspect.iscoroutine(hook_result):
+                            hook_result = await hook_result
+                        return hook_result
+                    
+                    result = await build_chain(around_hooks, modified_params)
+                else:
+                    # 无 around hook，直接执行原始 handler
+                    result = original_handler(**modified_params)
+                    if inspect.iscoroutine(result):
+                        result = await result
             
             # 4. 执行 after hooks
             final_result = await plugin_ref.execute_after_hooks(
@@ -562,8 +600,35 @@ class NekoPluginBase:
                 if inspect.iscoroutine(result):
                     result = asyncio.run(result)
             else:
-                # 3. 执行原始同步 handler（在当前线程中，不在事件循环中）
-                result = original_handler(**modified_params)
+                # 3. 构建 around hook 链
+                around_hooks = plugin_ref.get_around_hooks(entry_id)
+                
+                if around_hooks:
+                    # 对于同步 handler，around hook 链需要在事件循环中执行
+                    async def build_chain_async(hooks_remaining, params):
+                        if not hooks_remaining:
+                            # 链的末端：执行原始同步 handler
+                            return original_handler(**params)
+                        
+                        current_hook = hooks_remaining[0]
+                        rest_hooks = hooks_remaining[1:]
+                        
+                        async def next_handler(p=None):
+                            return await build_chain_async(rest_hooks, p if p is not None else params)
+                        
+                        hook_result = current_hook.handler(
+                            entry_id=entry_id,
+                            params=params,
+                            next_handler=next_handler,
+                        )
+                        if inspect.iscoroutine(hook_result):
+                            hook_result = await hook_result
+                        return hook_result
+                    
+                    result = asyncio.run(build_chain_async(around_hooks, modified_params))
+                else:
+                    # 无 around hook，直接执行原始同步 handler
+                    result = original_handler(**modified_params)
             
             # 4. 执行 after hooks（在新事件循环中）
             final_result = asyncio.run(

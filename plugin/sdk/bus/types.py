@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from plugin.sdk.bus.lifecycle import LifecycleList
     from plugin.sdk.bus.memory import MemoryList
     from plugin.sdk.bus.messages import MessageList
+    from plugin.sdk.bus.conversations import ConversationList
 
 _WATCHER_REGISTRY: Dict[str, "BusListWatcher[Any]"] = {}
 _WATCHER_REGISTRY_LOCK = None
@@ -310,11 +311,40 @@ class _MemoryClientProto(Protocol):
     def get(self, bucket_id: str, limit: int = 20, timeout: float = 5.0) -> "MemoryList": ...
 
 
+class _ConversationClientProto(Protocol):
+    def get(
+        self,
+        *,
+        conversation_id: Optional[str] = None,
+        max_count: int = 50,
+        since_ts: Optional[float] = None,
+        timeout: float = 5.0,
+    ) -> "ConversationList": ...
+    
+    def get_by_id(
+        self,
+        conversation_id: str,
+        *,
+        max_count: int = 50,
+        timeout: float = 5.0,
+    ) -> "ConversationList": ...
+
+
 class BusHubProtocol(Protocol):
+    """Bus Hub 协议，提供对各种 Bus 客户端的访问
+    
+    Attributes:
+        messages: 消息客户端，用于查询消息
+        events: 事件客户端，用于查询事件
+        lifecycle: 生命周期客户端，用于查询生命周期事件
+        memory: 内存客户端，用于查询内存数据
+        conversations: 对话客户端，用于查询对话上下文
+    """
     messages: _MessageClientProto
     events: _EventClientProto
     lifecycle: _LifecycleClientProto
     memory: _MemoryClientProto
+    conversations: _ConversationClientProto
 
 
 class BusReplayContext(Protocol):
