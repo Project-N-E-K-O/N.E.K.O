@@ -193,6 +193,61 @@
                 input.className = 'modal-input';
                 input.value = config.defaultValue || '';
                 input.placeholder = config.placeholder || '';
+
+                // 可选的输入属性（如 maxlength 等）
+                if (config.inputAttributes && typeof config.inputAttributes === 'object') {
+                    Object.keys(config.inputAttributes).forEach((k) => {
+                        const v = config.inputAttributes[k];
+                        if (v === undefined || v === null) return;
+                        // 兼容部分 DOM 属性（如 maxLength）
+                        if (k in input) {
+                            try { input[k] = v; } catch (e) { /* ignore */ }
+                        }
+                        try { input.setAttribute(k, String(v)); } catch (e) { /* ignore */ }
+                    });
+                }
+
+                const normalizeValue = () => {
+                    if (typeof config.normalize === 'function') {
+                        try {
+                            const next = config.normalize(input.value);
+                            if (typeof next === 'string' && next !== input.value) {
+                                input.value = next;
+                            }
+                        } catch (e) {
+                            // ignore
+                        }
+                    }
+                };
+
+                const validateValue = () => {
+                    if (typeof config.validator === 'function') {
+                        try {
+                            const err = config.validator(input.value);
+                            if (err) {
+                                input.setCustomValidity(String(err));
+                                return false;
+                            }
+                        } catch (e) {
+                            // ignore
+                        }
+                    }
+                    input.setCustomValidity('');
+                    return true;
+                };
+
+                // 绑定输入事件（支持 IME）
+                const onInput = () => {
+                    normalizeValue();
+                    validateValue();
+                    if (typeof config.onInput === 'function') {
+                        try { config.onInput(input); } catch (e) { /* ignore */ }
+                    }
+                };
+                input.addEventListener('input', onInput);
+                input.addEventListener('compositionend', onInput);
+                // 初次校验
+                setTimeout(onInput, 0);
                 body.appendChild(input);
             }
 
@@ -268,6 +323,20 @@
                 okBtn.className = 'modal-btn modal-btn-primary';
                 okBtn.textContent = config.okText || (window.t ? window.t('common.ok') : '确定');
                 okBtn.onclick = () => {
+                    // 确认前先归一化和校验
+                    if (typeof config.normalize === 'function') {
+                        try { input.value = config.normalize(input.value); } catch (e) { /* ignore */ }
+                    }
+                    if (typeof config.validator === 'function') {
+                        let err = '';
+                        try { err = config.validator(input.value) || ''; } catch (e) { err = ''; }
+                        if (err) {
+                            input.setCustomValidity(String(err));
+                            if (typeof input.reportValidity === 'function') input.reportValidity();
+                            return;
+                        }
+                    }
+                    input.setCustomValidity('');
                     closeModal();
                     resolve(input.value);
                 };
@@ -276,6 +345,20 @@
                 // Enter 键确认
                 input.addEventListener('keydown', (e) => {
                     if (e.key === 'Enter') {
+                        // Enter 行为与确定按钮一致
+                        if (typeof config.normalize === 'function') {
+                            try { input.value = config.normalize(input.value); } catch (e) { /* ignore */ }
+                        }
+                        if (typeof config.validator === 'function') {
+                            let err = '';
+                            try { err = config.validator(input.value) || ''; } catch (e) { err = ''; }
+                            if (err) {
+                                input.setCustomValidity(String(err));
+                                if (typeof input.reportValidity === 'function') input.reportValidity();
+                                return;
+                            }
+                        }
+                        input.setCustomValidity('');
                         closeModal();
                         resolve(input.value);
                     } else if (e.key === 'Escape') {
@@ -385,7 +468,7 @@
      * @param {string} title - 标题（可选）
      * @returns {Promise<string|null>}
      */
-    window.showPrompt = function(message, defaultValue = '', title = null) {
+    window.showPrompt = function(message, defaultValue = '', title = null, options = {}) {
         if (title === null) {
             title = window.t ? window.t('common.input') : '输入';
         }
@@ -394,6 +477,13 @@
             title: title,
             message: message,
             defaultValue: defaultValue,
+            placeholder: options.placeholder,
+            okText: options.okText,
+            cancelText: options.cancelText,
+            inputAttributes: options.inputAttributes,
+            normalize: options.normalize,
+            validator: options.validator,
+            onInput: options.onInput,
         });
     };
 
