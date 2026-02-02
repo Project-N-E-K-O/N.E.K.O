@@ -741,14 +741,20 @@
                         item.className = 'multiselect-item';
                         const fileName = motion.split('/').pop();
                         const cleanFileName = fileName.replace(/\.(motion3|exp3)\.json$/, '');
-                        item.innerHTML = `
-                            <input type="checkbox" value="${motion}">
-                            <span>${cleanFileName}</span>
-                        `;
+                        
+                        const checkbox = document.createElement('input');
+                        checkbox.type = 'checkbox';
+                        checkbox.value = motion;
+                        
+                        const span = document.createElement('span');
+                        span.textContent = cleanFileName;
+                        
+                        item.appendChild(checkbox);
+                        item.appendChild(span);
+
                         item.addEventListener('click', (e) => {
                             if (e.target.tagName !== 'INPUT') {
-                                const cb = item.querySelector('input');
-                                cb.checked = !cb.checked;
+                                checkbox.checked = !checkbox.checked;
                             }
                             updateMultiselectHeader(motionContainer.closest('.custom-multiselect'));
                             e.stopPropagation(); // 再次确保不冒泡
@@ -772,14 +778,20 @@
                         item.className = 'multiselect-item';
                         const fileName = expression.split('/').pop();
                         const cleanFileName = fileName.replace(/\.(motion3|exp3)\.json$/, '');
-                        item.innerHTML = `
-                            <input type="checkbox" value="${expression}">
-                            <span>${cleanFileName}</span>
-                        `;
+                        
+                        const checkbox = document.createElement('input');
+                        checkbox.type = 'checkbox';
+                        checkbox.value = expression;
+                        
+                        const span = document.createElement('span');
+                        span.textContent = cleanFileName;
+                        
+                        item.appendChild(checkbox);
+                        item.appendChild(span);
+
                         item.addEventListener('click', (e) => {
                             if (e.target.tagName !== 'INPUT') {
-                                const cb = item.querySelector('input');
-                                cb.checked = !cb.checked;
+                                checkbox.checked = !checkbox.checked;
                             }
                             updateMultiselectHeader(expressionContainer.closest('.custom-multiselect'));
                             e.stopPropagation(); // 再次确保不冒泡
