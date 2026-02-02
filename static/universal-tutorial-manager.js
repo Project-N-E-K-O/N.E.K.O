@@ -414,17 +414,17 @@ class UniversalTutorialManager {
                 }
             },
             {
-                element: '#catgirl-section',
+                element: 'textarea[name="性别"]',
                 popover: {
-                    title: '🐱 猫娘档案',
-                    description: '这里可以创建和管理多个虚拟伙伴角色。每个角色都有独特的性格、Live2D 形象和语音设定。',
+                    title: '👥 性别设定',
+                    description: '这是可选项。你可以输入你的性别或其他相关信息。这会影响虚拟伙伴对你的称呼方式。',
                 }
             },
             {
-                element: '#add-catgirl-btn',
+                element: 'textarea[name="昵称"]',
                 popover: {
-                    title: '➕ 新增猫娘',
-                    description: '点击这个按钮创建一个新的虚拟伙伴角色。你可以为她设置名字、性格、形象和语音。',
+                    title: '💬 昵称设定',
+                    description: '这是可选项。你可以为自己设置一个昵称。虚拟伙伴可能会用这个昵称来称呼你。',
                 }
             },
             {
@@ -432,6 +432,20 @@ class UniversalTutorialManager {
                 popover: {
                     title: '🔑 API Key 设置',
                     description: '点击这里配置 AI 服务的 API Key。这是虚拟伙伴能够进行对话的必要配置。',
+                }
+            },
+            {
+                element: '#catgirl-section',
+                popover: {
+                    title: '🐱 猫娘档案',
+                    description: '这里可以创建和管理多个虚拟伙伴角色。每个角色都有独特的性格、Live2D 形象和语音设定。你可以在不同的角色之间切换。',
+                }
+            },
+            {
+                element: '#add-catgirl-btn',
+                popover: {
+                    title: '➕ 新增猫娘',
+                    description: '点击这个按钮创建一个新的虚拟伙伴角色。你可以为她设置名字、性格、形象和语音。每个角色都是独立的，有自己的记忆和性格。',
                 }
             }
         ];
@@ -851,6 +865,69 @@ class UniversalTutorialManager {
     }
 
     /**
+     * 检查元素是否在可见视口内
+     */
+    isElementInViewport(element) {
+        if (!element) return false;
+
+        const rect = element.getBoundingClientRect();
+        return (
+            rect.top >= 0 &&
+            rect.left >= 0 &&
+            rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) &&
+            rect.right <= (window.innerWidth || document.documentElement.clientWidth)
+        );
+    }
+
+    /**
+     * 自动滚动到目标元素
+     */
+    scrollToElement(element) {
+        if (!element) return;
+
+        // 检查元素是否已经在视口内
+        if (this.isElementInViewport(element)) {
+            console.log('[Tutorial] 元素已在视口内，无需滚动');
+            return;
+        }
+
+        console.log('[Tutorial] 元素不在视口内，正在滚动...');
+
+        // 尝试找到可滚动的父容器
+        let scrollableParent = element.parentElement;
+        while (scrollableParent) {
+            const style = window.getComputedStyle(scrollableParent);
+            const hasScroll = style.overflowY === 'auto' ||
+                            style.overflowY === 'scroll' ||
+                            style.overflow === 'auto' ||
+                            style.overflow === 'scroll';
+
+            if (hasScroll) {
+                console.log('[Tutorial] 找到可滚动容器，正在滚动到元素...');
+                // 计算元素相对于可滚动容器的位置
+                const elementTop = element.offsetTop;
+                const containerHeight = scrollableParent.clientHeight;
+                const elementHeight = element.clientHeight;
+
+                // 计算需要滚动的距离，使元素居中显示
+                const targetScroll = elementTop - (containerHeight - elementHeight) / 2;
+
+                scrollableParent.scrollTo({
+                    top: Math.max(0, targetScroll),
+                    behavior: 'smooth'
+                });
+                return;
+            }
+
+            scrollableParent = scrollableParent.parentElement;
+        }
+
+        // 如果没有找到可滚动的父容器，尝试滚动 window
+        console.log('[Tutorial] 未找到可滚动容器，尝试滚动 window');
+        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    /**
      * 步骤改变时的回调
      */
     onStepChange() {
@@ -863,19 +940,28 @@ class UniversalTutorialManager {
             const currentStepConfig = steps[this.currentStep];
             const element = document.querySelector(currentStepConfig.element);
 
-            if (element && !this.isElementVisible(element)) {
-                console.warn(`[Tutorial] 当前步骤的元素隐藏，正在显示: ${currentStepConfig.element}`);
-                this.showElementForTutorial(element, currentStepConfig.element);
-            }
+            if (element) {
+                // 先检查元素是否隐藏，如果隐藏则显示
+                if (!this.isElementVisible(element)) {
+                    console.warn(`[Tutorial] 当前步骤的元素隐藏，正在显示: ${currentStepConfig.element}`);
+                    this.showElementForTutorial(element, currentStepConfig.element);
+                }
 
-            // 执行步骤中定义的操作
-            if (currentStepConfig.action && element) {
-                if (currentStepConfig.action === 'click') {
-                    // 延迟一点点时间，确保元素已经完全显示
-                    setTimeout(() => {
-                        console.log(`[Tutorial] 自动点击元素: ${currentStepConfig.element}`);
-                        element.click();
-                    }, 300);
+                // 然后检查元素是否在视口内，如果不在则滚动
+                if (!this.isElementInViewport(element)) {
+                    console.log(`[Tutorial] 当前步骤的元素不在视口内，正在滚动: ${currentStepConfig.element}`);
+                    this.scrollToElement(element);
+                }
+
+                // 执行步骤中定义的操作
+                if (currentStepConfig.action) {
+                    if (currentStepConfig.action === 'click') {
+                        // 延迟一点点时间，确保元素已经完全显示和滚动到位
+                        setTimeout(() => {
+                            console.log(`[Tutorial] 自动点击元素: ${currentStepConfig.element}`);
+                            element.click();
+                        }, 300);
+                    }
                 }
             }
         }
