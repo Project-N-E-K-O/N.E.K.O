@@ -453,7 +453,7 @@
                 <div class="select-group">
                     <label>动作</label>
                     <div class="custom-multiselect emotion-motion-select" data-emotion="happy">
-                        <div class="multiselect-header">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
                             <span class="selected-text">选择动作</span>
                         </div>
                         <div class="multiselect-options"></div>
@@ -462,7 +462,7 @@
                 <div class="select-group">
                     <label>表情</label>
                     <div class="custom-multiselect emotion-expression-select" data-emotion="happy">
-                        <div class="multiselect-header">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
                             <span class="selected-text">选择表情</span>
                         </div>
                         <div class="multiselect-options"></div>
@@ -476,7 +476,7 @@
                 <div class="select-group">
                     <label>动作</label>
                     <div class="custom-multiselect emotion-motion-select" data-emotion="sad">
-                        <div class="multiselect-header">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
                             <span class="selected-text">选择动作</span>
                         </div>
                         <div class="multiselect-options"></div>
@@ -485,7 +485,7 @@
                 <div class="select-group">
                     <label>表情</label>
                     <div class="custom-multiselect emotion-expression-select" data-emotion="sad">
-                        <div class="multiselect-header">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
                             <span class="selected-text">选择表情</span>
                         </div>
                         <div class="multiselect-options"></div>
@@ -499,7 +499,7 @@
                 <div class="select-group">
                     <label>动作</label>
                     <div class="custom-multiselect emotion-motion-select" data-emotion="angry">
-                        <div class="multiselect-header">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
                             <span class="selected-text">选择动作</span>
                         </div>
                         <div class="multiselect-options"></div>
@@ -508,7 +508,7 @@
                 <div class="select-group">
                     <label>表情</label>
                     <div class="custom-multiselect emotion-expression-select" data-emotion="angry">
-                        <div class="multiselect-header">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
                             <span class="selected-text">选择表情</span>
                         </div>
                         <div class="multiselect-options"></div>
@@ -522,7 +522,7 @@
                 <div class="select-group">
                     <label>动作</label>
                     <div class="custom-multiselect emotion-motion-select" data-emotion="neutral">
-                        <div class="multiselect-header">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
                             <span class="selected-text">选择动作</span>
                         </div>
                         <div class="multiselect-options"></div>
@@ -531,7 +531,7 @@
                 <div class="select-group">
                     <label>表情</label>
                     <div class="custom-multiselect emotion-expression-select" data-emotion="neutral">
-                        <div class="multiselect-header">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
                             <span class="selected-text">选择表情</span>
                         </div>
                         <div class="multiselect-options"></div>
@@ -545,7 +545,7 @@
                 <div class="select-group">
                     <label>动作</label>
                     <div class="custom-multiselect emotion-motion-select" data-emotion="surprised">
-                        <div class="multiselect-header">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
                             <span class="selected-text">选择动作</span>
                         </div>
                         <div class="multiselect-options"></div>
@@ -554,7 +554,7 @@
                 <div class="select-group">
                     <label>表情</label>
                     <div class="custom-multiselect emotion-expression-select" data-emotion="surprised">
-                        <div class="multiselect-header">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
                             <span class="selected-text">选择表情</span>
                         </div>
                         <div class="multiselect-options"></div>
@@ -568,7 +568,7 @@
                 <div class="select-group">
                     <label>动作</label>
                     <div class="custom-multiselect emotion-motion-select" data-emotion="Idle">
-                        <div class="multiselect-header">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
                             <span class="selected-text">选择动作</span>
                         </div>
                         <div class="multiselect-options"></div>
@@ -577,7 +577,7 @@
                 <div class="select-group">
                     <label>表情</label>
                     <div class="custom-multiselect emotion-expression-select" data-emotion="Idle">
-                        <div class="multiselect-header">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
                             <span class="selected-text">选择表情</span>
                         </div>
                         <div class="multiselect-options"></div>
@@ -681,15 +681,19 @@
         // 切换下拉菜单
         function toggleDropdown(event) {
             const multiselect = event.currentTarget.closest('.custom-multiselect');
+            const header = multiselect.querySelector('.multiselect-header');
             const wasActive = multiselect.classList.contains('active');
 
             // 关闭所有其他下拉菜单
             document.querySelectorAll('.custom-multiselect').forEach(ms => {
                 ms.classList.remove('active');
+                const h = ms.querySelector('.multiselect-header');
+                if (h) h.setAttribute('aria-expanded', 'false');
             });
 
             if (!wasActive) {
                 multiselect.classList.add('active');
+                if (header) header.setAttribute('aria-expanded', 'true');
             }
 
             event.stopPropagation();
@@ -699,6 +703,8 @@
         window.addEventListener('click', () => {
             document.querySelectorAll('.custom-multiselect').forEach(ms => {
                 ms.classList.remove('active');
+                const h = ms.querySelector('.multiselect-header');
+                if (h) h.setAttribute('aria-expanded', 'false');
             });
         });
 
@@ -766,6 +772,12 @@
                     // 绑定点击事件到 header
                     const header = motionContainer.closest('.custom-multiselect').querySelector('.multiselect-header');
                     header.onclick = toggleDropdown;
+                    header.onkeydown = (e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            toggleDropdown(e);
+                        }
+                    };
                 }
 
                 if (expressionContainer) {
@@ -803,6 +815,12 @@
                     // 绑定点击事件到 header
                     const header = expressionContainer.closest('.custom-multiselect').querySelector('.multiselect-header');
                     header.onclick = toggleDropdown;
+                    header.onkeydown = (e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            toggleDropdown(e);
+                        }
+                    };
                 }
             });
         }
