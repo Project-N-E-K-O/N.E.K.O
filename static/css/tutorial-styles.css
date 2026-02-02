@@ -11,7 +11,15 @@
 /* 高亮遮罩层 */
 .driver-overlay {
     background: rgba(0, 0, 0, 0.6) !important;
-    backdrop-filter: blur(2px);
+    pointer-events: none;
+}
+
+/* 确保对话框内容清晰 */
+#chat-container,
+#chat-container * {
+    filter: none !important;
+    opacity: 1 !important;
+    backdrop-filter: none !important;
 }
 
 /* 高亮框 */

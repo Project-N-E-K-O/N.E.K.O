@@ -3997,7 +3997,7 @@ function init_app() {
 
                 //  隐藏Live2D浮动按钮和锁图标
                 const live2dFloatingButtons = document.getElementById('live2d-floating-buttons');
-                if (live2dFloatingButtons) {
+                if (live2dFloatingButtons && !window.isInTutorial) {
                     live2dFloatingButtons.style.display = 'none';
                 }
                 const live2dLockIcon = document.getElementById('live2d-lock-icon');
