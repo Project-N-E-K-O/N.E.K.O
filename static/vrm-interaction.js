@@ -54,6 +54,7 @@ class VRMInteraction {
         };
         this._snapAnimationFrameId = null;
         this._isSnappingModel = false;
+        this._snapResolve = null;
     }
 
 
@@ -132,6 +133,10 @@ class VRMInteraction {
             if (this._snapAnimationFrameId) {
                 cancelAnimationFrame(this._snapAnimationFrameId);
                 this._snapAnimationFrameId = null;
+                if (this._snapResolve) {
+                    this._snapResolve(false);
+                    this._snapResolve = null;
+                }
                 this._isSnappingModel = false;
             }
 
@@ -624,6 +629,11 @@ class VRMInteraction {
         if (this._snapAnimationFrameId) {
             cancelAnimationFrame(this._snapAnimationFrameId);
             this._snapAnimationFrameId = null;
+            if (this._snapResolve) {
+                this._snapResolve(false);
+                this._snapResolve = null;
+            }
+            this._isSnappingModel = false;
         }
 
         const duration = this._snapConfig?.duration || 260;
@@ -634,6 +644,7 @@ class VRMInteraction {
         this._isSnappingModel = true;
 
         return new Promise((resolve) => {
+            this._snapResolve = resolve;
             const animate = (currentTime) => {
                 const elapsed = currentTime - startTime;
                 const progress = Math.min(elapsed / duration, 1);
@@ -651,6 +662,7 @@ class VRMInteraction {
                     scene.position.copy(targetPosition);
                     this._isSnappingModel = false;
                     this._snapAnimationFrameId = null;
+                    this._snapResolve = null;
                     resolve(true);
                 }
             };
@@ -1143,6 +1155,10 @@ class VRMInteraction {
         if (this._snapAnimationFrameId) {
             cancelAnimationFrame(this._snapAnimationFrameId);
             this._snapAnimationFrameId = null;
+        }
+        if (this._snapResolve) {
+            this._snapResolve(false);
+            this._snapResolve = null;
         }
         this._isSnappingModel = false;
 
