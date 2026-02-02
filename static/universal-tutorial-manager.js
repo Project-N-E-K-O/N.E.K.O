@@ -13,6 +13,7 @@ class UniversalTutorialManager {
         this.STORAGE_KEY_PREFIX = 'neko_tutorial_';
         this.driver = null;
         this.isInitialized = false;
+        this.isTutorialRunning = false; // 防止重复启动
         this.currentPage = this.detectPage();
         this.currentStep = 0;
 
@@ -447,6 +448,57 @@ class UniversalTutorialManager {
                     title: '➕ 新增猫娘',
                     description: '点击这个按钮创建一个新的虚拟伙伴角色。你可以为她设置名字、性格、形象和语音。每个角色都是独立的，有自己的记忆和性格。',
                 }
+            },
+            {
+                element: '.catgirl-block:first-child .catgirl-header',
+                popover: {
+                    title: '📋 猫娘卡片',
+                    description: '点击猫娘名称可以展开或折叠详细信息。每个猫娘都有独立的设定，包括基础信息和进阶配置。',
+                },
+                action: 'click' // 自动点击展开卡片
+            },
+            {
+                element: '.catgirl-block:first-child button[id^="switch-btn-"]',
+                popover: {
+                    title: '🔄 切换猫娘',
+                    description: '点击此按钮可以将这个猫娘设为当前活跃角色。切换后，主页和对话界面会使用该角色的形象和性格。',
+                }
+            },
+            {
+                element: '.catgirl-block:first-child button.delete',
+                popover: {
+                    title: '🗑️ 删除猫娘',
+                    description: '点击此按钮可以删除该猫娘角色。注意：删除后无法恢复，请谨慎操作。',
+                }
+            },
+            {
+                element: '.catgirl-block:first-child .fold-toggle',
+                popover: {
+                    title: '⚙️ 进阶设定',
+                    description: '点击展开进阶设定，可以配置 Live2D 模型、语音 ID、以及添加自定义性格属性（如性格、爱好、口头禅等）。',
+                },
+                action: 'click' // 自动点击展开
+            },
+            {
+                element: '.catgirl-block:first-child .live2d-link',
+                popover: {
+                    title: '🎨 模型设定',
+                    description: '点击此链接可以选择或更换猫娘的 Live2D 形象或 VRM 模型。不同的模型会带来不同的视觉体验。',
+                }
+            },
+            {
+                element: '.catgirl-block:first-child select[name="voice_id"]',
+                popover: {
+                    title: '🎤 语音设定',
+                    description: '选择猫娘的语音角色。不同的 voice_id 对应不同的声音特征，让你的虚拟伙伴拥有独特的声音。',
+                }
+            },
+            {
+                element: '#catgirl-section',
+                popover: {
+                    title: '✅ 引导完成',
+                    description: '恭喜！你已经了解了角色管理的所有功能。现在可以开始创建和管理你的虚拟伙伴了。随时可以回到这里修改设定。',
+                }
             }
         ];
     }
@@ -738,6 +790,12 @@ class UniversalTutorialManager {
             return;
         }
 
+        // 防止重复启动
+        if (this.isTutorialRunning) {
+            console.warn('[Tutorial] 引导已在运行中，跳过重复启动');
+            return;
+        }
+
         try {
             const steps = this.getStepsForPage();
 
@@ -768,70 +826,236 @@ class UniversalTutorialManager {
                 return;
             }
 
-            // 定义步骤
-            this.driver.setSteps(validSteps);
+            // 标记引导正在运行
+            this.isTutorialRunning = true;
 
-            // 设置全局标记，表示正在进行引导
-            window.isInTutorial = true;
-            console.log('[Tutorial] 设置全局引导标记');
-
-            // 禁用对话框拖动功能（在引导中）
-            const chatContainer = document.getElementById('chat-container');
-            if (chatContainer) {
-                chatContainer.style.pointerEvents = 'none';
-                console.log('[Tutorial] 禁用对话框拖动功能');
-            }
-
-            // 禁用 Live2D 模型拖动功能（在引导中）
-            const live2dCanvas = document.getElementById('live2d-canvas');
-            if (live2dCanvas) {
-                live2dCanvas.style.pointerEvents = 'none';
-                console.log('[Tutorial] 禁用 Live2D 模型拖动功能');
-            }
-
-            // 将 Live2D 模型移到屏幕右边（在引导中）
-            const live2dContainer = document.getElementById('live2d-container');
-            if (live2dContainer) {
-                this.originalLive2dStyle = {
-                    left: live2dContainer.style.left,
-                    right: live2dContainer.style.right,
-                    transform: live2dContainer.style.transform
-                };
-                live2dContainer.style.left = 'auto';
-                live2dContainer.style.right = '0';
-                console.log('[Tutorial] 将 Live2D 模型移到屏幕右边');
-            }
-
-            // 立即强制显示浮动工具栏（引导开始时）
-            const floatingButtons = document.getElementById('live2d-floating-buttons');
-            if (floatingButtons) {
-                floatingButtons.style.setProperty('display', 'flex', 'important');
-                floatingButtons.style.setProperty('visibility', 'visible', 'important');
-                floatingButtons.style.setProperty('opacity', '1', 'important');
-                console.log('[Tutorial] 强制显示浮动工具栏');
-            }
-
-            // 启动浮动工具栏保护定时器（每 200ms 检查一次，更频繁）
-            this.floatingButtonsProtectionTimer = setInterval(() => {
-                const floatingButtons = document.getElementById('live2d-floating-buttons');
-                if (floatingButtons && window.isInTutorial) {
-                    // 强制设置所有可能隐藏浮动按钮的样式
-                    floatingButtons.style.setProperty('display', 'flex', 'important');
-                    floatingButtons.style.setProperty('visibility', 'visible', 'important');
-                    floatingButtons.style.setProperty('opacity', '1', 'important');
-                }
-            }, 200);
-
-            // 监听事件
-            this.driver.on('destroy', () => this.onTutorialEnd());
-            this.driver.on('next', () => this.onStepChange());
-
-            // 启动引导
-            this.driver.start();
-            console.log('[Tutorial] 引导已启动，页面:', this.currentPage);
+            // 先显示全屏提示，等待用户点击
+            this.showFullscreenPrompt(validSteps);
         } catch (error) {
             console.error('[Tutorial] 启动引导失败:', error);
         }
+    }
+
+    /**
+     * 显示全屏提示
+     */
+    showFullscreenPrompt(validSteps) {
+        // 创建提示遮罩
+        const overlay = document.createElement('div');
+        overlay.style.position = 'fixed';
+        overlay.style.top = '0';
+        overlay.style.left = '0';
+        overlay.style.width = '100vw';
+        overlay.style.height = '100vh';
+        overlay.style.background = 'rgba(0, 0, 0, 0.8)';
+        overlay.style.zIndex = '99999';
+        overlay.style.display = 'flex';
+        overlay.style.alignItems = 'center';
+        overlay.style.justifyContent = 'center';
+
+        // 创建提示框
+        const prompt = document.createElement('div');
+        prompt.style.background = 'rgba(30, 30, 40, 0.95)';
+        prompt.style.border = '2px solid #44b7fe';
+        prompt.style.borderRadius = '16px';
+        prompt.style.padding = '40px';
+        prompt.style.maxWidth = '500px';
+        prompt.style.textAlign = 'center';
+        prompt.style.backdropFilter = 'blur(10px)';
+        prompt.style.boxShadow = '0 8px 32px rgba(0, 0, 0, 0.4)';
+
+        // 标题
+        const title = document.createElement('h2');
+        title.textContent = '🎓 开始新手引导';
+        title.style.color = '#44b7fe';
+        title.style.marginBottom = '20px';
+        title.style.fontSize = '24px';
+
+        // 描述
+        const description = document.createElement('p');
+        description.textContent = '为了获得最佳的引导体验，建议进入全屏模式。\n全屏模式下，引导内容会更清晰，不会被其他元素遮挡。';
+        description.style.color = 'rgba(255, 255, 255, 0.85)';
+        description.style.marginBottom = '30px';
+        description.style.lineHeight = '1.6';
+        description.style.whiteSpace = 'pre-line';
+
+        // 按钮容器
+        const buttonContainer = document.createElement('div');
+        buttonContainer.style.display = 'flex';
+        buttonContainer.style.gap = '15px';
+        buttonContainer.style.justifyContent = 'center';
+
+        // 全屏按钮
+        const fullscreenBtn = document.createElement('button');
+        fullscreenBtn.textContent = '进入全屏引导';
+        fullscreenBtn.style.padding = '12px 30px';
+        fullscreenBtn.style.background = 'linear-gradient(135deg, #44b7fe 0%, #40C5F1 100%)';
+        fullscreenBtn.style.color = '#fff';
+        fullscreenBtn.style.border = 'none';
+        fullscreenBtn.style.borderRadius = '8px';
+        fullscreenBtn.style.fontSize = '16px';
+        fullscreenBtn.style.fontWeight = '600';
+        fullscreenBtn.style.cursor = 'pointer';
+        fullscreenBtn.style.transition = 'all 0.2s ease';
+
+        fullscreenBtn.onmouseover = () => {
+            fullscreenBtn.style.transform = 'translateY(-2px)';
+            fullscreenBtn.style.boxShadow = '0 4px 12px rgba(68, 183, 254, 0.4)';
+        };
+        fullscreenBtn.onmouseout = () => {
+            fullscreenBtn.style.transform = 'translateY(0)';
+            fullscreenBtn.style.boxShadow = 'none';
+        };
+
+        fullscreenBtn.onclick = () => {
+            document.body.removeChild(overlay);
+
+            // 进入全屏
+            this.enterFullscreenMode();
+
+            // 监听全屏变化事件，等待全屏完成后再启动引导
+            const onFullscreenChange = () => {
+                if (document.fullscreenElement || document.webkitFullscreenElement ||
+                    document.mozFullScreenElement || document.msFullscreenElement) {
+                    // 已进入全屏，延迟一点确保布局稳定
+                    setTimeout(() => {
+                        console.log('[Tutorial] 全屏布局已稳定，启动引导');
+                        this.startTutorialSteps(validSteps);
+                    }, 300);
+
+                    // 移除监听器
+                    document.removeEventListener('fullscreenchange', onFullscreenChange);
+                    document.removeEventListener('webkitfullscreenchange', onFullscreenChange);
+                    document.removeEventListener('mozfullscreenchange', onFullscreenChange);
+                    document.removeEventListener('MSFullscreenChange', onFullscreenChange);
+                }
+            };
+
+            // 添加全屏变化监听器
+            document.addEventListener('fullscreenchange', onFullscreenChange);
+            document.addEventListener('webkitfullscreenchange', onFullscreenChange);
+            document.addEventListener('mozfullscreenchange', onFullscreenChange);
+            document.addEventListener('MSFullscreenChange', onFullscreenChange);
+
+            // 超时保护：如果2秒内没有进入全屏，直接启动引导
+            setTimeout(() => {
+                if (!document.fullscreenElement && !document.webkitFullscreenElement &&
+                    !document.mozFullScreenElement && !document.msFullscreenElement) {
+                    console.warn('[Tutorial] 全屏超时，直接启动引导');
+                    this.startTutorialSteps(validSteps);
+
+                    // 移除监听器
+                    document.removeEventListener('fullscreenchange', onFullscreenChange);
+                    document.removeEventListener('webkitfullscreenchange', onFullscreenChange);
+                    document.removeEventListener('mozfullscreenchange', onFullscreenChange);
+                    document.removeEventListener('MSFullscreenChange', onFullscreenChange);
+                }
+            }, 2000);
+        };
+
+        // 跳过按钮
+        const skipBtn = document.createElement('button');
+        skipBtn.textContent = '跳过全屏';
+        skipBtn.style.padding = '12px 30px';
+        skipBtn.style.background = 'rgba(68, 183, 254, 0.15)';
+        skipBtn.style.color = '#44b7fe';
+        skipBtn.style.border = '1px solid rgba(68, 183, 254, 0.3)';
+        skipBtn.style.borderRadius = '8px';
+        skipBtn.style.fontSize = '16px';
+        skipBtn.style.fontWeight = '600';
+        skipBtn.style.cursor = 'pointer';
+        skipBtn.style.transition = 'all 0.2s ease';
+
+        skipBtn.onmouseover = () => {
+            skipBtn.style.background = 'rgba(68, 183, 254, 0.25)';
+            skipBtn.style.transform = 'translateY(-1px)';
+        };
+        skipBtn.onmouseout = () => {
+            skipBtn.style.background = 'rgba(68, 183, 254, 0.15)';
+            skipBtn.style.transform = 'translateY(0)';
+        };
+
+        skipBtn.onclick = () => {
+            document.body.removeChild(overlay);
+            // 不进入全屏，直接启动引导
+            this.startTutorialSteps(this.driver.steps);
+        };
+
+        // 组装
+        buttonContainer.appendChild(fullscreenBtn);
+        buttonContainer.appendChild(skipBtn);
+        prompt.appendChild(title);
+        prompt.appendChild(description);
+        prompt.appendChild(buttonContainer);
+        overlay.appendChild(prompt);
+        document.body.appendChild(overlay);
+    }
+
+    /**
+     * 启动引导步骤（内部方法）
+     */
+    startTutorialSteps(validSteps) {
+        // 定义步骤
+        this.driver.setSteps(validSteps);
+
+        // 设置全局标记，表示正在进行引导
+        window.isInTutorial = true;
+        console.log('[Tutorial] 设置全局引导标记');
+
+        // 禁用对话框拖动功能（在引导中）
+        const chatContainer = document.getElementById('chat-container');
+        if (chatContainer) {
+            chatContainer.style.pointerEvents = 'none';
+            console.log('[Tutorial] 禁用对话框拖动功能');
+        }
+
+        // 禁用 Live2D 模型拖动功能（在引导中）
+        const live2dCanvas = document.getElementById('live2d-canvas');
+        if (live2dCanvas) {
+            live2dCanvas.style.pointerEvents = 'none';
+            console.log('[Tutorial] 禁用 Live2D 模型拖动功能');
+        }
+
+        // 将 Live2D 模型移到屏幕右边（在引导中）
+        const live2dContainer = document.getElementById('live2d-container');
+        if (live2dContainer) {
+            this.originalLive2dStyle = {
+                left: live2dContainer.style.left,
+                right: live2dContainer.style.right,
+                transform: live2dContainer.style.transform
+            };
+            live2dContainer.style.left = 'auto';
+            live2dContainer.style.right = '0';
+            console.log('[Tutorial] 将 Live2D 模型移到屏幕右边');
+        }
+
+        // 立即强制显示浮动工具栏（引导开始时）
+        const floatingButtons = document.getElementById('live2d-floating-buttons');
+        if (floatingButtons) {
+            floatingButtons.style.setProperty('display', 'flex', 'important');
+            floatingButtons.style.setProperty('visibility', 'visible', 'important');
+            floatingButtons.style.setProperty('opacity', '1', 'important');
+            console.log('[Tutorial] 强制显示浮动工具栏');
+        }
+
+        // 启动浮动工具栏保护定时器（每 200ms 检查一次，更频繁）
+        this.floatingButtonsProtectionTimer = setInterval(() => {
+            const floatingButtons = document.getElementById('live2d-floating-buttons');
+            if (floatingButtons && window.isInTutorial) {
+                // 强制设置所有可能隐藏浮动按钮的样式
+                floatingButtons.style.setProperty('display', 'flex', 'important');
+                floatingButtons.style.setProperty('visibility', 'visible', 'important');
+                floatingButtons.style.setProperty('opacity', '1', 'important');
+            }
+        }, 200);
+
+        // 监听事件
+        this.driver.on('destroy', () => this.onTutorialEnd());
+        this.driver.on('next', () => this.onStepChange());
+
+        // 启动引导
+        this.driver.start();
+        console.log('[Tutorial] 引导已启动，页面:', this.currentPage);
     }
 
     /**
@@ -883,48 +1107,66 @@ class UniversalTutorialManager {
      * 自动滚动到目标元素
      */
     scrollToElement(element) {
-        if (!element) return;
-
-        // 检查元素是否已经在视口内
-        if (this.isElementInViewport(element)) {
-            console.log('[Tutorial] 元素已在视口内，无需滚动');
-            return;
-        }
-
-        console.log('[Tutorial] 元素不在视口内，正在滚动...');
-
-        // 尝试找到可滚动的父容器
-        let scrollableParent = element.parentElement;
-        while (scrollableParent) {
-            const style = window.getComputedStyle(scrollableParent);
-            const hasScroll = style.overflowY === 'auto' ||
-                            style.overflowY === 'scroll' ||
-                            style.overflow === 'auto' ||
-                            style.overflow === 'scroll';
-
-            if (hasScroll) {
-                console.log('[Tutorial] 找到可滚动容器，正在滚动到元素...');
-                // 计算元素相对于可滚动容器的位置
-                const elementTop = element.offsetTop;
-                const containerHeight = scrollableParent.clientHeight;
-                const elementHeight = element.clientHeight;
-
-                // 计算需要滚动的距离，使元素居中显示
-                const targetScroll = elementTop - (containerHeight - elementHeight) / 2;
-
-                scrollableParent.scrollTo({
-                    top: Math.max(0, targetScroll),
-                    behavior: 'smooth'
-                });
+        return new Promise((resolve) => {
+            if (!element) {
+                resolve();
                 return;
             }
 
-            scrollableParent = scrollableParent.parentElement;
-        }
+            // 检查元素是否已经在视口内
+            if (this.isElementInViewport(element)) {
+                console.log('[Tutorial] 元素已在视口内，无需滚动');
+                resolve();
+                return;
+            }
 
-        // 如果没有找到可滚动的父容器，尝试滚动 window
-        console.log('[Tutorial] 未找到可滚动容器，尝试滚动 window');
-        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            console.log('[Tutorial] 元素不在视口内，正在滚动...');
+
+            // 尝试找到可滚动的父容器
+            let scrollableParent = element.parentElement;
+            while (scrollableParent) {
+                const style = window.getComputedStyle(scrollableParent);
+                const hasScroll = style.overflowY === 'auto' ||
+                                style.overflowY === 'scroll' ||
+                                style.overflow === 'auto' ||
+                                style.overflow === 'scroll';
+
+                if (hasScroll) {
+                    console.log('[Tutorial] 找到可滚动容器，正在滚动到元素...');
+                    // 计算元素相对于可滚动容器的位置
+                    const elementTop = element.offsetTop;
+                    const containerHeight = scrollableParent.clientHeight;
+                    const elementHeight = element.clientHeight;
+
+                    // 计算需要滚动的距离，使元素居中显示
+                    const targetScroll = elementTop - (containerHeight - elementHeight) / 2;
+
+                    scrollableParent.scrollTo({
+                        top: Math.max(0, targetScroll),
+                        behavior: 'smooth'
+                    });
+
+                    // 等待滚动完成（平滑滚动大约需要 300-500ms）
+                    setTimeout(() => {
+                        console.log('[Tutorial] 滚动完成');
+                        resolve();
+                    }, 600);
+                    return;
+                }
+
+                scrollableParent = scrollableParent.parentElement;
+            }
+
+            // 如果没有找到可滚动的父容器，尝试滚动 window
+            console.log('[Tutorial] 未找到可滚动容器，尝试滚动 window');
+            element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+            // 等待滚动完成
+            setTimeout(() => {
+                console.log('[Tutorial] 滚动完成');
+                resolve();
+            }, 600);
+        });
     }
 
     /**
@@ -941,22 +1183,16 @@ class UniversalTutorialManager {
             const element = document.querySelector(currentStepConfig.element);
 
             if (element) {
-                // 先检查元素是否隐藏，如果隐藏则显示
+                // 检查元素是否隐藏，如果隐藏则显示
                 if (!this.isElementVisible(element)) {
                     console.warn(`[Tutorial] 当前步骤的元素隐藏，正在显示: ${currentStepConfig.element}`);
                     this.showElementForTutorial(element, currentStepConfig.element);
                 }
 
-                // 然后检查元素是否在视口内，如果不在则滚动
-                if (!this.isElementInViewport(element)) {
-                    console.log(`[Tutorial] 当前步骤的元素不在视口内，正在滚动: ${currentStepConfig.element}`);
-                    this.scrollToElement(element);
-                }
-
                 // 执行步骤中定义的操作
                 if (currentStepConfig.action) {
                     if (currentStepConfig.action === 'click') {
-                        // 延迟一点点时间，确保元素已经完全显示和滚动到位
+                        // 延迟一点点时间，确保元素已经完全显示
                         setTimeout(() => {
                             console.log(`[Tutorial] 自动点击元素: ${currentStepConfig.element}`);
                             element.click();
@@ -971,6 +1207,12 @@ class UniversalTutorialManager {
      * 引导结束时的回调
      */
     onTutorialEnd() {
+        // 重置运行标志
+        this.isTutorialRunning = false;
+
+        // 退出全屏模式
+        this.exitFullscreenMode();
+
         // 标记用户已看过该页面的引导
         const storageKey = this.STORAGE_KEY_PREFIX + this.currentPage;
         localStorage.setItem(storageKey, 'true');
@@ -1050,6 +1292,52 @@ class UniversalTutorialManager {
         const targetPage = page || this.currentPage;
         const storageKey = this.STORAGE_KEY_PREFIX + targetPage;
         return localStorage.getItem(storageKey) === 'true';
+    }
+
+    /**
+     * 进入全屏模式
+     */
+    enterFullscreenMode() {
+        console.log('[Tutorial] 请求进入全屏模式');
+
+        const elem = document.documentElement;
+
+        // 使用 Fullscreen API 进入全屏
+        if (elem.requestFullscreen) {
+            elem.requestFullscreen().catch(err => {
+                console.error('[Tutorial] 进入全屏失败:', err);
+            });
+        } else if (elem.webkitRequestFullscreen) { // Safari
+            elem.webkitRequestFullscreen();
+        } else if (elem.msRequestFullscreen) { // IE11
+            elem.msRequestFullscreen();
+        } else if (elem.mozRequestFullScreen) { // Firefox
+            elem.mozRequestFullScreen();
+        }
+
+        console.log('[Tutorial] 全屏模式已请求');
+    }
+
+    /**
+     * 退出全屏模式
+     */
+    exitFullscreenMode() {
+        console.log('[Tutorial] 退出全屏模式');
+
+        // 使用 Fullscreen API 退出全屏
+        if (document.exitFullscreen) {
+            document.exitFullscreen().catch(err => {
+                console.error('[Tutorial] 退出全屏失败:', err);
+            });
+        } else if (document.webkitExitFullscreen) { // Safari
+            document.webkitExitFullscreen();
+        } else if (document.msExitFullscreen) { // IE11
+            document.msExitFullscreen();
+        } else if (document.mozCancelFullScreen) { // Firefox
+            document.mozCancelFullScreen();
+        }
+
+        console.log('[Tutorial] 全屏模式已退出');
     }
 }
 

@@ -39,6 +39,24 @@
     font-weight: 600;
     margin-bottom: 12px;
     letter-spacing: 0.5px;
+    cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+}
+
+.driver-popover-title:active {
+    cursor: grabbing;
+}
+
+.driver-popover.dragging {
+    transition: none !important;
+    animation: none !important;
+}
+
+.driver-popover.dragging .driver-popover-title {
+    cursor: grabbing;
 }
 
 .driver-popover-description {
