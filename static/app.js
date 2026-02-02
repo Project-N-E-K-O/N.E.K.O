@@ -8683,4 +8683,14 @@ document.addEventListener('DOMContentLoaded', async function() {
             checkAndShowSubtitlePrompt(fullText);
         }
     }
+
+    // 初始化新手引导管理器
+    if (typeof initTutorialManager === 'function') {
+        try {
+            initTutorialManager();
+            console.log('[App] 新手引导管理器已初始化');
+        } catch (error) {
+            console.error('[App] 新手引导管理器初始化失败:', error);
+        }
+    }
 });

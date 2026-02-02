@@ -1354,6 +1354,25 @@
     "loadCurrentCharacterModelFailed": "加载当前角色模型失败:",
     "serverNotReturnedValidJSON": "服务器未返回有效的 JSON 数据"
   },
+  "tutorial": {
+    "step1": {
+      "title": "👋 欢迎来到 N.E.K.O",
+      "desc": "这是你的虚拟伙伴，她会陪伴你进行各种交互。点击她可以触发不同的表情和动作哦~"
+    },
+    "step2": {
+      "title": "💬 对话区域",
+      "desc": "在这里可以和伙伴进行文字对话。输入你的想法，她会给你有趣的回应呢~"
+    },
+    "step3": {
+      "title": "✍️ 输入框",
+      "desc": "在这里输入你想说的话。按 Enter 发送，Shift+Enter 换行。也可以点击右边的按钮发送截图哦~"
+    },
+    "step4": {
+      "title": "🎮 快速操作",
+      "desc": "左边是发送按钮，右边是截图按钮。你可以分享屏幕截图给伙伴，她会帮你分析哦~"
+    },
+    "completed": "✨ 引导完成！祝你使用愉快~"
+  },
   "console": {
     "oggOpusInitFailed": "[OGG OPUS] 初始化 Promise 失败，将允许重试:",
     "oggOpusNotLoaded": "ogg-opus-decoder 未加载，请检查 index.html",

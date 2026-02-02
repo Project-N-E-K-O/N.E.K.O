@@ -1294,6 +1294,25 @@
     "loadCurrentCharacterModelFailed": "Failed to load current character model:",
     "serverNotReturnedValidJSON": "Server did not return valid JSON data"
   },
+  "tutorial": {
+    "step1": {
+      "title": "👋 Welcome to N.E.K.O",
+      "desc": "This is your virtual companion who will accompany you through various interactions. Click on her to trigger different expressions and actions~"
+    },
+    "step2": {
+      "title": "💬 Chat Area",
+      "desc": "You can have text conversations with your companion here. Share your thoughts and she'll give you interesting responses~"
+    },
+    "step3": {
+      "title": "✍️ Input Box",
+      "desc": "Type what you want to say here. Press Enter to send, Shift+Enter for a new line. You can also click the button on the right to send screenshots~"
+    },
+    "step4": {
+      "title": "🎮 Quick Actions",
+      "desc": "The left button sends messages, the right button takes screenshots. You can share screen captures with your companion and she'll help analyze them~"
+    },
+    "completed": "✨ Tutorial complete! Enjoy using N.E.K.O~"
+  },
   "console": {
     "oggOpusInitFailed": "[OGG OPUS] Initialization Promise failed, will allow retry:",
     "oggOpusNotLoaded": "ogg-opus-decoder not loaded, please check index.html",

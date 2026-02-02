@@ -60,6 +60,22 @@
         </div>
     </div>
     <script src="/static/js/memory_browser.js"></script>
+
+    <!-- Driver.js 库 -->
+    <script src="/static/libs/driver.min.js"></script>
+    <link rel="stylesheet" href="/static/libs/driver.min.css">
+
+    <!-- 通用教程管理器 -->
+    <script src="/static/universal-tutorial-manager.js"></script>
+
+    <!-- 初始化 -->
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            if (typeof initUniversalTutorialManager === 'function') {
+                initUniversalTutorialManager();
+            }
+        });
+    </script>
 </body>
 
 </html>
