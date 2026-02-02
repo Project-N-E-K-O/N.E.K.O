@@ -32,15 +32,18 @@ N.E.K.O 引导系统基于 **driver.js v1.0+** 构建，提供统一的新手引
 
 ### 支持的页面
 
-| 页面类型 | 路径匹配 | 引导步骤数 |
-|---------|---------|-----------|
-| 主页 | `/`, `/index.html` | 22 步 |
-| 模型管理 | `/model_manager`, `/l2d` | 8 步 |
-| 角色管理 | `/chara_manager` | 13 步 |
-| API 设置 | `/api_key`, `/settings` | 7 步 |
-| 语音克隆 | `/voice_clone` | 6 步 |
-| Steam Workshop | `/steam_workshop` | 5 步 |
-| 内存浏览器 | `/memory_browser` | 6 步 |
+| 页面类型 | 路径匹配 | 引导步骤数 | localStorage 键 | 说明 |
+|---------|---------|-----------|----------------|------|
+| 主页 | `/`, `/index.html` | 22 步 | `neko_tutorial_home` | 无全屏提示 |
+| 模型管理 (Live2D) | `/model_manager`, `/l2d` | 8 步 | `neko_tutorial_model_manager_live2d` | 根据当前模型类型动态调整 |
+| 模型管理 (VRM) | `/model_manager`, `/l2d` | 7 步 | `neko_tutorial_model_manager_vrm` | 根据当前模型类型动态调整 |
+| 角色管理 | `/chara_manager` | 13 步 | `neko_tutorial_chara_manager` | 需要全屏提示 |
+| API 设置 | `/api_key`, `/settings` | 7 步 | `neko_tutorial_settings` | - |
+| 语音克隆 | `/voice_clone` | 6 步 | `neko_tutorial_voice_clone` | - |
+| Steam Workshop | `/steam_workshop` | 5 步 | `neko_tutorial_steam_workshop` | - |
+| 内存浏览器 | `/memory_browser` | 6 步 | `neko_tutorial_memory_browser` | - |
+
+**注意**：模型管理页面会根据当前选择的模型类型（Live2D 或 VRM）使用不同的 localStorage 键，这样用户可以分别体验两种模型类型的引导。
 
 ---
 

@@ -129,33 +129,8 @@ class UniversalTutorialManager {
                 allowClose: true,
                 overlayClickNext: false,
                 animate: true,
-                smoothScroll: true, // 启用平滑滚动
                 className: 'neko-tutorial-driver',
                 disableActiveInteraction: false,
-                onHighlighted: (element, step, options) => {
-                    // 每次高亮元素时，确保元素在视口中
-                    console.log('[Tutorial] 高亮元素:', step.element);
-
-                    // 给一点时间让 Driver.js 完成定位
-                    setTimeout(() => {
-                        if (element && element.element) {
-                            const targetElement = element.element;
-                            // 检查元素是否在视口中
-                            const rect = targetElement.getBoundingClientRect();
-                            const isInViewport = (
-                                rect.top >= 0 &&
-                                rect.left >= 0 &&
-                                rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) &&
-                                rect.right <= (window.innerWidth || document.documentElement.clientWidth)
-                            );
-
-                            if (!isInViewport) {
-                                console.log('[Tutorial] 元素不在视口中，滚动到元素');
-                                targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                            }
-                        }
-                    }, 100);
-                }
             });
 
             this.isInitialized = true;
@@ -169,27 +144,10 @@ class UniversalTutorialManager {
     }
 
     /**
-     * 获取当前页面的存储键（区分 Live2D 和 VRM）
-     */
-    getStorageKey() {
-        let pageKey = this.currentPage;
-
-        // 对于模型管理页面，需要区分 Live2D 和 VRM
-        if (this.currentPage === 'model_manager') {
-            const modelTypeText = document.getElementById('model-type-text');
-            const isVRM = modelTypeText && modelTypeText.textContent.includes('VRM');
-            pageKey = isVRM ? 'model_manager_vrm' : 'model_manager_live2d';
-            console.log('[Tutorial] 检测到模型管理页面，模型类型:', isVRM ? 'VRM' : 'Live2D');
-        }
-
-        return this.STORAGE_KEY_PREFIX + pageKey;
-    }
-
-    /**
      * 检查是否需要自动启动引导
      */
     checkAndStartTutorial() {
-        const storageKey = this.getStorageKey();
+        const storageKey = this.STORAGE_KEY_PREFIX + this.currentPage;
         const hasSeen = localStorage.getItem(storageKey);
 
         console.log('[Tutorial] 检查引导状态:');
@@ -248,19 +206,28 @@ class UniversalTutorialManager {
 
             // 延迟一点，等待 UI 更新
             setTimeout(() => {
-                // 检查新模型类型是否已看过引导
-                const newStorageKey = this.getStorageKey();
-                const hasSeenNew = localStorage.getItem(newStorageKey);
+                const newPageType = this.detectPage();
+                console.log('[Tutorial] 新的页面类型:', newPageType);
 
-                console.log('[Tutorial] 模型类型切换后的引导状态:');
-                console.log('  - 存储键:', newStorageKey);
-                console.log('  - 已看过引导:', hasSeenNew ? '已看过' : '未看过');
+                // 如果页面类型改变了
+                if (newPageType !== this.currentPage) {
+                    console.log('[Tutorial] 页面类型已改变，从', this.currentPage, '到', newPageType);
 
-                // 如果没看过，自动启动引导
-                if (!hasSeenNew) {
-                    setTimeout(() => {
-                        this.startTutorial();
-                    }, 1000);
+                    // 更新当前页面类型
+                    this.currentPage = newPageType;
+
+                    // 检查新模型类型是否已看过引导
+                    const newStorageKey = this.STORAGE_KEY_PREFIX + newPageType;
+                    const hasSeenNew = localStorage.getItem(newStorageKey);
+
+                    console.log('[Tutorial] 新模型类型引导状态:', hasSeenNew ? '已看过' : '未看过');
+
+                    // 如果没看过，自动启动引导
+                    if (!hasSeenNew) {
+                        setTimeout(() => {
+                            this.startTutorial();
+                        }, 1000);
+                    }
                 }
             }, 500);
         });
@@ -305,49 +272,49 @@ class UniversalTutorialManager {
                 element: '#live2d-container',
                 popover: {
                     title: window.t ? window.t('tutorial.step1.title', '👋 欢迎来到 N.E.K.O') : '👋 欢迎来到 N.E.K.O',
-                    description: window.t ? window.t('tutorial.step1.desc', '这是您的虚拟伙伴，她会陪伴您进行各种交互。点击她可以触发不同的表情和动作哦~') : '这是您的虚拟伙伴，她会陪伴您进行各种交互。点击她可以触发不同的表情和动作哦~',
+                    description: window.t ? window.t('tutorial.step1.desc', '这是你的虚拟伙伴，她会陪伴你进行各种交互。点击她可以触发不同的表情和动作哦~') : '这是你的虚拟伙伴，她会陪伴你进行各种交互。点击她可以触发不同的表情和动作哦~',
                 }
             },
             {
                 element: '#chat-container',
                 popover: {
                     title: window.t ? window.t('tutorial.step2.title', '💬 对话区域') : '💬 对话区域',
-                    description: window.t ? window.t('tutorial.step2.desc', '在这里可以和伙伴进行文字对话。输入您的想法，她会给您有趣的回应呢~') : '在这里可以和伙伴进行文字对话。输入您的想法，她会给您有趣的回应呢~',
+                    description: window.t ? window.t('tutorial.step2.desc', '在这里可以和伙伴进行文字对话。输入你的想法，她会给你有趣的回应呢~') : '在这里可以和伙伴进行文字对话。输入你的想法，她会给你有趣的回应呢~',
                 }
             },
             {
                 element: '#textInputBox',
                 popover: {
                     title: window.t ? window.t('tutorial.step3.title', '✍️ 输入框') : '✍️ 输入框',
-                    description: window.t ? window.t('tutorial.step3.desc', '在这里输入您想说的话。按 Enter 发送，Shift+Enter 换行。也可以点击右边的按钮发送截图哦~') : '在这里输入您想说的话。按 Enter 发送，Shift+Enter 换行。也可以点击右边的按钮发送截图哦~',
+                    description: window.t ? window.t('tutorial.step3.desc', '在这里输入你想说的话。按 Enter 发送，Shift+Enter 换行。也可以点击右边的按钮发送截图哦~') : '在这里输入你想说的话。按 Enter 发送，Shift+Enter 换行。也可以点击右边的按钮发送截图哦~',
                 }
             },
             {
                 element: '#button-group',
                 popover: {
                     title: window.t ? window.t('tutorial.step4.title', '🎮 快速操作') : '🎮 快速操作',
-                    description: window.t ? window.t('tutorial.step4.desc', '左边是发送按钮，右边是截图按钮。您可以分享屏幕截图给伙伴，她会帮您分析哦~') : '左边是发送按钮，右边是截图按钮。您可以分享屏幕截图给伙伴，她会帮您分析哦~',
+                    description: window.t ? window.t('tutorial.step4.desc', '左边是发送按钮，右边是截图按钮。你可以分享屏幕截图给伙伴，她会帮你分析哦~') : '左边是发送按钮，右边是截图按钮。你可以分享屏幕截图给伙伴，她会帮你分析哦~',
                 }
             },
             {
                 element: '#live2d-floating-buttons',
                 popover: {
                     title: '🎛️ 浮动工具栏',
-                    description: '这是浮动工具栏，包含多个实用功能按钮。让我为您逐一介绍每个按钮的功能吧~',
+                    description: '这是浮动工具栏，包含多个实用功能按钮。让我为你逐一介绍每个按钮的功能吧~',
                 }
             },
             {
                 element: '#live2d-btn-mic',
                 popover: {
                     title: '🎤 语音控制',
-                    description: '点击这个按钮可以启用语音控制功能。启用后，虚拟伙伴会通过语音识别来理解您的话语，让交互更加自然和便捷。',
+                    description: '点击这个按钮可以启用语音控制功能。启用后，虚拟伙伴会通过语音识别来理解你的话语，让交互更加自然和便捷。',
                 }
             },
             {
                 element: '#live2d-btn-settings',
                 popover: {
                     title: '⚙️ 设置',
-                    description: '点击这个按钮可以打开设置面板。在这里您可以调整虚拟伙伴的行为参数，管理角色、API 密钥、记忆等。',
+                    description: '点击这个按钮可以打开设置面板。在这里你可以调整虚拟伙伴的行为参数，管理角色、API 密钥、记忆等。',
                 },
                 action: 'click'
             },
@@ -378,26 +345,20 @@ class UniversalTutorialManager {
 
         console.log('[Tutorial] 模型管理页面 - 当前模型类型:', isVRM ? 'VRM' : 'Live2D');
 
-        // 检查通用步骤是否已看过
-        const commonStorageKey = this.STORAGE_KEY_PREFIX + 'model_manager_common';
-        const hasSeenCommon = localStorage.getItem(commonStorageKey);
-
-        console.log('[Tutorial] 通用步骤状态:', hasSeenCommon ? '已看过' : '未看过');
-
         // 通用步骤（所有模型类型都有）
         const commonSteps = [
             {
                 element: '#model-type-select-btn',
                 popover: {
                     title: '🎨 选择模型类型',
-                    description: '首先选择您要使用的模型类型：Live2D（2D 动画）或 VRM（3D 模型）。',
+                    description: '首先选择你要使用的模型类型：Live2D（2D 动画）或 VRM（3D 模型）。',
                 }
             },
             {
                 element: '#upload-btn',
                 popover: {
                     title: '📤 上传模型',
-                    description: '点击这里上传您的模型文件。支持 Live2D 和 VRM 格式。',
+                    description: '点击这里上传你的模型文件。支持 Live2D 和 VRM 格式。',
                 }
             }
         ];
@@ -482,7 +443,7 @@ class UniversalTutorialManager {
                 element: '#vrm-lighting-wrapper',
                 popover: {
                     title: '💡 光照系统',
-                    description: 'VRM 模型支持专业的 3D 光照系统。您可以调整环境光、主光源、补光和轮廓光，打造完美的视觉效果。',
+                    description: 'VRM 模型支持专业的 3D 光照系统。你可以调整环境光、主光源、补光和轮廓光，打造完美的视觉效果。',
                 }
             },
             {
@@ -508,22 +469,12 @@ class UniversalTutorialManager {
             }
         ];
 
-        // 根据当前模型类型和通用步骤状态返回对应的步骤
-        let steps = [];
-
-        // 如果通用步骤没看过，添加通用步骤
-        if (!hasSeenCommon) {
-            steps = [...commonSteps];
-        }
-
-        // 添加特定步骤
+        // 根据当前模型类型返回对应的步骤
         if (isVRM) {
-            steps = [...steps, ...vrmSteps];
+            return [...commonSteps, ...vrmSteps];
         } else {
-            steps = [...steps, ...live2dSteps];
+            return [...commonSteps, ...live2dSteps];
         }
-
-        return steps;
     }
 
     /**
@@ -565,8 +516,15 @@ class UniversalTutorialManager {
                     title: '💾 保存参数',
                     description: '调整完成后，点击这里保存参数设置。保存后，模型会在主页中使用这些参数显示。',
                 }
+            },
+            {
+                element: '#backToMainBtn',
+                popover: {
+                    title: '🏠 返回主页',
+                    description: '完成编辑后，点击这里返回模型管理页面。',
+                }
             }
-            ];
+        ];
     }
 
     /**
@@ -614,28 +572,28 @@ class UniversalTutorialManager {
                 element: '#master-section',
                 popover: {
                     title: '👤 主人档案',
-                    description: '这是您的主人档案。档案名是必填项，其他信息（性别、昵称等）都是可选的。这些信息会影响虚拟伙伴对您的称呼和态度。',
+                    description: '这是你的主人档案。档案名是必填项，其他信息（性别、昵称等）都是可选的。这些信息会影响虚拟伙伴对你的称呼和态度。',
                 }
             },
             {
                 element: 'input[name="档案名"]',
                 popover: {
                     title: '📝 设置档案名',
-                    description: '输入您的名字或昵称。虚拟伙伴会用这个名字来称呼您。最多 20 个字符。',
+                    description: '输入你的名字或昵称。虚拟伙伴会用这个名字来称呼你。最多 20 个字符。',
                 }
             },
             {
                 element: 'textarea[name="性别"]',
                 popover: {
                     title: '👥 性别设定',
-                    description: '这是可选项。您可以输入您的性别或其他相关信息。这会影响虚拟伙伴对您的称呼方式。',
+                    description: '这是可选项。你可以输入你的性别或其他相关信息。这会影响虚拟伙伴对你的称呼方式。',
                 }
             },
             {
                 element: 'textarea[name="昵称"]',
                 popover: {
                     title: '💬 昵称设定',
-                    description: '这是可选项。您可以为自己设置一个昵称。虚拟伙伴可能会用这个昵称来称呼您。',
+                    description: '这是可选项。你可以为自己设置一个昵称。虚拟伙伴可能会用这个昵称来称呼你。',
                 }
             },
             {
@@ -649,14 +607,14 @@ class UniversalTutorialManager {
                 element: '#catgirl-section',
                 popover: {
                     title: '🐱 猫娘档案',
-                    description: '这里可以创建和管理多个虚拟伙伴角色。每个角色都有独特的性格、Live2D 形象和语音设定。您可以在不同的角色之间切换。',
+                    description: '这里可以创建和管理多个虚拟伙伴角色。每个角色都有独特的性格、Live2D 形象和语音设定。你可以在不同的角色之间切换。',
                 }
             },
             {
                 element: '#add-catgirl-btn',
                 popover: {
                     title: '➕ 新增猫娘',
-                    description: '点击这个按钮创建一个新的虚拟伙伴角色。您可以为她设置名字、性格、形象和语音。每个角色都是独立的，有自己的记忆和性格。',
+                    description: '点击这个按钮创建一个新的虚拟伙伴角色。你可以为她设置名字、性格、形象和语音。每个角色都是独立的，有自己的记忆和性格。',
                 }
             },
             {
@@ -665,51 +623,7 @@ class UniversalTutorialManager {
                     title: '📋 猫娘卡片',
                     description: '点击猫娘名称可以展开或折叠详细信息。每个猫娘都有独立的设定，包括基础信息和进阶配置。',
                 },
-                action: 'click' // 使用 action 自动点击展开，系统会自动刷新位置
-            },
-            {
-                element: '.catgirl-block:first-child input[name="档案名"]',
-                popover: {
-                    title: '📝 猫娘档案名',
-                    description: '这是猫娘的名字，也是她的唯一标识。创建后可以通过"修改名称"按钮来更改。',
-                },
-                skipInitialCheck: true, // 跳过初始化时的元素检查
-                onHighlightStarted: async () => {
-                    // 等待表单元素渲染完成
-                    const maxWait = 3000; // 最多等待3秒
-                    const startTime = Date.now();
-
-                    while (Date.now() - startTime < maxWait) {
-                        const element = document.querySelector('.catgirl-block:first-child input[name="档案名"]');
-                        if (element) {
-                            console.log('[Tutorial] 档案名输入框已找到');
-                            break;
-                        }
-                        await new Promise(resolve => setTimeout(resolve, 100));
-                    }
-                }
-            },
-            {
-                element: '.catgirl-block:first-child .custom-row:first-child',
-                popover: {
-                    title: '✨ 自定义属性',
-                    description: '这些是猫娘的性格设定字段，如性格、背景、爱好、口头禅等。您可以自由添加和编辑这些属性，让每个猫娘都有独特的个性。',
-                },
-                skipInitialCheck: true, // 跳过初始化时的元素检查
-                onHighlightStarted: async () => {
-                    // 等待自定义字段渲染完成
-                    const maxWait = 3000;
-                    const startTime = Date.now();
-
-                    while (Date.now() - startTime < maxWait) {
-                        const element = document.querySelector('.catgirl-block:first-child .custom-row:first-child');
-                        if (element) {
-                            console.log('[Tutorial] 自定义属性字段已找到');
-                            break;
-                        }
-                        await new Promise(resolve => setTimeout(resolve, 100));
-                    }
-                }
+                action: 'click' // 自动点击展开卡片
             },
             {
                 element: '.catgirl-block:first-child button[id^="switch-btn-"]',
@@ -731,58 +645,27 @@ class UniversalTutorialManager {
                     title: '⚙️ 进阶设定',
                     description: '点击展开进阶设定，可以配置 Live2D 模型、语音 ID、以及添加自定义性格属性（如性格、爱好、口头禅等）。',
                 },
-                skipInitialCheck: true, // 跳过初始化时的元素检查
-                action: 'click' // 使用 action 自动点击展开，系统会自动刷新位置
+                action: 'click' // 自动点击展开
             },
             {
                 element: '.catgirl-block:first-child .live2d-link',
                 popover: {
                     title: '🎨 模型设定',
                     description: '点击此链接可以选择或更换猫娘的 Live2D 形象或 VRM 模型。不同的模型会带来不同的视觉体验。',
-                },
-                skipInitialCheck: true, // 跳过初始化时的元素检查
-                onHighlightStarted: async () => {
-                    // 等待模型设定链接渲染完成
-                    const maxWait = 3000;
-                    const startTime = Date.now();
-
-                    while (Date.now() - startTime < maxWait) {
-                        const element = document.querySelector('.catgirl-block:first-child .live2d-link');
-                        if (element) {
-                            console.log('[Tutorial] 模型设定链接已找到');
-                            break;
-                        }
-                        await new Promise(resolve => setTimeout(resolve, 100));
-                    }
                 }
             },
             {
                 element: '.catgirl-block:first-child select[name="voice_id"]',
                 popover: {
                     title: '🎤 语音设定',
-                    description: '选择猫娘的语音角色。不同的 voice_id 对应不同的声音特征，让您的虚拟伙伴拥有独特的声音。',
-                },
-                skipInitialCheck: true, // 跳过初始化时的元素检查
-                onHighlightStarted: async () => {
-                    // 等待语音选择框渲染完成
-                    const maxWait = 3000;
-                    const startTime = Date.now();
-
-                    while (Date.now() - startTime < maxWait) {
-                        const element = document.querySelector('.catgirl-block:first-child select[name="voice_id"]');
-                        if (element) {
-                            console.log('[Tutorial] 语音选择框已找到');
-                            break;
-                        }
-                        await new Promise(resolve => setTimeout(resolve, 100));
-                    }
+                    description: '选择猫娘的语音角色。不同的 voice_id 对应不同的声音特征，让你的虚拟伙伴拥有独特的声音。',
                 }
             },
             {
                 element: '#catgirl-section',
                 popover: {
                     title: '✅ 引导完成',
-                    description: '恭喜！您已经了解了角色管理的所有功能。现在可以开始创建和管理您的虚拟伙伴了。随时可以回到这里修改设定。',
+                    description: '恭喜！你已经了解了角色管理的所有功能。现在可以开始创建和管理你的虚拟伙伴了。随时可以回到这里修改设定。',
                 }
             }
         ];
@@ -794,10 +677,17 @@ class UniversalTutorialManager {
     getSettingsSteps() {
         return [
             {
+                element: '.api-key-info',
+                popover: {
+                    title: '📖 快速开始',
+                    description: '这里提供了详细的 API Key 获取步骤。如果你是新手，建议先阅读这部分内容。',
+                }
+            },
+            {
                 element: '.newbie-recommend',
                 popover: {
                     title: '🎯 新手推荐',
-                    description: '如果您还没有 API Key，可以直接选择"免费版"开始使用，无需注册任何账号！',
+                    description: '如果你还没有 API Key，可以直接选择"免费版"开始使用，无需注册任何账号！',
                 }
             },
             {
@@ -811,14 +701,14 @@ class UniversalTutorialManager {
                 element: '#apiKeyInput',
                 popover: {
                     title: '📝 核心 API Key',
-                    description: '将您选择的 API 服务商的 API Key 粘贴到这里。如果选择了免费版，这个字段可以留空。',
+                    description: '将你选择的 API 服务商的 API Key 粘贴到这里。如果选择了免费版，这个字段可以留空。',
                 }
             },
             {
                 element: '#save-settings-btn',
                 popover: {
                     title: '💾 保存设置',
-                    description: '点击这个按钮保存您的 API 配置。保存后需要重启服务才能生效。',
+                    description: '点击这个按钮保存你的 API 配置。保存后需要重启服务才能生效。',
                 }
             },
             {
@@ -840,14 +730,14 @@ class UniversalTutorialManager {
                 element: '#assistApiKeyInputQwen',
                 popover: {
                     title: '🔑 辅助 API Key',
-                    description: '如果您选择了阿里作为辅助 API，需要在这里填写阿里的 API Key。如果不填写，系统会使用核心 API 的 Key。',
+                    description: '如果你选择了阿里作为辅助 API，需要在这里填写阿里的 API Key。如果不填写，系统会使用核心 API 的 Key。',
                 }
             },
             {
                 element: '#custom-api-toggle-btn',
                 popover: {
                     title: '🔧 自定义 API 配置',
-                    description: '点击这里可以展开自定义 API 配置选项。如果您想使用自己的 API 服务器或其他兼容的 API 服务，可以在这里配置。',
+                    description: '点击这里可以展开自定义 API 配置选项。如果你想使用自己的 API 服务器或其他兼容的 API 服务，可以在这里配置。',
                 },
                 action: 'click'
             },
@@ -855,7 +745,7 @@ class UniversalTutorialManager {
                 element: '#enableCustomApi',
                 popover: {
                     title: '✅ 启用自定义 API',
-                    description: '勾选这个选项可以启用自定义 API 配置。启用后，您可以为不同的功能模块（摘要、纠错、情感分析等）配置独立的 API。',
+                    description: '勾选这个选项可以启用自定义 API 配置。启用后，你可以为不同的功能模块（摘要、纠错、情感分析等）配置独立的 API。',
                 },
                 action: 'click'
             },
@@ -870,7 +760,7 @@ class UniversalTutorialManager {
                 element: '.model-config-container:nth-of-type(1)',
                 popover: {
                     title: '📝 摘要模型配置',
-                    description: '摘要模型用于生成对话摘要和记忆管理。您可以配置独立的 API 服务来处理摘要生成任务。',
+                    description: '摘要模型用于生成对话摘要和记忆管理。你可以配置独立的 API 服务来处理摘要生成任务。',
                 }
             },
             {
@@ -905,7 +795,7 @@ class UniversalTutorialManager {
                 element: '.model-config-container:nth-of-type(6)',
                 popover: {
                     title: '🔊 TTS 模型配置',
-                    description: 'TTS（文本转语音）模型用于生成语音。您可以配置自定义的语音合成服务和默认音色。',
+                    description: 'TTS（文本转语音）模型用于生成语音。你可以配置自定义的语音合成服务和默认音色。',
                 }
             }
         ];
@@ -920,7 +810,7 @@ class UniversalTutorialManager {
                 element: '.alibaba-api-notice',
                 popover: {
                     title: '⚠️ 重要提示',
-                    description: '语音克隆功能需要使用阿里云 API。请确保您已经在 API 设置中配置了阿里云的 API Key。',
+                    description: '语音克隆功能需要使用阿里云 API。请确保你已经在 API 设置中配置了阿里云的 API Key。',
                 }
             },
             {
@@ -934,7 +824,7 @@ class UniversalTutorialManager {
                 element: '#refLanguage',
                 popover: {
                     title: '🌍 选择参考音频语言',
-                    description: '选择您上传的音频文件的语言。这帮助系统更准确地识别和克隆声音特征。',
+                    description: '选择你上传的音频文件的语言。这帮助系统更准确地识别和克隆声音特征。',
                 }
             },
             {
@@ -948,14 +838,14 @@ class UniversalTutorialManager {
                 element: '.register-voice-btn',
                 popover: {
                     title: '✨ 注册音色',
-                    description: '点击这个按钮开始克隆您的音色。系统会处理音频并生成一个独特的音色 ID。',
+                    description: '点击这个按钮开始克隆你的音色。系统会处理音频并生成一个独特的音色 ID。',
                 }
             },
             {
                 element: '.voice-list-section',
                 popover: {
                     title: '📋 已注册音色列表',
-                    description: '这里显示所有已成功克隆的音色。您可以在角色管理中选择这些音色来为虚拟伙伴配音。',
+                    description: '这里显示所有已成功克隆的音色。你可以在角色管理中选择这些音色来为虚拟伙伴配音。',
                 }
             }
         ];
@@ -970,35 +860,35 @@ class UniversalTutorialManager {
                 element: '#workshop-tabs',
                 popover: {
                     title: '📑 标签切换',
-                    description: '在这里可以切换不同的内容类型。"订阅内容"显示您已订阅的模型和角色卡，"角色卡"显示所有可用的角色卡。',
+                    description: '在这里可以切换不同的内容类型。"订阅内容"显示你已订阅的模型和角色卡，"角色卡"显示所有可用的角色卡。',
                 }
             },
             {
                 element: '#search-subscription',
                 popover: {
                     title: '🔍 搜索功能',
-                    description: '输入关键词来搜索您想要的模型或角色卡。支持按名称搜索。',
+                    description: '输入关键词来搜索你想要的模型或角色卡。支持按名称搜索。',
                 }
             },
             {
                 element: '#sort-subscription',
                 popover: {
                     title: '📊 排序选项',
-                    description: '选择排序方式来组织您的订阅内容。可以按名称、订阅日期、文件大小或更新时间排序。',
+                    description: '选择排序方式来组织你的订阅内容。可以按名称、订阅日期、文件大小或更新时间排序。',
                 }
             },
             {
                 element: '#subscriptions-list',
                 popover: {
                     title: '📦 订阅内容列表',
-                    description: '这里显示所有您已订阅的 Steam Workshop 内容。点击卡片可以查看详情或进行操作。',
+                    description: '这里显示所有你已订阅的 Steam Workshop 内容。点击卡片可以查看详情或进行操作。',
                 }
             },
             {
                 element: '.workshop-integration-info',
                 popover: {
                     title: '💡 使用提示',
-                    description: '如果您想使用 Steam Workshop 中的语音音色，需要前往 Live2D 设置页面手动注册。',
+                    description: '如果你想使用 Steam Workshop 中的语音音色，需要前往 Live2D 设置页面手动注册。',
                 }
             }
         ];
@@ -1034,14 +924,14 @@ class UniversalTutorialManager {
                 element: '#memory-chat-edit',
                 popover: {
                     title: '📝 聊天记录编辑',
-                    description: '这里显示选中猫娘的所有对话记录。您可以在这里查看、编辑或删除特定的对话内容。',
+                    description: '这里显示选中猫娘的所有对话记录。你可以在这里查看、编辑或删除特定的对话内容。',
                 }
             },
             {
                 element: '#save-memory-btn',
                 popover: {
                     title: '💾 保存修改',
-                    description: '编辑完对话记录后，点击这个按钮保存您的修改。',
+                    description: '编辑完对话记录后，点击这个按钮保存你的修改。',
                 }
             },
             {
@@ -1149,12 +1039,6 @@ class UniversalTutorialManager {
 
             // 过滤掉不存在的元素，并显示隐藏的元素
             const validSteps = steps.filter(step => {
-                // 如果步骤标记为跳过初始检查，则直接通过
-                if (step.skipInitialCheck) {
-                    console.log(`[Tutorial] 跳过初始检查: ${step.element}`);
-                    return true;
-                }
-
                 const element = document.querySelector(step.element);
                 if (!element) {
                     console.warn(`[Tutorial] 元素不存在: ${step.element}`);
@@ -1638,55 +1522,24 @@ class UniversalTutorialManager {
                             element.click();
 
                             // 点击后等待布局稳定，然后停止监听并最后刷新一次
-                            // 对于角色管理页面的展开操作，需要更长的等待时间以确保表单渲染完成
-                            const waitTime = (this.currentPage === 'chara_manager' &&
-                                            (currentStepConfig.element.includes('.catgirl-header') ||
-                                             currentStepConfig.element.includes('.fold-toggle'))) ? 1500 : 800;
-
                             setTimeout(() => {
                                 observer.disconnect();
 
                                 if (this.driver && typeof this.driver.refresh === 'function') {
                                     this.driver.refresh();
-                                    console.log(`[Tutorial] 最终刷新高亮框位置 (等待${waitTime}ms)`);
+                                    console.log(`[Tutorial] 最终刷新高亮框位置`);
                                 }
-                            }, waitTime);
+                            }, 800);
                         }, 300);
                     }
                 } else {
                     // 即使没有点击操作，也在步骤切换后刷新位置
-                    // 对于需要等待动态元素的步骤，多次刷新以确保位置正确
-                    if (currentStepConfig.skipInitialCheck) {
-                        console.log(`[Tutorial] 动态元素步骤，将多次刷新位置`);
-                        // 第一次刷新
-                        setTimeout(() => {
-                            if (this.driver && typeof this.driver.refresh === 'function') {
-                                this.driver.refresh();
-                                console.log(`[Tutorial] 步骤切换后刷新高亮框位置 (第1次)`);
-                            }
-                        }, 200);
-                        // 第二次刷新
-                        setTimeout(() => {
-                            if (this.driver && typeof this.driver.refresh === 'function') {
-                                this.driver.refresh();
-                                console.log(`[Tutorial] 步骤切换后刷新高亮框位置 (第2次)`);
-                            }
-                        }, 600);
-                        // 第三次刷新
-                        setTimeout(() => {
-                            if (this.driver && typeof this.driver.refresh === 'function') {
-                                this.driver.refresh();
-                                console.log(`[Tutorial] 步骤切换后刷新高亮框位置 (第3次)`);
-                            }
-                        }, 1000);
-                    } else {
-                        setTimeout(() => {
-                            if (this.driver && typeof this.driver.refresh === 'function') {
-                                this.driver.refresh();
-                                console.log(`[Tutorial] 步骤切换后刷新高亮框位置`);
-                            }
-                        }, 200);
-                    }
+                    setTimeout(() => {
+                        if (this.driver && typeof this.driver.refresh === 'function') {
+                            this.driver.refresh();
+                            console.log(`[Tutorial] 步骤切换后刷新高亮框位置`);
+                        }
+                    }, 200);
                 }
             }
         }
@@ -1715,15 +1568,8 @@ class UniversalTutorialManager {
         }
 
         // 标记用户已看过该页面的引导
-        const storageKey = this.getStorageKey();
+        const storageKey = this.STORAGE_KEY_PREFIX + this.currentPage;
         localStorage.setItem(storageKey, 'true');
-
-        // 对于模型管理页面，同时标记通用步骤为已看过
-        if (this.currentPage === 'model_manager') {
-            const commonStorageKey = this.STORAGE_KEY_PREFIX + 'model_manager_common';
-            localStorage.setItem(commonStorageKey, 'true');
-            console.log('[Tutorial] 已标记模型管理通用步骤为已看过');
-        }
 
         // 清除全局引导标记
         window.isInTutorial = false;
