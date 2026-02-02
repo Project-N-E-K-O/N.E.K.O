@@ -476,7 +476,7 @@ Live2DManager.prototype.setupTouchZoom = function (model) {
 
 // 启用鼠标跟踪以检测与模型的接近度
 Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
-    const { threshold = 70, HoverFadethreshold = 5 } = options;
+    const { threshold = 70, HoverFadethreshold = 40 } = options; // 增加默认变淡阈值，从 5px 增加到 40px
 
     // 使用实例属性保存定时器，便于在其他地方访问
     if (this._hideButtonsTimer) {
@@ -596,10 +596,17 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
 
     // 方法2：同时保留 window 的 pointermove 监听（适用于普通浏览器）
     const onPointerMove = (event) => {
-        // 直接从事件中读取 Ctrl 键状态（更可靠）
-        const ctrlKeyPressed = event.ctrlKey || event.metaKey; // 支持 Mac 的 Cmd 键
-        // 同时更新备用状态变量
-        isCtrlPressed = ctrlKeyPressed;
+        // 更新 Ctrl 键状态：综合事件中的状态和本地状态
+        // 如果是真实事件，更新本地状态；如果是模拟事件，本地状态保持不变（除非事件里带了 Ctrl）
+        if (event.isTrusted) {
+            isCtrlPressed = event.ctrlKey || event.metaKey;
+        } else if (event.ctrlKey || event.metaKey) {
+            // 如果模拟事件带了 Ctrl 键，也更新本地状态以供后续逻辑使用
+            isCtrlPressed = true;
+        }
+
+        // 最终用于变淡判断的 Ctrl 状态
+        const ctrlKeyPressed = event.ctrlKey || event.metaKey || isCtrlPressed;
 
         // 检查模型是否存在，防止切换模型时出现错误
         if (!model) {
@@ -674,9 +681,45 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
             }
             const bounds = model.getBounds();
 
-            const dx = Math.max(bounds.left - pointer.x, 0, pointer.x - bounds.right);
-            const dy = Math.max(bounds.top - pointer.y, 0, pointer.y - bounds.bottom);
-            const distance = Math.sqrt(dx * dx + dy * dy);
+            // 使用椭圆近似检测（基于完整模型边界，椭圆可以部分在屏幕外）
+            const centerX = (bounds.left + bounds.right) / 2;
+            const centerY = (bounds.top + bounds.bottom) / 2;
+            const width = bounds.right - bounds.left;
+            const height = bounds.bottom - bounds.top;
+
+            let distance;
+            // 防止除零：当宽度或高度接近零时，回退到矩形距离计算
+            if (width < 1 || height < 1) {
+                const dx = Math.max(bounds.left - pointer.x, 0, pointer.x - bounds.right);
+                const dy = Math.max(bounds.top - pointer.y, 0, pointer.y - bounds.bottom);
+                distance = Math.sqrt(dx * dx + dy * dy);
+            } else {
+                // 椭圆半径比例（相对于边界框）
+                const ellipseRadiusX = width * 0.35;
+                const ellipseRadiusY = height * 0.45;
+
+                // 计算点到椭圆的归一化距离
+                const normalizedX = (pointer.x - centerX) / ellipseRadiusX;
+                const normalizedY = (pointer.y - centerY) / ellipseRadiusY;
+                const ellipseDistance = Math.sqrt(normalizedX * normalizedX + normalizedY * normalizedY);
+
+                // 将椭圆距离转换为像素距离（用于阈值比较）
+                // ellipseDistance <= 1 表示在椭圆内部，distance = 0
+                // ellipseDistance > 1 表示在椭圆外部，distance 为超出椭圆边缘的等效像素距离
+                distance = ellipseDistance <= 1 ? 0 : (ellipseDistance - 1) * Math.min(ellipseRadiusX, ellipseRadiusY);
+            }
+
+            // 额外检查：鼠标必须在模型可见区域附近
+            const isPointerNearVisibleModel = pointer.x >= bounds.left - threshold && pointer.x <= bounds.right + threshold &&
+                                              pointer.y >= Math.max(bounds.top, 0) - threshold && pointer.y <= Math.min(bounds.bottom, window.innerHeight) + threshold;
+            
+            // 如果鼠标不在屏幕内或不在模型可见区域附近，视为远离模型
+            if (!isPointerNearVisibleModel) {
+                this.isFocusing = false;
+                startHideTimer();
+                setLockedHoverFade(false);
+                return;
+            }
             // 只有在锁定、按住 Ctrl 键且鼠标在模型附近时才变淡
             const shouldFade = this.isLocked && ctrlKeyPressed && distance < HoverFadethreshold;
             setLockedHoverFade(shouldFade);

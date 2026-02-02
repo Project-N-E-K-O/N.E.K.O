@@ -127,7 +127,8 @@ Live2DManager.prototype.clearExpression = function() {
     }
 
     // 如存在常驻表情，清除后立即重放常驻，保证不被清掉
-    this.applyPersistentExpressionsNative();
+    // 注意：这里传入 skipBackup=true，因为我们只是重新应用已有的常驻表情，不需要再次备份
+    this.applyPersistentExpressionsNative(true);
 };
 
 // 播放表情（优先使用 EmotionMapping.expressions）
@@ -228,7 +229,8 @@ Live2DManager.prototype.playExpression = async function(emotion, specifiedExpres
     }
 
     // 重放常驻表情，确保不被覆盖
-    try { await this.applyPersistentExpressionsNative(); } catch (e) {}
+    // skipBackup=true 因为只是重新应用，不需要再次备份
+    try { await this.applyPersistentExpressionsNative(true); } catch (e) {}
 };
 
 // 播放动作
@@ -239,13 +241,24 @@ Live2DManager.prototype.playMotion = async function(emotion) {
     }
 
     // 优先使用 Cubism 原生 Motion Group（FileReferences.Motions）
+    // 格式: { emotion: [{ File: "motions/xxx.motion3.json" }, ...] }
     let motions = null;
     if (this.fileReferences && this.fileReferences.Motions && this.fileReferences.Motions[emotion]) {
         motions = this.fileReferences.Motions[emotion]; // 形如 [{ File: "motions/xxx.motion3.json" }, ...]
     } else if (this.emotionMapping && this.emotionMapping.motions && this.emotionMapping.motions[emotion]) {
-        // 兼容 EmotionMapping.motions: ["motions/xxx.motion3.json", ...]
-        motions = this.emotionMapping.motions[emotion].map(f => ({ File: f }));
+        // 兼容 EmotionMapping.motions: { emotion: ["motions/xxx.motion3.json", ...] }
+        const emotionMotions = this.emotionMapping.motions[emotion];
+        if (Array.isArray(emotionMotions) && emotionMotions.length > 0) {
+            // 检查是否已经是对象格式还是字符串格式
+            if (typeof emotionMotions[0] === 'string') {
+                motions = emotionMotions.map(f => ({ File: f }));
+            } else {
+                // 已经是对象格式
+                motions = emotionMotions;
+            }
+        }
     }
+
     if (!motions || motions.length === 0) {
         console.warn(`未找到情感 ${emotion} 对应的动作，但将保持表情`);
         // 如果没有找到对应的motion，设置一个短定时器以确保expression能够显示
@@ -255,15 +268,19 @@ Live2DManager.prototype.playMotion = async function(emotion) {
         }, 500); // 500ms应该足够让expression稳定显示
         return;
     }
-    
+
     const choice = this.getRandomElement(motions);
-    if (!choice || !choice.File) return;
-    
+    if (!choice || !choice.File) {
+        console.warn(`motion配置无效: ${JSON.stringify(choice)}，回退到简单动作`);
+        this.playSimpleMotion(emotion);
+        return;
+    }
+
     try {
         // 清除之前的动作定时器
         if (this.motionTimer) {
             console.log('检测到前一个motion正在播放，正在停止...');
-            
+
             if (this.motionTimer.type === 'animation') {
                 cancelAnimationFrame(this.motionTimer.id);
             } else if (this.motionTimer.type === 'timeout') {
@@ -283,29 +300,29 @@ Live2DManager.prototype.playMotion = async function(emotion) {
             this.motionTimer = null;
             console.log('前一个motion已停止');
         }
-        
+
         // 尝试使用Live2D模型的原生motion播放功能
         try {
             // 构建完整的motion路径（相对模型根目录）
             const motionPath = this.resolveAssetPath(choice.File);
             console.log(`尝试播放motion: ${motionPath}`);
-            
-            // 方法1: 直接使用模型的motion播放功能
+
+            // 使用模型的原生motion播放功能
             if (this.currentModel.motion) {
                 try {
                     console.log(`尝试播放motion: ${choice.File}`);
-                    
+
                     // 使用情感名称作为motion组名，这样可以确保播放正确的motion
                     console.log(`尝试使用情感组播放motion: ${emotion}`);
-                    
+
                     const motion = await this.currentModel.motion(emotion);
-                    
+
                     if (motion) {
                         console.log(`成功开始播放motion（情感组: ${emotion}，预期文件: ${choice.File}）`);
-                        
+
                         // 获取motion的实际持续时间
                         let motionDuration = 5000; // 默认5秒
-                        
+
                         // 尝试从motion文件获取持续时间
                         try {
                             const response = await fetch(motionPath);
@@ -318,43 +335,34 @@ Live2DManager.prototype.playMotion = async function(emotion) {
                         } catch (error) {
                             console.warn('无法获取motion持续时间，使用默认值');
                         }
-                        
+
                         console.log(`预期motion持续时间: ${motionDuration}ms`);
-                        
+
                         // 设置定时器在motion结束后清理motion参数（但保留expression）
                         this.motionTimer = setTimeout(() => {
                             console.log(`motion播放完成（预期文件: ${choice.File}），清除motion参数但保留expression`);
                             this.motionTimer = null;
                             this.clearEmotionEffects(); // 只清除motion参数，不清除expression
                         }, motionDuration);
-                        
+
                         return; // 成功播放，直接返回
                     } else {
-                        console.warn('motion播放失败');
+                        console.warn('motion播放失败，返回值无效');
                     }
                 } catch (error) {
                     console.warn('模型motion方法失败:', error);
                 }
             }
-            
-            // 方法2: 备用方案 - 如果方法1失败，尝试其他方法
-            if (!this.motionTimer) {
-                console.log('方法1失败，尝试备用方案');
-                
-                // 这里可以添加其他备用方案，但目前方法1已经工作
-                console.warn('所有motion播放方法都失败，回退到简单动作');
-                this.playSimpleMotion(emotion);
-            }
-            
-            // 如果所有方法都失败，回退到简单动作
+
+            // 如果原生motion播放失败，回退到简单动作
             console.warn(`无法播放motion: ${choice.File}，回退到简单动作`);
             this.playSimpleMotion(emotion);
-            
+
         } catch (error) {
             console.error('motion播放过程中出错:', error);
             this.playSimpleMotion(emotion);
         }
-        
+
     } catch (error) {
         console.error('播放动作失败:', error);
         // 回退到简单动作
@@ -503,8 +511,9 @@ Live2DManager.prototype.clearEmotionEffects = function() {
     }
     
     // 重新应用常驻表情（保护常驻expression不被影响）
+    // skipBackup=true 因为只是重新应用，不需要再次备份
     try {
-        this.applyPersistentExpressionsNative();
+        this.applyPersistentExpressionsNative(true);
     } catch (e) {
         console.warn('重新应用常驻表情失败:', e);
     }
@@ -648,12 +657,12 @@ Live2DManager.prototype.collectPersistentExpressionFiles = function() {
 
 Live2DManager.prototype.setupPersistentExpressions = async function() {
     try {
-        this.persistentExpressionNames = [];
-        this.persistentExpressionParamsByName = {};
+        // 先清除之前的常驻表情效果
+        this.teardownPersistentExpressions();
+        
         const files = this.collectPersistentExpressionFiles();
         if (!files || files.length === 0) {
-            this.teardownPersistentExpressions();
-            console.log('未配置常驻表情');
+            console.log('[setupPersistent] 未配置常驻表情');
             return;
         }
 
@@ -688,13 +697,93 @@ Live2DManager.prototype.setupPersistentExpressions = async function() {
 };
 
 Live2DManager.prototype.teardownPersistentExpressions = function() {
+    // 先重置之前常驻表情应用的参数到保存的原始值
+    const hasBackup = this._persistentParamsBackup && Object.keys(this._persistentParamsBackup).length > 0;
+    console.log('[teardown] 开始清除常驻表情, 备份数据:', hasBackup ? Object.keys(this._persistentParamsBackup) : '无');
+    
+    if (this.currentModel && this.currentModel.internalModel) {
+        // 先停止 expression manager，防止它继续覆盖我们的参数
+        if (this.currentModel.internalModel.motionManager && 
+            this.currentModel.internalModel.motionManager.expressionManager) {
+            try {
+                this.currentModel.internalModel.motionManager.expressionManager.stopAllExpressions();
+                console.log('[teardown] 已停止所有表情');
+            } catch (e) {
+                console.warn('[teardown] 停止表情失败:', e);
+            }
+        }
+        
+        // 然后恢复参数
+        if (this.currentModel.internalModel.coreModel && hasBackup) {
+            const core = this.currentModel.internalModel.coreModel;
+            for (const [paramId, originalValue] of Object.entries(this._persistentParamsBackup)) {
+                try { 
+                    core.setParameterValueById(paramId, originalValue); 
+                    console.log(`[teardown] 恢复参数 ${paramId} = ${originalValue}`);
+                } catch (e) {
+                    console.warn(`[teardown] 恢复参数 ${paramId} 失败:`, e);
+                }
+            }
+            console.log('[teardown] 已清除常驻表情参数');
+        }
+    }
+    
+    if (!hasBackup) {
+        console.log('[teardown] 没有备份数据，跳过恢复');
+    }
     this.persistentExpressionNames = [];
     this.persistentExpressionParamsByName = {};
+    this._persistentParamsBackup = {};
 };
 
-Live2DManager.prototype.applyPersistentExpressionsNative = async function() {
-    if (!this.currentModel) return;
-    if (typeof this.currentModel.expression !== 'function') return;
+Live2DManager.prototype.applyPersistentExpressionsNative = async function(skipBackup = false) {
+    console.log('[applyPersistent] 开始应用常驻表情, skipBackup:', skipBackup);
+    console.log('[applyPersistent] persistentExpressionNames:', this.persistentExpressionNames);
+    
+    if (!this.currentModel) {
+        console.log('[applyPersistent] 退出: currentModel 不存在');
+        return;
+    }
+    if (typeof this.currentModel.expression !== 'function') {
+        console.log('[applyPersistent] 退出: expression 方法不存在');
+        return;
+    }
+    
+    const core = this.currentModel.internalModel && this.currentModel.internalModel.coreModel;
+    
+    // 在应用常驻表情前，备份将要修改的参数的当前值
+    // skipBackup=true 时跳过备份（用于 clearExpression 后重新应用常驻表情的场景）
+    if (!skipBackup && core) {
+        // 初始化参数备份对象
+        if (!this._persistentParamsBackup) {
+            this._persistentParamsBackup = {};
+        }
+        
+        console.log('[applyPersistent] 开始备份参数...');
+        for (const name of this.persistentExpressionNames || []) {
+            const params = this.persistentExpressionParamsByName[name];
+            console.log(`[applyPersistent] 处理表情 ${name}, 参数数量:`, params ? params.length : 0);
+            if (Array.isArray(params)) {
+                for (const p of params) {
+                    if (window.LIPSYNC_PARAMS && window.LIPSYNC_PARAMS.includes(p.Id)) continue;
+                    // 如果还没有备份过这个参数，保存其当前值
+                    if (this._persistentParamsBackup[p.Id] === undefined) {
+                        try {
+                            const currentValue = core.getParameterValueById(p.Id);
+                            this._persistentParamsBackup[p.Id] = currentValue;
+                            console.log(`[applyPersistent] 备份参数 ${p.Id} = ${currentValue}`);
+                        } catch (e) {
+                            console.warn(`[applyPersistent] 备份参数 ${p.Id} 失败:`, e);
+                        }
+                    }
+                }
+            }
+        }
+        console.log('[applyPersistent] 备份完成, 备份数据:', Object.keys(this._persistentParamsBackup));
+    } else {
+        console.log('[applyPersistent] 跳过备份, skipBackup:', skipBackup, 'core:', !!core);
+    }
+    
     for (const name of this.persistentExpressionNames || []) {
         try {
             const maybe = await this.currentModel.expression(name);
@@ -702,10 +791,9 @@ Live2DManager.prototype.applyPersistentExpressionsNative = async function() {
                 // 回退：手动设置参数（跳过口型参数以避免覆盖lipsync）
                 try {
                     const params = this.persistentExpressionParamsByName[name];
-                    const core = this.currentModel.internalModel && this.currentModel.internalModel.coreModel;
                     if (core) {
                         for (const p of params) {
-                            if (window.LIPSYNC_PARAMS.includes(p.Id)) continue;
+                            if (window.LIPSYNC_PARAMS && window.LIPSYNC_PARAMS.includes(p.Id)) continue;
                             try { core.setParameterValueById(p.Id, p.Value); } catch (_) {}
                         }
                     }
@@ -716,10 +804,9 @@ Live2DManager.prototype.applyPersistentExpressionsNative = async function() {
             try {
                 if (this.persistentExpressionParamsByName && Array.isArray(this.persistentExpressionParamsByName[name])) {
                     const params = this.persistentExpressionParamsByName[name];
-                    const core = this.currentModel.internalModel && this.currentModel.internalModel.coreModel;
                     if (core) {
                         for (const p of params) {
-                            if (window.LIPSYNC_PARAMS.includes(p.Id)) continue;
+                            if (window.LIPSYNC_PARAMS && window.LIPSYNC_PARAMS.includes(p.Id)) continue;
                             try { core.setParameterValueById(p.Id, p.Value); } catch (_) {}
                         }
                     }

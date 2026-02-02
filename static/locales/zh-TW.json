@@ -560,6 +560,7 @@
     "freeVersionSuggestionFull": "完全免費，無需API Key，適閤新手體驗（不支持自定義語音和Agent模式）",
     "coreApiSuggestionFull": "負責對話功能（建議根據預算和需求選擇）",
     "assistApiSuggestionFull": "負責記憶管理、文本對話和自定義語音（隻有阿裏支持自定義語音）",
+    "assistApiKeyRequiredHint": "需在對應的輸入框內填寫API才能選擇其對應的供應商",
     "mcpRouterToken": "MCP Router Token",
     "mcpRouterTokenDesc": "MCP Router Token說明：",
     "mcpRouterTokenDescText": "用於訪問MCP Router服務的認證令牌，啓用MCP功能時需要填寫。如果您的MCP Router不需要認證，可以留空。",
@@ -668,6 +669,8 @@
     "selectModel": "選擇模型",
     "pleaseSelect": "選擇模型",
     "pleaseSelectModel": "選擇模型",
+    "pleaseSelectMotion": "請先選擇動作",
+    "pleaseSelectExpression": "請先選擇表情",
     "selectMotion": "選擇動作",
     "selectExpression": "選擇錶情",
     "addMotion": "增加動作",
@@ -849,7 +852,26 @@
     "deleteFailed": "失敗 {{count}} 個",
     "switchingToDefault": "當前模型已刪除，正在切換到默認模型...",
     "userDocuments": "用戶文檔",
-    "localUpload": "本地上傳"
+    "localUpload": "本地上傳",
+    "emotionMapping": {
+      "title": "情感映射管理",
+      "description": "配置不同情緒下的動作和錶情",
+      "happy": "開心 (Happy)",
+      "sad": "悲傷 (Sad)",
+      "angry": "生氣 (Angry)",
+      "neutral": "平靜 (Neutral)",
+      "surprised": "驚訝 (Surprised)",
+      "Idle": "待機 (Idle)",
+      "selectMotion": "選擇動作文件",
+      "selectExpression": "選擇錶情文件",
+      "save": "保存情感映射",
+      "reset": "重置",
+      "loaded": "情感映射配置已加載",
+      "loadFailed": "加載情感映射配置失敗",
+      "saved": "情感映射配置已保存",
+      "saveFailed": "保存情感映射配置失敗",
+      "noModelSelected": "請先選擇一個模型"
+    }
   },
   "voice": {
     "title": "音色注冊",
@@ -935,6 +957,10 @@
     "apiKeySettings": "API Key",
     "masterProfile": "主人檔案（唯一）：檔案名為必填項，其他均為可選項。",
     "profileName": "檔案名",
+    "profileNameMaxHint": "最多20個字符",
+    "profileNameTooLong": "檔案名過長",
+    "newProfileNameRequired": "新檔案名不能為空",
+    "newProfileNameTooLong": "檔案名過長",
     "required": "*",
     "deleteField": "刪除設定",
     "detailDescriptionPlaceholder": "可輸入詳細描述",
@@ -985,6 +1011,7 @@
     "saveError": "保存時發生錯誤: {{error}}",
     "fillProfileNameFirstForLive2D": "請先填寫貓娘檔案名，然後再設置Live2D模型",
     "createCharacterFirst": "請先點擊\"確認新貓娘\"按鈕創建角色，然後再設置Live2D模型",
+    "createCharacterFirstForModel": "請先點擊\"確認新貓娘\"按鈕保存角色，然後再設置模型",
     "fillProfileNameFirstForVoice": "請先填寫貓娘檔案名，然後再注冊音色",
     "createCharacterFirstForVoice": "請先點擊\"確認新貓娘\"按鈕創建角色，然後再注冊音色",
     "allowPopups": "請允許彈窗！",
@@ -1101,6 +1128,7 @@
     "readyToSpeak": "可以說話瞭！",
     "screenShareRequiresVoice": "屏幕分享僅用於音視頻通話",
     "repetitionDetected": "檢測到高重復度對話。建議您終止對話，讓{{name}}休息片刻。",
+    "modelSwitched": "模型已切換",
     "screenSource": {
       "notAvailable": "屏幕源選擇僅在桌麵版可用",
       "loading": "加載中...",
@@ -1120,6 +1148,10 @@
     "return": "請她迴來"
   },
   "settings": {
+    "interval": {
+      "chatIntervalBase": "聊天間隔基準",
+      "visionInterval": "視覺間隔"
+    },
     "menu": {
       "live2dSettings": "Live2D設置",
       "modelSettings": "角色外形",

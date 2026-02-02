@@ -301,6 +301,11 @@ function init_app() {
     let sessionStartedResolver = null; // 用于等待 session_started 消息
     let sessionStartedRejecter = null; // 用于等待 session_failed / timeout 消息
 
+    // 语音模式下用户 transcript 合并相关变量（兜底机制，防止 Gemini 等模型返回碎片化转录造成刷屏）
+    let lastVoiceUserMessage = null;       // 上一个用户消息 DOM 元素
+    let lastVoiceUserMessageTime = 0;      // 上一个用户消息的时间戳
+    const VOICE_TRANSCRIPT_MERGE_WINDOW = 5000; // 合并时间窗口（毫秒），5秒内的连续转录会合并
+
     // 主动搭话功能相关
     let proactiveChatEnabled = false;
     let proactiveVisionEnabled = false;
@@ -431,9 +436,40 @@ function init_app() {
                 if (response.type === 'gemini_response') {
                     // 检查是否是新消息的开始
                     const isNewMessage = response.isNewMessage || false;
+                    
+                    // AI 开始新回复时，重置用户转录合并追踪（避免跨轮次合并）
+                    if (isNewMessage) {
+                        lastVoiceUserMessage = null;
+                        lastVoiceUserMessageTime = 0;
+                    }
+                    
                     appendMessage(response.text, 'gemini', isNewMessage);
                 } else if (response.type === 'user_transcript') {
-                    appendMessage(response.text, 'user', true);
+                    // 语音模式下的用户转录合并机制（兜底，防止 Gemini 等模型碎片化转录刷屏）
+                    const now = Date.now();
+                    const shouldMerge = isRecording && 
+                        lastVoiceUserMessage && 
+                        lastVoiceUserMessage.isConnected &&
+                        (now - lastVoiceUserMessageTime) < VOICE_TRANSCRIPT_MERGE_WINDOW;
+                    
+                    if (shouldMerge) {
+                        // 合并到上一个用户消息气泡（流式追加）
+                        lastVoiceUserMessage.textContent += response.text;
+                        lastVoiceUserMessageTime = now; // 更新时间戳，延续合并窗口
+                    } else {
+                        // 创建新消息
+                        appendMessage(response.text, 'user', true);
+                        
+                        // 在语音模式下追踪这个消息，以便后续合并
+                        if (isRecording) {
+                            // 获取刚创建的用户消息元素（chatContainer 的最后一个 .user 消息）
+                            const userMessages = chatContainer.querySelectorAll('.message.user');
+                            if (userMessages.length > 0) {
+                                lastVoiceUserMessage = userMessages[userMessages.length - 1];
+                                lastVoiceUserMessageTime = now;
+                            }
+                        }
+                    }
                 } else if (response.type === 'user_activity') {
                     interruptedSpeechId = response.interrupted_speech_id || null;
                     pendingDecoderReset = true;  // 标记需要在新 speech_id 到来时重置
@@ -890,7 +926,7 @@ function init_app() {
 
                 switch (event.data.action) {
                     case 'reload_model':
-                        await handleModelReload();
+                        await handleModelReload(event.data?.lanlan_name);
                         break;
                     case 'hide_main_ui':
                         handleHideMainUI();
@@ -906,7 +942,14 @@ function init_app() {
     }
 
     // 模型重载处理函数
-    async function handleModelReload() {
+    async function handleModelReload(targetLanlanName = '') {
+        // 如果消息携带了 lanlan_name，且与当前页面角色不一致，则忽略（避免配置其它角色时影响当前主界面）
+        const currentLanlanName = window.lanlan_config?.lanlan_name || '';
+        if (targetLanlanName && currentLanlanName && targetLanlanName !== currentLanlanName) {
+            console.log('[Model] 忽略来自其它角色的模型重载请求:', { targetLanlanName, currentLanlanName });
+            return;
+        }
+
         // 并发控制：如果已有重载正在进行，记录待处理的请求并等待
         if (window._modelReloadInFlight) {
             console.log('[Model] 模型重载已在进行中，等待完成后重试');
@@ -929,7 +972,11 @@ function init_app() {
 
         try {
             // 1. 重新获取页面配置
-            const response = await fetch('/api/config/page_config');
+            const nameForConfig = targetLanlanName || currentLanlanName;
+            const pageConfigUrl = nameForConfig
+                ? `/api/config/page_config?lanlan_name=${encodeURIComponent(nameForConfig)}`
+                : '/api/config/page_config';
+            const response = await fetch(pageConfigUrl);
             const data = await response.json();
 
             if (data.success) {
@@ -1053,14 +1100,26 @@ function init_app() {
                                 await window.live2dManager.initPIXI('live2d-canvas', 'live2d-container');
                             }
 
-                            const modelConfig = {
-                                model: newModelPath,
-                                width: 800,
-                                height: 800,
-                                position: [0, 0],
-                                scale: 1.0
-                            };
-                            await window.live2dManager.loadModel(modelConfig);
+                            // 关键修复：应用用户已保存的偏好（位置/缩放/参数等），避免从模型管理页返回后“复位”
+                            let modelPreferences = null;
+                            try {
+                                const preferences = await window.live2dManager.loadUserPreferences();
+                                modelPreferences = preferences ? preferences.find(p => p && p.model_path === newModelPath) : null;
+                            } catch (prefError) {
+                                console.warn('[Model] 读取 Live2D 用户偏好失败，将继续加载模型:', prefError);
+                            }
+
+                            // loadModel 支持直接传入模型路径字符串（与 live2d-init.js 一致）
+                            await window.live2dManager.loadModel(newModelPath, {
+                                preferences: modelPreferences,
+                                isMobile: window.innerWidth <= 768
+                            });
+
+                            // 同步全局引用，保持兼容旧接口
+                            if (window.LanLan1) {
+                                window.LanLan1.live2dModel = window.live2dManager.getCurrentModel();
+                                window.LanLan1.currentModel = window.live2dManager.getCurrentModel();
+                            }
                         } else {
                             console.error('[Model] Live2D 管理器初始化失败');
                         }
@@ -1218,7 +1277,7 @@ function init_app() {
 
         if (event.data && (event.data.action === 'model_saved' || event.data.action === 'reload_model')) {
             console.log('[Model] 通过 postMessage 收到模型重载通知');
-            await handleModelReload();
+            await handleModelReload(event.data?.lanlan_name);
         }
     });
 
@@ -3307,6 +3366,10 @@ function init_app() {
         isRecording = false;
         window.isRecording = false;
         window.currentGeminiMessage = null;
+        
+        // 重置语音模式用户转录合并追踪
+        lastVoiceUserMessage = null;
+        lastVoiceUserMessageTime = 0;
 
         // 停止静音检测
         stopSilenceDetection();
@@ -3661,47 +3724,30 @@ function init_app() {
         // 重置平滑状态
         _lastMouthOpen = 0;
         
-        // 使用频域数据 (Frequency Data) 而不是时域数据，这样对人声更敏感
-        analyser.fftSize = 512; // 较小的 FFT 窗口可以提高实时性
-        const bufferLength = analyser.frequencyBinCount;
-        const dataArray = new Uint8Array(bufferLength);
-        let logCounter = 0;
+        // 使用时域数据计算 RMS，对干声足够了
+        const dataArray = new Uint8Array(analyser.fftSize);
 
         function animate() {
             if (!analyser) return;
             
-            // 获取频域数据
-            analyser.getByteFrequencyData(dataArray);
+            analyser.getByteTimeDomainData(dataArray);
             
-            // 计算人声频段 (约 85Hz - 255Hz，但在 FFT 中通常看低中频)
-            // 我们取前 1/4 的频段能量作为嘴巴开合的依据
+            // 计算 RMS
             let sum = 0;
-            const count = Math.floor(bufferLength * 0.4); // 取低频部分
-            for (let i = 0; i < count; i++) {
-                sum += dataArray[i];
+            for (let i = 0; i < dataArray.length; i++) {
+                const val = (dataArray[i] - 128) / 128; // 归一化到 -1~1
+                sum += val * val;
             }
-            const average = sum / count;
+            const rms = Math.sqrt(sum / dataArray.length);
             
             // 映射到 0~1
-            // 阈值调整：进一步提高静默阈值，并压缩动态范围
-            // 假设 30 是环境噪音，150 是大声说话
-            let mouthOpen = (average - 35) / 140; 
-            mouthOpen = Math.max(0, Math.min(1, mouthOpen));
+            let mouthOpen = Math.min(1, rms * 10);
             
-            // 进一步限制最大张开度，避免出现 O 型嘴 (限制在 0.5 左右)
-            // 0.5 通常是 Live2D 模型比较自然的张嘴程度
-            mouthOpen = mouthOpen * 0.5;
             
             // 柔化处理：大幅增加平滑度，让动作更“肉”一点，避免快速开合
-            mouthOpen = _lastMouthOpen * 0.7 + mouthOpen * 0.3;
+            mouthOpen = _lastMouthOpen * 0.5 + mouthOpen * 0.5;
             _lastMouthOpen = mouthOpen;
 
-            // 每60帧输出一次调试日志
-            if (logCounter++ % 60 === 0) {
-                if (window.DEBUG_LIPSYNC) {
-                    console.log('[LipSync] avg_freq:', average.toFixed(2), 'mouthOpen:', mouthOpen.toFixed(4));
-                }
-            }
             
             if (window.LanLan1 && typeof window.LanLan1.setMouth === 'function') {
                 window.LanLan1.setMouth(mouthOpen);
@@ -7352,6 +7398,9 @@ function init_app() {
             window._realisticGeminiQueue = [];
             window._realisticGeminiBuffer = '';
             window._realisticGeminiTimestamp = null;
+            // 重置语音模式用户转录合并追踪
+            lastVoiceUserMessage = null;
+            lastVoiceUserMessageTime = 0;
 
             // 清理连接与状态
             if (autoReconnectTimeoutId) clearTimeout(autoReconnectTimeoutId);

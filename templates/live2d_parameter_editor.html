@@ -17,7 +17,7 @@
         <div class="control-group">
             <button id="backToMainBtn" class="btn btn-primary" data-i18n-title="live2d.parameterEditor.backToL2DManager">
                 <img src="/static/icons/back_to_main_button.png?v=1" data-i18n-alt="live2d.parameterEditor.backToL2DManager" class="back-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
-                <span class="round-stroke-text" id="back-text" data-i18n="live2d.parameterEditor.backToL2DManager">返回模型管理</span>
+                <span class="round-stroke-text" id="back-text" data-i18n="live2d.parameterEditor.backToL2DManager" data-text="返回模型管理">返回模型管理</span>
                 <img src="/static/icons/paw_ui.png?v=1" alt="" class="paw-icon" style="height: 70px; width: auto; max-width: 60px; image-rendering: crisp-edges; margin-left: auto; flex-shrink: 0; object-fit: contain; display: inline-block;">
             </button>
         </div>
@@ -40,10 +40,10 @@
         <div class="control-group">
             <div style="display:flex; gap: 0;">
                 <button id="reset-all-btn" class="btn btn-secondary btn-icon" disabled style="width: 135px; flex: 0 0 135px;" data-i18n-title="live2d.parameterEditor.resetAll">
-                    <span class="round-stroke-text round-stroke-text-center" id="reset-all-text" data-i18n="live2d.parameterEditor.resetAll">重置全部</span>
+                    <span class="round-stroke-text round-stroke-text-center" id="reset-all-text" data-i18n="live2d.parameterEditor.resetAll" data-text="重置全部">重置全部</span>
                 </button>
                 <button id="save-btn" class="btn btn-success btn-icon" disabled style="width: 135px; flex: 0 0 135px;" data-i18n-title="live2d.parameterEditor.saveParameters">
-                    <span class="round-stroke-text round-stroke-text-center" id="save-text" data-i18n="live2d.parameterEditor.saveParameters">保存参数</span>
+                    <span class="round-stroke-text round-stroke-text-center" id="save-text" data-i18n="live2d.parameterEditor.saveParameters" data-text="保存参数">保存参数</span>
                 </button>
             </div>
         </div>
@@ -51,7 +51,7 @@
         <div class="control-group" style="flex: 1; min-height: 0; display: flex; flex-direction: column;">
             <div id="parameters-list-wrapper" class="parameters-list-wrapper">
                 <div class="parameters-list-header">
-                    <span class="parameters-list-header-text" data-i18n="live2d.parameterEditor.parameterList">参数列表</span>
+                    <span class="parameters-list-header-text" data-i18n="live2d.parameterEditor.parameterList" data-text="参数列表">参数列表</span>
                 </div>
                 <div id="parameters-list" class="parameters-list">
                     <div class="parameters-list-empty" data-i18n="live2d.parameterEditor.pleaseSelectAndLoadModel">

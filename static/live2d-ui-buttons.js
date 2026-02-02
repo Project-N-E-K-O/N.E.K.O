@@ -187,6 +187,37 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
         return;
     }
 
+    // 清理可能存在的旧浮动按钮容器，防止重复创建
+    const existingContainer = document.getElementById('live2d-floating-buttons');
+    if (existingContainer) {
+        // 关键：旧实例仅移除 DOM 会导致 ticker 回调继续运行，并持有旧容器/闭包引用
+        if (this._floatingButtonsTicker && this.pixi_app?.ticker) {
+            try {
+                this.pixi_app.ticker.remove(this._floatingButtonsTicker);
+            } catch (_) {
+                // 忽略移除失败（例如 ticker 已销毁）
+            }
+        }
+        this._floatingButtonsTicker = null;
+
+        // 清理保存的引用，便于 GC 回收旧闭包/容器
+        if (this._floatingButtonsContainer === existingContainer) {
+            this._floatingButtonsContainer = null;
+        }
+        this._floatingButtons = {};
+
+        // 同步清理可能残留的“请她回来”容器，避免重复创建
+        const existingReturnContainer = document.getElementById('live2d-return-button-container');
+        if (existingReturnContainer) {
+            existingReturnContainer.remove();
+            if (this._returnButtonContainer === existingReturnContainer) {
+                this._returnButtonContainer = null;
+            }
+        }
+
+        existingContainer.remove();
+    }
+
     // 创建按钮容器
     const buttonsContainer = document.createElement('div');
     buttonsContainer.id = 'live2d-floating-buttons';

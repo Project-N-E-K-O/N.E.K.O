@@ -274,6 +274,10 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
         }
     }
 
+    // 记录模型的初始参数（用于expression重置）
+    // 必须在应用常驻表情之前记录，否则记录的是已应用常驻表情后的状态
+    this.recordInitialParameters();
+
     // 设置常驻表情
     try { await this.syncEmotionMappingWithServer({ replacePersistentOnly: true }); } catch(_) {}
     await this.setupPersistentExpressions();
@@ -286,9 +290,6 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
             console.warn('[Live2D Model] 常驻表情应用完成回调执行失败:', callbackError);
         }
     }
-
-    // 记录模型的初始参数（用于expression重置）
-    this.recordInitialParameters();
     
     // 加载并应用模型目录中的parameters.json文件（优先级最高）
     // 先加载参数，然后再安装口型覆盖（这样coreModel.update就能访问到savedModelParameters）
@@ -349,6 +350,29 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
             this.pixi_app.ticker.start();
             console.log('[Live2D Model] Ticker 已启动');
         }
+    }
+
+    // 模型加载完成后，延迟播放Idle情绪（给模型一些时间完全初始化）
+    // 兼容新旧两种配置格式:
+    // - 新格式: EmotionMapping.motions['Idle'] / EmotionMapping.expressions['Idle']
+    // - 旧格式: FileReferences.Motions['Idle'] / FileReferences.Expressions 中的 Idle 前缀
+    const hasIdleInEmotionMapping = this.emotionMapping && 
+        (this.emotionMapping.motions?.['Idle'] || this.emotionMapping.expressions?.['Idle']);
+    const hasIdleInFileReferences = this.fileReferences && 
+        (this.fileReferences.Motions?.['Idle'] || 
+         (Array.isArray(this.fileReferences.Expressions) && 
+          this.fileReferences.Expressions.some(e => (e.Name || '').startsWith('Idle'))));
+    
+    if (hasIdleInEmotionMapping || hasIdleInFileReferences) {
+        // 使用 setTimeout 延迟500ms，确保模型完全初始化
+        setTimeout(async () => {
+            try {
+                console.log('[Live2D Model] 模型加载完成，开始播放Idle情绪');
+                await this.setEmotion('Idle');
+            } catch (error) {
+                console.warn('[Live2D Model] 播放Idle情绪失败:', error);
+            }
+        }, 500);
     }
 
     // 调用回调函数

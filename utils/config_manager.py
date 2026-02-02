@@ -669,7 +669,8 @@ class ConfigManager:
             print(f"[GeoIP DEBUG] Country code (upper): '{ip_country.upper() if ip_country else 'EMPTY'}'", file=sys.stderr)
             
             # CN = mainland (False), else = non-mainland (True)
-            result = (ip_country.upper() != 'CN') if ip_country else True
+            # If ip_country is empty, default to mainland (False)
+            result = (ip_country.upper() != 'CN') if ip_country else False
             
             print(f"[GeoIP DEBUG] Is non-mainland: {result}", file=sys.stderr)
             print(f"[GeoIP DEBUG] URL replacement: {'lanlan.tech -> lanlan.app' if result else 'NO CHANGE'}", file=sys.stderr)

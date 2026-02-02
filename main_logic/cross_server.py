@@ -236,6 +236,11 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 text_output_cache = ''
 
                             if message["data"] == "renew session":
+                                # 检查是否正在关闭
+                                if shutdown_event.is_set():
+                                    logger.info(f"[{lanlan_name}] 进程正在关闭，跳过renew session处理")
+                                    break
+                                
                                 # 先处理未完成的用户输入缓存（如果有）
                                 if user_input_cache:
                                     chat_history.append({'role': 'user', 'content': [{"type": "text", "text": user_input_cache}]})
@@ -252,6 +257,12 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 # 清理连续的assistant消息（主动搭话未被响应时只保留最后一条）
                                 chat_history = cleanup_consecutive_assistant_messages(chat_history)
                                 
+                                # 再次检查关闭状态
+                                if shutdown_event.is_set():
+                                    logger.info(f"[{lanlan_name}] 进程正在关闭，跳过memory_server请求")
+                                    chat_history.clear()
+                                    break
+                                
                                 logger.info(f"[{lanlan_name}] 热重置：聊天历史长度 {len(chat_history)} 条消息")
                                 try:
                                     async with aiohttp.ClientSession() as session:
@@ -265,6 +276,11 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                                 logger.error(f"[{lanlan_name}] 热重置记忆处理失败: {result.get('message')}")
                                             else:
                                                 logger.info(f"[{lanlan_name}] 热重置记忆已成功上传到 memory_server")
+                                except RuntimeError as e:
+                                    if "shutdown" in str(e).lower() or "closed" in str(e).lower():
+                                        logger.info(f"[{lanlan_name}] 进程正在关闭，renew请求已取消")
+                                    else:
+                                        logger.exception(f"[{lanlan_name}] 调用 /renew API 失败: {type(e).__name__}: {e}")
                                 except Exception as e:
                                     logger.exception(f"[{lanlan_name}] 调用 /renew API 失败: {type(e).__name__}: {e}")
                                 chat_history.clear()
@@ -279,35 +295,47 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 if config['monitor'] and sync_ws:
                                     await sync_ws.send_json({'type': 'turn end'})
                                 # 非阻塞地向tool_server发送最近对话，供分析器识别潜在任务
-                                try:
-                                    # 构造最近的消息摘要
-                                    recent = []
-                                    for item in chat_history[-6:]:
-                                        if item.get('role') in ['user', 'assistant']:
-                                            try:
-                                                txt = item['content'][0]['text'] if item.get('content') else ''
-                                            except Exception:
-                                                txt = ''
-                                            if txt == '':
-                                                continue
-                                            recent.append({'role': item.get('role'), 'text': txt})
-                                    if recent:
-                                        async with aiohttp.ClientSession() as session:
-                                            async with session.post(
-                                                f"http://localhost:{TOOL_SERVER_PORT}/analyze_and_plan",
-                                                json={'messages': recent, 'lanlan_name': lanlan_name},
-                                                timeout=aiohttp.ClientTimeout(total=5.0)
-                                            ) as resp:
-                                                await resp.read()  # 确保响应被完全读取
-                                        logger.debug(f"[{lanlan_name}] 已发送对话到analyzer进行分析")
-                                except asyncio.TimeoutError:
-                                    logger.debug(f"[{lanlan_name}] 发送到analyzer超时")
-                                except Exception as e:
-                                    logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e}")
+                                # 检查是否正在关闭
+                                if not shutdown_event.is_set():
+                                    try:
+                                        # 构造最近的消息摘要
+                                        recent = []
+                                        for item in chat_history[-6:]:
+                                            if item.get('role') in ['user', 'assistant']:
+                                                try:
+                                                    txt = item['content'][0]['text'] if item.get('content') else ''
+                                                except Exception:
+                                                    txt = ''
+                                                if txt == '':
+                                                    continue
+                                                recent.append({'role': item.get('role'), 'text': txt})
+                                        if recent:
+                                            async with aiohttp.ClientSession() as session:
+                                                async with session.post(
+                                                    f"http://localhost:{TOOL_SERVER_PORT}/analyze_and_plan",
+                                                    json={'messages': recent, 'lanlan_name': lanlan_name},
+                                                    timeout=aiohttp.ClientTimeout(total=5.0)
+                                                ) as resp:
+                                                    await resp.read()  # 确保响应被完全读取
+                                            logger.debug(f"[{lanlan_name}] 已发送对话到analyzer进行分析")
+                                    except asyncio.TimeoutError:
+                                        logger.debug(f"[{lanlan_name}] 发送到analyzer超时")
+                                    except RuntimeError as e:
+                                        if "shutdown" in str(e).lower() or "closed" in str(e).lower():
+                                            logger.info(f"[{lanlan_name}] 进程正在关闭，跳过analyzer请求")
+                                        else:
+                                            logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e}")
+                                    except Exception as e:
+                                        logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e}")
                                 
                                 # Turn end时不保存聊天记录，只在session end或renew session时保存
 
                             elif message["data"] == 'session end': # 当前session结束了
+                                # 检查是否正在关闭，如果是则跳过网络操作
+                                if shutdown_event.is_set():
+                                    logger.info(f"[{lanlan_name}] 进程正在关闭，跳过session end处理")
+                                    break
+                                
                                 # 先处理未完成的用户输入缓存（如果有）
                                 if user_input_cache:
                                     chat_history.append({'role': 'user', 'content': [{"type": "text", "text": user_input_cache}]})
@@ -322,36 +350,48 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 text_output_cache = ''
                                 
                                 # 向tool_server发送最近对话，供分析器识别潜在任务（与turn end逻辑相同）
-                                try:
-                                    # 构造最近的消息摘要
-                                    recent = []
-                                    for item in chat_history[-6:]:
-                                        if item.get('role') in ['user', 'assistant']:
-                                            try:
-                                                txt = item['content'][0]['text'] if item.get('content') else ''
-                                            except Exception:
-                                                txt = ''
-                                            if txt == '':
-                                                continue
-                                            recent.append({'role': item.get('role'), 'text': txt})
-                                    if recent:
-                                        async with aiohttp.ClientSession() as session:
-                                            async with session.post(
-                                                f"http://localhost:{TOOL_SERVER_PORT}/analyze_and_plan",
-                                                json={'messages': recent, 'lanlan_name': lanlan_name},
-                                                timeout=aiohttp.ClientTimeout(total=5.0)
-                                            ) as resp:
-                                                await resp.read()  # 确保响应被完全读取
-                                        logger.debug(f"[{lanlan_name}] 已发送对话到analyzer进行分析 (session end)")
-                                except asyncio.TimeoutError:
-                                    logger.debug(f"[{lanlan_name}] 发送到analyzer超时 (session end)")
-                                except Exception as e:
-                                    logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e} (session end)")
+                                # 再次检查关闭状态
+                                if not shutdown_event.is_set():
+                                    try:
+                                        # 构造最近的消息摘要
+                                        recent = []
+                                        for item in chat_history[-6:]:
+                                            if item.get('role') in ['user', 'assistant']:
+                                                try:
+                                                    txt = item['content'][0]['text'] if item.get('content') else ''
+                                                except Exception:
+                                                    txt = ''
+                                                if txt == '':
+                                                    continue
+                                                recent.append({'role': item.get('role'), 'text': txt})
+                                        if recent:
+                                            async with aiohttp.ClientSession() as session:
+                                                async with session.post(
+                                                    f"http://localhost:{TOOL_SERVER_PORT}/analyze_and_plan",
+                                                    json={'messages': recent, 'lanlan_name': lanlan_name},
+                                                    timeout=aiohttp.ClientTimeout(total=5.0)
+                                                ) as resp:
+                                                    await resp.read()  # 确保响应被完全读取
+                                            logger.debug(f"[{lanlan_name}] 已发送对话到analyzer进行分析 (session end)")
+                                    except asyncio.TimeoutError:
+                                        logger.debug(f"[{lanlan_name}] 发送到analyzer超时 (session end)")
+                                    except RuntimeError as e:
+                                        if "shutdown" in str(e).lower() or "closed" in str(e).lower():
+                                            logger.info(f"[{lanlan_name}] 进程正在关闭，跳过analyzer请求")
+                                        else:
+                                            logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e} (session end)")
+                                    except Exception as e:
+                                        logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e} (session end)")
                                 
                                 # 清理连续的assistant消息（主动搭话未被响应时只保留最后一条）
                                 chat_history = cleanup_consecutive_assistant_messages(chat_history)
                                 
-                                # 处理聊天历史
+                                # 处理聊天历史 - 再次检查关闭状态
+                                if shutdown_event.is_set():
+                                    logger.info(f"[{lanlan_name}] 进程正在关闭，跳过memory_server请求")
+                                    chat_history.clear()
+                                    break
+                                
                                 logger.info(f"[{lanlan_name}] 会话结束：开始处理聊天历史，共 {len(chat_history)} 条消息")
                                 try:
                                     async with aiohttp.ClientSession() as session:
@@ -365,6 +405,11 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                                 logger.error(f"[{lanlan_name}] 会话记忆处理失败: {result.get('message')}")
                                             else:
                                                 logger.info(f"[{lanlan_name}] 会话记忆已成功上传到 memory_server")
+                                except RuntimeError as e:
+                                    if "shutdown" in str(e).lower() or "closed" in str(e).lower():
+                                        logger.info(f"[{lanlan_name}] 进程正在关闭，memory_server请求已取消")
+                                    else:
+                                        logger.exception(f"[{lanlan_name}] 调用 /process API 失败")
                                 except Exception:
                                     logger.exception(f"[{lanlan_name}] 调用 /process API 失败")
                                 chat_history.clear()
