@@ -844,10 +844,11 @@
 
                         // 填充新选择
                         if (config.motions && config.motions[emotion]) {
-                            const files = config.motions[emotion];
+                            const rawFiles = config.motions[emotion];
+                            const files = typeof rawFiles === 'string' ? [rawFiles] : rawFiles;
                             if (motionMS) {
                                 files.forEach(file => {
-                                    const cb = motionMS.querySelector(`input[value="${file}"]`);
+                                    const cb = motionMS.querySelector(`input[value="${CSS.escape(file)}"]`);
                                     if (cb) cb.checked = true;
                                 });
                                 updateMultiselectHeader(motionMS);
@@ -855,10 +856,11 @@
                         }
 
                         if (config.expressions && config.expressions[emotion]) {
-                            const files = config.expressions[emotion];
+                            const rawFiles = config.expressions[emotion];
+                            const files = typeof rawFiles === 'string' ? [rawFiles] : rawFiles;
                             if (expressionMS) {
                                 files.forEach(file => {
-                                    const cb = expressionMS.querySelector(`input[value="${file}"]`);
+                                    const cb = expressionMS.querySelector(`input[value="${CSS.escape(file)}"]`);
                                     if (cb) cb.checked = true;
                                 });
                                 updateMultiselectHeader(expressionMS);
@@ -868,15 +870,21 @@
                         // 兼容旧格式 (如果是字符串则转为数组)
                         if (config[emotion]) {
                             if (motionMS && config[emotion].motion) {
-                                const file = config[emotion].motion;
-                                const cb = motionMS.querySelector(`input[value="${file}"]`);
-                                if (cb) cb.checked = true;
+                                const rawFiles = config[emotion].motion;
+                                const files = typeof rawFiles === 'string' ? [rawFiles] : rawFiles;
+                                files.forEach(file => {
+                                    const cb = motionMS.querySelector(`input[value="${CSS.escape(file)}"]`);
+                                    if (cb) cb.checked = true;
+                                });
                                 updateMultiselectHeader(motionMS);
                             }
                             if (expressionMS && config[emotion].expression) {
-                                const file = config[emotion].expression;
-                                const cb = expressionMS.querySelector(`input[value="${file}"]`);
-                                if (cb) cb.checked = true;
+                                const rawFiles = config[emotion].expression;
+                                const files = typeof rawFiles === 'string' ? [rawFiles] : rawFiles;
+                                files.forEach(file => {
+                                    const cb = expressionMS.querySelector(`input[value="${CSS.escape(file)}"]`);
+                                    if (cb) cb.checked = true;
+                                });
                                 updateMultiselectHeader(expressionMS);
                             }
                         }
