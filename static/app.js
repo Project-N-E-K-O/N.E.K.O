@@ -8684,13 +8684,13 @@ document.addEventListener('DOMContentLoaded', async function() {
         }
     }
 
-    // 初始化新手引导管理器
-    if (typeof initTutorialManager === 'function') {
+    // 初始化通用引导管理器
+    if (typeof initUniversalTutorialManager === 'function') {
         try {
-            initTutorialManager();
-            console.log('[App] 新手引导管理器已初始化');
+            initUniversalTutorialManager();
+            console.log('[App] 通用引导管理器已初始化');
         } catch (error) {
-            console.error('[App] 新手引导管理器初始化失败:', error);
+            console.error('[App] 通用引导管理器初始化失败:', error);
         }
     }
 });

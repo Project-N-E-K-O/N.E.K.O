@@ -140,6 +140,11 @@ class UniversalTutorialManager {
         const storageKey = this.STORAGE_KEY_PREFIX + this.currentPage;
         const hasSeen = localStorage.getItem(storageKey);
 
+        console.log('[Tutorial] 检查引导状态:');
+        console.log('  - 当前页面:', this.currentPage);
+        console.log('  - 存储键:', storageKey);
+        console.log('  - 已看过引导:', hasSeen);
+
         if (!hasSeen) {
             // 对于主页，需要等待浮动按钮创建
             if (this.currentPage === 'home') {
@@ -162,6 +167,8 @@ class UniversalTutorialManager {
      * 获取当前页面的引导步骤配置
      */
     getStepsForPage() {
+        console.log('[Tutorial] getStepsForPage 被调用，当前页面:', this.currentPage);
+
         const configs = {
             home: this.getHomeSteps(),
             model_manager: this.getModelManagerSteps(),
@@ -172,7 +179,13 @@ class UniversalTutorialManager {
             memory_browser: this.getMemoryBrowserSteps(),
         };
 
-        return configs[this.currentPage] || [];
+        const steps = configs[this.currentPage] || [];
+        console.log('[Tutorial] 返回的步骤数:', steps.length);
+        if (steps.length > 0) {
+            console.log('[Tutorial] 第一个步骤元素:', steps[0].element);
+        }
+
+        return steps;
     }
 
     /**
@@ -829,8 +842,18 @@ class UniversalTutorialManager {
             // 标记引导正在运行
             this.isTutorialRunning = true;
 
-            // 先显示全屏提示，等待用户点击
-            this.showFullscreenPrompt(validSteps);
+            // 检查当前页面是否需要全屏提示
+            const pagesNeedingFullscreen = [
+                'chara_manager',  // 角色管理页面需要全屏
+            ];
+
+            if (pagesNeedingFullscreen.includes(this.currentPage)) {
+                // 显示全屏提示
+                this.showFullscreenPrompt(validSteps);
+            } else {
+                // 直接启动引导，不显示全屏提示
+                this.startTutorialSteps(validSteps);
+            }
         } catch (error) {
             console.error('[Tutorial] 启动引导失败:', error);
         }
@@ -1349,9 +1372,37 @@ window.universalTutorialManager = null;
  * 应在 DOM 加载完成后调用
  */
 function initUniversalTutorialManager() {
-    if (!window.universalTutorialManager) {
+    // 检测当前页面类型
+    const currentPath = window.location.pathname;
+    const currentPageType = (() => {
+        if (currentPath === '/' || currentPath === '/index.html') return 'home';
+        if (currentPath.includes('model_manager') || currentPath.includes('l2d')) return 'model_manager';
+        if (currentPath.includes('chara_manager')) return 'chara_manager';
+        if (currentPath.includes('api_key') || currentPath.includes('settings')) return 'settings';
+        if (currentPath.includes('voice_clone')) return 'voice_clone';
+        if (currentPath.includes('steam_workshop')) return 'steam_workshop';
+        if (currentPath.includes('memory_browser')) return 'memory_browser';
+        return 'unknown';
+    })();
+
+    // 如果全局实例存在，检查页面是否改变
+    if (window.universalTutorialManager) {
+        if (window.universalTutorialManager.currentPage !== currentPageType) {
+            console.log('[Tutorial] 页面已改变，销毁旧实例并创建新实例');
+            // 销毁旧的 driver 实例
+            if (window.universalTutorialManager.driver) {
+                window.universalTutorialManager.driver.destroy();
+            }
+            // 创建新实例
+            window.universalTutorialManager = new UniversalTutorialManager();
+            console.log('[Tutorial] 通用教程管理器已重新初始化，页面:', currentPageType);
+        } else {
+            console.log('[Tutorial] 页面未改变，使用现有实例');
+        }
+    } else {
+        // 创建新实例
         window.universalTutorialManager = new UniversalTutorialManager();
-        console.log('[Tutorial] 通用教程管理器已初始化');
+        console.log('[Tutorial] 通用教程管理器已初始化，页面:', currentPageType);
     }
 }
 
