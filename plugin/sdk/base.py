@@ -487,18 +487,55 @@ class NekoPluginBase:
         
         return current_result
     
-    def get_replace_hook(self, entry_id: str) -> Optional[HookHandler]:
-        """获取 replace 类型的 Hook（只返回优先级最高的一个）"""
+    def _check_hook_condition(self, hook_handler: HookHandler, entry_id: str, params: Dict[str, Any]) -> bool:
+        """检查 Hook 的 condition 是否满足
+        
+        Args:
+            hook_handler: Hook 处理器
+            entry_id: 入口点 ID
+            params: 参数字典
+        
+        Returns:
+            True 如果 condition 满足或没有 condition，False 否则
+        """
+        if not hook_handler.meta.condition:
+            return True
+        
+        # 从 handler 所属的对象获取条件方法
+        owner = getattr(hook_handler.handler, "__self__", None) or self
+        condition_method = getattr(owner, hook_handler.meta.condition, None)
+        if condition_method and callable(condition_method):
+            try:
+                return bool(condition_method(entry_id, params))
+            except Exception:
+                return False
+        return True
+    
+    def get_replace_hook(self, entry_id: str, params: Optional[Dict[str, Any]] = None) -> Optional[HookHandler]:
+        """获取 replace 类型的 Hook（只返回优先级最高且满足 condition 的一个）
+        
+        Args:
+            entry_id: 入口点 ID
+            params: 参数字典（用于检查 condition）
+        """
         hooks = self.get_hooks_for_entry(entry_id)
+        params = params or {}
         for h in hooks:
             if h.meta.timing == "replace":
-                return h
+                if self._check_hook_condition(h, entry_id, params):
+                    return h
         return None
     
-    def get_around_hooks(self, entry_id: str) -> List[HookHandler]:
-        """获取 around 类型的 Hook（按优先级排序）"""
+    def get_around_hooks(self, entry_id: str, params: Optional[Dict[str, Any]] = None) -> List[HookHandler]:
+        """获取 around 类型的 Hook（按优先级排序，只返回满足 condition 的）
+        
+        Args:
+            entry_id: 入口点 ID
+            params: 参数字典（用于检查 condition）
+        """
         hooks = self.get_hooks_for_entry(entry_id)
-        return [h for h in hooks if h.meta.timing == "around"]
+        params = params or {}
+        return [h for h in hooks if h.meta.timing == "around" and self._check_hook_condition(h, entry_id, params)]
     
     def _wrap_handler_with_hooks(self, entry_id: str, original_handler: Callable) -> Callable:
         """包装 handler，在执行前后执行 Hook
@@ -522,20 +559,38 @@ class NekoPluginBase:
             if not should_continue:
                 return early_result
             
-            # 2. 检查是否有 replace hook
-            replace_hook = plugin_ref.get_replace_hook(entry_id)
+            logger = getattr(plugin_ref.ctx, "logger", None)
+            
+            # 2. 检查是否有 replace hook（传入 params 用于 condition 检查）
+            replace_hook = plugin_ref.get_replace_hook(entry_id, modified_params)
             if replace_hook:
                 # 使用 replace hook 替代原始 handler
-                result = replace_hook.handler(
-                    entry_id=entry_id,
-                    params=modified_params,
-                    original_handler=original_handler,
-                )
-                if inspect.iscoroutine(result):
-                    result = await result
+                try:
+                    if logger:
+                        logger.debug(
+                            f"[Hook] replace: {replace_hook.router_name}.{replace_hook.handler.__name__} "
+                            f"for entry {entry_id}"
+                        )
+                    result = replace_hook.handler(
+                        entry_id=entry_id,
+                        params=modified_params,
+                        original_handler=original_handler,
+                    )
+                    if inspect.iscoroutine(result):
+                        result = await result
+                except Exception as e:
+                    if logger:
+                        logger.warning(
+                            f"[Hook] replace hook {replace_hook.router_name}.{replace_hook.handler.__name__} "
+                            f"failed for entry {entry_id}: {e}, falling back to original handler"
+                        )
+                    # replace hook 失败时回退到原始 handler
+                    result = original_handler(**modified_params)
+                    if inspect.iscoroutine(result):
+                        result = await result
             else:
-                # 3. 构建 around hook 链
-                around_hooks = plugin_ref.get_around_hooks(entry_id)
+                # 3. 构建 around hook 链（传入 params 用于 condition 检查）
+                around_hooks = plugin_ref.get_around_hooks(entry_id, modified_params)
                 
                 if around_hooks:
                     # 构建调用链：around_hook_1 -> around_hook_2 -> ... -> original_handler
@@ -555,15 +610,29 @@ class NekoPluginBase:
                         async def next_handler(p=None):
                             return await build_chain(rest_hooks, p if p is not None else params)
                         
-                        # 执行当前 around hook
-                        hook_result = current_hook.handler(
-                            entry_id=entry_id,
-                            params=params,
-                            next_handler=next_handler,
-                        )
-                        if inspect.iscoroutine(hook_result):
-                            hook_result = await hook_result
-                        return hook_result
+                        # 执行当前 around hook（带错误处理）
+                        try:
+                            if logger:
+                                logger.debug(
+                                    f"[Hook] around: {current_hook.router_name}.{current_hook.handler.__name__} "
+                                    f"for entry {entry_id}"
+                                )
+                            hook_result = current_hook.handler(
+                                entry_id=entry_id,
+                                params=params,
+                                next_handler=next_handler,
+                            )
+                            if inspect.iscoroutine(hook_result):
+                                hook_result = await hook_result
+                            return hook_result
+                        except Exception as e:
+                            if logger:
+                                logger.warning(
+                                    f"[Hook] around hook {current_hook.router_name}.{current_hook.handler.__name__} "
+                                    f"failed for entry {entry_id}: {e}, skipping to next"
+                                )
+                            # 跳过当前 hook，继续执行链的其余部分
+                            return await build_chain(rest_hooks, params)
                     
                     result = await build_chain(around_hooks, modified_params)
                 else:
@@ -588,20 +657,36 @@ class NekoPluginBase:
             if not should_continue:
                 return early_result
             
-            # 2. 检查是否有 replace hook
-            replace_hook = plugin_ref.get_replace_hook(entry_id)
+            logger = getattr(plugin_ref.ctx, "logger", None)
+            
+            # 2. 检查是否有 replace hook（传入 params 用于 condition 检查）
+            replace_hook = plugin_ref.get_replace_hook(entry_id, modified_params)
             if replace_hook:
                 # 使用 replace hook 替代原始 handler
-                result = replace_hook.handler(
-                    entry_id=entry_id,
-                    params=modified_params,
-                    original_handler=original_handler,
-                )
-                if inspect.iscoroutine(result):
-                    result = asyncio.run(result)
+                try:
+                    if logger:
+                        logger.debug(
+                            f"[Hook] replace: {replace_hook.router_name}.{replace_hook.handler.__name__} "
+                            f"for entry {entry_id}"
+                        )
+                    result = replace_hook.handler(
+                        entry_id=entry_id,
+                        params=modified_params,
+                        original_handler=original_handler,
+                    )
+                    if inspect.iscoroutine(result):
+                        result = asyncio.run(result)
+                except Exception as e:
+                    if logger:
+                        logger.warning(
+                            f"[Hook] replace hook {replace_hook.router_name}.{replace_hook.handler.__name__} "
+                            f"failed for entry {entry_id}: {e}, falling back to original handler"
+                        )
+                    # replace hook 失败时回退到原始 handler
+                    result = original_handler(**modified_params)
             else:
-                # 3. 构建 around hook 链
-                around_hooks = plugin_ref.get_around_hooks(entry_id)
+                # 3. 构建 around hook 链（传入 params 用于 condition 检查）
+                around_hooks = plugin_ref.get_around_hooks(entry_id, modified_params)
                 
                 if around_hooks:
                     # 对于同步 handler，around hook 链需要在事件循环中执行
@@ -616,14 +701,29 @@ class NekoPluginBase:
                         async def next_handler(p=None):
                             return await build_chain_async(rest_hooks, p if p is not None else params)
                         
-                        hook_result = current_hook.handler(
-                            entry_id=entry_id,
-                            params=params,
-                            next_handler=next_handler,
-                        )
-                        if inspect.iscoroutine(hook_result):
-                            hook_result = await hook_result
-                        return hook_result
+                        # 执行当前 around hook（带错误处理）
+                        try:
+                            if logger:
+                                logger.debug(
+                                    f"[Hook] around: {current_hook.router_name}.{current_hook.handler.__name__} "
+                                    f"for entry {entry_id}"
+                                )
+                            hook_result = current_hook.handler(
+                                entry_id=entry_id,
+                                params=params,
+                                next_handler=next_handler,
+                            )
+                            if inspect.iscoroutine(hook_result):
+                                hook_result = await hook_result
+                            return hook_result
+                        except Exception as e:
+                            if logger:
+                                logger.warning(
+                                    f"[Hook] around hook {current_hook.router_name}.{current_hook.handler.__name__} "
+                                    f"failed for entry {entry_id}: {e}, skipping to next"
+                                )
+                            # 跳过当前 hook，继续执行链的其余部分
+                            return await build_chain_async(rest_hooks, params)
                     
                     result = asyncio.run(build_chain_async(around_hooks, modified_params))
                 else:
