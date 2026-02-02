@@ -839,8 +839,14 @@
                         const expressionMS = document.querySelector(`.emotion-expression-select[data-emotion="${emotion}"]`);
 
                         // 清除当前选择
-                        if (motionMS) motionMS.querySelectorAll('input').forEach(cb => cb.checked = false);
-                        if (expressionMS) expressionMS.querySelectorAll('input').forEach(cb => cb.checked = false);
+                        if (motionMS) {
+                            motionMS.querySelectorAll('input').forEach(cb => cb.checked = false);
+                            updateMultiselectHeader(motionMS);
+                        }
+                        if (expressionMS) {
+                            expressionMS.querySelectorAll('input').forEach(cb => cb.checked = false);
+                            updateMultiselectHeader(expressionMS);
+                        }
 
                         // 填充新选择
                         if (config.motions && config.motions[emotion]) {
