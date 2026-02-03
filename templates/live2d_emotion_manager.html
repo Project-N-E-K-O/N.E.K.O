@@ -148,6 +148,130 @@
             box-shadow: 0 0 0 3px rgba(64, 197, 241, 0.15);
         }
 
+        /* Custom Multi-select Styles */
+        .custom-multiselect {
+            position: relative;
+            width: 100%;
+        }
+
+        .multiselect-header {
+            width: 100%;
+            padding: 12px 16px;
+            background: white;
+            border: 2px solid var(--color-n-border);
+            border-radius: var(--radius-capsule);
+            color: var(--color-text-main);
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            min-height: 46px;
+            user-select: none;
+        }
+
+        .multiselect-header:hover {
+            border-color: var(--color-n-main);
+            transform: translateY(-1px);
+        }
+
+        .multiselect-header::after {
+            content: '';
+            width: 12px;
+            height: 12px;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2340C5F1' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: center;
+            transition: transform 0.2s ease;
+        }
+
+        .custom-multiselect.active .multiselect-header::after {
+            transform: rotate(180deg);
+        }
+
+        .multiselect-options {
+            position: absolute;
+            top: calc(100% + 8px);
+            left: 0;
+            width: 100%;
+            background: white;
+            border: 2px solid var(--color-n-border);
+            border-radius: var(--radius-card);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+            z-index: 100;
+            max-height: 250px;
+            overflow-y: auto;
+            display: none;
+            padding: var(--spacing-sm);
+        }
+
+        .custom-multiselect.active .multiselect-options {
+            display: block;
+        }
+
+        .multiselect-item {
+            padding: 10px 12px;
+            border-radius: var(--spacing-sm);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            transition: background 0.2s ease;
+            font-size: 13px;
+            color: var(--color-text-dark);
+        }
+
+        .multiselect-item:hover {
+            background: var(--color-n-light);
+        }
+
+        .multiselect-item input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+            accent-color: var(--color-n-main);
+        }
+
+        .multiselect-item span {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .multiselect-header .selected-text {
+            flex: 1;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            overflow: hidden;
+            max-height: 70px; /* 限制高度，防止过多标签撑开太大 */
+        }
+
+        .selected-tag {
+            background: var(--color-n-light);
+            color: var(--color-n-deep);
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            border: 1px solid var(--color-n-border);
+            white-space: nowrap;
+            max-width: 120px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .multiselect-header .selected-count {
+            background: var(--color-n-main);
+            color: white;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 12px;
+            margin-left: 8px;
+            flex-shrink: 0;
+        }
+
         .emotion-section {
             margin-bottom: var(--spacing-xl);
             padding: var(--spacing-lg);
@@ -327,16 +451,22 @@
             <div class="emotion-section">
                 <div class="emotion-header">开心 (Happy)</div>
                 <div class="select-group">
-                    <label>动作文件</label>
-                    <select class="emotion-motion-select" data-emotion="happy">
-                        <option value="">选择动作文件</option>
-                    </select>
+                    <label>动作</label>
+                    <div class="custom-multiselect emotion-motion-select" data-emotion="happy">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="selected-text">选择动作</span>
+                        </div>
+                        <div class="multiselect-options"></div>
+                    </div>
                 </div>
                 <div class="select-group">
-                    <label>表情文件</label>
-                    <select class="emotion-expression-select" data-emotion="happy">
-                        <option value="">选择表情文件</option>
-                    </select>
+                    <label>表情</label>
+                    <div class="custom-multiselect emotion-expression-select" data-emotion="happy">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="selected-text">选择表情</span>
+                        </div>
+                        <div class="multiselect-options"></div>
+                    </div>
                 </div>
             </div>
 
@@ -344,16 +474,22 @@
             <div class="emotion-section">
                 <div class="emotion-header">悲伤 (Sad)</div>
                 <div class="select-group">
-                    <label>动作文件</label>
-                    <select class="emotion-motion-select" data-emotion="sad">
-                        <option value="">选择动作文件</option>
-                    </select>
+                    <label>动作</label>
+                    <div class="custom-multiselect emotion-motion-select" data-emotion="sad">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="selected-text">选择动作</span>
+                        </div>
+                        <div class="multiselect-options"></div>
+                    </div>
                 </div>
                 <div class="select-group">
-                    <label>表情文件</label>
-                    <select class="emotion-expression-select" data-emotion="sad">
-                        <option value="">选择表情文件</option>
-                    </select>
+                    <label>表情</label>
+                    <div class="custom-multiselect emotion-expression-select" data-emotion="sad">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="selected-text">选择表情</span>
+                        </div>
+                        <div class="multiselect-options"></div>
+                    </div>
                 </div>
             </div>
 
@@ -361,16 +497,22 @@
             <div class="emotion-section">
                 <div class="emotion-header">生气 (Angry)</div>
                 <div class="select-group">
-                    <label>动作文件</label>
-                    <select class="emotion-motion-select" data-emotion="angry">
-                        <option value="">选择动作文件</option>
-                    </select>
+                    <label>动作</label>
+                    <div class="custom-multiselect emotion-motion-select" data-emotion="angry">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="selected-text">选择动作</span>
+                        </div>
+                        <div class="multiselect-options"></div>
+                    </div>
                 </div>
                 <div class="select-group">
-                    <label>表情文件</label>
-                    <select class="emotion-expression-select" data-emotion="angry">
-                        <option value="">选择表情文件</option>
-                    </select>
+                    <label>表情</label>
+                    <div class="custom-multiselect emotion-expression-select" data-emotion="angry">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="selected-text">选择表情</span>
+                        </div>
+                        <div class="multiselect-options"></div>
+                    </div>
                 </div>
             </div>
 
@@ -378,16 +520,22 @@
             <div class="emotion-section">
                 <div class="emotion-header">平静 (Neutral)</div>
                 <div class="select-group">
-                    <label>动作文件</label>
-                    <select class="emotion-motion-select" data-emotion="neutral">
-                        <option value="">选择动作文件</option>
-                    </select>
+                    <label>动作</label>
+                    <div class="custom-multiselect emotion-motion-select" data-emotion="neutral">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="selected-text">选择动作</span>
+                        </div>
+                        <div class="multiselect-options"></div>
+                    </div>
                 </div>
                 <div class="select-group">
-                    <label>表情文件</label>
-                    <select class="emotion-expression-select" data-emotion="neutral">
-                        <option value="">选择表情文件</option>
-                    </select>
+                    <label>表情</label>
+                    <div class="custom-multiselect emotion-expression-select" data-emotion="neutral">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="selected-text">选择表情</span>
+                        </div>
+                        <div class="multiselect-options"></div>
+                    </div>
                 </div>
             </div>
 
@@ -395,16 +543,22 @@
             <div class="emotion-section">
                 <div class="emotion-header">惊讶 (Surprised)</div>
                 <div class="select-group">
-                    <label>动作文件</label>
-                    <select class="emotion-motion-select" data-emotion="surprised">
-                        <option value="">选择动作文件</option>
-                    </select>
+                    <label>动作</label>
+                    <div class="custom-multiselect emotion-motion-select" data-emotion="surprised">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="selected-text">选择动作</span>
+                        </div>
+                        <div class="multiselect-options"></div>
+                    </div>
                 </div>
                 <div class="select-group">
-                    <label>表情文件</label>
-                    <select class="emotion-expression-select" data-emotion="surprised">
-                        <option value="">选择表情文件</option>
-                    </select>
+                    <label>表情</label>
+                    <div class="custom-multiselect emotion-expression-select" data-emotion="surprised">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="selected-text">选择表情</span>
+                        </div>
+                        <div class="multiselect-options"></div>
+                    </div>
                 </div>
             </div>
 
@@ -412,16 +566,22 @@
             <div class="emotion-section">
                 <div class="emotion-header">待机 (Idle)</div>
                 <div class="select-group">
-                    <label>动作文件</label>
-                    <select class="emotion-motion-select" data-emotion="Idle">
-                        <option value="">选择动作文件</option>
-                    </select>
+                    <label>动作</label>
+                    <div class="custom-multiselect emotion-motion-select" data-emotion="Idle">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="selected-text">选择动作</span>
+                        </div>
+                        <div class="multiselect-options"></div>
+                    </div>
                 </div>
                 <div class="select-group">
-                    <label>表情文件</label>
-                    <select class="emotion-expression-select" data-emotion="Idle">
-                        <option value="">选择表情文件</option>
-                    </select>
+                    <label>表情</label>
+                    <div class="custom-multiselect emotion-expression-select" data-emotion="Idle">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="selected-text">选择表情</span>
+                        </div>
+                        <div class="multiselect-options"></div>
+                    </div>
                 </div>
             </div>
 
@@ -518,30 +678,149 @@
             }
         }
 
+        // 切换下拉菜单
+        function toggleDropdown(event) {
+            const multiselect = event.currentTarget.closest('.custom-multiselect');
+            const header = multiselect.querySelector('.multiselect-header');
+            const wasActive = multiselect.classList.contains('active');
+
+            // 关闭所有其他下拉菜单
+            document.querySelectorAll('.custom-multiselect').forEach(ms => {
+                ms.classList.remove('active');
+                const h = ms.querySelector('.multiselect-header');
+                if (h) h.setAttribute('aria-expanded', 'false');
+            });
+
+            if (!wasActive) {
+                multiselect.classList.add('active');
+                if (header) header.setAttribute('aria-expanded', 'true');
+            }
+
+            event.stopPropagation();
+        }
+
+        // 点击外部关闭下拉菜单
+        window.addEventListener('click', () => {
+            document.querySelectorAll('.custom-multiselect').forEach(ms => {
+                ms.classList.remove('active');
+                const h = ms.querySelector('.multiselect-header');
+                if (h) h.setAttribute('aria-expanded', 'false');
+            });
+        });
+
+        // 更新头部显示
+        function updateMultiselectHeader(multiselect) {
+            const checkboxes = multiselect.querySelectorAll('input[type="checkbox"]:checked');
+            const headerContainer = multiselect.querySelector('.selected-text');
+            const isMotion = multiselect.classList.contains('emotion-motion-select');
+
+            headerContainer.innerHTML = '';
+
+            if (checkboxes.length === 0) {
+                headerContainer.textContent = isMotion ? '选择动作' : '选择表情';
+            } else {
+                checkboxes.forEach(cb => {
+                    const label = cb.closest('.multiselect-item').querySelector('span').textContent;
+                    // 去掉 .motion3.json 或 .exp3.json 后缀
+                    const cleanLabel = label.replace(/\.(motion3|exp3)\.json$/, '');
+                    const tag = document.createElement('span');
+                    tag.className = 'selected-tag';
+                    tag.textContent = cleanLabel;
+                    headerContainer.appendChild(tag);
+                });
+            }
+        }
+
         // 填充下拉菜单
         function populateSelects() {
             emotions.forEach(emotion => {
-                const motionSelect = document.querySelector(`.emotion-motion-select[data-emotion="${emotion}"]`);
-                const expressionSelect = document.querySelector(`.emotion-expression-select[data-emotion="${emotion}"]`);
+                const motionContainer = document.querySelector(`.emotion-motion-select[data-emotion="${emotion}"] .multiselect-options`);
+                const expressionContainer = document.querySelector(`.emotion-expression-select[data-emotion="${emotion}"] .multiselect-options`);
 
-                if (motionSelect) {
-                    motionSelect.innerHTML = '<option value="">选择动作文件</option>';
+                if (motionContainer) {
+                    motionContainer.innerHTML = '';
+                    // 防止点击选项列表时关闭下拉框
+                    motionContainer.onclick = (e) => e.stopPropagation();
+
                     availableMotions.forEach(motion => {
-                        const option = document.createElement('option');
-                        option.value = motion;
-                        option.textContent = motion.split('/').pop();
-                        motionSelect.appendChild(option);
+                        const item = document.createElement('div');
+                        item.className = 'multiselect-item';
+                        const fileName = motion.split('/').pop();
+                        const cleanFileName = fileName.replace(/\.(motion3|exp3)\.json$/, '');
+                        
+                        const checkbox = document.createElement('input');
+                        checkbox.type = 'checkbox';
+                        checkbox.value = motion;
+                        
+                        const span = document.createElement('span');
+                        span.textContent = cleanFileName;
+                        
+                        item.appendChild(checkbox);
+                        item.appendChild(span);
+
+                        item.addEventListener('click', (e) => {
+                            if (e.target.tagName !== 'INPUT') {
+                                checkbox.checked = !checkbox.checked;
+                            }
+                            updateMultiselectHeader(motionContainer.closest('.custom-multiselect'));
+                            e.stopPropagation(); // 再次确保不冒泡
+                        });
+                        motionContainer.appendChild(item);
                     });
+                    // 初始化头部
+                    updateMultiselectHeader(motionContainer.closest('.custom-multiselect'));
+                    // 绑定点击事件到 header
+                    const header = motionContainer.closest('.custom-multiselect').querySelector('.multiselect-header');
+                    header.onclick = toggleDropdown;
+                    header.onkeydown = (e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            toggleDropdown(e);
+                        }
+                    };
                 }
 
-                if (expressionSelect) {
-                    expressionSelect.innerHTML = '<option value="">选择表情文件</option>';
+                if (expressionContainer) {
+                    expressionContainer.innerHTML = '';
+                    // 防止点击选项列表时关闭下拉框
+                    expressionContainer.onclick = (e) => e.stopPropagation();
+
                     availableExpressions.forEach(expression => {
-                        const option = document.createElement('option');
-                        option.value = expression;
-                        option.textContent = expression.split('/').pop();
-                        expressionSelect.appendChild(option);
+                        const item = document.createElement('div');
+                        item.className = 'multiselect-item';
+                        const fileName = expression.split('/').pop();
+                        const cleanFileName = fileName.replace(/\.(motion3|exp3)\.json$/, '');
+                        
+                        const checkbox = document.createElement('input');
+                        checkbox.type = 'checkbox';
+                        checkbox.value = expression;
+                        
+                        const span = document.createElement('span');
+                        span.textContent = cleanFileName;
+                        
+                        item.appendChild(checkbox);
+                        item.appendChild(span);
+
+                        item.addEventListener('click', (e) => {
+                            if (e.target.tagName !== 'INPUT') {
+                                checkbox.checked = !checkbox.checked;
+                            }
+                            updateMultiselectHeader(expressionContainer.closest('.custom-multiselect'));
+                            e.stopPropagation(); // 再次确保不冒泡
+                        });
+                        expressionContainer.appendChild(item);
                     });
+                    // 初始化头部
+                    updateMultiselectHeader(expressionContainer.closest('.custom-multiselect'));
+                    // 绑定点击事件到 header
+                    const header = expressionContainer.closest('.custom-multiselect').querySelector('.multiselect-header');
+                    header.onclick = toggleDropdown;
+                    header.onkeydown = (e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            toggleDropdown(e);
+                        }
+                    };
                 }
             });
         }
@@ -555,36 +834,64 @@
                 if (data.success && data.config) {
                     const config = data.config;
 
-                    // 后端返回的格式可能是:
-                    // 1. { motions: { emotion: [files] }, expressions: { emotion: [files] } }
-                    // 2. 或者旧格式 { emotion: { motion: "...", expression: "..." } }
-
                     emotions.forEach(emotion => {
-                        const motionSelect = document.querySelector(`.emotion-motion-select[data-emotion="${emotion}"]`);
-                        const expressionSelect = document.querySelector(`.emotion-expression-select[data-emotion="${emotion}"]`);
+                        const motionMS = document.querySelector(`.emotion-motion-select[data-emotion="${emotion}"]`);
+                        const expressionMS = document.querySelector(`.emotion-expression-select[data-emotion="${emotion}"]`);
 
-                        // 尝试新格式
+                        // 清除当前选择
+                        if (motionMS) {
+                            motionMS.querySelectorAll('input').forEach(cb => cb.checked = false);
+                            updateMultiselectHeader(motionMS);
+                        }
+                        if (expressionMS) {
+                            expressionMS.querySelectorAll('input').forEach(cb => cb.checked = false);
+                            updateMultiselectHeader(expressionMS);
+                        }
+
+                        // 填充新选择
                         if (config.motions && config.motions[emotion]) {
-                            const motionFiles = config.motions[emotion];
-                            if (motionSelect && motionFiles.length > 0) {
-                                motionSelect.value = motionFiles[0];
+                            const rawFiles = config.motions[emotion];
+                            const files = typeof rawFiles === 'string' ? [rawFiles] : rawFiles;
+                            if (motionMS) {
+                                files.forEach(file => {
+                                    const cb = motionMS.querySelector(`input[value="${CSS.escape(file)}"]`);
+                                    if (cb) cb.checked = true;
+                                });
+                                updateMultiselectHeader(motionMS);
                             }
                         }
 
                         if (config.expressions && config.expressions[emotion]) {
-                            const expressionFiles = config.expressions[emotion];
-                            if (expressionSelect && expressionFiles.length > 0) {
-                                expressionSelect.value = expressionFiles[0];
+                            const rawFiles = config.expressions[emotion];
+                            const files = typeof rawFiles === 'string' ? [rawFiles] : rawFiles;
+                            if (expressionMS) {
+                                files.forEach(file => {
+                                    const cb = expressionMS.querySelector(`input[value="${CSS.escape(file)}"]`);
+                                    if (cb) cb.checked = true;
+                                });
+                                updateMultiselectHeader(expressionMS);
                             }
                         }
 
-                        // 兼容旧格式
+                        // 兼容旧格式 (如果是字符串则转为数组)
                         if (config[emotion]) {
-                            if (motionSelect && config[emotion].motion) {
-                                motionSelect.value = config[emotion].motion;
+                            if (motionMS && config[emotion].motion) {
+                                const rawFiles = config[emotion].motion;
+                                const files = typeof rawFiles === 'string' ? [rawFiles] : rawFiles;
+                                files.forEach(file => {
+                                    const cb = motionMS.querySelector(`input[value="${CSS.escape(file)}"]`);
+                                    if (cb) cb.checked = true;
+                                });
+                                updateMultiselectHeader(motionMS);
                             }
-                            if (expressionSelect && config[emotion].expression) {
-                                expressionSelect.value = config[emotion].expression;
+                            if (expressionMS && config[emotion].expression) {
+                                const rawFiles = config[emotion].expression;
+                                const files = typeof rawFiles === 'string' ? [rawFiles] : rawFiles;
+                                files.forEach(file => {
+                                    const cb = expressionMS.querySelector(`input[value="${CSS.escape(file)}"]`);
+                                    if (cb) cb.checked = true;
+                                });
+                                updateMultiselectHeader(expressionMS);
                             }
                         }
                     });
@@ -603,25 +910,23 @@
                 return;
             }
 
-            // 构建后端期望的格式: { motions: { emotion: [files] }, expressions: { emotion: [files] } }
             const config = {
                 motions: {},
                 expressions: {}
             };
 
             emotions.forEach(emotion => {
-                const motionSelect = document.querySelector(`.emotion-motion-select[data-emotion="${emotion}"]`);
-                const expressionSelect = document.querySelector(`.emotion-expression-select[data-emotion="${emotion}"]`);
+                const motionMS = document.querySelector(`.emotion-motion-select[data-emotion="${emotion}"]`);
+                const expressionMS = document.querySelector(`.emotion-expression-select[data-emotion="${emotion}"]`);
 
-                const motionValue = motionSelect ? motionSelect.value : '';
-                const expressionValue = expressionSelect ? expressionSelect.value : '';
-
-                // 只有选择了文件才添加到配置中
-                if (motionValue) {
-                    config.motions[emotion] = [motionValue];
+                if (motionMS) {
+                    const selected = Array.from(motionMS.querySelectorAll('input:checked')).map(cb => cb.value);
+                    if (selected.length > 0) config.motions[emotion] = selected;
                 }
-                if (expressionValue) {
-                    config.expressions[emotion] = [expressionValue];
+
+                if (expressionMS) {
+                    const selected = Array.from(expressionMS.querySelectorAll('input:checked')).map(cb => cb.value);
+                    if (selected.length > 0) config.expressions[emotion] = selected;
                 }
             });
 
@@ -637,7 +942,7 @@
                 const data = await response.json();
 
                 if (data.success) {
-                    showStatus('配置保存成功！', 'success');
+                    showStatus('配置保存成功！ 每个情绪的动作/表情将平分触发概率。', 'success');
                 } else {
                     showStatus('保存失败: ' + (data.error || '未知错误'), 'error');
                 }
@@ -649,12 +954,9 @@
 
         // 重置配置
         function resetConfig() {
-            emotions.forEach(emotion => {
-                const motionSelect = document.querySelector(`.emotion-motion-select[data-emotion="${emotion}"]`);
-                const expressionSelect = document.querySelector(`.emotion-expression-select[data-emotion="${emotion}"]`);
-
-                if (motionSelect) motionSelect.value = '';
-                if (expressionSelect) expressionSelect.value = '';
+            document.querySelectorAll('.custom-multiselect').forEach(ms => {
+                ms.querySelectorAll('input').forEach(cb => cb.checked = false);
+                updateMultiselectHeader(ms);
             });
 
             showStatus('已重置配置', 'info');
