@@ -19,6 +19,9 @@ class UniversalTutorialManager {
         this.nextButtonGuardTimer = null;
         this.nextButtonGuardActive = false;
 
+        // 用于追踪在引导中修改过的元素及其原始样式
+        this.modifiedElementsMap = new Map();
+
         console.log('[Tutorial] 当前页面:', this.currentPage);
 
         // 等待 driver.js 库加载
@@ -1127,24 +1130,34 @@ class UniversalTutorialManager {
 
         const style = window.getComputedStyle(element);
 
-        // 保存原始样式，以便后续恢复
-        const originalDisplay = element.style.display;
-        const originalVisibility = element.style.visibility;
-        const originalOpacity = element.style.opacity;
+        // 保存元素的原始内联样式和类名（如果还未保存）
+        if (!this.modifiedElementsMap.has(element)) {
+            this.modifiedElementsMap.set(element, {
+                originalInlineStyle: element.getAttribute('style') || '',
+                originalClassName: element.className,
+                modifiedProperties: []
+            });
+            console.log(`[Tutorial] 已保存元素原始样式: ${selector}`);
+        }
+
+        const elementRecord = this.modifiedElementsMap.get(element);
 
         // 显示元素（使用 !important 确保样式被应用）
         if (style.display === 'none') {
             element.style.setProperty('display', 'flex', 'important');
+            elementRecord.modifiedProperties.push('display');
             console.log(`[Tutorial] 显示隐藏元素: ${selector}`);
         }
 
         if (style.visibility === 'hidden') {
             element.style.setProperty('visibility', 'visible', 'important');
+            elementRecord.modifiedProperties.push('visibility');
             console.log(`[Tutorial] 恢复隐藏元素可见性: ${selector}`);
         }
 
         if (style.opacity === '0') {
             element.style.setProperty('opacity', '1', 'important');
+            elementRecord.modifiedProperties.push('opacity');
             console.log(`[Tutorial] 恢复隐藏元素透明度: ${selector}`);
         }
 
@@ -1155,7 +1168,7 @@ class UniversalTutorialManager {
             console.log('[Tutorial] 浮动工具栏已标记为引导中');
         }
 
-        return { originalDisplay, originalVisibility, originalOpacity };
+        return { originalDisplay: element.style.display, originalVisibility: element.style.visibility, originalOpacity: element.style.opacity };
     }
 
     /**
@@ -1910,39 +1923,49 @@ class UniversalTutorialManager {
             console.log('[Tutorial] 浮动工具栏保护定时器已清除');
         }
 
-        // 恢复浮动工具栏的原始样式
-        const floatingButtons = document.getElementById('live2d-floating-buttons');
-        if (floatingButtons && this._floatingButtonsOriginalStyles) {
-            // 恢复原始的内联样式值
-            if (this._floatingButtonsOriginalStyles.display) {
-                floatingButtons.style.display = this._floatingButtonsOriginalStyles.display;
-            } else {
-                floatingButtons.style.removeProperty('display');
-            }
-
-            if (this._floatingButtonsOriginalStyles.visibility) {
-                floatingButtons.style.visibility = this._floatingButtonsOriginalStyles.visibility;
-            } else {
-                floatingButtons.style.removeProperty('visibility');
-            }
-
-            if (this._floatingButtonsOriginalStyles.opacity) {
-                floatingButtons.style.opacity = this._floatingButtonsOriginalStyles.opacity;
-            } else {
-                floatingButtons.style.removeProperty('opacity');
-            }
-
-            console.log('[Tutorial] 浮动工具栏原始样式已恢复');
-            this._floatingButtonsOriginalStyles = null;
-        }
-
-        // 清除浮动工具栏的引导标记
-        if (floatingButtons) {
-            floatingButtons.dataset.inTutorial = 'false';
-            console.log('[Tutorial] 浮动工具栏引导标记已清除');
-        }
+        // 恢复所有在引导中修改过的元素的原始样式
+        this.restoreAllModifiedElements();
 
         console.log('[Tutorial] 引导已完成，页面:', this.currentPage);
+    }
+
+    /**
+     * 恢复所有在引导中修改过的元素
+     */
+    restoreAllModifiedElements() {
+        if (this.modifiedElementsMap.size === 0) {
+            console.log('[Tutorial] 没有需要恢复的元素');
+            return;
+        }
+
+        console.log(`[Tutorial] 开始恢复 ${this.modifiedElementsMap.size} 个元素的原始样式`);
+
+        this.modifiedElementsMap.forEach((elementRecord, element) => {
+            try {
+                // 恢复原始的内联样式
+                if (elementRecord.originalInlineStyle) {
+                    element.setAttribute('style', elementRecord.originalInlineStyle);
+                } else {
+                    element.removeAttribute('style');
+                }
+
+                // 恢复原始的类名
+                element.className = elementRecord.originalClassName;
+
+                // 移除任何添加的数据属性
+                if (element.dataset.inTutorial) {
+                    delete element.dataset.inTutorial;
+                }
+
+                console.log(`[Tutorial] 已恢复元素: ${element.tagName}${element.id ? '#' + element.id : ''}${element.className ? '.' + element.className : ''}`);
+            } catch (error) {
+                console.error('[Tutorial] 恢复元素样式失败:', error);
+            }
+        });
+
+        // 清空 Map
+        this.modifiedElementsMap.clear();
+        console.log('[Tutorial] 所有元素样式已恢复，Map 已清空');
     }
 
     /**
