@@ -733,6 +733,26 @@ class ConfigManager:
             DEFAULT_TTS_MODEL_PROVIDER,
             DEFAULT_TTS_MODEL_URL,
             DEFAULT_TTS_MODEL_API_KEY,
+            DEFAULT_GPT_SOVITS_WS_URL,
+            DEFAULT_GPT_SOVITS_TEXT_LANG,
+            DEFAULT_GPT_SOVITS_PROMPT_LANG,
+            DEFAULT_GPT_SOVITS_PROMPT_TEXT,
+            DEFAULT_GPT_SOVITS_REF_AUDIO_PATH,
+            DEFAULT_GPT_SOVITS_AUX_REF_AUDIO_PATHS,
+            DEFAULT_GPT_SOVITS_SPEAKER,
+            DEFAULT_GPT_SOVITS_MEDIA_TYPE,
+            DEFAULT_GPT_SOVITS_SAMPLE_RATE,
+            DEFAULT_GPT_SOVITS_SPEED,
+            DEFAULT_GPT_SOVITS_FRAGMENT_INTERVAL,
+            DEFAULT_GPT_SOVITS_TEXT_SPLIT_METHOD,
+            DEFAULT_GPT_SOVITS_TOP_K,
+            DEFAULT_GPT_SOVITS_TOP_P,
+            DEFAULT_GPT_SOVITS_TEMPERATURE,
+            DEFAULT_GPT_SOVITS_BATCH_SIZE,
+            DEFAULT_GPT_SOVITS_BATCH_THRESHOLD,
+            DEFAULT_GPT_SOVITS_SPLIT_BUCKET,
+            DEFAULT_GPT_SOVITS_REPETITION_PENALTY,
+            DEFAULT_GPT_SOVITS_EXTRA_PAYLOAD,
             DEFAULT_COMPUTER_USE_MODEL,
             DEFAULT_COMPUTER_USE_MODEL_URL,
             DEFAULT_COMPUTER_USE_MODEL_API_KEY,
@@ -787,6 +807,26 @@ class ConfigManager:
             'TTS_MODEL_PROVIDER': DEFAULT_TTS_MODEL_PROVIDER,
             'TTS_MODEL_URL': DEFAULT_TTS_MODEL_URL,
             'TTS_MODEL_API_KEY': DEFAULT_TTS_MODEL_API_KEY,
+            'GPT_SOVITS_WS_URL': DEFAULT_GPT_SOVITS_WS_URL,
+            'GPT_SOVITS_TEXT_LANG': DEFAULT_GPT_SOVITS_TEXT_LANG,
+            'GPT_SOVITS_PROMPT_LANG': DEFAULT_GPT_SOVITS_PROMPT_LANG,
+            'GPT_SOVITS_PROMPT_TEXT': DEFAULT_GPT_SOVITS_PROMPT_TEXT,
+            'GPT_SOVITS_REF_AUDIO_PATH': DEFAULT_GPT_SOVITS_REF_AUDIO_PATH,
+            'GPT_SOVITS_AUX_REF_AUDIO_PATHS': DEFAULT_GPT_SOVITS_AUX_REF_AUDIO_PATHS,
+            'GPT_SOVITS_SPEAKER': DEFAULT_GPT_SOVITS_SPEAKER,
+            'GPT_SOVITS_MEDIA_TYPE': DEFAULT_GPT_SOVITS_MEDIA_TYPE,
+            'GPT_SOVITS_SAMPLE_RATE': DEFAULT_GPT_SOVITS_SAMPLE_RATE,
+            'GPT_SOVITS_SPEED': DEFAULT_GPT_SOVITS_SPEED,
+            'GPT_SOVITS_FRAGMENT_INTERVAL': DEFAULT_GPT_SOVITS_FRAGMENT_INTERVAL,
+            'GPT_SOVITS_TEXT_SPLIT_METHOD': DEFAULT_GPT_SOVITS_TEXT_SPLIT_METHOD,
+            'GPT_SOVITS_TOP_K': DEFAULT_GPT_SOVITS_TOP_K,
+            'GPT_SOVITS_TOP_P': DEFAULT_GPT_SOVITS_TOP_P,
+            'GPT_SOVITS_TEMPERATURE': DEFAULT_GPT_SOVITS_TEMPERATURE,
+            'GPT_SOVITS_BATCH_SIZE': DEFAULT_GPT_SOVITS_BATCH_SIZE,
+            'GPT_SOVITS_BATCH_THRESHOLD': DEFAULT_GPT_SOVITS_BATCH_THRESHOLD,
+            'GPT_SOVITS_SPLIT_BUCKET': DEFAULT_GPT_SOVITS_SPLIT_BUCKET,
+            'GPT_SOVITS_REPETITION_PENALTY': DEFAULT_GPT_SOVITS_REPETITION_PENALTY,
+            'GPT_SOVITS_EXTRA_PAYLOAD': DEFAULT_GPT_SOVITS_EXTRA_PAYLOAD,
         }
 
         core_cfg = deepcopy(DEFAULT_CONFIG_DATA['core_config.json'])
@@ -942,6 +982,48 @@ class ConfigManager:
             # TTS Voice ID 作为角色 voice_id 的回退
             if core_cfg.get('ttsVoiceId') is not None:
                 config['TTS_VOICE_ID'] = core_cfg.get('ttsVoiceId', '')
+            
+            # GPT-SoVITS WebSocket 配置（仅在启用自定义API时生效）
+            if core_cfg.get('gptSovitsWsUrl') is not None:
+                config['GPT_SOVITS_WS_URL'] = core_cfg.get('gptSovitsWsUrl', '') or config.get('GPT_SOVITS_WS_URL', '')
+            if core_cfg.get('gptSovitsTextLang') is not None:
+                config['GPT_SOVITS_TEXT_LANG'] = core_cfg.get('gptSovitsTextLang', '') or config.get('GPT_SOVITS_TEXT_LANG', '')
+            if core_cfg.get('gptSovitsPromptLang') is not None:
+                config['GPT_SOVITS_PROMPT_LANG'] = core_cfg.get('gptSovitsPromptLang', '') or config.get('GPT_SOVITS_PROMPT_LANG', '')
+            if core_cfg.get('gptSovitsPromptText') is not None:
+                config['GPT_SOVITS_PROMPT_TEXT'] = core_cfg.get('gptSovitsPromptText', '') or config.get('GPT_SOVITS_PROMPT_TEXT', '')
+            if core_cfg.get('gptSovitsRefAudioPath') is not None:
+                config['GPT_SOVITS_REF_AUDIO_PATH'] = core_cfg.get('gptSovitsRefAudioPath', '') or config.get('GPT_SOVITS_REF_AUDIO_PATH', '')
+            if core_cfg.get('gptSovitsAuxRefAudioPaths') is not None:
+                config['GPT_SOVITS_AUX_REF_AUDIO_PATHS'] = core_cfg.get('gptSovitsAuxRefAudioPaths', [])
+            if core_cfg.get('gptSovitsSpeaker') is not None:
+                config['GPT_SOVITS_SPEAKER'] = core_cfg.get('gptSovitsSpeaker', '') or config.get('GPT_SOVITS_SPEAKER', '')
+            if core_cfg.get('gptSovitsMediaType') is not None:
+                config['GPT_SOVITS_MEDIA_TYPE'] = core_cfg.get('gptSovitsMediaType', '') or config.get('GPT_SOVITS_MEDIA_TYPE', '')
+            if core_cfg.get('gptSovitsSampleRate') is not None:
+                config['GPT_SOVITS_SAMPLE_RATE'] = core_cfg.get('gptSovitsSampleRate', config.get('GPT_SOVITS_SAMPLE_RATE', 32000))
+            if core_cfg.get('gptSovitsSpeed') is not None:
+                config['GPT_SOVITS_SPEED'] = core_cfg.get('gptSovitsSpeed', config.get('GPT_SOVITS_SPEED', 1.0))
+            if core_cfg.get('gptSovitsFragmentInterval') is not None:
+                config['GPT_SOVITS_FRAGMENT_INTERVAL'] = core_cfg.get('gptSovitsFragmentInterval', config.get('GPT_SOVITS_FRAGMENT_INTERVAL', 0.3))
+            if core_cfg.get('gptSovitsTextSplitMethod') is not None:
+                config['GPT_SOVITS_TEXT_SPLIT_METHOD'] = core_cfg.get('gptSovitsTextSplitMethod', '') or config.get('GPT_SOVITS_TEXT_SPLIT_METHOD', '')
+            if core_cfg.get('gptSovitsTopK') is not None:
+                config['GPT_SOVITS_TOP_K'] = core_cfg.get('gptSovitsTopK', config.get('GPT_SOVITS_TOP_K', 5))
+            if core_cfg.get('gptSovitsTopP') is not None:
+                config['GPT_SOVITS_TOP_P'] = core_cfg.get('gptSovitsTopP', config.get('GPT_SOVITS_TOP_P', 1.0))
+            if core_cfg.get('gptSovitsTemperature') is not None:
+                config['GPT_SOVITS_TEMPERATURE'] = core_cfg.get('gptSovitsTemperature', config.get('GPT_SOVITS_TEMPERATURE', 1.0))
+            if core_cfg.get('gptSovitsBatchSize') is not None:
+                config['GPT_SOVITS_BATCH_SIZE'] = core_cfg.get('gptSovitsBatchSize', config.get('GPT_SOVITS_BATCH_SIZE', 1))
+            if core_cfg.get('gptSovitsBatchThreshold') is not None:
+                config['GPT_SOVITS_BATCH_THRESHOLD'] = core_cfg.get('gptSovitsBatchThreshold', config.get('GPT_SOVITS_BATCH_THRESHOLD', 0.75))
+            if core_cfg.get('gptSovitsSplitBucket') is not None:
+                config['GPT_SOVITS_SPLIT_BUCKET'] = core_cfg.get('gptSovitsSplitBucket', config.get('GPT_SOVITS_SPLIT_BUCKET', True))
+            if core_cfg.get('gptSovitsRepetitionPenalty') is not None:
+                config['GPT_SOVITS_REPETITION_PENALTY'] = core_cfg.get('gptSovitsRepetitionPenalty', config.get('GPT_SOVITS_REPETITION_PENALTY', 1.35))
+            if core_cfg.get('gptSovitsExtraPayload') is not None:
+                config['GPT_SOVITS_EXTRA_PAYLOAD'] = core_cfg.get('gptSovitsExtraPayload', {})
 
         for key, value in config.items():
             if key.endswith('_URL') and isinstance(value, str):
