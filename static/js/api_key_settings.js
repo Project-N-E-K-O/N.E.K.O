@@ -521,6 +521,8 @@ async function scanGptSovitsModelsAndSelect(gptModelPath, sovitsModelPath) {
         }
     } catch (e) {
         console.warn('Failed to scan GPT-SoVITS models:', e);
+        // 失败时重置下拉菜单为默认状态
+        updateGptSovitsModelDropdowns([], [], null, null);
     }
 }
 
@@ -618,48 +620,10 @@ function getGptSovitsConfig() {
         return null;
     }
     
-    const apiUrl = document.getElementById('gptsovitsApiUrl')?.value.trim() || '';
-    const refAudio = document.getElementById('gptsovitsRefAudio')?.value.trim() || '';
-    const refText = document.getElementById('gptsovitsRefText')?.value.trim() || '';
-    const refLang = document.getElementById('gptsovitsRefLang')?.value || 'zh';
-    const textLang = document.getElementById('gptsovitsTextLang')?.value || 'zh';
-    
-    // 高级参数
-    const speed = document.getElementById('gptsovitsSpeed')?.value || '';
-    const topK = document.getElementById('gptsovitsTopK')?.value || '';
-    const topP = document.getElementById('gptsovitsTopP')?.value || '';
-    const temperature = document.getElementById('gptsovitsTemperature')?.value || '';
-    const cutMethod = document.getElementById('gptsovitsCutMethod')?.value || 'cut5';
-    const seed = document.getElementById('gptsovitsSeed')?.value || '';
-    
-    // 模型配置
-    const basePath = document.getElementById('gptsovitsBasePath')?.value.trim() || '';
-    const gptModel = document.getElementById('gptsovitsGptModel')?.value || '';
-    const sovitsModel = document.getElementById('gptsovitsSovitsModel')?.value || '';
-    
-    // 如果启用了 GPT-SoVITS，则保存配置（即使 API URL 为空也使用默认值）
-    const effectiveApiUrl = apiUrl || 'http://127.0.0.1:9880';
-    if (effectiveApiUrl.startsWith('http')) {
-        // 构建高级参数 JSON（只包含非默认值）
-        const advanced = {};
-        if (speed && speed !== '1.0' && speed !== '1') advanced.speed = parseFloat(speed);
-        if (topK && topK !== '15') advanced.top_k = parseInt(topK);
-        if (topP && topP !== '1.0' && topP !== '1') advanced.top_p = parseFloat(topP);
-        if (temperature && temperature !== '1.0' && temperature !== '1') advanced.temperature = parseFloat(temperature);
-        if (cutMethod && cutMethod !== 'cut5') advanced.cut_method = cutMethod;
-        if (seed && seed !== '-1') advanced.seed = parseInt(seed);
-        // 保存模型配置（用于持久化）
-        if (basePath) advanced.base_path = basePath;
-        if (gptModel) advanced.gpt_model = gptModel;
-        if (sovitsModel) advanced.sovits_model = sovitsModel;
-        
-        // 高级参数始终添加 JSON（因为包含模型配置）
-        const advancedJson = Object.keys(advanced).length > 0 ? JSON.stringify(advanced) : '';
-        
-        return {
-            url: effectiveApiUrl,
-            voiceId: `${refAudio}|${refText}|${refLang}|${textLang}${advancedJson ? '|' + advancedJson : ''}`
-        };
+    // 复用 getGptSovitsConfigForSave 获取配置
+    const config = getGptSovitsConfigForSave();
+    if (config && config.url.startsWith('http')) {
+        return config;
     }
     return null;
 }
@@ -692,7 +656,7 @@ async function scanGptSovitsModels() {
     const basePath = document.getElementById('gptsovitsBasePath')?.value.trim();
     
     if (!basePath) {
-        alert(window.t ? window.t('api.gptsovitsBasePathRequired') : '请填写 GPT-SoVITS 安装路径');
+        showStatus(window.t ? window.t('api.gptsovitsBasePathRequired') : '请填写 GPT-SoVITS 安装路径', 'error');
         return;
     }
     
@@ -713,12 +677,12 @@ async function scanGptSovitsModels() {
             // 使用公共函数更新下拉菜单
             updateGptSovitsModelDropdowns(result.gpt_models, result.sovits_models, null, null);
             
-            alert(window.t ? window.t('api.gptsovitsScanSuccess') : `扫描完成：找到 ${result.gpt_models.length} 个 GPT 模型，${result.sovits_models.length} 个 SoVITS 模型`);
+            showStatus(window.t ? window.t('api.gptsovitsScanSuccess') : `扫描完成：找到 ${result.gpt_models.length} 个 GPT 模型，${result.sovits_models.length} 个 SoVITS 模型`, 'success');
         } else {
-            alert((window.t ? window.t('api.gptsovitsScanFailed') : '扫描失败: ') + result.error);
+            showStatus((window.t ? window.t('api.gptsovitsScanFailed') : '扫描失败: ') + result.error, 'error');
         }
     } catch (e) {
-        alert((window.t ? window.t('api.gptsovitsLoadError') : '请求失败: ') + e.message);
+        showStatus((window.t ? window.t('api.gptsovitsLoadError') : '请求失败: ') + e.message, 'error');
     }
 }
 
@@ -730,11 +694,11 @@ async function loadGptSovitsGptModel() {
     const modelPath = document.getElementById('gptsovitsGptModel')?.value;
     
     if (!apiUrl) {
-        alert(window.t ? window.t('api.gptsovitsApiUrlRequired') : '请先填写 API URL');
+        showStatus(window.t ? window.t('api.gptsovitsApiUrlRequired') : '请先填写 API URL', 'error');
         return;
     }
     if (!modelPath) {
-        alert(window.t ? window.t('api.gptsovitsSelectModelFirst') : '请先选择模型');
+        showStatus(window.t ? window.t('api.gptsovitsSelectModelFirst') : '请先选择模型', 'error');
         return;
     }
     
@@ -750,12 +714,12 @@ async function loadGptSovitsGptModel() {
         });
         const result = await response.json();
         if (result.success) {
-            alert(window.t ? window.t('api.gptsovitsLoadSuccess') : '模型加载成功');
+            showStatus(window.t ? window.t('api.gptsovitsLoadSuccess') : '模型加载成功', 'success');
         } else {
-            alert((window.t ? window.t('api.gptsovitsLoadFailed') : '模型加载失败: ') + (result.error || '未知错误'));
+            showStatus((window.t ? window.t('api.gptsovitsLoadFailed') : '模型加载失败: ') + (result.error || '未知错误'), 'error');
         }
     } catch (e) {
-        alert((window.t ? window.t('api.gptsovitsLoadError') : '请求失败: ') + e.message);
+        showStatus((window.t ? window.t('api.gptsovitsLoadError') : '请求失败: ') + e.message, 'error');
     }
 }
 
@@ -767,11 +731,11 @@ async function loadGptSovitsSovitsModel() {
     const modelPath = document.getElementById('gptsovitsSovitsModel')?.value;
     
     if (!apiUrl) {
-        alert(window.t ? window.t('api.gptsovitsApiUrlRequired') : '请先填写 API URL');
+        showStatus(window.t ? window.t('api.gptsovitsApiUrlRequired') : '请先填写 API URL', 'error');
         return;
     }
     if (!modelPath) {
-        alert(window.t ? window.t('api.gptsovitsSelectModelFirst') : '请先选择模型');
+        showStatus(window.t ? window.t('api.gptsovitsSelectModelFirst') : '请先选择模型', 'error');
         return;
     }
     
@@ -787,12 +751,12 @@ async function loadGptSovitsSovitsModel() {
         });
         const result = await response.json();
         if (result.success) {
-            alert(window.t ? window.t('api.gptsovitsLoadSuccess') : '模型加载成功');
+            showStatus(window.t ? window.t('api.gptsovitsLoadSuccess') : '模型加载成功', 'success');
         } else {
-            alert((window.t ? window.t('api.gptsovitsLoadFailed') : '模型加载失败: ') + (result.error || '未知错误'));
+            showStatus((window.t ? window.t('api.gptsovitsLoadFailed') : '模型加载失败: ') + (result.error || '未知错误'), 'error');
         }
     } catch (e) {
-        alert((window.t ? window.t('api.gptsovitsLoadError') : '请求失败: ') + e.message);
+        showStatus((window.t ? window.t('api.gptsovitsLoadError') : '请求失败: ') + e.message, 'error');
     }
 }
 

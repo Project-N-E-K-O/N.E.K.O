@@ -1099,14 +1099,10 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
 
 
 def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
-    """
-    GPT-SoVITS TTS Worker
-    使用 GPT-SoVITS 的 HTTP API（api_v2.py 的 /tts 端点）进行语音合成
-    注意：GPT-SoVITS 不支持流式输入，只支持流式输出
-    因此需要累积文本后一次性发送，但可以流式接收音频
+    """GPT-SoVITS TTS Worker - 使用 HTTP API 进行语音合成
     
     Args:
-        request_queue: 多进程请求队列，接收(speech_id, text)元组
+        request_queue: 多进程请求队列，接收 (speech_id, text) 元组
         response_queue: 多进程响应队列，发送音频数据（也用于发送就绪信号）
         audio_api_key: API密钥（GPT-SoVITS 本地部署通常不需要）
         voice_id: 音色配置，格式为 "参考音频路径|参考文本|参考语言|合成语言|高级参数JSON"
@@ -1116,6 +1112,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
     配置项（通过 TTS_MODEL_URL 设置）:
         base_url: GPT-SoVITS API 地址，如 "http://127.0.0.1:9880"
     """
+    _ = audio_api_key  # 未使用，但保持接口一致
     import asyncio
     import json
     
