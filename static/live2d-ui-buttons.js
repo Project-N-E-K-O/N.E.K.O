@@ -917,7 +917,13 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
     }, 100); // 延迟100ms确保位置已计算
 
     // 在引导中，添加额外的保护定时器，确保浮动按钮始终显示
-    const tutorialProtectionTimer = setInterval(() => {
+    // 清除任何现有的定时器，防止累积
+    if (this.tutorialProtectionTimer) {
+        clearInterval(this.tutorialProtectionTimer);
+        this.tutorialProtectionTimer = null;
+    }
+
+    this.tutorialProtectionTimer = setInterval(() => {
         if (window.isInTutorial === true) {
             const style = window.getComputedStyle(buttonsContainer);
             if (style.display === 'none') {
@@ -926,7 +932,10 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
             }
         } else {
             // 引导结束，清除定时器
-            clearInterval(tutorialProtectionTimer);
+            if (this.tutorialProtectionTimer) {
+                clearInterval(this.tutorialProtectionTimer);
+                this.tutorialProtectionTimer = null;
+            }
         }
     }, 300);
 

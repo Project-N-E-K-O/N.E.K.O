@@ -26,6 +26,18 @@ class UniversalTutorialManager {
     }
 
     /**
+     * 获取翻译文本的辅助函数
+     * @param {string} key - 翻译键，格式: tutorial.{page}.step{n}.{title|desc}
+     * @param {string} fallback - 备用文本（如果翻译不存在）
+     */
+    t(key, fallback = '') {
+        if (window.t && typeof window.t === 'function') {
+            return window.t(key, fallback);
+        }
+        return fallback;
+    }
+
+    /**
      * 检测当前页面类型
      */
     detectPage() {
@@ -474,15 +486,15 @@ class UniversalTutorialManager {
             {
                 element: '#model-type-select-btn',
                 popover: {
-                    title: '🎨 选择模型类型',
-                    description: '首先选择您要使用的模型类型：Live2D（2D 动画）或 VRM（3D 模型）。',
+                    title: this.t('tutorial.model_manager.common.step1.title', '🎨 选择模型类型'),
+                    description: this.t('tutorial.model_manager.common.step1.desc', '首先选择您要使用的模型类型：Live2D（2D 动画）或 VRM（3D 模型）。'),
                 }
             },
             {
                 element: '#upload-btn',
                 popover: {
-                    title: '📤 上传模型',
-                    description: '点击这里上传您的模型文件。支持 Live2D 和 VRM 格式。',
+                    title: this.t('tutorial.model_manager.common.step2.title', '📤 上传模型'),
+                    description: this.t('tutorial.model_manager.common.step2.desc', '点击这里上传您的模型文件。支持 Live2D 和 VRM 格式。'),
                 }
             }
         ];
@@ -492,43 +504,43 @@ class UniversalTutorialManager {
             {
                 element: '#live2d-model-select-btn',
                 popover: {
-                    title: '🎭 选择 Live2D 模型',
-                    description: '从已上传的 Live2D 模型中选择要使用的模型。',
+                    title: this.t('tutorial.model_manager.live2d.step1.title', '🎭 选择 Live2D 模型'),
+                    description: this.t('tutorial.model_manager.live2d.step1.desc', '从已上传的 Live2D 模型中选择要使用的模型。'),
                 }
             },
             {
                 element: '#motion-select-btn',
                 popover: {
-                    title: '💃 选择动作',
-                    description: '为 Live2D 模型选择动作。点击"播放动作"按钮可以预览效果。',
+                    title: this.t('tutorial.model_manager.live2d.step2.title', '💃 选择动作'),
+                    description: this.t('tutorial.model_manager.live2d.step2.desc', '为 Live2D 模型选择动作。点击"播放动作"按钮可以预览效果。'),
                 }
             },
             {
                 element: '#expression-select-btn',
                 popover: {
-                    title: '😊 选择表情',
-                    description: '为 Live2D 模型选择表情。可以设置常驻表情让模型保持该表情。',
+                    title: this.t('tutorial.model_manager.live2d.step3.title', '😊 选择表情'),
+                    description: this.t('tutorial.model_manager.live2d.step3.desc', '为 Live2D 模型选择表情。可以设置常驻表情让模型保持该表情。'),
                 }
             },
             {
                 element: '#persistent-expression-select-btn',
                 popover: {
-                    title: '🧷 常驻表情',
-                    description: '选择一个常驻表情，让模型持续保持该表情，直到你再次更改。',
+                    title: this.t('tutorial.model_manager.live2d.step4.title', '🧷 常驻表情'),
+                    description: this.t('tutorial.model_manager.live2d.step4.desc', '选择一个常驻表情，让模型持续保持该表情，直到你再次更改。'),
                 }
             },
             {
                 element: '#emotion-config-btn',
                 popover: {
-                    title: '😄 情感配置',
-                    description: '进入前请先选择一个模型。点击这里配置 Live2D 模型的情感表现，可为不同的情感设置对应的表情和动作组合。',
+                    title: this.t('tutorial.model_manager.live2d.step5.title', '😄 情感配置'),
+                    description: this.t('tutorial.model_manager.live2d.step5.desc', '进入前请先选择一个模型。点击这里配置 Live2D 模型的情感表现，可为不同的情感设置对应的表情和动作组合。'),
                 }
             },
             {
                 element: '#parameter-editor-btn',
                 popover: {
-                    title: '✨ 捏脸系统',
-                    description: '点击这里进入捏脸系统，可以精细调整 Live2D 模型的面部参数，打造独特的虚拟伙伴形象。',
+                    title: this.t('tutorial.model_manager.live2d.step6.title', '✨ 捏脸系统'),
+                    description: this.t('tutorial.model_manager.live2d.step6.desc', '点击这里进入捏脸系统，可以精细调整 Live2D 模型的面部参数，打造独特的虚拟伙伴形象。'),
                 }
             }
         ];
@@ -538,64 +550,64 @@ class UniversalTutorialManager {
             {
                 element: '#vrm-model-select-btn',
                 popover: {
-                    title: '🎭 选择 VRM 模型',
-                    description: '从已上传的 VRM 模型中选择要使用的 3D 模型。',
+                    title: this.t('tutorial.model_manager.vrm.step1.title', '🎭 选择 VRM 模型'),
+                    description: this.t('tutorial.model_manager.vrm.step1.desc', '从已上传的 VRM 模型中选择要使用的 3D 模型。'),
                 }
             },
             {
                 element: '#vrm-animation-select-btn',
                 popover: {
-                    title: '💃 选择动画',
-                    description: '为 VRM 模型选择动画。VRM 支持更丰富的 3D 动画效果。',
+                    title: this.t('tutorial.model_manager.vrm.step2.title', '💃 选择动画'),
+                    description: this.t('tutorial.model_manager.vrm.step2.desc', '为 VRM 模型选择动画。VRM 支持更丰富的 3D 动画效果。'),
                 }
             },
             {
                 element: '#play-vrm-animation-btn',
                 popover: {
-                    title: '▶️ 播放动画',
-                    description: '点击这个按钮可以预览选中的 VRM 动画效果。',
+                    title: this.t('tutorial.model_manager.vrm.step3.title', '▶️ 播放动画'),
+                    description: this.t('tutorial.model_manager.vrm.step3.desc', '点击这个按钮可以预览选中的 VRM 动画效果。'),
                 }
             },
             {
                 element: '#vrm-expression-select-btn',
                 popover: {
-                    title: '😊 选择表情',
-                    description: '为 VRM 模型选择表情。VRM 模型支持多种面部表情。',
+                    title: this.t('tutorial.model_manager.vrm.step4.title', '😊 选择表情'),
+                    description: this.t('tutorial.model_manager.vrm.step4.desc', '为 VRM 模型选择表情。VRM 模型支持多种面部表情。'),
                 }
             },
             {
                 element: '#vrm-lighting-wrapper',
                 popover: {
-                    title: '💡 光照系统',
-                    description: 'VRM 模型支持专业的 3D 光照系统。您可以调整环境光、主光源、补光和轮廓光，打造完美的视觉效果。',
+                    title: this.t('tutorial.model_manager.vrm.step5.title', '💡 光照系统'),
+                    description: this.t('tutorial.model_manager.vrm.step5.desc', 'VRM 模型支持专业的 3D 光照系统。您可以调整环境光、主光源、补光和轮廓光，打造完美的视觉效果。'),
                 }
             },
             {
                 element: '#ambient-light-slider',
                 popover: {
-                    title: '🌟 环境光',
-                    description: '调整环境光强度。环境光影响整体亮度，数值越高模型越亮。',
+                    title: this.t('tutorial.model_manager.vrm.step6.title', '🌟 环境光'),
+                    description: this.t('tutorial.model_manager.vrm.step6.desc', '调整环境光强度。环境光影响整体亮度，数值越高模型越亮。'),
                 }
             },
             {
                 element: '#main-light-slider',
                 popover: {
-                    title: '☀️ 主光源',
-                    description: '调整主光源强度。主光源是主要的照明来源，影响模型的明暗对比。',
+                    title: this.t('tutorial.model_manager.vrm.step7.title', '☀️ 主光源'),
+                    description: this.t('tutorial.model_manager.vrm.step7.desc', '调整主光源强度。主光源是主要的照明来源，影响模型的明暗对比。'),
                 }
             },
             {
                 element: '#exposure-slider',
                 popover: {
-                    title: '🌞 曝光',
-                    description: '调整整体曝光强度。数值越高整体越亮，越低则更暗更有对比。',
+                    title: this.t('tutorial.model_manager.vrm.step8.title', '🌞 曝光'),
+                    description: this.t('tutorial.model_manager.vrm.step8.desc', '调整整体曝光强度。数值越高整体越亮，越低则更暗更有对比。'),
                 }
             },
             {
                 element: '#tonemapping-select',
                 popover: {
-                    title: '🎞️ 色调映射',
-                    description: '选择不同的色调映射算法，决定画面亮部和暗部的呈现风格。',
+                    title: this.t('tutorial.model_manager.vrm.step9.title', '🎞️ 色调映射'),
+                    description: this.t('tutorial.model_manager.vrm.step9.desc', '选择不同的色调映射算法，决定画面亮部和暗部的呈现风格。'),
                 }
             }
         ];
@@ -626,29 +638,29 @@ class UniversalTutorialManager {
             {
                 element: '#model-select-btn',
                 popover: {
-                    title: '🎭 选择模型',
-                    description: '首先选择要编辑的 Live2D 模型。只有选择了模型后，才能调整参数。',
+                    title: this.t('tutorial.parameter_editor.step1.title', '🎭 选择模型'),
+                    description: this.t('tutorial.parameter_editor.step1.desc', '首先选择要编辑的 Live2D 模型。只有选择了模型后，才能调整参数。'),
                 }
             },
             {
                 element: '#parameters-list',
                 popover: {
-                    title: '🎨 参数列表',
-                    description: '这里显示了模型的所有可调参数。每个参数控制模型的不同部分，如眼睛大小、嘴巴形状、头部角度等。',
+                    title: this.t('tutorial.parameter_editor.step2.title', '🎨 参数列表'),
+                    description: this.t('tutorial.parameter_editor.step2.desc', '这里显示了模型的所有可调参数。每个参数控制模型的不同部分，如眼睛大小、嘴巴形状、头部角度等。'),
                 }
             },
             {
                 element: '#live2d-container',
                 popover: {
-                    title: '👁️ 实时预览',
-                    description: '左侧是实时预览区域。调整参数时，可以立即看到模型的变化效果。',
+                    title: this.t('tutorial.parameter_editor.step3.title', '👁️ 实时预览'),
+                    description: this.t('tutorial.parameter_editor.step3.desc', '左侧是实时预览区域。调整参数时，可以立即看到模型的变化效果。'),
                 }
             },
             {
                 element: '#reset-all-btn',
                 popover: {
-                    title: '🔄 重置所有参数',
-                    description: '点击这个按钮可以将所有参数重置为默认值。如果调整效果不满意，可以用这个功能重新开始。',
+                    title: this.t('tutorial.parameter_editor.step4.title', '🔄 重置所有参数'),
+                    description: this.t('tutorial.parameter_editor.step4.desc', '点击这个按钮可以将所有参数重置为默认值。如果调整效果不满意，可以用这个功能重新开始。'),
                 }
             }
             ];
@@ -662,15 +674,15 @@ class UniversalTutorialManager {
             {
                 element: '#model-select',
                 popover: {
-                    title: '🎭 选择模型',
-                    description: '首先选择要配置情感的 Live2D 模型。每个模型可以有独立的情感配置。选好模型后才能进入下一步。',
+                    title: this.t('tutorial.emotion_manager.step1.title', '🎭 选择模型'),
+                    description: this.t('tutorial.emotion_manager.step1.desc', '首先选择要配置情感的 Live2D 模型。每个模型可以有独立的情感配置。选好模型后才能进入下一步。'),
                 }
             },
             {
                 element: '#emotion-config',
                 popover: {
-                    title: '😊 情感配置区域',
-                    description: '这里可以为不同的情感（如开心、悲伤、生气等）配置对应的表情和动作组合。虚拟伙伴会根据对话内容自动切换情感表现。',
+                    title: this.t('tutorial.emotion_manager.step2.title', '😊 情感配置区域'),
+                    description: this.t('tutorial.emotion_manager.step2.desc', '这里可以为不同的情感（如开心、悲伤、生气等）配置对应的表情和动作组合。虚拟伙伴会根据对话内容自动切换情感表现。'),
                 },
                 // 避免在引导开始时强制显示（应在选择模型后显示）
                 skipAutoShow: true
@@ -678,8 +690,8 @@ class UniversalTutorialManager {
             {
                 element: '#reset-btn',
                 popover: {
-                    title: '🔄 重置配置',
-                    description: '点击这个按钮可以将情感配置重置为默认值。',
+                    title: this.t('tutorial.emotion_manager.step3.title', '🔄 重置配置'),
+                    description: this.t('tutorial.emotion_manager.step3.desc', '点击这个按钮可以将情感配置重置为默认值。'),
                 }
             }
         ];
@@ -693,65 +705,65 @@ class UniversalTutorialManager {
             {
                 element: '#master-section',
                 popover: {
-                    title: '👤 主人档案',
-                    description: '这是您的主人档案。档案名是必填项，其他信息（性别、昵称等）都是可选的。这些信息会影响虚拟伙伴对您的称呼和态度。',
+                    title: this.t('tutorial.chara_manager.step1.title', '👤 主人档案'),
+                    description: this.t('tutorial.chara_manager.step1.desc', '这是您的主人档案。档案名是必填项，其他信息（性别、昵称等）都是可选的。这些信息会影响虚拟伙伴对您的称呼和态度。'),
                 }
             },
             {
                 element: 'input[name="档案名"]',
                 popover: {
-                    title: '📝 设置档案名',
-                    description: '输入您的名字或昵称。虚拟伙伴会用这个名字来称呼您。最多 20 个字符。',
+                    title: this.t('tutorial.chara_manager.step2.title', '📝 设置档案名'),
+                    description: this.t('tutorial.chara_manager.step2.desc', '输入您的名字或昵称。虚拟伙伴会用这个名字来称呼您。最多 20 个字符。'),
                 }
             },
             {
                 element: 'textarea[name="性别"]',
                 popover: {
-                    title: '👥 性别设定',
-                    description: '这是可选项。您可以输入您的性别或其他相关信息。这会影响虚拟伙伴对您的称呼方式。',
+                    title: this.t('tutorial.chara_manager.step3.title', '👥 性别设定'),
+                    description: this.t('tutorial.chara_manager.step3.desc', '这是可选项。您可以输入您的性别或其他相关信息。这会影响虚拟伙伴对您的称呼方式。'),
                 }
             },
             {
                 element: 'textarea[name="昵称"]',
                 popover: {
-                    title: '💬 昵称设定',
-                    description: '这是可选项。您可以为自己设置一个昵称。虚拟伙伴可能会用这个昵称来称呼您。',
+                    title: this.t('tutorial.chara_manager.step4.title', '💬 昵称设定'),
+                    description: this.t('tutorial.chara_manager.step4.desc', '这是可选项。您可以为自己设置一个昵称。虚拟伙伴可能会用这个昵称来称呼您。'),
                 }
             },
             {
                 element: '#api-key-settings-btn',
                 popover: {
-                    title: '🔑 API Key 设置',
-                    description: '点击这里配置 AI 服务的 API Key。这是虚拟伙伴能够进行对话的必要配置。',
+                    title: this.t('tutorial.chara_manager.step5.title', '🔑 API Key 设置'),
+                    description: this.t('tutorial.chara_manager.step5.desc', '点击这里配置 AI 服务的 API Key。这是虚拟伙伴能够进行对话的必要配置。'),
                 }
             },
             {
                 element: '#catgirl-section',
                 popover: {
-                    title: '🐱 猫娘档案',
-                    description: '这里可以创建和管理多个虚拟伙伴角色。每个角色都有独特的性格、Live2D 形象和语音设定。您可以在不同的角色之间切换。',
+                    title: this.t('tutorial.chara_manager.step6.title', '🐱 猫娘档案'),
+                    description: this.t('tutorial.chara_manager.step6.desc', '这里可以创建和管理多个虚拟伙伴角色。每个角色都有独特的性格、Live2D 形象和语音设定。您可以在不同的角色之间切换。'),
                 }
             },
             {
                 element: '#add-catgirl-btn',
                 popover: {
-                    title: '➕ 新增猫娘',
-                    description: '点击这个按钮创建一个新的虚拟伙伴角色。您可以为她设置名字、性格、形象和语音。每个角色都是独立的，有自己的记忆和性格。',
+                    title: this.t('tutorial.chara_manager.step7.title', '➕ 新增猫娘'),
+                    description: this.t('tutorial.chara_manager.step7.desc', '点击这个按钮创建一个新的虚拟伙伴角色。您可以为她设置名字、性格、形象和语音。每个角色都是独立的，有自己的记忆和性格。'),
                 }
             },
             {
                 element: '.catgirl-block:first-child .catgirl-header',
                 popover: {
-                    title: '📋 猫娘卡片',
-                    description: '点击猫娘名称可以展开或折叠详细信息。每个猫娘都有独立的设定，包括基础信息和进阶配置。',
+                    title: this.t('tutorial.chara_manager.step8.title', '📋 猫娘卡片'),
+                    description: this.t('tutorial.chara_manager.step8.desc', '点击猫娘名称可以展开或折叠详细信息。每个猫娘都有独立的设定，包括基础信息和进阶配置。'),
                 },
                 action: 'click' // 使用 action 自动点击展开，系统会自动刷新位置
             },
             {
                 element: '.catgirl-block:first-child input[name="档案名"]',
                 popover: {
-                    title: '📝 猫娘档案名',
-                    description: '这是猫娘的名字，也是她的唯一标识。创建后可以通过"修改名称"按钮来更改。',
+                    title: this.t('tutorial.chara_manager.step9.title', '📝 猫娘档案名'),
+                    description: this.t('tutorial.chara_manager.step9.desc', '这是猫娘的名字，也是她的唯一标识。创建后可以通过"修改名称"按钮来更改。'),
                 },
                 skipInitialCheck: true, // 跳过初始化时的元素检查
                 onHighlightStarted: async () => {
@@ -772,8 +784,8 @@ class UniversalTutorialManager {
             {
                 element: '.catgirl-block:first-child .custom-row:first-child',
                 popover: {
-                    title: '✨ 自定义属性',
-                    description: '这些是猫娘的性格设定字段，如性格、背景、爱好、口头禅等。您可以自由添加和编辑这些属性，让每个猫娘都有独特的个性。',
+                    title: this.t('tutorial.chara_manager.step10.title', '✨ 自定义属性'),
+                    description: this.t('tutorial.chara_manager.step10.desc', '这些是猫娘的性格设定字段，如性格、背景、爱好、口头禅等。您可以自由添加和编辑这些属性，让每个猫娘都有独特的个性。'),
                 },
                 skipInitialCheck: true, // 跳过初始化时的元素检查
                 onHighlightStarted: async () => {
@@ -794,15 +806,15 @@ class UniversalTutorialManager {
             {
                 element: '.catgirl-block:first-child button[id^="switch-btn-"]',
                 popover: {
-                    title: '🔄 切换猫娘',
-                    description: '点击此按钮可以将这个猫娘设为当前活跃角色。切换后，主页和对话界面会使用该角色的形象和性格。',
+                    title: this.t('tutorial.chara_manager.step11.title', '🔄 切换猫娘'),
+                    description: this.t('tutorial.chara_manager.step11.desc', '点击此按钮可以将这个猫娘设为当前活跃角色。切换后，主页和对话界面会使用该角色的形象和性格。'),
                 }
             },
             {
                 element: '.catgirl-block:first-child .fold-toggle',
                 popover: {
-                    title: '⚙️ 进阶设定',
-                    description: '点击展开进阶设定，可以配置 Live2D 模型、语音 ID、以及添加自定义性格属性（如性格、爱好、口头禅等）。',
+                    title: this.t('tutorial.chara_manager.step12.title', '⚙️ 进阶设定'),
+                    description: this.t('tutorial.chara_manager.step12.desc', '点击展开进阶设定，可以配置 Live2D 模型、语音 ID、以及添加自定义性格属性（如性格、爱好、口头禅等）。'),
                 },
                 skipInitialCheck: true, // 跳过初始化时的元素检查
                 action: 'click' // 使用 action 自动点击展开，系统会自动刷新位置
@@ -810,8 +822,8 @@ class UniversalTutorialManager {
             {
                 element: '.catgirl-block:first-child .live2d-link',
                 popover: {
-                    title: '🎨 模型设定',
-                    description: '点击此链接可以选择或更换猫娘的 Live2D 形象或 VRM 模型。不同的模型会带来不同的视觉体验。',
+                    title: this.t('tutorial.chara_manager.step13.title', '🎨 模型设定'),
+                    description: this.t('tutorial.chara_manager.step13.desc', '点击此链接可以选择或更换猫娘的 Live2D 形象或 VRM 模型。不同的模型会带来不同的视觉体验。'),
                 },
                 skipInitialCheck: true, // 跳过初始化时的元素检查
                 onHighlightStarted: async () => {
@@ -832,8 +844,8 @@ class UniversalTutorialManager {
             {
                 element: '.catgirl-block:first-child select[name="voice_id"]',
                 popover: {
-                    title: '🎤 语音设定',
-                    description: '选择猫娘的语音角色。不同的 voice_id 对应不同的声音特征，让您的虚拟伙伴拥有独特的声音。',
+                    title: this.t('tutorial.chara_manager.step14.title', '🎤 语音设定'),
+                    description: this.t('tutorial.chara_manager.step14.desc', '选择猫娘的语音角色。不同的 voice_id 对应不同的声音特征，让您的虚拟伙伴拥有独特的声音。'),
                 },
                 skipInitialCheck: true, // 跳过初始化时的元素检查
                 onHighlightStarted: async () => {
@@ -850,13 +862,6 @@ class UniversalTutorialManager {
                         await new Promise(resolve => setTimeout(resolve, 100));
                     }
                 }
-            },
-            {
-                element: '#catgirl-section',
-                popover: {
-                    title: '✅ 引导完成',
-                    description: '恭喜！您已经了解了角色管理的所有功能。现在可以开始创建和管理您的虚拟伙伴了。随时可以回到这里修改设定。',
-                }
             }
         ];
     }
@@ -869,67 +874,67 @@ class UniversalTutorialManager {
             {
                 element: '.newbie-recommend',
                 popover: {
-                    title: '🎯 新手推荐',
-                    description: '如果您还没有 API Key，可以直接选择"免费版"开始使用，无需注册任何账号！',
+                    title: this.t('tutorial.settings.step1.title', '🎯 新手推荐'),
+                    description: this.t('tutorial.settings.step1.desc', '如果您还没有 API Key，可以直接选择"免费版"开始使用，无需注册任何账号！'),
                 }
             },
             {
                 element: '#coreApiSelect',
                 popover: {
-                    title: '🔑 核心 API 服务商',
-                    description: '这是最重要的设置。核心 API 负责对话功能。\n\n• 免费版：完全免费，无需 API Key，适合新手体验\n• 阿里：有免费额度，功能全面\n• 智谱：有免费额度，支持联网搜索\n• OpenAI：智能水平最高，但需要翻墙且价格昂贵',
+                    title: this.t('tutorial.settings.step2.title', '🔑 核心 API 服务商'),
+                    description: this.t('tutorial.settings.step2.desc', '这是最重要的设置。核心 API 负责对话功能。\n\n• 免费版：完全免费，无需 API Key，适合新手体验\n• 阿里：有免费额度，功能全面\n• 智谱：有免费额度，支持联网搜索\n• OpenAI：智能水平最高，但需要翻墙且价格昂贵'),
                 }
             },
             {
                 element: '#apiKeyInput',
                 popover: {
-                    title: '📝 核心 API Key',
-                    description: '将您选择的 API 服务商的 API Key 粘贴到这里。如果选择了免费版，这个字段可以留空。',
+                    title: this.t('tutorial.settings.step3.title', '📝 核心 API Key'),
+                    description: this.t('tutorial.settings.step3.desc', '将您选择的 API 服务商的 API Key 粘贴到这里。如果选择了免费版，这个字段可以留空。'),
                 }
             },
             {
                 element: '#advanced-toggle-btn',
                 popover: {
-                    title: '⚙️ 高级选项',
-                    description: '点击这里展开高级选项。高级选项包括辅助 API 配置和自定义 API 配置。',
+                    title: this.t('tutorial.settings.step4.title', '⚙️ 高级选项'),
+                    description: this.t('tutorial.settings.step4.desc', '点击这里展开高级选项。高级选项包括辅助 API 配置和自定义 API 配置。'),
                 },
                 action: 'click'
             },
             {
                 element: '#assistApiSelect',
                 popover: {
-                    title: '🔧 辅助 API 服务商',
-                    description: '辅助 API 负责记忆管理和自定义语音功能。\n\n• 免费版：完全免费，但不支持自定义语音\n• 阿里：推荐选择，支持自定义语音\n• 智谱：支持 Agent 模式\n• OpenAI：记忆管理能力强\n\n注意：只有阿里支持自定义语音功能。',
+                    title: this.t('tutorial.settings.step5.title', '🔧 辅助 API 服务商'),
+                    description: this.t('tutorial.settings.step5.desc', '辅助 API 负责记忆管理和自定义语音功能。\n\n• 免费版：完全免费，但不支持自定义语音\n• 阿里：推荐选择，支持自定义语音\n• 智谱：支持 Agent 模式\n• OpenAI：记忆管理能力强\n\n注意：只有阿里支持自定义语音功能。'),
                 }
             },
             {
                 element: '#assistApiKeyInputQwen',
                 popover: {
-                    title: '🔑 辅助 API Key',
-                    description: '如果您选择了阿里作为辅助 API，需要在这里填写阿里的 API Key。如果不填写，系统会使用核心 API 的 Key。',
+                    title: this.t('tutorial.settings.step6.title', '🔑 辅助 API Key'),
+                    description: this.t('tutorial.settings.step6.desc', '如果您选择了阿里作为辅助 API，需要在这里填写阿里的 API Key。如果不填写，系统会使用核心 API 的 Key。'),
                 }
             },
             {
                 element: '#custom-api-toggle-btn',
                 popover: {
-                    title: '🔧 自定义 API 配置',
-                    description: '点击这里可以展开自定义 API 配置选项。如果您想使用自己的 API 服务器或其他兼容的 API 服务，可以在这里配置。',
+                    title: this.t('tutorial.settings.step7.title', '🔧 自定义 API 配置'),
+                    description: this.t('tutorial.settings.step7.desc', '点击这里可以展开自定义 API 配置选项。如果您想使用自己的 API 服务器或其他兼容的 API 服务，可以在这里配置。'),
                 },
                 action: 'click'
             },
             {
                 element: '#enableCustomApi',
                 popover: {
-                    title: '✅ 启用自定义 API',
-                    description: '勾选这个选项可以启用自定义 API 配置。启用后，您可以为不同的功能模块（摘要、纠错、情感分析等）配置独立的 API。',
+                    title: this.t('tutorial.settings.step8.title', '✅ 启用自定义 API'),
+                    description: this.t('tutorial.settings.step8.desc', '勾选这个选项可以启用自定义 API 配置。启用后，您可以为不同的功能模块（摘要、纠错、情感分析等）配置独立的 API。'),
                 },
                 action: 'click'
             },
             {
                 element: '.model-config-container:nth-of-type(1)',
                 popover: {
-                    title: '📝 摘要模型配置',
-                    description: '摘要模型用于生成对话摘要和记忆管理。您可以配置独立的 API 服务来处理摘要生成任务。',
+                    title: this.t('tutorial.settings.step9.title', '📝 摘要模型配置'),
+                    description: this.t('tutorial.settings.step9.desc', '摘要模型用于生成对话摘要和记忆管理。您可以配置独立的 API 服务来处理摘要生成任务。'),
                 }
             }
         ];
@@ -943,36 +948,36 @@ class UniversalTutorialManager {
             {
                 element: '.alibaba-api-notice',
                 popover: {
-                    title: '⚠️ 重要提示',
-                    description: '语音克隆功能需要使用阿里云 API。请确保您已经在 API 设置中配置了阿里云的 API Key。',
+                    title: this.t('tutorial.voice_clone.step1.title', '⚠️ 重要提示'),
+                    description: this.t('tutorial.voice_clone.step1.desc', '语音克隆功能需要使用阿里云 API。请确保您已经在 API 设置中配置了阿里云的 API Key。'),
                 }
             },
             {
                 element: '#refLanguage',
                 popover: {
-                    title: '🌍 选择参考音频语言',
-                    description: '选择您上传的音频文件的语言。这帮助系统更准确地识别和克隆声音特征。',
+                    title: this.t('tutorial.voice_clone.step2.title', '🌍 选择参考音频语言'),
+                    description: this.t('tutorial.voice_clone.step2.desc', '选择您上传的音频文件的语言。这帮助系统更准确地识别和克隆声音特征。'),
                 }
             },
             {
                 element: '#prefix',
                 popover: {
-                    title: '🏷️ 自定义前缀',
-                    description: '输入一个 10 字符以内的前缀（只能用数字和英文字母）。这个前缀会作为克隆音色的标识。',
+                    title: this.t('tutorial.voice_clone.step3.title', '🏷️ 自定义前缀'),
+                    description: this.t('tutorial.voice_clone.step3.desc', '输入一个 10 字符以内的前缀（只能用数字和英文字母）。这个前缀会作为克隆音色的标识。'),
                 }
             },
             {
                 element: '.register-voice-btn',
                 popover: {
-                    title: '✨ 注册音色',
-                    description: '点击这个按钮开始克隆您的音色。系统会处理音频并生成一个独特的音色 ID。',
+                    title: this.t('tutorial.voice_clone.step4.title', '✨ 注册音色'),
+                    description: this.t('tutorial.voice_clone.step4.desc', '点击这个按钮开始克隆您的音色。系统会处理音频并生成一个独特的音色 ID。'),
                 }
             },
             {
                 element: '.voice-list-section',
                 popover: {
-                    title: '📋 已注册音色列表',
-                    description: '这里显示所有已成功克隆的音色。您可以在角色管理中选择这些音色来为虚拟伙伴配音。',
+                    title: this.t('tutorial.voice_clone.step5.title', '📋 已注册音色列表'),
+                    description: this.t('tutorial.voice_clone.step5.desc', '这里显示所有已成功克隆的音色。您可以在角色管理中选择这些音色来为虚拟伙伴配音。'),
                 }
             }
         ];
@@ -986,15 +991,15 @@ class UniversalTutorialManager {
             {
                 element: '#subscriptions-list',
                 popover: {
-                    title: '📦 订阅内容列表',
-                    description: '这里显示所有您已订阅的 Steam Workshop 内容。点击卡片可以查看详情或进行操作。',
+                    title: this.t('tutorial.steam_workshop.step1.title', '📦 订阅内容列表'),
+                    description: this.t('tutorial.steam_workshop.step1.desc', '这里显示所有您已订阅的 Steam Workshop 内容。点击卡片可以查看详情或进行操作。'),
                 }
             },
             {
                 element: '.workshop-integration-info',
                 popover: {
-                    title: '💡 使用提示',
-                    description: '如果您想使用 Steam Workshop 中的语音音色，需要前往 Live2D 设置页面手动注册。',
+                    title: this.t('tutorial.steam_workshop.step2.title', '💡 使用提示'),
+                    description: this.t('tutorial.steam_workshop.step2.desc', '如果您想使用 Steam Workshop 中的语音音色，需要前往 Live2D 设置页面手动注册。'),
                 }
             }
         ];
@@ -1008,29 +1013,29 @@ class UniversalTutorialManager {
             {
                 element: '.tips-container',
                 popover: {
-                    title: '💡 使用提示',
-                    description: '刚刚结束的对话内容需要稍等片刻才会载入。如果没有看到最新的对话，可以点击猫娘名称来刷新。',
+                    title: this.t('tutorial.memory_browser.step1.title', '💡 使用提示'),
+                    description: this.t('tutorial.memory_browser.step1.desc', '刚刚结束的对话内容需要稍等片刻才会载入。如果没有看到最新的对话，可以点击猫娘名称来刷新。'),
                 }
             },
             {
                 element: '#memory-file-list',
                 popover: {
-                    title: '🐱 猫娘记忆库',
-                    description: '这里列出了所有虚拟伙伴的记忆库。点击一个猫娘的名称可以查看和编辑她的对话历史。',
+                    title: this.t('tutorial.memory_browser.step2.title', '🐱 猫娘记忆库'),
+                    description: this.t('tutorial.memory_browser.step2.desc', '这里列出了所有虚拟伙伴的记忆库。点击一个猫娘的名称可以查看和编辑她的对话历史。'),
                 }
             },
             {
                 element: '.review-toggle',
                 popover: {
-                    title: '🤖 自动记忆整理',
-                    description: '开启这个功能后，系统会自动整理和优化记忆内容，提高对话质量。建议保持开启状态。',
+                    title: this.t('tutorial.memory_browser.step3.title', '🤖 自动记忆整理'),
+                    description: this.t('tutorial.memory_browser.step3.desc', '开启这个功能后，系统会自动整理和优化记忆内容，提高对话质量。建议保持开启状态。'),
                 }
             },
             {
                 element: '#memory-chat-edit',
                 popover: {
-                    title: '📝 聊天记录编辑',
-                    description: '这里显示选中猫娘的所有对话记录。您可以在这里查看、编辑或删除特定的对话内容。',
+                    title: this.t('tutorial.memory_browser.step4.title', '📝 聊天记录编辑'),
+                    description: this.t('tutorial.memory_browser.step4.desc', '这里显示选中猫娘的所有对话记录。您可以在这里查看、编辑或删除特定的对话内容。'),
                 }
             }
         ];
@@ -1387,8 +1392,8 @@ class UniversalTutorialManager {
 
         skipBtn.onclick = () => {
             document.body.removeChild(overlay);
-            // 不进入全屏，直接启动引导
-            this.startTutorialSteps(this.driver.steps);
+            // 不进入全屏，直接启动引导，使用已验证的 validSteps
+            this.startTutorialSteps(validSteps);
         };
 
         // 组装
@@ -1405,6 +1410,9 @@ class UniversalTutorialManager {
      * 启动引导步骤（内部方法）
      */
     startTutorialSteps(validSteps) {
+        // 缓存已验证的步骤，供 onStepChange 使用
+        this.cachedValidSteps = validSteps;
+
         // 定义步骤
         this.driver.setSteps(validSteps);
 
@@ -1452,6 +1460,14 @@ class UniversalTutorialManager {
         // 立即强制显示浮动工具栏（引导开始时）
         const floatingButtons = document.getElementById('live2d-floating-buttons');
         if (floatingButtons) {
+            // 保存原始的内联样式值
+            this._floatingButtonsOriginalStyles = {
+                display: floatingButtons.style.display,
+                visibility: floatingButtons.style.visibility,
+                opacity: floatingButtons.style.opacity
+            };
+            console.log('[Tutorial] 已保存浮动工具栏原始样式:', this._floatingButtonsOriginalStyles);
+
             floatingButtons.style.setProperty('display', 'flex', 'important');
             floatingButtons.style.setProperty('visibility', 'visible', 'important');
             floatingButtons.style.setProperty('opacity', '1', 'important');
@@ -1674,8 +1690,9 @@ class UniversalTutorialManager {
         this.currentStep = this.driver.currentStep || 0;
         console.log(`[Tutorial] 当前步骤: ${this.currentStep + 1}`);
 
-        // 获取当前步骤的元素
-        const steps = this.getStepsForPage();
+        // 使用缓存的已验证步骤，而不是重新调用 getStepsForPage()
+        // 这样可以保持与 startTutorialSteps 中使用的步骤列表一致
+        const steps = this.cachedValidSteps || this.getStepsForPage();
         if (this.currentStep < steps.length) {
             const currentStepConfig = steps[this.currentStep];
 
@@ -1893,8 +1910,33 @@ class UniversalTutorialManager {
             console.log('[Tutorial] 浮动工具栏保护定时器已清除');
         }
 
-        // 清除浮动工具栏的引导标记
+        // 恢复浮动工具栏的原始样式
         const floatingButtons = document.getElementById('live2d-floating-buttons');
+        if (floatingButtons && this._floatingButtonsOriginalStyles) {
+            // 恢复原始的内联样式值
+            if (this._floatingButtonsOriginalStyles.display) {
+                floatingButtons.style.display = this._floatingButtonsOriginalStyles.display;
+            } else {
+                floatingButtons.style.removeProperty('display');
+            }
+
+            if (this._floatingButtonsOriginalStyles.visibility) {
+                floatingButtons.style.visibility = this._floatingButtonsOriginalStyles.visibility;
+            } else {
+                floatingButtons.style.removeProperty('visibility');
+            }
+
+            if (this._floatingButtonsOriginalStyles.opacity) {
+                floatingButtons.style.opacity = this._floatingButtonsOriginalStyles.opacity;
+            } else {
+                floatingButtons.style.removeProperty('opacity');
+            }
+
+            console.log('[Tutorial] 浮动工具栏原始样式已恢复');
+            this._floatingButtonsOriginalStyles = null;
+        }
+
+        // 清除浮动工具栏的引导标记
         if (floatingButtons) {
             floatingButtons.dataset.inTutorial = 'false';
             console.log('[Tutorial] 浮动工具栏引导标记已清除');

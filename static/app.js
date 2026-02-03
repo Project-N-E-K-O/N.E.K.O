@@ -8684,10 +8684,11 @@ document.addEventListener('DOMContentLoaded', async function() {
         }
     }
 
-    // 初始化通用引导管理器
-    if (typeof initUniversalTutorialManager === 'function') {
+    // 初始化通用引导管理器（幂等性保护）
+    if (!window.__universalTutorialManagerInitialized && typeof initUniversalTutorialManager === 'function') {
         try {
             initUniversalTutorialManager();
+            window.__universalTutorialManagerInitialized = true;
             console.log('[App] 通用引导管理器已初始化');
         } catch (error) {
             console.error('[App] 通用引导管理器初始化失败:', error);
