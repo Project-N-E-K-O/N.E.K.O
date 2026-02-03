@@ -1098,6 +1098,227 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
             text_buffer.append(tts_text)
 
 
+def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
+    """
+    GPT-SoVITS TTS Worker
+    使用 GPT-SoVITS 的 HTTP API（api_v2.py 的 /tts 端点）进行语音合成
+    注意：GPT-SoVITS 不支持流式输入，只支持流式输出
+    因此需要累积文本后一次性发送，但可以流式接收音频
+    
+    Args:
+        request_queue: 多进程请求队列，接收(speech_id, text)元组
+        response_queue: 多进程响应队列，发送音频数据（也用于发送就绪信号）
+        audio_api_key: API密钥（GPT-SoVITS 本地部署通常不需要）
+        voice_id: 音色配置，格式为 "参考音频路径|参考文本|参考语言|合成语言|高级参数JSON"
+                  例如: "/path/to/ref.wav|这是参考文本|zh|zh|{\"speed\":1.2}"
+                  也可以只指定部分参数，使用默认值填充
+    
+    配置项（通过 TTS_MODEL_URL 设置）:
+        base_url: GPT-SoVITS API 地址，如 "http://127.0.0.1:9880"
+    """
+    import asyncio
+    import json
+    
+    # 获取配置
+    cm = get_config_manager()
+    tts_config = cm.get_model_api_config('tts_custom')
+    base_url = tts_config.get('base_url', 'http://127.0.0.1:9880').rstrip('/')
+    
+    # 确保是 HTTP URL
+    if base_url.startswith('ws://'):
+        base_url = 'http://' + base_url[5:]
+    elif base_url.startswith('wss://'):
+        base_url = 'https://' + base_url[6:]
+    
+    # 解析 voice_id: "ref_path|prompt_text|prompt_lang|text_lang|advanced_json"
+    ref_audio_path = ""
+    prompt_text = ""
+    prompt_lang = "zh"
+    text_lang = "zh"
+    # 高级参数（使用默认值）
+    advanced_params = {
+        "speed_factor": 1.0,
+        "top_k": 15,
+        "top_p": 1.0,
+        "temperature": 1.0,
+        "text_split_method": "cut5",
+        "seed": -1,
+    }
+    
+    if voice_id:
+        parts = voice_id.split('|')
+        if len(parts) >= 1 and parts[0]:
+            ref_audio_path = parts[0]
+        if len(parts) >= 2 and parts[1]:
+            prompt_text = parts[1]
+        if len(parts) >= 3 and parts[2]:
+            prompt_lang = parts[2]
+        if len(parts) >= 4 and parts[3]:
+            text_lang = parts[3]
+        # 解析高级参数 JSON（第5个字段）
+        if len(parts) >= 5 and parts[4]:
+            try:
+                adv = json.loads(parts[4])
+                if 'speed' in adv:
+                    advanced_params['speed_factor'] = float(adv['speed'])
+                if 'top_k' in adv:
+                    advanced_params['top_k'] = int(adv['top_k'])
+                if 'top_p' in adv:
+                    advanced_params['top_p'] = float(adv['top_p'])
+                if 'temperature' in adv:
+                    advanced_params['temperature'] = float(adv['temperature'])
+                if 'cut_method' in adv:
+                    advanced_params['text_split_method'] = adv['cut_method']
+                if 'seed' in adv:
+                    advanced_params['seed'] = int(adv['seed'])
+            except json.JSONDecodeError as e:
+                logger.warning(f"GPT-SoVITS 高级参数解析失败: {e}")
+    
+    # 检查必要参数
+    if not ref_audio_path:
+        logger.error("❌ GPT-SoVITS 需要参考音频路径，请在 voice_id 中配置")
+        logger.error("   格式: 参考音频路径|参考文本|参考语言|合成语言")
+        logger.error("   例如: /path/to/ref.wav|这是参考文本|zh|zh")
+        response_queue.put(("__ready__", False))
+        # 模仿 dummy_tts：持续清空队列但不生成音频
+        while True:
+            try:
+                sid, _ = request_queue.get()
+                if sid is None:
+                    continue
+            except Exception:
+                break
+        return
+    
+    async def async_worker():
+        """异步TTS worker主循环"""
+        current_speech_id = None
+        text_buffer = []  # 累积文本缓冲区
+        
+        # GPT-SoVITS 是基于 HTTP 的，无需建立持久连接，直接发送就绪信号
+        logger.info(f"GPT-SoVITS TTS 已就绪: {base_url}")
+        logger.info(f"  参考音频: {ref_audio_path}")
+        logger.info(f"  参考文本: {prompt_text[:50]}..." if len(prompt_text) > 50 else f"  参考文本: {prompt_text}")
+        response_queue.put(("__ready__", True))
+        
+        try:
+            loop = asyncio.get_running_loop()
+            
+            while True:
+                try:
+                    sid, tts_text = await loop.run_in_executor(None, request_queue.get)
+                except Exception:
+                    break
+                
+                # 新的语音ID，清空缓冲区并重新开始
+                if current_speech_id != sid and sid is not None:
+                    current_speech_id = sid
+                    text_buffer = []
+                
+                if sid is None:
+                    # 收到终止信号，合成累积的文本
+                    if text_buffer and current_speech_id is not None:
+                        full_text = "".join(text_buffer)
+                        if full_text.strip():
+                            try:
+                                # 构建请求参数（使用 api_v2 的 /tts 端点）
+                                params = {
+                                    "text": full_text,
+                                    "text_lang": text_lang,
+                                    "ref_audio_path": ref_audio_path,
+                                    "prompt_text": prompt_text,
+                                    "prompt_lang": prompt_lang,
+                                    "text_split_method": advanced_params['text_split_method'],
+                                    "media_type": "wav",
+                                    "streaming_mode": 1,  # 流式输出，最佳质量
+                                    "speed_factor": advanced_params['speed_factor'],
+                                    "top_k": advanced_params['top_k'],
+                                    "top_p": advanced_params['top_p'],
+                                    "temperature": advanced_params['temperature'],
+                                    "seed": advanced_params['seed'],
+                                }
+                                
+                                logger.debug(f"GPT-SoVITS 合成请求: {full_text[:100]}...")
+                                
+                                # 使用异步HTTP客户端流式接收响应
+                                async with aiohttp.ClientSession() as session:
+                                    async with session.get(f"{base_url}/tts", params=params, timeout=aiohttp.ClientTimeout(total=120)) as resp:
+                                        if resp.status == 200:
+                                            # 流式接收音频数据
+                                            # GPT-SoVITS streaming_mode=1 返回带 wav header 的流
+                                            # 第一个 chunk 包含 wav header，后续是 raw PCM
+                                            is_first_chunk = True
+                                            
+                                            async for chunk in resp.content.iter_chunked(8192):
+                                                if not chunk:
+                                                    continue
+                                                
+                                                # 跳过 wav header（44 bytes）
+                                                if is_first_chunk:
+                                                    is_first_chunk = False
+                                                    # wav header 通常是 44 bytes，但可能更长
+                                                    # 简单处理：跳过前 44 bytes
+                                                    if len(chunk) > 44:
+                                                        chunk = chunk[44:]
+                                                    else:
+                                                        continue
+                                                
+                                                # 确保 chunk 长度是偶数（int16 需要）
+                                                if len(chunk) % 2 != 0:
+                                                    chunk = chunk[:-1]
+                                                
+                                                if len(chunk) < 2:
+                                                    continue
+                                                
+                                                # GPT-SoVITS 输出采样率取决于模型版本:
+                                                # v1/v2/v2Pro: 32000Hz
+                                                # v3: 24000Hz (超采样后 48000Hz)
+                                                # v4: 48000Hz
+                                                # 这里假设 32000Hz，如需其他采样率可通过配置调整
+                                                src_rate = 32000
+                                                
+                                                # 转换为 numpy 数组
+                                                audio_array = np.frombuffer(chunk, dtype=np.int16)
+                                                
+                                                # 重采样到 48000Hz
+                                                if src_rate != 48000:
+                                                    audio_float = audio_array.astype(np.float32) / 32768.0
+                                                    resampled = soxr.resample(audio_float, src_rate, 48000, quality='HQ')
+                                                    resampled_int16 = (resampled * 32768.0).clip(-32768, 32767).astype(np.int16)
+                                                    response_queue.put(resampled_int16.tobytes())
+                                                else:
+                                                    response_queue.put(chunk)
+                                                    
+                                            logger.debug("GPT-SoVITS 合成完成")
+                                        else:
+                                            error_text = await resp.text()
+                                            logger.error(f"GPT-SoVITS API 错误 ({resp.status}): {error_text}")
+                            except asyncio.TimeoutError:
+                                logger.error("GPT-SoVITS 请求超时")
+                            except aiohttp.ClientError as e:
+                                logger.error(f"GPT-SoVITS 连接错误: {e}")
+                            except Exception as e:
+                                logger.error(f"GPT-SoVITS 合成失败: {e}")
+                    
+                    # 清空缓冲区
+                    text_buffer = []
+                    current_speech_id = None
+                    continue
+                
+                # 累积文本到缓冲区（不立即发送）
+                if tts_text and tts_text.strip():
+                    text_buffer.append(tts_text)
+        
+        except Exception as e:
+            logger.error(f"GPT-SoVITS Worker 错误: {e}")
+    
+    # 运行异步worker
+    try:
+        asyncio.run(async_worker())
+    except Exception as e:
+        logger.error(f"GPT-SoVITS Worker 启动失败: {e}")
+
+
 def dummy_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """
     空的TTS worker（用于不支持TTS的core_api）
@@ -1143,6 +1364,11 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False):
         tts_config = cm.get_model_api_config('tts_custom')
         # 只有当 is_custom=True（即 ENABLE_CUSTOM_API=true 且用户明确配置了自定义 TTS）时才使用本地 worker
         if tts_config.get('is_custom'):
+            base_url = tts_config.get('base_url', '')
+            # 检测是否是 GPT-SoVITS（通过 URL 包含 gptsovits 或使用 http/https 协议）
+            # GPT-SoVITS 使用 HTTP API，而 local_cosyvoice 使用 WebSocket
+            if base_url.startswith('http://') or base_url.startswith('https://'):
+                return gptsovits_tts_worker
             return local_cosyvoice_worker
     except Exception as e:
         logger.warning(f'TTS调度器检查报告:{e}')

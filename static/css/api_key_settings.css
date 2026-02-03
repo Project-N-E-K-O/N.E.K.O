@@ -903,7 +903,7 @@ transition: max-height 0.3s ease-in-out;
 }
 
 .model-content.expanded {
-max-height: 1000px;
+max-height: 2000px;
 }
 
 .model-content .field-row {

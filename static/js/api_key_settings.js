@@ -380,6 +380,9 @@ async function loadCurrentApiKey() {
             setInputValue('ttsModelApiKey', data.ttsModelApiKey);
             setInputValue('ttsVoiceId', data.ttsVoiceId);
 
+            // 加载 GPT-SoVITS 配置（从 ttsModelUrl 和 ttsVoiceId 解析）
+            loadGptSovitsConfig(data.ttsModelUrl, data.ttsVoiceId);
+
             // 加载MCPR_TOKEN
             setInputValue('mcpTokenInput', data.mcpToken);
 
@@ -401,6 +404,97 @@ async function loadCurrentApiKey() {
 
 // 全局变量存储待保存的API Key
 let pendingApiKey = null;
+
+// ==================== GPT-SoVITS 配置相关函数 ====================
+
+/**
+ * 从 ttsModelUrl 和 ttsVoiceId 解析并加载 GPT-SoVITS 配置
+ * GPT-SoVITS 使用 HTTP URL，voice_id 格式为: 参考音频|参考文本|参考语言|合成语言|高级参数JSON
+ */
+function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId) {
+    // 检查是否是 GPT-SoVITS 配置（HTTP URL）
+    if (ttsModelUrl && (ttsModelUrl.startsWith('http://') || ttsModelUrl.startsWith('https://'))) {
+        setInputValue('gptsovitsApiUrl', ttsModelUrl);
+        
+        // 解析 voice_id: "ref_path|prompt_text|prompt_lang|text_lang|advanced_json"
+        if (ttsVoiceId && ttsVoiceId.includes('|')) {
+            const parts = ttsVoiceId.split('|');
+            if (parts.length >= 1) setInputValue('gptsovitsRefAudio', parts[0]);
+            if (parts.length >= 2) setInputValue('gptsovitsRefText', parts[1]);
+            if (parts.length >= 3) setSelectValue('gptsovitsRefLang', parts[2]);
+            if (parts.length >= 4) setSelectValue('gptsovitsTextLang', parts[3]);
+            
+            // 解析高级参数 JSON（第5个字段）
+            if (parts.length >= 5 && parts[4]) {
+                try {
+                    const advanced = JSON.parse(parts[4]);
+                    if (advanced.speed) setInputValue('gptsovitsSpeed', advanced.speed);
+                    if (advanced.top_k) setInputValue('gptsovitsTopK', advanced.top_k);
+                    if (advanced.top_p) setInputValue('gptsovitsTopP', advanced.top_p);
+                    if (advanced.temperature) setInputValue('gptsovitsTemperature', advanced.temperature);
+                    if (advanced.cut_method) setSelectValue('gptsovitsCutMethod', advanced.cut_method);
+                    if (advanced.seed !== undefined) setInputValue('gptsovitsSeed', advanced.seed);
+                } catch (e) {
+                    console.warn('Failed to parse GPT-SoVITS advanced config:', e);
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 从 GPT-SoVITS 配置字段组装 ttsModelUrl 和 ttsVoiceId
+ * 返回 { url, voiceId } 或 null（如果未配置）
+ * voice_id 格式: 参考音频|参考文本|参考语言|合成语言|高级参数JSON
+ */
+function getGptSovitsConfig() {
+    const apiUrl = document.getElementById('gptsovitsApiUrl')?.value.trim() || '';
+    const refAudio = document.getElementById('gptsovitsRefAudio')?.value.trim() || '';
+    const refText = document.getElementById('gptsovitsRefText')?.value.trim() || '';
+    const refLang = document.getElementById('gptsovitsRefLang')?.value || 'zh';
+    const textLang = document.getElementById('gptsovitsTextLang')?.value || 'zh';
+    
+    // 高级参数
+    const speed = document.getElementById('gptsovitsSpeed')?.value || '';
+    const topK = document.getElementById('gptsovitsTopK')?.value || '';
+    const topP = document.getElementById('gptsovitsTopP')?.value || '';
+    const temperature = document.getElementById('gptsovitsTemperature')?.value || '';
+    const cutMethod = document.getElementById('gptsovitsCutMethod')?.value || 'cut5';
+    const seed = document.getElementById('gptsovitsSeed')?.value || '';
+    
+    // 如果配置了 GPT-SoVITS API URL，则使用 GPT-SoVITS 配置
+    if (apiUrl && apiUrl.startsWith('http')) {
+        // 构建高级参数 JSON（只包含非默认值）
+        const advanced = {};
+        if (speed && speed !== '1.0' && speed !== '1') advanced.speed = parseFloat(speed);
+        if (topK && topK !== '15') advanced.top_k = parseInt(topK);
+        if (topP && topP !== '1.0' && topP !== '1') advanced.top_p = parseFloat(topP);
+        if (temperature && temperature !== '1.0' && temperature !== '1') advanced.temperature = parseFloat(temperature);
+        if (cutMethod && cutMethod !== 'cut5') advanced.cut_method = cutMethod;
+        if (seed && seed !== '-1') advanced.seed = parseInt(seed);
+        
+        // 只有有高级参数时才添加 JSON
+        const advancedJson = Object.keys(advanced).length > 0 ? JSON.stringify(advanced) : '';
+        
+        return {
+            url: apiUrl,
+            voiceId: `${refAudio}|${refText}|${refLang}|${textLang}${advancedJson ? '|' + advancedJson : ''}`
+        };
+    }
+    return null;
+}
+
+/**
+ * 设置 select 元素的值
+ */
+function setSelectValue(id, value) {
+    const el = document.getElementById(id);
+    if (el && value) {
+        el.value = value;
+    }
+}
+
+// ==================== 结束 GPT-SoVITS 配置相关函数 ====================
 
 // 切换自定义API启用状态
 function toggleCustomApi() {
@@ -587,10 +681,17 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
     const omniModelApiKey = document.getElementById('omniModelApiKey') ? document.getElementById('omniModelApiKey').value.trim() : '';
 
     const ttsModelProvider = document.getElementById('ttsModelProvider') ? document.getElementById('ttsModelProvider').value.trim() : '';
-    const ttsModelUrl = document.getElementById('ttsModelUrl') ? document.getElementById('ttsModelUrl').value.trim() : '';
+    let ttsModelUrl = document.getElementById('ttsModelUrl') ? document.getElementById('ttsModelUrl').value.trim() : '';
     const ttsModelId = document.getElementById('ttsModelId') ? document.getElementById('ttsModelId').value.trim() : '';
     const ttsModelApiKey = document.getElementById('ttsModelApiKey') ? document.getElementById('ttsModelApiKey').value.trim() : '';
-    const ttsVoiceId = document.getElementById('ttsVoiceId') ? document.getElementById('ttsVoiceId').value.trim() : '';
+    let ttsVoiceId = document.getElementById('ttsVoiceId') ? document.getElementById('ttsVoiceId').value.trim() : '';
+
+    // 检查 GPT-SoVITS 配置，如果有则优先使用
+    const gptsovitsConfig = getGptSovitsConfig();
+    if (gptsovitsConfig) {
+        ttsModelUrl = gptsovitsConfig.url;
+        ttsVoiceId = gptsovitsConfig.voiceId;
+    }
 
     const mcpToken = document.getElementById('mcpTokenInput') ? document.getElementById('mcpTokenInput').value.trim() : '';
 
