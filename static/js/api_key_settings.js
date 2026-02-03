@@ -419,26 +419,43 @@ let gptsovitsModelCache = {
  * 从 ttsModelUrl 和 ttsVoiceId 解析并加载 GPT-SoVITS 配置
  * GPT-SoVITS 使用 HTTP URL，voice_id 格式为: 参考音频|参考文本|参考语言|合成语言|高级参数JSON
  * 高级参数JSON中包含: speed, top_k, top_p, temperature, cut_method, seed, base_path, gpt_model, sovits_model
+ * 特殊格式：__gptsovits_disabled__|url|voiceId 表示禁用但保存了配置
  */
 function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId) {
+    // 检查是否是禁用但保存了配置的情况
+    let isDisabledWithConfig = false;
+    let savedUrl = '';
+    let savedVoiceId = '';
+    
+    if (ttsVoiceId && ttsVoiceId.startsWith('__gptsovits_disabled__|')) {
+        isDisabledWithConfig = true;
+        const parts = ttsVoiceId.substring('__gptsovits_disabled__|'.length).split('|');
+        if (parts.length >= 1) savedUrl = parts[0];
+        if (parts.length >= 2) savedVoiceId = parts.slice(1).join('|');
+    }
+    
     // 检查是否是 GPT-SoVITS 配置（HTTP URL）
     const isGptSovits = ttsModelUrl && (ttsModelUrl.startsWith('http://') || ttsModelUrl.startsWith('https://'));
     
     // 设置启用开关状态
     const enabledCheckbox = document.getElementById('gptsovitsEnabled');
     if (enabledCheckbox) {
-        enabledCheckbox.checked = isGptSovits;
+        enabledCheckbox.checked = isGptSovits && !isDisabledWithConfig;
     }
     // 初始化配置区域显示状态
     toggleGptSovitsConfig();
     
-    if (isGptSovits) {
+    // 确定要加载的配置
+    let urlToLoad = isGptSovits ? ttsModelUrl : (isDisabledWithConfig ? savedUrl : '');
+    let voiceIdToLoad = isGptSovits ? ttsVoiceId : (isDisabledWithConfig ? savedVoiceId : '');
+    
+    if (urlToLoad || voiceIdToLoad) {
         const apiUrlEl = document.getElementById('gptsovitsApiUrl');
-        if (apiUrlEl) apiUrlEl.value = ttsModelUrl;
+        if (apiUrlEl && urlToLoad) apiUrlEl.value = urlToLoad;
         
         // 解析 voice_id: "ref_path|prompt_text|prompt_lang|text_lang|advanced_json"
-        if (ttsVoiceId && ttsVoiceId.includes('|')) {
-            const parts = ttsVoiceId.split('|');
+        if (voiceIdToLoad && voiceIdToLoad.includes('|')) {
+            const parts = voiceIdToLoad.split('|');
             // 辅助函数设置输入框值
             const setVal = (id, val) => { const el = document.getElementById(id); if (el && val !== undefined) el.value = val; };
             if (parts.length >= 1) setVal('gptsovitsRefAudio', parts[0]);
@@ -546,6 +563,47 @@ function updateGptSovitsModelDropdowns(gptModels, sovitsModels, selectedGptPath,
             });
         }
     }
+}
+
+/**
+ * 从 GPT-SoVITS 配置字段组装 ttsModelUrl 和 ttsVoiceId（用于保存，不检查启用状态）
+ * 返回 { url, voiceId } 或 null
+ */
+function getGptSovitsConfigForSave() {
+    const apiUrl = document.getElementById('gptsovitsApiUrl')?.value.trim() || '';
+    const refAudio = document.getElementById('gptsovitsRefAudio')?.value.trim() || '';
+    const refText = document.getElementById('gptsovitsRefText')?.value.trim() || '';
+    const refLang = document.getElementById('gptsovitsRefLang')?.value || 'zh';
+    const textLang = document.getElementById('gptsovitsTextLang')?.value || 'zh';
+    const speed = document.getElementById('gptsovitsSpeed')?.value || '';
+    const topK = document.getElementById('gptsovitsTopK')?.value || '';
+    const topP = document.getElementById('gptsovitsTopP')?.value || '';
+    const temperature = document.getElementById('gptsovitsTemperature')?.value || '';
+    const cutMethod = document.getElementById('gptsovitsCutMethod')?.value || 'cut5';
+    const seed = document.getElementById('gptsovitsSeed')?.value || '';
+    const basePath = document.getElementById('gptsovitsBasePath')?.value.trim() || '';
+    const gptModel = document.getElementById('gptsovitsGptModel')?.value || '';
+    const sovitsModel = document.getElementById('gptsovitsSovitsModel')?.value || '';
+    
+    const effectiveApiUrl = apiUrl || 'http://127.0.0.1:9880';
+    
+    const advanced = {};
+    if (speed && speed !== '1.0' && speed !== '1') advanced.speed = parseFloat(speed);
+    if (topK && topK !== '15') advanced.top_k = parseInt(topK);
+    if (topP && topP !== '1.0' && topP !== '1') advanced.top_p = parseFloat(topP);
+    if (temperature && temperature !== '1.0' && temperature !== '1') advanced.temperature = parseFloat(temperature);
+    if (cutMethod && cutMethod !== 'cut5') advanced.cut_method = cutMethod;
+    if (seed && seed !== '-1') advanced.seed = parseInt(seed);
+    if (basePath) advanced.base_path = basePath;
+    if (gptModel) advanced.gpt_model = gptModel;
+    if (sovitsModel) advanced.sovits_model = sovitsModel;
+    
+    const advancedJson = Object.keys(advanced).length > 0 ? JSON.stringify(advanced) : '';
+    
+    return {
+        url: effectiveApiUrl,
+        voiceId: `${refAudio}|${refText}|${refLang}|${textLang}${advancedJson ? '|' + advancedJson : ''}`
+    };
 }
 
 /**
@@ -930,11 +988,26 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
     const ttsModelApiKey = document.getElementById('ttsModelApiKey') ? document.getElementById('ttsModelApiKey').value.trim() : '';
     let ttsVoiceId = document.getElementById('ttsVoiceId') ? document.getElementById('ttsVoiceId').value.trim() : '';
 
-    // 检查 GPT-SoVITS 配置，如果有则优先使用
-    const gptsovitsConfig = getGptSovitsConfig();
-    if (gptsovitsConfig) {
-        ttsModelUrl = gptsovitsConfig.url;
-        ttsVoiceId = gptsovitsConfig.voiceId;
+    // 检查 GPT-SoVITS 配置
+    const gptsovitsEnabled = document.getElementById('gptsovitsEnabled')?.checked;
+    // 始终获取 GPT-SoVITS 配置用于保存（即使禁用也保存配置以便下次启用时恢复）
+    const gptsovitsConfigForSave = getGptSovitsConfigForSave();
+    
+    if (gptsovitsEnabled && gptsovitsConfigForSave) {
+        // GPT-SoVITS 启用，使用其配置
+        ttsModelUrl = gptsovitsConfigForSave.url;
+        ttsVoiceId = gptsovitsConfigForSave.voiceId;
+    } else if (!gptsovitsEnabled) {
+        // GPT-SoVITS 禁用
+        // 如果当前 ttsModelUrl 是 HTTP URL（GPT-SoVITS 格式），需要特殊处理
+        if (ttsModelUrl && (ttsModelUrl.startsWith('http://') || ttsModelUrl.startsWith('https://'))) {
+            // 保存 GPT-SoVITS 配置到特殊标记，但清空实际使用的 URL
+            // 格式：在 voiceId 中添加 __gptsovits_disabled__ 前缀保存配置
+            if (gptsovitsConfigForSave) {
+                ttsVoiceId = `__gptsovits_disabled__|${gptsovitsConfigForSave.url}|${gptsovitsConfigForSave.voiceId}`;
+            }
+            ttsModelUrl = '';
+        }
     }
 
     const mcpToken = document.getElementById('mcpTokenInput') ? document.getElementById('mcpTokenInput').value.trim() : '';
