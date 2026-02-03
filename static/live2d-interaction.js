@@ -9,9 +9,9 @@ const SNAP_CONFIG = {
     // 吸附边距：吸附后距离屏幕边缘的最小距离
     margin: 5,
     // 动画持续时间（毫秒）
-    animationDuration: 300,
+    animationDuration: 260,
     // 动画缓动函数类型
-    easingType: 'easeOutCubic'
+    easingType: 'easeOutBack'
 };
 
 // 缓动函数集合
@@ -22,6 +22,12 @@ const EasingFunctions = {
     easeOutQuad: t => t * (2 - t),
     // 缓出三次方（更自然）
     easeOutCubic: t => (--t) * t * t + 1,
+    // 缓出回弹（与聊天框一致）
+    easeOutBack: t => {
+        const c1 = 1.70158;
+        const c3 = c1 + 1;
+        return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+    },
     // 缓出弹性
     easeOutElastic: t => {
         const p = 0.3;

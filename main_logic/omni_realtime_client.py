@@ -378,14 +378,14 @@ class OmniRealtimeClient:
                     "turn_detection": {
                         "type": "server_vad"
                     },
-                    "tools": [
-                        {
-                            "type": "web_search",# 固定值
-                            "function": {
-                                "description": "这个web_search用来搜索互联网的信息"# 描述什么样的信息需要大模型进行搜索。
-                            }
-                        }
-                    ]
+                    # "tools": [
+                    #     {
+                    #         "type": "web_search",# 固定值
+                    #         "function": {
+                    #             "description": "这个web_search用来搜索互联网的信息"# 描述什么样的信息需要大模型进行搜索。
+                    #         }
+                    #     }
+                    # ]
                 })
             else:
                 raise ValueError(f"Invalid model: {self.model}")

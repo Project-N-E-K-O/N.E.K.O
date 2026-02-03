@@ -322,7 +322,7 @@ MODELS_EXTRA_BODY_MAP = {
     "glm-4.6v": EXTRA_BODY_CLAUDE,
     # Silicon (zai-org) - 使用 Qwen 格式
     "zai-org/GLM-4.6V": EXTRA_BODY_OPENAI,
-    "free-model": {"tools":[{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
+    # "free-model": {"tools":[{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
     "step-2-mini": {"tools":[{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
     # Gemini 系列
     "gemini-2.5-flash": EXTRA_BODY_GEMINI,  # 禁用 thinking
