@@ -1168,7 +1168,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                     advanced_params['text_split_method'] = adv['cut_method']
                 if 'seed' in adv:
                     advanced_params['seed'] = int(adv['seed'])
-            except json.JSONDecodeError as e:
+            except (json.JSONDecodeError, ValueError, TypeError) as e:
                 logger.warning(f"GPT-SoVITS 高级参数解析失败: {e}")
     
     # 检查必要参数

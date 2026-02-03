@@ -954,8 +954,15 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
 
     // 检查 GPT-SoVITS 配置
     const gptsovitsEnabled = document.getElementById('gptsovitsEnabled')?.checked;
+    const gptsovitsRefAudio = document.getElementById('gptsovitsRefAudio')?.value.trim() || '';
     // 始终获取 GPT-SoVITS 配置用于保存（即使禁用也保存配置以便下次启用时恢复）
     const gptsovitsConfigForSave = getGptSovitsConfigForSave();
+    
+    // 启用 GPT-SoVITS 时必须填写参考音频
+    if (gptsovitsEnabled && !gptsovitsRefAudio) {
+        showStatus(window.t ? window.t('api.gptsovitsRefAudioRequired') : '请填写参考音频路径', 'error');
+        return;
+    }
     
     if (gptsovitsEnabled && gptsovitsConfigForSave) {
         // GPT-SoVITS 启用，使用其配置
