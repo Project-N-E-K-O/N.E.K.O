@@ -219,7 +219,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                 await asyncio.wait_for(response_done.wait(), timeout=20.0)
                                 logger.debug("音频生成完成，主动关闭连接")
                             except asyncio.TimeoutError:
-                                logger.warning("等待响应完成超时（30秒），强制关闭连接")
+                                logger.warning("等待响应完成超时（20秒），强制关闭连接")
                             
                             # 主动关闭连接，避免连接一直保持到超时
                             if ws:
@@ -529,7 +529,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                 await asyncio.wait_for(response_done.wait(), timeout=20.0)
                                 logger.debug("音频生成完成，主动关闭连接")
                             except asyncio.TimeoutError:
-                                logger.warning("等待响应完成超时（30秒），强制关闭连接")
+                                logger.warning("等待响应完成超时（20秒），强制关闭连接")
                             
                             # 主动关闭连接，避免连接一直保持到超时
                             if ws:
@@ -702,14 +702,14 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         def on_open(self): 
             # 连接已建立，发送就绪信号
             elapsed = time.time() - self.construct_start_time if hasattr(self, 'construct_start_time') else -1
-            print(f"TTS 连接已建立!! (构造到open耗时: {elapsed:.2f}s)")
+            logger.debug(f"TTS 连接已建立 (构造到open耗时: {elapsed:.2f}s)")
             
         def on_complete(self): 
             pass
                 
         def on_error(self, message: str): 
             if "request timeout after 23 seconds" not in message:
-                print(f"TTS Error: {message}")
+                logger.error(f"TTS Error: {message}")
             
         def on_close(self): 
             pass
@@ -749,11 +749,11 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                         pass
                     synthesizer = None   
             current_speech_id = None
+            continue  # 终止信号处理完毕，继续等待下一个请求
 
         if current_speech_id is None:
             current_speech_id = sid
-
-        if current_speech_id != sid:
+        elif current_speech_id != sid:
             if synthesizer is not None:
                 try:
                     synthesizer.close()
@@ -778,7 +778,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 )
                 synthesizer.streaming_call("。")
             except Exception as e:
-                print("TTS Init Error: ", e)
+                logger.error(f"TTS Init Error: {e}")
                 synthesizer = None
                 current_speech_id = None
                 time.sleep(0.1)
@@ -809,7 +809,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 )
                 synthesizer.streaming_call(tts_text)
             except Exception as reconnect_error:
-                print(f"TTS Reconnect Error: {reconnect_error}")
+                logger.error(f"TTS Reconnect Error: {reconnect_error}")
                 synthesizer = None
                 current_speech_id = None
 
@@ -1248,23 +1248,26 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                                             # GPT-SoVITS streaming_mode=1 返回带 wav header 的流
                                             # 收集所有数据后统一处理，避免分块重采样产生电流音
                                             audio_data = bytearray()
-                                            is_first_chunk = True
+                                            header_buf = bytearray()
+                                            header_parsed = False
                                             src_rate = 32000  # 默认采样率
                                             
                                             async for chunk in resp.content.iter_chunked(8192):
                                                 if not chunk:
                                                     continue
                                                 
-                                                # 解析 wav header 获取采样率
-                                                if is_first_chunk:
-                                                    is_first_chunk = False
+                                                # 先缓冲到 44 字节再解析 wav header
+                                                if not header_parsed:
+                                                    header_buf.extend(chunk)
+                                                    if len(header_buf) < 44:
+                                                        continue
                                                     # wav header: bytes 24-27 是采样率 (little-endian)
-                                                    if len(chunk) >= 28:
-                                                        src_rate = int.from_bytes(chunk[24:28], 'little')
-                                                        logger.debug(f"GPT-SoVITS 音频采样率: {src_rate}Hz")
-                                                    # 跳过 wav header（44 bytes）
-                                                    if len(chunk) > 44:
-                                                        audio_data.extend(chunk[44:])
+                                                    src_rate = int.from_bytes(header_buf[24:28], 'little')
+                                                    logger.debug(f"GPT-SoVITS 音频采样率: {src_rate}Hz")
+                                                    # 跳过 wav header（44 bytes），保留剩余数据
+                                                    if len(header_buf) > 44:
+                                                        audio_data.extend(header_buf[44:])
+                                                    header_parsed = True
                                                     continue
                                                 
                                                 audio_data.extend(chunk)

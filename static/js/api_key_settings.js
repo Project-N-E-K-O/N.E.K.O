@@ -1522,7 +1522,7 @@ function toggleModelConfig(modelType) {
 // 页面加载完成后初始化折叠状态
 document.addEventListener('DOMContentLoaded', function () {
     // 初始化所有模型配置为折叠状态
-    const modelTypes = ['summary', 'correction', 'emotion', 'vision', 'omni', 'tts'];
+    const modelTypes = ['summary', 'correction', 'emotion', 'vision', 'omni', 'tts', 'gptsovits'];
     modelTypes.forEach(modelType => {
         const content = document.getElementById(`${modelType}-model-content`);
         if (content) {
