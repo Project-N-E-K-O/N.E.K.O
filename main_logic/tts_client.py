@@ -1269,6 +1269,11 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                                                 
                                                 audio_data.extend(chunk)
                                             
+                                            # 检查是否成功解析了 header
+                                            if not header_parsed:
+                                                logger.warning("GPT-SoVITS 响应数据不完整，未能解析 WAV header")
+                                                continue
+                                            
                                             # 处理完整音频数据
                                             if len(audio_data) > 0:
                                                 # 确保长度是偶数（int16 需要）
