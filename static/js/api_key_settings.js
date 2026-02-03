@@ -398,6 +398,7 @@ async function loadCurrentApiKey() {
             showCurrentApiKey(window.t ? window.t('get_current_api_key_failed') : '获取当前API Key失败', '', false);
         }
     } catch (error) {
+        console.error('loadCurrentApiKey error:', error);
         showCurrentApiKey(window.t ? window.t('error_getting_current_api_key') : '获取当前API Key时出错', '', false);
     }
 }
@@ -405,22 +406,43 @@ async function loadCurrentApiKey() {
 // 全局变量存储待保存的API Key
 let pendingApiKey = null;
 
+// GPT-SoVITS 模型缓存
+let gptsovitsModelCache = {
+    gpt_models: [],
+    sovits_models: [],
+    base_path: ''
+};
+
 // ==================== GPT-SoVITS 配置相关函数 ====================
 
 /**
  * 从 ttsModelUrl 和 ttsVoiceId 解析并加载 GPT-SoVITS 配置
  * GPT-SoVITS 使用 HTTP URL，voice_id 格式为: 参考音频|参考文本|参考语言|合成语言|高级参数JSON
+ * 高级参数JSON中包含: speed, top_k, top_p, temperature, cut_method, seed, base_path, gpt_model, sovits_model
  */
 function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId) {
     // 检查是否是 GPT-SoVITS 配置（HTTP URL）
-    if (ttsModelUrl && (ttsModelUrl.startsWith('http://') || ttsModelUrl.startsWith('https://'))) {
-        setInputValue('gptsovitsApiUrl', ttsModelUrl);
+    const isGptSovits = ttsModelUrl && (ttsModelUrl.startsWith('http://') || ttsModelUrl.startsWith('https://'));
+    
+    // 设置启用开关状态
+    const enabledCheckbox = document.getElementById('gptsovitsEnabled');
+    if (enabledCheckbox) {
+        enabledCheckbox.checked = isGptSovits;
+    }
+    // 初始化配置区域显示状态
+    toggleGptSovitsConfig();
+    
+    if (isGptSovits) {
+        const apiUrlEl = document.getElementById('gptsovitsApiUrl');
+        if (apiUrlEl) apiUrlEl.value = ttsModelUrl;
         
         // 解析 voice_id: "ref_path|prompt_text|prompt_lang|text_lang|advanced_json"
         if (ttsVoiceId && ttsVoiceId.includes('|')) {
             const parts = ttsVoiceId.split('|');
-            if (parts.length >= 1) setInputValue('gptsovitsRefAudio', parts[0]);
-            if (parts.length >= 2) setInputValue('gptsovitsRefText', parts[1]);
+            // 辅助函数设置输入框值
+            const setVal = (id, val) => { const el = document.getElementById(id); if (el && val !== undefined) el.value = val; };
+            if (parts.length >= 1) setVal('gptsovitsRefAudio', parts[0]);
+            if (parts.length >= 2) setVal('gptsovitsRefText', parts[1]);
             if (parts.length >= 3) setSelectValue('gptsovitsRefLang', parts[2]);
             if (parts.length >= 4) setSelectValue('gptsovitsTextLang', parts[3]);
             
@@ -428,12 +450,20 @@ function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId) {
             if (parts.length >= 5 && parts[4]) {
                 try {
                     const advanced = JSON.parse(parts[4]);
-                    if (advanced.speed) setInputValue('gptsovitsSpeed', advanced.speed);
-                    if (advanced.top_k) setInputValue('gptsovitsTopK', advanced.top_k);
-                    if (advanced.top_p) setInputValue('gptsovitsTopP', advanced.top_p);
-                    if (advanced.temperature) setInputValue('gptsovitsTemperature', advanced.temperature);
+                    // 使用辅助函数设置值
+                    const setVal = (id, val) => { const el = document.getElementById(id); if (el && val !== undefined) el.value = val; };
+                    if (advanced.speed) setVal('gptsovitsSpeed', advanced.speed);
+                    if (advanced.top_k) setVal('gptsovitsTopK', advanced.top_k);
+                    if (advanced.top_p) setVal('gptsovitsTopP', advanced.top_p);
+                    if (advanced.temperature) setVal('gptsovitsTemperature', advanced.temperature);
                     if (advanced.cut_method) setSelectValue('gptsovitsCutMethod', advanced.cut_method);
-                    if (advanced.seed !== undefined) setInputValue('gptsovitsSeed', advanced.seed);
+                    if (advanced.seed !== undefined) setVal('gptsovitsSeed', advanced.seed);
+                    // 加载模型配置
+                    if (advanced.base_path) {
+                        setVal('gptsovitsBasePath', advanced.base_path);
+                        // 自动扫描模型并恢复选中状态
+                        scanGptSovitsModelsAndSelect(advanced.gpt_model, advanced.sovits_model);
+                    }
                 } catch (e) {
                     console.warn('Failed to parse GPT-SoVITS advanced config:', e);
                 }
@@ -443,11 +473,93 @@ function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId) {
 }
 
 /**
+ * 扫描模型并选中指定的模型（带缓存）
+ */
+async function scanGptSovitsModelsAndSelect(gptModelPath, sovitsModelPath) {
+    const basePath = document.getElementById('gptsovitsBasePath')?.value.trim();
+    if (!basePath) return;
+    
+    // 如果缓存中有相同路径的数据，直接使用缓存
+    if (gptsovitsModelCache.base_path === basePath && 
+        (gptsovitsModelCache.gpt_models.length > 0 || gptsovitsModelCache.sovits_models.length > 0)) {
+        updateGptSovitsModelDropdowns(gptsovitsModelCache.gpt_models, gptsovitsModelCache.sovits_models, gptModelPath, sovitsModelPath);
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/config/gptsovits/scan_models', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ base_path: basePath })
+        });
+        const result = await response.json();
+        
+        if (result.success) {
+            // 更新缓存
+            gptsovitsModelCache.base_path = basePath;
+            gptsovitsModelCache.gpt_models = result.gpt_models;
+            gptsovitsModelCache.sovits_models = result.sovits_models;
+            
+            updateGptSovitsModelDropdowns(result.gpt_models, result.sovits_models, gptModelPath, sovitsModelPath);
+        }
+    } catch (e) {
+        console.warn('Failed to scan GPT-SoVITS models:', e);
+    }
+}
+
+/**
+ * 更新 GPT-SoVITS 模型下拉菜单
+ */
+function updateGptSovitsModelDropdowns(gptModels, sovitsModels, selectedGptPath, selectedSovitsPath) {
+    // 更新 GPT 模型下拉菜单
+    const gptSelect = document.getElementById('gptsovitsGptModel');
+    if (gptSelect) {
+        gptSelect.innerHTML = '';
+        if (gptModels.length === 0) {
+            gptSelect.innerHTML = `<option value="">${window.t ? window.t('api.gptsovitsNoModelsFound') : '未找到模型'}</option>`;
+        } else {
+            gptSelect.innerHTML = `<option value="">${window.t ? window.t('api.gptsovitsSelectModel') : '请选择模型'}</option>`;
+            gptModels.forEach(model => {
+                const option = document.createElement('option');
+                option.value = model.path;
+                option.textContent = `${model.name} (${model.version})`;
+                if (model.path === selectedGptPath) option.selected = true;
+                gptSelect.appendChild(option);
+            });
+        }
+    }
+    
+    // 更新 SoVITS 模型下拉菜单
+    const sovitsSelect = document.getElementById('gptsovitsSovitsModel');
+    if (sovitsSelect) {
+        sovitsSelect.innerHTML = '';
+        if (sovitsModels.length === 0) {
+            sovitsSelect.innerHTML = `<option value="">${window.t ? window.t('api.gptsovitsNoModelsFound') : '未找到模型'}</option>`;
+        } else {
+            sovitsSelect.innerHTML = `<option value="">${window.t ? window.t('api.gptsovitsSelectModel') : '请选择模型'}</option>`;
+            sovitsModels.forEach(model => {
+                const option = document.createElement('option');
+                option.value = model.path;
+                option.textContent = `${model.name} (${model.version})`;
+                if (model.path === selectedSovitsPath) option.selected = true;
+                sovitsSelect.appendChild(option);
+            });
+        }
+    }
+}
+
+/**
  * 从 GPT-SoVITS 配置字段组装 ttsModelUrl 和 ttsVoiceId
- * 返回 { url, voiceId } 或 null（如果未配置）
+ * 返回 { url, voiceId } 或 null（如果未启用或未配置）
  * voice_id 格式: 参考音频|参考文本|参考语言|合成语言|高级参数JSON
  */
 function getGptSovitsConfig() {
+    // 检查是否启用
+    const enabled = document.getElementById('gptsovitsEnabled')?.checked;
+    if (!enabled) {
+        return null;
+    }
+    
     const apiUrl = document.getElementById('gptsovitsApiUrl')?.value.trim() || '';
     const refAudio = document.getElementById('gptsovitsRefAudio')?.value.trim() || '';
     const refText = document.getElementById('gptsovitsRefText')?.value.trim() || '';
@@ -462,8 +574,14 @@ function getGptSovitsConfig() {
     const cutMethod = document.getElementById('gptsovitsCutMethod')?.value || 'cut5';
     const seed = document.getElementById('gptsovitsSeed')?.value || '';
     
-    // 如果配置了 GPT-SoVITS API URL，则使用 GPT-SoVITS 配置
-    if (apiUrl && apiUrl.startsWith('http')) {
+    // 模型配置
+    const basePath = document.getElementById('gptsovitsBasePath')?.value.trim() || '';
+    const gptModel = document.getElementById('gptsovitsGptModel')?.value || '';
+    const sovitsModel = document.getElementById('gptsovitsSovitsModel')?.value || '';
+    
+    // 如果启用了 GPT-SoVITS，则保存配置（即使 API URL 为空也使用默认值）
+    const effectiveApiUrl = apiUrl || 'http://127.0.0.1:9880';
+    if (effectiveApiUrl.startsWith('http')) {
         // 构建高级参数 JSON（只包含非默认值）
         const advanced = {};
         if (speed && speed !== '1.0' && speed !== '1') advanced.speed = parseFloat(speed);
@@ -472,12 +590,16 @@ function getGptSovitsConfig() {
         if (temperature && temperature !== '1.0' && temperature !== '1') advanced.temperature = parseFloat(temperature);
         if (cutMethod && cutMethod !== 'cut5') advanced.cut_method = cutMethod;
         if (seed && seed !== '-1') advanced.seed = parseInt(seed);
+        // 保存模型配置（用于持久化）
+        if (basePath) advanced.base_path = basePath;
+        if (gptModel) advanced.gpt_model = gptModel;
+        if (sovitsModel) advanced.sovits_model = sovitsModel;
         
-        // 只有有高级参数时才添加 JSON
+        // 高级参数始终添加 JSON（因为包含模型配置）
         const advancedJson = Object.keys(advanced).length > 0 ? JSON.stringify(advanced) : '';
         
         return {
-            url: apiUrl,
+            url: effectiveApiUrl,
             voiceId: `${refAudio}|${refText}|${refLang}|${textLang}${advancedJson ? '|' + advancedJson : ''}`
         };
     }
@@ -491,6 +613,128 @@ function setSelectValue(id, value) {
     const el = document.getElementById(id);
     if (el && value) {
         el.value = value;
+    }
+}
+
+/**
+ * 切换 GPT-SoVITS 配置区域的显示/隐藏
+ */
+function toggleGptSovitsConfig() {
+    const enabled = document.getElementById('gptsovitsEnabled')?.checked;
+    const configFields = document.getElementById('gptsovits-config-fields');
+    if (configFields) {
+        configFields.style.display = enabled ? 'block' : 'none';
+    }
+}
+
+/**
+ * 扫描 GPT-SoVITS 模型文件夹（带缓存）
+ */
+async function scanGptSovitsModels() {
+    const basePath = document.getElementById('gptsovitsBasePath')?.value.trim();
+    
+    if (!basePath) {
+        alert(window.t ? window.t('api.gptsovitsBasePathRequired') : '请填写 GPT-SoVITS 安装路径');
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/config/gptsovits/scan_models', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ base_path: basePath })
+        });
+        const result = await response.json();
+        
+        if (result.success) {
+            // 更新缓存
+            gptsovitsModelCache.base_path = basePath;
+            gptsovitsModelCache.gpt_models = result.gpt_models;
+            gptsovitsModelCache.sovits_models = result.sovits_models;
+            
+            // 使用公共函数更新下拉菜单
+            updateGptSovitsModelDropdowns(result.gpt_models, result.sovits_models, null, null);
+            
+            alert(window.t ? window.t('api.gptsovitsScanSuccess') : `扫描完成：找到 ${result.gpt_models.length} 个 GPT 模型，${result.sovits_models.length} 个 SoVITS 模型`);
+        } else {
+            alert((window.t ? window.t('api.gptsovitsScanFailed') : '扫描失败: ') + result.error);
+        }
+    } catch (e) {
+        alert((window.t ? window.t('api.gptsovitsLoadError') : '请求失败: ') + e.message);
+    }
+}
+
+/**
+ * 加载 GPT-SoVITS GPT 模型（通过后端代理解决 CORS 问题）
+ */
+async function loadGptSovitsGptModel() {
+    let apiUrl = document.getElementById('gptsovitsApiUrl')?.value.trim();
+    const modelPath = document.getElementById('gptsovitsGptModel')?.value;
+    
+    if (!apiUrl) {
+        alert(window.t ? window.t('api.gptsovitsApiUrlRequired') : '请先填写 API URL');
+        return;
+    }
+    if (!modelPath) {
+        alert(window.t ? window.t('api.gptsovitsSelectModelFirst') : '请先选择模型');
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/config/gptsovits/load_model', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                api_url: apiUrl,
+                model_type: 'gpt',
+                weights_path: modelPath
+            })
+        });
+        const result = await response.json();
+        if (result.success) {
+            alert(window.t ? window.t('api.gptsovitsLoadSuccess') : '模型加载成功');
+        } else {
+            alert((window.t ? window.t('api.gptsovitsLoadFailed') : '模型加载失败: ') + (result.error || '未知错误'));
+        }
+    } catch (e) {
+        alert((window.t ? window.t('api.gptsovitsLoadError') : '请求失败: ') + e.message);
+    }
+}
+
+/**
+ * 加载 GPT-SoVITS SoVITS 模型（通过后端代理解决 CORS 问题）
+ */
+async function loadGptSovitsSovitsModel() {
+    let apiUrl = document.getElementById('gptsovitsApiUrl')?.value.trim();
+    const modelPath = document.getElementById('gptsovitsSovitsModel')?.value;
+    
+    if (!apiUrl) {
+        alert(window.t ? window.t('api.gptsovitsApiUrlRequired') : '请先填写 API URL');
+        return;
+    }
+    if (!modelPath) {
+        alert(window.t ? window.t('api.gptsovitsSelectModelFirst') : '请先选择模型');
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/config/gptsovits/load_model', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                api_url: apiUrl,
+                model_type: 'sovits',
+                weights_path: modelPath
+            })
+        });
+        const result = await response.json();
+        if (result.success) {
+            alert(window.t ? window.t('api.gptsovitsLoadSuccess') : '模型加载成功');
+        } else {
+            alert((window.t ? window.t('api.gptsovitsLoadFailed') : '模型加载失败: ') + (result.error || '未知错误'));
+        }
+    } catch (e) {
+        alert((window.t ? window.t('api.gptsovitsLoadError') : '请求失败: ') + e.message);
     }
 }
 

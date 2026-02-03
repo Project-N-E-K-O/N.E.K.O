@@ -1246,48 +1246,46 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                                         if resp.status == 200:
                                             # 流式接收音频数据
                                             # GPT-SoVITS streaming_mode=1 返回带 wav header 的流
-                                            # 第一个 chunk 包含 wav header，后续是 raw PCM
+                                            # 收集所有数据后统一处理，避免分块重采样产生电流音
+                                            audio_data = bytearray()
                                             is_first_chunk = True
+                                            src_rate = 32000  # 默认采样率
                                             
                                             async for chunk in resp.content.iter_chunked(8192):
                                                 if not chunk:
                                                     continue
                                                 
-                                                # 跳过 wav header（44 bytes）
+                                                # 解析 wav header 获取采样率
                                                 if is_first_chunk:
                                                     is_first_chunk = False
-                                                    # wav header 通常是 44 bytes，但可能更长
-                                                    # 简单处理：跳过前 44 bytes
+                                                    # wav header: bytes 24-27 是采样率 (little-endian)
+                                                    if len(chunk) >= 28:
+                                                        src_rate = int.from_bytes(chunk[24:28], 'little')
+                                                        logger.debug(f"GPT-SoVITS 音频采样率: {src_rate}Hz")
+                                                    # 跳过 wav header（44 bytes）
                                                     if len(chunk) > 44:
-                                                        chunk = chunk[44:]
-                                                    else:
-                                                        continue
-                                                
-                                                # 确保 chunk 长度是偶数（int16 需要）
-                                                if len(chunk) % 2 != 0:
-                                                    chunk = chunk[:-1]
-                                                
-                                                if len(chunk) < 2:
+                                                        audio_data.extend(chunk[44:])
                                                     continue
                                                 
-                                                # GPT-SoVITS 输出采样率取决于模型版本:
-                                                # v1/v2/v2Pro: 32000Hz
-                                                # v3: 24000Hz (超采样后 48000Hz)
-                                                # v4: 48000Hz
-                                                # 这里假设 32000Hz，如需其他采样率可通过配置调整
-                                                src_rate = 32000
+                                                audio_data.extend(chunk)
+                                            
+                                            # 处理完整音频数据
+                                            if len(audio_data) > 0:
+                                                # 确保长度是偶数（int16 需要）
+                                                if len(audio_data) % 2 != 0:
+                                                    audio_data = audio_data[:-1]
                                                 
                                                 # 转换为 numpy 数组
-                                                audio_array = np.frombuffer(chunk, dtype=np.int16)
+                                                audio_array = np.frombuffer(bytes(audio_data), dtype=np.int16)
                                                 
-                                                # 重采样到 48000Hz
-                                                if src_rate != 48000:
+                                                # 重采样到 48000Hz（统一处理避免接缝噪音）
+                                                if src_rate != 48000 and len(audio_array) > 0:
                                                     audio_float = audio_array.astype(np.float32) / 32768.0
-                                                    resampled = soxr.resample(audio_float, src_rate, 48000, quality='HQ')
+                                                    resampled = soxr.resample(audio_float, src_rate, 48000, quality='VHQ')
                                                     resampled_int16 = (resampled * 32768.0).clip(-32768, 32767).astype(np.int16)
                                                     response_queue.put(resampled_int16.tobytes())
                                                 else:
-                                                    response_queue.put(chunk)
+                                                    response_queue.put(bytes(audio_data))
                                                     
                                             logger.debug("GPT-SoVITS 合成完成")
                                         else:

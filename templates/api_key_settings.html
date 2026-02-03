@@ -546,16 +546,85 @@
                                         <span class="toggle-icon">▼</span>
                                     </div>
                                     <div id="gptsovits-model-content" class="model-content">
-                                        <div style="background: #fff8e6; border: 1px solid #ffe0b3; border-radius: 6px; padding: 12px; margin-bottom: 16px; font-size: 0.85em; color: #996600; line-height: 1.5;">
+                                        <!-- 启用开关 -->
+                                        <div class="field-row" style="display: flex; flex-direction: row; align-items: center; justify-content: space-between;">
+                                            <label for="gptsovitsEnabled" style="margin-bottom: 0;">
+                                                <span data-i18n="api.gptsovitsEnabled">启用 GPT-SoVITS</span>
+                                                <em style="font-weight: normal; color: #888;" data-i18n="api.gptsovitsEnabledHint">（启用后将替代上方的 TTS 配置）</em>
+                                            </label>
+                                            <label class="switch" style="margin-left: 16px;">
+                                                <input type="checkbox" id="gptsovitsEnabled" onchange="toggleGptSovitsConfig()">
+                                                <span class="slider round"></span>
+                                            </label>
+                                        </div>
+                                        <div id="gptsovits-config-fields">
+                                        <div style="background: #fff8e6; border: 1px solid #ffe0b3; border-radius: 6px; padding: 12px; margin: 12px 16px; font-size: 0.85em; color: #996600; line-height: 1.5;">
                                             <strong data-i18n="api.gptsovitsDescription">GPT-SoVITS 说明：</strong><br>
                                             <span data-i18n="api.gptsovitsDescriptionText">本地部署的语音克隆模型，需要先启动 GPT-SoVITS 的 api_v2.py 服务。配置后将自动替代上方的 TTS 模型配置。</span>
                                         </div>
+                                        
+                                        <!-- 模型加载（最重要，放在最前面） -->
+                                        <div class="field-row" style="border-bottom: 1px dashed #ddd; padding-bottom: 12px; margin-bottom: 8px;">
+                                            <label style="font-weight: 600; color: #40C5F1;" data-i18n="api.gptsovitsModelLoad">模型加载</label>
+                                        </div>
+                                        
                                         <div class="field-row">
-                                            <label for="gptsovitsApiUrl" data-i18n="api.apiUrl">API URL</label>
+                                            <label for="gptsovitsBasePath">
+                                                <span data-i18n="api.gptsovitsBasePath">GPT-SoVITS 安装路径</span>
+                                                <em style="font-weight: normal; color: #888;" data-i18n="api.gptsovitsBasePathHint">（包含 GPT_weights 和 SoVITS_weights 文件夹的目录）</em>
+                                            </label>
+                                            <div style="display: flex; gap: 8px; align-items: center; width: 100%;">
+                                                <input type="text" id="gptsovitsBasePath"
+                                                    data-i18n-placeholder="api.gptsovitsBasePathPlaceholder"
+                                                    placeholder="如：/path/to/GPT-SoVITS"
+                                                    value="" style="max-width: 500px; flex: 1;">
+                                                <button type="button" class="btn secondary" onclick="scanGptSovitsModels()" 
+                                                    style="padding: 8px 16px; white-space: nowrap;" data-i18n="api.gptsovitsScanModels">扫描模型</button>
+                                            </div>
+                                        </div>
+
+                                        <div class="field-row">
+                                            <label for="gptsovitsGptModel">
+                                                <span data-i18n="api.gptsovitsGptModel">GPT 模型</span>
+                                                <em style="font-weight: normal; color: #888;" data-i18n="api.gptsovitsGptModelHint">（选择后点击加载）</em>
+                                            </label>
+                                            <div style="display: flex; gap: 8px; align-items: center; width: 100%;">
+                                                <select id="gptsovitsGptModel" style="max-width: 500px; flex: 1; padding: 10px 12px; border-radius: 6px; border: 1px solid #ccc;">
+                                                    <option value="" data-i18n="api.gptsovitsPleaseSelect">请先扫描模型</option>
+                                                </select>
+                                                <button type="button" class="btn secondary" onclick="loadGptSovitsGptModel()" 
+                                                    style="padding: 8px 16px; white-space: nowrap;" data-i18n="api.gptsovitsLoadModel">加载</button>
+                                            </div>
+                                        </div>
+
+                                        <div class="field-row">
+                                            <label for="gptsovitsSovitsModel">
+                                                <span data-i18n="api.gptsovitsSovitsModel">SoVITS 模型</span>
+                                                <em style="font-weight: normal; color: #888;" data-i18n="api.gptsovitsSovitsModelHint">（选择后点击加载）</em>
+                                            </label>
+                                            <div style="display: flex; gap: 8px; align-items: center; width: 100%;">
+                                                <select id="gptsovitsSovitsModel" style="max-width: 500px; flex: 1; padding: 10px 12px; border-radius: 6px; border: 1px solid #ccc;">
+                                                    <option value="" data-i18n="api.gptsovitsPleaseSelect">请先扫描模型</option>
+                                                </select>
+                                                <button type="button" class="btn secondary" onclick="loadGptSovitsSovitsModel()" 
+                                                    style="padding: 8px 16px; white-space: nowrap;" data-i18n="api.gptsovitsLoadModel">加载</button>
+                                            </div>
+                                        </div>
+
+                                        <!-- API 配置 -->
+                                        <div class="field-row" style="border-top: 1px dashed #ddd; padding-top: 12px; margin-top: 8px;">
+                                            <label style="font-weight: 600; color: #666;" data-i18n="api.gptsovitsApiConfig">API 配置</label>
+                                        </div>
+                                        
+                                        <div class="field-row">
+                                            <label for="gptsovitsApiUrl">
+                                                <span data-i18n="api.apiUrl">API URL</span>
+                                                <em style="font-weight: normal; color: #888;" data-i18n="api.gptsovitsApiUrlOptional">（选填，默认 http://127.0.0.1:9880）</em>
+                                            </label>
                                             <input type="text" id="gptsovitsApiUrl"
                                                 data-i18n-placeholder="api.gptsovitsApiUrlPlaceholder"
-                                                placeholder="e.g., http://127.0.0.1:9880"
-                                                value="" style="max-width: 600px;">
+                                                placeholder="http://127.0.0.1:9880"
+                                                value="http://127.0.0.1:9880" style="max-width: 600px;">
                                         </div>
                                         <div class="field-row">
                                             <label for="gptsovitsRefAudio">
@@ -657,6 +726,8 @@
                                             </label>
                                             <input type="number" id="gptsovitsSeed" step="1" min="-1"
                                                 placeholder="-1" value="" style="max-width: 200px;">
+                                        </div>
+
                                         </div>
                                     </div>
                                 </div>
