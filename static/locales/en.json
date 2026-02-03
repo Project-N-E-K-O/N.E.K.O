@@ -1297,21 +1297,77 @@
   "tutorial": {
     "step1": {
       "title": "👋 Welcome to N.E.K.O",
-      "desc": "This is your virtual companion who will accompany you through various interactions. Click on her to trigger different expressions and actions~"
+      "desc": "Your virtual companion. Click her to trigger different expressions and actions~"
     },
     "step2": {
       "title": "💬 Chat Area",
-      "desc": "You can have text conversations with your companion here. Share your thoughts and she'll give you interesting responses~"
+      "desc": "Chat with your companion here. Share your thoughts and get interesting responses~"
     },
     "step3": {
       "title": "✍️ Input Box",
-      "desc": "Type what you want to say here. Press Enter to send, Shift+Enter for a new line. You can also click the button on the right to send screenshots~"
+      "desc": "Type your message. Enter to send, Shift+Enter for new line. Click the button to send screenshots~"
     },
     "step4": {
       "title": "🎮 Quick Actions",
-      "desc": "The left button sends messages, the right button takes screenshots. You can share screen captures with your companion and she'll help analyze them~"
+      "desc": "Left button sends messages, right button takes screenshots. Share them with your companion~"
     },
-    "completed": "✨ Tutorial complete! Enjoy using N.E.K.O~"
+    "step5": {
+      "title": "🎛️ Floating Toolbar",
+      "desc": "Floating toolbar with useful function buttons. Let me introduce each one~"
+    },
+    "step6": {
+      "title": "🎤 Voice Control",
+      "desc": "Enable voice control for natural voice-based interaction~"
+    },
+    "step7": {
+      "title": "🖥️ Screen Share",
+      "desc": "Share your screen/window/tab with your companion~"
+    },
+    "step8": {
+      "title": "🔨 Agent Tools",
+      "desc": "Open Agent tool panel with various helper functions~"
+    },
+    "step9": {
+      "title": "💤 Ask Her to Leave",
+      "desc": "Let companion leave temporarily. Click \"Ask Her Back\" to restore~"
+    },
+    "step10": {
+      "title": "⚙️ Settings",
+      "desc": "Open settings panel. Let me introduce each setting~"
+    },
+    "step11": {
+      "title": "🧩 Merge Messages",
+      "desc": "Combine short messages into one send to reduce interruptions~"
+    },
+    "step12": {
+      "title": "⛔ Allow Interruption",
+      "desc": "Control whether to allow interrupting current reply~"
+    },
+    "step13": {
+      "title": "💬 Proactive Chat",
+      "desc": "Companion initiates conversation periodically. Adjust interval here~"
+    },
+    "step14": {
+      "title": "👀 Proactive Vision",
+      "desc": "Companion actively reads screen information. Adjust interval here~"
+    },
+    "step15": {
+      "title": "👤 Character Manager",
+      "desc": "Manage companion's character settings, model and voice~"
+    },
+    "step16": {
+      "title": "🔑 API Keys",
+      "desc": "Configure AI service API keys. Required for companion~"
+    },
+    "step17": {
+      "title": "🧠 Memory Browser",
+      "desc": "View and manage companion's memory content~"
+    },
+    "step18": {
+      "title": "🛠️ Steam Workshop",
+      "desc": "Access Steam Workshop page and manage subscriptions~"
+    },
+    "completed": "✨ Tutorial complete! Enjoy~"
   },
   "console": {
     "oggOpusInitFailed": "[OGG OPUS] Initialization Promise failed, will allow retry:",

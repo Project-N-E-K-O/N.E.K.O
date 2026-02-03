@@ -94,6 +94,13 @@
 // 关闭指定按钮对应的弹出框，并恢复按钮状态
 Live2DManager.prototype.closePopupById = function (buttonId) {
     if (!buttonId) return false;
+
+    // 引导模式下，阻止关闭设置弹出框
+    if (window.isInTutorial === true && buttonId === 'settings') {
+        console.log('[Live2D] 引导中：阻止关闭设置弹出框');
+        return false;
+    }
+
     this._floatingButtons = this._floatingButtons || {};
     this._popupTimers = this._popupTimers || {};
     const popup = document.getElementById(`live2d-popup-${buttonId}`);
@@ -378,6 +385,12 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
     }
 
     if (isVisible) {
+        // 引导模式下，阻止关闭设置弹出框
+        if (window.isInTutorial === true && buttonId === 'settings') {
+            console.log('[Live2D] 引导中：阻止切换关闭设置弹出框');
+            return;
+        }
+
         // 如果已经显示，则隐藏
         popup.style.opacity = '0';
         popup.style.transform = 'translateX(-10px)';

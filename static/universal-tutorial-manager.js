@@ -16,6 +16,8 @@ class UniversalTutorialManager {
         this.isTutorialRunning = false; // 防止重复启动
         this.currentPage = this.detectPage();
         this.currentStep = 0;
+        this.nextButtonGuardTimer = null;
+        this.nextButtonGuardActive = false;
 
         console.log('[Tutorial] 当前页面:', this.currentPage);
 
@@ -186,6 +188,26 @@ class UniversalTutorialManager {
     }
 
     /**
+     * 获取指定页面相关的所有存储键（用于重置/判断）
+     */
+    getStorageKeysForPage(page) {
+        const keys = [];
+        const targetPage = page || this.currentPage;
+
+        if (targetPage === 'model_manager') {
+            // 兼容历史键 + 细分键 + 通用步骤键
+            keys.push(this.STORAGE_KEY_PREFIX + 'model_manager');
+            keys.push(this.STORAGE_KEY_PREFIX + 'model_manager_live2d');
+            keys.push(this.STORAGE_KEY_PREFIX + 'model_manager_vrm');
+            keys.push(this.STORAGE_KEY_PREFIX + 'model_manager_common');
+        } else {
+            keys.push(this.STORAGE_KEY_PREFIX + targetPage);
+        }
+
+        return keys;
+    }
+
+    /**
      * 检查是否需要自动启动引导
      */
     checkAndStartTutorial() {
@@ -326,7 +348,7 @@ class UniversalTutorialManager {
                 element: '#button-group',
                 popover: {
                     title: window.t ? window.t('tutorial.step4.title', '🎮 快速操作') : '🎮 快速操作',
-                    description: window.t ? window.t('tutorial.step4.desc', '左边是发送按钮，右边是截图按钮。您可以分享屏幕截图给伙伴，她会帮您分析哦~') : '左边是发送按钮，右边是截图按钮。您可以分享屏幕截图给伙伴，她会帮您分析哦~',
+                    description: window.t ? window.t('tutorial.step4.desc', '上边是发送按钮，下边是截图按钮。您可以分享屏幕截图给伙伴，她会帮您分析哦~') : '左边是发送按钮，右边是截图按钮。您可以分享屏幕截图给伙伴，她会帮您分析哦~',
                 }
             },
             {
@@ -344,12 +366,61 @@ class UniversalTutorialManager {
                 }
             },
             {
+                element: '#live2d-btn-screen',
+                popover: {
+                    title: '🖥️ 屏幕分享',
+                    description: '点击这里可以分享屏幕/窗口/标签页，让伙伴看到你的画面，适合语音通话或需要她帮忙看内容时使用。',
+                }
+            },
+            {
+                element: '#live2d-btn-agent',
+                popover: {
+                    title: '🔨 Agent工具',
+                    description: '打开 Agent 工具面板，使用各类辅助功能或工具集。',
+                }
+            },
+            {
+                element: '#live2d-btn-goodbye',
+                popover: {
+                    title: '💤 请她离开',
+                    description: '让伙伴暂时离开并隐藏界面，需要时可点击“请她回来”恢复。',
+                }
+            },
+            {
                 element: '#live2d-btn-settings',
                 popover: {
                     title: '⚙️ 设置',
-                    description: '点击这个按钮可以打开设置面板。在这里您可以调整虚拟伙伴的行为参数，管理角色、API 密钥、记忆等。',
+                    description: '点击这个按钮可以打开设置面板。下面会依次介绍设置里的 8 个项目。',
                 },
                 action: 'click'
+            },
+            {
+                element: '#live2d-toggle-merge-messages',
+                popover: {
+                    title: '🧩 合并消息',
+                    description: '将多条短消息合并为一次发送，减少打断感。',
+                }
+            },
+            {
+                element: '#live2d-toggle-focus-mode',
+                popover: {
+                    title: '⛔ 允许打断',
+                    description: '控制是否允许打断当前回复，适合不同的对话节奏。',
+                }
+            },
+            {
+                element: '#live2d-toggle-proactive-chat',
+                popover: {
+                    title: '💬 主动搭话',
+                    description: '开启后伙伴会定时主动发起对话，间隔可在此调整。',
+                }
+            },
+            {
+                element: '#live2d-toggle-proactive-vision',
+                popover: {
+                    title: '👀 自主视觉',
+                    description: '开启后伙伴会主动读取画面信息（如屏幕内容），间隔可在此调整。',
+                }
             },
             {
                 element: '#live2d-menu-character',
@@ -363,6 +434,20 @@ class UniversalTutorialManager {
                 popover: {
                     title: '🔑 API 密钥',
                     description: '配置 AI 服务的 API 密钥。这是使用虚拟伙伴的必要配置。',
+                }
+            },
+            {
+                element: '#live2d-menu-memory',
+                popover: {
+                    title: '🧠 记忆浏览',
+                    description: '查看与管理伙伴的记忆内容。',
+                }
+            },
+            {
+                element: '#live2d-menu-steam-workshop',
+                popover: {
+                    title: '🛠️ 创意工坊',
+                    description: '进入 Steam 创意工坊页面，管理订阅内容。',
                 }
             }
         ];
@@ -426,17 +511,17 @@ class UniversalTutorialManager {
                 }
             },
             {
-                element: '#save-position-btn',
+                element: '#persistent-expression-select-btn',
                 popover: {
-                    title: '💾 保存设置',
-                    description: '点击这里保存当前的 Live2D 模型、动作和表情设置。',
+                    title: '🧷 常驻表情',
+                    description: '选择一个常驻表情，让模型持续保持该表情，直到你再次更改。',
                 }
             },
             {
                 element: '#emotion-config-btn',
                 popover: {
                     title: '😄 情感配置',
-                    description: '点击这里配置 Live2D 模型的情感表现。可以为不同的情感设置对应的表情和动作组合。',
+                    description: '进入前请先选择一个模型。点击这里配置 Live2D 模型的情感表现，可为不同的情感设置对应的表情和动作组合。',
                 }
             },
             {
@@ -500,10 +585,17 @@ class UniversalTutorialManager {
                 }
             },
             {
-                element: '#save-position-btn',
+                element: '#exposure-slider',
                 popover: {
-                    title: '💾 保存设置',
-                    description: '点击这里保存当前的 VRM 模型、动画、表情和光照设置。',
+                    title: '🌞 曝光',
+                    description: '调整整体曝光强度。数值越高整体越亮，越低则更暗更有对比。',
+                }
+            },
+            {
+                element: '#tonemapping-select',
+                popover: {
+                    title: '🎞️ 色调映射',
+                    description: '选择不同的色调映射算法，决定画面亮部和暗部的呈现风格。',
                 }
             }
         ];
@@ -558,13 +650,6 @@ class UniversalTutorialManager {
                     title: '🔄 重置所有参数',
                     description: '点击这个按钮可以将所有参数重置为默认值。如果调整效果不满意，可以用这个功能重新开始。',
                 }
-            },
-            {
-                element: '#save-btn',
-                popover: {
-                    title: '💾 保存参数',
-                    description: '调整完成后，点击这里保存参数设置。保存后，模型会在主页中使用这些参数显示。',
-                }
             }
             ];
     }
@@ -578,7 +663,7 @@ class UniversalTutorialManager {
                 element: '#model-select',
                 popover: {
                     title: '🎭 选择模型',
-                    description: '首先选择要配置情感的 Live2D 模型。每个模型可以有独立的情感配置。',
+                    description: '首先选择要配置情感的 Live2D 模型。每个模型可以有独立的情感配置。选好模型后才能进入下一步。',
                 }
             },
             {
@@ -586,14 +671,9 @@ class UniversalTutorialManager {
                 popover: {
                     title: '😊 情感配置区域',
                     description: '这里可以为不同的情感（如开心、悲伤、生气等）配置对应的表情和动作组合。虚拟伙伴会根据对话内容自动切换情感表现。',
-                }
-            },
-            {
-                element: '#save-btn',
-                popover: {
-                    title: '💾 保存配置',
-                    description: '配置完成后，点击这里保存情感设置。保存后，虚拟伙伴会使用这些情感配置来表现不同的情绪。',
-                }
+                },
+                // 避免在引导开始时强制显示（应在选择模型后显示）
+                skipAutoShow: true
             },
             {
                 element: '#reset-btn',
@@ -719,13 +799,6 @@ class UniversalTutorialManager {
                 }
             },
             {
-                element: '.catgirl-block:first-child button.delete',
-                popover: {
-                    title: '🗑️ 删除猫娘',
-                    description: '点击此按钮可以删除该猫娘角色。注意：删除后无法恢复，请谨慎操作。',
-                }
-            },
-            {
                 element: '.catgirl-block:first-child .fold-toggle',
                 popover: {
                     title: '⚙️ 进阶设定',
@@ -815,13 +888,6 @@ class UniversalTutorialManager {
                 }
             },
             {
-                element: '#save-settings-btn',
-                popover: {
-                    title: '💾 保存设置',
-                    description: '点击这个按钮保存您的 API 配置。保存后需要重启服务才能生效。',
-                }
-            },
-            {
                 element: '#advanced-toggle-btn',
                 popover: {
                     title: '⚙️ 高级选项',
@@ -860,52 +926,10 @@ class UniversalTutorialManager {
                 action: 'click'
             },
             {
-                element: '#custom-api-container',
-                popover: {
-                    title: '⚙️ 自定义 API 配置区域',
-                    description: '启用自定义 API 后，这里会显示各个功能模块的配置选项。每个模块都可以独立配置供应商、URL、模型 ID 和 API Key。',
-                }
-            },
-            {
                 element: '.model-config-container:nth-of-type(1)',
                 popover: {
                     title: '📝 摘要模型配置',
                     description: '摘要模型用于生成对话摘要和记忆管理。您可以配置独立的 API 服务来处理摘要生成任务。',
-                }
-            },
-            {
-                element: '.model-config-container:nth-of-type(2)',
-                popover: {
-                    title: '✏️ 纠错模型配置',
-                    description: '纠错模型用于文本纠错和优化。可以配置专门的语言模型来提高文本质量。',
-                }
-            },
-            {
-                element: '.model-config-container:nth-of-type(3)',
-                popover: {
-                    title: '😊 情感模型配置',
-                    description: '情感模型用于分析对话情感和生成合适的表情。可以配置专门的情感分析 API。',
-                }
-            },
-            {
-                element: '.model-config-container:nth-of-type(4)',
-                popover: {
-                    title: '👁️ 视觉模型配置',
-                    description: '视觉模型用于图像识别和视觉对话。如果需要图像理解功能，可以在这里配置视觉 API。',
-                }
-            },
-            {
-                element: '.model-config-container:nth-of-type(5)',
-                popover: {
-                    title: '🎙️ 实时模型配置',
-                    description: '实时模型用于实时语音对话和全模态交互。注意：这里需要配置 WebSocket 地址（以 ws:// 或 wss:// 开头）。',
-                }
-            },
-            {
-                element: '.model-config-container:nth-of-type(6)',
-                popover: {
-                    title: '🔊 TTS 模型配置',
-                    description: 'TTS（文本转语音）模型用于生成语音。您可以配置自定义的语音合成服务和默认音色。',
                 }
             }
         ];
@@ -921,13 +945,6 @@ class UniversalTutorialManager {
                 popover: {
                     title: '⚠️ 重要提示',
                     description: '语音克隆功能需要使用阿里云 API。请确保您已经在 API 设置中配置了阿里云的 API Key。',
-                }
-            },
-            {
-                element: '.file-input-wrapper',
-                popover: {
-                    title: '🎵 选择音频文件',
-                    description: '上传一个 15 秒左右的音频样本（最长 30 秒）。支持 WAV 和 MP3 格式。这个音频会被用来克隆虚拟伙伴的声音。',
                 }
             },
             {
@@ -966,27 +983,6 @@ class UniversalTutorialManager {
      */
     getSteamWorkshopSteps() {
         return [
-            {
-                element: '#workshop-tabs',
-                popover: {
-                    title: '📑 标签切换',
-                    description: '在这里可以切换不同的内容类型。"订阅内容"显示您已订阅的模型和角色卡，"角色卡"显示所有可用的角色卡。',
-                }
-            },
-            {
-                element: '#search-subscription',
-                popover: {
-                    title: '🔍 搜索功能',
-                    description: '输入关键词来搜索您想要的模型或角色卡。支持按名称搜索。',
-                }
-            },
-            {
-                element: '#sort-subscription',
-                popover: {
-                    title: '📊 排序选项',
-                    description: '选择排序方式来组织您的订阅内容。可以按名称、订阅日期、文件大小或更新时间排序。',
-                }
-            },
             {
                 element: '#subscriptions-list',
                 popover: {
@@ -1036,20 +1032,6 @@ class UniversalTutorialManager {
                     title: '📝 聊天记录编辑',
                     description: '这里显示选中猫娘的所有对话记录。您可以在这里查看、编辑或删除特定的对话内容。',
                 }
-            },
-            {
-                element: '#save-memory-btn',
-                popover: {
-                    title: '💾 保存修改',
-                    description: '编辑完对话记录后，点击这个按钮保存您的修改。',
-                }
-            },
-            {
-                element: '#clear-memory-btn',
-                popover: {
-                    title: '🗑️ 清空记忆',
-                    description: '点击这个按钮可以清空选中猫娘的所有对话记录。请谨慎使用，此操作无法撤销。',
-                }
             }
         ];
     }
@@ -1083,6 +1065,53 @@ class UniversalTutorialManager {
         }
 
         return true;
+    }
+
+    /**
+     * 是否已加载 Live2D 模型（用于情感配置等前置判断）
+     */
+    hasLive2DModelLoaded() {
+        const live2dManager = window.live2dManager;
+        if (live2dManager && typeof live2dManager.getCurrentModel === 'function') {
+            return !!live2dManager.getCurrentModel();
+        }
+        return false;
+    }
+
+    /**
+     * 情感配置页面是否已选择模型
+     */
+    hasEmotionManagerModelSelected() {
+        const select = document.querySelector('#model-select');
+        return !!(select && select.value);
+    }
+
+    /**
+     * 设置“下一步”按钮状态
+     */
+    setNextButtonState(enabled, disabledTitle = '') {
+        const nextBtn = document.querySelector('.driver-next');
+        if (!nextBtn) return;
+
+        nextBtn.disabled = !enabled;
+        nextBtn.style.pointerEvents = enabled ? 'auto' : 'none';
+        nextBtn.style.opacity = enabled ? '1' : '0.5';
+        nextBtn.title = enabled ? '' : disabledTitle;
+    }
+
+    /**
+     * 清理“下一步”按钮的前置校验
+     */
+    clearNextButtonGuard() {
+        if (this.nextButtonGuardTimer) {
+            clearInterval(this.nextButtonGuardTimer);
+            this.nextButtonGuardTimer = null;
+        }
+
+        if (this.nextButtonGuardActive) {
+            this.setNextButtonState(true);
+            this.nextButtonGuardActive = false;
+        }
     }
 
     /**
@@ -1162,7 +1191,7 @@ class UniversalTutorialManager {
                 }
 
                 // 检查元素是否可见，如果隐藏则显示它
-                if (!this.isElementVisible(element)) {
+                if (!this.isElementVisible(element) && !step.skipAutoShow) {
                     console.warn(`[Tutorial] 元素隐藏，正在显示: ${step.element}`);
                     this.showElementForTutorial(element, step.element);
                 }
@@ -1180,7 +1209,7 @@ class UniversalTutorialManager {
 
             // 检查当前页面是否需要全屏提示
             const pagesNeedingFullscreen = [
-                // 'chara_manager',  // 角色管理页面不需要全屏，像 API 设置页面一样在普通窗口引导
+                'chara_manager',  // 角色管理页面需要全屏引导以避免布局问题
             ];
 
             if (pagesNeedingFullscreen.includes(this.currentPage)) {
@@ -1511,6 +1540,53 @@ class UniversalTutorialManager {
     }
 
     /**
+     * 检查元素是否需要点击（用于折叠/展开组件）
+     */
+    shouldClickElement(element, selector) {
+        // 对于折叠/展开类型的元素，检查是否已经处于展开状态
+        if (selector.includes('.fold-toggle') || selector.includes('.catgirl-header')) {
+            // 查找相关的内容容器
+            let contentContainer = element.nextElementSibling;
+
+            // 如果直接的下一个兄弟元素不是内容，向上查找到父元素再查找
+            if (!contentContainer) {
+                const parent = element.closest('[class*="catgirl"]');
+                if (parent) {
+                    contentContainer = parent.querySelector('[class*="details"], [class*="content"], .fold-content');
+                }
+            }
+
+            // 检查内容是否可见
+            if (contentContainer) {
+                const style = window.getComputedStyle(contentContainer);
+                const isVisible = style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+
+                console.log(`[Tutorial] 折叠组件状态检查 - 选择器: ${selector}, 已展开: ${isVisible}`);
+
+                // 如果已经展开，就不需要再点击
+                return !isVisible;
+            }
+
+            // 检查元素本身是否有 aria-expanded 属性
+            const ariaExpanded = element.getAttribute('aria-expanded');
+            if (ariaExpanded !== null) {
+                const isExpanded = ariaExpanded === 'true';
+                console.log(`[Tutorial] 折叠组件 aria-expanded 检查 - 已展开: ${isExpanded}`);
+                return !isExpanded;
+            }
+
+            // 检查是否有 active/open 类
+            if (element.classList.contains('active') || element.classList.contains('open') || element.classList.contains('expanded')) {
+                console.log(`[Tutorial] 折叠组件已处于展开状态（通过class检查）`);
+                return false;
+            }
+        }
+
+        // 其他类型的元素总是需要点击
+        return true;
+    }
+
+    /**
      * 检查元素是否在可见视口内
      */
     isElementInViewport(element) {
@@ -1602,11 +1678,56 @@ class UniversalTutorialManager {
         const steps = this.getStepsForPage();
         if (this.currentStep < steps.length) {
             const currentStepConfig = steps[this.currentStep];
+
+            // 进入新步骤前，先清理上一阶段的“下一步”前置校验
+            this.clearNextButtonGuard();
+
+            // 情感配置页面：未选择模型时禁止进入下一步
+            if (this.currentPage === 'emotion_manager' &&
+                currentStepConfig.element === '#model-select') {
+                const updateNextState = () => {
+                    const hasModel = this.hasEmotionManagerModelSelected();
+                    this.setNextButtonState(hasModel, '请先选择模型');
+                    if (hasModel && this.nextButtonGuardTimer) {
+                        clearInterval(this.nextButtonGuardTimer);
+                        this.nextButtonGuardTimer = null;
+                    }
+                };
+
+                this.nextButtonGuardActive = true;
+                updateNextState();
+                this.nextButtonGuardTimer = setInterval(updateNextState, 300);
+            }
+
+            // 情感配置前必须先选择/加载 Live2D 模型，避免进入后出错
+            if (this.currentPage === 'model_manager' &&
+                currentStepConfig.element === '#emotion-config-btn' &&
+                !this.hasLive2DModelLoaded()) {
+                console.warn('[Tutorial] 未检测到已加载的 Live2D 模型，跳转回选择模型步骤');
+                const targetIndex = steps.findIndex(step => step.element === '#live2d-model-select-btn');
+                if (this.driver && typeof this.driver.showStep === 'function' && targetIndex >= 0) {
+                    this.driver.showStep(targetIndex);
+                    return;
+                }
+            }
+
+            // 情感配置页面中，未选模型时不进入配置区域
+            if (this.currentPage === 'emotion_manager' &&
+                currentStepConfig.element === '#emotion-config' &&
+                !this.hasEmotionManagerModelSelected()) {
+                console.warn('[Tutorial] 情感配置页面未选择模型，跳转回选择模型步骤');
+                const targetIndex = steps.findIndex(step => step.element === '#model-select');
+                if (this.driver && typeof this.driver.showStep === 'function' && targetIndex >= 0) {
+                    this.driver.showStep(targetIndex);
+                    return;
+                }
+            }
+
             const element = document.querySelector(currentStepConfig.element);
 
             if (element) {
                 // 检查元素是否隐藏，如果隐藏则显示
-                if (!this.isElementVisible(element)) {
+                if (!this.isElementVisible(element) && !currentStepConfig.skipAutoShow) {
                     console.warn(`[Tutorial] 当前步骤的元素隐藏，正在显示: ${currentStepConfig.element}`);
                     this.showElementForTutorial(element, currentStepConfig.element);
                 }
@@ -1614,44 +1735,57 @@ class UniversalTutorialManager {
                 // 执行步骤中定义的操作
                 if (currentStepConfig.action) {
                     if (currentStepConfig.action === 'click') {
-                        // 延迟一点点时间，确保元素已经完全显示
-                        setTimeout(() => {
-                            console.log(`[Tutorial] 自动点击元素: ${currentStepConfig.element}`);
+                        // 检查是否真正需要点击（对于折叠/展开的元素）
+                        const needsClick = this.shouldClickElement(element, currentStepConfig.element);
 
-                            // 创建 MutationObserver 来监听 DOM 变化
-                            const observer = new MutationObserver(() => {
-                                if (this.driver && typeof this.driver.refresh === 'function') {
-                                    this.driver.refresh();
-                                    console.log(`[Tutorial] DOM 变化后刷新高亮框位置`);
-                                }
-                            });
-
-                            // 监听整个 body 的子树变化
-                            observer.observe(document.body, {
-                                childList: true,
-                                subtree: true,
-                                attributes: true,
-                                attributeFilter: ['style', 'class']
-                            });
-
-                            // 点击元素
-                            element.click();
-
-                            // 点击后等待布局稳定，然后停止监听并最后刷新一次
-                            // 对于角色管理页面的展开操作，需要更长的等待时间以确保表单渲染完成
-                            const waitTime = (this.currentPage === 'chara_manager' &&
-                                            (currentStepConfig.element.includes('.catgirl-header') ||
-                                             currentStepConfig.element.includes('.fold-toggle'))) ? 1500 : 800;
-
+                        if (!needsClick) {
+                            console.log(`[Tutorial] 元素已处于目标状态，跳过点击: ${currentStepConfig.element}`);
+                            // 直接刷新位置
                             setTimeout(() => {
-                                observer.disconnect();
-
                                 if (this.driver && typeof this.driver.refresh === 'function') {
                                     this.driver.refresh();
-                                    console.log(`[Tutorial] 最终刷新高亮框位置 (等待${waitTime}ms)`);
                                 }
-                            }, waitTime);
-                        }, 300);
+                            }, 200);
+                        } else {
+                            // 延迟一点点时间，确保元素已经完全显示
+                            setTimeout(() => {
+                                console.log(`[Tutorial] 自动点击元素: ${currentStepConfig.element}`);
+
+                                // 创建 MutationObserver 来监听 DOM 变化
+                                const observer = new MutationObserver(() => {
+                                    if (this.driver && typeof this.driver.refresh === 'function') {
+                                        this.driver.refresh();
+                                        console.log(`[Tutorial] DOM 变化后刷新高亮框位置`);
+                                    }
+                                });
+
+                                // 监听整个 body 的子树变化
+                                observer.observe(document.body, {
+                                    childList: true,
+                                    subtree: true,
+                                    attributes: true,
+                                    attributeFilter: ['style', 'class']
+                                });
+
+                                // 点击元素
+                                element.click();
+
+                                // 点击后等待布局稳定，然后停止监听并最后刷新一次
+                                // 对于角色管理页面的展开操作，需要更长的等待时间以确保表单渲染完成
+                                const waitTime = (this.currentPage === 'chara_manager' &&
+                                                (currentStepConfig.element.includes('.catgirl-header') ||
+                                                 currentStepConfig.element.includes('.fold-toggle'))) ? 1500 : 800;
+
+                                setTimeout(() => {
+                                    observer.disconnect();
+
+                                    if (this.driver && typeof this.driver.refresh === 'function') {
+                                        this.driver.refresh();
+                                        console.log(`[Tutorial] 最终刷新高亮框位置 (等待${waitTime}ms)`);
+                                    }
+                                }, waitTime);
+                            }, 300);
+                        }
                     }
                 } else {
                     // 即使没有点击操作，也在步骤切换后刷新位置
@@ -1698,6 +1832,7 @@ class UniversalTutorialManager {
     onTutorialEnd() {
         // 重置运行标志
         this.isTutorialRunning = false;
+        this.clearNextButtonGuard();
 
         // 只有进入了全屏的页面才需要退出全屏
         const pagesNeedingFullscreen = ['chara_manager'];
@@ -1772,8 +1907,8 @@ class UniversalTutorialManager {
      * 重新启动引导（用户手动触发）
      */
     restartTutorial() {
-        const storageKey = this.STORAGE_KEY_PREFIX + this.currentPage;
-        localStorage.removeItem(storageKey);
+        const storageKeys = this.getStorageKeysForPage(this.currentPage);
+        storageKeys.forEach(key => localStorage.removeItem(key));
 
         if (this.driver) {
             this.driver.destroy();
@@ -1798,7 +1933,8 @@ class UniversalTutorialManager {
             'memory_browser'
         ];
         pages.forEach(page => {
-            localStorage.removeItem(this.STORAGE_KEY_PREFIX + page);
+            const storageKeys = this.getStorageKeysForPage(page);
+            storageKeys.forEach(key => localStorage.removeItem(key));
         });
         console.log('[Tutorial] 所有引导状态已重置');
     }
@@ -1807,9 +1943,12 @@ class UniversalTutorialManager {
      * 获取引导状态
      */
     hasSeenTutorial(page = null) {
-        const targetPage = page || this.currentPage;
-        const storageKey = this.STORAGE_KEY_PREFIX + targetPage;
-        return localStorage.getItem(storageKey) === 'true';
+        if (!page) {
+            return localStorage.getItem(this.getStorageKey()) === 'true';
+        }
+
+        const storageKeys = this.getStorageKeysForPage(page);
+        return storageKeys.some(key => localStorage.getItem(key) === 'true');
     }
 
     /**

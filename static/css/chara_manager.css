@@ -10,17 +10,19 @@ backdrop-filter: blur(4px);
 color: #333;
 font-family: 'Segoe UI', Arial, sans-serif;
 position: relative;
+overflow: auto; /* 允许 body 滚动 */
 }
 
 /* 主容器 - 浮动模态窗口样式 */
 .container {
-max-width: 800px;
-margin: 40px auto;
+max-width: 920px;
+margin: 24px auto;
 background: #fff;
 border-radius: 20px;
 box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
 padding: 0;
-overflow: hidden;
+padding-bottom: 24px; /* 底部留出空间 */
+overflow: visible; /* 让内容自然扩展 */
 position: relative;
 }
 

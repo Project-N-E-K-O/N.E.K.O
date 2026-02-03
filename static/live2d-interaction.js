@@ -516,10 +516,19 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
 
         if (this._goodbyeClicked) return;
 
+        // 引导模式下不隐藏浮动按钮
+        if (window.isInTutorial === true) return;
+
         // 如果已有定时器，不重复创建
         if (this._hideButtonsTimer) return;
 
         this._hideButtonsTimer = setTimeout(() => {
+            // 引导模式下不隐藏
+            if (window.isInTutorial === true) {
+                this._hideButtonsTimer = null;
+                return;
+            }
+
             // 再次检查鼠标是否在按钮区域内
             if (this._isMouseOverButtons) {
                 // 鼠标在按钮上，不隐藏，重新启动定时器

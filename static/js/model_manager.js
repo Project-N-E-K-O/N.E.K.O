@@ -1489,10 +1489,19 @@ document.addEventListener('DOMContentLoaded', async () => {
             // 【新增】清理Live2D资源（内存管理改进）
             if (window.live2dManager) {
                 try {
-                    // 1. 先释放 Live2D 模型资源（如果存在 release 方法）
+                    // 1. 先从舞台移除模型（避免销毁时访问已移除的对象）
+                    if (window.live2dManager.currentModel && window.live2dManager.pixi_app && window.live2dManager.pixi_app.stage) {
+                        try {
+                            window.live2dManager.pixi_app.stage.removeChild(window.live2dManager.currentModel);
+                        } catch (e) {
+                            console.warn('[模型管理] 从舞台移除模型时出现警告:', e);
+                        }
+                    }
+
+                    // 2. 销毁模型本身（不要提前清空 internalModel）
                     if (window.live2dManager.currentModel) {
                         const live2dModel = window.live2dManager.currentModel;
-                        
+
                         // 尝试调用 release 方法释放模型资源
                         if (typeof live2dModel.release === 'function') {
                             try {
@@ -1502,21 +1511,28 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 console.warn('[模型管理] 释放 Live2D 模型资源时出现警告:', releaseError);
                             }
                         }
-                        
-                        // 清理内部模型引用（防止内存泄漏）
-                        if (live2dModel.internalModel) {
-                            live2dModel.internalModel = null;
+
+                        // 销毁模型（让 PIXI 自己处理内部清理）
+                        try {
+                            live2dModel.destroy({ children: true });
+                        } catch (e) {
+                            console.warn('[模型管理] 销毁 Live2D 模型时出现警告:', e);
                         }
-                        
+
                         // 清空模型引用
                         window.live2dManager.currentModel = null;
                     }
 
-                    // 2. 销毁PIXI应用（在模型释放之后）
+                    // 3. 销毁PIXI应用（在模型销毁之后）
                     if (window.live2dManager.pixi_app) {
                         try {
+                            // 先停止 ticker 防止渲染已销毁的对象
+                            if (window.live2dManager.pixi_app.ticker) {
+                                window.live2dManager.pixi_app.ticker.stop();
+                            }
+                            // 销毁 PIXI 应用，但不销毁 children（已经在上面处理过了）
                             window.live2dManager.pixi_app.destroy(true, {
-                                children: true,
+                                children: false,
                                 texture: true,
                                 baseTexture: true
                             });
@@ -1526,10 +1542,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                             console.log('[模型管理] PIXI 应用已销毁');
                         } catch (pixiError) {
                             console.warn('[模型管理] PIXI销毁时出现警告:', pixiError);
+                            // 即使销毁出错，也要重置状态
+                            window.live2dManager.pixi_app = null;
+                            window.live2dManager.isInitialized = false;
                         }
                     }
                 } catch (cleanupError) {
                     console.warn('[模型管理] Live2D清理时出现警告:', cleanupError);
+                    // 确保状态被重置
+                    if (window.live2dManager) {
+                        window.live2dManager.currentModel = null;
+                        window.live2dManager.pixi_app = null;
+                        window.live2dManager.isInitialized = false;
+                    }
                 }
             }
 

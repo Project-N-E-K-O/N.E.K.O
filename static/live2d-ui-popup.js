@@ -872,6 +872,10 @@ Live2DManager.prototype._createSubmenuContainer = function (submenuItems) {
         });
     };
     container._collapse = () => {
+        // 引导模式下，不收起子菜单
+        if (window.isInTutorial === true) {
+            return;
+        }
         container.style.height = '0';
         container.style.opacity = '0';
         setTimeout(() => {
