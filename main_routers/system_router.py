@@ -15,6 +15,7 @@ import asyncio
 import logging
 import re
 import time
+import json
 from urllib.parse import unquote
 
 from fastapi import APIRouter, Request
@@ -62,6 +63,48 @@ def _get_app_root():
             return os.path.dirname(sys.executable)
     else:
         return os.getcwd()
+
+
+def _get_local_playtime_path() -> str:
+    cfg = get_config_manager()
+    try:
+        if cfg.ensure_config_directory():
+            return str(cfg.get_config_path('steam_playtime_local.json'))
+    except Exception as e:
+        logger.debug(f"确保配置目录失败（本地时长回退）: {e}")
+
+    # 回退到项目 config 目录
+    try:
+        cfg.project_config_dir.mkdir(parents=True, exist_ok=True)
+        return str(cfg.project_config_dir / 'steam_playtime_local.json')
+    except Exception as e:
+        logger.warning(f"回退到项目配置目录失败，将使用当前工作目录: {e}")
+        return str(os.path.join(os.getcwd(), 'steam_playtime_local.json'))
+
+
+def _load_local_playtime() -> int:
+    path = _get_local_playtime_path()
+    try:
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                value = int(data.get('playtime_seconds', 0))
+            else:
+                value = int(data)
+            return max(0, value)
+    except Exception as e:
+        logger.warning(f"读取本地时长失败，使用 0: {e}")
+    return 0
+
+
+def _save_local_playtime(seconds: int) -> None:
+    path = _get_local_playtime_path()
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump({"playtime_seconds": int(seconds)}, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning(f"保存本地时长失败: {e}")
         
 @router.post('/emotion/analysis')
 async def emotion_analysis(request: Request):
@@ -195,6 +238,25 @@ async def set_achievement_status(name: str):
             for _ in range(10):
                 steamworks.run_callbacks()
                 await asyncio.sleep(0.1)
+
+            # 校验成就 ID 是否在 Steam 后台已配置
+            try:
+                num_achievements = steamworks.UserStats.GetNumAchievements()
+                valid_names = set()
+                for i in range(num_achievements):
+                    ach_name = steamworks.UserStats.GetAchievementName(i)
+                    if isinstance(ach_name, bytes):
+                        ach_name = ach_name.decode('utf-8')
+                    if ach_name:
+                        valid_names.add(ach_name)
+                if valid_names and name not in valid_names:
+                    logger.error(f"成就ID未配置: {name}，Steam后台已配置: {sorted(valid_names)}")
+                    return JSONResponse(
+                        content={"success": False, "error": f"成就ID未配置: {name}"},
+                        status_code=400
+                    )
+            except Exception as e:
+                logger.warning(f"成就ID校验失败，继续尝试解锁: {e}")
             
             achievement_status = steamworks.UserStats.GetAchievement(name)
             logger.info(f"Achievement status: {achievement_status}")
@@ -257,15 +319,26 @@ async def update_playtime(request: Request):
             # 频繁调用可能导致性能问题和同步延迟
             # 这里直接获取和更新统计值即可
 
-            # 获取当前游戏时长（如果统计不存在，从 0 开始）
+            # 读取本地回退时长
+            local_playtime = _load_local_playtime()
+
+            # 获取当前游戏时长（如果统计不存在，使用本地回退）
+            current_playtime = None
             try:
                 current_playtime = steamworks.UserStats.GetStatInt('PLAY_TIME_SECONDS')
+                if current_playtime is not None:
+                    current_playtime = int(current_playtime)
             except Exception as e:
-                logger.warning(f"获取 PLAY_TIME_SECONDS 失败，从 0 开始: {e}")
-                current_playtime = 0
+                logger.warning(f"获取 PLAY_TIME_SECONDS 失败，改用本地时长: {e}")
+                current_playtime = None
+
+            # 取 Steam 与本地的最大值作为基准，避免回退覆盖
+            base_playtime = local_playtime
+            if current_playtime is not None:
+                base_playtime = max(local_playtime, current_playtime)
 
             # 增加时长
-            new_playtime = current_playtime + seconds_to_add
+            new_playtime = base_playtime + seconds_to_add
 
             # 设置新的时长
             try:
@@ -276,6 +349,9 @@ async def update_playtime(request: Request):
                     steamworks.UserStats.StoreStats()
                     steamworks.run_callbacks()
 
+                    # 同步保存本地回退时长
+                    _save_local_playtime(new_playtime)
+
                     logger.debug(f"游戏时长已更新: {current_playtime}s -> {new_playtime}s (+{seconds_to_add}s)")
 
                     return JSONResponse(content={
@@ -285,21 +361,25 @@ async def update_playtime(request: Request):
                     })
                 else:
                     logger.debug("SetStat 返回 False - PLAY_TIME_SECONDS 统计可能未在 Steamworks 后台配置")
+                    _save_local_playtime(new_playtime)
                     # 即使失败也返回成功，避免前端报错
                     return JSONResponse(content={
                         "success": True,
                         "totalPlayTime": new_playtime,
                         "added": seconds_to_add,
-                        "warning": "Steam stat not configured"
+                        "warning": "Steam stat not configured",
+                        "source": "local"
                     })
             except Exception as stat_error:
                 logger.warning(f"设置 Steam 统计失败: {stat_error} - 统计可能未在 Steamworks 后台配置")
+                _save_local_playtime(new_playtime)
                 # 即使失败也返回成功，避免前端报错
                 return JSONResponse(content={
                     "success": True,
                     "totalPlayTime": new_playtime,
                     "added": seconds_to_add,
-                    "warning": "Steam stat not configured"
+                    "warning": "Steam stat not configured",
+                    "source": "local"
                 })
 
         except Exception as e:
