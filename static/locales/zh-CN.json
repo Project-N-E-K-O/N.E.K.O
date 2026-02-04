@@ -947,7 +947,21 @@
     "enabled": "已开启",
     "disabled": "已关闭",
     "autoReviewNote": "开启后系统将自动整理和优化记忆内容，提高对话质量",
-    "saveFailedStatus": "保存失败"
+    "saveFailedStatus": "保存失败",
+    "tutorialReset": "新手引导",
+    "tutorialSelectPage": "-- 选择页面 --",
+    "tutorialAllPages": "全部页面",
+    "tutorialPageHome": "主页",
+    "tutorialPageModelManager": "模型设置",
+    "tutorialPageParameterEditor": "捏脸系统",
+    "tutorialPageEmotionManager": "情感管理",
+    "tutorialPageCharaManager": "角色管理",
+    "tutorialPageSettings": "API设置",
+    "tutorialPageVoiceClone": "语音克隆",
+    "tutorialPageMemoryBrowser": "记忆浏览",
+    "resetTutorialBtn": "重置引导",
+    "tutorialResetSuccess": "已重置所有引导，下次进入各页面时将重新显示引导。",
+    "tutorialPageResetSuccess": "已重置该页面的引导，下次进入时将重新显示引导。"
   },
   "character": {
     "manager": "角色管理",
@@ -1440,6 +1454,10 @@
       "desc": "进入 Steam 创意工坊页面，管理订阅内容~"
     },
     "completed": "✨ 引导完成！祝你使用愉快~",
+    "resetHint": {
+      "title": "✨ 引导完成",
+      "desc": "如果想再次查看引导，可以前往「记忆浏览」页面，在「新手引导」区域重置。"
+    },
     "model_manager": {
       "common": {
         "step1": {

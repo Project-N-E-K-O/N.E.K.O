@@ -929,7 +929,21 @@
     "enabled": "Enabled",
     "disabled": "Disabled",
     "autoReviewNote": "When enabled, the system will automatically organize and optimize memory content to improve conversation quality",
-    "saveFailedStatus": "Save failed"
+    "saveFailedStatus": "Save failed",
+    "tutorialReset": "Tutorial Guide",
+    "tutorialSelectPage": "-- Select Page --",
+    "tutorialAllPages": "All Pages",
+    "tutorialPageHome": "Home",
+    "tutorialPageModelManager": "Model Settings",
+    "tutorialPageParameterEditor": "Face Editor",
+    "tutorialPageEmotionManager": "Emotion Manager",
+    "tutorialPageCharaManager": "Character Manager",
+    "tutorialPageSettings": "API Settings",
+    "tutorialPageVoiceClone": "Voice Clone",
+    "tutorialPageMemoryBrowser": "Memory Browser",
+    "resetTutorialBtn": "Reset Tutorial",
+    "tutorialResetSuccess": "All tutorials have been reset. They will be shown again when you visit each page.",
+    "tutorialPageResetSuccess": "Tutorial for this page has been reset. It will be shown again when you visit."
   },
   "character": {
     "manager": "Character Manager",
@@ -1380,6 +1394,10 @@
       "desc": "Access Steam Workshop page and manage subscriptions~"
     },
     "completed": "✨ Tutorial complete! Enjoy~",
+    "resetHint": {
+      "title": "✨ Tutorial Complete",
+      "desc": "To view this tutorial again, go to \"Memory Browser\" and reset it in the \"Tutorial Guide\" section."
+    },
     "model_manager": {
       "common": {
         "step1": {

@@ -162,10 +162,17 @@ body {
     min-height: 500px;
 }
 
-.file-list {
+/* 左侧列：包含两个框 */
+.left-column {
     width: 240px;
     min-width: 220px;
     flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.file-list {
     border: 2px solid #b3e5fc;
     border-radius: 20px;
     padding: 20px;
@@ -333,6 +340,75 @@ body {
     padding-left: 4px;
     line-height: 1.5;
     font-weight: 500;
+}
+
+/* 新手引导重置区域 */
+.tutorial-section {
+    margin-top: 0;
+}
+
+.tutorial-reset-wrapper {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+/* 下拉框 - 胶囊形状，与猫娘按钮一致 */
+.tutorial-reset-wrapper select {
+    width: 100%;
+    padding: 10px 15px;
+    background: #fff;
+    border: 2px solid #e3f4ff;
+    border-radius: 50px;
+    color: #40C5F1;
+    font-size: 0.95rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    text-align: center;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2340C5F1' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 15px center;
+}
+
+.tutorial-reset-wrapper select:hover {
+    border-color: #40C5F1;
+    background-color: #f0f9ff;
+    transform: translateY(-1px);
+}
+
+.tutorial-reset-wrapper select:focus {
+    outline: none;
+    border-color: #40C5F1;
+}
+
+/* 重置按钮 - 胶囊形状，与猫娘按钮一致 */
+.tutorial-reset-wrapper .tutorial-reset-btn {
+    width: 100%;
+    padding: 10px 15px;
+    background: #fff;
+    border: 2px solid #e3f4ff;
+    border-radius: 50px;
+    color: #40C5F1;
+    font-size: 0.95rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    text-align: center;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.tutorial-reset-wrapper .tutorial-reset-btn:hover {
+    border-color: #40C5F1;
+    background: #f0f9ff;
+    transform: translateY(-1px);
+}
+
+.tutorial-reset-wrapper .tutorial-reset-btn:active {
+    transform: translateY(0);
 }
 
 /* 编辑器区域 */

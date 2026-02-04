@@ -976,7 +976,21 @@
     "enabled": "有効",
     "disabled": "無効",
     "autoReviewNote": "有効にすると、システムはメモリコンテンツを自動的に整理および最適化して、会話品質を向上させます",
-    "saveFailedStatus": "保存失敗"
+    "saveFailedStatus": "保存失敗",
+    "tutorialReset": "チュートリアル",
+    "tutorialSelectPage": "-- ページを選択 --",
+    "tutorialAllPages": "すべてのページ",
+    "tutorialPageHome": "ホーム",
+    "tutorialPageModelManager": "モデル設定",
+    "tutorialPageParameterEditor": "フェイスエディター",
+    "tutorialPageEmotionManager": "感情マネージャー",
+    "tutorialPageCharaManager": "キャラクターマネージャー",
+    "tutorialPageSettings": "API設定",
+    "tutorialPageVoiceClone": "ボイスクローン",
+    "tutorialPageMemoryBrowser": "メモリブラウザ",
+    "resetTutorialBtn": "リセット",
+    "tutorialResetSuccess": "すべてのチュートリアルがリセットされました。各ページにアクセスすると再度表示されます。",
+    "tutorialPageResetSuccess": "このページのチュートリアルがリセットされました。次回アクセス時に再度表示されます。"
   },
   "character": {
     "manager": "キャラクターマネージャー",
@@ -1423,6 +1437,10 @@
       "desc": "Steamワークショップページにアクセスして購読を管理~"
     },
     "completed": "✨ チュートリアル完了！楽しんでください~",
+    "resetHint": {
+      "title": "✨ チュートリアル完了",
+      "desc": "このチュートリアルをもう一度見るには、「メモリブラウザ」ページの「チュートリアル」セクションでリセットしてください。"
+    },
     "model_manager": {
       "common": {
         "step1": {

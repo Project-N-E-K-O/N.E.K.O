@@ -946,7 +946,21 @@
     "enabled": "已開啓",
     "disabled": "已關閉",
     "autoReviewNote": "開啓後係統將自動整理和優化記憶內容，提高對話質量",
-    "saveFailedStatus": "保存失敗"
+    "saveFailedStatus": "保存失敗",
+    "tutorialReset": "新手引導",
+    "tutorialSelectPage": "-- 選擇頁面 --",
+    "tutorialAllPages": "全部頁面",
+    "tutorialPageHome": "主頁",
+    "tutorialPageModelManager": "模型設置",
+    "tutorialPageParameterEditor": "捏臉系統",
+    "tutorialPageEmotionManager": "情感管理",
+    "tutorialPageCharaManager": "角色管理",
+    "tutorialPageSettings": "API設置",
+    "tutorialPageVoiceClone": "語音克隆",
+    "tutorialPageMemoryBrowser": "記憶瀏覽",
+    "resetTutorialBtn": "重置引導",
+    "tutorialResetSuccess": "已重置所有引導，下次進入各頁面時將重新顯示引導。",
+    "tutorialPageResetSuccess": "已重置該頁面的引導，下次進入時將重新顯示引導。"
   },
   "character": {
     "manager": "角色管理",
@@ -1441,6 +1455,10 @@
       "desc": "進入 Steam 創意工坊頁面，管理訂閱內容~"
     },
     "completed": "✨ 引導完成！祝妳使用愉快~",
+    "resetHint": {
+      "title": "✨ 引導完成",
+      "desc": "如果想再次查看引導，可以前往「記憶瀏覽」頁面，在「新手引導」區域重置。"
+    },
     "model_manager": {
       "common": {
         "step1": {
