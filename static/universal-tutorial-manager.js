@@ -10,6 +10,9 @@
 
 class UniversalTutorialManager {
     constructor() {
+        // 立即设置全局引用，以便在 getter 中使用
+        window.universalTutorialManager = this;
+
         this.STORAGE_KEY_PREFIX = 'neko_tutorial_';
         this.driver = null;
         this.isInitialized = false;
@@ -171,6 +174,9 @@ class UniversalTutorialManager {
                                 targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
                             }
                         }
+
+                        // 启用 popover 拖动功能
+                        this.enablePopoverDragging();
                     }, 100);
                 }
             });
@@ -342,7 +348,33 @@ class UniversalTutorialManager {
                 element: '#live2d-container',
                 popover: {
                     title: window.t ? window.t('tutorial.step1.title', '👋 欢迎来到 N.E.K.O') : '👋 欢迎来到 N.E.K.O',
-                    description: window.t ? window.t('tutorial.step1.desc', '这是您的虚拟伙伴，她会陪伴您进行各种交互。点击她可以触发不同的表情和动作哦~') : '这是您的虚拟伙伴，她会陪伴您进行各种交互。点击她可以触发不同的表情和动作哦~',
+                    description: window.t ? window.t('tutorial.step1.desc', '这是你的虚拟伙伴！接下来我会带你熟悉各项功能~') : '这是你的虚拟伙伴！接下来我会带你熟悉各项功能~',
+                },
+                disableActiveInteraction: false
+            },
+            {
+                element: '#live2d-container',
+                popover: {
+                    title: window.t ? window.t('tutorial.step1a.title', '🎭 点击体验表情动作') : '🎭 点击体验表情动作',
+                    description: window.t ? window.t('tutorial.step1a.desc', '试试点击模型吧！每次点击都会触发不同的表情和动作变化。体验完后点击「下一步」继续~') : '试试点击模型吧！每次点击都会触发不同的表情和动作变化。体验完后点击「下一步」继续~',
+                },
+                disableActiveInteraction: false,
+                enableModelInteraction: true
+            },
+            {
+                element: '#live2d-container',
+                popover: {
+                    title: window.t ? window.t('tutorial.step1b.title', '🖱️ 拖拽与缩放') : '🖱️ 拖拽与缩放',
+                    description: window.t ? window.t('tutorial.step1b.desc', '你可以拖拽模型移动位置，也可以用鼠标滚轮放大缩小模型，试试看吧~') : '你可以拖拽模型移动位置，也可以用鼠标滚轮放大缩小模型，试试看吧~',
+                },
+                disableActiveInteraction: false,
+                enableModelInteraction: true
+            },
+            {
+                element: '#live2d-lock-icon',
+                popover: {
+                    title: window.t ? window.t('tutorial.step1c.title', '🔒 锁定模型') : '🔒 锁定模型',
+                    description: window.t ? window.t('tutorial.step1c.desc', '点击这个锁可以锁定模型位置，防止误触移动。再次点击可以解锁~') : '点击这个锁可以锁定模型位置，防止误触移动。再次点击可以解锁~',
                 }
             },
             {
@@ -755,112 +787,210 @@ class UniversalTutorialManager {
                 }
             },
             {
-                element: '.catgirl-block:first-child .catgirl-header',
+                get element() {
+                    // 动态获取目标猫娘卡片的头部
+                    const manager = window.universalTutorialManager;
+                    const targetBlock = manager ? manager.getTargetCatgirlBlock() : null;
+                    return targetBlock ? targetBlock.querySelector('.catgirl-header') : null;
+                },
                 popover: {
                     title: this.t('tutorial.chara_manager.step8.title', '📋 猫娘卡片'),
                     description: this.t('tutorial.chara_manager.step8.desc', '点击猫娘名称可以展开或折叠详细信息。每个猫娘都有独立的设定，包括基础信息和进阶配置。'),
                 },
-                action: 'click' // 使用 action 自动点击展开，系统会自动刷新位置
+                skipInitialCheck: true,
+                onHighlightStarted: async () => {
+                    // 获取目标猫娘卡片
+                    const manager = window.universalTutorialManager;
+                    const targetBlock = manager ? manager.getTargetCatgirlBlock() : null;
+
+                    if (targetBlock) {
+                        // 滚动到可视区域
+                        manager.scrollIntoViewSmooth(targetBlock);
+                        await new Promise(resolve => setTimeout(resolve, 500));
+
+                        // 确保卡片已展开
+                        await manager.ensureCatgirlExpanded(targetBlock);
+                    }
+                }
             },
             {
-                element: '.catgirl-block:first-child input[name="档案名"]',
+                get element() {
+                    // 动态获取目标猫娘卡片的档案名输入框
+                    const manager = window.universalTutorialManager;
+                    const targetBlock = manager ? manager.getTargetCatgirlBlock() : null;
+                    return targetBlock ? targetBlock.querySelector('input[name="档案名"]') : null;
+                },
                 popover: {
                     title: this.t('tutorial.chara_manager.step9.title', '📝 猫娘档案名'),
                     description: this.t('tutorial.chara_manager.step9.desc', '这是猫娘的名字，也是她的唯一标识。创建后可以通过"修改名称"按钮来更改。'),
                 },
-                skipInitialCheck: true, // 跳过初始化时的元素检查
+                skipInitialCheck: true,
                 onHighlightStarted: async () => {
                     // 等待表单元素渲染完成
-                    const maxWait = 3000; // 最多等待3秒
+                    const maxWait = 3000;
                     const startTime = Date.now();
 
+                    const manager = window.universalTutorialManager;
+                    const targetBlock = manager ? manager.getTargetCatgirlBlock() : null;
+
                     while (Date.now() - startTime < maxWait) {
-                        const element = document.querySelector('.catgirl-block:first-child input[name="档案名"]');
-                        if (element) {
-                            console.log('[Tutorial] 档案名输入框已找到');
-                            break;
+                        if (targetBlock) {
+                            const element = targetBlock.querySelector('input[name="档案名"]');
+                            if (element) {
+                                console.log('[Tutorial] 档案名输入框已找到');
+                                manager.scrollIntoViewSmooth(element);
+                                break;
+                            }
                         }
                         await new Promise(resolve => setTimeout(resolve, 100));
                     }
                 }
             },
             {
-                element: '.catgirl-block:first-child .custom-row:first-child',
+                get element() {
+                    // 动态获取目标猫娘卡片的第一个自定义字段
+                    const manager = window.universalTutorialManager;
+                    const targetBlock = manager ? manager.getTargetCatgirlBlock() : null;
+                    return targetBlock ? targetBlock.querySelector('.custom-row:first-child') : null;
+                },
                 popover: {
                     title: this.t('tutorial.chara_manager.step10.title', '✨ 自定义属性'),
                     description: this.t('tutorial.chara_manager.step10.desc', '这些是猫娘的性格设定字段，如性格、背景、爱好、口头禅等。您可以自由添加和编辑这些属性，让每个猫娘都有独特的个性。'),
                 },
-                skipInitialCheck: true, // 跳过初始化时的元素检查
+                skipInitialCheck: true,
                 onHighlightStarted: async () => {
                     // 等待自定义字段渲染完成
                     const maxWait = 3000;
                     const startTime = Date.now();
 
+                    const manager = window.universalTutorialManager;
+                    const targetBlock = manager ? manager.getTargetCatgirlBlock() : null;
+
                     while (Date.now() - startTime < maxWait) {
-                        const element = document.querySelector('.catgirl-block:first-child .custom-row:first-child');
-                        if (element) {
-                            console.log('[Tutorial] 自定义属性字段已找到');
-                            break;
+                        if (targetBlock) {
+                            const element = targetBlock.querySelector('.custom-row:first-child');
+                            if (element) {
+                                console.log('[Tutorial] 自定义属性字段已找到');
+                                manager.scrollIntoViewSmooth(element);
+                                break;
+                            }
                         }
                         await new Promise(resolve => setTimeout(resolve, 100));
                     }
                 }
             },
             {
-                element: '.catgirl-block:first-child button[id^="switch-btn-"]',
+                get element() {
+                    // 动态获取目标猫娘卡片的切换按钮
+                    const manager = window.universalTutorialManager;
+                    const targetBlock = manager ? manager.getTargetCatgirlBlock() : null;
+                    return targetBlock ? targetBlock.querySelector('button[id^="switch-btn-"]') : null;
+                },
                 popover: {
                     title: this.t('tutorial.chara_manager.step11.title', '🔄 切换猫娘'),
                     description: this.t('tutorial.chara_manager.step11.desc', '点击此按钮可以将这个猫娘设为当前活跃角色。切换后，主页和对话界面会使用该角色的形象和性格。'),
+                },
+                skipInitialCheck: true,
+                onHighlightStarted: async () => {
+                    const manager = window.universalTutorialManager;
+                    const targetBlock = manager ? manager.getTargetCatgirlBlock() : null;
+                    if (targetBlock) {
+                        const element = targetBlock.querySelector('button[id^="switch-btn-"]');
+                        if (element) {
+                            manager.scrollIntoViewSmooth(element);
+                        }
+                    }
                 }
             },
             {
-                element: '.catgirl-block:first-child .fold-toggle',
+                get element() {
+                    // 动态获取目标猫娘卡片的进阶设定按钮
+                    const manager = window.universalTutorialManager;
+                    const targetBlock = manager ? manager.getTargetCatgirlBlock() : null;
+                    return targetBlock ? targetBlock.querySelector('.fold-toggle') : null;
+                },
                 popover: {
                     title: this.t('tutorial.chara_manager.step12.title', '⚙️ 进阶设定'),
                     description: this.t('tutorial.chara_manager.step12.desc', '点击展开进阶设定，可以配置 Live2D 模型、语音 ID、以及添加自定义性格属性（如性格、爱好、口头禅等）。'),
                 },
-                skipInitialCheck: true, // 跳过初始化时的元素检查
-                action: 'click' // 使用 action 自动点击展开，系统会自动刷新位置
+                skipInitialCheck: true,
+                onHighlightStarted: async () => {
+                    const manager = window.universalTutorialManager;
+                    const targetBlock = manager ? manager.getTargetCatgirlBlock() : null;
+
+                    if (targetBlock) {
+                        const element = targetBlock.querySelector('.fold-toggle');
+                        if (element) {
+                            manager.scrollIntoViewSmooth(element);
+                            await new Promise(resolve => setTimeout(resolve, 500));
+
+                            // 确保进阶设定已展开
+                            await manager.ensureAdvancedSettingsExpanded(targetBlock);
+                        }
+                    }
+                }
             },
             {
-                element: '.catgirl-block:first-child .live2d-link',
+                get element() {
+                    // 动态获取目标猫娘卡片的模型设定链接
+                    const manager = window.universalTutorialManager;
+                    const targetBlock = manager ? manager.getTargetCatgirlBlock() : null;
+                    return targetBlock ? targetBlock.querySelector('.live2d-link') : null;
+                },
                 popover: {
                     title: this.t('tutorial.chara_manager.step13.title', '🎨 模型设定'),
                     description: this.t('tutorial.chara_manager.step13.desc', '点击此链接可以选择或更换猫娘的 Live2D 形象或 VRM 模型。不同的模型会带来不同的视觉体验。'),
                 },
-                skipInitialCheck: true, // 跳过初始化时的元素检查
+                skipInitialCheck: true,
                 onHighlightStarted: async () => {
                     // 等待模型设定链接渲染完成
                     const maxWait = 3000;
                     const startTime = Date.now();
 
+                    const manager = window.universalTutorialManager;
+                    const targetBlock = manager ? manager.getTargetCatgirlBlock() : null;
+
                     while (Date.now() - startTime < maxWait) {
-                        const element = document.querySelector('.catgirl-block:first-child .live2d-link');
-                        if (element) {
-                            console.log('[Tutorial] 模型设定链接已找到');
-                            break;
+                        if (targetBlock) {
+                            const element = targetBlock.querySelector('.live2d-link');
+                            if (element) {
+                                console.log('[Tutorial] 模型设定链接已找到');
+                                manager.scrollIntoViewSmooth(element);
+                                break;
+                            }
                         }
                         await new Promise(resolve => setTimeout(resolve, 100));
                     }
                 }
             },
             {
-                element: '.catgirl-block:first-child select[name="voice_id"]',
+                get element() {
+                    // 动态获取目标猫娘卡片的语音选择框
+                    const manager = window.universalTutorialManager;
+                    const targetBlock = manager ? manager.getTargetCatgirlBlock() : null;
+                    return targetBlock ? targetBlock.querySelector('select[name="voice_id"]') : null;
+                },
                 popover: {
                     title: this.t('tutorial.chara_manager.step14.title', '🎤 语音设定'),
                     description: this.t('tutorial.chara_manager.step14.desc', '选择猫娘的语音角色。不同的 voice_id 对应不同的声音特征，让您的虚拟伙伴拥有独特的声音。'),
                 },
-                skipInitialCheck: true, // 跳过初始化时的元素检查
+                skipInitialCheck: true,
                 onHighlightStarted: async () => {
                     // 等待语音选择框渲染完成
                     const maxWait = 3000;
                     const startTime = Date.now();
 
+                    const manager = window.universalTutorialManager;
+                    const targetBlock = manager ? manager.getTargetCatgirlBlock() : null;
+
                     while (Date.now() - startTime < maxWait) {
-                        const element = document.querySelector('.catgirl-block:first-child select[name="voice_id"]');
-                        if (element) {
-                            console.log('[Tutorial] 语音选择框已找到');
-                            break;
+                        if (targetBlock) {
+                            const element = targetBlock.querySelector('select[name="voice_id"]');
+                            if (element) {
+                                console.log('[Tutorial] 语音选择框已找到');
+                                manager.scrollIntoViewSmooth(element);
+                                break;
+                            }
                         }
                         await new Promise(resolve => setTimeout(resolve, 100));
                     }
@@ -1569,6 +1699,91 @@ class UniversalTutorialManager {
     }
 
     /**
+     * 获取用于教程展示的目标猫娘卡片
+     * 优先选择第一个，如果不存在则返回 null
+     */
+    getTargetCatgirlBlock() {
+        const catgirlBlocks = document.querySelectorAll('.catgirl-block');
+        if (catgirlBlocks.length === 0) {
+            console.warn('[Tutorial] 没有找到任何猫娘卡片');
+            return null;
+        }
+
+        // 返回第一个猫娘卡片
+        return catgirlBlocks[0];
+    }
+
+    /**
+     * 确保猫娘卡片已展开（用于教程）
+     * @param {Element} catgirlBlock - 猫娘卡片元素
+     */
+    async ensureCatgirlExpanded(catgirlBlock) {
+        if (!catgirlBlock) return false;
+
+        const header = catgirlBlock.querySelector('.catgirl-header');
+        const body = catgirlBlock.querySelector('.catgirl-card-body');
+
+        if (!header || !body) {
+            console.warn('[Tutorial] 猫娘卡片结构不完整');
+            return false;
+        }
+
+        // 检查是否已展开
+        const isExpanded = body.style.display !== 'none' && body.style.maxHeight !== '0px';
+
+        if (!isExpanded) {
+            console.log('[Tutorial] 展开猫娘卡片');
+            header.click();
+            // 等待展开动画完成
+            await new Promise(resolve => setTimeout(resolve, 300));
+        }
+
+        return true;
+    }
+
+    /**
+     * 确保进阶设定已展开（用于教程）
+     * @param {Element} catgirlBlock - 猫娘卡片元素
+     */
+    async ensureAdvancedSettingsExpanded(catgirlBlock) {
+        if (!catgirlBlock) return false;
+
+        const foldToggle = catgirlBlock.querySelector('.fold-toggle');
+        const foldSection = catgirlBlock.querySelector('.fold-section');
+
+        if (!foldToggle || !foldSection) {
+            console.warn('[Tutorial] 进阶设定结构不完整');
+            return false;
+        }
+
+        // 检查是否已展开
+        const isExpanded = foldSection.style.maxHeight !== '0px' && foldSection.style.maxHeight !== '';
+
+        if (!isExpanded) {
+            console.log('[Tutorial] 展开进阶设定');
+            foldToggle.click();
+            // 等待展开动画完成
+            await new Promise(resolve => setTimeout(resolve, 300));
+        }
+
+        return true;
+    }
+
+    /**
+     * 滚动元素到可视区域
+     * @param {Element} element - 要滚动到的元素
+     */
+    scrollIntoViewSmooth(element) {
+        if (!element) return;
+
+        element.scrollIntoView({
+            behavior: 'smooth',
+            block: 'center',
+            inline: 'nearest'
+        });
+    }
+
+    /**
      * 检查元素是否需要点击（用于折叠/展开组件）
      */
     shouldClickElement(element, selector) {
@@ -1697,6 +1912,126 @@ class UniversalTutorialManager {
     }
 
     /**
+     * 启用 popover 拖动功能
+     */
+    enablePopoverDragging() {
+        const popover = document.querySelector('.driver-popover');
+        if (!popover) {
+            console.log('[Tutorial] 未找到 popover 元素');
+            return;
+        }
+
+        // 如果已经启用，先清理旧的监听器
+        if (popover.dataset.draggableEnabled === 'true' && popover._dragListeners) {
+            console.log('[Tutorial] Popover 已启用拖动，先清理旧监听器');
+            const { onMouseDown, onMouseMove, onMouseUp, dragElement } = popover._dragListeners;
+            if (dragElement) {
+                dragElement.removeEventListener('mousedown', onMouseDown);
+            }
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+            delete popover._dragListeners;
+            delete popover.dataset.draggableEnabled;
+        }
+
+        // 尝试多个可能的标题选择器
+        const possibleTitleSelectors = [
+            '.driver-popover-title',
+            '.driver-popover-header',
+            'header',
+            '.popover-title'
+        ];
+
+        let popoverTitle = null;
+        for (const selector of possibleTitleSelectors) {
+            popoverTitle = popover.querySelector(selector);
+            if (popoverTitle) {
+                console.log(`[Tutorial] 找到 popover 标题元素: ${selector}`);
+                break;
+            }
+        }
+
+        // 如果找不到标题，使用整个 popover 作为拖动区域
+        if (!popoverTitle) {
+            console.log('[Tutorial] 未找到 popover 标题元素，使用整个 popover 作为拖动区域');
+            popoverTitle = popover;
+        }
+
+        // 标记为可拖动
+        popover.dataset.draggableEnabled = 'true';
+        popoverTitle.style.cursor = 'move';
+        popoverTitle.style.userSelect = 'none';
+        popoverTitle.title = '按住拖动以移动提示框';
+
+        let isDragging = false;
+        let startX = 0;
+        let startY = 0;
+        let initialX = 0;
+        let initialY = 0;
+
+        const onMouseDown = (e) => {
+            // 只在点击标题区域时启动拖动（避免影响按钮点击）
+            if (e.target.closest('button')) {
+                return;
+            }
+
+            isDragging = true;
+            startX = e.clientX;
+            startY = e.clientY;
+
+            // 获取当前 popover 的位置
+            const rect = popover.getBoundingClientRect();
+            initialX = rect.left;
+            initialY = rect.top;
+
+            // 移除 driver.js 的定位样式，切换到固定定位
+            popover.style.position = 'fixed';
+            popover.style.left = initialX + 'px';
+            popover.style.top = initialY + 'px';
+            popover.style.margin = '0';
+            popover.style.transform = 'none';
+            popover.style.zIndex = '10000';
+
+            e.preventDefault();
+            e.stopPropagation();
+        };
+
+        const onMouseMove = (e) => {
+            if (!isDragging) return;
+
+            const deltaX = e.clientX - startX;
+            const deltaY = e.clientY - startY;
+
+            const newX = initialX + deltaX;
+            const newY = initialY + deltaY;
+
+            popover.style.left = newX + 'px';
+            popover.style.top = newY + 'px';
+        };
+
+        const onMouseUp = () => {
+            if (isDragging) {
+                isDragging = false;
+            }
+        };
+
+        // 添加事件监听器
+        popoverTitle.addEventListener('mousedown', onMouseDown, { passive: false });
+        document.addEventListener('mousemove', onMouseMove, { passive: true });
+        document.addEventListener('mouseup', onMouseUp, { passive: true });
+
+        // 保存监听器引用，以便清理
+        popover._dragListeners = {
+            onMouseDown,
+            onMouseMove,
+            onMouseUp,
+            dragElement: popoverTitle
+        };
+
+        console.log('[Tutorial] Popover 拖动功能已启用');
+    }
+
+    /**
      * 步骤改变时的回调
      */
     onStepChange() {
@@ -1709,8 +2044,20 @@ class UniversalTutorialManager {
         if (this.currentStep < steps.length) {
             const currentStepConfig = steps[this.currentStep];
 
-            // 进入新步骤前，先清理上一阶段的“下一步”前置校验
+            // 进入新步骤前，先清理上一阶段的"下一步"前置校验
             this.clearNextButtonGuard();
+
+            // 根据步骤配置启用/禁用模型交互（点击模型触发表情动作）
+            const live2dCanvas = document.getElementById('live2d-canvas');
+            if (live2dCanvas) {
+                if (currentStepConfig.enableModelInteraction) {
+                    live2dCanvas.style.pointerEvents = 'auto';
+                    console.log('[Tutorial] 启用模型交互');
+                } else {
+                    live2dCanvas.style.pointerEvents = 'none';
+                    console.log('[Tutorial] 禁用模型交互');
+                }
+            }
 
             // 情感配置页面：未选择模型时禁止进入下一步
             if (this.currentPage === 'emotion_manager' &&
@@ -1854,6 +2201,12 @@ class UniversalTutorialManager {
                 }
             }
         }
+
+        // 在步骤切换后，延迟启用 popover 拖动功能
+        // 因为 driver.js 可能会重新渲染 popover
+        setTimeout(() => {
+            this.enablePopoverDragging();
+        }, 200);
     }
 
     /**
@@ -1921,6 +2274,20 @@ class UniversalTutorialManager {
             clearInterval(this.floatingButtonsProtectionTimer);
             this.floatingButtonsProtectionTimer = null;
             console.log('[Tutorial] 浮动工具栏保护定时器已清除');
+        }
+
+        // 清理 popover 拖动监听器
+        const popover = document.querySelector('.driver-popover');
+        if (popover && popover._dragListeners) {
+            const { onMouseDown, onMouseMove, onMouseUp, dragElement } = popover._dragListeners;
+            if (dragElement) {
+                dragElement.removeEventListener('mousedown', onMouseDown);
+            }
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+            delete popover._dragListeners;
+            delete popover.dataset.draggableEnabled;
+            console.log('[Tutorial] Popover 拖动监听器已清除');
         }
 
         // 恢复所有在引导中修改过的元素的原始样式

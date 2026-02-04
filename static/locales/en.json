@@ -1297,7 +1297,19 @@
   "tutorial": {
     "step1": {
       "title": "👋 Welcome to N.E.K.O",
-      "desc": "Your virtual companion. Click her to trigger different expressions and actions~"
+      "desc": "This is your virtual companion! Let me guide you through the features~"
+    },
+    "step1a": {
+      "title": "🎭 Click to Experience Expressions",
+      "desc": "Try clicking on the model! Each click triggers different expressions and actions. Click Next when you're done~"
+    },
+    "step1b": {
+      "title": "🖱️ Drag & Zoom",
+      "desc": "You can drag the model to move it, and use mouse wheel to zoom in/out. Give it a try~"
+    },
+    "step1c": {
+      "title": "🔒 Lock Model",
+      "desc": "Click this lock to lock the model position, preventing accidental moves. Click again to unlock~"
     },
     "step2": {
       "title": "💬 Chat Area",
