@@ -259,6 +259,15 @@ class OmniOfflineClient:
         try:
             self._is_responding = True
             
+            # 防御性检查：确保对话历史中至少有用户消息
+            has_user_message = any(isinstance(msg, HumanMessage) for msg in self._conversation_history)
+            if not has_user_message:
+                error_msg = "对话历史中没有用户消息，无法生成回复"
+                logger.error(f"OmniOfflineClient: {error_msg}")
+                if self.handle_connection_error:
+                    await self.handle_connection_error(error_msg)
+                return
+            
             for attempt in range(max_retries):
                 try:
                     assistant_message = ""
