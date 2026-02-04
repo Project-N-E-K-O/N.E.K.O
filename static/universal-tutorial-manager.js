@@ -1201,6 +1201,7 @@ class UniversalTutorialManager {
 
         // 对于设置页面和记忆浏览页面，禁用页面滚动以防止用户在引导中滚动页面导致问题
         if (this.currentPage === 'settings' || this.currentPage === 'memory_browser') {
+            this._originalBodyOverflow = document.body.style.overflow;
             document.body.style.overflow = 'hidden';
             console.log('[Tutorial] 禁用页面滚动');
         }
@@ -1573,16 +1574,19 @@ class UniversalTutorialManager {
             return;
         }
 
-        // 如果已经启用，先清理旧的监听器
-        if (popover.dataset.draggableEnabled === 'true' && popover._dragListeners) {
-            console.log('[Tutorial] Popover 已启用拖动，先清理旧监听器');
-            const { onMouseDown, onMouseMove, onMouseUp, dragElement } = popover._dragListeners;
+        // 始终先清理旧的监听器（从 manager 对象获取引用）
+        if (this._popoverDragListeners) {
+            console.log('[Tutorial] 清理旧的 popover 拖动监听器');
+            const { onMouseDown, onMouseMove, onMouseUp, dragElement } = this._popoverDragListeners;
             if (dragElement) {
                 dragElement.removeEventListener('mousedown', onMouseDown);
             }
             document.removeEventListener('mousemove', onMouseMove);
             document.removeEventListener('mouseup', onMouseUp);
-            delete popover._dragListeners;
+            this._popoverDragListeners = undefined;
+        }
+        // 清除任何 popover 上的旧标记
+        if (popover.dataset.draggableEnabled) {
             delete popover.dataset.draggableEnabled;
         }
 
@@ -1672,8 +1676,8 @@ class UniversalTutorialManager {
         document.addEventListener('mousemove', onMouseMove, { passive: true });
         document.addEventListener('mouseup', onMouseUp, { passive: true });
 
-        // 保存监听器引用，以便清理
-        popover._dragListeners = {
+        // 保存监听器引用到 manager 对象，以便清理
+        this._popoverDragListeners = {
             onMouseDown,
             onMouseMove,
             onMouseUp,
@@ -1910,7 +1914,8 @@ class UniversalTutorialManager {
 
         // 对于设置页面和记忆浏览页面，恢复页面滚动
         if (this.currentPage === 'settings' || this.currentPage === 'memory_browser') {
-            document.body.style.overflow = '';
+            document.body.style.overflow = this._originalBodyOverflow ?? '';
+            this._originalBodyOverflow = undefined;
             console.log('[Tutorial] 恢复页面滚动');
         }
 
@@ -1943,18 +1948,20 @@ class UniversalTutorialManager {
             console.log('[Tutorial] 浮动工具栏保护定时器已清除');
         }
 
-        // 清理 popover 拖动监听器
-        const popover = document.querySelector('.driver-popover');
-        if (popover && popover._dragListeners) {
-            const { onMouseDown, onMouseMove, onMouseUp, dragElement } = popover._dragListeners;
+        // 清理 popover 拖动监听器（从 manager 对象获取引用）
+        if (this._popoverDragListeners) {
+            const { onMouseDown, onMouseMove, onMouseUp, dragElement } = this._popoverDragListeners;
             if (dragElement) {
                 dragElement.removeEventListener('mousedown', onMouseDown);
             }
             document.removeEventListener('mousemove', onMouseMove);
             document.removeEventListener('mouseup', onMouseUp);
-            delete popover._dragListeners;
-            delete popover.dataset.draggableEnabled;
+            this._popoverDragListeners = undefined;
             console.log('[Tutorial] Popover 拖动监听器已清除');
+        }
+        const popover = document.querySelector('.driver-popover');
+        if (popover && popover.dataset.draggableEnabled) {
+            delete popover.dataset.draggableEnabled;
         }
 
         // 恢复所有在引导中修改过的元素的原始样式
@@ -2234,6 +2241,12 @@ class UniversalTutorialManager {
      * 重新启动当前页面的引导
      */
     restartCurrentTutorial() {
+        // 先销毁现有的 driver 以避免残留的监听器和遮罩
+        if (this.driver) {
+            this.driver.destroy();
+            this.driver = null;
+        }
+
         // 清除当前页面的引导记录
         const storageKey = this.getStorageKey();
         localStorage.removeItem(storageKey);
@@ -2301,7 +2314,7 @@ function resetAllTutorials() {
         // 如果管理器未初始化，直接清除 localStorage
         const prefix = 'neko_tutorial_';
         const pages = ['home', 'model_manager', 'model_manager_live2d', 'model_manager_vrm', 'model_manager_common', 'parameter_editor', 'emotion_manager', 'chara_manager', 'settings', 'voice_clone', 'steam_workshop', 'memory_browser'];
-        pages.forEach(page => localStorage.removeItem(prefix + page));
+        pages.forEach(page => { localStorage.removeItem(prefix + page); });
     }
     alert(window.t ? window.t('api.tutorialResetSuccess', '已重置所有引导，下次进入各页面时将重新显示引导。') : '已重置所有引导，下次进入各页面时将重新显示引导。');
 }
