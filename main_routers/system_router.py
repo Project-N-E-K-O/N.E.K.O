@@ -16,6 +16,7 @@ import logging
 import re
 import time
 import json
+import threading
 from urllib.parse import unquote
 
 from fastapi import APIRouter, Request
@@ -65,6 +66,9 @@ def _get_app_root():
         return os.getcwd()
 
 
+_LOCAL_PLAYTIME_LOCK = threading.Lock()
+
+
 def _get_local_playtime_path() -> str:
     cfg = get_config_manager()
     try:
@@ -84,27 +88,32 @@ def _get_local_playtime_path() -> str:
 
 def _load_local_playtime() -> int:
     path = _get_local_playtime_path()
-    try:
-        if os.path.exists(path):
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                value = int(data.get('playtime_seconds', 0))
-            else:
-                value = int(data)
-            return max(0, value)
-    except Exception as e:
-        logger.warning(f"读取本地时长失败，使用 0: {e}")
-    return 0
+    with _LOCAL_PLAYTIME_LOCK:
+        try:
+            if os.path.exists(path):
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    value = int(data.get('playtime_seconds', 0))
+                else:
+                    value = int(data)
+                return max(0, value)
+        except Exception as e:
+            logger.warning(f"读取本地时长失败，使用 0: {e}")
+        return 0
 
 
 def _save_local_playtime(seconds: int) -> None:
     path = _get_local_playtime_path()
-    try:
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump({"playtime_seconds": int(seconds)}, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.warning(f"保存本地时长失败: {e}")
+    with _LOCAL_PLAYTIME_LOCK:
+        try:
+            base_dir = os.path.dirname(path) or os.getcwd()
+            temp_path = f"{path}.tmp"
+            with open(temp_path, 'w', encoding='utf-8') as f:
+                json.dump({"playtime_seconds": int(seconds)}, f, ensure_ascii=False, indent=2)
+            os.replace(temp_path, path)
+        except Exception as e:
+            logger.warning(f"保存本地时长失败: {e}")
         
 @router.post('/emotion/analysis')
 async def emotion_analysis(request: Request):
