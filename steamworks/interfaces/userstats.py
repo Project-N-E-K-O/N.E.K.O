@@ -61,6 +61,8 @@ class SteamUserStats(object):
         :param name: str
         :return: float
         """
+        if isinstance(name, str):
+            name = name.encode('utf-8')
         return self.steam.GetStatFloat(name)
 
 
@@ -70,6 +72,8 @@ class SteamUserStats(object):
         :param name: str
         :return: float
         """
+        if isinstance(name, str):
+            name = name.encode('utf-8')
         return self.steam.GetStatInt(name)
 
 
@@ -108,6 +112,8 @@ class SteamUserStats(object):
         :param value: float, int
         :return:
         """
+        if isinstance(name, str):
+            name = name.encode('utf-8')
         if isinstance(value, float):
             return self.steam.SetStatFloat(name, value)
 
