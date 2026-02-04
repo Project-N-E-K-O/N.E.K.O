@@ -66,11 +66,11 @@ class SteamUserStats(object):
         return self.steam.GetStatFloat(name)
 
 
-    def GetStatInt(self, name: str) -> float:
+    def GetStatInt(self, name: str) -> int:
         """Get the value of an integer statistic
 
         :param name: str
-        :return: float
+        :return: int
         """
         if isinstance(name, str):
             name = name.encode('utf-8')
