@@ -949,7 +949,13 @@ class LLMSessionManager:
                 
                 # 🔥 预热逻辑：对于语音模式，立即触发一次 skipped response 来 prefill instructions
                 # 这样可以大幅减少首轮对话的延迟（让 API 提前处理并缓存 instructions 的 KV cache）
-                if isinstance(self.session, OmniRealtimeClient):
+                # 注意：Gemini 和 Free 模型跳过预热，因为：
+                #   - Gemini: prefill 本身足够快，发送空内容会污染对话历史
+                #   - Free: 底层使用 Gemini，同样会导致首轮对话被吞
+                skip_warmup_api_types = ['gemini', 'free']
+                session_api_type = getattr(self.session, '_api_type', '').lower()
+                should_warmup = isinstance(self.session, OmniRealtimeClient) and session_api_type not in skip_warmup_api_types
+                if should_warmup:
                     try:
                         logger.info("🔥 开始预热 Session，prefill instructions...")
                         warmup_start = time.time()

@@ -1081,7 +1081,23 @@ async def proactive_chat(request: Request):
             if not mgr.session or not hasattr(mgr.session, '_conversation_history'):
                 logger.info(f"[{lanlan_name}] 没有活跃session，创建文本session用于主动搭话")
                 # 使用现有的真实websocket启动session
-                await mgr.start_session(mgr.websocket, new=True, input_mode='text')
+                try:
+                    await mgr.start_session(mgr.websocket, new=True, input_mode='text')
+                except Exception as e:
+                    logger.error(f"[{lanlan_name}] 创建文本session失败: {e}")
+                    return JSONResponse({
+                        "success": False,
+                        "error": f"创建文本session失败: {str(e)}"
+                    }, status_code=500)
+                
+                # 验证session是否正确创建
+                if not mgr.session or not hasattr(mgr.session, '_conversation_history'):
+                    logger.error(f"[{lanlan_name}] 文本session创建后验证失败")
+                    return JSONResponse({
+                        "success": False,
+                        "error": "文本session创建失败，无法进行主动搭话"
+                    }, status_code=500)
+                
                 session_created = True
                 logger.info(f"[{lanlan_name}] 文本session已创建")
             

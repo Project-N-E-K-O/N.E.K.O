@@ -790,36 +790,20 @@ class VRMCore {
             
             if (!hasSavedRotation && typeof this.saveUserPreferences === 'function') {
                 // 标准化位置为普通对象 {x, y, z}
-                let currentPosition;
-                if (preferences?.position) {
-                    currentPosition = {
-                        x: preferences.position.x,
-                        y: preferences.position.y,
-                        z: preferences.position.z
-                    };
-                } else {
-                    currentPosition = {
-                        x: vrm.scene.position.x,
-                        y: vrm.scene.position.y,
-                        z: vrm.scene.position.z
-                    };
-                }
+                // 始终从 vrm.scene 获取当前位置，确保 z 值有效
+                // （旧版偏好设置可能只有 x 和 y，没有 z 值）
+                const currentPosition = {
+                    x: vrm.scene.position.x,
+                    y: vrm.scene.position.y,
+                    z: vrm.scene.position.z
+                };
                 
                 // 标准化缩放为普通对象 {x, y, z}
-                let currentScale;
-                if (preferences?.scale) {
-                    currentScale = {
-                        x: preferences.scale.x,
-                        y: preferences.scale.y,
-                        z: preferences.scale.z
-                    };
-                } else {
-                    currentScale = {
-                        x: vrm.scene.scale.x,
-                        y: vrm.scene.scale.y,
-                        z: vrm.scene.scale.z
-                    };
-                }
+                const currentScale = {
+                    x: vrm.scene.scale.x,
+                    y: vrm.scene.scale.y,
+                    z: vrm.scene.scale.z
+                };
                 
                 this.saveUserPreferences(
                     modelUrl,
