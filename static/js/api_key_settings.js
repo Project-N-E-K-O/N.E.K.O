@@ -509,6 +509,13 @@ async function scanGptSovitsModelsAndSelect(gptModelPath, sovitsModelPath) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ base_path: basePath })
         });
+        
+        if (!response.ok) {
+            console.warn('Failed to scan GPT-SoVITS models: HTTP', response.status);
+            updateGptSovitsModelDropdowns([], [], null, null);
+            return;
+        }
+        
         const result = await response.json();
         
         if (result.success) {
@@ -593,12 +600,28 @@ function getGptSovitsConfigForSave() {
     const effectiveApiUrl = apiUrl || 'http://127.0.0.1:9880';
     
     const advanced = {};
-    if (speed && speed !== '1.0' && speed !== '1') advanced.speed = parseFloat(speed);
-    if (topK && topK !== '15') advanced.top_k = parseInt(topK);
-    if (topP && topP !== '1.0' && topP !== '1') advanced.top_p = parseFloat(topP);
-    if (temperature && temperature !== '1.0' && temperature !== '1') advanced.temperature = parseFloat(temperature);
+    const parseAndValidate = (val, parser) => { const n = parser(val); return isNaN(n) ? null : n; };
+    if (speed && speed !== '1.0' && speed !== '1') {
+        const v = parseAndValidate(speed, parseFloat);
+        if (v !== null) advanced.speed = v;
+    }
+    if (topK && topK !== '15') {
+        const v = parseAndValidate(topK, parseInt);
+        if (v !== null) advanced.top_k = v;
+    }
+    if (topP && topP !== '1.0' && topP !== '1') {
+        const v = parseAndValidate(topP, parseFloat);
+        if (v !== null) advanced.top_p = v;
+    }
+    if (temperature && temperature !== '1.0' && temperature !== '1') {
+        const v = parseAndValidate(temperature, parseFloat);
+        if (v !== null) advanced.temperature = v;
+    }
     if (cutMethod && cutMethod !== 'cut5') advanced.cut_method = cutMethod;
-    if (seed && seed !== '-1') advanced.seed = parseInt(seed);
+    if (seed && seed !== '-1') {
+        const v = parseAndValidate(seed, parseInt);
+        if (v !== null) advanced.seed = v;
+    }
     if (basePath) advanced.base_path = basePath;
     if (gptModel) advanced.gpt_model = gptModel;
     if (sovitsModel) advanced.sovits_model = sovitsModel;
@@ -669,6 +692,12 @@ async function scanGptSovitsModels() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ base_path: basePath })
         });
+        
+        if (!response.ok) {
+            showStatus((window.t ? window.t('api.gptsovitsScanFailed') : '扫描失败: ') + 'HTTP ' + response.status, 'error');
+            return;
+        }
+        
         const result = await response.json();
         
         if (result.success) {
