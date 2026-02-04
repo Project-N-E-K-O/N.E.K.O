@@ -1187,13 +1187,130 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                 break
         return
     
-    async def async_worker():
-        """异步TTS worker主循环"""
-        current_speech_id = None
-        text_buffer = []  # 累积文本缓冲区
+    # 句子边界检测符号（包含逗号级切分以降低延迟）
+    # 优先级：句号级 > 逗号级
+    SENTENCE_ENDINGS = set('。！？.!?')
+    CLAUSE_ENDINGS = set('，,、；;：:')
+    
+    async def synthesize_text_to_buffer(text: str, session: 'aiohttp.ClientSession') -> bytes:
+        """
+        合成单个文本片段，返回完整的重采样后音频数据
+        用于并行请求 + 有序输出
+        """
+        if not text.strip():
+            return b''
         
-        # GPT-SoVITS 是基于 HTTP 的，无需建立持久连接，直接发送就绪信号
-        logger.info(f"GPT-SoVITS TTS 已就绪: {base_url}")
+        params = {
+            "text": text,
+            "text_lang": text_lang,
+            "ref_audio_path": ref_audio_path,
+            "prompt_text": prompt_text,
+            "prompt_lang": prompt_lang,
+            "text_split_method": advanced_params['text_split_method'],
+            "media_type": "wav",
+            "streaming_mode": 1,
+            "parallel_infer": False,  # 关闭并行推理，实现真正的流式效果
+            "speed_factor": advanced_params['speed_factor'],
+            "top_k": advanced_params['top_k'],
+            "top_p": advanced_params['top_p'],
+            "temperature": advanced_params['temperature'],
+            "seed": advanced_params['seed'],
+        }
+        
+        try:
+            async with session.post(f"{base_url}/tts", json=params, timeout=aiohttp.ClientTimeout(total=120)) as resp:
+                if resp.status == 200:
+                    header_buf = bytearray()
+                    header_parsed = False
+                    src_rate = 32000
+                    audio_data = bytearray()
+                    
+                    async for chunk in resp.content.iter_chunked(8192):
+                        if not chunk:
+                            continue
+                        
+                        if not header_parsed:
+                            header_buf.extend(chunk)
+                            if len(header_buf) < 44:
+                                continue
+                            src_rate = int.from_bytes(header_buf[24:28], 'little')
+                            if len(header_buf) > 44:
+                                audio_data.extend(header_buf[44:])
+                            header_parsed = True
+                        else:
+                            audio_data.extend(chunk)
+                    
+                    if not header_parsed:
+                        logger.warning(f"GPT-SoVITS 响应不完整: {text[:30]}...")
+                        return b''
+                    
+                    if len(audio_data) < 2:
+                        return b''
+                    
+                    # 确保偶数长度
+                    if len(audio_data) % 2 != 0:
+                        audio_data = audio_data[:-1]
+                    
+                    audio_array = np.frombuffer(bytes(audio_data), dtype=np.int16)
+                    
+                    # 重采样到 48000Hz
+                    if src_rate != 48000 and len(audio_array) > 0:
+                        audio_float = audio_array.astype(np.float32) / 32768.0
+                        resampled = soxr.resample(audio_float, src_rate, 48000, quality='VHQ')
+                        resampled_int16 = (resampled * 32768.0).clip(-32768, 32767).astype(np.int16)
+                        return resampled_int16.tobytes()
+                    else:
+                        return bytes(audio_data)
+                else:
+                    error_text = await resp.text()
+                    logger.error(f"GPT-SoVITS API 错误 ({resp.status}): {error_text}")
+                    return b''
+        except asyncio.TimeoutError:
+            logger.error(f"GPT-SoVITS 请求超时: {text[:50]}...")
+            return b''
+        except aiohttp.ClientError as e:
+            logger.error(f"GPT-SoVITS 连接错误: {e}")
+            return b''
+        except Exception as e:
+            logger.error(f"GPT-SoVITS 合成失败: {e}")
+            return b''
+    
+    def extract_sentences(text_buffer: list, min_clause_len: int = 6) -> tuple:
+        """
+        从缓冲区提取可合成的文本片段，返回 (片段列表, 剩余文本列表)
+        
+        策略：
+        1. 遇到句号级标点立即切分
+        2. 遇到逗号级标点且累积长度 >= min_clause_len 时切分
+        3. 太短的片段继续累积，避免语音碎片化
+        """
+        full_text = "".join(text_buffer)
+        segments = []
+        current = []
+        
+        for char in full_text:
+            current.append(char)
+            current_len = len(current)
+            
+            # 句号级：立即切分
+            if char in SENTENCE_ENDINGS:
+                segments.append("".join(current))
+                current = []
+            # 逗号级：长度足够时切分
+            elif char in CLAUSE_ENDINGS and current_len >= min_clause_len:
+                segments.append("".join(current))
+                current = []
+        
+        # 返回可合成片段和剩余部分
+        remaining = "".join(current)
+        return segments, [remaining] if remaining else []
+    
+    async def async_worker():
+        """异步TTS worker主循环 - 串行请求保证顺序"""
+        current_speech_id = None
+        text_buffer = []
+        
+        logger.info(f"GPT-SoVITS TTS 已就绪 (串行模式): {base_url}")
         logger.info(f"  参考音频: {ref_audio_path}")
         logger.info(f"  参考文本: {prompt_text[:50]}..." if len(prompt_text) > 50 else f"  参考文本: {prompt_text}")
         response_queue.put(("__ready__", True))
@@ -1201,116 +1318,46 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
         try:
             loop = asyncio.get_running_loop()
             
-            while True:
-                try:
-                    sid, tts_text = await loop.run_in_executor(None, request_queue.get)
-                except Exception:
-                    break
-                
-                # 新的语音ID，清空缓冲区并重新开始
-                if current_speech_id != sid and sid is not None:
-                    current_speech_id = sid
-                    text_buffer = []
-                
-                if sid is None:
-                    # 收到终止信号，合成累积的文本
-                    if text_buffer and current_speech_id is not None:
-                        full_text = "".join(text_buffer)
-                        if full_text.strip():
-                            try:
-                                # 构建请求参数（使用 api_v2 的 /tts 端点）
-                                params = {
-                                    "text": full_text,
-                                    "text_lang": text_lang,
-                                    "ref_audio_path": ref_audio_path,
-                                    "prompt_text": prompt_text,
-                                    "prompt_lang": prompt_lang,
-                                    "text_split_method": advanced_params['text_split_method'],
-                                    "media_type": "wav",
-                                    "streaming_mode": 1,  # 流式输出，最佳质量
-                                    "speed_factor": advanced_params['speed_factor'],
-                                    "top_k": advanced_params['top_k'],
-                                    "top_p": advanced_params['top_p'],
-                                    "temperature": advanced_params['temperature'],
-                                    "seed": advanced_params['seed'],
-                                }
-                                
-                                logger.debug(f"GPT-SoVITS 合成请求: {full_text[:100]}...")
-                                
-                                # 使用异步HTTP客户端流式接收响应
-                                async with aiohttp.ClientSession() as session:
-                                    async with session.post(f"{base_url}/tts", json=params, timeout=aiohttp.ClientTimeout(total=120)) as resp:
-                                        if resp.status == 200:
-                                            # 流式接收音频数据
-                                            # GPT-SoVITS streaming_mode=1 返回带 wav header 的流
-                                            # 收集所有数据后统一处理，避免分块重采样产生电流音
-                                            audio_data = bytearray()
-                                            header_buf = bytearray()
-                                            header_parsed = False
-                                            src_rate = 32000  # 默认采样率
-                                            
-                                            async for chunk in resp.content.iter_chunked(8192):
-                                                if not chunk:
-                                                    continue
-                                                
-                                                # 先缓冲到 44 字节再解析 wav header
-                                                if not header_parsed:
-                                                    header_buf.extend(chunk)
-                                                    if len(header_buf) < 44:
-                                                        continue
-                                                    # wav header: bytes 24-27 是采样率 (little-endian)
-                                                    src_rate = int.from_bytes(header_buf[24:28], 'little')
-                                                    logger.debug(f"GPT-SoVITS 音频采样率: {src_rate}Hz")
-                                                    # 跳过 wav header（44 bytes），保留剩余数据
-                                                    if len(header_buf) > 44:
-                                                        audio_data.extend(header_buf[44:])
-                                                    header_parsed = True
-                                                    continue
-                                                
-                                                audio_data.extend(chunk)
-                                            
-                                            # 检查是否成功解析了 header
-                                            if not header_parsed:
-                                                logger.warning("GPT-SoVITS 响应数据不完整，未能解析 WAV header")
-                                                continue
-                                            
-                                            # 处理完整音频数据
-                                            if len(audio_data) > 0:
-                                                # 确保长度是偶数（int16 需要）
-                                                if len(audio_data) % 2 != 0:
-                                                    audio_data = audio_data[:-1]
-                                                
-                                                # 转换为 numpy 数组
-                                                audio_array = np.frombuffer(bytes(audio_data), dtype=np.int16)
-                                                
-                                                # 重采样到 48000Hz（统一处理避免接缝噪音）
-                                                if src_rate != 48000 and len(audio_array) > 0:
-                                                    audio_float = audio_array.astype(np.float32) / 32768.0
-                                                    resampled = soxr.resample(audio_float, src_rate, 48000, quality='VHQ')
-                                                    resampled_int16 = (resampled * 32768.0).clip(-32768, 32767).astype(np.int16)
-                                                    response_queue.put(resampled_int16.tobytes())
-                                                else:
-                                                    response_queue.put(bytes(audio_data))
-                                                    
-                                            logger.debug("GPT-SoVITS 合成完成")
-                                        else:
-                                            error_text = await resp.text()
-                                            logger.error(f"GPT-SoVITS API 错误 ({resp.status}): {error_text}")
-                            except asyncio.TimeoutError:
-                                logger.error("GPT-SoVITS 请求超时")
-                            except aiohttp.ClientError as e:
-                                logger.error(f"GPT-SoVITS 连接错误: {e}")
-                            except Exception as e:
-                                logger.error(f"GPT-SoVITS 合成失败: {e}")
+            async with aiohttp.ClientSession() as session:
+                while True:
+                    try:
+                        sid, tts_text = await loop.run_in_executor(None, request_queue.get)
+                    except Exception:
+                        break
                     
-                    # 清空缓冲区
-                    text_buffer = []
-                    current_speech_id = None
-                    continue
-                
-                # 累积文本到缓冲区（不立即发送）
-                if tts_text and tts_text.strip():
-                    text_buffer.append(tts_text)
+                    # 新的语音ID，清空缓冲区
+                    if current_speech_id != sid and sid is not None:
+                        current_speech_id = sid
+                        text_buffer = []
+                    
+                    if sid is None:
+                        # 收到终止信号，合成剩余文本
+                        if text_buffer and current_speech_id is not None:
+                            remaining_text = "".join(text_buffer)
+                            if remaining_text.strip():
+                                logger.debug(f"GPT-SoVITS 合成剩余: {remaining_text[:30]}...")
+                                audio_data = await synthesize_text_to_buffer(remaining_text, session)
+                                if audio_data:
+                                    response_queue.put(audio_data)
+                        
+                        text_buffer = []
+                        current_speech_id = None
+                        continue
+                    
+                    # 累积文本并检测句子边界
+                    if tts_text and tts_text.strip():
+                        text_buffer.append(tts_text)
+                        
+                        # 提取完整句子
+                        sentences, text_buffer = extract_sentences(text_buffer)
+                        
+                        # 串行处理每个句子（保证顺序）
+                        for sentence in sentences:
+                            if sentence.strip():
+                                logger.debug(f"GPT-SoVITS 合成: {sentence[:30]}...")
+                                audio_data = await synthesize_text_to_buffer(sentence, session)
+                                if audio_data:
+                                    response_queue.put(audio_data)
         
         except Exception as e:
             logger.error(f"GPT-SoVITS Worker 错误: {e}")
