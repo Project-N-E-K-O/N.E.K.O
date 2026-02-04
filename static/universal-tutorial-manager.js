@@ -2234,7 +2234,7 @@ class UniversalTutorialManager {
         // 重新初始化并启动引导
         this.isInitialized = false;
         this.isTutorialRunning = false;
-        this.init();
+        this.waitForDriver();
     }
 }
 
