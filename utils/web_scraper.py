@@ -1625,12 +1625,12 @@ async def main():
         print("正在获取热门内容（B站、微博）...")
     else:
         print("检测到非中文区域")
-        print("正在获取热门内容（YouTube、Twitter）...")
+        print("正在获取热门内容（Reddit、Twitter）...")
     
     content = await fetch_trending_content(
         bilibili_limit=5, 
         weibo_limit=5,
-        youtube_limit=5,
+        reddit_limit=5,
         twitter_limit=5
     )
     
