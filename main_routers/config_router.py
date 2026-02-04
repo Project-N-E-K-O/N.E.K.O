@@ -632,7 +632,7 @@ async def scan_gptsovits_models(request: Request):
         
         # 如果配置了允许的根目录，进行边界校验
         if allowed_root:
-            # 从 URL 中提取路径（如果是 http:// 开头则跳过校验）
+            # 从 URL 中提取路径（如果是 http:// 开头则拒绝扫描）
             if not allowed_root.startswith('http://') and not allowed_root.startswith('https://'):
                 allowed_root_path = Path(allowed_root).expanduser().resolve()
                 base_path_resolved = Path(base_path).expanduser().resolve()
@@ -643,11 +643,11 @@ async def scan_gptsovits_models(request: Request):
                     return {"success": False, "error": "base_path not within allowed directory"}
                 base_path = str(base_path_resolved)
             else:
-                base_path = os.path.expanduser(base_path)
-                base_path = os.path.abspath(base_path)
+                # HTTP URL 配置时，无法进行本地目录扫描
+                return {"success": False, "error": "gptsovits_base_path must be a local path for scanning"}
         else:
-            base_path = os.path.expanduser(base_path)
-            base_path = os.path.abspath(base_path)
+            # 未配置允许的根目录，拒绝扫描以防止任意目录枚举
+            return {"success": False, "error": "gptsovits_base_path not configured, cannot scan"}
         
         if not os.path.exists(base_path):
             return {"success": False, "error": f"Path does not exist: {base_path}"}

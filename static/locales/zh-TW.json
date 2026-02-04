@@ -676,6 +676,7 @@
     "gptsovitsRefAudio": "參考音頻路徑",
     "gptsovitsRefAudioHint": "（GPT-SoVITS 服務器上的絕對路徑）",
     "gptsovitsRefAudioPlaceholder": "如：/path/to/reference.wav",
+    "gptsovitsRefAudioRequired": "請填寫參考音頻路徑",
     "gptsovitsRefText": "參考文本",
     "gptsovitsRefTextHint": "（參考音頻對應的文字內容）",
     "gptsovitsRefTextPlaceholder": "如：這是參考音頻的文本內容",

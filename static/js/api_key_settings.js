@@ -518,6 +518,9 @@ async function scanGptSovitsModelsAndSelect(gptModelPath, sovitsModelPath) {
             gptsovitsModelCache.sovits_models = result.sovits_models;
             
             updateGptSovitsModelDropdowns(result.gpt_models, result.sovits_models, gptModelPath, sovitsModelPath);
+        } else {
+            console.warn('Failed to scan GPT-SoVITS models:', result.error);
+            updateGptSovitsModelDropdowns([], [], null, null);
         }
     } catch (e) {
         console.warn('Failed to scan GPT-SoVITS models:', e);
