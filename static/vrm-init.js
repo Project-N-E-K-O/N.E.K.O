@@ -11,18 +11,23 @@
 
     const loadModules = async () => {
         console.log('[VRM] 开始加载依赖模块');
-        const vrmModules = [
+        
+        // 可以并行加载的核心模块（无相互依赖）
+        const parallelModules = [
             '/static/vrm-orientation.js',
             '/static/vrm-core.js',
             '/static/vrm-expression.js',
             '/static/vrm-animation.js',
             '/static/vrm-interaction.js',
-            '/static/vrm-manager.js',
+            '/static/vrm-manager.js'
+        ];
+        
+        // 必须顺序加载的 UI 模块（vrm-ui-buttons.js 依赖 vrm-ui-popup.js 中定义的 createPopup）
+        const sequentialModules = [
             '/static/vrm-ui-popup.js',
             '/static/vrm-ui-buttons.js'
         ];
 
-        // 并行加载所有模块喵~
         const failedModules = [];
         const appendScriptSafely = (script) => {
             const attachScript = () => {
@@ -36,7 +41,7 @@
             }
         };
 
-        const loadPromises = vrmModules.map(moduleSrc => {
+        const loadScript = (moduleSrc) => {
             // 检查脚本是否已存在
             if (document.querySelector(`script[src^="${moduleSrc}"]`)) {
                 return Promise.resolve();
@@ -52,13 +57,20 @@
                 script.onerror = () => {
                     console.error(`[VRM] 模块加载失败: ${moduleSrc}`);
                     failedModules.push(moduleSrc);
-                    resolve(); // 即使失败也继续，防止 Promise.all 阻塞
+                    resolve(); // 即使失败也继续
                 };
                 appendScriptSafely(script);
             });
-        });
+        };
 
-        await Promise.all(loadPromises);
+        // 1. 并行加载核心模块
+        await Promise.all(parallelModules.map(loadScript));
+        
+        // 2. 顺序加载 UI 模块（确保 popup 在 buttons 之前完成）
+        for (const moduleSrc of sequentialModules) {
+            await loadScript(moduleSrc);
+        }
+
         if (failedModules.length === 0) {
             window.vrmModuleLoaded = true;
             window.dispatchEvent(new CustomEvent('vrm-modules-ready'));

@@ -39,25 +39,63 @@
 
         body {
             font-family: 'Source Han Sans CN', 'Noto Sans SC', '微软雅黑', 'Segoe UI', Arial, sans-serif;
-            background: var(--color-n-light);
+            background: transparent;
             color: var(--color-text-dark);
-            padding: var(--spacing-xl);
+            padding: 0;
+            margin: 0;
             min-height: 100vh;
         }
 
         .container {
-            max-width: 900px;
-            margin: 40px auto;
+            max-width: 100%;
+            margin: 0;
             background: white;
-            border-radius: var(--radius-card);
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            border-radius: 0;
+            box-shadow: none;
             overflow: hidden;
+            min-height: 100vh;
         }
 
         .header {
             background: var(--color-n-main);
             padding: 24px;
-            border-radius: var(--radius-card) var(--radius-card) 0 0;
+            border-radius: 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            -webkit-app-region: drag;
+        }
+
+        .header-content {
+            flex: 1;
+        }
+
+        .close-btn {
+            background: transparent;
+            border: none;
+            cursor: pointer;
+            padding: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: transform 0.2s ease, opacity 0.2s ease;
+            opacity: 0.9;
+            -webkit-app-region: no-drag;
+        }
+
+        .close-btn:hover {
+            transform: scale(1.1);
+            opacity: 1;
+        }
+
+        .close-btn:active {
+            transform: scale(0.95);
+        }
+
+        .close-btn img {
+            width: 32px;
+            height: 32px;
+            object-fit: contain;
         }
 
         .header h1 {
@@ -430,12 +468,21 @@
             }
         }
     </style>
+
+    <!-- Driver.js 新手引导库样式 -->
+    <link rel="stylesheet" href="/static/libs/driver.min.css">
+    <link rel="stylesheet" href="/static/css/tutorial-styles.css">
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1 data-text="Live2D 情感映射管理器">Live2D 情感映射管理器</h1>
-            <p>配置不同情绪下的动作和表情</p>
+            <div class="header-content">
+                <h1 data-text="Live2D 情感映射管理器">Live2D 情感映射管理器</h1>
+                <p>配置不同情绪下的动作和表情</p>
+            </div>
+            <button class="close-btn" onclick="window.close(); window.history.back();" title="关闭">
+                <img src="/static/icons/close_button.png" alt="关闭">
+            </button>
         </div>
 
         <div class="container-content">
@@ -980,6 +1027,19 @@
 
         // 初始化
         loadModelList();
+    </script>
+
+    <!-- Driver.js 新手引导库 -->
+    <script src="/static/libs/driver.min.js"></script>
+
+    <!-- 通用教程管理器 -->
+    <script src="/static/universal-tutorial-manager.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            if (typeof initUniversalTutorialManager === 'function') {
+                initUniversalTutorialManager();
+            }
+        });
     </script>
 </body>
 </html>

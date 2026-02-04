@@ -1,0 +1,255 @@
+/**
+ * N.E.K.O 新手引导样式定制
+ * 深色模式 + 磨砂玻璃风格
+ * 主题色：蓝色 (#44b7fe) + 淡粉色 (#ff69b4)
+ */
+
+/* ============================================
+   driver.js 全局样式覆盖
+   ============================================ */
+
+/* 高亮遮罩层 */
+.driver-overlay {
+    background: rgba(0, 0, 0, 0.6) !important;
+    pointer-events: none;
+}
+
+/* 确保对话框内容清晰 */
+#chat-container,
+#chat-container * {
+    filter: none !important;
+    opacity: 1 !important;
+    backdrop-filter: none !important;
+}
+
+/* 高亮框 */
+.driver-highlight {
+    box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.6),
+                0 0 20px rgba(68, 183, 254, 0.4) !important;
+    border-radius: 8px;
+}
+
+/* ============================================
+   弹窗容器样式
+   ============================================ */
+
+.driver-popover {
+    /* 磨砂玻璃效果 */
+    background: rgba(30, 30, 40, 0.95) !important;
+    backdrop-filter: blur(10px) !important;
+    border: 1px solid rgba(68, 183, 254, 0.3) !important;
+    border-radius: 12px !important;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4),
+                0 0 20px rgba(68, 183, 254, 0.2) !important;
+    padding: 20px !important;
+    max-width: 380px !important;
+    animation: slideIn 0.3s ease-out;
+}
+
+/* 弹窗标题 */
+.driver-popover-title {
+    color: #44b7fe !important;
+    font-size: 16px !important;
+    font-weight: 600 !important;
+    margin-bottom: 12px !important;
+    letter-spacing: 0.5px;
+}
+
+/* 弹窗描述文本 */
+.driver-popover-description {
+    color: rgba(255, 255, 255, 0.85) !important;
+    font-size: 14px !important;
+    line-height: 1.6 !important;
+    margin-bottom: 16px !important;
+}
+
+/* ============================================
+   按钮样式
+   ============================================ */
+
+/* 按钮容器 */
+.driver-popover-footer {
+    display: flex !important;
+    gap: 10px !important;
+    justify-content: flex-end !important;
+    margin-top: 16px !important;
+}
+
+/* 通用按钮基础样式 */
+.driver-popover-footer button {
+    padding: 8px 16px !important;
+    border-radius: 6px !important;
+    font-size: 13px !important;
+    font-weight: 500 !important;
+    cursor: pointer !important;
+    transition: all 0.2s ease !important;
+    border: none !important;
+    outline: none !important;
+}
+
+/* 上一步按钮 */
+.driver-popover-footer button:nth-child(1) {
+    background: rgba(68, 183, 254, 0.15) !important;
+    color: #44b7fe !important;
+    border: 1px solid rgba(68, 183, 254, 0.3) !important;
+}
+
+.driver-popover-footer button:nth-child(1):hover {
+    background: rgba(68, 183, 254, 0.25) !important;
+    border-color: rgba(68, 183, 254, 0.5) !important;
+    transform: translateY(-1px);
+}
+
+/* 下一步/完成按钮 */
+.driver-popover-footer button:nth-child(2) {
+    background: linear-gradient(135deg, #44b7fe 0%, #40C5F1 100%) !important;
+    color: #fff !important;
+}
+
+.driver-popover-footer button:nth-child(2):hover {
+    background: linear-gradient(135deg, #3aa8f0 0%, #38b8e3 100%) !important;
+    box-shadow: 0 4px 12px rgba(68, 183, 254, 0.4) !important;
+    transform: translateY(-2px);
+}
+
+/* 跳过按钮（如果有的话） */
+.driver-popover-footer button.skip-btn {
+    background: transparent !important;
+    color: rgba(255, 255, 255, 0.6) !important;
+    border: 1px solid rgba(255, 255, 255, 0.2) !important;
+}
+
+.driver-popover-footer button.skip-btn:hover {
+    background: rgba(255, 255, 255, 0.05) !important;
+    color: rgba(255, 255, 255, 0.9) !important;
+    border-color: rgba(255, 255, 255, 0.4) !important;
+}
+
+/* ============================================
+   箭头指示器
+   ============================================ */
+
+.driver-popover-arrow {
+    border-color: rgba(30, 30, 40, 0.95) !important;
+}
+
+/* 箭头边框 */
+.driver-popover-arrow::before {
+    border-color: rgba(68, 183, 254, 0.3) !important;
+}
+
+/* ============================================
+   步骤计数器
+   ============================================ */
+
+.driver-popover-footer::before {
+    content: attr(data-step) !important;
+    color: rgba(255, 255, 255, 0.5) !important;
+    font-size: 12px !important;
+    margin-right: auto !important;
+}
+
+/* ============================================
+   动画效果
+   ============================================ */
+
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateY(-10px) scale(0.95);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+@keyframes pulse {
+    0%, 100% {
+        box-shadow: 0 0 0 0 rgba(68, 183, 254, 0.7);
+    }
+    50% {
+        box-shadow: 0 0 0 10px rgba(68, 183, 254, 0);
+    }
+}
+
+/* 高亮元素脉冲效果 */
+.driver-highlight {
+    animation: pulse 2s infinite;
+}
+
+/* ============================================
+   响应式设计
+   ============================================ */
+
+@media (max-width: 768px) {
+    .driver-popover {
+        max-width: 90vw !important;
+        padding: 16px !important;
+    }
+
+    .driver-popover-title {
+        font-size: 15px !important;
+    }
+
+    .driver-popover-description {
+        font-size: 13px !important;
+    }
+
+    .driver-popover-footer button {
+        padding: 6px 12px !important;
+        font-size: 12px !important;
+    }
+}
+
+/* ============================================
+   深色主题适配
+   ============================================ */
+
+@media (prefers-color-scheme: dark) {
+    .driver-overlay {
+        background: rgba(0, 0, 0, 0.7) !important;
+    }
+
+    .driver-popover {
+        background: rgba(20, 20, 30, 0.98) !important;
+        border-color: rgba(68, 183, 254, 0.4) !important;
+    }
+}
+
+/* ============================================
+   自定义类名样式
+   ============================================ */
+
+.neko-tutorial-driver .driver-popover {
+    /* 额外的 N.E.K.O 品牌定制 */
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+                 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+                 sans-serif;
+}
+
+/* ============================================
+   无障碍支持
+   ============================================ */
+
+.driver-popover:focus-within {
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4),
+                0 0 20px rgba(68, 183, 254, 0.4),
+                0 0 0 3px rgba(68, 183, 254, 0.2) !important;
+}
+
+.driver-popover-footer button:focus-visible {
+    outline: 2px solid #44b7fe !important;
+    outline-offset: 2px !important;
+}
+
+/* ============================================
+   打印样式
+   ============================================ */
+
+@media print {
+    .driver-overlay,
+    .driver-popover {
+        display: none !important;
+    }
+}

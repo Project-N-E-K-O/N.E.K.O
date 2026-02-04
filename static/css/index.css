@@ -466,12 +466,13 @@ box-shadow: 0 4px 12px rgba(68, 183, 254, 0.4);
 z-index: 22;
 pointer-events: none;
 animation: slideInBounce 0.6s cubic-bezier(0.68, -0.55, 0.265, 1.55);
-transition: opacity 0.3s ease, transform 0.3s ease;
+transition: opacity 0.3s ease, transform 0.3s ease, visibility 0s linear 0.3s;
 }
 
 #chat-tooltip.hidden {
 opacity: 0;
 transform: translateX(-20px);
+visibility: hidden;
 pointer-events: none;
 }
 

@@ -5,23 +5,25 @@ body {
 height: 100%;
 margin: 0;
 padding: 0;
-background: rgba(0, 0, 0, 0.4);
-backdrop-filter: blur(4px);
+background: transparent;
 color: #333;
 font-family: 'Segoe UI', Arial, sans-serif;
 position: relative;
+overflow: auto; /* 允许 body 滚动 */
 }
 
-/* 主容器 - 浮动模态窗口样式 */
+/* 主容器 - 无边框窗口样式 */
 .container {
-max-width: 800px;
-margin: 40px auto;
+max-width: 100%;
+margin: 0;
 background: #fff;
-border-radius: 20px;
-box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+border-radius: 0;
+box-shadow: none;
 padding: 0;
-overflow: hidden;
+padding-bottom: 24px; /* 底部留出空间 */
+overflow: visible; /* 让内容自然扩展 */
 position: relative;
+min-height: 100vh;
 }
 
 /* 标题栏 */
@@ -31,7 +33,13 @@ padding: 18px 24px;
 display: flex;
 justify-content: space-between;
 align-items: center;
-border-radius: 20px 20px 0 0;
+border-radius: 0;
+-webkit-app-region: drag; /* 允许通过标题栏拖动窗口 */
+}
+
+/* 标题栏内的可交互元素需要禁用拖动 */
+.container-header .close-btn {
+-webkit-app-region: no-drag;
 }
 
 .container-header h2 {

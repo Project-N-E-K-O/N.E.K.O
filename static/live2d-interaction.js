@@ -284,6 +284,14 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     let isDragging = false;
     let dragStartPos = new PIXI.Point();
 
+    // 点击检测相关变量
+    let clickStartTime = 0;
+    let clickStartX = 0;
+    let clickStartY = 0;
+    let hasMoved = false;
+    const CLICK_THRESHOLD_DISTANCE = 10; // 移动距离阈值（像素）
+    const CLICK_THRESHOLD_TIME = 300; // 时间阈值（毫秒）
+
     // 使用 live2d-ui-drag.js 中的共享工具函数（按钮 pointer-events 管理）
     const disableButtonPointerEvents = () => {
         if (window.DragHelpers) {
@@ -294,6 +302,164 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     const restoreButtonPointerEvents = () => {
         if (window.DragHelpers) {
             window.DragHelpers.restoreButtonPointerEvents();
+        }
+    };
+
+    const playTutorialMotion = async () => {
+        if (!this.currentModel || !this.currentModel.motion) {
+            return false;
+        }
+
+        const fileRefMotions = this.fileReferences && this.fileReferences.Motions;
+        let motionGroups = [];
+
+        if (fileRefMotions && typeof fileRefMotions === 'object') {
+            motionGroups = Object.keys(fileRefMotions)
+                .filter(group => Array.isArray(fileRefMotions[group]) && fileRefMotions[group].length > 0);
+        }
+
+        if (motionGroups.length === 0 &&
+            this.currentModel.internalModel &&
+            this.currentModel.internalModel.motionManager &&
+            this.currentModel.internalModel.motionManager.definitions) {
+            const defs = this.currentModel.internalModel.motionManager.definitions;
+            motionGroups = Object.keys(defs)
+                .filter(group => Array.isArray(defs[group]) && defs[group].length > 0);
+        }
+
+        if (motionGroups.length === 0) {
+            return false;
+        }
+
+        const group = this.getRandomElement(motionGroups);
+        if (!group) return false;
+
+        const groupList =
+            (fileRefMotions && fileRefMotions[group]) ||
+            (this.currentModel.internalModel &&
+                this.currentModel.internalModel.motionManager &&
+                this.currentModel.internalModel.motionManager.definitions &&
+                this.currentModel.internalModel.motionManager.definitions[group]) ||
+            [];
+
+        if (!Array.isArray(groupList) || groupList.length === 0) {
+            return false;
+        }
+
+        const index = Math.floor(Math.random() * groupList.length);
+
+        try {
+            const motion = await this.currentModel.motion(group, index);
+            if (motion) {
+                console.log(`[Interaction] 教程模式 - 播放动作: ${group}[${index}]`);
+                return true;
+            }
+        } catch (error) {
+            console.warn('[Interaction] 教程模式 - 动作播放失败:', error);
+        }
+
+        return false;
+    };
+
+    // 点击触发随机表情和动作
+    const triggerRandomEmotion = async () => {
+        // 教程模式：直接随机播放表情
+        if (window.isInTutorial) {
+            console.log('[Interaction] 教程模式 - 随机播放表情');
+            try {
+                // 获取表情列表
+                let expressionNames = [];
+                if (this.fileReferences && Array.isArray(this.fileReferences.Expressions)) {
+                    expressionNames = this.fileReferences.Expressions.map(e => e.Name).filter(Boolean);
+                }
+
+                // 随机播放表情
+                if (expressionNames.length > 0) {
+                    const randomExpression = expressionNames[Math.floor(Math.random() * expressionNames.length)];
+                    console.log(`[Interaction] 教程模式 - 播放表情: ${randomExpression}`);
+                    await this.currentModel.expression(randomExpression);
+
+                    const playedMotion = await playTutorialMotion();
+
+                    if (!playedMotion) {
+                        // 动作不可用时，回退到参数动画模拟效果
+                        const model = this.currentModel.internalModel;
+                        if (model && model.coreModel) {
+                            // 随机晃动头部
+                            const angleXIndex = model.coreModel.getParameterIndex('ParamAngleX');
+                            const angleYIndex = model.coreModel.getParameterIndex('ParamAngleY');
+                            const bodyAngleXIndex = model.coreModel.getParameterIndex('ParamBodyAngleX');
+
+                            const duration = 1000 + Math.random() * 1000; // 1-2秒
+                            const startTime = Date.now();
+
+                            const setParamByIndex = (index, value) => {
+                                if (index < 0) return;
+                                if (typeof model.coreModel.setParameterValueByIndex === 'function') {
+                                    model.coreModel.setParameterValueByIndex(index, value);
+                                } else {
+                                    model.coreModel.setParameterValueById(index, value);
+                                }
+                            };
+
+                            const animate = () => {
+                                const elapsed = Date.now() - startTime;
+                                const progress = Math.min(elapsed / duration, 1);
+                                const t = progress * Math.PI * 2; // 一个完整周期
+
+                                setParamByIndex(angleXIndex, Math.sin(t) * 15); // -15 到 15 度
+                                setParamByIndex(angleYIndex, Math.cos(t) * 10); // -10 到 10 度
+                                setParamByIndex(bodyAngleXIndex, Math.sin(t * 0.5) * 5); // 更慢的身体晃动
+
+                                if (progress < 1) {
+                                    requestAnimationFrame(animate);
+                                } else {
+                                    // 动画结束，恢复默认值
+                                    setParamByIndex(angleXIndex, 0);
+                                    setParamByIndex(angleYIndex, 0);
+                                    setParamByIndex(bodyAngleXIndex, 0);
+                                }
+                            };
+
+                            animate();
+                            console.log('[Interaction] 教程模式 - 播放参数动画');
+                        }
+                    }
+                }
+            } catch (error) {
+                console.warn('[Interaction] 教程模式播放表情失败:', error);
+            }
+            return;
+        }
+
+        // 正常模式：使用情感系统
+        if (!this.emotionMapping) {
+            console.log('[Interaction] 没有情感映射配置，跳过点击触发');
+            return;
+        }
+
+        // 获取可用的情感列表
+        let availableEmotions = [];
+
+        // 从 emotionMapping 中获取可用情感
+        if (this.emotionMapping.expressions) {
+            availableEmotions = Object.keys(this.emotionMapping.expressions).filter(e => e !== '常驻');
+        }
+
+        // 如果没有配置情感，使用默认列表
+        if (availableEmotions.length === 0) {
+            availableEmotions = ['happy', 'sad', 'angry', 'neutral'];
+        }
+
+        // 随机选择一个情感
+        const randomEmotion = availableEmotions[Math.floor(Math.random() * availableEmotions.length)];
+        console.log(`[Interaction] 点击触发随机情感: ${randomEmotion}`);
+
+        // 触发情感
+        try {
+            await this.setEmotion(randomEmotion);
+        } catch (error) {
+            console.warn('[Interaction] 触发情感失败:', error);
         }
     };
 
@@ -312,6 +478,13 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         const globalPos = event.data.global;
         dragStartPos.x = globalPos.x - model.x;
         dragStartPos.y = globalPos.y - model.y;
+
+        // 记录点击开始信息
+        clickStartTime = Date.now();
+        clickStartX = globalPos.x;
+        clickStartY = globalPos.y;
+        hasMoved = false;
+
         document.getElementById('live2d-canvas').style.cursor = 'grabbing';
 
         // 开始拖动时，临时禁用按钮的 pointer-events
@@ -325,6 +498,15 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
 
             // 拖拽结束后恢复按钮的 pointer-events
             restoreButtonPointerEvents();
+
+            // 检测是否为点击（非拖拽）
+            const clickDuration = Date.now() - clickStartTime;
+            if (!hasMoved && clickDuration < CLICK_THRESHOLD_TIME) {
+                // 这是一个点击，触发随机表情和动作
+                console.log(`[Interaction] 检测到点击（时长: ${clickDuration}ms）`);
+                await triggerRandomEmotion();
+                return; // 点击不需要保存位置
+            }
 
             // 检测是否需要切换屏幕（多屏幕支持）
             // _checkAndSwitchDisplay returns true if a display switch occurred (and saved internally)
@@ -358,6 +540,14 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             // 这里假设 canvas 是全屏覆盖的
             const x = event.clientX;
             const y = event.clientY;
+
+            // 检测是否移动超过阈值
+            const moveDistance = Math.sqrt(
+                Math.pow(x - clickStartX, 2) + Math.pow(y - clickStartY, 2)
+            );
+            if (moveDistance > CLICK_THRESHOLD_DISTANCE) {
+                hasMoved = true;
+            }
 
             model.x = x - dragStartPos.x;
             model.y = y - dragStartPos.y;
@@ -522,10 +712,19 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
 
         if (this._goodbyeClicked) return;
 
+        // 引导模式下不隐藏浮动按钮
+        if (window.isInTutorial === true) return;
+
         // 如果已有定时器，不重复创建
         if (this._hideButtonsTimer) return;
 
         this._hideButtonsTimer = setTimeout(() => {
+            // 引导模式下不隐藏
+            if (window.isInTutorial === true) {
+                this._hideButtonsTimer = null;
+                return;
+            }
+
             // 再次检查鼠标是否在按钮区域内
             if (this._isMouseOverButtons) {
                 // 鼠标在按钮上，不隐藏，重新启动定时器
@@ -1233,4 +1432,3 @@ Live2DManager.prototype.destroy = function () {
 
     console.log('[Live2D] Live2DManager 实例已销毁');
 };
-

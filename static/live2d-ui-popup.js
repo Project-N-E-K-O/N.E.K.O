@@ -462,6 +462,7 @@ Live2DManager.prototype._createToggleItem = function (toggle, popup) {
 // 创建设置开关项
 Live2DManager.prototype._createSettingsToggleItem = function (toggle, popup) {
     const toggleItem = document.createElement('div');
+    toggleItem.id = `live2d-toggle-${toggle.id}`;  // 为整个切换项容器添加 ID
     Object.assign(toggleItem.style, {
         display: 'flex',
         alignItems: 'center',
@@ -743,6 +744,7 @@ Live2DManager.prototype._createSettingsMenuItems = function (popup) {
 // 创建单个菜单项
 Live2DManager.prototype._createMenuItem = function (item, isSubmenuItem = false) {
     const menuItem = document.createElement('div');
+    menuItem.id = `live2d-menu-${item.id}`;  // 为菜单项添加 ID
     Object.assign(menuItem.style, {
         display: 'flex',
         alignItems: 'center',
@@ -870,6 +872,10 @@ Live2DManager.prototype._createSubmenuContainer = function (submenuItems) {
         });
     };
     container._collapse = () => {
+        // 引导模式下，不收起子菜单
+        if (window.isInTutorial === true) {
+            return;
+        }
         container.style.height = '0';
         container.style.opacity = '0';
         setTimeout(() => {
