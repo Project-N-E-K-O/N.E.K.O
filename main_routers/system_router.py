@@ -27,10 +27,10 @@ import httpx
 
 from .shared_state import get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
 from config import get_extra_body, MEMORY_SERVER_PORT
-from config.prompts_sys import emotion_analysis_prompt, proactive_chat_prompt, proactive_chat_prompt_screenshot, proactive_chat_prompt_window_search, proactive_chat_rewrite_prompt
+from config.prompts_sys import emotion_analysis_prompt, get_proactive_chat_prompt, get_proactive_chat_rewrite_prompt
 from utils.workshop_utils import get_workshop_path
 from utils.screenshot_utils import analyze_screenshot_from_data_url
-from utils.language_utils import detect_language, translate_text, normalize_language_code
+from utils.language_utils import detect_language, translate_text, normalize_language_code, get_global_language
 
 router = APIRouter(prefix="/api", tags=["system"])
 logger = logging.getLogger("Main")
@@ -870,10 +870,20 @@ async def proactive_chat(request: Request):
             logger.warning(f"[{lanlan_name}] 获取记忆上下文失败，使用空上下文: {e}")
             memory_context = ""
         
-        # 3. 构造提示词（根据选择使用不同的模板）
+        # 3. 选择语言（用于主动搭话提示词 i18n）
+        try:
+            request_lang = data.get('language') or data.get('lang') or data.get('i18n_language')
+            if request_lang:
+                proactive_lang = normalize_language_code(request_lang, format='short')
+            else:
+                proactive_lang = get_global_language()
+        except Exception:
+            proactive_lang = 'zh'
+
+        # 4. 构造提示词（根据选择使用不同的模板）
         if use_screenshot:
             # 截图模板：基于屏幕内容让AI决定是否主动发起对话
-            system_prompt = proactive_chat_prompt_screenshot.format(
+            system_prompt = get_proactive_chat_prompt('screenshot', proactive_lang).format(
                 lanlan_name=lanlan_name,
                 master_name=master_name_current,
                 screenshot_content=screenshot_content,
@@ -882,7 +892,7 @@ async def proactive_chat(request: Request):
             logger.info(f"[{lanlan_name}] 使用图片进行主动对话")
         elif use_window_search:
             # 窗口搜索模板：基于当前活跃窗口和百度搜索结果让AI决定是否主动发起对话
-            system_prompt = proactive_chat_prompt_window_search.format(
+            system_prompt = get_proactive_chat_prompt('window', proactive_lang).format(
                 lanlan_name=lanlan_name,
                 master_name=master_name_current,
                 window_context=formatted_window_content,
@@ -891,7 +901,7 @@ async def proactive_chat(request: Request):
             logger.info(f"[{lanlan_name}] 使用窗口搜索进行主动对话")
         else:
             # 首页推荐模板：基于首页信息流让AI决定是否主动发起对话
-            system_prompt = proactive_chat_prompt.format(
+            system_prompt = get_proactive_chat_prompt('home', proactive_lang).format(
                 lanlan_name=lanlan_name,
                 master_name=master_name_current,
                 trending_content=formatted_content,
@@ -1020,7 +1030,7 @@ async def proactive_chat(request: Request):
                     )
                     
                     # 构造改写提示
-                    rewrite_prompt = proactive_chat_rewrite_prompt.format(raw_output=response_text)
+                    rewrite_prompt = get_proactive_chat_rewrite_prompt(proactive_lang).format(raw_output=response_text)
                     
                     # 调用改写模型
                     rewrite_response = await asyncio.wait_for(

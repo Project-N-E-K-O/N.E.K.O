@@ -2,7 +2,7 @@
 网络爬虫模块，用于获取各平台的热门内容
 支持基于区域的内容获取：
 - 中文区域：B站和微博
-- 非中文区域：YouTube和Twitter
+- 非中文区域：Reddit和Twitter
 同时支持获取活跃窗口标题和搜索功能
 """
 import asyncio
@@ -1625,12 +1625,12 @@ async def main():
         print("正在获取热门内容（B站、微博）...")
     else:
         print("检测到非中文区域")
-        print("正在获取热门内容（YouTube、Twitter）...")
+        print("正在获取热门内容（Reddit、Twitter）...")
     
     content = await fetch_trending_content(
         bilibili_limit=5, 
         weibo_limit=5,
-        youtube_limit=5,
+        reddit_limit=5,
         twitter_limit=5
     )
     
