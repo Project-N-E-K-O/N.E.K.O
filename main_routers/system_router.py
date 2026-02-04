@@ -107,7 +107,6 @@ def _save_local_playtime(seconds: int) -> None:
     path = _get_local_playtime_path()
     with _LOCAL_PLAYTIME_LOCK:
         try:
-            base_dir = os.path.dirname(path) or os.getcwd()
             temp_path = f"{path}.tmp"
             with open(temp_path, 'w', encoding='utf-8') as f:
                 json.dump({"playtime_seconds": int(seconds)}, f, ensure_ascii=False, indent=2)
