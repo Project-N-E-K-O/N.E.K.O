@@ -152,6 +152,14 @@ class UniversalTutorialManager {
                 smoothScroll: true, // 启用平滑滚动
                 className: 'neko-tutorial-driver',
                 disableActiveInteraction: false,
+                onDestroyStarted: () => {
+                    // 教程结束时，如果需要标记 hint 已显示
+                    if (this.shouldMarkHintShown) {
+                        localStorage.setItem('neko_tutorial_reset_hint_shown', 'true');
+                        this.shouldMarkHintShown = false;
+                        console.log('[Tutorial] 已标记重置提示为已显示');
+                    }
+                },
                 onHighlighted: (element, step, options) => {
                     // 每次高亮元素时，确保元素在视口中
                     console.log('[Tutorial] 高亮元素:', step.element);
@@ -184,8 +192,6 @@ class UniversalTutorialManager {
             this.isInitialized = true;
             console.log('[Tutorial] driver.js 初始化成功');
 
-            // 创建帮助按钮
-            this.createHelpButton();
 
             // 检查是否需要自动启动引导
             this.checkAndStartTutorial();
@@ -341,8 +347,10 @@ class UniversalTutorialManager {
         const hintShown = localStorage.getItem('neko_tutorial_reset_hint_shown');
         if (steps.length > 0 && this.currentPage === 'home' && !hintShown) {
             steps = [...steps, this.getTutorialResetHintStep()];
-            // 标记提示已显示
-            localStorage.setItem('neko_tutorial_reset_hint_shown', 'true');
+            // 标记需要在教程结束时设置 hint 已显示
+            this.shouldMarkHintShown = true;
+        } else {
+            this.shouldMarkHintShown = false;
         }
 
         console.log('[Tutorial] 返回的步骤数:', steps.length);
@@ -2325,14 +2333,14 @@ function resetTutorialForPage(pageKey) {
     }
 
     const pageNames = {
-        'home': '主页',
-        'model_manager': '模型设置',
-        'parameter_editor': '捏脸系统',
-        'emotion_manager': '情感管理',
-        'chara_manager': '角色管理',
-        'settings': 'API设置',
-        'voice_clone': '语音克隆',
-        'memory_browser': '记忆浏览'
+        'home': window.t ? window.t('memory.tutorialPage.home', '主页') : '主页',
+        'model_manager': window.t ? window.t('memory.tutorialPage.model_manager', '模型设置') : '模型设置',
+        'parameter_editor': window.t ? window.t('memory.tutorialPage.parameter_editor', '捏脸系统') : '捏脸系统',
+        'emotion_manager': window.t ? window.t('memory.tutorialPage.emotion_manager', '情感管理') : '情感管理',
+        'chara_manager': window.t ? window.t('memory.tutorialPage.chara_manager', '角色管理') : '角色管理',
+        'settings': window.t ? window.t('memory.tutorialPage.settings', 'API设置') : 'API设置',
+        'voice_clone': window.t ? window.t('memory.tutorialPage.voice_clone', '语音克隆') : '语音克隆',
+        'memory_browser': window.t ? window.t('memory.tutorialPage.memory_browser', '记忆浏览') : '记忆浏览'
     };
     const pageName = pageNames[pageKey] || pageKey;
     alert(window.t ? window.t('api.tutorialPageResetSuccess', `已重置「${pageName}」的引导，下次进入该页面时将重新显示引导。`) : `已重置「${pageName}」的引导，下次进入该页面时将重新显示引导。`);
