@@ -469,10 +469,10 @@ function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId) {
                     const advanced = JSON.parse(parts[4]);
                     // 使用辅助函数设置值
                     const setVal = (id, val) => { const el = document.getElementById(id); if (el && val !== undefined) el.value = val; };
-                    if (advanced.speed) setVal('gptsovitsSpeed', advanced.speed);
-                    if (advanced.top_k) setVal('gptsovitsTopK', advanced.top_k);
-                    if (advanced.top_p) setVal('gptsovitsTopP', advanced.top_p);
-                    if (advanced.temperature) setVal('gptsovitsTemperature', advanced.temperature);
+                    if (Number.isFinite(advanced.speed)) setVal('gptsovitsSpeed', advanced.speed);
+                    if (Number.isFinite(advanced.top_k)) setVal('gptsovitsTopK', advanced.top_k);
+                    if (Number.isFinite(advanced.top_p)) setVal('gptsovitsTopP', advanced.top_p);
+                    if (Number.isFinite(advanced.temperature)) setVal('gptsovitsTemperature', advanced.temperature);
                     if (advanced.cut_method) setSelectValue('gptsovitsCutMethod', advanced.cut_method);
                     if (advanced.seed !== undefined) setVal('gptsovitsSeed', advanced.seed);
                     // 加载模型配置
@@ -699,6 +699,7 @@ async function scanGptSovitsModels() {
         if (!response.ok) {
             showStatus((window.t ? window.t('api.gptsovitsScanFailed') : '扫描失败: ') + 'HTTP ' + response.status, 'error');
             gptsovitsModelCache = { gpt_models: [], sovits_models: [], base_path: basePath };
+            updateGptSovitsModelDropdowns([], [], null, null);
             return;
         }
         
@@ -717,10 +718,12 @@ async function scanGptSovitsModels() {
         } else {
             showStatus((window.t ? window.t('api.gptsovitsScanFailed') : '扫描失败: ') + result.error, 'error');
             gptsovitsModelCache = { gpt_models: [], sovits_models: [], base_path: basePath };
+            updateGptSovitsModelDropdowns([], [], null, null);
         }
     } catch (e) {
         showStatus((window.t ? window.t('api.gptsovitsLoadError') : '请求失败: ') + e.message, 'error');
         gptsovitsModelCache = { gpt_models: [], sovits_models: [], base_path: basePath };
+        updateGptSovitsModelDropdowns([], [], null, null);
     }
 }
 
