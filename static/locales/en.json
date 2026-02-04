@@ -1024,7 +1024,8 @@
     "tutorialPageMemoryBrowser": "Memory Browser",
     "resetTutorialBtn": "Reset Tutorial",
     "tutorialResetSuccess": "All tutorials have been reset. They will be shown again when you visit each page.",
-    "tutorialPageResetSuccess": "Tutorial for this page has been reset. It will be shown again when you visit."
+    "tutorialPageResetSuccess": "Tutorial for this page has been reset. It will be shown again when you visit.",
+    "tutorialPageResetSuccessWithName": "Tutorial for \"{{pageName}}\" has been reset. It will be shown again when you visit that page."
   },
   "character": {
     "manager": "Character Manager",
@@ -1392,23 +1393,23 @@
   "tutorial": {
     "step1": {
       "title": "👋 Welcome to N.E.K.O",
-      "desc": "This is your virtual companion! Let me guide you through the features~"
+      "desc": "This is your Neko! Let me guide you through the features~"
     },
     "step1a": {
       "title": "🎭 Click to Experience Expressions",
-      "desc": "Try clicking on the model! Each click triggers different expressions and actions. Click Next when you're done~"
+      "desc": "Try clicking on your Neko! Each click triggers different expressions and actions. Click Next when you're done~"
     },
     "step1b": {
       "title": "🖱️ Drag & Zoom",
-      "desc": "You can drag the model to move it, and use mouse wheel to zoom in/out. Give it a try~"
+      "desc": "You can drag your Neko to move her, and use mouse wheel to zoom in/out. Give it a try~"
     },
     "step1c": {
-      "title": "🔒 Lock Model",
-      "desc": "Click this lock to lock the model position, preventing accidental moves. Click again to unlock~"
+      "title": "🔒 Lock Neko",
+      "desc": "Click this lock to lock your Neko's position, preventing accidental moves. Click again to unlock~"
     },
     "step2": {
       "title": "💬 Chat Area",
-      "desc": "Chat with your companion here. Share your thoughts and get interesting responses~"
+      "desc": "Chat with your Neko here. Share your thoughts and get interesting responses~"
     },
     "step3": {
       "title": "✍️ Input Box",
@@ -1416,7 +1417,7 @@
     },
     "step4": {
       "title": "🎮 Quick Actions",
-      "desc": "Left button sends messages, right button takes screenshots. Share them with your companion~"
+      "desc": "Left button sends messages, right button takes screenshots. Share them with your Neko~"
     },
     "step5": {
       "title": "🎛️ Floating Toolbar",
@@ -1424,11 +1425,11 @@
     },
     "step6": {
       "title": "🎤 Voice Control",
-      "desc": "Enable voice control for natural voice-based interaction~"
+      "desc": "Enable voice control for natural voice-based interaction with your Neko~"
     },
     "step7": {
       "title": "🖥️ Screen Share",
-      "desc": "Share your screen/window/tab with your companion~"
+      "desc": "Share your screen/window/tab with your Neko~"
     },
     "step8": {
       "title": "🔨 Agent Tools",
@@ -1436,39 +1437,31 @@
     },
     "step9": {
       "title": "💤 Ask Her to Leave",
-      "desc": "Let companion leave temporarily. Click \"Ask Her Back\" to restore~"
+      "desc": "Let your Neko leave temporarily. Click \"Ask Her Back\" to restore~"
     },
     "step10": {
       "title": "⚙️ Settings",
       "desc": "Open settings panel. Let me introduce each setting~"
     },
-    "step11": {
-      "title": "🧩 Merge Messages",
-      "desc": "Combine short messages into one send to reduce interruptions~"
-    },
-    "step12": {
-      "title": "⛔ Allow Interruption",
-      "desc": "Control whether to allow interrupting current reply~"
-    },
     "step13": {
       "title": "💬 Proactive Chat",
-      "desc": "Companion initiates conversation periodically. Adjust interval here~"
+      "desc": "Your Neko initiates conversation proactively. Adjust frequency here~"
     },
     "step14": {
       "title": "👀 Proactive Vision",
-      "desc": "Companion actively reads screen information. Adjust interval here~"
+      "desc": "Your Neko actively reads screen information. Adjust interval here~"
     },
     "step15": {
       "title": "👤 Character Manager",
-      "desc": "Manage companion's character settings, model and voice~"
+      "desc": "Adjust your Neko's personality, appearance, voice, etc.~"
     },
     "step16": {
       "title": "🔑 API Keys",
-      "desc": "Configure AI service API keys. Required for companion~"
+      "desc": "Configure AI service API keys. Required to interact with your Neko~"
     },
     "step17": {
       "title": "🧠 Memory Browser",
-      "desc": "View and manage companion's memory content~"
+      "desc": "View and manage your Neko's memory content~"
     },
     "step18": {
       "title": "🛠️ Steam Workshop",
@@ -1513,7 +1506,7 @@
         },
         "step6": {
           "title": "✨ Face Customization",
-          "desc": "Enter the face customization system to fine-tune Live2D model parameters."
+          "desc": "Enter the face customization system to fine-tune Live2D model parameters for your unique Neko."
         }
       },
       "vrm": {
@@ -1580,7 +1573,7 @@
       },
       "step2": {
         "title": "😊 Emotion Configuration Area",
-        "desc": "Configure expressions and motion combinations for different emotions. The companion will automatically switch emotions based on conversation."
+        "desc": "Configure expressions and motion combinations for different emotions. Your Neko will automatically switch emotions based on conversation."
       },
       "step3": {
         "title": "🔄 Reset Configuration",
@@ -1590,31 +1583,31 @@
     "chara_manager": {
       "step1": {
         "title": "👤 Master Profile",
-        "desc": "This is your master profile. Profile name is required, other info is optional. This affects how the companion addresses you."
+        "desc": "This is your master profile. Profile name is required, other info is optional. This affects how your Neko addresses you."
       },
       "step2": {
         "title": "📝 Set Profile Name",
-        "desc": "Enter your name or nickname. The companion will use this to address you. Max 20 characters."
+        "desc": "Enter your name or nickname. Your Neko will use this to address you. Max 20 characters."
       },
       "step3": {
         "title": "👥 Gender Setting",
-        "desc": "Optional. Enter your gender or related information. This affects how the companion addresses you."
+        "desc": "Optional. Enter your gender or related information. This affects how your Neko addresses you."
       },
       "step4": {
         "title": "💬 Nickname Setting",
-        "desc": "Optional. Set a nickname for yourself. The companion may use this nickname to address you."
+        "desc": "Optional. Set a nickname for yourself. Your Neko may use this nickname to address you."
       },
       "step5": {
         "title": "🔑 API Key Settings",
-        "desc": "Click here to configure AI service API keys. Required for the companion to chat."
+        "desc": "Click here to configure AI service API keys. Required for your Neko to chat."
       },
       "step6": {
         "title": "🐱 Character Profile",
-        "desc": "Create and manage multiple companion characters. Each has unique personality, Live2D appearance and voice. Switch between them anytime."
+        "desc": "Create and manage multiple Neko characters. Each has unique personality, Live2D appearance and voice. Switch between them anytime."
       },
       "step7": {
         "title": "➕ Add New Character",
-        "desc": "Click to create a new companion character. Set name, personality, appearance and voice. Each character is independent with own memory."
+        "desc": "Click to create a new Neko character. Set name, personality, appearance and voice. Each character is independent with own memory."
       },
       "step8": {
         "title": "📋 Character Card",
@@ -1642,7 +1635,7 @@
       },
       "step14": {
         "title": "🎤 Voice Settings",
-        "desc": "Select the character's voice. Different voice_ids correspond to different voice characteristics for unique sound."
+        "desc": "Select your Neko's voice. Different voice_ids correspond to different voice characteristics for unique sound."
       }
     },
     "settings": {
@@ -1652,7 +1645,7 @@
       },
       "step2": {
         "title": "🔑 Core API Provider",
-        "desc": "Most important setting. Core API handles conversation.\n\n• Free: Completely free, no API Key needed, great for beginners\n• Alibaba: Free quota available, full features\n• Zhipu: Free quota available, supports web search\n• OpenAI: Highest intelligence, but requires VPN and is expensive"
+        "desc": "Most important setting. Core API handles conversation."
       },
       "step3": {
         "title": "📝 Core API Key",
@@ -1702,7 +1695,7 @@
       },
       "step5": {
         "title": "📋 Registered Voices List",
-        "desc": "Shows all successfully cloned voices. Select these in character manager to voice your companion."
+        "desc": "Shows all successfully cloned voices. Select these in character manager to voice your Neko."
       }
     },
     "steam_workshop": {
@@ -1722,7 +1715,7 @@
       },
       "step2": {
         "title": "🐱 Character Memory Library",
-        "desc": "Lists all companion character memory libraries. Click a character name to view and edit her conversation history."
+        "desc": "Lists all Neko character memory libraries. Click a character name to view and edit her conversation history."
       },
       "step3": {
         "title": "🤖 Auto Memory Organization",
@@ -1732,6 +1725,17 @@
         "title": "📝 Chat History Editing",
         "desc": "Shows all conversation records for selected character. View, edit or delete specific conversations here."
       }
+    },
+    "buttons": {
+      "next": "Next",
+      "prev": "Previous",
+      "done": "Done",
+      "close": "Close"
+    },
+    "fullscreenPrompt": {
+      "title": "🎓 Start Tutorial",
+      "desc": "For the best tutorial experience, we recommend entering fullscreen mode.\nIn fullscreen mode, the tutorial content will be clearer and won't be obscured by other elements.",
+      "enterFullscreen": "Enter Fullscreen Tutorial"
     }
   },
   "console": {
