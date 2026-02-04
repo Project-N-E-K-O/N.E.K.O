@@ -349,9 +349,11 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         const index = Math.floor(Math.random() * groupList.length);
 
         try {
-            const motion = await this.currentModel.motion(group, index);
+            // 使用低优先级 IDLE=1 播放动作，这样不会覆盖对话等高优先级动作
+            // pixi-live2d-display 的 motion(group, index, priority) 支持优先级参数
+            const motion = await this.currentModel.motion(group, index, CLICK_MOTION_PRIORITY);
             if (motion) {
-                console.log(`[Interaction] 教程模式 - 播放动作: ${group}[${index}]`);
+                console.log(`[Interaction] 教程模式 - 播放动作: ${group}[${index}]（优先级: ${CLICK_MOTION_PRIORITY}）`);
                 return true;
             }
         } catch (error) {
@@ -361,11 +363,21 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         return false;
     };
 
-    // 点击触发随机表情和动作
+    // 点击触发随机表情和动作（低优先级，会自动恢复）
+    // 使用最低优先级 IDLE=1，确保不会覆盖对话等高优先级动作
+    const CLICK_MOTION_PRIORITY = 1; // IDLE priority
+    const CLICK_EFFECT_DURATION = 3000; // 点击效果持续时间（毫秒）
+
     const triggerRandomEmotion = async () => {
+        // 清除之前的点击效果恢复定时器
+        if (this._clickEffectRestoreTimer) {
+            clearTimeout(this._clickEffectRestoreTimer);
+            this._clickEffectRestoreTimer = null;
+        }
+
         // 教程模式：直接随机播放表情
         if (window.isInTutorial) {
-            console.log('[Interaction] 教程模式 - 随机播放表情');
+            console.log('[Interaction] 教程模式 - 随机播放表情（低优先级，将自动恢复）');
             try {
                 // 获取表情列表
                 let expressionNames = [];
@@ -376,7 +388,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
                 // 随机播放表情
                 if (expressionNames.length > 0) {
                     const randomExpression = expressionNames[Math.floor(Math.random() * expressionNames.length)];
-                    console.log(`[Interaction] 教程模式 - 播放表情: ${randomExpression}`);
+                    console.log(`[Interaction] 教程模式 - 播放表情: ${randomExpression}（将在 ${CLICK_EFFECT_DURATION}ms 后恢复）`);
                     await this.currentModel.expression(randomExpression);
 
                     const playedMotion = await playTutorialMotion();
@@ -425,6 +437,28 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
                             console.log('[Interaction] 教程模式 - 播放参数动画');
                         }
                     }
+
+                    // 设置恢复定时器：在效果持续时间后清除表情，恢复到常驻/默认状态
+                    // 使用唯一 ID 标记此次点击效果，用于判断是否应该恢复
+                    const clickEffectId = Date.now();
+                    this._currentClickEffectId = clickEffectId;
+                    
+                    this._clickEffectRestoreTimer = setTimeout(() => {
+                        this._clickEffectRestoreTimer = null;
+                        
+                        // 检查是否仍然是此次点击效果（没有被新的情感/点击覆盖）
+                        if (this._currentClickEffectId !== clickEffectId) {
+                            console.log('[Interaction] 点击效果已被新的情感覆盖，跳过恢复');
+                            return;
+                        }
+                        
+                        console.log('[Interaction] 点击效果持续时间结束，恢复到默认状态');
+                        this._currentClickEffectId = null;
+                        // 清除表情，恢复到常驻表情或默认状态
+                        if (this.clearExpression) {
+                            this.clearExpression();
+                        }
+                    }, CLICK_EFFECT_DURATION);
                 }
             } catch (error) {
                 console.warn('[Interaction] 教程模式播放表情失败:', error);
@@ -432,7 +466,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             return;
         }
 
-        // 正常模式：使用情感系统
+        // 正常模式：使用情感系统（但使用临时触发，会自动恢复）
         if (!this.emotionMapping) {
             console.log('[Interaction] 没有情感映射配置，跳过点击触发');
             return;
@@ -453,11 +487,12 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
 
         // 随机选择一个情感
         const randomEmotion = availableEmotions[Math.floor(Math.random() * availableEmotions.length)];
-        console.log(`[Interaction] 点击触发随机情感: ${randomEmotion}`);
+        console.log(`[Interaction] 点击触发随机情感: ${randomEmotion}（低优先级，将自动恢复）`);
 
-        // 触发情感
+        // 触发临时情感效果
         try {
-            await this.setEmotion(randomEmotion);
+            // 播放低优先级的表情和动作
+            await this._playTemporaryClickEffect(randomEmotion, CLICK_MOTION_PRIORITY, CLICK_EFFECT_DURATION);
         } catch (error) {
             console.warn('[Interaction] 触发情感失败:', error);
         }
@@ -1015,6 +1050,124 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
     }, 100);
 };
 
+/**
+ * 播放临时点击效果（低优先级，会自动恢复）
+ * @param {string} emotion - 情感名称
+ * @param {number} priority - 动作优先级 (1=IDLE, 2=NORMAL, 3=FORCE)
+ * @param {number} duration - 效果持续时间（毫秒）
+ */
+Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, priority = 1, duration = 3000) {
+    if (!this.currentModel) {
+        console.warn('[ClickEffect] 无法播放：模型未加载');
+        return;
+    }
+
+    // 清除之前的点击效果恢复定时器
+    if (this._clickEffectRestoreTimer) {
+        clearTimeout(this._clickEffectRestoreTimer);
+        this._clickEffectRestoreTimer = null;
+    }
+
+    try {
+        // 1. 播放表情（如果有配置）
+        let expressionFiles = [];
+        if (this.emotionMapping && this.emotionMapping.expressions && this.emotionMapping.expressions[emotion]) {
+            expressionFiles = this.emotionMapping.expressions[emotion];
+        }
+        
+        // 兼容旧结构
+        if (expressionFiles.length === 0 && this.fileReferences && Array.isArray(this.fileReferences.Expressions)) {
+            const candidates = this.fileReferences.Expressions.filter(e => (e.Name || '').startsWith(emotion));
+            expressionFiles = candidates.map(e => e.File).filter(Boolean);
+        }
+
+        if (expressionFiles.length > 0) {
+            const choiceFile = this.getRandomElement(expressionFiles);
+            if (choiceFile) {
+                // 在 FileReferences 中查找匹配的表情名称
+                let expressionName = null;
+                if (this.fileReferences && this.fileReferences.Expressions) {
+                    for (const expr of this.fileReferences.Expressions) {
+                        if (expr.File === choiceFile) {
+                            expressionName = expr.Name;
+                            break;
+                        }
+                    }
+                }
+                
+                if (!expressionName) {
+                    const base = String(choiceFile).split('/').pop() || '';
+                    expressionName = base.replace('.exp3.json', '');
+                }
+
+                console.log(`[ClickEffect] 播放临时表情: ${expressionName}`);
+                await this.currentModel.expression(expressionName);
+            }
+        }
+
+        // 2. 播放低优先级动作
+        let motions = null;
+        if (this.fileReferences && this.fileReferences.Motions && this.fileReferences.Motions[emotion]) {
+            motions = this.fileReferences.Motions[emotion];
+        } else if (this.emotionMapping && this.emotionMapping.motions && this.emotionMapping.motions[emotion]) {
+            const emotionMotions = this.emotionMapping.motions[emotion];
+            if (Array.isArray(emotionMotions) && emotionMotions.length > 0) {
+                if (typeof emotionMotions[0] === 'string') {
+                    motions = emotionMotions.map(f => ({ File: f }));
+                } else {
+                    motions = emotionMotions;
+                }
+            }
+        }
+
+        if (motions && motions.length > 0) {
+            // 使用低优先级播放动作
+            // pixi-live2d-display 的 motion(group, index, priority) 支持优先级参数
+            try {
+                const motion = await this.currentModel.motion(emotion, undefined, priority);
+                if (motion) {
+                    console.log(`[ClickEffect] 播放临时动作: ${emotion}（优先级: ${priority}）`);
+                }
+            } catch (motionError) {
+                console.warn('[ClickEffect] 动作播放失败:', motionError);
+            }
+        }
+
+        // 3. 设置恢复定时器
+        // 使用唯一 ID 标记此次点击效果，用于判断是否应该恢复
+        const clickEffectId = Date.now();
+        this._currentClickEffectId = clickEffectId;
+        
+        this._clickEffectRestoreTimer = setTimeout(() => {
+            this._clickEffectRestoreTimer = null;
+            
+            // 检查是否仍然是此次点击效果（没有被新的情感/点击覆盖）
+            if (this._currentClickEffectId !== clickEffectId) {
+                console.log('[ClickEffect] 临时效果已被新的情感覆盖，跳过恢复');
+                return;
+            }
+            
+            console.log('[ClickEffect] 临时效果结束，恢复到默认状态');
+            this._currentClickEffectId = null;
+            
+            // 清除表情效果，恢复到常驻表情或默认状态
+            if (this.clearExpression) {
+                this.clearExpression();
+            }
+            
+            // 清除动作相关参数
+            if (this.clearEmotionEffects) {
+                this.clearEmotionEffects();
+            }
+        }, duration);
+
+        console.log(`[ClickEffect] 临时效果将在 ${duration}ms 后恢复`);
+
+    } catch (error) {
+        console.error('[ClickEffect] 播放临时效果失败:', error);
+    }
+};
+
 // 交互后保存位置和缩放的辅助函数
 Live2DManager.prototype._savePositionAfterInteraction = async function () {
     if (!this.currentModel || !this._lastLoadedModelPath) {
@@ -1377,6 +1530,13 @@ Live2DManager.prototype.cleanupEventListeners = function () {
         clearTimeout(this._savePositionDebounceTimer);
         this._savePositionDebounceTimer = null;
     }
+
+    // 清理点击效果恢复定时器和 ID
+    if (this._clickEffectRestoreTimer) {
+        clearTimeout(this._clickEffectRestoreTimer);
+        this._clickEffectRestoreTimer = null;
+    }
+    this._currentClickEffectId = null;
 
     // 清理页面卸载监听器（如果存在）
     if (this._unloadListener) {

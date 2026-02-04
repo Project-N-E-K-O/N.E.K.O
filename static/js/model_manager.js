@@ -1772,6 +1772,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                             modelSelect.dispatchEvent(new Event('change', { bubbles: true }));
                         }
                     }
+                    
+                    // 【关键修复】延迟双重保险：确保 PIXI ticker 在模型加载后启动
+                    // 由于 modelSelect 的 change 事件是异步的，模型可能还没有完全加载
+                    // 使用延迟来确保 ticker 一定在运行
+                    setTimeout(() => {
+                        if (window.live2dManager?.pixi_app?.ticker) {
+                            window.live2dManager.pixi_app.ticker.start();
+                            console.log('[模型管理] Live2D ticker 延迟启动（从VRM切回的双重保险）');
+                        }
+                    }, 500);
                 } catch (autoLoadError) {
                     console.warn('[模型管理] 切回 Live2D 自动加载模型失败:', autoLoadError);
                 }

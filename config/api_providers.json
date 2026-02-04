@@ -45,7 +45,7 @@
       "openrouter_url": "https://lanlan.tech/text/v1",
       "summary_model": "free-model",
       "correction_model": "free-model",
-      "emotion_model": "free-model",
+      "emotion_model": "free-tiny-model",
       "vision_model": "free-vision-model",
       "audio_api_key": "free-access",
       "openrouter_api_key": "free-access",

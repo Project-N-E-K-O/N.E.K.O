@@ -383,7 +383,7 @@ class UniversalTutorialManager {
                 element: '#live2d-container',
                 popover: {
                     title: window.t ? window.t('tutorial.step1.title', '👋 欢迎来到 N.E.K.O') : '👋 欢迎来到 N.E.K.O',
-                    description: window.t ? window.t('tutorial.step1.desc', '这是你的虚拟伙伴！接下来我会带你熟悉各项功能~') : '这是你的虚拟伙伴！接下来我会带你熟悉各项功能~',
+                    description: window.t ? window.t('tutorial.step1.desc', '这是你的猫娘！接下来我会带你熟悉各项功能~') : '这是你的猫娘！接下来我会带你熟悉各项功能~',
                 },
                 disableActiveInteraction: false
             },
@@ -391,7 +391,7 @@ class UniversalTutorialManager {
                 element: '#live2d-container',
                 popover: {
                     title: window.t ? window.t('tutorial.step1a.title', '🎭 点击体验表情动作') : '🎭 点击体验表情动作',
-                    description: window.t ? window.t('tutorial.step1a.desc', '试试点击模型吧！每次点击都会触发不同的表情和动作变化。体验完后点击「下一步」继续~') : '试试点击模型吧！每次点击都会触发不同的表情和动作变化。体验完后点击「下一步」继续~',
+                    description: window.t ? window.t('tutorial.step1a.desc', '试试点击猫娘吧！每次点击都会触发不同的表情和动作变化。体验完后点击「下一步」继续~') : '试试点击猫娘吧！每次点击都会触发不同的表情和动作变化。体验完后点击「下一步」继续~',
                 },
                 disableActiveInteraction: false,
                 enableModelInteraction: true
@@ -400,7 +400,7 @@ class UniversalTutorialManager {
                 element: '#live2d-container',
                 popover: {
                     title: window.t ? window.t('tutorial.step1b.title', '🖱️ 拖拽与缩放') : '🖱️ 拖拽与缩放',
-                    description: window.t ? window.t('tutorial.step1b.desc', '你可以拖拽模型移动位置，也可以用鼠标滚轮放大缩小模型，试试看吧~') : '你可以拖拽模型移动位置，也可以用鼠标滚轮放大缩小模型，试试看吧~',
+                    description: window.t ? window.t('tutorial.step1b.desc', '你可以拖拽猫娘移动位置，也可以用鼠标滚轮放大缩小，试试看吧~') : '你可以拖拽猫娘移动位置，也可以用鼠标滚轮放大缩小，试试看吧~',
                 },
                 disableActiveInteraction: false,
                 enableModelInteraction: true
@@ -408,114 +408,114 @@ class UniversalTutorialManager {
             {
                 element: '#live2d-lock-icon',
                 popover: {
-                    title: window.t ? window.t('tutorial.step1c.title', '🔒 锁定模型') : '🔒 锁定模型',
-                    description: window.t ? window.t('tutorial.step1c.desc', '点击这个锁可以锁定模型位置，防止误触移动。再次点击可以解锁~') : '点击这个锁可以锁定模型位置，防止误触移动。再次点击可以解锁~',
+                    title: window.t ? window.t('tutorial.step1c.title', '🔒 锁定猫娘') : '🔒 锁定猫娘',
+                    description: window.t ? window.t('tutorial.step1c.desc', '点击这个锁可以锁定猫娘位置，防止误触移动。再次点击可以解锁~') : '点击这个锁可以锁定猫娘位置，防止误触移动。再次点击可以解锁~',
                 }
             },
             {
                 element: '#chat-container',
                 popover: {
                     title: window.t ? window.t('tutorial.step2.title', '💬 对话区域') : '💬 对话区域',
-                    description: window.t ? window.t('tutorial.step2.desc', '在这里可以和伙伴进行文字对话。输入您的想法，她会给您有趣的回应呢~') : '在这里可以和伙伴进行文字对话。输入您的想法，她会给您有趣的回应呢~',
+                    description: window.t ? window.t('tutorial.step2.desc', '在这里可以和猫娘进行文字对话。输入您的想法，她会给您有趣的回应呢~') : '在这里可以和猫娘进行文字对话。输入您的想法，她会给您有趣的回应呢~',
                 }
             },
             {
                 element: '#live2d-floating-buttons',
                 popover: {
-                    title: '🎛️ 浮动工具栏',
-                    description: '这是浮动工具栏，包含多个实用功能按钮。让我为您逐一介绍每个按钮的功能吧~',
+                    title: window.t ? window.t('tutorial.step5.title', '🎛️ 浮动工具栏') : '🎛️ 浮动工具栏',
+                    description: window.t ? window.t('tutorial.step5.desc', '浮动工具栏包含多个实用功能按钮，让我为你逐一介绍~') : '浮动工具栏包含多个实用功能按钮，让我为你逐一介绍~',
                 }
             },
             {
                 element: '#live2d-btn-mic',
                 popover: {
-                    title: '🎤 语音控制',
-                    description: '点击这个按钮可以启用语音控制功能。启用后，虚拟伙伴会通过语音识别来理解您的话语，让交互更加自然和便捷。',
+                    title: window.t ? window.t('tutorial.step6.title', '🎤 语音控制') : '🎤 语音控制',
+                    description: window.t ? window.t('tutorial.step6.desc', '启用语音控制，猫娘通过语音识别理解你的话语~') : '启用语音控制，猫娘通过语音识别理解你的话语~',
                 }
             },
             {
                 element: '#live2d-btn-screen',
                 popover: {
-                    title: '🖥️ 屏幕分享',
-                    description: '点击这里可以分享屏幕/窗口/标签页，让伙伴看到你的画面，适合语音通话或需要她帮忙看内容时使用。',
+                    title: window.t ? window.t('tutorial.step7.title', '🖥️ 屏幕分享') : '🖥️ 屏幕分享',
+                    description: window.t ? window.t('tutorial.step7.desc', '分享屏幕/窗口/标签页，让猫娘看到你的画面~') : '分享屏幕/窗口/标签页，让猫娘看到你的画面~',
                 }
             },
             {
                 element: '#live2d-btn-agent',
                 popover: {
-                    title: '🔨 Agent工具',
-                    description: '打开 Agent 工具面板，使用各类辅助功能或工具集。',
+                    title: window.t ? window.t('tutorial.step8.title', '🔨 Agent工具') : '🔨 Agent工具',
+                    description: window.t ? window.t('tutorial.step8.desc', '打开 Agent 工具面板，使用各类辅助功能~') : '打开 Agent 工具面板，使用各类辅助功能~',
                 }
             },
             {
                 element: '#live2d-btn-goodbye',
                 popover: {
-                    title: '💤 请她离开',
-                    description: '让伙伴暂时离开并隐藏界面，需要时可点击“请她回来”恢复。',
+                    title: window.t ? window.t('tutorial.step9.title', '💤 请她离开') : '💤 请她离开',
+                    description: window.t ? window.t('tutorial.step9.desc', '让猫娘暂时离开并隐藏界面，需要时可点击\"请她回来\"恢复~') : '让猫娘暂时离开并隐藏界面，需要时可点击\"请她回来\"恢复~',
                 }
             },
             {
                 element: '#live2d-btn-settings',
                 popover: {
-                    title: '⚙️ 设置',
-                    description: '点击这个按钮可以打开设置面板。下面会依次介绍设置里的 8 个项目。',
+                    title: window.t ? window.t('tutorial.step10.title', '⚙️ 设置') : '⚙️ 设置',
+                    description: window.t ? window.t('tutorial.step10.desc', '打开设置面板，下面会依次介绍设置里的各个项目~') : '打开设置面板，下面会依次介绍设置里的各个项目~',
                 },
                 action: 'click'
             },
             {
                 element: '#live2d-toggle-merge-messages',
                 popover: {
-                    title: '🧩 合并消息',
-                    description: '将多条短消息合并为一次发送，减少打断感。',
+                    title: window.t ? window.t('tutorial.step11.title', '🧩 合并消息') : '🧩 合并消息',
+                    description: window.t ? window.t('tutorial.step11.desc', '将多条短消息合并为一次发送，减少打断感~') : '将多条短消息合并为一次发送，减少打断感~',
                 }
             },
             {
                 element: '#live2d-toggle-focus-mode',
                 popover: {
-                    title: '⛔ 允许打断',
-                    description: '控制是否允许打断当前回复，适合不同的对话节奏。',
+                    title: window.t ? window.t('tutorial.step12.title', '⛔ 允许打断') : '⛔ 允许打断',
+                    description: window.t ? window.t('tutorial.step12.desc', '控制是否允许打断当前回复，适合不同的对话节奏~') : '控制是否允许打断当前回复，适合不同的对话节奏~',
                 }
             },
             {
                 element: '#live2d-toggle-proactive-chat',
                 popover: {
-                    title: '💬 主动搭话',
-                    description: '开启后伙伴会定时主动发起对话，间隔可在此调整。',
+                    title: window.t ? window.t('tutorial.step13.title', '💬 主动搭话') : '💬 主动搭话',
+                    description: window.t ? window.t('tutorial.step13.desc', '开启后猫娘会主动发起对话，频率可在此调整~') : '开启后猫娘会主动发起对话，频率可在此调整~',
                 }
             },
             {
                 element: '#live2d-toggle-proactive-vision',
                 popover: {
-                    title: '👀 自主视觉',
-                    description: '开启后伙伴会主动读取画面信息（如屏幕内容），间隔可在此调整。',
+                    title: window.t ? window.t('tutorial.step14.title', '👀 自主视觉') : '👀 自主视觉',
+                    description: window.t ? window.t('tutorial.step14.desc', '开启后猫娘会主动读取画面信息，间隔可在此调整~') : '开启后猫娘会主动读取画面信息，间隔可在此调整~',
                 }
             },
             {
                 element: '#live2d-menu-character',
                 popover: {
-                    title: '👤 角色管理',
-                    description: '管理虚拟伙伴的角色设置、模型和声音。',
+                    title: window.t ? window.t('tutorial.step15.title', '👤 角色管理') : '👤 角色管理',
+                    description: window.t ? window.t('tutorial.step15.desc', '调整猫娘的性格、形象、声音等~') : '调整猫娘的性格、形象、声音等~',
                 }
             },
             {
                 element: '#live2d-menu-api-keys',
                 popover: {
-                    title: '🔑 API 密钥',
-                    description: '配置 AI 服务的 API 密钥。这是使用虚拟伙伴的必要配置。',
+                    title: window.t ? window.t('tutorial.step16.title', '🔑 API 密钥') : '🔑 API 密钥',
+                    description: window.t ? window.t('tutorial.step16.desc', '配置 AI 服务的 API 密钥，这是和猫娘互动的必要配置~') : '配置 AI 服务的 API 密钥，这是和猫娘互动的必要配置~',
                 }
             },
             {
                 element: '#live2d-menu-memory',
                 popover: {
-                    title: '🧠 记忆浏览',
-                    description: '查看与管理伙伴的记忆内容。',
+                    title: window.t ? window.t('tutorial.step17.title', '🧠 记忆浏览') : '🧠 记忆浏览',
+                    description: window.t ? window.t('tutorial.step17.desc', '查看与管理猫娘的记忆内容~') : '查看与管理猫娘的记忆内容~',
                 }
             },
             {
                 element: '#live2d-menu-steam-workshop',
                 popover: {
-                    title: '🛠️ 创意工坊',
-                    description: '进入 Steam 创意工坊页面，管理订阅内容。',
+                    title: window.t ? window.t('tutorial.step18.title', '🛠️ 创意工坊') : '🛠️ 创意工坊',
+                    description: window.t ? window.t('tutorial.step18.desc', '进入 Steam 创意工坊页面，管理订阅内容~') : '进入 Steam 创意工坊页面，管理订阅内容~',
                 }
             }
         ];
@@ -551,7 +551,7 @@ class UniversalTutorialManager {
                 element: '#parameter-editor-btn',
                 popover: {
                     title: this.t('tutorial.model_manager.live2d.parameter.title', '✨ 捏脸系统'),
-                    description: this.t('tutorial.model_manager.live2d.parameter.desc', '点击这里进入捏脸系统，可以精细调整 Live2D 模型的面部参数，打造独特的虚拟伙伴形象。'),
+                    description: this.t('tutorial.model_manager.live2d.parameter.desc', '点击这里进入捏脸系统，可以精细调整 Live2D 模型的面部参数，打造独特的猫娘形象。'),
                 }
             }
         ];
@@ -634,7 +634,7 @@ class UniversalTutorialManager {
                 element: '#emotion-config',
                 popover: {
                     title: this.t('tutorial.emotion_manager.step2.title', '😊 情感配置区域'),
-                    description: this.t('tutorial.emotion_manager.step2.desc', '这里可以为不同的情感（如开心、悲伤、生气等）配置对应的表情和动作组合。虚拟伙伴会根据对话内容自动切换情感表现。'),
+                    description: this.t('tutorial.emotion_manager.step2.desc', '这里可以为不同的情感（如开心、悲伤、生气等）配置对应的表情和动作组合。猫娘会根据对话内容自动切换情感表现。'),
                 },
                 // 避免在引导开始时强制显示（应在选择模型后显示）
                 skipAutoShow: true
@@ -658,14 +658,14 @@ class UniversalTutorialManager {
                 element: '#master-section',
                 popover: {
                     title: this.t('tutorial.chara_manager.master.title', '👤 主人档案'),
-                    description: this.t('tutorial.chara_manager.master.desc', '这是您的主人档案。填写您的信息后，虚拟伙伴会根据这些信息来称呼您。'),
+                    description: this.t('tutorial.chara_manager.master.desc', '这是您的主人档案。填写您的信息后，猫娘会根据这些信息来称呼您。'),
                 }
             },
             {
                 element: '#catgirl-section',
                 popover: {
                     title: this.t('tutorial.chara_manager.catgirl.title', '🐱 猫娘档案'),
-                    description: this.t('tutorial.chara_manager.catgirl.desc', '这里可以创建和管理多个虚拟伙伴角色。每个角色都有独特的性格设定。'),
+                    description: this.t('tutorial.chara_manager.catgirl.desc', '这里可以创建和管理多个猫娘角色。每个角色都有独特的性格设定。'),
                 }
             },
             {
@@ -737,7 +737,7 @@ class UniversalTutorialManager {
                 element: '.voice-list-section',
                 popover: {
                     title: this.t('tutorial.voice_clone.step5.title', '📋 已注册音色列表'),
-                    description: this.t('tutorial.voice_clone.step5.desc', '这里显示所有已成功克隆的音色。您可以在角色管理中选择这些音色来为虚拟伙伴配音。'),
+                    description: this.t('tutorial.voice_clone.step5.desc', '这里显示所有已成功克隆的音色。您可以在角色管理中选择这些音色来为猫娘配音。'),
                 }
             }
         ];
@@ -759,7 +759,7 @@ class UniversalTutorialManager {
                 element: '#memory-file-list',
                 popover: {
                     title: this.t('tutorial.memory_browser.catgirl.title', '🐱 猫娘记忆库'),
-                    description: this.t('tutorial.memory_browser.catgirl.desc', '这里列出了所有虚拟伙伴的记忆库。点击一个猫娘的名称可以查看和编辑她的对话历史。'),
+                    description: this.t('tutorial.memory_browser.catgirl.desc', '这里列出了所有猫娘的记忆库。点击一个猫娘的名称可以查看和编辑她的对话历史。'),
                 }
             },
             {
@@ -1188,6 +1188,26 @@ class UniversalTutorialManager {
             console.log('[Tutorial] 强制显示浮动工具栏');
         }
 
+        // 立即强制显示锁图标（如果当前页面的引导包含锁图标步骤）
+        const hasLockIconStep = validSteps.some(step => step.element === '#live2d-lock-icon');
+        if (hasLockIconStep) {
+            const lockIcon = document.getElementById('live2d-lock-icon');
+            if (lockIcon) {
+                // 保存原始的内联样式值
+                this._lockIconOriginalStyles = {
+                    display: lockIcon.style.display,
+                    visibility: lockIcon.style.visibility,
+                    opacity: lockIcon.style.opacity
+                };
+                console.log('[Tutorial] 已保存锁图标原始样式:', this._lockIconOriginalStyles);
+
+                lockIcon.style.setProperty('display', 'block', 'important');
+                lockIcon.style.setProperty('visibility', 'visible', 'important');
+                lockIcon.style.setProperty('opacity', '1', 'important');
+                console.log('[Tutorial] 强制显示锁图标');
+            }
+        }
+
         // 启动浮动工具栏保护定时器（每 200ms 检查一次，更频繁）
         this.floatingButtonsProtectionTimer = setInterval(() => {
             const floatingButtons = document.getElementById('live2d-floating-buttons');
@@ -1196,6 +1216,16 @@ class UniversalTutorialManager {
                 floatingButtons.style.setProperty('display', 'flex', 'important');
                 floatingButtons.style.setProperty('visibility', 'visible', 'important');
                 floatingButtons.style.setProperty('opacity', '1', 'important');
+            }
+
+            // 同样保护锁图标（如果当前引导包含锁图标步骤）
+            if (this._lockIconOriginalStyles !== undefined && window.isInTutorial) {
+                const lockIcon = document.getElementById('live2d-lock-icon');
+                if (lockIcon) {
+                    lockIcon.style.setProperty('display', 'block', 'important');
+                    lockIcon.style.setProperty('visibility', 'visible', 'important');
+                    lockIcon.style.setProperty('opacity', '1', 'important');
+                }
             }
         }, 200);
 
@@ -1946,6 +1976,30 @@ class UniversalTutorialManager {
             clearInterval(this.floatingButtonsProtectionTimer);
             this.floatingButtonsProtectionTimer = null;
             console.log('[Tutorial] 浮动工具栏保护定时器已清除');
+        }
+
+        // 恢复锁图标的原始样式
+        if (this._lockIconOriginalStyles !== undefined) {
+            const lockIcon = document.getElementById('live2d-lock-icon');
+            if (lockIcon) {
+                // 先移除 !important 样式
+                lockIcon.style.removeProperty('display');
+                lockIcon.style.removeProperty('visibility');
+                lockIcon.style.removeProperty('opacity');
+                
+                // 恢复原始样式（如果原始样式为空字符串则不设置，让 CSS 规则生效）
+                if (this._lockIconOriginalStyles.display) {
+                    lockIcon.style.display = this._lockIconOriginalStyles.display;
+                }
+                if (this._lockIconOriginalStyles.visibility) {
+                    lockIcon.style.visibility = this._lockIconOriginalStyles.visibility;
+                }
+                if (this._lockIconOriginalStyles.opacity) {
+                    lockIcon.style.opacity = this._lockIconOriginalStyles.opacity;
+                }
+                console.log('[Tutorial] 已恢复锁图标原始样式');
+            }
+            this._lockIconOriginalStyles = undefined;
         }
 
         // 清理 popover 拖动监听器（从 manager 对象获取引用）

@@ -529,6 +529,13 @@ Live2DManager.prototype.setEmotion = async function(emotion) {
         return;
     }
     
+    // 清除点击效果的 ID，这样点击效果的恢复定时器会检测到并跳过恢复
+    // 避免点击效果的恢复覆盖正常的情感表达
+    if (this._currentClickEffectId) {
+        console.log('[setEmotion] 清除点击效果 ID，防止恢复定时器干扰');
+        this._currentClickEffectId = null;
+    }
+    
     // 获取将要使用的表情文件（用于精确比较）
     let targetExpressionFile = null;
     
