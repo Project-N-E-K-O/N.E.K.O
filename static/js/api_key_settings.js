@@ -693,13 +693,8 @@ async function scanGptSovitsModels() {
  * 加载 GPT-SoVITS GPT 模型（通过后端代理解决 CORS 问题）
  */
 async function loadGptSovitsGptModel() {
-    let apiUrl = document.getElementById('gptsovitsApiUrl')?.value.trim();
+    let apiUrl = document.getElementById('gptsovitsApiUrl')?.value.trim() || 'http://127.0.0.1:9880';
     const modelPath = document.getElementById('gptsovitsGptModel')?.value;
-    
-    if (!apiUrl) {
-        showStatus(window.t ? window.t('api.gptsovitsApiUrlRequired') : '请先填写 API URL', 'error');
-        return;
-    }
     if (!modelPath) {
         showStatus(window.t ? window.t('api.gptsovitsSelectModelFirst') : '请先选择模型', 'error');
         return;
@@ -730,13 +725,8 @@ async function loadGptSovitsGptModel() {
  * 加载 GPT-SoVITS SoVITS 模型（通过后端代理解决 CORS 问题）
  */
 async function loadGptSovitsSovitsModel() {
-    let apiUrl = document.getElementById('gptsovitsApiUrl')?.value.trim();
+    let apiUrl = document.getElementById('gptsovitsApiUrl')?.value.trim() || 'http://127.0.0.1:9880';
     const modelPath = document.getElementById('gptsovitsSovitsModel')?.value;
-    
-    if (!apiUrl) {
-        showStatus(window.t ? window.t('api.gptsovitsApiUrlRequired') : '请先填写 API URL', 'error');
-        return;
-    }
     if (!modelPath) {
         showStatus(window.t ? window.t('api.gptsovitsSelectModelFirst') : '请先选择模型', 'error');
         return;
