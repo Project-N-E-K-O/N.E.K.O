@@ -678,6 +678,7 @@
     "gptsovitsRefAudioHint": "（GPT-SoVITS 服务器上的绝对路径）",
     "gptsovitsRefAudioPlaceholder": "如：/path/to/reference.wav",
     "gptsovitsRefAudioRequired": "请填写参考音频路径",
+    "gptsovitsInvalidInput": "参考音频/文本不能包含 | 符号",
     "gptsovitsRefText": "参考文本",
     "gptsovitsRefTextHint": "（参考音频对应的文字内容）",
     "gptsovitsRefTextPlaceholder": "如：这是参考音频的文本内容",

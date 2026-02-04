@@ -660,6 +660,7 @@
     "gptsovitsRefAudioHint": "（GPT-SoVITSサーバー上の絶対パス）",
     "gptsovitsRefAudioPlaceholder": "例：/path/to/reference.wav",
     "gptsovitsRefAudioRequired": "参照音声パスを入力してください",
+    "gptsovitsInvalidInput": "参照音声/テキストに | 記号を含めることはできません",
     "gptsovitsRefText": "参照テキスト",
     "gptsovitsRefTextHint": "（参照音声に対応するテキスト内容）",
     "gptsovitsRefTextPlaceholder": "例：これは参照音声のテキストです",

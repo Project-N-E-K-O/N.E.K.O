@@ -660,6 +660,7 @@
     "gptsovitsRefAudioHint": "(Absolute path on GPT-SoVITS server)",
     "gptsovitsRefAudioPlaceholder": "e.g., /path/to/reference.wav",
     "gptsovitsRefAudioRequired": "Please fill in the reference audio path",
+    "gptsovitsInvalidInput": "Reference audio/text cannot contain | symbol",
     "gptsovitsRefText": "Reference Text",
     "gptsovitsRefTextHint": "(Text content of the reference audio)",
     "gptsovitsRefTextPlaceholder": "e.g., This is the reference audio text",
