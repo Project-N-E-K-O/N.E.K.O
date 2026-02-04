@@ -152,6 +152,10 @@ class UniversalTutorialManager {
                 smoothScroll: true, // 启用平滑滚动
                 className: 'neko-tutorial-driver',
                 disableActiveInteraction: false,
+                // i18n 按钮文本
+                nextBtnText: this.t('tutorial.buttons.next', '下一步'),
+                prevBtnText: this.t('tutorial.buttons.prev', '上一步'),
+                doneBtnText: this.t('tutorial.buttons.done', '完成'),
                 onDestroyStarted: () => {
                     // 教程结束时，如果需要标记 hint 已显示
                     if (this.shouldMarkHintShown) {
@@ -197,6 +201,75 @@ class UniversalTutorialManager {
             this.checkAndStartTutorial();
         } catch (error) {
             console.error('[Tutorial] driver.js 初始化失败:', error);
+        }
+    }
+
+    /**
+     * 重新创建 driver 实例以确保按钮文本使用最新的 i18n 翻译
+     * 这个方法在启动引导时调用，此时 i18n 应该已经加载完成
+     */
+    recreateDriverWithI18n() {
+        try {
+            const DriverClass = window.driver;
+            if (!DriverClass) {
+                console.error('[Tutorial] driver.js 类未找到');
+                return;
+            }
+
+            // 销毁现有的 driver 实例
+            if (this.driver) {
+                try {
+                    this.driver.destroy();
+                } catch (e) {
+                    // 忽略销毁错误
+                }
+            }
+
+            // 重新创建 driver 实例，使用最新的 i18n 翻译
+            this.driver = new DriverClass({
+                padding: 8,
+                allowClose: true,
+                overlayClickNext: false,
+                animate: true,
+                smoothScroll: true,
+                className: 'neko-tutorial-driver',
+                disableActiveInteraction: false,
+                // i18n 按钮文本
+                nextBtnText: this.t('tutorial.buttons.next', '下一步'),
+                prevBtnText: this.t('tutorial.buttons.prev', '上一步'),
+                doneBtnText: this.t('tutorial.buttons.done', '完成'),
+                onDestroyStarted: () => {
+                    if (this.shouldMarkHintShown) {
+                        localStorage.setItem('neko_tutorial_reset_hint_shown', 'true');
+                        this.shouldMarkHintShown = false;
+                        console.log('[Tutorial] 已标记重置提示为已显示');
+                    }
+                },
+                onHighlighted: (element, step, options) => {
+                    console.log('[Tutorial] 高亮元素:', step.element);
+                    setTimeout(() => {
+                        if (element && element.element) {
+                            const targetElement = element.element;
+                            const rect = targetElement.getBoundingClientRect();
+                            const isInViewport = (
+                                rect.top >= 0 &&
+                                rect.left >= 0 &&
+                                rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) &&
+                                rect.right <= (window.innerWidth || document.documentElement.clientWidth)
+                            );
+                            if (!isInViewport) {
+                                console.log('[Tutorial] 元素不在视口中，滚动到元素');
+                                targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            }
+                        }
+                        this.enablePopoverDragging();
+                    }, 100);
+                }
+            });
+
+            console.log('[Tutorial] driver.js 重新创建成功，使用 i18n 按钮文本');
+        } catch (error) {
+            console.error('[Tutorial] driver.js 重新创建失败:', error);
         }
     }
 
@@ -463,20 +536,6 @@ class UniversalTutorialManager {
                 action: 'click'
             },
             {
-                element: '#live2d-toggle-merge-messages',
-                popover: {
-                    title: window.t ? window.t('tutorial.step11.title', '🧩 合并消息') : '🧩 合并消息',
-                    description: window.t ? window.t('tutorial.step11.desc', '将多条短消息合并为一次发送，减少打断感~') : '将多条短消息合并为一次发送，减少打断感~',
-                }
-            },
-            {
-                element: '#live2d-toggle-focus-mode',
-                popover: {
-                    title: window.t ? window.t('tutorial.step12.title', '⛔ 允许打断') : '⛔ 允许打断',
-                    description: window.t ? window.t('tutorial.step12.desc', '控制是否允许打断当前回复，适合不同的对话节奏~') : '控制是否允许打断当前回复，适合不同的对话节奏~',
-                }
-            },
-            {
                 element: '#live2d-toggle-proactive-chat',
                 popover: {
                     title: window.t ? window.t('tutorial.step13.title', '💬 主动搭话') : '💬 主动搭话',
@@ -536,22 +595,22 @@ class UniversalTutorialManager {
             {
                 element: '#persistent-expression-select-btn',
                 popover: {
-                    title: this.t('tutorial.model_manager.live2d.persistent.title', '🧷 常驻表情'),
-                    description: this.t('tutorial.model_manager.live2d.persistent.desc', '选择一个常驻表情，让模型持续保持该表情，直到你再次更改。'),
+                    title: this.t('tutorial.model_manager.live2d.step4.title', '🧷 常驻表情'),
+                    description: this.t('tutorial.model_manager.live2d.step4.desc', '选择一个常驻表情，让模型持续保持该表情，直到你再次更改。'),
                 }
             },
             {
                 element: '#emotion-config-btn',
                 popover: {
-                    title: this.t('tutorial.model_manager.live2d.emotion.title', '😄 情感配置'),
-                    description: this.t('tutorial.model_manager.live2d.emotion.desc', '进入前请先选择一个模型。点击这里配置 Live2D 模型的情感表现，可为不同的情感设置对应的表情和动作组合。'),
+                    title: this.t('tutorial.model_manager.live2d.step5.title', '😄 情感配置'),
+                    description: this.t('tutorial.model_manager.live2d.step5.desc', '进入前请先选择一个模型。点击这里配置 Live2D 模型的情感表现，可为不同的情感设置对应的表情和动作组合。'),
                 }
             },
             {
                 element: '#parameter-editor-btn',
                 popover: {
-                    title: this.t('tutorial.model_manager.live2d.parameter.title', '✨ 捏脸系统'),
-                    description: this.t('tutorial.model_manager.live2d.parameter.desc', '点击这里进入捏脸系统，可以精细调整 Live2D 模型的面部参数，打造独特的猫娘形象。'),
+                    title: this.t('tutorial.model_manager.live2d.step6.title', '✨ 捏脸系统'),
+                    description: this.t('tutorial.model_manager.live2d.step6.desc', '点击这里进入捏脸系统，可以精细调整 Live2D 模型的面部参数，打造独特的猫娘形象。'),
                 }
             }
         ];
@@ -561,29 +620,29 @@ class UniversalTutorialManager {
             {
                 element: '#ambient-light-slider',
                 popover: {
-                    title: this.t('tutorial.model_manager.vrm.ambient.title', '🌟 环境光'),
-                    description: this.t('tutorial.model_manager.vrm.ambient.desc', '调整环境光强度。环境光影响整体亮度，数值越高模型越亮。'),
+                    title: this.t('tutorial.model_manager.vrm.step6.title', '🌟 环境光'),
+                    description: this.t('tutorial.model_manager.vrm.step6.desc', '调整环境光强度。环境光影响整体亮度，数值越高模型越亮。'),
                 }
             },
             {
                 element: '#main-light-slider',
                 popover: {
-                    title: this.t('tutorial.model_manager.vrm.mainlight.title', '☀️ 主光源'),
-                    description: this.t('tutorial.model_manager.vrm.mainlight.desc', '调整主光源强度。主光源是主要的照明来源，影响模型的明暗对比。'),
+                    title: this.t('tutorial.model_manager.vrm.step7.title', '☀️ 主光源'),
+                    description: this.t('tutorial.model_manager.vrm.step7.desc', '调整主光源强度。主光源是主要的照明来源，影响模型的明暗对比。'),
                 }
             },
             {
                 element: '#exposure-slider',
                 popover: {
-                    title: this.t('tutorial.model_manager.vrm.exposure.title', '🌞 曝光'),
-                    description: this.t('tutorial.model_manager.vrm.exposure.desc', '调整整体曝光强度。数值越高整体越亮，越低则更暗更有对比。'),
+                    title: this.t('tutorial.model_manager.vrm.step8.title', '🌞 曝光'),
+                    description: this.t('tutorial.model_manager.vrm.step8.desc', '调整整体曝光强度。数值越高整体越亮，越低则更暗更有对比。'),
                 }
             },
             {
                 element: '#tonemapping-select',
                 popover: {
-                    title: this.t('tutorial.model_manager.vrm.tonemapping.title', '🎞️ 色调映射'),
-                    description: this.t('tutorial.model_manager.vrm.tonemapping.desc', '选择不同的色调映射算法，决定画面亮部和暗部的呈现风格。'),
+                    title: this.t('tutorial.model_manager.vrm.step9.title', '🎞️ 色调映射'),
+                    description: this.t('tutorial.model_manager.vrm.step9.desc', '选择不同的色调映射算法，决定画面亮部和暗部的呈现风格。'),
                 }
             }
         ];
@@ -604,15 +663,15 @@ class UniversalTutorialManager {
             {
                 element: '#model-select-btn',
                 popover: {
-                    title: this.t('tutorial.parameter_editor.model.title', '🎭 选择模型'),
-                    description: this.t('tutorial.parameter_editor.model.desc', '首先选择要编辑的 Live2D 模型。只有选择了模型后，才能调整参数。'),
+                    title: this.t('tutorial.parameter_editor.step1.title', '🎭 选择模型'),
+                    description: this.t('tutorial.parameter_editor.step1.desc', '首先选择要编辑的 Live2D 模型。只有选择了模型后，才能调整参数。'),
                 }
             },
             {
                 element: '#parameters-list',
                 popover: {
-                    title: this.t('tutorial.parameter_editor.params.title', '🎨 参数列表'),
-                    description: this.t('tutorial.parameter_editor.params.desc', '这里显示了模型的所有可调参数。每个参数控制模型的不同部分，如眼睛大小、嘴巴形状、头部角度等。'),
+                    title: this.t('tutorial.parameter_editor.step2.title', '🎨 参数列表'),
+                    description: this.t('tutorial.parameter_editor.step2.desc', '这里显示了模型的所有可调参数。每个参数控制模型的不同部分，如眼睛大小、嘴巴形状、头部角度等。'),
                 }
             }
             ];
@@ -657,22 +716,22 @@ class UniversalTutorialManager {
             {
                 element: '#master-section',
                 popover: {
-                    title: this.t('tutorial.chara_manager.master.title', '👤 主人档案'),
-                    description: this.t('tutorial.chara_manager.master.desc', '这是您的主人档案。填写您的信息后，猫娘会根据这些信息来称呼您。'),
+                    title: this.t('tutorial.chara_manager.step1.title', '👤 主人档案'),
+                    description: this.t('tutorial.chara_manager.step1.desc', '这是您的主人档案。填写您的信息后，猫娘会根据这些信息来称呼您。'),
                 }
             },
             {
                 element: '#catgirl-section',
                 popover: {
-                    title: this.t('tutorial.chara_manager.catgirl.title', '🐱 猫娘档案'),
-                    description: this.t('tutorial.chara_manager.catgirl.desc', '这里可以创建和管理多个猫娘角色。每个角色都有独特的性格设定。'),
+                    title: this.t('tutorial.chara_manager.step6.title', '🐱 猫娘档案'),
+                    description: this.t('tutorial.chara_manager.step6.desc', '这里可以创建和管理多个猫娘角色。每个角色都有独特的性格设定。'),
                 }
             },
             {
                 element: '.catgirl-block:first-child button[id^="switch-btn-"]',
                 popover: {
-                    title: this.t('tutorial.chara_manager.switch.title', '🔄 切换猫娘'),
-                    description: this.t('tutorial.chara_manager.switch.desc', '点击此按钮可以将这个猫娘设为当前活跃角色。切换后，主页会使用该角色的形象和性格。'),
+                    title: this.t('tutorial.chara_manager.step11.title', '🔄 切换猫娘'),
+                    description: this.t('tutorial.chara_manager.step11.desc', '点击此按钮可以将这个猫娘设为当前活跃角色。切换后，主页会使用该角色的形象和性格。'),
                 }
             }
         ];
@@ -686,15 +745,15 @@ class UniversalTutorialManager {
             {
                 element: '#coreApiSelect',
                 popover: {
-                    title: this.t('tutorial.settings.core.title', '🔑 核心 API 服务商'),
-                    description: this.t('tutorial.settings.core.desc', '这是最重要的设置。核心 API 负责对话功能。\n\n• 免费版：完全免费，无需 API Key，适合新手体验\n• 阿里：有免费额度，功能全面\n• 智谱：有免费额度，支持联网搜索\n• OpenAI：智能水平最高，但需要翻墙且价格昂贵'),
+                    title: this.t('tutorial.settings.step2.title', '🔑 核心 API 服务商'),
+                    description: this.t('tutorial.settings.step2.desc', '这是最重要的设置。核心 API 负责对话功能。\n\n• 免费版：完全免费，无需 API Key，适合新手体验\n• 阿里：有免费额度，功能全面\n• 智谱：有免费额度，支持联网搜索\n• OpenAI：智能水平最高，但需要翻墙且价格昂贵'),
                 }
             },
             {
                 element: '#apiKeyInput',
                 popover: {
-                    title: this.t('tutorial.settings.apikey.title', '📝 核心 API Key'),
-                    description: this.t('tutorial.settings.apikey.desc', '将您选择的 API 服务商的 API Key 粘贴到这里。如果选择了免费版，这个字段可以留空。'),
+                    title: this.t('tutorial.settings.step3.title', '📝 核心 API Key'),
+                    description: this.t('tutorial.settings.step3.desc', '将您选择的 API 服务商的 API Key 粘贴到这里。如果选择了免费版，这个字段可以留空。'),
                 }
             }
         ];
@@ -758,15 +817,15 @@ class UniversalTutorialManager {
             {
                 element: '#memory-file-list',
                 popover: {
-                    title: this.t('tutorial.memory_browser.catgirl.title', '🐱 猫娘记忆库'),
-                    description: this.t('tutorial.memory_browser.catgirl.desc', '这里列出了所有猫娘的记忆库。点击一个猫娘的名称可以查看和编辑她的对话历史。'),
+                    title: this.t('tutorial.memory_browser.step2.title', '🐱 猫娘记忆库'),
+                    description: this.t('tutorial.memory_browser.step2.desc', '这里列出了所有猫娘的记忆库。点击一个猫娘的名称可以查看和编辑她的对话历史。'),
                 }
             },
             {
                 element: '#memory-chat-edit',
                 popover: {
-                    title: this.t('tutorial.memory_browser.chat.title', '📝 聊天记录编辑'),
-                    description: this.t('tutorial.memory_browser.chat.desc', '这里显示选中猫娘的所有对话记录。您可以在这里查看、编辑或删除特定的对话内容。'),
+                    title: this.t('tutorial.memory_browser.step4.title', '📝 聊天记录编辑'),
+                    description: this.t('tutorial.memory_browser.step4.desc', '这里显示选中猫娘的所有对话记录。您可以在这里查看、编辑或删除特定的对话内容。'),
                 }
             }
         ];
@@ -955,7 +1014,7 @@ class UniversalTutorialManager {
 
             // 检查当前页面是否需要全屏提示
             const pagesNeedingFullscreen = [
-                'chara_manager',  // 角色管理页面需要全屏引导
+                // 已禁用全屏提示
             ];
 
             if (pagesNeedingFullscreen.includes(this.currentPage)) {
@@ -1000,14 +1059,14 @@ class UniversalTutorialManager {
 
         // 标题
         const title = document.createElement('h2');
-        title.textContent = '🎓 开始新手引导';
+        title.textContent = this.t('tutorial.fullscreenPrompt.title', '🎓 开始新手引导');
         title.style.color = '#44b7fe';
         title.style.marginBottom = '20px';
         title.style.fontSize = '24px';
 
         // 描述
         const description = document.createElement('p');
-        description.textContent = '为了获得最佳的引导体验，建议进入全屏模式。\n全屏模式下，引导内容会更清晰，不会被其他元素遮挡。';
+        description.textContent = this.t('tutorial.fullscreenPrompt.desc', '为了获得最佳的引导体验，建议进入全屏模式。\n全屏模式下，引导内容会更清晰，不会被其他元素遮挡。');
         description.style.color = 'rgba(255, 255, 255, 0.85)';
         description.style.marginBottom = '30px';
         description.style.lineHeight = '1.6';
@@ -1021,7 +1080,7 @@ class UniversalTutorialManager {
 
         // 全屏按钮
         const fullscreenBtn = document.createElement('button');
-        fullscreenBtn.textContent = '进入全屏引导';
+        fullscreenBtn.textContent = this.t('tutorial.fullscreenPrompt.enterFullscreen', '进入全屏引导');
         fullscreenBtn.style.padding = '12px 30px';
         fullscreenBtn.style.background = 'linear-gradient(135deg, #44b7fe 0%, #40C5F1 100%)';
         fullscreenBtn.style.color = '#fff';
@@ -1126,6 +1185,9 @@ class UniversalTutorialManager {
     startTutorialSteps(validSteps) {
         // 缓存已验证的步骤，供 onStepChange 使用
         this.cachedValidSteps = validSteps;
+
+        // 重新创建 driver 实例以确保按钮文本使用最新的 i18n 翻译
+        this.recreateDriverWithI18n();
 
         // 定义步骤
         this.driver.setSteps(validSteps);
@@ -1911,7 +1973,7 @@ class UniversalTutorialManager {
         this.clearNextButtonGuard();
 
         // 只有进入了全屏的页面才需要退出全屏
-        const pagesNeedingFullscreen = ['chara_manager'];
+        const pagesNeedingFullscreen = []; // 已禁用全屏提示
         if (pagesNeedingFullscreen.includes(this.currentPage)) {
             this.exitFullscreenMode();
         }
@@ -2370,7 +2432,7 @@ function resetAllTutorials() {
         const pages = ['home', 'model_manager', 'model_manager_live2d', 'model_manager_vrm', 'model_manager_common', 'parameter_editor', 'emotion_manager', 'chara_manager', 'settings', 'voice_clone', 'steam_workshop', 'memory_browser'];
         pages.forEach(page => { localStorage.removeItem(prefix + page); });
     }
-    alert(window.t ? window.t('api.tutorialResetSuccess', '已重置所有引导，下次进入各页面时将重新显示引导。') : '已重置所有引导，下次进入各页面时将重新显示引导。');
+    alert(window.t ? window.t('memory.tutorialResetSuccess', '已重置所有引导，下次进入各页面时将重新显示引导。') : '已重置所有引导，下次进入各页面时将重新显示引导。');
 }
 
 /**
@@ -2400,17 +2462,21 @@ function resetTutorialForPage(pageKey) {
     }
 
     const pageNames = {
-        'home': window.t ? window.t('memory.tutorialPage.home', '主页') : '主页',
-        'model_manager': window.t ? window.t('memory.tutorialPage.model_manager', '模型设置') : '模型设置',
-        'parameter_editor': window.t ? window.t('memory.tutorialPage.parameter_editor', '捏脸系统') : '捏脸系统',
-        'emotion_manager': window.t ? window.t('memory.tutorialPage.emotion_manager', '情感管理') : '情感管理',
-        'chara_manager': window.t ? window.t('memory.tutorialPage.chara_manager', '角色管理') : '角色管理',
-        'settings': window.t ? window.t('memory.tutorialPage.settings', 'API设置') : 'API设置',
-        'voice_clone': window.t ? window.t('memory.tutorialPage.voice_clone', '语音克隆') : '语音克隆',
-        'memory_browser': window.t ? window.t('memory.tutorialPage.memory_browser', '记忆浏览') : '记忆浏览'
+        'home': window.t ? window.t('memory.tutorialPageHome', '主页') : '主页',
+        'model_manager': window.t ? window.t('memory.tutorialPageModelManager', '模型设置') : '模型设置',
+        'parameter_editor': window.t ? window.t('memory.tutorialPageParameterEditor', '捏脸系统') : '捏脸系统',
+        'emotion_manager': window.t ? window.t('memory.tutorialPageEmotionManager', '情感管理') : '情感管理',
+        'chara_manager': window.t ? window.t('memory.tutorialPageCharaManager', '角色管理') : '角色管理',
+        'settings': window.t ? window.t('memory.tutorialPageSettings', 'API设置') : 'API设置',
+        'voice_clone': window.t ? window.t('memory.tutorialPageVoiceClone', '语音克隆') : '语音克隆',
+        'memory_browser': window.t ? window.t('memory.tutorialPageMemoryBrowser', '记忆浏览') : '记忆浏览'
     };
     const pageName = pageNames[pageKey] || pageKey;
-    alert(window.t ? window.t('api.tutorialPageResetSuccess', `已重置「${pageName}」的引导，下次进入该页面时将重新显示引导。`) : `已重置「${pageName}」的引导，下次进入该页面时将重新显示引导。`);
+    // 使用带参数的 i18n 键，格式：已重置「{{pageName}}」的引导
+    const message = window.t 
+        ? window.t('memory.tutorialPageResetSuccessWithName', { pageName: pageName, defaultValue: `已重置「${pageName}」的引导，下次进入该页面时将重新显示引导。` })
+        : `已重置「${pageName}」的引导，下次进入该页面时将重新显示引导。`;
+    alert(message);
 }
 
 /**
