@@ -1239,7 +1239,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                                 
                                 # 使用异步HTTP客户端流式接收响应
                                 async with aiohttp.ClientSession() as session:
-                                    async with session.get(f"{base_url}/tts", params=params, timeout=aiohttp.ClientTimeout(total=120)) as resp:
+                                    async with session.post(f"{base_url}/tts", json=params, timeout=aiohttp.ClientTimeout(total=120)) as resp:
                                         if resp.status == 200:
                                             # 流式接收音频数据
                                             # GPT-SoVITS streaming_mode=1 返回带 wav header 的流

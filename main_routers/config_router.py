@@ -568,6 +568,8 @@ async def get_api_providers_config():
 async def load_gptsovits_model(request: Request):
     """代理请求到 GPT-SoVITS API 加载模型（解决 CORS 问题）"""
     import aiohttp
+    from urllib.parse import urlparse
+    import ipaddress
     try:
         data = await request.json()
         api_url = data.get("api_url", "").rstrip("/")
@@ -576,6 +578,18 @@ async def load_gptsovits_model(request: Request):
         
         if not api_url or not model_type or not weights_path:
             return {"success": False, "error": "Missing required parameters"}
+        
+        # SSRF 防护：限制 api_url 只能是 localhost
+        parsed = urlparse(api_url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return {"success": False, "error": "Invalid api_url"}
+        host = parsed.hostname
+        try:
+            if not ipaddress.ip_address(host).is_loopback:
+                return {"success": False, "error": "api_url must be localhost"}
+        except ValueError:
+            if host not in ("localhost",):
+                return {"success": False, "error": "api_url must be localhost"}
         
         # 根据模型类型选择 API 端点
         if model_type == "gpt":
