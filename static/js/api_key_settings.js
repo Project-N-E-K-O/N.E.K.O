@@ -739,6 +739,12 @@ async function loadGptSovitsGptModel() {
                 weights_path: modelPath
             })
         });
+        
+        if (!response.ok) {
+            showStatus((window.t ? window.t('api.gptsovitsLoadFailed') : '模型加载失败: ') + 'HTTP ' + response.status, 'error');
+            return;
+        }
+        
         const result = await response.json();
         if (result.success) {
             showStatus(window.t ? window.t('api.gptsovitsLoadSuccess') : '模型加载成功', 'success');
@@ -771,6 +777,12 @@ async function loadGptSovitsSovitsModel() {
                 weights_path: modelPath
             })
         });
+        
+        if (!response.ok) {
+            showStatus((window.t ? window.t('api.gptsovitsLoadFailed') : '模型加载失败: ') + 'HTTP ' + response.status, 'error');
+            return;
+        }
+        
         const result = await response.json();
         if (result.success) {
             showStatus(window.t ? window.t('api.gptsovitsLoadSuccess') : '模型加载成功', 'success');
