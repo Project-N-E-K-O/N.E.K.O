@@ -171,7 +171,11 @@ class UniversalTutorialManager {
                     // 调用步骤特定的 onHighlighted 回调（如果存在）
                     if (step.onHighlighted && typeof step.onHighlighted === 'function') {
                         console.log('[Tutorial] 调用步骤特定的 onHighlighted 回调');
-                        step.onHighlighted.call(this);
+                        try {
+                            step.onHighlighted.call(this);
+                        } catch (error) {
+                            console.error('[Tutorial] 步骤 onHighlighted 执行失败:', step.element, error);
+                        }
                         if (this.driver) {
                             this._lastOnHighlightedStepIndex = this.driver.currentStep ?? this._lastOnHighlightedStepIndex;
                         }
@@ -255,7 +259,11 @@ class UniversalTutorialManager {
                     // 调用步骤特定的 onHighlighted 回调（如果存在）
                     if (step.onHighlighted && typeof step.onHighlighted === 'function') {
                         console.log('[Tutorial] 调用步骤特定的 onHighlighted 回调');
-                        step.onHighlighted.call(this);
+                        try {
+                            step.onHighlighted.call(this);
+                        } catch (error) {
+                            console.error('[Tutorial] 步骤 onHighlighted 执行失败:', step.element, error);
+                        }
                         if (this.driver) {
                             this._lastOnHighlightedStepIndex = this.driver.currentStep ?? this._lastOnHighlightedStepIndex;
                         }
