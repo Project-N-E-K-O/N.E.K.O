@@ -1170,7 +1170,9 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
                 if (expressionManager && typeof expressionManager.stopAllExpressions === 'function') {
                     expressionManager.stopAllExpressions();
                 }
-            } catch (e) {}
+            } catch (e) {
+                console.warn('[ClickEffect] Failed to stop expressions on currentModel:', e);
+            }
 
             if (typeof this.applyPersistentExpressionsNative === 'function') {
                 try { this.applyPersistentExpressionsNative(true); } catch (e) {}
