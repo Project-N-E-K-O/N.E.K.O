@@ -170,14 +170,19 @@ class UniversalTutorialManager {
 
                     // 调用步骤特定的 onHighlighted 回调（如果存在）
                     if (step.onHighlighted && typeof step.onHighlighted === 'function') {
-                        console.log('[Tutorial] 调用步骤特定的 onHighlighted 回调');
-                        try {
-                            step.onHighlighted.call(this);
-                        } catch (error) {
-                            console.error('[Tutorial] 步骤 onHighlighted 执行失败:', step.element, error);
-                        }
-                        if (this.driver) {
-                            this._lastOnHighlightedStepIndex = this.driver.currentStep ?? this._lastOnHighlightedStepIndex;
+                        const currentStepIndex = (this.driver && typeof this.driver.currentStep === 'number')
+                            ? this.driver.currentStep
+                            : this.currentStep;
+                        if (currentStepIndex === this._lastOnHighlightedStepIndex) {
+                            console.log('[Tutorial] 跳过重复的 onHighlighted 回调:', step.element);
+                        } else {
+                            console.log('[Tutorial] 调用步骤特定的 onHighlighted 回调');
+                            try {
+                                step.onHighlighted.call(this);
+                            } catch (error) {
+                                console.error('[Tutorial] 步骤 onHighlighted 执行失败:', step.element, error);
+                            }
+                            this._lastOnHighlightedStepIndex = currentStepIndex;
                         }
                     }
 
@@ -258,14 +263,19 @@ class UniversalTutorialManager {
 
                     // 调用步骤特定的 onHighlighted 回调（如果存在）
                     if (step.onHighlighted && typeof step.onHighlighted === 'function') {
-                        console.log('[Tutorial] 调用步骤特定的 onHighlighted 回调');
-                        try {
-                            step.onHighlighted.call(this);
-                        } catch (error) {
-                            console.error('[Tutorial] 步骤 onHighlighted 执行失败:', step.element, error);
-                        }
-                        if (this.driver) {
-                            this._lastOnHighlightedStepIndex = this.driver.currentStep ?? this._lastOnHighlightedStepIndex;
+                        const currentStepIndex = (this.driver && typeof this.driver.currentStep === 'number')
+                            ? this.driver.currentStep
+                            : this.currentStep;
+                        if (currentStepIndex === this._lastOnHighlightedStepIndex) {
+                            console.log('[Tutorial] 跳过重复的 onHighlighted 回调:', step.element);
+                        } else {
+                            console.log('[Tutorial] 调用步骤特定的 onHighlighted 回调');
+                            try {
+                                step.onHighlighted.call(this);
+                            } catch (error) {
+                                console.error('[Tutorial] 步骤 onHighlighted 执行失败:', step.element, error);
+                            }
+                            this._lastOnHighlightedStepIndex = currentStepIndex;
                         }
                     }
 
