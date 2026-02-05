@@ -731,7 +731,7 @@ class VRMCore {
                         vrm.scene.position.set(-center.x, -center.y, -center.z);
                     }
                 } else {
-                    vrm.scene.position.set(-center.x, -center.y, -center.z);
+                    vrm.scene.position.set(0, 0, 0);
                 }
 
                 if (preferences.scale) {
@@ -745,7 +745,7 @@ class VRMCore {
                 // 注意：不在这里直接设置 rotation，避免双重旋转
                 // rotation 将在检测器阶段之后统一设置（见下方代码）
             } else {
-                vrm.scene.position.set(-center.x, -center.y, -center.z);
+                vrm.scene.position.set(0, 0, 0);
             }
             
             // 等待 3 帧确保 DOM 布局和 Three.js 场景完全稳定后再处理旋转
