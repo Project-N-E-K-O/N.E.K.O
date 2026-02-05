@@ -2386,34 +2386,6 @@ class UniversalTutorialManager {
     }
 
     /**
-     * 重置所有页面的引导状态
-     */
-    resetAllTutorials() {
-        const pages = [
-            'home',
-            'model_manager',
-            'model_manager_live2d',
-            'model_manager_vrm',
-            'model_manager_common',
-            'parameter_editor',
-            'emotion_manager',
-            'chara_manager',
-            'settings',
-            'voice_clone',
-            'steam_workshop',
-            'memory_browser'
-        ];
-
-        pages.forEach(page => {
-            const key = this.STORAGE_KEY_PREFIX + page;
-            localStorage.removeItem(key);
-        });
-
-        console.log('[Tutorial] 已重置所有引导状态');
-        return true;
-    }
-
-    /**
      * 重置指定页面的引导状态
      */
     resetPageTutorial(pageKey) {
