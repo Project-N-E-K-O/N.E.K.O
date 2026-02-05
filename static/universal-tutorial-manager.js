@@ -21,6 +21,7 @@ class UniversalTutorialManager {
         this.currentStep = 0;
         this.nextButtonGuardTimer = null;
         this.nextButtonGuardActive = false;
+        this._lastOnHighlightedStepIndex = null;
 
         // 用于追踪在引导中修改过的元素及其原始样式
         this.modifiedElementsMap = new Map();
@@ -165,14 +166,20 @@ class UniversalTutorialManager {
                     }
                 },
                 onHighlighted: (element, step, options) => {
-                    // 每次高亮元素时，确保元素在视口中
                     console.log('[Tutorial] 高亮元素:', step.element);
 
-                    // 给一点时间让 Driver.js 完成定位
+                    // 调用步骤特定的 onHighlighted 回调（如果存在）
+                    if (step.onHighlighted && typeof step.onHighlighted === 'function') {
+                        console.log('[Tutorial] 调用步骤特定的 onHighlighted 回调');
+                        step.onHighlighted.call(this);
+                        if (this.driver) {
+                            this._lastOnHighlightedStepIndex = this.driver.currentStep ?? this._lastOnHighlightedStepIndex;
+                        }
+                    }
+
                     setTimeout(() => {
                         if (element && element.element) {
                             const targetElement = element.element;
-                            // 检查元素是否在视口中
                             const rect = targetElement.getBoundingClientRect();
                             const isInViewport = (
                                 rect.top >= 0 &&
@@ -180,14 +187,11 @@ class UniversalTutorialManager {
                                 rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) &&
                                 rect.right <= (window.innerWidth || document.documentElement.clientWidth)
                             );
-
                             if (!isInViewport) {
                                 console.log('[Tutorial] 元素不在视口中，滚动到元素');
                                 targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
                             }
                         }
-
-                        // 启用 popover 拖动功能
                         this.enablePopoverDragging();
                     }, 100);
                 }
@@ -247,6 +251,16 @@ class UniversalTutorialManager {
                 },
                 onHighlighted: (element, step, options) => {
                     console.log('[Tutorial] 高亮元素:', step.element);
+
+                    // 调用步骤特定的 onHighlighted 回调（如果存在）
+                    if (step.onHighlighted && typeof step.onHighlighted === 'function') {
+                        console.log('[Tutorial] 调用步骤特定的 onHighlighted 回调');
+                        step.onHighlighted.call(this);
+                        if (this.driver) {
+                            this._lastOnHighlightedStepIndex = this.driver.currentStep ?? this._lastOnHighlightedStepIndex;
+                        }
+                    }
+
                     setTimeout(() => {
                         if (element && element.element) {
                             const targetElement = element.element;
@@ -451,6 +465,8 @@ class UniversalTutorialManager {
      * 主页引导步骤
      */
     getHomeSteps() {
+        const t = (key, fallback) => this.t(key, fallback);
+
         return [
             {
                 element: '#live2d-container',
@@ -575,6 +591,57 @@ class UniversalTutorialManager {
                 popover: {
                     title: window.t ? window.t('tutorial.step18.title', '🛠️ 创意工坊') : '🛠️ 创意工坊',
                     description: window.t ? window.t('tutorial.step18.desc', '进入 Steam 创意工坊页面，管理订阅内容~') : '进入 Steam 创意工坊页面，管理订阅内容~',
+                }
+            },
+            {
+                element: 'body',
+                popover: {
+                    title: t('tutorial.systray.intro.title', '📌 系统托盘功能'),
+                    description: `
+                        <div class="neko-systray-guide">
+                            <div class="neko-systray-guide__text">
+                                ${t('tutorial.systray.intro.desc', '在桌面版中，N.E.K.O 会在系统托盘（屏幕右下角）显示一个小图标。')}
+                            </div>
+                            <div class="neko-systray-guide__icon">
+                                <img src="/static/icons/icon_systray.ico" alt="N.E.K.O.">
+                            </div>
+                            <div class="neko-systray-guide__hint">
+                                ${t('tutorial.systray.icon.desc', '这个图标会常驻在托盘区域，方便你随时找到 N.E.K.O。')}
+                            </div>
+                        </div>
+                    `
+                }
+            },
+            {
+                element: 'body',
+                popover: {
+                    title: t('tutorial.systray.menu.title', '📋 托盘菜单'),
+                    description: `
+                        <div class="neko-systray-menu">
+                            <div class="neko-systray-menu__hint">
+                                ${t('tutorial.systray.menu.desc', '右键点击托盘图标，会出现菜单。下面是两个常用功能：')}
+                            </div>
+                            <div class="neko-systray-menu__panel">
+                                <div class="neko-systray-menu__item">
+                                    <div class="neko-systray-menu__item-label">
+                                        ${t('tutorial.systray.hotkey', '快捷键设置')}
+                                    </div>
+                                    <div class="neko-systray-menu__item-desc">
+                                        ${t('tutorial.systray.hotkeyDesc', '在这里可以设置全局快捷键，让你更高效地控制 N.E.K.O~')}
+                                    </div>
+                                </div>
+                                <div class="neko-systray-menu__separator"></div>
+                                <div class="neko-systray-menu__item neko-systray-menu__item--danger">
+                                    <div class="neko-systray-menu__item-label">
+                                        ${t('tutorial.systray.exit', '退出')}
+                                    </div>
+                                    <div class="neko-systray-menu__item-desc">
+                                        ${t('tutorial.systray.exitDesc', '想要关闭 N.E.K.O 时，在这里点击退出即可。')}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `
                 }
             }
         ];
@@ -1183,6 +1250,9 @@ class UniversalTutorialManager {
      * 启动引导步骤（内部方法）
      */
     startTutorialSteps(validSteps) {
+        // 重置步骤 onHighlighted 触发标记（避免重复/跨次引导）
+        this._lastOnHighlightedStepIndex = null;
+
         // 缓存已验证的步骤，供 onStepChange 使用
         this.cachedValidSteps = validSteps;
 
@@ -1794,6 +1864,19 @@ class UniversalTutorialManager {
 
             // 进入新步骤前，先清理上一阶段的"下一步"前置校验
             this.clearNextButtonGuard();
+
+            // 触发步骤特定的 onHighlighted（driver.min.js 不支持该回调）
+            if (currentStepConfig.onHighlighted && typeof currentStepConfig.onHighlighted === 'function') {
+                if (this._lastOnHighlightedStepIndex !== this.currentStep) {
+                    try {
+                        console.log('[Tutorial] 手动触发步骤 onHighlighted');
+                        currentStepConfig.onHighlighted.call(this);
+                        this._lastOnHighlightedStepIndex = this.currentStep;
+                    } catch (error) {
+                        console.error('[Tutorial] 步骤 onHighlighted 执行失败:', error);
+                    }
+                }
+            }
 
             // 角色管理页面：进入进阶设定相关步骤前，确保猫娘卡片和进阶设定都已展开
             if (this.currentPage === 'chara_manager') {

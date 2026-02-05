@@ -1398,6 +1398,61 @@
       "title": "🛠️ Steam Workshop",
       "desc": "Access Steam Workshop page and manage subscriptions~"
     },
+    "systray": {
+      "intro": {
+        "title": "📌 System Tray Features",
+        "desc": "In the desktop version, N.E.K.O shows a small icon in the system tray (bottom-right corner of the screen)."
+      },
+      "icon": {
+        "desc": "This icon stays in the tray so you can always find N.E.K.O quickly."
+      },
+      "menu": {
+        "title": "📋 Tray Menu",
+        "desc": "Right-click the tray icon to open the menu. Here are two commonly used features:"
+      },
+      "reset": {
+        "title": "🔄 Reset Model Position",
+        "desc": "If your catgirl moves off-screen or to an undesirable position, click this option to return her to the default position~"
+      },
+      "switchMode": {
+        "title": "💻 Switch Desktop/Mobile Mode",
+        "desc": "Switch between different display modes to adapt to various usage scenarios~"
+      },
+      "reload": {
+        "title": "🔃 Reload",
+        "desc": "Reload the application to fix display issues~"
+      },
+      "autoLaunch": {
+        "title": "🚀 Auto Launch",
+        "desc": "When enabled, N.E.K.O will automatically start when your computer boots up~"
+      },
+      "hotkey": {
+        "title": "⌨️ Hotkey Settings",
+        "desc": "Configure global hotkeys here to control N.E.K.O more efficiently~"
+      },
+      "feedback": {
+        "title": "📤 Upload Logs",
+        "desc": "Encountered issues or have suggestions? Click here to upload logs for feedback~"
+      },
+      "exit": {
+        "title": "❌ Exit Application",
+        "desc": "When you want to close N.E.K.O, click exit here. Since the window is borderless, the tray menu is the primary way to exit the application~"
+      },
+      "complete": {
+        "title": "🎉 Tutorial Complete!",
+        "desc": "Congratulations on completing all tutorials! You now understand N.E.K.O's main features. Enjoy interacting with your catgirl! To review the tutorial, click \"Reset Tutorial\" in settings~"
+      },
+      "resetPosition": "Reset Model Position",
+      "switchMode": "Switch Desktop/Mobile Mode",
+      "reload": "Reload",
+      "autoLaunch": "Auto Launch",
+      "compatibility": "Compatibility Mode",
+      "hotkey": "Hotkey Settings",
+      "hotkeyDesc": "Configure global hotkeys here to control N.E.K.O more efficiently~",
+      "uploadLogs": "Upload Logs",
+      "exit": "Exit",
+      "exitDesc": "When you want to close N.E.K.O, click Exit here. Since the window is borderless, the tray menu is the primary way to exit the application~"
+    },
     "completed": "✨ Tutorial complete! Enjoy~",
     "resetHint": {
       "title": "✨ Tutorial Complete",
