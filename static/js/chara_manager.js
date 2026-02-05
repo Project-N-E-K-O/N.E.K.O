@@ -1937,7 +1937,8 @@ function openApiKeySettings() {
 function openVoiceClone(lanlanName) {
     // 使用 window.openOrFocusWindow 打开独立窗口
     const url = '/voice_clone?lanlan_name=' + encodeURIComponent(lanlanName);
-    const windowName = 'neko_voice_clone_' + encodeURIComponent(lanlanName);
+    const lanlanNameForKey = lanlanName || 'default';
+    const windowName = 'neko_voice_clone_' + encodeURIComponent(lanlanNameForKey);
 
     // 计算窗口位置，使其居中显示
     const width = 700;
