@@ -596,30 +596,11 @@ class UniversalTutorialManager {
             {
                 element: 'body',
                 popover: {
-                    title: t('tutorial.systray.intro.title', '📌 系统托盘功能'),
-                    description: `
-                        <div class="neko-systray-guide">
-                            <div class="neko-systray-guide__text">
-                                ${t('tutorial.systray.intro.desc', '在桌面版中，N.E.K.O 会在系统托盘（屏幕右下角）显示一个小图标。')}
-                            </div>
-                            <div class="neko-systray-guide__icon">
-                                <img src="/static/icons/icon_systray.ico" alt="N.E.K.O.">
-                            </div>
-                            <div class="neko-systray-guide__hint">
-                                ${t('tutorial.systray.icon.desc', '这个图标会常驻在托盘区域，方便你随时找到 N.E.K.O。')}
-                            </div>
-                        </div>
-                    `
-                }
-            },
-            {
-                element: 'body',
-                popover: {
                     title: t('tutorial.systray.menu.title', '📋 托盘菜单'),
                     description: `
                         <div class="neko-systray-menu">
                             <div class="neko-systray-menu__hint">
-                                ${t('tutorial.systray.menu.desc', '右键点击托盘图标，会出现菜单。下面是两个常用功能：')}
+                                ${t('tutorial.systray.menu.desc', '右下角托盘里会有 N.E.K.O 的图标，右键点击会出现很多选项。下面是两个常用功能：')}
                             </div>
                             <div class="neko-systray-menu__panel">
                                 <div class="neko-systray-menu__item">

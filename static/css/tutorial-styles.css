@@ -266,45 +266,16 @@
    系统托盘教程展示样式
    ============================================ */
 
-.neko-systray-guide,
 .neko-systray-menu {
     display: flex;
     flex-direction: column;
     gap: 10px;
 }
 
-.neko-systray-guide__text,
-.neko-systray-guide__hint {
-    font-size: 13px;
-    line-height: 1.5;
-    color: #ffffff;
-}
-
 .neko-systray-menu__hint {
     font-size: 12px;
     line-height: 1.5;
     color: #ffffff;
-}
-
-.neko-systray-guide__icon {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0;
-    width: 100%;
-    padding: 10px 0;
-}
-
-.neko-systray-guide__icon img {
-    width: 56px;
-    height: 56px;
-    object-fit: contain;
-}
-
-.neko-systray-guide__label {
-    font-size: 13px;
-    font-weight: 600;
-    color: #111827;
 }
 
 .neko-systray-menu__panel {
