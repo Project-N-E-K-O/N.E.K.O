@@ -973,7 +973,8 @@
     "tutorialPageMemoryBrowser": "记忆浏览",
     "resetTutorialBtn": "重置引导",
     "tutorialResetSuccess": "已重置所有引导，下次进入各页面时将重新显示引导。",
-    "tutorialPageResetSuccess": "已重置该页面的引导，下次进入时将重新显示引导。"
+    "tutorialPageResetSuccess": "已重置该页面的引导，下次进入时将重新显示引导。",
+    "tutorialPageResetSuccessWithName": "已重置「{{pageName}}」的引导，下次进入该页面时将重新显示引导。"
   },
   "character": {
     "manager": "角色管理",
@@ -1635,7 +1636,7 @@
       },
       "step2": {
         "title": "🔑 核心 API 服务商",
-        "desc": "这是最重要的设置。核心 API 负责对话功能。\n\n• 免费版：完全免费，无需 API Key，适合新手体验\n• 阿里：有免费额度，功能全面\n• 智谱：有免费额度，支持联网搜索\n• OpenAI：智能水平最高，但需要翻墙且价格昂贵"
+        "desc": "这是最重要的设置。核心 API 负责对话功能。"
       },
       "step3": {
         "title": "📝 核心 API Key",
@@ -1715,6 +1716,17 @@
         "title": "📝 聊天记录编辑",
         "desc": "这里显示选中猫娘的所有对话记录。您可以在这里查看、编辑或删除特定的对话内容。"
       }
+    },
+    "buttons": {
+      "next": "下一步",
+      "prev": "上一步",
+      "done": "完成",
+      "close": "关闭"
+    },
+    "fullscreenPrompt": {
+      "title": "🎓 开始新手引导",
+      "desc": "为了获得最佳的引导体验，建议进入全屏模式。\n全屏模式下，引导内容会更清晰，不会被其他元素遮挡。",
+      "enterFullscreen": "进入全屏引导"
     }
   },
   "console": {

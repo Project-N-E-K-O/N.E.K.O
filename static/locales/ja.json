@@ -1002,7 +1002,8 @@
     "tutorialPageMemoryBrowser": "メモリブラウザ",
     "resetTutorialBtn": "リセット",
     "tutorialResetSuccess": "すべてのチュートリアルがリセットされました。各ページにアクセスすると再度表示されます。",
-    "tutorialPageResetSuccess": "このページのチュートリアルがリセットされました。次回アクセス時に再度表示されます。"
+    "tutorialPageResetSuccess": "このページのチュートリアルがリセットされました。次回アクセス時に再度表示されます。",
+    "tutorialPageResetSuccessWithName": "「{{pageName}}」のチュートリアルがリセットされました。次回アクセス時に再度表示されます。"
   },
   "character": {
     "manager": "キャラクターマネージャー",
@@ -1618,7 +1619,7 @@
       },
       "step2": {
         "title": "🔑 コアAPIプロバイダー",
-        "desc": "最も重要な設定です。コアAPIは会話機能を処理します。\n\n• 無料版：完全無料、APIキー不要、初心者向け\n• Alibaba：無料枠あり、機能充実\n• Zhipu：無料枠あり、ウェブ検索対応\n• OpenAI：最高の知能レベル、ただしVPN必要で高価"
+        "desc": "最も重要な設定です。コアAPIは会話機能を処理します。"
       },
       "step3": {
         "title": "📝 コアAPIキー",
@@ -1698,6 +1699,17 @@
         "title": "📝 チャット履歴編集",
         "desc": "選択したキャラクターのすべての会話記録を表示します。ここで特定の会話を表示・編集・削除できます。"
       }
+    },
+    "buttons": {
+      "next": "次へ",
+      "prev": "前へ",
+      "done": "完了",
+      "close": "閉じる"
+    },
+    "fullscreenPrompt": {
+      "title": "🎓 チュートリアルを開始",
+      "desc": "最高のチュートリアル体験のために、フルスクリーンモードに入ることをお勧めします。\nフルスクリーンモードでは、チュートリアルの内容がより見やすく、他の要素に遮られません。",
+      "enterFullscreen": "フルスクリーンで開始"
     }
   },
   "console": {

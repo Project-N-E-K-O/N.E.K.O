@@ -935,12 +935,12 @@ background: #fff;
 color: #222;
 resize: none;
 /* 高度精确等于按钮组总高度，确保上沿和下沿对齐 */
-/* 发送按钮: padding 8px上下 + border 2px上下(透明) + 内容高度(图标22px) = 8+2+22+2+8 = 42px */
+/* 发送按钮: padding 8px上下 + border 2px上下(透明) + 内容高度(图标28px) = 8+2+28+2+8 = 48px */
 /* gap: 6px */
-/* 截图按钮: padding 8px上下 + border 2px上下(蓝色) + 内容高度(图标22px) = 8+2+22+2+8 = 42px */
-/* 总高度: 42px + 6px + 42px = 90px */
+/* 截图按钮: padding 8px上下 + border 2px上下(蓝色) + 内容高度(图标28px) = 8+2+28+2+8 = 48px */
+/* 总高度: 48px + 6px + 48px = 102px */
 /* 由于box-sizing: border-box，边框包含在高度内 */
-height: 90px;
+height: 102px;
 box-sizing: border-box;
 cursor: text;
 caret-color: #222;
@@ -1232,9 +1232,12 @@ transition: none !important;
 
 #textInputBox {
 font-size: 0.9rem;
-/* 移动端：按钮组高度 = 两个按钮(6px*2+内容) + gap(4px) */
-height: 62px;
-/* 保持移动端原有高度 */
+/* 移动端：按钮组高度精确等于按钮组总高度 */
+/* 发送按钮: padding 6px上下 + border 2px上下 + 内容高度(图标28px) = 6+2+28+2+6 = 44px */
+/* gap: 4px */
+/* 截图按钮: padding 6px上下 + border 2px上下 + 内容高度(图标28px) = 6+2+28+2+6 = 44px */
+/* 总高度: 44px + 4px + 44px = 92px */
+height: 92px;
 }
 
 #button-group {

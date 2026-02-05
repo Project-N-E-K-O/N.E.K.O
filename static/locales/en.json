@@ -955,7 +955,8 @@
     "tutorialPageMemoryBrowser": "Memory Browser",
     "resetTutorialBtn": "Reset Tutorial",
     "tutorialResetSuccess": "All tutorials have been reset. They will be shown again when you visit each page.",
-    "tutorialPageResetSuccess": "Tutorial for this page has been reset. It will be shown again when you visit."
+    "tutorialPageResetSuccess": "Tutorial for this page has been reset. It will be shown again when you visit.",
+    "tutorialPageResetSuccessWithName": "Tutorial for \"{{pageName}}\" has been reset. It will be shown again when you visit that page."
   },
   "character": {
     "manager": "Character Manager",
@@ -1575,7 +1576,7 @@
       },
       "step2": {
         "title": "🔑 Core API Provider",
-        "desc": "Most important setting. Core API handles conversation.\n\n• Free: Completely free, no API Key needed, great for beginners\n• Alibaba: Free quota available, full features\n• Zhipu: Free quota available, supports web search\n• OpenAI: Highest intelligence, but requires VPN and is expensive"
+        "desc": "Most important setting. Core API handles conversation."
       },
       "step3": {
         "title": "📝 Core API Key",
@@ -1655,6 +1656,17 @@
         "title": "📝 Chat History Editing",
         "desc": "Shows all conversation records for selected character. View, edit or delete specific conversations here."
       }
+    },
+    "buttons": {
+      "next": "Next",
+      "prev": "Previous",
+      "done": "Done",
+      "close": "Close"
+    },
+    "fullscreenPrompt": {
+      "title": "🎓 Start Tutorial",
+      "desc": "For the best tutorial experience, we recommend entering fullscreen mode.\nIn fullscreen mode, the tutorial content will be clearer and won't be obscured by other elements.",
+      "enterFullscreen": "Enter Fullscreen Tutorial"
     }
   },
   "console": {
