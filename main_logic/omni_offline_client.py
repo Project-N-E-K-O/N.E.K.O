@@ -9,7 +9,7 @@ from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from config import get_extra_body
 from utils.frontend_utils import calculate_text_similarity
-from config.prompts_sys import normal_chat_rewrite_prompt
+from config.prompts_sys import get_normal_chat_rewrite_prompt
 
 # Setup logger for this module
 logger = logging.getLogger(__name__)
@@ -134,6 +134,7 @@ class OmniOfflineClient:
         
         # 改写模型配置（由 core.py 在启动时设置）
         self.rewrite_model_config: Optional[Dict[str, str]] = None
+        self.rewrite_prompt_language = 'zh-CN'
         
     async def connect(self, instructions: str, native_audio=False) -> None:
         """Initialize the client with system instructions."""
@@ -226,6 +227,13 @@ class OmniOfflineClient:
         
         return False
 
+    def set_rewrite_prompt_language(self, language: str) -> None:
+        """设置改写提示语言（由 Core 根据用户语言调用）"""
+        if language:
+            self.rewrite_prompt_language = language
+        else:
+            self.rewrite_prompt_language = 'zh-CN'
+
     async def _rewrite_long_response(self, text: str) -> Optional[str]:
         """
         调用改写模型精简过长的回复
@@ -250,7 +258,8 @@ class OmniOfflineClient:
                 streaming=False,
             )
             
-            rewrite_prompt = normal_chat_rewrite_prompt.format(
+            rewrite_prompt_template = get_normal_chat_rewrite_prompt(self.rewrite_prompt_language)
+            rewrite_prompt = rewrite_prompt_template.format(
                 raw_output=text,
                 max_length=self.max_response_length
             )
@@ -516,4 +525,3 @@ class OmniOfflineClient:
         self._conversation_history = []
         self._pending_images.clear()
         logger.info("OmniOfflineClient closed")
-

@@ -421,3 +421,48 @@ normal_chat_rewrite_prompt = """你是一个文本精简专家。请将以下AI�
 4. 如果原文已经足够简洁（不超过{max_length}字/词），可以原样返回。
 
 请只返回精简后的内容，不要有其他解释。"""
+
+normal_chat_rewrite_prompt_en = """You are a response-cleanup expert. Please condense and polish the AI reply below.
+
+====== Original Reply ======
+{raw_output}
+====== Original Reply ======
+
+Follow these rules:
+1. Remove any reasoning or analysis markers (e.g., <thinking>, [analysis], [thought]), keep only the final message.
+2. Merge repetitive or redundant statements.
+3. Preserve the key reply content so that it is:
+   - Concise and natural (no more than {max_length} words/characters)
+   - In the same tone/style as the original
+   - Complete sentences without cutting them halfway
+4. If the reply is already shorter than {max_length}, you may return it as-is.
+
+Return only the refined reply with no extra explanation."""
+
+normal_chat_rewrite_prompt_ja = """あなたはテキストの要約・整形の専門家です。以下のAI返信を簡潔に整えてください。
+
+====== 元の返信 ======
+{raw_output}
+====== 元の返信 ======
+
+ルール：
+1. <thinking> や【分析】などの思考・分析マーカーを取り除き、最終的な発話内容だけを残す。
+2. 重複や冗長な表現は統合・削除する。
+3. 返信の核心内容は以下を満たすこと：
+   - 自然で簡潔（{max_length} 字/語以内）
+   - 元のトーンやスタイルを維持
+   - 文を途中で切らず、意味が通るようにする
+4. もともと {max_length} を超えない場合は、そのまま返してもよい。
+
+整形後の内容のみを返し、説明は追加しないこと。"""
+
+NORMAL_CHAT_REWRITE_PROMPTS = {
+    'zh': normal_chat_rewrite_prompt,
+    'en': normal_chat_rewrite_prompt_en,
+    'ja': normal_chat_rewrite_prompt_ja,
+}
+
+
+def get_normal_chat_rewrite_prompt(lang: str = 'zh') -> str:
+    lang_key = _normalize_prompt_language(lang)
+    return NORMAL_CHAT_REWRITE_PROMPTS.get(lang_key, NORMAL_CHAT_REWRITE_PROMPTS['zh'])

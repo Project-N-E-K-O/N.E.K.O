@@ -931,6 +931,8 @@ class LLMSessionManager:
                     on_response_done=self.handle_response_complete,
                     on_repetition_detected=self.handle_repetition_detected
                 )
+                if hasattr(self.session, "set_rewrite_prompt_language"):
+                    self.session.set_rewrite_prompt_language(self.user_language)
                 # ========== 配置改写模型和回调 ==========
                 self.session.rewrite_model_config = {
                     'model': correction_config.get('model', 'qwen-max'),
@@ -1190,6 +1192,8 @@ class LLMSessionManager:
                     on_connection_error=self.handle_connection_error,
                     on_response_done=self.handle_response_complete
                 )
+                if hasattr(self.pending_session, "set_rewrite_prompt_language"):
+                    self.pending_session.set_rewrite_prompt_language(self.user_language)
                 # ========== 配置改写模型和回调 ==========
                 self.pending_session.rewrite_model_config = {
                     'model': correction_config.get('model', 'qwen-max'),
@@ -1861,6 +1865,20 @@ class LLMSessionManager:
             logger.info(f"用户语言已归一化: {language} → {normalized_lang}")
         else:
             logger.info(f"用户语言已设置为: {normalized_lang}")
+
+        # 同步到当前/备用文本 Session，用于改写提示语言
+        try:
+            if isinstance(self.session, OmniOfflineClient) and hasattr(self.session, "set_rewrite_prompt_language"):
+                self.session.set_rewrite_prompt_language(self.user_language)
+        except Exception as e:
+            logger.warning(f"更新当前Session改写语言失败: {e}")
+
+        try:
+            if self.pending_session and isinstance(self.pending_session, OmniOfflineClient) and \
+                    hasattr(self.pending_session, "set_rewrite_prompt_language"):
+                self.pending_session.set_rewrite_prompt_language(self.user_language)
+        except Exception as e:
+            logger.warning(f"更新备用Session改写语言失败: {e}")
     
     async def translate_if_needed(self, text: str) -> str:
         """
