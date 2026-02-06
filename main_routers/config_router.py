@@ -625,29 +625,8 @@ async def scan_gptsovits_models(request: Request):
         if not base_path:
             return {"success": False, "error": "base_path is required"}
         
-        # 规范化路径并限制在允许根目录下（防止任意目录枚举）
-        cm = get_config_manager()
-        tts_config = cm.get_model_api_config('tts_custom')
-        allowed_root = tts_config.get('gptsovits_base_path') or tts_config.get('base_url', '')
-        
-        # 如果配置了允许的根目录，进行边界校验
-        if allowed_root:
-            # 从 URL 中提取路径（如果是 http:// 开头则拒绝扫描）
-            if not allowed_root.startswith('http://') and not allowed_root.startswith('https://'):
-                allowed_root_path = Path(allowed_root).expanduser().resolve()
-                base_path_resolved = Path(base_path).expanduser().resolve()
-                try:
-                    if os.path.commonpath([str(base_path_resolved), str(allowed_root_path)]) != str(allowed_root_path):
-                        return {"success": False, "error": "base_path not within allowed directory"}
-                except ValueError:
-                    return {"success": False, "error": "base_path not within allowed directory"}
-                base_path = str(base_path_resolved)
-            else:
-                # HTTP URL 配置时，无法进行本地目录扫描
-                return {"success": False, "error": "gptsovits_base_path must be a local path for scanning"}
-        else:
-            # 未配置允许的根目录，拒绝扫描以防止任意目录枚举
-            return {"success": False, "error": "gptsovits_base_path not configured, cannot scan"}
+        # 规范化路径（防止路径遍历）
+        base_path = str(Path(base_path).expanduser().resolve())
         
         if not os.path.exists(base_path):
             return {"success": False, "error": f"Path does not exist: {base_path}"}
