@@ -211,7 +211,7 @@
                 <span class="vrm-lighting-header-text" data-i18n="vrm.lighting.title">VRM打光设置</span>
             </div>
             <div id="vrm-lighting-content" class="vrm-lighting-content">
-                <div class="lighting-control">
+                <div class="lighting-control" id="ambient-light-control">
             <label for="ambient-light-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.ambientLight">环境光强度</label>
             <div style="display: flex; align-items: center; gap: 10px;">
                 <input type="range" id="ambient-light-slider" min="0" max="1.0" step="0.01" value="0.7"
@@ -220,7 +220,7 @@
             </div>
         </div>
 
-        <div class="lighting-control">
+        <div class="lighting-control" id="main-light-control">
             <label for="main-light-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.mainLight">主光源强度</label>
             <div style="display: flex; align-items: center; gap: 10px;">
                 <input type="range" id="main-light-slider" min="0" max="2.5" step="0.01" value="0.8"
@@ -266,7 +266,7 @@
             </div>
         </div>
 
-        <div class="lighting-control">
+        <div class="lighting-control" id="exposure-control">
             <label for="exposure-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.exposure">曝光</label>
             <div style="display: flex; align-items: center; gap: 10px;">
                 <input type="range" id="exposure-slider" min="0.5" max="2.5" step="0.05" value="1.0"
@@ -275,7 +275,7 @@
             </div>
         </div>
 
-            <div class="lighting-control">
+            <div class="lighting-control" id="tonemapping-control">
                 <label for="tonemapping-select" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.toneMapping">色调映射</label>
                 <div style="display: flex; align-items: center; gap: 10px;">
                     <select id="tonemapping-select" style="flex: 1; padding: 5px; border-radius: 4px; opacity: 0.85; color: #4f8cff;">
