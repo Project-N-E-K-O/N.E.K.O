@@ -2612,3 +2612,50 @@
             flex: none !important;
         }
     
+        #sidebar .sidebar-controls {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            width: 100%;
+            box-sizing: border-box;
+            padding: 0;
+            border-radius: 25px;
+            background: transparent;
+            position: relative;
+        }
+
+        #sidebar.mode-live2d {
+            width: 360px;
+        }
+
+        #sidebar.mode-live2d .sidebar-controls {
+            padding: 18px 16px 22px;
+            background: transparent;
+            border: none;
+        }
+
+        #sidebar.mode-live2d .sidebar-controls::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 7px;
+            width: 285px;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.5);
+            border: 2px solid rgba(201, 241, 244, 0.88);
+            border-radius: 25px;
+            backdrop-filter: blur(2px);
+            z-index: 0;
+            pointer-events: none;
+        }
+
+        #sidebar.mode-live2d .sidebar-controls > * {
+            position: relative;
+            z-index: 1;
+        }
+
+        #sidebar.mode-live2d #delete-model-btn,
+        #sidebar.mode-live2d #play-motion-btn,
+        #sidebar.mode-live2d #play-expression-btn {
+            margin-left: 8px !important;
+        }

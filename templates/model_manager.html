@@ -16,6 +16,7 @@
 
 
     <div id="sidebar">
+        <div id="sidebar-controls" class="sidebar-controls">
         <div class="control-group">
             <button id="backToMainBtn" class="btn btn-primary" data-i18n-title="live2d.backToMain">
                 <img src="/static/icons/back_to_main_button.png?v=1" data-i18n-alt="live2d.backToMain" class="back-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
@@ -113,7 +114,7 @@
             <div style="display: flex; gap: 0; align-items: center;">
                 <div id="vrm-expression-select-wrapper" style="position: relative; display: flex; flex: 1;">
                     <button id="vrm-expression-select-btn" class="btn btn-primary" type="button" disabled data-i18n-title="live2d.vrmExpression.selectExpression">
-                        <img src="/static/icons/parameter_editor_icon.png?v=1" data-i18n-alt="live2d.vrmExpression.selectExpression" class="vrm-expression-select-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
+                        <img src="/static/icons/expression_chosen.png?v=1" data-i18n-alt="live2d.vrmExpression.selectExpression" class="vrm-expression-select-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
                         <span class="round-stroke-text" id="vrm-expression-select-text" data-i18n="live2d.vrmExpression.selectExpression" data-text="Select Expression">选择表情</span>
                     </button>
                     <select id="vrm-expression-select" class="control-select" style="display: none;" disabled>
@@ -154,7 +155,7 @@
             <div style="display: flex; gap: 0; align-items: center;">
                 <div id="expression-select-wrapper" style="position: relative; display: flex; flex: 1;">
                     <button id="expression-select-btn" class="btn btn-primary" type="button" disabled data-i18n-title="live2d.selectExpression">
-                        <img src="/static/icons/parameter_editor_icon.png?v=1" data-i18n-alt="live2d.selectExpression" class="expression-select-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
+                        <img src="/static/icons/expression_chosen.png?v=1" data-i18n-alt="live2d.selectExpression" class="expression-select-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
                         <span class="round-stroke-text" id="expression-select-text" data-i18n="live2d.selectExpression" data-text="Select Expression">选择表情</span>
                     </button>
                     <select id="expression-select" class="control-select" style="display: none;" disabled>
@@ -296,6 +297,8 @@
                 <img src="/static/icons/parameter_editor_icon.png?v=1" data-i18n-alt="live2d.parameterEditor.title" class="parameter-editor-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
                 <span class="round-stroke-text" id="parameter-editor-text" data-i18n="live2d.parameterEditor.title" data-text="Face Editor">捏脸系统</span>
             </a>
+        </div>
+
         </div>
 
         <div id="status">
