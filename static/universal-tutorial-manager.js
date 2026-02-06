@@ -507,7 +507,8 @@ class UniversalTutorialManager {
                 popover: {
                     title: window.t ? window.t('tutorial.step5.title', '🎛️ 浮动工具栏') : '🎛️ 浮动工具栏',
                     description: window.t ? window.t('tutorial.step5.desc', '浮动工具栏包含多个实用功能按钮，让我为你逐一介绍~') : '浮动工具栏包含多个实用功能按钮，让我为你逐一介绍~',
-                }
+                },
+                disableActiveInteraction: true
             },
             {
                 element: '#live2d-btn-mic',
@@ -1029,7 +1030,7 @@ class UniversalTutorialManager {
         console.log(`[Tutorial] 已收集交互元素: ${elements.size}`);
     }
 
-    setTutorialMarkersVisible(visible) {
+    setTutorialMarkersVisible(visible, options = {}) {
         const overlay = document.querySelector('.driver-overlay');
         const highlight = document.querySelector('.driver-highlight');
         const popover = document.querySelector('.driver-popover');
@@ -1038,7 +1039,11 @@ class UniversalTutorialManager {
             this.tutorialMarkerDisplayCache = new Map();
         }
         if (!visible) {
+            const keepPopover = options.keepPopover === true;
             elements.forEach(element => {
+                // 如果指定保留弹窗且当前元素是弹窗，则跳过隐藏
+                if (keepPopover && element === popover) return;
+
                 if (!this.tutorialMarkerDisplayCache.has(element)) {
                     this.tutorialMarkerDisplayCache.set(element, element.style.display);
                 }
@@ -1091,7 +1096,8 @@ class UniversalTutorialManager {
     enableCurrentStepInteractions(currentElement) {
         if (!currentElement) return;
         this.tutorialControlledElements.forEach(element => {
-            if (element === currentElement || element.contains(currentElement)) {
+            // 启用当前元素、其父级容器以及其内部的受控子元素
+            if (element === currentElement || element.contains(currentElement) || currentElement.contains(element)) {
                 this.setElementInteractive(element, true);
             }
         });
@@ -1153,14 +1159,15 @@ class UniversalTutorialManager {
     rollbackTutorialInteractionState() {
         this.tutorialRollbackActive = true;
         this.disableAllTutorialInteractions();
-        this.setTutorialMarkersVisible(false);
-        console.error('[Tutorial] 已回滚至禁用状态');
+        // 仅隐藏遮罩和高亮，保留引导弹窗以避免用户卡死，并允许其通过弹窗按钮退出
+        this.setTutorialMarkersVisible(false, { keepPopover: true });
+        console.error('[Tutorial] 检测到布局异常，已回滚交互并保留引导弹窗');
     }
 
     restoreTutorialInteractionState() {
         this.tutorialControlledElements.forEach(element => {
-            element.style.pointerEvents = 'auto';
             const state = this.tutorialInteractionStates.get(element);
+            element.style.pointerEvents = state?.pointerEvents || '';
             element.style.cursor = state?.cursor || '';
             element.style.userSelect = state?.userSelect || '';
             if (element.dataset.tutorialDisabled) {
@@ -2387,28 +2394,6 @@ class UniversalTutorialManager {
         }
 
         this.startTutorial();
-    }
-
-    /**
-     * 重置所有页面的引导状态
-     */
-    resetAllTutorials() {
-        const pages = [
-            'home',
-            'model_manager',
-            'parameter_editor',
-            'emotion_manager',
-            'chara_manager',
-            'settings',
-            'voice_clone',
-            'steam_workshop',
-            'memory_browser'
-        ];
-        pages.forEach(page => {
-            const storageKeys = this.getStorageKeysForPage(page);
-            storageKeys.forEach(key => localStorage.removeItem(key));
-        });
-        console.log('[Tutorial] 所有引导状态已重置');
     }
 
     /**
