@@ -421,6 +421,25 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                     last_synced_index = 0
                                     break
                                 
+                                # Session end 前兜底同步：若仍有未同步消息（例如 turn end 前崩溃），再发送一次增量
+                                if not shutdown_event.is_set() and last_synced_index < len(chat_history):
+                                    new_messages = chat_history[last_synced_index:]
+                                    try:
+                                        async with aiohttp.ClientSession() as session:
+                                            async with session.post(
+                                                f"http://localhost:{MEMORY_SERVER_PORT}/process/{lanlan_name}",
+                                                json={'input_history': json.dumps(new_messages, indent=2, ensure_ascii=False)},
+                                                timeout=aiohttp.ClientTimeout(total=30.0)
+                                            ) as response:
+                                                result = await response.json()
+                                                if result.get('status') == 'error':
+                                                    logger.debug(f"[{lanlan_name}] session end 记忆同步失败: {result.get('message')}")
+                                                else:
+                                                    last_synced_index = len(chat_history)
+                                                    logger.debug(f"[{lanlan_name}] session end 兜底同步 {len(new_messages)} 条消息到 memory_server")
+                                    except Exception as e:
+                                        logger.debug(f"[{lanlan_name}] session end 同步 memory_server 失败: {e}")
+
                                 # Session end 不再向 memory_server 发送完整 chat_history，避免重复写入：
                                 # 每轮已在 turn end 时把新增消息同步到 /process，memory 中已有完整对话；
                                 # 若 session end 再发一次完整历史，recent_history 会 extend() 导致整段对话重复。

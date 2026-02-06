@@ -278,7 +278,8 @@ class LLMSessionManager:
         logger.info(f"[{self.lanlan_name}] 改写成功: {original_length} -> {rewritten_length} 字")
         
         # 1. 通知前端替换显示
-        if self.websocket and hasattr(self.websocket, 'client_state'):
+        if (self.websocket and hasattr(self.websocket, 'client_state') and
+                self.websocket.client_state == self.websocket.client_state.CONNECTED):
             try:
                 await self.websocket.send_json({
                     "type": "response_rewritten",
@@ -2009,4 +2010,3 @@ class LLMSessionManager:
                     continue
                 await self.send_speech(data)
             await asyncio.sleep(0.01)
-

@@ -493,17 +493,20 @@ function init_app() {
                                 break;
                             }
                         }
-                        toRemove.forEach(el => {
-                            if (el && el.parentNode) {
-                                el.parentNode.removeChild(el);
-                            }
-                        });
+                toRemove.forEach(el => {
+                    if (el && el.parentNode) {
+                        el.parentNode.removeChild(el);
                     }
-                    
-                    // 添加唯一一个精简气泡
-                    const messageDiv = document.createElement('div');
-                    messageDiv.classList.add('message', 'gemini');
-                    messageDiv.textContent = "[" + getCurrentTimeString() + "] 🎀 " + response.text;
+                });
+            }
+
+            // 更新本轮完整文本缓存，确保后续逻辑使用精简内容
+            window._geminiTurnFullText = typeof response.text === 'string' ? response.text : '';
+                
+                // 添加唯一一个精简气泡
+                const messageDiv = document.createElement('div');
+                messageDiv.classList.add('message', 'gemini');
+                messageDiv.textContent = "[" + getCurrentTimeString() + "] 🎀 " + response.text;
                     chatContainer.appendChild(messageDiv);
                     window.currentGeminiMessage = messageDiv;
                     window.currentTurnGeminiBubbles = [messageDiv];
