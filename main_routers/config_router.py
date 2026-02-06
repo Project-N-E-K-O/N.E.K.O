@@ -602,7 +602,11 @@ async def load_gptsovits_model(request: Request):
         # 代理请求到 GPT-SoVITS API
         async with aiohttp.ClientSession() as session:
             async with session.get(endpoint, params={"weights_path": weights_path}, timeout=aiohttp.ClientTimeout(total=60)) as resp:
-                result = await resp.json()
+                try:
+                    result = await resp.json(content_type=None)
+                except Exception:
+                    text = await resp.text()
+                    return {"success": False, "error": f"Non-JSON response (HTTP {resp.status}): {text[:200]}"}
                 if resp.status == 200:
                     return {"success": True, "message": result.get("message", "Model loaded")}
                 else:

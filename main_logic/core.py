@@ -1106,8 +1106,10 @@ class LLMSessionManager:
             # 如果角色没有设置 voice_id，尝试使用自定义API配置的 TTS_VOICE_ID 作为回退
             if not self.voice_id:
                 core_config = self._config_manager.get_core_config()
-                if core_config.get('ENABLE_CUSTOM_API') and core_config.get('TTS_VOICE_ID'):
-                    self.voice_id = core_config.get('TTS_VOICE_ID')
+                tts_voice_id = core_config.get('TTS_VOICE_ID', '')
+                # 过滤掉 GPT-SoVITS 禁用时的占位符（格式: __gptsovits_disabled__|...）
+                if core_config.get('ENABLE_CUSTOM_API') and tts_voice_id and not tts_voice_id.startswith('__gptsovits_disabled__'):
+                    self.voice_id = tts_voice_id
                     logger.info(f"🔄 热切换准备: 使用自定义TTS回退音色: '{self.voice_id}'")
             
             if old_voice_id != self.voice_id:
