@@ -147,9 +147,6 @@ class LLMSessionManager:
         # 用户活动时间戳：用于主动搭话检测最近是否有用户输入
         self.last_user_activity_time = None  # float timestamp or None
         
-        # 累积本轮完整文本（用于前端显示追踪，实际改写逻辑在 omni_offline_client.py）
-        self._current_turn_text = ''
-        
         # 用户语言设置（从前端获取）
         self.user_language = 'zh-CN'  # 默认中文
         # 翻译服务（延迟初始化）
@@ -192,12 +189,6 @@ class LLMSessionManager:
     async def handle_text_data(self, text: str, is_first_chunk: bool = False):
         """文本回调：处理文本显示和TTS（用于文本模式）"""
         
-        # ========== 新增：累积本轮完整文本 ==========
-        if is_first_chunk:
-            self._current_turn_text = ''
-        self._current_turn_text += text
-        # ========== 累积结束 ==========
-        
         # 如果是新消息的第一个chunk，清空TTS队列和缓存以打断之前的语音
         if is_first_chunk and self.use_tts:
             async with self.tts_cache_lock:
@@ -232,9 +223,6 @@ class LLMSessionManager:
 
     async def handle_response_complete(self):
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""
-        
-        # 重置本轮文本累积（改写逻辑已移至 omni_offline_client.py）
-        self._current_turn_text = ''
         
         # 预热期间跳过TTS信号发送（避免local TTS收到空包产生参考prompt音频）
         if self._is_warmup_in_progress:
