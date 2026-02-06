@@ -2166,6 +2166,8 @@
             white-space: nowrap;  /* 防止文字换行导致伪元素错位 */
             text-overflow: ellipsis;  /* 文字过长时显示省略号 */
             text-align: center;  /* 文字在 span 内居中 */
+            padding: 0 6px;
+            box-sizing: border-box;
         }
         
         /* 【下层】：负责圆润描边 - 高密度阴影矩阵 */
