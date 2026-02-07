@@ -39,6 +39,7 @@
       "tChanNickname": "T-chan, Little T"
     },
     "labels": {
+      "档案名": "Profile Name",
       "性别": "Gender",
       "年龄": "Age",
       "昵称": "Nickname"

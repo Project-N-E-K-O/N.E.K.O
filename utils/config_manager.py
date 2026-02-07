@@ -14,7 +14,6 @@ from pathlib import Path
 from config import (
     APP_NAME,
     CONFIG_FILES,
-    DEFAULT_CHARACTERS_CONFIG,
     DEFAULT_CONFIG_DATA,
 )
 from config.prompts_chara import lanlan_prompt

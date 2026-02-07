@@ -168,7 +168,7 @@ _VALUE_TRANSLATIONS = {
 }
 
 
-def get_localized_default_characters(language: str = None) -> dict:
+def get_localized_default_characters(language: str | None = None) -> dict:
     """
     获取本地化的默认角色配置。
     
