@@ -585,6 +585,7 @@ MAIN_SERVER_SUPPRESSED_ENDPOINTS = [
     "/api/characters/current_catgirl",
     "/api/agent/computer_use/availability",
     "/api/agent/mcp/availability",
+    "/api/steam/update-playtime",
 ]
 
 MAIN_SERVER_RATE_LIMITED_ENDPOINTS = [

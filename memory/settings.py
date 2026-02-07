@@ -37,6 +37,11 @@ class ImportantSettingsManager:
                 self.lanlan_basic_config[i].pop('system_prompt', None)
                 self.lanlan_basic_config[i].pop('live2d', None)
                 self.lanlan_basic_config[i].pop('voice_id', None)
+                # 前端渲染字段 - 仅用于模型显示，不应该出现在 prompt 中
+                self.lanlan_basic_config[i].pop('model_type', None)
+                self.lanlan_basic_config[i].pop('vrm', None)
+                self.lanlan_basic_config[i].pop('vrm_animation', None)
+                self.lanlan_basic_config[i].pop('lighting', None)
                 # 工坊保留字段 - 由工坊系统管理，不应该被记忆系统读取
                 for workshop_field in ['原始数据', '文件路径', '创意工坊物品ID', 
                                        'description', 'tags', 'name',

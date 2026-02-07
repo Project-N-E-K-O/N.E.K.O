@@ -731,6 +731,15 @@ class OmniRealtimeClient:
             logger.warning("Gemini session not available for create_response")
             return
         
+        # 🔧 修复：跳过空内容的发送，避免预热时污染 Gemini 对话历史
+        # 预热时 instructions 为空字符串，发送空 turn 会导致首轮对话被吞掉
+        if not instructions or not instructions.strip():
+            logger.info("Gemini: skipping empty content (warmup or empty message)")
+            # 直接触发 response_done 回调，让预热逻辑正常完成
+            if self.on_response_done:
+                await self.on_response_done()
+            return
+        
         try:
             # Gemini 使用 send_client_content 发送文本
             from google.genai import types as genai_types

@@ -29,20 +29,21 @@ body {
 height: 100%;
 margin: 0;
 padding: 0;
-background: #f7f8fa;
+background: transparent;
 color: #222;
 font-family: 'Segoe UI', Arial, sans-serif;
 }
 
 .container {
-max-width: 800px;
-margin: 40px auto 0 auto;
+max-width: 100%;
+margin: 0;
 background: #fff;
-border-radius: 24px; /* 增加圆角 */
-box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+border-radius: 0; /* 无边框窗口不需要圆角 */
+box-shadow: none;
 padding: 0;
 overflow: hidden;
 position: relative;
+min-height: 100vh;
 }
 
 .container-header {
@@ -51,7 +52,13 @@ padding: 18px 24px;
 display: flex;
 justify-content: space-between;
 align-items: center;
-border-radius: 20px 20px 0 0;
+border-radius: 0;
+-webkit-app-region: drag; /* 允许通过标题栏拖动窗口 */
+}
+
+/* 标题栏内的可交互元素需要禁用拖动 */
+.container-header .close-btn {
+-webkit-app-region: no-drag;
 }
 
 .container-header h2 {

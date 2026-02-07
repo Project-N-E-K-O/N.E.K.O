@@ -62,7 +62,43 @@
         "File": "expressions/exp_08.exp3.json"
       }
     ],
-    "Motions": {}
+    "Motions": {
+      "happy": [
+        {
+          "File": "motions/mtn_02.motion3.json"
+        },
+        {
+          "File": "motions/mtn_03.motion3.json"
+        }
+      ],
+      "sad": [
+        {
+          "File": "motions/special_02.motion3.json"
+        }
+      ],
+      "angry": [],
+      "neutral": [
+        {
+          "File": "motions/mtn_03.motion3.json"
+        },
+        {
+          "File": "motions/mtn_04.motion3.json"
+        },
+        {
+          "File": "motions/special_03.motion3.json"
+        }
+      ],
+      "surprised": [
+        {
+          "File": "motions/special_01.motion3.json"
+        }
+      ],
+      "Idle": [
+        {
+          "File": "motions/mtn_01.motion3.json"
+        }
+      ]
+    }
   },
   "Groups": [
     {
@@ -92,7 +128,27 @@
     }
   ],
   "EmotionMapping": {
-    "motions": {},
+    "motions": {
+      "happy": [
+        "motions/mtn_02.motion3.json",
+        "motions/mtn_03.motion3.json"
+      ],
+      "sad": [
+        "motions/special_02.motion3.json"
+      ],
+      "angry": [],
+      "neutral": [
+        "motions/mtn_03.motion3.json",
+        "motions/mtn_04.motion3.json",
+        "motions/special_03.motion3.json"
+      ],
+      "surprised": [
+        "motions/special_01.motion3.json"
+      ],
+      "Idle": [
+        "motions/mtn_01.motion3.json"
+      ]
+    },
     "expressions": {}
   }
 }

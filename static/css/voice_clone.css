@@ -5,20 +5,21 @@ body {
     height: 100%;
     margin: 0;
     padding: 0;
-    background: #e3f4ff;
+    background: transparent;
     color: #222;
     font-family: 'Segoe UI', Arial, sans-serif;
 }
 
 .container {
-    max-width: 800px;
-    margin: 40px auto 0 auto;
+    max-width: 100%;
+    margin: 0;
     background: #e3f4ff;
-    border-radius: 20px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    border-radius: 0;
+    box-shadow: none;
     padding: 0;
     overflow: hidden;
     position: relative;
+    min-height: 100vh;
 }
 
 .container-header {
@@ -27,8 +28,14 @@ body {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    border-radius: 20px 20px 0 0;
+    border-radius: 0;
     position: relative;
+    -webkit-app-region: drag; /* 允许通过标题栏拖动窗口 */
+}
+
+/* 标题栏内的可交互元素需要禁用拖动 */
+.container-header .close-page-btn {
+    -webkit-app-region: no-drag;
 }
 
 .close-page-btn {

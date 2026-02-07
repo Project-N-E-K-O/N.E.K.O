@@ -1099,6 +1099,110 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
             text_buffer.append(tts_text)
 
 
+def openai_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
+    """
+    OpenAI TTS worker（用于默认音色）
+    使用 OpenAI 的 TTS API（gpt-4o-mini-tts）
+    注意：OpenAI TTS 不支持流式输入，只支持流式输出
+    因此需要累积文本后一次性发送，但可以流式接收音频
+    
+    Args:
+        request_queue: 多进程请求队列，接收(speech_id, text)元组
+        response_queue: 多进程响应队列，发送音频数据（也用于发送就绪信号）
+        audio_api_key: API密钥
+        voice_id: 音色ID，默认使用"marin"（支持：marin, alloy, ash, ballad, coral, echo, fable, onyx, nova, sage, shimmer）
+    """
+    import asyncio
+    
+    try:
+        from openai import AsyncOpenAI
+    except ImportError:
+        logger.error("❌ 无法导入 openai 库，OpenAI TTS 不可用")
+        response_queue.put(("__ready__", False))
+        while True:
+            try:
+                sid, _ = request_queue.get()
+                if sid is None:
+                    continue
+            except Exception:
+                break
+        return
+    
+    # 使用默认音色 "marin"
+    if not voice_id:
+        voice_id = "marin"
+    
+    async def async_worker():
+        """异步TTS worker主循环"""
+        current_speech_id = None
+        text_buffer = []  # 累积文本缓冲区
+        
+        # 初始化 OpenAI 客户端
+        client = AsyncOpenAI(api_key=audio_api_key)
+        
+        # OpenAI TTS 是基于 HTTP 的，无需建立持久连接，直接发送就绪信号
+        logger.info("OpenAI TTS 已就绪，发送就绪信号")
+        response_queue.put(("__ready__", True))
+        
+        try:
+            loop = asyncio.get_running_loop()
+            
+            while True:
+                try:
+                    sid, tts_text = await loop.run_in_executor(None, request_queue.get)
+                except Exception:
+                    break
+                
+                # 新的语音ID，清空缓冲区并重新开始
+                if current_speech_id != sid and sid is not None:
+                    current_speech_id = sid
+                    text_buffer = []
+                
+                if sid is None:
+                    # 收到终止信号，合成累积的文本
+                    if text_buffer and current_speech_id is not None:
+                        full_text = "".join(text_buffer)
+                        if full_text.strip():
+                            try:
+                                # 使用 OpenAI TTS API 进行流式合成
+                                # PCM 格式: 24000Hz, 16-bit, mono
+                                async with client.audio.speech.with_streaming_response.create(
+                                    model="gpt-4o-mini-tts",
+                                    voice=voice_id,
+                                    input=full_text,
+                                    response_format="pcm",
+                                ) as response:
+                                    # 流式接收音频数据
+                                    async for chunk in response.iter_bytes(chunk_size=4096):
+                                        if chunk:
+                                            # OpenAI TTS 返回 PCM 16-bit @ 24000Hz
+                                            audio_array = np.frombuffer(chunk, dtype=np.int16)
+                                            # 重采样到 48000Hz
+                                            resampled_bytes = _resample_audio(audio_array, 24000, 48000)
+                                            response_queue.put(resampled_bytes)
+                                            
+                            except Exception as e:
+                                logger.error(f"OpenAI TTS 合成失败: {e}")
+                    
+                    # 清空缓冲区
+                    text_buffer = []
+                    current_speech_id = None
+                    continue
+                
+                # 累积文本到缓冲区（不立即发送）
+                if tts_text and tts_text.strip():
+                    text_buffer.append(tts_text)
+        
+        except Exception as e:
+            logger.error(f"OpenAI TTS Worker错误: {e}")
+    
+    # 运行异步worker
+    try:
+        asyncio.run(async_worker())
+    except Exception as e:
+        logger.error(f"OpenAI TTS Worker启动失败: {e}")
+
+
 def dummy_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """
     空的TTS worker（用于不支持TTS的core_api）
@@ -1163,6 +1267,8 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False):
         return cogtts_tts_worker
     elif core_api_type == 'gemini':
         return gemini_tts_worker
+    elif core_api_type == 'openai':
+        return openai_tts_worker
     else:
         logger.error(f"{core_api_type}不支持原生TTS，请使用自定义语音")
         return dummy_tts_worker

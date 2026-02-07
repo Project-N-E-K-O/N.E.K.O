@@ -731,7 +731,7 @@ class VRMCore {
                         vrm.scene.position.set(-center.x, -center.y, -center.z);
                     }
                 } else {
-                    vrm.scene.position.set(-center.x, -center.y, -center.z);
+                    vrm.scene.position.set(0, 0, 0);
                 }
 
                 if (preferences.scale) {
@@ -745,7 +745,7 @@ class VRMCore {
                 // 注意：不在这里直接设置 rotation，避免双重旋转
                 // rotation 将在检测器阶段之后统一设置（见下方代码）
             } else {
-                vrm.scene.position.set(-center.x, -center.y, -center.z);
+                vrm.scene.position.set(0, 0, 0);
             }
             
             // 等待 3 帧确保 DOM 布局和 Three.js 场景完全稳定后再处理旋转
@@ -790,36 +790,20 @@ class VRMCore {
             
             if (!hasSavedRotation && typeof this.saveUserPreferences === 'function') {
                 // 标准化位置为普通对象 {x, y, z}
-                let currentPosition;
-                if (preferences?.position) {
-                    currentPosition = {
-                        x: preferences.position.x,
-                        y: preferences.position.y,
-                        z: preferences.position.z
-                    };
-                } else {
-                    currentPosition = {
-                        x: vrm.scene.position.x,
-                        y: vrm.scene.position.y,
-                        z: vrm.scene.position.z
-                    };
-                }
+                // 始终从 vrm.scene 获取当前位置，确保 z 值有效
+                // （旧版偏好设置可能只有 x 和 y，没有 z 值）
+                const currentPosition = {
+                    x: vrm.scene.position.x,
+                    y: vrm.scene.position.y,
+                    z: vrm.scene.position.z
+                };
                 
                 // 标准化缩放为普通对象 {x, y, z}
-                let currentScale;
-                if (preferences?.scale) {
-                    currentScale = {
-                        x: preferences.scale.x,
-                        y: preferences.scale.y,
-                        z: preferences.scale.z
-                    };
-                } else {
-                    currentScale = {
-                        x: vrm.scene.scale.x,
-                        y: vrm.scene.scale.y,
-                        z: vrm.scene.scale.z
-                    };
-                }
+                const currentScale = {
+                    x: vrm.scene.scale.x,
+                    y: vrm.scene.scale.y,
+                    z: vrm.scene.scale.z
+                };
                 
                 this.saveUserPreferences(
                     modelUrl,

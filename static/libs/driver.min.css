@@ -1,0 +1,157 @@
+/* Driver.js 本地实现 - 样式文件 */
+
+.driver-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.6);
+    z-index: 9998;
+    animation: fadeIn 0.3s ease-out;
+}
+
+.driver-highlight {
+    position: fixed;
+    border: 2px solid #44b7fe;
+    border-radius: 8px;
+    box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.6);
+    z-index: 9999;
+    animation: pulse 2s infinite;
+}
+
+.driver-popover {
+    position: fixed;
+    background: rgba(30, 30, 40, 0.95);
+    border: 1px solid rgba(68, 183, 254, 0.3);
+    border-radius: 12px;
+    padding: 20px;
+    max-width: 380px;
+    z-index: 10000;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(10px);
+    animation: slideIn 0.3s ease-out;
+}
+
+.driver-popover-title {
+    color: #44b7fe;
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 12px;
+    letter-spacing: 0.5px;
+    cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+}
+
+.driver-popover-title:active {
+    cursor: grabbing;
+}
+
+.driver-popover.dragging {
+    transition: none !important;
+    animation: none !important;
+}
+
+.driver-popover.dragging .driver-popover-title {
+    cursor: grabbing;
+}
+
+.driver-popover-description {
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 14px;
+    line-height: 1.6;
+    margin-bottom: 16px;
+}
+
+.driver-popover-footer {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+    margin-top: 16px;
+}
+
+.driver-popover-footer button {
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    outline: none;
+    transition: all 0.2s ease;
+}
+
+.driver-popover-footer button:first-child {
+    background: rgba(68, 183, 254, 0.15);
+    color: #44b7fe;
+    border: 1px solid rgba(68, 183, 254, 0.3);
+}
+
+.driver-popover-footer button:first-child:hover {
+    background: rgba(68, 183, 254, 0.25);
+    border-color: rgba(68, 183, 254, 0.5);
+    transform: translateY(-1px);
+}
+
+.driver-popover-footer button:last-child {
+    background: linear-gradient(135deg, #44b7fe 0%, #40C5F1 100%);
+    color: #fff;
+}
+
+.driver-popover-footer button:last-child:hover {
+    background: linear-gradient(135deg, #3aa8f0 0%, #38b8e3 100%);
+    box-shadow: 0 4px 12px rgba(68, 183, 254, 0.4);
+    transform: translateY(-2px);
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: 1;
+    }
+}
+
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateY(-10px) scale(0.95);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+@keyframes pulse {
+    0%, 100% {
+        box-shadow: 0 0 0 0 rgba(68, 183, 254, 0.7), 0 0 0 9999px rgba(0, 0, 0, 0.6);
+    }
+    50% {
+        box-shadow: 0 0 0 10px rgba(68, 183, 254, 0), 0 0 0 9999px rgba(0, 0, 0, 0.6);
+    }
+}
+
+@media (max-width: 768px) {
+    .driver-popover {
+        max-width: 90vw;
+        padding: 16px;
+    }
+
+    .driver-popover-title {
+        font-size: 15px;
+    }
+
+    .driver-popover-description {
+        font-size: 13px;
+    }
+
+    .driver-popover-footer button {
+        padding: 6px 12px;
+        font-size: 12px;
+    }
+}

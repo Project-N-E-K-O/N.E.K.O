@@ -4,18 +4,64 @@ html, body {
 min-height: 100vh; 
 margin: 0; 
 padding: 0; 
-background: #eee; 
+background: transparent; 
 color: #222;
 font-family: 'Segoe UI', Arial, sans-serif;
 overflow-x: hidden;
+}
+
+/* 页面标题栏 - 支持窗口拖动 */
+.page-title-bar {
+    background: #fff;
+    border-radius: 0; /* 无边框窗口不需要圆角 */
+    padding: 15px 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    -webkit-app-region: drag; /* 允许通过标题栏拖动窗口 */
+}
+
+.page-title-bar h1 {
+    margin: 0;
+    font-size: 24px;
+    font-weight: 600;
+    color: #333;
+    border: none;
+    padding: 0;
+}
+
+.page-title-bar .close-btn {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.2s ease, opacity 0.2s ease;
+    opacity: 0.9;
+    -webkit-app-region: no-drag; /* 关闭按钮不参与拖动 */
+}
+
+.page-title-bar .close-btn:hover {
+    opacity: 0.7;
+    transform: scale(1.1);
+}
+
+.page-title-bar .close-btn img {
+    width: 32px;
+    height: 32px;
+    object-fit: contain;
+    display: block;
 }
 
 /* 布局容器 */
 .layout-container {
 display: flex;
 gap: 20px;
-max-width: 1400px;
-margin: 20px auto;
+max-width: 100%;
+margin: 0;
 padding: 0 20px;
 }
 

@@ -345,11 +345,10 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     }
 
     // 确保 PIXI ticker 正在运行（防止从VRM切换后卡住）
+    // 无条件调用 start()，因为它是幂等的（如果已在运行则不会有影响）
     if (this.pixi_app && this.pixi_app.ticker) {
-        if (!this.pixi_app.ticker.started) {
-            this.pixi_app.ticker.start();
-            console.log('[Live2D Model] Ticker 已启动');
-        }
+        this.pixi_app.ticker.start();
+        console.log('[Live2D Model] Ticker 已确保启动');
     }
 
     // 模型加载完成后，延迟播放Idle情绪（给模型一些时间完全初始化）
