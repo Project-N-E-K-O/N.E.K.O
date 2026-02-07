@@ -127,8 +127,13 @@ def _get_bilibili_credential():
                     # EditThisCookie/Cookie-Editor格式 (数组)
                     if isinstance(cookie_data, list):
                         for cookie in cookie_data:
+                            # 安全地访问字典，防止畸形数据导致 KeyError
                             if cookie.get('domain', '').endswith('bilibili.com'):
-                                cookies[cookie['name']] = cookie['value']
+                                name = cookie.get('name')
+                                value = cookie.get('value')
+                                # 只有 name 和 value 都存在时才添加
+                                if name and value:
+                                    cookies[name] = value
                     
                     # 简单的键值对格式
                     elif isinstance(cookie_data, dict):
@@ -153,15 +158,18 @@ def _get_bilibili_credential():
                         else:
                             logger.warning(f"⚠️ Cookie文件缺少SESSDATA: {cookie_file}")
     except ImportError:
+        # bilibili_api 库未安装，直接返回 None
+        # 不打印任何日志，让调用方处理
         logger.debug("bilibili_api 库未安装")
+        return None
     except Exception as e:
         logger.debug(f"从文件加载认证信息失败: {e}")
     
-    # 如果没有找到cookie文件，记录提示信息
-    logger.info("💡 提示：要使用个性化B站推荐，请导出cookies到以下任一位置：")
-    logger.info(f"   1. {Path(os.path.expanduser('~')) / 'bilibili_cookies.json'}")
-    logger.info(f"   2. {Path('config') / 'bilibili_cookies.json'}")
-    logger.info("   使用浏览器扩展 'EditThisCookie' 或 'Cookie-Editor' 导出为JSON格式")
+    # 如果没有找到cookie文件，使用 DEBUG 级别记录（避免打扰不用B站的用户）
+    logger.debug("未找到 Bilibili cookie 文件，将使用默认推荐（非个性化）")
+    logger.debug(f"提示：要使用个性化推荐，可导出cookies到以下位置之一：")
+    logger.debug(f"  - {Path(os.path.expanduser('~')) / 'bilibili_cookies.json'}")
+    logger.debug(f"  - {Path('config') / 'bilibili_cookies.json'}")
     
     return None
 
