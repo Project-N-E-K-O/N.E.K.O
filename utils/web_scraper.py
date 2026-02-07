@@ -683,7 +683,7 @@ async def fetch_trending_content(bilibili_limit: int = 10, weibo_limit: int = 10
     """
     try:
         # 检测用户区域
-        china_region = True
+        china_region = is_china_region()
         
         if china_region:
             # Chinese region: Use Bilibili and Weibo
@@ -721,7 +721,8 @@ async def fetch_trending_content(bilibili_limit: int = 10, weibo_limit: int = 10
             return {
                 'success': True,
                 'region': 'china',
-                'bilibili': bilibili_result
+                'bilibili': bilibili_result,
+                'weibo': weibo_result
             }
         else:
             # 非中文区域：使用Reddit和Twitter
@@ -794,7 +795,7 @@ def format_trending_content(trending_content: Dict[str, Any]) -> str:
             output_lines.append("【B站首页推荐】")
             videos = bilibili_data.get('videos', [])
             
-            for i, video in enumerate(videos[:10], 1):  # 只显示前5个
+            for i, video in enumerate(videos[:5], 1):  # 只显示前5个
                 title = video.get('title', '')
                 author = video.get('author', '')
                 url = video.get('url', '')
@@ -1708,10 +1709,10 @@ async def main():
         print("正在获取热门内容（Reddit、Twitter）...")
     
     content = await fetch_trending_content(
-        bilibili_limit=20, 
-        weibo_limit=20,
-        youtube_limit=20,
-        twitter_limit=20
+        bilibili_limit=5, 
+        weibo_limit=5,
+        reddit_limit=5,
+        twitter_limit=5
     )
     
     if content['success']:
