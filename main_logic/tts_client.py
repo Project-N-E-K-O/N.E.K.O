@@ -13,6 +13,7 @@ import io
 import wave
 import aiohttp
 import asyncio
+import os
 from functools import partial
 from utils.config_manager import get_config_manager
 logger = logging.getLogger(__name__)
@@ -1361,3 +1362,149 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
         asyncio.run(async_worker())
     except Exception as e:
         logger.error(f"Local CosyVoice Worker 崩溃: {e}")
+        
+def local_qwen3_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
+    _ = audio_api_key  # 本地不需要 key
+
+    cm = get_config_manager()
+    tts_config = cm.get_model_api_config('tts_custom')
+
+    ws_base = tts_config.get('base_url', '')
+    if not ws_base:
+        logger.error("local_qwen3_tts 未配置 tts_custom.base_url")
+        response_queue.put(("__ready__", False))
+        return
+
+    # 你可以配置成 ws://127.0.0.1:8765
+    if ws_base.startswith("http://"):
+        ws_base = "ws://" + ws_base[len("http://"):]
+    if ws_base.startswith("https://"):
+        ws_base = "wss://" + ws_base[len("https://"):]
+
+    WS_URL = ws_base.rstrip("/")  # 直接就是 ws://127.0.0.1:8765
+
+    # voice_id 可扩展成选择不同 pt/不同 ref
+    # 这里先做最小可用：固定使用你 advanced_demo 的缓存文件
+    CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+    voice_pt_path = os.path.join(os.path.dirname(__file__), "..", "local_server", "qwen3_tts_server", "nyaning_voice.pt")
+    voice_pt_path = os.path.abspath(voice_pt_path)
+
+    # 目标采样率：前端 PCM 默认按 48k 播
+    DST_RATE = 48000
+
+    # 伪流式 commit 策略
+    COMMIT_CHARS = 60
+    COMMIT_PUNCS = ("。", "！", "？", ".", "!", "?", "\n")
+
+    async def async_worker():
+        ws = None
+        receive_task = None
+        current_speech_id = None
+
+        text_buf = ""
+        src_rate = 24000  # default, will be overridden by audio.meta
+        resampler = soxr.ResampleStream(src_rate, DST_RATE, 1, dtype="float32")
+
+        async def receive_loop(ws_conn):
+            nonlocal src_rate, resampler
+            try:
+                async for message in ws_conn:
+                    if isinstance(message, str):
+                        try:
+                            evt = json.loads(message)
+                        except Exception:
+                            continue
+                        if evt.get("type") == "audio.meta":
+                            sr = int(evt.get("sample_rate", src_rate))
+                            if sr != src_rate:
+                                src_rate = sr
+                                resampler = soxr.ResampleStream(src_rate, DST_RATE, 1, dtype="float32")
+                        continue
+
+                    if isinstance(message, bytes):
+                        audio_i16 = np.frombuffer(message, dtype=np.int16)
+                        resampled = _resample_audio(audio_i16, src_rate, DST_RATE, resampler)
+                        response_queue.put(resampled)
+            except Exception as e:
+                logger.error(f"local_qwen3 receive_loop error: {e}")
+
+        async def connect():
+            nonlocal ws, receive_task
+            ws = await websockets.connect(WS_URL, ping_interval=None, max_size=None)
+
+            # session.update
+            await ws.send(json.dumps({
+                "type": "session.update",
+                "voice_pt_path": voice_pt_path,
+                "language": "Chinese",
+            }, ensure_ascii=False))
+
+            receive_task = asyncio.create_task(receive_loop(ws))
+            return ws
+
+        async def send_cancel():
+            if ws:
+                try:
+                    await ws.send(json.dumps({"type": "cancel"}))
+                except Exception:
+                    pass
+
+        async def send_append(txt: str):
+            if ws and txt:
+                await ws.send(json.dumps({"type": "input_text_buffer.append", "text": txt}, ensure_ascii=False))
+
+        async def send_commit():
+            if ws:
+                await ws.send(json.dumps({"type": "input_text_buffer.commit"}))
+
+        # init connect
+        try:
+            await connect()
+            response_queue.put(("__ready__", True))
+        except Exception as e:
+            logger.error(f"local_qwen3 connect failed: {e}")
+            response_queue.put(("__ready__", False))
+            return
+
+        loop = asyncio.get_running_loop()
+
+        while True:
+            sid, tts_text = await loop.run_in_executor(None, request_queue.get)
+
+            # end signal from N.E.K.O
+            if sid is None:
+                if text_buf.strip():
+                    await send_append(text_buf)
+                    await send_commit()
+                    text_buf = ""
+                current_speech_id = None
+                continue
+
+            # speech_id changed -> cancel old
+            if current_speech_id is not None and sid != current_speech_id:
+                await send_cancel()
+                text_buf = ""
+
+            if current_speech_id != sid:
+                current_speech_id = sid
+
+            if not tts_text or not tts_text.strip():
+                continue
+
+            text_buf += tts_text
+
+            should_commit = False
+            if len(text_buf) >= COMMIT_CHARS:
+                should_commit = True
+            if any(p in tts_text for p in COMMIT_PUNCS):
+                should_commit = True
+
+            if should_commit:
+                await send_append(text_buf)
+                await send_commit()
+                text_buf = ""
+
+    try:
+        asyncio.run(async_worker())
+    except Exception as e:
+        logger.error(f"local_qwen3_tts_worker crashed: {e}")
