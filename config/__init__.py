@@ -143,6 +143,106 @@ DEFAULT_CHARACTERS_CONFIG = {
     "当前猫娘": next(iter(DEFAULT_LANLAN_TEMPLATE.keys()), "")
 }
 
+
+# 内容值翻译映射（仅翻译值，键名保持中文不变，因为系统内部依赖这些键名）
+_VALUE_TRANSLATIONS = {
+    'en': {
+        '哥哥': 'Brother',
+        '男': 'Male',
+        '女': 'Female',
+        'T酱, 小T': 'T-chan, Little T',
+    },
+    'ja': {
+        '哥哥': 'お兄ちゃん',
+        '男': '男性',
+        '女': '女性',
+        'T酱, 小T': 'Tちゃん, 小T',
+    },
+    'zh-TW': {
+        '哥哥': '哥哥',
+        '男': '男',
+        '女': '女',
+        'T酱, 小T': 'T醬, 小T',
+    },
+    # zh 和 zh-CN 使用原始中文值（不需要翻译）
+}
+
+
+def get_localized_default_characters(language: str = None) -> dict:
+    """
+    获取本地化的默认角色配置。
+    
+    根据 Steam 语言设置翻译内容值（如"哥哥"→"Brother"）。
+    注意：键名保持中文不变，因为系统内部依赖这些键名。
+    仅在首次创建 characters.json 时使用。
+    
+    Args:
+        language: 语言代码 ('en', 'ja', 'zh', 'zh-CN', 'zh-TW')。
+                  如果为 None，则从 Steam 获取或默认为 'zh-CN'。
+    
+    Returns:
+        本地化后的 DEFAULT_CHARACTERS_CONFIG 副本
+    """
+    # 获取语言代码
+    if language is None:
+        try:
+            from utils.language_utils import _get_steam_language, normalize_language_code
+            steam_lang = _get_steam_language()
+            language = normalize_language_code(steam_lang, format='full') if steam_lang else 'zh-CN'
+        except Exception as e:
+            logger.warning(f"获取 Steam 语言失败: {e}，使用默认中文")
+            language = 'zh-CN'
+    
+    # 获取翻译映射
+    value_trans = _VALUE_TRANSLATIONS.get(language)
+    
+    # 尝试根据前缀匹配
+    if value_trans is None:
+        lang_lower = language.lower()
+        if lang_lower.startswith('zh'):
+            if 'tw' in lang_lower:
+                value_trans = _VALUE_TRANSLATIONS.get('zh-TW')
+            # 简体中文不需要翻译
+        elif lang_lower.startswith('ja'):
+            value_trans = _VALUE_TRANSLATIONS.get('ja')
+        elif lang_lower.startswith('en'):
+            value_trans = _VALUE_TRANSLATIONS.get('en')
+    
+    # 如果不需要翻译（简体中文），直接返回原始配置
+    if value_trans is None:
+        return deepcopy(DEFAULT_CHARACTERS_CONFIG)
+    
+    def translate_value(val):
+        """翻译值（仅翻译字符串类型）"""
+        if isinstance(val, str):
+            return value_trans.get(val, val)
+        return val
+    
+    # 构建本地化配置（键名保持不变，只翻译值）
+    result = {}
+    
+    # 本地化主人模板
+    master = deepcopy(DEFAULT_MASTER_TEMPLATE)
+    localized_master = {}
+    for key, value in master.items():
+        localized_master[key] = translate_value(value)
+    result['主人'] = localized_master
+    
+    # 本地化猫娘模板
+    catgirl_data = deepcopy(DEFAULT_LANLAN_TEMPLATE)
+    localized_catgirl = {}
+    for char_name, char_config in catgirl_data.items():
+        localized_config = {}
+        for key, value in char_config.items():
+            localized_config[key] = translate_value(value)
+        localized_catgirl[char_name] = localized_config
+    result['猫娘'] = localized_catgirl
+    
+    result['当前猫娘'] = next(iter(catgirl_data.keys()), "")
+    
+    return result
+
+
 DEFAULT_CORE_CONFIG = {
     "coreApiKey": "",
     "coreApi": "qwen",
@@ -356,6 +456,7 @@ __all__ = [
     'VRM_LIGHTING_RANGES',
     'get_default_vrm_lighting',
     'DEFAULT_CHARACTERS_CONFIG',
+    'get_localized_default_characters',
     'DEFAULT_CORE_CONFIG',
     'DEFAULT_USER_PREFERENCES',
     'DEFAULT_VOICE_STORAGE',

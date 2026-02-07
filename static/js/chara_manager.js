@@ -99,6 +99,25 @@ const PROFILE_NAME_TOO_LONG_KEY = 'character.profileNameTooLong';
 const NEW_PROFILE_NAME_REQUIRED_KEY = 'character.newProfileNameRequired';
 const NEW_PROFILE_NAME_TOO_LONG_KEY = 'character.newProfileNameTooLong';
 
+/**
+ * 获取字段的本地化显示标签
+ * 用于将中文键名（如"性别"）翻译为当前语言的显示文本（如"Gender"）
+ * @param {string} fieldName - 字段的原始键名
+ * @returns {string} 翻译后的标签文本
+ */
+function getFieldLabel(fieldName) {
+    // 尝试从 i18n 获取翻译
+    if (window.t) {
+        const translated = window.t(`characterProfile.labels.${fieldName}`);
+        // 如果翻译结果不等于 key 本身，说明找到了翻译
+        if (translated && translated !== `characterProfile.labels.${fieldName}`) {
+            return translated;
+        }
+    }
+    // 没有翻译则返回原始键名
+    return fieldName;
+}
+
 function tOrFallback(key, fallback, params) {
     if (window.t && typeof window.t === 'function') {
         try {
@@ -589,7 +608,7 @@ function renderMaster() {
 
         // 创建label元素（在wrapper中）
         const label = document.createElement('label');
-        label.textContent = k;
+        label.textContent = getFieldLabel(k);
         wrapper.appendChild(label);
 
         // 创建field-row（胶囊框）
@@ -1083,7 +1102,7 @@ function showCatgirlForm(key, container) {
             const deleteFieldText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">${window.t('character.deleteField')}</span>` : '<img src="/static/icons/delete.png" alt="" class="delete-icon"> 删除设定';
 
             const labelEl = document.createElement('label');
-            labelEl.textContent = k;
+            labelEl.textContent = getFieldLabel(k);
             wrapper.appendChild(labelEl);
 
             const fieldRow = document.createElement('div');
