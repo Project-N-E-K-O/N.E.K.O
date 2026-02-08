@@ -10,6 +10,7 @@ import threading
 import uuid
 import queue
 import numpy as np
+import re
 
 # ========================================================
 # 1. 初始化 Logging
@@ -21,9 +22,10 @@ logging.basicConfig(
 logger = logging.getLogger("Qwen3-TTS-Server")
 
 # ========================================================
-# 2. 路径与环境配置
+# 2. 路径配置 (适配 Linux 原生路径)
 # ========================================================
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+# 假设你还在 WSL 的这个位置
 MODEL_SOURCE_DIR = os.path.join(PROJECT_ROOT, "Qwen3-TTS")
 
 if MODEL_SOURCE_DIR not in sys.path:
@@ -42,7 +44,7 @@ except ImportError as e:
 
 
 # ========================================================
-# 3. QwenLocalServer 类定义
+# 3. Server 类定义 (融合版)
 # ========================================================
 class QwenLocalServer:
     def __init__(self, model_path):
@@ -51,10 +53,11 @@ class QwenLocalServer:
         self.model = None
         self.cached_prompt = None
         self.pad_token_id = None
-        self.ref_text = "アラバマ シュー ノ サイダイ トシ ワ バーミングハム デ アル。" # 这里是预设的prompt_text
+        self.ref_text = "アラバマ シュー ノ サイダイ トシ ワ バーミングハム デ アル。"
 
-        # --- 任务队列 (解决并发卡顿的核心) ---
+        # --- 任务队列 (解决并发卡顿) ---
         self.task_queue = queue.Queue()
+        # 启动后台工人
         threading.Thread(target=self._worker_loop, daemon=True).start()
 
         self._load_engine(model_path)
@@ -64,67 +67,50 @@ class QwenLocalServer:
             t0 = time.time()
             logger.info(f"正在启动 N.E.K.O 语音引擎 (Device: {self.device})...")
 
-            # 1. 加载处理器
             processor = Qwen3TTSProcessor.from_pretrained(model_path, fix_mistral_regex=True)
 
-            # 2. 加载模型 (修复版)
-            # 这里的关键是：不使用 AutoConfig，直接用特定类加载
-            # 同时传入 torch_dtype 和 dtype 以兼容所有版本的库
+            # --- 关键优化 1: 显式指定 Bfloat16 和 Flash Attention 2 ---
             raw_model = Qwen3TTSForConditionalGeneration.from_pretrained(
                 model_path,
-                torch_dtype=torch.bfloat16,  # 显式告诉 transformers 使用 bf16
-                dtype=torch.bfloat16,  # 显式告诉 custom code 使用 bf16
-                attn_implementation="flash_attention_2" if self.device == "cuda" else "eager",
-                device_map=self.device,
-                # ---- 硬编码 ---
-                # attn_implementation="flash_attention_2",
-                # device_map="cuda",  # 让 accelerate 自动管理显存
+                torch_dtype=torch.bfloat16,  # 给 transformers 看
+                dtype=torch.bfloat16,  # 给 qwen 看
+                attn_implementation="flash_attention_2",
+                device_map="cuda",
                 low_cpu_mem_usage=True
             )
-
-            # 确保模型处于评估模式
             raw_model.eval()
 
             self.model = Qwen3TTSModel(model=raw_model, processor=processor)
 
-            # 设置 pad_token_id 防止日志刷屏
-            pad_id = raw_model.config.pad_token_id
-            self.pad_token_id = pad_id if pad_id is not None else raw_model.config.eos_token_id
-            # 尝试注入 generation config (如果模型支持)
+            # --- 关键优化 2: 预设 Config 防止推理时反复初始化 ---
+            self.pad_token_id = raw_model.config.pad_token_id or raw_model.config.eos_token_id
             if hasattr(self.model, 'generation_config'):
                 self.model.generation_config.pad_token_id = self.pad_token_id
 
-            # 3. 加载/提取音色
+            # 加载/提取音色
             if os.path.exists(self.pt_path):
                 logger.info(f"✨ 发现音色特征 {self.pt_path}，加载中...")
-                # 确保音色特征加载到 GPU
                 self.cached_prompt = torch.load(self.pt_path, map_location=self.device, weights_only=False)
             else:
-                logger.warning("🎙️ 未发现导出的音色，尝试从 uttid_f1.wav 提取...")
+                logger.warning("🎙️ 未发现音色特征，尝试提取...")
                 ref_wav = os.path.join(PROJECT_ROOT, "uttid_f1.wav")
                 if os.path.exists(ref_wav):
-                    logger.info("正在提取音色 (首次运行较慢)...")
                     with torch.no_grad():
-                        # 确保提取过程也使用 bf16
-                        # with torch.cuda.amp.autocast(dtype=torch.bfloat16): # 旧逻辑 可用
-                        with torch.amp.autocast(device_type =self.device,dtype = torch.bfloat16):
+                        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                             self.cached_prompt = self.model.create_voice_clone_prompt(
-                                ref_audio=ref_wav,
-                                ref_text=self.ref_text
+                                ref_audio=ref_wav, ref_text=self.ref_text
                             )
                     torch.save(self.cached_prompt, self.pt_path)
-                    logger.info("✅ 音色提取并保存完成")
+                    logger.info("✅ 音色提取完成")
                 else:
                     logger.error(f"❌ 找不到参考音频: {ref_wav}")
 
-            logger.info(f"🚀 语音引擎初始化完成 | 精度: {raw_model.dtype} | 耗时: {time.time() - t0:.2f}s")
+            logger.info(f"🚀 引擎就绪 | 精度: {raw_model.dtype} | 耗时: {time.time() - t0:.2f}s")
         except Exception as e:
             logger.error(f"❌ 加载引擎异常: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
 
     def _worker_loop(self):
-        logger.info("👷 推理队列服务已启动")
+        logger.info("👷 智能拼句队列服务已启动")
         while True:
             task = self.task_queue.get()
             if task is None: break
@@ -140,16 +126,13 @@ class QwenLocalServer:
 
     def _do_inference(self, full_text, job_id, loop, audio_queue, cancel_event):
         try:
-            if  self.model is None or self.cached_prompt is None:
-                logger.error("模型未就绪")
-                return
+            if not self.model or self.cached_prompt is None: return
 
             start_time = time.time()
 
-            # 使用 inference_mode 极致优化
+            # --- 关键优化 3: 使用 inference_mode 和 autocast ---
             with torch.inference_mode():
-                # 确保上下文也是 bf16
-                with torch.cuda.amp.autocast(enabled=True, dtype=torch.bfloat16):
+                with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                     wavs, sr = self.model.generate_voice_clone(
                         text=full_text,
                         voice_clone_prompt=self.cached_prompt,
@@ -162,7 +145,8 @@ class QwenLocalServer:
 
             inference_duration = time.time() - start_time
 
-            # numpy 处理
+            # --- 🚨 核心修复：找回丢失的 Int16 转换 (这就是没声音的原因！) ---
+            # 兔老师的代码可能直接发了 float，我们需要转回 int16
             audio_data = wavs[0].flatten()
             audio_int16 = (audio_data * 32767).astype(np.int16)
 
@@ -182,6 +166,8 @@ class QwenLocalServer:
 
         except Exception as e:
             logger.error(f"❌ 推理错误: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
         finally:
             loop.call_soon_threadsafe(audio_queue.put_nowait, b"__END__")
 
@@ -189,7 +175,9 @@ class QwenLocalServer:
         logger.info(f"客户端连接: {websocket.remote_address}")
         loop = asyncio.get_running_loop()
 
-        text_buffer = ""
+        # 智能拼句缓冲区
+        self.sentence_buffer = ""
+
         current_job_id = None
         cancel_event = threading.Event()
         audio_queue = asyncio.Queue()
@@ -202,16 +190,20 @@ class QwenLocalServer:
             while not audio_queue.empty():
                 try:
                     audio_queue.get_nowait()
-                except asyncio.QueueEmpty:
+                except:
                     break
+            self.sentence_buffer = ""
 
+        # 发送循环
         async def _sender_loop():
             while True:
                 try:
                     chunk = await audio_queue.get()
                     if chunk == b"__END__":
                         if current_job_id:
-                            await websocket.send(json.dumps({"type": "response.done", "job_id": current_job_id}))
+                            # 适配 N.E.K.O 客户端协议
+                            response_done = {"type": "response.done", "job_id": current_job_id}
+                            await websocket.send(json.dumps(response_done))
                         continue
                     await websocket.send(chunk)
                 except Exception:
@@ -220,33 +212,53 @@ class QwenLocalServer:
         sender_task = asyncio.create_task(_sender_loop())
 
         try:
+            # 发送 ready 信号
             await websocket.send(json.dumps({"type": "ready"}))
+
             async for message in websocket:
                 if isinstance(message, bytes): continue
                 try:
                     data = json.loads(message)
-                except json.JSONDecodeError:
+                except:
                     continue
 
                 msg_type = data.get("type")
                 if "text" in data and not msg_type: msg_type = "legacy.text"
 
                 if msg_type == "input_text_buffer.append":
-                    text_buffer += data.get("text", "")
+                    text_fragment = data.get("text", "")
+                    self.sentence_buffer += text_fragment
 
                 elif msg_type in ("input_text_buffer.commit", "legacy.text"):
-                    if msg_type == "legacy.text": text_buffer = data.get("text", "")
+                    if msg_type == "legacy.text":
+                        self.sentence_buffer += data.get("text", "")
 
-                    full_text = text_buffer.strip()
-                    text_buffer = ""
-                    if not full_text: continue
+                    # 正则智能断句
+                    parts = re.split(r'([。！？.!?\n]+)', self.sentence_buffer)
 
-                    await _stop_current_job()
-                    current_job_id = str(uuid.uuid4())
-                    await websocket.send(json.dumps({"type": "response.start", "job_id": current_job_id}))
+                    if len(parts) > 1:
+                        for i in range(0, len(parts) - 1, 2):
+                            sentence = parts[i] + parts[i + 1]
+                            sentence = sentence.strip()
+                            if not sentence: continue
 
-                    # 放入队列，不直接运行
-                    self.task_queue.put((full_text, current_job_id, loop, audio_queue, cancel_event))
+                            if not current_job_id:
+                                current_job_id = str(uuid.uuid4())
+                                await websocket.send(json.dumps({"type": "response.start", "job_id": current_job_id}))
+
+                            logger.info(f"📥 句子: {sentence[:20]}...")
+                            self.task_queue.put((sentence, current_job_id, loop, audio_queue, cancel_event))
+
+                        self.sentence_buffer = parts[-1]
+
+                    # 缓冲区兜底 (防止一直不说话)
+                    if len(self.sentence_buffer) > 30:
+                        sentence = self.sentence_buffer
+                        self.sentence_buffer = ""
+                        if not current_job_id:
+                            current_job_id = str(uuid.uuid4())
+                            await websocket.send(json.dumps({"type": "response.start", "job_id": current_job_id}))
+                        self.task_queue.put((sentence, current_job_id, loop, audio_queue, cancel_event))
 
                 elif msg_type == "cancel":
                     await _stop_current_job()
@@ -257,6 +269,7 @@ class QwenLocalServer:
 
 
 async def main():
+    # 请确保路径正确
     MODEL_PATH = "/home/amadeus/models/qwen3_tts"
     server = QwenLocalServer(MODEL_PATH)
     async with websockets.serve(server.handle_tts, "0.0.0.0", 8765):
