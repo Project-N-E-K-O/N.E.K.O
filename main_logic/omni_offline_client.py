@@ -2,15 +2,35 @@
 
 import asyncio
 import logging
+import re
 from typing import Optional, Callable, Dict, Any, Awaitable
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from config import get_extra_body
 from utils.frontend_utils import calculate_text_similarity
+from config.prompts_sys import get_normal_chat_rewrite_prompt
 
 # Setup logger for this module
 logger = logging.getLogger(__name__)
+
+
+def count_words_and_chars(text: str) -> int:
+    """
+    统计文本的字数（中文字符 + 英文单词）
+    与主动回复使用相同的统计方式
+    """
+    if not text:
+        return 0
+    count = 0
+    # 统计中文字符
+    chinese_chars = re.findall(r'[\u4e00-\u9fff]', text)
+    count += len(chinese_chars)
+    # 移除中文字符后，按空格拆分计算英文单词
+    text_without_chinese = re.sub(r'[\u4e00-\u9fff]', ' ', text)
+    english_words = [w for w in text_without_chinese.split() if w.strip()]
+    count += len(english_words)
+    return count
 
 class OmniOfflineClient:
     """
@@ -103,6 +123,19 @@ class OmniOfflineClient:
         self._repetition_threshold = 0.8  # 相似度阈值
         self._max_recent_responses = 3  # 最多存储的回复数
         
+        # ========== 普通对话截断配置 ==========
+        self.enable_response_rewrite = True   # 是否启用响应改写
+        self.max_response_length = 200        # 触发改写的字数阈值
+        self.rewrite_timeout = 6.0            # 改写超时时间（秒）
+        
+        # 改写相关的回调（由 core.py 设置）
+        # 参数: (rewritten_text, original_length, rewritten_length)
+        self.on_response_rewritten: Optional[Callable[[str, int, int], Awaitable[None]]] = None
+        
+        # 改写模型配置（由 core.py 在启动时设置）
+        self.rewrite_model_config: Optional[Dict[str, str]] = None
+        self.rewrite_prompt_language = 'zh-CN'
+        
     async def connect(self, instructions: str, native_audio=False) -> None:
         """Initialize the client with system instructions."""
         self._instructions = instructions
@@ -193,6 +226,60 @@ class OmniOfflineClient:
             return True
         
         return False
+
+    def set_rewrite_prompt_language(self, language: str) -> None:
+        """设置改写提示语言（由 Core 根据用户语言调用）"""
+        if language:
+            self.rewrite_prompt_language = language
+        else:
+            self.rewrite_prompt_language = 'zh-CN'
+
+    async def _rewrite_long_response(self, text: str) -> Optional[str]:
+        """
+        调用改写模型精简过长的回复
+        
+        Args:
+            text: 原始回复文本
+            
+        Returns:
+            改写后的文本，失败返回 None
+        """
+        if not self.rewrite_model_config:
+            logger.warning("OmniOfflineClient: 未配置改写模型，跳过改写")
+            return None
+        
+        try:
+            rewrite_llm = ChatOpenAI(
+                model=self.rewrite_model_config.get('model', 'qwen-max'),
+                base_url=self.rewrite_model_config.get('base_url', ''),
+                api_key=self.rewrite_model_config.get('api_key', ''),
+                temperature=0.3,  # 低温度，更稳定
+                max_completion_tokens=500,
+                streaming=False,
+            )
+            
+            rewrite_prompt_template = get_normal_chat_rewrite_prompt(self.rewrite_prompt_language)
+            rewrite_prompt = rewrite_prompt_template.format(
+                raw_output=text,
+                max_length=self.max_response_length
+            )
+            
+            rewrite_response = await asyncio.wait_for(
+                rewrite_llm.ainvoke([
+                    SystemMessage(content=rewrite_prompt),
+                    HumanMessage(content="========请开始========")
+                ]),
+                timeout=self.rewrite_timeout
+            )
+            
+            return rewrite_response.content.strip()
+            
+        except asyncio.TimeoutError:
+            logger.warning("OmniOfflineClient: 改写超时，保留原文")
+            return None
+        except Exception as e:
+            logger.warning(f"OmniOfflineClient: 改写失败: {e}，保留原文")
+            return None
 
     async def stream_text(self, text: str) -> None:
         """
@@ -319,9 +406,31 @@ class OmniOfflineClient:
                     
                     # Add assistant response to history
                     if assistant_message:
-                        self._conversation_history.append(AIMessage(content=assistant_message))
+                        final_message = assistant_message
+                        original_length = count_words_and_chars(assistant_message)
+                        
+                        # ========== 新增：检查是否需要改写 ==========
+                        if self.enable_response_rewrite and original_length > self.max_response_length:
+                            logger.info(f"OmniOfflineClient: 检测到长回复 ({original_length}字)，触发改写...")
+                            
+                            rewritten_text = await self._rewrite_long_response(assistant_message)
+                            
+                            if rewritten_text:
+                                rewritten_length = count_words_and_chars(rewritten_text)
+                                if rewritten_length <= self.max_response_length and rewritten_length > 0:
+                                    logger.info(f"OmniOfflineClient: 改写成功: {original_length} -> {rewritten_length} 字")
+                                    final_message = rewritten_text
+                                    
+                                    # 通知 core.py 进行前端替换
+                                    if self.on_response_rewritten:
+                                        await self.on_response_rewritten(rewritten_text, original_length, rewritten_length)
+                                else:
+                                    logger.warning(f"OmniOfflineClient: 改写后仍超长 ({rewritten_length}字)，保留原文")
+                        # ========== 改写逻辑结束 ==========
+                        
+                        self._conversation_history.append(AIMessage(content=final_message))
                         # 检测重复度
-                        await self._check_repetition(assistant_message)
+                        await self._check_repetition(final_message)
                     break
                             
                 except (APIConnectionError, InternalServerError, RateLimitError) as e:
@@ -416,4 +525,3 @@ class OmniOfflineClient:
         self._conversation_history = []
         self._pending_images.clear()
         logger.info("OmniOfflineClient closed")
-
