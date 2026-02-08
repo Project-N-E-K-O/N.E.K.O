@@ -446,7 +446,84 @@ function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId) {
         
         if (voiceIdToLoad) {
             const el = document.getElementById('gptsovitsVoiceId');
-            if (el) el.value = voiceIdToLoad;
+            if (el) {
+                // select 元素：先尝试选中已有选项，若不存在则添加一个临时选项
+                const existingOpt = el.querySelector(`option[value="${voiceIdToLoad}"]`);
+                if (existingOpt) {
+                    el.value = voiceIdToLoad;
+                } else {
+                    const opt = document.createElement('option');
+                    opt.value = voiceIdToLoad;
+                    opt.textContent = voiceIdToLoad;
+                    el.appendChild(opt);
+                    el.value = voiceIdToLoad;
+                }
+            }
+        }
+
+        // 自动获取语音列表（如果有 URL）
+        const autoUrl = urlToLoad || document.getElementById('gptsovitsApiUrl')?.value.trim();
+        if (autoUrl) {
+            fetchGptSovitsVoices(true);
+        }
+    }
+}
+
+/**
+ * 从 GPT-SoVITS v3 API 获取可用语音配置列表并填充下拉框
+ * @param {boolean} silent - 静默模式，不显示错误提示
+ */
+async function fetchGptSovitsVoices(silent = false) {
+    const apiUrl = document.getElementById('gptsovitsApiUrl')?.value.trim() || 'http://127.0.0.1:9881';
+    const select = document.getElementById('gptsovitsVoiceId');
+    if (!select) return;
+
+    // 记住当前选中的值
+    const currentValue = select.value;
+
+    try {
+        const resp = await fetch(`${getBaseUrl()}/gptsovits/list_voices`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ api_url: apiUrl })
+        });
+        const result = await resp.json();
+
+        if (result.success && Array.isArray(result.voices)) {
+            // 清空现有选项
+            select.innerHTML = '';
+
+            if (result.voices.length === 0) {
+                const emptyOpt = document.createElement('option');
+                emptyOpt.value = '';
+                emptyOpt.textContent = window.t ? window.t('api.gptsovitsNoVoices') : '-- 无可用配置 --';
+                select.appendChild(emptyOpt);
+            } else {
+                result.voices.forEach(v => {
+                    const opt = document.createElement('option');
+                    opt.value = v.id;
+                    opt.textContent = v.name ? `${v.name} (${v.id})` : v.id;
+                    if (v.description) opt.title = v.description;
+                    select.appendChild(opt);
+                });
+            }
+
+            // 恢复之前选中的值
+            if (currentValue && select.querySelector(`option[value="${currentValue}"]`)) {
+                select.value = currentValue;
+            }
+
+            if (!silent) {
+                showStatus(window.t ? window.t('api.gptsovitsVoicesLoaded', { count: result.voices.length }) : `已加载 ${result.voices.length} 个语音配置`, 'success');
+            }
+        } else {
+            if (!silent) {
+                showStatus(result.error || (window.t ? window.t('api.gptsovitsVoicesLoadFailed') : '获取语音列表失败'), 'error');
+            }
+        }
+    } catch (e) {
+        if (!silent) {
+            showStatus(window.t ? window.t('api.gptsovitsVoicesLoadFailed') : '获取语音列表失败: ' + e.message, 'error');
         }
     }
 }
@@ -457,7 +534,7 @@ function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId) {
  */
 function getGptSovitsConfigForSave() {
     const apiUrl = document.getElementById('gptsovitsApiUrl')?.value.trim() || '';
-    const voiceId = document.getElementById('gptsovitsVoiceId')?.value.trim() || '';
+    const voiceId = document.getElementById('gptsovitsVoiceId')?.value || '';
     
     return {
         url: apiUrl || 'http://127.0.0.1:9881',
