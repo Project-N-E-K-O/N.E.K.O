@@ -563,3 +563,167 @@ async def get_api_providers_config():
             "assist_api_providers": [],
         }
 
+
+@router.post("/gptsovits/load_model")
+async def load_gptsovits_model(request: Request):
+    """代理请求到 GPT-SoVITS API 加载模型（解决 CORS 问题）"""
+    import aiohttp
+    from urllib.parse import urlparse
+    import ipaddress
+    try:
+        data = await request.json()
+        api_url = data.get("api_url", "").rstrip("/")
+        model_type = data.get("model_type", "")  # "gpt" or "sovits"
+        weights_path = data.get("weights_path", "")
+        
+        if not api_url or not model_type or not weights_path:
+            return {"success": False, "error": "Missing required parameters"}
+        
+        # SSRF 防护：限制 api_url 只能是 localhost
+        parsed = urlparse(api_url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return {"success": False, "error": "Invalid api_url"}
+        host = parsed.hostname
+        try:
+            if not ipaddress.ip_address(host).is_loopback:
+                return {"success": False, "error": "api_url must be localhost"}
+        except ValueError:
+            if host not in ("localhost",):
+                return {"success": False, "error": "api_url must be localhost"}
+        
+        # 根据模型类型选择 API 端点
+        if model_type == "gpt":
+            endpoint = f"{api_url}/set_gpt_weights"
+        elif model_type == "sovits":
+            endpoint = f"{api_url}/set_sovits_weights"
+        else:
+            return {"success": False, "error": f"Invalid model_type: {model_type}"}
+        
+        # 代理请求到 GPT-SoVITS API
+        async with aiohttp.ClientSession() as session:
+            async with session.get(endpoint, params={"weights_path": weights_path}, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                try:
+                    result = await resp.json(content_type=None)
+                except Exception:
+                    text = await resp.text()
+                    return {"success": False, "error": f"Non-JSON response (HTTP {resp.status}): {text[:200]}"}
+                if resp.status == 200:
+                    return {"success": True, "message": result.get("message", "Model loaded")}
+                else:
+                    return {"success": False, "error": result.get("message") or result.get("Exception") or "Unknown error"}
+    except aiohttp.ClientError as e:
+        logger.error(f"GPT-SoVITS API 请求失败: {e}")
+        return {"success": False, "error": f"Connection error: {str(e)}"}
+    except Exception as e:
+        logger.error(f"加载 GPT-SoVITS 模型失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/gptsovits/list_voices")
+async def list_gptsovits_voices(request: Request):
+    """代理请求到 GPT-SoVITS v3 API 获取可用语音配置列表"""
+    import aiohttp
+    from urllib.parse import urlparse
+    import ipaddress
+    try:
+        data = await request.json()
+        api_url = data.get("api_url", "").rstrip("/")
+
+        if not api_url:
+            return {"success": False, "error": "api_url is required"}
+
+        # SSRF 防护：限制 api_url 只能是 localhost
+        parsed = urlparse(api_url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return {"success": False, "error": "Invalid api_url"}
+        host = parsed.hostname
+        try:
+            if not ipaddress.ip_address(host).is_loopback:
+                return {"success": False, "error": "api_url must be localhost"}
+        except ValueError:
+            if host not in ("localhost",):
+                return {"success": False, "error": "api_url must be localhost"}
+
+        endpoint = f"{api_url}/api/v3/voices"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(endpoint, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    voices = await resp.json()
+                    return {"success": True, "voices": voices}
+                else:
+                    text = await resp.text()
+                    return {"success": False, "error": f"HTTP {resp.status}: {text[:200]}"}
+    except aiohttp.ClientError as e:
+        logger.error(f"GPT-SoVITS v3 API 请求失败: {e}")
+        return {"success": False, "error": f"Connection error: {str(e)}"}
+    except Exception as e:
+        logger.error(f"获取 GPT-SoVITS 语音列表失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/gptsovits/scan_models")
+async def scan_gptsovits_models(request: Request):
+    """扫描 GPT-SoVITS 模型文件夹，返回可用的模型列表"""
+    try:
+        data = await request.json()
+        base_path = data.get("base_path", "")
+        
+        if not base_path:
+            return {"success": False, "error": "base_path is required"}
+        
+        # 规范化路径（防止路径遍历）
+        base_path = str(Path(base_path).expanduser().resolve())
+        
+        if not os.path.exists(base_path):
+            return {"success": False, "error": f"Path does not exist: {base_path}"}
+        
+        if not os.path.isdir(base_path):
+            return {"success": False, "error": f"Path is not a directory: {base_path}"}
+        
+        # GPT-SoVITS 模型文件夹名称
+        gpt_folders = ["GPT_weights", "GPT_weights_v2", "GPT_weights_v3", "GPT_weights_v4", "GPT_weights_v2Pro", "GPT_weights_v2ProPlus"]
+        sovits_folders = ["SoVITS_weights", "SoVITS_weights_v2", "SoVITS_weights_v3", "SoVITS_weights_v4", "SoVITS_weights_v2Pro", "SoVITS_weights_v2ProPlus"]
+        
+        gpt_models = []
+        sovits_models = []
+        
+        # 扫描 GPT 模型 (.ckpt)
+        for folder in gpt_folders:
+            folder_path = os.path.join(base_path, folder)
+            if os.path.exists(folder_path) and os.path.isdir(folder_path):
+                for name in os.listdir(folder_path):
+                    if name.endswith(".ckpt"):
+                        full_path = os.path.join(folder_path, name)
+                        gpt_models.append({
+                            "name": f"{folder}/{name}",
+                            "path": full_path,
+                            "version": folder.replace("GPT_weights", "").replace("_", "") or "v1"
+                        })
+        
+        # 扫描 SoVITS 模型 (.pth)
+        for folder in sovits_folders:
+            folder_path = os.path.join(base_path, folder)
+            if os.path.exists(folder_path) and os.path.isdir(folder_path):
+                for name in os.listdir(folder_path):
+                    if name.endswith(".pth"):
+                        full_path = os.path.join(folder_path, name)
+                        sovits_models.append({
+                            "name": f"{folder}/{name}",
+                            "path": full_path,
+                            "version": folder.replace("SoVITS_weights", "").replace("_", "") or "v1"
+                        })
+        
+        # 按名称排序
+        gpt_models.sort(key=lambda x: x["name"])
+        sovits_models.sort(key=lambda x: x["name"])
+        
+        return {
+            "success": True,
+            "gpt_models": gpt_models,
+            "sovits_models": sovits_models,
+        }
+    except Exception as e:
+        logger.error(f"扫描 GPT-SoVITS 模型失败: {e}")
+        return {"success": False, "error": str(e)}
+
+
