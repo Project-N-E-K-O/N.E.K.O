@@ -1268,7 +1268,8 @@
       "zh-CN": "簡體中文",
       "en": "English",
       "zh-TW": "繁體中文",
-      "ja": "日本語"
+      "ja": "日本語",
+      "ko": "한국어"
     },
     "toggles": {
       "allowInterrupt": "允許打斷",

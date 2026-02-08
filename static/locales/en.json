@@ -1203,7 +1203,10 @@
     "language": {
       "title": "Select Language",
       "zh-CN": "Simplified Chinese",
-      "en": "English"
+      "en": "English",
+      "ja": "日本語",
+      "zh-TW": "繁體中文",
+      "ko": "한국어"
     },
     "interval": {
       "chatIntervalBase": "Base Interval",

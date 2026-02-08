@@ -980,7 +980,8 @@
     "confirmDelete": "このボイスを削除しますか？",
     "deleting": "削除中...",
     "deleteSuccess": "削除成功",
-    "deleteFailed": "削除失敗：{{error}}"
+    "deleteFailed": "削除失敗",
+    "deleteError": "削除失敗：{{error}}"
   },
   "settings": {
     "menu": {
@@ -1003,7 +1004,8 @@
       "zh-CN": "簡体字中国語",
       "en": "英語",
       "ja": "日本語",
-      "zh-TW": "繁体字中国語"
+      "zh-TW": "繁体字中国語",
+      "ko": "한국어"
     },
     "interval": {
       "chatIntervalBase": "基本間隔",

@@ -1263,7 +1263,10 @@
     "language": {
       "title": "选择语言",
       "zh-CN": "简体中文",
-      "en": "English"
+      "en": "English",
+      "ja": "日本語",
+      "zh-TW": "繁體中文",
+      "ko": "한국어"
     },
     "interval": {
       "chatIntervalBase": "基础间隔",
