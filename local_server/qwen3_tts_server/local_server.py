@@ -51,7 +51,7 @@ class QwenLocalServer:
         self.model = None
         self.cached_prompt = None
         self.pad_token_id = None
-        self.ref_text = "アラバマ シュー ノ サイダイ トシ ワ バーミングハム デ アル。"
+        self.ref_text = "アラバマ シュー ノ サイダイ トシ ワ バーミングハム デ アル。" # 这里是预设的prompt_text
 
         # --- 任务队列 (解决并发卡顿的核心) ---
         self.task_queue = queue.Queue()
@@ -74,8 +74,11 @@ class QwenLocalServer:
                 model_path,
                 torch_dtype=torch.bfloat16,  # 显式告诉 transformers 使用 bf16
                 dtype=torch.bfloat16,  # 显式告诉 custom code 使用 bf16
-                attn_implementation="flash_attention_2",
-                device_map="cuda",  # 让 accelerate 自动管理显存
+                attn_implementation="flash_attention_2" if self.device == "cuda" else "eager",
+                device_map=self.device,
+                # ---- 硬编码 ---
+                # attn_implementation="flash_attention_2",
+                # device_map="cuda",  # 让 accelerate 自动管理显存
                 low_cpu_mem_usage=True
             )
 
@@ -85,7 +88,8 @@ class QwenLocalServer:
             self.model = Qwen3TTSModel(model=raw_model, processor=processor)
 
             # 设置 pad_token_id 防止日志刷屏
-            self.pad_token_id = raw_model.config.pad_token_id or raw_model.config.eos_token_id
+            pad_id = raw_model.config.pad_token_id
+            self.pad_token_id = pad_id if pad_id is not None else raw_model.config.eos_token_id
             # 尝试注入 generation config (如果模型支持)
             if hasattr(self.model, 'generation_config'):
                 self.model.generation_config.pad_token_id = self.pad_token_id
@@ -197,7 +201,7 @@ class QwenLocalServer:
             while not audio_queue.empty():
                 try:
                     audio_queue.get_nowait()
-                except:
+                except asyncio.QueueEmpty:
                     break
 
         async def _sender_loop():
@@ -220,7 +224,7 @@ class QwenLocalServer:
                 if isinstance(message, bytes): continue
                 try:
                     data = json.loads(message)
-                except:
+                except json.JSONDecodeError:
                     continue
 
                 msg_type = data.get("type")
@@ -236,6 +240,7 @@ class QwenLocalServer:
                     text_buffer = ""
                     if not full_text: continue
 
+                    await _stop_current_job()
                     current_job_id = str(uuid.uuid4())
                     await websocket.send(json.dumps({"type": "response.start", "job_id": current_job_id}))
 
