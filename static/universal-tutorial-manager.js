@@ -45,6 +45,20 @@ class UniversalTutorialManager {
     }
 
     /**
+     * HTML转义辅助函数 - 用于在HTML属性或内容中安全使用翻译文本
+     * @param {string} text - 要转义的文本
+     * @returns {string} 转义后的HTML安全文本
+     */
+    safeEscapeHtml(text) {
+        if (typeof text !== 'string') {
+            return String(text);
+        }
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    /**
      * 检测当前页面类型
      */
     detectPage() {
@@ -619,14 +633,14 @@ class UniversalTutorialManager {
                         <div class="neko-systray-location">
                             <img
                                 src="/static/icons/stray_intro.png"
-                                alt="${t('tutorial.systray.location.alt', 'System tray location example')}"
+                                alt="${this.safeEscapeHtml(t('tutorial.systray.location.alt', 'System tray location example'))}"
                                 class="neko-systray-location__image"
                             />
                             <div class="neko-systray-location__caption">
-                                ${t('tutorial.systray.location.desc', 'The N.E.K.O icon appears in the system tray at the bottom-right of your screen. Click it to find N.E.K.O.')}
+                                ${this.safeEscapeHtml(t('tutorial.systray.location.desc', 'The N.E.K.O icon appears in the system tray at the bottom-right of your screen. Click it to find N.E.K.O.'))}
                             </div>
                             <div class="neko-systray-location__note">
-                                ${t('tutorial.systray.location.note', 'If you don\'t see it, expand the tray arrow to show hidden icons.')}
+                                ${this.safeEscapeHtml(t('tutorial.systray.location.note', 'If you don\'t see it, expand the tray arrow to show hidden icons.'))}
                             </div>
                         </div>
                     `
@@ -639,24 +653,24 @@ class UniversalTutorialManager {
                     description: `
                         <div class="neko-systray-menu">
                             <div class="neko-systray-menu__hint">
-                                ${t('tutorial.systray.menu.desc', '右下角托盘里会有 N.E.K.O 的图标，右键点击会出现很多选项。下面是两个常用功能：')}
+                                ${this.safeEscapeHtml(t('tutorial.systray.menu.desc', '右下角托盘里会有 N.E.K.O 的图标，右键点击会出现很多选项。下面是两个常用功能：'))}
                             </div>
                             <div class="neko-systray-menu__panel">
                                 <div class="neko-systray-menu__item">
                                     <div class="neko-systray-menu__item-label">
-                                        ${t('tutorial.systray.hotkey', '快捷键设置')}
+                                        ${this.safeEscapeHtml(t('tutorial.systray.hotkey', '快捷键设置'))}
                                     </div>
                                     <div class="neko-systray-menu__item-desc">
-                                        ${t('tutorial.systray.hotkeyDesc', '在这里可以设置全局快捷键，让你更高效地控制 N.E.K.O~')}
+                                        ${this.safeEscapeHtml(t('tutorial.systray.hotkeyDesc', '在这里可以设置全局快捷键，让你更高效地控制 N.E.K.O~'))}
                                     </div>
                                 </div>
                                 <div class="neko-systray-menu__separator"></div>
                                 <div class="neko-systray-menu__item neko-systray-menu__item--danger">
                                     <div class="neko-systray-menu__item-label">
-                                        ${t('tutorial.systray.exit', '退出')}
+                                        ${this.safeEscapeHtml(t('tutorial.systray.exit', '退出'))}
                                     </div>
                                     <div class="neko-systray-menu__item-desc">
-                                        ${t('tutorial.systray.exitDesc', '想要关闭 N.E.K.O 时，在这里点击退出即可。')}
+                                        ${this.safeEscapeHtml(t('tutorial.systray.exitDesc', '想要关闭 N.E.K.O 时，在这里点击退出即可。'))}
                                     </div>
                                 </div>
                             </div>
