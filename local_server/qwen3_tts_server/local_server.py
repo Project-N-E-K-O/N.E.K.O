@@ -140,7 +140,7 @@ class QwenLocalServer:
 
     def _do_inference(self, full_text, job_id, loop, audio_queue, cancel_event):
         try:
-            if not self.model or self.cached_prompt is None:
+            if  self.model is None or self.cached_prompt is None:
                 logger.error("模型未就绪")
                 return
 
