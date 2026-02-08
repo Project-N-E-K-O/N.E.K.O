@@ -719,28 +719,28 @@ class UniversalTutorialManager {
         // VRM 特定步骤
         const vrmSteps = [
             {
-                element: '#ambient-light-slider',
+                element: '#ambient-light-control',
                 popover: {
                     title: this.t('tutorial.model_manager.vrm.step6.title', '🌟 环境光'),
                     description: this.t('tutorial.model_manager.vrm.step6.desc', '调整环境光强度。环境光影响整体亮度，数值越高模型越亮。'),
                 }
             },
             {
-                element: '#main-light-slider',
+                element: '#main-light-control',
                 popover: {
                     title: this.t('tutorial.model_manager.vrm.step7.title', '☀️ 主光源'),
                     description: this.t('tutorial.model_manager.vrm.step7.desc', '调整主光源强度。主光源是主要的照明来源，影响模型的明暗对比。'),
                 }
             },
             {
-                element: '#exposure-slider',
+                element: '#exposure-control',
                 popover: {
                     title: this.t('tutorial.model_manager.vrm.step8.title', '🌞 曝光'),
                     description: this.t('tutorial.model_manager.vrm.step8.desc', '调整整体曝光强度。数值越高整体越亮，越低则更暗更有对比。'),
                 }
             },
             {
-                element: '#tonemapping-select',
+                element: '#tonemapping-control',
                 popover: {
                     title: this.t('tutorial.model_manager.vrm.step9.title', '🎞️ 色调映射'),
                     description: this.t('tutorial.model_manager.vrm.step9.desc', '选择不同的色调映射算法，决定画面亮部和暗部的呈现风格。'),

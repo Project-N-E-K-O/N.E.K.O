@@ -27,6 +27,24 @@
     "fieldSeparator": "、",
     "tryAgainLater": "請稍後重試"
   },
+  "characterProfile": {
+    "gender": "性別",
+    "age": "年齡",
+    "nickname": "暱稱",
+    "profileName": "檔案名",
+    "values": {
+      "brother": "哥哥",
+      "male": "男",
+      "female": "女",
+      "tChanNickname": "T醬, 小T"
+    },
+    "labels": {
+      "档案名": "檔案名",
+      "性别": "性別",
+      "年龄": "年齡",
+      "昵称": "暱稱"
+    }
+  },
   "steam": {
     "characterCards": "角色卡",
     "characterCardName": "昵稱",

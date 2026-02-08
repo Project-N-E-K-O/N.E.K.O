@@ -818,7 +818,8 @@ Live2DManager.prototype._createMenuItem = function (item, isSubmenuItem = false)
 
         if (item.action === 'navigate') {
             let finalUrl = item.url || item.urlBase;
-            const windowName = `neko_${item.id}`;
+            let windowName = `neko_${item.id}`;
+            let features;
 
             if (item.id === 'live2d-manage' && item.urlBase) {
                 const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
@@ -826,17 +827,29 @@ Live2DManager.prototype._createMenuItem = function (item, isSubmenuItem = false)
                 window.location.href = finalUrl;
             } else if (item.id === 'voice-clone' && item.url) {
                 const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+                const lanlanNameForKey = lanlanName || 'default';
                 finalUrl = `${item.url}?lanlan_name=${encodeURIComponent(lanlanName)}`;
+                windowName = `neko_voice_clone_${encodeURIComponent(lanlanNameForKey)}`;
+
+                const width = 700;
+                const height = 750;
+                const left = Math.max(0, Math.floor((screen.width - width) / 2));
+                const top = Math.max(0, Math.floor((screen.height - height) / 2));
+                features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
 
                 // 设置防抖标志
                 isOpening = true;
-                window.openOrFocusWindow(finalUrl, windowName);
+                window.openOrFocusWindow(finalUrl, windowName, features);
                 // 500ms后重置标志，允许再次点击
                 setTimeout(() => { isOpening = false; }, 500);
             } else {
+                if (typeof finalUrl === 'string' && finalUrl.startsWith('/chara_manager')) {
+                    windowName = 'neko_chara_manager';
+                }
+
                 // 设置防抖标志
                 isOpening = true;
-                window.openOrFocusWindow(finalUrl, windowName);
+                window.openOrFocusWindow(finalUrl, windowName, features);
                 // 500ms后重置标志，允许再次点击
                 setTimeout(() => { isOpening = false; }, 500);
             }
