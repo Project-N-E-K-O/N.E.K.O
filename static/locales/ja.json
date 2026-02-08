@@ -27,6 +27,24 @@
     "fieldSeparator": "、 ",
     "tryAgainLater": "後でもう一度お試しください"
   },
+  "characterProfile": {
+    "gender": "性別",
+    "age": "年齢",
+    "nickname": "ニックネーム",
+    "profileName": "プロファイル名",
+    "values": {
+      "brother": "お兄ちゃん",
+      "male": "男性",
+      "female": "女性",
+      "tChanNickname": "Tちゃん, 小T"
+    },
+    "labels": {
+      "档案名": "プロファイル名",
+      "性别": "性別",
+      "年龄": "年齢",
+      "昵称": "ニックネーム"
+    }
+  },
   "steam": {
     "characterCards": "キャラクターカード",
     "characterCardName": "ニックネーム",
