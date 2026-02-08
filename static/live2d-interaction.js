@@ -1067,6 +1067,11 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
         clearTimeout(this._clickEffectRestoreTimer);
         this._clickEffectRestoreTimer = null;
     }
+    
+    if (this._clickEffectMotion && typeof this._clickEffectMotion.stop === 'function') {
+        try { this._clickEffectMotion.stop(); } catch (e) {}
+    }
+    this._clickEffectMotion = null;
 
     try {
         // 1. 播放表情（如果有配置）
@@ -1127,6 +1132,7 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
                 const motion = await this.currentModel.motion(emotion, undefined, priority);
                 if (motion) {
                     console.log(`[ClickEffect] 播放临时动作: ${emotion}（优先级: ${priority}）`);
+                    this._clickEffectMotion = motion;
                 }
             } catch (motionError) {
                 console.warn('[ClickEffect] 动作播放失败:', motionError);
@@ -1150,14 +1156,26 @@ Live2DManager.prototype._playTemporaryClickEffect = async function(emotion, prio
             console.log('[ClickEffect] 临时效果结束，恢复到默认状态');
             this._currentClickEffectId = null;
             
-            // 清除表情效果，恢复到常驻表情或默认状态
-            if (this.clearExpression) {
-                this.clearExpression();
+            const motionToStop = this._clickEffectMotion;
+            this._clickEffectMotion = null;
+            if (motionToStop && typeof motionToStop.stop === 'function') {
+                try { motionToStop.stop(); } catch (e) {}
             }
             
-            // 清除动作相关参数
-            if (this.clearEmotionEffects) {
-                this.clearEmotionEffects();
+            try {
+                const expressionManager = this.currentModel &&
+                    this.currentModel.internalModel &&
+                    this.currentModel.internalModel.motionManager &&
+                    this.currentModel.internalModel.motionManager.expressionManager;
+                if (expressionManager && typeof expressionManager.stopAllExpressions === 'function') {
+                    expressionManager.stopAllExpressions();
+                }
+            } catch (e) {
+                console.warn('[ClickEffect] Failed to stop expressions on currentModel:', e);
+            }
+
+            if (typeof this.applyPersistentExpressionsNative === 'function') {
+                try { this.applyPersistentExpressionsNative(true); } catch (e) {}
             }
         }, duration);
 

@@ -21,7 +21,7 @@ from utils.language_utils import detect_language as _detect_language_impl, norma
 logger = logging.getLogger(__name__)
 
 # 支持的语言列表（支持多种格式以兼容不同调用方式）
-SUPPORTED_LANGUAGES = ['zh', 'zh-CN', 'en', 'ja']
+SUPPORTED_LANGUAGES = ['zh', 'zh-CN', 'en', 'ja', 'ko']
 DEFAULT_LANGUAGE = 'zh-CN'
 
 # 缓存配置
@@ -124,7 +124,7 @@ class TranslationService:
             lang: 语言代码
             
         Returns:
-            归一化后的语言代码 ('zh-CN', 'en', 'ja')
+            归一化后的语言代码 ('zh-CN', 'en', 'ja', 'ko')
         """
         if not lang:
             return DEFAULT_LANGUAGE  # 默认中文
@@ -143,7 +143,7 @@ class TranslationService:
         检测文本语言（复用 language_utils.detect_language）
         
         Returns:
-            'zh-CN'、'ja' 或 'en'
+            'zh-CN'、'ja'、'ko' 或 'en'
         """
         # 使用 language_utils 的实现，并转换格式
         lang = _detect_language_impl(text)
@@ -164,7 +164,7 @@ class TranslationService:
         
         Args:
             text: 要翻译的文本
-            target_lang: 目标语言 ('zh', 'zh-CN', 'en', 'ja')
+            target_lang: 目标语言 ('zh', 'zh-CN', 'en', 'ja', 'ko')
             
         
         Returns:
@@ -216,6 +216,16 @@ class TranslationService:
                     source_lang_name = "Chinese"
                 elif detected_lang_normalized == 'en':
                     source_lang_name = "English"
+                else:
+                    source_lang_name = "the source language"
+            elif target_lang_normalized == 'ko':
+                target_lang_name = "Korean"
+                if detected_lang_normalized == 'zh-CN':
+                    source_lang_name = "Chinese"
+                elif detected_lang_normalized == 'en':
+                    source_lang_name = "English"
+                elif detected_lang_normalized == 'ja':
+                    source_lang_name = "Japanese"
                 else:
                     source_lang_name = "the source language"
             else:  # zh-CN
