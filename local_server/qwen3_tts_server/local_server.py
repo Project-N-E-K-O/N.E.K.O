@@ -106,7 +106,8 @@ class QwenLocalServer:
                     logger.info("正在提取音色 (首次运行较慢)...")
                     with torch.no_grad():
                         # 确保提取过程也使用 bf16
-                        with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+                        # with torch.cuda.amp.autocast(dtype=torch.bfloat16): # 旧逻辑 可用
+                        with torch.amp.autocast(device_type =self.device,dtype = torch.bfloat16):
                             self.cached_prompt = self.model.create_voice_clone_prompt(
                                 ref_audio=ref_wav,
                                 ref_text=self.ref_text
