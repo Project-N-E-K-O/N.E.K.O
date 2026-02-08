@@ -21,6 +21,12 @@ class UniversalTutorialManager {
         this.currentStep = 0;
         this.nextButtonGuardTimer = null;
         this.nextButtonGuardActive = false;
+        this.tutorialPadding = 8;
+        this.tutorialControlledElements = new Set();
+        this.tutorialInteractionStates = new Map();
+        this.tutorialMarkerDisplayCache = null;
+        this.tutorialRollbackActive = false;
+        this._applyingInteractionState = false;
 
         // 用于追踪在引导中修改过的元素及其原始样式
         this.modifiedElementsMap = new Map();
@@ -144,32 +150,50 @@ class UniversalTutorialManager {
                 return;
             }
 
-            this.driver = new DriverClass({
-                padding: 8,
-                allowClose: true,
-                overlayClickNext: false,
-                animate: true,
-                smoothScroll: true, // 启用平滑滚动
-                className: 'neko-tutorial-driver',
-                disableActiveInteraction: false,
-                // i18n 按钮文本
-                nextBtnText: this.t('tutorial.buttons.next', '下一步'),
-                prevBtnText: this.t('tutorial.buttons.prev', '上一步'),
-                doneBtnText: this.t('tutorial.buttons.done', '完成'),
-                onDestroyStarted: () => {
-                    // 教程结束时，如果需要标记 hint 已显示
-                    if (this.shouldMarkHintShown) {
-                        localStorage.setItem('neko_tutorial_reset_hint_shown', 'true');
-                        this.shouldMarkHintShown = false;
-                        console.log('[Tutorial] 已标记重置提示为已显示');
-                    }
-                },
-                onHighlighted: (element, step, options) => {
-                    // 每次高亮元素时，确保元素在视口中
-                    console.log('[Tutorial] 高亮元素:', step.element);
+            this.driver = new DriverClass(this.getDriverConfig());
 
-                    // 给一点时间让 Driver.js 完成定位
-                    setTimeout(() => {
+            this.isInitialized = true;
+            console.log('[Tutorial] driver.js 初始化成功');
+
+
+            // 检查是否需要自动启动引导
+            this.checkAndStartTutorial();
+        } catch (error) {
+            console.error('[Tutorial] driver.js 初始化失败:', error);
+        }
+    }
+
+    /**
+     * 获取 driver.js 的统一配置
+     */
+    getDriverConfig() {
+        return {
+            padding: this.tutorialPadding,
+            allowClose: true,
+            overlayClickNext: false,
+            animate: true,
+            smoothScroll: true, // 启用平滑滚动
+            className: 'neko-tutorial-driver',
+            disableActiveInteraction: false,
+            // i18n 按钮文本
+            nextBtnText: this.t('tutorial.buttons.next', '下一步'),
+            prevBtnText: this.t('tutorial.buttons.prev', '上一步'),
+            doneBtnText: this.t('tutorial.buttons.done', '完成'),
+            onDestroyStarted: () => {
+                // 教程结束时，如果需要标记 hint 已显示
+                if (this.shouldMarkHintShown) {
+                    localStorage.setItem('neko_tutorial_reset_hint_shown', 'true');
+                    this.shouldMarkHintShown = false;
+                    console.log('[Tutorial] 已标记重置提示为已显示');
+                }
+            },
+            onHighlighted: (element, step, options) => {
+                // 每次高亮元素时，确保元素在视口中
+                console.log('[Tutorial] 高亮元素:', step.element);
+
+                // 给一点时间让 Driver.js 完成定位
+                setTimeout(() => {
+                    (async () => {
                         if (element && element.element) {
                             const targetElement = element.element;
                             // 检查元素是否在视口中
@@ -187,21 +211,16 @@ class UniversalTutorialManager {
                             }
                         }
 
+                        await this.applyTutorialInteractionState(step, 'highlight');
+
                         // 启用 popover 拖动功能
                         this.enablePopoverDragging();
-                    }, 100);
-                }
-            });
-
-            this.isInitialized = true;
-            console.log('[Tutorial] driver.js 初始化成功');
-
-
-            // 检查是否需要自动启动引导
-            this.checkAndStartTutorial();
-        } catch (error) {
-            console.error('[Tutorial] driver.js 初始化失败:', error);
-        }
+                    })().catch(err => {
+                        console.error('[Tutorial] onHighlighted 回调执行失败:', err);
+                    });
+                }, 100);
+            }
+        };
     }
 
     /**
@@ -226,46 +245,7 @@ class UniversalTutorialManager {
             }
 
             // 重新创建 driver 实例，使用最新的 i18n 翻译
-            this.driver = new DriverClass({
-                padding: 8,
-                allowClose: true,
-                overlayClickNext: false,
-                animate: true,
-                smoothScroll: true,
-                className: 'neko-tutorial-driver',
-                disableActiveInteraction: false,
-                // i18n 按钮文本
-                nextBtnText: this.t('tutorial.buttons.next', '下一步'),
-                prevBtnText: this.t('tutorial.buttons.prev', '上一步'),
-                doneBtnText: this.t('tutorial.buttons.done', '完成'),
-                onDestroyStarted: () => {
-                    if (this.shouldMarkHintShown) {
-                        localStorage.setItem('neko_tutorial_reset_hint_shown', 'true');
-                        this.shouldMarkHintShown = false;
-                        console.log('[Tutorial] 已标记重置提示为已显示');
-                    }
-                },
-                onHighlighted: (element, step, options) => {
-                    console.log('[Tutorial] 高亮元素:', step.element);
-                    setTimeout(() => {
-                        if (element && element.element) {
-                            const targetElement = element.element;
-                            const rect = targetElement.getBoundingClientRect();
-                            const isInViewport = (
-                                rect.top >= 0 &&
-                                rect.left >= 0 &&
-                                rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) &&
-                                rect.right <= (window.innerWidth || document.documentElement.clientWidth)
-                            );
-                            if (!isInViewport) {
-                                console.log('[Tutorial] 元素不在视口中，滚动到元素');
-                                targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                            }
-                        }
-                        this.enablePopoverDragging();
-                    }, 100);
-                }
-            });
+            this.driver = new DriverClass(this.getDriverConfig());
 
             console.log('[Tutorial] driver.js 重新创建成功，使用 i18n 按钮文本');
         } catch (error) {
@@ -483,49 +463,56 @@ class UniversalTutorialManager {
                 popover: {
                     title: window.t ? window.t('tutorial.step1c.title', '🔒 锁定猫娘') : '🔒 锁定猫娘',
                     description: window.t ? window.t('tutorial.step1c.desc', '点击这个锁可以锁定猫娘位置，防止误触移动。再次点击可以解锁~') : '点击这个锁可以锁定猫娘位置，防止误触移动。再次点击可以解锁~',
-                }
+                },
+                disableActiveInteraction: true
             },
             {
                 element: '#chat-container',
                 popover: {
                     title: window.t ? window.t('tutorial.step2.title', '💬 对话区域') : '💬 对话区域',
                     description: window.t ? window.t('tutorial.step2.desc', '在这里可以和猫娘进行文字对话。输入您的想法，她会给您有趣的回应呢~') : '在这里可以和猫娘进行文字对话。输入您的想法，她会给您有趣的回应呢~',
-                }
+                },
+                disableActiveInteraction: true
             },
             {
                 element: '#live2d-floating-buttons',
                 popover: {
                     title: window.t ? window.t('tutorial.step5.title', '🎛️ 浮动工具栏') : '🎛️ 浮动工具栏',
                     description: window.t ? window.t('tutorial.step5.desc', '浮动工具栏包含多个实用功能按钮，让我为你逐一介绍~') : '浮动工具栏包含多个实用功能按钮，让我为你逐一介绍~',
-                }
+                },
+                disableActiveInteraction: true
             },
             {
                 element: '#live2d-btn-mic',
                 popover: {
                     title: window.t ? window.t('tutorial.step6.title', '🎤 语音控制') : '🎤 语音控制',
                     description: window.t ? window.t('tutorial.step6.desc', '启用语音控制，猫娘通过语音识别理解你的话语~') : '启用语音控制，猫娘通过语音识别理解你的话语~',
-                }
+                },
+                disableActiveInteraction: true
             },
             {
                 element: '#live2d-btn-screen',
                 popover: {
                     title: window.t ? window.t('tutorial.step7.title', '🖥️ 屏幕分享') : '🖥️ 屏幕分享',
                     description: window.t ? window.t('tutorial.step7.desc', '分享屏幕/窗口/标签页，让猫娘看到你的画面~') : '分享屏幕/窗口/标签页，让猫娘看到你的画面~',
-                }
+                },
+                disableActiveInteraction: true
             },
             {
                 element: '#live2d-btn-agent',
                 popover: {
                     title: window.t ? window.t('tutorial.step8.title', '🔨 Agent工具') : '🔨 Agent工具',
                     description: window.t ? window.t('tutorial.step8.desc', '打开 Agent 工具面板，使用各类辅助功能~') : '打开 Agent 工具面板，使用各类辅助功能~',
-                }
+                },
+                disableActiveInteraction: true
             },
             {
                 element: '#live2d-btn-goodbye',
                 popover: {
                     title: window.t ? window.t('tutorial.step9.title', '💤 请她离开') : '💤 请她离开',
                     description: window.t ? window.t('tutorial.step9.desc', '让猫娘暂时离开并隐藏界面，需要时可点击\"请她回来\"恢复~') : '让猫娘暂时离开并隐藏界面，需要时可点击\"请她回来\"恢复~',
-                }
+                },
+                disableActiveInteraction: true
             },
             {
                 element: '#live2d-btn-settings',
@@ -533,49 +520,56 @@ class UniversalTutorialManager {
                     title: window.t ? window.t('tutorial.step10.title', '⚙️ 设置') : '⚙️ 设置',
                     description: window.t ? window.t('tutorial.step10.desc', '打开设置面板，下面会依次介绍设置里的各个项目~') : '打开设置面板，下面会依次介绍设置里的各个项目~',
                 },
-                action: 'click'
+                action: 'click',
+                disableActiveInteraction: true
             },
             {
                 element: '#live2d-toggle-proactive-chat',
                 popover: {
                     title: window.t ? window.t('tutorial.step13.title', '💬 主动搭话') : '💬 主动搭话',
                     description: window.t ? window.t('tutorial.step13.desc', '开启后猫娘会主动发起对话，频率可在此调整~') : '开启后猫娘会主动发起对话，频率可在此调整~',
-                }
+                },
+                disableActiveInteraction: true
             },
             {
                 element: '#live2d-toggle-proactive-vision',
                 popover: {
                     title: window.t ? window.t('tutorial.step14.title', '👀 自主视觉') : '👀 自主视觉',
                     description: window.t ? window.t('tutorial.step14.desc', '开启后猫娘会主动读取画面信息，间隔可在此调整~') : '开启后猫娘会主动读取画面信息，间隔可在此调整~',
-                }
+                },
+                disableActiveInteraction: true
             },
             {
                 element: '#live2d-menu-character',
                 popover: {
                     title: window.t ? window.t('tutorial.step15.title', '👤 角色管理') : '👤 角色管理',
                     description: window.t ? window.t('tutorial.step15.desc', '调整猫娘的性格、形象、声音等~') : '调整猫娘的性格、形象、声音等~',
-                }
+                },
+                disableActiveInteraction: true
             },
             {
                 element: '#live2d-menu-api-keys',
                 popover: {
                     title: window.t ? window.t('tutorial.step16.title', '🔑 API 密钥') : '🔑 API 密钥',
                     description: window.t ? window.t('tutorial.step16.desc', '配置 AI 服务的 API 密钥，这是和猫娘互动的必要配置~') : '配置 AI 服务的 API 密钥，这是和猫娘互动的必要配置~',
-                }
+                },
+                disableActiveInteraction: true
             },
             {
                 element: '#live2d-menu-memory',
                 popover: {
                     title: window.t ? window.t('tutorial.step17.title', '🧠 记忆浏览') : '🧠 记忆浏览',
                     description: window.t ? window.t('tutorial.step17.desc', '查看与管理猫娘的记忆内容~') : '查看与管理猫娘的记忆内容~',
-                }
+                },
+                disableActiveInteraction: true
             },
             {
                 element: '#live2d-menu-steam-workshop',
                 popover: {
                     title: window.t ? window.t('tutorial.step18.title', '🛠️ 创意工坊') : '🛠️ 创意工坊',
                     description: window.t ? window.t('tutorial.step18.desc', '进入 Steam 创意工坊页面，管理订阅内容~') : '进入 Steam 创意工坊页面，管理订阅内容~',
-                }
+                },
+                disableActiveInteraction: true
             }
         ];
     }
@@ -958,6 +952,265 @@ class UniversalTutorialManager {
         return { originalDisplay: element.style.display, originalVisibility: element.style.visibility, originalOpacity: element.style.opacity };
     }
 
+    getTutorialInteractiveSelectors() {
+        return [
+            '#live2d-canvas',
+            '#live2d-container',
+            '#chat-container',
+            '#live2d-floating-buttons',
+            '#live2d-return-button-container',
+            '#live2d-btn-return',
+            '#resetSessionButton',
+            '#returnSessionButton',
+            '#live2d-lock-icon',
+            '#toggle-chat-btn',
+            '.live2d-floating-btn',
+            '[id^="live2d-btn-"]'
+        ];
+    }
+
+    isTutorialControlledElement(element) {
+        if (!element) return false;
+        
+        // 复用选择器列表进行匹配检查
+        const selectors = this.getTutorialInteractiveSelectors();
+        const isMatched = selectors.some(selector => {
+            try {
+                return element.matches(selector) || (element.closest && element.closest(selector));
+            } catch (e) {
+                console.warn(`[Tutorial] 选择器匹配失败: ${selector}`, e);
+                return false;
+            }
+        });
+
+        if (isMatched) return true;
+
+        // 额外的特殊逻辑：匹配所有以 live2d- 开头的 ID（保持与原有逻辑兼容）
+        const id = element.id || '';
+        if (id.startsWith('live2d-')) {
+            return true;
+        }
+
+        return false;
+    }
+
+    collectTutorialControlledElements(steps = []) {
+        const elements = new Set();
+        const selectors = this.getTutorialInteractiveSelectors();
+        selectors.forEach(selector => {
+            document.querySelectorAll(selector).forEach(element => elements.add(element));
+        });
+        steps.forEach(step => {
+            const element = document.querySelector(step.element);
+            if (element && this.isTutorialControlledElement(element)) {
+                elements.add(element);
+            }
+        });
+        this.tutorialControlledElements = elements;
+        console.log(`[Tutorial] 已收集交互元素: ${elements.size}`);
+    }
+
+    setTutorialMarkersVisible(visible, options = {}) {
+        const overlay = document.querySelector('.driver-overlay');
+        const highlight = document.querySelector('.driver-highlight');
+        const popover = document.querySelector('.driver-popover');
+        const elements = [overlay, highlight, popover].filter(Boolean);
+        
+        if (!this.tutorialMarkerDisplayCache) {
+            this.tutorialMarkerDisplayCache = new Map();
+        }
+
+        if (!visible) {
+            const keepPopover = options.keepPopover === true;
+            elements.forEach(element => {
+                // 如果指定保留弹窗且当前元素是弹窗，则跳过隐藏
+                if (keepPopover && element === popover) return;
+
+                if (!this.tutorialMarkerDisplayCache.has(element)) {
+                    this.tutorialMarkerDisplayCache.set(element, element.style.visibility);
+                }
+                // 使用 visibility: hidden 代替 display: none，保持布局占位，过渡更平滑
+                element.style.visibility = 'hidden';
+            });
+            return;
+        }
+
+        elements.forEach(element => {
+            const cached = this.tutorialMarkerDisplayCache.get(element);
+            if (cached !== undefined) {
+                element.style.visibility = cached;
+            } else {
+                element.style.visibility = 'visible';
+            }
+        });
+    }
+
+    setElementInteractive(element, enabled) {
+        if (!element) return;
+        if (!this.tutorialInteractionStates.has(element)) {
+            this.tutorialInteractionStates.set(element, {
+                pointerEvents: element.style.pointerEvents,
+                cursor: element.style.cursor,
+                userSelect: element.style.userSelect
+            });
+        }
+        if (enabled) {
+            element.style.pointerEvents = 'auto';
+            const state = this.tutorialInteractionStates.get(element);
+            element.style.cursor = state.cursor || '';
+            element.style.userSelect = state.userSelect || '';
+            if (element.dataset.tutorialDisabled) {
+                delete element.dataset.tutorialDisabled;
+            }
+            return;
+        }
+        element.style.pointerEvents = 'none';
+        element.style.cursor = 'default';
+        element.style.userSelect = 'none';
+        element.dataset.tutorialDisabled = 'true';
+    }
+
+    disableAllTutorialInteractions() {
+        this.tutorialControlledElements.forEach(element => {
+            this.setElementInteractive(element, false);
+        });
+        console.log('[Tutorial] 已禁用所有交互元素');
+    }
+
+    enableCurrentStepInteractions(currentElement) {
+        if (!currentElement) return;
+        this.tutorialControlledElements.forEach(element => {
+            // 启用当前元素、其父级容器以及其内部的受控子元素
+            if (element === currentElement || element.contains(currentElement) || currentElement.contains(element)) {
+                this.setElementInteractive(element, true);
+            }
+        });
+        console.log('[Tutorial] 已启用当前步骤交互元素');
+    }
+
+    validateTutorialLayout(currentElement, context) {
+        if (!currentElement) return true;
+        const highlight = document.querySelector('.driver-highlight');
+        if (!highlight) {
+            console.log('[Tutorial] 未检测到高亮框，跳过布局验证');
+            return true;
+        }
+        const rect = currentElement.getBoundingClientRect();
+        const highlightRect = highlight.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) {
+            console.log('[Tutorial] 当前步骤元素尺寸异常，跳过布局验证');
+            return true;
+        }
+        const padding = this.tutorialPadding || 0;
+        const diffLeft = Math.abs(highlightRect.left - (rect.left - padding));
+        const diffTop = Math.abs(highlightRect.top - (rect.top - padding));
+        const diffWidth = Math.abs(highlightRect.width - (rect.width + padding * 2));
+        const diffHeight = Math.abs(highlightRect.height - (rect.height + padding * 2));
+        const threshold = 6;
+        const hasOffset = diffLeft > threshold || diffTop > threshold || diffWidth > threshold || diffHeight > threshold;
+        if (hasOffset) {
+            console.error('[Tutorial] 检测到高亮框偏移，执行回滚', {
+                context,
+                diffLeft,
+                diffTop,
+                diffWidth,
+                diffHeight
+            });
+            return false;
+        }
+        console.log('[Tutorial] 布局验证通过', {
+            context,
+            diffLeft,
+            diffTop,
+            diffWidth,
+            diffHeight
+        });
+        return true;
+    }
+
+    async refreshAndValidateTutorialLayout(currentElement, context) {
+        if (this.driver && typeof this.driver.refresh === 'function') {
+            this.driver.refresh();
+        }
+        // 等待驱动程序完成高亮框重定位（匹配 onHighlighted 的 100ms 延迟）
+        await new Promise(r => setTimeout(r, 100));
+        
+        void document.body.offsetHeight;
+        const ok = this.validateTutorialLayout(currentElement, context);
+        if (!ok) {
+            this.rollbackTutorialInteractionState();
+        }
+        return ok;
+    }
+
+    rollbackTutorialInteractionState() {
+        this.tutorialRollbackActive = true;
+        this.disableAllTutorialInteractions();
+        // 仅隐藏遮罩和高亮，保留引导弹窗以避免用户卡死，并允许其通过弹窗按钮退出
+        this.setTutorialMarkersVisible(false, { keepPopover: true });
+        console.error('[Tutorial] 检测到布局异常，已回滚交互并保留引导弹窗');
+    }
+
+    restoreTutorialInteractionState() {
+        this.tutorialControlledElements.forEach(element => {
+            const state = this.tutorialInteractionStates.get(element);
+            element.style.pointerEvents = state?.pointerEvents || '';
+            element.style.cursor = state?.cursor || '';
+            element.style.userSelect = state?.userSelect || '';
+            if (element.dataset.tutorialDisabled) {
+                delete element.dataset.tutorialDisabled;
+            }
+        });
+        this.tutorialInteractionStates.clear();
+        this.tutorialControlledElements = new Set();
+        this.tutorialMarkerDisplayCache = null;
+        this.tutorialRollbackActive = false;
+        console.log('[Tutorial] 已恢复交互元素默认状态');
+    }
+
+    async applyTutorialInteractionState(currentStepConfig, context) {
+        if (!window.isInTutorial || !currentStepConfig) return;
+
+        if (this._applyingInteractionState) {
+            console.log('[Tutorial] 交互状态正在应用中，跳过重复调用');
+            return;
+        }
+
+        try {
+            this._applyingInteractionState = true;
+            this.tutorialRollbackActive = false;
+            if (!this.tutorialControlledElements || this.tutorialControlledElements.size === 0) {
+                this.collectTutorialControlledElements(this.cachedValidSteps || []);
+            }
+
+            // 仅在初次启动或特定上下文时才隐藏标记，减少闪烁
+            const shouldHideMarkers = context === 'start' || context === 'rollback';
+            if (shouldHideMarkers) {
+                this.setTutorialMarkersVisible(false);
+            }
+
+            this.disableAllTutorialInteractions();
+            const currentElement = document.querySelector(currentStepConfig.element);
+            if (currentElement && !currentStepConfig.disableActiveInteraction) {
+                this.enableCurrentStepInteractions(currentElement);
+            }
+            if (currentStepConfig.enableModelInteraction) {
+                const live2dCanvas = document.getElementById('live2d-canvas');
+                if (live2dCanvas) {
+                    this.setElementInteractive(live2dCanvas, true);
+                }
+            }
+
+            if (shouldHideMarkers) {
+                this.setTutorialMarkersVisible(true);
+            }
+            
+            await this.refreshAndValidateTutorialLayout(currentElement, context);
+        } finally {
+            this._applyingInteractionState = false;
+        }
+    }
+
     /**
      * 启动引导
      */
@@ -1195,6 +1448,9 @@ class UniversalTutorialManager {
         // 设置全局标记，表示正在进行引导
         window.isInTutorial = true;
         console.log('[Tutorial] 设置全局引导标记');
+        this.collectTutorialControlledElements(validSteps);
+        this.disableAllTutorialInteractions();
+        this.setTutorialMarkersVisible(false);
 
         // 对于角色管理页面，临时移除容器的上边距以修复高亮框偏移问题
         if (this.currentPage === 'chara_manager') {
@@ -1204,20 +1460,6 @@ class UniversalTutorialManager {
                 container.style.marginTop = '0';
                 console.log('[Tutorial] 临时移除容器上边距以修复高亮框位置');
             }
-        }
-
-        // 禁用对话框拖动功能（在引导中）
-        const chatContainer = document.getElementById('chat-container');
-        if (chatContainer) {
-            chatContainer.style.pointerEvents = 'none';
-            console.log('[Tutorial] 禁用对话框拖动功能');
-        }
-
-        // 禁用 Live2D 模型拖动功能（在引导中）
-        const live2dCanvas = document.getElementById('live2d-canvas');
-        if (live2dCanvas) {
-            live2dCanvas.style.pointerEvents = 'none';
-            console.log('[Tutorial] 禁用 Live2D 模型拖动功能');
         }
 
         // 将 Live2D 模型移到屏幕右边（在引导中）
@@ -1300,10 +1542,23 @@ class UniversalTutorialManager {
 
         // 监听事件
         this.driver.on('destroy', () => this.onTutorialEnd());
-        this.driver.on('next', () => this.onStepChange());
+        this.driver.on('next', () => this.onStepChange().catch(err => {
+            console.error('[Tutorial] 步骤切换失败:', err);
+        }));
+        this.driver.on('prev', () => this.onStepChange().catch(err => {
+            console.error('[Tutorial] 步骤切换失败:', err);
+        }));
 
         // 启动引导
         this.driver.start();
+        setTimeout(() => {
+            const steps = this.cachedValidSteps || [];
+            if (steps.length > 0) {
+                this.applyTutorialInteractionState(steps[0], 'start').catch(err => {
+                    console.error('[Tutorial] 初始交互状态应用失败:', err);
+                });
+            }
+        }, 0);
         console.log('[Tutorial] 引导已启动，页面:', this.currentPage);
     }
 
@@ -1782,7 +2037,7 @@ class UniversalTutorialManager {
     /**
      * 步骤改变时的回调
      */
-    onStepChange() {
+    async onStepChange() {
         this.currentStep = this.driver.currentStep || 0;
         console.log(`[Tutorial] 当前步骤: ${this.currentStep + 1}`);
 
@@ -1805,21 +2060,11 @@ class UniversalTutorialManager {
 
                 if (needsAdvancedSettings) {
                     console.log('[Tutorial] 进入进阶设定相关步骤，确保展开状态');
-                    this._ensureCharaManagerExpanded();
+                    await this._ensureCharaManagerExpanded();
                 }
             }
 
-            // 根据步骤配置启用/禁用模型交互（点击模型触发表情动作）
-            const live2dCanvas = document.getElementById('live2d-canvas');
-            if (live2dCanvas) {
-                if (currentStepConfig.enableModelInteraction) {
-                    live2dCanvas.style.pointerEvents = 'auto';
-                    console.log('[Tutorial] 启用模型交互');
-                } else {
-                    live2dCanvas.style.pointerEvents = 'none';
-                    console.log('[Tutorial] 禁用模型交互');
-                }
-            }
+            await this.applyTutorialInteractionState(currentStepConfig, 'step-change');
 
 
             // 情感配置页面：未选择模型时禁止进入下一步
@@ -2011,20 +2256,6 @@ class UniversalTutorialManager {
             console.log('[Tutorial] 恢复页面滚动');
         }
 
-        // 恢复对话框拖动功能
-        const chatContainer = document.getElementById('chat-container');
-        if (chatContainer) {
-            chatContainer.style.pointerEvents = 'auto';
-            console.log('[Tutorial] 恢复对话框拖动功能');
-        }
-
-        // 恢复 Live2D 模型拖动功能和原始位置
-        const live2dCanvas = document.getElementById('live2d-canvas');
-        if (live2dCanvas) {
-            live2dCanvas.style.pointerEvents = 'auto';
-            console.log('[Tutorial] 恢复 Live2D 模型拖动功能');
-        }
-
         const live2dContainer = document.getElementById('live2d-container');
         if (live2dContainer && this.originalLive2dStyle) {
             live2dContainer.style.left = this.originalLive2dStyle.left;
@@ -2082,6 +2313,7 @@ class UniversalTutorialManager {
 
         // 恢复所有在引导中修改过的元素的原始样式
         this.restoreAllModifiedElements();
+        this.restoreTutorialInteractionState();
 
         console.log('[Tutorial] 引导已完成，页面:', this.currentPage);
     }
@@ -2137,28 +2369,6 @@ class UniversalTutorialManager {
         }
 
         this.startTutorial();
-    }
-
-    /**
-     * 重置所有页面的引导状态
-     */
-    resetAllTutorials() {
-        const pages = [
-            'home',
-            'model_manager',
-            'parameter_editor',
-            'emotion_manager',
-            'chara_manager',
-            'settings',
-            'voice_clone',
-            'steam_workshop',
-            'memory_browser'
-        ];
-        pages.forEach(page => {
-            const storageKeys = this.getStorageKeysForPage(page);
-            storageKeys.forEach(key => localStorage.removeItem(key));
-        });
-        console.log('[Tutorial] 所有引导状态已重置');
     }
 
     /**
@@ -2223,76 +2433,85 @@ class UniversalTutorialManager {
      * 用于进入进阶设定相关步骤前的预处理
      */
     _ensureCharaManagerExpanded() {
-        let attempts = 0;
-        const maxAttempts = 10;
-        const self = this;
+        return new Promise((resolve) => {
+            let attempts = 0;
+            const maxAttempts = 10;
+            const self = this;
 
-        const tryExpand = () => {
-            attempts++;
-            console.log(`[Tutorial] _ensureCharaManagerExpanded: attempt ${attempts}/${maxAttempts}`);
+            const tryExpand = () => {
+                attempts++;
+                console.log(`[Tutorial] _ensureCharaManagerExpanded: attempt ${attempts}/${maxAttempts}`);
 
-            // 1. 找到第一个猫娘卡片
-            const targetBlock = document.querySelector('.catgirl-block:first-child');
-            if (!targetBlock) {
-                console.warn('[Tutorial] _ensureCharaManagerExpanded: 未找到目标猫娘卡片');
-                if (attempts < maxAttempts) setTimeout(tryExpand, 300);
-                return;
-            }
-
-            // 2. 确保猫娘卡片已展开
-            const details = targetBlock.querySelector('.catgirl-details');
-            const expandBtn = targetBlock.querySelector('.catgirl-expand');
-            if (details && expandBtn) {
-                const detailsStyle = window.getComputedStyle(details);
-                if (detailsStyle.display === 'none') {
-                    console.log('[Tutorial] 猫娘卡片未展开，正在展开...');
-                    expandBtn.click();
-                    // 等待卡片展开动画完成后再尝试展开进阶设定
+                // 1. 找到第一个猫娘卡片
+                const targetBlock = document.querySelector('.catgirl-block:first-child');
+                if (!targetBlock) {
+                    console.warn('[Tutorial] _ensureCharaManagerExpanded: 未找到目标猫娘卡片');
                     if (attempts < maxAttempts) {
-                        setTimeout(tryExpand, 600);
+                        setTimeout(tryExpand, 300);
+                    } else {
+                        resolve(false);
                     }
                     return;
                 }
-            }
 
-            // 3. 卡片已展开，确保进阶设定已展开
-            const foldContainer = targetBlock.querySelector('.fold');
-            const foldToggle = targetBlock.querySelector('.fold-toggle');
-            let clickedToggle = false;
-
-            if (foldContainer && foldToggle) {
-                const isExpanded = foldContainer.classList.contains('open') ||
-                    window.getComputedStyle(foldContainer).display !== 'none';
-                if (!isExpanded) {
-                    console.log('[Tutorial] 进阶设定未展开，正在展开...');
-                    foldToggle.click();
-                    clickedToggle = true;
-                }
-            }
-
-            // 4. 验证展开状态，失败则重试
-            setTimeout(() => {
-                if (self.driver && typeof self.driver.refresh === 'function') {
-                    self.driver.refresh();
-                }
-
-                if (clickedToggle && attempts < maxAttempts) {
-                    const fc = targetBlock.querySelector('.fold');
-                    if (fc) {
-                        const nowExpanded = fc.classList.contains('open') ||
-                            window.getComputedStyle(fc).display !== 'none';
-                        if (!nowExpanded) {
-                            console.log('[Tutorial] 进阶设定展开未确认，重试...');
-                            setTimeout(tryExpand, 300);
-                            return;
+                // 2. 确保猫娘卡片已展开
+                const details = targetBlock.querySelector('.catgirl-details');
+                const expandBtn = targetBlock.querySelector('.catgirl-expand');
+                if (details && expandBtn) {
+                    const detailsStyle = window.getComputedStyle(details);
+                    if (detailsStyle.display === 'none') {
+                        console.log('[Tutorial] 猫娘卡片未展开，正在展开...');
+                        expandBtn.click();
+                        // 等待卡片展开动画完成后再尝试展开进阶设定
+                        if (attempts < maxAttempts) {
+                            setTimeout(tryExpand, 600);
+                        } else {
+                            resolve(false);
                         }
+                        return;
                     }
                 }
-                console.log('[Tutorial] _ensureCharaManagerExpanded: 完成');
-            }, 500);
-        };
 
-        tryExpand();
+                // 3. 卡片已展开，确保进阶设定已展开
+                const foldContainer = targetBlock.querySelector('.fold');
+                const foldToggle = targetBlock.querySelector('.fold-toggle');
+                let clickedToggle = false;
+
+                if (foldContainer && foldToggle) {
+                    const isExpanded = foldContainer.classList.contains('open') ||
+                        window.getComputedStyle(foldContainer).display !== 'none';
+                    if (!isExpanded) {
+                        console.log('[Tutorial] 进阶设定未展开，正在展开...');
+                        foldToggle.click();
+                        clickedToggle = true;
+                    }
+                }
+
+                // 4. 验证展开状态，失败则重试
+                setTimeout(() => {
+                    if (self.driver && typeof self.driver.refresh === 'function') {
+                        self.driver.refresh();
+                    }
+
+                    if (clickedToggle && attempts < maxAttempts) {
+                        const fc = targetBlock.querySelector('.fold');
+                        if (fc) {
+                            const nowExpanded = fc.classList.contains('open') ||
+                                window.getComputedStyle(fc).display !== 'none';
+                            if (!nowExpanded) {
+                                console.log('[Tutorial] 进阶设定展开未确认，重试...');
+                                setTimeout(tryExpand, 300);
+                                return;
+                            }
+                        }
+                    }
+                    console.log('[Tutorial] _ensureCharaManagerExpanded: 完成');
+                    resolve(true);
+                }, 500);
+            };
+
+            tryExpand();
+        });
     }
 
     /**
