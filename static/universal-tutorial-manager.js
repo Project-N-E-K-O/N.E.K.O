@@ -628,19 +628,19 @@ class UniversalTutorialManager {
             {
                 element: 'body',
                 popover: {
-                    title: t('tutorial.systray.location.title', 'Tray icon location'),
+                    title: t('tutorial.systray.location.title', '🖥️ 托盘图标位置'),
                     description: `
                         <div class="neko-systray-location">
                             <img
                                 src="/static/icons/stray_intro.png"
-                                alt="${this.safeEscapeHtml(t('tutorial.systray.location.alt', 'System tray location example'))}"
+                                alt="${this.safeEscapeHtml(t('tutorial.systray.location.alt', '系统托盘位置示例'))}"
                                 class="neko-systray-location__image"
                             />
                             <div class="neko-systray-location__caption">
-                                ${this.safeEscapeHtml(t('tutorial.systray.location.desc', 'The N.E.K.O icon appears in the system tray at the bottom-right of your screen. Click it to find N.E.K.O.'))}
+                                ${this.safeEscapeHtml(t('tutorial.systray.location.desc', 'N.E.K.O 图标会出现在屏幕右下角的系统托盘中，点击它即可找到 N.E.K.O。'))}
                             </div>
                             <div class="neko-systray-location__note">
-                                ${this.safeEscapeHtml(t('tutorial.systray.location.note', 'If you don\'t see it, expand the tray arrow to show hidden icons.'))}
+                                ${this.safeEscapeHtml(t('tutorial.systray.location.note', '如果看不到，可点击托盘展开箭头查看隐藏的图标。'))}
                             </div>
                         </div>
                     `
