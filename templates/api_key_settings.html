@@ -560,172 +560,30 @@
                                         <div id="gptsovits-config-fields">
                                         <div style="background: #fff8e6; border: 1px solid #ffe0b3; border-radius: 6px; padding: 12px; margin: 12px 16px; font-size: 0.85em; color: #996600; line-height: 1.5;">
                                             <strong data-i18n="api.gptsovitsDescription">GPT-SoVITS 说明：</strong><br>
-                                            <span data-i18n="api.gptsovitsDescriptionText">本地部署的语音克隆模型，需要先启动 GPT-SoVITS 的 api_v2.py 服务。配置后将自动替代上方的 TTS 模型配置。</span>
+                                            <span data-i18n="api.gptsovitsDescriptionText">本地部署的语音克隆模型，需要先启动 GPT-SoVITS v3 API 服务。声音配置（参考音频、模型权重等）在 v3 的 voices/*.toml 文件中管理，此处只需填写声音配置 ID。</span>
                                         </div>
                                         
-                                        <!-- 模型加载（最重要，放在最前面） -->
-                                        <div class="field-row" style="border-bottom: 1px dashed #ddd; padding-bottom: 12px; margin-bottom: 8px;">
-                                            <label style="font-weight: 600; color: #40C5F1;" data-i18n="api.gptsovitsModelLoad">模型加载</label>
-                                        </div>
-                                        
-                                        <div class="field-row">
-                                            <label for="gptsovitsBasePath">
-                                                <span data-i18n="api.gptsovitsBasePath">GPT-SoVITS 安装路径</span>
-                                                <em style="font-weight: normal; color: #888;" data-i18n="api.gptsovitsBasePathHint">（包含 GPT_weights 和 SoVITS_weights 文件夹的目录）</em>
-                                            </label>
-                                            <div style="display: flex; gap: 8px; align-items: center; width: 100%;">
-                                                <input type="text" id="gptsovitsBasePath"
-                                                    data-i18n-placeholder="api.gptsovitsBasePathPlaceholder"
-                                                    placeholder="e.g., /path/to/GPT-SoVITS"
-                                                    value="" style="max-width: 500px; flex: 1;">
-                                                <button type="button" class="btn secondary" onclick="scanGptSovitsModels()" 
-                                                    style="padding: 8px 16px; white-space: nowrap;" data-i18n="api.gptsovitsScanModels">扫描模型</button>
-                                            </div>
-                                        </div>
-
-                                        <div class="field-row">
-                                            <label for="gptsovitsGptModel">
-                                                <span data-i18n="api.gptsovitsGptModel">GPT 模型</span>
-                                                <em style="font-weight: normal; color: #888;" data-i18n="api.gptsovitsGptModelHint">（选择后点击加载）</em>
-                                            </label>
-                                            <div style="display: flex; gap: 8px; align-items: center; width: 100%;">
-                                                <select id="gptsovitsGptModel" style="max-width: 500px; flex: 1; padding: 10px 12px; border-radius: 6px; border: 1px solid #ccc;">
-                                                    <option value="" data-i18n="api.gptsovitsPleaseSelect">请先扫描模型</option>
-                                                </select>
-                                                <button type="button" class="btn secondary" onclick="loadGptSovitsGptModel()" 
-                                                    style="padding: 8px 16px; white-space: nowrap;" data-i18n="api.gptsovitsLoadModel">加载</button>
-                                            </div>
-                                        </div>
-
-                                        <div class="field-row">
-                                            <label for="gptsovitsSovitsModel">
-                                                <span data-i18n="api.gptsovitsSovitsModel">SoVITS 模型</span>
-                                                <em style="font-weight: normal; color: #888;" data-i18n="api.gptsovitsSovitsModelHint">（选择后点击加载）</em>
-                                            </label>
-                                            <div style="display: flex; gap: 8px; align-items: center; width: 100%;">
-                                                <select id="gptsovitsSovitsModel" style="max-width: 500px; flex: 1; padding: 10px 12px; border-radius: 6px; border: 1px solid #ccc;">
-                                                    <option value="" data-i18n="api.gptsovitsPleaseSelect">请先扫描模型</option>
-                                                </select>
-                                                <button type="button" class="btn secondary" onclick="loadGptSovitsSovitsModel()" 
-                                                    style="padding: 8px 16px; white-space: nowrap;" data-i18n="api.gptsovitsLoadModel">加载</button>
-                                            </div>
-                                        </div>
-
                                         <!-- API 配置 -->
-                                        <div class="field-row" style="border-top: 1px dashed #ddd; padding-top: 12px; margin-top: 8px;">
-                                            <label style="font-weight: 600; color: #666;" data-i18n="api.gptsovitsApiConfig">API 配置</label>
-                                        </div>
-                                        
                                         <div class="field-row">
                                             <label for="gptsovitsApiUrl">
                                                 <span data-i18n="api.apiUrl">API URL</span>
-                                                <em style="font-weight: normal; color: #888;" data-i18n="api.gptsovitsApiUrlOptional">（选填，默认 http://127.0.0.1:9880）</em>
+                                                <em style="font-weight: normal; color: #888;" data-i18n="api.gptsovitsApiUrlOptional">（选填，默认 http://127.0.0.1:9881）</em>
                                             </label>
                                             <input type="text" id="gptsovitsApiUrl"
                                                 data-i18n-placeholder="api.gptsovitsApiUrlPlaceholder"
-                                                placeholder="http://127.0.0.1:9880"
-                                                value="http://127.0.0.1:9880" style="max-width: 600px;">
+                                                placeholder="http://127.0.0.1:9881"
+                                                value="http://127.0.0.1:9881" style="max-width: 600px;">
                                         </div>
+
                                         <div class="field-row">
-                                            <label for="gptsovitsRefAudio">
-                                                <span data-i18n="api.gptsovitsRefAudio">参考音频路径</span>
-                                                <em style="font-weight: normal; color: #888;" data-i18n="api.gptsovitsRefAudioHint">（GPT-SoVITS 服务器上的绝对路径）</em>
+                                            <label for="gptsovitsVoiceId">
+                                                <span data-i18n="api.gptsovitsVoiceId">声音配置 ID</span>
+                                                <em style="font-weight: normal; color: #888;" data-i18n="api.gptsovitsVoiceIdHint">（对应 v3 的 voices/*.toml 配置文件名）</em>
                                             </label>
-                                            <input type="text" id="gptsovitsRefAudio"
-                                                data-i18n-placeholder="api.gptsovitsRefAudioPlaceholder"
-                                                placeholder="e.g., /path/to/reference.wav"
+                                            <input type="text" id="gptsovitsVoiceId"
+                                                data-i18n-placeholder="api.gptsovitsVoiceIdPlaceholder"
+                                                placeholder="e.g., klala"
                                                 value="" style="max-width: 600px;">
-                                        </div>
-                                        <div class="field-row">
-                                            <label for="gptsovitsRefText">
-                                                <span data-i18n="api.gptsovitsRefText">参考文本</span>
-                                                <em style="font-weight: normal; color: #888;" data-i18n="api.gptsovitsRefTextHint">（参考音频对应的文字内容）</em>
-                                            </label>
-                                            <input type="text" id="gptsovitsRefText"
-                                                data-i18n-placeholder="api.gptsovitsRefTextPlaceholder"
-                                                placeholder="e.g., Reference audio text content"
-                                                value="" style="max-width: 600px;">
-                                        </div>
-                                        <div class="field-row">
-                                            <label for="gptsovitsRefLang" data-i18n="api.gptsovitsRefLang">参考语言</label>
-                                            <select id="gptsovitsRefLang" style="max-width: 600px; padding: 10px 12px; border-radius: 6px; border: 1px solid #ccc;">
-                                                <option value="zh" data-i18n="api.langZh">中文 (zh)</option>
-                                                <option value="en" data-i18n="api.langEn">英文 (en)</option>
-                                                <option value="ja" data-i18n="api.langJa">日文 (ja)</option>
-                                                <option value="all_zh" data-i18n="api.langAllZh">全中文 (all_zh)</option>
-                                                <option value="all_ja" data-i18n="api.langAllJa">全日文 (all_ja)</option>
-                                            </select>
-                                        </div>
-                                        <div class="field-row">
-                                            <label for="gptsovitsTextLang" data-i18n="api.gptsovitsTextLang">合成语言</label>
-                                            <select id="gptsovitsTextLang" style="max-width: 600px; padding: 10px 12px; border-radius: 6px; border: 1px solid #ccc;">
-                                                <option value="zh" data-i18n="api.langZh">中文 (zh)</option>
-                                                <option value="en" data-i18n="api.langEn">英文 (en)</option>
-                                                <option value="ja" data-i18n="api.langJa">日文 (ja)</option>
-                                                <option value="auto" data-i18n="api.langAuto">自动检测 (auto)</option>
-                                            </select>
-                                        </div>
-
-                                        <!-- GPT-SoVITS 高级参数 -->
-                                        <div class="field-row" style="border-top: 1px dashed #ddd; padding-top: 12px; margin-top: 8px;">
-                                            <label style="font-weight: 600; color: #666;" data-i18n="api.gptsovitsAdvanced">高级参数（可选）</label>
-                                        </div>
-                                        
-                                        <div class="field-row">
-                                            <label for="gptsovitsSpeed">
-                                                <span data-i18n="api.gptsovitsSpeed">语速</span>
-                                                <em style="font-weight: normal; color: #888;" data-i18n="api.gptsovitsSpeedHint">（0.5-2.0，默认1.0）</em>
-                                            </label>
-                                            <input type="number" id="gptsovitsSpeed" step="0.1" min="0.5" max="2.0"
-                                                placeholder="1.0" value="" style="max-width: 200px;">
-                                        </div>
-
-                                        <div class="field-row">
-                                            <label for="gptsovitsTopK">
-                                                <span>Top K</span>
-                                                <em style="font-weight: normal; color: #888;" data-i18n="api.gptsovitsTopKHint">（采样参数，默认15）</em>
-                                            </label>
-                                            <input type="number" id="gptsovitsTopK" step="1" min="1" max="100"
-                                                placeholder="15" value="" style="max-width: 200px;">
-                                        </div>
-
-                                        <div class="field-row">
-                                            <label for="gptsovitsTopP">
-                                                <span>Top P</span>
-                                                <em style="font-weight: normal; color: #888;" data-i18n="api.gptsovitsTopPHint">（采样参数，默认1.0）</em>
-                                            </label>
-                                            <input type="number" id="gptsovitsTopP" step="0.05" min="0" max="1"
-                                                placeholder="1.0" value="" style="max-width: 200px;">
-                                        </div>
-
-                                        <div class="field-row">
-                                            <label for="gptsovitsTemperature">
-                                                <span data-i18n="api.gptsovitsTemperature">温度</span>
-                                                <em style="font-weight: normal; color: #888;" data-i18n="api.gptsovitsTemperatureHint">（采样温度，默认1.0）</em>
-                                            </label>
-                                            <input type="number" id="gptsovitsTemperature" step="0.01"
-                                                placeholder="1.0" value="" style="max-width: 200px;">
-                                        </div>
-
-                                        <div class="field-row">
-                                            <label for="gptsovitsCutMethod" data-i18n="api.gptsovitsCutMethod">文本分割方式</label>
-                                            <select id="gptsovitsCutMethod" style="max-width: 300px;">
-                                                <option value="cut0" data-i18n="api.cutNone">不切分</option>
-                                                <option value="cut1" data-i18n="api.cutEvery4">每4句切一次</option>
-                                                <option value="cut2" data-i18n="api.cutEvery50">每50字切一次</option>
-                                                <option value="cut3" data-i18n="api.cutByChinese">按中文句号切</option>
-                                                <option value="cut4" data-i18n="api.cutByEnglish">按英文句号切</option>
-                                                <option value="cut5" selected data-i18n="api.cutByPunctuation">按标点符号切</option>
-                                            </select>
-                                        </div>
-
-                                        <div class="field-row">
-                                            <label for="gptsovitsSeed">
-                                                <span data-i18n="api.gptsovitsSeed">随机种子</span>
-                                                <em style="font-weight: normal; color: #888;" data-i18n="api.gptsovitsSeedHint">（-1为随机）</em>
-                                            </label>
-                                            <input type="number" id="gptsovitsSeed" step="1" min="-1"
-                                                placeholder="-1" value="" style="max-width: 200px;">
                                         </div>
 
                                         </div>
@@ -760,7 +618,7 @@
         </div> <!-- 关闭 container -->
         </div> <!-- 关闭 main-content -->
 
-    <script src="/static/js/api_key_settings.js"></script>
+    <script src="/static/js/api_key_settings.js?v=3"></script>
 
     <!-- Driver.js 库 -->
     <script src="/static/libs/driver.min.js"></script>
