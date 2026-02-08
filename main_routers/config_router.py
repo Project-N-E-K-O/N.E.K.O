@@ -200,7 +200,7 @@ async def get_steam_language():
             steam_language = steam_language.decode('utf-8')
         
         # 使用 language_utils 的归一化函数，统一映射逻辑
-        # format='full' 返回 'zh-CN', 'en', 'ja' 格式（用于前端 i18n）
+        # format='full' 返回 'zh-CN', 'zh-TW', 'en', 'ja', 'ko' 格式（用于前端 i18n）
         i18n_language = normalize_language_code(steam_language, format='full')
         logger.info(f"[i18n] Steam 语言映射: '{steam_language}' -> '{i18n_language}'")
         
@@ -562,5 +562,4 @@ async def get_api_providers_config():
             "core_api_providers": [],
             "assist_api_providers": [],
         }
-
 

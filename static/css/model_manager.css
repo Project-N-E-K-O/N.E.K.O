@@ -2166,6 +2166,8 @@
             white-space: nowrap;  /* 防止文字换行导致伪元素错位 */
             text-overflow: ellipsis;  /* 文字过长时显示省略号 */
             text-align: center;  /* 文字在 span 内居中 */
+            padding: 0 6px;
+            box-sizing: border-box;
         }
         
         /* 【下层】：负责圆润描边 - 高密度阴影矩阵 */
@@ -2369,76 +2371,24 @@
         /* VRM打光设置方框样式（参考参数列表方框） */
         .vrm-lighting-wrapper {
             position: relative;
-            width: auto !important;
+            width: 270px !important;
             min-width: 270px !important;
-            max-width: 320px !important;
-            border: 3px solid #96e8ff;
-            border-radius: 20px;
-            background: linear-gradient(135deg, rgba(240, 248, 255, 0.95), rgba(230, 245, 255, 0.95));
-            box-shadow: 
-                0 0 20px rgba(150, 232, 255, 0.3),
-                inset 0 0 30px rgba(150, 232, 255, 0.1);
-            overflow: hidden;
+            max-width: 270px !important;
+            border: none;
+            border-radius: 0;
+            background: transparent;
+            box-shadow: none;
+            overflow: visible;
         }
 
         /* 星星图案背景 - 使用加号/四角星形状 */
         .vrm-lighting-wrapper::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background-image: 
-                /* 加号形状 */
-                linear-gradient(0deg, transparent 48%, rgba(255, 255, 255, 0.4) 50%, transparent 52%),
-                linear-gradient(90deg, transparent 48%, rgba(255, 255, 255, 0.4) 50%, transparent 52%);
-            background-size: 
-                80px 80px,
-                80px 80px;
-            background-position:
-                20px 30px,
-                20px 30px,
-                100px 70px,
-                100px 70px,
-                180px 20px,
-                180px 20px,
-                260px 80px,
-                260px 80px,
-                40px 120px,
-                40px 120px,
-                120px 150px,
-                120px 150px,
-                200px 100px,
-                200px 100px,
-                60px 200px,
-                60px 200px,
-                140px 230px,
-                140px 230px,
-                220px 180px,
-                220px 180px,
-                80px 250px,
-                80px 250px,
-                160px 280px,
-                160px 280px,
-                240px 220px,
-                240px 220px;
-            background-repeat: repeat;
-            pointer-events: none;
-            opacity: 0.5;
+            content: none;
         }
 
         /* VRM打光设置标题栏 - 胶囊形状，顶部圆角，底部直边 */
         .vrm-lighting-header {
-            position: relative;
-            background: linear-gradient(135deg, #96e8ff, #b8e5ff);
-            border-top-left-radius: 18px;
-            border-top-right-radius: 18px;
-            border-bottom: none;
-            padding: 12px 20px;
-            margin: -3px -3px 0 -3px; /* 抵消wrapper的边框 */
-            z-index: 10;
-            box-shadow: 0 2px 8px rgba(150, 232, 255, 0.3);
+            display: none;
         }
 
         .vrm-lighting-header-text {
@@ -2446,7 +2396,7 @@
             z-index: 20;
             font-family: 'Comic Neue', 'Source Han Sans CN', 'Noto Sans SC', sans-serif;
             font-weight: bold;
-            font-size: var(--button-text-size) !important;
+            font-size: 18px !important;
             letter-spacing: 1px;
             color: transparent;
             transform: translateY(-2px);
@@ -2503,8 +2453,11 @@
         }
 
         .vrm-lighting-content {
-            padding: 15px;
-            background: transparent;
+            padding: 10px 12px;
+            background: linear-gradient(180deg, rgba(214, 245, 255, 0.65), rgba(196, 238, 255, 0.55));
+            border: 1px solid rgba(150, 232, 255, 0.55);
+            border-radius: 14px;
+            box-shadow: 0 4px 10px rgba(64, 197, 241, 0.12);
             position: relative;
             z-index: 1;
         }
@@ -2612,3 +2565,54 @@
             flex: none !important;
         }
     
+        #sidebar .sidebar-controls {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            width: 100%;
+            box-sizing: border-box;
+            padding: 0;
+            border-radius: 25px;
+            background: transparent;
+            position: relative;
+            z-index: 0;
+        }
+
+        #sidebar.mode-live2d {
+            width: 360px;
+        }
+
+        #sidebar.mode-live2d .sidebar-controls,
+        #sidebar.mode-vrm .sidebar-controls {
+            padding: 18px 16px 22px;
+            background: transparent;
+            border: none;
+        }
+
+        #sidebar.mode-live2d .sidebar-controls::before,
+        #sidebar.mode-vrm .sidebar-controls::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 7px;
+            width: 285px;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.5);
+            border: 2px solid rgba(201, 241, 244, 0.88);
+            border-radius: 25px;
+            backdrop-filter: blur(2px);
+            z-index: -1;
+            pointer-events: none;
+        }
+
+        #sidebar.mode-live2d #delete-model-btn,
+        #sidebar.mode-live2d #play-motion-btn,
+        #sidebar.mode-live2d #play-expression-btn {
+            margin-left: 8px !important;
+        }
+
+        #sidebar.mode-vrm #delete-model-btn,
+        #sidebar.mode-vrm #play-vrm-animation-btn,
+        #sidebar.mode-vrm #trigger-vrm-expression-btn {
+            margin-left: 8px !important;
+        }

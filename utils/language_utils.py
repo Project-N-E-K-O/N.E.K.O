@@ -65,7 +65,7 @@ def _get_system_language() -> str:
     从系统设置获取语言
     
     Returns:
-        语言代码 ('zh', 'en', 'ja')，默认返回 'zh'
+        语言代码 ('zh', 'en', 'ja', 'ko')，默认返回 'zh'
     """
     try:
         # 获取系统 locale（使用 locale.getlocale() 替代已弃用的 getdefaultlocale()）
@@ -79,6 +79,8 @@ def _get_system_language() -> str:
                 return 'ja'
             elif system_locale_lower.startswith('en'):
                 return 'en'
+            elif system_locale_lower.startswith('ko'):
+                return 'ko'
         
         lang_env = os.environ.get('LANG', '').lower()
         if lang_env.startswith('zh') or 'chinese' in lang_env:
@@ -87,6 +89,8 @@ def _get_system_language() -> str:
             return 'ja'
         elif lang_env.startswith('en'):
             return 'en'
+        elif lang_env.startswith('ko'):
+            return 'ko'
         
         return 'zh'  # 默认中文
     except Exception as e:
@@ -99,7 +103,7 @@ def _get_steam_language() -> Optional[str]:
     从 Steam 设置获取语言
     
     Returns:
-        语言代码 ('zh', 'en', 'ja')，如果无法获取则返回 None
+        语言代码 ('zh', 'zh-TW', 'en', 'ja', 'ko')，如果无法获取则返回 None
     """
     try:
         from main_routers.shared_state import get_steamworks
@@ -114,7 +118,10 @@ def _get_steam_language() -> Optional[str]:
             'tchinese': 'zh-TW',
             'english': 'en',
             'japanese': 'ja',
-            'ja': 'ja'
+            'ja': 'ja',
+            'koreana': 'ko',
+            'korean': 'ko',
+            'ko': 'ko',
         }
         
         # 获取 Steam 当前游戏语言
@@ -138,7 +145,7 @@ def initialize_global_language() -> str:
     初始化全局语言变量（优先级：Steam设置 > 系统设置）
     
     Returns:
-        初始化后的语言代码 ('zh', 'en', 'ja')
+        初始化后的语言代码 ('zh', 'en', 'ja', 'ko')
     """
     global _global_language, _global_region, _global_language_initialized
     
@@ -172,7 +179,7 @@ def get_global_language() -> str:
     获取全局语言变量
     
     Returns:
-        语言代码 ('zh', 'en', 'ja')，默认返回 'zh'
+        语言代码 ('zh', 'en', 'ja', 'ko')，默认返回 'zh'
     """
     global _global_language
     
@@ -188,7 +195,7 @@ def set_global_language(language: str) -> None:
     设置全局语言变量（手动设置，会覆盖自动检测）
     
     Args:
-        language: 语言代码 ('zh', 'en', 'ja')
+        language: 语言代码 ('zh', 'en', 'ja', 'ko')
     """
     global _global_language, _global_language_initialized
     
@@ -200,6 +207,8 @@ def set_global_language(language: str) -> None:
         normalized_lang = 'ja'
     elif lang_lower.startswith('en'):
         normalized_lang = 'en'
+    elif lang_lower.startswith('ko'):
+        normalized_lang = 'ko'
     else:
         logger.warning(f"不支持的语言代码: {language}，保持当前语言")
         return
@@ -257,14 +266,14 @@ def normalize_language_code(lang: str, format: str = 'short') -> str:
     此函数是公共 API，供其他模块复用。
     
     支持的输入格式：
-    - 标准语言代码：'zh', 'zh-CN', 'zh-TW', 'en', 'en-US', 'ja' 等
+    - 标准语言代码：'zh', 'zh-CN', 'zh-TW', 'en', 'en-US', 'ja', 'ja-JP', 'ko', 'ko-KR' 等
     - Steam 语言代码：'schinese', 'tchinese', 'english', 'japanese' 等
     
     Args:
         lang: 输入的语言代码
         format: 输出格式
-            - 'short': 返回短格式 ('zh', 'en', 'ja')
-            - 'full': 返回完整格式 ('zh-CN', 'en', 'ja')
+            - 'short': 返回短格式 ('zh', 'en', 'ja', 'ko')
+            - 'full': 返回完整格式 ('zh-CN', 'zh-TW', 'en', 'ja', 'ko')
         
     Returns:
         归一化后的语言代码，如果无法识别则返回默认值 ('zh' 或 'zh-CN')
@@ -281,6 +290,8 @@ def normalize_language_code(lang: str, format: str = 'short') -> str:
         'tchinese': 'zh-TW',   # 繁体中文
         'english': 'en',       # 英文
         'japanese': 'ja',      # 日语
+        'koreana': 'ko',       # 韩语
+        'korean': 'ko',        # 兼容
     }
     
     # 先检查是否是 Steam 语言代码
@@ -294,6 +305,8 @@ def normalize_language_code(lang: str, format: str = 'short') -> str:
                 return 'ja'
             elif normalized.startswith('en'):
                 return 'en'
+            elif normalized.startswith('ko'):
+                return 'ko'
         elif format == 'full' and normalized == 'zh':
             return 'zh-CN'
         return normalized
@@ -309,6 +322,8 @@ def normalize_language_code(lang: str, format: str = 'short') -> str:
         return 'ja'
     elif lang_lower.startswith('en'):
         return 'en'
+    elif lang_lower.startswith('ko'):
+        return 'ko'
     else:
         # 无法识别的语言代码，返回默认值
         logger.debug(f"无法识别的语言代码: {lang}，返回默认值")
@@ -363,6 +378,7 @@ except Exception as e:
 CHINESE_PATTERN = re.compile(r'[\u4e00-\u9fff]')
 JAPANESE_PATTERN = re.compile(r'[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff]')  # 平假名、片假名、汉字
 ENGLISH_PATTERN = re.compile(r'[a-zA-Z]')
+KOREAN_PATTERN = re.compile(r'[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]')  # 谚文
 
 
 def _split_text_into_chunks(text: str, max_chunk_size: int) -> List[str]:
@@ -422,8 +438,8 @@ async def translate_with_translatepy(text: str, source_lang: str, target_lang: s
     
     Args:
         text: 要翻译的文本
-        source_lang: 源语言代码（我们的格式，如 'zh', 'en', 'ja'）
-        target_lang: 目标语言代码（我们的格式，如 'zh', 'en', 'ja'）
+        source_lang: 源语言代码（我们的格式，如 'zh', 'en', 'ja', 'ko'）
+        target_lang: 目标语言代码（我们的格式，如 'zh', 'en', 'ja', 'ko'）
         
     Returns:
         翻译后的文本，失败时返回 None
@@ -437,6 +453,7 @@ async def translate_with_translatepy(text: str, source_lang: str, target_lang: s
             'zh': 'Chinese',  # 简体中文
             'en': 'English',
             'ja': 'Japanese',
+            'ko': 'Korean',
             'auto': 'auto'
         }
         
@@ -534,7 +551,7 @@ def detect_language(text: str) -> str:
         text: 要检测的文本
         
     Returns:
-        'zh' (中文), 'ja' (日语), 'en' (英文), 或 'unknown'
+        'zh' (中文), 'ja' (日语), 'ko' (韩语), 'en' (英文), 或 'unknown'
     """
     if not text or not text.strip():
         return 'unknown'
@@ -542,6 +559,7 @@ def detect_language(text: str) -> str:
     # 统计各语言字符数量
     chinese_count = len(CHINESE_PATTERN.findall(text))
     japanese_count = len(JAPANESE_PATTERN.findall(text)) - chinese_count  # 减去汉字（因为中日共用）
+    korean_count = len(KOREAN_PATTERN.findall(text))
     english_count = len(ENGLISH_PATTERN.findall(text))
     
     # 如果包含日文假名，优先判断为日语
@@ -551,6 +569,8 @@ def detect_language(text: str) -> str:
     
     # 判断主要语言
     # 注意：如果包含假名已经在上面返回 'ja' 了，这里只需要判断中文和英文
+    if korean_count >= chinese_count and korean_count >= english_count and korean_count > 0:
+        return 'ko'
     if chinese_count >= english_count and chinese_count > 0:
         return 'zh'
     elif english_count > 0:
@@ -574,7 +594,7 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
     
     Args:
         text: 要翻译的文本
-        target_lang: 目标语言代码 ('zh', 'en', 'ja')
+        target_lang: 目标语言代码 ('zh', 'en', 'ja', 'ko')
         source_lang: 源语言代码，如果为None则自动检测
         skip_google: 是否跳过 Google 翻译（会话级失败标记）
         
@@ -608,7 +628,8 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
     GOOGLE_LANG_MAP = {
         'zh': 'zh-cn',  # 简体中文
         'en': 'en',
-        'ja': 'ja'
+        'ja': 'ja',
+        'ko': 'ko',
     }
     
     google_target = GOOGLE_LANG_MAP.get(target_lang, target_lang)
@@ -727,7 +748,8 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
         lang_names = {
             'zh': '中文',
             'en': '英文',
-            'ja': '日语'
+            'ja': '日语',
+            'ko': '韩语',
         }
         
         source_name = lang_names.get(source_lang, source_lang)
@@ -770,7 +792,7 @@ def get_user_language() -> str:
     获取用户的语言偏好
     
     Returns:
-        用户语言代码 ('zh', 'en', 'ja')，默认返回 'zh'
+        用户语言代码 ('zh', 'en', 'ja', 'ko')，默认返回 'zh'
     """
     try:
         return get_global_language()
@@ -784,7 +806,7 @@ async def get_user_language_async() -> str:
     异步获取用户的语言偏好（使用全局语言管理模块）
     
     Returns:
-        用户语言代码 ('zh', 'en', 'ja')，默认返回 'zh'
+        用户语言代码 ('zh', 'en', 'ja', 'ko')，默认返回 'zh'
     """
     try:
         return get_global_language()

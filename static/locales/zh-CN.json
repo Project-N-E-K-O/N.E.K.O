@@ -27,6 +27,24 @@
     "fieldSeparator": "、",
     "tryAgainLater": "请稍后重试"
   },
+  "characterProfile": {
+    "gender": "性别",
+    "age": "年龄",
+    "nickname": "昵称",
+    "profileName": "档案名",
+    "values": {
+      "brother": "哥哥",
+      "male": "男",
+      "female": "女",
+      "tChanNickname": "T酱, 小T"
+    },
+    "labels": {
+      "档案名": "档案名",
+      "性别": "性别",
+      "年龄": "年龄",
+      "昵称": "昵称"
+    }
+  },
   "steam": {
     "characterCards": "角色卡",
     "characterCardName": "昵称",
@@ -828,9 +846,9 @@
       "saveParameters": "保存参数",
       "parameterList": "参数列表:",
       "pleaseSelectAndLoadModel": "请先选择并加载模型",
-    "pleaseSelectModel": "选择模型",
-    "ready": "就绪",
-    "pleaseSelectModelOption": "选择模型",
+      "pleaseSelectModel": "选择模型",
+      "ready": "就绪",
+      "pleaseSelectModelOption": "选择模型",
       "noModels": "暂无模型",
       "noModelsFound": "未找到模型",
       "modelListLoaded": "模型列表加载成功",

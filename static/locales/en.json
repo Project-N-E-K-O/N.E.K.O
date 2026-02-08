@@ -27,6 +27,24 @@
     "fieldSeparator": ", ",
     "tryAgainLater": "Please try again later"
   },
+  "characterProfile": {
+    "gender": "Gender",
+    "age": "Age",
+    "nickname": "Nickname",
+    "profileName": "Profile Name",
+    "values": {
+      "brother": "Brother",
+      "male": "Male",
+      "female": "Female",
+      "tChanNickname": "T-chan, Little T"
+    },
+    "labels": {
+      "档案名": "Profile Name",
+      "性别": "Gender",
+      "年龄": "Age",
+      "昵称": "Nickname"
+    }
+  },
   "steam": {
     "characterCards": "Character Cards",
     "characterCardName": "Nickname",
