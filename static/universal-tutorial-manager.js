@@ -21,6 +21,7 @@ class UniversalTutorialManager {
         this.currentStep = 0;
         this.nextButtonGuardTimer = null;
         this.nextButtonGuardActive = false;
+        this._lastOnHighlightedStepIndex = null;
 
         // 用于追踪在引导中修改过的元素及其原始样式
         this.modifiedElementsMap = new Map();
@@ -41,6 +42,20 @@ class UniversalTutorialManager {
             return window.t(key, fallback);
         }
         return fallback;
+    }
+
+    /**
+     * HTML转义辅助函数 - 用于在HTML属性或内容中安全使用翻译文本
+     * @param {string} text - 要转义的文本
+     * @returns {string} 转义后的HTML安全文本
+     */
+    safeEscapeHtml(text) {
+        if (typeof text !== 'string') {
+            return String(text);
+        }
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
     }
 
     /**
@@ -165,14 +180,29 @@ class UniversalTutorialManager {
                     }
                 },
                 onHighlighted: (element, step, options) => {
-                    // 每次高亮元素时，确保元素在视口中
                     console.log('[Tutorial] 高亮元素:', step.element);
 
-                    // 给一点时间让 Driver.js 完成定位
+                    // 调用步骤特定的 onHighlighted 回调（如果存在）
+                    if (step.onHighlighted && typeof step.onHighlighted === 'function') {
+                        const currentStepIndex = (this.driver && typeof this.driver.currentStep === 'number')
+                            ? this.driver.currentStep
+                            : this.currentStep;
+                        if (currentStepIndex === this._lastOnHighlightedStepIndex) {
+                            console.log('[Tutorial] 跳过重复的 onHighlighted 回调:', step.element);
+                        } else {
+                            console.log('[Tutorial] 调用步骤特定的 onHighlighted 回调');
+                            try {
+                                step.onHighlighted.call(this);
+                            } catch (error) {
+                                console.error('[Tutorial] 步骤 onHighlighted 执行失败:', step.element, error);
+                            }
+                            this._lastOnHighlightedStepIndex = currentStepIndex;
+                        }
+                    }
+
                     setTimeout(() => {
                         if (element && element.element) {
                             const targetElement = element.element;
-                            // 检查元素是否在视口中
                             const rect = targetElement.getBoundingClientRect();
                             const isInViewport = (
                                 rect.top >= 0 &&
@@ -180,14 +210,11 @@ class UniversalTutorialManager {
                                 rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) &&
                                 rect.right <= (window.innerWidth || document.documentElement.clientWidth)
                             );
-
                             if (!isInViewport) {
                                 console.log('[Tutorial] 元素不在视口中，滚动到元素');
                                 targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
                             }
                         }
-
-                        // 启用 popover 拖动功能
                         this.enablePopoverDragging();
                     }, 100);
                 }
@@ -247,6 +274,25 @@ class UniversalTutorialManager {
                 },
                 onHighlighted: (element, step, options) => {
                     console.log('[Tutorial] 高亮元素:', step.element);
+
+                    // 调用步骤特定的 onHighlighted 回调（如果存在）
+                    if (step.onHighlighted && typeof step.onHighlighted === 'function') {
+                        const currentStepIndex = (this.driver && typeof this.driver.currentStep === 'number')
+                            ? this.driver.currentStep
+                            : this.currentStep;
+                        if (currentStepIndex === this._lastOnHighlightedStepIndex) {
+                            console.log('[Tutorial] 跳过重复的 onHighlighted 回调:', step.element);
+                        } else {
+                            console.log('[Tutorial] 调用步骤特定的 onHighlighted 回调');
+                            try {
+                                step.onHighlighted.call(this);
+                            } catch (error) {
+                                console.error('[Tutorial] 步骤 onHighlighted 执行失败:', step.element, error);
+                            }
+                            this._lastOnHighlightedStepIndex = currentStepIndex;
+                        }
+                    }
+
                     setTimeout(() => {
                         if (element && element.element) {
                             const targetElement = element.element;
@@ -451,6 +497,8 @@ class UniversalTutorialManager {
      * 主页引导步骤
      */
     getHomeSteps() {
+        const t = (key, fallback) => this.t(key, fallback);
+
         return [
             {
                 element: '#live2d-container',
@@ -575,6 +623,59 @@ class UniversalTutorialManager {
                 popover: {
                     title: window.t ? window.t('tutorial.step18.title', '🛠️ 创意工坊') : '🛠️ 创意工坊',
                     description: window.t ? window.t('tutorial.step18.desc', '进入 Steam 创意工坊页面，管理订阅内容~') : '进入 Steam 创意工坊页面，管理订阅内容~',
+                }
+            },
+            {
+                element: 'body',
+                popover: {
+                    title: t('tutorial.systray.location.title', '🖥️ 托盘图标位置'),
+                    description: `
+                        <div class="neko-systray-location">
+                            <img
+                                src="/static/icons/stray_intro.png"
+                                alt="${this.safeEscapeHtml(t('tutorial.systray.location.alt', '系统托盘位置示例'))}"
+                                class="neko-systray-location__image"
+                            />
+                            <div class="neko-systray-location__caption">
+                                ${this.safeEscapeHtml(t('tutorial.systray.location.desc', 'N.E.K.O 图标会出现在屏幕右下角的系统托盘中，点击它即可找到 N.E.K.O。'))}
+                            </div>
+                            <div class="neko-systray-location__note">
+                                ${this.safeEscapeHtml(t('tutorial.systray.location.note', '如果看不到，可点击托盘展开箭头查看隐藏的图标。'))}
+                            </div>
+                        </div>
+                    `
+                }
+            },
+            {
+                element: 'body',
+                popover: {
+                    title: t('tutorial.systray.menu.title', '📋 托盘菜单'),
+                    description: `
+                        <div class="neko-systray-menu">
+                            <div class="neko-systray-menu__hint">
+                                ${this.safeEscapeHtml(t('tutorial.systray.menu.desc', '右下角托盘里会有 N.E.K.O 的图标，右键点击会出现很多选项。下面是两个常用功能：'))}
+                            </div>
+                            <div class="neko-systray-menu__panel">
+                                <div class="neko-systray-menu__item">
+                                    <div class="neko-systray-menu__item-label">
+                                        ${this.safeEscapeHtml(t('tutorial.systray.hotkey', '快捷键设置'))}
+                                    </div>
+                                    <div class="neko-systray-menu__item-desc">
+                                        ${this.safeEscapeHtml(t('tutorial.systray.hotkeyDesc', '在这里可以设置全局快捷键，让你更高效地控制 N.E.K.O~'))}
+                                    </div>
+                                </div>
+                                <div class="neko-systray-menu__separator"></div>
+                                <div class="neko-systray-menu__item neko-systray-menu__item--danger">
+                                    <div class="neko-systray-menu__item-label">
+                                        ${this.safeEscapeHtml(t('tutorial.systray.exit', '退出'))}
+                                    </div>
+                                    <div class="neko-systray-menu__item-desc">
+                                        ${this.safeEscapeHtml(t('tutorial.systray.exitDesc', '想要关闭 N.E.K.O 时，在这里点击退出即可。'))}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `
                 }
             }
         ];
@@ -1183,6 +1284,9 @@ class UniversalTutorialManager {
      * 启动引导步骤（内部方法）
      */
     startTutorialSteps(validSteps) {
+        // 重置步骤 onHighlighted 触发标记（避免重复/跨次引导）
+        this._lastOnHighlightedStepIndex = null;
+
         // 缓存已验证的步骤，供 onStepChange 使用
         this.cachedValidSteps = validSteps;
 
@@ -1795,6 +1899,19 @@ class UniversalTutorialManager {
             // 进入新步骤前，先清理上一阶段的"下一步"前置校验
             this.clearNextButtonGuard();
 
+            // 触发步骤特定的 onHighlighted（driver.min.js 不支持该回调）
+            if (currentStepConfig.onHighlighted && typeof currentStepConfig.onHighlighted === 'function') {
+                if (this._lastOnHighlightedStepIndex !== this.currentStep) {
+                    try {
+                        console.log('[Tutorial] 手动触发步骤 onHighlighted');
+                        currentStepConfig.onHighlighted.call(this);
+                        this._lastOnHighlightedStepIndex = this.currentStep;
+                    } catch (error) {
+                        console.error('[Tutorial] 步骤 onHighlighted 执行失败:', error);
+                    }
+                }
+            }
+
             // 角色管理页面：进入进阶设定相关步骤前，确保猫娘卡片和进阶设定都已展开
             if (this.currentPage === 'chara_manager') {
                 const needsAdvancedSettings = [
@@ -2301,34 +2418,6 @@ class UniversalTutorialManager {
     createHelpButton() {
         // 不再创建右下角帮助按钮
         return;
-    }
-
-    /**
-     * 重置所有页面的引导状态
-     */
-    resetAllTutorials() {
-        const pages = [
-            'home',
-            'model_manager',
-            'model_manager_live2d',
-            'model_manager_vrm',
-            'model_manager_common',
-            'parameter_editor',
-            'emotion_manager',
-            'chara_manager',
-            'settings',
-            'voice_clone',
-            'steam_workshop',
-            'memory_browser'
-        ];
-
-        pages.forEach(page => {
-            const key = this.STORAGE_KEY_PREFIX + page;
-            localStorage.removeItem(key);
-        });
-
-        console.log('[Tutorial] 已重置所有引导状态');
-        return true;
     }
 
     /**
