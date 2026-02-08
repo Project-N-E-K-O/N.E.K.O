@@ -266,6 +266,33 @@
    系统托盘教程展示样式
    ============================================ */
 
+.neko-systray-location {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.neko-systray-location__image {
+    width: 100%;
+    max-width: 320px;
+    border-radius: 10px;
+    border: 1px solid rgba(148, 163, 184, 0.4);
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.25);
+    align-self: center;
+}
+
+.neko-systray-location__caption {
+    font-size: 14px;
+    line-height: 1.55;
+    color: rgba(255, 255, 255, 0.9);
+}
+
+.neko-systray-location__note {
+    font-size: 11px;
+    line-height: 1.5;
+    color: rgba(255, 255, 255, 0.95);
+}
+
 .neko-systray-menu {
     display: flex;
     flex-direction: column;

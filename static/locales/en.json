@@ -1399,6 +1399,13 @@
       "desc": "Access Steam Workshop page and manage subscriptions~"
     },
     "systray": {
+      "location": {
+        "title": "Tray icon location",
+        "desc": "The N.E.K.O icon appears in the system tray at the bottom-right of your screen. Click it to find N.E.K.O.",
+        "note": "If you don't see it, expand the tray arrow to show hidden icons.",
+        "alt": "System tray location example"
+      },
+
       "menu": {
         "title": "📋 Tray Menu",
         "desc": "You'll find a N.E.K.O icon in the bottom-right tray. Right-click it to see many options. Here are two commonly used features:"

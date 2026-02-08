@@ -614,6 +614,27 @@ class UniversalTutorialManager {
             {
                 element: 'body',
                 popover: {
+                    title: t('tutorial.systray.location.title', 'Tray icon location'),
+                    description: `
+                        <div class="neko-systray-location">
+                            <img
+                                src="/static/icons/stray_intro.png"
+                                alt="${t('tutorial.systray.location.alt', 'System tray location example')}"
+                                class="neko-systray-location__image"
+                            />
+                            <div class="neko-systray-location__caption">
+                                ${t('tutorial.systray.location.desc', 'The N.E.K.O icon appears in the system tray at the bottom-right of your screen. Click it to find N.E.K.O.')}
+                            </div>
+                            <div class="neko-systray-location__note">
+                                ${t('tutorial.systray.location.note', 'If you don\'t see it, expand the tray arrow to show hidden icons.')}
+                            </div>
+                        </div>
+                    `
+                }
+            },
+            {
+                element: 'body',
+                popover: {
                     title: t('tutorial.systray.menu.title', '📋 托盘菜单'),
                     description: `
                         <div class="neko-systray-menu">
