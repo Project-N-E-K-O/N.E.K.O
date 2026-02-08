@@ -1937,7 +1937,8 @@ function openApiKeySettings() {
 function openVoiceClone(lanlanName) {
     // 使用 window.openOrFocusWindow 打开独立窗口
     const url = '/voice_clone?lanlan_name=' + encodeURIComponent(lanlanName);
-    const windowName = 'neko_voice_clone_' + encodeURIComponent(lanlanName);
+    const lanlanNameForKey = lanlanName || 'default';
+    const windowName = 'neko_voice_clone_' + encodeURIComponent(lanlanNameForKey);
 
     // 计算窗口位置，使其居中显示
     const width = 700;
@@ -2028,6 +2029,40 @@ window.addEventListener('message', function (event) {
         // API Key已更改，刷新角色数据以显示更新后的Voice ID状态
         console.log('API Key已更改，正在刷新角色数据...');
         loadCharacterData();
+    } else if (event.data && event.data.type === 'voice_id_updated') {
+        const lanlanName = event.data.lanlan_name;
+        const voiceId = event.data.voice_id;
+        if (!lanlanName || !voiceId) return;
+
+        try {
+            if (characterData && characterData['猫娘'] && characterData['猫娘'][lanlanName]) {
+                characterData['猫娘'][lanlanName]['voice_id'] = voiceId;
+            }
+
+            const switchBtn = document.getElementById(`switch-btn-${lanlanName}`);
+            const block = switchBtn ? switchBtn.closest('.catgirl-block') : null;
+            const select = block ? block.querySelector('select[name="voice_id"]') : null;
+            if (!select) return;
+
+            fetch('/api/characters/voices').then(r => r.json()).then(data => {
+                if (!data || !data.voices) return;
+                while (select.firstChild) select.removeChild(select.firstChild);
+                const voiceNotSetText = window.t ? window.t('character.voiceNotSet') : '未指定音色';
+                const defaultOption = document.createElement('option');
+                defaultOption.value = '';
+                defaultOption.textContent = voiceNotSetText;
+                select.appendChild(defaultOption);
+
+                Object.entries(data.voices).forEach(([id, voiceData]) => {
+                    const option = document.createElement('option');
+                    option.value = id;
+                    option.textContent = voiceData.prefix || id;
+                    select.appendChild(option);
+                });
+
+                select.value = voiceId;
+            }).catch(() => {});
+        } catch (e) {}
     }
 });
 
