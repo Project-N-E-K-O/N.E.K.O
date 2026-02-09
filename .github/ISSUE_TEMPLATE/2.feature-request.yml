@@ -1,0 +1,29 @@
+name: 需要新功能点这个喵
+description: 想要的功能不在 N.E.K.O 里？
+title: "[Feature Request]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        非常感谢主人喵的奇思喵想对我们的贡献喵！
+  - type: textarea
+    id: what-function
+    attributes:
+      label: 你希望开发者添加什么功能？
+      placeholder: 我希望群主能给我打米（误
+    validations:
+      required: true
+  - type: textarea
+    id: scene
+    attributes:
+      label: 什么使用场景？
+      placeholder: 每个功能都有存在的意义。例如：群主不给我打米，让我的猫娘饿的没有token，这使我很悲伤，很心急，忧郁的日子里无法镇静，无法相信快乐的日子将会来临。
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关信息
+      placeholder: |
+        直接粘贴过来就行，可以是你认为相关的任何东西(比如图片，文件等)。
