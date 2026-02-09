@@ -2,6 +2,7 @@
 class AudioManager {
     constructor() {
         this.ctx = null;       // 延迟到 unlock 再建
+        this.masterGain = null; // 总输出音量节点
         this.models = new Map();  // 同前
         this.priority = {LanLan1: true, LanLan2: false};         // 同前
     }
@@ -21,6 +22,19 @@ class AudioManager {
         }
         if (this.ctx.state === 'suspended') {
             this.ctx.resume();
+        }
+        // 创建总输出音量节点
+        if (!this.masterGain) {
+            this.masterGain = this.ctx.createGain();
+            this.masterGain.connect(this.ctx.destination);
+            // 从 localStorage 恢复上次的扬声器音量
+            const saved = localStorage.getItem('neko_speaker_volume');
+            if (saved !== null) {
+                const vol = parseInt(saved, 10);
+                if (!isNaN(vol) && vol >= 0 && vol <= 100) {
+                    this.masterGain.gain.value = vol / 100;
+                }
+            }
         }
         // 任何依赖 ctx 的 Graph 也可以在这里补建
         for (const [id, m] of this.models) {
@@ -51,7 +65,7 @@ class AudioManager {
         const gain = this.ctx.createGain();
         const analyser = this.ctx.createAnalyser();
         gain.connect(analyser);
-        analyser.connect(this.ctx.destination);
+        analyser.connect(this.masterGain || this.ctx.destination);
         analyser.fftSize = 2048;
         return {gain, analyser};
     }
@@ -145,6 +159,22 @@ class AudioManager {
           }
         }
       }
+
+    /** 设置扬声器音量 (0~100) */
+    setVolume(percent) {
+        const val = Math.max(0, Math.min(100, percent)) / 100;
+        if (this.masterGain) {
+            this.masterGain.gain.setTargetAtTime(val, this.ctx.currentTime, 0.05);
+        }
+    }
+
+    /** 获取扬声器音量 (0~100) */
+    getVolume() {
+        if (this.masterGain) {
+            return Math.round(this.masterGain.gain.value * 100);
+        }
+        return 100;
+    }
 
     startLipSync(modelId, analyser) {
         // 检测是Live2D还是VRM

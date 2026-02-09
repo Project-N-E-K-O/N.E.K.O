@@ -460,6 +460,10 @@
     "volumeHintLow": "音量が低いです。ゲインを上げてみてください",
     "volumeHintOk": "マイクは正常に動作しています"
   },
+  "speaker": {
+    "volumeLabel": "スピーカー音量",
+    "volumeHint": "AI音声の再生音量を調整"
+  },
   "status": {
     "initializing": "初期化中...",
     "connecting": "接続中...",
