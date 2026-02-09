@@ -4,7 +4,7 @@
  */
 
 // 引导页面列表常量
-const TUTORIAL_PAGES = ['home', 'model_manager', 'model_manager_live2d', 'model_manager_vrm', 'model_manager_common', 'parameter_editor', 'emotion_manager', 'chara_manager', 'settings', 'voice_clone', 'steam_workshop', 'memory_browser'];
+const TUTORIAL_PAGES = Object.freeze(['home', 'model_manager', 'model_manager_live2d', 'model_manager_vrm', 'model_manager_common', 'parameter_editor', 'emotion_manager', 'chara_manager', 'settings', 'voice_clone', 'steam_workshop', 'memory_browser']);
 
 class UniversalTutorialManager {
     constructor() {
@@ -26,8 +26,13 @@ class UniversalTutorialManager {
         this.tutorialRollbackActive = false;
         this._applyingInteractionState = false;
         this._stepChanging = false;
+        this._pendingStepChange = false;
         this._lastOnHighlightedStepIndex = null;
         this._lastAppliedStateKey = null;
+        this.cachedValidSteps = null;
+
+        // 刷新延迟常量
+        this.DYNAMIC_REFRESH_DELAYS = [200, 600, 1000];
 
         // 用于追踪在引导中修改过的元素及其原始样式
         this.modifiedElementsMap = new Map();
@@ -1263,7 +1268,7 @@ class UniversalTutorialManager {
         const currentStepIndex = (this.driver && typeof this.driver.currentStep === 'number')
             ? this.driver.currentStep
             : this.currentStep;
-        const stateKey = `${currentStepIndex}_${currentStepConfig.element}_${!!currentStepConfig.disableActiveInteraction}_${!!currentStepConfig.enableModelInteraction}`;
+        const stateKey = `${currentStepIndex}|${currentStepConfig.element}|${!!currentStepConfig.disableActiveInteraction}|${!!currentStepConfig.enableModelInteraction}`;
 
         if (this._applyingInteractionState) {
             console.log('[Tutorial] 交互状态正在应用中，跳过重复调用');
@@ -1278,7 +1283,6 @@ class UniversalTutorialManager {
 
         try {
             this._applyingInteractionState = true;
-            this._lastAppliedStateKey = stateKey;
             this.tutorialRollbackActive = false;
             if (!this.tutorialControlledElements || this.tutorialControlledElements.size === 0) {
                 this.collectTutorialControlledElements(this.cachedValidSteps || []);
@@ -1307,6 +1311,7 @@ class UniversalTutorialManager {
             }
 
             await this.refreshAndValidateTutorialLayout(currentElement, context);
+            this._lastAppliedStateKey = stateKey;
         } finally {
             this._applyingInteractionState = false;
         }
@@ -2296,7 +2301,7 @@ class UniversalTutorialManager {
                         // 对于需要等待动态元素的步骤，多次刷新以确保位置正确
                         if (currentStepConfig.skipInitialCheck) {
                             console.log(`[Tutorial] 动态元素步骤，将多次刷新位置`);
-                            [200, 600, 1000].forEach((delay, i) => {
+                            this.DYNAMIC_REFRESH_DELAYS.forEach((delay, i) => {
                                 setTimeout(() => {
                                     if (this.driver && typeof this.driver.refresh === 'function') {
                                         this.driver.refresh();
@@ -2341,6 +2346,10 @@ class UniversalTutorialManager {
         this.isTutorialRunning = false;
         this.clearNextButtonGuard();
         this._lastAppliedStateKey = null;
+        this._stepChanging = false;
+        this._pendingStepChange = false;
+        this._applyingInteractionState = false;
+        this.cachedValidSteps = null;
 
         // 只有进入了全屏的页面才需要退出全屏
         const pagesNeedingFullscreen = []; // 已禁用全屏提示
