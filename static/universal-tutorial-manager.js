@@ -32,6 +32,7 @@ class UniversalTutorialManager {
         this._lastOnHighlightedStepIndex = null;
         this._lastAppliedStateKey = null;
         this.cachedValidSteps = null;
+        this._refreshTimers = [];
 
         // 刷新延迟常量
         this.DYNAMIC_REFRESH_DELAYS = [200, 600, 1000];
@@ -238,6 +239,7 @@ class UniversalTutorialManager {
                 // 给一点时间让 Driver.js 完成定位
                 setTimeout(() => {
                     (async () => {
+                        if (!window.isInTutorial) return;
                         if (element && element.element) {
                             const targetElement = element.element;
                             const rect = targetElement.getBoundingClientRect();
@@ -284,6 +286,7 @@ class UniversalTutorialManager {
                 } catch (e) {
                     // 忽略销毁错误
                 }
+                this.driver = null;
             }
 
             // 重新创建 driver 实例，使用最新的 i18n 翻译
@@ -292,6 +295,7 @@ class UniversalTutorialManager {
             console.log('[Tutorial] driver.js 重新创建成功，使用 i18n 按钮文本');
         } catch (error) {
             console.error('[Tutorial] driver.js 重新创建失败:', error);
+            this.driver = null;
         }
     }
 
@@ -1148,10 +1152,10 @@ class UniversalTutorialManager {
             });
         }
         if (enabled) {
-            element.style.pointerEvents = 'auto';
             const state = this.tutorialInteractionStates.get(element);
-            element.style.cursor = state.cursor || '';
-            element.style.userSelect = state.userSelect || '';
+            element.style.pointerEvents = state?.pointerEvents || '';
+            element.style.cursor = state?.cursor || '';
+            element.style.userSelect = state?.userSelect || '';
             if (element.dataset.tutorialDisabled) {
                 delete element.dataset.tutorialDisabled;
             }
@@ -1389,6 +1393,10 @@ class UniversalTutorialManager {
             }
         } catch (error) {
             console.error('[Tutorial] 启动引导失败:', error);
+            this.isTutorialRunning = false;
+            window.isInTutorial = false;
+            this.restoreTutorialInteractionState();
+            this.setTutorialMarkersVisible(true);
         }
     }
 
@@ -1554,6 +1562,12 @@ class UniversalTutorialManager {
 
         // 重新创建 driver 实例以确保按钮文本使用最新的 i18n 翻译
         this.recreateDriverWithI18n();
+
+        if (!this.driver) {
+            console.error('[Tutorial] driver 实例创建失败，无法启动引导');
+            this.isTutorialRunning = false;
+            return;
+        }
 
         // 定义步骤
         this.driver.setSteps(validSteps);
@@ -2173,6 +2187,12 @@ class UniversalTutorialManager {
                 // 进入新步骤前，先清理上一阶段的"下一步"前置校验
                 this.clearNextButtonGuard();
 
+                // 清除旧的刷新定时器
+                if (this._refreshTimers) {
+                    this._refreshTimers.forEach(t => clearTimeout(t));
+                    this._refreshTimers = [];
+                }
+
                 // 触发步骤特定的 onHighlighted（driver.min.js 不支持该回调）
                 if (currentStepConfig.onHighlighted && typeof currentStepConfig.onHighlighted === 'function') {
                     if (this._lastOnHighlightedStepIndex !== this.currentStep) {
@@ -2306,20 +2326,22 @@ class UniversalTutorialManager {
                         if (currentStepConfig.skipInitialCheck) {
                             console.log(`[Tutorial] 动态元素步骤，将多次刷新位置`);
                             this.DYNAMIC_REFRESH_DELAYS.forEach((delay, i) => {
-                                setTimeout(() => {
+                                const timer = setTimeout(() => {
                                     if (this.driver && typeof this.driver.refresh === 'function') {
                                         this.driver.refresh();
                                         console.log(`[Tutorial] 步骤切换后刷新高亮框位置 (第${i + 1}次)`);
                                     }
                                 }, delay);
+                                if (this._refreshTimers) this._refreshTimers.push(timer);
                             });
                         } else {
-                            setTimeout(() => {
+                            const timer = setTimeout(() => {
                                 if (this.driver && typeof this.driver.refresh === 'function') {
                                     this.driver.refresh();
                                     console.log(`[Tutorial] 步骤切换后刷新高亮框位置`);
                                 }
                             }, 200);
+                            if (this._refreshTimers) this._refreshTimers.push(timer);
                         }
                     }
                 }
@@ -2354,6 +2376,12 @@ class UniversalTutorialManager {
         this._pendingStepChange = false;
         this._applyingInteractionState = false;
         this.cachedValidSteps = null;
+
+        // 清除刷新定时器
+        if (this._refreshTimers) {
+            this._refreshTimers.forEach(t => clearTimeout(t));
+            this._refreshTimers = [];
+        }
 
         // 只有进入了全屏的页面才需要退出全屏
         const pagesNeedingFullscreen = []; // 已禁用全屏提示
