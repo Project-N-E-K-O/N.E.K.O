@@ -3,7 +3,9 @@
  * 支持所有页面的引导配置
  */
 
-// 引导页面列表常量
+// 引导页面列表常量 - 包含所有页面类型及子类型的存储键集合
+// 注意：此列表包含 localStorage 使用的存储子键（如 model_manager_*），
+// 并不完全等同于 detectPage() 返回的逻辑页面集合。
 const TUTORIAL_PAGES = Object.freeze(['home', 'model_manager', 'model_manager_live2d', 'model_manager_vrm', 'model_manager_common', 'parameter_editor', 'emotion_manager', 'chara_manager', 'settings', 'voice_clone', 'steam_workshop', 'memory_browser']);
 
 class UniversalTutorialManager {
@@ -1311,7 +1313,9 @@ class UniversalTutorialManager {
             }
 
             await this.refreshAndValidateTutorialLayout(currentElement, context);
-            this._lastAppliedStateKey = stateKey;
+            if (!this.tutorialRollbackActive) {
+                this._lastAppliedStateKey = stateKey;
+            }
         } finally {
             this._applyingInteractionState = false;
         }
