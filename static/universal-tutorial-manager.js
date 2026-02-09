@@ -1197,7 +1197,7 @@ class UniversalTutorialManager {
         const diffTop = Math.abs(highlightRect.top - (rect.top - padding));
         const diffWidth = Math.abs(highlightRect.width - (rect.width + padding * 2));
         const diffHeight = Math.abs(highlightRect.height - (rect.height + padding * 2));
-        const threshold = 6;
+        const threshold = 12;
         const hasOffset = diffLeft > threshold || diffTop > threshold || diffWidth > threshold || diffHeight > threshold;
         if (hasOffset) {
             console.error('[Tutorial] 检测到高亮框偏移，执行回滚', {
@@ -1205,7 +1205,8 @@ class UniversalTutorialManager {
                 diffLeft,
                 diffTop,
                 diffWidth,
-                diffHeight
+                diffHeight,
+                threshold
             });
             return false;
         }
@@ -2147,10 +2148,14 @@ class UniversalTutorialManager {
      */
     async onStepChange() {
         if (this._stepChanging) {
-            console.log('[Tutorial] 步骤正在切换中，跳过重复调用');
+            console.log('[Tutorial] 步骤正在切换中，标记待处理请求');
+            this._pendingStepChange = true;
             return;
         }
+        
         this._stepChanging = true;
+        this._pendingStepChange = false;
+
         try {
             this.currentStep = this.driver.currentStep || 0;
             console.log(`[Tutorial] 当前步骤: ${this.currentStep + 1}`);
@@ -2336,6 +2341,11 @@ class UniversalTutorialManager {
             }, 200);
         } finally {
             this._stepChanging = false;
+            // 如果在执行期间有新的步骤切换请求，则再次触发
+            if (this._pendingStepChange) {
+                console.log('[Tutorial] 处理待处理的步骤切换请求');
+                this.onStepChange();
+            }
         }
     }
 
@@ -2663,6 +2673,17 @@ class UniversalTutorialManager {
         // 不再创建右下角帮助按钮
         return;
     }
+
+    /** 
+     * 重置所有页面的引导状态 
+     */ 
+    resetAllTutorials() { 
+        const pages = ['home', 'model_manager', 'model_manager_live2d', 'model_manager_vrm', 'model_manager_common', 'parameter_editor', 'emotion_manager', 'chara_manager', 'settings', 'voice_clone', 'steam_workshop', 'memory_browser']; 
+        pages.forEach(page => { 
+            localStorage.removeItem(this.STORAGE_KEY_PREFIX + page); 
+        }); 
+        console.log('[Tutorial] 已重置所有页面引导'); 
+    } 
 
     /**
      * 重置指定页面的引导状态
