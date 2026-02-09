@@ -27,6 +27,7 @@ class UniversalTutorialManager {
         this.tutorialMarkerDisplayCache = null;
         this.tutorialRollbackActive = false;
         this._applyingInteractionState = false;
+        this._lastOnHighlightedStepIndex = null;
 
         // 用于追踪在引导中修改过的元素及其原始样式
         this.modifiedElementsMap = new Map();
@@ -47,6 +48,20 @@ class UniversalTutorialManager {
             return window.t(key, fallback);
         }
         return fallback;
+    }
+
+    /**
+     * HTML转义辅助函数 - 用于在HTML属性或内容中安全使用翻译文本
+     * @param {string} text - 要转义的文本
+     * @returns {string} 转义后的HTML安全文本
+     */
+    safeEscapeHtml(text) {
+        if (typeof text !== 'string') {
+            return String(text);
+        }
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
     }
 
     /**
@@ -191,12 +206,29 @@ class UniversalTutorialManager {
                 // 每次高亮元素时，确保元素在视口中
                 console.log('[Tutorial] 高亮元素:', step.element);
 
+                // 调用步骤特定的 onHighlighted 回调（如果存在）
+                if (step.onHighlighted && typeof step.onHighlighted === 'function') {
+                    const currentStepIndex = (this.driver && typeof this.driver.currentStep === 'number')
+                        ? this.driver.currentStep
+                        : this.currentStep;
+                    if (currentStepIndex === this._lastOnHighlightedStepIndex) {
+                        console.log('[Tutorial] 跳过重复的 onHighlighted 回调:', step.element);
+                    } else {
+                        console.log('[Tutorial] 调用步骤特定的 onHighlighted 回调');
+                        try {
+                            step.onHighlighted.call(this);
+                        } catch (error) {
+                            console.error('[Tutorial] 步骤 onHighlighted 执行失败:', step.element, error);
+                        }
+                        this._lastOnHighlightedStepIndex = currentStepIndex;
+                    }
+                }
+
                 // 给一点时间让 Driver.js 完成定位
                 setTimeout(() => {
                     (async () => {
                         if (element && element.element) {
                             const targetElement = element.element;
-                            // 检查元素是否在视口中
                             const rect = targetElement.getBoundingClientRect();
                             const isInViewport = (
                                 rect.top >= 0 &&
@@ -204,7 +236,6 @@ class UniversalTutorialManager {
                                 rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) &&
                                 rect.right <= (window.innerWidth || document.documentElement.clientWidth)
                             );
-
                             if (!isInViewport) {
                                 console.log('[Tutorial] 元素不在视口中，滚动到元素');
                                 targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -431,6 +462,8 @@ class UniversalTutorialManager {
      * 主页引导步骤
      */
     getHomeSteps() {
+        const t = (key, fallback) => this.t(key, fallback);
+
         return [
             {
                 element: '#live2d-container',
@@ -570,6 +603,59 @@ class UniversalTutorialManager {
                     description: window.t ? window.t('tutorial.step18.desc', '进入 Steam 创意工坊页面，管理订阅内容~') : '进入 Steam 创意工坊页面，管理订阅内容~',
                 },
                 disableActiveInteraction: true
+            },
+            {
+                element: 'body',
+                popover: {
+                    title: t('tutorial.systray.location.title', '🖥️ 托盘图标位置'),
+                    description: `
+                        <div class="neko-systray-location">
+                            <img
+                                src="/static/icons/stray_intro.png"
+                                alt="${this.safeEscapeHtml(t('tutorial.systray.location.alt', '系统托盘位置示例'))}"
+                                class="neko-systray-location__image"
+                            />
+                            <div class="neko-systray-location__caption">
+                                ${this.safeEscapeHtml(t('tutorial.systray.location.desc', 'N.E.K.O 图标会出现在屏幕右下角的系统托盘中，点击它即可找到 N.E.K.O。'))}
+                            </div>
+                            <div class="neko-systray-location__note">
+                                ${this.safeEscapeHtml(t('tutorial.systray.location.note', '如果看不到，可点击托盘展开箭头查看隐藏的图标。'))}
+                            </div>
+                        </div>
+                    `
+                }
+            },
+            {
+                element: 'body',
+                popover: {
+                    title: t('tutorial.systray.menu.title', '📋 托盘菜单'),
+                    description: `
+                        <div class="neko-systray-menu">
+                            <div class="neko-systray-menu__hint">
+                                ${this.safeEscapeHtml(t('tutorial.systray.menu.desc', '右下角托盘里会有 N.E.K.O 的图标，右键点击会出现很多选项。下面是两个常用功能：'))}
+                            </div>
+                            <div class="neko-systray-menu__panel">
+                                <div class="neko-systray-menu__item">
+                                    <div class="neko-systray-menu__item-label">
+                                        ${this.safeEscapeHtml(t('tutorial.systray.hotkey', '快捷键设置'))}
+                                    </div>
+                                    <div class="neko-systray-menu__item-desc">
+                                        ${this.safeEscapeHtml(t('tutorial.systray.hotkeyDesc', '在这里可以设置全局快捷键，让你更高效地控制 N.E.K.O~'))}
+                                    </div>
+                                </div>
+                                <div class="neko-systray-menu__separator"></div>
+                                <div class="neko-systray-menu__item neko-systray-menu__item--danger">
+                                    <div class="neko-systray-menu__item-label">
+                                        ${this.safeEscapeHtml(t('tutorial.systray.exit', '退出'))}
+                                    </div>
+                                    <div class="neko-systray-menu__item-desc">
+                                        ${this.safeEscapeHtml(t('tutorial.systray.exitDesc', '想要关闭 N.E.K.O 时，在这里点击退出即可。'))}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `
+                }
             }
         ];
     }
@@ -612,28 +698,28 @@ class UniversalTutorialManager {
         // VRM 特定步骤
         const vrmSteps = [
             {
-                element: '#ambient-light-slider',
+                element: '#ambient-light-control',
                 popover: {
                     title: this.t('tutorial.model_manager.vrm.step6.title', '🌟 环境光'),
                     description: this.t('tutorial.model_manager.vrm.step6.desc', '调整环境光强度。环境光影响整体亮度，数值越高模型越亮。'),
                 }
             },
             {
-                element: '#main-light-slider',
+                element: '#main-light-control',
                 popover: {
                     title: this.t('tutorial.model_manager.vrm.step7.title', '☀️ 主光源'),
                     description: this.t('tutorial.model_manager.vrm.step7.desc', '调整主光源强度。主光源是主要的照明来源，影响模型的明暗对比。'),
                 }
             },
             {
-                element: '#exposure-slider',
+                element: '#exposure-control',
                 popover: {
                     title: this.t('tutorial.model_manager.vrm.step8.title', '🌞 曝光'),
                     description: this.t('tutorial.model_manager.vrm.step8.desc', '调整整体曝光强度。数值越高整体越亮，越低则更暗更有对比。'),
                 }
             },
             {
-                element: '#tonemapping-select',
+                element: '#tonemapping-control',
                 popover: {
                     title: this.t('tutorial.model_manager.vrm.step9.title', '🎞️ 色调映射'),
                     description: this.t('tutorial.model_manager.vrm.step9.desc', '选择不同的色调映射算法，决定画面亮部和暗部的呈现风格。'),
@@ -668,7 +754,7 @@ class UniversalTutorialManager {
                     description: this.t('tutorial.parameter_editor.step2.desc', '这里显示了模型的所有可调参数。每个参数控制模型的不同部分，如眼睛大小、嘴巴形状、头部角度等。'),
                 }
             }
-            ];
+        ];
     }
 
     /**
@@ -971,7 +1057,7 @@ class UniversalTutorialManager {
 
     isTutorialControlledElement(element) {
         if (!element) return false;
-        
+
         // 复用选择器列表进行匹配检查
         const selectors = this.getTutorialInteractiveSelectors();
         const isMatched = selectors.some(selector => {
@@ -1015,7 +1101,7 @@ class UniversalTutorialManager {
         const highlight = document.querySelector('.driver-highlight');
         const popover = document.querySelector('.driver-popover');
         const elements = [overlay, highlight, popover].filter(Boolean);
-        
+
         if (!this.tutorialMarkerDisplayCache) {
             this.tutorialMarkerDisplayCache = new Map();
         }
@@ -1134,7 +1220,7 @@ class UniversalTutorialManager {
         }
         // 等待驱动程序完成高亮框重定位（匹配 onHighlighted 的 100ms 延迟）
         await new Promise(r => setTimeout(r, 100));
-        
+
         void document.body.offsetHeight;
         const ok = this.validateTutorialLayout(currentElement, context);
         if (!ok) {
@@ -1204,7 +1290,7 @@ class UniversalTutorialManager {
             if (shouldHideMarkers) {
                 this.setTutorialMarkersVisible(true);
             }
-            
+
             await this.refreshAndValidateTutorialLayout(currentElement, context);
         } finally {
             this._applyingInteractionState = false;
@@ -1436,6 +1522,9 @@ class UniversalTutorialManager {
      * 启动引导步骤（内部方法）
      */
     startTutorialSteps(validSteps) {
+        // 重置步骤 onHighlighted 触发标记（避免重复/跨次引导）
+        this._lastOnHighlightedStepIndex = null;
+
         // 缓存已验证的步骤，供 onStepChange 使用
         this.cachedValidSteps = validSteps;
 
@@ -1770,10 +1859,10 @@ class UniversalTutorialManager {
      */
     shouldClickElement(element, selector) {
         // 检查是否是折叠/展开类型的元素（支持类名和 ID）
-        const isToggleElement = selector.includes('.fold-toggle') || 
-                              selector.includes('.catgirl-header') ||
-                              selector === '#tutorial-target-fold-toggle' || 
-                              selector === '#tutorial-target-catgirl-header';
+        const isToggleElement = selector.includes('.fold-toggle') ||
+            selector.includes('.catgirl-header') ||
+            selector === '#tutorial-target-fold-toggle' ||
+            selector === '#tutorial-target-catgirl-header';
 
         if (isToggleElement) {
             // 查找相关的内容容器
@@ -1787,7 +1876,7 @@ class UniversalTutorialManager {
                     // 尝试找兄弟节点中的内容
                     contentContainer = foldParent.nextElementSibling || foldParent.querySelector('.fold-content');
                 }
-                
+
                 // 如果还是没找到，尝试通用的查找方式
                 if (!contentContainer) {
                     const parent = element.closest('[class*="catgirl"]');
@@ -1798,7 +1887,7 @@ class UniversalTutorialManager {
                     }
                 }
             }
-            
+
 
             // 检查内容是否可见
             if (contentContainer) {
@@ -1869,9 +1958,9 @@ class UniversalTutorialManager {
             while (scrollableParent) {
                 const style = window.getComputedStyle(scrollableParent);
                 const hasScroll = style.overflowY === 'auto' ||
-                                style.overflowY === 'scroll' ||
-                                style.overflow === 'auto' ||
-                                style.overflow === 'scroll';
+                    style.overflowY === 'scroll' ||
+                    style.overflow === 'auto' ||
+                    style.overflow === 'scroll';
 
                 if (hasScroll) {
                     console.log('[Tutorial] 找到可滚动容器，正在滚动到元素...');
@@ -2050,6 +2139,19 @@ class UniversalTutorialManager {
             // 进入新步骤前，先清理上一阶段的"下一步"前置校验
             this.clearNextButtonGuard();
 
+            // 触发步骤特定的 onHighlighted（driver.min.js 不支持该回调）
+            if (currentStepConfig.onHighlighted && typeof currentStepConfig.onHighlighted === 'function') {
+                if (this._lastOnHighlightedStepIndex !== this.currentStep) {
+                    try {
+                        console.log('[Tutorial] 手动触发步骤 onHighlighted');
+                        currentStepConfig.onHighlighted.call(this);
+                        this._lastOnHighlightedStepIndex = this.currentStep;
+                    } catch (error) {
+                        console.error('[Tutorial] 步骤 onHighlighted 执行失败:', error);
+                    }
+                }
+            }
+
             // 角色管理页面：进入进阶设定相关步骤前，确保猫娘卡片和进阶设定都已展开
             if (this.currentPage === 'chara_manager') {
                 const needsAdvancedSettings = [
@@ -2120,50 +2222,50 @@ class UniversalTutorialManager {
                 // 执行步骤中定义的操作
                 if (currentStepConfig.action) {
                     if (currentStepConfig.action === 'click') {
-                    setTimeout(() => {
-                        console.log(`[Tutorial] 执行自动点击: ${currentStepConfig.element}`);
-
-                        // 1. 找到要点击的元素
-                        const innerTrigger = element.querySelector('.catgirl-expand, .fold-toggle');
-                        const clickTarget = innerTrigger || element;
-
-                        // 2. 检查是否是折叠类元素，如果已展开则不点击
-                        let shouldClick = true;
-                        if (clickTarget.classList.contains('fold-toggle')) {
-                            // 检查进阶设定是否已展开
-                            const foldContainer = clickTarget.closest('.catgirl-block')?.querySelector('.fold');
-                            if (foldContainer) {
-                                const isExpanded = foldContainer.classList.contains('open') ||
-                                    window.getComputedStyle(foldContainer).display !== 'none';
-                                if (isExpanded) {
-                                    console.log('[Tutorial] 进阶设定已展开，跳过点击');
-                                    shouldClick = false;
-                                }
-                            }
-                        } else if (clickTarget.classList.contains('catgirl-expand')) {
-                            // 检查猫娘卡片是否已展开
-                            const details = clickTarget.closest('.catgirl-block')?.querySelector('.catgirl-details');
-                            if (details) {
-                                const isExpanded = window.getComputedStyle(details).display !== 'none';
-                                if (isExpanded) {
-                                    console.log('[Tutorial] 猫娘卡片已展开，跳过点击');
-                                    shouldClick = false;
-                                }
-                            }
-                        }
-
-                        // 3. 执行点击
-                        if (shouldClick) {
-                            clickTarget.click();
-                        }
-
-                        // 4. 刷新高亮框
                         setTimeout(() => {
-                            if (this.driver) this.driver.refresh();
-                        }, 500);
+                            console.log(`[Tutorial] 执行自动点击: ${currentStepConfig.element}`);
 
-                    }, 300);
-                }
+                            // 1. 找到要点击的元素
+                            const innerTrigger = element.querySelector('.catgirl-expand, .fold-toggle');
+                            const clickTarget = innerTrigger || element;
+
+                            // 2. 检查是否是折叠类元素，如果已展开则不点击
+                            let shouldClick = true;
+                            if (clickTarget.classList.contains('fold-toggle')) {
+                                // 检查进阶设定是否已展开
+                                const foldContainer = clickTarget.closest('.catgirl-block')?.querySelector('.fold');
+                                if (foldContainer) {
+                                    const isExpanded = foldContainer.classList.contains('open') ||
+                                        window.getComputedStyle(foldContainer).display !== 'none';
+                                    if (isExpanded) {
+                                        console.log('[Tutorial] 进阶设定已展开，跳过点击');
+                                        shouldClick = false;
+                                    }
+                                }
+                            } else if (clickTarget.classList.contains('catgirl-expand')) {
+                                // 检查猫娘卡片是否已展开
+                                const details = clickTarget.closest('.catgirl-block')?.querySelector('.catgirl-details');
+                                if (details) {
+                                    const isExpanded = window.getComputedStyle(details).display !== 'none';
+                                    if (isExpanded) {
+                                        console.log('[Tutorial] 猫娘卡片已展开，跳过点击');
+                                        shouldClick = false;
+                                    }
+                                }
+                            }
+
+                            // 3. 执行点击
+                            if (shouldClick) {
+                                clickTarget.click();
+                            }
+
+                            // 4. 刷新高亮框
+                            setTimeout(() => {
+                                if (this.driver) this.driver.refresh();
+                            }, 500);
+
+                        }, 300);
+                    }
                 } else {
                     // 即使没有点击操作，也在步骤切换后刷新位置
                     // 对于需要等待动态元素的步骤，多次刷新以确保位置正确
@@ -2279,7 +2381,7 @@ class UniversalTutorialManager {
                 lockIcon.style.removeProperty('display');
                 lockIcon.style.removeProperty('visibility');
                 lockIcon.style.removeProperty('opacity');
-                
+
                 // 恢复原始样式（如果原始样式为空字符串则不设置，让 CSS 规则生效）
                 if (this._lockIconOriginalStyles.display) {
                     lockIcon.style.display = this._lockIconOriginalStyles.display;
@@ -2523,34 +2625,6 @@ class UniversalTutorialManager {
     }
 
     /**
-     * 重置所有页面的引导状态
-     */
-    resetAllTutorials() {
-        const pages = [
-            'home',
-            'model_manager',
-            'model_manager_live2d',
-            'model_manager_vrm',
-            'model_manager_common',
-            'parameter_editor',
-            'emotion_manager',
-            'chara_manager',
-            'settings',
-            'voice_clone',
-            'steam_workshop',
-            'memory_browser'
-        ];
-
-        pages.forEach(page => {
-            const key = this.STORAGE_KEY_PREFIX + page;
-            localStorage.removeItem(key);
-        });
-
-        console.log('[Tutorial] 已重置所有引导状态');
-        return true;
-    }
-
-    /**
      * 重置指定页面的引导状态
      */
     resetPageTutorial(pageKey) {
@@ -2692,7 +2766,7 @@ function resetTutorialForPage(pageKey) {
     };
     const pageName = pageNames[pageKey] || pageKey;
     // 使用带参数的 i18n 键，格式：已重置「{{pageName}}」的引导
-    const message = window.t 
+    const message = window.t
         ? window.t('memory.tutorialPageResetSuccessWithName', { pageName: pageName, defaultValue: `已重置「${pageName}」的引导，下次进入该页面时将重新显示引导。` })
         : `已重置「${pageName}」的引导，下次进入该页面时将重新显示引导。`;
     alert(message);
