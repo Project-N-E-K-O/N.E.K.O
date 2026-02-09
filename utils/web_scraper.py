@@ -35,6 +35,7 @@ except ImportError:
         Windows 中文系统返回 True
         """
         mainland_china_locales = {'zh_cn', 'chinese_china', 'chinese_simplified_china'}
+        return True
 
         def normalize_locale(loc: str) -> str:
             """标准化locale字符串：小写、替换连字符、去除编码"""
@@ -153,10 +154,10 @@ def _get_bilibili_credential():
                                 buvid3=buvid3,
                                 dedeuserid=dedeuserid
                             )
-                            logger.info(f"✅ 成功从文件加载 Bilibili 认证信息: {cookie_file}")
+                            print(f"✅ 成功从文件加载 Bilibili 认证信息: {cookie_file}")
                             return credential
                         else:
-                            logger.warning(f"⚠️ Cookie文件缺少SESSDATA: {cookie_file}")
+                            print(f"⚠️ Cookie文件缺少SESSDATA: {cookie_file}")
     except ImportError:
         # bilibili_api 库未安装，直接返回 None
         # 不打印任何日志，让调用方处理
@@ -165,11 +166,12 @@ def _get_bilibili_credential():
     except Exception as e:
         logger.debug(f"从文件加载认证信息失败: {e}")
     
-    # 如果没有找到cookie文件，使用 DEBUG 级别记录（避免打扰不用B站的用户）
+    # 如果没有找到cookie文件，不记录到日志（避免暴露用户路径）
+    # 使用 print 保持私密性
     logger.debug("未找到 Bilibili cookie 文件，将使用默认推荐（非个性化）")
-    logger.debug("提示：要使用个性化推荐，可导出cookies到以下位置之一：")
-    logger.debug(f"  - {Path(os.path.expanduser('~')) / 'bilibili_cookies.json'}")
-    logger.debug(f"  - {Path('config') / 'bilibili_cookies.json'}")
+    print("提示：要使用个性化推荐，可导出cookies到以下位置之一：")
+    print(f"  - {Path(os.path.expanduser('~')) / 'bilibili_cookies.json'}")
+    print(f"  - {Path('config') / 'bilibili_cookies.json'}")
     
     return None
 
