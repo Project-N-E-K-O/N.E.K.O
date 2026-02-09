@@ -454,7 +454,8 @@ class UniversalTutorialManager {
             popover: {
                 title: this.t('tutorial.resetHint.title', '✨ 引导完成'),
                 description: this.t('tutorial.resetHint.desc', '如果想再次查看引导，可以前往「记忆浏览」页面，在「新手引导」区域重置。'),
-            }
+            },
+            disableActiveInteraction: true
         };
     }
 
@@ -623,7 +624,8 @@ class UniversalTutorialManager {
                             </div>
                         </div>
                     `
-                }
+                },
+                disableActiveInteraction: true
             },
             {
                 element: 'body',
@@ -655,7 +657,8 @@ class UniversalTutorialManager {
                             </div>
                         </div>
                     `
-                }
+                },
+                disableActiveInteraction: true
             }
         ];
     }
