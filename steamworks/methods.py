@@ -281,10 +281,12 @@ STEAMWORKS_METHODS = {
         'restype': c_char_p
     },
     'GetStatInt': {
-        'restype': int
+        'restype': int,
+        'argtypes': [c_char_p]
     },
     'GetStatFloat': {
-        'restype': c_float
+        'restype': c_float,
+        'argtypes': [c_char_p]
     },
     'ResetAllStats': {
         'restype': bool
@@ -297,10 +299,12 @@ STEAMWORKS_METHODS = {
         'argtypes': [c_char_p]
     },
     'SetStatInt': {
-        'restype': bool
+        'restype': bool,
+        'argtypes': [c_char_p, c_int32]
     },
     'SetStatFloat': {
-        'restype': bool
+        'restype': bool,
+        'argtypes': [c_char_p, c_float]
     },
     'StoreStats': {
         'restype': bool

@@ -27,6 +27,24 @@
     "fieldSeparator": "、",
     "tryAgainLater": "请稍后重试"
   },
+  "characterProfile": {
+    "gender": "性别",
+    "age": "年龄",
+    "nickname": "昵称",
+    "profileName": "档案名",
+    "values": {
+      "brother": "哥哥",
+      "male": "男",
+      "female": "女",
+      "tChanNickname": "T酱, 小T"
+    },
+    "labels": {
+      "档案名": "档案名",
+      "性别": "性别",
+      "年龄": "年龄",
+      "昵称": "昵称"
+    }
+  },
   "steam": {
     "characterCards": "角色卡",
     "characterCardName": "昵称",
@@ -444,7 +462,21 @@
     "switched": "已切换麦克风 (下一次录音生效)",
     "switchFailed": "切换麦克风失败: {{error}}",
     "networkError": "切换麦克风失败：网络错误",
-    "accessFailed": "无法访问麦克风"
+    "accessFailed": "无法访问麦克风",
+    "gainLabel": "麦克风增益",
+    "gainHint": "0dB为原始音量，正值放大、负值减小",
+    "volumeLabel": "输入音量",
+    "volumeIdle": "未录音",
+    "volumeNoSound": "无声音",
+    "volumeLow": "音量偏低",
+    "volumeNormal": "正常",
+    "volumeHigh": "音量较高",
+    "volumeHint": "开始录音后可查看音量",
+    "volumeDetecting": "检测中...",
+    "volumeHintDetecting": "正在检测麦克风输入...",
+    "volumeHintNoSound": "检测不到声音，请检查麦克风",
+    "volumeHintLow": "音量较低，建议调高增益",
+    "volumeHintOk": "麦克风工作正常"
   },
   "status": {
     "initializing": "正在初始化...",
@@ -561,6 +593,7 @@
     "freeVersionSuggestionFull": "完全免费，无需API Key，适合新手体验（不支持自定义语音和Agent模式）",
     "coreApiSuggestionFull": "负责对话功能（建议根据预算和需求选择）",
     "assistApiSuggestionFull": "负责记忆管理、文本对话和自定义语音（只有阿里支持自定义语音）",
+    "assistApiKeyRequiredHint": "需在对应的输入框内填写API才能选择其对应的供应商",
     "mcpRouterToken": "MCP Router Token",
     "mcpRouterTokenDesc": "MCP Router Token说明：",
     "mcpRouterTokenDescText": "用于访问MCP Router服务的认证令牌，启用MCP功能时需要填写。如果您的MCP Router不需要认证，可以留空。",
@@ -673,8 +706,6 @@
     "pleaseSelectExpression": "请先选择表情",
     "selectMotion": "选择动作",
     "selectExpression": "选择表情",
-    "addMotion": "增加动作",
-    "addExpression": "增加表情",
     "selectPersistentExpression": "选择常驻表情",
     "noMotionFiles": "没有动作文件",
     "emotionConfig": "情感配置",
@@ -815,9 +846,9 @@
       "saveParameters": "保存参数",
       "parameterList": "参数列表:",
       "pleaseSelectAndLoadModel": "请先选择并加载模型",
-    "pleaseSelectModel": "选择模型",
-    "ready": "就绪",
-    "pleaseSelectModelOption": "选择模型",
+      "pleaseSelectModel": "选择模型",
+      "ready": "就绪",
+      "pleaseSelectModelOption": "选择模型",
       "noModels": "暂无模型",
       "noModelsFound": "未找到模型",
       "modelListLoaded": "模型列表加载成功",
@@ -946,7 +977,22 @@
     "enabled": "已开启",
     "disabled": "已关闭",
     "autoReviewNote": "开启后系统将自动整理和优化记忆内容，提高对话质量",
-    "saveFailedStatus": "保存失败"
+    "saveFailedStatus": "保存失败",
+    "tutorialReset": "新手引导",
+    "tutorialSelectPage": "-- 选择页面 --",
+    "tutorialAllPages": "全部页面",
+    "tutorialPageHome": "主页",
+    "tutorialPageModelManager": "模型设置",
+    "tutorialPageParameterEditor": "捏脸系统",
+    "tutorialPageEmotionManager": "情感管理",
+    "tutorialPageCharaManager": "角色管理",
+    "tutorialPageSettings": "API设置",
+    "tutorialPageVoiceClone": "语音克隆",
+    "tutorialPageMemoryBrowser": "记忆浏览",
+    "resetTutorialBtn": "重置引导",
+    "tutorialResetSuccess": "已重置所有引导，下次进入各页面时将重新显示引导。",
+    "tutorialPageResetSuccess": "已重置该页面的引导，下次进入时将重新显示引导。",
+    "tutorialPageResetSuccessWithName": "已重置「{{pageName}}」的引导，下次进入该页面时将重新显示引导。"
   },
   "character": {
     "manager": "角色管理",
@@ -1352,6 +1398,389 @@
     "pathStillInvalidAfterConversion": "[模型管理] 路径转换后仍包含无效值:",
     "loadCurrentCharacterModelFailed": "加载当前角色模型失败:",
     "serverNotReturnedValidJSON": "服务器未返回有效的 JSON 数据"
+  },
+  "tutorial": {
+    "step1": {
+      "title": "👋 欢迎来到 N.E.K.O",
+      "desc": "这是你的猫娘！接下来我会带你熟悉各项功能~"
+    },
+    "step1a": {
+      "title": "🎭 点击体验表情动作",
+      "desc": "试试点击猫娘吧！每次点击都会触发不同的表情和动作变化。体验完后点击「下一步」继续~"
+    },
+    "step1b": {
+      "title": "🖱️ 拖拽与缩放",
+      "desc": "你可以拖拽猫娘移动位置，也可以用鼠标滚轮放大缩小，试试看吧~"
+    },
+    "step1c": {
+      "title": "🔒 锁定猫娘",
+      "desc": "点击这个锁可以锁定猫娘位置，防止误触移动。再次点击可以解锁~"
+    },
+    "step2": {
+      "title": "💬 对话区域",
+      "desc": "在这里和猫娘进行文字对话，输入想法她会给你有趣的回应~"
+    },
+    "step3": {
+      "title": "✍️ 输入框",
+      "desc": "输入你想说的话。Enter 发送，Shift+Enter 换行，也可以点击按钮发送截图~"
+    },
+    "step4": {
+      "title": "🎮 快速操作",
+      "desc": "左边发送按钮，右边截图按钮。分享截图给猫娘，她会帮你分析~"
+    },
+    "step5": {
+      "title": "🎛️ 浮动工具栏",
+      "desc": "浮动工具栏包含多个实用功能按钮，让我为你逐一介绍~"
+    },
+    "step6": {
+      "title": "🎤 语音控制",
+      "desc": "启用语音控制，猫娘通过语音识别理解你的话语~"
+    },
+    "step7": {
+      "title": "🖥️ 屏幕分享",
+      "desc": "分享屏幕/窗口/标签页，让猫娘看到你的画面~"
+    },
+    "step8": {
+      "title": "🔨 Agent工具",
+      "desc": "打开 Agent 工具面板，使用各类辅助功能~"
+    },
+    "step9": {
+      "title": "💤 请她离开",
+      "desc": "让猫娘暂时离开并隐藏界面，需要时可点击\"请她回来\"恢复~"
+    },
+    "step10": {
+      "title": "⚙️ 设置",
+      "desc": "打开设置面板，下面会依次介绍设置里的各个项目~"
+    },
+    "step13": {
+      "title": "💬 主动搭话",
+      "desc": "开启后猫娘会主动发起对话，频率可在此调整~"
+    },
+    "step14": {
+      "title": "👀 自主视觉",
+      "desc": "开启后猫娘会主动读取画面信息，间隔可在此调整~"
+    },
+    "step15": {
+      "title": "👤 角色管理",
+      "desc": "调整猫娘的性格、形象、声音等~"
+    },
+    "step16": {
+      "title": "🔑 API 密钥",
+      "desc": "配置 AI 服务的 API 密钥，这是和猫娘互动的必要配置~"
+    },
+    "step17": {
+      "title": "🧠 记忆浏览",
+      "desc": "查看与管理猫娘的记忆内容~"
+    },
+    "step18": {
+      "title": "🛠️ 创意工坊",
+      "desc": "进入 Steam 创意工坊页面，管理订阅内容~"
+    },
+    "systray": {
+      "location": {
+        "title": "📍 托盘图标位置",
+        "desc": "N.E.K.O 的图标会出现在屏幕右下角的系统托盘里，点击一下就能找到它。",
+        "note": "如果看不到，可以先展开托盘的小箭头，查看全部图标。",
+        "alt": "系统托盘位置示意图"
+      },
+
+      "menu": {
+        "title": "📋 托盘菜单",
+        "desc": "右下角托盘里会有 N.E.K.O 的图标，右键点击会出现很多选项。下面是两个常用功能："
+      },
+      "reset": {
+        "title": "🔄 复位模型位置",
+        "desc": "如果猫娘被拖到屏幕外或位置不理想，点击这个选项可以让她回到默认位置~"
+      },
+      "switchMode": "切换桌面/移动模式",
+      "reload": "重新加载",
+      "autoLaunch": "开机自启动",
+      "hotkey": "快捷键设置",
+      "feedback": {
+        "title": "📤 上传日志",
+        "desc": "遇到问题或有好的建议？点这里上传日志提交反馈~"
+      },
+      "exit": "退出",
+      "complete": {
+        "title": "🎉 引导完成！",
+        "desc": "恭喜你完成了所有引导！现在你已经了解了 N.E.K.O 的主要功能。开始享受和猫娘的互动吧！如需重新查看引导，可以在设置中点击「重置引导」~"
+      },
+      "resetPosition": "复位模型位置",
+      "compatibility": "兼容模式",
+      "hotkeyDesc": "在这里可以设置全局快捷键，让你更高效地控制 N.E.K.O~",
+      "uploadLogs": "上传日志",
+      "exitDesc": "想要关闭 N.E.K.O 时，在这里点击退出即可。因为窗口是无边框的，所以托盘菜单是退出应用的主要方式~"
+    },
+    "completed": "✨ 引导完成！祝你使用愉快~",
+    "resetHint": {
+      "title": "✨ 引导完成",
+      "desc": "如果想再次查看引导，可以前往「记忆浏览」页面，在「新手引导」区域重置。"
+    },
+    "model_manager": {
+      "common": {
+        "step1": {
+          "title": "🎨 选择模型类型",
+          "desc": "首先选择您要使用的模型类型：Live2D（2D 动画）或 VRM（3D 模型）。"
+        },
+        "step2": {
+          "title": "📤 上传模型",
+          "desc": "点击这里上传您的模型文件。支持 Live2D 和 VRM 格式。"
+        }
+      },
+      "live2d": {
+        "step1": {
+          "title": "🎭 选择 Live2D 模型",
+          "desc": "从已上传的 Live2D 模型中选择要使用的模型。"
+        },
+        "step2": {
+          "title": "💃 选择动作",
+          "desc": "为 Live2D 模型选择动作。点击\"播放动作\"按钮可以预览效果。"
+        },
+        "step3": {
+          "title": "😊 选择表情",
+          "desc": "为 Live2D 模型选择表情。可以设置常驻表情让模型保持该表情。"
+        },
+        "step4": {
+          "title": "🧷 常驻表情",
+          "desc": "选择一个常驻表情，让模型持续保持该表情，直到你再次更改。"
+        },
+        "step5": {
+          "title": "😄 情感配置",
+          "desc": "进入前请先选择一个模型。点击这里配置 Live2D 模型的情感表现，可为不同的情感设置对应的表情和动作组合。"
+        },
+        "step6": {
+          "title": "✨ 捏脸系统",
+          "desc": "点击这里进入捏脸系统，可以精细调整 Live2D 模型的面部参数，打造独特的猫娘形象。"
+        }
+      },
+      "vrm": {
+        "step1": {
+          "title": "🎭 选择 VRM 模型",
+          "desc": "从已上传的 VRM 模型中选择要使用的 3D 模型。"
+        },
+        "step2": {
+          "title": "💃 选择动画",
+          "desc": "为 VRM 模型选择动画。VRM 支持更丰富的 3D 动画效果。"
+        },
+        "step3": {
+          "title": "▶️ 播放动画",
+          "desc": "点击这个按钮可以预览选中的 VRM 动画效果。"
+        },
+        "step4": {
+          "title": "😊 选择表情",
+          "desc": "为 VRM 模型选择表情。VRM 模型支持多种面部表情。"
+        },
+        "step5": {
+          "title": "💡 光照系统",
+          "desc": "VRM 模型支持专业的 3D 光照系统。您可以调整环境光、主光源、补光和轮廓光，打造完美的视觉效果。"
+        },
+        "step6": {
+          "title": "🌟 环境光",
+          "desc": "调整环境光强度。环境光影响整体亮度，数值越高模型越亮。"
+        },
+        "step7": {
+          "title": "☀️ 主光源",
+          "desc": "调整主光源强度。主光源是主要的照明来源，影响模型的明暗对比。"
+        },
+        "step8": {
+          "title": "🌞 曝光",
+          "desc": "调整整体曝光强度。数值越高整体越亮，越低则更暗更有对比。"
+        },
+        "step9": {
+          "title": "🎞️ 色调映射",
+          "desc": "选择不同的色调映射算法，决定画面亮部和暗部的呈现风格。"
+        }
+      }
+    },
+    "parameter_editor": {
+      "step1": {
+        "title": "🎭 选择模型",
+        "desc": "首先选择要编辑的 Live2D 模型。只有选择了模型后，才能调整参数。"
+      },
+      "step2": {
+        "title": "🎨 参数列表",
+        "desc": "这里显示了模型的所有可调参数。每个参数控制模型的不同部分，如眼睛大小、嘴巴形状、头部角度等。"
+      },
+      "step3": {
+        "title": "👁️ 实时预览",
+        "desc": "左侧是实时预览区域。调整参数时，可以立即看到模型的变化效果。"
+      },
+      "step4": {
+        "title": "🔄 重置所有参数",
+        "desc": "点击这个按钮可以将所有参数重置为默认值。如果调整效果不满意，可以用这个功能重新开始。"
+      }
+    },
+    "emotion_manager": {
+      "step1": {
+        "title": "🎭 选择模型",
+        "desc": "首先选择要配置情感的 Live2D 模型。每个模型可以有独立的情感配置。选好模型后才能进入下一步。"
+      },
+      "step2": {
+        "title": "😊 情感配置区域",
+        "desc": "这里可以为不同的情感（如开心、悲伤、生气等）配置对应的表情和动作组合。猫娘会根据对话内容自动切换情感表现。"
+      },
+      "step3": {
+        "title": "🔄 重置配置",
+        "desc": "点击这个按钮可以将情感配置重置为默认值。"
+      }
+    },
+    "chara_manager": {
+      "step1": {
+        "title": "👤 主人档案",
+        "desc": "这是您的主人档案。档案名是必填项，其他信息（性别、昵称等）都是可选的。这些信息会影响猫娘对您的称呼和态度。"
+      },
+      "step2": {
+        "title": "📝 设置档案名",
+        "desc": "输入您的名字或昵称。猫娘会用这个名字来称呼您。最多 20 个字符。"
+      },
+      "step3": {
+        "title": "👥 性别设定",
+        "desc": "这是可选项。您可以输入您的性别或其他相关信息。这会影响猫娘对您的称呼方式。"
+      },
+      "step4": {
+        "title": "💬 昵称设定",
+        "desc": "这是可选项。您可以为自己设置一个昵称。猫娘可能会用这个昵称来称呼您。"
+      },
+      "step5": {
+        "title": "🔑 API Key 设置",
+        "desc": "点击这里配置 AI 服务的 API Key。这是猫娘能够进行对话的必要配置。"
+      },
+      "step6": {
+        "title": "🐱 猫娘档案",
+        "desc": "这里可以创建和管理多个猫娘角色。每个角色都有独特的性格、Live2D 形象和语音设定。您可以在不同的角色之间切换。"
+      },
+      "step7": {
+        "title": "➕ 新增猫娘",
+        "desc": "点击这个按钮创建一个新的猫娘角色。您可以为她设置名字、性格、形象和语音。每个角色都是独立的，有自己的记忆和性格。"
+      },
+      "step8": {
+        "title": "📋 猫娘卡片",
+        "desc": "点击猫娘名称可以展开或折叠详细信息。每个猫娘都有独立的设定，包括基础信息和进阶配置。"
+      },
+      "step9": {
+        "title": "📝 猫娘档案名",
+        "desc": "这是猫娘的名字，也是她的唯一标识。创建后可以通过\"修改名称\"按钮来更改。"
+      },
+      "step10": {
+        "title": "✨ 自定义属性",
+        "desc": "这些是猫娘的性格设定字段，如性格、背景、爱好、口头禅等。您可以自由添加和编辑这些属性，让每个猫娘都有独特的个性。"
+      },
+      "step11": {
+        "title": "🔄 切换猫娘",
+        "desc": "点击此按钮可以将这个猫娘设为当前活跃角色。切换后，主页和对话界面会使用该角色的形象和性格。"
+      },
+      "step12": {
+        "title": "⚙️ 进阶设定",
+        "desc": "点击展开进阶设定，可以配置 Live2D 模型、语音 ID、以及添加自定义性格属性（如性格、爱好、口头禅等）。"
+      },
+      "step13": {
+        "title": "🎨 模型设定",
+        "desc": "点击此链接可以选择或更换猫娘的 Live2D 形象或 VRM 模型。不同的模型会带来不同的视觉体验。"
+      },
+      "step14": {
+        "title": "🎤 语音设定",
+        "desc": "选择猫娘的语音角色。不同的 voice_id 对应不同的声音特征，让您的猫娘拥有独特的声音。"
+      }
+    },
+    "settings": {
+      "step1": {
+        "title": "🎯 新手推荐",
+        "desc": "如果您还没有 API Key，可以直接选择\"免费版\"开始使用，无需注册任何账号！"
+      },
+      "step2": {
+        "title": "🔑 核心 API 服务商",
+        "desc": "这是最重要的设置。核心 API 负责对话功能。"
+      },
+      "step3": {
+        "title": "📝 核心 API Key",
+        "desc": "将您选择的 API 服务商的 API Key 粘贴到这里。如果选择了免费版，这个字段可以留空。"
+      },
+      "step4": {
+        "title": "⚙️ 高级选项",
+        "desc": "点击这里展开高级选项。高级选项包括辅助 API 配置和自定义 API 配置。"
+      },
+      "step5": {
+        "title": "🔧 辅助 API 服务商",
+        "desc": "辅助 API 负责记忆管理和自定义语音功能。\n\n• 免费版：完全免费，但不支持自定义语音\n• 阿里：推荐选择，支持自定义语音\n• 智谱：支持 Agent 模式\n• OpenAI：记忆管理能力强\n\n注意：只有阿里支持自定义语音功能。"
+      },
+      "step6": {
+        "title": "🔑 辅助 API Key",
+        "desc": "如果您选择了阿里作为辅助 API，需要在这里填写阿里的 API Key。如果不填写，系统会使用核心 API 的 Key。"
+      },
+      "step7": {
+        "title": "🔧 自定义 API 配置",
+        "desc": "点击这里可以展开自定义 API 配置选项。如果您想使用自己的 API 服务器或其他兼容的 API 服务，可以在这里配置。"
+      },
+      "step8": {
+        "title": "✅ 启用自定义 API",
+        "desc": "勾选这个选项可以启用自定义 API 配置。启用后，您可以为不同的功能模块（摘要、纠错、情感分析等）配置独立的 API。"
+      },
+      "step9": {
+        "title": "📝 摘要模型配置",
+        "desc": "摘要模型用于生成对话摘要和记忆管理。您可以配置独立的 API 服务来处理摘要生成任务。"
+      }
+    },
+    "voice_clone": {
+      "step1": {
+        "title": "⚠️ 重要提示",
+        "desc": "语音克隆功能需要使用阿里云 API。请确保您已经在 API 设置中配置了阿里云的 API Key。"
+      },
+      "step2": {
+        "title": "🌍 选择参考音频语言",
+        "desc": "选择您上传的音频文件的语言。这帮助系统更准确地识别和克隆声音特征。"
+      },
+      "step3": {
+        "title": "🏷️ 自定义前缀",
+        "desc": "输入一个 10 字符以内的前缀（只能用数字和英文字母）。这个前缀会作为克隆音色的标识。"
+      },
+      "step4": {
+        "title": "✨ 注册音色",
+        "desc": "点击这个按钮开始克隆您的音色。系统会处理音频并生成一个独特的音色 ID。"
+      },
+      "step5": {
+        "title": "📋 已注册音色列表",
+        "desc": "这里显示所有已成功克隆的音色。您可以在角色管理中选择这些音色来为猫娘配音。"
+      }
+    },
+    "steam_workshop": {
+      "step1": {
+        "title": "📦 订阅内容列表",
+        "desc": "这里显示所有您已订阅的 Steam Workshop 内容。点击卡片可以查看详情或进行操作。"
+      },
+      "step2": {
+        "title": "💡 使用提示",
+        "desc": "如果您想使用 Steam Workshop 中的语音音色，需要前往 Live2D 设置页面手动注册。"
+      }
+    },
+    "memory_browser": {
+      "step1": {
+        "title": "💡 使用提示",
+        "desc": "刚刚结束的对话内容需要稍等片刻才会载入。如果没有看到最新的对话，可以点击猫娘名称来刷新。"
+      },
+      "step2": {
+        "title": "🐱 猫娘记忆库",
+        "desc": "这里列出了所有猫娘的记忆库。点击一个猫娘的名称可以查看和编辑她的对话历史。"
+      },
+      "step3": {
+        "title": "🤖 自动记忆整理",
+        "desc": "开启这个功能后，系统会自动整理和优化记忆内容，提高对话质量。建议保持开启状态。"
+      },
+      "step4": {
+        "title": "📝 聊天记录编辑",
+        "desc": "这里显示选中猫娘的所有对话记录。您可以在这里查看、编辑或删除特定的对话内容。"
+      }
+    },
+    "buttons": {
+      "next": "下一步",
+      "prev": "上一步",
+      "done": "完成",
+      "close": "关闭"
+    },
+    "fullscreenPrompt": {
+      "title": "🎓 开始新手引导",
+      "desc": "为了获得最佳的引导体验，建议进入全屏模式。\n全屏模式下，引导内容会更清晰，不会被其他元素遮挡。",
+      "enterFullscreen": "进入全屏引导"
+    }
   },
   "console": {
     "oggOpusInitFailed": "[OGG OPUS] 初始化 Promise 失败，将允许重试:",

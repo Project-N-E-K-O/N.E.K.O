@@ -24,20 +24,42 @@
                 <span class="tip-text" data-i18n="memory.tip1">刚刚结束的对话内容要稍等片刻才会载入，可以重新点击猫娘名称刷新。</span>
             </div>
             <div class="main">
-                <div class="file-list">
-                    <div class="file-list-title" data-i18n="memory.catgirlMemory">猫娘记忆库</div>
-                    <ul id="memory-file-list"></ul>
-                    <div class="review-toggle">
-                        <div class="review-toggle-title" data-i18n="memory.autoReview">自动记忆整理</div>
-                        <div class="auto-review-toggle-wrapper">
-                            <input type="checkbox" id="review-toggle-checkbox">
-                            <label for="review-toggle-checkbox" class="auto-review-toggle-btn">
-                                <span class="auto-review-toggle-icon"></span>
-                                <span class="auto-review-toggle-text" id="review-toggle-text" data-i18n="memory.disabled">已关闭</span>
-                            </label>
-                            <div class="auto-review-toggle-note" data-i18n="memory.autoReviewNote">
-                                开启后系统将自动整理和优化记忆内容，提高对话质量
+                <div class="left-column">
+                    <div class="file-list">
+                        <div class="file-list-title" data-i18n="memory.catgirlMemory">猫娘记忆库</div>
+                        <ul id="memory-file-list"></ul>
+                        <div class="review-toggle">
+                            <div class="review-toggle-title" data-i18n="memory.autoReview">自动记忆整理</div>
+                            <div class="auto-review-toggle-wrapper">
+                                <input type="checkbox" id="review-toggle-checkbox">
+                                <label for="review-toggle-checkbox" class="auto-review-toggle-btn">
+                                    <span class="auto-review-toggle-icon"></span>
+                                    <span class="auto-review-toggle-text" id="review-toggle-text" data-i18n="memory.disabled">已关闭</span>
+                                </label>
+                                <div class="auto-review-toggle-note" data-i18n="memory.autoReviewNote">
+                                    开启后系统将自动整理和优化记忆内容，提高对话质量
+                                </div>
                             </div>
+                        </div>
+                    </div>
+                    <div class="file-list tutorial-section">
+                        <div class="file-list-title" data-i18n="memory.tutorialReset">新手引导</div>
+                        <div class="tutorial-reset-wrapper">
+                            <select id="tutorial-reset-select">
+                                <option value="" data-i18n="memory.tutorialSelectPage">-- 选择页面 --</option>
+                                <option value="all" data-i18n="memory.tutorialAllPages">全部页面</option>
+                                <option value="home" data-i18n="memory.tutorialPageHome">主页</option>
+                                <option value="model_manager" data-i18n="memory.tutorialPageModelManager">模型设置</option>
+                                <option value="parameter_editor" data-i18n="memory.tutorialPageParameterEditor">捏脸系统</option>
+                                <option value="emotion_manager" data-i18n="memory.tutorialPageEmotionManager">情感管理</option>
+                                <option value="chara_manager" data-i18n="memory.tutorialPageCharaManager">角色管理</option>
+                                <option value="settings" data-i18n="memory.tutorialPageSettings">API设置</option>
+                                <option value="voice_clone" data-i18n="memory.tutorialPageVoiceClone">语音克隆</option>
+                                <option value="memory_browser" data-i18n="memory.tutorialPageMemoryBrowser">记忆浏览</option>
+                            </select>
+                            <button type="button" class="auto-review-toggle-btn tutorial-reset-btn" onclick="resetTutorialForPage(document.getElementById('tutorial-reset-select').value)">
+                                <span data-i18n="memory.resetTutorialBtn">重置引导</span>
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -60,6 +82,22 @@
         </div>
     </div>
     <script src="/static/js/memory_browser.js"></script>
+
+    <!-- Driver.js 库 -->
+    <script src="/static/libs/driver.min.js"></script>
+    <link rel="stylesheet" href="/static/libs/driver.min.css">
+
+    <!-- 通用教程管理器 -->
+    <script src="/static/universal-tutorial-manager.js"></script>
+
+    <!-- 初始化 -->
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            if (typeof initUniversalTutorialManager === 'function') {
+                initUniversalTutorialManager();
+            }
+        });
+    </script>
 </body>
 
 </html>

@@ -304,8 +304,12 @@ function registerVoice() {
                             resultDiv.appendChild(statusSpan);
 
                             // 通知父页面voice_id已更新
+                            const payload = { type: 'voice_id_updated', voice_id: data.voice_id, lanlan_name: lanlanName, session_restarted: res.session_restarted };
                             if (window.parent !== window) {
-                                window.parent.postMessage({ type: 'voice_id_updated', voice_id: data.voice_id, session_restarted: res.session_restarted }, window.location.origin);
+                                try { window.parent.postMessage(payload, window.location.origin); } catch (e) {}
+                            }
+                            if (window.opener && !window.opener.closed) {
+                                try { window.opener.postMessage(payload, window.location.origin); } catch (e) {}
                             }
                         }
                     }).catch(e => {

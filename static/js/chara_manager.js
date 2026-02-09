@@ -99,6 +99,25 @@ const PROFILE_NAME_TOO_LONG_KEY = 'character.profileNameTooLong';
 const NEW_PROFILE_NAME_REQUIRED_KEY = 'character.newProfileNameRequired';
 const NEW_PROFILE_NAME_TOO_LONG_KEY = 'character.newProfileNameTooLong';
 
+/**
+ * 获取字段的本地化显示标签
+ * 用于将中文键名（如"性别"）翻译为当前语言的显示文本（如"Gender"）
+ * @param {string} fieldName - 字段的原始键名
+ * @returns {string} 翻译后的标签文本
+ */
+function getFieldLabel(fieldName) {
+    // 尝试从 i18n 获取翻译
+    if (window.t) {
+        const translated = window.t(`characterProfile.labels.${fieldName}`);
+        // 如果翻译结果不等于 key 本身，说明找到了翻译
+        if (translated && translated !== `characterProfile.labels.${fieldName}`) {
+            return translated;
+        }
+    }
+    // 没有翻译则返回原始键名
+    return fieldName;
+}
+
 function tOrFallback(key, fallback, params) {
     if (window.t && typeof window.t === 'function') {
         try {
@@ -589,7 +608,7 @@ function renderMaster() {
 
         // 创建label元素（在wrapper中）
         const label = document.createElement('label');
-        label.textContent = k;
+        label.textContent = getFieldLabel(k);
         wrapper.appendChild(label);
 
         // 创建field-row（胶囊框）
@@ -1083,7 +1102,7 @@ function showCatgirlForm(key, container) {
             const deleteFieldText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">${window.t('character.deleteField')}</span>` : '<img src="/static/icons/delete.png" alt="" class="delete-icon"> 删除设定';
 
             const labelEl = document.createElement('label');
-            labelEl.textContent = k;
+            labelEl.textContent = getFieldLabel(k);
             wrapper.appendChild(labelEl);
 
             const fieldRow = document.createElement('div');
@@ -1937,7 +1956,8 @@ function openApiKeySettings() {
 function openVoiceClone(lanlanName) {
     // 使用 window.openOrFocusWindow 打开独立窗口
     const url = '/voice_clone?lanlan_name=' + encodeURIComponent(lanlanName);
-    const windowName = 'neko_voice_clone_' + encodeURIComponent(lanlanName);
+    const lanlanNameForKey = lanlanName || 'default';
+    const windowName = 'neko_voice_clone_' + encodeURIComponent(lanlanNameForKey);
 
     // 计算窗口位置，使其居中显示
     const width = 700;
@@ -2028,6 +2048,40 @@ window.addEventListener('message', function (event) {
         // API Key已更改，刷新角色数据以显示更新后的Voice ID状态
         console.log('API Key已更改，正在刷新角色数据...');
         loadCharacterData();
+    } else if (event.data && event.data.type === 'voice_id_updated') {
+        const lanlanName = event.data.lanlan_name;
+        const voiceId = event.data.voice_id;
+        if (!lanlanName || !voiceId) return;
+
+        try {
+            if (characterData && characterData['猫娘'] && characterData['猫娘'][lanlanName]) {
+                characterData['猫娘'][lanlanName]['voice_id'] = voiceId;
+            }
+
+            const switchBtn = document.getElementById(`switch-btn-${lanlanName}`);
+            const block = switchBtn ? switchBtn.closest('.catgirl-block') : null;
+            const select = block ? block.querySelector('select[name="voice_id"]') : null;
+            if (!select) return;
+
+            fetch('/api/characters/voices').then(r => r.json()).then(data => {
+                if (!data || !data.voices) return;
+                while (select.firstChild) select.removeChild(select.firstChild);
+                const voiceNotSetText = window.t ? window.t('character.voiceNotSet') : '未指定音色';
+                const defaultOption = document.createElement('option');
+                defaultOption.value = '';
+                defaultOption.textContent = voiceNotSetText;
+                select.appendChild(defaultOption);
+
+                Object.entries(data.voices).forEach(([id, voiceData]) => {
+                    const option = document.createElement('option');
+                    option.value = id;
+                    option.textContent = voiceData.prefix || id;
+                    select.appendChild(option);
+                });
+
+                select.value = voiceId;
+            }).catch(() => {});
+        } catch (e) {}
     }
 });
 

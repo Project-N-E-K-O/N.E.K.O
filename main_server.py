@@ -128,15 +128,13 @@ logger, log_config = setup_logging(service_name="Main", log_level=logging.INFO, 
 _config_manager = get_config_manager()
 
 def cleanup():
-    logger.info("Starting cleanup process")
-    for k in sync_message_queue:
-        # 清空队列（queue.Queue 没有 close/join_thread 方法）
+    """通知所有同步线程停止"""
+    logger.info("正在关闭同步线程...")
+    for k in sync_shutdown_event:
         try:
-            while sync_message_queue[k] and not sync_message_queue[k].empty():
-                sync_message_queue[k].get_nowait()
-        except: # noqa: E722
+            sync_shutdown_event[k].set()
+        except Exception:
             pass
-    logger.info("Cleanup completed")
 
 # 只在主进程中注册 cleanup 函数，防止子进程退出时执行清理
 if _IS_MAIN_PROCESS:
@@ -756,6 +754,7 @@ if __name__ == "__main__":
     import uvicorn
     import argparse
     import signal
+    import threading
     
     parser = argparse.ArgumentParser()
     parser.add_argument("--open-browser",   action="store_true",
@@ -812,10 +811,15 @@ if __name__ == "__main__":
 
     print(f"启动配置: {get_start_config()}")
 
-    # 2) 定义服务器关闭回调
-    def shutdown_server():
-        logger.info("收到浏览器关闭信号，正在关闭服务器...")
-        os.kill(os.getpid(), signal.SIGTERM)
+    # 2) 信号处理：Ctrl+C 时快速关闭
+    def _signal_handler(signum, frame):
+        logger.info("正在关闭服务器...")
+        cleanup()
+        server.should_exit = True
+        threading.Timer(3.0, lambda: os._exit(0)).start()
+    
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
 
     # 4) 启动服务器（阻塞，直到 server.should_exit=True）
     logger.info("--- Starting FastAPI Server ---")
@@ -823,5 +827,8 @@ if __name__ == "__main__":
     
     try:
         server.run()
+    except KeyboardInterrupt:
+        # 信号处理器已经处理了，这里只是捕获异常防止 traceback
+        pass
     finally:
         logger.info("服务器已关闭")
