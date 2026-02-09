@@ -1214,7 +1214,7 @@ async def translate_text_api(request: Request):
     请求格式:
     {
         "text": "要翻译的文本",
-        "target_lang": "目标语言代码 ('zh', 'en', 'ja')",
+        "target_lang": "目标语言代码 ('zh', 'en', 'ja', 'ko')",
         "source_lang": "源语言代码 (可选，为null时自动检测)"
     }
     
@@ -1298,5 +1298,4 @@ async def translate_text_api(request: Request):
             "source_lang": "unknown",
             "target_lang": "zh"
         }
-
 

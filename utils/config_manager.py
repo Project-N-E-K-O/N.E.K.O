@@ -14,7 +14,6 @@ from pathlib import Path
 from config import (
     APP_NAME,
     CONFIG_FILES,
-    DEFAULT_CHARACTERS_CONFIG,
     DEFAULT_CONFIG_DATA,
 )
 from config.prompts_chara import lanlan_prompt
@@ -450,8 +449,9 @@ class ConfigManager:
     # --- Character configuration helpers ---
 
     def get_default_characters(self):
-        """获取默认角色配置数据"""
-        return deepcopy(DEFAULT_CHARACTERS_CONFIG)
+        """获取默认角色配置数据（根据Steam语言本地化内容值）"""
+        from config import get_localized_default_characters
+        return get_localized_default_characters()
 
     def load_characters(self, character_json_path=None):
         """加载角色配置"""

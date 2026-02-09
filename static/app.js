@@ -8594,7 +8594,7 @@ window.addEventListener('message', function (event) {
 
 // 字幕提示框功能
 
-// 归一化语言代码：将 BCP-47 格式（如 'zh-CN', 'en-US'）归一化为简单代码（'zh', 'en', 'ja'）
+// 归一化语言代码：将 BCP-47 格式（如 'zh-CN', 'en-US'）归一化为简单代码（'zh', 'en', 'ja', 'ko'）
 // 与 detectLanguage() 返回的格式保持一致，避免误判
 function normalizeLanguageCode(lang) {
     if (!lang) return 'zh'; // 默认中文
@@ -8605,6 +8605,8 @@ function normalizeLanguageCode(lang) {
         return 'ja';
     } else if (langLower.startsWith('en')) {
         return 'en';
+    } else if (langLower.startsWith('ko')) {
+        return 'ko';
     }
     return 'zh'; // 默认中文
 }
@@ -8638,7 +8640,7 @@ async function getUserLanguage() {
             const response = await fetch('/api/config/user_language');
             const data = await response.json();
             if (data.success && data.language) {
-                // 归一化语言代码：将 BCP-47 格式（如 'zh-CN', 'en-US'）归一化为简单代码（'zh', 'en', 'ja'）
+                // 归一化语言代码：将 BCP-47 格式（如 'zh-CN', 'en-US'）归一化为简单代码（'zh', 'en', 'ja', 'ko'）
                 // 与 detectLanguage() 返回的格式保持一致，避免误判
                 userLanguage = normalizeLanguageCode(data.language);
                 localStorage.setItem('userLanguage', userLanguage);
@@ -8675,16 +8677,24 @@ function detectLanguage(text) {
     const chinesePattern = /[\u4e00-\u9fff]/g;
     // 日文检测（平假名、片假名）
     const japanesePattern = /[\u3040-\u309f\u30a0-\u30ff]/g;
+    // 韩文检测（谚文）
+    const koreanPattern = /[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/g;
     // 英文检测
     const englishPattern = /[a-zA-Z]/g;
     
     const chineseCount = (text.match(chinesePattern) || []).length;
     const japaneseCount = (text.match(japanesePattern) || []).length;
+    const koreanCount = (text.match(koreanPattern) || []).length;
     const englishCount = (text.match(englishPattern) || []).length;
     
     // 如果包含日文假名，优先判断为日语
     if (japaneseCount > 0) {
         return 'ja';
+    }
+    
+    // 如果包含韩文，优先判断为韩语
+    if (koreanCount > 0) {
+        return 'ko';
     }
     
     // 判断主要语言
@@ -9029,7 +9039,8 @@ function showSubtitlePrompt() {
     const fallbacks = {
         'zh': '开启字幕翻译',
         'en': 'Enable Subtitle Translation',
-        'ja': '字幕翻訳を有効にする'
+        'ja': '字幕翻訳を有効にする',
+        'ko': '자막 번역 켜기'
     };
     if (window.t) {
         const translated = window.t('subtitle.enable');
