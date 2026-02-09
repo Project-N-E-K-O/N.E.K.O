@@ -613,7 +613,14 @@ Live2DManager.prototype.setupWheelZoom = function (model) {
     const onWheelScroll = (event) => {
         if (this.isLocked || !this.currentModel) return;
         event.preventDefault();
-        const scaleFactor = 1.1;
+
+        // 根据 deltaY 大小动态计算缩放因子，避免固定倍率导致缩放过快
+        // 鼠标滚轮通常 deltaY ≈ ±100，触控板 deltaY ≈ ±1~30
+        const absDelta = Math.abs(event.deltaY);
+        // 将 deltaY 映射到 0~0.08 的缩放增量（最大约 8%）
+        const zoomStep = Math.min(absDelta / 1000, 0.08);
+        const scaleFactor = 1 + zoomStep;
+
         const oldScale = this.currentModel.scale.x;
         let newScale = event.deltaY < 0 ? oldScale * scaleFactor : oldScale / scaleFactor;
         this.currentModel.scale.set(newScale);
