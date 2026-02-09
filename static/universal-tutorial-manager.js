@@ -1,12 +1,10 @@
 /**
  * N.E.K.O 通用新手引导系统
  * 支持所有页面的引导配置
- *
- * 使用方式：
- * 1. 在页面中引入此文件
- * 2. 系统会自动检测当前页面
- * 3. 根据页面类型加载对应的引导配置
  */
+
+// 引导页面列表常量
+const TUTORIAL_PAGES = ['home', 'model_manager', 'model_manager_live2d', 'model_manager_vrm', 'model_manager_common', 'parameter_editor', 'emotion_manager', 'chara_manager', 'settings', 'voice_clone', 'steam_workshop', 'memory_browser'];
 
 class UniversalTutorialManager {
     constructor() {
@@ -17,7 +15,7 @@ class UniversalTutorialManager {
         this.driver = null;
         this.isInitialized = false;
         this.isTutorialRunning = false; // 防止重复启动
-        this.currentPage = this.detectPage();
+        this.currentPage = UniversalTutorialManager.detectPage();
         this.currentStep = 0;
         this.nextButtonGuardTimer = null;
         this.nextButtonGuardActive = false;
@@ -69,7 +67,7 @@ class UniversalTutorialManager {
     /**
      * 检测当前页面类型
      */
-    detectPage() {
+    static detectPage() {
         const path = window.location.pathname;
         const hash = window.location.hash;
 
@@ -167,11 +165,10 @@ class UniversalTutorialManager {
                 return;
             }
 
-            this.driver = new DriverClass(this.getDriverConfig());
-
+            // 注意：此处不再立即创建 driver 实例，而是延迟到 startTutorialSteps 中
+            // 这样可以确保按钮文本等配置能正确获取到最新的 i18n 翻译
             this.isInitialized = true;
-            console.log('[Tutorial] driver.js 初始化成功');
-
+            console.log('[Tutorial] driver.js 环境检测成功');
 
             // 检查是否需要自动启动引导
             this.checkAndStartTutorial();
@@ -205,6 +202,11 @@ class UniversalTutorialManager {
                 }
             },
             onHighlighted: (element, step, options) => {
+                // 去重机制说明：
+                // 1. driver.js 内部切换步骤时会触发 onHighlighted。
+                // 2. onStepChange 手动触发时也会调用此回调。
+                // 3. 使用 _lastOnHighlightedStepIndex 记录最后一次处理的步骤索引，
+                //    确保同一步骤的逻辑（特别是交互状态应用）只执行一次，避免竞争。
                 // 每次高亮元素时，确保元素在视口中
                 console.log('[Tutorial] 高亮元素:', step.element);
 
@@ -1056,6 +1058,7 @@ class UniversalTutorialManager {
             '#live2d-lock-icon',
             '#toggle-chat-btn',
             '.live2d-floating-btn',
+            // 宽泛匹配：所有以 live2d- 开头 ID 的元素都将被教程系统自动识别并控制交互状态
             '[id^="live2d-"]'
         ];
     }
@@ -1081,7 +1084,7 @@ class UniversalTutorialManager {
         const elements = new Set();
         const selectors = this.getTutorialInteractiveSelectors();
         selectors.forEach(selector => {
-            document.querySelectorAll(selector).forEach(element => elements.add(element));
+            document.querySelectorAll(selector).forEach(element => { elements.add(element); });
         });
         steps.forEach(step => {
             const element = document.querySelector(step.element);
@@ -1613,7 +1616,7 @@ class UniversalTutorialManager {
             }
         }
 
-        // 启动浮动工具栏保护定时器（每 200ms 检查一次，更频繁）
+        // 启动浮动工具栏保护定时器（每 500ms 检查一次）
         this.floatingButtonsProtectionTimer = setInterval(() => {
             const floatingButtons = document.getElementById('live2d-floating-buttons');
             if (floatingButtons && window.isInTutorial) {
@@ -1632,7 +1635,7 @@ class UniversalTutorialManager {
                     lockIcon.style.setProperty('opacity', '1', 'important');
                 }
             }
-        }, 200);
+        }, 500);
 
         // 对于设置页面和记忆浏览页面，禁用页面滚动以防止用户在引导中滚动页面导致问题
         if (this.currentPage === 'settings' || this.currentPage === 'memory_browser') {
@@ -2393,6 +2396,27 @@ class UniversalTutorialManager {
             console.log('[Tutorial] 浮动工具栏保护定时器已清除');
         }
 
+        // 恢复浮动工具栏的原始样式
+        if (this._floatingButtonsOriginalStyles !== undefined) {
+            const floatingButtons = document.getElementById('live2d-floating-buttons');
+            if (floatingButtons) {
+                floatingButtons.style.removeProperty('display');
+                floatingButtons.style.removeProperty('visibility');
+                floatingButtons.style.removeProperty('opacity');
+                if (this._floatingButtonsOriginalStyles.display) {
+                    floatingButtons.style.display = this._floatingButtonsOriginalStyles.display;
+                }
+                if (this._floatingButtonsOriginalStyles.visibility) {
+                    floatingButtons.style.visibility = this._floatingButtonsOriginalStyles.visibility;
+                }
+                if (this._floatingButtonsOriginalStyles.opacity) {
+                    floatingButtons.style.opacity = this._floatingButtonsOriginalStyles.opacity;
+                }
+                console.log('[Tutorial] 已恢复浮动工具栏原始样式');
+            }
+            this._floatingButtonsOriginalStyles = undefined;
+        }
+
         // 恢复锁图标的原始样式
         if (this._lockIconOriginalStyles !== undefined) {
             const lockIcon = document.getElementById('live2d-lock-icon');
@@ -2530,6 +2554,14 @@ class UniversalTutorialManager {
     }
 
     /**
+     * 等待指定时间
+     * @param {number} ms - 毫秒数
+     */
+    sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    /**
      * 退出全屏模式
      */
     exitFullscreenMode() {
@@ -2553,98 +2585,82 @@ class UniversalTutorialManager {
     /**
      * 确保角色管理页面的猫娘卡片和进阶设定都已展开
      * 用于进入进阶设定相关步骤前的预处理
+     * 使用 async/await + 重试机制确保 DOM 状态稳定
      */
-    _ensureCharaManagerExpanded() {
-        return new Promise((resolve) => {
-            let attempts = 0;
-            const maxAttempts = 10;
+    async _ensureCharaManagerExpanded() {
+        let attempts = 0;
+        const maxAttempts = 10;
 
-            const tryExpand = () => {
-                attempts++;
-                console.log(`[Tutorial] _ensureCharaManagerExpanded: attempt ${attempts}/${maxAttempts}`);
+        while (attempts < maxAttempts) {
+            attempts++;
+            console.log(`[Tutorial] _ensureCharaManagerExpanded: 尝试 ${attempts}/${maxAttempts}`);
 
-                // 1. 找到第一个猫娘卡片
-                const targetBlock = document.querySelector('.catgirl-block:first-child');
-                if (!targetBlock) {
-                    console.warn('[Tutorial] _ensureCharaManagerExpanded: 未找到目标猫娘卡片');
-                    if (attempts < maxAttempts) {
-                        setTimeout(tryExpand, 300);
-                    } else {
-                        resolve(false);
-                    }
-                    return;
+            // 1. 找到第一个猫娘卡片
+            const targetBlock = document.querySelector('.catgirl-block:first-child');
+            if (!targetBlock) {
+                console.warn('[Tutorial] _ensureCharaManagerExpanded: 未找到目标猫娘卡片，重试中...');
+                await this.sleep(300);
+                continue;
+            }
+
+            // 2. 确保猫娘卡片详情区域已展开
+            const details = targetBlock.querySelector('.catgirl-details');
+            const expandBtn = targetBlock.querySelector('.catgirl-expand');
+            if (details && expandBtn) {
+                const detailsStyle = window.getComputedStyle(details);
+                if (detailsStyle.display === 'none') {
+                    console.log('[Tutorial] 猫娘卡片详情未展开，正在点击展开按钮...');
+                    expandBtn.click();
+                    // 等待卡片展开动画完成
+                    await this.sleep(600);
+                    continue; // 重新进入循环以验证展开结果
+                }
+            } else {
+                console.warn('[Tutorial] _ensureCharaManagerExpanded: 猫娘卡片结构异常，缺少详情或展开按钮');
+                return false;
+            }
+
+            // 3. 确保“进阶设定”折叠区域已展开
+            const foldContainer = targetBlock.querySelector('.fold');
+            const foldToggle = targetBlock.querySelector('.fold-toggle');
+
+            if (!foldContainer || !foldToggle) {
+                console.warn('[Tutorial] _ensureCharaManagerExpanded: 未找到进阶设定折叠区域或开关');
+                return false;
+            }
+
+            const isExpanded = foldContainer.classList.contains('open') ||
+                window.getComputedStyle(foldContainer).display !== 'none';
+
+            if (!isExpanded) {
+                console.log('[Tutorial] 进阶设定未展开，正在点击切换按钮...');
+                foldToggle.click();
+                // 等待折叠展开动画并刷新 driver 位置
+                await this.sleep(500);
+                if (this.driver && typeof this.driver.refresh === 'function') {
+                    this.driver.refresh();
                 }
 
-                // 2. 确保猫娘卡片已展开
-                const details = targetBlock.querySelector('.catgirl-details');
-                const expandBtn = targetBlock.querySelector('.catgirl-expand');
-                if (details && expandBtn) {
-                    const detailsStyle = window.getComputedStyle(details);
-                    if (detailsStyle.display === 'none') {
-                        console.log('[Tutorial] 猫娘卡片未展开，正在展开...');
-                        expandBtn.click();
-                        // 等待卡片展开动画完成后再尝试展开进阶设定
-                        if (attempts < maxAttempts) {
-                            setTimeout(tryExpand, 600);
-                        } else {
-                            resolve(false);
-                        }
-                        return;
-                    }
+                // 再次验证是否成功展开
+                const finalCheck = foldContainer.classList.contains('open') ||
+                    window.getComputedStyle(foldContainer).display !== 'none';
+
+                if (finalCheck) {
+                    console.log('[Tutorial] _ensureCharaManagerExpanded: 进阶设定已成功展开');
+                    return true;
+                } else {
+                    console.warn('[Tutorial] _ensureCharaManagerExpanded: 进阶设定展开状态确认失败，继续重试...');
+                    continue;
                 }
+            }
 
-                // 3. 卡片已展开，确保进阶设定已展开
-                const foldContainer = targetBlock.querySelector('.fold');
-                const foldToggle = targetBlock.querySelector('.fold-toggle');
-                let clickedToggle = false;
+            // 如果已经走到这里，说明所有部分都已经展开了
+            console.log('[Tutorial] _ensureCharaManagerExpanded: 确认所有区域已展开');
+            return true;
+        }
 
-                if (foldContainer && foldToggle) {
-                    const isExpanded = foldContainer.classList.contains('open') ||
-                        window.getComputedStyle(foldContainer).display !== 'none';
-                    if (!isExpanded) {
-                        console.log('[Tutorial] 进阶设定未展开，正在展开...');
-                        foldToggle.click();
-                        clickedToggle = true;
-                    }
-                }
-
-                // 4. 验证展开状态，失败则重试
-                setTimeout(() => {
-                    if (this.driver && typeof this.driver.refresh === 'function') {
-                        this.driver.refresh();
-                    }
-
-                    if (clickedToggle && attempts < maxAttempts) {
-                        const fc = targetBlock.querySelector('.fold');
-                        if (fc) {
-                            const nowExpanded = fc.classList.contains('open') ||
-                                window.getComputedStyle(fc).display !== 'none';
-                            if (!nowExpanded) {
-                                console.log('[Tutorial] 进阶设定展开未确认，重试...');
-                                setTimeout(tryExpand, 300);
-                                return;
-                            }
-                        }
-                    } else if (clickedToggle) {
-                        // 最后一次尝试也失败了，检查实际展开状态 
-                        const fc = targetBlock.querySelector('.fold');
-                        if (fc) {
-                            const nowExpanded = fc.classList.contains('open') ||
-                                window.getComputedStyle(fc).display !== 'none';
-                            if (!nowExpanded) {
-                                console.warn('[Tutorial] _ensureCharaManagerExpanded: 重试耗尽，展开失败');
-                                resolve(false);
-                                return;
-                            }
-                        }
-                    }
-                    console.log('[Tutorial] _ensureCharaManagerExpanded: 完成');
-                    resolve(true);
-                }, 500);
-            };
-
-            tryExpand();
-        });
+        console.warn('[Tutorial] _ensureCharaManagerExpanded: 达到最大重试次数，可能未能完全展开');
+        return false;
     }
 
     /**
@@ -2658,12 +2674,11 @@ class UniversalTutorialManager {
     /** 
      * 重置所有页面的引导状态 
      */ 
-    resetAllTutorials() { 
-        const pages = ['home', 'model_manager', 'model_manager_live2d', 'model_manager_vrm', 'model_manager_common', 'parameter_editor', 'emotion_manager', 'chara_manager', 'settings', 'voice_clone', 'steam_workshop', 'memory_browser']; 
-        pages.forEach(page => { 
-            localStorage.removeItem(this.STORAGE_KEY_PREFIX + page); 
-        }); 
-        console.log('[Tutorial] 已重置所有页面引导'); 
+    resetAllTutorials() {
+        TUTORIAL_PAGES.forEach(page => {
+            localStorage.removeItem(this.STORAGE_KEY_PREFIX + page);
+        });
+        console.log('[Tutorial] 已重置所有页面引导');
     } 
 
     /**
@@ -2719,19 +2734,7 @@ window.universalTutorialManager = null;
  */
 function initUniversalTutorialManager() {
     // 检测当前页面类型
-    const currentPath = window.location.pathname;
-    const currentPageType = (() => {
-        if (currentPath === '/' || currentPath === '/index.html') return 'home';
-        if (currentPath.includes('parameter_editor')) return 'parameter_editor';
-        if (currentPath.includes('emotion_manager')) return 'emotion_manager';
-        if (currentPath.includes('model_manager') || currentPath.includes('l2d')) return 'model_manager';
-        if (currentPath.includes('chara_manager')) return 'chara_manager';
-        if (currentPath.includes('api_key') || currentPath.includes('settings')) return 'settings';
-        if (currentPath.includes('voice_clone')) return 'voice_clone';
-        if (currentPath.includes('steam_workshop')) return 'steam_workshop';
-        if (currentPath.includes('memory_browser')) return 'memory_browser';
-        return 'unknown';
-    })();
+    const currentPageType = UniversalTutorialManager.detectPage();
 
     // 如果全局实例存在，检查页面是否改变
     if (window.universalTutorialManager) {
@@ -2764,8 +2767,7 @@ function resetAllTutorials() {
     } else {
         // 如果管理器未初始化，直接清除 localStorage
         const prefix = 'neko_tutorial_';
-        const pages = ['home', 'model_manager', 'model_manager_live2d', 'model_manager_vrm', 'model_manager_common', 'parameter_editor', 'emotion_manager', 'chara_manager', 'settings', 'voice_clone', 'steam_workshop', 'memory_browser'];
-        pages.forEach(page => { localStorage.removeItem(prefix + page); });
+        TUTORIAL_PAGES.forEach(page => { localStorage.removeItem(prefix + page); });
     }
     alert(window.t ? window.t('memory.tutorialResetSuccess', '已重置所有引导，下次进入各页面时将重新显示引导。') : '已重置所有引导，下次进入各页面时将重新显示引导。');
 }
