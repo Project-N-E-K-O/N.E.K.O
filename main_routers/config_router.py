@@ -132,9 +132,11 @@ async def save_preferences(request: Request):
         display = data.get('display')
         # 获取旋转信息（可选，用于VRM模型朝向）
         rotation = data.get('rotation')
-        
+        # 获取视口信息（可选，用于跨分辨率位置和缩放归一化）
+        viewport = data.get('viewport')
+
         # 更新偏好
-        if update_model_preferences(data['model_path'], data['position'], data['scale'], parameters, display, rotation):
+        if update_model_preferences(data['model_path'], data['position'], data['scale'], parameters, display, rotation, viewport):
             return {"success": True, "message": "偏好设置已保存"}
         else:
             return {"success": False, "error": "保存失败"}

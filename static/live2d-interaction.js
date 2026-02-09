@@ -1238,8 +1238,18 @@ Live2DManager.prototype._savePositionAfterInteraction = async function () {
         }
     }
 
+    // 获取当前视口尺寸（用于跨分辨率位置和缩放归一化）
+    let viewportInfo = null;
+    if (this.pixi_app && this.pixi_app.renderer) {
+        const w = this.pixi_app.renderer.width;
+        const h = this.pixi_app.renderer.height;
+        if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+            viewportInfo = { width: w, height: h };
+        }
+    }
+
     // 异步保存，不阻塞交互
-    this.saveUserPreferences(this._lastLoadedModelPath, position, scale, null, displayInfo)
+    this.saveUserPreferences(this._lastLoadedModelPath, position, scale, null, displayInfo, viewportInfo)
         .then(success => {
             if (success) {
                 console.debug('模型位置和缩放已自动保存');

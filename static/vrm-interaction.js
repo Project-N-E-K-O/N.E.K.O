@@ -1091,6 +1091,16 @@ class VRMInteraction {
             }
         }
 
+        // 获取当前视口尺寸（用于跨分辨率缩放归一化）
+        let viewportInfo = null;
+        if (this.manager.renderer && this.manager.renderer.domElement) {
+            const w = this.manager.renderer.domElement.clientWidth || window.innerWidth;
+            const h = this.manager.renderer.domElement.clientHeight || window.innerHeight;
+            if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+                viewportInfo = { width: w, height: h };
+            }
+        }
+
         // 异步保存，不阻塞交互
         if (this.manager.core && typeof this.manager.core.saveUserPreferences === 'function') {
             this.manager.core.saveUserPreferences(
@@ -1098,7 +1108,8 @@ class VRMInteraction {
                 position,
                 scale,
                 rotation,
-                displayInfo
+                displayInfo,
+                viewportInfo
             ).then(success => {
                 if (!success) {
                     console.warn('[VRM] 自动保存位置失败');
