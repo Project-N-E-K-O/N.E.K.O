@@ -27,6 +27,7 @@ class UniversalTutorialManager {
         this.tutorialMarkerDisplayCache = null;
         this.tutorialRollbackActive = false;
         this._applyingInteractionState = false;
+        this._stepChanging = false;
         this._lastOnHighlightedStepIndex = null;
 
         // 用于追踪在引导中修改过的元素及其原始样式
@@ -2130,8 +2131,14 @@ class UniversalTutorialManager {
      * 步骤改变时的回调
      */
     async onStepChange() {
-        this.currentStep = this.driver.currentStep || 0;
-        console.log(`[Tutorial] 当前步骤: ${this.currentStep + 1}`);
+        if (this._stepChanging) {
+            console.log('[Tutorial] 步骤正在切换中，跳过重复调用');
+            return;
+        }
+        this._stepChanging = true;
+        try {
+            this.currentStep = this.driver.currentStep || 0;
+            console.log(`[Tutorial] 当前步骤: ${this.currentStep + 1}`);
 
         // 使用缓存的已验证步骤，而不是重新调用 getStepsForPage()
         // 这样可以保持与 startTutorialSteps 中使用的步骤列表一致
@@ -2312,7 +2319,10 @@ class UniversalTutorialManager {
         setTimeout(() => {
             this.enablePopoverDragging();
         }, 200);
+    } finally {
+        this._stepChanging = false;
     }
+}
 
     /**
      * 引导结束时的回调
@@ -2541,7 +2551,6 @@ class UniversalTutorialManager {
         return new Promise((resolve) => {
             let attempts = 0;
             const maxAttempts = 10;
-            const self = this;
 
             const tryExpand = () => {
                 attempts++;
@@ -2594,8 +2603,8 @@ class UniversalTutorialManager {
 
                 // 4. 验证展开状态，失败则重试
                 setTimeout(() => {
-                    if (self.driver && typeof self.driver.refresh === 'function') {
-                        self.driver.refresh();
+                    if (this.driver && typeof this.driver.refresh === 'function') {
+                        this.driver.refresh();
                     }
 
                     if (clickedToggle && attempts < maxAttempts) {
