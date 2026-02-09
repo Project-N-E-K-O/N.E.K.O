@@ -768,7 +768,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 dropdownId: 'expression-dropdown',
                 textSpanId: 'expression-select-text',
                 iconClass: 'expression-select-icon',
-                iconSrc: '/static/icons/parameter_editor_icon.png?v=1',
+                iconSrc: '/static/icons/expression_chosen.png?v=1',
                 defaultText: window.i18next?.t('live2d.selectExpression') || '选择表情',
                 iconAlt: window.i18next?.t('live2d.selectExpression') || '选择表情',
                 shouldSkipOption: (option) => {
@@ -869,7 +869,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 dropdownId: 'vrm-expression-dropdown',
                 textSpanId: 'vrm-expression-select-text',
                 iconClass: 'vrm-expression-select-icon',
-                iconSrc: '/static/icons/parameter_editor_icon.png?v=1',
+                iconSrc: '/static/icons/expression_chosen.png?v=1',
                 defaultText: window.i18next?.t('live2d.vrmExpression.selectExpression') || '选择表情',
                 iconAlt: window.i18next?.t('live2d.vrmExpression.selectExpression') || '选择表情',
                 shouldSkipOption: (option) => {
@@ -1327,7 +1327,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         currentModelType = type;
         localStorage.setItem('modelType', type);
         if (modelTypeSelect) modelTypeSelect.value = type;
-        
+
+        const sidebar = document.getElementById('sidebar');
+        if (sidebar) {
+            sidebar.classList.toggle('mode-live2d', type === 'live2d');
+            sidebar.classList.toggle('mode-vrm', type === 'vrm');
+        }
+
         // 更新模型类型按钮文字
         if (modelTypeManager) {
             modelTypeManager.updateButtonText();
