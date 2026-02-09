@@ -1056,7 +1056,7 @@ class UniversalTutorialManager {
             '#live2d-lock-icon',
             '#toggle-chat-btn',
             '.live2d-floating-btn',
-            '[id^="live2d-btn-"]'
+            '[id^="live2d-"]'
         ];
     }
 
@@ -1074,15 +1074,7 @@ class UniversalTutorialManager {
             }
         });
 
-        if (isMatched) return true;
-
-        // 额外的特殊逻辑：匹配所有以 live2d- 开头的 ID（保持与原有逻辑兼容）
-        const id = element.id || '';
-        if (id.startsWith('live2d-')) {
-            return true;
-        }
-
-        return false;
+        return isMatched;
     }
 
     collectTutorialControlledElements(steps = []) {
@@ -2301,27 +2293,14 @@ class UniversalTutorialManager {
                         // 对于需要等待动态元素的步骤，多次刷新以确保位置正确
                         if (currentStepConfig.skipInitialCheck) {
                             console.log(`[Tutorial] 动态元素步骤，将多次刷新位置`);
-                            // 第一次刷新
-                            setTimeout(() => {
-                                if (this.driver && typeof this.driver.refresh === 'function') {
-                                    this.driver.refresh();
-                                    console.log(`[Tutorial] 步骤切换后刷新高亮框位置 (第1次)`);
-                                }
-                            }, 200);
-                            // 第二次刷新
-                            setTimeout(() => {
-                                if (this.driver && typeof this.driver.refresh === 'function') {
-                                    this.driver.refresh();
-                                    console.log(`[Tutorial] 步骤切换后刷新高亮框位置 (第2次)`);
-                                }
-                            }, 600);
-                            // 第三次刷新
-                            setTimeout(() => {
-                                if (this.driver && typeof this.driver.refresh === 'function') {
-                                    this.driver.refresh();
-                                    console.log(`[Tutorial] 步骤切换后刷新高亮框位置 (第3次)`);
-                                }
-                            }, 1000);
+                            [200, 600, 1000].forEach((delay, i) => {
+                                setTimeout(() => {
+                                    if (this.driver && typeof this.driver.refresh === 'function') {
+                                        this.driver.refresh();
+                                        console.log(`[Tutorial] 步骤切换后刷新高亮框位置 (第${i + 1}次)`);
+                                    }
+                                }, delay);
+                            });
                         } else {
                             setTimeout(() => {
                                 if (this.driver && typeof this.driver.refresh === 'function') {
@@ -2344,7 +2323,9 @@ class UniversalTutorialManager {
             // 如果在执行期间有新的步骤切换请求，则再次触发
             if (this._pendingStepChange) {
                 console.log('[Tutorial] 处理待处理的步骤切换请求');
-                this.onStepChange();
+                this.onStepChange().catch(err => {
+                    console.error('[Tutorial] 待处理步骤切换失败:', err);
+                });
             }
         }
     }
