@@ -29,6 +29,7 @@ class UniversalTutorialManager {
         this._applyingInteractionState = false;
         this._stepChanging = false;
         this._lastOnHighlightedStepIndex = null;
+        this._lastAppliedStateKey = null;
 
         // 用于追踪在引导中修改过的元素及其原始样式
         this.modifiedElementsMap = new Map();
@@ -1255,19 +1256,33 @@ class UniversalTutorialManager {
         this.tutorialControlledElements = new Set();
         this.tutorialMarkerDisplayCache = null;
         this.tutorialRollbackActive = false;
+        this._lastAppliedStateKey = null;
         console.log('[Tutorial] 已恢复交互元素默认状态');
     }
 
     async applyTutorialInteractionState(currentStepConfig, context) {
         if (!window.isInTutorial || !currentStepConfig) return;
 
+        // 生成当前状态的唯一标识
+        const currentStepIndex = (this.driver && typeof this.driver.currentStep === 'number')
+            ? this.driver.currentStep
+            : this.currentStep;
+        const stateKey = `${currentStepIndex}_${currentStepConfig.element}_${!!currentStepConfig.disableActiveInteraction}_${!!currentStepConfig.enableModelInteraction}`;
+
         if (this._applyingInteractionState) {
             console.log('[Tutorial] 交互状态正在应用中，跳过重复调用');
             return;
         }
 
+        // 如果状态已应用且不是特殊上下文（如 start 或 rollback），则跳过以减少重复验证周期
+        if (this._lastAppliedStateKey === stateKey && context !== 'start' && context !== 'rollback') {
+            console.log(`[Tutorial] 交互状态已应用，跳过重复操作 (Context: ${context})`);
+            return;
+        }
+
         try {
             this._applyingInteractionState = true;
+            this._lastAppliedStateKey = stateKey;
             this.tutorialRollbackActive = false;
             if (!this.tutorialControlledElements || this.tutorialControlledElements.size === 0) {
                 this.collectTutorialControlledElements(this.cachedValidSteps || []);
@@ -2140,189 +2155,189 @@ class UniversalTutorialManager {
             this.currentStep = this.driver.currentStep || 0;
             console.log(`[Tutorial] 当前步骤: ${this.currentStep + 1}`);
 
-        // 使用缓存的已验证步骤，而不是重新调用 getStepsForPage()
-        // 这样可以保持与 startTutorialSteps 中使用的步骤列表一致
-        const steps = this.cachedValidSteps || this.getStepsForPage();
-        if (this.currentStep < steps.length) {
-            const currentStepConfig = steps[this.currentStep];
+            // 使用缓存的已验证步骤，而不是重新调用 getStepsForPage()
+            // 这样可以保持与 startTutorialSteps 中使用的步骤列表一致
+            const steps = this.cachedValidSteps || this.getStepsForPage();
+            if (this.currentStep < steps.length) {
+                const currentStepConfig = steps[this.currentStep];
 
-            // 进入新步骤前，先清理上一阶段的"下一步"前置校验
-            this.clearNextButtonGuard();
+                // 进入新步骤前，先清理上一阶段的"下一步"前置校验
+                this.clearNextButtonGuard();
 
-            // 触发步骤特定的 onHighlighted（driver.min.js 不支持该回调）
-            if (currentStepConfig.onHighlighted && typeof currentStepConfig.onHighlighted === 'function') {
-                if (this._lastOnHighlightedStepIndex !== this.currentStep) {
-                    try {
-                        console.log('[Tutorial] 手动触发步骤 onHighlighted');
-                        currentStepConfig.onHighlighted.call(this);
-                        this._lastOnHighlightedStepIndex = this.currentStep;
-                    } catch (error) {
-                        console.error('[Tutorial] 步骤 onHighlighted 执行失败:', error);
+                // 触发步骤特定的 onHighlighted（driver.min.js 不支持该回调）
+                if (currentStepConfig.onHighlighted && typeof currentStepConfig.onHighlighted === 'function') {
+                    if (this._lastOnHighlightedStepIndex !== this.currentStep) {
+                        try {
+                            console.log('[Tutorial] 手动触发步骤 onHighlighted');
+                            currentStepConfig.onHighlighted.call(this);
+                            this._lastOnHighlightedStepIndex = this.currentStep;
+                        } catch (error) {
+                            console.error('[Tutorial] 步骤 onHighlighted 执行失败:', error);
+                        }
                     }
                 }
-            }
 
-            // 角色管理页面：进入进阶设定相关步骤前，确保猫娘卡片和进阶设定都已展开
-            if (this.currentPage === 'chara_manager') {
-                const needsAdvancedSettings = [
-                    '.catgirl-block:first-child .fold-toggle',
-                    '.catgirl-block:first-child .live2d-link',
-                    '.catgirl-block:first-child select[name="voice_id"]'
-                ].includes(currentStepConfig.element);
+                // 角色管理页面：进入进阶设定相关步骤前，确保猫娘卡片和进阶设定都已展开
+                if (this.currentPage === 'chara_manager') {
+                    const needsAdvancedSettings = [
+                        '.catgirl-block:first-child .fold-toggle',
+                        '.catgirl-block:first-child .live2d-link',
+                        '.catgirl-block:first-child select[name="voice_id"]'
+                    ].includes(currentStepConfig.element);
 
-                if (needsAdvancedSettings) {
-                    console.log('[Tutorial] 进入进阶设定相关步骤，确保展开状态');
-                    await this._ensureCharaManagerExpanded();
-                }
-            }
-
-            await this.applyTutorialInteractionState(currentStepConfig, 'step-change');
-
-
-            // 情感配置页面：未选择模型时禁止进入下一步
-            if (this.currentPage === 'emotion_manager' &&
-                currentStepConfig.element === '#model-select') {
-                const updateNextState = () => {
-                    const hasModel = this.hasEmotionManagerModelSelected();
-                    this.setNextButtonState(hasModel, '请先选择模型');
-                    if (hasModel && this.nextButtonGuardTimer) {
-                        clearInterval(this.nextButtonGuardTimer);
-                        this.nextButtonGuardTimer = null;
+                    if (needsAdvancedSettings) {
+                        console.log('[Tutorial] 进入进阶设定相关步骤，确保展开状态');
+                        await this._ensureCharaManagerExpanded();
                     }
-                };
-
-                this.nextButtonGuardActive = true;
-                updateNextState();
-                this.nextButtonGuardTimer = setInterval(updateNextState, 300);
-            }
-
-            // 情感配置前必须先选择/加载 Live2D 模型，避免进入后出错
-            if (this.currentPage === 'model_manager' &&
-                currentStepConfig.element === '#emotion-config-btn' &&
-                !this.hasLive2DModelLoaded()) {
-                console.warn('[Tutorial] 未检测到已加载的 Live2D 模型，跳转回选择模型步骤');
-                const targetIndex = steps.findIndex(step => step.element === '#live2d-model-select-btn');
-                if (this.driver && typeof this.driver.showStep === 'function' && targetIndex >= 0) {
-                    this.driver.showStep(targetIndex);
-                    return;
-                }
-            }
-
-            // 情感配置页面中，未选模型时不进入配置区域
-            if (this.currentPage === 'emotion_manager' &&
-                currentStepConfig.element === '#emotion-config' &&
-                !this.hasEmotionManagerModelSelected()) {
-                console.warn('[Tutorial] 情感配置页面未选择模型，跳转回选择模型步骤');
-                const targetIndex = steps.findIndex(step => step.element === '#model-select');
-                if (this.driver && typeof this.driver.showStep === 'function' && targetIndex >= 0) {
-                    this.driver.showStep(targetIndex);
-                    return;
-                }
-            }
-
-            const element = document.querySelector(currentStepConfig.element);
-
-            if (element) {
-                // 检查元素是否隐藏，如果隐藏则显示
-                if (!this.isElementVisible(element) && !currentStepConfig.skipAutoShow) {
-                    console.warn(`[Tutorial] 当前步骤的元素隐藏，正在显示: ${currentStepConfig.element}`);
-                    this.showElementForTutorial(element, currentStepConfig.element);
                 }
 
-                // 执行步骤中定义的操作
-                if (currentStepConfig.action) {
-                    if (currentStepConfig.action === 'click') {
-                        setTimeout(() => {
-                            console.log(`[Tutorial] 执行自动点击: ${currentStepConfig.element}`);
+                await this.applyTutorialInteractionState(currentStepConfig, 'step-change');
 
-                            // 1. 找到要点击的元素
-                            const innerTrigger = element.querySelector('.catgirl-expand, .fold-toggle');
-                            const clickTarget = innerTrigger || element;
 
-                            // 2. 检查是否是折叠类元素，如果已展开则不点击
-                            let shouldClick = true;
-                            if (clickTarget.classList.contains('fold-toggle')) {
-                                // 检查进阶设定是否已展开
-                                const foldContainer = clickTarget.closest('.catgirl-block')?.querySelector('.fold');
-                                if (foldContainer) {
-                                    const isExpanded = foldContainer.classList.contains('open') ||
-                                        window.getComputedStyle(foldContainer).display !== 'none';
-                                    if (isExpanded) {
-                                        console.log('[Tutorial] 进阶设定已展开，跳过点击');
-                                        shouldClick = false;
-                                    }
-                                }
-                            } else if (clickTarget.classList.contains('catgirl-expand')) {
-                                // 检查猫娘卡片是否已展开
-                                const details = clickTarget.closest('.catgirl-block')?.querySelector('.catgirl-details');
-                                if (details) {
-                                    const isExpanded = window.getComputedStyle(details).display !== 'none';
-                                    if (isExpanded) {
-                                        console.log('[Tutorial] 猫娘卡片已展开，跳过点击');
-                                        shouldClick = false;
-                                    }
-                                }
-                            }
+                // 情感配置页面：未选择模型时禁止进入下一步
+                if (this.currentPage === 'emotion_manager' &&
+                    currentStepConfig.element === '#model-select') {
+                    const updateNextState = () => {
+                        const hasModel = this.hasEmotionManagerModelSelected();
+                        this.setNextButtonState(hasModel, '请先选择模型');
+                        if (hasModel && this.nextButtonGuardTimer) {
+                            clearInterval(this.nextButtonGuardTimer);
+                            this.nextButtonGuardTimer = null;
+                        }
+                    };
 
-                            // 3. 执行点击
-                            if (shouldClick) {
-                                clickTarget.click();
-                            }
+                    this.nextButtonGuardActive = true;
+                    updateNextState();
+                    this.nextButtonGuardTimer = setInterval(updateNextState, 300);
+                }
 
-                            // 4. 刷新高亮框
+                // 情感配置前必须先选择/加载 Live2D 模型，避免进入后出错
+                if (this.currentPage === 'model_manager' &&
+                    currentStepConfig.element === '#emotion-config-btn' &&
+                    !this.hasLive2DModelLoaded()) {
+                    console.warn('[Tutorial] 未检测到已加载的 Live2D 模型，跳转回选择模型步骤');
+                    const targetIndex = steps.findIndex(step => step.element === '#live2d-model-select-btn');
+                    if (this.driver && typeof this.driver.showStep === 'function' && targetIndex >= 0) {
+                        this.driver.showStep(targetIndex);
+                        return;
+                    }
+                }
+
+                // 情感配置页面中，未选模型时不进入配置区域
+                if (this.currentPage === 'emotion_manager' &&
+                    currentStepConfig.element === '#emotion-config' &&
+                    !this.hasEmotionManagerModelSelected()) {
+                    console.warn('[Tutorial] 情感配置页面未选择模型，跳转回选择模型步骤');
+                    const targetIndex = steps.findIndex(step => step.element === '#model-select');
+                    if (this.driver && typeof this.driver.showStep === 'function' && targetIndex >= 0) {
+                        this.driver.showStep(targetIndex);
+                        return;
+                    }
+                }
+
+                const element = document.querySelector(currentStepConfig.element);
+
+                if (element) {
+                    // 检查元素是否隐藏，如果隐藏则显示
+                    if (!this.isElementVisible(element) && !currentStepConfig.skipAutoShow) {
+                        console.warn(`[Tutorial] 当前步骤的元素隐藏，正在显示: ${currentStepConfig.element}`);
+                        this.showElementForTutorial(element, currentStepConfig.element);
+                    }
+
+                    // 执行步骤中定义的操作
+                    if (currentStepConfig.action) {
+                        if (currentStepConfig.action === 'click') {
                             setTimeout(() => {
-                                if (this.driver) this.driver.refresh();
-                            }, 500);
+                                console.log(`[Tutorial] 执行自动点击: ${currentStepConfig.element}`);
 
-                        }, 300);
-                    }
-                } else {
-                    // 即使没有点击操作，也在步骤切换后刷新位置
-                    // 对于需要等待动态元素的步骤，多次刷新以确保位置正确
-                    if (currentStepConfig.skipInitialCheck) {
-                        console.log(`[Tutorial] 动态元素步骤，将多次刷新位置`);
-                        // 第一次刷新
-                        setTimeout(() => {
-                            if (this.driver && typeof this.driver.refresh === 'function') {
-                                this.driver.refresh();
-                                console.log(`[Tutorial] 步骤切换后刷新高亮框位置 (第1次)`);
-                            }
-                        }, 200);
-                        // 第二次刷新
-                        setTimeout(() => {
-                            if (this.driver && typeof this.driver.refresh === 'function') {
-                                this.driver.refresh();
-                                console.log(`[Tutorial] 步骤切换后刷新高亮框位置 (第2次)`);
-                            }
-                        }, 600);
-                        // 第三次刷新
-                        setTimeout(() => {
-                            if (this.driver && typeof this.driver.refresh === 'function') {
-                                this.driver.refresh();
-                                console.log(`[Tutorial] 步骤切换后刷新高亮框位置 (第3次)`);
-                            }
-                        }, 1000);
+                                // 1. 找到要点击的元素
+                                const innerTrigger = element.querySelector('.catgirl-expand, .fold-toggle');
+                                const clickTarget = innerTrigger || element;
+
+                                // 2. 检查是否是折叠类元素，如果已展开则不点击
+                                let shouldClick = true;
+                                if (clickTarget.classList.contains('fold-toggle')) {
+                                    // 检查进阶设定是否已展开
+                                    const foldContainer = clickTarget.closest('.catgirl-block')?.querySelector('.fold');
+                                    if (foldContainer) {
+                                        const isExpanded = foldContainer.classList.contains('open') ||
+                                            window.getComputedStyle(foldContainer).display !== 'none';
+                                        if (isExpanded) {
+                                            console.log('[Tutorial] 进阶设定已展开，跳过点击');
+                                            shouldClick = false;
+                                        }
+                                    }
+                                } else if (clickTarget.classList.contains('catgirl-expand')) {
+                                    // 检查猫娘卡片是否已展开
+                                    const details = clickTarget.closest('.catgirl-block')?.querySelector('.catgirl-details');
+                                    if (details) {
+                                        const isExpanded = window.getComputedStyle(details).display !== 'none';
+                                        if (isExpanded) {
+                                            console.log('[Tutorial] 猫娘卡片已展开，跳过点击');
+                                            shouldClick = false;
+                                        }
+                                    }
+                                }
+
+                                // 3. 执行点击
+                                if (shouldClick) {
+                                    clickTarget.click();
+                                }
+
+                                // 4. 刷新高亮框
+                                setTimeout(() => {
+                                    if (this.driver) this.driver.refresh();
+                                }, 500);
+
+                            }, 300);
+                        }
                     } else {
-                        setTimeout(() => {
-                            if (this.driver && typeof this.driver.refresh === 'function') {
-                                this.driver.refresh();
-                                console.log(`[Tutorial] 步骤切换后刷新高亮框位置`);
-                            }
-                        }, 200);
+                        // 即使没有点击操作，也在步骤切换后刷新位置
+                        // 对于需要等待动态元素的步骤，多次刷新以确保位置正确
+                        if (currentStepConfig.skipInitialCheck) {
+                            console.log(`[Tutorial] 动态元素步骤，将多次刷新位置`);
+                            // 第一次刷新
+                            setTimeout(() => {
+                                if (this.driver && typeof this.driver.refresh === 'function') {
+                                    this.driver.refresh();
+                                    console.log(`[Tutorial] 步骤切换后刷新高亮框位置 (第1次)`);
+                                }
+                            }, 200);
+                            // 第二次刷新
+                            setTimeout(() => {
+                                if (this.driver && typeof this.driver.refresh === 'function') {
+                                    this.driver.refresh();
+                                    console.log(`[Tutorial] 步骤切换后刷新高亮框位置 (第2次)`);
+                                }
+                            }, 600);
+                            // 第三次刷新
+                            setTimeout(() => {
+                                if (this.driver && typeof this.driver.refresh === 'function') {
+                                    this.driver.refresh();
+                                    console.log(`[Tutorial] 步骤切换后刷新高亮框位置 (第3次)`);
+                                }
+                            }, 1000);
+                        } else {
+                            setTimeout(() => {
+                                if (this.driver && typeof this.driver.refresh === 'function') {
+                                    this.driver.refresh();
+                                    console.log(`[Tutorial] 步骤切换后刷新高亮框位置`);
+                                }
+                            }, 200);
+                        }
                     }
                 }
             }
-        }
 
-        // 在步骤切换后，延迟启用 popover 拖动功能
-        // 因为 driver.js 可能会重新渲染 popover
-        setTimeout(() => {
-            this.enablePopoverDragging();
-        }, 200);
-    } finally {
-        this._stepChanging = false;
+            // 在步骤切换后，延迟启用 popover 拖动功能
+            // 因为 driver.js 可能会重新渲染 popover
+            setTimeout(() => {
+                this.enablePopoverDragging();
+            }, 200);
+        } finally {
+            this._stepChanging = false;
+        }
     }
-}
 
     /**
      * 引导结束时的回调
@@ -2331,6 +2346,7 @@ class UniversalTutorialManager {
         // 重置运行标志
         this.isTutorialRunning = false;
         this.clearNextButtonGuard();
+        this._lastAppliedStateKey = null;
 
         // 只有进入了全屏的页面才需要退出全屏
         const pagesNeedingFullscreen = []; // 已禁用全屏提示
@@ -2615,6 +2631,18 @@ class UniversalTutorialManager {
                             if (!nowExpanded) {
                                 console.log('[Tutorial] 进阶设定展开未确认，重试...');
                                 setTimeout(tryExpand, 300);
+                                return;
+                            }
+                        }
+                    } else if (clickedToggle) {
+                        // 最后一次尝试也失败了，检查实际展开状态 
+                        const fc = targetBlock.querySelector('.fold');
+                        if (fc) {
+                            const nowExpanded = fc.classList.contains('open') ||
+                                window.getComputedStyle(fc).display !== 'none';
+                            if (!nowExpanded) {
+                                console.warn('[Tutorial] _ensureCharaManagerExpanded: 重试耗尽，展开失败');
+                                resolve(false);
                                 return;
                             }
                         }
