@@ -35,6 +35,7 @@ class UniversalTutorialManager {
         this._refreshTimers = [];
 
         // 刷新延迟常量
+        this.LAYOUT_REFRESH_DELAY = 100;
         this.DYNAMIC_REFRESH_DELAYS = [200, 600, 1000];
 
         // 用于追踪在引导中修改过的元素及其原始样式
@@ -262,7 +263,7 @@ class UniversalTutorialManager {
                     })().catch(err => {
                         console.error('[Tutorial] onHighlighted 回调执行失败:', err);
                     });
-                }, 100);
+                }, this.LAYOUT_REFRESH_DELAY);
             }
         };
     }
@@ -1230,8 +1231,8 @@ class UniversalTutorialManager {
         if (this.driver && typeof this.driver.refresh === 'function') {
             this.driver.refresh();
         }
-        // 等待驱动程序完成高亮框重定位（匹配 onHighlighted 的 100ms 延迟）
-        await new Promise(r => setTimeout(r, 100));
+        // 等待驱动程序完成高亮框重定位（匹配 onHighlighted 的延迟）
+        await new Promise(r => setTimeout(r, this.LAYOUT_REFRESH_DELAY));
 
         void document.body.offsetHeight;
         const ok = this.validateTutorialLayout(currentElement, context);
@@ -1566,6 +1567,9 @@ class UniversalTutorialManager {
         if (!this.driver) {
             console.error('[Tutorial] driver 实例创建失败，无法启动引导');
             this.isTutorialRunning = false;
+            window.isInTutorial = false;
+            this.restoreTutorialInteractionState();
+            this.setTutorialMarkersVisible(true);
             return;
         }
 
@@ -2173,8 +2177,14 @@ class UniversalTutorialManager {
         
         this._stepChanging = true;
         this._pendingStepChange = false;
+        let succeeded = false;
 
         try {
+            if (!this.driver) {
+                console.warn('[Tutorial] driver 已销毁，跳过步骤切换');
+                this.currentStep = 0;
+                return;
+            }
             this.currentStep = this.driver.currentStep || 0;
             console.log(`[Tutorial] 当前步骤: ${this.currentStep + 1}`);
 
@@ -2276,7 +2286,7 @@ class UniversalTutorialManager {
                     // 执行步骤中定义的操作
                     if (currentStepConfig.action) {
                         if (currentStepConfig.action === 'click') {
-                            setTimeout(() => {
+                            const timer = setTimeout(() => {
                                 console.log(`[Tutorial] 执行自动点击: ${currentStepConfig.element}`);
 
                                 // 1. 找到要点击的元素
@@ -2314,11 +2324,13 @@ class UniversalTutorialManager {
                                 }
 
                                 // 4. 刷新高亮框
-                                setTimeout(() => {
+                                const refreshTimer = setTimeout(() => {
                                     if (this.driver) this.driver.refresh();
                                 }, 500);
+                                if (this._refreshTimers) this._refreshTimers.push(refreshTimer);
 
                             }, 300);
+                            if (this._refreshTimers) this._refreshTimers.push(timer);
                         }
                     } else {
                         // 即使没有点击操作，也在步骤切换后刷新位置
@@ -2352,10 +2364,17 @@ class UniversalTutorialManager {
             setTimeout(() => {
                 this.enablePopoverDragging();
             }, 200);
+
+            succeeded = true;
+        } catch (error) {
+            console.error('[Tutorial] 步骤切换回调执行出错:', error);
+            // 发生错误时确保清除待处理标记，避免进入死循环
+            this._pendingStepChange = false;
+            throw error;
         } finally {
             this._stepChanging = false;
-            // 如果在执行期间有新的步骤切换请求，则再次触发
-            if (this._pendingStepChange) {
+            // 如果在执行期间有新的步骤切换请求，且当前步骤处理成功，则再次触发
+            if (succeeded && this._pendingStepChange) {
                 console.log('[Tutorial] 处理待处理的步骤切换请求');
                 this.onStepChange().catch(err => {
                     console.error('[Tutorial] 待处理步骤切换失败:', err);
@@ -2748,7 +2767,16 @@ class UniversalTutorialManager {
      * 重新启动当前页面的引导
      */
     restartCurrentTutorial() {
+        // 清除浮动按钮保护定时器，防止在重启时留下陈旧的计时器
+        if (this.floatingButtonsProtectionTimer) {
+            clearInterval(this.floatingButtonsProtectionTimer);
+            this.floatingButtonsProtectionTimer = null;
+        }
+
         // 先销毁现有的 driver 以避免残留的监听器和遮罩
+        if (this.isTutorialRunning) {
+            this.onTutorialEnd();
+        }
         if (this.driver) {
             this.driver.destroy();
             this.driver = null;
@@ -2781,7 +2809,10 @@ function initUniversalTutorialManager() {
     if (window.universalTutorialManager) {
         if (window.universalTutorialManager.currentPage !== currentPageType) {
             console.log('[Tutorial] 页面已改变，销毁旧实例并创建新实例');
-            // 销毁旧的 driver 实例
+            // 销毁旧的 driver 实例和清理状态
+            if (window.universalTutorialManager.isTutorialRunning) {
+                window.universalTutorialManager.onTutorialEnd();
+            }
             if (window.universalTutorialManager.driver) {
                 window.universalTutorialManager.driver.destroy();
             }
