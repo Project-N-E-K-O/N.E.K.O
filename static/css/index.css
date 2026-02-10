@@ -374,10 +374,10 @@ position: absolute;
 /* 绝对定位于容器内 */
 top: 8px;
 right: 8px;
-width: 24px;
-/* 按钮尺寸以容纳图标 */
-height: 24px;
-/* 按钮尺寸以容纳图标 */
+width: 32px;
+/* 按钮尺寸匹配图标 */
+height: 32px;
+/* 按钮尺寸匹配图标 */
 background: transparent;
 /* 透明背景，去掉深蓝色方框 */
 opacity: 1;
@@ -390,7 +390,7 @@ cursor: grab;
 font-weight: bold;
 font-size: 14px;
 /* 改为固定像素值，确保一致性 */
-line-height: 24px;
+line-height: 32px;
 /* 与按钮高度一致，确保垂直居中 */
 text-align: center;
 color: #fff;
