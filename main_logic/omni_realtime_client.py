@@ -275,7 +275,7 @@ class OmniRealtimeClient:
         headers = {
             "Authorization": f"Bearer {self.api_key}"
         }
-        self.ws = await websockets.connect(url, extra_headers=headers)
+        self.ws = await websockets.connect(url, additional_headers=headers)
         
         # 启动静默检测任务（只在启用时）
         self._last_speech_time = time.time()
