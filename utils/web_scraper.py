@@ -16,6 +16,9 @@ from urllib.parse import quote
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage
 from bs4 import BeautifulSoup
+import os
+from pathlib import Path
+import json
 
 # 从 language_utils 导入区域检测功能
 try:
@@ -32,7 +35,7 @@ except ImportError:
         Windows 中文系统返回 True
         """
         mainland_china_locales = {'zh_cn', 'chinese_china', 'chinese_simplified_china'}
-
+       
         def normalize_locale(loc: str) -> str:
             """标准化locale字符串：小写、替换连字符、去除编码"""
             if not loc:
@@ -91,103 +94,162 @@ def get_random_user_agent() -> str:
     return random.choice(USER_AGENTS)
 
 
-async def fetch_bilibili_trending(limit: int = 10) -> Dict[str, Any]:
+def _get_bilibili_credential():
     """
-    获取B站首页推荐视频
-    使用B站的首页推荐API
-    通过随机化参数来获取更多样的推荐内容
+    从文件加载Bilibili认证信息，返回Credential对象
+    
+    支持从以下位置读取cookies：
+    1. ~/bilibili_cookies.json
+    2. config/bilibili_cookies.json
+    3. ./bilibili_cookies.json
+    
+    Returns:
+        Credential对象，如果加载失败则返回None
     """
     try:
-        # B站首页推荐API (WBI签名版本)
-        url = "https://api.bilibili.com/x/web-interface/wbi/index/top/feed/rcmd"
+        from bilibili_api import Credential
         
-        # 生成随机翻页参数，模拟用户浏览行为
-        fresh_idx = random.randint(1, 10)  # 当前翻页号
-        fresh_idx_1h = fresh_idx  # 一小时内的翻页号，保持一致
-        brush = fresh_idx  # 刷子参数，与翻页号一致
-        y_num = random.randint(4, 6)  # 一行中视频数量
-        fetch_row = fresh_idx * y_num  # 本次抓取的最后一行行号
+        # 查找可能的cookie文件位置
+        possible_paths = [
+            Path(os.path.expanduser('~')) / 'bilibili_cookies.json',
+            Path('config') / 'bilibili_cookies.json',
+            Path('.') / 'bilibili_cookies.json',
+        ]
         
-        # 生成随机视口大小
-        screen_widths = [1920, 1680, 1536, 1440, 1366, 2560]
-        screen_heights = [1080, 1050, 864, 900, 768, 1440]
-        screen_width = random.choice(screen_widths)
-        screen_height = random.choice(screen_heights)
-        screen = f"{screen_width}-{screen_height}"
+        for cookie_file in possible_paths:
+            if cookie_file.exists():
+                with open(cookie_file, 'r', encoding='utf-8') as f:
+                    cookie_data = json.load(f)
+                    
+                    # 提取必要的认证信息
+                    cookies = {}
+                    
+                    # EditThisCookie/Cookie-Editor格式 (数组)
+                    if isinstance(cookie_data, list):
+                        for cookie in cookie_data:
+                            # 安全地访问字典，防止畸形数据导致 KeyError
+                            if cookie.get('domain', '').endswith('bilibili.com'):
+                                name = cookie.get('name')
+                                value = cookie.get('value')
+                                # 只有 name 和 value 都存在时才添加
+                                if name and value:
+                                    cookies[name] = value
+                    
+                    # 简单的键值对格式
+                    elif isinstance(cookie_data, dict):
+                        cookies = cookie_data
+                    
+                    # 创建Credential对象
+                    if cookies:
+                        sessdata = cookies.get('SESSDATA', '')
+                        bili_jct = cookies.get('bili_jct', '')
+                        buvid3 = cookies.get('buvid3', '')
+                        dedeuserid = cookies.get('DedeUserID', '')
+                        
+                        if sessdata:
+                            credential = Credential(
+                                sessdata=sessdata,
+                                bili_jct=bili_jct,
+                                buvid3=buvid3,
+                                dedeuserid=dedeuserid
+                            )
+                            print(f"✅ 成功从文件加载 Bilibili 认证信息: {cookie_file}")
+                            return credential
+                        else:
+                            print(f"⚠️ Cookie文件缺少SESSDATA: {cookie_file}")
+    except ImportError:
+        # bilibili_api 库未安装，直接返回 None
+        # 不打印任何日志，让调用方处理
+        logger.debug("bilibili_api 库未安装")
+        return None
+    except Exception as e:
+        logger.debug(f"从文件加载认证信息失败: {e}")
+    
+    # 如果没有找到cookie文件，不记录到日志（避免暴露用户路径）
+    # 使用 print 保持私密性
+    logger.debug("未找到 Bilibili cookie 文件，将使用默认推荐（非个性化）")
+    print("提示：要使用个性化推荐，可导出cookies到以下位置之一：")
+    print(f"  - {Path(os.path.expanduser('~')) / 'bilibili_cookies.json'}")
+    print(f"  - {Path('config') / 'bilibili_cookies.json'}")
+    
+    return None
+
+
+async def fetch_bilibili_trending(limit: int = 30) -> Dict[str, Any]:
+    """
+    获取B站首页推荐视频
+    使用bilibili-api库获取主页视频推荐
+    支持个性化推荐（如果提供了认证信息）
+    """
+    try:
+        from bilibili_api import homepage
         
-        params = {
-            "ps": limit,  # 每页数量，增加随机性，最大30
-            "fresh_type": random.randint(3, 5),  # 刷新类型，值越大越相关
-            "fresh_idx": fresh_idx,  # 当前翻页号
-            "fresh_idx_1h": fresh_idx_1h,  # 一小时前的翻页号
-            "brush": brush,  # 刷子参数
-            "fetch_row": fetch_row,  # 本次抓取的最后一行行号
-            "y_num": y_num,  # 普通列数
-            "last_y_num": y_num + random.randint(0, 2),  # 总列数
-            "web_location": 1430650,  # 主页位置
-            "feed_version": "V8",  # feed版本
-            "homepage_ver": 1,  # 首页版本
-            "screen": screen,  # 浏览器视口大小
-        }
-        
-        # 添加完整的headers来模拟浏览器请求
-        headers = {
-            'User-Agent': get_random_user_agent(),
-            'Referer': 'https://www.bilibili.com',
-            'Origin': 'https://www.bilibili.com',
-            'Accept': 'application/json, text/plain, */*',
-            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-            'Sec-Ch-Ua-Mobile': '?0',
-            'Sec-Ch-Ua-Platform': '"Windows"',
-            'Sec-Fetch-Dest': 'empty',
-            'Sec-Fetch-Mode': 'cors',
-            'Sec-Fetch-Site': 'same-site',
-            'DNT': '1',
-        }
+        # 获取认证信息（如果有）
+        credential = _get_bilibili_credential()
         
         # 添加随机延迟，避免请求过快
         await asyncio.sleep(random.uniform(0.1, 0.5))
         
-        async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
-            response = await client.get(url, params=params, headers=headers)
-            response.raise_for_status()
-            data = response.json()
+        # 使用bilibili-api获取首页推荐
+        # 如果有credential，会获取个性化推荐；否则获取通用推荐
+        result = await homepage.get_videos(credential=credential)
+        
+        videos = []
+        # 安全地访问嵌套字典，避免 KeyError
+        if result:
+            # bilibili-api 返回的数据结构可能是 {'data': {'item': [...]}} 或直接 {'item': [...]}
+            # 先尝试从 data 中获取，如果没有则直接获取
+            data = result.get('data', result)
+            items = data.get('item', [])
             
-            if data.get('code') == 0:
-                videos = []
-                items = data.get('data', {}).get('item', [])
-                for item in items[:limit]:
-                    videos.append({
-                        'title': item.get('title', ''),
-                        'desc': item.get('desc', ''),
-                        'author': item.get('owner', {}).get('name', ''),
-                        'view': item.get('stat', {}).get('view', 0),
-                        'like': item.get('stat', {}).get('like', 0),
-                        'bvid': item.get('bvid', '')
-                    })
+            for item in items:
+                # 提取视频信息
+                bvid = item.get('bvid', '')
+                # 有些项目可能是广告或其他类型，跳过没有bvid的
+                if not bvid:
+                    continue
                 
-                return {
-                    'success': True,
-                    'videos': videos
-                }
-            else:
-                logger.error(f"B站API返回错误: {data.get('message', '未知错误')}")
-                return {
-                    'success': False,
-                    'error': data.get('message', '未知错误')
-                }
+                # 提取推荐理由（如果有）
+                rcmd_reason = item.get('rcmd_reason', {})
+                rcmd_reason_text = rcmd_reason.get('content', '') if isinstance(rcmd_reason, dict) else ''
+                    
+                videos.append({
+                    'title': item.get('title', ''),
+                    'desc': item.get('desc', ''),
+                    'author': item.get('owner', {}).get('name', ''),
+                    'view': item.get('stat', {}).get('view', 0),
+                    'like': item.get('stat', {}).get('like', 0),
+                    'bvid': bvid,
+                    'url': f'https://www.bilibili.com/video/{bvid}',
+                    'id': item.get('id', 0),  # 视频ID
+                    'goto': item.get('goto', ''),  # 跳转类型
+                    'rcmd_reason': rcmd_reason_text,  # 推荐理由
+                })
                 
-    except httpx.TimeoutException:
-        logger.exception("获取B站首页推荐超时")
+                # 如果已经获取到足够的视频，停止
+                if len(videos) >= limit:
+                    break
+        
+        if credential:
+            logger.info(f"✅ 使用个性化推荐获取到 {len(videos)} 个B站视频")
+        else:
+            logger.info(f"✅ 使用默认推荐获取到 {len(videos)} 个B站视频")
+        
+        return {
+            'success': True,
+            'videos': videos
+        }
+        
+    except ImportError:
+        logger.error("bilibili_api 库未安装，请运行: pip install bilibili-api-python")
         return {
             'success': False,
-            'error': '请求超时'
+            'error': 'bilibili_api 库未安装'
         }
     except Exception as e:
-        logger.exception(f"获取B站首页推荐失败: {e}")
+        logger.error(f"获取B站推荐失败: {e}")
+        import traceback
+        logger.debug(f"详细错误: {traceback.format_exc()}")
         return {
             'success': False,
             'error': str(e)
@@ -345,6 +407,12 @@ async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
                     if not word:
                         continue
                     
+                    # 获取链接
+                    href = a_tag.get('href', '')
+                    # 构建完整URL（相对链接需要加上域名）
+                    if href and not href.startswith('http'):
+                        href = f"https://s.weibo.com{href}"
+                    
                     # 解析热度值
                     hot_text = span.get_text(strip=True) if span else ''
                     # 热度可能包含类型标签如"剧集 336075"，需要提取数字
@@ -359,7 +427,8 @@ async def fetch_weibo_trending(limit: int = 10) -> Dict[str, Any]:
                         'word': word,
                         'raw_hot': raw_hot,
                         'note': note,
-                        'rank': i + 1
+                        'rank': i + 1,
+                        'url': href
                     })
             
             if trending_list:
@@ -410,11 +479,16 @@ async def _fetch_weibo_trending_fallback(limit: int = 10) -> Dict[str, Any]:
                     if item.get('is_ad'):
                         continue
                     
+                    word = item.get('word', '')
+                    # 构建搜索URL
+                    search_url = f"https://s.weibo.com/weibo?q={quote(word)}" if word else ''
+                    
                     trending_list.append({
-                        'word': item.get('word', ''),
+                        'word': word,
                         'raw_hot': item.get('raw_hot', 0),
                         'note': item.get('note', ''),
-                        'rank': item.get('rank', 0)
+                        'rank': item.get('rank', 0),
+                        'url': search_url
                     })
                 
                 return {
@@ -486,11 +560,16 @@ async def fetch_twitter_trending(limit: int = 10) -> Dict[str, Any]:
             for i, trend in enumerate(trends[:limit]):
                 if trend and not trend.startswith('#'):
                     trend = '#' + trend if not trend.startswith('@') else trend
+                
+                # 构建搜索URL
+                search_url = f"https://twitter.com/search?q={quote(trend)}" if trend else ''
+                
                 trending_list.append({
                     'word': trend,
                     'tweet_count': tweet_counts[i] if i < len(tweet_counts) else 'N/A',
                     'note': '',
-                    'rank': i + 1
+                    'rank': i + 1,
+                    'url': search_url
                 })
             
             if trending_list:
@@ -525,11 +604,13 @@ async def _fetch_twitter_trending_fallback(limit: int = 10) -> Dict[str, Any]:
         for i, item in enumerate(trend_cards[:limit]):
             trend_text = item.get_text(strip=True)
             if trend_text:
+                search_url = f"https://twitter.com/search?q={quote(trend_text)}"
                 trending_list.append({
                     'word': trend_text,
                     'tweet_count': 'N/A',
                     'note': '',
-                    'rank': i + 1
+                    'rank': i + 1,
+                    'url': search_url
                 })
         return trending_list
     
@@ -540,11 +621,13 @@ async def _fetch_twitter_trending_fallback(limit: int = 10) -> Dict[str, Any]:
         for i, item in enumerate(trend_items[:limit]):
             trend_text = item.get_text(strip=True)
             if trend_text:
+                search_url = f"https://twitter.com/search?q={quote(trend_text)}"
                 trending_list.append({
                     'word': trend_text,
                     'tweet_count': 'N/A',
                     'note': '',
-                    'rank': i + 1
+                    'rank': i + 1,
+                    'url': search_url
                 })
         return trending_list
     
@@ -630,12 +713,13 @@ async def fetch_trending_content(bilibili_limit: int = 10, weibo_limit: int = 10
             bilibili_task = fetch_bilibili_trending(bilibili_limit)
             weibo_task = fetch_weibo_trending(weibo_limit)
             
+            
             bilibili_result, weibo_result = await asyncio.gather(
                 bilibili_task, 
                 weibo_task,
                 return_exceptions=True
             )
-            
+
             # 处理异常
             if isinstance(bilibili_result, Exception):
                 logger.error(f"B站爬取异常: {bilibili_result}")
@@ -735,9 +819,16 @@ def format_trending_content(trending_content: Dict[str, Any]) -> str:
             for i, video in enumerate(videos[:5], 1):  # 只显示前5个
                 title = video.get('title', '')
                 author = video.get('author', '')
+                url = video.get('url', '')
+                rcmd_reason = video.get('rcmd_reason', '')
                 
                 output_lines.append(f"{i}. {title}")
                 output_lines.append(f"   UP主: {author}")
+                # 显示推荐理由（如果有）
+                if rcmd_reason:
+                    output_lines.append(f"   推荐理由: {rcmd_reason}")
+                if url:
+                    output_lines.append(f"   链接: {url}")
             
             output_lines.append("")  # 空行
         
@@ -750,11 +841,14 @@ def format_trending_content(trending_content: Dict[str, Any]) -> str:
             for i, item in enumerate(trending_list[:5], 1):  # 只显示前5个
                 word = item.get('word', '')
                 note = item.get('note', '')
+                url = item.get('url', '')
                 
                 line = f"{i}. {word}"
                 if note:
                     line += f" [{note}]"
                 output_lines.append(line)
+                if url:
+                    output_lines.append(f"   链接: {url}")
         
         if not output_lines:
             return "暂时无法获取推荐内容"
@@ -769,10 +863,13 @@ def format_trending_content(trending_content: Dict[str, Any]) -> str:
                 title = post.get('title', '')
                 subreddit = post.get('subreddit', '')
                 score = post.get('score', '')
+                url = post.get('url', '')
                 
                 output_lines.append(f"{i}. {title}")
                 if subreddit:
                     output_lines.append(f"   {subreddit} | {score} upvotes")
+                if url:
+                    output_lines.append(f"   Link: {url}")
             
             output_lines.append("")  # 空行
         
@@ -786,6 +883,7 @@ def format_trending_content(trending_content: Dict[str, Any]) -> str:
                 word = item.get('word', '')
                 tweet_count = item.get('tweet_count', '')
                 note = item.get('note', '')
+                url = item.get('url', '')
                 
                 line = f"{i}. {word}"
                 if tweet_count and tweet_count != 'N/A':
@@ -793,6 +891,8 @@ def format_trending_content(trending_content: Dict[str, Any]) -> str:
                 if note:
                     line += f" - {note}"
                 output_lines.append(line)
+                if url:
+                    output_lines.append(f"   Link: {url}")
         
         if not output_lines:
             return "暂时无法获取热门内容"
@@ -1010,7 +1110,7 @@ def clean_window_title(title: str) -> str:
     return cleaned[:100]  # 限制长度
 
 
-async def search_google(query: str, limit: int = 5) -> Dict[str, Any]:
+async def search_google(query: str, limit: int = 10) -> Dict[str, Any]:
     """
     使用Google搜索关键词并获取搜索结果（用于非中文区域）
     
@@ -1597,11 +1697,17 @@ def format_window_context_content(content: Dict[str, Any]) -> str:
     for i, result in enumerate(results, 1):
         title = result.get('title', '')
         abstract = result.get('abstract', '')
+        url = result.get('url', '')
         
         output_lines.append(f"{i}. {title}")
         if abstract:
             abstract = abstract[:150] + '...' if len(abstract) > 150 else abstract
             output_lines.append(f"   {abstract}")
+        if url:
+            if china_region:
+                output_lines.append(f"   链接: {url}")
+            else:
+                output_lines.append(f"   Link: {url}")
     
     if not results:
         if china_region:
