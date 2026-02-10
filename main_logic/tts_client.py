@@ -85,7 +85,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
             # 连接WebSocket
             headers = {"Authorization": f"Bearer {audio_api_key}"}
             
-            ws = await websockets.connect(tts_url, additional_headers=headers)
+            ws = await websockets.connect(tts_url, extra_headers=headers)
             
             # 等待连接成功事件
             async def wait_for_connection():
@@ -261,7 +261,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     
                     # 建立新连接
                     try:
-                        ws = await websockets.connect(tts_url, additional_headers=headers)
+                        ws = await websockets.connect(tts_url, extra_headers=headers)
                         
                         # 等待连接成功
                         session_id = None
@@ -437,7 +437,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                 }
             }
             
-            ws = await websockets.connect(tts_url, additional_headers=headers)
+            ws = await websockets.connect(tts_url, extra_headers=headers)
             
             # 等待并处理初始消息
             async def wait_for_session_ready():
@@ -571,7 +571,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                     
                     # 建立新连接
                     try:
-                        ws = await websockets.connect(tts_url, additional_headers=headers)
+                        ws = await websockets.connect(tts_url, extra_headers=headers)
                         await ws.send(json.dumps(config_message))
                         
                         # 等待 session.created
