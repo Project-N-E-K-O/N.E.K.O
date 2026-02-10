@@ -9,6 +9,7 @@ import struct  # For packing audio data
 import re
 import logging
 import time
+from typing import Optional
 from datetime import datetime
 from websockets import exceptions as web_exceptions
 from fastapi import WebSocket, WebSocketDisconnect
@@ -254,89 +255,27 @@ class LLMSessionManager:
         except Exception as e:
             logger.error(f"💥 Extra reply preparation error: {e}")
 
-    async def handle_response_rewritten(self, rewritten_text: str, original_length: int, rewritten_length: int):
+    async def handle_response_discarded(self, reason: str, attempt: int, max_attempts: int, will_retry: bool, message: Optional[str] = None):
         """
-        处理改写完成的回调：发送消息到前端替换显示，并通知 cross_server 更新记忆
-        
-        Args:
-            rewritten_text: 改写后的文本
-            original_length: 原始字数
-            rewritten_length: 改写后字数
+        处理响应被丢弃的通知：清空当前前端输出，必要时发送 turn end
         """
-        logger.info(f"[{self.lanlan_name}] 改写成功: {original_length} -> {rewritten_length} 字")
+        logger.warning(f"[{self.lanlan_name}] 响应异常已丢弃 (reason={reason}, attempt={attempt}/{max_attempts}, will_retry={will_retry})")
         
-        # 1. 通知前端替换显示
-        if (self.websocket and hasattr(self.websocket, 'client_state') and
-                self.websocket.client_state == self.websocket.client_state.CONNECTED):
+        if self.websocket and hasattr(self.websocket, 'client_state') and \
+                self.websocket.client_state == self.websocket.client_state.CONNECTED:
             try:
                 await self.websocket.send_json({
-                    "type": "response_rewritten",
-                    "text": rewritten_text,
-                    "original_length": original_length,
-                    "rewritten_length": rewritten_length
+                    "type": "response_discarded",
+                    "reason": reason,
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "will_retry": will_retry,
+                    "message": message or ""
                 })
             except Exception as e:
-                logger.warning(f"发送改写结果到前端失败: {e}")
+                logger.warning(f"发送 response_discarded 到前端失败: {e}")
         
-        # 2. 通知 cross_server 用改写后的文本替换记忆中的原文
-        #    通过 sync_message_queue 发送一条 system 消息，cross_server 会在
-        #    message["type"] == "system" 分支中接收并更新 text_output_cache
-        try:
-            if hasattr(self, "sync_message_queue") and self.sync_message_queue is not None:
-                self.sync_message_queue.put({
-                    "type": "system",
-                    "data": "response_rewritten_for_memory",
-                    "text": rewritten_text
-                })
-            else:
-                logger.warning("发送改写结果到 cross_server 失败: sync_message_queue 不可用")
-        except Exception as e:
-            logger.warning(f"发送改写结果到 cross_server 失败: {e}")
-        
-        # 如果正在热切换过程中，跳过所有热切换逻辑
-        if self.is_hot_swap_imminent:
-            return
-            
-        if hasattr(self, 'is_preparing_new_session') and not self.is_preparing_new_session:
-            if self.session_start_time and \
-                        (datetime.now() - self.session_start_time).total_seconds() >= 40:
-                logger.info(f"[{self.lanlan_name}] Main Listener: Uptime threshold met. Marking for new session preparation.")
-                self.is_preparing_new_session = True  # Mark that we are in prep mode
-                self.summary_triggered_time = datetime.now()
-                self.message_cache_for_new_session = []  # Reset cache for this new cycle
-                self.initial_cache_snapshot_len = 0  # Reset snapshot marker
-                self.sync_message_queue.put({'type': 'system', 'data': 'renew session'}) 
-
-        # If prep mode is active, summary time has passed, and a turn just completed in OLD session:
-        # AND background task for initial warmup isn't already running
-        if self.is_preparing_new_session and \
-                self.summary_triggered_time and \
-                (datetime.now() - self.summary_triggered_time).total_seconds() >= 10 and \
-                (not self.background_preparation_task or self.background_preparation_task.done()) and \
-                not (
-                        self.pending_session_warmed_up_event and self.pending_session_warmed_up_event.is_set()):  # Don't restart if already warmed up
-            logger.info(f"[{self.lanlan_name}] Main Listener: Conditions met to start BACKGROUND PREPARATION of pending session.")
-            self.pending_session_warmed_up_event = asyncio.Event()  # Create event for this prep cycle
-            self.background_preparation_task = asyncio.create_task(self._background_prepare_pending_session())
-
-        # Stage 2: Trigger FINAL SWAP if pending session is warmed up AND this old session just completed a turn
-        elif self.pending_session_warmed_up_event and \
-                self.pending_session_warmed_up_event.is_set() and \
-                not self.is_hot_swap_imminent and \
-                (not self.final_swap_task or self.final_swap_task.done()):
-            logger.info(
-                "Main Listener: OLD session completed a turn & PENDING session is warmed up. Triggering FINAL SWAP sequence.")
-            self.is_hot_swap_imminent = True  # Prevent re-triggering
-
-            # The main cache self.message_cache_for_new_session is now "spent" for transfer purposes
-            # It will be fully cleared after a successful swap by _reset_preparation_state.
-            self.pending_session_final_prime_complete_event = asyncio.Event()
-            self.final_swap_task = asyncio.create_task(
-                self._perform_final_swap_sequence()
-            )
-            # The old session listener's current turn is done.
-            # The final_swap_task will now manage the actual switch.
-            # This listener will be cancelled by the final_swap_task.
+        # turn end will由 handle_response_complete 统一发送
 
 
     async def handle_audio_data(self, audio_data: bytes):
@@ -919,16 +858,7 @@ class LLMSessionManager:
                     on_response_done=self.handle_response_complete,
                     on_repetition_detected=self.handle_repetition_detected
                 )
-                if hasattr(self.session, "set_rewrite_prompt_language"):
-                    self.session.set_rewrite_prompt_language(self.user_language)
-                # ========== 配置改写模型和回调 ==========
-                self.session.rewrite_model_config = {
-                    'model': correction_config.get('model', 'qwen-max'),
-                    'base_url': correction_config.get('base_url', ''),
-                    'api_key': correction_config.get('api_key', ''),
-                }
-                self.session.on_response_rewritten = self.handle_response_rewritten
-                # ========== 配置结束 ==========
+                self.session.on_response_discarded = self.handle_response_discarded
             else:
                 # 语音模式：使用 OmniRealtimeClient
                 realtime_config = self._config_manager.get_model_api_config('realtime')
@@ -1180,16 +1110,7 @@ class LLMSessionManager:
                     on_connection_error=self.handle_connection_error,
                     on_response_done=self.handle_response_complete
                 )
-                if hasattr(self.pending_session, "set_rewrite_prompt_language"):
-                    self.pending_session.set_rewrite_prompt_language(self.user_language)
-                # ========== 配置改写模型和回调 ==========
-                self.pending_session.rewrite_model_config = {
-                    'model': correction_config.get('model', 'qwen-max'),
-                    'base_url': correction_config.get('base_url', ''),
-                    'api_key': correction_config.get('api_key', ''),
-                }
-                self.pending_session.on_response_rewritten = self.handle_response_rewritten
-                # ========== 配置结束 ==========
+                self.pending_session.on_response_discarded = self.handle_response_discarded
                 logger.info("🔄 热切换准备: 创建文本模式 OmniOfflineClient")
             else:
                 # 语音模式：使用 OmniRealtimeClient
@@ -1854,19 +1775,7 @@ class LLMSessionManager:
         else:
             logger.info(f"用户语言已设置为: {normalized_lang}")
 
-        # 同步到当前/备用文本 Session，用于改写提示语言
-        try:
-            if isinstance(self.session, OmniOfflineClient) and hasattr(self.session, "set_rewrite_prompt_language"):
-                self.session.set_rewrite_prompt_language(self.user_language)
-        except Exception as e:
-            logger.warning(f"更新当前Session改写语言失败: {e}")
-
-        try:
-            if self.pending_session and isinstance(self.pending_session, OmniOfflineClient) and \
-                    hasattr(self.pending_session, "set_rewrite_prompt_language"):
-                self.pending_session.set_rewrite_prompt_language(self.user_language)
-        except Exception as e:
-            logger.warning(f"更新备用Session改写语言失败: {e}")
+        # 文本模式下无需额外同步改写提示语言（已移除 rewrite 逻辑）
     
     async def translate_if_needed(self, text: str) -> str:
         """

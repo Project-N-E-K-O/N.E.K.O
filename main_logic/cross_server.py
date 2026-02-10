@@ -236,15 +236,6 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                         {'type': 'text', 'text': "网络错误，您已断开连接！"}]})
                                 text_output_cache = ''
                             
-                            # ========== 新增：处理改写后的文本替换 ==========
-                            elif message["data"] == "response_rewritten_for_memory":
-                                # 用改写后的文本替换当前缓存，确保记忆存的是精简版
-                                rewritten_text = message.get("text", "")
-                                if rewritten_text:
-                                    text_output_cache = rewritten_text
-                                    logger.debug(f"[{lanlan_name}] cross_server: 已用改写后文本替换缓存")
-                            # ========== 改写逻辑结束 ==========
-
                             if message["data"] == "renew session":
                                 # 检查是否正在关闭
                                 if shutdown_event.is_set():

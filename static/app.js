@@ -466,16 +466,15 @@ function init_app() {
                     }
                     
                     appendMessage(response.text, 'gemini', isNewMessage);
-                } else if (response.type === 'response_rewritten') {
-                    // ========== 处理响应改写消息（严格按文档 10.4） ==========
-                    console.log(`[Rewrite] 响应已精简: ${response.original_length} -> ${response.rewritten_length} 字`);
+                } else if (response.type === 'response_discarded') {
+                    const attempt = response.attempt || 0;
+                    const maxAttempts = response.max_attempts || 0;
+                    console.log(`[Discard] AI回复被丢弃 reason=${response.reason} attempt=${attempt}/${maxAttempts} retry=${response.will_retry}`);
                     
-                    // 10.4(2) 处理异步与队列：立即清空本轮的拟真队列与缓冲，避免后续再根据残留队列调用 createGeminiBubble
                     window._realisticGeminiQueue = [];
                     window._realisticGeminiBuffer = '';
                     window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
                     
-                    // 10.4(1) 删除通过 currentTurnGeminiBubbles 追踪到的本轮 Gemini 气泡
                     if (window.currentTurnGeminiBubbles && window.currentTurnGeminiBubbles.length > 0) {
                         window.currentTurnGeminiBubbles.forEach(bubble => {
                             if (bubble && bubble.parentNode) {
@@ -485,7 +484,6 @@ function init_app() {
                         window.currentTurnGeminiBubbles = [];
                     }
 
-                    // 10.4(3) 兜底删除策略：从 chatContainer 底部向上扫描，删除最后一段连续的 .message.gemini 气泡
                     if (chatContainer && chatContainer.children && chatContainer.children.length > 0) {
                         const toRemove = [];
                         for (let i = chatContainer.children.length - 1; i >= 0; i--) {
@@ -496,29 +494,29 @@ function init_app() {
                                 break;
                             }
                         }
-                toRemove.forEach(el => {
-                    if (el && el.parentNode) {
-                        el.parentNode.removeChild(el);
+                        toRemove.forEach(el => {
+                            if (el && el.parentNode) {
+                                el.parentNode.removeChild(el);
+                            }
+                        });
                     }
-                });
-            }
 
-                    const displayText = typeof response.text === 'string'
-                        ? response.text
-                        : (typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '');
-                    window._geminiTurnFullText = displayText;
-                
-                    // 添加唯一一个精简气泡
-                    const messageDiv = document.createElement('div');
-                    messageDiv.classList.add('message', 'gemini');
-                    messageDiv.textContent = "[" + getCurrentTimeString() + "] 🎀 " + displayText;
-                    chatContainer.appendChild(messageDiv);
-                    window.currentGeminiMessage = messageDiv;
-                    window.currentTurnGeminiBubbles = [messageDiv];
+                    window._geminiTurnFullText = '';
                     
-                    // 滚动到底部
+                    const retryMsg = window.t ? window.t('console.aiRetrying') : 'AI回复异常，正在重新生成…';
+                    const failMsg = window.t ? window.t('console.aiFailed') : 'AI回复异常，已放弃输出';
+                    showStatusToast(response.will_retry ? retryMsg : failMsg, 2500);
+                    
+                    if (!response.will_retry && response.message) {
+                        const messageDiv = document.createElement('div');
+                        messageDiv.classList.add('message', 'gemini');
+                        messageDiv.textContent = "[" + getCurrentTimeString() + "] 🎀 " + response.message;
+                        chatContainer.appendChild(messageDiv);
+                        window.currentGeminiMessage = messageDiv;
+                        window.currentTurnGeminiBubbles = [messageDiv];
+                    }
+                    
                     chatContainer.scrollTop = chatContainer.scrollHeight;
-                    // ========== 改写消息处理结束 ==========
                 } else if (response.type === 'user_transcript') {
                     // 语音模式下的用户转录合并机制（兜底，防止 Gemini 等模型碎片化转录刷屏）
                     const now = Date.now();
