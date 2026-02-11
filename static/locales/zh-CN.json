@@ -478,6 +478,10 @@
     "volumeHintLow": "音量较低，建议调高增益",
     "volumeHintOk": "麦克风工作正常"
   },
+  "speaker": {
+    "volumeLabel": "扬声器音量",
+    "volumeHint": "调节AI语音的播放音量"
+  },
   "status": {
     "initializing": "正在初始化...",
     "connecting": "正在连接...",

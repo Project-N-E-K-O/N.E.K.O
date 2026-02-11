@@ -292,6 +292,10 @@ function init_app() {
     const MIN_MIC_GAIN_DB = -5;         // 最小增益（-5dB ≈ 0.56倍）
     let micVolumeAnimationId = null;    // 音量可视化动画帧ID
 
+    // 扬声器音量控制相关变量
+    let speakerVolume = 100;                // 扬声器音量 (0~100)
+    const DEFAULT_SPEAKER_VOLUME = 100;     // 默认音量 100%
+
     // 分贝转线性增益：linear = 10^(dB/20)
     function dbToLinear(db) {
         return Math.pow(10, db / 20);
@@ -1818,6 +1822,68 @@ function init_app() {
             return `${db}dB`;
         }
     }
+
+    // ========== 扬声器音量控制 ==========
+
+    // 保存扬声器音量到 localStorage
+    function saveSpeakerVolumeSetting() {
+        try {
+            localStorage.setItem('neko_speaker_volume', String(speakerVolume));
+            console.log(`扬声器音量设置已保存: ${speakerVolume}%`);
+        } catch (err) {
+            console.error('保存扬声器音量设置失败:', err);
+        }
+    }
+
+    // 从 localStorage 加载扬声器音量设置
+    function loadSpeakerVolumeSetting() {
+        try {
+            const saved = localStorage.getItem('neko_speaker_volume');
+            if (saved !== null) {
+                const vol = parseInt(saved, 10);
+                if (!isNaN(vol) && vol >= 0 && vol <= 100) {
+                    speakerVolume = vol;
+                    console.log(`已加载扬声器音量设置: ${speakerVolume}%`);
+                } else {
+                    console.warn(`无效的扬声器音量值 ${saved}，使用默认值 ${DEFAULT_SPEAKER_VOLUME}%`);
+                    speakerVolume = DEFAULT_SPEAKER_VOLUME;
+                }
+            } else {
+                console.log(`未找到扬声器音量设置，使用默认值 ${DEFAULT_SPEAKER_VOLUME}%`);
+                speakerVolume = DEFAULT_SPEAKER_VOLUME;
+            }
+
+            // 立即应用到 AudioManager（如果已初始化）
+            if (window.AM && typeof window.AM.setVolume === 'function') {
+                window.AM.setVolume(speakerVolume);
+            }
+        } catch (err) {
+            console.error('加载扬声器音量设置失败:', err);
+            speakerVolume = DEFAULT_SPEAKER_VOLUME;
+        }
+    }
+
+    // 设置扬声器音量（供外部调用，参数为 0~100）
+    window.setSpeakerVolume = function(vol) {
+        if (vol >= 0 && vol <= 100) {
+            speakerVolume = vol;
+            if (window.AM) {
+                window.AM.setVolume(vol);
+            }
+            saveSpeakerVolumeSetting();
+            // 更新 UI 滑块（如果存在）
+            const slider = document.getElementById('speaker-volume-slider');
+            const valueDisplay = document.getElementById('speaker-volume-value');
+            if (slider) slider.value = String(vol);
+            if (valueDisplay) valueDisplay.textContent = `${vol}%`;
+            console.log(`扬声器音量已设置: ${vol}%`);
+        }
+    };
+
+    // 获取当前扬声器音量
+    window.getSpeakerVolume = function() {
+        return speakerVolume;
+    };
 
     // 启动麦克风音量可视化
     function startMicVolumeVisualization() {
@@ -6473,6 +6539,184 @@ function init_app() {
                 return false;
             }
 
+            // ========== 1. 扬声器音量控制（最上面） ==========
+            const speakerContainer = document.createElement('div');
+            speakerContainer.className = 'speaker-volume-container';
+            Object.assign(speakerContainer.style, {
+                padding: '8px 12px'
+            });
+
+            // 扬声器音量标签和当前值显示
+            const speakerHeader = document.createElement('div');
+            Object.assign(speakerHeader.style, {
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '8px'
+            });
+
+            const speakerLabel = document.createElement('span');
+            speakerLabel.textContent = window.t ? window.t('speaker.volumeLabel') : '扬声器音量';
+            speakerLabel.setAttribute('data-i18n', 'speaker.volumeLabel');
+            speakerLabel.style.fontSize = '13px';
+            speakerLabel.style.color = '#333';
+            speakerLabel.style.fontWeight = '500';
+
+            const speakerValue = document.createElement('span');
+            speakerValue.id = 'speaker-volume-value';
+            speakerValue.textContent = `${speakerVolume}%`;
+            speakerValue.style.fontSize = '12px';
+            speakerValue.style.color = '#4f8cff';
+            speakerValue.style.fontWeight = '500';
+
+            speakerHeader.appendChild(speakerLabel);
+            speakerHeader.appendChild(speakerValue);
+            speakerContainer.appendChild(speakerHeader);
+
+            // 扬声器音量滑块
+            const speakerSlider = document.createElement('input');
+            speakerSlider.type = 'range';
+            speakerSlider.id = 'speaker-volume-slider';
+            speakerSlider.min = '0';
+            speakerSlider.max = '100';
+            speakerSlider.step = '1';
+            speakerSlider.value = String(speakerVolume);
+            Object.assign(speakerSlider.style, {
+                width: '100%',
+                height: '6px',
+                borderRadius: '3px',
+                cursor: 'pointer',
+                accentColor: '#4f8cff'
+            });
+
+            // 滑块事件：实时更新音量
+            speakerSlider.addEventListener('input', (e) => {
+                const newVol = parseInt(e.target.value, 10);
+                speakerVolume = newVol;
+                speakerValue.textContent = `${newVol}%`;
+
+                // 实时更新 AudioManager 主音量
+                if (window.AM) {
+                    window.AM.setVolume(newVol);
+                }
+            });
+
+            // 滑块松开时保存设置
+            speakerSlider.addEventListener('change', () => {
+                saveSpeakerVolumeSetting();
+            });
+
+            speakerContainer.appendChild(speakerSlider);
+
+            // 扬声器音量提示文字
+            const speakerHint = document.createElement('div');
+            speakerHint.textContent = window.t ? window.t('speaker.volumeHint') : '调节AI语音的播放音量';
+            speakerHint.setAttribute('data-i18n', 'speaker.volumeHint');
+            Object.assign(speakerHint.style, {
+                fontSize: '11px',
+                color: '#888',
+                marginTop: '6px'
+            });
+            speakerContainer.appendChild(speakerHint);
+
+            micPopup.appendChild(speakerContainer);
+
+            // 添加分隔线
+            const speakerSeparator = document.createElement('div');
+            speakerSeparator.style.height = '1px';
+            speakerSeparator.style.backgroundColor = '#eee';
+            speakerSeparator.style.margin = '8px 0';
+            micPopup.appendChild(speakerSeparator);
+
+            // ========== 2. 麦克风增益控制 ==========
+            const gainContainer = document.createElement('div');
+            gainContainer.className = 'mic-gain-container';
+            Object.assign(gainContainer.style, {
+                padding: '8px 12px'
+            });
+
+            // 增益标签和当前值显示
+            const gainHeader = document.createElement('div');
+            Object.assign(gainHeader.style, {
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '8px'
+            });
+
+            const gainLabel = document.createElement('span');
+            gainLabel.textContent = window.t ? window.t('microphone.gainLabel') : '麦克风增益';
+            gainLabel.style.fontSize = '13px';
+            gainLabel.style.color = '#333';
+            gainLabel.style.fontWeight = '500';
+
+            const gainValue = document.createElement('span');
+            gainValue.id = 'mic-gain-value';
+            gainValue.textContent = formatGainDisplay(microphoneGainDb);
+            gainValue.style.fontSize = '12px';
+            gainValue.style.color = '#4f8cff';
+            gainValue.style.fontWeight = '500';
+
+            gainHeader.appendChild(gainLabel);
+            gainHeader.appendChild(gainValue);
+            gainContainer.appendChild(gainHeader);
+
+            // 增益滑块（使用分贝单位）
+            const gainSlider = document.createElement('input');
+            gainSlider.type = 'range';
+            gainSlider.id = 'mic-gain-slider';
+            gainSlider.min = String(MIN_MIC_GAIN_DB);
+            gainSlider.max = String(MAX_MIC_GAIN_DB);
+            gainSlider.step = '1';  // 1dB 步进
+            gainSlider.value = String(microphoneGainDb);
+            Object.assign(gainSlider.style, {
+                width: '100%',
+                height: '6px',
+                borderRadius: '3px',
+                cursor: 'pointer',
+                accentColor: '#4f8cff'
+            });
+
+            // 滑块事件：实时更新增益
+            gainSlider.addEventListener('input', (e) => {
+                const newGainDb = parseFloat(e.target.value);
+                microphoneGainDb = newGainDb;
+                gainValue.textContent = formatGainDisplay(newGainDb);
+
+                // 实时更新 GainNode（如果正在录音）
+                if (micGainNode) {
+                    micGainNode.gain.value = dbToLinear(newGainDb);
+                    console.log(`麦克风增益已实时更新: ${newGainDb}dB`);
+                }
+            });
+
+            // 滑块松开时保存设置
+            gainSlider.addEventListener('change', () => {
+                saveMicGainSetting();
+            });
+
+            gainContainer.appendChild(gainSlider);
+
+            // 增益提示文字
+            const gainHint = document.createElement('div');
+            gainHint.textContent = window.t ? window.t('microphone.gainHint') : '如果麦克风声音太小，可以调高增益';
+            Object.assign(gainHint.style, {
+                fontSize: '11px',
+                color: '#888',
+                marginTop: '6px'
+            });
+            gainContainer.appendChild(gainHint);
+
+            micPopup.appendChild(gainContainer);
+
+            // 添加分隔线（设备列表前）
+            const deviceSeparator = document.createElement('div');
+            deviceSeparator.style.height = '1px';
+            deviceSeparator.style.backgroundColor = '#eee';
+            deviceSeparator.style.margin = '8px 0';
+            micPopup.appendChild(deviceSeparator);
+
+            // ========== 3. 麦克风设备选择列表 ==========
             // 添加默认麦克风选项
             const defaultOption = document.createElement('button');
             defaultOption.className = 'mic-option';
@@ -6563,102 +6807,14 @@ function init_app() {
                 micPopup.appendChild(option);
             });
 
-            // 添加分隔线（增益控制区域前）
-            const gainSeparator = document.createElement('div');
-            gainSeparator.style.height = '1px';
-            gainSeparator.style.backgroundColor = '#eee';
-            gainSeparator.style.margin = '8px 0';
-            micPopup.appendChild(gainSeparator);
-
-            // 添加麦克风增益控制区域
-            const gainContainer = document.createElement('div');
-            gainContainer.className = 'mic-gain-container';
-            Object.assign(gainContainer.style, {
-                padding: '8px 12px'
-            });
-
-            // 增益标签和当前值显示
-            const gainHeader = document.createElement('div');
-            Object.assign(gainHeader.style, {
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                marginBottom: '8px'
-            });
-
-            const gainLabel = document.createElement('span');
-            gainLabel.textContent = window.t ? window.t('microphone.gainLabel') : '麦克风增益';
-            gainLabel.style.fontSize = '13px';
-            gainLabel.style.color = '#333';
-            gainLabel.style.fontWeight = '500';
-
-            const gainValue = document.createElement('span');
-            gainValue.id = 'mic-gain-value';
-            gainValue.textContent = formatGainDisplay(microphoneGainDb);
-            gainValue.style.fontSize = '12px';
-            gainValue.style.color = '#4f8cff';
-            gainValue.style.fontWeight = '500';
-
-            gainHeader.appendChild(gainLabel);
-            gainHeader.appendChild(gainValue);
-            gainContainer.appendChild(gainHeader);
-
-            // 增益滑块（使用分贝单位）
-            const gainSlider = document.createElement('input');
-            gainSlider.type = 'range';
-            gainSlider.id = 'mic-gain-slider';
-            gainSlider.min = String(MIN_MIC_GAIN_DB);
-            gainSlider.max = String(MAX_MIC_GAIN_DB);
-            gainSlider.step = '1';  // 1dB 步进
-            gainSlider.value = String(microphoneGainDb);
-            Object.assign(gainSlider.style, {
-                width: '100%',
-                height: '6px',
-                borderRadius: '3px',
-                cursor: 'pointer',
-                accentColor: '#4f8cff'
-            });
-
-            // 滑块事件：实时更新增益
-            gainSlider.addEventListener('input', (e) => {
-                const newGainDb = parseFloat(e.target.value);
-                microphoneGainDb = newGainDb;
-                gainValue.textContent = formatGainDisplay(newGainDb);
-                
-                // 实时更新 GainNode（如果正在录音）
-                if (micGainNode) {
-                    micGainNode.gain.value = dbToLinear(newGainDb);
-                    console.log(`麦克风增益已实时更新: ${newGainDb}dB`);
-                }
-            });
-
-            // 滑块松开时保存设置
-            gainSlider.addEventListener('change', () => {
-                saveMicGainSetting();
-            });
-
-            gainContainer.appendChild(gainSlider);
-
-            // 增益提示文字
-            const gainHint = document.createElement('div');
-            gainHint.textContent = window.t ? window.t('microphone.gainHint') : '如果麦克风声音太小，可以调高增益';
-            Object.assign(gainHint.style, {
-                fontSize: '11px',
-                color: '#888',
-                marginTop: '6px'
-            });
-            gainContainer.appendChild(gainHint);
-
-            micPopup.appendChild(gainContainer);
-
-            // 添加分隔线（音量显示区域前）
+            // 添加分隔线（音量可视化区域前）
             const volumeSeparator = document.createElement('div');
             volumeSeparator.style.height = '1px';
             volumeSeparator.style.backgroundColor = '#eee';
             volumeSeparator.style.margin = '8px 0';
             micPopup.appendChild(volumeSeparator);
 
-            // 添加麦克风音量可视化区域
+            // ========== 4. 麦克风音量可视化区域 ==========
             const volumeContainer = document.createElement('div');
             volumeContainer.className = 'mic-volume-container';
             Object.assign(volumeContainer.style, {
@@ -7596,6 +7752,9 @@ function init_app() {
 
     // 加载麦克风增益设置
     loadMicGainSetting();
+
+    // 加载扬声器音量设置
+    loadSpeakerVolumeSetting();
 
     // 如果已开启主动搭话，立即启动定时器
     if (proactiveChatEnabled) {
