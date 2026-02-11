@@ -503,8 +503,8 @@ function init_app() {
 
                     window._geminiTurnFullText = '';
                     
-                    const retryMsg = window.t ? window.t('console.aiRetrying') : 'AI回复异常，正在重新生成…';
-                    const failMsg = window.t ? window.t('console.aiFailed') : 'AI回复异常，已放弃输出';
+                    const retryMsg = window.t ? window.t('console.aiRetrying') : '网络抖动，正在重新生成…';
+                    const failMsg = window.t ? window.t('console.aiFailed') : '网络异常，本轮回复已放弃';
                     showStatusToast(response.will_retry ? retryMsg : failMsg, 2500);
                     
                     if (!response.will_retry && response.message) {
