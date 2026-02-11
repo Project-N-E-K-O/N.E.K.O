@@ -1243,8 +1243,12 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
         v3_voice_id = parts[0].strip() or "_default"
         try:
             extra_params = json.loads(parts[1])
-        except (json.JSONDecodeError, IndexError):
-            logger.warning(f"[GPT-SoVITS v3] voice_id 高级参数解析失败，忽略: {parts[1]}")
+            if not isinstance(extra_params, dict):
+                logger.warning(f"[GPT-SoVITS v3] 高级参数不是对象，已忽略: {type(extra_params).__name__}")
+                extra_params = {}
+        except (json.JSONDecodeError, IndexError, TypeError, ValueError) as e:
+            logger.warning(f"[GPT-SoVITS v3] voice_id 高级参数解析失败，忽略: {e}")
+            extra_params = {}
     else:
         v3_voice_id = raw_voice or "_default"
 
