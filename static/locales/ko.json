@@ -519,6 +519,10 @@
     "volumeHintLow": "볼륨이 낮습니다. 게인을 높여보세요.",
     "volumeHintOk": "마이크가 제대로 작동함"
   },
+  "speaker": {
+    "volumeLabel": "스피커 볼륨",
+    "volumeHint": "AI 음성 재생 볼륨 조절"
+  },
   "status": {
     "initializing": "초기화 중...",
     "connecting": "연결 중...",
