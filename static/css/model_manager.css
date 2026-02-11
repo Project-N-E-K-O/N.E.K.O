@@ -1851,8 +1851,8 @@
         .persistent-item {
             padding: 4px 8px;
             margin: 2px 0;
-            background: linear-gradient(135deg, rgba(214, 245, 255, 0.85), rgba(196, 238, 255, 0.75));
-            border: 1px solid rgba(150, 232, 255, 0.4);
+            background: linear-gradient(135deg, rgb(214 245 255 / 85%), rgb(196 238 255 / 75%));
+            border: 1px solid rgb(150 232 255 / 40%);
             border-radius: 4px;
             font-size: 12px;
             display: flex;
@@ -1863,10 +1863,10 @@
         }
 
         .persistent-item:hover {
-            background: linear-gradient(135deg, rgba(150, 232, 255, 0.95), rgba(120, 220, 255, 0.85));
-            border-color: rgba(150, 232, 255, 0.7);
+            background: linear-gradient(135deg, rgb(150 232 255 / 95%), rgb(120 220 255 / 85%));
+            border-color: rgb(150 232 255 / 70%);
             transform: translateY(-4px) translateX(-3px);
-            box-shadow: 0 6px 12px rgba(68, 183, 254, 0.4), 0 2px 4px rgba(68, 183, 254, 0.2);
+            box-shadow: 0 6px 12px rgb(68 183 254 / 40%), 0 2px 4px rgb(68 183 254 / 20%);
         }
 
         /* 常驻表情删除按钮样式 */
