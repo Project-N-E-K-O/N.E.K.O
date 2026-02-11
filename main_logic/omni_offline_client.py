@@ -8,28 +8,10 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from openai import APIConnectionError, InternalServerError, RateLimitError
 from config import get_extra_body
-from utils.frontend_utils import calculate_text_similarity
+from utils.frontend_utils import calculate_text_similarity, count_words_and_chars
 
 # Setup logger for this module
 logger = logging.getLogger(__name__)
-
-
-def count_words_and_chars(text: str) -> int:
-    """
-    统计文本的字数（中文字符 + 英文单词）
-    与主动回复使用相同的统计方式
-    """
-    if not text:
-        return 0
-    count = 0
-    # 统计中文字符
-    chinese_chars = re.findall(r'[\u4e00-\u9fff]', text)
-    count += len(chinese_chars)
-    # 移除中文字符后，按空格拆分计算英文单词
-    text_without_chinese = re.sub(r'[\u4e00-\u9fff]', ' ', text)
-    english_words = [w for w in text_without_chinese.split() if w.strip()]
-    count += len(english_words)
-    return count
 
 class OmniOfflineClient:
     """
