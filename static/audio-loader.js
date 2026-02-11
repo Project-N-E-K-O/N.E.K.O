@@ -2,6 +2,7 @@
 class AudioManager {
     constructor() {
         this.ctx = null;       // 延迟到 unlock 再建
+        this.masterGain = null; // 总输出音量节点
         this.models = new Map();  // 同前
         this.priority = {LanLan1: true, LanLan2: false};         // 同前
     }
@@ -21,6 +22,17 @@ class AudioManager {
         }
         if (this.ctx.state === 'suspended') {
             this.ctx.resume();
+        }
+        // 创建总输出音量节点
+        if (!this.masterGain) {
+            this.masterGain = this.ctx.createGain();
+            this.masterGain.connect(this.ctx.destination);
+            // 使用 app.js 中已加载的 speakerVolume，避免重复读取 localStorage
+            // 如果 app.js 的 getSpeakerVolume 可用，使用它；否则默认 100%
+            const vol = (typeof window.getSpeakerVolume === 'function')
+                ? window.getSpeakerVolume()
+                : 100;
+            this.masterGain.gain.value = vol / 100;
         }
         // 任何依赖 ctx 的 Graph 也可以在这里补建
         for (const [id, m] of this.models) {
@@ -51,7 +63,7 @@ class AudioManager {
         const gain = this.ctx.createGain();
         const analyser = this.ctx.createAnalyser();
         gain.connect(analyser);
-        analyser.connect(this.ctx.destination);
+        analyser.connect(this.masterGain || this.ctx.destination);
         analyser.fftSize = 2048;
         return {gain, analyser};
     }
@@ -145,6 +157,25 @@ class AudioManager {
           }
         }
       }
+
+    /** 设置扬声器音量 (0~100) */
+    setVolume(percent) {
+        // 验证并强制转换为数字，非有效数字时默认为 0
+        const numPercent = Number.isFinite(percent) ? percent : (Number.isFinite(Number(percent)) ? Number(percent) : 0);
+        // 限制在 0~100 范围内，转换为 0~1
+        const val = Math.max(0, Math.min(100, numPercent)) / 100;
+        if (this.masterGain) {
+            this.masterGain.gain.setTargetAtTime(val, this.ctx.currentTime, 0.05);
+        }
+    }
+
+    /** 获取扬声器音量 (0~100) */
+    getVolume() {
+        if (this.masterGain) {
+            return Math.round(this.masterGain.gain.value * 100);
+        }
+        return 100;
+    }
 
     startLipSync(modelId, analyser) {
         // 检测是Live2D还是VRM

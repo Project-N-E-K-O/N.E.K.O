@@ -424,3 +424,4 @@ def get_proactive_chat_prompt(kind: str, lang: str = 'zh') -> str:
 def get_proactive_chat_rewrite_prompt(lang: str = 'zh') -> str:
     lang_key = _normalize_prompt_language(lang)
     return PROACTIVE_CHAT_REWRITE_PROMPTS.get(lang_key, PROACTIVE_CHAT_REWRITE_PROMPTS['zh'])
+

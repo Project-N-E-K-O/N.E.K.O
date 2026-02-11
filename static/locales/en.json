@@ -460,6 +460,10 @@
     "volumeHintLow": "Volume is low, try increasing gain",
     "volumeHintOk": "Microphone working properly"
   },
+  "speaker": {
+    "volumeLabel": "Speaker Volume",
+    "volumeHint": "Adjust AI voice playback volume"
+  },
   "status": {
     "initializing": "Initializing...",
     "connecting": "Connecting...",
