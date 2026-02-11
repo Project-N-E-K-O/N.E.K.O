@@ -40,6 +40,24 @@ def replace_corner_mark(text):
     text = text.replace('³', '立方')
     return text
 
+def estimate_speech_time(text, unit_duration=0.2):
+    # 中文汉字范围
+    chinese_chars = re.findall(r'[\u4e00-\u9fff]', text)
+    chinese_units = len(chinese_chars) * 1.5
+
+    # 日文假名范围（平假名 3040–309F，片假名 30A0–30FF）
+    japanese_kana = re.findall(r'[\u3040-\u30FF]', text)
+    japanese_units = len(japanese_kana) * 1.0
+
+    # 英文单词（连续的 a-z 或 A-Z）
+    english_words = re.findall(r'\b[a-zA-Z]+\b', text)
+    english_units = len(english_words) * 1.5
+
+    total_units = chinese_units + japanese_units + english_units
+    estimated_seconds = total_units * unit_duration
+
+    return estimated_seconds
+
 # remove meaningless symbol
 def remove_bracket(text):
     for p in bracket_patterns:
@@ -51,6 +69,54 @@ def remove_bracket(text):
     text = text.replace("（", "").replace("）", "").replace("(", "").replace(")", "")
     return text
 
+
+
+
+# split paragrah logic：
+# 1. per sentence max len token_max_n, min len token_min_n, merge if last sentence len less than merge_len
+# 2. cal sentence len according to lang
+# 3. split sentence according to punctuation
+# 4. 返回（要处理的文本，剩余buffer）
+def split_paragraph(text: str, force_process=False, lang="zh", token_min_n=2.5, comma_split=True):
+    def calc_utt_length(_text: str):
+        return estimate_speech_time(_text)
+
+    if lang == "zh":
+        pounc = ['。', '？', '！', '；', '：', '、', '.', '?', '!', ';']
+    else:
+        pounc = ['.', '?', '!', ';', ':']
+    if comma_split:
+        pounc.extend(['，', ','])
+
+    st = 0
+    utts = []
+    for i, c in enumerate(text):
+        if c in pounc:
+            if len(text[st: i]) > 0:
+                utts.append(text[st: i+1])
+            if i + 1 < len(text) and text[i + 1] in ['"', '”']:
+                tmp = utts.pop(-1)
+                utts.append(tmp + text[i + 1])
+                st = i + 2
+            else:
+                st = i + 1
+
+    if len(utts) == 0: # 没有一个标点
+        if force_process:
+            return text, ""
+        else:
+            return "", text
+    elif calc_utt_length(utts[-1]) > token_min_n: #如果最后一个utt长度达标
+        # print(f"💼后端进行切割：|| {''.join(utts)} || {text[st:]}")
+        return ''.join(utts), text[st:]
+    elif len(utts)==1: #如果长度不达标，但没有其他utt
+        if force_process:
+            return text, ""
+        else:
+            return "", text
+    else:
+        # print(f"💼后端进行切割：|| {''.join(utts[:-1])} || {utts[-1] + text[st:]}")
+        return ''.join(utts[:-1]), utts[-1] + text[st:]
 
 # remove blank between chinese character
 def replace_blank(text: str):

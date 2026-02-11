@@ -1478,7 +1478,7 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False):
         tts_config = cm.get_model_api_config('tts_custom')
         # 只有当 is_custom=True（即 ENABLE_CUSTOM_API=true 且用户明确配置了自定义 TTS）时才使用本地 worker
         if tts_config.get('is_custom'):
-            base_url = tts_config.get('base_url', '')
+            base_url = tts_config.get('base_url') or ''
             # GPT-SoVITS v3：配置 http/https URL，worker 内部自动转为 ws:// 连接
             # local_cosyvoice：配置 ws:// URL，直接使用 WebSocket
             if base_url.startswith('http://') or base_url.startswith('https://'):

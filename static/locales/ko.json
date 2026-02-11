@@ -27,6 +27,24 @@
     "fieldSeparator": ", ",
     "tryAgainLater": "나중에 다시 시도해 주세요."
   },
+  "characterProfile": {
+    "gender": "성별",
+    "age": "나이",
+    "nickname": "닉네임",
+    "profileName": "프로필 이름",
+    "values": {
+      "brother": "오빠",
+      "male": "남성",
+      "female": "여성",
+      "tChanNickname": "T짱, 꼬마T"
+    },
+    "labels": {
+      "档案名": "프로필 이름",
+      "性别": "성별",
+      "年龄": "나이",
+      "昵称": "닉네임"
+    }
+  },
   "steam": {
     "previewImageMissing": "미리보기 이미지 파일이 없습니다. 경로를 확인하세요",
     "uploadReady": "{{itemName}} 업로드 준비 중",
@@ -308,6 +326,7 @@
     "localItemsHide": "로컬 항목 숨기기",
     "localItemsManage": "로컬 항목 관리",
     "validatingFolderPath": "폴더 확인 중: {{path}}",
+    "validatingFolderPathWithName": "폴더 확인 중: {{path}}",
     "workshopDescriptionElementNotFound": "창작마당 설명 요소를 찾을 수 없습니다.",
     "applySyncDataError": "동기화 데이터 적용 오류: {{error}}",
     "selectFolderFailed": "폴더를 선택하지 못했습니다: {{error}}",
@@ -1482,6 +1501,40 @@
     "step18": {
       "title": "🛠️ Steam 창작마당",
       "desc": "Steam 창작마당 페이지에 접속하여 구독을 관리하세요~"
+    },
+    "systray": {
+      "location": {
+        "title": "📍 트레이 아이콘 위치",
+        "desc": "N.E.K.O 아이콘은 화면 오른쪽 하단의 시스템 트레이에 나타납니다. 클릭하면 찾을 수 있습니다.",
+        "note": "보이지 않으면 트레이의 작은 화살표를 펼쳐 모든 아이콘을 확인하세요.",
+        "alt": "시스템 트레이 위치 안내 이미지"
+      },
+      "menu": {
+        "title": "📋 트레이 메뉴",
+        "desc": "오른쪽 하단 트레이에 N.E.K.O 아이콘이 있으며, 마우스 오른쪽 버튼을 클릭하면 다양한 옵션이 나타납니다. 다음은 두 가지 자주 사용하는 기능입니다:"
+      },
+      "reset": {
+        "title": "🔄 모델 위치 초기화",
+        "desc": "캐릭터가 화면 밖으로 드래그되거나 위치가 마음에 들지 않으면 이 옵션을 클릭하여 기본 위치로 되돌릴 수 있습니다~"
+      },
+      "switchMode": "데스크톱/모바일 모드 전환",
+      "reload": "새로고침",
+      "autoLaunch": "시작 시 자동 실행",
+      "hotkey": "단축키 설정",
+      "feedback": {
+        "title": "📤 로그 업로드",
+        "desc": "문제가 발생하거나 좋은 제안이 있으신가요? 여기를 클릭하여 로그를 업로드하고 피드백을 제출하세요~"
+      },
+      "exit": "종료",
+      "complete": {
+        "title": "🎉 가이드 완료!",
+        "desc": "모든 가이드를 완료하셨습니다! 이제 N.E.K.O의 주요 기능을 알게 되셨습니다. 캐릭터와의 상호작용을 즐겨보세요! 가이드를 다시 보려면 설정에서 '가이드 초기화'를 클릭하세요~"
+      },
+      "resetPosition": "모델 위치 초기화",
+      "compatibility": "호환 모드",
+      "hotkeyDesc": "여기에서 전역 단축키를 설정하여 N.E.K.O를 더 효율적으로 제어할 수 있습니다~",
+      "uploadLogs": "로그 업로드",
+      "exitDesc": "N.E.K.O를 닫으려면 여기에서 종료를 클릭하세요. 창이 테두리 없는 형태이므로 트레이 메뉴가 앱을 종료하는 주요 방법입니다~"
     },
     "completed": "✨ 튜토리얼이 완료되었습니다! 즐겨보세요~",
     "resetHint": {
