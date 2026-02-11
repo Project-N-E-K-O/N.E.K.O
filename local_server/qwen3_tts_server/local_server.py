@@ -68,7 +68,7 @@ class QwenLocalServer:
         self.language = language or "Chinese"
         self.chunk_size = int(chunk_size) if chunk_size else 4096
         self.buffer_fallback_chars = int(buffer_fallback_chars) if buffer_fallback_chars else 30
-        self.inference_loc =threading.Lock()
+        self.inference_lock =threading.Lock()
 
         # --- 任务队列 (解决并发卡顿) ---
         self.task_queue = queue.Queue()
