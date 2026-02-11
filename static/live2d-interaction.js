@@ -613,7 +613,14 @@ Live2DManager.prototype.setupWheelZoom = function (model) {
     const onWheelScroll = (event) => {
         if (this.isLocked || !this.currentModel) return;
         event.preventDefault();
-        const scaleFactor = 1.1;
+
+        // 根据 deltaY 大小动态计算缩放因子，避免固定倍率导致缩放过快
+        // 鼠标滚轮通常 deltaY ≈ ±100，触控板 deltaY ≈ ±1~30
+        const absDelta = Math.abs(event.deltaY);
+        // 将 deltaY 映射到 0~0.08 的缩放增量（最大约 8%）
+        const zoomStep = Math.min(absDelta / 1000, 0.08);
+        const scaleFactor = 1 + zoomStep;
+
         const oldScale = this.currentModel.scale.x;
         let newScale = event.deltaY < 0 ? oldScale * scaleFactor : oldScale / scaleFactor;
         this.currentModel.scale.set(newScale);
@@ -1238,8 +1245,18 @@ Live2DManager.prototype._savePositionAfterInteraction = async function () {
         }
     }
 
+    // 获取当前视口尺寸（用于跨分辨率位置和缩放归一化）
+    let viewportInfo = null;
+    if (this.pixi_app && this.pixi_app.renderer) {
+        const w = this.pixi_app.renderer.width;
+        const h = this.pixi_app.renderer.height;
+        if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+            viewportInfo = { width: w, height: h };
+        }
+    }
+
     // 异步保存，不阻塞交互
-    this.saveUserPreferences(this._lastLoadedModelPath, position, scale, null, displayInfo)
+    this.saveUserPreferences(this._lastLoadedModelPath, position, scale, null, displayInfo, viewportInfo)
         .then(success => {
             if (success) {
                 console.debug('模型位置和缩放已自动保存');
@@ -1385,14 +1402,18 @@ Live2DManager.prototype._checkAndSwitchDisplay = async function (model) {
 };
 
 /**
- * 设置窗口大小改变时的自动吸附检测
- * 当窗口/屏幕大小改变时，检测模型是否超出边界并执行吸附
+ * 设置窗口大小改变时的自动位置归一化和吸附检测
+ * 当窗口/屏幕大小改变时，按比例调整模型位置和缩放，然后检测是否超出边界并执行吸附
  */
 Live2DManager.prototype.setupResizeSnapDetection = function () {
     // 防止重复绑定
     if (this._resizeSnapHandler) {
         window.removeEventListener('resize', this._resizeSnapHandler);
     }
+
+    // 记录当前视口尺寸，用于检测resize变化
+    this._lastViewportWidth = this.pixi_app ? this.pixi_app.renderer.width : window.innerWidth;
+    this._lastViewportHeight = this.pixi_app ? this.pixi_app.renderer.height : window.innerHeight;
 
     // 防抖动的 resize 处理函数
     let resizeTimeout = null;
@@ -1408,18 +1429,49 @@ Live2DManager.prototype.setupResizeSnapDetection = function () {
 
         // 延迟执行，避免频繁触发
         resizeTimeout = setTimeout(async () => {
-            if (!this.currentModel) return;
+            if (!this.currentModel || !this.pixi_app) return;
 
-            console.debug('[Live2D] 窗口大小改变，检测是否需要吸附');
+            // 获取resize后的新视口尺寸（PIXI renderer已自动resize）
+            const newWidth = this.pixi_app.renderer.width;
+            const newHeight = this.pixi_app.renderer.height;
+            const oldWidth = this._lastViewportWidth || newWidth;
+            const oldHeight = this._lastViewportHeight || newHeight;
 
-            // 执行吸附检测
+            // 检查视口是否有实际变化
+            const wRatio = newWidth / oldWidth;
+            const hRatio = newHeight / oldHeight;
+            const hasChanged = Math.abs(wRatio - 1) > 0.01 || Math.abs(hRatio - 1) > 0.01;
+
+            if (hasChanged) {
+                console.log('[Live2D] 窗口大小改变，按比例调整模型位置和缩放:', { oldWidth, oldHeight, newWidth, newHeight, wRatio, hRatio });
+
+                // 按比例调整位置
+                this.currentModel.x = this.currentModel.x * wRatio;
+                this.currentModel.y = this.currentModel.y * hRatio;
+
+                // 按最小比例等比调整缩放，保持模型相对大小
+                const scaleRatio = Math.min(wRatio, hRatio);
+                this.currentModel.scale.set(
+                    this.currentModel.scale.x * scaleRatio,
+                    this.currentModel.scale.y * scaleRatio
+                );
+
+                // 更新记录的视口尺寸
+                this._lastViewportWidth = newWidth;
+                this._lastViewportHeight = newHeight;
+
+                // 保存调整后的位置
+                this._debouncedSavePosition();
+            }
+
+            // 执行吸附检测（位置调整后仍可能超出边界）
             await this._checkAndPerformSnap(this.currentModel);
         }, 300);
     };
 
     window.addEventListener('resize', this._resizeSnapHandler);
 
-    console.debug('[Live2D] 已启用窗口大小改变时的自动吸附检测');
+    console.debug('[Live2D] 已启用窗口大小改变时的自动位置归一化和吸附检测');
 };
 
 /**

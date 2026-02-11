@@ -119,8 +119,8 @@
             position: absolute;
             top: 12px;
             right: 12px;
-            width: 24px;
-            height: 24px;
+            width: 32px;
+            height: 32px;
             background: #e0e1e2;
             opacity: 0.8;
             border: none;
@@ -129,7 +129,7 @@
             font-weight: bold;
             font-size: 14px;
             /* 统一字体大小 */
-            line-height: 24px;
+            line-height: 32px;
             /* 与按钮高度一致 */
             text-align: center;
             z-index: 21;
@@ -138,6 +138,11 @@
 
         #toggle-chat-btn:hover {
             background: #cacbcd;
+        }
+
+        #toggle-chat-btn img {
+            width: 32px;
+            height: 32px;
         }
 
         #chat-header {
@@ -229,9 +234,20 @@
         }
 
         #chat-container.minimized #toggle-chat-btn {
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            width: 100%;
+            height: 100%;
+            transform: none;
+            background: transparent;
+            border-radius: 0;
+        }
+
+        #chat-container.minimized #toggle-chat-btn img {
+            width: 100% !important;
+            height: 100% !important;
         }
 
         @media only screen and (max-width: 768px) {
@@ -286,8 +302,9 @@
             <span id="chat-title" data-i18n="chat.viewerTitle">对话 (观看模式)</span>
         </div>
         <button id="toggle-chat-btn" data-i18n-title="common.minimize" title="最小化"><img
-                src='/static/icons/expand_icon.png' alt="最小化" data-i18n-alt="common.minimize"
-                style="width: 24px; height: 24px; object-fit: contain; pointer-events: none;"></button>
+                src='/static/icons/expand_icon_off.png' alt="最小化" data-i18n-alt="common.minimize"
+                width="32" height="32"
+                style="object-fit: cover; pointer-events: none;"></button>
         <div id="chat-content-wrapper">
             <div id="chatContainer"></div>
         </div>
@@ -442,8 +459,10 @@
                 // 更新图标为展开图标
                 let iconImg = toggleChatBtn.querySelector('img');
                 if (iconImg) {
-                    iconImg.src = '/static/icons/expand_icon.png';
+                    iconImg.src = '/static/icons/expand_icon_off.png';
                     iconImg.alt = window.t ? window.t('common.expand') : '展开';
+                    iconImg.style.width = '100%';
+                    iconImg.style.height = '100%';
                 }
                 toggleChatBtn.title = window.t ? window.t('common.expand') : '展开';
             } else {
@@ -451,11 +470,32 @@
                 // 更新图标为最小化图标
                 let iconImg = toggleChatBtn.querySelector('img');
                 if (iconImg) {
-                    iconImg.src = '/static/icons/expand_icon.png';
+                    iconImg.src = '/static/icons/expand_icon_off.png';
                     iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
+                    iconImg.style.width = '32px';
+                    iconImg.style.height = '32px';
                 }
                 toggleChatBtn.title = window.t ? window.t('common.minimize') : '最小化';
                 scrollToBottom();
+            }
+        });
+
+        // 鼠标悬停效果 - 仅在最小化状态下生效
+        toggleChatBtn.addEventListener('mouseenter', () => {
+            if (chatMinimized) {
+                let iconImg = toggleChatBtn.querySelector('img');
+                if (iconImg) {
+                    iconImg.src = '/static/icons/expand_icon_on.png';
+                }
+            }
+        });
+
+        toggleChatBtn.addEventListener('mouseleave', () => {
+            if (chatMinimized) {
+                let iconImg = toggleChatBtn.querySelector('img');
+                if (iconImg) {
+                    iconImg.src = '/static/icons/expand_icon_off.png';
+                }
             }
         });
 

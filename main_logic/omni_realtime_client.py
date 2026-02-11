@@ -264,12 +264,17 @@ class OmniRealtimeClient:
         if self._is_gemini:
             await self._connect_gemini(instructions, native_audio)
             return
-        
+
+        # 确保开始新连接时状态完全重置
+        self._silence_reset_pending = False
+        if self._audio_processor is not None:
+            self._audio_processor.reset()
+
         # WebSocket-based APIs (GLM, Qwen, GPT, Step, Free)
         url = f"{self.base_url}?model={self.model}" if self.model != "free-model" else self.base_url
         headers = {
             "Authorization": f"Bearer {self.api_key}"
-        } 
+        }
         self.ws = await websockets.connect(url, additional_headers=headers)
         
         # 启动静默检测任务（只在启用时）
@@ -986,14 +991,23 @@ class OmniRealtimeClient:
                 logger.error(f"Error cancelling silence check task: {e}")
             finally:
                 self._silence_check_task = None
-        
+
+        # 重置静默超时相关状态
+        self._silence_timeout_triggered = False
+        self._last_speech_time = None
+        self._silence_reset_pending = False
+
         # 保存 debug 音频（RNNoise 处理前后的对比音频）
         if self._audio_processor is not None:
             try:
                 self._audio_processor.save_debug_audio()
             except Exception as e:
                 logger.error(f"Error saving debug audio: {e}")
-        
+
+        # 重置音频处理器状态
+        if self._audio_processor is not None:
+            self._audio_processor.reset()
+
         # Gemini uses different cleanup
         if self._is_gemini:
             await self._close_gemini()
@@ -1022,6 +1036,16 @@ class OmniRealtimeClient:
                 self._gemini_session = None
                 self._gemini_context_manager = None
                 self.ws = None
+
+                # 重置静默超时相关状态（与普通close()保持一致）
+                self._silence_timeout_triggered = False
+                self._last_speech_time = None
+                self._silence_reset_pending = False
+
+                # 重置音频处理器状态
+                if self._audio_processor is not None:
+                    self._audio_processor.reset()
+
                 logger.info("Gemini Live API session closed")
     
     async def _handle_messages_gemini(self) -> None:

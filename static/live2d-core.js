@@ -217,7 +217,7 @@ class Live2DManager {
     }
 
     // 保存用户偏好
-    async saveUserPreferences(modelPath, position, scale, parameters, display) {
+    async saveUserPreferences(modelPath, position, scale, parameters, display, viewport) {
         try {
             // 验证位置和缩放值是否为有效的有限数值
             if (!position || typeof position !== 'object' ||
@@ -255,6 +255,16 @@ class Live2DManager {
                 preferences.display = {
                     screenX: display.screenX,
                     screenY: display.screenY
+                };
+            }
+
+            // 如果有视口信息，添加到偏好中（用于跨分辨率位置和缩放归一化）
+            if (viewport && typeof viewport === 'object' &&
+                Number.isFinite(viewport.width) && Number.isFinite(viewport.height) &&
+                viewport.width > 0 && viewport.height > 0) {
+                preferences.viewport = {
+                    width: viewport.width,
+                    height: viewport.height
                 };
             }
 
@@ -343,10 +353,15 @@ class Live2DManager {
 
             // 复位后自动保存位置
             if (this._lastLoadedModelPath) {
+                const viewport = {
+                    width: this.pixi_app.renderer.width,
+                    height: this.pixi_app.renderer.height
+                };
                 const saveSuccess = await this.saveUserPreferences(
                     this._lastLoadedModelPath,
                     { x: this.currentModel.x, y: this.currentModel.y },
-                    { x: this.currentModel.scale.x, y: this.currentModel.scale.y }
+                    { x: this.currentModel.scale.x, y: this.currentModel.scale.y },
+                    null, null, viewport
                 );
                 if (saveSuccess) {
                     console.log('模型位置已保存');

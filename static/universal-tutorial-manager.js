@@ -1,12 +1,12 @@
 /**
  * N.E.K.O 通用新手引导系统
  * 支持所有页面的引导配置
- *
- * 使用方式：
- * 1. 在页面中引入此文件
- * 2. 系统会自动检测当前页面
- * 3. 根据页面类型加载对应的引导配置
  */
+
+// 引导页面列表常量 - 包含所有页面类型及子类型的存储键集合
+// 注意：此列表包含 localStorage 使用的存储子键（如 model_manager_*），
+// 并不完全等同于 detectPage() 返回的逻辑页面集合。
+const TUTORIAL_PAGES = Object.freeze(['home', 'model_manager', 'model_manager_live2d', 'model_manager_vrm', 'model_manager_common', 'parameter_editor', 'emotion_manager', 'chara_manager', 'settings', 'voice_clone', 'steam_workshop', 'memory_browser']);
 
 class UniversalTutorialManager {
     constructor() {
@@ -17,11 +17,26 @@ class UniversalTutorialManager {
         this.driver = null;
         this.isInitialized = false;
         this.isTutorialRunning = false; // 防止重复启动
-        this.currentPage = this.detectPage();
+        this.currentPage = UniversalTutorialManager.detectPage();
         this.currentStep = 0;
         this.nextButtonGuardTimer = null;
         this.nextButtonGuardActive = false;
+        this.tutorialPadding = 8;
+        this.tutorialControlledElements = new Set();
+        this.tutorialInteractionStates = new Map();
+        this.tutorialMarkerDisplayCache = null;
+        this.tutorialRollbackActive = false;
+        this._applyingInteractionState = false;
+        this._stepChanging = false;
+        this._pendingStepChange = false;
         this._lastOnHighlightedStepIndex = null;
+        this._lastAppliedStateKey = null;
+        this.cachedValidSteps = null;
+        this._refreshTimers = [];
+
+        // 刷新延迟常量
+        this.LAYOUT_REFRESH_DELAY = 100;
+        this.DYNAMIC_REFRESH_DELAYS = [200, 600, 1000];
 
         // 用于追踪在引导中修改过的元素及其原始样式
         this.modifiedElementsMap = new Map();
@@ -61,7 +76,7 @@ class UniversalTutorialManager {
     /**
      * 检测当前页面类型
      */
-    detectPage() {
+    static detectPage() {
         const path = window.location.pathname;
         const hash = window.location.hash;
 
@@ -159,48 +174,73 @@ class UniversalTutorialManager {
                 return;
             }
 
-            this.driver = new DriverClass({
-                padding: 8,
-                allowClose: true,
-                overlayClickNext: false,
-                animate: true,
-                smoothScroll: true, // 启用平滑滚动
-                className: 'neko-tutorial-driver',
-                disableActiveInteraction: false,
-                // i18n 按钮文本
-                nextBtnText: this.t('tutorial.buttons.next', '下一步'),
-                prevBtnText: this.t('tutorial.buttons.prev', '上一步'),
-                doneBtnText: this.t('tutorial.buttons.done', '完成'),
-                onDestroyStarted: () => {
-                    // 教程结束时，如果需要标记 hint 已显示
-                    if (this.shouldMarkHintShown) {
-                        localStorage.setItem('neko_tutorial_reset_hint_shown', 'true');
-                        this.shouldMarkHintShown = false;
-                        console.log('[Tutorial] 已标记重置提示为已显示');
-                    }
-                },
-                onHighlighted: (element, step, options) => {
-                    console.log('[Tutorial] 高亮元素:', step.element);
+            // 注意：此处不再立即创建 driver 实例，而是延迟到 startTutorialSteps 中
+            // 这样可以确保按钮文本等配置能正确获取到最新的 i18n 翻译
+            this.isInitialized = true;
+            console.log('[Tutorial] driver.js 环境检测成功');
 
-                    // 调用步骤特定的 onHighlighted 回调（如果存在）
-                    if (step.onHighlighted && typeof step.onHighlighted === 'function') {
-                        const currentStepIndex = (this.driver && typeof this.driver.currentStep === 'number')
-                            ? this.driver.currentStep
-                            : this.currentStep;
-                        if (currentStepIndex === this._lastOnHighlightedStepIndex) {
-                            console.log('[Tutorial] 跳过重复的 onHighlighted 回调:', step.element);
-                        } else {
-                            console.log('[Tutorial] 调用步骤特定的 onHighlighted 回调');
-                            try {
-                                step.onHighlighted.call(this);
-                            } catch (error) {
-                                console.error('[Tutorial] 步骤 onHighlighted 执行失败:', step.element, error);
-                            }
-                            this._lastOnHighlightedStepIndex = currentStepIndex;
+            // 检查是否需要自动启动引导
+            this.checkAndStartTutorial();
+        } catch (error) {
+            console.error('[Tutorial] driver.js 初始化失败:', error);
+        }
+    }
+
+    /**
+     * 获取 driver.js 的统一配置
+     */
+    getDriverConfig() {
+        return {
+            padding: this.tutorialPadding,
+            allowClose: true,
+            overlayClickNext: false,
+            animate: true,
+            smoothScroll: true, // 启用平滑滚动
+            className: 'neko-tutorial-driver',
+            disableActiveInteraction: false,
+            // i18n 按钮文本
+            nextBtnText: this.t('tutorial.buttons.next', '下一步'),
+            prevBtnText: this.t('tutorial.buttons.prev', '上一步'),
+            doneBtnText: this.t('tutorial.buttons.done', '完成'),
+            onDestroyStarted: () => {
+                // 教程结束时，如果需要标记 hint 已显示
+                if (this.shouldMarkHintShown) {
+                    localStorage.setItem('neko_tutorial_reset_hint_shown', 'true');
+                    this.shouldMarkHintShown = false;
+                    console.log('[Tutorial] 已标记重置提示为已显示');
+                }
+            },
+            onHighlighted: (element, step, options) => {
+                // 去重机制说明：
+                // 1. driver.js 内部切换步骤时会触发 onHighlighted。
+                // 2. onStepChange 手动触发时也会调用此回调。
+                // 3. 使用 _lastOnHighlightedStepIndex 记录最后一次处理的步骤索引，
+                //    确保同一步骤的逻辑（特别是交互状态应用）只执行一次，避免竞争。
+                // 每次高亮元素时，确保元素在视口中
+                console.log('[Tutorial] 高亮元素:', step.element);
+
+                // 调用步骤特定的 onHighlighted 回调（如果存在）
+                if (step.onHighlighted && typeof step.onHighlighted === 'function') {
+                    const currentStepIndex = (this.driver && typeof this.driver.currentStep === 'number')
+                        ? this.driver.currentStep
+                        : this.currentStep;
+                    if (currentStepIndex === this._lastOnHighlightedStepIndex) {
+                        console.log('[Tutorial] 跳过重复的 onHighlighted 回调:', step.element);
+                    } else {
+                        console.log('[Tutorial] 调用步骤特定的 onHighlighted 回调');
+                        try {
+                            step.onHighlighted.call(this);
+                        } catch (error) {
+                            console.error('[Tutorial] 步骤 onHighlighted 执行失败:', step.element, error);
                         }
+                        this._lastOnHighlightedStepIndex = currentStepIndex;
                     }
+                }
 
-                    setTimeout(() => {
+                // 给一点时间让 Driver.js 完成定位
+                setTimeout(() => {
+                    (async () => {
+                        if (!window.isInTutorial) return;
                         if (element && element.element) {
                             const targetElement = element.element;
                             const rect = targetElement.getBoundingClientRect();
@@ -215,20 +255,17 @@ class UniversalTutorialManager {
                                 targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
                             }
                         }
+
+                        await this.applyTutorialInteractionState(step, 'highlight');
+
+                        // 启用 popover 拖动功能
                         this.enablePopoverDragging();
-                    }, 100);
-                }
-            });
-
-            this.isInitialized = true;
-            console.log('[Tutorial] driver.js 初始化成功');
-
-
-            // 检查是否需要自动启动引导
-            this.checkAndStartTutorial();
-        } catch (error) {
-            console.error('[Tutorial] driver.js 初始化失败:', error);
-        }
+                    })().catch(err => {
+                        console.error('[Tutorial] onHighlighted 回调执行失败:', err);
+                    });
+                }, this.LAYOUT_REFRESH_DELAY);
+            }
+        };
     }
 
     /**
@@ -250,72 +287,16 @@ class UniversalTutorialManager {
                 } catch (e) {
                     // 忽略销毁错误
                 }
+                this.driver = null;
             }
 
             // 重新创建 driver 实例，使用最新的 i18n 翻译
-            this.driver = new DriverClass({
-                padding: 8,
-                allowClose: true,
-                overlayClickNext: false,
-                animate: true,
-                smoothScroll: true,
-                className: 'neko-tutorial-driver',
-                disableActiveInteraction: false,
-                // i18n 按钮文本
-                nextBtnText: this.t('tutorial.buttons.next', '下一步'),
-                prevBtnText: this.t('tutorial.buttons.prev', '上一步'),
-                doneBtnText: this.t('tutorial.buttons.done', '完成'),
-                onDestroyStarted: () => {
-                    if (this.shouldMarkHintShown) {
-                        localStorage.setItem('neko_tutorial_reset_hint_shown', 'true');
-                        this.shouldMarkHintShown = false;
-                        console.log('[Tutorial] 已标记重置提示为已显示');
-                    }
-                },
-                onHighlighted: (element, step, options) => {
-                    console.log('[Tutorial] 高亮元素:', step.element);
-
-                    // 调用步骤特定的 onHighlighted 回调（如果存在）
-                    if (step.onHighlighted && typeof step.onHighlighted === 'function') {
-                        const currentStepIndex = (this.driver && typeof this.driver.currentStep === 'number')
-                            ? this.driver.currentStep
-                            : this.currentStep;
-                        if (currentStepIndex === this._lastOnHighlightedStepIndex) {
-                            console.log('[Tutorial] 跳过重复的 onHighlighted 回调:', step.element);
-                        } else {
-                            console.log('[Tutorial] 调用步骤特定的 onHighlighted 回调');
-                            try {
-                                step.onHighlighted.call(this);
-                            } catch (error) {
-                                console.error('[Tutorial] 步骤 onHighlighted 执行失败:', step.element, error);
-                            }
-                            this._lastOnHighlightedStepIndex = currentStepIndex;
-                        }
-                    }
-
-                    setTimeout(() => {
-                        if (element && element.element) {
-                            const targetElement = element.element;
-                            const rect = targetElement.getBoundingClientRect();
-                            const isInViewport = (
-                                rect.top >= 0 &&
-                                rect.left >= 0 &&
-                                rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) &&
-                                rect.right <= (window.innerWidth || document.documentElement.clientWidth)
-                            );
-                            if (!isInViewport) {
-                                console.log('[Tutorial] 元素不在视口中，滚动到元素');
-                                targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                            }
-                        }
-                        this.enablePopoverDragging();
-                    }, 100);
-                }
-            });
+            this.driver = new DriverClass(this.getDriverConfig());
 
             console.log('[Tutorial] driver.js 重新创建成功，使用 i18n 按钮文本');
         } catch (error) {
             console.error('[Tutorial] driver.js 重新创建失败:', error);
+            this.driver = null;
         }
     }
 
@@ -489,7 +470,8 @@ class UniversalTutorialManager {
             popover: {
                 title: this.t('tutorial.resetHint.title', '✨ 引导完成'),
                 description: this.t('tutorial.resetHint.desc', '如果想再次查看引导，可以前往「记忆浏览」页面，在「新手引导」区域重置。'),
-            }
+            },
+            disableActiveInteraction: true
         };
     }
 
@@ -531,49 +513,56 @@ class UniversalTutorialManager {
                 popover: {
                     title: window.t ? window.t('tutorial.step1c.title', '🔒 锁定猫娘') : '🔒 锁定猫娘',
                     description: window.t ? window.t('tutorial.step1c.desc', '点击这个锁可以锁定猫娘位置，防止误触移动。再次点击可以解锁~') : '点击这个锁可以锁定猫娘位置，防止误触移动。再次点击可以解锁~',
-                }
+                },
+                disableActiveInteraction: true
             },
             {
                 element: '#chat-container',
                 popover: {
                     title: window.t ? window.t('tutorial.step2.title', '💬 对话区域') : '💬 对话区域',
                     description: window.t ? window.t('tutorial.step2.desc', '在这里可以和猫娘进行文字对话。输入您的想法，她会给您有趣的回应呢~') : '在这里可以和猫娘进行文字对话。输入您的想法，她会给您有趣的回应呢~',
-                }
+                },
+                disableActiveInteraction: true
             },
             {
                 element: '#live2d-floating-buttons',
                 popover: {
                     title: window.t ? window.t('tutorial.step5.title', '🎛️ 浮动工具栏') : '🎛️ 浮动工具栏',
                     description: window.t ? window.t('tutorial.step5.desc', '浮动工具栏包含多个实用功能按钮，让我为你逐一介绍~') : '浮动工具栏包含多个实用功能按钮，让我为你逐一介绍~',
-                }
+                },
+                disableActiveInteraction: true
             },
             {
                 element: '#live2d-btn-mic',
                 popover: {
                     title: window.t ? window.t('tutorial.step6.title', '🎤 语音控制') : '🎤 语音控制',
                     description: window.t ? window.t('tutorial.step6.desc', '启用语音控制，猫娘通过语音识别理解你的话语~') : '启用语音控制，猫娘通过语音识别理解你的话语~',
-                }
+                },
+                disableActiveInteraction: true
             },
             {
                 element: '#live2d-btn-screen',
                 popover: {
                     title: window.t ? window.t('tutorial.step7.title', '🖥️ 屏幕分享') : '🖥️ 屏幕分享',
                     description: window.t ? window.t('tutorial.step7.desc', '分享屏幕/窗口/标签页，让猫娘看到你的画面~') : '分享屏幕/窗口/标签页，让猫娘看到你的画面~',
-                }
+                },
+                disableActiveInteraction: true
             },
             {
                 element: '#live2d-btn-agent',
                 popover: {
                     title: window.t ? window.t('tutorial.step8.title', '🔨 Agent工具') : '🔨 Agent工具',
                     description: window.t ? window.t('tutorial.step8.desc', '打开 Agent 工具面板，使用各类辅助功能~') : '打开 Agent 工具面板，使用各类辅助功能~',
-                }
+                },
+                disableActiveInteraction: true
             },
             {
                 element: '#live2d-btn-goodbye',
                 popover: {
                     title: window.t ? window.t('tutorial.step9.title', '💤 请她离开') : '💤 请她离开',
                     description: window.t ? window.t('tutorial.step9.desc', '让猫娘暂时离开并隐藏界面，需要时可点击\"请她回来\"恢复~') : '让猫娘暂时离开并隐藏界面，需要时可点击\"请她回来\"恢复~',
-                }
+                },
+                disableActiveInteraction: true
             },
             {
                 element: '#live2d-btn-settings',
@@ -581,49 +570,56 @@ class UniversalTutorialManager {
                     title: window.t ? window.t('tutorial.step10.title', '⚙️ 设置') : '⚙️ 设置',
                     description: window.t ? window.t('tutorial.step10.desc', '打开设置面板，下面会依次介绍设置里的各个项目~') : '打开设置面板，下面会依次介绍设置里的各个项目~',
                 },
-                action: 'click'
+                action: 'click',
+                disableActiveInteraction: true
             },
             {
                 element: '#live2d-toggle-proactive-chat',
                 popover: {
                     title: window.t ? window.t('tutorial.step13.title', '💬 主动搭话') : '💬 主动搭话',
                     description: window.t ? window.t('tutorial.step13.desc', '开启后猫娘会主动发起对话，频率可在此调整~') : '开启后猫娘会主动发起对话，频率可在此调整~',
-                }
+                },
+                disableActiveInteraction: true
             },
             {
                 element: '#live2d-toggle-proactive-vision',
                 popover: {
                     title: window.t ? window.t('tutorial.step14.title', '👀 自主视觉') : '👀 自主视觉',
                     description: window.t ? window.t('tutorial.step14.desc', '开启后猫娘会主动读取画面信息，间隔可在此调整~') : '开启后猫娘会主动读取画面信息，间隔可在此调整~',
-                }
+                },
+                disableActiveInteraction: true
             },
             {
                 element: '#live2d-menu-character',
                 popover: {
                     title: window.t ? window.t('tutorial.step15.title', '👤 角色管理') : '👤 角色管理',
                     description: window.t ? window.t('tutorial.step15.desc', '调整猫娘的性格、形象、声音等~') : '调整猫娘的性格、形象、声音等~',
-                }
+                },
+                disableActiveInteraction: true
             },
             {
                 element: '#live2d-menu-api-keys',
                 popover: {
                     title: window.t ? window.t('tutorial.step16.title', '🔑 API 密钥') : '🔑 API 密钥',
                     description: window.t ? window.t('tutorial.step16.desc', '配置 AI 服务的 API 密钥，这是和猫娘互动的必要配置~') : '配置 AI 服务的 API 密钥，这是和猫娘互动的必要配置~',
-                }
+                },
+                disableActiveInteraction: true
             },
             {
                 element: '#live2d-menu-memory',
                 popover: {
                     title: window.t ? window.t('tutorial.step17.title', '🧠 记忆浏览') : '🧠 记忆浏览',
                     description: window.t ? window.t('tutorial.step17.desc', '查看与管理猫娘的记忆内容~') : '查看与管理猫娘的记忆内容~',
-                }
+                },
+                disableActiveInteraction: true
             },
             {
                 element: '#live2d-menu-steam-workshop',
                 popover: {
                     title: window.t ? window.t('tutorial.step18.title', '🛠️ 创意工坊') : '🛠️ 创意工坊',
                     description: window.t ? window.t('tutorial.step18.desc', '进入 Steam 创意工坊页面，管理订阅内容~') : '进入 Steam 创意工坊页面，管理订阅内容~',
-                }
+                },
+                disableActiveInteraction: true
             },
             {
                 element: 'body',
@@ -644,7 +640,8 @@ class UniversalTutorialManager {
                             </div>
                         </div>
                     `
-                }
+                },
+                disableActiveInteraction: true
             },
             {
                 element: 'body',
@@ -676,7 +673,8 @@ class UniversalTutorialManager {
                             </div>
                         </div>
                     `
-                }
+                },
+                disableActiveInteraction: true
             }
         ];
     }
@@ -775,7 +773,7 @@ class UniversalTutorialManager {
                     description: this.t('tutorial.parameter_editor.step2.desc', '这里显示了模型的所有可调参数。每个参数控制模型的不同部分，如眼睛大小、嘴巴形状、头部角度等。'),
                 }
             }
-            ];
+        ];
     }
 
     /**
@@ -1059,6 +1057,275 @@ class UniversalTutorialManager {
         return { originalDisplay: element.style.display, originalVisibility: element.style.visibility, originalOpacity: element.style.opacity };
     }
 
+    getTutorialInteractiveSelectors() {
+        return [
+            '#live2d-canvas',
+            '#live2d-container',
+            '#chat-container',
+            '#live2d-floating-buttons',
+            '#live2d-return-button-container',
+            '#live2d-btn-return',
+            '#resetSessionButton',
+            '#returnSessionButton',
+            '#live2d-lock-icon',
+            '#toggle-chat-btn',
+            '.live2d-floating-btn',
+            // 宽泛匹配：所有以 live2d- 开头 ID 的元素都将被教程系统自动识别并控制交互状态
+            '[id^="live2d-"]'
+        ];
+    }
+
+    isTutorialControlledElement(element) {
+        if (!element) return false;
+
+        // 复用选择器列表进行匹配检查
+        const selectors = this.getTutorialInteractiveSelectors();
+        const isMatched = selectors.some(selector => {
+            try {
+                return element.matches(selector) || (element.closest && element.closest(selector));
+            } catch (e) {
+                console.warn(`[Tutorial] 选择器匹配失败: ${selector}`, e);
+                return false;
+            }
+        });
+
+        return isMatched;
+    }
+
+    collectTutorialControlledElements(steps = []) {
+        const elements = new Set();
+        const selectors = this.getTutorialInteractiveSelectors();
+        selectors.forEach(selector => {
+            document.querySelectorAll(selector).forEach(element => { elements.add(element); });
+        });
+        steps.forEach(step => {
+            const element = document.querySelector(step.element);
+            if (element && this.isTutorialControlledElement(element)) {
+                elements.add(element);
+            }
+        });
+        this.tutorialControlledElements = elements;
+        console.log(`[Tutorial] 已收集交互元素: ${elements.size}`);
+    }
+
+    setTutorialMarkersVisible(visible, options = {}) {
+        const overlay = document.querySelector('.driver-overlay');
+        const highlight = document.querySelector('.driver-highlight');
+        const popover = document.querySelector('.driver-popover');
+        const elements = [overlay, highlight, popover].filter(Boolean);
+
+        if (!this.tutorialMarkerDisplayCache) {
+            this.tutorialMarkerDisplayCache = new Map();
+        }
+
+        if (!visible) {
+            const keepPopover = options.keepPopover === true;
+            elements.forEach(element => {
+                // 如果指定保留弹窗且当前元素是弹窗，则跳过隐藏
+                if (keepPopover && element === popover) return;
+
+                if (!this.tutorialMarkerDisplayCache.has(element)) {
+                    this.tutorialMarkerDisplayCache.set(element, element.style.visibility);
+                }
+                // 使用 visibility: hidden 代替 display: none，保持布局占位，过渡更平滑
+                element.style.visibility = 'hidden';
+            });
+            return;
+        }
+
+        elements.forEach(element => {
+            const cached = this.tutorialMarkerDisplayCache.get(element);
+            if (cached !== undefined) {
+                element.style.visibility = cached;
+            } else {
+                element.style.visibility = 'visible';
+            }
+        });
+    }
+
+    setElementInteractive(element, enabled) {
+        if (!element) return;
+        if (!this.tutorialInteractionStates.has(element)) {
+            this.tutorialInteractionStates.set(element, {
+                pointerEvents: element.style.pointerEvents,
+                cursor: element.style.cursor,
+                userSelect: element.style.userSelect
+            });
+        }
+        if (enabled) {
+            const state = this.tutorialInteractionStates.get(element);
+            element.style.pointerEvents = state?.pointerEvents || '';
+            element.style.cursor = state?.cursor || '';
+            element.style.userSelect = state?.userSelect || '';
+            if (element.dataset.tutorialDisabled) {
+                delete element.dataset.tutorialDisabled;
+            }
+            return;
+        }
+        element.style.pointerEvents = 'none';
+        element.style.cursor = 'default';
+        element.style.userSelect = 'none';
+        element.dataset.tutorialDisabled = 'true';
+    }
+
+    disableAllTutorialInteractions() {
+        this.tutorialControlledElements.forEach(element => {
+            this.setElementInteractive(element, false);
+        });
+        console.log('[Tutorial] 已禁用所有交互元素');
+    }
+
+    enableCurrentStepInteractions(currentElement) {
+        if (!currentElement) return;
+        this.tutorialControlledElements.forEach(element => {
+            // 启用当前元素、其父级容器以及其内部的受控子元素
+            if (element === currentElement || element.contains(currentElement) || currentElement.contains(element)) {
+                this.setElementInteractive(element, true);
+            }
+        });
+        console.log('[Tutorial] 已启用当前步骤交互元素');
+    }
+
+    validateTutorialLayout(currentElement, context) {
+        if (!currentElement) return true;
+        const highlight = document.querySelector('.driver-highlight');
+        if (!highlight) {
+            console.log('[Tutorial] 未检测到高亮框，跳过布局验证');
+            return true;
+        }
+        const rect = currentElement.getBoundingClientRect();
+        const highlightRect = highlight.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) {
+            console.log('[Tutorial] 当前步骤元素尺寸异常，跳过布局验证');
+            return true;
+        }
+        const padding = this.tutorialPadding || 0;
+        const diffLeft = Math.abs(highlightRect.left - (rect.left - padding));
+        const diffTop = Math.abs(highlightRect.top - (rect.top - padding));
+        const diffWidth = Math.abs(highlightRect.width - (rect.width + padding * 2));
+        const diffHeight = Math.abs(highlightRect.height - (rect.height + padding * 2));
+        const threshold = 12;
+        const hasOffset = diffLeft > threshold || diffTop > threshold || diffWidth > threshold || diffHeight > threshold;
+        if (hasOffset) {
+            console.error('[Tutorial] 检测到高亮框偏移，执行回滚', {
+                context,
+                diffLeft,
+                diffTop,
+                diffWidth,
+                diffHeight,
+                threshold
+            });
+            return false;
+        }
+        console.log('[Tutorial] 布局验证通过', {
+            context,
+            diffLeft,
+            diffTop,
+            diffWidth,
+            diffHeight
+        });
+        return true;
+    }
+
+    async refreshAndValidateTutorialLayout(currentElement, context) {
+        if (this.driver && typeof this.driver.refresh === 'function') {
+            this.driver.refresh();
+        }
+        // 等待驱动程序完成高亮框重定位（匹配 onHighlighted 的延迟）
+        await new Promise(r => setTimeout(r, this.LAYOUT_REFRESH_DELAY));
+
+        void document.body.offsetHeight;
+        const ok = this.validateTutorialLayout(currentElement, context);
+        if (!ok) {
+            this.rollbackTutorialInteractionState();
+        }
+        return ok;
+    }
+
+    rollbackTutorialInteractionState() {
+        this.tutorialRollbackActive = true;
+        this.disableAllTutorialInteractions();
+        // 仅隐藏遮罩和高亮，保留引导弹窗以避免用户卡死，并允许其通过弹窗按钮退出
+        this.setTutorialMarkersVisible(false, { keepPopover: true });
+        console.error('[Tutorial] 检测到布局异常，已回滚交互并保留引导弹窗');
+    }
+
+    restoreTutorialInteractionState() {
+        this.tutorialControlledElements.forEach(element => {
+            const state = this.tutorialInteractionStates.get(element);
+            element.style.pointerEvents = state?.pointerEvents || '';
+            element.style.cursor = state?.cursor || '';
+            element.style.userSelect = state?.userSelect || '';
+            if (element.dataset.tutorialDisabled) {
+                delete element.dataset.tutorialDisabled;
+            }
+        });
+        this.tutorialInteractionStates.clear();
+        this.tutorialControlledElements = new Set();
+        this.tutorialMarkerDisplayCache = null;
+        this.tutorialRollbackActive = false;
+        this._lastAppliedStateKey = null;
+        console.log('[Tutorial] 已恢复交互元素默认状态');
+    }
+
+    async applyTutorialInteractionState(currentStepConfig, context) {
+        if (!window.isInTutorial || !currentStepConfig) return;
+
+        // 生成当前状态的唯一标识
+        const currentStepIndex = (this.driver && typeof this.driver.currentStep === 'number')
+            ? this.driver.currentStep
+            : this.currentStep;
+        const stateKey = `${currentStepIndex}|${currentStepConfig.element}|${!!currentStepConfig.disableActiveInteraction}|${!!currentStepConfig.enableModelInteraction}`;
+
+        if (this._applyingInteractionState) {
+            console.log('[Tutorial] 交互状态正在应用中，跳过重复调用');
+            return;
+        }
+
+        // 如果状态已应用且不是特殊上下文（如 start 或 rollback），则跳过以减少重复验证周期
+        if (this._lastAppliedStateKey === stateKey && context !== 'start' && context !== 'rollback') {
+            console.log(`[Tutorial] 交互状态已应用，跳过重复操作 (Context: ${context})`);
+            return;
+        }
+
+        try {
+            this._applyingInteractionState = true;
+            this.tutorialRollbackActive = false;
+            if (!this.tutorialControlledElements || this.tutorialControlledElements.size === 0) {
+                this.collectTutorialControlledElements(this.cachedValidSteps || []);
+            }
+
+            // 仅在初次启动或特定上下文时才隐藏标记，减少闪烁
+            const shouldHideMarkers = context === 'start' || context === 'rollback';
+            if (shouldHideMarkers) {
+                this.setTutorialMarkersVisible(false);
+            }
+
+            this.disableAllTutorialInteractions();
+            const currentElement = document.querySelector(currentStepConfig.element);
+            if (currentElement && !currentStepConfig.disableActiveInteraction) {
+                this.enableCurrentStepInteractions(currentElement);
+            }
+            if (currentStepConfig.enableModelInteraction) {
+                const live2dCanvas = document.getElementById('live2d-canvas');
+                if (live2dCanvas) {
+                    this.setElementInteractive(live2dCanvas, true);
+                }
+            }
+
+            if (shouldHideMarkers) {
+                this.setTutorialMarkersVisible(true);
+            }
+
+            await this.refreshAndValidateTutorialLayout(currentElement, context);
+            if (!this.tutorialRollbackActive) {
+                this._lastAppliedStateKey = stateKey;
+            }
+        } finally {
+            this._applyingInteractionState = false;
+        }
+    }
+
     /**
      * 启动引导
      */
@@ -1127,6 +1394,10 @@ class UniversalTutorialManager {
             }
         } catch (error) {
             console.error('[Tutorial] 启动引导失败:', error);
+            this.isTutorialRunning = false;
+            window.isInTutorial = false;
+            this.restoreTutorialInteractionState();
+            this.setTutorialMarkersVisible(true);
         }
     }
 
@@ -1293,12 +1564,24 @@ class UniversalTutorialManager {
         // 重新创建 driver 实例以确保按钮文本使用最新的 i18n 翻译
         this.recreateDriverWithI18n();
 
+        if (!this.driver) {
+            console.error('[Tutorial] driver 实例创建失败，无法启动引导');
+            this.isTutorialRunning = false;
+            window.isInTutorial = false;
+            this.restoreTutorialInteractionState();
+            this.setTutorialMarkersVisible(true);
+            return;
+        }
+
         // 定义步骤
         this.driver.setSteps(validSteps);
 
         // 设置全局标记，表示正在进行引导
         window.isInTutorial = true;
         console.log('[Tutorial] 设置全局引导标记');
+        this.collectTutorialControlledElements(validSteps);
+        this.disableAllTutorialInteractions();
+        this.setTutorialMarkersVisible(false);
 
         // 对于角色管理页面，临时移除容器的上边距以修复高亮框偏移问题
         if (this.currentPage === 'chara_manager') {
@@ -1308,20 +1591,6 @@ class UniversalTutorialManager {
                 container.style.marginTop = '0';
                 console.log('[Tutorial] 临时移除容器上边距以修复高亮框位置');
             }
-        }
-
-        // 禁用对话框拖动功能（在引导中）
-        const chatContainer = document.getElementById('chat-container');
-        if (chatContainer) {
-            chatContainer.style.pointerEvents = 'none';
-            console.log('[Tutorial] 禁用对话框拖动功能');
-        }
-
-        // 禁用 Live2D 模型拖动功能（在引导中）
-        const live2dCanvas = document.getElementById('live2d-canvas');
-        if (live2dCanvas) {
-            live2dCanvas.style.pointerEvents = 'none';
-            console.log('[Tutorial] 禁用 Live2D 模型拖动功能');
         }
 
         // 将 Live2D 模型移到屏幕右边（在引导中）
@@ -1374,7 +1643,7 @@ class UniversalTutorialManager {
             }
         }
 
-        // 启动浮动工具栏保护定时器（每 200ms 检查一次，更频繁）
+        // 启动浮动工具栏保护定时器（每 500ms 检查一次）
         this.floatingButtonsProtectionTimer = setInterval(() => {
             const floatingButtons = document.getElementById('live2d-floating-buttons');
             if (floatingButtons && window.isInTutorial) {
@@ -1393,7 +1662,7 @@ class UniversalTutorialManager {
                     lockIcon.style.setProperty('opacity', '1', 'important');
                 }
             }
-        }, 200);
+        }, 500);
 
         // 对于设置页面和记忆浏览页面，禁用页面滚动以防止用户在引导中滚动页面导致问题
         if (this.currentPage === 'settings' || this.currentPage === 'memory_browser') {
@@ -1404,10 +1673,23 @@ class UniversalTutorialManager {
 
         // 监听事件
         this.driver.on('destroy', () => this.onTutorialEnd());
-        this.driver.on('next', () => this.onStepChange());
+        this.driver.on('next', () => this.onStepChange().catch(err => {
+            console.error('[Tutorial] 步骤切换失败:', err);
+        }));
+        this.driver.on('prev', () => this.onStepChange().catch(err => {
+            console.error('[Tutorial] 步骤切换失败:', err);
+        }));
 
         // 启动引导
         this.driver.start();
+        setTimeout(() => {
+            const steps = this.cachedValidSteps || [];
+            if (steps.length > 0) {
+                this.applyTutorialInteractionState(steps[0], 'start').catch(err => {
+                    console.error('[Tutorial] 初始交互状态应用失败:', err);
+                });
+            }
+        }, 0);
         console.log('[Tutorial] 引导已启动，页面:', this.currentPage);
     }
 
@@ -1619,10 +1901,10 @@ class UniversalTutorialManager {
      */
     shouldClickElement(element, selector) {
         // 检查是否是折叠/展开类型的元素（支持类名和 ID）
-        const isToggleElement = selector.includes('.fold-toggle') || 
-                              selector.includes('.catgirl-header') ||
-                              selector === '#tutorial-target-fold-toggle' || 
-                              selector === '#tutorial-target-catgirl-header';
+        const isToggleElement = selector.includes('.fold-toggle') ||
+            selector.includes('.catgirl-header') ||
+            selector === '#tutorial-target-fold-toggle' ||
+            selector === '#tutorial-target-catgirl-header';
 
         if (isToggleElement) {
             // 查找相关的内容容器
@@ -1636,7 +1918,7 @@ class UniversalTutorialManager {
                     // 尝试找兄弟节点中的内容
                     contentContainer = foldParent.nextElementSibling || foldParent.querySelector('.fold-content');
                 }
-                
+
                 // 如果还是没找到，尝试通用的查找方式
                 if (!contentContainer) {
                     const parent = element.closest('[class*="catgirl"]');
@@ -1647,7 +1929,7 @@ class UniversalTutorialManager {
                     }
                 }
             }
-            
+
 
             // 检查内容是否可见
             if (contentContainer) {
@@ -1718,9 +2000,9 @@ class UniversalTutorialManager {
             while (scrollableParent) {
                 const style = window.getComputedStyle(scrollableParent);
                 const hasScroll = style.overflowY === 'auto' ||
-                                style.overflowY === 'scroll' ||
-                                style.overflow === 'auto' ||
-                                style.overflow === 'scroll';
+                    style.overflowY === 'scroll' ||
+                    style.overflow === 'auto' ||
+                    style.overflow === 'scroll';
 
                 if (hasScroll) {
                     console.log('[Tutorial] 找到可滚动容器，正在滚动到元素...');
@@ -1886,199 +2168,219 @@ class UniversalTutorialManager {
     /**
      * 步骤改变时的回调
      */
-    onStepChange() {
-        this.currentStep = this.driver.currentStep || 0;
-        console.log(`[Tutorial] 当前步骤: ${this.currentStep + 1}`);
+    async onStepChange() {
+        if (this._stepChanging) {
+            console.log('[Tutorial] 步骤正在切换中，标记待处理请求');
+            this._pendingStepChange = true;
+            return;
+        }
+        
+        this._stepChanging = true;
+        this._pendingStepChange = false;
+        let succeeded = false;
 
-        // 使用缓存的已验证步骤，而不是重新调用 getStepsForPage()
-        // 这样可以保持与 startTutorialSteps 中使用的步骤列表一致
-        const steps = this.cachedValidSteps || this.getStepsForPage();
-        if (this.currentStep < steps.length) {
-            const currentStepConfig = steps[this.currentStep];
+        try {
+            if (!this.driver) {
+                console.warn('[Tutorial] driver 已销毁，跳过步骤切换');
+                this.currentStep = 0;
+                return;
+            }
+            this.currentStep = this.driver.currentStep || 0;
+            console.log(`[Tutorial] 当前步骤: ${this.currentStep + 1}`);
 
-            // 进入新步骤前，先清理上一阶段的"下一步"前置校验
-            this.clearNextButtonGuard();
+            // 使用缓存的已验证步骤，而不是重新调用 getStepsForPage()
+            // 这样可以保持与 startTutorialSteps 中使用的步骤列表一致
+            const steps = this.cachedValidSteps || this.getStepsForPage();
+            if (this.currentStep < steps.length) {
+                const currentStepConfig = steps[this.currentStep];
 
-            // 触发步骤特定的 onHighlighted（driver.min.js 不支持该回调）
-            if (currentStepConfig.onHighlighted && typeof currentStepConfig.onHighlighted === 'function') {
-                if (this._lastOnHighlightedStepIndex !== this.currentStep) {
-                    try {
-                        console.log('[Tutorial] 手动触发步骤 onHighlighted');
-                        currentStepConfig.onHighlighted.call(this);
-                        this._lastOnHighlightedStepIndex = this.currentStep;
-                    } catch (error) {
-                        console.error('[Tutorial] 步骤 onHighlighted 执行失败:', error);
+                // 进入新步骤前，先清理上一阶段的"下一步"前置校验
+                this.clearNextButtonGuard();
+
+                // 清除旧的刷新定时器
+                if (this._refreshTimers) {
+                    this._refreshTimers.forEach(t => clearTimeout(t));
+                    this._refreshTimers = [];
+                }
+
+                // 触发步骤特定的 onHighlighted（driver.min.js 不支持该回调）
+                if (currentStepConfig.onHighlighted && typeof currentStepConfig.onHighlighted === 'function') {
+                    if (this._lastOnHighlightedStepIndex !== this.currentStep) {
+                        try {
+                            console.log('[Tutorial] 手动触发步骤 onHighlighted');
+                            currentStepConfig.onHighlighted.call(this);
+                            this._lastOnHighlightedStepIndex = this.currentStep;
+                        } catch (error) {
+                            console.error('[Tutorial] 步骤 onHighlighted 执行失败:', error);
+                        }
                     }
                 }
-            }
 
-            // 角色管理页面：进入进阶设定相关步骤前，确保猫娘卡片和进阶设定都已展开
-            if (this.currentPage === 'chara_manager') {
-                const needsAdvancedSettings = [
-                    '.catgirl-block:first-child .fold-toggle',
-                    '.catgirl-block:first-child .live2d-link',
-                    '.catgirl-block:first-child select[name="voice_id"]'
-                ].includes(currentStepConfig.element);
+                // 角色管理页面：进入进阶设定相关步骤前，确保猫娘卡片和进阶设定都已展开
+                if (this.currentPage === 'chara_manager') {
+                    const needsAdvancedSettings = [
+                        '.catgirl-block:first-child .fold-toggle',
+                        '.catgirl-block:first-child .live2d-link',
+                        '.catgirl-block:first-child select[name="voice_id"]'
+                    ].includes(currentStepConfig.element);
 
-                if (needsAdvancedSettings) {
-                    console.log('[Tutorial] 进入进阶设定相关步骤，确保展开状态');
-                    this._ensureCharaManagerExpanded();
-                }
-            }
-
-            // 根据步骤配置启用/禁用模型交互（点击模型触发表情动作）
-            const live2dCanvas = document.getElementById('live2d-canvas');
-            if (live2dCanvas) {
-                if (currentStepConfig.enableModelInteraction) {
-                    live2dCanvas.style.pointerEvents = 'auto';
-                    console.log('[Tutorial] 启用模型交互');
-                } else {
-                    live2dCanvas.style.pointerEvents = 'none';
-                    console.log('[Tutorial] 禁用模型交互');
-                }
-            }
-
-
-            // 情感配置页面：未选择模型时禁止进入下一步
-            if (this.currentPage === 'emotion_manager' &&
-                currentStepConfig.element === '#model-select') {
-                const updateNextState = () => {
-                    const hasModel = this.hasEmotionManagerModelSelected();
-                    this.setNextButtonState(hasModel, '请先选择模型');
-                    if (hasModel && this.nextButtonGuardTimer) {
-                        clearInterval(this.nextButtonGuardTimer);
-                        this.nextButtonGuardTimer = null;
+                    if (needsAdvancedSettings) {
+                        console.log('[Tutorial] 进入进阶设定相关步骤，确保展开状态');
+                        await this._ensureCharaManagerExpanded();
                     }
-                };
-
-                this.nextButtonGuardActive = true;
-                updateNextState();
-                this.nextButtonGuardTimer = setInterval(updateNextState, 300);
-            }
-
-            // 情感配置前必须先选择/加载 Live2D 模型，避免进入后出错
-            if (this.currentPage === 'model_manager' &&
-                currentStepConfig.element === '#emotion-config-btn' &&
-                !this.hasLive2DModelLoaded()) {
-                console.warn('[Tutorial] 未检测到已加载的 Live2D 模型，跳转回选择模型步骤');
-                const targetIndex = steps.findIndex(step => step.element === '#live2d-model-select-btn');
-                if (this.driver && typeof this.driver.showStep === 'function' && targetIndex >= 0) {
-                    this.driver.showStep(targetIndex);
-                    return;
-                }
-            }
-
-            // 情感配置页面中，未选模型时不进入配置区域
-            if (this.currentPage === 'emotion_manager' &&
-                currentStepConfig.element === '#emotion-config' &&
-                !this.hasEmotionManagerModelSelected()) {
-                console.warn('[Tutorial] 情感配置页面未选择模型，跳转回选择模型步骤');
-                const targetIndex = steps.findIndex(step => step.element === '#model-select');
-                if (this.driver && typeof this.driver.showStep === 'function' && targetIndex >= 0) {
-                    this.driver.showStep(targetIndex);
-                    return;
-                }
-            }
-
-            const element = document.querySelector(currentStepConfig.element);
-
-            if (element) {
-                // 检查元素是否隐藏，如果隐藏则显示
-                if (!this.isElementVisible(element) && !currentStepConfig.skipAutoShow) {
-                    console.warn(`[Tutorial] 当前步骤的元素隐藏，正在显示: ${currentStepConfig.element}`);
-                    this.showElementForTutorial(element, currentStepConfig.element);
                 }
 
-                // 执行步骤中定义的操作
-                if (currentStepConfig.action) {
-                    if (currentStepConfig.action === 'click') {
-                    setTimeout(() => {
-                        console.log(`[Tutorial] 执行自动点击: ${currentStepConfig.element}`);
+                await this.applyTutorialInteractionState(currentStepConfig, 'step-change');
 
-                        // 1. 找到要点击的元素
-                        const innerTrigger = element.querySelector('.catgirl-expand, .fold-toggle');
-                        const clickTarget = innerTrigger || element;
 
-                        // 2. 检查是否是折叠类元素，如果已展开则不点击
-                        let shouldClick = true;
-                        if (clickTarget.classList.contains('fold-toggle')) {
-                            // 检查进阶设定是否已展开
-                            const foldContainer = clickTarget.closest('.catgirl-block')?.querySelector('.fold');
-                            if (foldContainer) {
-                                const isExpanded = foldContainer.classList.contains('open') ||
-                                    window.getComputedStyle(foldContainer).display !== 'none';
-                                if (isExpanded) {
-                                    console.log('[Tutorial] 进阶设定已展开，跳过点击');
-                                    shouldClick = false;
-                                }
-                            }
-                        } else if (clickTarget.classList.contains('catgirl-expand')) {
-                            // 检查猫娘卡片是否已展开
-                            const details = clickTarget.closest('.catgirl-block')?.querySelector('.catgirl-details');
-                            if (details) {
-                                const isExpanded = window.getComputedStyle(details).display !== 'none';
-                                if (isExpanded) {
-                                    console.log('[Tutorial] 猫娘卡片已展开，跳过点击');
-                                    shouldClick = false;
-                                }
-                            }
+                // 情感配置页面：未选择模型时禁止进入下一步
+                if (this.currentPage === 'emotion_manager' &&
+                    currentStepConfig.element === '#model-select') {
+                    const updateNextState = () => {
+                        const hasModel = this.hasEmotionManagerModelSelected();
+                        this.setNextButtonState(hasModel, '请先选择模型');
+                        if (hasModel && this.nextButtonGuardTimer) {
+                            clearInterval(this.nextButtonGuardTimer);
+                            this.nextButtonGuardTimer = null;
                         }
+                    };
 
-                        // 3. 执行点击
-                        if (shouldClick) {
-                            clickTarget.click();
-                        }
-
-                        // 4. 刷新高亮框
-                        setTimeout(() => {
-                            if (this.driver) this.driver.refresh();
-                        }, 500);
-
-                    }, 300);
+                    this.nextButtonGuardActive = true;
+                    updateNextState();
+                    this.nextButtonGuardTimer = setInterval(updateNextState, 300);
                 }
-                } else {
-                    // 即使没有点击操作，也在步骤切换后刷新位置
-                    // 对于需要等待动态元素的步骤，多次刷新以确保位置正确
-                    if (currentStepConfig.skipInitialCheck) {
-                        console.log(`[Tutorial] 动态元素步骤，将多次刷新位置`);
-                        // 第一次刷新
-                        setTimeout(() => {
-                            if (this.driver && typeof this.driver.refresh === 'function') {
-                                this.driver.refresh();
-                                console.log(`[Tutorial] 步骤切换后刷新高亮框位置 (第1次)`);
-                            }
-                        }, 200);
-                        // 第二次刷新
-                        setTimeout(() => {
-                            if (this.driver && typeof this.driver.refresh === 'function') {
-                                this.driver.refresh();
-                                console.log(`[Tutorial] 步骤切换后刷新高亮框位置 (第2次)`);
-                            }
-                        }, 600);
-                        // 第三次刷新
-                        setTimeout(() => {
-                            if (this.driver && typeof this.driver.refresh === 'function') {
-                                this.driver.refresh();
-                                console.log(`[Tutorial] 步骤切换后刷新高亮框位置 (第3次)`);
-                            }
-                        }, 1000);
+
+                // 情感配置前必须先选择/加载 Live2D 模型，避免进入后出错
+                if (this.currentPage === 'model_manager' &&
+                    currentStepConfig.element === '#emotion-config-btn' &&
+                    !this.hasLive2DModelLoaded()) {
+                    console.warn('[Tutorial] 未检测到已加载的 Live2D 模型，跳转回选择模型步骤');
+                    const targetIndex = steps.findIndex(step => step.element === '#live2d-model-select-btn');
+                    if (this.driver && typeof this.driver.showStep === 'function' && targetIndex >= 0) {
+                        this.driver.showStep(targetIndex);
+                        return;
+                    }
+                }
+
+                // 情感配置页面中，未选模型时不进入配置区域
+                if (this.currentPage === 'emotion_manager' &&
+                    currentStepConfig.element === '#emotion-config' &&
+                    !this.hasEmotionManagerModelSelected()) {
+                    console.warn('[Tutorial] 情感配置页面未选择模型，跳转回选择模型步骤');
+                    const targetIndex = steps.findIndex(step => step.element === '#model-select');
+                    if (this.driver && typeof this.driver.showStep === 'function' && targetIndex >= 0) {
+                        this.driver.showStep(targetIndex);
+                        return;
+                    }
+                }
+
+                const element = document.querySelector(currentStepConfig.element);
+
+                if (element) {
+                    // 检查元素是否隐藏，如果隐藏则显示
+                    if (!this.isElementVisible(element) && !currentStepConfig.skipAutoShow) {
+                        console.warn(`[Tutorial] 当前步骤的元素隐藏，正在显示: ${currentStepConfig.element}`);
+                        this.showElementForTutorial(element, currentStepConfig.element);
+                    }
+
+                    // 执行步骤中定义的操作
+                    if (currentStepConfig.action) {
+                        if (currentStepConfig.action === 'click') {
+                            const timer = setTimeout(() => {
+                                console.log(`[Tutorial] 执行自动点击: ${currentStepConfig.element}`);
+
+                                // 1. 找到要点击的元素
+                                const innerTrigger = element.querySelector('.catgirl-expand, .fold-toggle');
+                                const clickTarget = innerTrigger || element;
+
+                                // 2. 检查是否是折叠类元素，如果已展开则不点击
+                                let shouldClick = true;
+                                if (clickTarget.classList.contains('fold-toggle')) {
+                                    // 检查进阶设定是否已展开
+                                    const foldContainer = clickTarget.closest('.catgirl-block')?.querySelector('.fold');
+                                    if (foldContainer) {
+                                        const isExpanded = foldContainer.classList.contains('open') ||
+                                            window.getComputedStyle(foldContainer).display !== 'none';
+                                        if (isExpanded) {
+                                            console.log('[Tutorial] 进阶设定已展开，跳过点击');
+                                            shouldClick = false;
+                                        }
+                                    }
+                                } else if (clickTarget.classList.contains('catgirl-expand')) {
+                                    // 检查猫娘卡片是否已展开
+                                    const details = clickTarget.closest('.catgirl-block')?.querySelector('.catgirl-details');
+                                    if (details) {
+                                        const isExpanded = window.getComputedStyle(details).display !== 'none';
+                                        if (isExpanded) {
+                                            console.log('[Tutorial] 猫娘卡片已展开，跳过点击');
+                                            shouldClick = false;
+                                        }
+                                    }
+                                }
+
+                                // 3. 执行点击
+                                if (shouldClick) {
+                                    clickTarget.click();
+                                }
+
+                                // 4. 刷新高亮框
+                                const refreshTimer = setTimeout(() => {
+                                    if (this.driver) this.driver.refresh();
+                                }, 500);
+                                if (this._refreshTimers) this._refreshTimers.push(refreshTimer);
+
+                            }, 300);
+                            if (this._refreshTimers) this._refreshTimers.push(timer);
+                        }
                     } else {
-                        setTimeout(() => {
-                            if (this.driver && typeof this.driver.refresh === 'function') {
-                                this.driver.refresh();
-                                console.log(`[Tutorial] 步骤切换后刷新高亮框位置`);
-                            }
-                        }, 200);
+                        // 即使没有点击操作，也在步骤切换后刷新位置
+                        // 对于需要等待动态元素的步骤，多次刷新以确保位置正确
+                        if (currentStepConfig.skipInitialCheck) {
+                            console.log(`[Tutorial] 动态元素步骤，将多次刷新位置`);
+                            this.DYNAMIC_REFRESH_DELAYS.forEach((delay, i) => {
+                                const timer = setTimeout(() => {
+                                    if (this.driver && typeof this.driver.refresh === 'function') {
+                                        this.driver.refresh();
+                                        console.log(`[Tutorial] 步骤切换后刷新高亮框位置 (第${i + 1}次)`);
+                                    }
+                                }, delay);
+                                if (this._refreshTimers) this._refreshTimers.push(timer);
+                            });
+                        } else {
+                            const timer = setTimeout(() => {
+                                if (this.driver && typeof this.driver.refresh === 'function') {
+                                    this.driver.refresh();
+                                    console.log(`[Tutorial] 步骤切换后刷新高亮框位置`);
+                                }
+                            }, 200);
+                            if (this._refreshTimers) this._refreshTimers.push(timer);
+                        }
                     }
                 }
+            }
+
+            // 在步骤切换后，延迟启用 popover 拖动功能
+            // 因为 driver.js 可能会重新渲染 popover
+            setTimeout(() => {
+                this.enablePopoverDragging();
+            }, 200);
+
+            succeeded = true;
+        } catch (error) {
+            console.error('[Tutorial] 步骤切换回调执行出错:', error);
+            // 发生错误时确保清除待处理标记，避免进入死循环
+            this._pendingStepChange = false;
+            throw error;
+        } finally {
+            this._stepChanging = false;
+            // 如果在执行期间有新的步骤切换请求，且当前步骤处理成功，则再次触发
+            if (succeeded && this._pendingStepChange) {
+                console.log('[Tutorial] 处理待处理的步骤切换请求');
+                this.onStepChange().catch(err => {
+                    console.error('[Tutorial] 待处理步骤切换失败:', err);
+                });
             }
         }
-
-        // 在步骤切换后，延迟启用 popover 拖动功能
-        // 因为 driver.js 可能会重新渲染 popover
-        setTimeout(() => {
-            this.enablePopoverDragging();
-        }, 200);
     }
 
     /**
@@ -2088,6 +2390,17 @@ class UniversalTutorialManager {
         // 重置运行标志
         this.isTutorialRunning = false;
         this.clearNextButtonGuard();
+        this._lastAppliedStateKey = null;
+        this._stepChanging = false;
+        this._pendingStepChange = false;
+        this._applyingInteractionState = false;
+        this.cachedValidSteps = null;
+
+        // 清除刷新定时器
+        if (this._refreshTimers) {
+            this._refreshTimers.forEach(t => clearTimeout(t));
+            this._refreshTimers = [];
+        }
 
         // 只有进入了全屏的页面才需要退出全屏
         const pagesNeedingFullscreen = []; // 已禁用全屏提示
@@ -2128,20 +2441,6 @@ class UniversalTutorialManager {
             console.log('[Tutorial] 恢复页面滚动');
         }
 
-        // 恢复对话框拖动功能
-        const chatContainer = document.getElementById('chat-container');
-        if (chatContainer) {
-            chatContainer.style.pointerEvents = 'auto';
-            console.log('[Tutorial] 恢复对话框拖动功能');
-        }
-
-        // 恢复 Live2D 模型拖动功能和原始位置
-        const live2dCanvas = document.getElementById('live2d-canvas');
-        if (live2dCanvas) {
-            live2dCanvas.style.pointerEvents = 'auto';
-            console.log('[Tutorial] 恢复 Live2D 模型拖动功能');
-        }
-
         const live2dContainer = document.getElementById('live2d-container');
         if (live2dContainer && this.originalLive2dStyle) {
             live2dContainer.style.left = this.originalLive2dStyle.left;
@@ -2157,6 +2456,27 @@ class UniversalTutorialManager {
             console.log('[Tutorial] 浮动工具栏保护定时器已清除');
         }
 
+        // 恢复浮动工具栏的原始样式
+        if (this._floatingButtonsOriginalStyles !== undefined) {
+            const floatingButtons = document.getElementById('live2d-floating-buttons');
+            if (floatingButtons) {
+                floatingButtons.style.removeProperty('display');
+                floatingButtons.style.removeProperty('visibility');
+                floatingButtons.style.removeProperty('opacity');
+                if (this._floatingButtonsOriginalStyles.display) {
+                    floatingButtons.style.display = this._floatingButtonsOriginalStyles.display;
+                }
+                if (this._floatingButtonsOriginalStyles.visibility) {
+                    floatingButtons.style.visibility = this._floatingButtonsOriginalStyles.visibility;
+                }
+                if (this._floatingButtonsOriginalStyles.opacity) {
+                    floatingButtons.style.opacity = this._floatingButtonsOriginalStyles.opacity;
+                }
+                console.log('[Tutorial] 已恢复浮动工具栏原始样式');
+            }
+            this._floatingButtonsOriginalStyles = undefined;
+        }
+
         // 恢复锁图标的原始样式
         if (this._lockIconOriginalStyles !== undefined) {
             const lockIcon = document.getElementById('live2d-lock-icon');
@@ -2165,7 +2485,7 @@ class UniversalTutorialManager {
                 lockIcon.style.removeProperty('display');
                 lockIcon.style.removeProperty('visibility');
                 lockIcon.style.removeProperty('opacity');
-                
+
                 // 恢复原始样式（如果原始样式为空字符串则不设置，让 CSS 规则生效）
                 if (this._lockIconOriginalStyles.display) {
                     lockIcon.style.display = this._lockIconOriginalStyles.display;
@@ -2199,6 +2519,7 @@ class UniversalTutorialManager {
 
         // 恢复所有在引导中修改过的元素的原始样式
         this.restoreAllModifiedElements();
+        this.restoreTutorialInteractionState();
 
         console.log('[Tutorial] 引导已完成，页面:', this.currentPage);
     }
@@ -2257,28 +2578,6 @@ class UniversalTutorialManager {
     }
 
     /**
-     * 重置所有页面的引导状态
-     */
-    resetAllTutorials() {
-        const pages = [
-            'home',
-            'model_manager',
-            'parameter_editor',
-            'emotion_manager',
-            'chara_manager',
-            'settings',
-            'voice_clone',
-            'steam_workshop',
-            'memory_browser'
-        ];
-        pages.forEach(page => {
-            const storageKeys = this.getStorageKeysForPage(page);
-            storageKeys.forEach(key => localStorage.removeItem(key));
-        });
-        console.log('[Tutorial] 所有引导状态已重置');
-    }
-
-    /**
      * 获取引导状态
      */
     hasSeenTutorial(page = null) {
@@ -2315,6 +2614,14 @@ class UniversalTutorialManager {
     }
 
     /**
+     * 等待指定时间
+     * @param {number} ms - 毫秒数
+     */
+    sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    /**
      * 退出全屏模式
      */
     exitFullscreenMode() {
@@ -2338,78 +2645,82 @@ class UniversalTutorialManager {
     /**
      * 确保角色管理页面的猫娘卡片和进阶设定都已展开
      * 用于进入进阶设定相关步骤前的预处理
+     * 使用 async/await + 重试机制确保 DOM 状态稳定
      */
-    _ensureCharaManagerExpanded() {
+    async _ensureCharaManagerExpanded() {
         let attempts = 0;
         const maxAttempts = 10;
-        const self = this;
 
-        const tryExpand = () => {
+        while (attempts < maxAttempts) {
             attempts++;
-            console.log(`[Tutorial] _ensureCharaManagerExpanded: attempt ${attempts}/${maxAttempts}`);
+            console.log(`[Tutorial] _ensureCharaManagerExpanded: 尝试 ${attempts}/${maxAttempts}`);
 
             // 1. 找到第一个猫娘卡片
             const targetBlock = document.querySelector('.catgirl-block:first-child');
             if (!targetBlock) {
-                console.warn('[Tutorial] _ensureCharaManagerExpanded: 未找到目标猫娘卡片');
-                if (attempts < maxAttempts) setTimeout(tryExpand, 300);
-                return;
+                console.warn('[Tutorial] _ensureCharaManagerExpanded: 未找到目标猫娘卡片，重试中...');
+                await this.sleep(300);
+                continue;
             }
 
-            // 2. 确保猫娘卡片已展开
+            // 2. 确保猫娘卡片详情区域已展开
             const details = targetBlock.querySelector('.catgirl-details');
             const expandBtn = targetBlock.querySelector('.catgirl-expand');
             if (details && expandBtn) {
                 const detailsStyle = window.getComputedStyle(details);
                 if (detailsStyle.display === 'none') {
-                    console.log('[Tutorial] 猫娘卡片未展开，正在展开...');
+                    console.log('[Tutorial] 猫娘卡片详情未展开，正在点击展开按钮...');
                     expandBtn.click();
-                    // 等待卡片展开动画完成后再尝试展开进阶设定
-                    if (attempts < maxAttempts) {
-                        setTimeout(tryExpand, 600);
-                    }
-                    return;
+                    // 等待卡片展开动画完成
+                    await this.sleep(600);
+                    continue; // 重新进入循环以验证展开结果
                 }
+            } else {
+                console.warn('[Tutorial] _ensureCharaManagerExpanded: 猫娘卡片结构异常，缺少详情或展开按钮');
+                return false;
             }
 
-            // 3. 卡片已展开，确保进阶设定已展开
+            // 3. 确保“进阶设定”折叠区域已展开
             const foldContainer = targetBlock.querySelector('.fold');
             const foldToggle = targetBlock.querySelector('.fold-toggle');
-            let clickedToggle = false;
 
-            if (foldContainer && foldToggle) {
-                const isExpanded = foldContainer.classList.contains('open') ||
+            if (!foldContainer || !foldToggle) {
+                console.warn('[Tutorial] _ensureCharaManagerExpanded: 未找到进阶设定折叠区域或开关');
+                return false;
+            }
+
+            const isExpanded = foldContainer.classList.contains('open') ||
+                window.getComputedStyle(foldContainer).display !== 'none';
+
+            if (!isExpanded) {
+                console.log('[Tutorial] 进阶设定未展开，正在点击切换按钮...');
+                foldToggle.click();
+                // 等待折叠展开动画并刷新 driver 位置
+                await this.sleep(500);
+                if (this.driver && typeof this.driver.refresh === 'function') {
+                    this.driver.refresh();
+                }
+
+                // 再次验证是否成功展开
+                const finalCheck = foldContainer.classList.contains('open') ||
                     window.getComputedStyle(foldContainer).display !== 'none';
-                if (!isExpanded) {
-                    console.log('[Tutorial] 进阶设定未展开，正在展开...');
-                    foldToggle.click();
-                    clickedToggle = true;
+
+                if (finalCheck) {
+                    console.log('[Tutorial] _ensureCharaManagerExpanded: 进阶设定已成功展开');
+                    return true;
+                } else {
+                    console.warn('[Tutorial] _ensureCharaManagerExpanded: 进阶设定展开状态确认失败，继续重试...');
+                    continue;
                 }
             }
 
-            // 4. 验证展开状态，失败则重试
-            setTimeout(() => {
-                if (self.driver && typeof self.driver.refresh === 'function') {
-                    self.driver.refresh();
-                }
+            // 如果已经走到这里，说明所有部分都已经展开了
+            console.log('[Tutorial] _ensureCharaManagerExpanded: 确认所有区域已展开');
+            return true;
+        }
 
-                if (clickedToggle && attempts < maxAttempts) {
-                    const fc = targetBlock.querySelector('.fold');
-                    if (fc) {
-                        const nowExpanded = fc.classList.contains('open') ||
-                            window.getComputedStyle(fc).display !== 'none';
-                        if (!nowExpanded) {
-                            console.log('[Tutorial] 进阶设定展开未确认，重试...');
-                            setTimeout(tryExpand, 300);
-                            return;
-                        }
-                    }
-                }
-                console.log('[Tutorial] _ensureCharaManagerExpanded: 完成');
-            }, 500);
-        };
-
-        tryExpand();
+        console.warn('[Tutorial] _ensureCharaManagerExpanded: 达到最大重试次数，可能未能完全展开');
+        return false;
     }
 
     /**
@@ -2419,6 +2730,16 @@ class UniversalTutorialManager {
         // 不再创建右下角帮助按钮
         return;
     }
+
+    /** 
+     * 重置所有页面的引导状态 
+     */ 
+    resetAllTutorials() {
+        TUTORIAL_PAGES.forEach(page => {
+            localStorage.removeItem(this.STORAGE_KEY_PREFIX + page);
+        });
+        console.log('[Tutorial] 已重置所有页面引导');
+    } 
 
     /**
      * 重置指定页面的引导状态
@@ -2446,7 +2767,16 @@ class UniversalTutorialManager {
      * 重新启动当前页面的引导
      */
     restartCurrentTutorial() {
+        // 清除浮动按钮保护定时器，防止在重启时留下陈旧的计时器
+        if (this.floatingButtonsProtectionTimer) {
+            clearInterval(this.floatingButtonsProtectionTimer);
+            this.floatingButtonsProtectionTimer = null;
+        }
+
         // 先销毁现有的 driver 以避免残留的监听器和遮罩
+        if (this.isTutorialRunning) {
+            this.onTutorialEnd();
+        }
         if (this.driver) {
             this.driver.destroy();
             this.driver = null;
@@ -2473,25 +2803,16 @@ window.universalTutorialManager = null;
  */
 function initUniversalTutorialManager() {
     // 检测当前页面类型
-    const currentPath = window.location.pathname;
-    const currentPageType = (() => {
-        if (currentPath === '/' || currentPath === '/index.html') return 'home';
-        if (currentPath.includes('parameter_editor')) return 'parameter_editor';
-        if (currentPath.includes('emotion_manager')) return 'emotion_manager';
-        if (currentPath.includes('model_manager') || currentPath.includes('l2d')) return 'model_manager';
-        if (currentPath.includes('chara_manager')) return 'chara_manager';
-        if (currentPath.includes('api_key') || currentPath.includes('settings')) return 'settings';
-        if (currentPath.includes('voice_clone')) return 'voice_clone';
-        if (currentPath.includes('steam_workshop')) return 'steam_workshop';
-        if (currentPath.includes('memory_browser')) return 'memory_browser';
-        return 'unknown';
-    })();
+    const currentPageType = UniversalTutorialManager.detectPage();
 
     // 如果全局实例存在，检查页面是否改变
     if (window.universalTutorialManager) {
         if (window.universalTutorialManager.currentPage !== currentPageType) {
             console.log('[Tutorial] 页面已改变，销毁旧实例并创建新实例');
-            // 销毁旧的 driver 实例
+            // 销毁旧的 driver 实例和清理状态
+            if (window.universalTutorialManager.isTutorialRunning) {
+                window.universalTutorialManager.onTutorialEnd();
+            }
             if (window.universalTutorialManager.driver) {
                 window.universalTutorialManager.driver.destroy();
             }
@@ -2518,8 +2839,7 @@ function resetAllTutorials() {
     } else {
         // 如果管理器未初始化，直接清除 localStorage
         const prefix = 'neko_tutorial_';
-        const pages = ['home', 'model_manager', 'model_manager_live2d', 'model_manager_vrm', 'model_manager_common', 'parameter_editor', 'emotion_manager', 'chara_manager', 'settings', 'voice_clone', 'steam_workshop', 'memory_browser'];
-        pages.forEach(page => { localStorage.removeItem(prefix + page); });
+        TUTORIAL_PAGES.forEach(page => { localStorage.removeItem(prefix + page); });
     }
     alert(window.t ? window.t('memory.tutorialResetSuccess', '已重置所有引导，下次进入各页面时将重新显示引导。') : '已重置所有引导，下次进入各页面时将重新显示引导。');
 }
@@ -2562,7 +2882,7 @@ function resetTutorialForPage(pageKey) {
     };
     const pageName = pageNames[pageKey] || pageKey;
     // 使用带参数的 i18n 键，格式：已重置「{{pageName}}」的引导
-    const message = window.t 
+    const message = window.t
         ? window.t('memory.tutorialPageResetSuccessWithName', { pageName: pageName, defaultValue: `已重置「${pageName}」的引导，下次进入该页面时将重新显示引导。` })
         : `已重置「${pageName}」的引导，下次进入该页面时将重新显示引导。`;
     alert(message);
