@@ -374,10 +374,10 @@ position: absolute;
 /* 绝对定位于容器内 */
 top: 8px;
 right: 8px;
-width: 24px;
-/* 按钮尺寸以容纳图标 */
-height: 24px;
-/* 按钮尺寸以容纳图标 */
+width: 32px;
+/* 按钮尺寸匹配图标 */
+height: 32px;
+/* 按钮尺寸匹配图标 */
 background: transparent;
 /* 透明背景，去掉深蓝色方框 */
 opacity: 1;
@@ -390,7 +390,7 @@ cursor: grab;
 font-weight: bold;
 font-size: 14px;
 /* 改为固定像素值，确保一致性 */
-line-height: 24px;
+line-height: 32px;
 /* 与按钮高度一致，确保垂直居中 */
 text-align: center;
 color: #fff;
@@ -405,6 +405,11 @@ transition: all 0.3s ease;
 
 #toggle-chat-btn:hover {
 transform: scale(1.1);
+}
+
+#toggle-chat-btn img {
+width: 32px;
+height: 32px;
 }
 
 /* 聊天框标题 - Fluent Design 风格 */
@@ -1103,18 +1108,25 @@ display: none;
 }
 
 #chat-container.minimized #toggle-chat-btn {
-/* 将按钮居中显示 */
-top: 50%;
-left: 50%;
-transform: translate(-50%, -50%);
-/* 保持相同的字体大小设置 */
-font-size: 14px;
-line-height: 24px;
-/* 防止hover效果在最小化状态下放大按钮 */
+/* 将按钮充满整个容器 */
+top: 0;
+left: 0;
+right: 0;
+bottom: 0;
+width: 100%;
+height: 100%;
+transform: none;
+background: transparent;
+border-radius: 0;
 }
 
 #chat-container.minimized #toggle-chat-btn:hover {
-transform: translate(-50%, -50%) scale(1.1);
+transform: none;
+}
+
+#chat-container.minimized #toggle-chat-btn img {
+width: 100% !important;
+height: 100% !important;
 }
 
 /* 折叠状态下的呼吸特效动画 */
