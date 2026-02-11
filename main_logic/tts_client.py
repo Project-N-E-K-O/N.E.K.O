@@ -1252,16 +1252,20 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
     else:
         v3_voice_id = raw_voice or "_default"
 
+    # 预加载 websockets State（兼容不同版本）
+    try:
+        from websockets.connection import State as _WsState
+    except (ImportError, AttributeError):
+        _WsState = None
+
     def _ws_is_open(ws_conn):
         """检查 WS 连接是否仍然打开（兼容 websockets v14+/v16）"""
         if ws_conn is None:
             return False
-        try:
-            from websockets.connection import State
-            return ws_conn.state is State.OPEN
-        except (AttributeError, ImportError):
-            # fallback: 旧版 websockets
-            return not getattr(ws_conn, 'closed', True)
+        if _WsState is not None:
+            return getattr(ws_conn, 'state', None) is _WsState.OPEN
+        # fallback: 旧版 websockets
+        return not getattr(ws_conn, 'closed', True)
 
     def _extract_pcm_from_wav(wav_bytes: bytes) -> tuple:
         """从 WAV chunk 中提取 PCM 数据和采样率"""
@@ -1402,11 +1406,17 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                         ws = None
                         receive_task = None
                     current_speech_id = sid
-                    try:
-                        await create_connection()
-                    except Exception as e:
-                        logger.error(f"[GPT-SoVITS v3] 连接失败: {e}")
-                        ws = None
+                    for _retry in range(3):
+                        try:
+                            await create_connection()
+                            break
+                        except Exception as e:
+                            logger.warning(f"[GPT-SoVITS v3] 连接失败 (retry {_retry+1}/3): {e}")
+                            ws = None
+                            if _retry < 2:
+                                await asyncio.sleep(0.5 * (2 ** _retry))
+                    else:
+                        logger.error("[GPT-SoVITS v3] 连接重试耗尽，跳过当前文本")
                         continue
 
                 if sid is None:

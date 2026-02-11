@@ -578,61 +578,6 @@ async def get_api_providers_config():
         }
 
 
-@router.post("/gptsovits/load_model")
-async def load_gptsovits_model(request: Request):
-    """代理请求到 GPT-SoVITS API 加载模型（解决 CORS 问题）"""
-    import aiohttp
-    from urllib.parse import urlparse
-    import ipaddress
-    try:
-        data = await request.json()
-        api_url = data.get("api_url", "").rstrip("/")
-        model_type = data.get("model_type", "")  # "gpt" or "sovits"
-        weights_path = data.get("weights_path", "")
-        
-        if not api_url or not model_type or not weights_path:
-            return {"success": False, "error": "Missing required parameters"}
-        
-        # SSRF 防护：限制 api_url 只能是 localhost
-        parsed = urlparse(api_url)
-        if parsed.scheme not in ("http", "https") or not parsed.hostname:
-            return {"success": False, "error": "Invalid api_url"}
-        host = parsed.hostname
-        try:
-            if not ipaddress.ip_address(host).is_loopback:
-                return {"success": False, "error": "api_url must be localhost"}
-        except ValueError:
-            if host not in ("localhost",):
-                return {"success": False, "error": "api_url must be localhost"}
-        
-        # 根据模型类型选择 API 端点
-        if model_type == "gpt":
-            endpoint = f"{api_url}/set_gpt_weights"
-        elif model_type == "sovits":
-            endpoint = f"{api_url}/set_sovits_weights"
-        else:
-            return {"success": False, "error": f"Invalid model_type: {model_type}"}
-        
-        # 代理请求到 GPT-SoVITS API
-        async with aiohttp.ClientSession() as session:
-            async with session.get(endpoint, params={"weights_path": weights_path}, timeout=aiohttp.ClientTimeout(total=60)) as resp:
-                try:
-                    result = await resp.json(content_type=None)
-                except Exception:
-                    text = await resp.text()
-                    return {"success": False, "error": f"Non-JSON response (HTTP {resp.status}): {text[:200]}"}
-                if resp.status == 200:
-                    return {"success": True, "message": result.get("message", "Model loaded")}
-                else:
-                    return {"success": False, "error": result.get("message") or result.get("Exception") or "Unknown error"}
-    except aiohttp.ClientError as e:
-        logger.error(f"GPT-SoVITS API 请求失败: {e}")
-        return {"success": False, "error": f"Connection error: {str(e)}"}
-    except Exception as e:
-        logger.error(f"加载 GPT-SoVITS 模型失败: {e}")
-        return {"success": False, "error": str(e)}
-
-
 @router.post("/gptsovits/list_voices")
 async def list_gptsovits_voices(request: Request):
     """代理请求到 GPT-SoVITS v3 API 获取可用语音配置列表"""
