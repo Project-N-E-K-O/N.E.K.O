@@ -738,7 +738,19 @@ class VRMCore {
                     const scl = preferences.scale;
                     if (Number.isFinite(scl.x) && Number.isFinite(scl.y) && Number.isFinite(scl.z) &&
                         scl.x > 0 && scl.y > 0 && scl.z > 0) {
-                        vrm.scene.scale.set(scl.x, scl.y, scl.z);
+                        // 检查是否需要跨分辨率缩放归一化
+                        const savedViewport = preferences.viewport;
+                        const currentHeight = window.innerHeight;
+                        if (savedViewport &&
+                            Number.isFinite(savedViewport.height) && savedViewport.height > 0 &&
+                            Math.abs(currentHeight / savedViewport.height - 1) > 0.01) {
+                            // 视口高度有变化，按比例调整缩放
+                            const hRatio = currentHeight / savedViewport.height;
+                            vrm.scene.scale.set(scl.x * hRatio, scl.y * hRatio, scl.z * hRatio);
+                            console.log('[VRM Core] 视口变化，缩放已归一化:', { savedHeight: savedViewport.height, currentHeight, hRatio });
+                        } else {
+                            vrm.scene.scale.set(scl.x, scl.y, scl.z);
+                        }
                     }
                 }
 
@@ -1066,9 +1078,10 @@ class VRMCore {
      * @param {object} scale - 缩放 {x, y, z}
      * @param {object} rotation - 旋转 {x, y, z}（可选）
      * @param {object} display - 显示器信息（可选）
+     * @param {object} viewport - 视口尺寸 {width, height}（可选，用于跨分辨率归一化）
      * @returns {Promise<boolean>} 是否保存成功
      */
-    async saveUserPreferences(modelPath, position, scale, rotation, display) {
+    async saveUserPreferences(modelPath, position, scale, rotation, display, viewport) {
         try {
             // 验证位置值
             if (!position || typeof position !== 'object' ||
@@ -1108,6 +1121,16 @@ class VRMCore {
                 preferences.display = {
                     screenX: display.screenX,
                     screenY: display.screenY
+                };
+            }
+
+            // 如果有视口信息，添加到偏好中（用于跨分辨率缩放归一化）
+            if (viewport && typeof viewport === 'object' &&
+                Number.isFinite(viewport.width) && Number.isFinite(viewport.height) &&
+                viewport.width > 0 && viewport.height > 0) {
+                preferences.viewport = {
+                    width: viewport.width,
+                    height: viewport.height
                 };
             }
             

@@ -31,6 +31,7 @@ from config.prompts_sys import emotion_analysis_prompt, get_proactive_chat_promp
 from utils.workshop_utils import get_workshop_path
 from utils.screenshot_utils import analyze_screenshot_from_data_url
 from utils.language_utils import detect_language, translate_text, normalize_language_code, get_global_language
+from utils.frontend_utils import count_words_and_chars
 
 router = APIRouter(prefix="/api", tags=["system"])
 logger = logging.getLogger("Main")
@@ -998,19 +999,6 @@ async def proactive_chat(request: Request):
             # 1) 字数限制：按150英文词（空格拆分）或中文字来计算，超过则放弃输出
             text_length = 200
             try:
-                # 计算混合长度：中文字符计1，英文单词计1
-                def count_words_and_chars(text):
-                    count = 0
-                    # 用正则分离中文字符和英文单词
-                    # 匹配中文字符
-                    chinese_chars = re.findall(r'[\u4e00-\u9fff]', text)
-                    count += len(chinese_chars)
-                    # 移除中文字符后，按空格拆分计算英文单词
-                    text_without_chinese = re.sub(r'[\u4e00-\u9fff]', ' ', text)
-                    english_words = [w for w in text_without_chinese.split() if w.strip()]
-                    count += len(english_words)
-                    return count
-                
                 text_length = count_words_and_chars(response_text)
             except Exception:
                 logger.exception(f"[{lanlan_name}] 在检查回复长度时发生错误")
@@ -1298,4 +1286,3 @@ async def translate_text_api(request: Request):
             "source_lang": "unknown",
             "target_lang": "zh"
         }
-

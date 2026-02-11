@@ -9,6 +9,7 @@ import struct  # For packing audio data
 import re
 import logging
 import time
+from typing import Optional
 from datetime import datetime
 from websockets import exceptions as web_exceptions
 from fastapi import WebSocket, WebSocketDisconnect
@@ -26,7 +27,7 @@ from queue import Queue
 from uuid import uuid4
 import numpy as np
 import soxr
-import httpx 
+import httpx
 
 # Setup logger for this module
 logger = logging.getLogger(__name__)
@@ -157,6 +158,15 @@ class LLMSessionManager:
         self.last_audio_send_error_time = 0.0  # 上次音频发送错误的时间戳
         self.audio_error_log_interval = 2.0  # 音频错误log间隔（秒）
 
+    def _get_text_guard_max_length(self) -> int:
+        try:
+            value = int(self._config_manager.get_core_config().get('TEXT_GUARD_MAX_LENGTH', 200))
+            if value <= 0:
+                raise ValueError
+            return value
+        except Exception:
+            return 200
+
     async def handle_new_message(self):
         """处理新模型输出：清空TTS队列并通知前端"""
         # 重置音频重采样器状态（新轮次音频不应与上轮次连续）
@@ -188,6 +198,7 @@ class LLMSessionManager:
 
     async def handle_text_data(self, text: str, is_first_chunk: bool = False):
         """文本回调：处理文本显示和TTS（用于文本模式）"""
+        
         # 如果是新消息的第一个chunk，清空TTS队列和缓存以打断之前的语音
         if is_first_chunk and self.use_tts:
             async with self.tts_cache_lock:
@@ -222,6 +233,7 @@ class LLMSessionManager:
 
     async def handle_response_complete(self):
         """Qwen完成回调：用于处理Core API的响应完成事件，包含TTS和热切换逻辑"""
+        
         # 预热期间跳过TTS信号发送（避免local TTS收到空包产生参考prompt音频）
         if self._is_warmup_in_progress:
             logger.debug("⏭️ 跳过预热期间的TTS信号发送")
@@ -251,51 +263,34 @@ class LLMSessionManager:
                 await self._trigger_immediate_preparation_for_extra()
         except Exception as e:
             logger.error(f"💥 Extra reply preparation error: {e}")
+
+    async def handle_response_discarded(self, reason: str, attempt: int, max_attempts: int, will_retry: bool, message: Optional[str] = None):
+        """
+        处理响应被丢弃的通知：清空当前前端输出，必要时发送 turn end
+        """
+        logger.warning(f"[{self.lanlan_name}] 响应异常已丢弃 (reason={reason}, attempt={attempt}/{max_attempts}, will_retry={will_retry})")
         
-        # 如果正在热切换过程中，跳过所有热切换逻辑
-        if self.is_hot_swap_imminent:
-            return
-            
-        if hasattr(self, 'is_preparing_new_session') and not self.is_preparing_new_session:
-            if self.session_start_time and \
-                        (datetime.now() - self.session_start_time).total_seconds() >= 40:
-                logger.info(f"[{self.lanlan_name}] Main Listener: Uptime threshold met. Marking for new session preparation.")
-                self.is_preparing_new_session = True  # Mark that we are in prep mode
-                self.summary_triggered_time = datetime.now()
-                self.message_cache_for_new_session = []  # Reset cache for this new cycle
-                self.initial_cache_snapshot_len = 0  # Reset snapshot marker
-                self.sync_message_queue.put({'type': 'system', 'data': 'renew session'}) 
+        if self.websocket and hasattr(self.websocket, 'client_state') and \
+                self.websocket.client_state == self.websocket.client_state.CONNECTED:
+            try:
+                await self.websocket.send_json({
+                    "type": "response_discarded",
+                    "reason": reason,
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "will_retry": will_retry,
+                    "message": message or ""
+                })
+            except Exception as e:
+                logger.warning(f"发送 response_discarded 到前端失败: {e}")
 
-        # If prep mode is active, summary time has passed, and a turn just completed in OLD session:
-        # AND background task for initial warmup isn't already running
-        if self.is_preparing_new_session and \
-                self.summary_triggered_time and \
-                (datetime.now() - self.summary_triggered_time).total_seconds() >= 10 and \
-                (not self.background_preparation_task or self.background_preparation_task.done()) and \
-                not (
-                        self.pending_session_warmed_up_event and self.pending_session_warmed_up_event.is_set()):  # Don't restart if already warmed up
-            logger.info(f"[{self.lanlan_name}] Main Listener: Conditions met to start BACKGROUND PREPARATION of pending session.")
-            self.pending_session_warmed_up_event = asyncio.Event()  # Create event for this prep cycle
-            self.background_preparation_task = asyncio.create_task(self._background_prepare_pending_session())
+        if self.sync_message_queue:
+            self.sync_message_queue.put({
+                'type': 'system',
+                'data': 'response_discarded_clear'
+            })
 
-        # Stage 2: Trigger FINAL SWAP if pending session is warmed up AND this old session just completed a turn
-        elif self.pending_session_warmed_up_event and \
-                self.pending_session_warmed_up_event.is_set() and \
-                not self.is_hot_swap_imminent and \
-                (not self.final_swap_task or self.final_swap_task.done()):
-            logger.info(
-                "Main Listener: OLD session completed a turn & PENDING session is warmed up. Triggering FINAL SWAP sequence.")
-            self.is_hot_swap_imminent = True  # Prevent re-triggering
-
-            # The main cache self.message_cache_for_new_session is now "spent" for transfer purposes
-            # It will be fully cleared after a successful swap by _reset_preparation_state.
-            self.pending_session_final_prime_complete_event = asyncio.Event()
-            self.final_swap_task = asyncio.create_task(
-                self._perform_final_swap_sequence()
-            )
-            # The old session listener's current turn is done.
-            # The final_swap_task will now manage the actual switch.
-            # This listener will be cancelled by the final_swap_task.
+        # turn end will 由 handle_response_complete 统一发送
 
 
     async def handle_audio_data(self, audio_data: bytes):
@@ -840,8 +835,9 @@ class LLMSessionManager:
             return True
 
         # 定义 LLM Session 启动协程
-        async def start_llm_session():
-            """异步创建并连接 LLM Session"""
+            async def start_llm_session():
+                """异步创建并连接 LLM Session"""
+                guard_max_length = self._get_text_guard_max_length()
             # 获取初始 prompt
             initial_prompt = (f"你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{self.lanlan_name}），并在对方请求时、回答'我试试'并尝试操纵电脑。" if self._is_agent_enabled() else f"你是一个角色扮演大师。请按要求扮演以下角色（{self.lanlan_name}）。") + self.lanlan_prompt
             
@@ -876,7 +872,9 @@ class LLMSessionManager:
                     on_output_transcript=self.handle_output_transcript,
                     on_connection_error=self.handle_connection_error,
                     on_response_done=self.handle_response_complete,
-                    on_repetition_detected=self.handle_repetition_detected
+                    on_repetition_detected=self.handle_repetition_detected,
+                    on_response_discarded=self.handle_response_discarded,
+                    max_response_length=guard_max_length
                 )
             else:
                 # 语音模式：使用 OmniRealtimeClient
@@ -1116,6 +1114,7 @@ class LLMSessionManager:
                 # 文本模式：使用 OmniOfflineClient
                 correction_config = self._config_manager.get_model_api_config('correction')
                 vision_config = self._config_manager.get_model_api_config('vision')
+                guard_max_length = self._get_text_guard_max_length()
                 self.pending_session = OmniOfflineClient(
                     base_url=correction_config['base_url'],
                     api_key=correction_config['api_key'],
@@ -1127,7 +1126,10 @@ class LLMSessionManager:
                     on_input_transcript=self.handle_input_transcript,
                     on_output_transcript=self.handle_output_transcript,
                     on_connection_error=self.handle_connection_error,
-                    on_response_done=self.handle_response_complete
+                    on_response_done=self.handle_response_complete,
+                    on_repetition_detected=self.handle_repetition_detected,
+                    on_response_discarded=self.handle_response_discarded,
+                    max_response_length=guard_max_length
                 )
                 logger.info("🔄 热切换准备: 创建文本模式 OmniOfflineClient")
             else:
@@ -1792,6 +1794,8 @@ class LLMSessionManager:
             logger.info(f"用户语言已归一化: {language} → {normalized_lang}")
         else:
             logger.info(f"用户语言已设置为: {normalized_lang}")
+
+        # 文本模式下无需额外同步改写提示语言（已移除 rewrite 逻辑）
     
     async def translate_if_needed(self, text: str) -> str:
         """
@@ -1941,4 +1945,3 @@ class LLMSessionManager:
                     continue
                 await self.send_speech(data)
             await asyncio.sleep(0.01)
-

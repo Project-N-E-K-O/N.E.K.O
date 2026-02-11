@@ -1,0 +1,52 @@
+name: 发现问题点这个喵
+description: 碰到错误或异常了？请把复现步骤和相关信息告诉我喵
+title: "[Bug Report]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        哎呀，主人喵遇到不好的事情了喵！为了让我快速帮忙定位问题，请尽量详细填写下面的信息喵。
+  - type: input
+    id: summary
+    attributes:
+      label: 简短描述
+      placeholder: 比如：在启动时出现 IndexError 或 页面加载空白
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: 请列出清晰的复现步骤喵，比如：
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+      placeholder: 我期望看到的结果是……
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      placeholder: 实际发生了什么……
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 附件和相关信息
+      placeholder: 此处可以粘贴或上传任何你觉着相关的信息等，但请审查并避免带有你的敏感信息（如api key等）
+  - type: input
+    id: environment
+    attributes:
+      label: 运行环境
+      placeholder: 系统版本和N.E.K.O 版本
+  - type: markdown
+    attributes:
+      value: |
+        谢谢主人喵提供的信息喵，我们会尽快排查并回复喵。
+

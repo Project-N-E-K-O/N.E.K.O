@@ -253,3 +253,90 @@
         display: none !important;
     }
 }
+
+/* ============================================
+   高亮框通用修正
+   ============================================ */
+
+.driver-highlight {
+    box-sizing: border-box !important;
+}
+
+/* ============================================
+   系统托盘教程展示样式
+   ============================================ */
+
+.neko-systray-location {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.neko-systray-location__image {
+    width: 100%;
+    max-width: 320px;
+    border-radius: 10px;
+    border: 1px solid rgba(148, 163, 184, 0.4);
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.25);
+    align-self: center;
+}
+
+.neko-systray-location__caption {
+    font-size: 14px;
+    line-height: 1.55;
+    color: rgba(255, 255, 255, 0.9);
+}
+
+.neko-systray-location__note {
+    font-size: 11px;
+    line-height: 1.5;
+    color: rgba(255, 255, 255, 0.95);
+}
+
+.neko-systray-menu {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.neko-systray-menu__hint {
+    font-size: 12px;
+    line-height: 1.5;
+    color: #ffffff;
+}
+
+.neko-systray-menu__panel {
+    border-radius: 10px;
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    background: rgba(248, 250, 252, 0.95);
+    box-shadow: 0 10px 25px rgba(15, 23, 42, 0.12);
+    overflow: hidden;
+}
+
+.neko-systray-menu__item {
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.neko-systray-menu__item-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: #111827;
+}
+
+.neko-systray-menu__item-desc {
+    font-size: 12px;
+    line-height: 1.45;
+    color: #4b5563;
+}
+
+.neko-systray-menu__separator {
+    height: 1px;
+    background: rgba(148, 163, 184, 0.35);
+}
+
+.neko-systray-menu__item--danger .neko-systray-menu__item-label {
+    color: #b42318;
+}

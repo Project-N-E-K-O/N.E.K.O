@@ -228,6 +228,10 @@ function init_app() {
     let socket;
     // 将 currentGeminiMessage 改为全局变量，供字幕模块使用
     window.currentGeminiMessage = null;
+    // 追踪本轮 AI 回复的所有气泡（用于改写时删除）
+    window.currentTurnGeminiBubbles = [];
+    // 拟真输出队列版本号，用于取消旧任务
+    window._realisticGeminiVersion = 0;
     let audioPlayerContext = null;
     let videoTrack, videoSenderInterval;
     let audioBufferQueue = [];
@@ -291,6 +295,10 @@ function init_app() {
     const MAX_MIC_GAIN_DB = 25;         // 最大增益（25dB ≈ 18倍放大）
     const MIN_MIC_GAIN_DB = -5;         // 最小增益（-5dB ≈ 0.56倍）
     let micVolumeAnimationId = null;    // 音量可视化动画帧ID
+
+    // 扬声器音量控制相关变量
+    let speakerVolume = 100;                // 扬声器音量 (0~100)
+    const DEFAULT_SPEAKER_VOLUME = 100;     // 默认音量 100%
 
     // 分贝转线性增益：linear = 10^(dB/20)
     function dbToLinear(db) {
@@ -462,6 +470,58 @@ function init_app() {
                     }
                     
                     appendMessage(response.text, 'gemini', isNewMessage);
+                } else if (response.type === 'response_discarded') {
+                    const attempt = response.attempt || 0;
+                    const maxAttempts = response.max_attempts || 0;
+                    console.log(`[Discard] AI回复被丢弃 reason=${response.reason} attempt=${attempt}/${maxAttempts} retry=${response.will_retry}`);
+                    
+                    window._realisticGeminiQueue = [];
+                    window._realisticGeminiBuffer = '';
+                    window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
+                    
+                    if (window.currentTurnGeminiBubbles && window.currentTurnGeminiBubbles.length > 0) {
+                        window.currentTurnGeminiBubbles.forEach(bubble => {
+                            if (bubble && bubble.parentNode) {
+                                bubble.parentNode.removeChild(bubble);
+                            }
+                        });
+                        window.currentTurnGeminiBubbles = [];
+                    }
+
+                    if ((!window.currentTurnGeminiBubbles || window.currentTurnGeminiBubbles.length === 0) &&
+                        chatContainer && chatContainer.children && chatContainer.children.length > 0) {
+                        const toRemove = [];
+                        for (let i = chatContainer.children.length - 1; i >= 0; i--) {
+                            const el = chatContainer.children[i];
+                            if (el.classList && el.classList.contains('message') && el.classList.contains('gemini')) {
+                                toRemove.push(el);
+                            } else {
+                                break;
+                            }
+                        }
+                        toRemove.forEach(el => {
+                            if (el && el.parentNode) {
+                                el.parentNode.removeChild(el);
+                            }
+                        });
+                    }
+
+                    window._geminiTurnFullText = '';
+                    
+                    const retryMsg = window.t ? window.t('console.aiRetrying') : '猫娘链接出现异常，校准中…';
+                    const failMsg = window.t ? window.t('console.aiFailed') : '猫娘链接出现异常';
+                    showStatusToast(response.will_retry ? retryMsg : failMsg, 2500);
+                    
+                    if (!response.will_retry && response.message) {
+                        const messageDiv = document.createElement('div');
+                        messageDiv.classList.add('message', 'gemini');
+                        messageDiv.textContent = "[" + getCurrentTimeString() + "] 🎀 " + response.message;
+                        chatContainer.appendChild(messageDiv);
+                        window.currentGeminiMessage = messageDiv;
+                        window.currentTurnGeminiBubbles = [messageDiv];
+                    }
+                    
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
                 } else if (response.type === 'user_transcript') {
                     // 语音模式下的用户转录合并机制（兜底，防止 Gemini 等模型碎片化转录刷屏）
                     const now = Date.now();
@@ -741,7 +801,7 @@ function init_app() {
                             window._realisticGeminiQueue = window._realisticGeminiQueue || [];
                             window._realisticGeminiQueue.push(trimmed);
                             window._realisticGeminiBuffer = '';
-                            processRealisticQueue();
+                            processRealisticQueue(window._realisticGeminiVersion || 0);
                         }
                     } catch (e) {
                         console.warn(window.t('console.turnEndFlushFailed'), e);
@@ -1314,6 +1374,10 @@ function init_app() {
         messageDiv.textContent = "[" + getCurrentTimeString() + "] 🎀 " + sentence;
         chatContainer.appendChild(messageDiv);
         window.currentGeminiMessage = messageDiv;
+        
+        // ========== 新增：追踪本轮气泡 ==========
+        window.currentTurnGeminiBubbles.push(messageDiv);
+        // ========== 追踪结束 ==========
 
         // 检测AI消息的语言，如果与用户语言不同，显示字幕提示框
         checkAndShowSubtitlePrompt(sentence);
@@ -1326,12 +1390,15 @@ function init_app() {
         }
     }
 
-    async function processRealisticQueue() {
+    async function processRealisticQueue(queueVersion = window._realisticGeminiVersion || 0) {
         if (window._isProcessingRealisticQueue) return;
         window._isProcessingRealisticQueue = true;
 
         try {
             while (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
+                if ((window._realisticGeminiVersion || 0) !== queueVersion) {
+                    break;
+                }
                 // 基于时间戳的延迟：确保每句之间至少间隔2秒
                 const now = Date.now();
                 const timeSinceLastBubble = now - (window._lastBubbleTime || 0);
@@ -1339,8 +1406,12 @@ function init_app() {
                     await new Promise(resolve => setTimeout(resolve, 2000 - timeSinceLastBubble));
                 }
 
+                if ((window._realisticGeminiVersion || 0) !== queueVersion) {
+                    break;
+                }
+
                 const s = window._realisticGeminiQueue.shift();
-                if (s) {
+                if (s && (window._realisticGeminiVersion || 0) === queueVersion) {
                     createGeminiBubble(s);
                     chatContainer.scrollTop = chatContainer.scrollHeight;
                     window._lastBubbleTime = Date.now();
@@ -1350,7 +1421,7 @@ function init_app() {
             window._isProcessingRealisticQueue = false;
             // 兜底检查：如果在循环结束到重置标志位之间又有新消息进入队列，递归触发
             if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
-                processRealisticQueue();
+                processRealisticQueue(window._realisticGeminiVersion || 0);
             }
         }
     }
@@ -1402,7 +1473,11 @@ function init_app() {
         // 维护“本轮 AI 回复”的完整文本（用于 turn end 时整段翻译/情感分析）
         if (sender === 'gemini') {
             if (isNewMessage) {
+                window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
                 window._geminiTurnFullText = '';
+                // ========== 新增：重置本轮气泡追踪 ==========
+                window.currentTurnGeminiBubbles = [];
+                // ========== 重置结束 ==========
             }
             const prevFull = typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '';
             window._geminiTurnFullText = prevFull + normalizeGeminiText(text);
@@ -1423,7 +1498,7 @@ function init_app() {
             if (sentences.length > 0) {
                 window._realisticGeminiQueue = window._realisticGeminiQueue || [];
                 window._realisticGeminiQueue.push(...sentences);
-                processRealisticQueue();
+                processRealisticQueue(window._realisticGeminiVersion || 0);
             }
         } else if (sender === 'gemini' && isMergeMessagesEnabled() && isNewMessage) {
             // 合并消息开启：新一轮开始时，清空拟真缓冲，防止残留
@@ -1435,6 +1510,9 @@ function init_app() {
             messageDiv.textContent = "[" + getCurrentTimeString() + "] 🎀 " + (text || '');
             chatContainer.appendChild(messageDiv);
             window.currentGeminiMessage = messageDiv;
+            // ========== 新增：追踪本轮气泡 ==========
+            window.currentTurnGeminiBubbles.push(messageDiv);
+            // ========== 追踪结束 ==========
 
             checkAndShowSubtitlePrompt(text);
 
@@ -1499,6 +1577,9 @@ function init_app() {
             // 如果是Gemini消息，更新当前消息引用
             if (sender === 'gemini') {
                 window.currentGeminiMessage = messageDiv;
+                // ========== 新增：追踪本轮气泡 ==========
+                window.currentTurnGeminiBubbles.push(messageDiv);
+                // ========== 追踪结束 ==========
 
                 // 检测AI消息的语言，如果与用户语言不同，显示字幕提示框
                 checkAndShowSubtitlePrompt(text);
@@ -1818,6 +1899,68 @@ function init_app() {
             return `${db}dB`;
         }
     }
+
+    // ========== 扬声器音量控制 ==========
+
+    // 保存扬声器音量到 localStorage
+    function saveSpeakerVolumeSetting() {
+        try {
+            localStorage.setItem('neko_speaker_volume', String(speakerVolume));
+            console.log(`扬声器音量设置已保存: ${speakerVolume}%`);
+        } catch (err) {
+            console.error('保存扬声器音量设置失败:', err);
+        }
+    }
+
+    // 从 localStorage 加载扬声器音量设置
+    function loadSpeakerVolumeSetting() {
+        try {
+            const saved = localStorage.getItem('neko_speaker_volume');
+            if (saved !== null) {
+                const vol = parseInt(saved, 10);
+                if (!isNaN(vol) && vol >= 0 && vol <= 100) {
+                    speakerVolume = vol;
+                    console.log(`已加载扬声器音量设置: ${speakerVolume}%`);
+                } else {
+                    console.warn(`无效的扬声器音量值 ${saved}，使用默认值 ${DEFAULT_SPEAKER_VOLUME}%`);
+                    speakerVolume = DEFAULT_SPEAKER_VOLUME;
+                }
+            } else {
+                console.log(`未找到扬声器音量设置，使用默认值 ${DEFAULT_SPEAKER_VOLUME}%`);
+                speakerVolume = DEFAULT_SPEAKER_VOLUME;
+            }
+
+            // 立即应用到 AudioManager（如果已初始化）
+            if (window.AM && typeof window.AM.setVolume === 'function') {
+                window.AM.setVolume(speakerVolume);
+            }
+        } catch (err) {
+            console.error('加载扬声器音量设置失败:', err);
+            speakerVolume = DEFAULT_SPEAKER_VOLUME;
+        }
+    }
+
+    // 设置扬声器音量（供外部调用，参数为 0~100）
+    window.setSpeakerVolume = function(vol) {
+        if (vol >= 0 && vol <= 100) {
+            speakerVolume = vol;
+            if (window.AM) {
+                window.AM.setVolume(vol);
+            }
+            saveSpeakerVolumeSetting();
+            // 更新 UI 滑块（如果存在）
+            const slider = document.getElementById('speaker-volume-slider');
+            const valueDisplay = document.getElementById('speaker-volume-value');
+            if (slider) slider.value = String(vol);
+            if (valueDisplay) valueDisplay.textContent = `${vol}%`;
+            console.log(`扬声器音量已设置: ${vol}%`);
+        }
+    };
+
+    // 获取当前扬声器音量
+    window.getSpeakerVolume = function() {
+        return speakerVolume;
+    };
 
     // 启动麦克风音量可视化
     function startMicVolumeVisualization() {
@@ -2981,7 +3124,7 @@ function init_app() {
                 if (toggleChatBtn) {
                     const iconImg = toggleChatBtn.querySelector('img');
                     if (iconImg) {
-                        iconImg.src = '/static/icons/expand_icon.png';
+                        iconImg.src = '/static/icons/expand_icon_off.png';
                         iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
                     }
                     toggleChatBtn.title = window.t ? window.t('common.minimize') : '最小化';
@@ -4632,7 +4775,7 @@ function init_app() {
             if (toggleChatBtn) {
                 const iconImg = toggleChatBtn.querySelector('img');
                 if (iconImg) {
-                    iconImg.src = '/static/icons/expand_icon.png';
+                    iconImg.src = '/static/icons/expand_icon_off.png';
                     iconImg.alt = window.t ? window.t('common.expand') : '展开';
                 }
                 toggleChatBtn.title = window.t ? window.t('common.expand') : '展开';
@@ -4854,7 +4997,7 @@ function init_app() {
             if (toggleChatBtn) {
                 const iconImg = toggleChatBtn.querySelector('img');
                 if (iconImg) {
-                    iconImg.src = '/static/icons/expand_icon.png';
+                    iconImg.src = '/static/icons/expand_icon_off.png';
                     iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
                 }
                 toggleChatBtn.title = window.t ? window.t('common.minimize') : '最小化';
@@ -6473,6 +6616,184 @@ function init_app() {
                 return false;
             }
 
+            // ========== 1. 扬声器音量控制（最上面） ==========
+            const speakerContainer = document.createElement('div');
+            speakerContainer.className = 'speaker-volume-container';
+            Object.assign(speakerContainer.style, {
+                padding: '8px 12px'
+            });
+
+            // 扬声器音量标签和当前值显示
+            const speakerHeader = document.createElement('div');
+            Object.assign(speakerHeader.style, {
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '8px'
+            });
+
+            const speakerLabel = document.createElement('span');
+            speakerLabel.textContent = window.t ? window.t('speaker.volumeLabel') : '扬声器音量';
+            speakerLabel.setAttribute('data-i18n', 'speaker.volumeLabel');
+            speakerLabel.style.fontSize = '13px';
+            speakerLabel.style.color = '#333';
+            speakerLabel.style.fontWeight = '500';
+
+            const speakerValue = document.createElement('span');
+            speakerValue.id = 'speaker-volume-value';
+            speakerValue.textContent = `${speakerVolume}%`;
+            speakerValue.style.fontSize = '12px';
+            speakerValue.style.color = '#4f8cff';
+            speakerValue.style.fontWeight = '500';
+
+            speakerHeader.appendChild(speakerLabel);
+            speakerHeader.appendChild(speakerValue);
+            speakerContainer.appendChild(speakerHeader);
+
+            // 扬声器音量滑块
+            const speakerSlider = document.createElement('input');
+            speakerSlider.type = 'range';
+            speakerSlider.id = 'speaker-volume-slider';
+            speakerSlider.min = '0';
+            speakerSlider.max = '100';
+            speakerSlider.step = '1';
+            speakerSlider.value = String(speakerVolume);
+            Object.assign(speakerSlider.style, {
+                width: '100%',
+                height: '6px',
+                borderRadius: '3px',
+                cursor: 'pointer',
+                accentColor: '#4f8cff'
+            });
+
+            // 滑块事件：实时更新音量
+            speakerSlider.addEventListener('input', (e) => {
+                const newVol = parseInt(e.target.value, 10);
+                speakerVolume = newVol;
+                speakerValue.textContent = `${newVol}%`;
+
+                // 实时更新 AudioManager 主音量
+                if (window.AM) {
+                    window.AM.setVolume(newVol);
+                }
+            });
+
+            // 滑块松开时保存设置
+            speakerSlider.addEventListener('change', () => {
+                saveSpeakerVolumeSetting();
+            });
+
+            speakerContainer.appendChild(speakerSlider);
+
+            // 扬声器音量提示文字
+            const speakerHint = document.createElement('div');
+            speakerHint.textContent = window.t ? window.t('speaker.volumeHint') : '调节AI语音的播放音量';
+            speakerHint.setAttribute('data-i18n', 'speaker.volumeHint');
+            Object.assign(speakerHint.style, {
+                fontSize: '11px',
+                color: '#888',
+                marginTop: '6px'
+            });
+            speakerContainer.appendChild(speakerHint);
+
+            micPopup.appendChild(speakerContainer);
+
+            // 添加分隔线
+            const speakerSeparator = document.createElement('div');
+            speakerSeparator.style.height = '1px';
+            speakerSeparator.style.backgroundColor = '#eee';
+            speakerSeparator.style.margin = '8px 0';
+            micPopup.appendChild(speakerSeparator);
+
+            // ========== 2. 麦克风增益控制 ==========
+            const gainContainer = document.createElement('div');
+            gainContainer.className = 'mic-gain-container';
+            Object.assign(gainContainer.style, {
+                padding: '8px 12px'
+            });
+
+            // 增益标签和当前值显示
+            const gainHeader = document.createElement('div');
+            Object.assign(gainHeader.style, {
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '8px'
+            });
+
+            const gainLabel = document.createElement('span');
+            gainLabel.textContent = window.t ? window.t('microphone.gainLabel') : '麦克风增益';
+            gainLabel.style.fontSize = '13px';
+            gainLabel.style.color = '#333';
+            gainLabel.style.fontWeight = '500';
+
+            const gainValue = document.createElement('span');
+            gainValue.id = 'mic-gain-value';
+            gainValue.textContent = formatGainDisplay(microphoneGainDb);
+            gainValue.style.fontSize = '12px';
+            gainValue.style.color = '#4f8cff';
+            gainValue.style.fontWeight = '500';
+
+            gainHeader.appendChild(gainLabel);
+            gainHeader.appendChild(gainValue);
+            gainContainer.appendChild(gainHeader);
+
+            // 增益滑块（使用分贝单位）
+            const gainSlider = document.createElement('input');
+            gainSlider.type = 'range';
+            gainSlider.id = 'mic-gain-slider';
+            gainSlider.min = String(MIN_MIC_GAIN_DB);
+            gainSlider.max = String(MAX_MIC_GAIN_DB);
+            gainSlider.step = '1';  // 1dB 步进
+            gainSlider.value = String(microphoneGainDb);
+            Object.assign(gainSlider.style, {
+                width: '100%',
+                height: '6px',
+                borderRadius: '3px',
+                cursor: 'pointer',
+                accentColor: '#4f8cff'
+            });
+
+            // 滑块事件：实时更新增益
+            gainSlider.addEventListener('input', (e) => {
+                const newGainDb = parseFloat(e.target.value);
+                microphoneGainDb = newGainDb;
+                gainValue.textContent = formatGainDisplay(newGainDb);
+
+                // 实时更新 GainNode（如果正在录音）
+                if (micGainNode) {
+                    micGainNode.gain.value = dbToLinear(newGainDb);
+                    console.log(`麦克风增益已实时更新: ${newGainDb}dB`);
+                }
+            });
+
+            // 滑块松开时保存设置
+            gainSlider.addEventListener('change', () => {
+                saveMicGainSetting();
+            });
+
+            gainContainer.appendChild(gainSlider);
+
+            // 增益提示文字
+            const gainHint = document.createElement('div');
+            gainHint.textContent = window.t ? window.t('microphone.gainHint') : '如果麦克风声音太小，可以调高增益';
+            Object.assign(gainHint.style, {
+                fontSize: '11px',
+                color: '#888',
+                marginTop: '6px'
+            });
+            gainContainer.appendChild(gainHint);
+
+            micPopup.appendChild(gainContainer);
+
+            // 添加分隔线（设备列表前）
+            const deviceSeparator = document.createElement('div');
+            deviceSeparator.style.height = '1px';
+            deviceSeparator.style.backgroundColor = '#eee';
+            deviceSeparator.style.margin = '8px 0';
+            micPopup.appendChild(deviceSeparator);
+
+            // ========== 3. 麦克风设备选择列表 ==========
             // 添加默认麦克风选项
             const defaultOption = document.createElement('button');
             defaultOption.className = 'mic-option';
@@ -6563,102 +6884,14 @@ function init_app() {
                 micPopup.appendChild(option);
             });
 
-            // 添加分隔线（增益控制区域前）
-            const gainSeparator = document.createElement('div');
-            gainSeparator.style.height = '1px';
-            gainSeparator.style.backgroundColor = '#eee';
-            gainSeparator.style.margin = '8px 0';
-            micPopup.appendChild(gainSeparator);
-
-            // 添加麦克风增益控制区域
-            const gainContainer = document.createElement('div');
-            gainContainer.className = 'mic-gain-container';
-            Object.assign(gainContainer.style, {
-                padding: '8px 12px'
-            });
-
-            // 增益标签和当前值显示
-            const gainHeader = document.createElement('div');
-            Object.assign(gainHeader.style, {
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                marginBottom: '8px'
-            });
-
-            const gainLabel = document.createElement('span');
-            gainLabel.textContent = window.t ? window.t('microphone.gainLabel') : '麦克风增益';
-            gainLabel.style.fontSize = '13px';
-            gainLabel.style.color = '#333';
-            gainLabel.style.fontWeight = '500';
-
-            const gainValue = document.createElement('span');
-            gainValue.id = 'mic-gain-value';
-            gainValue.textContent = formatGainDisplay(microphoneGainDb);
-            gainValue.style.fontSize = '12px';
-            gainValue.style.color = '#4f8cff';
-            gainValue.style.fontWeight = '500';
-
-            gainHeader.appendChild(gainLabel);
-            gainHeader.appendChild(gainValue);
-            gainContainer.appendChild(gainHeader);
-
-            // 增益滑块（使用分贝单位）
-            const gainSlider = document.createElement('input');
-            gainSlider.type = 'range';
-            gainSlider.id = 'mic-gain-slider';
-            gainSlider.min = String(MIN_MIC_GAIN_DB);
-            gainSlider.max = String(MAX_MIC_GAIN_DB);
-            gainSlider.step = '1';  // 1dB 步进
-            gainSlider.value = String(microphoneGainDb);
-            Object.assign(gainSlider.style, {
-                width: '100%',
-                height: '6px',
-                borderRadius: '3px',
-                cursor: 'pointer',
-                accentColor: '#4f8cff'
-            });
-
-            // 滑块事件：实时更新增益
-            gainSlider.addEventListener('input', (e) => {
-                const newGainDb = parseFloat(e.target.value);
-                microphoneGainDb = newGainDb;
-                gainValue.textContent = formatGainDisplay(newGainDb);
-                
-                // 实时更新 GainNode（如果正在录音）
-                if (micGainNode) {
-                    micGainNode.gain.value = dbToLinear(newGainDb);
-                    console.log(`麦克风增益已实时更新: ${newGainDb}dB`);
-                }
-            });
-
-            // 滑块松开时保存设置
-            gainSlider.addEventListener('change', () => {
-                saveMicGainSetting();
-            });
-
-            gainContainer.appendChild(gainSlider);
-
-            // 增益提示文字
-            const gainHint = document.createElement('div');
-            gainHint.textContent = window.t ? window.t('microphone.gainHint') : '如果麦克风声音太小，可以调高增益';
-            Object.assign(gainHint.style, {
-                fontSize: '11px',
-                color: '#888',
-                marginTop: '6px'
-            });
-            gainContainer.appendChild(gainHint);
-
-            micPopup.appendChild(gainContainer);
-
-            // 添加分隔线（音量显示区域前）
+            // 添加分隔线（音量可视化区域前）
             const volumeSeparator = document.createElement('div');
             volumeSeparator.style.height = '1px';
             volumeSeparator.style.backgroundColor = '#eee';
             volumeSeparator.style.margin = '8px 0';
             micPopup.appendChild(volumeSeparator);
 
-            // 添加麦克风音量可视化区域
+            // ========== 4. 麦克风音量可视化区域 ==========
             const volumeContainer = document.createElement('div');
             volumeContainer.className = 'mic-volume-container';
             Object.assign(volumeContainer.style, {
@@ -7597,6 +7830,9 @@ function init_app() {
     // 加载麦克风增益设置
     loadMicGainSetting();
 
+    // 加载扬声器音量设置
+    loadSpeakerVolumeSetting();
+
     // 如果已开启主动搭话，立即启动定时器
     if (proactiveChatEnabled) {
         scheduleProactiveChat();
@@ -7811,6 +8047,7 @@ function init_app() {
             window._realisticGeminiQueue = [];
             window._realisticGeminiBuffer = '';
             window._realisticGeminiTimestamp = null;
+            window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
             // 重置语音模式用户转录合并追踪
             lastVoiceUserMessage = null;
             lastVoiceUserMessageTime = 0;

@@ -91,23 +91,23 @@ if (toggleBtn) {
             let iconImg = toggleBtn.querySelector('img');
             if (!iconImg) {
                 iconImg = document.createElement('img');
-                iconImg.style.width = '24px';
-                iconImg.style.height = '24px';
-                iconImg.style.objectFit = 'contain';
+                iconImg.style.width = '32px';
+                iconImg.style.height = '32px';
+                iconImg.style.objectFit = 'cover';
                 iconImg.style.pointerEvents = 'none';
                 toggleBtn.innerHTML = '';
                 toggleBtn.appendChild(iconImg);
             } else {
-                iconImg.style.width = '24px';
-                iconImg.style.height = '24px';
+                iconImg.style.width = '32px';
+                iconImg.style.height = '32px';
             }
             
             if (becomingCollapsed) {
-                iconImg.src = '/static/icons/expand_icon.png';
+                iconImg.src = '/static/icons/expand_icon_off.png';
                 iconImg.alt = window.t ? window.t('common.expand') : '展开';
                 toggleBtn.title = window.t ? window.t('common.expand') : '展开';
             } else {
-                iconImg.src = '/static/icons/expand_icon.png';
+                iconImg.src = '/static/icons/expand_icon_off.png';
                 iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
                 toggleBtn.title = window.t ? window.t('common.minimize') : '最小化';
                 setTimeout(scrollToBottom, 300);
@@ -129,32 +129,57 @@ if (toggleBtn) {
         if (!iconImg) {
             // 如果没有图标，创建一个
             iconImg = document.createElement('img');
-            iconImg.style.width = '24px';  /* 图标尺寸 */
-            iconImg.style.height = '24px';  /* 图标尺寸 */
-            iconImg.style.objectFit = 'contain';
+            iconImg.style.width = '32px';  /* 图标尺寸 */
+            iconImg.style.height = '32px';  /* 图标尺寸 */
+            iconImg.style.objectFit = 'cover';
             iconImg.style.pointerEvents = 'none'; /* 确保图标不干扰点击事件 */
             toggleBtn.innerHTML = '';
             toggleBtn.appendChild(iconImg);
         } else {
             // 如果图标已存在，也更新其大小
-            iconImg.style.width = '24px';  /* 图标尺寸 */
-            iconImg.style.height = '24px';  /* 图标尺寸 */
+            iconImg.style.width = '32px';  /* 图标尺寸 */
+            iconImg.style.height = '32px';  /* 图标尺寸 */
         }
 
         if (isMinimized) {
             // 刚刚最小化，显示展开图标（加号）
-            iconImg.src = '/static/icons/expand_icon.png';
+            iconImg.src = '/static/icons/expand_icon_off.png';
             iconImg.alt = window.t ? window.t('common.expand') : '展开';
             toggleBtn.title = window.t ? window.t('common.expand') : '展开';
+            iconImg.style.width = '100%';
+            iconImg.style.height = '100%';
         } else {
             // 刚刚还原展开，显示最小化图标（减号）
-            iconImg.src = '/static/icons/expand_icon.png';
+            iconImg.src = '/static/icons/expand_icon_off.png';
             iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
             toggleBtn.title = window.t ? window.t('common.minimize') : '最小化';
+            iconImg.style.width = '32px';
+            iconImg.style.height = '32px';
             // 还原后滚动到底部
             setTimeout(scrollToBottom, 300); // 给CSS过渡留出时间
             // 展开后执行回弹，避免位置越界
             triggerExpandSnap();
+        }
+    });
+}
+
+// --- 鼠标悬停效果 - 仅在最小化状态下生效 ---
+if (toggleBtn) {
+    toggleBtn.addEventListener('mouseenter', () => {
+        if (chatContainer.classList.contains('minimized')) {
+            let iconImg = toggleBtn.querySelector('img');
+            if (iconImg) {
+                iconImg.src = '/static/icons/expand_icon_on.png';
+            }
+        }
+    });
+
+    toggleBtn.addEventListener('mouseleave', () => {
+        if (chatContainer.classList.contains('minimized')) {
+            let iconImg = toggleBtn.querySelector('img');
+            if (iconImg) {
+                iconImg.src = '/static/icons/expand_icon_off.png';
+            }
         }
     });
 }
@@ -538,12 +563,12 @@ document.addEventListener('DOMContentLoaded', () => {
         
         if (isCollapsed()) {
             // 最小化状态，显示展开图标（加号）
-            iconImg.src = '/static/icons/expand_icon.png';
+            iconImg.src = '/static/icons/expand_icon_off.png';
             iconImg.alt = window.t ? window.t('common.expand') : '展开';
             toggleBtn.title = window.t ? window.t('common.expand') : '展开';
         } else {
             // 展开状态，显示最小化图标（减号）
-            iconImg.src = '/static/icons/expand_icon.png';
+            iconImg.src = '/static/icons/expand_icon_off.png';
             iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
             toggleBtn.title = window.t ? window.t('common.minimize') : '最小化';
             scrollToBottom(); // 初始加载时滚动一次
