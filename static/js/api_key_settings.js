@@ -482,7 +482,7 @@ async function fetchGptSovitsVoices(silent = false) {
     const currentValue = select.value;
 
     try {
-        const resp = await fetch(`${getBaseUrl()}/gptsovits/list_voices`, {
+        const resp = await fetch('/api/config/gptsovits/list_voices', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ api_url: apiUrl })
