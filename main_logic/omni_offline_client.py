@@ -291,95 +291,85 @@ class OmniOfflineClient:
             
             for attempt in range(max_retries):
                 try:
-                    self._is_responding = True
                     assistant_message = ""
-                    is_first_chunk = True
-                    pipe_count = 0  # 围栏：追踪 | 字符的出现次数
-                    fence_triggered = False  # 围栏是否已触发
-                    
-                    # Stream response using langchain
-                    guard_triggered = False
-                    discard_reason = None
-                    
-                    async for chunk in self.llm.astream(self._conversation_history):
-                        if not self._is_responding:
-                            # Interrupted
-                            break
+                    guard_attempt = 0
+                    while guard_attempt <= self.max_response_rerolls:
+                        self._is_responding = True
+                        assistant_message = ""
+                        is_first_chunk = True
+                        pipe_count = 0  # 围栏：追踪 | 字符的出现次数
+                        fence_triggered = False  # 围栏是否已触发
+                        guard_triggered = False
+                        discard_reason = None
                         
-                        # 检查围栏是否已触发
-                        if fence_triggered:
-                            break
+                        async for chunk in self.llm.astream(self._conversation_history):
+                            if not self._is_responding:
+                                break
                             
-                        content = chunk.content if hasattr(chunk, 'content') else str(chunk)
-                        
-                        # 只处理非空内容，从源头过滤空文本
-                        if content and content.strip():
-                            # 围栏检测：检查 | 字符
-                            for char in content:
-                                if char == '|':
-                                    pipe_count += 1
-                                    if pipe_count >= 2:
-                                        # 触发围栏：找到第二个 | 的位置并截断
-                                        pipe_positions = [i for i, c in enumerate(content) if c == '|']
-                                        if len(pipe_positions) >= 2:
-                                            content = content[:pipe_positions[1]]
-                                        fence_triggered = True
-                                        logger.info("OmniOfflineClient: 围栏触发 - 检测到第二个 | 字符，截断输出")
-                                        break
+                            if fence_triggered:
+                                break
+                            
+                            content = chunk.content if hasattr(chunk, 'content') else str(chunk)
                             
                             if content and content.strip():
-                                assistant_message += content
+                                for char in content:
+                                    if char == '|':
+                                        pipe_count += 1
+                                        if pipe_count >= 2:
+                                            pipe_positions = [i for i, c in enumerate(content) if c == '|']
+                                            if len(pipe_positions) >= 2:
+                                                content = content[:pipe_positions[1]]
+                                            fence_triggered = True
+                                            logger.info("OmniOfflineClient: 围栏触发 - 检测到第二个 | 字符，截断输出")
+                                            break
                                 
-                                # 文本模式只调用 on_text_delta，不调用 on_output_transcript
-                                # 这与 OmniRealtimeClient 的行为一致：
-                                # - 文本响应使用 on_text_delta
-                                # - 语音转录使用 on_output_transcript
-                                if self.on_text_delta:
-                                    await self.on_text_delta(content, is_first_chunk)
-                                
-                                is_first_chunk = False
-                                
-                                if self.enable_response_guard:
-                                    current_length = count_words_and_chars(assistant_message)
-                                    if current_length > self.max_response_length:
-                                        guard_triggered = True
-                                        discard_reason = f"length>{self.max_response_length}"
-                                        logger.info(f"OmniOfflineClient: 检测到长回复 ({current_length}字)，准备重试")
-                                        self._is_responding = False
-                                        break
-                        elif content and not content.strip():
-                            # 记录被过滤的空内容（仅包含空白字符）
-                            logger.debug(f"OmniOfflineClient: 过滤空白内容 - content_repr: {repr(content)[:100]}")
-                    
-                    if guard_triggered:
-                        reroll_count += 1
-                        will_retry = reroll_count <= self.max_response_rerolls
-                        failure_message = None if will_retry else "AI回复异常，已放弃输出"
-                        await self._notify_response_discarded(
-                            discard_reason or "guard",
-                            reroll_count,
-                            self.max_response_rerolls,
-                            will_retry,
-                            failure_message
-                        )
+                                if content and content.strip():
+                                    assistant_message += content
+                                    if self.on_text_delta:
+                                        await self.on_text_delta(content, is_first_chunk)
+                                    is_first_chunk = False
+                                    
+                                    if self.enable_response_guard:
+                                        current_length = count_words_and_chars(assistant_message)
+                                        if current_length > self.max_response_length:
+                                            guard_triggered = True
+                                            discard_reason = f"length>{self.max_response_length}"
+                                            logger.info(f"OmniOfflineClient: 检测到长回复 ({current_length}字)，准备重试")
+                                            self._is_responding = False
+                                            break
+                            elif content and not content.strip():
+                                logger.debug(f"OmniOfflineClient: 过滤空白内容 - content_repr: {repr(content)[:100]}")
                         
-                        if will_retry:
-                            logger.info(f"OmniOfflineClient: 响应被丢弃（{discard_reason}），第 {reroll_count}/{self.max_response_rerolls} 次重试")
-                            self._is_responding = True
-                            continue
+                        if guard_triggered:
+                            guard_attempt += 1
+                            reroll_count += 1
+                            will_retry = guard_attempt <= self.max_response_rerolls
+                            failure_message = None if will_retry else "AI回复异常，已放弃输出"
+                            await self._notify_response_discarded(
+                                discard_reason or "guard",
+                                guard_attempt,
+                                self.max_response_rerolls,
+                                will_retry,
+                                failure_message
+                            )
+                            
+                            if will_retry:
+                                logger.info(f"OmniOfflineClient: 响应被丢弃（{discard_reason}），第 {guard_attempt}/{self.max_response_rerolls} 次重试")
+                                continue
+                            
+                            logger.warning("OmniOfflineClient: guard 重试耗尽，放弃输出")
+                            if self.handle_connection_error:
+                                await self.handle_connection_error("AI回复异常，已放弃输出")
+                            assistant_message = ""
+                            break
                         
-                        logger.warning("OmniOfflineClient: 响应多次异常，放弃输出")
-                        if self.handle_connection_error:
-                            await self.handle_connection_error("AI回复异常，已放弃输出")
-                        assistant_message = ""
+                        if assistant_message:
+                            self._conversation_history.append(AIMessage(content=assistant_message))
+                            await self._check_repetition(assistant_message)
                         break
                     
-                    # Add assistant response to history
                     if assistant_message:
-                        self._conversation_history.append(AIMessage(content=assistant_message))
-                        # 检测重复度
-                        await self._check_repetition(assistant_message)
-                    break
+                        break
                             
                 except (APIConnectionError, InternalServerError, RateLimitError) as e:
                     logger.info(f"ℹ️ 捕获到 {type(e).__name__} 错误")
