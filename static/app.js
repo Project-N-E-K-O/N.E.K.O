@@ -484,7 +484,8 @@ function init_app() {
                         window.currentTurnGeminiBubbles = [];
                     }
 
-                    if (chatContainer && chatContainer.children && chatContainer.children.length > 0) {
+                    if ((!window.currentTurnGeminiBubbles || window.currentTurnGeminiBubbles.length === 0) &&
+                        chatContainer && chatContainer.children && chatContainer.children.length > 0) {
                         const toRemove = [];
                         for (let i = chatContainer.children.length - 1; i >= 0; i--) {
                             const el = chatContainer.children[i];
