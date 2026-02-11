@@ -1174,8 +1174,18 @@ async def get_voice_preview(voice_id: str):
     """获取音色预览音频"""
     try:
         _config_manager = get_config_manager()
-        core_config = _config_manager.get_core_config()
-        audio_api_key = core_config.get('AUDIO_API_KEY', '')
+        
+        # 优先尝试从 tts_custom 获取 API Key
+        try:
+            tts_custom_config = _config_manager.get_model_api_config('tts_custom')
+            audio_api_key = tts_custom_config.get('api_key', '')
+        except Exception:
+            audio_api_key = ''
+            
+        # 如果没有，则回退到核心配置
+        if not audio_api_key:
+            core_config = _config_manager.get_core_config()
+            audio_api_key = core_config.get('AUDIO_API_KEY', '')
 
         if not audio_api_key:
             return JSONResponse({'success': False, 'error': '未配置 AUDIO_API_KEY'}, status_code=400)
@@ -1188,7 +1198,8 @@ async def get_voice_preview(voice_id: str):
         # 参照 复刻.py 使用 cosyvoice-v3-plus 模型
         try:
             synthesizer = SpeechSynthesizer(model="cosyvoice-v3-plus", voice=voice_id)
-            audio_data = synthesizer.call(text)
+            # 使用 asyncio.to_thread 包装同步阻塞调用
+            audio_data = await asyncio.to_thread(lambda: synthesizer.call(text))
             
             if not audio_data:
                 request_id = getattr(synthesizer, 'get_last_request_id', lambda: 'unknown')()

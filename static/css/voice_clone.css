@@ -674,25 +674,25 @@ html[lang="zh-CN"] .register-voice-btn .register-text {
 }
 
 .voice-delete-btn {
-    background: #ff5252;
+    background: #f52;
     color: white;
 }
 
 .voice-preview-btn {
-    background: #40C5F1;
+    background: #40c5f1;
     color: white;
 }
 
 .voice-delete-btn:hover:not(:disabled) {
-    background: #ff4444;
+    background: #f44;
     transform: translateY(-1px);
-    box-shadow: 0 2px 8px rgba(255, 82, 82, 0.3);
+    box-shadow: 0 2px 8px rgb(255 82 82 / 0.3);
 }
 
 .voice-preview-btn:hover:not(:disabled) {
     background: #35b5e1;
     transform: translateY(-1px);
-    box-shadow: 0 2px 8px rgba(64, 197, 241, 0.3);
+    box-shadow: 0 2px 8px rgb(64 197 241 / 0.3);
 }
 
 .voice-delete-btn:active:not(:disabled), .voice-preview-btn:active:not(:disabled) {
