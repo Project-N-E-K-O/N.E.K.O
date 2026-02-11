@@ -14,6 +14,7 @@ import os
 import logging
 import asyncio
 import copy
+import base64
 from datetime import datetime
 import pathlib
 import wave
@@ -22,7 +23,7 @@ from fastapi import APIRouter, Request, File, UploadFile, Form
 from fastapi.responses import JSONResponse
 import httpx
 import dashscope
-from dashscope.audio.tts_v2 import VoiceEnrollmentService
+from dashscope.audio.tts_v2 import VoiceEnrollmentService, SpeechSynthesizer
 
 from .shared_state import get_config_manager, get_session_manager, get_initialize_character_data
 from utils.frontend_utils import find_models, find_model_directory, is_user_imported_model
@@ -1166,6 +1167,57 @@ async def get_voices():
     """获取当前API key对应的所有已注册音色"""
     _config_manager = get_config_manager()
     return {"voices": _config_manager.get_voices_for_current_api()}
+
+
+@router.get('/voice_preview')
+async def get_voice_preview(voice_id: str):
+    """获取音色预览音频"""
+    try:
+        _config_manager = get_config_manager()
+        core_config = _config_manager.get_core_config()
+        audio_api_key = core_config.get('AUDIO_API_KEY', '')
+
+        if not audio_api_key:
+            return JSONResponse({'success': False, 'error': '未配置 AUDIO_API_KEY'}, status_code=400)
+
+        # 生成音频
+        dashscope.api_key = audio_api_key
+        logger.info(f"正在为音色 {voice_id} 生成预览音频...")
+        
+        text = "喵喵喵～这里是neko～很高兴见到你～"
+        # 参照 复刻.py 使用 cosyvoice-v3-plus 模型
+        try:
+            synthesizer = SpeechSynthesizer(model="cosyvoice-v3-plus", voice=voice_id)
+            audio_data = synthesizer.call(text)
+            
+            if not audio_data:
+                request_id = getattr(synthesizer, 'get_last_request_id', lambda: 'unknown')()
+                logger.error(f"生成音频失败: audio_data 为空. Request ID: {request_id}")
+                return JSONResponse({
+                    'success': False, 
+                    'error': f'生成音频失败 (Request ID: {request_id})。请检查 API Key 额度或音色 ID 是否有效。'
+                }, status_code=500)
+                
+            logger.info(f"音色 {voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
+                
+            # 将音频数据转换为 Base64 字符串
+            audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+                
+            return {
+                "success": True, 
+                "audio": audio_base64,
+                "mime_type": "audio/mpeg"
+            }
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"SpeechSynthesizer 调用异常: {error_msg}")
+            return JSONResponse({
+                'success': False, 
+                'error': f'语音合成异常: {error_msg}'
+            }, status_code=500)
+    except Exception as e:
+        logger.error(f"生成音色预览失败: {e}")
+        return JSONResponse({'success': False, 'error': f'系统错误: {str(e)}'}, status_code=500)
 
 
 @router.post('/voices')

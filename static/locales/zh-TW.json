@@ -939,6 +939,9 @@
       "ru": "俄語"
     },
     "registeredVoices": "已注冊音色",
+    "preview": "預覽",
+    "previewFailed": "預覽失敗: {{error}}",
+    "playFailed": "播放失敗: {{error}}",
     "refresh": "刷新",
     "loading": "加載中...",
     "noVoices": "暫無已注冊音色",

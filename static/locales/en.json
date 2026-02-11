@@ -926,6 +926,9 @@
       "ru": "Russian"
     },
     "registeredVoices": "Registered Voices",
+    "preview": "Preview",
+    "previewFailed": "Preview failed: {{error}}",
+    "playFailed": "Play failed: {{error}}",
     "refresh": "Refresh",
     "loading": "Loading...",
     "noVoices": "No registered voices",

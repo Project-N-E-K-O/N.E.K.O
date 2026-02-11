@@ -985,6 +985,9 @@
       "ru": "러시아어"
     },
     "registeredVoices": "등록된 음성",
+    "preview": "미리보기",
+    "previewFailed": "미리보기에 실패했습니다: {{error}}",
+    "playFailed": "재생에 실패했습니다: {{error}}",
     "refresh": "새로고침",
     "loading": "로드 중...",
     "noVoices": "등록된 음성이 없습니다.",

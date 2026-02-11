@@ -944,6 +944,9 @@
       "ru": "俄语"
     },
     "registeredVoices": "已注册音色",
+    "preview": "预览",
+    "previewFailed": "预览失败: {{error}}",
+    "playFailed": "播放失败: {{error}}",
     "refresh": "刷新",
     "loading": "加载中...",
     "noVoices": "暂无已注册音色",

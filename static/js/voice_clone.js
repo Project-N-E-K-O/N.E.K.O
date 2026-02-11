@@ -306,10 +306,10 @@ function registerVoice() {
                             // 通知父页面voice_id已更新
                             const payload = { type: 'voice_id_updated', voice_id: data.voice_id, lanlan_name: lanlanName, session_restarted: res.session_restarted };
                             if (window.parent !== window) {
-                                try { window.parent.postMessage(payload, window.location.origin); } catch (e) {}
+                                try { window.parent.postMessage(payload, window.location.origin); } catch (e) { }
                             }
                             if (window.opener && !window.opener.closed) {
-                                try { window.opener.postMessage(payload, window.location.origin); } catch (e) {}
+                                try { window.opener.postMessage(payload, window.location.origin); } catch (e) { }
                             }
                         }
                     }).catch(e => {
@@ -345,6 +345,58 @@ window.addEventListener('message', function (event) {
         loadVoices();
     }
 });
+
+async function playPreview(voiceId, btn) {
+    if (btn.disabled) return;
+
+    const originalContent = btn.innerHTML;
+    const loadingText = window.t ? window.t('voice.loading') : '...';
+    btn.textContent = loadingText;
+    btn.disabled = true;
+
+    try {
+        const storageKey = `voice_preview_${voiceId}`;
+        let audioSrc = localStorage.getItem(storageKey);
+
+        if (!audioSrc) {
+            // 如果本地没有缓存，则从服务器获取
+            const response = await fetch(`/api/characters/voice_preview?voice_id=${encodeURIComponent(voiceId)}`);
+            if (response.status === 404) {
+                throw new Error('API route not found (404). Please ensure the server has been restarted.');
+            }
+            const data = await response.json();
+
+            if (data.success && data.audio) {
+                audioSrc = `data:${data.mime_type || 'audio/mpeg'};base64,${data.audio}`;
+                // 保存到 localStorage
+                try {
+                    localStorage.setItem(storageKey, audioSrc);
+                } catch (e) {
+                    console.warn('Failed to save preview to localStorage:', e);
+                    // localStorage 可能满了，但我们仍然可以播放这一次生成的音频
+                }
+            } else {
+                throw new Error(data.error || 'Failed to get preview');
+            }
+        }
+
+        if (audioSrc) {
+            const audio = new Audio(audioSrc);
+            audio.play().catch(e => {
+                console.error('Audio play error:', e);
+                alert(window.t ? window.t('voice.playFailed', { error: e.message }) : '播放失败: ' + e.message);
+            });
+            btn.innerHTML = originalContent;
+            btn.disabled = false;
+        }
+    } catch (error) {
+        console.error('Preview error:', error);
+        const errorMsg = error?.message || error?.toString();
+        alert(window.t ? window.t('voice.previewFailed', { error: errorMsg }) : '预览失败: ' + errorMsg);
+        btn.innerHTML = originalContent;
+        btn.disabled = false;
+    }
+}
 
 // 加载音色列表
 async function loadVoices() {
@@ -430,6 +482,19 @@ async function loadVoices() {
                 }
             }
 
+            const voiceActions = document.createElement('div');
+            voiceActions.className = 'voice-actions';
+
+            const previewBtn = document.createElement('button');
+            previewBtn.className = 'voice-preview-btn';
+            const previewText = window.t ? window.t('voice.preview') : '预览';
+            const previewImg = document.createElement('img');
+            previewImg.src = '/static/icons/sound.png';
+            previewImg.alt = '';
+            previewBtn.appendChild(previewImg);
+            previewBtn.appendChild(document.createTextNode(previewText));
+            previewBtn.onclick = () => playPreview(voiceId, previewBtn);
+
             const deleteBtn = document.createElement('button');
             deleteBtn.className = 'voice-delete-btn';
             const deleteText = window.t ? window.t('voice.delete') : '删除';
@@ -439,6 +504,9 @@ async function loadVoices() {
             deleteBtn.appendChild(deleteImg);
             deleteBtn.appendChild(document.createTextNode(deleteText));
             deleteBtn.onclick = () => deleteVoice(voiceId, displayName);
+
+            voiceActions.appendChild(previewBtn);
+            voiceActions.appendChild(deleteBtn);
 
             const infoDiv = document.createElement('div');
             infoDiv.className = 'voice-info';
@@ -461,7 +529,7 @@ async function loadVoices() {
             }
 
             item.appendChild(infoDiv);
-            item.appendChild(deleteBtn);
+            item.appendChild(voiceActions);
 
             container.appendChild(item);
         });
@@ -520,6 +588,9 @@ async function deleteVoice(voiceId, voiceName) {
         const data = await response.json();
 
         if (response.ok && data.success) {
+            // 删除本地缓存的预览音频
+            localStorage.removeItem(`voice_preview_${voiceId}`);
+            
             // 删除成功，刷新列表
             await loadVoices();
             // 显示成功消息
