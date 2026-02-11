@@ -661,12 +661,14 @@ async def list_gptsovits_voices(request: Request):
         endpoint = f"{api_url}/api/v3/voices"
         async with aiohttp.ClientSession() as session:
             async with session.get(endpoint, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status == 200:
-                    voices = await resp.json()
-                    return {"success": True, "voices": voices}
-                else:
+                try:
+                    result = await resp.json(content_type=None)
+                except Exception:
                     text = await resp.text()
-                    return {"success": False, "error": f"HTTP {resp.status}: {text[:200]}"}
+                    return {"success": False, "error": f"Non-JSON response (HTTP {resp.status}): {text[:200]}"}
+                if resp.status == 200:
+                    return {"success": True, "voices": result}
+                return {"success": False, "error": f"HTTP {resp.status}: {str(result)[:200]}"}
     except aiohttp.ClientError as e:
         logger.error(f"GPT-SoVITS v3 API 请求失败: {e}")
         return {"success": False, "error": f"Connection error: {str(e)}"}

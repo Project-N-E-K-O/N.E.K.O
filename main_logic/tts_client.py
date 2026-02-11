@@ -1210,7 +1210,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
         response_queue: 多进程响应队列，发送音频数据（也用于发送就绪信号）
         audio_api_key: API密钥（未使用，保持接口一致）
         voice_id: v3 声音配置ID，格式为 "voice_id" 或 "voice_id|高级参数JSON"
-                  例如: "klala" 或 "klala|{\"speed\":1.2,\"text_lang\":\"all_zh\"}"
+                  例如: "my_voice" 或 "my_voice|{\"speed\":1.2,\"text_lang\":\"all_zh\"}"
     
     配置项（通过 TTS_MODEL_URL 设置）:
         base_url: GPT-SoVITS API 地址，如 "http://127.0.0.1:9881"
@@ -1221,7 +1221,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
     # 获取配置
     cm = get_config_manager()
     tts_config = cm.get_model_api_config('tts_custom')
-    base_url = tts_config.get('base_url', 'http://127.0.0.1:9881').rstrip('/')
+    base_url = (tts_config.get('base_url') or 'http://127.0.0.1:9881').rstrip('/')
 
     # 转换为 WS URL
     if base_url.startswith('http://'):
@@ -1235,10 +1235,18 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
 
     WS_URL = f'{ws_base}/api/v3/tts/stream-input'
 
-    # voice_id 直接就是 v3 的声音配置 ID
-    v3_voice_id = voice_id.strip() if voice_id else "_default"
-    if not v3_voice_id:
-        v3_voice_id = "_default"
+    # 解析 voice_id：支持 "voice_id" 或 "voice_id|{JSON高级参数}" 格式
+    extra_params = {}
+    raw_voice = voice_id.strip() if voice_id else ""
+    if '|' in raw_voice:
+        parts = raw_voice.split('|', 1)
+        v3_voice_id = parts[0].strip() or "_default"
+        try:
+            extra_params = json.loads(parts[1])
+        except (json.JSONDecodeError, IndexError):
+            logger.warning(f"[GPT-SoVITS v3] voice_id 高级参数解析失败，忽略: {parts[1]}")
+    else:
+        v3_voice_id = raw_voice or "_default"
 
     def _ws_is_open(ws_conn):
         """检查 WS 连接是否仍然打开（兼容 websockets v14+/v16）"""
@@ -1343,8 +1351,8 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
             logger.debug(f"[GPT-SoVITS v3] 连接: {WS_URL}")
             ws = await websockets.connect(WS_URL, ping_interval=None, max_size=10 * 1024 * 1024)
 
-            # 发送 init 指令
-            init_msg = {"cmd": "init", "voice_id": v3_voice_id}
+            # 发送 init 指令（合并高级参数）
+            init_msg = {"cmd": "init", "voice_id": v3_voice_id, **extra_params}
             await ws.send(json.dumps(init_msg))
 
             # 等待 ready 响应
@@ -1408,6 +1416,8 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                     except Exception as e:
                         logger.error(f"[GPT-SoVITS v3] 发送失败: {e}")
                         ws = None
+                        receive_task = None
+                        current_speech_id = None
 
         except Exception as e:
             logger.error(f"[GPT-SoVITS v3] Worker 错误: {e}")
