@@ -1355,8 +1355,9 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
             logger.debug(f"[GPT-SoVITS v3] 连接: {WS_URL}")
             ws = await websockets.connect(WS_URL, ping_interval=None, max_size=10 * 1024 * 1024)
 
-            # 发送 init 指令（合并高级参数）
-            init_msg = {"cmd": "init", "voice_id": v3_voice_id, **extra_params}
+            # 发送 init 指令（合并高级参数，过滤保留字段防止覆盖）
+            safe_params = {k: v for k, v in extra_params.items() if k not in ("cmd", "voice_id")}
+            init_msg = {"cmd": "init", "voice_id": v3_voice_id, **safe_params}
             await ws.send(json.dumps(init_msg))
 
             # 等待 ready 响应
@@ -1371,11 +1372,19 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
             receive_task = asyncio.create_task(receive_loop(ws))
             return ws
 
-        # ─── 主循环 ───
-        logger.info(f"[GPT-SoVITS v3] TTS 已就绪 (WS 双工模式): {WS_URL}")
-        logger.info(f"  voice_id: {v3_voice_id}")
-        response_queue.put(("__ready__", True))
+        # ─── 初始连接验证 ───
+        try:
+            await create_connection()
+            logger.info(f"[GPT-SoVITS v3] TTS 已就绪 (WS 双工模式): {WS_URL}")
+            logger.info(f"  voice_id: {v3_voice_id}")
+            response_queue.put(("__ready__", True))
+        except Exception as e:
+            logger.error(f"[GPT-SoVITS v3] 初始连接失败: {e}")
+            logger.error("请确保 GPT-SoVITS 服务已运行且端口正确")
+            response_queue.put(("__ready__", False))
+            return
 
+        # ─── 主循环 ───
         try:
             loop = asyncio.get_running_loop()
 
