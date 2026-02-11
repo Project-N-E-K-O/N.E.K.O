@@ -289,6 +289,7 @@ class OmniOfflineClient:
                     await self.handle_connection_error(error_msg)
                 return
             
+            guard_exhausted = False
             for attempt in range(max_retries):
                 try:
                     assistant_message = ""
@@ -360,11 +361,15 @@ class OmniOfflineClient:
                             if self.handle_connection_error:
                                 await self.handle_connection_error("AI回复异常，已放弃输出")
                             assistant_message = ""
+                            guard_exhausted = True
                             break
                         
                         if assistant_message:
                             self._conversation_history.append(AIMessage(content=assistant_message))
                             await self._check_repetition(assistant_message)
+                        break
+                    
+                    if guard_exhausted:
                         break
                     
                     if assistant_message:
