@@ -121,24 +121,31 @@ async def start_plugin(plugin_id: str, restore_state: bool = False) -> Dict[str,
     pdata = conf.get("plugin") or {}
 
     # 检查 plugin_runtime.enabled：如果插件在配置中被禁用，则不允许手动启动。
+    from plugin.utils import parse_bool_config
     runtime_cfg = conf.get("plugin_runtime")
     enabled_val = True
     if isinstance(runtime_cfg, dict):
-        v_enabled = runtime_cfg.get("enabled")
-        if isinstance(v_enabled, bool):
-            enabled_val = v_enabled
-        elif isinstance(v_enabled, str):
-            s = v_enabled.strip().lower()
-            if s in ("0", "false", "no", "off"):
-                enabled_val = False
-            elif s in ("1", "true", "yes", "on"):
-                enabled_val = True
+        enabled_val = parse_bool_config(runtime_cfg.get("enabled"), default=True)
 
     if not enabled_val:
         raise HTTPException(
             status_code=400,
             detail=f"Plugin '{plugin_id}' is disabled by plugin_runtime.enabled and cannot be started",
         )
+
+    # Extension 类型不能作为独立进程启动，它们会被注入到宿主插件进程中
+    if pdata.get("type") == "extension":
+        host_conf = pdata.get("host")
+        host_pid = host_conf.get("plugin_id") if isinstance(host_conf, dict) else "unknown"
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Plugin '{plugin_id}' is an extension (type='extension') and cannot be started as "
+                f"an independent process. It will be automatically injected into its host plugin "
+                f"'{host_pid}' when the host starts."
+            ),
+        )
+
     entry = pdata.get("entry")
     if not entry or ":" not in entry:
         raise HTTPException(
@@ -712,5 +719,103 @@ async def unfreeze_plugin(plugin_id: str) -> Dict[str, Any]:
         result["message"] = "Plugin unfrozen successfully"
         result["restored_from_frozen"] = True
     
+    return result
+
+
+def _validate_extension(ext_id: str) -> tuple[Dict[str, Any], str, Optional[PluginProcessHost]]:
+    """验证 Extension 元数据，返回 (ext_meta, host_plugin_id, host_or_None)。"""
+    with state.acquire_plugins_read_lock():
+        ext_meta = state.plugins.get(ext_id)
+    if not ext_meta or not isinstance(ext_meta, dict):
+        raise HTTPException(status_code=404, detail=f"Extension '{ext_id}' not found")
+    if ext_meta.get("type") != "extension":
+        raise HTTPException(status_code=400, detail=f"'{ext_id}' is not an extension plugin")
+    host_pid = ext_meta.get("host_plugin_id")
+    if not host_pid:
+        raise HTTPException(status_code=400, detail=f"Extension '{ext_id}' has no host_plugin_id")
+    with state.acquire_plugin_hosts_read_lock():
+        host = state.plugin_hosts.get(host_pid)
+    return ext_meta, host_pid, host
+
+
+async def disable_extension(ext_id: str) -> Dict[str, Any]:
+    """禁用 Extension：通知宿主进程卸载 Router，更新元数据状态。"""
+    ext_meta, host_pid, host = _validate_extension(ext_id)
+
+    result: Dict[str, Any] = {"success": False, "ext_id": ext_id, "host_plugin_id": host_pid}
+
+    if host and host.is_alive():
+        try:
+            data = await host.send_extension_command(
+                "DISABLE_EXTENSION", {"ext_name": ext_id}, timeout=10.0,
+            )
+            result["success"] = True
+            result["data"] = data
+        except Exception as e:
+            logger.exception("Failed to disable extension '{}' in host '{}'", ext_id, host_pid)
+            raise HTTPException(status_code=500, detail=f"Failed to disable extension: {e}") from e
+    else:
+        # 宿主未运行，只更新元数据
+        result["success"] = True
+        result["message"] = "Host not running; extension metadata updated"
+
+    # 更新元数据
+    with state.acquire_plugins_write_lock():
+        meta = state.plugins.get(ext_id)
+        if isinstance(meta, dict):
+            meta["runtime_enabled"] = False
+            state.plugins[ext_id] = meta
+
+    _enqueue_lifecycle({"type": "extension_disabled", "plugin_id": ext_id, "host_plugin_id": host_pid, "time": now_iso()})
+    return result
+
+
+async def enable_extension(ext_id: str) -> Dict[str, Any]:
+    """启用 Extension：通知宿主进程重新注入 Router，更新元数据状态。"""
+    ext_meta, host_pid, host = _validate_extension(ext_id)
+    ext_entry = ext_meta.get("entry_point", "")
+
+    # 从 TOML 中读取 prefix
+    config_path = ext_meta.get("config_path")
+    prefix = ""
+    if config_path:
+        try:
+            import tomllib
+        except ModuleNotFoundError:
+            import tomli as tomllib  # type: ignore[no-redef]
+        try:
+            with Path(config_path).open("rb") as f:
+                conf = tomllib.load(f)
+            host_conf = conf.get("plugin", {}).get("host", {})
+            prefix = host_conf.get("prefix", "")
+        except Exception as exc:
+            logger.warning("Failed to read prefix from config '{}': {}", config_path, exc)
+
+    result: Dict[str, Any] = {"success": False, "ext_id": ext_id, "host_plugin_id": host_pid}
+
+    if host and host.is_alive():
+        try:
+            data = await host.send_extension_command(
+                "ENABLE_EXTENSION",
+                {"ext_id": ext_id, "ext_entry": ext_entry, "prefix": prefix},
+                timeout=10.0,
+            )
+            result["success"] = True
+            result["data"] = data
+        except Exception as e:
+            logger.exception("Failed to enable extension '{}' in host '{}'", ext_id, host_pid)
+            raise HTTPException(status_code=500, detail=f"Failed to enable extension: {e}") from e
+    else:
+        result["success"] = True
+        result["message"] = "Host not running; extension will be injected when host starts"
+
+    # 更新元数据
+    with state.acquire_plugins_write_lock():
+        meta = state.plugins.get(ext_id)
+        if isinstance(meta, dict):
+            meta["runtime_enabled"] = True
+            state.plugins[ext_id] = meta
+
+    _enqueue_lifecycle({"type": "extension_enabled", "plugin_id": ext_id, "host_plugin_id": host_pid, "time": now_iso()})
     return result
 

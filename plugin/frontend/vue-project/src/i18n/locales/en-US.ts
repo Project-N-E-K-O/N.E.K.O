@@ -156,7 +156,16 @@ export default {
     disabled: 'Disabled',
     autoStart: 'Auto Start',
     manualStart: 'Manual Start',
-    fetchFailed: 'Failed to fetch plugins'
+    fetchFailed: 'Failed to fetch plugins',
+    extension: 'Extension',
+    pluginType: 'Type',
+    pluginTypeNormal: 'Plugin',
+    hostPlugin: 'Host Plugin',
+    boundExtensions: 'Bound Extensions',
+    pluginsSection: 'Plugins',
+    extensionsSection: 'Extensions',
+    disableExtension: 'Disable Extension',
+    enableExtension: 'Enable Extension'
   },
   metrics: {
     title: 'Metrics',
@@ -233,7 +242,9 @@ export default {
     stopped: 'Stopped',
     crashed: 'Crashed',
     loading: 'Loading',
-    disabled: 'Disabled'
+    disabled: 'Disabled',
+    injected: 'Injected',
+    pending: 'Pending Host'
   },
   logLevel: {
     DEBUG: 'Debug',
@@ -258,6 +269,11 @@ export default {
     stopFailed: 'Failed to stop',
     reloadFailed: 'Failed to reload',
     pluginDisabled: 'Plugin is disabled. Please enable it first.',
+    confirmDisableExt: 'Disable this extension? Its functionality will be unloaded from the host plugin.',
+    extensionDisabled: 'Extension disabled',
+    extensionEnabled: 'Extension enabled',
+    disableExtFailed: 'Failed to disable extension',
+    enableExtFailed: 'Failed to enable extension',
     requestFailed: 'Request failed',
     requestFailedWithStatus: 'Request failed ({status})',
     badRequest: 'Invalid request parameters',

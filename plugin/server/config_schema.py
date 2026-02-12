@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+from plugin.api.models import PluginType
 
 
 class PluginAuthorSchema(BaseModel):
@@ -48,6 +49,15 @@ class PluginSafetySchema(BaseModel):
     sync_call_in_handler: Optional[Literal["warn", "reject"]] = None
 
 
+class PluginHostSchema(BaseModel):
+    """Extension 宿主插件配置 Schema
+    
+    当 type = "extension" 时必填，声明 Extension 要注入的宿主插件。
+    """
+    plugin_id: str = Field(..., min_length=1, max_length=128, pattern=r'^[a-zA-Z0-9_-]+$')
+    prefix: str = Field(default="", max_length=64)
+
+
 class PluginDependencySchema(BaseModel):
     """插件依赖 Schema"""
     id: Optional[str] = None
@@ -76,16 +86,27 @@ class PluginSectionSchema(BaseModel):
     entry: str = Field(..., pattern=r'^[a-zA-Z0-9_.]+:[a-zA-Z0-9_]+$')
     
     # 可选字段
+    type: PluginType = "plugin"
     description: str = ""
     version: str = Field(default="0.1.0", pattern=r'^\d+\.\d+\.\d+.*$')
     
     # 嵌套配置
     author: Optional[PluginAuthorSchema] = None
+    host: Optional[PluginHostSchema] = None
     sdk: Optional[PluginSdkSchema] = None
     store: Optional[PluginStoreSchema] = None
     config_profiles: Optional[PluginConfigProfilesSchema] = None
     safety: Optional[PluginSafetySchema] = None
     dependencies: Optional[List[PluginDependencySchema]] = None
+
+    @model_validator(mode="after")
+    def validate_extension_host(self) -> "PluginSectionSchema":
+        """extension 类型必须声明 host，非 extension 类型不应声明 host"""
+        if self.type == "extension" and self.host is None:
+            raise ValueError("type = 'extension' 时必须声明 [plugin.host] 段（指定宿主插件）")
+        if self.type != "extension" and self.host is not None:
+            raise ValueError("只有 type = 'extension' 的插件才能声明 [plugin.host] 段")
+        return self
 
     @field_validator('id')
     @classmethod
@@ -393,6 +414,8 @@ __all__ = [
     "PluginStoreSchema",
     "PluginConfigProfilesSchema",
     "PluginDependencySchema",
+    "PluginHostSchema",
+    "PluginType",
     "ProfileConfigSchema",
     # 验证函数
     "validate_plugin_config",

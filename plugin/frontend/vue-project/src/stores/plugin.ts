@@ -3,7 +3,7 @@
  */
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { getPlugins, getPluginStatus, startPlugin, stopPlugin, reloadPlugin } from '@/api/plugins'
+import { getPlugins, getPluginStatus, startPlugin, stopPlugin, reloadPlugin, disableExtension, enableExtension } from '@/api/plugins'
 import type { PluginMeta, PluginStatusData } from '@/types/api'
 import { PluginStatus as StatusEnum } from '@/utils/constants'
 
@@ -41,27 +41,33 @@ export const usePluginStore = defineStore('plugin', () => {
         const statusObj = statusData.status
         if (statusObj) {
           if (typeof statusObj === 'string') {
-            // 如果 status 直接是字符串
             statusValue = statusObj
           } else if (typeof statusObj === 'object' && statusObj !== null) {
-            // 如果 status 是对象，尝试提取 status 字段
             const nestedStatus = (statusObj as any).status
             if (typeof nestedStatus === 'string') {
               statusValue = nestedStatus
             } else {
-              // 如果嵌套的 status 也不是字符串，使用默认值
               statusValue = StatusEnum.STOPPED
             }
           }
         }
       }
       
-      // 确保返回的 status 始终是字符串
       const finalStatus = typeof statusValue === 'string' ? statusValue : StatusEnum.STOPPED
 
       const enabled = plugin.runtime_enabled !== false
       const autoStart = plugin.runtime_auto_start !== false
-      const displayStatus = enabled ? finalStatus : StatusEnum.DISABLED
+      const isExtension = plugin.type === 'extension'
+
+      // Extension 状态由后端 build_plugin_list 推导（injected/pending/disabled），
+      // 直接使用 GET /plugins 返回的 status 字段，因为 Extension 不是独立进程，
+      // pluginStatuses（GET /plugin/status）中不会有它的数据。
+      let displayStatus: string
+      if (isExtension) {
+        displayStatus = typeof plugin.status === 'string' ? plugin.status : StatusEnum.PENDING
+      } else {
+        displayStatus = enabled ? finalStatus : StatusEnum.DISABLED
+      }
       
       return {
         ...plugin,
@@ -71,6 +77,18 @@ export const usePluginStore = defineStore('plugin', () => {
       }
     })
   })
+
+  const normalPlugins = computed(() => {
+    return pluginsWithStatus.value.filter(p => p.type !== 'extension')
+  })
+
+  const extensions = computed(() => {
+    return pluginsWithStatus.value.filter(p => p.type === 'extension')
+  })
+
+  function getExtensionsForHost(hostPluginId: string) {
+    return extensions.value.filter(e => e.host_plugin_id === hostPluginId)
+  }
 
   // 操作
   async function fetchPlugins() {
@@ -198,6 +216,24 @@ export const usePluginStore = defineStore('plugin', () => {
     }
   }
 
+  async function disableExt(extId: string) {
+    try {
+      await disableExtension(extId)
+      await fetchPlugins()
+    } catch (err: any) {
+      throw err
+    }
+  }
+
+  async function enableExt(extId: string) {
+    try {
+      await enableExtension(extId)
+      await fetchPlugins()
+    } catch (err: any) {
+      throw err
+    }
+  }
+
   function setSelectedPlugin(pluginId: string | null) {
     selectedPluginId.value = pluginId
   }
@@ -209,6 +245,8 @@ export const usePluginStore = defineStore('plugin', () => {
     selectedPluginId,
     selectedPlugin,
     pluginsWithStatus,
+    normalPlugins,
+    extensions,
     loading,
     error,
     // 操作
@@ -217,6 +255,9 @@ export const usePluginStore = defineStore('plugin', () => {
     start,
     stop,
     reload,
+    disableExt,
+    enableExt,
+    getExtensionsForHost,
     setSelectedPlugin
   }
 })

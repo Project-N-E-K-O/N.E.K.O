@@ -39,12 +39,14 @@ const statusText = computed(() => {
 const tagType = computed(() => {
   switch (props.status) {
     case PluginStatus.RUNNING:
+    case PluginStatus.INJECTED:
       return 'success'
     case PluginStatus.STOPPED:
       return 'info'
     case PluginStatus.CRASHED:
       return 'danger'
     case PluginStatus.LOADING:
+    case PluginStatus.PENDING:
       return 'warning'
     case PluginStatus.DISABLED:
       return 'info'

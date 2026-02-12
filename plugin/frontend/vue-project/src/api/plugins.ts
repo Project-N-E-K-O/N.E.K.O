@@ -81,6 +81,22 @@ export function getPluginMessages(params?: {
 }
 
 /**
+ * 禁用 Extension（热切换）
+ */
+export function disableExtension(extId: string): Promise<{ success: boolean; ext_id: string; host_plugin_id: string; data?: any; message?: string }> {
+  const safeId = encodeURIComponent(extId)
+  return post(`/plugin/${safeId}/extension/disable`)
+}
+
+/**
+ * 启用 Extension（热切换）
+ */
+export function enableExtension(extId: string): Promise<{ success: boolean; ext_id: string; host_plugin_id: string; data?: any; message?: string }> {
+  const safeId = encodeURIComponent(extId)
+  return post(`/plugin/${safeId}/extension/enable`)
+}
+
+/**
  * 获取服务器信息（包括SDK版本）
  */
 export function getServerInfo(): Promise<{

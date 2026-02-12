@@ -221,9 +221,9 @@ def _stop_message_plane_external() -> None:
             pass
 
 
-def _factory(plugin_id: str, entry: str, config_path: Path) -> PluginProcessHost:
+def _factory(plugin_id: str, entry: str, config_path: Path, *, extension_configs: list | None = None) -> PluginProcessHost:
     """插件进程宿主工厂函数"""
-    return PluginProcessHost(plugin_id=plugin_id, entry_point=entry, config_path=config_path)
+    return PluginProcessHost(plugin_id=plugin_id, entry_point=entry, config_path=config_path, extension_configs=extension_configs)
 
 
 async def startup() -> None:

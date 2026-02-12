@@ -28,9 +28,12 @@ export interface PluginDependency {
   conflicts?: string[] | boolean
 }
 
+export type PluginType = 'plugin' | 'extension' | 'script'
+
 export interface PluginMeta {
   id: string
   name: string
+  type?: PluginType
   description: string
   version: string
   sdk_version?: string
@@ -44,6 +47,8 @@ export interface PluginMeta {
   author?: PluginAuthor
   dependencies?: PluginDependency[]
   input_schema?: JSONSchema
+  host_plugin_id?: string
+  status?: string
 }
 
 // JSON Schema（简化版），用于描述插件入口参数

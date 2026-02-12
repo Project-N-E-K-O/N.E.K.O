@@ -885,8 +885,3 @@ class HelloPlugin(NekoPluginBase):
         )
         return ok(data={"ok": True, "greeted": name})
 
-    @hook(target="hello_run", timing="after")
-    def after_hello_run(self, entry_id: str, params: dict, result: dict, **_):
-        """Hook: 在 hello_run 执行后记录日志"""
-        self.file_logger.info("HelloPlugin after hello_run, params={}, result={}", params, result)
-        return result  # after hook 应返回 result

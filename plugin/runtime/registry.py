@@ -989,6 +989,45 @@ def scan_static_metadata(pid: str, cls: type, conf: dict, pdata: dict) -> None:
             # 继续处理其他条目，不中断整个插件加载
 
 
+def _build_plugin_meta(
+    pid: str,
+    pdata: dict,
+    *,
+    sdk_supported_str: Optional[str] = None,
+    sdk_recommended_str: Optional[str] = None,
+    sdk_untested_str: Optional[str] = None,
+    sdk_conflicts_list: Optional[List[str]] = None,
+    dependencies: Optional[List[PluginDependency]] = None,
+    input_schema: Optional[Dict[str, Any]] = None,
+    host_plugin_id: Optional[str] = None,
+) -> PluginMeta:
+    """统一构建 PluginMeta，消除 disabled / extension / normal 三处重复。"""
+    author_data = pdata.get("author")
+    author = None
+    if author_data and isinstance(author_data, dict):
+        author = PluginAuthor(
+            name=author_data.get("name"),
+            email=author_data.get("email"),
+        )
+
+    return PluginMeta(
+        id=pid,
+        name=pdata.get("name", pid),
+        type=pdata.get("type", "plugin"),
+        description=pdata.get("description", ""),
+        version=pdata.get("version", "0.1.0"),
+        sdk_version=sdk_supported_str or SDK_VERSION,
+        sdk_recommended=sdk_recommended_str,
+        sdk_supported=sdk_supported_str,
+        sdk_untested=sdk_untested_str,
+        sdk_conflicts=sdk_conflicts_list or [],
+        input_schema=input_schema or {"type": "object", "properties": {}},
+        author=author,
+        dependencies=dependencies or [],
+        host_plugin_id=host_plugin_id,
+    )
+
+
 def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> List[Dict[str, Any]]:
     """Extract entry metadata for UI visibility without registering event handlers.
 
@@ -1085,11 +1124,11 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
 def load_plugins_from_toml(
     plugin_config_root: Path,
     logger: Any,
-    process_host_factory: Callable[[str, str, Path], Any],
+    process_host_factory: Callable[..., Any],
 ) -> None:
     """
     扫描插件配置，启动子进程，并静态扫描元数据用于注册列表。
-    process_host_factory 接收 (plugin_id, entry_point, config_path) 并返回宿主对象。
+    process_host_factory 接收 (plugin_id, entry_point, config_path, extension_configs=None) 并返回宿主对象。
     
     加载过程分为三个阶段：
     1. 收集（Collect）：扫描所有 TOML 文件，解析配置和依赖。
@@ -1178,26 +1217,9 @@ def load_plugins_from_toml(
             enabled_val = True
             auto_start_val = True
             if isinstance(runtime_cfg, dict):
-                v_enabled = runtime_cfg.get("enabled")
-                v_auto = runtime_cfg.get("auto_start")
-
-                if isinstance(v_enabled, bool):
-                    enabled_val = v_enabled
-                elif isinstance(v_enabled, str):
-                    s = v_enabled.strip().lower()
-                    if s in ("0", "false", "no", "off"):
-                        enabled_val = False
-                    elif s in ("1", "true", "yes", "on"):
-                        enabled_val = True
-
-                if isinstance(v_auto, bool):
-                    auto_start_val = v_auto
-                elif isinstance(v_auto, str):
-                    s = v_auto.strip().lower()
-                    if s in ("0", "false", "no", "off"):
-                        auto_start_val = False
-                    elif s in ("1", "true", "yes", "on"):
-                        auto_start_val = True
+                from plugin.utils import parse_bool_config
+                enabled_val = parse_bool_config(runtime_cfg.get("enabled"), default=True)
+                auto_start_val = parse_bool_config(runtime_cfg.get("auto_start"), default=True)
 
             # enabled=false: still collect for visibility, but do not participate in runtime load.
             if not enabled_val:
@@ -1445,6 +1467,31 @@ def load_plugins_from_toml(
     logger.info("Plugin load order: {}", final_order)
     
     # === Phase 3: Load ===
+    # 预构建 extension 映射：host_plugin_id → [{"ext_id", "ext_entry", "prefix"}]
+    # 第一遍扫描收集所有 extension 信息，第二遍加载时传递给宿主进程
+    _extension_map: Dict[str, List[Dict[str, str]]] = {}
+    for _ctx in plugin_contexts:
+        _pdata = _ctx["pdata"]
+        if _pdata.get("type") != "extension":
+            continue
+        _host_conf = _pdata.get("host")
+        if not isinstance(_host_conf, dict):
+            continue
+        _host_pid = _host_conf.get("plugin_id")
+        if not _host_pid:
+            continue
+        # 检查 enabled
+        _rt = _ctx["conf"].get("plugin_runtime")
+        if isinstance(_rt, dict):
+            from plugin.utils import parse_bool_config as _pbc
+            if not _pbc(_rt.get("enabled"), default=True):
+                continue
+        _extension_map.setdefault(_host_pid, []).append({
+            "ext_id": _ctx["pid"],
+            "ext_entry": _ctx["entry"],
+            "prefix": _host_conf.get("prefix", ""),
+        })
+
     for pid in final_order:
         context = pid_to_context.get(pid)
         if not context:
@@ -1476,27 +1523,12 @@ def load_plugins_from_toml(
                 pdata=pdata,
             )
 
-            author_data = pdata.get("author")
-            author = None
-            if author_data and isinstance(author_data, dict):
-                author = PluginAuthor(
-                    name=author_data.get("name"),
-                    email=author_data.get("email")
-                )
-
-            plugin_meta = PluginMeta(
-                id=pid,
-                name=pdata.get("name", pid),
-                type=pdata.get("type", "plugin"),
-                description=pdata.get("description", ""),
-                version=pdata.get("version", "0.1.0"),
-                sdk_version=sdk_supported_str or SDK_VERSION,
-                sdk_recommended=sdk_recommended_str,
-                sdk_supported=sdk_supported_str,
-                sdk_untested=sdk_untested_str,
-                sdk_conflicts=sdk_conflicts_list,
-                input_schema={"type": "object", "properties": {}},
-                author=author,
+            plugin_meta = _build_plugin_meta(
+                pid, pdata,
+                sdk_supported_str=sdk_supported_str,
+                sdk_recommended_str=sdk_recommended_str,
+                sdk_untested_str=sdk_untested_str,
+                sdk_conflicts_list=sdk_conflicts_list,
                 dependencies=dependencies,
             )
             resolved_id = register_plugin(
@@ -1513,6 +1545,41 @@ def load_plugins_from_toml(
                         meta["runtime_auto_start"] = False
                         meta["entries_preview"] = entries_preview
                         state.plugins[resolved_id] = meta
+            continue
+
+        # extension 类型：不启动独立进程，只注册元数据。
+        # 实际加载在宿主子进程中通过 _inject_extensions() 完成。
+        plugin_type = pdata.get("type", "plugin")
+        if plugin_type == "extension":
+            host_conf = pdata.get("host")
+            host_pid = host_conf.get("plugin_id") if isinstance(host_conf, dict) else None
+
+            plugin_meta = _build_plugin_meta(
+                pid, pdata,
+                sdk_supported_str=sdk_supported_str,
+                sdk_recommended_str=sdk_recommended_str,
+                sdk_untested_str=sdk_untested_str,
+                sdk_conflicts_list=sdk_conflicts_list,
+                dependencies=dependencies,
+                host_plugin_id=host_pid,
+            )
+            resolved_id = register_plugin(
+                plugin_meta,
+                logger,
+                config_path=toml_path,
+                entry_point=entry,
+            )
+            if resolved_id is not None:
+                with state.acquire_plugins_write_lock():
+                    meta = state.plugins.get(resolved_id)
+                    if isinstance(meta, dict):
+                        meta["runtime_enabled"] = enabled_val
+                        meta["runtime_auto_start"] = False
+                        state.plugins[resolved_id] = meta
+            logger.info(
+                "Extension '{}' registered (host='{}'); will be injected into host process at runtime",
+                pid, host_pid,
+            )
             continue
 
         # 依赖检查（可通过配置禁用）
@@ -1663,7 +1730,8 @@ def load_plugins_from_toml(
         if enabled_val and auto_start_val:
             try:
                 logger.info("Plugin {}: creating process host...", pid)
-                host = process_host_factory(pid, entry, toml_path)
+                ext_cfgs = _extension_map.get(pid)
+                host = process_host_factory(pid, entry, toml_path, extension_configs=ext_cfgs)
                 logger.info(
                     "Plugin {}: process host created successfully (pid: {}, alive: {})",
                     pid,
@@ -1756,29 +1824,14 @@ def load_plugins_from_toml(
 
         scan_static_metadata(pid, cls, conf, pdata)
 
-        # 读取作者信息
-        author_data = pdata.get("author")
-        author = None
-        if author_data and isinstance(author_data, dict):
-            author = PluginAuthor(
-                name=author_data.get("name"),
-                email=author_data.get("email")
-            )
-
-        plugin_meta = PluginMeta(
-            id=pid,
-            name=pdata.get("name", pid),
-            type=pdata.get("type", "plugin"),
-            description=pdata.get("description", ""),
-            version=pdata.get("version", "0.1.0"),
-            sdk_version=sdk_supported_str or SDK_VERSION,
-            sdk_recommended=sdk_recommended_str,
-            sdk_supported=sdk_supported_str,
-            sdk_untested=sdk_untested_str,
-            sdk_conflicts=sdk_conflicts_list,
-            input_schema=getattr(cls, "input_schema", {}) or {"type": "object", "properties": {}},
-            author=author,
+        plugin_meta = _build_plugin_meta(
+            pid, pdata,
+            sdk_supported_str=sdk_supported_str,
+            sdk_recommended_str=sdk_recommended_str,
+            sdk_untested_str=sdk_untested_str,
+            sdk_conflicts_list=sdk_conflicts_list,
             dependencies=dependencies,
+            input_schema=getattr(cls, "input_schema", {}) or {"type": "object", "properties": {}},
         )
         
         # 在调用 register_plugin 之前，验证 host 是否还在 plugin_hosts 中。

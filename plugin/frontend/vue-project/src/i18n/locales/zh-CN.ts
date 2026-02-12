@@ -156,7 +156,16 @@ export default {
     disabled: '已禁用',
     autoStart: '自动启动',
     manualStart: '手动启动',
-    fetchFailed: '获取插件列表失败'
+    fetchFailed: '获取插件列表失败',
+    extension: '扩展',
+    pluginType: '类型',
+    pluginTypeNormal: '插件',
+    hostPlugin: '宿主插件',
+    boundExtensions: '绑定扩展',
+    pluginsSection: '插件',
+    extensionsSection: '扩展',
+    disableExtension: '禁用扩展',
+    enableExtension: '启用扩展'
   },
   metrics: {
     title: '性能指标',
@@ -233,7 +242,9 @@ export default {
     stopped: '已停止',
     crashed: '已崩溃',
     loading: '加载中',
-    disabled: '已禁用'
+    disabled: '已禁用',
+    injected: '已注入',
+    pending: '等待宿主'
   },
   logLevel: {
     DEBUG: '调试',
@@ -258,6 +269,11 @@ export default {
     stopFailed: '停止失败',
     reloadFailed: '重载失败',
     pluginDisabled: '插件已禁用，请先启用',
+    confirmDisableExt: '确认禁用此扩展？宿主插件中的扩展功能将被卸载。',
+    extensionDisabled: '扩展已禁用',
+    extensionEnabled: '扩展已启用',
+    disableExtFailed: '禁用扩展失败',
+    enableExtFailed: '启用扩展失败',
     requestFailed: '请求失败',
     requestFailedWithStatus: '请求失败 ({status})',
     badRequest: '请求参数错误',

@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 import hashlib
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional, Type
 from multiprocessing import Queue
@@ -51,6 +52,164 @@ def _sanitize_plugin_id(raw: Any, max_len: int = 64) -> str:
     return safe
 
 
+def _inject_extensions(
+    instance: Any,
+    host_plugin_id: str,
+    host_config_path: Path,
+    logger: Any,
+    extension_configs: list | None = None,
+) -> None:
+    """扫描所有 type=extension 且 host.plugin_id 匹配的插件，注入其 Router 到宿主实例。
+
+    在宿主子进程内部调用，发生在 instance 创建后、collect_entries 之前。
+    Extension 的 entry 指向一个 PluginRouter 子类，实例化后通过 include_router 注入。
+
+    如果 *extension_configs* 不为空，直接使用预构建的映射（避免全量扫描 TOML）。
+    每个元素格式: {"ext_id": str, "ext_entry": str, "prefix": str}
+    """
+    # 如果主进程已预构建映射，直接使用
+    if extension_configs:
+        from plugin.sdk.router import PluginRouter
+        injected_count = 0
+        for ext_cfg in extension_configs:
+            ext_id = ext_cfg.get("ext_id", "unknown")
+            ext_entry = ext_cfg.get("ext_entry", "")
+            prefix = ext_cfg.get("prefix", "")
+            if not ext_entry or ":" not in ext_entry:
+                logger.warning("[Extension] Pre-built config for '{}' has invalid entry, skipping", ext_id)
+                continue
+            module_path, class_name = ext_entry.split(":", 1)
+            try:
+                mod = importlib.import_module(module_path)
+                router_cls = getattr(mod, class_name)
+            except Exception as e:
+                logger.warning("[Extension] Failed to import extension '{}': {}", ext_id, e)
+                continue
+            if not (isinstance(router_cls, type) and issubclass(router_cls, PluginRouter)):
+                logger.warning("[Extension] '{}' is not a PluginRouter subclass, skipping", ext_id)
+                continue
+            try:
+                router_instance = router_cls(prefix=prefix, name=ext_id)
+                instance.include_router(router_instance)
+                injected_count += 1
+                logger.info("[Extension] Injected '{}' into host '{}' (pre-built)", ext_id, host_plugin_id)
+            except Exception as e:
+                logger.warning("[Extension] Failed to inject '{}': {}", ext_id, e)
+        if injected_count > 0:
+            logger.info("[Extension] Total {} extension(s) injected into host '{}'", injected_count, host_plugin_id)
+        return
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        try:
+            import tomli as tomllib  # type: ignore[no-redef]
+        except ImportError:
+            logger.debug("[Extension] tomllib/tomli not available, skipping extension injection")
+            return
+
+    # 优先使用 settings 中的 PLUGIN_CONFIG_ROOT，回退到路径推导
+    try:
+        from plugin.settings import PLUGIN_CONFIG_ROOT
+        plugin_config_root = PLUGIN_CONFIG_ROOT
+    except Exception:
+        plugin_config_root = host_config_path.parent.parent
+
+    try:
+        if not plugin_config_root.exists():
+            return
+    except Exception:
+        return
+
+    injected_count = 0
+    for toml_path in plugin_config_root.glob("*/plugin.toml"):
+        try:
+            with toml_path.open("rb") as f:
+                conf = tomllib.load(f)
+            pdata = conf.get("plugin") or {}
+
+            # 只处理 type=extension
+            if pdata.get("type") != "extension":
+                continue
+
+            # 检查宿主匹配
+            host_conf = pdata.get("host")
+            if not isinstance(host_conf, dict):
+                continue
+            if host_conf.get("plugin_id") != host_plugin_id:
+                continue
+
+            # 检查 enabled
+            runtime_cfg = conf.get("plugin_runtime")
+            if isinstance(runtime_cfg, dict):
+                from plugin.utils import parse_bool_config
+                if not parse_bool_config(runtime_cfg.get("enabled"), default=True):
+                    logger.debug(
+                        "[Extension] Extension '{}' is disabled, skipping",
+                        pdata.get("id", "?"),
+                    )
+                    continue
+
+            ext_id = pdata.get("id", "unknown")
+            ext_entry = pdata.get("entry")
+            if not ext_entry or ":" not in ext_entry:
+                logger.warning(
+                    "[Extension] Extension '{}' has invalid entry '{}', skipping",
+                    ext_id, ext_entry,
+                )
+                continue
+
+            # 导入 Extension Router 类
+            module_path, class_name = ext_entry.split(":", 1)
+            try:
+                mod = importlib.import_module(module_path)
+                router_cls = getattr(mod, class_name)
+            except (ImportError, ModuleNotFoundError) as e:
+                logger.warning(
+                    "[Extension] Failed to import extension '{}' ({}): {}",
+                    ext_id, ext_entry, e,
+                )
+                continue
+            except AttributeError as e:
+                logger.warning(
+                    "[Extension] Class '{}' not found in module '{}' for extension '{}': {}",
+                    class_name, module_path, ext_id, e,
+                )
+                continue
+
+            # 验证是 PluginRouter 子类
+            from plugin.sdk.router import PluginRouter
+            if not (isinstance(router_cls, type) and issubclass(router_cls, PluginRouter)):
+                logger.warning(
+                    "[Extension] Extension '{}' entry class '{}' is not a PluginRouter subclass, skipping",
+                    ext_id, class_name,
+                )
+                continue
+
+            # 实例化并注入
+            prefix = host_conf.get("prefix", "")
+            try:
+                router_instance = router_cls(prefix=prefix, name=ext_id)
+                instance.include_router(router_instance)
+                injected_count += 1
+                logger.info(
+                    "[Extension] Injected extension '{}' into host '{}' with prefix '{}'",
+                    ext_id, host_plugin_id, prefix,
+                )
+            except Exception as e:
+                logger.warning(
+                    "[Extension] Failed to inject extension '{}' into host '{}': {}",
+                    ext_id, host_plugin_id, e,
+                )
+        except Exception as e:
+            logger.debug("[Extension] Error processing {}: {}", toml_path, e)
+
+    if injected_count > 0:
+        logger.info(
+            "[Extension] Total {} extension(s) injected into host '{}'",
+            injected_count, host_plugin_id,
+        )
+
+
 def _plugin_process_runner(
     plugin_id: str,
     entry_point: str,
@@ -62,6 +221,7 @@ def _plugin_process_runner(
     response_queue: Queue,
     stop_event: Any | None = None,
     plugin_comm_queue: Queue | None = None,
+    extension_configs: list | None = None,
 ) -> None:
     """
     独立进程中的运行函数，负责加载插件、映射入口、处理命令并返回结果。
@@ -178,6 +338,24 @@ def _plugin_process_runner(
     except Exception as e:
         logger.warning("[Plugin Process] Failed to setup logging interception: {}", e)
 
+    # 防御性检查：Extension 类型不应作为独立进程运行
+    try:
+        try:
+            import tomllib as _tomllib
+        except ModuleNotFoundError:
+            import tomli as _tomllib  # type: ignore[no-redef]
+        with config_path.open("rb") as _f:
+            _conf = _tomllib.load(_f)
+        if _conf.get("plugin", {}).get("type") == "extension":
+            logger.error(
+                "[Plugin Process] FATAL: Plugin '{}' is type='extension' and must NOT run as an independent process. "
+                "It should be injected into its host plugin. Exiting immediately.",
+                plugin_id,
+            )
+            return
+    except Exception as _e:
+        logger.debug("[Plugin Process] Could not perform extension type guard: {}", _e)
+
     try:
         # 设置 Python 路径，确保能够导入插件模块
         if str(project_root) not in sys.path:
@@ -234,7 +412,29 @@ def _plugin_process_runner(
             except Exception:
                 pass
             pass
+
+        # 防御：extension（PluginRouter 子类）不应被当作独立进程启动
+        from plugin.sdk.router import PluginRouter as _SDKRouter
+        if isinstance(cls, type) and issubclass(cls, _SDKRouter):
+            logger.error(
+                "[Plugin Process] Entry class '{}' is a PluginRouter subclass, not a NekoPluginBase. "
+                "This plugin should be loaded as an extension (type='extension'), not as an independent process. "
+                "Aborting process for plugin '{}'.",
+                cls.__name__, plugin_id,
+            )
+            status_queue.put({
+                "type": "plugin_status",
+                "plugin_id": plugin_id,
+                "status": "error",
+                "error": f"Plugin '{plugin_id}' entry is a PluginRouter, not a NekoPluginBase. "
+                         f"Set type='extension' in plugin.toml to inject it into a host plugin.",
+            })
+            return
+
         instance = cls(ctx)
+
+        # 注入 Extension Router（type="extension" 且 host.plugin_id 匹配的插件）
+        _inject_extensions(instance, plugin_id, config_path, logger, extension_configs=extension_configs)
 
         # 获取 freezable 属性列表和持久化模式
         freezable_keys = getattr(instance, "__freezable__", []) or []
@@ -289,6 +489,16 @@ def _plugin_process_runner(
         entry_map: Dict[str, Any] = {}
         entry_meta_map: Dict[str, Any] = {}  # 存储 EventMeta 用于获取自定义配置（如 timeout）
         events_by_type: Dict[str, Dict[str, Any]] = {}
+
+        def _rebuild_entry_map() -> None:
+            """重建 entry_map（Extension 注入/卸载后调用）。"""
+            collected = instance.collect_entries(wrap_with_hooks=True)
+            entry_map.clear()
+            entry_meta_map.clear()
+            for eid, eh in collected.items():
+                entry_map[eid] = eh.handler
+                entry_meta_map[eid] = eh.meta
+            ctx._entry_map = entry_map
 
         # 优先使用 collect_entries() 获取入口点（支持 Hook 包装）
         if hasattr(instance, "collect_entries") and callable(instance.collect_entries):
@@ -635,6 +845,58 @@ def _plugin_process_runner(
                     # 即使发送失败，也要继续处理下一个命令（防御性编程）
                 continue
 
+            if msg["type"] == "DISABLE_EXTENSION":
+                ext_name = msg.get("ext_name", "")
+                req_id = msg.get("req_id", "unknown")
+                ret_payload = {"req_id": req_id, "success": False, "data": None, "error": None}
+                try:
+                    ok = instance.exclude_router(ext_name)
+                    if ok:
+                        _rebuild_entry_map()
+                        ret_payload["success"] = True
+                        ret_payload["data"] = {"disabled": ext_name}
+                        logger.info("[Extension] Disabled extension '{}' in host '{}'", ext_name, plugin_id)
+                    else:
+                        ret_payload["error"] = f"Extension '{ext_name}' not found in host"
+                except Exception as e:
+                    logger.exception("[Extension] Failed to disable extension '{}'", ext_name)
+                    ret_payload["error"] = str(e)
+                res_queue.put(ret_payload, timeout=10.0)
+                continue
+
+            if msg["type"] == "ENABLE_EXTENSION":
+                ext_id = msg.get("ext_id", "")
+                ext_entry = msg.get("ext_entry", "")
+                prefix = msg.get("prefix", "")
+                req_id = msg.get("req_id", "unknown")
+                ret_payload = {"req_id": req_id, "success": False, "data": None, "error": None}
+                try:
+                    # 检查是否已注入
+                    existing = instance.get_router(ext_id) if hasattr(instance, "get_router") else None
+                    if existing:
+                        ret_payload["error"] = f"Extension '{ext_id}' is already injected"
+                    elif not ext_entry or ":" not in ext_entry:
+                        ret_payload["error"] = f"Invalid ext_entry '{ext_entry}'"
+                    else:
+                        from plugin.sdk.router import PluginRouter as _PR
+                        mod_path, cls_name = ext_entry.split(":", 1)
+                        mod = importlib.import_module(mod_path)
+                        router_cls = getattr(mod, cls_name)
+                        if not (isinstance(router_cls, type) and issubclass(router_cls, _PR)):
+                            ret_payload["error"] = f"'{cls_name}' is not a PluginRouter subclass"
+                        else:
+                            router_inst = router_cls(prefix=prefix, name=ext_id)
+                            instance.include_router(router_inst)
+                            _rebuild_entry_map()
+                            ret_payload["success"] = True
+                            ret_payload["data"] = {"enabled": ext_id}
+                            logger.info("[Extension] Enabled extension '{}' in host '{}'", ext_id, plugin_id)
+                except Exception as e:
+                    logger.exception("[Extension] Failed to enable extension '{}'", ext_id)
+                    ret_payload["error"] = str(e)
+                res_queue.put(ret_payload, timeout=10.0)
+                continue
+
             if msg["type"] == "TRIGGER":
                 entry_id = msg["entry_id"]
                 args = msg["args"]
@@ -952,7 +1214,7 @@ class PluginHost:
     - 进程间通信（通过 PluginCommunicationResourceManager）
     """
 
-    def __init__(self, plugin_id: str, entry_point: str, config_path: Path):
+    def __init__(self, plugin_id: str, entry_point: str, config_path: Path, extension_configs: list | None = None):
         self.plugin_id = plugin_id
         self.entry_point = entry_point
         self.config_path = config_path
@@ -1008,6 +1270,7 @@ class PluginHost:
                 response_queue,
                 self._process_stop_event,
                 plugin_comm_queue,
+                extension_configs,
             ),
             daemon=True,
         )
@@ -1194,7 +1457,13 @@ class PluginHost:
 
     async def push_bus_change(self, *, sub_id: str, bus: str, op: str, delta: Dict[str, Any] | None = None) -> None:
         await self.comm_manager.push_bus_change(sub_id=sub_id, bus=bus, op=op, delta=delta)
-    
+
+    async def send_extension_command(self, msg_type: str, payload: Dict[str, Any], timeout: float = 10.0) -> Any:
+        """向子进程发送 Extension 管理命令（DISABLE_EXTENSION / ENABLE_EXTENSION）。"""
+        req_id = str(uuid.uuid4())
+        cmd = {"type": msg_type, "req_id": req_id, **payload}
+        return await self.comm_manager._send_command_and_wait(req_id, cmd, timeout, f"extension cmd {msg_type}")
+
     def is_alive(self) -> bool:
         """检查进程是否存活"""
         return self.process.is_alive() and self.process.exitcode is None

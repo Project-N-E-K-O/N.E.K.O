@@ -3,12 +3,15 @@
     <template #header>
       <div class="plugin-card-header">
         <div class="plugin-info">
+          <el-tag v-if="plugin.type === 'extension'" size="small" type="primary" effect="plain" class="type-tag">
+            {{ t('plugins.extension') }}
+          </el-tag>
           <h3 class="plugin-name">{{ plugin.name }}</h3>
           <StatusIndicator :status="plugin.status || 'stopped'" />
-          <el-tag v-if="plugin.enabled === false" size="small" type="info">
+          <el-tag v-if="plugin.enabled === false && plugin.type !== 'extension'" size="small" type="info">
             {{ t('plugins.disabled') }}
           </el-tag>
-          <el-tag v-else-if="plugin.autoStart === false" size="small" type="warning">
+          <el-tag v-else-if="plugin.autoStart === false && plugin.type !== 'extension'" size="small" type="warning">
             {{ t('plugins.manualStart') }}
           </el-tag>
         </div>
@@ -30,6 +33,9 @@
           <p class="plugin-description">{{ plugin.description || t('common.noData') }}</p>
           <div class="plugin-meta">
             <el-tag size="small" type="info">v{{ plugin.version }}</el-tag>
+            <span v-if="plugin.type === 'extension' && plugin.host_plugin_id" class="plugin-host">
+              → {{ plugin.host_plugin_id }}
+            </span>
             <span class="plugin-entries">{{ t('plugins.entryPoint') }}: {{ entryCount }}</span>
           </div>
         </div>
@@ -46,7 +52,7 @@ import PluginMetricsInline from '@/components/plugin/PluginMetricsInline.vue'
 import type { PluginMeta } from '@/types/api'
 
 interface Props {
-  plugin: PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean }
+  plugin: PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean; type?: string; host_plugin_id?: string }
   isSelected?: boolean
   showMetrics?: boolean
 }
@@ -130,6 +136,16 @@ const entryCount = computed(() => {
 
 .plugin-entries {
   margin-left: auto;
+}
+
+.plugin-host {
+  color: var(--el-color-primary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.type-tag {
+  flex-shrink: 0;
 }
 
 .plugin-metrics-wrapper {

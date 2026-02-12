@@ -170,12 +170,23 @@ def build_plugin_list() -> List[Dict[str, Any]]:
             plugin_info = plugin_meta.copy()
             plugin_info["entries"] = []
             
-            # 检查插件是否正在运行（使用快照数据，无需再获取锁）
-            # 注意：不调用 host.is_alive()，因为 multiprocessing.Process.is_alive() 可能阻塞事件循环
-            # 直接使用 plugin_id 是否在 running_plugins 中来判断
-            is_running = plugin_id in running_plugins
-            
-            plugin_info["status"] = "running" if is_running else "stopped"
+            # 根据插件类型推导状态
+            plugin_type = plugin_meta.get("type", "plugin")
+            if plugin_type == "extension":
+                # Extension 不是独立进程，状态取决于宿主
+                host_pid = plugin_meta.get("host_plugin_id")
+                runtime_enabled = plugin_meta.get("runtime_enabled", True)
+                if not runtime_enabled:
+                    plugin_info["status"] = "disabled"
+                elif host_pid and host_pid in running_plugins:
+                    plugin_info["status"] = "injected"
+                else:
+                    plugin_info["status"] = "pending"
+            else:
+                # 普通插件：检查是否正在运行
+                # 注意：不调用 host.is_alive()，因为 multiprocessing.Process.is_alive() 可能阻塞事件循环
+                is_running = plugin_id in running_plugins
+                plugin_info["status"] = "running" if is_running else "stopped"
             
             # 处理每个插件的入口点（使用快照数据，无需再获取锁）
             seen = set()  # 用于去重 (event_type, id)

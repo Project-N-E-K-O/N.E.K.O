@@ -27,48 +27,74 @@
           </div>
         </div>
 
-        <div class="filter-bar" @mouseenter="filterVisible = true" @mouseleave="filterVisible = false">
-          <template v-if="filterVisible">
-            <el-input
-              v-model="filterText"
-              clearable
-              class="filter-input"
-              :placeholder="$t('plugins.filterPlaceholder')"
-            />
-            <el-switch
-              v-model="useRegex"
-              class="filter-switch"
-              active-text="Regex"
-              inactive-text="Text"
-            />
-            <el-radio-group v-model="filterMode" size="small" class="filter-mode">
-              <el-radio-button label="whitelist">{{ $t('plugins.filterWhitelist') }}</el-radio-button>
-              <el-radio-button label="blacklist">{{ $t('plugins.filterBlacklist') }}</el-radio-button>
-            </el-radio-group>
-            <span v-if="regexError" class="filter-error">{{ $t('plugins.invalidRegex') }}</span>
-          </template>
-          <template v-else>
-            <span class="filter-placeholder">{{ $t('plugins.hoverToShowFilter') }}</span>
-          </template>
+        <div class="filter-bar" @mouseenter="showFilter" @mouseleave="scheduleHideFilter">
+          <Transition name="filter-fade" mode="out-in">
+            <div v-if="filterVisible" key="controls" class="filter-controls">
+              <el-input
+                v-model="filterText"
+                clearable
+                class="filter-input"
+                :placeholder="$t('plugins.filterPlaceholder')"
+              />
+              <el-switch
+                v-model="useRegex"
+                class="filter-switch"
+                active-text="Regex"
+                inactive-text="Text"
+              />
+              <el-radio-group v-model="filterMode" size="small" class="filter-mode">
+                <el-radio-button label="whitelist">{{ $t('plugins.filterWhitelist') }}</el-radio-button>
+                <el-radio-button label="blacklist">{{ $t('plugins.filterBlacklist') }}</el-radio-button>
+              </el-radio-group>
+              <span v-if="regexError" class="filter-error">{{ $t('plugins.invalidRegex') }}</span>
+            </div>
+            <span v-else key="placeholder" class="filter-placeholder">{{ $t('plugins.hoverToShowFilter') }}</span>
+          </Transition>
         </div>
       </template>
 
       <LoadingSpinner v-if="loading && rawPlugins.length === 0" :loading="true" :text="$t('common.loading')" />
       <EmptyState v-else-if="rawPlugins.length === 0" :description="$t('plugins.noPlugins')" />
       
-      <TransitionGroup v-else name="list" tag="div" class="plugin-grid">
-        <div
-          v-for="plugin in filteredPlugins"
-          :key="plugin.id"
-          class="plugin-item"
-        >
-          <PluginCard
-            :plugin="plugin"
-            :show-metrics="showMetrics"
-            @click="handlePluginClick(plugin.id)"
-          />
+      <template v-else>
+        <!-- 普通插件 -->
+        <div class="section-header">
+          <span class="section-title">{{ $t('plugins.pluginsSection') }} ({{ filteredNormalPlugins.length }})</span>
         </div>
-      </TransitionGroup>
+        <TransitionGroup name="list" tag="div" class="plugin-grid">
+          <div
+            v-for="plugin in filteredNormalPlugins"
+            :key="plugin.id"
+            class="plugin-item"
+          >
+            <PluginCard
+              :plugin="plugin"
+              :show-metrics="showMetrics"
+              @click="handlePluginClick(plugin.id)"
+            />
+          </div>
+        </TransitionGroup>
+
+        <!-- 扩展插件 -->
+        <template v-if="filteredExtensions.length > 0">
+          <div class="section-header section-header--ext">
+            <span class="section-title">{{ $t('plugins.extensionsSection') }} ({{ filteredExtensions.length }})</span>
+          </div>
+          <TransitionGroup name="list" tag="div" class="plugin-grid">
+            <div
+              v-for="ext in filteredExtensions"
+              :key="ext.id"
+              class="plugin-item"
+            >
+              <PluginCard
+                :plugin="ext"
+                :show-metrics="showMetrics"
+                @click="handlePluginClick(ext.id)"
+              />
+            </div>
+          </TransitionGroup>
+        </template>
+      </template>
     </el-card>
   </div>
 </template>
@@ -95,13 +121,31 @@ const { t } = useI18n()
 const reloadingAll = ref(false)
 
 const rawPlugins = computed(() => pluginStore.pluginsWithStatus)
+const rawNormalPlugins = computed(() => pluginStore.normalPlugins)
+const rawExtensions = computed(() => pluginStore.extensions)
 const filterVisible = ref(false)
+let hideTimer: number | null = null
+
+function showFilter() {
+  if (hideTimer) {
+    clearTimeout(hideTimer)
+    hideTimer = null
+  }
+  filterVisible.value = true
+}
+
+function scheduleHideFilter() {
+  if (hideTimer) clearTimeout(hideTimer)
+  hideTimer = window.setTimeout(() => {
+    filterVisible.value = false
+    hideTimer = null
+  }, 1000)
+}
 const filterText = ref('')
 const useRegex = ref(false)
 const filterMode = ref<'whitelist' | 'blacklist'>('whitelist')
 const regexError = ref(false)
-const filteredPlugins = computed(() => {
-  const list = rawPlugins.value || []
+function applyFilter<T extends { id: string; name: string; description: string }>(list: T[]): T[] {
   const text = filterText.value.trim()
   if (!text) {
     regexError.value = false
@@ -112,17 +156,8 @@ const filteredPlugins = computed(() => {
     try {
       const re = new RegExp(text, 'i')
       regexError.value = false
-      const matches = (p: typeof list[number]) => {
-        const id = p.id || ''
-        const name = p.name || ''
-        const desc = p.description || ''
-        return re.test(id) || re.test(name) || re.test(desc)
-      }
-      
-      if (filterMode.value === 'blacklist') {
-        return list.filter((p) => !matches(p))
-      }
-      return list.filter((p) => matches(p))
+      const matches = (p: T) => re.test(p.id || '') || re.test(p.name || '') || re.test(p.description || '')
+      return filterMode.value === 'blacklist' ? list.filter(p => !matches(p)) : list.filter(p => matches(p))
     } catch {
       regexError.value = true
       return list
@@ -131,18 +166,16 @@ const filteredPlugins = computed(() => {
 
   regexError.value = false
   const lower = text.toLowerCase()
-  const match = (p: typeof list[number]) => {
-    const id = (p.id || '').toLowerCase()
-    const name = (p.name || '').toLowerCase()
-    const desc = (p.description || '').toLowerCase()
-    return id.includes(lower) || name.includes(lower) || desc.includes(lower)
+  const match = (p: T) => {
+    return (p.id || '').toLowerCase().includes(lower) ||
+           (p.name || '').toLowerCase().includes(lower) ||
+           (p.description || '').toLowerCase().includes(lower)
   }
+  return filterMode.value === 'blacklist' ? list.filter(p => !match(p)) : list.filter(p => match(p))
+}
 
-  if (filterMode.value === 'blacklist') {
-    return list.filter((p) => !match(p))
-  }
-  return list.filter((p) => match(p))
-})
+const filteredNormalPlugins = computed(() => applyFilter(rawNormalPlugins.value || []))
+const filteredExtensions = computed(() => applyFilter(rawExtensions.value || []))
 const loading = computed(() => pluginStore.loading)
 const showMetrics = ref(false)
 let metricsRefreshTimer: number | null = null
@@ -197,9 +230,9 @@ function handlePluginClick(pluginId: string) {
   router.push(`/plugins/${safeId}`)
 }
 
-// 获取运行中的插件列表
+// 获取运行中的普通插件列表（排除 extension）
 const runningPlugins = computed(() => {
-  return rawPlugins.value.filter(p => p.status === 'running' && p.enabled !== false)
+  return rawNormalPlugins.value.filter(p => p.status === 'running' && p.enabled !== false)
 })
 
 // 全局重载所有运行中的插件（使用后端批量 API）
@@ -257,6 +290,10 @@ onMounted(async () => {
 
 onUnmounted(() => {
   stopMetricsAutoRefresh()
+  if (hideTimer) {
+    clearTimeout(hideTimer)
+    hideTimer = null
+  }
 })
 </script>
 
@@ -270,6 +307,8 @@ onUnmounted(() => {
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
+  min-height: 56px;
+  box-sizing: border-box;
 }
 
 .filter-input {
@@ -291,10 +330,40 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
+.filter-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  width: 100%;
+}
+
 .filter-placeholder {
   color: var(--el-text-color-placeholder);
   font-style: italic;
   font-size: 14px;
+  line-height: 32px;
+}
+
+.filter-fade-enter-active,
+.filter-fade-leave-active {
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.filter-fade-enter-from {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+.filter-fade-leave-to {
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+.filter-fade-enter-to,
+.filter-fade-leave-from {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .plugin-list {
@@ -313,11 +382,25 @@ onUnmounted(() => {
   align-items: center;
 }
 
+.section-header {
+  margin-bottom: 12px;
+}
+
+.section-header--ext {
+  margin-top: 24px;
+}
+
+.section-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
 .plugin-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 16px;
-  align-items: stretch; /* 让所有项目等高 */
+  align-items: stretch;
 }
 
 .plugin-item {
