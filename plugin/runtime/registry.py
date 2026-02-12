@@ -911,6 +911,7 @@ def register_plugin(
         plugin = PluginMeta(
             id=resolved_id,
             name=plugin.name,
+            type=plugin.type,
             description=plugin.description,
             version=plugin.version,
             sdk_version=plugin.sdk_version,
@@ -1486,6 +1487,7 @@ def load_plugins_from_toml(
             plugin_meta = PluginMeta(
                 id=pid,
                 name=pdata.get("name", pid),
+                type=pdata.get("type", "plugin"),
                 description=pdata.get("description", ""),
                 version=pdata.get("version", "0.1.0"),
                 sdk_version=sdk_supported_str or SDK_VERSION,
@@ -1766,6 +1768,7 @@ def load_plugins_from_toml(
         plugin_meta = PluginMeta(
             id=pid,
             name=pdata.get("name", pid),
+            type=pdata.get("type", "plugin"),
             description=pdata.get("description", ""),
             version=pdata.get("version", "0.1.0"),
             sdk_version=sdk_supported_str or SDK_VERSION,

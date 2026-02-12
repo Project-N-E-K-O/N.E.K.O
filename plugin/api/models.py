@@ -86,10 +86,14 @@ class PluginDependency(BaseModel):
         return self
 
 
+PluginType = Literal["plugin", "extension", "script"]
+
+
 class PluginMeta(BaseModel):
     """插件元数据"""
     id: str
     name: str
+    type: PluginType = "plugin"  # 插件类型: plugin(完整插件) | extension(扩展插件) | script(脚本)
     description: str = ""
     version: str = "0.1.0"
     sdk_version: str = SDK_VERSION
