@@ -613,6 +613,7 @@
       "cancel": "Cancel",
       "continue": "Continue Saving"
     },
+    "文本对话模型ModelConfig" : "Text Dialogue Model Configuration",
     "summaryModelConfig": "Summary Model Configuration",
     "correctionModelConfig": "Correction Model Configuration",
     "emotionModelConfig": "Emotion Model Configuration",

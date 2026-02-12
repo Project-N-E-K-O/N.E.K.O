@@ -292,6 +292,45 @@
 
                             <!-- 自定义API折叠容器 -->
                             <div id="custom-api-container" class="custom-api-container" style="display: none;">
+                                
+                                <!-- 文本对话模型模型配置 -->
+                                <div class="model-config-container">
+                                    <div class="model-header" onclick="toggleModelConfig('文本对话模型')">
+                                        <span class="model-title">
+                                            <img src="/static/icons/correction_model_icon.png" data-i18n-alt="api.文本对话模型ModelConfig" class="model-title-icon">
+                                            <span data-i18n="api.文本对话模型ModelConfig">文本对话模型模型配置</span>
+                                        </span>
+                                        <span class="toggle-icon">▼</span>
+                                    </div>
+                                    <div id="文本对话模型-model-content" class="model-content">
+                                        <div class="field-row">
+                                            <label for="文本对话模型ModelProvider" data-i18n="api.provider">供应商</label>
+                                            <input type="text" id="文本对话模型ModelProvider"
+                                                data-i18n-placeholder="api.providerExamplePlaceholder"
+                                                placeholder="e.g., openai, azure, custom" value="" style="max-width: 600px;">
+                                        </div>
+                                        <div class="field-row">
+                                            <label for="文本对话模型ModelUrl" data-i18n="api.apiUrl">API URL</label>
+                                            <input type="text" id="文本对话模型ModelUrl"
+                                                data-i18n-placeholder="api.baseUrlExamplePlaceholder"
+                                                placeholder="e.g., https://api.openai.com/v1" value=""
+                                                style="max-width: 600px;">
+                                        </div>
+                                        <div class="field-row">
+                                            <label for="文本对话模型ModelId" data-i18n="api.modelId">模型ID</label>
+                                            <input type="text" id="文本对话模型ModelId"
+                                                data-i18n-placeholder="api.modelExamplePlaceholder"
+                                                placeholder="e.g., gpt-3.5-turbo, qwen-turbo, glm-4-flash" value=""
+                                                style="max-width: 600px;">
+                                        </div>
+                                        <div class="field-row">
+                                            <label for="文本对话模型ModelApiKey" data-i18n="api.apiKey">API Key</label>
+                                            <input type="text" id="文本对话模型ModelApiKey"
+                                                data-i18n-placeholder="api.文本对话模型ApiKeyPlaceholder"
+                                                placeholder="Enter 文本对话模型 API Key" value="" style="max-width: 600px;">
+                                        </div>
+                                    </div>
+                                </div>
 
                                 <!-- 摘要模型配置 -->
                                 <div class="model-config-container">

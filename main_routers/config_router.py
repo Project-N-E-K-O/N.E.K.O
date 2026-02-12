@@ -336,6 +336,10 @@ async def get_core_config_api():
             "mcpToken": core_cfg.get('mcpToken', ''),  
             "enableCustomApi": core_cfg.get('enableCustomApi', False),  
             # 自定义API相关字段
+            "文本对话模型ModelProvider": core_cfg.get('文本对话模型ModelProvider', ''),
+            "文本对话模型ModelUrl": core_cfg.get('文本对话模型ModelUrl', ''),
+            "文本对话模型ModelId": core_cfg.get('文本对话模型ModelId', ''),
+            "文本对话模型ModelApiKey": core_cfg.get('文本对话模型ModelApiKey', ''),
             "summaryModelProvider": core_cfg.get('summaryModelProvider', ''),
             "summaryModelUrl": core_cfg.get('summaryModelUrl', ''),
             "summaryModelId": core_cfg.get('summaryModelId', ''),
@@ -448,6 +452,15 @@ async def update_core_config(request: Request):
             core_cfg['enableCustomApi'] = data['enableCustomApi']
         
         # 添加用户自定义API配置
+        if '文本对话模型ModelProvider' in data:
+            core_cfg['文本对话模型ModelProvider'] = data['文本对话模型ModelProvider']
+        if '文本对话模型ModelUrl' in data:
+            core_cfg['文本对话模型ModelUrl'] = data['文本对话模型ModelUrl']
+        if '文本对话模型ModelId' in data:
+            core_cfg['文本对话模型ModelId'] = data['文本对话模型ModelId']
+        if '文本对话模型ModelApiKey' in data:
+            core_cfg['文本对话模型ModelApiKey'] = data['文本对话模型ModelApiKey']
+            
         if 'summaryModelProvider' in data:
             core_cfg['summaryModelProvider'] = data['summaryModelProvider']
         if 'summaryModelUrl' in data:

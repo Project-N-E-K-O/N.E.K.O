@@ -835,9 +835,9 @@ class LLMSessionManager:
             return True
 
         # 定义 LLM Session 启动协程
-            async def start_llm_session():
-                """异步创建并连接 LLM Session"""
-                guard_max_length = self._get_text_guard_max_length()
+        async def start_llm_session():
+            """异步创建并连接 LLM Session"""
+            guard_max_length = self._get_text_guard_max_length()
             # 获取初始 prompt
             initial_prompt = (f"你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{self.lanlan_name}），并在对方请求时、回答'我试试'并尝试操纵电脑。" if self._is_agent_enabled() else f"你是一个角色扮演大师。请按要求扮演以下角色（{self.lanlan_name}）。") + self.lanlan_prompt
             
@@ -858,7 +858,9 @@ class LLMSessionManager:
             # 根据input_mode创建不同的session
             if input_mode == 'text':
                 # 文本模式：使用 OmniOfflineClient with OpenAI-compatible API
-                correction_config = self._config_manager.get_model_api_config('correction')
+                # correction_config = self._config_manager.get_model_api_config('correction')
+                correction_config = self._config_manager.get_model_api_config('文本对话模型')
+
                 vision_config = self._config_manager.get_model_api_config('vision')
                 self.session = OmniOfflineClient(
                     base_url=correction_config['base_url'],

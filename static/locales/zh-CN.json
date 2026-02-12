@@ -631,6 +631,7 @@
       "cancel": "取消",
       "continue": "继续保存"
     },
+    "文本对话模型ModelConfig":"文本对话模型配置",
     "summaryModelConfig": "摘要模型配置",
     "correctionModelConfig": "纠错模型配置",
     "emotionModelConfig": "情感模型配置",

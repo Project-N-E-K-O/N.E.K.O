@@ -613,6 +613,7 @@
       "cancel": "キャンセル",
       "continue": "保存して続行"
     },
+    "文本对话模型ModelConfig":"テキスト対話モデル設定",
     "summaryModelConfig": "要約モデル設定",
     "correctionModelConfig": "修正モデル設定",
     "emotionModelConfig": "感情モデル設定",
