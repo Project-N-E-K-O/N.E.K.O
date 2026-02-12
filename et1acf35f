@@ -1,0 +1,562 @@
+[33m1acf35f[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32m分离文本api与纠错api[m[33m, [m[1;31m分离文本api与纠错api/分离文本api与纠错api[m[33m)[m 完成分离文本对话api与纠错api
+[33m303f894[m[33m ([m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;32mmain[m[33m)[m Merge branch 'main' of https://github.com/Project-N-E-K-O/N.E.K.O
+[33ma46bd07[m fix micro volume display issue
+[33m9a2c2d4[m Change layout of microphone setup. Fix it for vrm.
+[33m376a22d[m feat: truncate long text chats and sync rewritten memory (#306)
+[33mda65a82[m feat: 添加扬声器音量控制功能 (#312)
+[33m9b862f6[m 修复屏幕缩放不同对模型位置和UI大小的影响 (#317)
+[33m1577e2d[m Let the expand icon same as back icon (#316)
+[33m3677a96[m Fix voice chat state reset issue after session timeout (#315)
+[33md02062c[m 修复在教程期间请她离开、拖动角色之类的可能造成的问题 (#314)
+[33mf65affb[m feat: Reduce keyword repetition in memory summaries with pronoun substitution (#310)
+[33m9b56f37[m utilize bilibili-api-python library for bilibili scraping (#309)
+[33m799b119[m 加了两个issue模板 (#311)
+[33mbb336ea[m Add a system tray note to the home tutorial and simplify the tray preview (#303)
+[33mdf92e16[m feat: 为初始角色的默认档案内容值和键名提供i18n (#308)
+[33m852f5c3[m feat: add sidebar white panel treatment and prevent button text clipping (#305)
+[33m851b960[m 修复角色管理页面和声音克隆界面可以多开的问题 (#304)
+[33m6017dae[m  Complete ko translation i18n files (#302)
+[33ma50ca60[m fix: Reset VRM scene position to origin and update API key management link
+[33m27470c2[m[33m ([m[1;33mtag: [m[1;33mv0.6.3[m[33m)[m fix: Update emotion model and adjust tutorial steps for clarity
+[33m6bf361e[m fix: Update emotion model and enhance interaction logic. Update tutorials.
+[33m8ce8352[m style: Update CSS for a unified transparent, borderless window design across multiple components
+[33mbd95e27[m fix: Simplify the tutorial & add tutorial reset function (#300)
+[33m1da9ea8[m feat: 添加 OpenAI TTS worker 支持，允许使用 OpenAI 的 TTS API 进行音频合成
+[33m90ad2f5[m feat: 添加本地游戏时长管理功能，支持读取和保存本地时长 (#301)
+[33mfaa6ded[m Merge branch 'main' of https://github.com/Project-N-E-K-O/N.E.K.O
+[33me4a3c84[m feat: Enhance microphone gain control and volume visualization. Fix warmup logic for realtime clients. Fix VRM model setting page switching/loading logic.
+[33ma1f1a15[m feat: 更新主动对话提示词 (#299)
+[33mf11f565[m feat: Complete tutorial system with driver.js & translations for all languages (#297)
+[33ma4b67fa[m 情感映射功能将可以选择多个表情和动作并且触发概率平分 (#296)
+[33m4b3b7d5[m 修复VRM模式的模型不会自动加载的问题 (#295)
+[33mbf39c1e[m feat: 添加模型出界回弹功能，确保模型在拖拽后位置正确 (#294)
+[33m375e2e3[m refactor: comment out web search tool configurations in model definitions
+[33me11b4c6[m feat: enhance shutdown handling in main server and cross server logic
+[33m9516cff[m refactor: adjust mouth openness calculation for improved responsiveness
+[33m35ac178[m feat: 添加聊天框回弹功能，确保在屏幕切换和拖动后位置正确 (#292)
+[33mfbd9e4f[m Slightly ajusted mouth openess.
+[33maa32664[m 为辅助API添加提示并更新i18n (#291)
+[33mbb5b5c3[m fix: 修复鼠标跟踪中Ctrl键状态检测和悬停淡出阈值 (#290)
+[33m102bf31[m 修复情感配置按钮为圆角长方形而非胶囊形显得突兀的问题 (#287)
+[33me2c7012[m 修复了捏脸界面部分UI中文字无法正常显示的问题 (#286)
+[33m8fc95ca[m feat: 增加档案名长度限制和验证，确保用户输入符合要求 (#285)
+[33mca93888[m Merge branch 'main' of https://github.com/Project-N-E-K-O/N.E.K.O
+[33m90db56d[m Revert blank removal and emotion management. Merge consecutive user messages.
+[33maefa0c3[m fix: 修复下拉选项未选择时显示第一个文件名的问题，确保显示“可显示”的选项 (#284)
+[33m140526a[m fix(vrm-interaction): 修复拖拽时按钮拦截事件的问题 (#282)
+[33m069a0e8[m 角色设置页面重复打开多个窗口 (#279)
+[33m8d17451[m feat: 更新语言包和界面提示，增加表情选择的相关提示信息 (#283)
+[33m9cde21e[m fix: resolve Steam achievement timing issues ,resolve character creation and emotion mapping issues (#276)
+[33ma358ec9[m feat: 增强模型重载功能，支持根据角色名称过滤请求并应用用户偏好设置 (#273)
+[33m6551c52[m fullfill the ja i18n (#274)
+[33m7f8a327[m refactor: update persistent expression handling in Live2DManager
+[33mf5b08d6[m emotion control page added (#272)
+[33m0560bcc[m fix: 添加模型选择后更新按钮文字的功能 (#271)
+[33m8c3f669[m feat: enhance mouse tracking for Live2D models using elliptical detection
+[33m96067cf[m feat: add localization for motion selection in multiple languages
+[33mda8fb6b[m feat: enhance GeoIP logging and error handling in region detection
+[33mf6cf884[m feat: enhance region detection and API key management for Gemini
+[33md2c893f[m fix: prevent duplicate window opening on rapid menu clicks (#270)
+[33mbc97be7[m feat: pause model rendering when entering model management interface (#269)
+[33m4fb7acd[m feat: update Gemini model configurations and enhance TTS functionality
+[33m55ebf56[m feat: add glm-4.7-flash model and update proactive chat/vision intervals in settings
+[33m03fd294[m feat：i18n files fixed （especially consoles）& add zh-tw and ja i (#268)
+[33m756bb46[m Fix: 代码格式化和角色切换问题修复 (#267)
+[33m9ce5d52[m feat: Integrate Gemini Live API for real-time audio and text interactions, adding new skills and configuration options.
+[33m02f25ff[m {lanlan_name} 没有被解析为变量值 (#266)
+[33mf349243[m refactor: Modernize frontend architecture with CSS/JS module separation (#265)
+[33m2a4e559[m Fix local tts issue, support cloning.
+[33m6203cdf[m 自定义API状态下也可以不用填写核心API (#263)
+[33mad00924[m docs: 更新 post-work-analysis skill 并新增 3d-interaction skill
+[33m6066b6d[m fix(vrm-interaction): 改进 VRM 模型拖拽和边界检测逻辑
+[33mfacc637[m Update hair(springbone) physic logic. Added skill set.
+[33m9bca982[m feat: reconstruct the VRM  (Squash all changes) (#257)
+[33m8a8d938[m 为模型设置加入删除功能 (#254)
+[33m18ba227[m 修复动作或表情名称过长播放按钮不显示的问题 (#252)
+[33md9cf5c8[m Added Session failure signal to frontend.
+[33mabbe554[m[33m ([m[1;33mtag: [m[1;33mv0.6.2[m[33m)[m Enable custom api for all models.
+[33mfc1c9fe[m fix: prevent empty bars when clicking 'Add Catgirl' multiple times (#249)
+[33m11dadb9[m Improved logic for merge messages.
+[33ma0b19a5[m Async loading workshop items for chara_manager.
+[33m23c7289[m 修复从默认麦克风切换到别的麦克风时可能出现无法使用的问题 (#247)
+[33m05c7c64[m Better cleanup logic to accomodate extreme race condition.
+[33mf086a86[m Merge branch 'main' of https://github.com/Project-N-E-K-O/N.E.K.O
+[33m268c84e[m Improve workshop item handling, and enhance metadata management
+[33m8ada9e6[m Fixed model loading issues with workshop.
+[33mb097db2[m 修复主动搭话无论如何都识别为非中文环境的问题 (#243)
+[33m0c29c81[m fix(拖拽): 禁用弹窗元素的pointer-events避免拖拽冲突 (#244)
+[33m53c015a[m 解决在不确认新猫娘的情况下注册新声音会导致当前没确认的猫娘消失的问题 (#242)
+[33mb2029d8[m feat(live2d): 改进模型吸附逻辑并添加屏幕切换后宽松吸附 (#241)
+[33maf4d4b0[m Fix ES6 grammar and refactor steamworks (progress 60%).
+[33m1abdb50[m fix(live2d): 添加模型加载锁防止并发加载导致重复模型 (#240)
+[33mf482aa8[m 在新建猫娘时添加防重复提交 (#238)
+[33m012e4e3[m fix(交互): 修复拖拽时按钮事件拦截问题 (#233)
+[33m8eff304[m Update docker-related docs.
+[33me046a47[m Add locked hover fade effect to Live2D container (#224)
+[33m59f9f38[m feat: change youtube proactive chat to reddit since youtube api has expired.
+[33ma6828f3[m feat(web_scraper): 添加区域感知的热门内容爬取功能 ，支持根据用户区域自动选择不同的平台获取热门内容 (#222)
+[33mae4f0d8[m Add local cosyvoice (#192)
+[33m4930dcf[m Workshop rework, new character card and upload logic (#221)
+[33me01d7df[m Fix UI sync up issues with global shortcut. Forbid screenshot shortcut during voice chat.
+[33mcd729f5[m feat: window selector for screen share
+[33m1c97d92[m Support shortcut buttons for screenshot, voice mode and sreen share.
+[33m8322e9d[m feat(live2d): 添加参数编辑器模态框并优化窗口关闭逻辑 (#219)
+[33m8f20b20[m feat:add realistic output in frontend. Enable to produce message bubbles in one sentense. (#218)
+[33mea93530[m Fix: Auto-create character when saving Live2D model and prevent model disappearing on character switch (#216)
+[33m4b9852c[m feat(interaction): 添加窗口大小改变时的模型自动吸附功能 (#215)
+[33mc480802[m Better prompts for proactive dialogue (works better with deepseek). Fix proactive dialogue tts issue.
+[33m8593209[m Fix tts issue.
+[33mc56d82e[m[33m ([m[1;33mtag: [m[1;33mv0.6.1[m[33m)[m 修复语音状态下开启主动视觉无法触发主动截图的问题 (#214)
+[33mc140861[m Fix parameter editor navigation: preserve character context when returning to L2D manager (#212)
+[33m6b171ab[m Change interruption logic. Add speech id to ensure proper audio playing interruption.
+[33m6836077[m Improve custom tts logic for lower latency.
+[33m36e3963[m Ensure TTS thread is alive before processing output transcripts in LLMSessionManager. This change adds a check to restart the TTS thread if it is not active, aligning with existing thread management practices.
+[33me36856f[m Add TTS restart lock to LLMSessionManager to prevent concurrent restarts and streamline TTS thread management. Enhance logging and ensure proper cleanup of old handlers during TTS restarts.
+[33m12139cc[m Remove redundant TTS thread checks in LLMSessionManager to streamline the logic for ensuring TTS readiness.
+[33md6caed6[m Enhance logging for session and TTS states in main_server and core logic. Add safety checks and context-specific logs to improve debugging capabilities. Update audio scheduling logic in app.js to ensure smooth playback and prevent silence during initialization.
+[33m80701a4[m Proactive chat exempted from hot swap
+[33mb975fcc[m 解决错误提示异常的问题
+[33md96f29f[m Update prompts and comment.
+[33macb9930[m Fix many critical issues with hot swap and image analysis. Now it's more robust.
+[33m894dccb[m Remove debug_audio.
+[33m77692df[m Improve initialization logic and reduce first audio session loading time for 1s. Fix translation subtitle logic.
+[33m1d6a2ae[m Fixed deps for translate caption. Add audio caching for hot swap.  Merge language detect logic into single endpoint.
+[33m8578829[m Enhance AGC for better VAD.
+[33mccf2f1a[m feat: Add automatic translation for character data and backend messages based on user language (#202)
+[33m3ab3998[m Merge branch 'main' of https://github.com/Project-N-E-K-O/N.E.K.O
+[33m8fde347[m Revert missing html and fix steamwork live2d loading issue (partially done).
+[33mc7c2e97[m 通过角色管理页面进入live2d设置中的参数编辑器左上角按钮为返回l2d设置，但点击却返回了主页面 (#201)
+[33m023c741[m feat: Add Apple Silicon (arm64) build support (#195)
+[33mfd3323a[m Revert api keys and voice manage. Remove deprecated app.js codes.
+[33mffc0e0f[m 添加GitHub Actions工作流，全流程多架构构建Docker镜像。优化Dockerfile 结构，采用变量传入参数。优化启动脚本Nginx的相关配置 (#198)
+[33m044f50d[m 📝 Add docstrings to `main`
+[33mf4e95ac[m feat(多屏幕支持): 添加多显示器位置保存和自动切换功能 (#190) (#194)
+[33m5e85e4d[m Add proactive chat lock and auto audio buffer clear.
+[33m5652835[m Adjust proactive vision to autonomous vision.
+[33m36900b9[m Adjust sys prompt structure. Remove mem tooltip.
+[33m9fc1b8e[m feat: Steam Workshop integration with character card upload, autoscan, and voice clone support (#188)
+[33md7afe30[m[33m ([m[1;33mtag: [m[1;33mv0.6.0[m[33m)[m Better interruption handler.
+[33m933befa[m Merge branch 'main' of https://github.com/Project-N-E-K-O/N.E.K.O
+[33mfd38994[m Better memory processing for proactive chat.
+[33ma96caa9[m 修复语音或屏幕共享按钮状态异常的问题
+[33m01f06e7[m feat: Change build profiles. Change tts multiprocess to multi-thread for enhanced performance.
+[33m126460a[m Fix typos in multiple files.
+[33mb679260[m Merge branch 'main' of https://github.com/Project-N-E-K-O/N.E.K.O
+[33m43a9304[m feat: enhace realtime effectiveness of web scrapers
+[33m3aee4a4[m Add web search function for offline step models.
+[33m045e56b[m Revise prompt and log config.
+[33m3fe8bac[m Added image streaming thorttling setting. Cut off proactive chat when user input.
+[33m2858f58[m Enhance denoise and AGC quality for better VAD. (#184)
+[33mc61c31f[m Increase AGC for better VAD.
+[33mfa8e648[m Enable autoGainControl to couple with RNNoise.
+[33mc684634[m Add semaphore. Add language selection for voice_clone.
+[33mf22ccc6[m Adding timestamp to initial prompt.
+[33m2652ccd[m feat: Enforce 48000khz at frontend.
+[33maf75a89[m feat: Add real-time audio processor with RNNoise noise reduction, AGC, and limiter.
+[33m978e23c[m feat: Enhance frontend hints for voice cloning.
+[33mafb48b1[m Make memory update effective immediately.
+[33mcc9fe80[m feat(系统路由): 添加AI回复内容验证规则 (#181)
+[33mb9b4be5[m 新增语音聊天时如果开启了主动视觉则每十秒共享一次屏幕（1帧画面） (#179)
+[33md6ae81b[m feat(主动对话):基于标题搜索的主动对话功能 & 将热门内容改为首页推荐并更新相关逻辑 (#176)
+[33m24e6c6f[m Remove soundfile dependency and refactor audio processing to utilize OGG OPUS streaming with WASM OGG decoder.
+[33m37b77fe[m Revert response_optimizer. Change cv3 output to ogg opus.
+[33m1e04137[m feat(交互): 在拖拽模型时临时禁用按钮事件拦截 (#175)
+[33m8466c66[m Update extra body handling in system router.
+[33m4790a01[m 解决了自定义API设置视觉模型后模型选择错误的问题 (#174)
+[33mc640291[m Refactor main_server. Adjust build profiles.  (#173)
+[33mc122403[m Support custom API. Screenshot utils unified usage. (#171)
+[33m1026d27[m QOL. Default vision api and better mic mute detection.
+[33m128a1c5[m Added repetition detection and notification. (#170)
+[33m59cbea2[m Add custom plugin subsystem with UI (plugin server, registry, runtime state) (#161)
+[33mc4b0f9b[m fix: 在加载新模型和刷新页面时关闭设置窗口 (#165)
+[33m26b27c1[m 添加可以根据屏幕内容主动搭话的功能 (#160)
+[33m1e39453[m Added noise reduce funcionality with RNNoise. (#168)
+[33m7c45ff4[m 修复免费版本 UI 显示和保存后状态显示错误 (#159)
+[33mc62cc6e[m fix: prevent click-through in advanced settings and improve UX (#158)
+[33mbbe06b6[m Merge pull request #157 from Project-N-E-K-O/WUHINS-patch-1
+[33me4d66c4[m Update entrypoint.sh
+[33m68ed3cc[m 展示文档的docker部署部分更新
+[33m5893e59[m nginx反向代理适配
+[33m06f7176[m 新增反代端口映射
+[33m0f6a263[m Dockerfile添加nginx安装流程
+[33m38a18d5[m Merge branch 'main' into WUHINS-patch-1
+[33m70853bb[m[33m ([m[1;33mtag: [m[1;33m0.5.5[m[33m)[m Enhance Live2D parameter handling and update reset logic
+[33mfd2a4d8[m Merge pull request #155 from Project-N-E-K-O/l2d-motion-patch
+[33m599fbd6[m Refactor live2d interaction logic and enhance model loading process
+[33mdbbf1bb[m Added more i18n config. Fixed parameter-motion interaction logic. Improve agent menu synchronization logic.
+[33mcb7f7e4[m Fixed i18n for agent.
+[33m2bfad33[m Merge pull request #152 from Project-N-E-K-O/live2d-refactor
+[33mb2d2bac[m fix(agent_server): 在 `_spawn_task` 中支持 `processor` 协程调度，修复 `/plan` 路径崩溃  在 `agent_server.py` 中为 `processor` 类型创建运行时条目并使用 `asyncio.create_task` 执行 `Modules.processor.process`，更新任务状态并尝试通知主服务；保留 `computer_use` 的子进程调度逻辑，避免 `/plan` 在 MCP 可执行路径抛出 500 错误
+[33m96819ce[m feat(agent): Implement notification system and enhance capability checks
+[33mefcef3e[m feat: Enhance floating button management and improve locking mechanism
+[33m3ac82bc[m fix: Refine locking mechanism and update lock icon handling
+[33m3729894[m fix: Reset floating button states and improve locking mechanism
+[33m949757a[m feat: Enhance microphone handling and improve UI interaction
+[33ma365fd7[m fix: Improve expression handling and enhance HUD position logic
+[33m3b1e145[m refactor: Clean up floating button setup and improve HUD position handling
+[33m8933407[m fix: Improve expression handling and update popup IDs for consistency
+[33m548f09a[m feat(agent): 实现弹窗状态机并优化Agent控制逻辑 (#153)
+[33m1c64a50[m Merge: resolve conflict in live2d_parameter_editor.html
+[33m0eafff4[m Refactor live2d-ui into modules.
+[33m2e69915[m feat: 添加用户偏好设置加载功能以增强模型个性化 (#151)
+[33ma8de19e[m 参数自定义界面点左上角退出的时候会重新打开一个主页，而不是回到原来的主页 (#150)
+[33m5284698[m Enhance Live2D interaction by adding event listeners to prevent pointer events from propagating to the window, ensuring smoother user experience with floating buttons and popups.
+[33mdd617d6[m Fix: Update Live2D canvas visibility handling to ensure proper event detection in Electron.
+[33ma5f54c8[m Update core_model version for Qwen-Omni API provider in api_providers.json
+[33m5c166e1[m Merge branch 'main' of https://github.com/Project-N-E-K-O/N.E.K.O
+[33mf204ad6[m Update z-index values in live2d-ui.js to ensure UI elements float above Live2D models
+[33m0fb58f8[m 修复了模型设置页中切换角色不点保存也会保存的问题，并添加了未保存提示 (#146)
+[33m2efb555[m Enhance UI with breathing animation effects for return button and minimized chat container. Update styles for improved user interaction and visual feedback.
+[33ma74330b[m Add custom prefix note in localization files for better user guidance.
+[33m267d413[m Merge branch 'main' of https://github.com/Project-N-E-K-O/N.E.K.O
+[33m3e9373f[m Update server host configuration to use localhost (127.0.0.1). Adjust Live2D interaction logic to manage floating button visibility based on lock state and enhance UI translations for Steam Workshop.
+[33m234328b[m fix: 修复Live2D参数重置逻辑错误 (#143)
+[33m25cb88a[m Fix: Immediately close all popups to prevent mouse event blocking and clear associated timers in app.js
+[33m3a3dc0d[m Better icons in main UI.
+[33m2f842e4[m 修复自定义API模式下模型ID不保存与不显示填写内容的问题；修复模型设置页UI问题 (#142)
+[33mef251ee[m Fix: Add error handling for motionManager.update and coreModel.update overrides (#140)
+[33m0b8d8d1[m feat(交互): 添加模型位置和缩放的自动保存功能 (#139)
+[33mdb8c863[m Update WebSocket URLs for improved security and add response completion handling in TTS workers. (#138)
+[33mf276092[m 为主人档案和猫娘档案的属性添加滚动条，方便阅读和修改 (#137)
+[33m880c95f[m Liangfix: Fix Live2D model disappearing immediately after loading (#136)
+[33medd6a78[m Add i18n support for parameter editor and improve persistent expression handling (#132)
+[33md9196a5[m Merge branch 'main' into WUHINS-patch-1
+[33m7bc1a26[m Enhance mouse tracking to focus on the model only when the mouse is near.
+[33maefebda[m Immprove audio context management in app.js, and refine UI initialization for agent toggles.
+[33mcda4b88[m Update README.MD
+[33meaae3f7[m docker部署方法文档更新
+[33m6dca875[m Add periodic synchronization of flags state with the backend, improving polling logic based on agent popup status
+[33m7c52537[m Add API endpoints to retrieve and synchronize agent flags state; update error handling in audio context management and improve logging for API failures.
+[33mc055f0c[m[33m ([m[1;33mtag: [m[1;33mv0.5.4[m[33m)[m Refactor Live2DManager to enhance mouth parameter handling and improve emotion mapping persistence.
+[33mc043b25[m Enhance achievement handling with retry logic and add API for listing achievements; update Steamworks method signatures for argument types.
+[33m486061e[m Enhance achievement status handling and update workshop EULA links
+[33m7d173e3[m Merge branch 'main' of https://github.com/Project-N-E-K-O/N.E.K.O
+[33ma0daafb[m Updated system prompt.
+[33m14ff3fa[m Update steam achievements and workshop EULA (#128)
+[33m8a698e4[m feat(OmniRealtimeClient): Add status message handling for image analysis errors; update LLMSessionManager to support status messages
+[33m0d89678[m Merge branch 'main' of https://github.com/Project-N-E-K-O/N.E.K.O
+[33m97ab184[m Updated i18n for api key page.  Updated temperature for offline models.
+[33m91aed96[m feat(会话管理): 添加系统准备状态通知机制 (#127)
+[33me307ff2[m fix(agent): 修复频繁切换Agent开关导致的竞态问题
+[33mcb02d96[m feat(LLMSessionManager): 支持角色切换时的音色热更新 (#123)
+[33m869bf89[m 上传模型时将动作文件中关于口型的部分都设置为空值
+[33m06972b7[m [Critical] Updated default temperature for qwen 3 and now it works perfectly.
+[33mfc0746d[m Optimize MCP client caching and error handling; reduce tool cache TTL to 3/1 secs.
+[33m5a58d03[m Skip lipsync params when setting up expressions.
+[33mfc9b8ce[m Throttle mcp server polling error logs.
+[33m2a0197a[m Implement analyzer enable/disable functionality in agent server.
+[33mc4db374[m Update vision model handling in OmniOfflineClient to switch permanently for sessions with image data.
+[33m4d3a363[m [!!Critical!!] Refactor synchronization mechanism to use threads instead of processes for better performance and resource management. Update related logging and cleanup procedures to accommodate threading behavior.
+[33m84d9dff[m Enhance workshop path handling in downgrade mode by adding checks for existence and directory status. Improve error logging for mounting failures. Update retry messages across multiple modules to specify network errors.
+[33m231fe58[m Refactor error handling in LLM calls to include APIConnectionError and InternalServerError across multiple modules.
+[33m728716a[m Enable retry for every llm calls. Mute logging for subprocesses.
+[33m2fd0347[m Change hint text of default config path from N.E.K.O. to N.E.K.O
+[33m2667269[m Change workshop utils deps to comply with dev standard.
+[33mdd7329f[m docker编排镜像拉取标签更新
+[33m3397d84[m Updated i18n and minor fixes for steam. (#117)
+[33m8649c9c[m Merge branch 'main' of https://github.com/Project-N-E-K-O/N.E.K.O
+[33m5870f97[m Fixed current neko renaming issues.
+[33m4f348f6[m Merge steam i18n to main (#114)
+[33m628b057[m fix: Prevent text chat interruption when switching other characters' voice (#110)
+[33mcc1fcb6[m Update docker-compose.yml，更新docker编排 (#112)
+[33md3be789[m Update Dockerfile，提交了docker编译的文件
+[33mf0b3903[m Revert quote symbols.
+[33mf9fe600[m Update entrypoint.sh，以健全docker容器启动 (#109)
+[33mc962222[m Change all sync http requests to async version.
+[33ma2c8567[m feat(ui): 为任务HUD添加拖拽和折叠功能 (#106)
+[33m756c9b7[m Reorganize directory structure. Update multiprocessing deduplication logic.
+[33m63ea047[m Added launcher and specs so that anyone can build their own executable server. https://github.com/Project-N-E-K-O/N.E.K.O/issues/105#issue-3677022933
+[33m0081b39[m Include steamwork libs. Change directory resolving logic.
+[33m6e5cef0[m Fixed a rare failure of agent serevr where display is not available.
+[33mcb7d371[m Fixed a process reinitialization issue. Updated requirements.txt.
+[33m7ef1647[m Fixed steam import issue to support linux platform.
+[33m1743804[m Merge branch 'steam'
+[33mc11d62a[m Resolve agent-s relevant issues mentioned by Prof. Rabbit.
+[33mce56c91[m Changed UI theme. Fluent Design!
+[33ma8b720b[m Merge branch 'main' of https://github.com/Project-N-E-K-O/N.E.K.O
+[33m728a515[m Simplify agent workflow and enable more agent service providers.
+[33ma5b4e8c[m 确保i18n文件完全遵循了正确的模板变量格式，使用“{{}}”而不是“{}”
+[33ma8a9cd3[m Fixed Workshop page style, ui logic, remove hard coded dir etc. (#101)
+[33mc269a6c[m 使用分层null/undefined检查代替try-catch
+[33mc37217c[m 如果未找到初始参数记录严重错误并直接返回不记录错误的基线
+[33m496b111[m 解决注释和实际行为不符的问题
+[33m6779bdd[m 优化Live2D情绪系统和日志输出
+[33mf799692[m 修复构建时的python依赖文件的复制路径
+[33me2e90cc[m Auto-initialize memory server for new characters and enable real-time chat recording (#99)
+[33m5ff84ce[m Resolve racing conditions of agent status and switchers.
+[33mc83e194[m 修复Agent开关项多次触发bug (#97)
+[33m998f4de[m Support i18n with steam setting
+[33m959bbf5[m Update monitor.py.
+[33m5bb1fad[m refactor(Live2DManager): 移除自动保存功能并修复复位位置逻辑 (#98)
+[33macce2ed[m Allow absolute path and saved path.
+[33mcad80c3[m Allow preview image selection, change steam logo.
+[33m90f0450[m Update default workshop path.
+[33m004100a[m Change default l2d params back to previous defaults.
+[33m8cf3d5a[m  fix: Live2D 模型管理器进行了改进，重点在于用户偏好设置的持久化以及更佳的默认模型屏幕位置 (#95)
+[33m7b6d785[m 当修改猫娘名称时猫娘记忆名称也一同修改 (#94)
+[33m701b907[m Update steam branch to latest main. (#93)
+[33mf951553[m Adjusted to accomodate PR.
+[33m001a82b[m Improved logic for agent menu and agent frontend status.
+[33m8cb8e60[m Enhanced support for agent mode. LICENSE file added. Agent status window added. Better log for agent mode.
+[33mfbc07ad[m Remove agent-s deps. Improve agent polling logic.
+[33ma118ef2[m Merge branch 'main' of https://github.com/Project-N-E-K-O/N.E.K.O
+[33m1e7c43f[m Update some of the namespace from N.E.K.O. to safer project-neko.
+[33mc6b6936[m Upgrade LangChain to 1.0: Simplify dependencies and improve performance (#68)
+[33m2208ea9[m feat: Close all popup windows before page navigation (#92)
+[33m6a18584[m fix(交互): 修复按钮拖动与点击的冲突问题并优化返回按钮定位 (#88)
+[33mdab9738[m Remove inflect and librosa deps. Use soxr instead.
+[33m65e7548[m Update live2d-ui.js to sync up with main
+[33m1d24a8c[m Merge branch 'main' into steam
+[33mf246a2c[m[33m ([m[1;33mtag: [m[1;33mv0.5.3[m[33m)[m Split live2d script. Improve live2d pointer event logic.
+[33m3138255[m Steamworks sdk added (#89)
+[33me16a62f[m Fixed l2d double loading issue.
+[33mdf68cd3[m Fixed proactive/focusmode flages saving issue.
+[33me0d14db[m Added lock for popup windows.
+[33m3c0ad9a[m Fixed memory browser i18n and l2d manager reloading.
+[33m833c387[m fix: Improve microphone button state management and prevent duplicate clicks
+[33mca3f724[m fix(i18n): Update proactive chat text for consistency in English and Chinese locales; enhance loading logic for various templates to address Electron white screen issues. Fix l2d mirrowing issues.
+[33m293afd3[m Fix i18n issues for fullscreen switcher. Enhanced popup windows logics (tuned for electron). Avoid l2d shadow.
+[33mb3eb015[m 解决API设置页配置可能读取错误的问题 (#83)
+[33m1943336[m fix(voice-clone): Fix timeout retry logic and improve error handling
+[33m76ed17d[m fix focusCheckbox proactiveChatCheckbox style
+[33mc0e5332[m fix(api-settings): Improve API Key settings page loading logic and error handling (#79)
+[33m51866b1[m fix live2d import default position
+[33m749aba4[m fix: sync focusModeEnabled when returning from l2d page
+[33m21ed986[m Fix i18n params issue with incorrect { and }
+[33m6175cac[m feat(API配置): 为自定义API添加模型ID配置项 (#77)
+[33mad8e785[m UI Improve chat dialog button styling with custom icons and color scheme (#76)
+[33m73582e3[m Support docker deployment. Updated README.
+[33m314948a[m Fixed i18n functionality and optimized notification messages (#72)
+[33m14a49ab[m style: update input style in voice_clone.html (#73)
+[33m688e4a7[m Fix UI state synchronization issues when leaving and returning session (#67)
+[33m45ecd06[m 回调部分对index.html的更改修复bug
+[33m27bec67[m Complete i18next internationalization and optimize code structure (#62)
+[33mc1c3591[m 为live2d模型设置页添加全屏按钮 (#64)
+[33mbcd11ed[m Updated README
+[33meef3670[m Merge branch 'main' of https://github.com/Project-N-E-K-O/N.E.K.O
+[33m583277d[m Updated README and titles.
+[33m7fd4305[m 将聊天框最小化背景回调为透明
+[33m100ba90[m Consolidate API configuration logic into utils to eliminate potential circular imports.
+[33m31206e8[m Migrate API providers and default models from hardcoded to JSON config (#58)
+[33mb1881d6[m Fix mobile chatbox layout (#57)
+[33maba56c2[m Fix mobile menu layout
+[33m7ae2e7e[m Fixed path solving issues with monitor and viewer.
+[33m52f761f[m Revert webpage titles.
+[33me753c6b[m feat(ui): 统一按钮图标样式并优化交互体验
+[33med181e6[m 为角色设置页添加保存与取消按钮的显示逻辑使有修改后才显示 (#52)
+[33m663e9f0[m feat(交互): 新增"请她回来"功能并优化界面状态管理
+[33mb254d9a[m 确保 lanlan_config.lanlan_name 更新到 chara_manager.html 当前选中的猫娘
+[33m1633e3c[m Merge branch 'main' of github.com:wehos/Xiao8
+[33m006b026[m Updated README, webpage title. Removed template variables.
+[33m028a00a[m feat: Auto-delete memory files when deleting catgirl character
+[33m9d1d9c7[m update
+[33m875d52c[m 解决了克隆并设置声音后无法切换为不使用克隆声音的问题
+[33mba2dac0[m fix: Restore sub-toggle auto-disable when master toggle is off
+[33m52bd992[m feat: Enhance Agent menu UI and add real-time availability checking
+[33m459b0a0[m In rare cases, my documents may be locked. Add backup.
+[33m9a7a9f2[m Fixed a recent dialogue dropping issue with audio dialog. Fix proactive dialogue switcher. Fix voice id unregistration.
+[33mfb5bd67[m Improved api key setting UI. Fixed serious bug with hot swap prompt.
+[33mf0eab49[m refactor(模板): 移除自定义API配置中的工具提示说明
+[33mfeab757[m feat(api): 添加自定义API配置功能
+[33mfe35be8[m Update monitor to accomodate 0.5.1 change.
+[33m3465c73[m Added prefill mechanism, which may have profound impact. We will monitor the impact.
+[33mb45e143[m Updated README.
+[33mfe30ebd[m Reloading when api and voice id changed. Enhanced error logging.
+[33m3768d7a[m Fixed logger logic. fixed api key hot swap.
+[33mc03c46d[m Added window.lanlan_name to fix voice id register issue,
+[33md5d403b[m[33m ([m[1;33mtag: [m[1;33mv0.5.2[m[33m)[m Auto enabling new voice id.
+[33m37a1855[m 1. Fixed menu y calc issues. 2. Reload preference whenever l2d may have been changed. 3. Default l2d guaranteed to be loaded when l2d not set. 4. Auto-binding voice id.
+[33m41d6d80[m Added guard for cleanup. Added l2d preference reloading mechanism.
+[33m9f56430[m Merge pull request #39 from Tonnodoubt/Liang
+[33m8db2871[m L2d manager page with auto fullscreen.
+[33m996e9dd[m Forbid webpage zooming.
+[33m63d1556[m Fixed pointer event issue with buttons.
+[33maf61b9e[m fix: Fix else if syntax error in WebSocket message handler
+[33m69a7a4d[m Add config/api_template.py
+[33mcb8664f[m Merge remote-tracking branch 'origin/Liang' into Liang - Resolve conflict in static/app.js
+[33m42813b9[m feat: Implement WebSocket-based real-time catgirl switching and prevent duplicate settings windows
+[33m95d3d93[m Disable textbox auto-relocation. TTS model revert to cosyvoice2. Change app name back to Xiao8.
+[33mbb53a4f[m Merge pull request #37 from Tonnodoubt/Liang
+[33m292c51e[m Fix Live2D model switching issue by supporting user document directory lookup
+[33m4f12462[m Improve return logic of l2d manager page. Change config path.
+[33m4b3f2ef[m Remove alert, confirmation and prompts. Suppress certain info log. Remove full screen option from l2dmanager.
+[33m597b336[m Updated README and cosyvoice-3.
+[33m699b93e[m Merge pull request #36 from wehos/pr-35
+[33meafea0d[m Revert xiaoba png.
+[33mf496a17[m Update icon type
+[33m0af41b7[m Revert memory delete function.
+[33m22d7cbb[m Revert icon path change
+[33mfc2df8f[m feat: 娣诲姞璁板繂娴忚鐣岄潰鍒犻櫎鐚鑱婂ぉ璁板綍鍔熻兘
+[33m918df97[m 鎭㈠ api_template.py 妯℃澘鏂囦欢
+[33mba7487b[m 浼樺寲UI锛氭洿鏂板脊绐楁牱寮忋€乫avicon鍜屽浘鏍囷紝绉婚櫎闃村奖鏁堟灉
+[33md3347cb[m Update icon and logo.
+[33m5b9566b[m Merge pull request #34 from nantxcel/fixing-voice-id
+[33mfc2a2b9[m Delete api_template - 副本.py
+[33me67519a[m 修复voice id, 修改中继服务器
+[33mab2d9d1[m Merge pull request #33 from wehos/0.5.1
+[33m54cf33f[m Merge pull request #32 from CN-QanYi/QanYi
+[33me79e1ac[m Merge pull request #31 from Chiya-mt/main
+[33mdfc9780[m Merge pull request #30 from Tonnodoubt/Liang
+[33m5bd8aba[m Merge branch 'wehos:main' into Liang
+[33mf19a987[m feat(live2d): 添加Live2D模型验证和回退机制
+[33m6c54215[m Update main_server.py - remove uvicorn import
+[33m9523ce3[m 解决了模型设置页面的模型与主页面模型叠加的问题
+[33m312710d[m Add uvicorn import to main_server.py
+[33mffff51a[m Initial commit for QanYi branch
+[33m0903e5e[m 鏇存柊鏍稿績妯″潡鍜屽疄鏃跺鎴风锛屾坊鍔爐oast鑳屾櫙鍥炬爣
+[33m6da8bd8[m 浼樺寲瀵硅瘽妗嗘斁澶х缉灏忓浘鏍囷細绉婚櫎娣辫摑鑹茶儗鏅拰杈规锛岃皟鏁村浘鏍囧ぇ灏忎负24px
+[33me4c14a4[m 娣诲姞鐘舵€佹皵娉℃鍔熻兘鍜岃蹇嗗闃呰嚜鍔ㄩ€夋嫨鍔熻兘
+[33mf7c9024[m Merge pull request #29 from Tonnodoubt/Liang
+[33m49176b0[m Attempt to fix mic permission issue.
+[33mf3f7dd3[m fix: restore dropdown auto-expand feature after saving catgirl settings
+[33m8ac8438[m fix: resolve WebSocket auto-reconnect conflict, simplify Live2D model loading logic, and fix setInterval memory leak
+[33mb926110[m feat: align settings menu items - unify padding and icon sizes for cleaner UI
+[33m377f645[m feat: improve settings menu UI - center align options, add checkmark for selected state, add background color for selected items, improve vertical alignment
+[33md06c723[m feat: implement catgirl switch auto-update and dropdown auto-expand features
+[33ma66ad9c[m Updated api key settings. Change data storage.
+[33m3f7d3b0[m Complete PR #27 and remove deprecated launcher.
+[33mfd385fc[m Continue to revert PR #27.
+[33m056c303[m Revert PR #27: Remove deprecated sidebar and agent-panel code
+[33mdf8c51a[m Merge PR #27: UI improvements with icon system
+[33m441bb07[m[33m ([m[1;33mtag: [m[1;33mv0.5.1[m[33m)[m Merge pull request #28 from wehos/main
+[33mffc2a5f[m 0.5.1 release. Fixed minor issues with proactive and focus mode.
+[33m9248886[m Fixed minor issues for l2d management. Ready for 0.5.1 release.
+[33m8cb6774[m Update README.
+[33ma3edaca[m UI improvements: Add icon system and enhance user interface
+[33ma4708a4[m Fixed logic for "let her leave".
+[33me34f1e3[m Updated to latest mcp router. Reorganize config manager. Updated UI logic for text frame and mic button.
+[33m051c5a9[m Merge pull request #26 from Tonnodoubt/main
+[33m47163fd[m Update main_server.py to comply with the latest standards.
+[33m8ae4036[m Merge pull request #22 from jihu33/main
+[33m34904a3[m 修复了音色克隆的结果无法储存导致下次打开时需要重新克隆的问题
+[33maec5101[m 将音色克隆的结果储存并提供给角色音色设置中的下拉菜单
+[33m45c5fc8[m fix: resolve config issue in development mode
+[33m3c9db25[m ui 2.0
+[33m98535a3[m UI v1.5.
+[33mc1b0eb6[m[33m ([m[1;31morigin/archived/original-ui[m[33m)[m Fix issues brought by monitor server.
+[33m308db49[m 1. Fixed one issue with hot swap. 2. Support vision mode with free&Step api. 3. Autofolding dialogue window.
+[33m1a470b8[m 1. Support monitor, mobile&computer sync up. 2. Support screenshot in text input mode. 3. UI improvement for mobile phone, drag to resize live2d. 4. Added icon for the webpage.
+[33m0ee4ee1[m Updated README.
+[33mac222b8[m[33m ([m[1;33mtag: [m[1;33mv0.5.0[m[33m)[m Updated README.
+[33mf6973c1[m Ready for 0.5.0 release. Fixed minor issue with live2d expression reset and api hints.
+[33m81854eb[m Merge pull request #20 from Chiya-mt/main
+[33me9d1211[m 解决了API设置的识别问题
+[33m548dc3e[m Added free model. Memory server now run in fully async mode.
+[33m8b30120[m Improve agent server communication. Enforce hot refreshment of apis.
+[33me97917c[m Fixed issue with emo analysis and session initialization.
+[33mbbcd6ec[m Minor UI improvement.
+[33md16b4c8[m Enhanced logic when switching between voice and text mode.
+[33m8bf3392[m Enable log files. Move logs&memory&config to My Documents. QoL updates for frontend error presentation.
+[33mcb1c0ff[m Now user audio transcript will also be pushed to frontend.
+[33m95cc58c[m Fixed default audio name for qwen. Support GLM audio
+[33m93848a6[m Better audio processing for step audio. Fixed a bug in recent memory manager.
+[33mdfddda1[m Support step api text input. Better interruption handler logic.
+[33mf7d4d2b[m Added support for mcp token in api page; added text input mode; fixed inconsistent "start chatting" button style; updated temp file server
+[33ma0bcfbe[m Change system prompt to accomodate persona of qwen3.
+[33m611073e[m Post 0.4.1 hot fix: critical problems with initial prompt.
+[33m18b6b2e[m[33m ([m[1;33mtag: [m[1;33mv0.4.1[m[33m)[m Updated README. Ready for v0.4.1 release.
+[33ma3fc2b3[m MCP client fully supported.
+[33m610cba0[m Updated qwen model to qwen3-omni.
+[33m5bfea95[m Added native microphone selection support. Remove redundant setting (e.g., sys/l2d/voice) from setting manager.
+[33ma88a3fc[m Merge pull request #18 from xiaoniao427/patch-1
+[33mf881738[m Update README.MD
+[33macc2aa1[m Fix GPT-Realtime with customized vocie.
+[33m7516a9d[m Added support for Step models.
+[33m1c656ec[m Added test.py to gitignore. Remove test.py (and revoked leaked api key FYI).
+[33ma33187e[m Support gpt-realtime!
+[33m09d3dae[m Hot fix: allowing mp3 and m4a to be uploaded. Updated logic for main entrance.
+[33ma788187[m[33m ([m[1;33mtag: [m[1;33mv0.4.0[m[33m)[m v0.4.0 ready. README.md updated.
+[33m8b41553[m Update according to https://github.com/wehos/Xiao8/issues/16#issue-3349556555
+[33md87ad73[m Added frontend task browser for agent service. Added new tts model support but failed.
+[33m7eda714[m Updated requirements to enable pip installation.
+[33mbff1c87[m Added new main entrance based on rust.
+[33m2dd1761[m Fixed minor issues in l2d persistent group display and prompt management.
+[33m6155a78[m Update README.
+[33m231dcc3[m Changed agent mode description in UI.
+[33mad14015[m Agent server and brain module implemented. Computer Use enabled.
+[33m2ef9011[m[33m ([m[1;31morigin/archived/non-agent[m[33m)[m Updated system prompt and lip sync logic.
+[33m707f1f5[m Update README.MD
+[33mde857c0[m Persistent expression support added.
+[33m95eeb0c[m Post 0.3.2 hot fix. Now l2d can be dragged in manage page.
+[33mbe1877a[m[33m ([m[1;33mtag: [m[1;33mv0.3.2[m[33m)[m Fixed minor issue with l2d expression profile. All set for v0.3.2.
+[33mba7ecff[m Fixed minor issues with l2d saving. Prepare for v0.3.2 release.
+[33m8c3a7ab[m Merge branch 'main' of github.com:wehos/Xiao8
+[33m850ba0a[m Added frontend messages for common errors.
+[33m08a1530[m Resolve a bug where master property cannot be the same name as catgirl property.
+[33m18b6417[m Update README.MD
+[33mb5d2bd1[m Added drag&zoom support for live2d models with a switcher icon. Added l2d auto-focus when cursor is near l2d.
+[33m0f8a362[m Merge pull request #13 from Chiya-mt/main
+[33mb132a38[m Add files via upload
+[33m4977381[m Update README.MD
+[33mc36d6dc[m Merge pull request #12 from wehos/wehos-patch-1
+[33mad7acac[m Update README.MD
+[33ma9bc5f9[m Update README.MD
+[33m17af01d[m Update README.MD
+[33mceaf60d[m Update README.MD
+[33m68810b4[m Support emotion management with l2d motions/expressions customization.
+[33m4c2fe70[m Added randomness for playing l2d motions.
+[33m7548815[m Remove unnecessary docs.
+[33m7f7e3e8[m Merge branch 'main' of github.com:wehos/Xiao8
+[33mb792b06[m Added emotion analysis, expressions and motions support. Applied live2d.js to chara manager page.
+[33mce73d2d[m Merge pull request #10 from Chiya-mt/main
+[33m9b58c3b[m Add files via upload
+[33mbd20879[m Quick patch for resolving path issues on some windows environments.
+[33m56b11d8[m[33m ([m[1;33mtag: [m[1;33mv0.3.1[m[33m)[m Updated hints for api key format, accommodating GLM.
+[33m0b7cb96[m Update README.MD
+[33md4af83a[m Popping sound issue resolved. Added hint for perma-free glm models.
+[33m1f092f0[m (Continued) Increased computation budget for larger Live2d model. Last commit had minor issues.
+[33me54de1a[m Increased computation budget for larger Live2d model.
+[33m4a14afe[m Merge branch 'main' of github.com:wehos/Xiao8
+[33me9777e1[m Post v0.3.0 bug fix: voice id setup after changing core api.
+[33m8fb2819[m Update README.MD
+[33m31006ee[m Update README.MD
+[33m47d898a[m V0.3.0 Release. Increased memory review frequency. Fixed minor issues.
+[33m458ba8d[m[33m ([m[1;33mtag: [m[1;33mv0.3.0[m[33m)[m Patched for compatibility with v0.2.1. Pre-release for v0.3.0
+[33m9a29aa2[m Added ui instructions for memory browser.
+[33m01edbe5[m Added voice_id removal. Revised memory review functions. Improved memory browser display.
+[33m3758401[m Added recent memory review function.
+[33mfbdf8fd[m Enhanced solutions for mimetypes/fastapi env errors.
+[33mb83c3f9[m Added API switcher. Users can now choose from Qwen, OpenAI and GLM.
+[33madf43d4[m Added memory browser for memory correction.
+[33mf5164eb[m Added focus mode support (uninterruptible mode).
+[33md45132e[m Merge pull request #6 from lanzilan827/main
+[33m01f8953[m fix bugs and organize the static folder
+[33meedf960[m Merge pull request #5 from lanzilan827/main
+[33me765ce9[m Fix: bug with Catgirl button and character profile display.
+[33m19350d9[m Rollback "take a break" in app.js. Now take a break can properly work without reconnections.
+[33mb92f091[m Fixed summary issues when summary parsed as dict instead of str.
+[33m87806b8[m - Fixed async lock. Fixed disconnected by server logic, reconnnection now properly works.
+[33m0816fd9[m Post PR reformat. ui and live2d separated to new js files. Reset position of l2d libs.
+[33mba667ac[m Merge pull request #4 from a2942/patch-1
+[33m62c70bb[m Merge pull request #3 from lanzilan827/main
+[33mb3ff0af[m 添加自动收缩于 a2942.js
+[33m8c6262e[m 添加自动收缩于 index.html
+[33m47addab[m Hide 'Add Catgirl' button from UI
+[33m6feab50[m Update README.MD for developers.
+[33m58015db[m Updated instructions for developers.
+[33mce89290[m[33m ([m[1;33mtag: [m[1;33mv0.2.1[m[33m)[m v0.2.1 version. Added frontend for API key support.
+[33m9d8a2bc[m Post v0.2.0 hot fix: character manager does not overwrite voice and l2d.
+[33m2fbd75b[m Updated UI. Final version before release 0.2.0.
+[33m2859419[m[33m ([m[1;33mtag: [m[1;33mv0.2.0[m[33m)[m Added setting frontend. Prepare for v0.2.0 release.
+[33m53bd853[m Added a new protocol at /l2d for live2d model customization.
+[33md3adb27[m Updated README.
+[33m24cf9ba[m Updated README.
+[33m99b4b62[m Added English Version for readme.
+[33ma078bc7[m Remove api.py to avoid accidents. Developers should now manually copy api_template.py to api.py.
+[33m5761137[m Include api.py in .gitignore. Revoke api key. (Why the hell it was not in gitignore?)
+[33md1f308a[m Fixed many bugs.
+[33m559fcac[m Update README.MD
+[33m22332bf[m Update README.MD
+[33m64f2367[m Merge pull request #1 from lanzilan827/main
+[33m6fc4d5b[m Updated logic for micButton and screenButton. Renamed static js dirs.
+[33m249d661[m 移除 WeTextProcessing，更新核心代码和文档
+[33mf8a9d0b[m 从版本控制中移除 memory/store/ 并添加到 .gitignore
+[33m8666994[m 从版本控制中移除 core_config.txt，但保留本地文件
+[33m0c4917b[m update index.html
+[33m93f25e8[m update .gitignore
+[33mb2a4d28[m 删除 asset 文件夹
+[33me20c1d9[m use local live2D scripts
+[33m43d3c3d[m rename 'asset' folder to 'assets' and update README
+[33m739ff86[m chore: add .gitignore and ignore core_config.txt
+[33m00431d4[m[33m ([m[1;33mtag: [m[1;33mv0.1.0[m[33m)[m Initial commit.
+[33m42b4de5[m Initial commit

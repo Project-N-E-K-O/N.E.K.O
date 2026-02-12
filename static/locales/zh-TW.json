@@ -602,6 +602,7 @@
     "providerExamplePlaceholder": "如：openai、azure、custom",
     "baseUrlExamplePlaceholder": "如：https://api.openai.com/v1",
     "modelExamplePlaceholder": "如：gpt-3.5-turbo、qwen-turbo、glm-4-flash",
+    "文本对话模型ApiKeyPlaceholder": "請輸入文本對話模型的API Key",
     "summaryApiKeyPlaceholder": "請輸入摘要模型的API Key",
     "correctionApiKeyPlaceholder": "請輸入糾錯模型的API Key",
     "emotionApiKeyPlaceholder": "請輸入情感模型的API Key",
@@ -626,6 +627,7 @@
       "cancel": "取消",
       "continue": "繼續保存"
     },
+    "文本对话模型ModelConfig":"文本對話模型配置",
     "summaryModelConfig": "摘要模型配置",
     "correctionModelConfig": "糾錯模型配置",
     "emotionModelConfig": "情感模型配置",

@@ -349,6 +349,11 @@ async function loadCurrentApiKey() {
             setInputValue('assistApiKeyInputGemini', data.assistApiKeyGemini, assistApiKeyPlaceholder);
 
             // 加载用户自定义API配置
+            setInputValue('文本对话模型ModelProvider', data.文本对话模型ModelProvider);
+            setInputValue('文本对话模型ModelUrl', data.文本对话模型ModelUrl);
+            setInputValue('文本对话模型ModelId', data.文本对话模型ModelId);
+            setInputValue('文本对话模型ModelApiKey', data.文本对话模型ModelApiKey);
+
             setInputValue('summaryModelProvider', data.summaryModelProvider);
             setInputValue('summaryModelUrl', data.summaryModelUrl);
             setInputValue('summaryModelId', data.summaryModelId);
@@ -561,6 +566,11 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
     const assistApiKeyGemini = document.getElementById('assistApiKeyInputGemini') ? document.getElementById('assistApiKeyInputGemini').value.trim() : '';
 
     // 获取用户自定义API配置
+    const 文本对话模型ModelProvider = document.getElementById('文本对话模型ModelProvider') ? document.getElementById('文本对话模型ModelProvider').value.trim() : '';
+    const 文本对话模型ModelUrl = document.getElementById('文本对话模型ModelUrl') ? document.getElementById('文本对话模型ModelUrl').value.trim() : '';
+    const 文本对话模型ModelId = document.getElementById('文本对话模型ModelId') ? document.getElementById('文本对话模型ModelId').value.trim() : '';
+    const 文本对话模型ModelApiKey = document.getElementById('文本对话模型ModelApiKey') ? document.getElementById('文本对话模型ModelApiKey').value.trim() : '';
+
     const summaryModelProvider = document.getElementById('summaryModelProvider') ? document.getElementById('summaryModelProvider').value.trim() : '';
     const summaryModelUrl = document.getElementById('summaryModelUrl') ? document.getElementById('summaryModelUrl').value.trim() : '';
     const summaryModelId = document.getElementById('summaryModelId') ? document.getElementById('summaryModelId').value.trim() : '';
@@ -609,6 +619,7 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
         pendingApiKey = {
             apiKey: apiKeyForSave, coreApi, assistApi,
             assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini,
+            文本对话模型ModelProvider, 文本对话模型ModelUrl, 文本对话模型ModelId, 文本对话模型ModelApiKey,
             summaryModelProvider, summaryModelUrl, summaryModelId, summaryModelApiKey,
             correctionModelProvider, correctionModelUrl, correctionModelId, correctionModelApiKey,
             emotionModelProvider, emotionModelUrl, emotionModelId, emotionModelApiKey,
@@ -623,6 +634,7 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
         await saveApiKey({
             apiKey: apiKeyForSave, coreApi, assistApi,
             assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini,
+            文本对话模型ModelProvider, 文本对话模型ModelUrl, 文本对话模型ModelId, 文本对话模型ModelApiKey,
             summaryModelProvider, summaryModelUrl, summaryModelId, summaryModelApiKey,
             correctionModelProvider, correctionModelUrl, correctionModelId, correctionModelApiKey,
             emotionModelProvider, emotionModelUrl, emotionModelId, emotionModelApiKey,
@@ -634,7 +646,7 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
     }
 });
 
-async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini, summaryModelProvider, summaryModelUrl, summaryModelId, summaryModelApiKey, correctionModelProvider, correctionModelUrl, correctionModelId, correctionModelApiKey, emotionModelProvider, emotionModelUrl, emotionModelId, emotionModelApiKey, visionModelProvider, visionModelUrl, visionModelId, visionModelApiKey, omniModelProvider, omniModelUrl, omniModelId, omniModelApiKey, ttsModelProvider, ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId, mcpToken, enableCustomApi }) {
+async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini, 文本对话模型ModelProvider, 文本对话模型ModelUrl, 文本对话模型ModelId, 文本对话模型ModelApiKey, summaryModelProvider, summaryModelUrl, summaryModelId, summaryModelApiKey, correctionModelProvider, correctionModelUrl, correctionModelId, correctionModelApiKey, emotionModelProvider, emotionModelUrl, emotionModelId, emotionModelApiKey, visionModelProvider, visionModelUrl, visionModelId, visionModelApiKey, omniModelProvider, omniModelUrl, omniModelId, omniModelApiKey, ttsModelProvider, ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId, mcpToken, enableCustomApi }) {
     // 统一处理免费版 API Key 的保存值：如果核心或辅助 API 为 free，则保存值应为 'free-access'
     if (coreApi === 'free' || assistApi === 'free') {
         // 无论用户在 UI 中看到的是翻译文本或空值，保存时都使用 'free-access'
@@ -663,6 +675,10 @@ async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assist
                 assistApiKeyStep: assistApiKeyStep || undefined,
                 assistApiKeySilicon: assistApiKeySilicon || undefined,
                 assistApiKeyGemini: assistApiKeyGemini || undefined,
+                文本对话模型ModelProvider: 文本对话模型ModelProvider || undefined,
+                文本对话模型ModelUrl: 文本对话模型ModelUrl || undefined,
+                文本对话模型ModelId: 文本对话模型ModelId || undefined,
+                文本对话模型ModelApiKey: 文本对话模型ModelApiKey || undefined,
                 summaryModelProvider: summaryModelProvider || undefined,
                 summaryModelUrl: summaryModelUrl || undefined,
                 summaryModelId: summaryModelId || undefined,
@@ -1104,7 +1120,7 @@ function toggleModelConfig(modelType) {
 // 页面加载完成后初始化折叠状态
 document.addEventListener('DOMContentLoaded', function () {
     // 初始化所有模型配置为折叠状态
-    const modelTypes = ['summary', 'correction', 'emotion', 'vision', 'omni', 'tts'];
+    const modelTypes = ["文本对话模型",'summary', 'correction', 'emotion', 'vision', 'omni', 'tts'];
     modelTypes.forEach(modelType => {
         const content = document.getElementById(`${modelType}-model-content`);
         if (content) {
