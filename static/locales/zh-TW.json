@@ -456,6 +456,7 @@
   "microphone": {
     "noDevices": "沒有檢測到麥剋風設備",
     "defaultDevice": "係統默認麥剋風",
+    "deviceTitle": "選擇麥克風裝置",
     "deviceLabel": "麥剋風 {{index}}",
     "loadFailed": "獲取麥剋風列錶失敗",
     "switched": "已切換麥剋風 (下一次錄音生效)",
@@ -464,7 +465,7 @@
     "accessFailed": "無法訪問麥剋風",
     "gainLabel": "麥剋風增益",
     "gainHint": "0dB為原始音量，正值放大、負值減小",
-    "volumeLabel": "輸入音量",
+    "volumeLabel": "即時麥克風音量",
     "volumeIdle": "未錄音",
     "volumeNoSound": "無聲音",
     "volumeLow": "音量偏低",

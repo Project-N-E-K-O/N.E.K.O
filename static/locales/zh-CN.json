@@ -457,6 +457,7 @@
   "microphone": {
     "noDevices": "没有检测到麦克风设备",
     "defaultDevice": "系统默认麦克风",
+    "deviceTitle": "选择麦克风设备",
     "deviceLabel": "麦克风 {{index}}",
     "loadFailed": "获取麦克风列表失败",
     "switched": "已切换麦克风 (下一次录音生效)",
@@ -465,7 +466,7 @@
     "accessFailed": "无法访问麦克风",
     "gainLabel": "麦克风增益",
     "gainHint": "0dB为原始音量，正值放大、负值减小",
-    "volumeLabel": "输入音量",
+    "volumeLabel": "实时麦克风音量",
     "volumeIdle": "未录音",
     "volumeNoSound": "无声音",
     "volumeLow": "音量偏低",

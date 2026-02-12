@@ -500,6 +500,7 @@
   "microphone": {
     "noDevices": "마이크 장치가 감지되지 않았습니다.",
     "defaultDevice": "시스템 기본 마이크",
+    "deviceTitle": "마이크 선택",
     "deviceLabel": "마이크 {{index}}",
     "loadFailed": "마이크 목록을 로드하지 못했습니다.",
     "switched": "마이크 전환됨(다음 녹음에 적용됨)",
@@ -508,7 +509,7 @@
     "accessFailed": "마이크에 액세스할 수 없습니다.",
     "gainLabel": "마이크 게인",
     "gainHint": "0dB는 원래 볼륨, 양수 증폭, 음수 감소",
-    "volumeLabel": "입력 볼륨",
+    "volumeLabel": "실시간 마이크 볼륨",
     "volumeIdle": "녹화하지 않음",
     "volumeNoSound": "소리 없음",
     "volumeLow": "낮은 볼륨",

@@ -439,6 +439,7 @@
   "microphone": {
     "noDevices": "No microphone devices detected",
     "defaultDevice": "System Default Microphone",
+    "deviceTitle": "Select Microphone",
     "deviceLabel": "Microphone {{index}}",
     "loadFailed": "Failed to load microphone list",
     "switched": "Microphone switched (will take effect on next recording)",
@@ -447,7 +448,7 @@
     "accessFailed": "Cannot access microphone",
     "gainLabel": "Microphone Gain",
     "gainHint": "0dB is original volume, positive amplifies, negative reduces",
-    "volumeLabel": "Input Volume",
+    "volumeLabel": "Live Mic Volume",
     "volumeIdle": "Not Recording",
     "volumeNoSound": "No Sound",
     "volumeLow": "Low Volume",

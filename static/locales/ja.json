@@ -439,6 +439,7 @@
   "microphone": {
     "noDevices": "マイクデバイスが検出されません",
     "defaultDevice": "システムデフォルトマイク",
+    "deviceTitle": "マイクを選択",
     "deviceLabel": "マイク {{index}}",
     "loadFailed": "マイクリストの読み込みに失敗しました",
     "switched": "マイクを切り替えました（次回の録音から有効になります）",
@@ -447,7 +448,7 @@
     "accessFailed": "マイクにアクセスできません",
     "gainLabel": "マイクゲイン",
     "gainHint": "0dBが元の音量、正の値で増幅、負の値で減衰",
-    "volumeLabel": "入力音量",
+    "volumeLabel": "リアルタイムマイク音量",
     "volumeIdle": "録音していません",
     "volumeNoSound": "音声なし",
     "volumeLow": "音量が低い",
