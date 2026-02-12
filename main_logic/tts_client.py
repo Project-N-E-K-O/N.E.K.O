@@ -219,7 +219,7 @@ def step_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                 await asyncio.wait_for(response_done.wait(), timeout=20.0)
                                 logger.debug("音频生成完成，主动关闭连接")
                             except asyncio.TimeoutError:
-                                logger.warning("等待响应完成超时（30秒），强制关闭连接")
+                                logger.warning("等待响应完成超时（20秒），强制关闭连接")
                             
                             # 主动关闭连接，避免连接一直保持到超时
                             if ws:
@@ -529,7 +529,7 @@ def qwen_realtime_tts_worker(request_queue, response_queue, audio_api_key, voice
                                 await asyncio.wait_for(response_done.wait(), timeout=20.0)
                                 logger.debug("音频生成完成，主动关闭连接")
                             except asyncio.TimeoutError:
-                                logger.warning("等待响应完成超时（30秒），强制关闭连接")
+                                logger.warning("等待响应完成超时（20秒），强制关闭连接")
                             
                             # 主动关闭连接，避免连接一直保持到超时
                             if ws:
@@ -702,14 +702,14 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
         def on_open(self): 
             # 连接已建立，发送就绪信号
             elapsed = time.time() - self.construct_start_time if hasattr(self, 'construct_start_time') else -1
-            print(f"TTS 连接已建立!! (构造到open耗时: {elapsed:.2f}s)")
+            logger.debug(f"TTS 连接已建立 (构造到open耗时: {elapsed:.2f}s)")
             
         def on_complete(self): 
             pass
                 
         def on_error(self, message: str): 
             if "request timeout after 23 seconds" not in message:
-                print(f"TTS Error: {message}")
+                logger.error(f"TTS Error: {message}")
             
         def on_close(self): 
             pass
@@ -749,11 +749,11 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                         pass
                     synthesizer = None   
             current_speech_id = None
+            continue  # 终止信号处理完毕，继续等待下一个请求
 
         if current_speech_id is None:
             current_speech_id = sid
-
-        if current_speech_id != sid:
+        elif current_speech_id != sid:
             if synthesizer is not None:
                 try:
                     synthesizer.close()
@@ -778,7 +778,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 )
                 synthesizer.streaming_call("。")
             except Exception as e:
-                print("TTS Init Error: ", e)
+                logger.error(f"TTS Init Error: {e}")
                 synthesizer = None
                 current_speech_id = None
                 time.sleep(0.1)
@@ -809,7 +809,7 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                 )
                 synthesizer.streaming_call(tts_text)
             except Exception as reconnect_error:
-                print(f"TTS Reconnect Error: {reconnect_error}")
+                logger.error(f"TTS Reconnect Error: {reconnect_error}")
                 synthesizer = None
                 current_speech_id = None
 
@@ -1202,6 +1202,260 @@ def openai_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
         logger.error(f"OpenAI TTS Worker启动失败: {e}")
 
 
+def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
+    """GPT-SoVITS TTS Worker - 使用 v3 WebSocket stream-input 双工模式
+    
+    Args:
+        request_queue: 多进程请求队列，接收 (speech_id, text) 元组
+        response_queue: 多进程响应队列，发送音频数据（也用于发送就绪信号）
+        audio_api_key: API密钥（未使用，保持接口一致）
+        voice_id: v3 声音配置ID，格式为 "voice_id" 或 "voice_id|高级参数JSON"
+                  例如: "my_voice" 或 "my_voice|{\"speed\":1.2,\"text_lang\":\"all_zh\"}"
+    
+    配置项（通过 TTS_MODEL_URL 设置）:
+        base_url: GPT-SoVITS API 地址，如 "http://127.0.0.1:9881"
+                  会自动转换为 ws:// 协议用于 WebSocket 连接
+    """
+    _ = audio_api_key  # 未使用，但保持接口一致
+
+    # 获取配置
+    cm = get_config_manager()
+    tts_config = cm.get_model_api_config('tts_custom')
+    base_url = (tts_config.get('base_url') or 'http://127.0.0.1:9881').rstrip('/')
+
+    # 转换为 WS URL
+    if base_url.startswith('http://'):
+        ws_base = 'ws://' + base_url[7:]
+    elif base_url.startswith('https://'):
+        ws_base = 'wss://' + base_url[8:]
+    elif base_url.startswith('ws://') or base_url.startswith('wss://'):
+        ws_base = base_url
+    else:
+        ws_base = 'ws://' + base_url
+
+    WS_URL = f'{ws_base}/api/v3/tts/stream-input'
+
+    # 解析 voice_id：支持 "voice_id" 或 "voice_id|{JSON高级参数}" 格式
+    extra_params = {}
+    raw_voice = voice_id.strip() if voice_id else ""
+    if '|' in raw_voice:
+        parts = raw_voice.split('|', 1)
+        v3_voice_id = parts[0].strip() or "_default"
+        try:
+            extra_params = json.loads(parts[1])
+            if not isinstance(extra_params, dict):
+                logger.warning(f"[GPT-SoVITS v3] 高级参数不是对象，已忽略: {type(extra_params).__name__}")
+                extra_params = {}
+        except (json.JSONDecodeError, IndexError, TypeError, ValueError) as e:
+            logger.warning(f"[GPT-SoVITS v3] voice_id 高级参数解析失败，忽略: {e}")
+            extra_params = {}
+    else:
+        v3_voice_id = raw_voice or "_default"
+
+    # 预加载 websockets State（兼容不同版本）
+    try:
+        from websockets.connection import State as _WsState
+    except (ImportError, AttributeError):
+        _WsState = None
+
+    def _ws_is_open(ws_conn):
+        """检查 WS 连接是否仍然打开（兼容 websockets v14+/v16）"""
+        if ws_conn is None:
+            return False
+        if _WsState is not None:
+            return getattr(ws_conn, 'state', None) is _WsState.OPEN
+        # fallback: 旧版 websockets
+        return not getattr(ws_conn, 'closed', True)
+
+    def _extract_pcm_from_wav(wav_bytes: bytes) -> tuple:
+        """从 WAV chunk 中提取 PCM 数据和采样率"""
+        if len(wav_bytes) < 44:
+            return None, 0
+        src_rate = int.from_bytes(wav_bytes[24:28], 'little')
+        pcm_data = wav_bytes[44:]
+        if len(pcm_data) < 2:
+            return None, 0
+        # 确保偶数长度
+        if len(pcm_data) % 2 != 0:
+            pcm_data = pcm_data[:-1]
+        return pcm_data, src_rate
+
+    async def async_worker():
+        """异步 TTS worker 主循环 - WebSocket 双工模式"""
+        ws = None
+        receive_task = None
+        current_speech_id = None
+        resampler = None
+
+        async def receive_loop(ws_conn):
+            """独立接收协程：处理 WS 返回的音频 chunk 和 JSON 消息"""
+            nonlocal resampler
+            try:
+                async for message in ws_conn:
+                    if isinstance(message, bytes):
+                        # 每个 binary frame 是完整 WAV chunk（含 header）
+                        pcm_data, src_rate = _extract_pcm_from_wav(message)
+                        if pcm_data is not None and len(pcm_data) > 0:
+                            audio_array = np.frombuffer(pcm_data, dtype=np.int16)
+                            if src_rate != 48000:
+                                if resampler is None:
+                                    resampler = soxr.ResampleStream(src_rate, 48000, 1, dtype='float32')
+                                resampled_bytes = _resample_audio(audio_array, src_rate, 48000, resampler)
+                            else:
+                                resampled_bytes = audio_array.tobytes()
+                            response_queue.put(resampled_bytes)
+                    else:
+                        # JSON 消息（日志用）
+                        try:
+                            msg = json.loads(message)
+                            msg_type = msg.get('type', '')
+                            if msg_type == 'sentence':
+                                logger.debug(f"[GPT-SoVITS v3] 合成: {msg.get('text', '')[:30]}...")
+                            elif msg_type == 'sentence_done':
+                                logger.debug(f"[GPT-SoVITS v3] 句完成 (task={msg.get('task_id')}, chunks={msg.get('chunks_sent', '?')})")
+                            elif msg_type == 'done':
+                                logger.debug("[GPT-SoVITS v3] 会话完成")
+                            elif msg_type == 'error':
+                                logger.error(f"[GPT-SoVITS v3] 服务端错误: {msg.get('message', '')}")
+                            elif msg_type == 'flushed':
+                                logger.debug("[GPT-SoVITS v3] flush 完成")
+                        except json.JSONDecodeError:
+                            pass
+            except websockets.exceptions.ConnectionClosed:
+                logger.debug("[GPT-SoVITS v3] WS 连接已关闭")
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.error(f"[GPT-SoVITS v3] 接收循环异常: {e}")
+
+        async def close_session(ws_conn, recv_task, send_end=True):
+            """关闭当前 WS 会话"""
+            nonlocal resampler
+            if send_end and _ws_is_open(ws_conn):
+                try:
+                    await ws_conn.send(json.dumps({"cmd": "end"}))
+                    # 等待 done 消息（最多 30 秒，让推理完成）
+                    await asyncio.wait_for(recv_task, timeout=30.0)
+                except (asyncio.TimeoutError, Exception):
+                    pass
+            if recv_task and not recv_task.done():
+                recv_task.cancel()
+                try:
+                    await recv_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            if _ws_is_open(ws_conn):
+                try:
+                    await ws_conn.close()
+                except Exception:
+                    pass
+            resampler = None
+
+        async def create_connection():
+            """创建新的 WS 连接并发送 init"""
+            nonlocal ws, receive_task, resampler
+            resampler = None
+
+            logger.debug(f"[GPT-SoVITS v3] 连接: {WS_URL}")
+            ws = await websockets.connect(WS_URL, ping_interval=None, max_size=10 * 1024 * 1024)
+
+            # 发送 init 指令（合并高级参数，过滤保留字段防止覆盖）
+            safe_params = {k: v for k, v in extra_params.items() if k not in ("cmd", "voice_id")}
+            init_msg = {"cmd": "init", "voice_id": v3_voice_id, **safe_params}
+            await ws.send(json.dumps(init_msg))
+
+            # 等待 ready 响应
+            ready_msg = await asyncio.wait_for(ws.recv(), timeout=10.0)
+            ready_data = json.loads(ready_msg)
+            if ready_data.get('type') != 'ready':
+                raise RuntimeError(f"init 失败: {ready_data}")
+
+            logger.debug(f"[GPT-SoVITS v3] 会话就绪 (voice={v3_voice_id})")
+
+            # 启动接收协程
+            receive_task = asyncio.create_task(receive_loop(ws))
+            return ws
+
+        # ─── 初始连接验证 ───
+        try:
+            await create_connection()
+            logger.info(f"[GPT-SoVITS v3] TTS 已就绪 (WS 双工模式): {WS_URL}")
+            logger.info(f"  voice_id: {v3_voice_id}")
+            response_queue.put(("__ready__", True))
+        except Exception as e:
+            logger.error(f"[GPT-SoVITS v3] 初始连接失败: {e}")
+            logger.error("请确保 GPT-SoVITS 服务已运行且端口正确")
+            response_queue.put(("__ready__", False))
+            return
+
+        # ─── 主循环 ───
+        try:
+            loop = asyncio.get_running_loop()
+
+            while True:
+                try:
+                    sid, tts_text = await loop.run_in_executor(None, request_queue.get)
+                except Exception:
+                    break
+
+                # speech_id 变化 → 打断旧会话，创建新连接
+                # 打断时不发 end（避免等待推理完成），直接关闭连接
+                if sid != current_speech_id and sid is not None:
+                    if _ws_is_open(ws):
+                        await close_session(ws, receive_task, send_end=False)
+                        ws = None
+                        receive_task = None
+                    current_speech_id = sid
+                    for _retry in range(3):
+                        try:
+                            await create_connection()
+                            break
+                        except Exception as e:
+                            logger.warning(f"[GPT-SoVITS v3] 连接失败 (retry {_retry+1}/3): {e}")
+                            ws = None
+                            if _retry < 2:
+                                await asyncio.sleep(0.5 * (2 ** _retry))
+                    else:
+                        logger.error("[GPT-SoVITS v3] 连接重试耗尽，跳过当前文本")
+                        continue
+
+                if sid is None:
+                    # 终止信号：发送 end 关闭会话（v3 end 会自动 flush 剩余文本）
+                    if _ws_is_open(ws):
+                        await close_session(ws, receive_task, send_end=True)
+                        ws = None
+                        receive_task = None
+                    current_speech_id = None
+                    continue
+
+                if not tts_text or not tts_text.strip():
+                    continue
+
+                # 用 append 累积碎片文本，v3 TextBuffer 自动按标点切句推理
+                if _ws_is_open(ws):
+                    try:
+                        await ws.send(json.dumps({"cmd": "append", "data": tts_text}))
+                        logger.debug(f"[GPT-SoVITS v3] append: {tts_text[:30]}...")
+                    except Exception as e:
+                        logger.error(f"[GPT-SoVITS v3] 发送失败: {e}")
+                        ws = None
+                        receive_task = None
+                        current_speech_id = None
+
+        except Exception as e:
+            logger.error(f"[GPT-SoVITS v3] Worker 错误: {e}")
+        finally:
+            # 清理
+            if _ws_is_open(ws):
+                await close_session(ws, receive_task, send_end=False)
+
+    # 运行异步 worker
+    try:
+        asyncio.run(async_worker())
+    except Exception as e:
+        logger.error(f"[GPT-SoVITS v3] Worker 启动失败: {e}")
+
+
 def dummy_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """
     空的TTS worker（用于不支持TTS的core_api）
@@ -1247,6 +1501,11 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False):
         tts_config = cm.get_model_api_config('tts_custom')
         # 只有当 is_custom=True（即 ENABLE_CUSTOM_API=true 且用户明确配置了自定义 TTS）时才使用本地 worker
         if tts_config.get('is_custom'):
+            base_url = tts_config.get('base_url') or ''
+            # GPT-SoVITS v3：配置 http/https URL，worker 内部自动转为 ws:// 连接
+            # local_cosyvoice：配置 ws:// URL，直接使用 WebSocket
+            if base_url.startswith('http://') or base_url.startswith('https://'):
+                return gptsovits_tts_worker
             return local_cosyvoice_worker
     except Exception as e:
         logger.warning(f'TTS调度器检查报告:{e}')

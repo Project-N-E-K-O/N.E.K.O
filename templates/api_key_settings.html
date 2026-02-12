@@ -535,6 +535,64 @@
                                         </div>
                                     </div>
                                 </div>
+
+                                <!-- GPT-SoVITS 配置 -->
+                                <div class="model-config-container">
+                                    <div class="model-header" onclick="toggleModelConfig('gptsovits')">
+                                        <span class="model-title">
+                                            <img src="/static/icons/tts_model_icon.png" data-i18n-alt="api.gptsovitsConfig" class="model-title-icon">
+                                            <span data-i18n="api.gptsovitsConfig">GPT-SoVITS 配置</span>
+                                        </span>
+                                        <span class="toggle-icon">▼</span>
+                                    </div>
+                                    <div id="gptsovits-model-content" class="model-content">
+                                        <!-- 启用开关 -->
+                                        <div class="field-row" style="display: flex; flex-direction: row; align-items: center; justify-content: space-between;">
+                                            <label for="gptsovitsEnabled" style="margin-bottom: 0;">
+                                                <span data-i18n="api.gptsovitsEnabled">启用 GPT-SoVITS</span>
+                                                <em style="font-weight: normal; color: #888;" data-i18n="api.gptsovitsEnabledHint">（启用后将替代上方的 TTS 配置）</em>
+                                            </label>
+                                            <label class="switch" style="margin-left: 16px;">
+                                                <input type="checkbox" id="gptsovitsEnabled" onchange="toggleGptSovitsConfig()">
+                                                <span class="slider round"></span>
+                                            </label>
+                                        </div>
+                                        <div id="gptsovits-config-fields" style="display: none;">
+                                        <div style="background: #fff8e6; border: 1px solid #ffe0b3; border-radius: 6px; padding: 12px; margin: 12px 16px; font-size: 0.85em; color: #996600; line-height: 1.5;">
+                                            <strong data-i18n="api.gptsovitsDescription">GPT-SoVITS 说明：</strong><br>
+                                            <span data-i18n="api.gptsovitsDescriptionText">本地部署的语音克隆模型，需要先启动 GPT-SoVITS v3 API 服务。声音配置（参考音频、模型权重等）在 v3 的 voices/*.toml 文件中管理，此处只需填写声音配置 ID。</span>
+                                        </div>
+                                        
+                                        <!-- API 配置 -->
+                                        <div class="field-row">
+                                            <label for="gptsovitsApiUrl">
+                                                <span data-i18n="api.apiUrl">API URL</span>
+                                                <em style="font-weight: normal; color: #888;" data-i18n="api.gptsovitsApiUrlOptional">（选填，默认 http://127.0.0.1:9881）</em>
+                                            </label>
+                                            <input type="text" id="gptsovitsApiUrl"
+                                                data-i18n-placeholder="api.gptsovitsApiUrlPlaceholder"
+                                                placeholder="http://127.0.0.1:9881"
+                                                value="http://127.0.0.1:9881" style="max-width: 600px;">
+                                        </div>
+
+                                        <div class="field-row">
+                                            <label for="gptsovitsVoiceId">
+                                                <span data-i18n="api.gptsovitsVoiceId">声音配置</span>
+                                                <em style="font-weight: normal; color: #888;" data-i18n="api.gptsovitsVoiceIdHint">（从 GPT-SoVITS v3 获取可用配置）</em>
+                                            </label>
+                                            <div style="display: flex; gap: 8px; align-items: center; max-width: 600px;">
+                                                <select id="gptsovitsVoiceId" style="flex: 1; padding: 10px 12px; border-radius: 6px; border: 1px solid #ccc;">
+                                                    <option value="" data-i18n="api.gptsovitsVoiceIdEmpty">-- 请先获取语音列表 --</option>
+                                                </select>
+                                                <button type="button" onclick="fetchGptSovitsVoices()" 
+                                                    style="padding: 10px 16px; border-radius: 6px; border: 1px solid #ccc; background: #f5f5f5; cursor: pointer; white-space: nowrap;"
+                                                    data-i18n="api.gptsovitsRefreshVoices">获取列表</button>
+                                            </div>
+                                        </div>
+
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -564,7 +622,7 @@
         </div> <!-- 关闭 container -->
         </div> <!-- 关闭 main-content -->
 
-    <script src="/static/js/api_key_settings.js"></script>
+    <script src="/static/js/api_key_settings.js?v=5"></script>
 
     <!-- Driver.js 库 -->
     <script src="/static/libs/driver.min.js"></script>

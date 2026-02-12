@@ -4053,13 +4053,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                     persistentList.innerHTML = '';
                     persistentExpressions.forEach(file => {
                         const item = document.createElement('div');
-                        item.style.cssText = 'padding: 4px 8px; margin: 2px 0; background: #f0f0f0; border-radius: 4px; font-size: 12px; display: flex; justify-content: space-between; align-items: center;';
+                        item.className = 'persistent-item';
                         const fileName = file.split('/').pop().replace('.exp3.json', '');
                         const nameSpan = document.createElement('span');
                         nameSpan.textContent = fileName;
                         const deleteBtn = document.createElement('button');
+                        deleteBtn.className = 'persistent-delete-btn';
                         deleteBtn.textContent = t('live2d.delete', '删除');
-                        deleteBtn.style.cssText = 'background: #dc3545; color: white; border: none; border-radius: 4px; padding: 2px 8px; cursor: pointer; font-size: 11px;';
                         deleteBtn.addEventListener('click', () => removePersistentExpression(file));
                         item.appendChild(nameSpan);
                         item.appendChild(deleteBtn);
