@@ -648,7 +648,7 @@
     "providerExamplePlaceholder": "예: openai, azure, 사용자 정의",
     "baseUrlExamplePlaceholder": "예: https://api.openai.com/v1",
     "modelExamplePlaceholder": "예: gpt-3.5-turbo, qwen-turbo, glm-4-flash",
-    "文本对话模型ApiKeyPlaceholder":"텍스트 대화 모델 API 키 입력",
+    "conversationApiKeyPlaceholder":"텍스트 대화 모델 API 키 입력",
     "summaryApiKeyPlaceholder": "요약 API 키 입력",
     "correctionApiKeyPlaceholder": "수정 API 키 입력",
     "emotionApiKeyPlaceholder": "Emotion API 키 입력",
@@ -673,7 +673,7 @@
       "cancel": "취소",
       "continue": "계속 저장"
     },
-    "文本对话模型ModelConfig": "텍스트 대화 모델 구성",
+    "conversationModelConfig": "텍스트 대화 모델 구성",
     "summaryModelConfig": "요약 모델 구성",
     "correctionModelConfig": "수정 모델 구성",
     "emotionModelConfig": "감정 모델 구성",

@@ -859,7 +859,7 @@ class LLMSessionManager:
             if input_mode == 'text':
                 # 文本模式：使用 OmniOfflineClient with OpenAI-compatible API
                 # correction_config = self._config_manager.get_model_api_config('correction')
-                correction_config = self._config_manager.get_model_api_config('文本对话模型')
+                correction_config = self._config_manager.get_model_api_config('conversation') #分离 文本api与纠错api
 
                 vision_config = self._config_manager.get_model_api_config('vision')
                 self.session = OmniOfflineClient(
@@ -1114,7 +1114,8 @@ class LLMSessionManager:
             # 根据input_mode创建对应类型的pending session
             if self.input_mode == 'text':
                 # 文本模式：使用 OmniOfflineClient
-                correction_config = self._config_manager.get_model_api_config('correction')
+                # correction_config = self._config_manager.get_model_api_config('correction')
+                correction_config = self._config_manager.get_model_api_config('conversation') #分离 文本api与纠错api
                 vision_config = self._config_manager.get_model_api_config('vision')
                 guard_max_length = self._get_text_guard_max_length()
                 self.pending_session = OmniOfflineClient(
