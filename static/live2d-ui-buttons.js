@@ -905,11 +905,39 @@ Live2DManager.prototype.setupFloatingButtons = function (model) {
 
         setTimeout(() => {
             // 5秒后的隐藏逻辑：如果鼠标不在附近就隐藏
-            if (!this.isFocusing) {
+            // 但如果在引导中，则保持显示
+            const inTutorial = buttonsContainer.dataset.inTutorial === 'true' || window.isInTutorial === true;
+            if (!this.isFocusing && !inTutorial) {
                 buttonsContainer.style.display = 'none';
+            } else if (inTutorial) {
+                // 在引导中，确保浮动按钮始终显示
+                buttonsContainer.style.setProperty('display', 'flex', 'important');
             }
         }, 5000);
     }, 100); // 延迟100ms确保位置已计算
+
+    // 在引导中，添加额外的保护定时器，确保浮动按钮始终显示
+    // 清除任何现有的定时器，防止累积
+    if (this.tutorialProtectionTimer) {
+        clearInterval(this.tutorialProtectionTimer);
+        this.tutorialProtectionTimer = null;
+    }
+
+    this.tutorialProtectionTimer = setInterval(() => {
+        if (window.isInTutorial === true) {
+            const style = window.getComputedStyle(buttonsContainer);
+            if (style.display === 'none') {
+                buttonsContainer.style.setProperty('display', 'flex', 'important');
+                console.log('[Live2D] 引导中：恢复浮动按钮显示');
+            }
+        } else {
+            // 引导结束，清除定时器
+            if (this.tutorialProtectionTimer) {
+                clearInterval(this.tutorialProtectionTimer);
+                this.tutorialProtectionTimer = null;
+            }
+        }
+    }, 300);
 
     // 为"请她回来"按钮容器添加拖动功能
     this.setupReturnButtonContainerDrag(returnButtonContainer);

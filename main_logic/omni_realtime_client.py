@@ -264,12 +264,17 @@ class OmniRealtimeClient:
         if self._is_gemini:
             await self._connect_gemini(instructions, native_audio)
             return
-        
+
+        # 确保开始新连接时状态完全重置
+        self._silence_reset_pending = False
+        if self._audio_processor is not None:
+            self._audio_processor.reset()
+
         # WebSocket-based APIs (GLM, Qwen, GPT, Step, Free)
         url = f"{self.base_url}?model={self.model}" if self.model != "free-model" else self.base_url
         headers = {
             "Authorization": f"Bearer {self.api_key}"
-        } 
+        }
         self.ws = await websockets.connect(url, additional_headers=headers)
         
         # 启动静默检测任务（只在启用时）
@@ -378,14 +383,14 @@ class OmniRealtimeClient:
                     "turn_detection": {
                         "type": "server_vad"
                     },
-                    "tools": [
-                        {
-                            "type": "web_search",# 固定值
-                            "function": {
-                                "description": "这个web_search用来搜索互联网的信息"# 描述什么样的信息需要大模型进行搜索。
-                            }
-                        }
-                    ]
+                    # "tools": [
+                    #     {
+                    #         "type": "web_search",# 固定值
+                    #         "function": {
+                    #             "description": "这个web_search用来搜索互联网的信息"# 描述什么样的信息需要大模型进行搜索。
+                    #         }
+                    #     }
+                    # ]
                 })
             else:
                 raise ValueError(f"Invalid model: {self.model}")
@@ -731,6 +736,15 @@ class OmniRealtimeClient:
             logger.warning("Gemini session not available for create_response")
             return
         
+        # 🔧 修复：跳过空内容的发送，避免预热时污染 Gemini 对话历史
+        # 预热时 instructions 为空字符串，发送空 turn 会导致首轮对话被吞掉
+        if not instructions or not instructions.strip():
+            logger.info("Gemini: skipping empty content (warmup or empty message)")
+            # 直接触发 response_done 回调，让预热逻辑正常完成
+            if self.on_response_done:
+                await self.on_response_done()
+            return
+        
         try:
             # Gemini 使用 send_client_content 发送文本
             from google.genai import types as genai_types
@@ -977,14 +991,23 @@ class OmniRealtimeClient:
                 logger.error(f"Error cancelling silence check task: {e}")
             finally:
                 self._silence_check_task = None
-        
+
+        # 重置静默超时相关状态
+        self._silence_timeout_triggered = False
+        self._last_speech_time = None
+        self._silence_reset_pending = False
+
         # 保存 debug 音频（RNNoise 处理前后的对比音频）
         if self._audio_processor is not None:
             try:
                 self._audio_processor.save_debug_audio()
             except Exception as e:
                 logger.error(f"Error saving debug audio: {e}")
-        
+
+        # 重置音频处理器状态
+        if self._audio_processor is not None:
+            self._audio_processor.reset()
+
         # Gemini uses different cleanup
         if self._is_gemini:
             await self._close_gemini()
@@ -1013,6 +1036,16 @@ class OmniRealtimeClient:
                 self._gemini_session = None
                 self._gemini_context_manager = None
                 self.ws = None
+
+                # 重置静默超时相关状态（与普通close()保持一致）
+                self._silence_timeout_triggered = False
+                self._last_speech_time = None
+                self._silence_reset_pending = False
+
+                # 重置音频处理器状态
+                if self._audio_processor is not None:
+                    self._audio_processor.reset()
+
                 logger.info("Gemini Live API session closed")
     
     async def _handle_messages_gemini(self) -> None:
@@ -1060,7 +1093,7 @@ class OmniRealtimeClient:
                 if hasattr(server_content, 'input_transcription') and server_content.input_transcription:
                     input_trans = server_content.input_transcription
                     if hasattr(input_trans, 'text') and input_trans.text:
-                        self._gemini_user_transcript += input_trans.text.replace(' ', '')
+                        self._gemini_user_transcript += input_trans.text
                 
                 # 检查是否有 AI 内容（model_turn 或 output_transcription）
                 has_ai_content = (
@@ -1072,7 +1105,7 @@ class OmniRealtimeClient:
                 if has_ai_content and not self._is_responding:
                     # 在AI开始响应前，发送累积的用户输入
                     if self._gemini_user_transcript and self.on_input_transcript:
-                        await self.on_input_transcript(self._gemini_user_transcript.replace(' ', ''))
+                        await self.on_input_transcript(self._gemini_user_transcript)
                         self._gemini_user_transcript = ""  # 清空累积
                     
                     self._is_responding = True
@@ -1085,7 +1118,7 @@ class OmniRealtimeClient:
                 if hasattr(server_content, 'output_transcription') and server_content.output_transcription:
                     output_trans = server_content.output_transcription
                     if hasattr(output_trans, 'text') and output_trans.text:
-                        text = output_trans.text.replace(' ', '')  # 去掉空格
+                        text = output_trans.text
                         self._gemini_current_transcript += text
                         # 流式发送到前端（第一个 chunk 标记 is_first=True）
                         if self.on_text_delta:
@@ -1118,7 +1151,7 @@ class OmniRealtimeClient:
                     self._is_responding = False
                     # 被中断时也发送已累积的用户输入
                     if self._gemini_user_transcript and self.on_input_transcript:
-                        await self.on_input_transcript(self._gemini_user_transcript.replace(' ', ''))
+                        await self.on_input_transcript(self._gemini_user_transcript)
                         self._gemini_user_transcript = ""
                     logger.info("Gemini response was interrupted by user")
         

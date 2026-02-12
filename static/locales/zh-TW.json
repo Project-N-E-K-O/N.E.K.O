@@ -27,6 +27,24 @@
     "fieldSeparator": "、",
     "tryAgainLater": "請稍後重試"
   },
+  "characterProfile": {
+    "gender": "性別",
+    "age": "年齡",
+    "nickname": "暱稱",
+    "profileName": "檔案名",
+    "values": {
+      "brother": "哥哥",
+      "male": "男",
+      "female": "女",
+      "tChanNickname": "T醬, 小T"
+    },
+    "labels": {
+      "档案名": "檔案名",
+      "性别": "性別",
+      "年龄": "年齡",
+      "昵称": "暱稱"
+    }
+  },
   "steam": {
     "characterCards": "角色卡",
     "characterCardName": "昵稱",
@@ -438,12 +456,27 @@
   "microphone": {
     "noDevices": "沒有檢測到麥剋風設備",
     "defaultDevice": "係統默認麥剋風",
+    "deviceTitle": "選擇麥克風裝置",
     "deviceLabel": "麥剋風 {{index}}",
     "loadFailed": "獲取麥剋風列錶失敗",
     "switched": "已切換麥剋風 (下一次錄音生效)",
     "switchFailed": "切換麥剋風失敗: {{error}}",
     "networkError": "切換麥剋風失敗：網絡錯誤",
-    "accessFailed": "無法訪問麥剋風"
+    "accessFailed": "無法訪問麥剋風",
+    "gainLabel": "麥剋風增益",
+    "gainHint": "0dB為原始音量，正值放大、負值減小",
+    "volumeLabel": "即時麥克風音量",
+    "volumeIdle": "未錄音",
+    "volumeNoSound": "無聲音",
+    "volumeLow": "音量偏低",
+    "volumeNormal": "正常",
+    "volumeHigh": "音量較高",
+    "volumeHint": "開始錄音後可查看音量",
+    "volumeDetecting": "檢測中...",
+    "volumeHintDetecting": "正在檢測麥剋風輸入...",
+    "volumeHintNoSound": "檢測不到聲音，請檢查麥剋風",
+    "volumeHintLow": "音量較低，建議調高增益",
+    "volumeHintOk": "麥剋風工作正常"
   },
   "status": {
     "initializing": "正在初始化...",
@@ -560,6 +593,7 @@
     "freeVersionSuggestionFull": "完全免費，無需API Key，適閤新手體驗（不支持自定義語音和Agent模式）",
     "coreApiSuggestionFull": "負責對話功能（建議根據預算和需求選擇）",
     "assistApiSuggestionFull": "負責記憶管理、文本對話和自定義語音（隻有阿裏支持自定義語音）",
+    "assistApiKeyRequiredHint": "需在對應的輸入框內填寫API才能選擇其對應的供應商",
     "mcpRouterToken": "MCP Router Token",
     "mcpRouterTokenDesc": "MCP Router Token說明：",
     "mcpRouterTokenDescText": "用於訪問MCP Router服務的認證令牌，啓用MCP功能時需要填寫。如果您的MCP Router不需要認證，可以留空。",
@@ -654,6 +688,20 @@
       "wsProtocol": "• URL 必須使用 WebSocket 協議（以 ws:// 或 wss:// 開頭）",
       "cosyVoiceOnly": "• 目前僅支持阿裏雲 CosyVoice 兼容的協議格式"
     },
+    "gptsovitsConfig": "GPT-SoVITS 配置",
+    "gptsovitsDescription": "GPT-SoVITS 說明：",
+    "gptsovitsDescriptionText": "本地部署的語音克隆模型，需要先啟動 GPT-SoVITS v3 API 服務。聲音配置（參考音頻、模型權重等）在 v3 的 voices/*.toml 檔案中管理，此處只需填寫聲音配置 ID。",
+    "gptsovitsApiUrlPlaceholder": "如：http://127.0.0.1:9881",
+    "gptsovitsApiUrlOptional": "（選填，默認 http://127.0.0.1:9881）",
+    "gptsovitsVoiceId": "聲音配置",
+    "gptsovitsVoiceIdHint": "（從 GPT-SoVITS v3 獲取可用配置）",
+    "gptsovitsVoiceIdEmpty": "-- 請先獲取語音列表 --",
+    "gptsovitsNoVoices": "-- 無可用配置 --",
+    "gptsovitsRefreshVoices": "獲取列表",
+    "gptsovitsVoicesLoaded": "已載入 {{count}} 個語音配置",
+    "gptsovitsVoicesLoadFailed": "獲取語音列表失敗",
+    "gptsovitsEnabled": "啟用 GPT-SoVITS",
+    "gptsovitsEnabledHint": "（啟用後將替代上方的 TTS 配置）",
     "wsWarning": {
       "title": "協議錯誤",
       "message": "URL 必須使用 WebSocket 協議（以 ws:// 或 wss:// 開頭）",
@@ -669,10 +717,9 @@
     "pleaseSelect": "選擇模型",
     "pleaseSelectModel": "選擇模型",
     "pleaseSelectMotion": "請先選擇動作",
+    "pleaseSelectExpression": "請先選擇表情",
     "selectMotion": "選擇動作",
     "selectExpression": "選擇錶情",
-    "addMotion": "增加動作",
-    "addExpression": "增加錶情",
     "selectPersistentExpression": "選擇常駐錶情",
     "noMotionFiles": "沒有動作文件",
     "emotionConfig": "情感配置",
@@ -906,6 +953,9 @@
       "ru": "俄語"
     },
     "registeredVoices": "已注冊音色",
+    "preview": "預覽",
+    "previewFailed": "預覽失敗: {{error}}",
+    "playFailed": "播放失敗: {{error}}",
     "refresh": "刷新",
     "loading": "加載中...",
     "noVoices": "暫無已注冊音色",
@@ -944,7 +994,22 @@
     "enabled": "已開啓",
     "disabled": "已關閉",
     "autoReviewNote": "開啓後係統將自動整理和優化記憶內容，提高對話質量",
-    "saveFailedStatus": "保存失敗"
+    "saveFailedStatus": "保存失敗",
+    "tutorialReset": "新手引導",
+    "tutorialSelectPage": "-- 選擇頁面 --",
+    "tutorialAllPages": "全部頁面",
+    "tutorialPageHome": "主頁",
+    "tutorialPageModelManager": "模型設置",
+    "tutorialPageParameterEditor": "捏臉系統",
+    "tutorialPageEmotionManager": "情感管理",
+    "tutorialPageCharaManager": "角色管理",
+    "tutorialPageSettings": "API設置",
+    "tutorialPageVoiceClone": "語音克隆",
+    "tutorialPageMemoryBrowser": "記憶瀏覽",
+    "resetTutorialBtn": "重置引導",
+    "tutorialResetSuccess": "已重置所有引導，下次進入各頁面時將重新顯示引導。",
+    "tutorialPageResetSuccess": "已重置該頁面的引導，下次進入時將重新顯示引導。",
+    "tutorialPageResetSuccessWithName": "已重置「{{pageName}}」的引導，下次進入該頁面時將重新顯示引導。"
   },
   "character": {
     "manager": "角色管理",
@@ -955,6 +1020,10 @@
     "apiKeySettings": "API Key",
     "masterProfile": "主人檔案（唯一）：檔案名為必填項，其他均為可選項。",
     "profileName": "檔案名",
+    "profileNameMaxHint": "最多20個字符",
+    "profileNameTooLong": "檔案名過長",
+    "newProfileNameRequired": "新檔案名不能為空",
+    "newProfileNameTooLong": "檔案名過長",
     "required": "*",
     "deleteField": "刪除設定",
     "detailDescriptionPlaceholder": "可輸入詳細描述",
@@ -1166,7 +1235,8 @@
       "zh-CN": "簡體中文",
       "en": "English",
       "zh-TW": "繁體中文",
-      "ja": "日本語"
+      "ja": "日本語",
+      "ko": "한국어"
     },
     "toggles": {
       "allowInterrupt": "允許打斷",
@@ -1348,6 +1418,389 @@
     "pathStillInvalidAfterConversion": "[模型管理] 路徑轉換後仍包含無效值:",
     "loadCurrentCharacterModelFailed": "加載當前角色模型失敗:",
     "serverNotReturnedValidJSON": "服務器未返迴有效的 JSON 數據"
+  },
+  "tutorial": {
+    "step1": {
+      "title": "👋 歡迎來到 N.E.K.O",
+      "desc": "這是妳的貓娘！接下來我會帶妳熟悉各項功能~"
+    },
+    "step1a": {
+      "title": "🎭 點擊體驗表情動作",
+      "desc": "試試點擊貓娘吧！每次點擊都會觸發不同的表情和動作變化。體驗完後點擊「下一步」繼續~"
+    },
+    "step1b": {
+      "title": "🖱️ 拖曳與縮放",
+      "desc": "妳可以拖曳貓娘移動位置，也可以用滑鼠滾輪放大縮小，試試看吧~"
+    },
+    "step1c": {
+      "title": "🔒 鎖定貓娘",
+      "desc": "點擊這個鎖可以鎖定貓娘位置，防止誤觸移動。再次點擊可以解鎖~"
+    },
+    "step2": {
+      "title": "💬 對話區域",
+      "desc": "在這裡和貓娘進行文字對話。輸入想法她會給妳有趣的回應~"
+    },
+    "step3": {
+      "title": "✍️ 輸入框",
+      "desc": "輸入妳想說的話。Enter 發送，Shift+Enter 換行。也可以點擊按鈕發送截圖~"
+    },
+    "step4": {
+      "title": "🎮 快速操作",
+      "desc": "左邊發送按鈕，右邊截圖按鈕。分享截圖給貓娘，她會幫妳分析~"
+    },
+    "step5": {
+      "title": "🎛️ 浮動工具欄",
+      "desc": "浮動工具欄包含多個實用功能按鈕。讓我為妳逐一介紹~"
+    },
+    "step6": {
+      "title": "🎤 語音控制",
+      "desc": "啟用語音控制，貓娘通過語音識別理解妳的話語~"
+    },
+    "step7": {
+      "title": "🖥️ 屏幕分享",
+      "desc": "分享屏幕/窗口/標籤頁，讓貓娘看到妳的畫面~"
+    },
+    "step8": {
+      "title": "🔨 Agent工具",
+      "desc": "打開 Agent 工具面板，使用各類輔助功能~"
+    },
+    "step9": {
+      "title": "💤 請她離開",
+      "desc": "讓貓娘暫時離開並隱藏界面。需要時可點擊\"請她回來\"恢復~"
+    },
+    "step10": {
+      "title": "⚙️ 設置",
+      "desc": "打開設置面板。下面會依次介紹設置裡的各個項目~"
+    },
+    "step13": {
+      "title": "💬 主動搭話",
+      "desc": "開啟後貓娘會主動發起對話，頻率可在此調整~"
+    },
+    "step14": {
+      "title": "👀 自主視覺",
+      "desc": "開啟後貓娘會主動讀取畫面信息。間隔可在此調整~"
+    },
+    "step15": {
+      "title": "👤 角色管理",
+      "desc": "調整貓娘的性格、形象、聲音等~"
+    },
+    "step16": {
+      "title": "🔑 API 密鑰",
+      "desc": "配置 AI 服務的 API 密鑰，這是和貓娘互動的必要配置~"
+    },
+    "step17": {
+      "title": "🧠 記憶瀏覽",
+      "desc": "查看與管理貓娘的記憶內容~"
+    },
+    "step18": {
+      "title": "🛠️ 創意工坊",
+      "desc": "進入 Steam 創意工坊頁面，管理訂閱內容~"
+    },
+    "systray": {
+      "location": {
+        "title": "📍 托盤圖示位置",
+        "desc": "N.E.K.O 的圖示會出現在螢幕右下角的系統托盤裡，點一下就能找到它。",
+        "note": "如果看不到，可以先展開托盤的小箭頭，查看全部圖示。",
+        "alt": "系統托盤位置示意圖"
+      },
+
+      "menu": {
+        "title": "📋 托盤菜單",
+        "desc": "右下角托盤裡會有 N.E.K.O 的圖標，右鍵點擊會出現很多選項。下面是兩個常用功能："
+      },
+      "reset": {
+        "title": "🔄 復位模型位置",
+        "desc": "如果貓娘被拖到螢幕外或位置不理想，點擊這個選項可以讓她回到默認位置~"
+      },
+      "switchMode": "切換桌面/移動模式",
+      "reload": "重新加載",
+      "autoLaunch": "開機自啟動",
+      "hotkey": "快捷鍵設置",
+      "feedback": {
+        "title": "📤 上傳日誌",
+        "desc": "遇到問題或有好的建議？點這裡上傳日誌提交反饋~"
+      },
+      "exit": "退出",
+      "complete": {
+        "title": "🎉 引導完成！",
+        "desc": "恭喜妳完成了所有引導！現在妳已經了解了 N.E.K.O 的主要功能。開始享受和貓娘的互動吧！如需重新查看引導，可以在設置中點擊「重置引導」~"
+      },
+      "resetPosition": "復位模型位置",
+      "compatibility": "兼容模式",
+      "hotkeyDesc": "在這裡可以設置全局快捷鍵，讓你更高效地控制 N.E.K.O~",
+      "uploadLogs": "上傳日誌",
+      "exitDesc": "想要關閉 N.E.K.O 時，在這裡點擊退出即可。因為窗口是無邊框的，所以托盤菜單是退出應用的主要方式~"
+    },
+    "completed": "✨ 引導完成！祝妳使用愉快~",
+    "resetHint": {
+      "title": "✨ 引導完成",
+      "desc": "如果想再次查看引導，可以前往「記憶瀏覽」頁面，在「新手引導」區域重置。"
+    },
+    "model_manager": {
+      "common": {
+        "step1": {
+          "title": "🎨 選擇模型類型",
+          "desc": "首先選擇妳要使用的模型類型：Live2D（2D 動畫）或 VRM（3D 模型）。"
+        },
+        "step2": {
+          "title": "📤 上傳模型",
+          "desc": "點擊這裡上傳妳的模型文件。支持 Live2D 和 VRM 格式。"
+        }
+      },
+      "live2d": {
+        "step1": {
+          "title": "🎭 選擇 Live2D 模型",
+          "desc": "從已上傳的 Live2D 模型中選擇要使用的模型。"
+        },
+        "step2": {
+          "title": "💃 選擇動作",
+          "desc": "為 Live2D 模型選擇動作。點擊\"播放動作\"按鈕可以預覽效果。"
+        },
+        "step3": {
+          "title": "😊 選擇表情",
+          "desc": "為 Live2D 模型選擇表情。可以設置常駐表情讓模型保持該表情。"
+        },
+        "step4": {
+          "title": "🧷 常駐表情",
+          "desc": "選擇一個常駐表情，讓模型持續保持該表情，直到妳再次更改。"
+        },
+        "step5": {
+          "title": "😄 情感配置",
+          "desc": "進入前請先選擇一個模型。點擊這裡配置 Live2D 模型的情感表現，可為不同的情感設置對應的表情和動作組合。"
+        },
+        "step6": {
+          "title": "✨ 捏臉系統",
+          "desc": "點擊這裡進入捏臉系統，可以精細調整 Live2D 模型的面部參數，打造獨特的貓娘形象。"
+        }
+      },
+      "vrm": {
+        "step1": {
+          "title": "🎭 選擇 VRM 模型",
+          "desc": "從已上傳的 VRM 模型中選擇要使用的 3D 模型。"
+        },
+        "step2": {
+          "title": "💃 選擇動畫",
+          "desc": "為 VRM 模型選擇動畫。VRM 支持更豐富的 3D 動畫效果。"
+        },
+        "step3": {
+          "title": "▶️ 播放動畫",
+          "desc": "點擊這個按鈕可以預覽選中的 VRM 動畫效果。"
+        },
+        "step4": {
+          "title": "😊 選擇表情",
+          "desc": "為 VRM 模型選擇表情。VRM 模型支持多種面部表情。"
+        },
+        "step5": {
+          "title": "💡 光照系統",
+          "desc": "VRM 模型支持專業的 3D 光照系統。妳可以調整環境光、主光源、補光和輪廓光，打造完美的視覺效果。"
+        },
+        "step6": {
+          "title": "🌟 環境光",
+          "desc": "調整環境光強度。環境光影響整體亮度，數值越高模型越亮。"
+        },
+        "step7": {
+          "title": "☀️ 主光源",
+          "desc": "調整主光源強度。主光源是主要的照明來源，影響模型的明暗對比。"
+        },
+        "step8": {
+          "title": "🌞 曝光",
+          "desc": "調整整體曝光強度。數值越高整體越亮，越低則更暗更有對比。"
+        },
+        "step9": {
+          "title": "🎞️ 色調映射",
+          "desc": "選擇不同的色調映射算法，決定畫面亮部和暗部的呈現風格。"
+        }
+      }
+    },
+    "parameter_editor": {
+      "step1": {
+        "title": "🎭 選擇模型",
+        "desc": "首先選擇要編輯的 Live2D 模型。只有選擇了模型後，才能調整參數。"
+      },
+      "step2": {
+        "title": "🎨 參數列表",
+        "desc": "這裡顯示了模型的所有可調參數。每個參數控制模型的不同部分，如眼睛大小、嘴巴形狀、頭部角度等。"
+      },
+      "step3": {
+        "title": "👁️ 實時預覽",
+        "desc": "左側是實時預覽區域。調整參數時，可以立即看到模型的變化效果。"
+      },
+      "step4": {
+        "title": "🔄 重置所有參數",
+        "desc": "點擊這個按鈕可以將所有參數重置為默認值。如果調整效果不滿意，可以用這個功能重新開始。"
+      }
+    },
+    "emotion_manager": {
+      "step1": {
+        "title": "🎭 選擇模型",
+        "desc": "首先選擇要配置情感的 Live2D 模型。每個模型可以有獨立的情感配置。選好模型後才能進入下一步。"
+      },
+      "step2": {
+        "title": "😊 情感配置區域",
+        "desc": "這裡可以為不同的情感（如開心、悲傷、生氣等）配置對應的表情和動作組合。貓娘會根據對話內容自動切換情感表現。"
+      },
+      "step3": {
+        "title": "🔄 重置配置",
+        "desc": "點擊這個按鈕可以將情感配置重置為默認值。"
+      }
+    },
+    "chara_manager": {
+      "step1": {
+        "title": "👤 主人檔案",
+        "desc": "這是妳的主人檔案。檔案名是必填項，其他信息（性別、昵稱等）都是可選的。這些信息會影響貓娘對妳的稱呼和態度。"
+      },
+      "step2": {
+        "title": "📝 設置檔案名",
+        "desc": "輸入妳的名字或昵稱。貓娘會用這個名字來稱呼妳。最多 20 個字符。"
+      },
+      "step3": {
+        "title": "👥 性別設定",
+        "desc": "這是可選項。妳可以輸入妳的性別或其他相關信息。這會影響貓娘對妳的稱呼方式。"
+      },
+      "step4": {
+        "title": "💬 昵稱設定",
+        "desc": "這是可選項。妳可以為自己設置一個昵稱。貓娘可能會用這個昵稱來稱呼妳。"
+      },
+      "step5": {
+        "title": "🔑 API Key 設置",
+        "desc": "點擊這裡配置 AI 服務的 API Key。這是貓娘能夠進行對話的必要配置。"
+      },
+      "step6": {
+        "title": "🐱 貓娘檔案",
+        "desc": "這裡可以創建和管理多個貓娘角色。每個角色都有獨特的性格、Live2D 形象和語音設定。妳可以在不同的角色之間切換。"
+      },
+      "step7": {
+        "title": "➕ 新增貓娘",
+        "desc": "點擊這個按鈕創建一個新的貓娘角色。妳可以為她設置名字、性格、形象和語音。每個角色都是獨立的，有自己的記憶和性格。"
+      },
+      "step8": {
+        "title": "📋 貓娘卡片",
+        "desc": "點擊貓娘名稱可以展開或折疊詳細信息。每個貓娘都有獨立的設定，包括基礎信息和進階配置。"
+      },
+      "step9": {
+        "title": "📝 貓娘檔案名",
+        "desc": "這是貓娘的名字，也是她的唯一標識。創建後可以通過\"修改名稱\"按鈕來更改。"
+      },
+      "step10": {
+        "title": "✨ 自定義屬性",
+        "desc": "這些是貓娘的性格設定字段，如性格、背景、愛好、口頭禪等。妳可以自由添加和編輯這些屬性，讓每個貓娘都有獨特的個性。"
+      },
+      "step11": {
+        "title": "🔄 切換貓娘",
+        "desc": "點擊此按鈕可以將這個貓娘設為當前活躍角色。切換後，主頁和對話界面會使用該角色的形象和性格。"
+      },
+      "step12": {
+        "title": "⚙️ 進階設定",
+        "desc": "點擊展開進階設定，可以配置 Live2D 模型、語音 ID、以及添加自定義性格屬性（如性格、愛好、口頭禪等）。"
+      },
+      "step13": {
+        "title": "🎨 模型設定",
+        "desc": "點擊此鏈接可以選擇或更換貓娘的 Live2D 形象或 VRM 模型。不同的模型會帶來不同的視覺體驗。"
+      },
+      "step14": {
+        "title": "🎤 語音設定",
+        "desc": "選擇貓娘的語音角色。不同的 voice_id 對應不同的聲音特徵，讓妳的貓娘擁有獨特的聲音。"
+      }
+    },
+    "settings": {
+      "step1": {
+        "title": "🎯 新手推薦",
+        "desc": "如果妳還沒有 API Key，可以直接選擇\"免費版\"開始使用，無需註冊任何賬號！"
+      },
+      "step2": {
+        "title": "🔑 核心 API 服務商",
+        "desc": "這是最重要的設置。核心 API 負責對話功能。"
+      },
+      "step3": {
+        "title": "📝 核心 API Key",
+        "desc": "將妳選擇的 API 服務商的 API Key 粘貼到這裡。如果選擇了免費版，這個字段可以留空。"
+      },
+      "step4": {
+        "title": "⚙️ 高級選項",
+        "desc": "點擊這裡展開高級選項。高級選項包括輔助 API 配置和自定義 API 配置。"
+      },
+      "step5": {
+        "title": "🔧 輔助 API 服務商",
+        "desc": "輔助 API 負責記憶管理和自定義語音功能。\n\n• 免費版：完全免費，但不支持自定義語音\n• 阿里：推薦選擇，支持自定義語音\n• 智譜：支持 Agent 模式\n• OpenAI：記憶管理能力強\n\n注意：只有阿里支持自定義語音功能。"
+      },
+      "step6": {
+        "title": "🔑 輔助 API Key",
+        "desc": "如果妳選擇了阿里作為輔助 API，需要在這裡填寫阿里的 API Key。如果不填寫，系統會使用核心 API 的 Key。"
+      },
+      "step7": {
+        "title": "🔧 自定義 API 配置",
+        "desc": "點擊這裡可以展開自定義 API 配置選項。如果妳想使用自己的 API 服務器或其他兼容的 API 服務，可以在這裡配置。"
+      },
+      "step8": {
+        "title": "✅ 啟用自定義 API",
+        "desc": "勾選這個選項可以啟用自定義 API 配置。啟用後，妳可以為不同的功能模塊（摘要、糾錯、情感分析等）配置獨立的 API。"
+      },
+      "step9": {
+        "title": "📝 摘要模型配置",
+        "desc": "摘要模型用於生成對話摘要和記憶管理。妳可以配置獨立的 API 服務來處理摘要生成任務。"
+      }
+    },
+    "voice_clone": {
+      "step1": {
+        "title": "⚠️ 重要提示",
+        "desc": "語音克隆功能需要使用阿里雲 API。請確保妳已經在 API 設置中配置了阿里雲的 API Key。"
+      },
+      "step2": {
+        "title": "🌍 選擇參考音頻語言",
+        "desc": "選擇妳上傳的音頻文件的語言。這幫助系統更準確地識別和克隆聲音特徵。"
+      },
+      "step3": {
+        "title": "🏷️ 自定義前綴",
+        "desc": "輸入一個 10 字符以內的前綴（只能用數字和英文字母）。這個前綴會作為克隆音色的標識。"
+      },
+      "step4": {
+        "title": "✨ 註冊音色",
+        "desc": "點擊這個按鈕開始克隆妳的音色。系統會處理音頻並生成一個獨特的音色 ID。"
+      },
+      "step5": {
+        "title": "📋 已註冊音色列表",
+        "desc": "這裡顯示所有已成功克隆的音色。妳可以在角色管理中選擇這些音色來為貓娘配音。"
+      }
+    },
+    "steam_workshop": {
+      "step1": {
+        "title": "📦 訂閱內容列表",
+        "desc": "這裡顯示所有妳已訂閱的 Steam Workshop 內容。點擊卡片可以查看詳情或進行操作。"
+      },
+      "step2": {
+        "title": "💡 使用提示",
+        "desc": "如果妳想使用 Steam Workshop 中的語音音色，需要前往 Live2D 設置頁面手動註冊。"
+      }
+    },
+    "memory_browser": {
+      "step1": {
+        "title": "💡 使用提示",
+        "desc": "剛剛結束的對話內容需要稍等片刻才會載入。如果沒有看到最新的對話，可以點擊貓娘名稱來刷新。"
+      },
+      "step2": {
+        "title": "🐱 貓娘記憶庫",
+        "desc": "這裡列出了所有貓娘的記憶庫。點擊一個貓娘的名稱可以查看和編輯她的對話歷史。"
+      },
+      "step3": {
+        "title": "🤖 自動記憶整理",
+        "desc": "開啟這個功能後，系統會自動整理和優化記憶內容，提高對話質量。建議保持開啟狀態。"
+      },
+      "step4": {
+        "title": "📝 聊天記錄編輯",
+        "desc": "這裡顯示選中貓娘的所有對話記錄。妳可以在這裡查看、編輯或刪除特定的對話內容。"
+      }
+    },
+    "buttons": {
+      "next": "下一步",
+      "prev": "上一步",
+      "done": "完成",
+      "close": "關閉"
+    },
+    "fullscreenPrompt": {
+      "title": "🎓 開始新手引導",
+      "desc": "為了獲得最佳的引導體驗，建議進入全螢幕模式。\n全螢幕模式下，引導內容會更清晰，不會被其他元素遮擋。",
+      "enterFullscreen": "進入全螢幕引導"
+    }
   },
   "console": {
     "oggOpusInitFailed": "[OGG OPUS] 初始化 Promise 失敗，將允許重試:",

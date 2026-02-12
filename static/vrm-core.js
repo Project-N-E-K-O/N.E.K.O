@@ -731,21 +731,33 @@ class VRMCore {
                         vrm.scene.position.set(-center.x, -center.y, -center.z);
                     }
                 } else {
-                    vrm.scene.position.set(-center.x, -center.y, -center.z);
+                    vrm.scene.position.set(0, 0, 0);
                 }
 
                 if (preferences.scale) {
                     const scl = preferences.scale;
                     if (Number.isFinite(scl.x) && Number.isFinite(scl.y) && Number.isFinite(scl.z) &&
                         scl.x > 0 && scl.y > 0 && scl.z > 0) {
-                        vrm.scene.scale.set(scl.x, scl.y, scl.z);
+                        // 检查是否需要跨分辨率缩放归一化
+                        const savedViewport = preferences.viewport;
+                        const currentHeight = window.innerHeight;
+                        if (savedViewport &&
+                            Number.isFinite(savedViewport.height) && savedViewport.height > 0 &&
+                            Math.abs(currentHeight / savedViewport.height - 1) > 0.01) {
+                            // 视口高度有变化，按比例调整缩放
+                            const hRatio = currentHeight / savedViewport.height;
+                            vrm.scene.scale.set(scl.x * hRatio, scl.y * hRatio, scl.z * hRatio);
+                            console.log('[VRM Core] 视口变化，缩放已归一化:', { savedHeight: savedViewport.height, currentHeight, hRatio });
+                        } else {
+                            vrm.scene.scale.set(scl.x, scl.y, scl.z);
+                        }
                     }
                 }
 
                 // 注意：不在这里直接设置 rotation，避免双重旋转
                 // rotation 将在检测器阶段之后统一设置（见下方代码）
             } else {
-                vrm.scene.position.set(-center.x, -center.y, -center.z);
+                vrm.scene.position.set(0, 0, 0);
             }
             
             // 等待 3 帧确保 DOM 布局和 Three.js 场景完全稳定后再处理旋转
@@ -790,36 +802,20 @@ class VRMCore {
             
             if (!hasSavedRotation && typeof this.saveUserPreferences === 'function') {
                 // 标准化位置为普通对象 {x, y, z}
-                let currentPosition;
-                if (preferences?.position) {
-                    currentPosition = {
-                        x: preferences.position.x,
-                        y: preferences.position.y,
-                        z: preferences.position.z
-                    };
-                } else {
-                    currentPosition = {
-                        x: vrm.scene.position.x,
-                        y: vrm.scene.position.y,
-                        z: vrm.scene.position.z
-                    };
-                }
+                // 始终从 vrm.scene 获取当前位置，确保 z 值有效
+                // （旧版偏好设置可能只有 x 和 y，没有 z 值）
+                const currentPosition = {
+                    x: vrm.scene.position.x,
+                    y: vrm.scene.position.y,
+                    z: vrm.scene.position.z
+                };
                 
                 // 标准化缩放为普通对象 {x, y, z}
-                let currentScale;
-                if (preferences?.scale) {
-                    currentScale = {
-                        x: preferences.scale.x,
-                        y: preferences.scale.y,
-                        z: preferences.scale.z
-                    };
-                } else {
-                    currentScale = {
-                        x: vrm.scene.scale.x,
-                        y: vrm.scene.scale.y,
-                        z: vrm.scene.scale.z
-                    };
-                }
+                const currentScale = {
+                    x: vrm.scene.scale.x,
+                    y: vrm.scene.scale.y,
+                    z: vrm.scene.scale.z
+                };
                 
                 this.saveUserPreferences(
                     modelUrl,
@@ -1082,9 +1078,10 @@ class VRMCore {
      * @param {object} scale - 缩放 {x, y, z}
      * @param {object} rotation - 旋转 {x, y, z}（可选）
      * @param {object} display - 显示器信息（可选）
+     * @param {object} viewport - 视口尺寸 {width, height}（可选，用于跨分辨率归一化）
      * @returns {Promise<boolean>} 是否保存成功
      */
-    async saveUserPreferences(modelPath, position, scale, rotation, display) {
+    async saveUserPreferences(modelPath, position, scale, rotation, display, viewport) {
         try {
             // 验证位置值
             if (!position || typeof position !== 'object' ||
@@ -1124,6 +1121,16 @@ class VRMCore {
                 preferences.display = {
                     screenX: display.screenX,
                     screenY: display.screenY
+                };
+            }
+
+            // 如果有视口信息，添加到偏好中（用于跨分辨率缩放归一化）
+            if (viewport && typeof viewport === 'object' &&
+                Number.isFinite(viewport.width) && Number.isFinite(viewport.height) &&
+                viewport.width > 0 && viewport.height > 0) {
+                preferences.viewport = {
+                    width: viewport.width,
+                    height: viewport.height
                 };
             }
             

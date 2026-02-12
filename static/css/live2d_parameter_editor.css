@@ -48,7 +48,7 @@ pointer-events: auto;
 display: block;
 width: 100%;
 height: 100%;
-background: transparent;
+background: rgba(255, 255, 255, 0.7);
 cursor: grab;
 pointer-events: auto;
 }

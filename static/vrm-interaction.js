@@ -46,8 +46,32 @@ class VRMInteraction {
         this._cachedScreenBounds = null; // { minX, maxX, minY, maxY }
         this._floatingButtonsPendingFrame = null; // RAF ID，用于取消
         this._lastModelUpdateTime = 0;
+
+        // 出界回弹配置（与聊天框风格一致）
+        this._snapConfig = {
+            duration: 260,
+            easingType: 'easeOutBack'
+        };
+        this._snapAnimationFrameId = null;
+        this._isSnappingModel = false;
+        this._snapResolve = null;
     }
 
+
+    /**
+     * 使用 live2d-ui-drag.js 中的共享工具函数（按钮 pointer-events 管理）
+     */
+    _disableButtonPointerEvents() {
+        if (window.DragHelpers) {
+            window.DragHelpers.disableButtonPointerEvents();
+        }
+    }
+
+    _restoreButtonPointerEvents() {
+        if (window.DragHelpers) {
+            window.DragHelpers.restoreButtonPointerEvents();
+        }
+    }
 
     /**
      * 【修改】初始化拖拽和缩放功能
@@ -105,6 +129,17 @@ class VRMInteraction {
         this.mouseDownHandler = (e) => {
             if (this.checkLocked()) return;
 
+            // 如果正在回弹动画，优先取消，避免拖拽冲突
+            if (this._snapAnimationFrameId) {
+                cancelAnimationFrame(this._snapAnimationFrameId);
+                this._snapAnimationFrameId = null;
+                if (this._snapResolve) {
+                    this._snapResolve(false);
+                    this._snapResolve = null;
+                }
+                this._isSnappingModel = false;
+            }
+
             if (e.button === 0 || e.button === 1) { // 左键或中键
                 this.isDragging = true;
                 this.dragMode = 'pan';
@@ -112,6 +147,9 @@ class VRMInteraction {
                 canvas.style.cursor = 'move';
                 e.preventDefault();
                 e.stopPropagation();
+
+                // 开始拖动时，临时禁用按钮的 pointer-events
+                this._disableButtonPointerEvents();
             }
         };
 
@@ -124,6 +162,8 @@ class VRMInteraction {
                     this.isDragging = false;
                     this.dragMode = null;
                     canvas.style.cursor = 'grab';
+                    // 恢复按钮的 pointer-events
+                    this._restoreButtonPointerEvents();
                 }
                 return;
             }
@@ -179,12 +219,18 @@ class VRMInteraction {
         this.mouseUpHandler = async (e) => {
             if (this.isDragging) {
                 e.preventDefault();
-                +               e.stopPropagation();
+                e.stopPropagation();
                 this.isDragging = false;
                 this.dragMode = null;
                 canvas.style.cursor = 'grab';
 
-                // 拖动结束后保存位置
+                // 拖拽结束后恢复按钮的 pointer-events
+                this._restoreButtonPointerEvents();
+
+                // 拖拽结束后：若超出屏幕范围，执行回弹
+                await this._snapModelIntoScreen({ animate: true });
+
+                // 拖动结束后保存位置（包含回弹后的位置）
                 await this._savePositionAfterInteraction();
             }
         };
@@ -341,6 +387,8 @@ class VRMInteraction {
             if (this.manager.renderer) {
                 this.manager.renderer.domElement.style.cursor = 'grab';
             }
+            // 恢复按钮的 pointer-events
+            this._restoreButtonPointerEvents();
         }
     }
 
@@ -546,6 +594,112 @@ class VRMInteraction {
             console.warn('[VRM Interaction] 边界检测失败，跳过限制:', error);
             return position;
         }
+    }
+
+    /**
+     * 获取回弹缓动函数
+     */
+    _getSnapEasingFunction() {
+        const easingType = this._snapConfig?.easingType || 'easeOutBack';
+
+        const easingMap = {
+            easeOutBack: (t) => {
+                const c1 = 1.70158;
+                const c3 = c1 + 1;
+                return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+            },
+            easeOutCubic: (t) => (--t) * t * t + 1
+        };
+
+        return easingMap[easingType] || easingMap.easeOutCubic;
+    }
+
+    /**
+     * 执行模型回弹动画
+     */
+    _animateModelToPosition(startPosition, targetPosition) {
+        if (!this.manager.currentModel?.scene) {
+            return Promise.resolve(false);
+        }
+
+        if (!Number.isFinite(targetPosition?.x) || !Number.isFinite(targetPosition?.y) || !Number.isFinite(targetPosition?.z)) {
+            return Promise.resolve(false);
+        }
+
+        if (this._snapAnimationFrameId) {
+            cancelAnimationFrame(this._snapAnimationFrameId);
+            this._snapAnimationFrameId = null;
+            if (this._snapResolve) {
+                this._snapResolve(false);
+                this._snapResolve = null;
+            }
+            this._isSnappingModel = false;
+        }
+
+        const duration = this._snapConfig?.duration || 260;
+        const easingFn = this._getSnapEasingFunction();
+        const startTime = performance.now();
+        const scene = this.manager.currentModel.scene;
+
+        this._isSnappingModel = true;
+
+        return new Promise((resolve) => {
+            this._snapResolve = resolve;
+            const animate = (currentTime) => {
+                const elapsed = currentTime - startTime;
+                const progress = Math.min(elapsed / duration, 1);
+                const eased = easingFn(progress);
+
+                const newX = startPosition.x + (targetPosition.x - startPosition.x) * eased;
+                const newY = startPosition.y + (targetPosition.y - startPosition.y) * eased;
+                const newZ = startPosition.z + (targetPosition.z - startPosition.z) * eased;
+
+                scene.position.set(newX, newY, newZ);
+
+                if (progress < 1) {
+                    this._snapAnimationFrameId = requestAnimationFrame(animate);
+                } else {
+                    scene.position.copy(targetPosition);
+                    this._isSnappingModel = false;
+                    this._snapAnimationFrameId = null;
+                    this._snapResolve = null;
+                    resolve(true);
+                }
+            };
+
+            this._snapAnimationFrameId = requestAnimationFrame(animate);
+        });
+    }
+
+    /**
+     * 出界回弹：保持原有边界检查逻辑不变，仅在需要时执行回弹动画
+     */
+    async _snapModelIntoScreen({ animate = true } = {}) {
+        if (this._isSnappingModel) return false;
+        if (!this.manager.currentModel?.scene || !this.manager.camera || !this.manager.renderer) return false;
+        if (!THREE) return false;
+
+        const scene = this.manager.currentModel.scene;
+        const startPosition = scene.position.clone();
+
+        // 使用原有的边界检查逻辑计算目标位置
+        const targetPosition = this.clampModelPosition(startPosition.clone());
+
+        if (!targetPosition || !targetPosition.isVector3) {
+            return false;
+        }
+
+        const distance = startPosition.distanceTo(targetPosition);
+        if (!Number.isFinite(distance) || distance < 0.0001) {
+            return false;
+        }
+
+        if (!animate) {
+            scene.position.copy(targetPosition);
+            return true;
+        }
+
+        return await this._animateModelToPosition(startPosition, targetPosition);
     }
 
 
@@ -937,6 +1091,16 @@ class VRMInteraction {
             }
         }
 
+        // 获取当前视口尺寸（用于跨分辨率缩放归一化）
+        let viewportInfo = null;
+        if (this.manager.renderer && this.manager.renderer.domElement) {
+            const w = this.manager.renderer.domElement.clientWidth || window.innerWidth;
+            const h = this.manager.renderer.domElement.clientHeight || window.innerHeight;
+            if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+                viewportInfo = { width: w, height: h };
+            }
+        }
+
         // 异步保存，不阻塞交互
         if (this.manager.core && typeof this.manager.core.saveUserPreferences === 'function') {
             this.manager.core.saveUserPreferences(
@@ -944,7 +1108,8 @@ class VRMInteraction {
                 position,
                 scale,
                 rotation,
-                displayInfo
+                displayInfo,
+                viewportInfo
             ).then(success => {
                 if (!success) {
                     console.warn('[VRM] 自动保存位置失败');
@@ -978,6 +1143,8 @@ class VRMInteraction {
     dispose() {
         this.enableMouseTracking(false);
         this.cleanupDragAndZoom();
+        // 确保拖拽相关的 pointer-events 被恢复
+        this._restoreButtonPointerEvents();
         // 确保初始化定时器被清理（即使 renderer 不存在）
         if (this._initTimerId !== null) {
             clearTimeout(this._initTimerId);
@@ -994,6 +1161,17 @@ class VRMInteraction {
             clearTimeout(this._savePositionDebounceTimer);
             this._savePositionDebounceTimer = null;
         }
+
+        // 清理回弹动画
+        if (this._snapAnimationFrameId) {
+            cancelAnimationFrame(this._snapAnimationFrameId);
+            this._snapAnimationFrameId = null;
+        }
+        if (this._snapResolve) {
+            this._snapResolve(false);
+            this._snapResolve = null;
+        }
+        this._isSnappingModel = false;
 
         // 重置状态
         this.isDragging = false;

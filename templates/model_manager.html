@@ -16,6 +16,7 @@
 
 
     <div id="sidebar">
+        <div id="sidebar-controls" class="sidebar-controls">
         <div class="control-group">
             <button id="backToMainBtn" class="btn btn-primary" data-i18n-title="live2d.backToMain">
                 <img src="/static/icons/back_to_main_button.png?v=1" data-i18n-alt="live2d.backToMain" class="back-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
@@ -113,7 +114,7 @@
             <div style="display: flex; gap: 0; align-items: center;">
                 <div id="vrm-expression-select-wrapper" style="position: relative; display: flex; flex: 1;">
                     <button id="vrm-expression-select-btn" class="btn btn-primary" type="button" disabled data-i18n-title="live2d.vrmExpression.selectExpression">
-                        <img src="/static/icons/parameter_editor_icon.png?v=1" data-i18n-alt="live2d.vrmExpression.selectExpression" class="vrm-expression-select-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
+                        <img src="/static/icons/expression_chosen.png?v=1" data-i18n-alt="live2d.vrmExpression.selectExpression" class="vrm-expression-select-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
                         <span class="round-stroke-text" id="vrm-expression-select-text" data-i18n="live2d.vrmExpression.selectExpression" data-text="Select Expression">选择表情</span>
                     </button>
                     <select id="vrm-expression-select" class="control-select" style="display: none;" disabled>
@@ -138,7 +139,7 @@
                         <span class="round-stroke-text" id="motion-select-text" data-i18n="live2d.selectMotion" data-text="Select Motion">选择动作</span>
                     </button>
                     <select id="motion-select" class="control-select" style="display: none;" disabled>
-                        <option data-i18n="live2d.pleaseLoadModel">请先加载模型</option>
+                        <option value="" data-i18n="live2d.pleaseLoadModel">请先加载模型</option>
                     </select>
                     <div id="motion-dropdown" class="motion-dropdown" style="display: none;">
                         <!-- 下拉菜单项将动态生成 -->
@@ -154,11 +155,11 @@
             <div style="display: flex; gap: 0; align-items: center;">
                 <div id="expression-select-wrapper" style="position: relative; display: flex; flex: 1;">
                     <button id="expression-select-btn" class="btn btn-primary" type="button" disabled data-i18n-title="live2d.selectExpression">
-                        <img src="/static/icons/parameter_editor_icon.png?v=1" data-i18n-alt="live2d.selectExpression" class="expression-select-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
+                        <img src="/static/icons/expression_chosen.png?v=1" data-i18n-alt="live2d.selectExpression" class="expression-select-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
                         <span class="round-stroke-text" id="expression-select-text" data-i18n="live2d.selectExpression" data-text="Select Expression">选择表情</span>
                     </button>
                     <select id="expression-select" class="control-select" style="display: none;" disabled>
-                        <option data-i18n="live2d.pleaseLoadModel">请先加载模型</option>
+                        <option value="" data-i18n="live2d.pleaseLoadModel">请先加载模型</option>
                     </select>
                     <div id="expression-dropdown" class="expression-dropdown" style="display: none;">
                         <!-- 下拉菜单项将动态生成 -->
@@ -210,7 +211,7 @@
                 <span class="vrm-lighting-header-text" data-i18n="vrm.lighting.title">VRM打光设置</span>
             </div>
             <div id="vrm-lighting-content" class="vrm-lighting-content">
-                <div class="lighting-control">
+                <div class="lighting-control" id="ambient-light-control">
             <label for="ambient-light-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.ambientLight">环境光强度</label>
             <div style="display: flex; align-items: center; gap: 10px;">
                 <input type="range" id="ambient-light-slider" min="0" max="1.0" step="0.01" value="0.7"
@@ -219,7 +220,7 @@
             </div>
         </div>
 
-        <div class="lighting-control">
+        <div class="lighting-control" id="main-light-control">
             <label for="main-light-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.mainLight">主光源强度</label>
             <div style="display: flex; align-items: center; gap: 10px;">
                 <input type="range" id="main-light-slider" min="0" max="2.5" step="0.01" value="0.8"
@@ -265,7 +266,7 @@
             </div>
         </div>
 
-        <div class="lighting-control">
+        <div class="lighting-control" id="exposure-control">
             <label for="exposure-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.exposure">曝光</label>
             <div style="display: flex; align-items: center; gap: 10px;">
                 <input type="range" id="exposure-slider" min="0.5" max="2.5" step="0.05" value="1.0"
@@ -274,7 +275,7 @@
             </div>
         </div>
 
-            <div class="lighting-control">
+            <div class="lighting-control" id="tonemapping-control">
                 <label for="tonemapping-select" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.toneMapping">色调映射</label>
                 <div style="display: flex; align-items: center; gap: 10px;">
                     <select id="tonemapping-select" style="flex: 1; padding: 5px; border-radius: 4px; opacity: 0.85; color: #4f8cff;">
@@ -296,6 +297,8 @@
                 <img src="/static/icons/parameter_editor_icon.png?v=1" data-i18n-alt="live2d.parameterEditor.title" class="parameter-editor-icon" style="height: 40px; width: auto; max-width: 80px; image-rendering: crisp-edges; margin-right: 10px; flex-shrink: 0; object-fit: contain; display: inline-block;">
                 <span class="round-stroke-text" id="parameter-editor-text" data-i18n="live2d.parameterEditor.title" data-text="Face Editor">捏脸系统</span>
             </a>
+        </div>
+
         </div>
 
         <div id="status">
@@ -365,6 +368,22 @@
     <!-- VRM模块（按顺序加载，失败不影响Live2D）-->
 
     <script src="/static/js/model_manager.js"></script>
+
+    <!-- Driver.js 库 -->
+    <script src="/static/libs/driver.min.js"></script>
+    <link rel="stylesheet" href="/static/libs/driver.min.css">
+
+    <!-- 通用教程管理器 -->
+    <script src="/static/universal-tutorial-manager.js"></script>
+
+    <!-- 初始化 -->
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            if (typeof initUniversalTutorialManager === 'function') {
+                initUniversalTutorialManager();
+            }
+        });
+    </script>
 </body>
 
 </html>

@@ -90,6 +90,183 @@ function toggleFold(fold) {
     fold.classList.toggle('open');
 }
 
+// 档案名长度限制：最多 20 个计数单位（纯中文不超过 10 个字）
+// 计数规则：ASCII(<=0x7F) 计 1，其它字符计 2
+const PROFILE_NAME_MAX_UNITS = 20;
+
+const PROFILE_NAME_MAX_HINT_KEY = 'character.profileNameMaxHint';
+const PROFILE_NAME_TOO_LONG_KEY = 'character.profileNameTooLong';
+const NEW_PROFILE_NAME_REQUIRED_KEY = 'character.newProfileNameRequired';
+const NEW_PROFILE_NAME_TOO_LONG_KEY = 'character.newProfileNameTooLong';
+
+/**
+ * 获取字段的本地化显示标签
+ * 用于将中文键名（如"性别"）翻译为当前语言的显示文本（如"Gender"）
+ * @param {string} fieldName - 字段的原始键名
+ * @returns {string} 翻译后的标签文本
+ */
+function getFieldLabel(fieldName) {
+    // 尝试从 i18n 获取翻译
+    if (window.t) {
+        const translated = window.t(`characterProfile.labels.${fieldName}`);
+        // 如果翻译结果不等于 key 本身，说明找到了翻译
+        if (translated && translated !== `characterProfile.labels.${fieldName}`) {
+            return translated;
+        }
+    }
+    // 没有翻译则返回原始键名
+    return fieldName;
+}
+
+function tOrFallback(key, fallback, params) {
+    if (window.t && typeof window.t === 'function') {
+        try {
+            return window.t(key, params || {});
+        } catch (e) {
+            // ignore
+        }
+    }
+    return fallback;
+}
+
+function profileNameCountUnits(str) {
+    if (!str) return 0;
+    let units = 0;
+    for (const ch of String(str)) {
+        units += (ch.charCodeAt(0) <= 0x7F) ? 1 : 2;
+    }
+    return units;
+}
+
+function profileNameTrimToMaxUnits(str, maxUnits) {
+    if (!str) return '';
+    let units = 0;
+    let out = '';
+    for (const ch of String(str)) {
+        const inc = (ch.charCodeAt(0) <= 0x7F) ? 1 : 2;
+        if (units + inc > maxUnits) break;
+        out += ch;
+        units += inc;
+    }
+    return out;
+}
+
+function flashProfileNameTooLong(inputEl) {
+    if (!inputEl) return;
+
+    const msg = tOrFallback(PROFILE_NAME_TOO_LONG_KEY, '档案名过长');
+
+    // 红框：优先给胶囊容器加 class（chara_manager 页面），同时也给 input 自己加 class（兼容弹窗）
+    const fieldRow = inputEl.closest ? inputEl.closest('.field-row') : null;
+    if (fieldRow) fieldRow.classList.add('profile-name-too-long');
+    inputEl.classList.add('profile-name-too-long');
+    inputEl.setAttribute('aria-invalid', 'true');
+
+    // 临时提示：放在 field-row 下方
+    let tip = null;
+    if (fieldRow) {
+        tip = fieldRow.querySelector(':scope > .profile-name-too-long-tip');
+        if (!tip) {
+            tip = document.createElement('div');
+            tip.className = 'profile-name-too-long-tip';
+            fieldRow.appendChild(tip);
+        }
+        tip.textContent = msg;
+    }
+
+    // 用浏览器原生校验气泡提示一次，但不阻塞后续提交（立即清理 validity）
+    try {
+        inputEl.setCustomValidity(msg);
+        if (typeof inputEl.reportValidity === 'function') inputEl.reportValidity();
+    } catch (e) {
+        // ignore
+    } finally {
+        setTimeout(() => {
+            try { inputEl.setCustomValidity(''); } catch (e) { /* ignore */ }
+        }, 0);
+    }
+
+    // 1s 后自动恢复
+    const token = String(Date.now());
+    inputEl.dataset.profileNameTooLongToken = token;
+    setTimeout(() => {
+        if (inputEl.dataset.profileNameTooLongToken !== token) return;
+        if (fieldRow) fieldRow.classList.remove('profile-name-too-long');
+        inputEl.classList.remove('profile-name-too-long');
+        inputEl.removeAttribute('aria-invalid');
+        if (tip && tip.parentNode) tip.parentNode.removeChild(tip);
+    }, 1000);
+}
+
+function attachProfileNameLimiter(inputEl) {
+    if (!inputEl || inputEl.dataset.profileNameLimiterAttached === 'true') return;
+    inputEl.dataset.profileNameLimiterAttached = 'true';
+
+    // IME 组合输入期间不要修改 value/selection，否则可能打断中文输入
+    let composing = false;
+
+    // 仅作为辅助上限；真正限制由计数单位逻辑实现
+    try {
+        inputEl.maxLength = PROFILE_NAME_MAX_UNITS;
+    } catch (e) {
+        // ignore
+    }
+
+    // 删除输入框提示（placeholder/title 由需求移除），这里只做长度限制与超限反馈
+
+    const enforce = () => {
+        if (composing) return;
+        if (inputEl.readOnly || inputEl.disabled) return;
+        const before = inputEl.value;
+        const beforeUnits = profileNameCountUnits(before);
+        const after = profileNameTrimToMaxUnits(before, PROFILE_NAME_MAX_UNITS);
+        if (before !== after) {
+            const caret = (typeof inputEl.selectionStart === 'number') ? inputEl.selectionStart : null;
+            inputEl.value = after;
+            if (caret !== null) {
+                const newPos = Math.min(caret, after.length);
+                try { inputEl.setSelectionRange(newPos, newPos); } catch (e) { /* ignore */ }
+            }
+
+            // 用户尝试输入超限：红框标记 + 提示
+            if (beforeUnits > PROFILE_NAME_MAX_UNITS) {
+                flashProfileNameTooLong(inputEl);
+            }
+        }
+
+        // 理论上不会超过（已截断），这里保持表单可提交
+        try { inputEl.setCustomValidity(''); } catch (e) { /* ignore */ }
+    };
+
+    inputEl.addEventListener('input', enforce);
+    inputEl.addEventListener('compositionstart', () => {
+        composing = true;
+    });
+    // 中文输入法：composition 期间不要强制截断，结束时再强制一次
+    inputEl.addEventListener('compositionend', () => {
+        composing = false;
+        enforce();
+    });
+    enforce();
+}
+
+// 事件委托：覆盖动态创建的猫娘表单
+if (!window._profileNameLimiterDelegated) {
+    document.body.addEventListener('focusin', function (e) {
+        const target = e.target;
+        if (target && target.matches && target.matches('input[name="档案名"]')) {
+            attachProfileNameLimiter(target);
+        }
+    });
+    document.body.addEventListener('input', function (e) {
+        const target = e.target;
+        if (target && target.matches && target.matches('input[name="档案名"]')) {
+            attachProfileNameLimiter(target);
+        }
+    });
+    window._profileNameLimiterDelegated = true;
+}
+
 // 事件委托，支持所有动态表单的折叠按钮和箭头符号
 if (!window._charaManagerFoldHandler) {
     document.body.addEventListener('click', function (e) {
@@ -431,7 +608,7 @@ function renderMaster() {
 
         // 创建label元素（在wrapper中）
         const label = document.createElement('label');
-        label.textContent = k;
+        label.textContent = getFieldLabel(k);
         wrapper.appendChild(label);
 
         // 创建field-row（胶囊框）
@@ -887,6 +1064,7 @@ function showCatgirlForm(key, container) {
     nameInput.required = true;
     nameInput.value = key || '';
     if (!isNew) nameInput.readOnly = true;
+    attachProfileNameLimiter(nameInput);
     fieldRow.appendChild(nameInput);
 
     baseWrapper.appendChild(fieldRow);
@@ -924,7 +1102,7 @@ function showCatgirlForm(key, container) {
             const deleteFieldText = (window.t && typeof window.t === 'function') ? `<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">${window.t('character.deleteField')}</span>` : '<img src="/static/icons/delete.png" alt="" class="delete-icon"> 删除设定';
 
             const labelEl = document.createElement('label');
-            labelEl.textContent = k;
+            labelEl.textContent = getFieldLabel(k);
             wrapper.appendChild(labelEl);
 
             const fieldRow = document.createElement('div');
@@ -1579,10 +1757,36 @@ function showCatgirlForm(key, container) {
 
 // 主人档案名重命名
 window.renameMaster = async function (oldName) {
+    let _renameMasterDidOverLimit = false;
     const newName = await showPrompt(
         window.t ? window.t('character.enterNewProfileName') : '请输入新的主人档案名',
         oldName,
-        window.t ? window.t('character.renameMasterTitle') : '重命名主人'
+        window.t ? window.t('character.renameMasterTitle') : '重命名主人',
+        {
+            inputAttributes: {
+                maxlength: PROFILE_NAME_MAX_UNITS,
+                autocomplete: 'off'
+            },
+            normalize: (v) => {
+                const trimmed = String(v ?? '').trim();
+                _renameMasterDidOverLimit = profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS;
+                return profileNameTrimToMaxUnits(trimmed, PROFILE_NAME_MAX_UNITS);
+            },
+            validator: (v) => {
+                const trimmed = String(v ?? '').trim();
+                if (!trimmed) return tOrFallback(NEW_PROFILE_NAME_REQUIRED_KEY, '新档案名不能为空');
+                if (profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS) {
+                    return tOrFallback(PROFILE_NAME_TOO_LONG_KEY, '档案名过长');
+                }
+                return '';
+            },
+            onInput: (inputEl) => {
+                if (_renameMasterDidOverLimit) {
+                    _renameMasterDidOverLimit = false;
+                    flashProfileNameTooLong(inputEl);
+                }
+            }
+        }
     );
     if (!newName || newName === oldName) return;
     if (characterData['主人'][newName]) {
@@ -1620,10 +1824,36 @@ window.renameCatgirl = async function (oldName) {
         // 如果检查失败，继续执行，让后端来处理
     }
 
+    let _renameCatgirlDidOverLimit = false;
     const newName = await showPrompt(
         window.t ? window.t('character.enterNewProfileName') : '请输入新的猫娘档案名',
         oldName,
-        window.t ? window.t('character.renameCatgirlTitle') : '重命名猫娘'
+        window.t ? window.t('character.renameCatgirlTitle') : '重命名猫娘',
+        {
+            inputAttributes: {
+                maxlength: PROFILE_NAME_MAX_UNITS,
+                autocomplete: 'off'
+            },
+            normalize: (v) => {
+                const trimmed = String(v ?? '').trim();
+                _renameCatgirlDidOverLimit = profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS;
+                return profileNameTrimToMaxUnits(trimmed, PROFILE_NAME_MAX_UNITS);
+            },
+            validator: (v) => {
+                const trimmed = String(v ?? '').trim();
+                if (!trimmed) return tOrFallback(NEW_PROFILE_NAME_REQUIRED_KEY, '新档案名不能为空');
+                if (profileNameCountUnits(trimmed) > PROFILE_NAME_MAX_UNITS) {
+                    return tOrFallback(PROFILE_NAME_TOO_LONG_KEY, '档案名过长');
+                }
+                return '';
+            },
+            onInput: (inputEl) => {
+                if (_renameCatgirlDidOverLimit) {
+                    _renameCatgirlDidOverLimit = false;
+                    flashProfileNameTooLong(inputEl);
+                }
+            }
+        }
     );
     if (!newName || newName === oldName) return;
     if (characterData['猫娘'][newName]) {
@@ -1726,7 +1956,8 @@ function openApiKeySettings() {
 function openVoiceClone(lanlanName) {
     // 使用 window.openOrFocusWindow 打开独立窗口
     const url = '/voice_clone?lanlan_name=' + encodeURIComponent(lanlanName);
-    const windowName = 'neko_voice_clone_' + encodeURIComponent(lanlanName);
+    const lanlanNameForKey = lanlanName || 'default';
+    const windowName = 'neko_voice_clone_' + encodeURIComponent(lanlanNameForKey);
 
     // 计算窗口位置，使其居中显示
     const width = 700;
@@ -1817,6 +2048,40 @@ window.addEventListener('message', function (event) {
         // API Key已更改，刷新角色数据以显示更新后的Voice ID状态
         console.log('API Key已更改，正在刷新角色数据...');
         loadCharacterData();
+    } else if (event.data && event.data.type === 'voice_id_updated') {
+        const lanlanName = event.data.lanlan_name;
+        const voiceId = event.data.voice_id;
+        if (!lanlanName || !voiceId) return;
+
+        try {
+            if (characterData && characterData['猫娘'] && characterData['猫娘'][lanlanName]) {
+                characterData['猫娘'][lanlanName]['voice_id'] = voiceId;
+            }
+
+            const switchBtn = document.getElementById(`switch-btn-${lanlanName}`);
+            const block = switchBtn ? switchBtn.closest('.catgirl-block') : null;
+            const select = block ? block.querySelector('select[name="voice_id"]') : null;
+            if (!select) return;
+
+            fetch('/api/characters/voices').then(r => r.json()).then(data => {
+                if (!data || !data.voices) return;
+                while (select.firstChild) select.removeChild(select.firstChild);
+                const voiceNotSetText = window.t ? window.t('character.voiceNotSet') : '未指定音色';
+                const defaultOption = document.createElement('option');
+                defaultOption.value = '';
+                defaultOption.textContent = voiceNotSetText;
+                select.appendChild(defaultOption);
+
+                Object.entries(data.voices).forEach(([id, voiceData]) => {
+                    const option = document.createElement('option');
+                    option.value = id;
+                    option.textContent = voiceData.prefix || id;
+                    select.appendChild(option);
+                });
+
+                select.value = voiceId;
+            }).catch(() => {});
+        } catch (e) {}
     }
 });
 

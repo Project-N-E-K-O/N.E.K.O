@@ -27,10 +27,11 @@ import httpx
 
 from .shared_state import get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
 from config import get_extra_body, MEMORY_SERVER_PORT
-from config.prompts_sys import emotion_analysis_prompt, proactive_chat_prompt, proactive_chat_prompt_screenshot, proactive_chat_prompt_window_search, proactive_chat_rewrite_prompt
+from config.prompts_sys import emotion_analysis_prompt, get_proactive_chat_prompt, get_proactive_chat_rewrite_prompt
 from utils.workshop_utils import get_workshop_path
 from utils.screenshot_utils import analyze_screenshot_from_data_url
-from utils.language_utils import detect_language, translate_text, normalize_language_code
+from utils.language_utils import detect_language, translate_text, normalize_language_code, get_global_language
+from utils.frontend_utils import count_words_and_chars
 
 router = APIRouter(prefix="/api", tags=["system"])
 logger = logging.getLogger("Main")
@@ -870,10 +871,20 @@ async def proactive_chat(request: Request):
             logger.warning(f"[{lanlan_name}] 获取记忆上下文失败，使用空上下文: {e}")
             memory_context = ""
         
-        # 3. 构造提示词（根据选择使用不同的模板）
+        # 3. 选择语言（用于主动搭话提示词 i18n）
+        try:
+            request_lang = data.get('language') or data.get('lang') or data.get('i18n_language')
+            if request_lang:
+                proactive_lang = normalize_language_code(request_lang, format='short')
+            else:
+                proactive_lang = get_global_language()
+        except Exception:
+            proactive_lang = 'zh'
+
+        # 4. 构造提示词（根据选择使用不同的模板）
         if use_screenshot:
             # 截图模板：基于屏幕内容让AI决定是否主动发起对话
-            system_prompt = proactive_chat_prompt_screenshot.format(
+            system_prompt = get_proactive_chat_prompt('screenshot', proactive_lang).format(
                 lanlan_name=lanlan_name,
                 master_name=master_name_current,
                 screenshot_content=screenshot_content,
@@ -882,7 +893,7 @@ async def proactive_chat(request: Request):
             logger.info(f"[{lanlan_name}] 使用图片进行主动对话")
         elif use_window_search:
             # 窗口搜索模板：基于当前活跃窗口和百度搜索结果让AI决定是否主动发起对话
-            system_prompt = proactive_chat_prompt_window_search.format(
+            system_prompt = get_proactive_chat_prompt('window', proactive_lang).format(
                 lanlan_name=lanlan_name,
                 master_name=master_name_current,
                 window_context=formatted_window_content,
@@ -891,7 +902,7 @@ async def proactive_chat(request: Request):
             logger.info(f"[{lanlan_name}] 使用窗口搜索进行主动对话")
         else:
             # 首页推荐模板：基于首页信息流让AI决定是否主动发起对话
-            system_prompt = proactive_chat_prompt.format(
+            system_prompt = get_proactive_chat_prompt('home', proactive_lang).format(
                 lanlan_name=lanlan_name,
                 master_name=master_name_current,
                 trending_content=formatted_content,
@@ -988,19 +999,6 @@ async def proactive_chat(request: Request):
             # 1) 字数限制：按150英文词（空格拆分）或中文字来计算，超过则放弃输出
             text_length = 200
             try:
-                # 计算混合长度：中文字符计1，英文单词计1
-                def count_words_and_chars(text):
-                    count = 0
-                    # 用正则分离中文字符和英文单词
-                    # 匹配中文字符
-                    chinese_chars = re.findall(r'[\u4e00-\u9fff]', text)
-                    count += len(chinese_chars)
-                    # 移除中文字符后，按空格拆分计算英文单词
-                    text_without_chinese = re.sub(r'[\u4e00-\u9fff]', ' ', text)
-                    english_words = [w for w in text_without_chinese.split() if w.strip()]
-                    count += len(english_words)
-                    return count
-                
                 text_length = count_words_and_chars(response_text)
             except Exception:
                 logger.exception(f"[{lanlan_name}] 在检查回复长度时发生错误")
@@ -1020,7 +1018,7 @@ async def proactive_chat(request: Request):
                     )
                     
                     # 构造改写提示
-                    rewrite_prompt = proactive_chat_rewrite_prompt.format(raw_output=response_text)
+                    rewrite_prompt = get_proactive_chat_rewrite_prompt(proactive_lang).format(raw_output=response_text)
                     
                     # 调用改写模型
                     rewrite_response = await asyncio.wait_for(
@@ -1071,7 +1069,23 @@ async def proactive_chat(request: Request):
             if not mgr.session or not hasattr(mgr.session, '_conversation_history'):
                 logger.info(f"[{lanlan_name}] 没有活跃session，创建文本session用于主动搭话")
                 # 使用现有的真实websocket启动session
-                await mgr.start_session(mgr.websocket, new=True, input_mode='text')
+                try:
+                    await mgr.start_session(mgr.websocket, new=True, input_mode='text')
+                except Exception as e:
+                    logger.error(f"[{lanlan_name}] 创建文本session失败: {e}")
+                    return JSONResponse({
+                        "success": False,
+                        "error": f"创建文本session失败: {str(e)}"
+                    }, status_code=500)
+                
+                # 验证session是否正确创建
+                if not mgr.session or not hasattr(mgr.session, '_conversation_history'):
+                    logger.error(f"[{lanlan_name}] 文本session创建后验证失败")
+                    return JSONResponse({
+                        "success": False,
+                        "error": "文本session创建失败，无法进行主动搭话"
+                    }, status_code=500)
+                
                 session_created = True
                 logger.info(f"[{lanlan_name}] 文本session已创建")
             
@@ -1188,7 +1202,7 @@ async def translate_text_api(request: Request):
     请求格式:
     {
         "text": "要翻译的文本",
-        "target_lang": "目标语言代码 ('zh', 'en', 'ja')",
+        "target_lang": "目标语言代码 ('zh', 'en', 'ja', 'ko')",
         "source_lang": "源语言代码 (可选，为null时自动检测)"
     }
     
@@ -1272,5 +1286,3 @@ async def translate_text_api(request: Request):
             "source_lang": "unknown",
             "target_lang": "zh"
         }
-
-

@@ -52,6 +52,12 @@ Live2DManager.prototype.createPopup = function (buttonId) {
         // 麦克风选择列表（将从页面中获取）
         popup.id = 'live2d-popup-mic';
         popup.setAttribute('data-legacy-id', 'live2d-mic-popup');
+        // 双栏布局：加宽弹出框，横向排列
+        popup.style.minWidth = '400px';
+        popup.style.maxHeight = '320px';
+        popup.style.flexDirection = 'row';
+        popup.style.gap = '0';
+        popup.style.overflowY = 'hidden';  // 整体不滚动，右栏单独滚动
     } else if (buttonId === 'screen') {
         // 屏幕/窗口源选择列表（将从Electron获取）
         popup.id = 'live2d-popup-screen';
@@ -462,6 +468,7 @@ Live2DManager.prototype._createToggleItem = function (toggle, popup) {
 // 创建设置开关项
 Live2DManager.prototype._createSettingsToggleItem = function (toggle, popup) {
     const toggleItem = document.createElement('div');
+    toggleItem.id = `live2d-toggle-${toggle.id}`;  // 为整个切换项容器添加 ID
     Object.assign(toggleItem.style, {
         display: 'flex',
         alignItems: 'center',
@@ -743,6 +750,7 @@ Live2DManager.prototype._createSettingsMenuItems = function (popup) {
 // 创建单个菜单项
 Live2DManager.prototype._createMenuItem = function (item, isSubmenuItem = false) {
     const menuItem = document.createElement('div');
+    menuItem.id = `live2d-menu-${item.id}`;  // 为菜单项添加 ID
     Object.assign(menuItem.style, {
         display: 'flex',
         alignItems: 'center',
@@ -816,7 +824,8 @@ Live2DManager.prototype._createMenuItem = function (item, isSubmenuItem = false)
 
         if (item.action === 'navigate') {
             let finalUrl = item.url || item.urlBase;
-            const windowName = `neko_${item.id}`;
+            let windowName = `neko_${item.id}`;
+            let features;
 
             if (item.id === 'live2d-manage' && item.urlBase) {
                 const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
@@ -824,17 +833,29 @@ Live2DManager.prototype._createMenuItem = function (item, isSubmenuItem = false)
                 window.location.href = finalUrl;
             } else if (item.id === 'voice-clone' && item.url) {
                 const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+                const lanlanNameForKey = lanlanName || 'default';
                 finalUrl = `${item.url}?lanlan_name=${encodeURIComponent(lanlanName)}`;
+                windowName = `neko_voice_clone_${encodeURIComponent(lanlanNameForKey)}`;
+
+                const width = 700;
+                const height = 750;
+                const left = Math.max(0, Math.floor((screen.width - width) / 2));
+                const top = Math.max(0, Math.floor((screen.height - height) / 2));
+                features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
 
                 // 设置防抖标志
                 isOpening = true;
-                window.openOrFocusWindow(finalUrl, windowName);
+                window.openOrFocusWindow(finalUrl, windowName, features);
                 // 500ms后重置标志，允许再次点击
                 setTimeout(() => { isOpening = false; }, 500);
             } else {
+                if (typeof finalUrl === 'string' && finalUrl.startsWith('/chara_manager')) {
+                    windowName = 'neko_chara_manager';
+                }
+
                 // 设置防抖标志
                 isOpening = true;
-                window.openOrFocusWindow(finalUrl, windowName);
+                window.openOrFocusWindow(finalUrl, windowName, features);
                 // 500ms后重置标志，允许再次点击
                 setTimeout(() => { isOpening = false; }, 500);
             }
@@ -870,6 +891,10 @@ Live2DManager.prototype._createSubmenuContainer = function (submenuItems) {
         });
     };
     container._collapse = () => {
+        // 引导模式下，不收起子菜单
+        if (window.isInTutorial === true) {
+            return;
+        }
         container.style.height = '0';
         container.style.opacity = '0';
         setTimeout(() => {

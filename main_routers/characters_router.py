@@ -14,6 +14,7 @@ import os
 import logging
 import asyncio
 import copy
+import base64
 from datetime import datetime
 import pathlib
 import wave
@@ -22,7 +23,7 @@ from fastapi import APIRouter, Request, File, UploadFile, Form
 from fastapi.responses import JSONResponse
 import httpx
 import dashscope
-from dashscope.audio.tts_v2 import VoiceEnrollmentService
+from dashscope.audio.tts_v2 import VoiceEnrollmentService, SpeechSynthesizer
 
 from .shared_state import get_config_manager, get_session_manager, get_initialize_character_data
 from utils.frontend_utils import find_models, find_model_directory, is_user_imported_model
@@ -31,6 +32,25 @@ from config import MEMORY_SERVER_PORT, TFLINK_UPLOAD_URL
 
 router = APIRouter(prefix="/api/characters", tags=["characters"])
 logger = logging.getLogger("Main")
+
+
+PROFILE_NAME_MAX_UNITS = 20
+
+
+def _profile_name_units(name: str) -> int:
+    # 计数规则与前端保持一致：ASCII(<=0x7F) 计 1，其它字符计 2
+    return sum(1 if ord(ch) <= 0x7F else 2 for ch in name)
+
+
+def _validate_profile_name(name: str) -> str | None:
+    if name is None:
+        return '档案名为必填项'
+    name = str(name).strip()
+    if not name:
+        return '档案名为必填项'
+    if _profile_name_units(name) > PROFILE_NAME_MAX_UNITS:
+        return f'档案名长度不能超过{PROFILE_NAME_MAX_UNITS}单位（ASCII=1，其他=2；PROFILE_NAME_MAX_UNITS={PROFILE_NAME_MAX_UNITS}）'
+    return None
 
 
 async def send_reload_page_notice(session, message_text: str = "语音已更新，页面即将刷新"):
@@ -684,6 +704,11 @@ async def rename_catgirl(old_name: str, request: Request):
     new_name = data.get('new_name') if data else None
     if not new_name:
         return JSONResponse({'success': False, 'error': '新档案名不能为空'}, status_code=400)
+
+    new_name = str(new_name).strip()
+    err = _validate_profile_name(new_name)
+    if err:
+        return JSONResponse({'success': False, 'error': err.replace('档案名', '新档案名')}, status_code=400)
     characters = _config_manager.load_characters()
     if old_name not in characters.get('猫娘', {}):
         return JSONResponse({'success': False, 'error': '原猫娘不存在'}, status_code=404)
@@ -863,8 +888,13 @@ async def reload_character_config():
 @router.post('/master')
 async def update_master(request: Request):
     data = await request.json()
-    if not data or not data.get('档案名'):
+    if not data:
         return JSONResponse({'success': False, 'error': '档案名为必填项'}, status_code=400)
+    profile_name = data.get('档案名')
+    err = _validate_profile_name(profile_name)
+    if err:
+        return JSONResponse({'success': False, 'error': err}, status_code=400)
+    data['档案名'] = str(profile_name).strip()
     _config_manager = get_config_manager()
     initialize_character_data = get_initialize_character_data()
     characters = _config_manager.load_characters()
@@ -878,8 +908,14 @@ async def update_master(request: Request):
 @router.post('/catgirl')
 async def add_catgirl(request: Request):
     data = await request.json()
-    if not data or not data.get('档案名'):
+    if not data:
         return JSONResponse({'success': False, 'error': '档案名为必填项'}, status_code=400)
+
+    profile_name = data.get('档案名')
+    err = _validate_profile_name(profile_name)
+    if err:
+        return JSONResponse({'success': False, 'error': err}, status_code=400)
+    data['档案名'] = str(profile_name).strip()
     
     _config_manager = get_config_manager()
     characters = _config_manager.load_characters()
@@ -1131,6 +1167,68 @@ async def get_voices():
     """获取当前API key对应的所有已注册音色"""
     _config_manager = get_config_manager()
     return {"voices": _config_manager.get_voices_for_current_api()}
+
+
+@router.get('/voice_preview')
+async def get_voice_preview(voice_id: str):
+    """获取音色预览音频"""
+    try:
+        _config_manager = get_config_manager()
+        
+        # 优先尝试从 tts_custom 获取 API Key
+        try:
+            tts_custom_config = _config_manager.get_model_api_config('tts_custom')
+            audio_api_key = tts_custom_config.get('api_key', '')
+        except Exception:
+            audio_api_key = ''
+            
+        # 如果没有，则回退到核心配置
+        if not audio_api_key:
+            core_config = _config_manager.get_core_config()
+            audio_api_key = core_config.get('AUDIO_API_KEY', '')
+
+        if not audio_api_key:
+            return JSONResponse({'success': False, 'error': '未配置 AUDIO_API_KEY'}, status_code=400)
+
+        # 生成音频
+        dashscope.api_key = audio_api_key
+        logger.info(f"正在为音色 {voice_id} 生成预览音频...")
+        
+        text = "喵喵喵～这里是neko～很高兴见到你～"
+        # 参照 复刻.py 使用 cosyvoice-v3-plus 模型
+        try:
+            synthesizer = SpeechSynthesizer(model="cosyvoice-v3-plus", voice=voice_id)
+            # 使用 asyncio.to_thread 包装同步阻塞调用
+            audio_data = await asyncio.to_thread(lambda: synthesizer.call(text))
+            
+            if not audio_data:
+                request_id = getattr(synthesizer, 'get_last_request_id', lambda: 'unknown')()
+                logger.error(f"生成音频失败: audio_data 为空. Request ID: {request_id}")
+                return JSONResponse({
+                    'success': False, 
+                    'error': f'生成音频失败 (Request ID: {request_id})。请检查 API Key 额度或音色 ID 是否有效。'
+                }, status_code=500)
+                
+            logger.info(f"音色 {voice_id} 预览音频生成成功，大小: {len(audio_data)} 字节")
+                
+            # 将音频数据转换为 Base64 字符串
+            audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+                
+            return {
+                "success": True, 
+                "audio": audio_base64,
+                "mime_type": "audio/mpeg"
+            }
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"SpeechSynthesizer 调用异常: {error_msg}")
+            return JSONResponse({
+                'success': False, 
+                'error': f'语音合成异常: {error_msg}'
+            }, status_code=500)
+    except Exception as e:
+        logger.error(f"生成音色预览失败: {e}")
+        return JSONResponse({'success': False, 'error': f'系统错误: {str(e)}'}, status_code=500)
 
 
 @router.post('/voices')

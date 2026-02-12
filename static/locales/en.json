@@ -27,6 +27,24 @@
     "fieldSeparator": ", ",
     "tryAgainLater": "Please try again later"
   },
+  "characterProfile": {
+    "gender": "Gender",
+    "age": "Age",
+    "nickname": "Nickname",
+    "profileName": "Profile Name",
+    "values": {
+      "brother": "Brother",
+      "male": "Male",
+      "female": "Female",
+      "tChanNickname": "T-chan, Little T"
+    },
+    "labels": {
+      "档案名": "Profile Name",
+      "性别": "Gender",
+      "年龄": "Age",
+      "昵称": "Nickname"
+    }
+  },
   "steam": {
     "characterCards": "Character Cards",
     "characterCardName": "Nickname",
@@ -421,12 +439,31 @@
   "microphone": {
     "noDevices": "No microphone devices detected",
     "defaultDevice": "System Default Microphone",
+    "deviceTitle": "Select Microphone",
     "deviceLabel": "Microphone {{index}}",
     "loadFailed": "Failed to load microphone list",
     "switched": "Microphone switched (will take effect on next recording)",
     "switchFailed": "Failed to switch microphone: {{error}}",
     "networkError": "Failed to switch microphone: network error",
-    "accessFailed": "Cannot access microphone"
+    "accessFailed": "Cannot access microphone",
+    "gainLabel": "Microphone Gain",
+    "gainHint": "0dB is original volume, positive amplifies, negative reduces",
+    "volumeLabel": "Live Mic Volume",
+    "volumeIdle": "Not Recording",
+    "volumeNoSound": "No Sound",
+    "volumeLow": "Low Volume",
+    "volumeNormal": "Normal",
+    "volumeHigh": "High Volume",
+    "volumeHint": "Start recording to see volume",
+    "volumeDetecting": "Detecting...",
+    "volumeHintDetecting": "Detecting microphone input...",
+    "volumeHintNoSound": "No sound detected, check microphone",
+    "volumeHintLow": "Volume is low, try increasing gain",
+    "volumeHintOk": "Microphone working properly"
+  },
+  "speaker": {
+    "volumeLabel": "Speaker Volume",
+    "volumeHint": "Adjust AI voice playback volume"
   },
   "status": {
     "initializing": "Initializing...",
@@ -543,6 +580,7 @@
     "freeVersionSuggestionFull": "Completely free, no API Key needed, suitable for beginners (custom voice and Agent mode not supported)",
     "coreApiSuggestionFull": "Handles conversation functionality (choose based on budget and needs)",
     "assistApiSuggestionFull": "Handles memory management, text chat, and custom voice (only Alibaba supports custom voice)",
+    "assistApiKeyRequiredHint": "You need to fill in the API in the corresponding input box before you can select its provider",
     "mcpRouterToken": "MCP Router Token",
     "mcpRouterTokenDesc": "MCP Router Token Description:",
     "mcpRouterTokenDescText": "Authentication token for accessing MCP Router service. Required when MCP functionality is enabled. Leave empty if your MCP Router does not require authentication.",
@@ -637,6 +675,20 @@
       "wsProtocol": "• URL must use WebSocket protocol (starting with ws:// or wss://)",
       "cosyVoiceOnly": "• Currently only supports Alibaba Cloud CosyVoice compatible protocol format"
     },
+    "gptsovitsConfig": "GPT-SoVITS Configuration",
+    "gptsovitsDescription": "GPT-SoVITS Note:",
+    "gptsovitsDescriptionText": "A locally deployed voice cloning model. Start the GPT-SoVITS v3 API service first. Voice configs (reference audio, model weights, etc.) are managed in v3's voices/*.toml files — just enter the voice config ID here.",
+    "gptsovitsApiUrlPlaceholder": "e.g., http://127.0.0.1:9881",
+    "gptsovitsApiUrlOptional": "(Optional, default http://127.0.0.1:9881)",
+    "gptsovitsVoiceId": "Voice Config",
+    "gptsovitsVoiceIdHint": "(Fetch available configs from GPT-SoVITS v3)",
+    "gptsovitsVoiceIdEmpty": "-- Fetch voice list first --",
+    "gptsovitsNoVoices": "-- No configs available --",
+    "gptsovitsRefreshVoices": "Fetch List",
+    "gptsovitsVoicesLoaded": "Loaded {{count}} voice config(s)",
+    "gptsovitsVoicesLoadFailed": "Failed to fetch voice list",
+    "gptsovitsEnabled": "Enable GPT-SoVITS",
+    "gptsovitsEnabledHint": "(Will override TTS config above when enabled)",
     "wsWarning": {
       "title": "Protocol Error",
       "message": "URL must use WebSocket protocol (starting with ws:// or wss://)",
@@ -652,10 +704,9 @@
     "pleaseSelect": "Please select a model",
     "pleaseSelectModel": "Please select a model",
     "pleaseSelectMotion": "Please select a motion first",
+    "pleaseSelectExpression": "Please select an expression first",
     "selectMotion": "Animation",
     "selectExpression": "Expression",
-    "addMotion": "Add Motion",
-    "addExpression": "Add Expression",
     "selectPersistentExpression": "Select Persistent Expression",
     "noMotionFiles": "No motion files",
     "emotionConfig": "Emotion Config",
@@ -889,6 +940,9 @@
       "ru": "Russian"
     },
     "registeredVoices": "Registered Voices",
+    "preview": "Preview",
+    "previewFailed": "Preview failed: {{error}}",
+    "playFailed": "Play failed: {{error}}",
     "refresh": "Refresh",
     "loading": "Loading...",
     "noVoices": "No registered voices",
@@ -927,7 +981,22 @@
     "enabled": "Enabled",
     "disabled": "Disabled",
     "autoReviewNote": "When enabled, the system will automatically organize and optimize memory content to improve conversation quality",
-    "saveFailedStatus": "Save failed"
+    "saveFailedStatus": "Save failed",
+    "tutorialReset": "Tutorial Guide",
+    "tutorialSelectPage": "-- Select Page --",
+    "tutorialAllPages": "All Pages",
+    "tutorialPageHome": "Home",
+    "tutorialPageModelManager": "Model Settings",
+    "tutorialPageParameterEditor": "Face Editor",
+    "tutorialPageEmotionManager": "Emotion Manager",
+    "tutorialPageCharaManager": "Character Manager",
+    "tutorialPageSettings": "API Settings",
+    "tutorialPageVoiceClone": "Voice Clone",
+    "tutorialPageMemoryBrowser": "Memory Browser",
+    "resetTutorialBtn": "Reset Tutorial",
+    "tutorialResetSuccess": "All tutorials have been reset. They will be shown again when you visit each page.",
+    "tutorialPageResetSuccess": "Tutorial for this page has been reset. It will be shown again when you visit.",
+    "tutorialPageResetSuccessWithName": "Tutorial for \"{{pageName}}\" has been reset. It will be shown again when you visit that page."
   },
   "plugins": {
     "title": "Plugins",
@@ -952,6 +1021,10 @@
     "apiKeySettings": "API Key",
     "masterProfile": "Master Profile (Unique): Profile name is required, others are optional and can be deleted.",
     "profileName": "Profile Name",
+    "profileNameMaxHint": "Max 20 characters",
+    "profileNameTooLong": "Profile name is too long",
+    "newProfileNameRequired": "New profile name cannot be empty",
+    "newProfileNameTooLong": "Profile name is too long",
     "required": "*",
     "deleteField": "Delete Field",
     "detailDescriptionPlaceholder": "Enter detailed description",
@@ -1115,7 +1188,10 @@
     "language": {
       "title": "Select Language",
       "zh-CN": "Simplified Chinese",
-      "en": "English"
+      "en": "English",
+      "ja": "日本語",
+      "zh-TW": "繁體中文",
+      "ko": "한국어"
     },
     "interval": {
       "chatIntervalBase": "Base Interval",
@@ -1301,6 +1377,389 @@
     "pathStillInvalidAfterConversion": "[Model Manager] Path still contains invalid value after conversion:",
     "loadCurrentCharacterModelFailed": "Failed to load current character model:",
     "serverNotReturnedValidJSON": "Server did not return valid JSON data"
+  },
+  "tutorial": {
+    "step1": {
+      "title": "👋 Welcome to N.E.K.O",
+      "desc": "This is your Neko! Let me guide you through the features~"
+    },
+    "step1a": {
+      "title": "🎭 Click to Experience Expressions",
+      "desc": "Try clicking on your Neko! Each click triggers different expressions and actions. Click Next when you're done~"
+    },
+    "step1b": {
+      "title": "🖱️ Drag & Zoom",
+      "desc": "You can drag your Neko to move her, and use mouse wheel to zoom in/out. Give it a try~"
+    },
+    "step1c": {
+      "title": "🔒 Lock Neko",
+      "desc": "Click this lock to lock your Neko's position, preventing accidental moves. Click again to unlock~"
+    },
+    "step2": {
+      "title": "💬 Chat Area",
+      "desc": "Chat with your Neko here. Share your thoughts and get interesting responses~"
+    },
+    "step3": {
+      "title": "✍️ Input Box",
+      "desc": "Type your message. Enter to send, Shift+Enter for new line. Click the button to send screenshots~"
+    },
+    "step4": {
+      "title": "🎮 Quick Actions",
+      "desc": "Left button sends messages, right button takes screenshots. Share them with your Neko~"
+    },
+    "step5": {
+      "title": "🎛️ Floating Toolbar",
+      "desc": "Floating toolbar with useful function buttons. Let me introduce each one~"
+    },
+    "step6": {
+      "title": "🎤 Voice Control",
+      "desc": "Enable voice control for natural voice-based interaction with your Neko~"
+    },
+    "step7": {
+      "title": "🖥️ Screen Share",
+      "desc": "Share your screen/window/tab with your Neko~"
+    },
+    "step8": {
+      "title": "🔨 Agent Tools",
+      "desc": "Open Agent tool panel with various helper functions~"
+    },
+    "step9": {
+      "title": "💤 Ask Her to Leave",
+      "desc": "Let your Neko leave temporarily. Click \"Ask Her Back\" to restore~"
+    },
+    "step10": {
+      "title": "⚙️ Settings",
+      "desc": "Open settings panel. Let me introduce each setting~"
+    },
+    "step13": {
+      "title": "💬 Proactive Chat",
+      "desc": "Your Neko initiates conversation proactively. Adjust frequency here~"
+    },
+    "step14": {
+      "title": "👀 Proactive Vision",
+      "desc": "Your Neko actively reads screen information. Adjust interval here~"
+    },
+    "step15": {
+      "title": "👤 Character Manager",
+      "desc": "Adjust your Neko's personality, appearance, voice, etc.~"
+    },
+    "step16": {
+      "title": "🔑 API Keys",
+      "desc": "Configure AI service API keys. Required to interact with your Neko~"
+    },
+    "step17": {
+      "title": "🧠 Memory Browser",
+      "desc": "View and manage your Neko's memory content~"
+    },
+    "step18": {
+      "title": "🛠️ Steam Workshop",
+      "desc": "Access Steam Workshop page and manage subscriptions~"
+    },
+    "systray": {
+      "location": {
+        "title": "Tray icon location",
+        "desc": "The N.E.K.O icon appears in the system tray at the bottom-right of your screen. Click it to find N.E.K.O.",
+        "note": "If you don't see it, expand the tray arrow to show hidden icons.",
+        "alt": "System tray location example"
+      },
+
+      "menu": {
+        "title": "📋 Tray Menu",
+        "desc": "You'll find a N.E.K.O icon in the bottom-right tray. Right-click it to see many options. Here are two commonly used features:"
+      },
+      "reset": {
+        "title": "🔄 Reset Model Position",
+        "desc": "If your catgirl moves off-screen or to an undesirable position, click this option to return her to the default position~"
+      },
+      "switchMode": "Switch Desktop/Mobile Mode",
+      "reload": "Reload",
+      "autoLaunch": "Auto Launch",
+      "hotkey": "Hotkey Settings",
+      "feedback": {
+        "title": "📤 Upload Logs",
+        "desc": "Encountered issues or have suggestions? Click here to upload logs for feedback~"
+      },
+      "exit": "Exit",
+      "complete": {
+        "title": "🎉 Tutorial Complete!",
+        "desc": "Congratulations on completing all tutorials! You now understand N.E.K.O's main features. Enjoy interacting with your catgirl! To review the tutorial, click \"Reset Tutorial\" in settings~"
+      },
+      "resetPosition": "Reset Model Position",
+      "compatibility": "Compatibility Mode",
+      "hotkeyDesc": "Configure global hotkeys here to control N.E.K.O more efficiently~",
+      "uploadLogs": "Upload Logs",
+      "exitDesc": "When you want to close N.E.K.O, click Exit here. Since the window is borderless, the tray menu is the primary way to exit the application~"
+    },
+    "completed": "✨ Tutorial complete! Enjoy~",
+    "resetHint": {
+      "title": "✨ Tutorial Complete",
+      "desc": "To view this tutorial again, go to \"Memory Browser\" and reset it in the \"Tutorial Guide\" section."
+    },
+    "model_manager": {
+      "common": {
+        "step1": {
+          "title": "🎨 Select Model Type",
+          "desc": "First, choose the model type you want to use: Live2D (2D animation) or VRM (3D model)."
+        },
+        "step2": {
+          "title": "📤 Upload Model",
+          "desc": "Click here to upload your model file. Supports Live2D and VRM formats."
+        }
+      },
+      "live2d": {
+        "step1": {
+          "title": "🎭 Select Live2D Model",
+          "desc": "Choose a Live2D model from the uploaded models."
+        },
+        "step2": {
+          "title": "💃 Select Motion",
+          "desc": "Select a motion for the Live2D model. Click \"Play Motion\" to preview."
+        },
+        "step3": {
+          "title": "😊 Select Expression",
+          "desc": "Select an expression for the Live2D model. You can set a persistent expression."
+        },
+        "step4": {
+          "title": "🧷 Persistent Expression",
+          "desc": "Select a persistent expression to keep the model in that expression until changed."
+        },
+        "step5": {
+          "title": "😄 Emotion Configuration",
+          "desc": "Configure emotion expressions for the Live2D model. Set different expressions and motions for different emotions."
+        },
+        "step6": {
+          "title": "✨ Face Customization",
+          "desc": "Enter the face customization system to fine-tune Live2D model parameters for your unique Neko."
+        }
+      },
+      "vrm": {
+        "step1": {
+          "title": "🎭 Select VRM Model",
+          "desc": "Choose a VRM 3D model from the uploaded models."
+        },
+        "step2": {
+          "title": "💃 Select Animation",
+          "desc": "Select an animation for the VRM model. VRM supports rich 3D animations."
+        },
+        "step3": {
+          "title": "▶️ Play Animation",
+          "desc": "Click to preview the selected VRM animation."
+        },
+        "step4": {
+          "title": "😊 Select Expression",
+          "desc": "Select an expression for the VRM model. VRM supports multiple facial expressions."
+        },
+        "step5": {
+          "title": "💡 Lighting System",
+          "desc": "VRM supports professional 3D lighting. Adjust ambient light, main light, fill light and rim light."
+        },
+        "step6": {
+          "title": "🌟 Ambient Light",
+          "desc": "Adjust ambient light intensity. Higher values make the model brighter."
+        },
+        "step7": {
+          "title": "☀️ Main Light",
+          "desc": "Adjust main light intensity. Main light is the primary light source affecting contrast."
+        },
+        "step8": {
+          "title": "🌞 Exposure",
+          "desc": "Adjust overall exposure. Higher values brighten the image, lower values darken it."
+        },
+        "step9": {
+          "title": "🎞️ Tone Mapping",
+          "desc": "Select different tone mapping algorithms to control highlight and shadow rendering."
+        }
+      }
+    },
+    "parameter_editor": {
+      "step1": {
+        "title": "🎭 Select Model",
+        "desc": "First select the Live2D model to edit. You can only adjust parameters after selecting a model."
+      },
+      "step2": {
+        "title": "🎨 Parameter List",
+        "desc": "Shows all adjustable parameters for the model. Each parameter controls different parts like eye size, mouth shape, head angle, etc."
+      },
+      "step3": {
+        "title": "👁️ Real-time Preview",
+        "desc": "Left side is the preview area. See model changes in real-time as you adjust parameters."
+      },
+      "step4": {
+        "title": "🔄 Reset All Parameters",
+        "desc": "Click to reset all parameters to default values. Use this if you're not satisfied with adjustments."
+      }
+    },
+    "emotion_manager": {
+      "step1": {
+        "title": "🎭 Select Model",
+        "desc": "First select the Live2D model to configure emotions. Each model can have independent emotion settings."
+      },
+      "step2": {
+        "title": "😊 Emotion Configuration Area",
+        "desc": "Configure expressions and motion combinations for different emotions. Your Neko will automatically switch emotions based on conversation."
+      },
+      "step3": {
+        "title": "🔄 Reset Configuration",
+        "desc": "Click to reset emotion configuration to default values."
+      }
+    },
+    "chara_manager": {
+      "step1": {
+        "title": "👤 Master Profile",
+        "desc": "This is your master profile. Profile name is required, other info is optional. This affects how your Neko addresses you."
+      },
+      "step2": {
+        "title": "📝 Set Profile Name",
+        "desc": "Enter your name or nickname. Your Neko will use this to address you. Max 20 characters."
+      },
+      "step3": {
+        "title": "👥 Gender Setting",
+        "desc": "Optional. Enter your gender or related information. This affects how your Neko addresses you."
+      },
+      "step4": {
+        "title": "💬 Nickname Setting",
+        "desc": "Optional. Set a nickname for yourself. Your Neko may use this nickname to address you."
+      },
+      "step5": {
+        "title": "🔑 API Key Settings",
+        "desc": "Click here to configure AI service API keys. Required for your Neko to chat."
+      },
+      "step6": {
+        "title": "🐱 Character Profile",
+        "desc": "Create and manage multiple Neko characters. Each has unique personality, Live2D appearance and voice. Switch between them anytime."
+      },
+      "step7": {
+        "title": "➕ Add New Character",
+        "desc": "Click to create a new Neko character. Set name, personality, appearance and voice. Each character is independent with own memory."
+      },
+      "step8": {
+        "title": "📋 Character Card",
+        "desc": "Click character name to expand/collapse details. Each character has independent settings including basic info and advanced config."
+      },
+      "step9": {
+        "title": "📝 Character Name",
+        "desc": "This is the character's name and unique identifier. Can be changed later via \"Rename\" button."
+      },
+      "step10": {
+        "title": "✨ Custom Attributes",
+        "desc": "Character personality settings like personality, background, hobbies, catchphrases, etc. Customize freely for unique personality."
+      },
+      "step11": {
+        "title": "🔄 Switch Character",
+        "desc": "Click to set this character as active. After switching, home and chat will use this character's appearance and personality."
+      },
+      "step12": {
+        "title": "⚙️ Advanced Settings",
+        "desc": "Click to expand advanced settings. Configure Live2D model, voice ID, and add custom personality attributes."
+      },
+      "step13": {
+        "title": "🎨 Model Settings",
+        "desc": "Click to select or change the character's Live2D appearance or VRM model. Different models provide different visual experiences."
+      },
+      "step14": {
+        "title": "🎤 Voice Settings",
+        "desc": "Select your Neko's voice. Different voice_ids correspond to different voice characteristics for unique sound."
+      }
+    },
+    "settings": {
+      "step1": {
+        "title": "🎯 Beginner Recommended",
+        "desc": "If you don't have an API Key, select \"Free Version\" to start without registration!"
+      },
+      "step2": {
+        "title": "🔑 Core API Provider",
+        "desc": "Most important setting. Core API handles conversation."
+      },
+      "step3": {
+        "title": "📝 Core API Key",
+        "desc": "Paste your chosen API provider's API Key here. Can be left empty if using Free version."
+      },
+      "step4": {
+        "title": "⚙️ Advanced Options",
+        "desc": "Click to expand advanced options including auxiliary API and custom API configuration."
+      },
+      "step5": {
+        "title": "🔧 Auxiliary API Provider",
+        "desc": "Auxiliary API handles memory management and custom voice.\n\n• Free: Completely free, no custom voice support\n• Alibaba: Recommended, supports custom voice\n• Zhipu: Supports Agent mode\n• OpenAI: Strong memory management\n\nNote: Only Alibaba supports custom voice."
+      },
+      "step6": {
+        "title": "🔑 Auxiliary API Key",
+        "desc": "If using Alibaba as auxiliary API, enter Alibaba's API Key here. If empty, uses core API key."
+      },
+      "step7": {
+        "title": "🔧 Custom API Configuration",
+        "desc": "Click to expand custom API options. Configure your own API server or other compatible services."
+      },
+      "step8": {
+        "title": "✅ Enable Custom API",
+        "desc": "Check to enable custom API configuration. Then configure independent APIs for different modules like summarization, correction, emotion analysis, etc."
+      },
+      "step9": {
+        "title": "📝 Summary Model Configuration",
+        "desc": "Summary model generates conversation summaries and manages memory. Configure independent API service for summary tasks."
+      }
+    },
+    "voice_clone": {
+      "step1": {
+        "title": "⚠️ Important Notice",
+        "desc": "Voice cloning requires Alibaba Cloud API. Make sure you've configured Alibaba Cloud API Key in API settings."
+      },
+      "step2": {
+        "title": "🌍 Select Reference Audio Language",
+        "desc": "Select the language of your uploaded audio file. Helps system accurately identify and clone voice characteristics."
+      },
+      "step3": {
+        "title": "🏷️ Custom Prefix",
+        "desc": "Enter a prefix up to 10 characters (numbers and English letters only). This prefix identifies the cloned voice."
+      },
+      "step4": {
+        "title": "✨ Register Voice",
+        "desc": "Click to start cloning your voice. System processes audio and generates unique voice ID."
+      },
+      "step5": {
+        "title": "📋 Registered Voices List",
+        "desc": "Shows all successfully cloned voices. Select these in character manager to voice your Neko."
+      }
+    },
+    "steam_workshop": {
+      "step1": {
+        "title": "📦 Subscriptions List",
+        "desc": "Shows all your Steam Workshop subscriptions. Click cards to view details or perform actions."
+      },
+      "step2": {
+        "title": "💡 Usage Tips",
+        "desc": "To use Steam Workshop voices, go to Live2D settings page to manually register them."
+      }
+    },
+    "memory_browser": {
+      "step1": {
+        "title": "💡 Usage Tips",
+        "desc": "Recent conversation content takes a moment to load. Click character name to refresh if you don't see latest chat."
+      },
+      "step2": {
+        "title": "🐱 Character Memory Library",
+        "desc": "Lists all Neko character memory libraries. Click a character name to view and edit her conversation history."
+      },
+      "step3": {
+        "title": "🤖 Auto Memory Organization",
+        "desc": "When enabled, system automatically organizes and optimizes memory content for better conversation quality. Recommended to keep enabled."
+      },
+      "step4": {
+        "title": "📝 Chat History Editing",
+        "desc": "Shows all conversation records for selected character. View, edit or delete specific conversations here."
+      }
+    },
+    "buttons": {
+      "next": "Next",
+      "prev": "Previous",
+      "done": "Done",
+      "close": "Close"
+    },
+    "fullscreenPrompt": {
+      "title": "🎓 Start Tutorial",
+      "desc": "For the best tutorial experience, we recommend entering fullscreen mode.\nIn fullscreen mode, the tutorial content will be clearer and won't be obscured by other elements.",
+      "enterFullscreen": "Enter Fullscreen Tutorial"
+    }
   },
   "console": {
     "oggOpusInitFailed": "[OGG OPUS] Initialization Promise failed, will allow retry:",

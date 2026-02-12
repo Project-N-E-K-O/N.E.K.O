@@ -15,6 +15,12 @@
     <script src="/static/i18n-i18next.js"></script>
     <script src="/static/common_dialogs.js"></script>
     <link rel="stylesheet" href="/static/css/index.css">
+
+    <!-- Driver.js 新手引导库 (本地实现 - 无需 CDN) -->
+    <script src="/static/libs/driver.min.js"></script>
+    <link rel="stylesheet" href="/static/libs/driver.min.css">
+    <!-- 教程样式定制 -->
+    <link rel="stylesheet" href="/static/css/tutorial-styles.css">
 </head>
 
 <body>
@@ -40,8 +46,9 @@
             <span id="chat-title" data-i18n="chat.title">对话</span>
         </div>
         <button id="toggle-chat-btn" data-i18n-title="common.minimize" title="最小化"><img
-                src='/static/icons/expand_icon.png' alt="最小化" data-i18n-alt="common.minimize"
-                style="width: 24px; height: 24px; object-fit: contain; pointer-events: none;"></button>
+                src='/static/icons/expand_icon_off.png' alt="最小化" data-i18n-alt="common.minimize"
+                width="32" height="32"
+                style="object-fit: cover; pointer-events: none;"></button>
         <div id="chat-tooltip" data-i18n="chat.tooltip">✨ 对话区</div>
         <div id="chat-content-wrapper">
             <div id="chatContainer"></div>
@@ -123,6 +130,10 @@
     <script src="/static/vrm-init.js"></script>
     <script src="/static/achievement_manager.js"></script>
     <script src="/static/app.js"></script>
+
+    <!-- 通用教程管理器（支持所有页面） -->
+    <script src="/static/universal-tutorial-manager.js"></script>
+    <!-- 注意：初始化由 app.js 统一处理，避免重复初始化 -->
 </body>
 
 </html>

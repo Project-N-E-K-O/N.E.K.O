@@ -5,23 +5,25 @@ body {
 height: 100%;
 margin: 0;
 padding: 0;
-background: rgba(0, 0, 0, 0.4);
-backdrop-filter: blur(4px);
+background: transparent;
 color: #333;
 font-family: 'Segoe UI', Arial, sans-serif;
 position: relative;
+overflow: auto; /* 允许 body 滚动 */
 }
 
-/* 主容器 - 浮动模态窗口样式 */
+/* 主容器 - 无边框窗口样式 */
 .container {
-max-width: 800px;
-margin: 40px auto;
+max-width: 100%;
+margin: 0;
 background: #fff;
-border-radius: 20px;
-box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+border-radius: 0;
+box-shadow: none;
 padding: 0;
-overflow: hidden;
+padding-bottom: 24px; /* 底部留出空间 */
+overflow: visible; /* 让内容自然扩展 */
 position: relative;
+min-height: 100vh;
 }
 
 /* 标题栏 */
@@ -31,7 +33,13 @@ padding: 18px 24px;
 display: flex;
 justify-content: space-between;
 align-items: center;
-border-radius: 20px 20px 0 0;
+border-radius: 0;
+-webkit-app-region: drag; /* 允许通过标题栏拖动窗口 */
+}
+
+/* 标题栏内的可交互元素需要禁用拖动 */
+.container-header .close-btn {
+-webkit-app-region: no-drag;
 }
 
 .container-header h2 {
@@ -324,6 +332,33 @@ outline: none;
 
 .field-row:focus-within {
 border-color: #40C5F1;
+}
+
+/* 档案名超限反馈：红框 + 临时提示 */
+.field-row.profile-name-too-long {
+    border-color: #ff5252;
+}
+
+.profile-name-too-long {
+    outline: 2px solid #ff5252 !important;
+    outline-offset: 1px;
+}
+
+.profile-name-too-long-tip {
+    position: absolute;
+    top: 100%;
+    left: 12px;
+    margin-top: 6px;
+    padding: 2px 10px;
+    font-size: 0.85rem;
+    line-height: 1.6;
+    color: #ff5252;
+    background: rgba(255, 255, 255, 0.95);
+    border: 1px solid rgba(255, 82, 82, 0.35);
+    border-radius: 999px;
+    z-index: 10;
+    white-space: nowrap;
+    pointer-events: none;
 }
 
 /* 输入字段 - 无边框，在胶囊内，白色背景，圆角贴合胶囊 */

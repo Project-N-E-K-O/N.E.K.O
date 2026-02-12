@@ -228,6 +228,10 @@ function init_app() {
     let socket;
     // 将 currentGeminiMessage 改为全局变量，供字幕模块使用
     window.currentGeminiMessage = null;
+    // 追踪本轮 AI 回复的所有气泡（用于改写时删除）
+    window.currentTurnGeminiBubbles = [];
+    // 拟真输出队列版本号，用于取消旧任务
+    window._realisticGeminiVersion = 0;
     let audioPlayerContext = null;
     let videoTrack, videoSenderInterval;
     let audioBufferQueue = [];
@@ -238,6 +242,7 @@ function init_app() {
     let animationFrameId;
     let seqCounter = 0;
     let globalAnalyser = null;
+    let speakerGainNode = null;  // 扬声器音量增益节点
     let lipSyncActive = false;
     let screenCaptureStream = null; // 暂存屏幕共享stream，不再需要每次都弹窗选择共享区域，方便自动重连
     let screenCaptureStreamLastUsed = null; // 记录屏幕流最后使用时间，用于闲置自动释放
@@ -284,6 +289,28 @@ function init_app() {
     // 新增：当前选择的麦克风设备ID
     let selectedMicrophoneId = null;
 
+    // 麦克风增益控制相关变量（使用分贝单位）
+    let microphoneGainDb = 0;           // 麦克风增益值（分贝），0dB为原始音量
+    let micGainNode = null;             // GainNode 实例，用于实时调整增益
+    const DEFAULT_MIC_GAIN_DB = 0;      // 默认增益（0dB = 原始音量）
+    const MAX_MIC_GAIN_DB = 25;         // 最大增益（25dB ≈ 18倍放大）
+    const MIN_MIC_GAIN_DB = -5;         // 最小增益（-5dB ≈ 0.56倍）
+    let micVolumeAnimationId = null;    // 音量可视化动画帧ID
+
+    // 扬声器音量控制相关变量
+    let speakerVolume = 100;                // 扬声器音量 (0~100)
+    const DEFAULT_SPEAKER_VOLUME = 100;     // 默认音量 100%
+
+    // 分贝转线性增益：linear = 10^(dB/20)
+    function dbToLinear(db) {
+        return Math.pow(10, db / 20);
+    }
+
+    // 线性增益转分贝：dB = 20 * log10(linear)
+    function linearToDb(linear) {
+        return 20 * Math.log10(linear);
+    }
+
     // Speech ID 精确打断控制相关变量
     let interruptedSpeechId = null;      // 被打断的 speech_id
     let currentPlayingSpeechId = null;   // 当前正在播放的 speech_id
@@ -300,6 +327,11 @@ function init_app() {
     let isSwitchingMode = false; // 新增：模式切换标志
     let sessionStartedResolver = null; // 用于等待 session_started 消息
     let sessionStartedRejecter = null; // 用于等待 session_failed / timeout 消息
+
+    // 语音模式下用户 transcript 合并相关变量（兜底机制，防止 Gemini 等模型返回碎片化转录造成刷屏）
+    let lastVoiceUserMessage = null;       // 上一个用户消息 DOM 元素
+    let lastVoiceUserMessageTime = 0;      // 上一个用户消息的时间戳
+    const VOICE_TRANSCRIPT_MERGE_WINDOW = 5000; // 合并时间窗口（毫秒），5秒内的连续转录会合并
 
     // 主动搭话功能相关
     let proactiveChatEnabled = false;
@@ -431,9 +463,92 @@ function init_app() {
                 if (response.type === 'gemini_response') {
                     // 检查是否是新消息的开始
                     const isNewMessage = response.isNewMessage || false;
+                    
+                    // AI 开始新回复时，重置用户转录合并追踪（避免跨轮次合并）
+                    if (isNewMessage) {
+                        lastVoiceUserMessage = null;
+                        lastVoiceUserMessageTime = 0;
+                    }
+                    
                     appendMessage(response.text, 'gemini', isNewMessage);
+                } else if (response.type === 'response_discarded') {
+                    const attempt = response.attempt || 0;
+                    const maxAttempts = response.max_attempts || 0;
+                    console.log(`[Discard] AI回复被丢弃 reason=${response.reason} attempt=${attempt}/${maxAttempts} retry=${response.will_retry}`);
+                    
+                    window._realisticGeminiQueue = [];
+                    window._realisticGeminiBuffer = '';
+                    window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
+                    
+                    if (window.currentTurnGeminiBubbles && window.currentTurnGeminiBubbles.length > 0) {
+                        window.currentTurnGeminiBubbles.forEach(bubble => {
+                            if (bubble && bubble.parentNode) {
+                                bubble.parentNode.removeChild(bubble);
+                            }
+                        });
+                        window.currentTurnGeminiBubbles = [];
+                    }
+
+                    if ((!window.currentTurnGeminiBubbles || window.currentTurnGeminiBubbles.length === 0) &&
+                        chatContainer && chatContainer.children && chatContainer.children.length > 0) {
+                        const toRemove = [];
+                        for (let i = chatContainer.children.length - 1; i >= 0; i--) {
+                            const el = chatContainer.children[i];
+                            if (el.classList && el.classList.contains('message') && el.classList.contains('gemini')) {
+                                toRemove.push(el);
+                            } else {
+                                break;
+                            }
+                        }
+                        toRemove.forEach(el => {
+                            if (el && el.parentNode) {
+                                el.parentNode.removeChild(el);
+                            }
+                        });
+                    }
+
+                    window._geminiTurnFullText = '';
+                    
+                    const retryMsg = window.t ? window.t('console.aiRetrying') : '猫娘链接出现异常，校准中…';
+                    const failMsg = window.t ? window.t('console.aiFailed') : '猫娘链接出现异常';
+                    showStatusToast(response.will_retry ? retryMsg : failMsg, 2500);
+                    
+                    if (!response.will_retry && response.message) {
+                        const messageDiv = document.createElement('div');
+                        messageDiv.classList.add('message', 'gemini');
+                        messageDiv.textContent = "[" + getCurrentTimeString() + "] 🎀 " + response.message;
+                        chatContainer.appendChild(messageDiv);
+                        window.currentGeminiMessage = messageDiv;
+                        window.currentTurnGeminiBubbles = [messageDiv];
+                    }
+                    
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
                 } else if (response.type === 'user_transcript') {
-                    appendMessage(response.text, 'user', true);
+                    // 语音模式下的用户转录合并机制（兜底，防止 Gemini 等模型碎片化转录刷屏）
+                    const now = Date.now();
+                    const shouldMerge = isRecording && 
+                        lastVoiceUserMessage && 
+                        lastVoiceUserMessage.isConnected &&
+                        (now - lastVoiceUserMessageTime) < VOICE_TRANSCRIPT_MERGE_WINDOW;
+                    
+                    if (shouldMerge) {
+                        // 合并到上一个用户消息气泡（流式追加）
+                        lastVoiceUserMessage.textContent += response.text;
+                        lastVoiceUserMessageTime = now; // 更新时间戳，延续合并窗口
+                    } else {
+                        // 创建新消息
+                        appendMessage(response.text, 'user', true);
+                        
+                        // 在语音模式下追踪这个消息，以便后续合并
+                        if (isRecording) {
+                            // 获取刚创建的用户消息元素（chatContainer 的最后一个 .user 消息）
+                            const userMessages = chatContainer.querySelectorAll('.message.user');
+                            if (userMessages.length > 0) {
+                                lastVoiceUserMessage = userMessages[userMessages.length - 1];
+                                lastVoiceUserMessageTime = now;
+                            }
+                        }
+                    }
                 } else if (response.type === 'user_activity') {
                     interruptedSpeechId = response.interrupted_speech_id || null;
                     pendingDecoderReset = true;  // 标记需要在新 speech_id 到来时重置
@@ -687,7 +802,7 @@ function init_app() {
                             window._realisticGeminiQueue = window._realisticGeminiQueue || [];
                             window._realisticGeminiQueue.push(trimmed);
                             window._realisticGeminiBuffer = '';
-                            processRealisticQueue();
+                            processRealisticQueue(window._realisticGeminiVersion || 0);
                         }
                     } catch (e) {
                         console.warn(window.t('console.turnEndFlushFailed'), e);
@@ -1260,6 +1375,10 @@ function init_app() {
         messageDiv.textContent = "[" + getCurrentTimeString() + "] 🎀 " + sentence;
         chatContainer.appendChild(messageDiv);
         window.currentGeminiMessage = messageDiv;
+        
+        // ========== 新增：追踪本轮气泡 ==========
+        window.currentTurnGeminiBubbles.push(messageDiv);
+        // ========== 追踪结束 ==========
 
         // 检测AI消息的语言，如果与用户语言不同，显示字幕提示框
         checkAndShowSubtitlePrompt(sentence);
@@ -1272,12 +1391,15 @@ function init_app() {
         }
     }
 
-    async function processRealisticQueue() {
+    async function processRealisticQueue(queueVersion = window._realisticGeminiVersion || 0) {
         if (window._isProcessingRealisticQueue) return;
         window._isProcessingRealisticQueue = true;
 
         try {
             while (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
+                if ((window._realisticGeminiVersion || 0) !== queueVersion) {
+                    break;
+                }
                 // 基于时间戳的延迟：确保每句之间至少间隔2秒
                 const now = Date.now();
                 const timeSinceLastBubble = now - (window._lastBubbleTime || 0);
@@ -1285,8 +1407,12 @@ function init_app() {
                     await new Promise(resolve => setTimeout(resolve, 2000 - timeSinceLastBubble));
                 }
 
+                if ((window._realisticGeminiVersion || 0) !== queueVersion) {
+                    break;
+                }
+
                 const s = window._realisticGeminiQueue.shift();
-                if (s) {
+                if (s && (window._realisticGeminiVersion || 0) === queueVersion) {
                     createGeminiBubble(s);
                     chatContainer.scrollTop = chatContainer.scrollHeight;
                     window._lastBubbleTime = Date.now();
@@ -1296,7 +1422,7 @@ function init_app() {
             window._isProcessingRealisticQueue = false;
             // 兜底检查：如果在循环结束到重置标志位之间又有新消息进入队列，递归触发
             if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
-                processRealisticQueue();
+                processRealisticQueue(window._realisticGeminiVersion || 0);
             }
         }
     }
@@ -1348,7 +1474,11 @@ function init_app() {
         // 维护“本轮 AI 回复”的完整文本（用于 turn end 时整段翻译/情感分析）
         if (sender === 'gemini') {
             if (isNewMessage) {
+                window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
                 window._geminiTurnFullText = '';
+                // ========== 新增：重置本轮气泡追踪 ==========
+                window.currentTurnGeminiBubbles = [];
+                // ========== 重置结束 ==========
             }
             const prevFull = typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '';
             window._geminiTurnFullText = prevFull + normalizeGeminiText(text);
@@ -1369,7 +1499,7 @@ function init_app() {
             if (sentences.length > 0) {
                 window._realisticGeminiQueue = window._realisticGeminiQueue || [];
                 window._realisticGeminiQueue.push(...sentences);
-                processRealisticQueue();
+                processRealisticQueue(window._realisticGeminiVersion || 0);
             }
         } else if (sender === 'gemini' && isMergeMessagesEnabled() && isNewMessage) {
             // 合并消息开启：新一轮开始时，清空拟真缓冲，防止残留
@@ -1381,6 +1511,9 @@ function init_app() {
             messageDiv.textContent = "[" + getCurrentTimeString() + "] 🎀 " + (text || '');
             chatContainer.appendChild(messageDiv);
             window.currentGeminiMessage = messageDiv;
+            // ========== 新增：追踪本轮气泡 ==========
+            window.currentTurnGeminiBubbles.push(messageDiv);
+            // ========== 追踪结束 ==========
 
             checkAndShowSubtitlePrompt(text);
 
@@ -1445,6 +1578,9 @@ function init_app() {
             // 如果是Gemini消息，更新当前消息引用
             if (sender === 'gemini') {
                 window.currentGeminiMessage = messageDiv;
+                // ========== 新增：追踪本轮气泡 ==========
+                window.currentTurnGeminiBubbles.push(messageDiv);
+                // ========== 追踪结束 ==========
 
                 // 检测AI消息的语言，如果与用户语言不同，显示字幕提示框
                 checkAndShowSubtitlePrompt(text);
@@ -1699,6 +1835,295 @@ function init_app() {
         }
     }
 
+    // 保存麦克风增益设置到 localStorage（保存分贝值）
+    function saveMicGainSetting() {
+        try {
+            localStorage.setItem('neko_mic_gain_db', String(microphoneGainDb));
+            console.log(`麦克风增益设置已保存: ${microphoneGainDb}dB`);
+        } catch (err) {
+            console.error('保存麦克风增益设置失败:', err);
+        }
+    }
+
+    // 从 localStorage 加载麦克风增益设置
+    function loadMicGainSetting() {
+        try {
+            const savedGainDb = localStorage.getItem('neko_mic_gain_db');
+            if (savedGainDb !== null) {
+                const gainDb = parseFloat(savedGainDb);
+                // 验证增益值在有效范围内
+                if (!isNaN(gainDb) && gainDb >= MIN_MIC_GAIN_DB && gainDb <= MAX_MIC_GAIN_DB) {
+                    microphoneGainDb = gainDb;
+                    console.log(`已加载麦克风增益设置: ${microphoneGainDb}dB`);
+                } else {
+                    console.warn(`无效的增益值 ${savedGainDb}dB，使用默认值 ${DEFAULT_MIC_GAIN_DB}dB`);
+                    microphoneGainDb = DEFAULT_MIC_GAIN_DB;
+                }
+            } else {
+                console.log(`未找到麦克风增益设置，使用默认值 ${DEFAULT_MIC_GAIN_DB}dB`);
+            }
+        } catch (err) {
+            console.error('加载麦克风增益设置失败:', err);
+            microphoneGainDb = DEFAULT_MIC_GAIN_DB;
+        }
+    }
+
+    // 更新麦克风增益（供外部调用，参数为分贝值）
+    window.setMicrophoneGain = function(gainDb) {
+        if (gainDb >= MIN_MIC_GAIN_DB && gainDb <= MAX_MIC_GAIN_DB) {
+            microphoneGainDb = gainDb;
+            if (micGainNode) {
+                micGainNode.gain.value = dbToLinear(gainDb);
+            }
+            saveMicGainSetting();
+            // 更新 UI 滑块（如果存在）
+            const slider = document.getElementById('mic-gain-slider');
+            const valueDisplay = document.getElementById('mic-gain-value');
+            if (slider) slider.value = String(gainDb);
+            if (valueDisplay) valueDisplay.textContent = formatGainDisplay(gainDb);
+            console.log(`麦克风增益已设置: ${gainDb}dB`);
+        }
+    };
+
+    // 获取当前麦克风增益（返回分贝值）
+    window.getMicrophoneGain = function() {
+        return microphoneGainDb;
+    };
+
+    // 格式化增益显示（带正负号）
+    function formatGainDisplay(db) {
+        if (db > 0) {
+            return `+${db}dB`;
+        } else if (db === 0) {
+            return '0dB';
+        } else {
+            return `${db}dB`;
+        }
+    }
+
+    // ========== 扬声器音量控制 ==========
+
+    // 保存扬声器音量到 localStorage
+    function saveSpeakerVolumeSetting() {
+        try {
+            localStorage.setItem('neko_speaker_volume', String(speakerVolume));
+            console.log(`扬声器音量设置已保存: ${speakerVolume}%`);
+        } catch (err) {
+            console.error('保存扬声器音量设置失败:', err);
+        }
+    }
+
+    // 从 localStorage 加载扬声器音量设置
+    function loadSpeakerVolumeSetting() {
+        try {
+            const saved = localStorage.getItem('neko_speaker_volume');
+            if (saved !== null) {
+                const vol = parseInt(saved, 10);
+                if (!isNaN(vol) && vol >= 0 && vol <= 100) {
+                    speakerVolume = vol;
+                    console.log(`已加载扬声器音量设置: ${speakerVolume}%`);
+                } else {
+                    console.warn(`无效的扬声器音量值 ${saved}，使用默认值 ${DEFAULT_SPEAKER_VOLUME}%`);
+                    speakerVolume = DEFAULT_SPEAKER_VOLUME;
+                }
+            } else {
+                console.log(`未找到扬声器音量设置，使用默认值 ${DEFAULT_SPEAKER_VOLUME}%`);
+                speakerVolume = DEFAULT_SPEAKER_VOLUME;
+            }
+
+            // 立即应用到音频管道（如果已初始化）
+            if (speakerGainNode) {
+                speakerGainNode.gain.setTargetAtTime(speakerVolume / 100, speakerGainNode.context.currentTime, 0.05);
+            }
+        } catch (err) {
+            console.error('加载扬声器音量设置失败:', err);
+            speakerVolume = DEFAULT_SPEAKER_VOLUME;
+        }
+    }
+
+    // 设置扬声器音量（供外部调用，参数为 0~100）
+    window.setSpeakerVolume = function(vol) {
+        if (vol >= 0 && vol <= 100) {
+            speakerVolume = vol;
+            if (speakerGainNode) {
+                speakerGainNode.gain.setTargetAtTime(vol / 100, speakerGainNode.context.currentTime, 0.05);
+            }
+            saveSpeakerVolumeSetting();
+            // 更新 UI 滑块（如果存在）
+            const slider = document.getElementById('speaker-volume-slider');
+            const valueDisplay = document.getElementById('speaker-volume-value');
+            if (slider) slider.value = String(vol);
+            if (valueDisplay) valueDisplay.textContent = `${vol}%`;
+            console.log(`扬声器音量已设置: ${vol}%`);
+        }
+    };
+
+    // 获取当前扬声器音量
+    window.getSpeakerVolume = function() {
+        return speakerVolume;
+    };
+
+    // 启动麦克风音量可视化
+    function startMicVolumeVisualization() {
+        // 先停止现有的动画
+        stopMicVolumeVisualization();
+
+        // 缓存 DOM 引用，仅在元素被销毁时重新查询
+        let cachedBarFill = document.getElementById('mic-volume-bar-fill');
+        let cachedStatus = document.getElementById('mic-volume-status');
+        let cachedHint = document.getElementById('mic-volume-hint');
+        let cachedPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic');
+
+        function updateVolumeDisplay() {
+            // 仅当缓存元素被移出 DOM 时才重新查询（popup 重建场景）
+            if (!cachedBarFill || !cachedBarFill.isConnected) {
+                cachedBarFill = document.getElementById('mic-volume-bar-fill');
+                cachedStatus = document.getElementById('mic-volume-status');
+                cachedHint = document.getElementById('mic-volume-hint');
+                cachedPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic');
+            }
+
+            if (!cachedBarFill) {
+                // DOM 元素已销毁（popup 被重建），停止旧的动画循环
+                // renderFloatingMicList 会启动新的动画循环
+                stopMicVolumeVisualization();
+                return;
+            }
+
+            // 检查弹出框是否仍然可见（兼容 Live2D 和 VRM）
+            // 注意：父容器隐藏时 offsetParent 为 null，但 popup 本身并未销毁
+            // 此时仅跳过本帧更新，保持动画循环存活，鼠标回来时恢复显示
+            if (!cachedPopup || cachedPopup.style.display === 'none' || !cachedPopup.offsetParent) {
+                // popup 不可见，跳过本帧但继续循环
+                micVolumeAnimationId = requestAnimationFrame(updateVolumeDisplay);
+                return;
+            }
+
+            // 检查是否正在录音且有 analyser
+            if (isRecording && inputAnalyser) {
+                // 获取音频数据
+                const dataArray = new Uint8Array(inputAnalyser.frequencyBinCount);
+                inputAnalyser.getByteFrequencyData(dataArray);
+
+                // 计算平均音量 (0-255)
+                let sum = 0;
+                for (let i = 0; i < dataArray.length; i++) {
+                    sum += dataArray[i];
+                }
+                const average = sum / dataArray.length;
+
+                // 转换为百分比 (0-100)，使用对数缩放使显示更自然
+                const volumePercent = Math.min(100, (average / 128) * 100);
+
+                // 更新音量条
+                cachedBarFill.style.width = `${volumePercent}%`;
+
+                // 根据音量设置颜色
+                if (volumePercent < 5) {
+                    cachedBarFill.style.backgroundColor = '#dc3545'; // 红色 - 无声音
+                } else if (volumePercent < 20) {
+                    cachedBarFill.style.backgroundColor = '#ffc107'; // 黄色 - 音量偏低
+                } else if (volumePercent > 90) {
+                    cachedBarFill.style.backgroundColor = '#fd7e14'; // 橙色 - 音量过高
+                } else {
+                    cachedBarFill.style.backgroundColor = '#28a745'; // 绿色 - 正常
+                }
+
+                // 更新状态文字
+                if (cachedStatus) {
+                    if (volumePercent < 5) {
+                        cachedStatus.textContent = window.t ? window.t('microphone.volumeNoSound') : '无声音';
+                        cachedStatus.style.color = '#dc3545';
+                    } else if (volumePercent < 20) {
+                        cachedStatus.textContent = window.t ? window.t('microphone.volumeLow') : '音量偏低';
+                        cachedStatus.style.color = '#ffc107';
+                    } else if (volumePercent > 90) {
+                        cachedStatus.textContent = window.t ? window.t('microphone.volumeHigh') : '音量较高';
+                        cachedStatus.style.color = '#fd7e14';
+                    } else {
+                        cachedStatus.textContent = window.t ? window.t('microphone.volumeNormal') : '正常';
+                        cachedStatus.style.color = '#28a745';
+                    }
+                }
+
+                // 更新提示文字
+                if (cachedHint) {
+                    if (volumePercent < 5) {
+                        cachedHint.textContent = window.t ? window.t('microphone.volumeHintNoSound') : '检测不到声音，请检查麦克风';
+                    } else if (volumePercent < 20) {
+                        cachedHint.textContent = window.t ? window.t('microphone.volumeHintLow') : '音量较低，建议调高增益';
+                    } else {
+                        cachedHint.textContent = window.t ? window.t('microphone.volumeHintOk') : '麦克风工作正常';
+                    }
+                }
+            } else {
+                // 未录音状态
+                cachedBarFill.style.width = '0%';
+                cachedBarFill.style.backgroundColor = '#4f8cff';
+                if (cachedStatus) {
+                    cachedStatus.textContent = window.t ? window.t('microphone.volumeIdle') : '未录音';
+                    cachedStatus.style.color = '#888';
+                }
+                if (cachedHint) {
+                    cachedHint.textContent = window.t ? window.t('microphone.volumeHint') : '开始录音后可查看音量';
+                }
+            }
+
+            // 继续下一帧
+            micVolumeAnimationId = requestAnimationFrame(updateVolumeDisplay);
+        }
+
+        // 启动动画循环
+        micVolumeAnimationId = requestAnimationFrame(updateVolumeDisplay);
+    }
+
+    // 停止麦克风音量可视化
+    function stopMicVolumeVisualization() {
+        if (micVolumeAnimationId) {
+            cancelAnimationFrame(micVolumeAnimationId);
+            micVolumeAnimationId = null;
+        }
+    }
+
+    // 立即更新音量显示状态（用于录音状态变化时立即反映）
+    function updateMicVolumeStatusNow(recording) {
+        const volumeBarFill = document.getElementById('mic-volume-bar-fill');
+        const volumeStatus = document.getElementById('mic-volume-status');
+        const volumeHint = document.getElementById('mic-volume-hint');
+
+        if (recording) {
+            // 刚开始录音，显示正在检测状态
+            if (volumeStatus) {
+                volumeStatus.textContent = window.t ? window.t('microphone.volumeDetecting') : '检测中...';
+                volumeStatus.style.color = '#4f8cff';
+            }
+            if (volumeHint) {
+                volumeHint.textContent = window.t ? window.t('microphone.volumeHintDetecting') : '正在检测麦克风输入...';
+            }
+            if (volumeBarFill) {
+                volumeBarFill.style.backgroundColor = '#4f8cff';
+            }
+        } else {
+            // 停止录音，重置为未录音状态
+            if (volumeBarFill) {
+                volumeBarFill.style.width = '0%';
+                volumeBarFill.style.backgroundColor = '#4f8cff';
+            }
+            if (volumeStatus) {
+                volumeStatus.textContent = window.t ? window.t('microphone.volumeIdle') : '未录音';
+                volumeStatus.style.color = '#888';
+            }
+            if (volumeHint) {
+                volumeHint.textContent = window.t ? window.t('microphone.volumeHint') : '开始录音后可查看音量';
+            }
+        }
+    }
+
+    // 暴露函数供外部调用
+    window.startMicVolumeVisualization = startMicVolumeVisualization;
+    window.stopMicVolumeVisualization = stopMicVolumeVisualization;
+    window.updateMicVolumeStatusNow = updateMicVolumeStatusNow;
+
     // 开麦，按钮on click
     async function startMicCapture() {
         try {
@@ -1774,6 +2199,9 @@ function init_app() {
             }
             syncFloatingMicButtonState(true);
 
+            // 立即更新音量显示状态（显示"检测中"）
+            updateMicVolumeStatusNow(true);
+
             // 开始录音时，停止主动搭话定时器
             stopProactiveChatSchedule();
         } catch (err) {
@@ -1808,6 +2236,9 @@ function init_app() {
         // 同步浮动按钮状态
         syncFloatingMicButtonState(false);
         syncFloatingScreenButtonState(false);
+
+        // 立即更新音量显示状态（显示"未录音"）
+        updateMicVolumeStatusNow(false);
 
         stopRecording();
         micButton.disabled = false;
@@ -2711,7 +3142,7 @@ function init_app() {
                 if (toggleChatBtn) {
                     const iconImg = toggleChatBtn.querySelector('img');
                     if (iconImg) {
-                        iconImg.src = '/static/icons/expand_icon.png';
+                        iconImg.src = '/static/icons/expand_icon_off.png';
                         iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
                     }
                     toggleChatBtn.title = window.t ? window.t('common.minimize') : '最小化';
@@ -3248,13 +3679,20 @@ function init_app() {
         // 创建媒体流源
         const source = audioContext.createMediaStreamSource(stream);
 
+        // 创建增益节点用于麦克风音量放大
+        micGainNode = audioContext.createGain();
+        const linearGain = dbToLinear(microphoneGainDb);
+        micGainNode.gain.value = linearGain;
+        console.log(`麦克风增益已设置: ${microphoneGainDb}dB (${linearGain.toFixed(2)}x)`);
+
         // 创建analyser节点用于监测输入音量
         inputAnalyser = audioContext.createAnalyser();
         inputAnalyser.fftSize = 2048;
         inputAnalyser.smoothingTimeConstant = 0.8;
 
-        // 连接source到analyser(用于音量检测)
-        source.connect(inputAnalyser);
+        // 连接 source → gainNode → analyser（用于音量检测，检测增益后的音量）
+        source.connect(micGainNode);
+        micGainNode.connect(inputAnalyser);
 
         try {
             // 加载AudioWorklet处理器
@@ -3294,8 +3732,8 @@ function init_app() {
                 }
             };
 
-            // 连接节点
-            source.connect(workletNode);
+            // 连接节点：gainNode → workletNode（音频经过增益处理后发送）
+            micGainNode.connect(workletNode);
             // 不需要连接到destination，因为我们不需要听到声音
             // workletNode.connect(audioContext.destination);
             // 所有初始化成功后，才标记为录音状态
@@ -3330,6 +3768,10 @@ function init_app() {
         isRecording = false;
         window.isRecording = false;
         window.currentGeminiMessage = null;
+        
+        // 重置语音模式用户转录合并追踪
+        lastVoiceUserMessage = null;
+        lastVoiceUserMessageTime = 0;
 
         // 停止静音检测
         stopSilenceDetection();
@@ -3653,8 +4095,14 @@ function init_app() {
                 try {
                     globalAnalyser = audioPlayerContext.createAnalyser();
                     globalAnalyser.fftSize = 2048;
-                    globalAnalyser.connect(audioPlayerContext.destination);
-                    console.log('[Audio] 全局分析器已创建并连接');
+                    // 插入扬声器音量增益节点: source → analyser → gainNode → destination
+                    speakerGainNode = audioPlayerContext.createGain();
+                    const vol = (typeof window.getSpeakerVolume === 'function')
+                        ? window.getSpeakerVolume() : 100;
+                    speakerGainNode.gain.value = vol / 100;
+                    globalAnalyser.connect(speakerGainNode);
+                    speakerGainNode.connect(audioPlayerContext.destination);
+                    console.log('[Audio] 全局分析器和扬声器增益节点已创建并连接');
                 } catch (e) {
                     console.error('[Audio] 创建分析器失败:', e);
                 }
@@ -3684,47 +4132,30 @@ function init_app() {
         // 重置平滑状态
         _lastMouthOpen = 0;
         
-        // 使用频域数据 (Frequency Data) 而不是时域数据，这样对人声更敏感
-        analyser.fftSize = 512; // 较小的 FFT 窗口可以提高实时性
-        const bufferLength = analyser.frequencyBinCount;
-        const dataArray = new Uint8Array(bufferLength);
-        let logCounter = 0;
+        // 使用时域数据计算 RMS，对干声足够了
+        const dataArray = new Uint8Array(analyser.fftSize);
 
         function animate() {
             if (!analyser) return;
             
-            // 获取频域数据
-            analyser.getByteFrequencyData(dataArray);
+            analyser.getByteTimeDomainData(dataArray);
             
-            // 计算人声频段 (约 85Hz - 255Hz，但在 FFT 中通常看低中频)
-            // 我们取前 1/4 的频段能量作为嘴巴开合的依据
+            // 计算 RMS
             let sum = 0;
-            const count = Math.floor(bufferLength * 0.4); // 取低频部分
-            for (let i = 0; i < count; i++) {
-                sum += dataArray[i];
+            for (let i = 0; i < dataArray.length; i++) {
+                const val = (dataArray[i] - 128) / 128; // 归一化到 -1~1
+                sum += val * val;
             }
-            const average = sum / count;
+            const rms = Math.sqrt(sum / dataArray.length);
             
             // 映射到 0~1
-            // 阈值调整：进一步提高静默阈值，并压缩动态范围
-            // 假设 30 是环境噪音，150 是大声说话
-            let mouthOpen = (average - 35) / 140; 
-            mouthOpen = Math.max(0, Math.min(1, mouthOpen));
+            let mouthOpen = Math.min(1, rms * 10);
             
-            // 进一步限制最大张开度，避免出现 O 型嘴 (限制在 0.5 左右)
-            // 0.5 通常是 Live2D 模型比较自然的张嘴程度
-            mouthOpen = mouthOpen * 0.5;
             
             // 柔化处理：大幅增加平滑度，让动作更“肉”一点，避免快速开合
-            mouthOpen = _lastMouthOpen * 0.7 + mouthOpen * 0.3;
+            mouthOpen = _lastMouthOpen * 0.5 + mouthOpen * 0.5;
             _lastMouthOpen = mouthOpen;
 
-            // 每60帧输出一次调试日志
-            if (logCounter++ % 60 === 0) {
-                if (window.DEBUG_LIPSYNC) {
-                    console.log('[LipSync] avg_freq:', average.toFixed(2), 'mouthOpen:', mouthOpen.toFixed(4));
-                }
-            }
             
             if (window.LanLan1 && typeof window.LanLan1.setMouth === 'function') {
                 window.LanLan1.setMouth(mouthOpen);
@@ -3974,7 +4405,7 @@ function init_app() {
 
                 //  隐藏Live2D浮动按钮和锁图标
                 const live2dFloatingButtons = document.getElementById('live2d-floating-buttons');
-                if (live2dFloatingButtons) {
+                if (live2dFloatingButtons && !window.isInTutorial) {
                     live2dFloatingButtons.style.display = 'none';
                 }
                 const live2dLockIcon = document.getElementById('live2d-lock-icon');
@@ -4368,7 +4799,7 @@ function init_app() {
             if (toggleChatBtn) {
                 const iconImg = toggleChatBtn.querySelector('img');
                 if (iconImg) {
-                    iconImg.src = '/static/icons/expand_icon.png';
+                    iconImg.src = '/static/icons/expand_icon_off.png';
                     iconImg.alt = window.t ? window.t('common.expand') : '展开';
                 }
                 toggleChatBtn.title = window.t ? window.t('common.expand') : '展开';
@@ -4590,7 +5021,7 @@ function init_app() {
             if (toggleChatBtn) {
                 const iconImg = toggleChatBtn.querySelector('img');
                 if (iconImg) {
-                    iconImg.src = '/static/icons/expand_icon.png';
+                    iconImg.src = '/static/icons/expand_icon_off.png';
                     iconImg.alt = window.t ? window.t('common.minimize') : '最小化';
                 }
                 toggleChatBtn.title = window.t ? window.t('common.minimize') : '最小化';
@@ -6187,8 +6618,8 @@ function init_app() {
     }
 
     // 为浮动弹出框渲染麦克风列表（修复版本：确保有权限后再渲染）
-    window.renderFloatingMicList = async () => {
-        const micPopup = document.getElementById('live2d-popup-mic');
+    window.renderFloatingMicList = async (popupArg) => {
+        const micPopup = popupArg || document.getElementById('live2d-popup-mic');
         if (!micPopup) {
             return false;
         }
@@ -6208,6 +6639,297 @@ function init_app() {
                 micPopup.appendChild(noMicItem);
                 return false;
             }
+
+            // ===== 双栏布局容器 =====
+            const leftColumn = document.createElement('div');
+            Object.assign(leftColumn.style, {
+                flex: '1',
+                minWidth: '180px',
+                display: 'flex',
+                flexDirection: 'column',
+                overflowY: 'auto'
+            });
+
+            const rightColumn = document.createElement('div');
+            Object.assign(rightColumn.style, {
+                flex: '1',
+                minWidth: '160px',
+                display: 'flex',
+                flexDirection: 'column',
+                overflowY: 'auto'
+            });
+
+            // ========== 左栏 1. 扬声器音量控制 ==========
+            const speakerContainer = document.createElement('div');
+            speakerContainer.className = 'speaker-volume-container';
+            Object.assign(speakerContainer.style, {
+                padding: '8px 12px'
+            });
+
+            // 扬声器音量标签和当前值显示
+            const speakerHeader = document.createElement('div');
+            Object.assign(speakerHeader.style, {
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '8px'
+            });
+
+            const speakerLabel = document.createElement('span');
+            speakerLabel.textContent = window.t ? window.t('speaker.volumeLabel') : '扬声器音量';
+            speakerLabel.setAttribute('data-i18n', 'speaker.volumeLabel');
+            speakerLabel.style.fontSize = '13px';
+            speakerLabel.style.color = '#333';
+            speakerLabel.style.fontWeight = '500';
+
+            const speakerValue = document.createElement('span');
+            speakerValue.id = 'speaker-volume-value';
+            speakerValue.textContent = `${speakerVolume}%`;
+            speakerValue.style.fontSize = '12px';
+            speakerValue.style.color = '#4f8cff';
+            speakerValue.style.fontWeight = '500';
+
+            speakerHeader.appendChild(speakerLabel);
+            speakerHeader.appendChild(speakerValue);
+            speakerContainer.appendChild(speakerHeader);
+
+            // 扬声器音量滑块
+            const speakerSlider = document.createElement('input');
+            speakerSlider.type = 'range';
+            speakerSlider.id = 'speaker-volume-slider';
+            speakerSlider.min = '0';
+            speakerSlider.max = '100';
+            speakerSlider.step = '1';
+            speakerSlider.value = String(speakerVolume);
+            Object.assign(speakerSlider.style, {
+                width: '100%',
+                height: '6px',
+                borderRadius: '3px',
+                cursor: 'pointer',
+                accentColor: '#4f8cff'
+            });
+
+            // 滑块事件：实时更新音量
+            speakerSlider.addEventListener('input', (e) => {
+                const newVol = parseInt(e.target.value, 10);
+                speakerVolume = newVol;
+                speakerValue.textContent = `${newVol}%`;
+
+                // 实时更新扬声器增益节点
+                if (speakerGainNode) {
+                    speakerGainNode.gain.setTargetAtTime(newVol / 100, speakerGainNode.context.currentTime, 0.05);
+                }
+            });
+
+            // 滑块松开时保存设置
+            speakerSlider.addEventListener('change', () => {
+                saveSpeakerVolumeSetting();
+            });
+
+            speakerContainer.appendChild(speakerSlider);
+
+            // 扬声器音量提示文字
+            const speakerHint = document.createElement('div');
+            speakerHint.textContent = window.t ? window.t('speaker.volumeHint') : '调节AI语音的播放音量';
+            speakerHint.setAttribute('data-i18n', 'speaker.volumeHint');
+            Object.assign(speakerHint.style, {
+                fontSize: '11px',
+                color: '#888',
+                marginTop: '6px'
+            });
+            speakerContainer.appendChild(speakerHint);
+
+            leftColumn.appendChild(speakerContainer);
+
+            // 添加分隔线
+            const speakerSeparator = document.createElement('div');
+            speakerSeparator.style.height = '1px';
+            speakerSeparator.style.backgroundColor = '#eee';
+            speakerSeparator.style.margin = '8px 0';
+            leftColumn.appendChild(speakerSeparator);
+
+            // ========== 左栏 2. 麦克风增益控制 ==========
+            const gainContainer = document.createElement('div');
+            gainContainer.className = 'mic-gain-container';
+            Object.assign(gainContainer.style, {
+                padding: '8px 12px'
+            });
+
+            // 增益标签和当前值显示
+            const gainHeader = document.createElement('div');
+            Object.assign(gainHeader.style, {
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '8px'
+            });
+
+            const gainLabel = document.createElement('span');
+            gainLabel.textContent = window.t ? window.t('microphone.gainLabel') : '麦克风增益';
+            gainLabel.style.fontSize = '13px';
+            gainLabel.style.color = '#333';
+            gainLabel.style.fontWeight = '500';
+
+            const gainValue = document.createElement('span');
+            gainValue.id = 'mic-gain-value';
+            gainValue.textContent = formatGainDisplay(microphoneGainDb);
+            gainValue.style.fontSize = '12px';
+            gainValue.style.color = '#4f8cff';
+            gainValue.style.fontWeight = '500';
+
+            gainHeader.appendChild(gainLabel);
+            gainHeader.appendChild(gainValue);
+            gainContainer.appendChild(gainHeader);
+
+            // 增益滑块（使用分贝单位）
+            const gainSlider = document.createElement('input');
+            gainSlider.type = 'range';
+            gainSlider.id = 'mic-gain-slider';
+            gainSlider.min = String(MIN_MIC_GAIN_DB);
+            gainSlider.max = String(MAX_MIC_GAIN_DB);
+            gainSlider.step = '1';  // 1dB 步进
+            gainSlider.value = String(microphoneGainDb);
+            Object.assign(gainSlider.style, {
+                width: '100%',
+                height: '6px',
+                borderRadius: '3px',
+                cursor: 'pointer',
+                accentColor: '#4f8cff'
+            });
+
+            // 滑块事件：实时更新增益
+            gainSlider.addEventListener('input', (e) => {
+                const newGainDb = parseFloat(e.target.value);
+                microphoneGainDb = newGainDb;
+                gainValue.textContent = formatGainDisplay(newGainDb);
+
+                // 实时更新 GainNode（如果正在录音）
+                if (micGainNode) {
+                    micGainNode.gain.value = dbToLinear(newGainDb);
+                    console.log(`麦克风增益已实时更新: ${newGainDb}dB`);
+                }
+            });
+
+            // 滑块松开时保存设置
+            gainSlider.addEventListener('change', () => {
+                saveMicGainSetting();
+            });
+
+            gainContainer.appendChild(gainSlider);
+
+            // 增益提示文字
+            const gainHint = document.createElement('div');
+            gainHint.textContent = window.t ? window.t('microphone.gainHint') : '如果麦克风声音太小，可以调高增益';
+            Object.assign(gainHint.style, {
+                fontSize: '11px',
+                color: '#888',
+                marginTop: '6px'
+            });
+            gainContainer.appendChild(gainHint);
+
+            leftColumn.appendChild(gainContainer);
+
+            // 添加分隔线（音量可视化区域前）
+            const volumeSeparator = document.createElement('div');
+            volumeSeparator.style.height = '1px';
+            volumeSeparator.style.backgroundColor = '#eee';
+            volumeSeparator.style.margin = '8px 0';
+            leftColumn.appendChild(volumeSeparator);
+
+            // ========== 左栏 3. 麦克风音量可视化区域 ==========
+            const volumeContainer = document.createElement('div');
+            volumeContainer.className = 'mic-volume-container';
+            Object.assign(volumeContainer.style, {
+                padding: '8px 12px'
+            });
+
+            // 音量标签
+            const volumeLabel = document.createElement('div');
+            Object.assign(volumeLabel.style, {
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '8px'
+            });
+
+            const volumeLabelText = document.createElement('span');
+            volumeLabelText.textContent = window.t ? window.t('microphone.volumeLabel') : '实时麦克风音量';
+            volumeLabelText.style.fontSize = '13px';
+            volumeLabelText.style.color = '#333';
+            volumeLabelText.style.fontWeight = '500';
+
+            const volumeStatus = document.createElement('span');
+            volumeStatus.id = 'mic-volume-status';
+            volumeStatus.textContent = window.t ? window.t('microphone.volumeIdle') : '未录音';
+            volumeStatus.style.fontSize = '11px';
+            volumeStatus.style.color = '#888';
+
+            volumeLabel.appendChild(volumeLabelText);
+            volumeLabel.appendChild(volumeStatus);
+            volumeContainer.appendChild(volumeLabel);
+
+            // 音量条背景
+            const volumeBarBg = document.createElement('div');
+            volumeBarBg.id = 'mic-volume-bar-bg';
+            Object.assign(volumeBarBg.style, {
+                width: '100%',
+                height: '8px',
+                backgroundColor: '#e9ecef',
+                borderRadius: '4px',
+                overflow: 'hidden',
+                position: 'relative'
+            });
+
+            // 音量条填充
+            const volumeBarFill = document.createElement('div');
+            volumeBarFill.id = 'mic-volume-bar-fill';
+            Object.assign(volumeBarFill.style, {
+                width: '0%',
+                height: '100%',
+                backgroundColor: '#4f8cff',
+                borderRadius: '4px',
+                transition: 'width 0.05s ease-out, background-color 0.1s ease'
+            });
+
+            volumeBarBg.appendChild(volumeBarFill);
+            volumeContainer.appendChild(volumeBarBg);
+
+            // 音量提示（录音时会显示）
+            const volumeHint = document.createElement('div');
+            volumeHint.id = 'mic-volume-hint';
+            volumeHint.textContent = window.t ? window.t('microphone.volumeHint') : '开始录音后可查看音量';
+            Object.assign(volumeHint.style, {
+                fontSize: '11px',
+                color: '#888',
+                marginTop: '6px'
+            });
+            volumeContainer.appendChild(volumeHint);
+
+            leftColumn.appendChild(volumeContainer);
+
+            // ========== 右栏：麦克风设备选择列表 ==========
+            // 标题
+            const deviceTitle = document.createElement('div');
+            Object.assign(deviceTitle.style, {
+                padding: '8px 12px 6px',
+                fontSize: '13px',
+                fontWeight: '600',
+                color: '#4f8cff',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                borderBottom: '1px solid rgba(79, 140, 255, 0.15)',
+                marginBottom: '4px'
+            });
+            const deviceTitleIcon = document.createElement('span');
+            deviceTitleIcon.textContent = '🎙️';
+            deviceTitleIcon.style.fontSize = '14px';
+            const deviceTitleText = document.createElement('span');
+            deviceTitleText.textContent = window.t ? window.t('microphone.deviceTitle') : '选择麦克风设备';
+            deviceTitleText.setAttribute('data-i18n', 'microphone.deviceTitle');
+            deviceTitle.appendChild(deviceTitleIcon);
+            deviceTitle.appendChild(deviceTitleText);
+            rightColumn.appendChild(deviceTitle);
 
             // 添加默认麦克风选项
             const defaultOption = document.createElement('button');
@@ -6245,14 +6967,14 @@ function init_app() {
                 // 只更新选中状态，不重新渲染整个列表
                 updateMicListSelection();
             });
-            micPopup.appendChild(defaultOption);
+            rightColumn.appendChild(defaultOption);
 
             // 添加分隔线
             const separator = document.createElement('div');
             separator.style.height = '1px';
             separator.style.backgroundColor = '#eee';
             separator.style.margin = '5px 0';
-            micPopup.appendChild(separator);
+            rightColumn.appendChild(separator);
 
             // 添加各个麦克风设备选项
             audioInputs.forEach(device => {
@@ -6296,8 +7018,25 @@ function init_app() {
                     updateMicListSelection();
                 });
 
-                micPopup.appendChild(option);
+                rightColumn.appendChild(option);
             });
+
+            // ===== 组装双栏布局 =====
+            micPopup.appendChild(leftColumn);
+
+            // 垂直分隔线
+            const verticalDivider = document.createElement('div');
+            Object.assign(verticalDivider.style, {
+                width: '1px',
+                backgroundColor: '#eee',
+                alignSelf: 'stretch',
+                margin: '8px 0'
+            });
+            micPopup.appendChild(verticalDivider);
+            micPopup.appendChild(rightColumn);
+
+            // 启动音量可视化更新
+            startMicVolumeVisualization();
 
             return true;
         } catch (error) {
@@ -6315,7 +7054,7 @@ function init_app() {
 
     // 轻量级更新：仅更新麦克风列表的选中状态（不重新渲染整个列表）
     function updateMicListSelection() {
-        const micPopup = document.getElementById('live2d-popup-mic');
+        const micPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic');
         if (!micPopup) return;
 
         // 更新所有选项的选中状态
@@ -7161,6 +7900,12 @@ function init_app() {
     // 加载设置
     loadSettings();
 
+    // 加载麦克风增益设置
+    loadMicGainSetting();
+
+    // 加载扬声器音量设置
+    loadSpeakerVolumeSetting();
+
     // 如果已开启主动搭话，立即启动定时器
     if (proactiveChatEnabled) {
         scheduleProactiveChat();
@@ -7375,6 +8120,10 @@ function init_app() {
             window._realisticGeminiQueue = [];
             window._realisticGeminiBuffer = '';
             window._realisticGeminiTimestamp = null;
+            window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
+            // 重置语音模式用户转录合并追踪
+            lastVoiceUserMessage = null;
+            lastVoiceUserMessageTime = 0;
 
             // 清理连接与状态
             if (autoReconnectTimeoutId) clearTimeout(autoReconnectTimeoutId);
@@ -8076,7 +8825,7 @@ window.addEventListener('message', function (event) {
 
 // 字幕提示框功能
 
-// 归一化语言代码：将 BCP-47 格式（如 'zh-CN', 'en-US'）归一化为简单代码（'zh', 'en', 'ja'）
+// 归一化语言代码：将 BCP-47 格式（如 'zh-CN', 'en-US'）归一化为简单代码（'zh', 'en', 'ja', 'ko'）
 // 与 detectLanguage() 返回的格式保持一致，避免误判
 function normalizeLanguageCode(lang) {
     if (!lang) return 'zh'; // 默认中文
@@ -8087,6 +8836,8 @@ function normalizeLanguageCode(lang) {
         return 'ja';
     } else if (langLower.startsWith('en')) {
         return 'en';
+    } else if (langLower.startsWith('ko')) {
+        return 'ko';
     }
     return 'zh'; // 默认中文
 }
@@ -8120,7 +8871,7 @@ async function getUserLanguage() {
             const response = await fetch('/api/config/user_language');
             const data = await response.json();
             if (data.success && data.language) {
-                // 归一化语言代码：将 BCP-47 格式（如 'zh-CN', 'en-US'）归一化为简单代码（'zh', 'en', 'ja'）
+                // 归一化语言代码：将 BCP-47 格式（如 'zh-CN', 'en-US'）归一化为简单代码（'zh', 'en', 'ja', 'ko'）
                 // 与 detectLanguage() 返回的格式保持一致，避免误判
                 userLanguage = normalizeLanguageCode(data.language);
                 localStorage.setItem('userLanguage', userLanguage);
@@ -8157,16 +8908,24 @@ function detectLanguage(text) {
     const chinesePattern = /[\u4e00-\u9fff]/g;
     // 日文检测（平假名、片假名）
     const japanesePattern = /[\u3040-\u309f\u30a0-\u30ff]/g;
+    // 韩文检测（谚文）
+    const koreanPattern = /[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/g;
     // 英文检测
     const englishPattern = /[a-zA-Z]/g;
     
     const chineseCount = (text.match(chinesePattern) || []).length;
     const japaneseCount = (text.match(japanesePattern) || []).length;
+    const koreanCount = (text.match(koreanPattern) || []).length;
     const englishCount = (text.match(englishPattern) || []).length;
     
     // 如果包含日文假名，优先判断为日语
     if (japaneseCount > 0) {
         return 'ja';
+    }
+    
+    // 如果包含韩文，优先判断为韩语
+    if (koreanCount > 0) {
+        return 'ko';
     }
     
     // 判断主要语言
@@ -8511,7 +9270,8 @@ function showSubtitlePrompt() {
     const fallbacks = {
         'zh': '开启字幕翻译',
         'en': 'Enable Subtitle Translation',
-        'ja': '字幕翻訳を有効にする'
+        'ja': '字幕翻訳を有効にする',
+        'ko': '자막 번역 켜기'
     };
     if (window.t) {
         const translated = window.t('subtitle.enable');
@@ -8655,6 +9415,17 @@ document.addEventListener('DOMContentLoaded', async function() {
         const fullText = window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] 🎀 /, '');
         if (fullText && fullText.trim()) {
             checkAndShowSubtitlePrompt(fullText);
+        }
+    }
+
+    // 初始化通用引导管理器（幂等性保护）
+    if (!window.__universalTutorialManagerInitialized && typeof initUniversalTutorialManager === 'function') {
+        try {
+            initUniversalTutorialManager();
+            window.__universalTutorialManagerInitialized = true;
+            console.log('[App] 通用引导管理器已初始化');
+        } catch (error) {
+            console.error('[App] 通用引导管理器初始化失败:', error);
         }
     }
 });

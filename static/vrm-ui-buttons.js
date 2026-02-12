@@ -266,7 +266,7 @@ VRMManager.prototype.setupFloatingButtons = function () {
                 e.stopPropagation();
                 const isPopupVisible = popup.style.display === 'flex' && popup.style.opacity === '1';
                 if (config.id === 'mic' && !isPopupVisible) {
-                    await this.renderMicList(popup);
+                    await window.renderFloatingMicList(popup);
                 }
                 if (config.id === 'screen' && !isPopupVisible) {
                     await this.renderScreenSourceList(popup);

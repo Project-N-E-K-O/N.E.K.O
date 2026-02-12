@@ -41,7 +41,7 @@
                             <label><span data-i18n="character.profileName">档案名</span><span class="required-star"
                                     data-i18n="character.required">*</span></label>
                             <div class="field-row">
-                                <input type="text" name="档案名" required>
+                                <input type="text" name="档案名" required maxlength="20" autocomplete="off">
                             </div>
                             </div>
                             <div class="field-row-wrapper">
@@ -84,6 +84,22 @@
 
 
     <script src="/static/js/chara_manager.js"></script>
+
+    <!-- Driver.js 库 -->
+    <script src="/static/libs/driver.min.js"></script>
+    <link rel="stylesheet" href="/static/libs/driver.min.css">
+
+    <!-- 通用教程管理器 -->
+    <script src="/static/universal-tutorial-manager.js"></script>
+
+    <!-- 初始化 -->
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            if (typeof initUniversalTutorialManager === 'function') {
+                initUniversalTutorialManager();
+            }
+        });
+    </script>
 </body>
 
 </html>

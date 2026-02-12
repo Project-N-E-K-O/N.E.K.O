@@ -29,20 +29,21 @@ body {
 height: 100%;
 margin: 0;
 padding: 0;
-background: #f7f8fa;
+background: transparent;
 color: #222;
 font-family: 'Segoe UI', Arial, sans-serif;
 }
 
 .container {
-max-width: 800px;
-margin: 40px auto 0 auto;
+max-width: 100%;
+margin: 0;
 background: #fff;
-border-radius: 24px; /* 增加圆角 */
-box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+border-radius: 0; /* 无边框窗口不需要圆角 */
+box-shadow: none;
 padding: 0;
 overflow: hidden;
 position: relative;
+min-height: 100vh;
 }
 
 .container-header {
@@ -51,7 +52,13 @@ padding: 18px 24px;
 display: flex;
 justify-content: space-between;
 align-items: center;
-border-radius: 20px 20px 0 0;
+border-radius: 0;
+-webkit-app-region: drag; /* 允许通过标题栏拖动窗口 */
+}
+
+/* 标题栏内的可交互元素需要禁用拖动 */
+.container-header .close-btn {
+-webkit-app-region: no-drag;
 }
 
 .container-header h2 {
@@ -903,7 +910,7 @@ transition: max-height 0.3s ease-in-out;
 }
 
 .model-content.expanded {
-max-height: 1000px;
+max-height: 2000px;
 }
 
 .model-content .field-row {
@@ -966,6 +973,58 @@ border-color: #333 transparent transparent transparent;
 top: auto;
 bottom: 100%;
 border-color: transparent transparent #333 transparent;
+}
+
+/* Toggle Switch 样式 */
+.switch {
+    position: relative;
+    display: inline-block;
+    width: 50px;
+    height: 26px;
+}
+
+.switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #ccc;
+    transition: 0.3s;
+}
+
+.slider:before {
+    position: absolute;
+    content: "";
+    height: 20px;
+    width: 20px;
+    left: 3px;
+    bottom: 3px;
+    background-color: white;
+    transition: 0.3s;
+}
+
+input:checked + .slider {
+    background-color: #40C5F1;
+}
+
+input:checked + .slider:before {
+    transform: translateX(24px);
+}
+
+.slider.round {
+    border-radius: 26px;
+}
+
+.slider.round:before {
+    border-radius: 50%;
 }
 
 @media (max-width: 800px) {

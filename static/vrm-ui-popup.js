@@ -143,6 +143,12 @@ VRMManager.prototype.createPopup = function (buttonId) {
 
     if (buttonId === 'mic') {
         popup.setAttribute('data-legacy-id', 'vrm-mic-popup');
+        // 双栏布局：加宽弹出框，横向排列（与 Live2D 保持一致）
+        popup.style.minWidth = '400px';
+        popup.style.maxHeight = '320px';
+        popup.style.flexDirection = 'row';
+        popup.style.gap = '0';
+        popup.style.overflowY = 'hidden';  // 整体不滚动，右栏单独滚动
     } else if (buttonId === 'agent') {
         this._createAgentPopupContent(popup);
     } else     if (buttonId === 'settings') {
@@ -727,7 +733,8 @@ VRMManager.prototype._createMenuItem = function (item, isSubmenuItem = false) {
 
         if (item.action === 'navigate') {
             let finalUrl = item.url || item.urlBase;
-            const windowName = `neko_${item.id}`;
+            let windowName = `neko_${item.id}`;
+            let features;
 
             if ((item.id === 'vrm-manage' || item.id === 'live2d-manage') && item.urlBase) {
                 const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
@@ -735,17 +742,29 @@ VRMManager.prototype._createMenuItem = function (item, isSubmenuItem = false) {
                 window.location.href = finalUrl;
             } else if (item.id === 'voice-clone' && item.url) {
                 const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+                const lanlanNameForKey = lanlanName || 'default';
                 finalUrl = `${item.url}?lanlan_name=${encodeURIComponent(lanlanName)}`;
+                windowName = `neko_voice_clone_${encodeURIComponent(lanlanNameForKey)}`;
+
+                const width = 700;
+                const height = 750;
+                const left = Math.max(0, Math.floor((screen.width - width) / 2));
+                const top = Math.max(0, Math.floor((screen.height - height) / 2));
+                features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
 
                 // 设置防抖标志
                 isOpening = true;
-                window.openOrFocusWindow(finalUrl, windowName);
+                window.openOrFocusWindow(finalUrl, windowName, features);
                 // 500ms后重置标志，允许再次点击
                 setTimeout(() => { isOpening = false; }, 500);
             } else {
+                if (typeof finalUrl === 'string' && finalUrl.startsWith('/chara_manager')) {
+                    windowName = 'neko_chara_manager';
+                }
+
                 // 设置防抖标志
                 isOpening = true;
-                window.openOrFocusWindow(finalUrl, windowName);
+                window.openOrFocusWindow(finalUrl, windowName, features);
                 // 500ms后重置标志，允许再次点击
                 setTimeout(() => { isOpening = false; }, 500);
             }
