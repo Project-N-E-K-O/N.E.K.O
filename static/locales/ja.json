@@ -439,6 +439,7 @@
   "microphone": {
     "noDevices": "マイクデバイスが検出されません",
     "defaultDevice": "システムデフォルトマイク",
+    "deviceTitle": "マイクを選択",
     "deviceLabel": "マイク {{index}}",
     "loadFailed": "マイクリストの読み込みに失敗しました",
     "switched": "マイクを切り替えました（次回の録音から有効になります）",
@@ -447,7 +448,7 @@
     "accessFailed": "マイクにアクセスできません",
     "gainLabel": "マイクゲイン",
     "gainHint": "0dBが元の音量、正の値で増幅、負の値で減衰",
-    "volumeLabel": "入力音量",
+    "volumeLabel": "リアルタイムマイク音量",
     "volumeIdle": "録音していません",
     "volumeNoSound": "音声なし",
     "volumeLow": "音量が低い",
@@ -674,6 +675,20 @@
       "wsProtocol": "• URLはWebSocketプロトコル（ws:// または wss://）である必要があります",
       "cosyVoiceOnly": "• 現在はAlibaba Cloud CosyVoice互換プロトコルのみサポートしています"
     },
+    "gptsovitsConfig": "GPT-SoVITS 設定",
+    "gptsovitsDescription": "GPT-SoVITS 説明：",
+    "gptsovitsDescriptionText": "ローカルにデプロイされた音声クローンモデルです。先にGPT-SoVITS v3 APIサービスを起動してください。音声設定（参照音声、モデルウェイトなど）はv3のvoices/*.tomlファイルで管理されます。ここでは音声設定IDを入力するだけです。",
+    "gptsovitsApiUrlPlaceholder": "例：http://127.0.0.1:9881",
+    "gptsovitsApiUrlOptional": "（オプション、デフォルト http://127.0.0.1:9881）",
+    "gptsovitsVoiceId": "音声設定",
+    "gptsovitsVoiceIdHint": "（GPT-SoVITS v3から利用可能な設定を取得）",
+    "gptsovitsVoiceIdEmpty": "-- 先に音声リストを取得してください --",
+    "gptsovitsNoVoices": "-- 利用可能な設定なし --",
+    "gptsovitsRefreshVoices": "リスト取得",
+    "gptsovitsVoicesLoaded": "{{count}}件の音声設定を読み込みました",
+    "gptsovitsVoicesLoadFailed": "音声リストの取得に失敗しました",
+    "gptsovitsEnabled": "GPT-SoVITS を有効化",
+    "gptsovitsEnabledHint": "（有効にすると上記のTTS設定を上書きします）",
     "wsWarning": {
       "title": "プロトコルエラー",
       "message": "URLはWebSocketプロトコル（ws:// または wss://）である必要があります",
@@ -933,7 +948,8 @@
     "confirmDelete": "このボイスを削除しますか？",
     "deleting": "削除中...",
     "deleteSuccess": "削除成功",
-    "deleteFailed": "削除失敗：{{error}}"
+    "deleteFailed": "削除失敗",
+    "deleteError": "削除失敗：{{error}}"
   },
   "settings": {
     "menu": {
@@ -956,7 +972,8 @@
       "zh-CN": "簡体字中国語",
       "en": "英語",
       "ja": "日本語",
-      "zh-TW": "繁体字中国語"
+      "zh-TW": "繁体字中国語",
+      "ko": "한국어"
     },
     "interval": {
       "chatIntervalBase": "基本間隔",

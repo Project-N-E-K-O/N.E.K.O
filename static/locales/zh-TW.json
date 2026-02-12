@@ -456,6 +456,7 @@
   "microphone": {
     "noDevices": "沒有檢測到麥剋風設備",
     "defaultDevice": "係統默認麥剋風",
+    "deviceTitle": "選擇麥克風裝置",
     "deviceLabel": "麥剋風 {{index}}",
     "loadFailed": "獲取麥剋風列錶失敗",
     "switched": "已切換麥剋風 (下一次錄音生效)",
@@ -464,7 +465,7 @@
     "accessFailed": "無法訪問麥剋風",
     "gainLabel": "麥剋風增益",
     "gainHint": "0dB為原始音量，正值放大、負值減小",
-    "volumeLabel": "輸入音量",
+    "volumeLabel": "即時麥克風音量",
     "volumeIdle": "未錄音",
     "volumeNoSound": "無聲音",
     "volumeLow": "音量偏低",
@@ -687,6 +688,20 @@
       "wsProtocol": "• URL 必須使用 WebSocket 協議（以 ws:// 或 wss:// 開頭）",
       "cosyVoiceOnly": "• 目前僅支持阿裏雲 CosyVoice 兼容的協議格式"
     },
+    "gptsovitsConfig": "GPT-SoVITS 配置",
+    "gptsovitsDescription": "GPT-SoVITS 說明：",
+    "gptsovitsDescriptionText": "本地部署的語音克隆模型，需要先啟動 GPT-SoVITS v3 API 服務。聲音配置（參考音頻、模型權重等）在 v3 的 voices/*.toml 檔案中管理，此處只需填寫聲音配置 ID。",
+    "gptsovitsApiUrlPlaceholder": "如：http://127.0.0.1:9881",
+    "gptsovitsApiUrlOptional": "（選填，默認 http://127.0.0.1:9881）",
+    "gptsovitsVoiceId": "聲音配置",
+    "gptsovitsVoiceIdHint": "（從 GPT-SoVITS v3 獲取可用配置）",
+    "gptsovitsVoiceIdEmpty": "-- 請先獲取語音列表 --",
+    "gptsovitsNoVoices": "-- 無可用配置 --",
+    "gptsovitsRefreshVoices": "獲取列表",
+    "gptsovitsVoicesLoaded": "已載入 {{count}} 個語音配置",
+    "gptsovitsVoicesLoadFailed": "獲取語音列表失敗",
+    "gptsovitsEnabled": "啟用 GPT-SoVITS",
+    "gptsovitsEnabledHint": "（啟用後將替代上方的 TTS 配置）",
     "wsWarning": {
       "title": "協議錯誤",
       "message": "URL 必須使用 WebSocket 協議（以 ws:// 或 wss:// 開頭）",
@@ -1217,7 +1232,8 @@
       "zh-CN": "簡體中文",
       "en": "English",
       "zh-TW": "繁體中文",
-      "ja": "日本語"
+      "ja": "日本語",
+      "ko": "한국어"
     },
     "toggles": {
       "allowInterrupt": "允許打斷",

@@ -69,6 +69,19 @@ def remove_bracket(text):
     text = text.replace("（", "").replace("）", "").replace("(", "").replace(")", "")
     return text
 
+def count_words_and_chars(text: str) -> int:
+    """
+    统计混合文本长度：中文字符计1、英文单词计1
+    """
+    if not text:
+        return 0
+    count = 0
+    chinese_chars = re.findall(r'[\u4e00-\u9fff]', text)
+    count += len(chinese_chars)
+    text_without_chinese = re.sub(r'[\u4e00-\u9fff]', ' ', text)
+    english_words = [w for w in text_without_chinese.split() if w.strip()]
+    count += len(english_words)
+    return count
 
 
 

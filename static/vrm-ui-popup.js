@@ -143,6 +143,12 @@ VRMManager.prototype.createPopup = function (buttonId) {
 
     if (buttonId === 'mic') {
         popup.setAttribute('data-legacy-id', 'vrm-mic-popup');
+        // 双栏布局：加宽弹出框，横向排列（与 Live2D 保持一致）
+        popup.style.minWidth = '400px';
+        popup.style.maxHeight = '320px';
+        popup.style.flexDirection = 'row';
+        popup.style.gap = '0';
+        popup.style.overflowY = 'hidden';  // 整体不滚动，右栏单独滚动
     } else if (buttonId === 'agent') {
         this._createAgentPopupContent(popup);
     } else     if (buttonId === 'settings') {

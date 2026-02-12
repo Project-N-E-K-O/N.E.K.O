@@ -439,6 +439,7 @@
   "microphone": {
     "noDevices": "No microphone devices detected",
     "defaultDevice": "System Default Microphone",
+    "deviceTitle": "Select Microphone",
     "deviceLabel": "Microphone {{index}}",
     "loadFailed": "Failed to load microphone list",
     "switched": "Microphone switched (will take effect on next recording)",
@@ -447,7 +448,7 @@
     "accessFailed": "Cannot access microphone",
     "gainLabel": "Microphone Gain",
     "gainHint": "0dB is original volume, positive amplifies, negative reduces",
-    "volumeLabel": "Input Volume",
+    "volumeLabel": "Live Mic Volume",
     "volumeIdle": "Not Recording",
     "volumeNoSound": "No Sound",
     "volumeLow": "Low Volume",
@@ -674,6 +675,20 @@
       "wsProtocol": "• URL must use WebSocket protocol (starting with ws:// or wss://)",
       "cosyVoiceOnly": "• Currently only supports Alibaba Cloud CosyVoice compatible protocol format"
     },
+    "gptsovitsConfig": "GPT-SoVITS Configuration",
+    "gptsovitsDescription": "GPT-SoVITS Note:",
+    "gptsovitsDescriptionText": "A locally deployed voice cloning model. Start the GPT-SoVITS v3 API service first. Voice configs (reference audio, model weights, etc.) are managed in v3's voices/*.toml files — just enter the voice config ID here.",
+    "gptsovitsApiUrlPlaceholder": "e.g., http://127.0.0.1:9881",
+    "gptsovitsApiUrlOptional": "(Optional, default http://127.0.0.1:9881)",
+    "gptsovitsVoiceId": "Voice Config",
+    "gptsovitsVoiceIdHint": "(Fetch available configs from GPT-SoVITS v3)",
+    "gptsovitsVoiceIdEmpty": "-- Fetch voice list first --",
+    "gptsovitsNoVoices": "-- No configs available --",
+    "gptsovitsRefreshVoices": "Fetch List",
+    "gptsovitsVoicesLoaded": "Loaded {{count}} voice config(s)",
+    "gptsovitsVoicesLoadFailed": "Failed to fetch voice list",
+    "gptsovitsEnabled": "Enable GPT-SoVITS",
+    "gptsovitsEnabledHint": "(Will override TTS config above when enabled)",
     "wsWarning": {
       "title": "Protocol Error",
       "message": "URL must use WebSocket protocol (starting with ws:// or wss://)",
@@ -1156,7 +1171,10 @@
     "language": {
       "title": "Select Language",
       "zh-CN": "Simplified Chinese",
-      "en": "English"
+      "en": "English",
+      "ja": "日本語",
+      "zh-TW": "繁體中文",
+      "ko": "한국어"
     },
     "interval": {
       "chatIntervalBase": "Base Interval",
