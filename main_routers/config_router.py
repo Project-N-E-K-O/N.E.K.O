@@ -622,4 +622,3 @@ async def list_gptsovits_voices(request: Request):
     except Exception as e:
         logger.error(f"获取 GPT-SoVITS 语音列表失败: {e}")
         return {"success": False, "error": str(e)}
-
