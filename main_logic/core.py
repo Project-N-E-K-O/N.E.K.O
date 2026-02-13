@@ -720,10 +720,11 @@ class LLMSessionManager:
         if input_mode == 'text':
             # 文本模式总是需要 TTS（使用默认或自定义音色）
             self.use_tts = True
-        elif self._is_free_preset_voice and self.core_api_type == 'free' and 'lanlan.tech' in realtime_config.get('base_url', ''):
-            # 免费预设音色直接传入 realtime session config 的 voice 字段，不需要外部 TTS
-            self.use_tts = False
-            logger.info(f"🆓 免费预设音色 '{self.voice_id}' 将直接传入 session config，不启动外部 TTS")
+        # TODO: 下面的elif本来是正确的，但是阶跃的API目前有问题
+        # elif self._is_free_preset_voice and self.core_api_type == 'free' and 'lanlan.tech' in realtime_config.get('base_url', ''):
+        #     # 免费预设音色直接传入 realtime session config 的 voice 字段，不需要外部 TTS
+        #     self.use_tts = False
+        #     logger.info(f"🆓 免费预设音色 '{self.voice_id}' 将直接传入 session config，不启动外部 TTS")
         elif self.voice_id or has_custom_tts_config:
             # 语音模式下：有自定义音色 或 配置了自定义TTS时，使用外部TTS
             self.use_tts = True
@@ -897,8 +898,10 @@ class LLMSessionManager:
                     base_url=realtime_config.get('base_url', ''),  # Gemini 不需要 base_url
                     api_key=realtime_config['api_key'],
                     model=realtime_config['model'],
-                    voice=self.voice_id if self._is_free_preset_voice and self.core_api_type == 'free' 
-                        and 'lanlan.tech' in realtime_config.get('base_url', '') else None,  # 免费预设音色直接传入 session config
+                    # TODO: 下面的写法本来是对的，但是阶跃的api现在有问题
+                    # voice=self.voice_id if self._is_free_preset_voice and self.core_api_type == 'free' 
+                    #     and 'lanlan.tech' in realtime_config.get('base_url', '') else None,  # 免费预设音色直接传入 session config
+                    voice=None,
                     on_text_delta=self.handle_text_data,
                     on_audio_delta=self.handle_audio_data,
                     on_new_message=self.handle_new_message,
