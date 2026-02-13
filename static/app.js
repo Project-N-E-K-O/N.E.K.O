@@ -921,6 +921,57 @@ function init_app() {
                     }
                     sessionStartedResolver = null;
                     sessionStartedRejecter = null;
+                } else if (response.type === 'session_ended_by_server') {
+                    // 后端 session 被服务器终止（如API断连），重置前端会话状态
+                    console.log('[App] Session ended by server, input_mode:', response.input_mode);
+
+                    isTextSessionActive = false;
+
+                    // 清理可能存在的 session Promise
+                    if (sessionStartedRejecter) {
+                        try {
+                            sessionStartedRejecter(new Error('Session ended by server'));
+                        } catch (e) { /* ignore */ }
+                    }
+                    sessionStartedResolver = null;
+                    sessionStartedRejecter = null;
+
+                    if (window.sessionTimeoutId) {
+                        clearTimeout(window.sessionTimeoutId);
+                        window.sessionTimeoutId = null;
+                    }
+
+                    // 如果当前处于语音模式，停止录音并清理音频
+                    if (isRecording) {
+                        stopRecording();
+                        (async () => { await clearAudioQueue(); })();
+                    }
+
+                    hideVoicePreparingToast();
+
+                    // 恢复 UI 到空闲状态
+                    micButton.classList.remove('active');
+                    screenButton.classList.remove('active');
+                    micButton.disabled = false;
+                    textSendButton.disabled = false;
+                    textInputBox.disabled = false;
+                    screenshotButton.disabled = false;
+                    muteButton.disabled = true;
+                    screenButton.disabled = true;
+                    stopButton.disabled = true;
+                    resetSessionButton.disabled = true;
+                    returnSessionButton.disabled = true;
+
+                    const textInputArea = document.getElementById('text-input-area');
+                    if (textInputArea) {
+                        textInputArea.classList.remove('hidden');
+                    }
+
+                    syncFloatingMicButtonState(false);
+                    syncFloatingScreenButtonState(false);
+
+                    window.isMicStarting = false;
+                    isSwitchingMode = false;
                 } else if (response.type === 'reload_page') {
                     console.log(window.t('console.reloadPageReceived'), response.message);
                     // 显示提示信息
@@ -973,6 +1024,102 @@ function init_app() {
                 isTextSessionActive = false;
                 console.log(window.t('console.websocketDisconnectedResetText'));
             }
+
+            // 重置语音录制状态
+            if (isRecording) {
+                console.log('WebSocket断开时重置语音录制状态');
+                isRecording = false;
+                window.isRecording = false;
+                window.currentGeminiMessage = null;
+                lastVoiceUserMessage = null;
+                lastVoiceUserMessageTime = 0;
+
+                // 停止静音检测
+                stopSilenceDetection();
+
+                // 清理输入analyser
+                inputAnalyser = null;
+
+                // 停止所有音频轨道
+                if (stream) {
+                    stream.getTracks().forEach(track => track.stop());
+                    stream = null;
+                }
+
+                // 关闭AudioContext
+                if (audioContext && audioContext.state !== 'closed') {
+                    audioContext.close();
+                    audioContext = null;
+                    workletNode = null;
+                }
+            }
+
+            // 重置麦克风启动状态
+            if (window.isMicStarting) {
+                console.log('WebSocket断开时重置麦克风启动状态');
+                window.isMicStarting = false;
+            }
+
+            // 重置模式切换标志
+            if (isSwitchingMode) {
+                console.log('WebSocket断开时重置模式切换标志');
+                isSwitchingMode = false;
+            }
+
+            // 清理 session Promise resolver/rejecter，防止后续操作永远等待
+            if (sessionStartedResolver || sessionStartedRejecter) {
+                console.log('WebSocket断开时清理session Promise');
+                if (sessionStartedRejecter) {
+                    try {
+                        sessionStartedRejecter(new Error('WebSocket连接断开'));
+                    } catch (e) {
+                        // 忽略已经处理的reject
+                    }
+                }
+                sessionStartedResolver = null;
+                sessionStartedRejecter = null;
+            }
+
+            // 清理session超时定时器
+            if (window.sessionTimeoutId) {
+                clearTimeout(window.sessionTimeoutId);
+                window.sessionTimeoutId = null;
+            }
+
+            // 清理音频队列
+            (async () => {
+                await clearAudioQueue();
+            })();
+
+            // 隐藏语音准备提示
+            hideVoicePreparingToast();
+
+            // 移除按钮的active类
+            micButton.classList.remove('active');
+            screenButton.classList.remove('active');
+
+            // 恢复按钮状态，确保用户可以继续操作
+            micButton.disabled = false;
+            textSendButton.disabled = false;
+            textInputBox.disabled = false;
+            screenshotButton.disabled = false;
+
+            // 禁用语音控制按钮（因为没有活跃的语音会话）
+            muteButton.disabled = true;
+            screenButton.disabled = true;
+            stopButton.disabled = true;
+            resetSessionButton.disabled = true;
+            returnSessionButton.disabled = true;
+
+            // 确保文本输入区可见
+            const textInputArea = document.getElementById('text-input-area');
+            if (textInputArea) {
+                textInputArea.classList.remove('hidden');
+            }
+
+            // 同步浮动按钮状态
+            syncFloatingMicButtonState(false);
+            syncFloatingScreenButtonState(false);
 
             // 如果不是正在切换猫娘，才自动重连（避免与手动重连冲突）
             if (!isSwitchingCatgirl) {

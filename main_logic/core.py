@@ -1379,6 +1379,8 @@ class LLMSessionManager:
 
     async def disconnected_by_server(self):
         await self.send_status(f"{self.lanlan_name}失联了，即将重启！")
+        # 通知前端 session 已被服务器终止，让前端重置状态
+        await self.send_session_ended_by_server()
         self.sync_message_queue.put({'type': 'system', 'data': 'API server disconnected'})
         await self.cleanup()
     
@@ -1680,6 +1682,8 @@ class LLMSessionManager:
         self.sync_message_queue.put({'type': 'system', 'data': 'session end'})
         async with self.lock:
             self.is_active = False
+            # 重置启动标志，防止断网重连后 start_session 被忽略
+            self.is_starting_session = False
 
         if self.message_handler_task:
             self.message_handler_task.cancel()
@@ -1883,6 +1887,17 @@ class LLMSessionManager:
             pass
         except Exception as e:
             logger.error(f"💥 WS Send Session Failed Error: {e}")
+
+    async def send_session_ended_by_server(self): # 通知前端session已被服务器终止
+        """通知前端 session 已被服务器端终止（如API断连），让前端重置会话状态"""
+        try:
+            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                data = json.dumps({"type": "session_ended_by_server", "input_mode": self.input_mode})
+                await self.websocket.send_text(data)
+        except WebSocketDisconnect:
+            pass
+        except Exception as e:
+            logger.error(f"💥 WS Send Session Ended By Server Error: {e}")
 
     async def send_expressions(self, prompt=""):
         '''这个函数在直播版本中有用，用于控制Live2D模型的表情动作。但是在开源版本目前没有实际用途。'''
