@@ -2895,6 +2895,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             // 使用助手
             const filesData = await RequestHelper.fetchJson(apiUrl);
+
+            // 检查 API 是否返回错误（例如模型目录不存在）
+            if (filesData.success === false) {
+                throw new Error(filesData.error || '获取模型文件列表失败');
+            }
+
+            // 确保字段存在，防止 undefined 访问导致 TypeError
+            filesData.motion_files = filesData.motion_files || [];
+            filesData.expression_files = filesData.expression_files || [];
+
             currentModelFiles = filesData;
 
             // 2. Fetch model config
@@ -3822,7 +3832,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             if (result.success && result.models && result.models.length > 0) {
                 userModelList.innerHTML = '';
-                result.models.forEach(model => {
+            result.models.forEach(model => {
                     const sourceLabel = model.source === 'user_documents'
                         ? t('live2d.userDocuments', '用户文档')
                         : t('live2d.localUpload', '本地上传');
@@ -3831,11 +3841,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const item = document.createElement('div');
                     item.className = 'model-item';
 
+                    // 检查是否是当前绑定的模型
+                    const isBound = currentModelInfo && currentModelInfo.name === model.name;
+
                     const checkbox = document.createElement('input');
                     checkbox.type = 'checkbox';
                     checkbox.id = safeId;
                     checkbox.value = model.name;
                     checkbox.setAttribute('data-path', model.path);
+
+                    if (isBound) {
+                        checkbox.disabled = true;
+                        checkbox.title = t('live2d.cannotDeleteBoundModel', '无法删除当前正在使用的模型');
+                    }
 
                     const label = document.createElement('label');
                     label.setAttribute('for', safeId);
@@ -3844,6 +3862,17 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const sourceSpan = document.createElement('span');
                     sourceSpan.className = 'model-source';
                     sourceSpan.textContent = sourceLabel;
+
+                    // 显示"使用中"标签
+                    if (isBound) {
+                        const boundBadge = document.createElement('span');
+                        boundBadge.className = 'model-source';
+                        boundBadge.style.color = 'var(--brand-blue, #4a9eff)';
+                        boundBadge.style.fontWeight = 'bold';
+                        boundBadge.textContent = t('live2d.modelInUse', '使用中');
+                        item.appendChild(boundBadge);
+                        item.style.opacity = '0.6';
+                    }
 
                     checkbox.addEventListener('change', (e) => {
                         if (e.target.checked) {
@@ -3878,6 +3907,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function deleteSelectedModels() {
         if (selectedDeleteModels.size === 0) return;
+
+        // 安全防护：移除当前绑定的模型，不允许删除
+        if (currentModelInfo && currentModelInfo.name) {
+            if (selectedDeleteModels.has(currentModelInfo.name)) {
+                selectedDeleteModels.delete(currentModelInfo.name);
+                showStatus(t('live2d.cannotDeleteBoundModel', '无法删除当前正在使用的模型'), 2000);
+                updateConfirmDeleteButton();
+                if (selectedDeleteModels.size === 0) return;
+            }
+        }
 
         const message = t('live2d.confirmDelete', '确定要删除选中的 {{count}} 个模型吗？此操作不可恢复。', { count: selectedDeleteModels.size });
         const title = t('live2d.deleteModelTitle', '删除已导入模型');
@@ -4053,13 +4092,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                     persistentList.innerHTML = '';
                     persistentExpressions.forEach(file => {
                         const item = document.createElement('div');
-                        item.style.cssText = 'padding: 4px 8px; margin: 2px 0; background: #f0f0f0; border-radius: 4px; font-size: 12px; display: flex; justify-content: space-between; align-items: center;';
+                        item.className = 'persistent-item';
                         const fileName = file.split('/').pop().replace('.exp3.json', '');
                         const nameSpan = document.createElement('span');
                         nameSpan.textContent = fileName;
                         const deleteBtn = document.createElement('button');
+                        deleteBtn.className = 'persistent-delete-btn';
                         deleteBtn.textContent = t('live2d.delete', '删除');
-                        deleteBtn.style.cssText = 'background: #dc3545; color: white; border: none; border-radius: 4px; padding: 2px 8px; cursor: pointer; font-size: 11px;';
                         deleteBtn.addEventListener('click', () => removePersistentExpression(file));
                         item.appendChild(nameSpan);
                         item.appendChild(deleteBtn);

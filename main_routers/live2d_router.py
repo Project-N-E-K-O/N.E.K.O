@@ -1044,6 +1044,23 @@ def delete_model(model_name: str):
         # 查找模型目录
         model_dir, _url_prefix = find_model_directory(model_name)
         
+        # 如果 find_model_directory 找不到，尝试直接在用户导入目录下查找（作为删除的降级路径）
+        if not model_dir or not os.path.exists(model_dir):
+            try:
+                config_mgr = get_config_manager()
+                config_mgr.ensure_live2d_directory()
+                fallback_dir = config_mgr.live2d_dir / model_name
+                if fallback_dir.exists():
+                    # 验证路径安全（防止路径遍历）
+                    fallback_real = os.path.realpath(str(fallback_dir))
+                    live2d_real = os.path.realpath(str(config_mgr.live2d_dir))
+                    if os.path.commonpath([fallback_real, live2d_real]) == live2d_real:
+                        model_dir = str(fallback_dir)
+                        _url_prefix = '/user_live2d'
+                        logger.info(f"通过降级路径找到用户模型: {model_dir}")
+            except Exception as e:
+                logger.warning(f"降级查找用户模型时出错: {e}")
+        
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": f"模型 {model_name} 不存在"})
         

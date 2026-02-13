@@ -403,7 +403,7 @@ class VRMCore {
         canvas.style.setProperty('pointer-events', 'auto', 'important');
         canvas.style.setProperty('touch-action', 'none', 'important');
         canvas.style.setProperty('user-select', 'none', 'important');
-        canvas.style.cursor = 'grab';
+        canvas.style.cursor = 'default';
         canvas.style.width = '100%';
         canvas.style.height = '100%';
         canvas.style.display = 'block';
@@ -884,24 +884,63 @@ class VRMCore {
                 }
             }
 
-            // 根据模型大小和屏幕大小计算合适的相机距离
-            // 检查相机是否存在
+            // 恢复相机位置，并记录 _cameraTarget（统一的观察目标）
             if (this.manager.camera && this.manager.camera.fov) {
-                // 使用缩放后的模型高度进行一致性校验
-                const scaledModelHeight = size.y * vrm.scene.scale.y;
-                const screenHeight = window.innerHeight;
-                const screenWidth = window.innerWidth;
+                const savedCameraPos = preferences?.camera_position;
 
-                // 目标：让模型在屏幕上的高度约为屏幕高度的0.4-0.5倍（类似Live2D）
-                const targetScreenHeight = screenHeight * 0.45;
-                const fov = this.manager.camera.fov * (Math.PI / 180);
-                const distance = (scaledModelHeight / 2) / Math.tan(fov / 2) / targetScreenHeight * screenHeight;
-                
-                const isMobileDevice = screenWidth <= 768;
-                const cameraY = center.y + (isMobileDevice ? scaledModelHeight * 0.2 : scaledModelHeight * 0.1);
-                const cameraZ = Math.abs(distance);
-                this.manager.camera.position.set(0, cameraY, cameraZ);
-                this.manager.camera.lookAt(0, center.y, 0);
+                // 验证相机位置有效性：检查坐标有限且位置非零（orbit 后 z 可能为负）
+                const camPosValid = savedCameraPos &&
+                    Number.isFinite(savedCameraPos.x) && Number.isFinite(savedCameraPos.y) && Number.isFinite(savedCameraPos.z) &&
+                    (savedCameraPos.x * savedCameraPos.x + savedCameraPos.y * savedCameraPos.y + savedCameraPos.z * savedCameraPos.z) > 0.01;
+                if (camPosValid) {
+                    // 恢复相机位置
+                    this.manager.camera.position.set(savedCameraPos.x, savedCameraPos.y, savedCameraPos.z);
+
+                    // 优先用四元数精确恢复朝向（避免 lookAt 转换误差）
+                    if (Number.isFinite(savedCameraPos.qx) && Number.isFinite(savedCameraPos.qy) &&
+                        Number.isFinite(savedCameraPos.qz) && Number.isFinite(savedCameraPos.qw)) {
+                        this.manager.camera.quaternion.set(
+                            savedCameraPos.qx, savedCameraPos.qy,
+                            savedCameraPos.qz, savedCameraPos.qw
+                        );
+                    } else if (Number.isFinite(savedCameraPos.targetX) && Number.isFinite(savedCameraPos.targetY) && Number.isFinite(savedCameraPos.targetZ)) {
+                        // 兼容旧数据：用 lookAt
+                        this.manager.camera.lookAt(savedCameraPos.targetX, savedCameraPos.targetY, savedCameraPos.targetZ);
+                    } else {
+                        this.manager.camera.lookAt(center.x, center.y, center.z);
+                    }
+
+                    // 恢复 _cameraTarget（zoom/orbit 的中心点）
+                    if (Number.isFinite(savedCameraPos.targetX) && Number.isFinite(savedCameraPos.targetY) && Number.isFinite(savedCameraPos.targetZ)) {
+                        this.manager._cameraTarget = new THREE.Vector3(savedCameraPos.targetX, savedCameraPos.targetY, savedCameraPos.targetZ);
+                    } else {
+                        // 从相机前方方向重建 _cameraTarget
+                        const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.manager.camera.quaternion);
+                        const box2 = new THREE.Box3().setFromObject(vrm.scene);
+                        const mc = box2.getCenter(new THREE.Vector3());
+                        const dist = this.manager.camera.position.distanceTo(mc);
+                        this.manager._cameraTarget = this.manager.camera.position.clone().add(forward.multiplyScalar(dist));
+                    }
+                    console.log('[VRM Core] 已恢复保存的相机位置:', savedCameraPos);
+                } else {
+                    // 没有保存的相机位置时，根据模型大小和屏幕大小计算默认值
+                    const scaledModelHeight = size.y * vrm.scene.scale.y;
+                    const screenHeight = window.innerHeight;
+                    const screenWidth = window.innerWidth;
+
+                    const targetScreenHeight = screenHeight * 0.45;
+                    const fov = this.manager.camera.fov * (Math.PI / 180);
+                    const distance = (scaledModelHeight / 2) / Math.tan(fov / 2) / targetScreenHeight * screenHeight;
+
+                    const isMobileDevice = screenWidth <= 768;
+                    const cameraY = center.y + (isMobileDevice ? scaledModelHeight * 0.2 : scaledModelHeight * 0.1);
+                    const cameraZ = Math.abs(distance);
+                    this.manager.camera.position.set(0, cameraY, cameraZ);
+
+                    // 默认观察目标：包围盒中心
+                    this.manager._cameraTarget = new THREE.Vector3(0, center.y, 0);
+                    this.manager.camera.lookAt(this.manager._cameraTarget);
+                }
             } else {
                 console.warn('[VRM Core] 相机未初始化，跳过相机位置调整');
             }
@@ -1081,7 +1120,7 @@ class VRMCore {
      * @param {object} viewport - 视口尺寸 {width, height}（可选，用于跨分辨率归一化）
      * @returns {Promise<boolean>} 是否保存成功
      */
-    async saveUserPreferences(modelPath, position, scale, rotation, display, viewport) {
+    async saveUserPreferences(modelPath, position, scale, rotation, display, viewport, cameraPosition) {
         try {
             // 验证位置值
             if (!position || typeof position !== 'object' ||
@@ -1131,6 +1170,16 @@ class VRMCore {
                 preferences.viewport = {
                     width: viewport.width,
                     height: viewport.height
+                };
+            }
+
+            // 如果有相机位置信息，添加到偏好中（用于恢复滚轮缩放状态）
+            if (cameraPosition && typeof cameraPosition === 'object' &&
+                Number.isFinite(cameraPosition.x) && Number.isFinite(cameraPosition.y) && Number.isFinite(cameraPosition.z)) {
+                preferences.camera_position = {
+                    x: cameraPosition.x,
+                    y: cameraPosition.y,
+                    z: cameraPosition.z
                 };
             }
             

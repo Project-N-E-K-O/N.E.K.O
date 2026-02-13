@@ -555,18 +555,37 @@ class ConfigManager:
             return False
 
         voices = self.get_voices_for_current_api()
-        return voice_id in voices
+        if voice_id in voices:
+            return True
+        
+        # 免费版 + lanlan.tech 时，也接受 free_voices 中的 voice_id
+        core_config = self.get_core_config()
+        if core_config.get('IS_FREE_VERSION'):
+            core_url = core_config.get('CORE_URL', '')
+            openrouter_url = core_config.get('OPENROUTER_URL', '')
+            if 'lanlan.tech' in core_url or 'lanlan.tech' in openrouter_url:
+                from utils.api_config_loader import get_free_voices
+                free_voices = get_free_voices()
+                if voice_id in free_voices.values():
+                    return True
+        
+        return False
 
     def cleanup_invalid_voice_ids(self):
         """清理 characters.json 中无效的 voice_id"""
         character_data = self.load_characters()
         voices = self.get_voices_for_current_api()
+        
+        # 免费预设音色也是有效的，不应被清理
+        from utils.api_config_loader import get_free_voices
+        free_voice_ids = set(get_free_voices().values())
+        
         cleaned_count = 0
 
         catgirls = character_data.get('猫娘', {})
         for name, config in catgirls.items():
             voice_id = config.get('voice_id', '')
-            if voice_id and voice_id not in voices:
+            if voice_id and voice_id not in voices and voice_id not in free_voice_ids:
                 logger.warning(
                     "猫娘 '%s' 的 voice_id '%s' 在当前 API 的 voice_storage 中不存在，已清除",
                     name,
@@ -673,7 +692,6 @@ class ConfigManager:
             result = (ip_country.upper() != 'CN') if ip_country else False
             
             print(f"[GeoIP DEBUG] Is non-mainland: {result}", file=sys.stderr)
-            print(f"[GeoIP DEBUG] URL replacement: {'lanlan.tech -> lanlan.app' if result else 'NO CHANGE'}", file=sys.stderr)
             print("=" * 60, file=sys.stderr)
             
             # Cache only when we get a definitive answer

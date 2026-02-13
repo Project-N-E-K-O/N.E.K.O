@@ -346,18 +346,17 @@ def find_model_directory(model_name: str):
     查找模型目录，优先在用户文档目录，其次在创意工坊目录，最后在static目录
     返回 (实际路径, URL前缀) 元组
     """
-    import re
     from utils.config_manager import get_config_manager
     
-    # 验证模型名称，只允许字母、数字、下划线、中文字符、日文字符、韩文字符、连字符和空格
-    # 防止路径遍历攻击
+    # 验证模型名称，防止路径遍历攻击
+    # 允许：字母、数字、下划线、中日韩字符、连字符、空格、括号（半角和全角）、点、逗号等常见字符
+    # 拒绝：路径分隔符 / \ 和路径遍历 ..
     if not model_name or not model_name.strip():
         logging.warning("模型名称为空")
         return (None, None)
-    if not re.match(r'^[\w\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af\- ]+$', model_name):
-        # 使用 repr() 安全地表示模型名称，避免控制字符污染日志
+    if '..' in model_name or '/' in model_name or '\\' in model_name:
         model_name_safe = repr(model_name) if len(model_name) <= 100 else repr(model_name[:100]) + '...'
-        logging.warning(f"无效的模型名称: {model_name_safe}")
+        logging.warning(f"模型名称包含非法路径字符: {model_name_safe}")
         return (None, None)
     
     # 从配置文件获取WORKSHOP_PATH，如果不存在则使用steam_workshop_path

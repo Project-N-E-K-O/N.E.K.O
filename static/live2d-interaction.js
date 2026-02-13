@@ -529,7 +529,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     const onDragEnd = async () => {
         if (isDragging) {
             isDragging = false;
-            document.getElementById('live2d-canvas').style.cursor = 'grab';
+            document.getElementById('live2d-canvas').style.cursor = '';
 
             // 拖拽结束后恢复按钮的 pointer-events
             restoreButtonPointerEvents();
@@ -567,7 +567,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             if (event.touches && event.touches.length > 1) {
                 // 如果变成多点触摸，停止拖拽
                 isDragging = false;
-                document.getElementById('live2d-canvas').style.cursor = 'grab';
+                document.getElementById('live2d-canvas').style.cursor = '';
                 return;
             }
 

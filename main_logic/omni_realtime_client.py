@@ -6,10 +6,11 @@ import json
 import base64
 import time
 import logging
+import numpy as np
 
 from typing import Optional, Callable, Dict, Any, Awaitable
 from enum import Enum
-from config import NATIVE_IMAGE_MIN_INTERVAL
+from config import NATIVE_IMAGE_MIN_INTERVAL, IMAGE_IDLE_RATE_MULTIPLIER
 from utils.config_manager import get_config_manager
 from utils.audio_processor import AudioProcessor
 from utils.frontend_utils import calculate_text_similarity
@@ -171,6 +172,13 @@ class OmniRealtimeClient:
         # Native image input rate limiting
         self._last_native_image_time = 0.0  # 上次原生图片输入时间戳
         
+        # Unified VAD for image throttling (priority: server VAD > RNNoise > RMS)
+        # All native-image paths use _client_vad_active to adjust send rate
+        self._client_vad_active = False  # 语音活动检测（统一标志）
+        self._client_vad_last_speech_time = 0.0  # 上次检测到语音的时间戳
+        self._client_vad_grace_period = 2.0  # 语音结束后保持活跃的宽限期（秒）
+        self._client_vad_threshold = 500  # RMS 能量阈值（int16 范围，fallback用）
+        
         # 防止log刷屏机制（当websocket关闭后）
         self._last_ws_none_warning_time = 0.0  # 上次websocket为None警告的时间戳
         self._ws_none_warning_interval = 5.0  # websocket为None警告的最小间隔（秒）
@@ -183,6 +191,20 @@ class OmniRealtimeClient:
         
         # Gemini Live API specific attributes
         self._is_gemini = self._api_type.lower() == 'gemini'
+        
+        # Whether this API returns server-side VAD events (speech_started/speech_stopped)
+        # Gemini (direct) and lanlan.app+free (Gemini proxy) do NOT have server VAD
+        self._has_server_vad = not self._is_gemini and not (
+            'lanlan.app' in (base_url or '') and 'free' in (model or '')
+        )
+        
+        # Whether this client supports native image input
+        # qwen/glm/gpt/gemini have native vision; lanlan.app replacement server (free, non-mainland) also does
+        self._supports_native_image = (
+            any(m in (model or '') for m in ['qwen', 'glm', 'gpt'])
+            or self._is_gemini
+            or ('lanlan.app' in (base_url or '') and 'free' in (model or ''))
+        )
         self._gemini_client = None  # genai.Client instance
         self._gemini_session = None  # Live session from SDK
         self._gemini_context_manager = None  # For proper cleanup
@@ -228,12 +250,20 @@ class OmniRealtimeClient:
                 if self._silence_timeout_triggered:
                     continue
                 
-                if self._last_speech_time is None:
+                # 选择语音活动时间源：有 server VAD 用 _last_speech_time，否则用客户端 VAD
+                if self._has_server_vad:
+                    speech_time = self._last_speech_time
+                else:
+                    # 无 server VAD 时（free/gemini），用客户端能量/RNNoise 检测的时间戳
+                    speech_time = self._client_vad_last_speech_time if self._client_vad_last_speech_time > 0 else None
+                
+                if speech_time is None:
                     # 还没有检测到任何语音，从现在开始计时
                     self._last_speech_time = time.time()
+                    self._client_vad_last_speech_time = self._last_speech_time
                     continue
                 
-                elapsed = time.time() - self._last_speech_time
+                elapsed = time.time() - speech_time
                 if elapsed >= self._silence_timeout_seconds:
                     logger.warning(f"⏰ 检测到{self._silence_timeout_seconds}秒无语音输入，触发自动关闭")
                     self._silence_timeout_triggered = True
@@ -539,6 +569,28 @@ class OmniRealtimeClient:
                 self._silence_reset_pending = False
                 await self.clear_audio_buffer()
         
+        # Unified VAD update (priority: server VAD > RNNoise > RMS)
+        # Grace period check: always runs regardless of VAD source
+        current_time = time.time()
+        if self._client_vad_active and current_time - self._client_vad_last_speech_time > self._client_vad_grace_period:
+            self._client_vad_active = False
+        
+        # Client-side speech detection (only when no server VAD — server events handle it in handle_messages)
+        if not self._has_server_vad:
+            if self._audio_processor is not None and self._audio_processor.noise_reduce_enabled:
+                # Priority 2: RNNoise speech probability
+                if self._audio_processor.speech_probability > 0.4:
+                    self._client_vad_last_speech_time = current_time
+                    self._client_vad_active = True
+            else:
+                # Priority 3: RMS energy fallback
+                samples = np.frombuffer(audio_chunk, dtype=np.int16)
+                if len(samples) > 0:
+                    rms = np.sqrt(np.mean(samples.astype(np.float32) ** 2))
+                    if rms > self._client_vad_threshold:
+                        self._client_vad_last_speech_time = current_time
+                        self._client_vad_active = True
+        
         # Gemini uses different API
         if self._is_gemini:
             await self._stream_audio_gemini(audio_chunk)
@@ -606,21 +658,44 @@ class OmniRealtimeClient:
         """Stream raw image data to the API."""
 
         try:
-            if '实时屏幕截图或相机画面正在分析中' in self._image_description and self.model in ['step', 'free']:
+            # Models without native vision (step, free on lanlan.tech) — first frame triggers VISION_MODEL analysis
+            if '实时屏幕截图或相机画面正在分析中' in self._image_description and not self._supports_native_image:
                 await self._analyze_image_with_vision_model(image_b64)
                 return
             
-            # Check if model supports native image input
-            supports_native_image = any(m in self.model for m in ["qwen", "glm", "gpt"])
-            
-            # Rate limiting for native image input
-            if supports_native_image:
+            # Rate limiting for native image input (with VAD-based throttling)
+            if self._supports_native_image:
                 current_time = time.time()
                 elapsed = current_time - self._last_native_image_time
-                if elapsed < NATIVE_IMAGE_MIN_INTERVAL:
+                min_interval = NATIVE_IMAGE_MIN_INTERVAL
+                if not self._client_vad_active:
+                    min_interval *= IMAGE_IDLE_RATE_MULTIPLIER
+                if elapsed < min_interval:
                     # Skip this image frame due to rate limiting
                     return
                 self._last_native_image_time = current_time
+
+            # Gemini uses SDK, not WebSocket events (_audio_in_buffer is not set for Gemini)
+            if self._is_gemini:
+                if self._gemini_session:
+                    try:
+                        image_bytes = base64.b64decode(image_b64)
+                        await self._gemini_session.send_realtime_input(
+                            media={"data": image_bytes, "mime_type": "image/jpeg"}
+                        )
+                    except Exception as e:
+                        logger.error(f"Error sending image to Gemini: {e}")
+                        if "closed" in str(e).lower():
+                            self._fatal_error_occurred = True
+                return
+
+            if ('lanlan.app' in self.base_url and 'free' in self.model):
+                append_event = {
+                    "type": "input_image_buffer.append" ,
+                    "image": image_b64
+                }
+                await self.send_event(append_event)
+                return
 
             if self._audio_in_buffer:
                 if "qwen" in self.model:
@@ -909,6 +984,9 @@ class OmniRealtimeClient:
                     self._audio_in_buffer = True
                     # 重置静默计时器
                     self._last_speech_time = time.time()
+                    # Priority 1: server VAD → sync to unified _client_vad_active
+                    self._client_vad_active = True
+                    self._client_vad_last_speech_time = self._last_speech_time
                     if self._is_responding:
                         logger.info("Handling interruption")
                         await self.handle_interruption()
@@ -917,6 +995,8 @@ class OmniRealtimeClient:
                     if self.on_new_message:
                         await self.on_new_message()
                     self._audio_in_buffer = False
+                    # Update timestamp so grace period starts from speech end
+                    self._client_vad_last_speech_time = time.time()
                 elif event_type == "conversation.item.input_audio_transcription.completed":
                     self._print_input_transcript = True
                 elif event_type in ["response.audio_transcript.done", "response.output_audio_transcript.done"]:

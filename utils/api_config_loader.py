@@ -326,6 +326,16 @@ def reload_config():
     _config_cache = None
     logger.info("配置缓存已清除，下次访问时将重新加载")
 
+def get_free_voices() -> Dict[str, str]:
+    """
+    获取免费预设音色列表（从 api_providers.json 中读取 free_voices 字段）
+    
+    Returns:
+        Dict[str, str]: {显示名: voice_id} 的映射字典
+    """
+    config = get_config()
+    return config.get('free_voices', {})
+
 
 # 导出主要函数
 __all__ = [
@@ -337,5 +347,5 @@ __all__ = [
     'get_assist_api_providers_for_frontend',
     'reload_config',
     'get_config',
+    'get_free_voices',
 ]
-

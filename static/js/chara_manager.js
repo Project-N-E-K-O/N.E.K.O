@@ -1554,6 +1554,20 @@ function showCatgirlForm(key, container) {
                     if (voiceId === (cat['voice_id'] || '')) option.selected = true;
                     select.appendChild(option);
                 });
+                // 添加免费预设音色（不可移除，放在最后）
+                if (data.free_voices && Object.keys(data.free_voices).length > 0) {
+                    const freeGroup = document.createElement('optgroup');
+                    const freeLabel = window.t ? window.t('character.freePresetVoices') : '免费预设音色';
+                    freeGroup.label = '── ' + freeLabel + ' ──';
+                    Object.entries(data.free_voices).forEach(([displayName, voiceId]) => {
+                        const option = document.createElement('option');
+                        option.value = voiceId;
+                        option.textContent = displayName;
+                        if (voiceId === (cat['voice_id'] || '')) option.selected = true;
+                        freeGroup.appendChild(option);
+                    });
+                    select.appendChild(freeGroup);
+                }
             }
         } catch (error) {
             console.error('加载音色列表失败:', error);
@@ -2078,6 +2092,20 @@ window.addEventListener('message', function (event) {
                     option.textContent = voiceData.prefix || id;
                     select.appendChild(option);
                 });
+
+                // 添加免费预设音色
+                if (data.free_voices && Object.keys(data.free_voices).length > 0) {
+                    const freeGroup = document.createElement('optgroup');
+                    const freeLabel = window.t ? window.t('character.freePresetVoices') : '免费预设音色';
+                    freeGroup.label = '── ' + freeLabel + ' ──';
+                    Object.entries(data.free_voices).forEach(([displayName, id]) => {
+                        const option = document.createElement('option');
+                        option.value = id;
+                        option.textContent = displayName;
+                        freeGroup.appendChild(option);
+                    });
+                    select.appendChild(freeGroup);
+                }
 
                 select.value = voiceId;
             }).catch(() => {});

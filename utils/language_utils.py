@@ -77,20 +77,20 @@ def _get_system_language() -> str:
                 return 'zh'
             elif system_locale_lower.startswith('ja'):
                 return 'ja'
+            elif system_locale_lower.startswith('ko') or 'korean' in system_locale_lower:
+                return 'ko'
             elif system_locale_lower.startswith('en'):
                 return 'en'
-            elif system_locale_lower.startswith('ko'):
-                return 'ko'
         
         lang_env = os.environ.get('LANG', '').lower()
         if lang_env.startswith('zh') or 'chinese' in lang_env:
             return 'zh'
         elif lang_env.startswith('ja'):
             return 'ja'
-        elif lang_env.startswith('en'):
-            return 'en'
         elif lang_env.startswith('ko'):
             return 'ko'
+        elif lang_env.startswith('en'):
+            return 'en'
         
         return 'zh'  # 默认中文
     except Exception as e:
@@ -103,7 +103,7 @@ def _get_steam_language() -> Optional[str]:
     从 Steam 设置获取语言
     
     Returns:
-        语言代码 ('zh', 'zh-TW', 'en', 'ja', 'ko')，如果无法获取则返回 None
+        语言代码 ('zh', 'en', 'ja', 'ko')，如果无法获取则返回 None
     """
     try:
         from main_routers.shared_state import get_steamworks
@@ -205,10 +205,10 @@ def set_global_language(language: str) -> None:
         normalized_lang = 'zh'
     elif lang_lower.startswith('ja'):
         normalized_lang = 'ja'
-    elif lang_lower.startswith('en'):
-        normalized_lang = 'en'
     elif lang_lower.startswith('ko'):
         normalized_lang = 'ko'
+    elif lang_lower.startswith('en'):
+        normalized_lang = 'en'
     else:
         logger.warning(f"不支持的语言代码: {language}，保持当前语言")
         return
@@ -320,10 +320,10 @@ def normalize_language_code(lang: str, format: str = 'short') -> str:
             return 'zh' if format == 'short' else 'zh-CN'
     elif lang_lower.startswith('ja'):
         return 'ja'
-    elif lang_lower.startswith('en'):
-        return 'en'
     elif lang_lower.startswith('ko'):
         return 'ko'
+    elif lang_lower.startswith('en'):
+        return 'en'
     else:
         # 无法识别的语言代码，返回默认值
         logger.debug(f"无法识别的语言代码: {lang}，返回默认值")

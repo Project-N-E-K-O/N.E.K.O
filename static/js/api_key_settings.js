@@ -380,6 +380,9 @@ async function loadCurrentApiKey() {
             setInputValue('ttsModelApiKey', data.ttsModelApiKey);
             setInputValue('ttsVoiceId', data.ttsVoiceId);
 
+            // 加载 GPT-SoVITS 配置（从 ttsModelUrl 和 ttsVoiceId 解析）
+            loadGptSovitsConfig(data.ttsModelUrl, data.ttsVoiceId);
+
             // 加载MCPR_TOKEN
             setInputValue('mcpTokenInput', data.mcpToken);
 
@@ -395,12 +398,175 @@ async function loadCurrentApiKey() {
             showCurrentApiKey(window.t ? window.t('get_current_api_key_failed') : '获取当前API Key失败', '', false);
         }
     } catch (error) {
+        console.error('loadCurrentApiKey error:', error);
         showCurrentApiKey(window.t ? window.t('error_getting_current_api_key') : '获取当前API Key时出错', '', false);
     }
 }
 
 // 全局变量存储待保存的API Key
 let pendingApiKey = null;
+
+// ==================== GPT-SoVITS v3 配置相关函数 ====================
+
+/**
+ * 从 ttsModelUrl 和 ttsVoiceId 解析并加载 GPT-SoVITS v3 配置
+ * v3 voice_id 格式: "voice_id" 或 "voice_id|高级参数JSON"
+ * 特殊格式：__gptsovits_disabled__|url|voiceId 表示禁用但保存了配置
+ */
+function loadGptSovitsConfig(ttsModelUrl, ttsVoiceId) {
+    // 检查是否是禁用但保存了配置的情况
+    let isDisabledWithConfig = false;
+    let savedUrl = '';
+    let savedVoiceId = '';
+    
+    if (ttsVoiceId && ttsVoiceId.startsWith('__gptsovits_disabled__|')) {
+        isDisabledWithConfig = true;
+        const parts = ttsVoiceId.substring('__gptsovits_disabled__|'.length).split('|', 2);
+        if (parts.length >= 1) savedUrl = parts[0];
+        if (parts.length >= 2) savedVoiceId = parts[1];
+    }
+    
+    // 检查是否是 GPT-SoVITS 配置（HTTP URL）
+    const isGptSovits = ttsModelUrl && (ttsModelUrl.startsWith('http://') || ttsModelUrl.startsWith('https://'));
+    
+    // 设置启用开关状态
+    const enabledCheckbox = document.getElementById('gptsovitsEnabled');
+    if (enabledCheckbox) {
+        enabledCheckbox.checked = isGptSovits && !isDisabledWithConfig;
+    }
+    toggleGptSovitsConfig();
+    
+    // 确定要加载的配置
+    const urlToLoad = isGptSovits ? ttsModelUrl : (isDisabledWithConfig ? savedUrl : '');
+    const voiceIdToLoad = isGptSovits ? ttsVoiceId : (isDisabledWithConfig ? savedVoiceId : '');
+    
+    if (urlToLoad || voiceIdToLoad) {
+        const apiUrlEl = document.getElementById('gptsovitsApiUrl');
+        if (apiUrlEl && urlToLoad) apiUrlEl.value = urlToLoad;
+        
+        if (voiceIdToLoad) {
+            const el = document.getElementById('gptsovitsVoiceId');
+            if (el) {
+                // select 元素：先尝试选中已有选项，若不存在则添加一个临时选项
+                const existingOpt = el.querySelector(`option[value="${voiceIdToLoad}"]`);
+                if (existingOpt) {
+                    el.value = voiceIdToLoad;
+                } else {
+                    const opt = document.createElement('option');
+                    opt.value = voiceIdToLoad;
+                    opt.textContent = voiceIdToLoad;
+                    el.appendChild(opt);
+                    el.value = voiceIdToLoad;
+                }
+            }
+        }
+
+        // 自动获取语音列表（如果有 URL）
+        const autoUrl = urlToLoad || document.getElementById('gptsovitsApiUrl')?.value.trim();
+        if (autoUrl) {
+            fetchGptSovitsVoices(true);
+        }
+    }
+}
+
+/**
+ * 从 GPT-SoVITS v3 API 获取可用语音配置列表并填充下拉框
+ * @param {boolean} silent - 静默模式，不显示错误提示
+ */
+async function fetchGptSovitsVoices(silent = false) {
+    const apiUrl = document.getElementById('gptsovitsApiUrl')?.value.trim() || 'http://127.0.0.1:9881';
+    const select = document.getElementById('gptsovitsVoiceId');
+    if (!select) return;
+
+    // 记住当前选中的值
+    const currentValue = select.value;
+
+    try {
+        const resp = await fetch('/api/config/gptsovits/list_voices', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ api_url: apiUrl })
+        });
+        const result = await resp.json();
+
+        if (result.success && Array.isArray(result.voices)) {
+            // 清空现有选项
+            select.innerHTML = '';
+
+            if (result.voices.length === 0) {
+                const emptyOpt = document.createElement('option');
+                emptyOpt.value = '';
+                emptyOpt.textContent = window.t ? window.t('api.gptsovitsNoVoices') : '-- 无可用配置 --';
+                select.appendChild(emptyOpt);
+            } else {
+                result.voices.forEach(v => {
+                    const opt = document.createElement('option');
+                    opt.value = v.id;
+                    opt.textContent = v.name ? `${v.name} (${v.id})` : v.id;
+                    if (v.description) opt.title = v.description;
+                    select.appendChild(opt);
+                });
+            }
+
+            // 恢复之前选中的值
+            if (currentValue && select.querySelector(`option[value="${currentValue}"]`)) {
+                select.value = currentValue;
+            }
+
+            if (!silent) {
+                showStatus(window.t ? window.t('api.gptsovitsVoicesLoaded', { count: result.voices.length }) : `已加载 ${result.voices.length} 个语音配置`, 'success');
+            }
+        } else {
+            if (!silent) {
+                showStatus(result.error || (window.t ? window.t('api.gptsovitsVoicesLoadFailed') : '获取语音列表失败'), 'error');
+            }
+        }
+    } catch (e) {
+        if (!silent) {
+            showStatus(window.t ? window.t('api.gptsovitsVoicesLoadFailed') : '获取语音列表失败: ' + e.message, 'error');
+        }
+    }
+}
+
+/**
+ * 从 GPT-SoVITS v3 配置字段组装 ttsModelUrl 和 ttsVoiceId（用于保存，不检查启用状态）
+ * v3 voice_id 格式: 直接就是 voice_id 字符串
+ */
+function getGptSovitsConfigForSave() {
+    const apiUrl = document.getElementById('gptsovitsApiUrl')?.value.trim() || '';
+    const voiceId = document.getElementById('gptsovitsVoiceId')?.value || '';
+    
+    return {
+        url: apiUrl || 'http://127.0.0.1:9881',
+        voiceId: voiceId
+    };
+}
+
+/**
+ * 从 GPT-SoVITS v3 配置字段组装 ttsModelUrl 和 ttsVoiceId
+ * 返回 { url, voiceId } 或 null（如果未启用）
+ */
+function getGptSovitsConfig() {
+    const enabled = document.getElementById('gptsovitsEnabled')?.checked;
+    if (!enabled) return null;
+    
+    const config = getGptSovitsConfigForSave();
+    if (config && config.url.startsWith('http')) return config;
+    return null;
+}
+
+/**
+ * 切换 GPT-SoVITS 配置区域的显示/隐藏
+ */
+function toggleGptSovitsConfig() {
+    const enabled = document.getElementById('gptsovitsEnabled')?.checked;
+    const configFields = document.getElementById('gptsovits-config-fields');
+    if (configFields) {
+        configFields.style.display = enabled ? 'block' : 'none';
+    }
+}
+
+// ==================== 结束 GPT-SoVITS v3 配置相关函数 ====================
 
 // 切换自定义API启用状态
 function toggleCustomApi() {
@@ -587,10 +753,41 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
     const omniModelApiKey = document.getElementById('omniModelApiKey') ? document.getElementById('omniModelApiKey').value.trim() : '';
 
     const ttsModelProvider = document.getElementById('ttsModelProvider') ? document.getElementById('ttsModelProvider').value.trim() : '';
-    const ttsModelUrl = document.getElementById('ttsModelUrl') ? document.getElementById('ttsModelUrl').value.trim() : '';
+    let ttsModelUrl = document.getElementById('ttsModelUrl') ? document.getElementById('ttsModelUrl').value.trim() : '';
     const ttsModelId = document.getElementById('ttsModelId') ? document.getElementById('ttsModelId').value.trim() : '';
     const ttsModelApiKey = document.getElementById('ttsModelApiKey') ? document.getElementById('ttsModelApiKey').value.trim() : '';
-    const ttsVoiceId = document.getElementById('ttsVoiceId') ? document.getElementById('ttsVoiceId').value.trim() : '';
+    let ttsVoiceId = document.getElementById('ttsVoiceId') ? document.getElementById('ttsVoiceId').value.trim() : '';
+
+    // 检查 GPT-SoVITS v3 配置
+    const gptsovitsEnabled = document.getElementById('gptsovitsEnabled')?.checked;
+    // 始终获取 GPT-SoVITS 配置用于保存（即使禁用也保存配置以便下次启用时恢复）
+    const gptsovitsConfigForSave = getGptSovitsConfigForSave();
+    
+    // 启用 GPT-SoVITS 时校验 URL 协议
+    if (gptsovitsEnabled && gptsovitsConfigForSave) {
+        const url = gptsovitsConfigForSave.url || '';
+        if (!/^https?:\/\//.test(url)) {
+            showStatus(window.t ? window.t('api.gptsovitsApiUrlRequired') : '请填写正确的 http/https API URL', 'error');
+            return;
+        }
+    }
+    
+    if (gptsovitsEnabled && gptsovitsConfigForSave) {
+        // GPT-SoVITS 启用，使用其配置
+        ttsModelUrl = gptsovitsConfigForSave.url;
+        ttsVoiceId = gptsovitsConfigForSave.voiceId;
+    } else if (!gptsovitsEnabled) {
+        // GPT-SoVITS 禁用
+        // 如果当前 ttsModelUrl 是 HTTP URL（GPT-SoVITS 格式），需要特殊处理
+        if (ttsModelUrl && (ttsModelUrl.startsWith('http://') || ttsModelUrl.startsWith('https://'))) {
+            // 保存 GPT-SoVITS 配置到特殊标记，但清空实际使用的 URL
+            // 格式：在 voiceId 中添加 __gptsovits_disabled__ 前缀保存配置
+            if (gptsovitsConfigForSave) {
+                ttsVoiceId = `__gptsovits_disabled__|${gptsovitsConfigForSave.url}|${gptsovitsConfigForSave.voiceId}`;
+            }
+            ttsModelUrl = '';
+        }
+    }
 
     const mcpToken = document.getElementById('mcpTokenInput') ? document.getElementById('mcpTokenInput').value.trim() : '';
 
@@ -1104,7 +1301,7 @@ function toggleModelConfig(modelType) {
 // 页面加载完成后初始化折叠状态
 document.addEventListener('DOMContentLoaded', function () {
     // 初始化所有模型配置为折叠状态
-    const modelTypes = ['summary', 'correction', 'emotion', 'vision', 'omni', 'tts'];
+    const modelTypes = ['summary', 'correction', 'emotion', 'vision', 'omni', 'tts', 'gptsovits'];
     modelTypes.forEach(modelType => {
         const content = document.getElementById(`${modelType}-model-content`);
         if (content) {

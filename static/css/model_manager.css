@@ -92,7 +92,7 @@
             flex-direction: column;
             gap: 15px;  /* 统一所有 control-group 之间的间距 */
             z-index: 20;
-            width: 360px;  /* 增加宽度以容纳导入模型按钮(270px) + 删除按钮(60px) + 边距 */
+            width: 376px;  /* 增加宽度以容纳导入模型按钮(270px) + 删除按钮(60px) + 边距 */
             max-width: calc(100vw - 40px);
             max-height: calc(100vh - 40px);
             padding: 20px;
@@ -469,7 +469,7 @@
             position: absolute;
             top: 100%;
             left: 0;
-            width: 100%; /* 让下拉框宽度与包装容器（即按钮宽度）一致 */
+            width: 90%; /* 让下拉框宽度与包装容器（即按钮宽度）一致 */
             min-width: 270px;
             background: linear-gradient(to bottom, rgba(240, 248, 255, 0.85), rgba(255, 255, 255, 0.80));
             backdrop-filter: blur(10px);
@@ -595,7 +595,7 @@
             position: absolute;
             top: 100%;
             left: 0;
-            width: 100%;
+            width: 90%;
             min-width: 270px;
             max-height: 300px;
             overflow-y: auto;
@@ -1844,6 +1844,69 @@
             border-radius: 8px;
             padding: 6px;
             background: #fff;
+            width: 259px;
+        }
+
+        /* 常驻表情列表项样式 */
+        .persistent-item {
+            padding: 4px 8px;
+            margin: 2px 0;
+            background: linear-gradient(135deg, rgb(214 245 255 / 85%), rgb(196 238 255 / 75%));
+            border: 1px solid rgb(150 232 255 / 40%);
+            border-radius: 4px;
+            font-size: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: all 0.2s ease;
+            cursor: default;
+        }
+
+        .persistent-item:hover {
+            background: linear-gradient(135deg, rgb(150 232 255 / 95%), rgb(120 220 255 / 85%));
+            border-color: rgb(150 232 255 / 70%);
+            transform: translateY(-4px) translateX(-3px);
+            box-shadow: 0 6px 12px rgb(68 183 254 / 40%), 0 2px 4px rgb(68 183 254 / 20%);
+        }
+
+        /* 常驻表情删除按钮样式 */
+        .persistent-delete-btn {
+            background: #dc3545;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 2px 8px;
+            cursor: pointer;
+            font-size: 11px;
+        }
+
+        .persistent-delete-btn:hover {
+            background: #c82333;
+        }
+
+        /* 常驻表情列表滚动条样式 */
+        #persistent-list::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        #persistent-list::-webkit-scrollbar-track {
+            background: #f0f8ff;
+            border-radius: 3px;
+        }
+
+        #persistent-list::-webkit-scrollbar-thumb {
+            background: #96e8ff;
+            border-radius: 3px;
+        }
+
+        #persistent-list::-webkit-scrollbar-thumb:hover {
+            background: #7dd3ff;
+        }
+
+        /* Firefox 滚动条样式 */
+        #persistent-list {
+            scrollbar-width: thin;
+            scrollbar-color: #96e8ff #f0f8ff;
         }
 
         /* 打光控制样式 */
@@ -2579,7 +2642,7 @@
         }
 
         #sidebar.mode-live2d {
-            width: 360px;
+            width: 376px;
         }
 
         #sidebar.mode-live2d .sidebar-controls,

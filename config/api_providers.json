@@ -59,7 +59,7 @@
       "summary_model": "qwen3-next-80b-a3b-instruct",
       "correction_model": "qwen3-235b-a22b-instruct-2507",
       "emotion_model": "qwen-flash-2025-07-28",
-      "vision_model": "qwen3-vl-plus-2025-09-23"
+      "vision_model": "qwen3-vl-plus-2025-12-19"
     },
     "openai": {
       "key": "openai",
@@ -133,5 +133,17 @@
     "step": "ASSIST_API_KEY_STEP",
     "silicon": "ASSIST_API_KEY_SILICON",
     "gemini": "ASSIST_API_KEY_GEMINI"
+  },
+  "free_voices": {
+    "俏皮女孩": "voice-tone-OdVwaw2Az2",
+    "可爱女孩": "voice-tone-OdVwrbG3No",
+    "可爱少女": "voice-tone-OdVx7X482K",
+    "女少侠": "voice-tone-OdVxXm6rc8",
+    "活泼女孩": "voice-tone-OdVy0WzNbM",
+    "清冷御姐": "voice-tone-OdVyPmim9I",
+    "温柔少女": "voice-tone-OdVyxjm0lk",
+    "甜美御姐": "voice-tone-OdVzNLvgSe",
+    "病弱少女": "voice-tone-OdVzm70Oxc",
+    "稚气少女": "voice-tone-OdW072DFOS"
   }
 }
