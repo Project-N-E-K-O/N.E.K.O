@@ -36,9 +36,99 @@ import socket
 import time
 import threading
 import itertools
+import ctypes
 from typing import List, Dict
 from multiprocessing import Process, freeze_support, Event
 from config import MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
+
+
+def setup_job_object():
+    """
+    创建 Windows Job Object 并将当前进程加入其中。
+    设置 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE 标志，
+    这样当主进程被 kill 时，OS 会自动终止所有子进程，
+    防止孤儿进程悬挂。
+    """
+    if sys.platform != 'win32':
+        return
+
+    try:
+        kernel32 = ctypes.windll.kernel32
+
+        # Job Object 常量
+        JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+
+        # 创建 Job Object
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            print("[Launcher] Warning: Failed to create Job Object", flush=True)
+            return
+
+        # 设置 Job Object 信息
+        # JOBOBJECT_EXTENDED_LIMIT_INFORMATION 结构体
+        # 我们只需要设置 BasicLimitInformation.LimitFlags
+        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ('PerProcessUserTimeLimit', ctypes.c_int64),
+                ('PerJobUserTimeLimit', ctypes.c_int64),
+                ('LimitFlags', ctypes.c_uint32),
+                ('MinimumWorkingSetSize', ctypes.c_size_t),
+                ('MaximumWorkingSetSize', ctypes.c_size_t),
+                ('ActiveProcessLimit', ctypes.c_uint32),
+                ('Affinity', ctypes.c_size_t),
+                ('PriorityClass', ctypes.c_uint32),
+                ('SchedulingClass', ctypes.c_uint32),
+            ]
+
+        class IO_COUNTERS(ctypes.Structure):
+            _fields_ = [
+                ('ReadOperationCount', ctypes.c_uint64),
+                ('WriteOperationCount', ctypes.c_uint64),
+                ('OtherOperationCount', ctypes.c_uint64),
+                ('ReadTransferCount', ctypes.c_uint64),
+                ('WriteTransferCount', ctypes.c_uint64),
+                ('OtherTransferCount', ctypes.c_uint64),
+            ]
+
+        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ('BasicLimitInformation', JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ('IoInfo', IO_COUNTERS),
+                ('ProcessMemoryLimit', ctypes.c_size_t),
+                ('JobMemoryLimit', ctypes.c_size_t),
+                ('PeakProcessMemoryUsed', ctypes.c_size_t),
+                ('PeakJobMemoryUsed', ctypes.c_size_t),
+            ]
+
+        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+
+        result = kernel32.SetInformationJobObject(
+            job,
+            JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+            ctypes.byref(info),
+            ctypes.sizeof(info)
+        )
+        if not result:
+            print("[Launcher] Warning: Failed to set Job Object info", flush=True)
+            kernel32.CloseHandle(job)
+            return
+
+        # 将当前进程加入 Job Object
+        current_process = kernel32.GetCurrentProcess()
+        result = kernel32.AssignProcessToJobObject(job, current_process)
+        if not result:
+            print("[Launcher] Warning: Failed to assign process to Job Object", flush=True)
+            kernel32.CloseHandle(job)
+            return
+
+        # 不关闭 job handle —— 保持它在进程生命周期内有效
+        # 当主进程退出时，handle 自动关闭，触发 KILL_ON_JOB_CLOSE
+        print("[Launcher] Job Object created - child processes will auto-terminate on exit", flush=True)
+
+    except Exception as e:
+        print(f"[Launcher] Warning: Job Object setup failed: {e}", flush=True)
 
 # 服务器配置
 SERVERS = [
@@ -352,6 +442,9 @@ def main():
     """主函数"""
     # 支持 multiprocessing 在 Windows 上的打包
     freeze_support()
+    
+    # 创建 Job Object，确保主进程被 kill 时子进程也会被终止
+    setup_job_object()
     
     print("=" * 60, flush=True)
     print("N.E.K.O. 服务器启动器", flush=True)

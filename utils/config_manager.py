@@ -367,6 +367,47 @@ class ConfigManager:
         # 都不存在，返回我的文档路径（用于创建新文件）
         return docs_config_path
     
+    def _get_localized_characters_source(self):
+        """根据用户语言获取本地化的 characters.json 源文件路径。
+        
+        Returns:
+            Path | None: 本地化文件路径，如果无法检测语言或文件不存在则返回 None（回退到默认）
+        """
+        try:
+            from utils.language_utils import _get_steam_language, _get_system_language, normalize_language_code
+            
+            # 优先使用 Steam 语言，其次系统语言
+            raw_lang = _get_steam_language()
+            if not raw_lang:
+                raw_lang = _get_system_language()
+            if not raw_lang:
+                return None
+            
+            lang = normalize_language_code(raw_lang, format='full')
+        except Exception as e:
+            self._log(f"[ConfigManager] Failed to detect language for characters config: {e}")
+            return None
+        
+        if not lang:
+            return None
+        
+        # 映射语言代码到文件后缀
+        lang_lower = lang.lower()
+        if lang_lower in ('zh-cn', 'zh'):
+            suffix = 'zh-CN'
+        elif 'tw' in lang_lower or 'hk' in lang_lower:
+            suffix = 'zh-TW'
+        elif lang_lower.startswith('ja'):
+            suffix = 'ja'
+        elif lang_lower.startswith('en'):
+            suffix = 'en'
+        else:
+            # 未知语言，回退
+            return None
+        
+        localized_path = self.project_config_dir / f"characters.{suffix}.json"
+        return localized_path if localized_path.exists() else None
+    
     def migrate_config_files(self):
         """
         迁移配置文件到我的文档
@@ -375,7 +416,9 @@ class ConfigManager:
         1. 检查我的文档下的config文件夹，没有就创建
         2. 对于每个配置文件：
            - 如果我的文档下有，跳过
-           - 如果我的文档下没有，但项目config下有，复制过去
+           - 如果我的文档下没有：
+             - characters.json: 根据语言选择本地化版本，回退到默认
+             - 其他文件: 从项目config复制
            - 如果都没有，不做处理（后续会创建默认值）
         """
         # 确保目录存在
@@ -396,6 +439,18 @@ class ConfigManager:
             if docs_config_path.exists():
                 self._log(f"[ConfigManager] Config already exists: {filename}")
                 continue
+            
+            # 对 characters.json 特殊处理：根据语言选择本地化版本
+            if filename == 'characters.json':
+                lang_source = self._get_localized_characters_source()
+                if lang_source:
+                    try:
+                        shutil.copy2(lang_source, docs_config_path)
+                        self._log(f"[ConfigManager] ✓ Migrated localized config: {lang_source.name} -> {docs_config_path}")
+                        continue
+                    except Exception as e:
+                        self._log(f"Warning: Failed to migrate localized {lang_source.name}: {e}")
+                        # 继续走默认拷贝逻辑
             
             # 如果项目config下有，复制过去
             if project_config_path.exists():
