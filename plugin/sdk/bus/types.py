@@ -63,35 +63,77 @@ _BUS_CHANGE_LISTENERS: Dict[str, "list[Callable[[str, str, Dict[str, Any]], None
 }
 
 
+# ========== 全局状态辅助函数（消除重复的 if lock: with lock: else: 模式） ==========
+
+def _locked(fn: Callable[..., Any]) -> Any:
+    """在持锁状态下执行 fn()，锁不可用时直接执行"""
+    if _BUS_LATEST_REV_LOCK is not None:
+        with _BUS_LATEST_REV_LOCK:
+            return fn()
+    return fn()
+
+
+def _get_bus_rev(bus: str) -> int:
+    return _locked(lambda: int(_BUS_LATEST_REV.get(bus, 0)))
+
+
+def _update_bus_rev(bus: str, rev: int) -> None:
+    def _do() -> None:
+        prev = int(_BUS_LATEST_REV.get(bus, 0))
+        if rev > prev:
+            _BUS_LATEST_REV[bus] = rev
+    _locked(_do)
+
+
+def _get_bus_listeners(bus: str) -> "list[Callable[[str, str, Dict[str, Any]], None]]":
+    return _locked(lambda: list(_BUS_CHANGE_LISTENERS.get(bus, [])))
+
+
+def _get_recent_deltas(bus: str) -> "list[tuple[int, str, Dict[str, Any]]]":
+    return _locked(lambda: list(_BUS_RECENT_DELTAS.get(bus, [])))
+
+
+def _append_recent_delta(bus: str, rev: int, op: str, delta: Dict[str, Any]) -> None:
+    def _do() -> None:
+        from collections import deque
+        q = _BUS_RECENT_DELTAS.get(bus)
+        if q is None:
+            q = deque(maxlen=512)
+            _BUS_RECENT_DELTAS[bus] = q
+        q.append((rev, str(op), dict(delta)))
+    _locked(_do)
+
+
+def _watcher_get(sub_id: str) -> "Optional[BusListWatcher[Any]]":
+    return _locked(lambda: _WATCHER_REGISTRY.get(sub_id))
+
+
+def _watcher_set(sub_id: str, watcher: "BusListWatcher[Any]") -> None:
+    _locked(lambda: _WATCHER_REGISTRY.__setitem__(sub_id, watcher))
+
+
+def _watcher_pop(sub_id: str) -> None:
+    _locked(lambda: _WATCHER_REGISTRY.pop(sub_id, None))
+
+
 def register_bus_change_listener(bus: str, fn: "Callable[[str, str, Dict[str, Any]], None]") -> Callable[[], None]:
     b = str(bus).strip()
     if b not in _BUS_CHANGE_LISTENERS:
         raise ValueError(f"invalid bus: {bus!r}")
     if not callable(fn):
         raise ValueError("listener must be callable")
-    if _BUS_LATEST_REV_LOCK is not None:
-        with _BUS_LATEST_REV_LOCK:
-            _BUS_CHANGE_LISTENERS[b].append(fn)
-    else:
-        _BUS_CHANGE_LISTENERS[b].append(fn)
+    _locked(lambda: _BUS_CHANGE_LISTENERS[b].append(fn))
 
     def _unsub() -> None:
         try:
-            if _BUS_LATEST_REV_LOCK is not None:
-                with _BUS_LATEST_REV_LOCK:
-                    lst = _BUS_CHANGE_LISTENERS.get(b)
-                    if lst is not None:
-                        try:
-                            lst.remove(fn)
-                        except ValueError:
-                            pass
-            else:
+            def _do() -> None:
                 lst = _BUS_CHANGE_LISTENERS.get(b)
                 if lst is not None:
                     try:
                         lst.remove(fn)
                     except ValueError:
                         pass
+            _locked(_do)
         except Exception:
             return
 
@@ -115,11 +157,7 @@ def _ensure_bus_rev_subscription(ctx: Any, bus: str) -> None:
         return
 
     try:
-        if _BUS_LATEST_REV_LOCK is not None:
-            with _BUS_LATEST_REV_LOCK:
-                sid0 = _BUS_REV_SUB_ID.get(b)
-        else:
-            sid0 = _BUS_REV_SUB_ID.get(b)
+        sid0 = _locked(lambda: _BUS_REV_SUB_ID.get(b))
         if isinstance(sid0, str) and sid0:
             return
     except Exception:
@@ -154,13 +192,10 @@ def _ensure_bus_rev_subscription(ctx: Any, bus: str) -> None:
         return
 
     sink = _BusRevSink()
-    if _WATCHER_REGISTRY_LOCK is not None:
-        with _WATCHER_REGISTRY_LOCK:
-            _WATCHER_REGISTRY[sub_id] = sink  # type: ignore[assignment]
-            _BUS_REV_SUB_ID[b] = sub_id
-    else:
+    def _register() -> None:
         _WATCHER_REGISTRY[sub_id] = sink  # type: ignore[assignment]
         _BUS_REV_SUB_ID[b] = sub_id
+    _locked(_register)
 
     if cur_rev is not None:
         try:
@@ -168,15 +203,21 @@ def _ensure_bus_rev_subscription(ctx: Any, bus: str) -> None:
         except Exception:
             r = None
         if r is not None:
-            if _BUS_LATEST_REV_LOCK is not None:
-                with _BUS_LATEST_REV_LOCK:
-                    prev = int(_BUS_LATEST_REV.get(b, 0))
-                    if r > prev:
-                        _BUS_LATEST_REV[b] = r
-            else:
-                prev = int(_BUS_LATEST_REV.get(b, 0))
-                if r > prev:
-                    _BUS_LATEST_REV[b] = r
+            _update_bus_rev(b, r)
+
+
+def _notify_bus_listeners(bus: str, op: str, delta: Dict[str, Any]) -> None:
+    """通知所有 bus change listeners（提取的公共逻辑）"""
+    b = str(bus).strip()
+    if b not in _BUS_CHANGE_LISTENERS:
+        return
+    listeners = _get_bus_listeners(b)
+    d = dict(delta or {})
+    for fn in listeners:
+        try:
+            fn(b, str(op), d)
+        except Exception:
+            continue
 
 
 def dispatch_bus_change(*, sub_id: str, bus: str, op: str, delta: Optional[Dict[str, Any]] = None) -> None:
@@ -194,54 +235,16 @@ def dispatch_bus_change(*, sub_id: str, bus: str, op: str, delta: Optional[Dict[
                 r = None
             if r is not None:
                 try:
-                    from collections import deque
-
-                    if _BUS_LATEST_REV_LOCK is not None:
-                        with _BUS_LATEST_REV_LOCK:
-                            q = _BUS_RECENT_DELTAS.get(b)
-                            if q is None:
-                                q = deque(maxlen=512)
-                                _BUS_RECENT_DELTAS[b] = q
-                            q.append((r, str(op), dict(d)))
-                    else:
-                        q = _BUS_RECENT_DELTAS.get(b)
-                        if q is None:
-                            q = deque(maxlen=512)
-                            _BUS_RECENT_DELTAS[b] = q
-                        q.append((r, str(op), dict(d)))
+                    _append_recent_delta(b, r, op, d)
                 except Exception:
                     pass
-                if _BUS_LATEST_REV_LOCK is not None:
-                    with _BUS_LATEST_REV_LOCK:
-                        prev = int(_BUS_LATEST_REV.get(b, 0))
-                        if r > prev:
-                            _BUS_LATEST_REV[b] = r
-                else:
-                    prev = int(_BUS_LATEST_REV.get(b, 0))
-                    if r > prev:
-                        _BUS_LATEST_REV[b] = r
+                _update_bus_rev(b, r)
     except Exception:
         pass
-    if _WATCHER_REGISTRY_LOCK is not None:
-        with _WATCHER_REGISTRY_LOCK:
-            w = _WATCHER_REGISTRY.get(sid)
-    else:
-        w = _WATCHER_REGISTRY.get(sid)
+    w = _watcher_get(sid)
     if w is None:
         try:
-            b2 = str(bus).strip()
-            d2 = dict(delta or {})
-            if b2 in _BUS_CHANGE_LISTENERS:
-                if _BUS_LATEST_REV_LOCK is not None:
-                    with _BUS_LATEST_REV_LOCK:
-                        listeners = list(_BUS_CHANGE_LISTENERS.get(b2, []))
-                else:
-                    listeners = list(_BUS_CHANGE_LISTENERS.get(b2, []))
-                for fn in listeners:
-                    try:
-                        fn(b2, str(op), d2)
-                    except Exception:
-                        continue
+            _notify_bus_listeners(bus, op, dict(delta or {}))
         except Exception:
             pass
         return
@@ -251,19 +254,7 @@ def dispatch_bus_change(*, sub_id: str, bus: str, op: str, delta: Optional[Dict[
         return
 
     try:
-        b2 = str(bus).strip()
-        d2 = dict(delta or {})
-        if b2 in _BUS_CHANGE_LISTENERS:
-            if _BUS_LATEST_REV_LOCK is not None:
-                with _BUS_LATEST_REV_LOCK:
-                    listeners = list(_BUS_CHANGE_LISTENERS.get(b2, []))
-            else:
-                listeners = list(_BUS_CHANGE_LISTENERS.get(b2, []))
-            for fn in listeners:
-                try:
-                    fn(b2, str(op), d2)
-                except Exception:
-                    continue
+        _notify_bus_listeners(bus, op, dict(delta or {}))
     except Exception:
         return
 
@@ -1927,11 +1918,7 @@ class BusList(Generic[TRecord]):
                         pass
                     latest_rev: Optional[int] = None
                     try:
-                        if _BUS_LATEST_REV_LOCK is not None:
-                            with _BUS_LATEST_REV_LOCK:
-                                latest_rev = int(_BUS_LATEST_REV.get(seed_bus, 0))
-                        else:
-                            latest_rev = int(_BUS_LATEST_REV.get(seed_bus, 0))
+                        latest_rev = _get_bus_rev(seed_bus)
                     except Exception:
                         latest_rev = None
 
@@ -1958,11 +1945,7 @@ class BusList(Generic[TRecord]):
                             return True
                         src = next(iter(sources))
                         try:
-                            if _BUS_LATEST_REV_LOCK is not None:
-                                with _BUS_LATEST_REV_LOCK:
-                                    q = list(_BUS_RECENT_DELTAS.get(bus, []))
-                            else:
-                                q = list(_BUS_RECENT_DELTAS.get(bus, []))
+                            q = _get_recent_deltas(bus)
                         except Exception:
                             return True
 
@@ -2598,11 +2581,7 @@ class BusListWatcher(Generic[TRecord]):
             if not isinstance(sub_id, str) or not sub_id:
                 raise RuntimeError("BUS_SUBSCRIBE failed: missing sub_id")
             self._sub_id = sub_id
-            if _WATCHER_REGISTRY_LOCK is not None:
-                with _WATCHER_REGISTRY_LOCK:
-                    _WATCHER_REGISTRY[sub_id] = self  # type: ignore[assignment]
-            else:
-                _WATCHER_REGISTRY[sub_id] = self  # type: ignore[assignment]
+            _watcher_set(sub_id, self)  # type: ignore[arg-type]
             return self
 
         # In-process fallback: subscribe to core state hub.
@@ -2621,11 +2600,7 @@ class BusListWatcher(Generic[TRecord]):
         if self._sub_id is not None:
             sid = self._sub_id
             self._sub_id = None
-            if _WATCHER_REGISTRY_LOCK is not None:
-                with _WATCHER_REGISTRY_LOCK:
-                    _WATCHER_REGISTRY.pop(sid, None)
-            else:
-                _WATCHER_REGISTRY.pop(sid, None)
+            _watcher_pop(sid)
 
             try:
                 if getattr(self._ctx, "_plugin_comm_queue", None) is not None and hasattr(self._ctx, "_send_request_and_wait"):

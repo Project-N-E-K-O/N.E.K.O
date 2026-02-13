@@ -50,19 +50,19 @@ async def start_plugin(plugin_id: str, restore_state: bool = False) -> Dict[str,
     logger.info("[start_plugin] BEGIN: plugin_id={}, restore_state={}", plugin_id, restore_state)
     
     # 检查插件是否已运行
-    if plugin_id in state.plugin_hosts:
-        host = state.plugin_hosts[plugin_id]
-        if host.is_alive():
-            _enqueue_lifecycle({
-                "type": "plugin_start_skipped",
-                "plugin_id": plugin_id,
-                "time": now_iso(),
-            })
-            return {
-                "success": True,
-                "plugin_id": plugin_id,
-                "message": "Plugin is already running"
-            }
+    with state.acquire_plugin_hosts_read_lock():
+        existing_host = state.plugin_hosts.get(plugin_id)
+    if existing_host and existing_host.is_alive():
+        _enqueue_lifecycle({
+            "type": "plugin_start_skipped",
+            "plugin_id": plugin_id,
+            "time": now_iso(),
+        })
+        return {
+            "success": True,
+            "plugin_id": plugin_id,
+            "message": "Plugin is already running"
+        }
     
     # 检查插件是否处于冻结状态
     if state.is_plugin_frozen(plugin_id) and not restore_state:
@@ -391,7 +391,8 @@ async def stop_plugin(plugin_id: str) -> Dict[str, Any]:
         操作结果
     """
     # 检查插件是否存在
-    host = state.plugin_hosts.get(plugin_id)
+    with state.acquire_plugin_hosts_read_lock():
+        host = state.plugin_hosts.get(plugin_id)
     if not host:
         raise HTTPException(
             status_code=404,
@@ -459,7 +460,9 @@ async def reload_plugin(plugin_id: str) -> Dict[str, Any]:
     })
     
     # 1. 停止插件（如果正在运行）
-    if plugin_id in state.plugin_hosts:
+    with state.acquire_plugin_hosts_read_lock():
+        is_running = plugin_id in state.plugin_hosts
+    if is_running:
         try:
             await stop_plugin(plugin_id)
         except HTTPException as e:
@@ -490,7 +493,8 @@ async def freeze_plugin(plugin_id: str) -> Dict[str, Any]:
         操作结果
     """
     # 检查插件是否存在
-    host = state.plugin_hosts.get(plugin_id)
+    with state.acquire_plugin_hosts_read_lock():
+        host = state.plugin_hosts.get(plugin_id)
     if not host:
         # 检查是否已经冻结
         if state.is_plugin_frozen(plugin_id):
@@ -688,7 +692,9 @@ async def unfreeze_plugin(plugin_id: str) -> Dict[str, Any]:
     # 检查插件是否处于冻结状态
     if not state.is_plugin_frozen(plugin_id):
         # 检查是否已在运行
-        if plugin_id in state.plugin_hosts:
+        with state.acquire_plugin_hosts_read_lock():
+            _already_running = plugin_id in state.plugin_hosts
+        if _already_running:
             raise HTTPException(
                 status_code=409,
                 detail=f"Plugin '{plugin_id}' is already running. Use stop_plugin first if you want to restart."

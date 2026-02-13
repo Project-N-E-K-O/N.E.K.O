@@ -81,19 +81,26 @@ class NekoPluginBase:
         config_path = getattr(ctx, "config_path", None)
         plugin_dir = config_path.parent if config_path else Path.cwd()
         
+        # 一次性读取有效配置（避免多次同步 IPC 调用拖慢启动）
+        _effective_cfg: Dict[str, Any] = {}
+        try:
+            if hasattr(self, 'config'):
+                _effective_cfg = self.config.dump_effective_sync(timeout=1.0)
+                if not isinstance(_effective_cfg, dict):
+                    _effective_cfg = {}
+        except Exception:
+            pass
+        
         # 读取 state_backend 配置（默认 off，需要开发者显式启用）
-        state_backend = "off"  # 默认禁用
+        state_backend = "off"
         try:
             from plugin.settings import PLUGIN_STATE_BACKEND_DEFAULT
             state_backend = PLUGIN_STATE_BACKEND_DEFAULT
-            # 尝试从插件配置覆盖
-            if hasattr(self, 'config'):
-                cfg = self.config.dump_effective_sync(timeout=1.0)
-                state_cfg = cfg.get("plugin_state", {})
-                if isinstance(state_cfg, dict):
-                    cfg_backend = state_cfg.get("backend")
-                    if cfg_backend in ("memory", "file", "off"):
-                        state_backend = cfg_backend
+            state_cfg = _effective_cfg.get("plugin_state", {})
+            if isinstance(state_cfg, dict):
+                cfg_backend = state_cfg.get("backend")
+                if cfg_backend in ("memory", "file", "off"):
+                    state_backend = cfg_backend
         except Exception:
             pass
         
@@ -107,13 +114,11 @@ class NekoPluginBase:
         self._freeze_checkpoint = self._state_persistence
         
         # 读取 store 配置（默认禁用，需要在 plugin.toml 中显式启用）
-        store_enabled = False  # 默认禁用
+        store_enabled = False
         try:
-            if hasattr(self, 'config'):
-                cfg = self.config.dump_effective_sync(timeout=1.0)
-                store_cfg = cfg.get("plugin", {}).get("store", {})
-                if isinstance(store_cfg, dict):
-                    store_enabled = store_cfg.get("enabled", False)
+            store_cfg = _effective_cfg.get("plugin", {}).get("store", {})
+            if isinstance(store_cfg, dict):
+                store_enabled = store_cfg.get("enabled", False)
         except Exception:
             pass
         
@@ -125,15 +130,13 @@ class NekoPluginBase:
         )
         
         # 读取 database 配置（默认禁用，需要在 plugin.toml 中显式启用）
-        db_enabled = False  # 默认禁用
-        db_name = None  # 默认使用 {plugin_id}.db
+        db_enabled = False
+        db_name = None
         try:
-            if hasattr(self, 'config'):
-                cfg = self.config.dump_effective_sync(timeout=1.0)
-                db_cfg = cfg.get("plugin", {}).get("database", {})
-                if isinstance(db_cfg, dict):
-                    db_enabled = db_cfg.get("enabled", False)
-                    db_name = db_cfg.get("name")  # 可选：自定义数据库文件名
+            db_cfg = _effective_cfg.get("plugin", {}).get("database", {})
+            if isinstance(db_cfg, dict):
+                db_enabled = db_cfg.get("enabled", False)
+                db_name = db_cfg.get("name")
         except Exception:
             pass
         

@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from plugin.core.state import state
 from plugin.api.models import RunCreateRequest, RunCreateResponse, RunStatus
 from plugin.server.services import trigger_plugin
+from plugin.settings import RUN_EXECUTION_TIMEOUT, RUN_STORE_MAX_COMPLETED
 
 
 ExportType = Literal["text", "url", "binary_url", "binary"]
@@ -130,10 +131,14 @@ class InMemoryExportStore:
             return items, next_after
 
 
+_TERMINAL_STATUSES = frozenset(("succeeded", "failed", "canceled", "timeout"))
+
+
 class InMemoryRunStore:
-    def __init__(self) -> None:
+    def __init__(self, max_completed: int = 0) -> None:
         self._lock = threading.Lock()
         self._runs: Dict[str, RunRecord] = {}
+        self._max_completed = max_completed if max_completed > 0 else int(RUN_STORE_MAX_COMPLETED)
 
     def create(self, rec: RunRecord) -> None:
         with self._lock:
@@ -202,7 +207,24 @@ class InMemoryRunStore:
             )
             nr = RunRecord.model_validate(data)
             self._runs[run_id] = nr
+            self._evict_completed_locked()
             return nr.model_copy(deep=True)
+
+    def _evict_completed_locked(self) -> None:
+        """在持锁状态下淘汰最旧的已终止 Run（超出 max_completed 时）"""
+        if self._max_completed <= 0:
+            return
+        completed = [
+            (rid, r) for rid, r in self._runs.items()
+            if r.status in _TERMINAL_STATUSES
+        ]
+        if len(completed) <= self._max_completed:
+            return
+        # 按 finished_at 排序，淘汰最旧的
+        completed.sort(key=lambda x: x[1].finished_at or x[1].updated_at)
+        to_remove = len(completed) - self._max_completed
+        for i in range(to_remove):
+            self._runs.pop(completed[i][0], None)
 
 
 _run_store: RunStore = InMemoryRunStore()
@@ -574,5 +596,24 @@ async def create_run(req: RunCreateRequest, *, client_host: Optional[str]) -> Ru
             if term is not None:
                 _emit_runs("change", term)
 
-    asyncio.create_task(_runner(), name=f"run:{run_id}")
+    async def _guarded_runner() -> None:
+        """带超时保护的 runner 包装器"""
+        timeout = float(RUN_EXECUTION_TIMEOUT)
+        if timeout <= 0:
+            # 超时禁用，直接执行
+            await _runner()
+            return
+        try:
+            await asyncio.wait_for(_runner(), timeout=timeout)
+        except asyncio.TimeoutError:
+            term = _run_store.commit_terminal(
+                run_id,
+                status="timeout",
+                error=RunError(code="TIMEOUT", message=f"Run exceeded {timeout}s timeout"),
+                result_refs=[],
+            )
+            if term is not None:
+                _emit_runs("change", term)
+
+    asyncio.create_task(_guarded_runner(), name=f"run:{run_id}")
     return RunCreateResponse(run_id=run_id, status="queued")

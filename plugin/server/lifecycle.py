@@ -379,18 +379,18 @@ async def startup() -> None:
         except Exception as e:
             logger.exception("Failed to start communication resources for plugin {}: {}", plugin_id, e)
     
+    # 持锁获取 plugin_hosts 副本的统一 getter
+    def get_plugin_hosts():
+        with state.acquire_plugin_hosts_read_lock():
+            return dict(state.plugin_hosts)
+
     # 启动状态消费任务
     await status_manager.start_status_consumer(
-        plugin_hosts_getter=lambda: state.plugin_hosts
+        plugin_hosts_getter=get_plugin_hosts
     )
     logger.info("Status consumer started")
     
     # 启动性能指标收集器
-    # 注意：需要在锁保护下获取 plugin_hosts
-    def get_plugin_hosts():
-        with state.acquire_plugin_hosts_read_lock():
-            return dict(state.plugin_hosts)  # 返回副本，避免长时间持有锁
-    
     await metrics_collector.start(
         plugin_hosts_getter=get_plugin_hosts
     )
@@ -445,8 +445,10 @@ async def _shutdown_internal() -> None:
     
     # 3. 关闭所有插件的资源
     step_t0 = time.time()
+    with state.acquire_plugin_hosts_read_lock():
+        plugin_hosts_snapshot = dict(state.plugin_hosts)
     shutdown_tasks = []
-    for plugin_id, host in state.plugin_hosts.items():
+    for plugin_id, host in plugin_hosts_snapshot.items():
         _enqueue_lifecycle({"type": "plugin_shutdown_requested", "plugin_id": plugin_id, "time": now_iso()})
         shutdown_tasks.append(host.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT))
     

@@ -220,22 +220,22 @@ class PluginRouter:
     @property
     def ctx(self) -> "PluginContext":
         """获取插件上下文"""
-        self._ensure_bound("access ctx")
-        assert self._plugin is not None
+        if not self._bound or self._plugin is None:
+            return None  # type: ignore[return-value]
         return self._plugin.ctx
     
     @property
     def config(self) -> "PluginConfig":
         """获取配置管理器"""
-        self._ensure_bound("access config")
-        assert self._plugin is not None
+        if not self._bound or self._plugin is None:
+            return None  # type: ignore[return-value]
         return self._plugin.config
     
     @property
     def plugins(self) -> "Plugins":
         """获取插件间调用管理器"""
-        self._ensure_bound("access plugins")
-        assert self._plugin is not None
+        if not self._bound or self._plugin is None:
+            return None  # type: ignore[return-value]
         return self._plugin.plugins
     
     @property
@@ -243,9 +243,10 @@ class PluginRouter:
         """获取日志记录器
         
         优先返回 file_logger（如果主插件启用了），否则返回 ctx.logger。
+        未绑定时返回 None（防止 inspect.getmembers 扫描崩溃）。
         """
-        self._ensure_bound("access logger")
-        assert self._plugin is not None
+        if not self._bound or self._plugin is None:
+            return None
         # 优先使用 file_logger
         file_logger = getattr(self._plugin, "file_logger", None)
         if file_logger is not None:
@@ -257,9 +258,10 @@ class PluginRouter:
         """获取文件日志记录器
         
         Returns:
-            文件日志记录器，如果主插件未启用则返回 None
+            文件日志记录器，如果主插件未启用或未绑定则返回 None
         """
-        self._ensure_bound("access file_logger")
+        if not self._bound or self._plugin is None:
+            return None
         return getattr(self._plugin, "file_logger", None)
     
     @property
@@ -267,9 +269,10 @@ class PluginRouter:
         """获取 KV 存储
         
         Returns:
-            PluginStore 实例，如果未启用则返回 None
+            PluginStore 实例，如果未启用或未绑定则返回 None
         """
-        self._ensure_bound("access store")
+        if not self._bound or self._plugin is None:
+            return None
         return getattr(self._plugin, "store", None)
     
     @property
@@ -277,15 +280,17 @@ class PluginRouter:
         """获取数据库
         
         Returns:
-            PluginDatabase 实例，如果未启用则返回 None
+            PluginDatabase 实例，如果未启用或未绑定则返回 None
         """
-        self._ensure_bound("access db")
+        if not self._bound or self._plugin is None:
+            return None
         return getattr(self._plugin, "db", None)
     
     @property
     def plugin_id(self) -> str:
         """获取插件 ID"""
-        self._ensure_bound("access plugin_id")
+        if not self._bound or self._plugin is None:
+            return self._name
         return getattr(self._plugin, "_plugin_id", "unknown")
     
     @property
@@ -310,8 +315,8 @@ class PluginRouter:
         Raises:
             PluginRouterError: 如果 Router 未绑定到插件
         """
-        self._ensure_bound()
-        assert self._plugin is not None
+        if not self._bound or self._plugin is None:
+            raise PluginRouterError.not_bound(self._name, "access main_plugin")
         return self._plugin
     
     def get_plugin_attr(self, name: str, default: T = None) -> Union[Any, T]:  # type: ignore[assignment]

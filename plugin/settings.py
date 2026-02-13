@@ -73,6 +73,12 @@ EXPORT_INLINE_BINARY_MAX_BYTES = _get_int_env("NEKO_EXPORT_INLINE_BINARY_MAX_BYT
 
 RUN_TOKEN_SECRET = os.getenv("NEKO_RUN_TOKEN_SECRET", "dev-insecure-run-token-secret")
 RUN_TOKEN_TTL_SECONDS = _get_int_env("NEKO_RUN_TOKEN_TTL_SECONDS", 3600)
+# 单次 Run 的最大执行时间（秒），超时后自动标记为 timeout
+# Env: NEKO_RUN_EXECUTION_TIMEOUT, default=300.0 (5分钟)
+RUN_EXECUTION_TIMEOUT = _get_float_env("NEKO_RUN_EXECUTION_TIMEOUT", 300.0)
+# InMemoryRunStore 保留的已终止 Run 最大数量，超出后淘汰最旧的
+# Env: NEKO_RUN_STORE_MAX_COMPLETED, default=500
+RUN_STORE_MAX_COMPLETED = _get_int_env("NEKO_RUN_STORE_MAX_COMPLETED", 500)
 
 BLOB_STORE_DIR = os.getenv("NEKO_BLOB_STORE_DIR", str((Path(__file__).parent / "store" / "blobs").resolve()))
 BLOB_UPLOAD_MAX_BYTES = _get_int_env("NEKO_BLOB_UPLOAD_MAX_BYTES", 200 * 1024 * 1024)
@@ -574,6 +580,10 @@ __all__ = [
     
     # 状态持久化配置
     "PLUGIN_STATE_BACKEND_DEFAULT",
+    
+    # Run 配置
+    "RUN_EXECUTION_TIMEOUT",
+    "RUN_STORE_MAX_COMPLETED",
     
     # 验证函数
     "validate_config",
