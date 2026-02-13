@@ -941,16 +941,19 @@ function init_app() {
                         window.sessionTimeoutId = null;
                     }
 
-                    // 如果当前处于语音模式，停止录音并清理音频
+                    // 如果当前处于语音模式，停止录音
                     if (isRecording) {
                         stopRecording();
-                        (async () => { await clearAudioQueue(); })();
                     }
+
+                    // 无条件清理音频队列，防止残留播放
+                    (async () => { await clearAudioQueue(); })();
 
                     hideVoicePreparingToast();
 
                     // 恢复 UI 到空闲状态
                     micButton.classList.remove('active');
+                    micButton.classList.remove('recording');
                     screenButton.classList.remove('active');
                     micButton.disabled = false;
                     textSendButton.disabled = false;
@@ -1025,11 +1028,12 @@ function init_app() {
                 console.log(window.t('console.websocketDisconnectedResetText'));
             }
 
-            // 重置语音录制状态
-            if (isRecording) {
+            // 重置语音录制状态和资源（包括录制中或麦克风启动中的情况）
+            if (isRecording || window.isMicStarting) {
                 console.log('WebSocket断开时重置语音录制状态');
                 isRecording = false;
                 window.isRecording = false;
+                window.isMicStarting = false;
                 window.currentGeminiMessage = null;
                 lastVoiceUserMessage = null;
                 lastVoiceUserMessageTime = 0;
@@ -1052,12 +1056,6 @@ function init_app() {
                     audioContext = null;
                     workletNode = null;
                 }
-            }
-
-            // 重置麦克风启动状态
-            if (window.isMicStarting) {
-                console.log('WebSocket断开时重置麦克风启动状态');
-                window.isMicStarting = false;
             }
 
             // 重置模式切换标志
@@ -1094,8 +1092,9 @@ function init_app() {
             // 隐藏语音准备提示
             hideVoicePreparingToast();
 
-            // 移除按钮的active类
+            // 移除按钮的active/recording类
             micButton.classList.remove('active');
+            micButton.classList.remove('recording');
             screenButton.classList.remove('active');
 
             // 恢复按钮状态，确保用户可以继续操作
