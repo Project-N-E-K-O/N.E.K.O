@@ -294,12 +294,21 @@
                 if (data.need_refresh) {
                     // 优先使用 BroadcastChannel（跨页面通信）
                     if (typeof BroadcastChannel !== 'undefined') {
-                        const channel = new BroadcastChannel('neko_page_channel');
-                        channel.postMessage({
-                            action: 'memory_edited',
-                            catgirl_name: data.catgirl_name
-                        });
-                        console.log('[MemoryBrowser] 已通过 BroadcastChannel 发送 memory_edited 消息');
+                        let channel = null;
+                        try {
+                            channel = new BroadcastChannel('neko_page_channel');
+                            channel.postMessage({
+                                action: 'memory_edited',
+                                catgirl_name: data.catgirl_name
+                            });
+                            console.log('[MemoryBrowser] 已通过 BroadcastChannel 发送 memory_edited 消息');
+                        } catch (e) {
+                            console.error('[MemoryBrowser] BroadcastChannel 发送失败:', e);
+                        } finally {
+                            if (channel) {
+                                channel.close();
+                            }
+                        }
                     }
                     // 同时使用 postMessage 作为后备（iframe 场景）
                     if (window.parent && window.parent !== window) {
