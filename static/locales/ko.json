@@ -1059,7 +1059,9 @@
     "resetTutorialBtn": "튜토리얼 재설정",
     "tutorialResetSuccess": "모든 튜토리얼이 재설정되었습니다. 각 페이지를 방문할 때마다 다시 표시됩니다.",
     "tutorialPageResetSuccess": "이 페이지의 튜토리얼이 재설정되었습니다. 방문하시면 다시 보여드리겠습니다.",
-    "tutorialPageResetSuccessWithName": "\"{{pageName}}\" 튜토리얼이 재설정되었습니다. 해당 페이지를 방문하면 다시 표시됩니다."
+    "tutorialPageResetSuccessWithName": "\"{{pageName}}\" 튜토리얼이 재설정되었습니다. 해당 페이지를 방문하면 다시 표시됩니다.",
+    "refreshed": "메모리가 업데이트되었습니다. 다음 대화에서 새 메모리가 사용됩니다",
+    "refreshingContext": "컨텍스트 새로고침 중..."
   },
   "character": {
     "manager": "캐릭터 관리자",

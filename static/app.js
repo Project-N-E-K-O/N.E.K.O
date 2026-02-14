@@ -1159,6 +1159,45 @@ function init_app() {
                     case 'show_main_ui':
                         handleShowMainUI();
                         break;
+                    case 'memory_edited':
+                        console.log(window.t('console.memoryEditedRefreshContext'), event.data.catgirl_name);
+                        (async () => {
+                            // 记录之前是否在语音模式
+                            const wasRecording = isRecording;
+                            
+                            // 停止当前语音捕获
+                            if (isRecording) {
+                                stopMicCapture();
+                            }
+                            // 如果是文本模式，重置会话状态，下次发送文本时会重新获取上下文
+                            if (isTextSessionActive) {
+                                isTextSessionActive = false;
+                                console.log('[Memory] 文本会话已重置，下次发送将重新加载上下文');
+                            }
+                            // 停止正在播放的AI语音回复
+                            if (typeof clearAudioQueue === 'function') {
+                                clearAudioQueue();
+                            }
+                            
+                            // 如果之前是语音模式，等待 session 结束后自动重新连接
+                            if (wasRecording) {
+                                showStatusToast(window.t ? window.t('memory.refreshingContext') : '正在刷新上下文...', 3000);
+                                // 等待 session 完全结束
+                                await new Promise(resolve => setTimeout(resolve, 1500));
+                                // 自动重新启动语音
+                                if (typeof startMicCapture === 'function') {
+                                    try {
+                                        await startMicCapture();
+                                    } catch (e) {
+                                        console.error('[Memory] 自动重连语音失败:', e);
+                                    }
+                                }
+                            } else {
+                                // 显示提示
+                                showStatusToast(window.t ? window.t('memory.refreshed') : '记忆已更新，下次对话将使用新记忆', 4000);
+                            }
+                        })();
+                        break;
                 }
             };
         }
@@ -1535,6 +1574,11 @@ function init_app() {
             // 停止当前语音捕获，用户再次开麦时会自动刷新上下文
             if (isRecording) {
                 stopMicCapture();
+            }
+            // 如果是文本模式，重置会话状态，下次发送文本时会重新获取上下文
+            if (isTextSessionActive) {
+                isTextSessionActive = false;
+                console.log('[Memory] 文本会话已重置，下次发送将重新加载上下文');
             }
             // 显示提示
             showStatusToast(window.t ? window.t('memory.refreshed') : '记忆已更新，下次对话将使用新记忆', 4000);

@@ -1049,7 +1049,9 @@
     "resetTutorialBtn": "リセット",
     "tutorialResetSuccess": "すべてのチュートリアルがリセットされました。各ページにアクセスすると再度表示されます。",
     "tutorialPageResetSuccess": "このページのチュートリアルがリセットされました。次回アクセス時に再度表示されます。",
-    "tutorialPageResetSuccessWithName": "「{{pageName}}」のチュートリアルがリセットされました。次回アクセス時に再度表示されます。"
+    "tutorialPageResetSuccessWithName": "「{{pageName}}」のチュートリアルがリセットされました。次回アクセス時に再度表示されます。",
+    "refreshed": "メモリが更新されました。次回の会話から新しいメモリが使用されます",
+    "refreshingContext": "コンテキストを更新中..."
   },
   "character": {
     "manager": "キャラクターマネージャー",

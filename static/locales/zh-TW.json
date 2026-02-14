@@ -1011,7 +1011,9 @@
     "resetTutorialBtn": "重置引導",
     "tutorialResetSuccess": "已重置所有引導，下次進入各頁面時將重新顯示引導。",
     "tutorialPageResetSuccess": "已重置該頁面的引導，下次進入時將重新顯示引導。",
-    "tutorialPageResetSuccessWithName": "已重置「{{pageName}}」的引導，下次進入該頁面時將重新顯示引導。"
+    "tutorialPageResetSuccessWithName": "已重置「{{pageName}}」的引導，下次進入該頁面時將重新顯示引導。",
+    "refreshed": "記憶已更新，下次對話將使用新記憶",
+    "refreshingContext": "正在刷新上下文..."
   },
   "character": {
     "manager": "角色管理",
