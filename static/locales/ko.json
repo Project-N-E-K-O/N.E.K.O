@@ -423,7 +423,15 @@
     "compressionInProgress": "모델 파일 압축 중...",
     "decompressionInProgress": "모델 파일 압축 해제 중...",
     "compressionFailed": "압축 실패: {{error}}",
-    "decompressionFailed": "압축 해제 실패: {{error}}"
+    "decompressionFailed": "압축 해제 실패: {{error}}",
+    "previewImageSizeExceeded": "미리보기 이미지가 1MB를 초과합니다. 더 작은 이미지를 선택하세요",
+    "modelConfigNotFound": "모델 설정 파일을 찾을 수 없습니다",
+    "noExpressionFiles": "표정 파일이 없습니다",
+    "tempFolderDeleted": "임시 폴더가 삭제되었습니다",
+    "tempFolderRetained": "임시 폴더가 유지되었습니다",
+    "noAvailableModelsError": "사용 가능한 모델이 없습니다",
+    "tagsPlaceholderInput": "태그 입력, 스페이스로 추가",
+    "prepareUploadFailedMessage": "업로드 준비 실패: {{error}}"
   },
   "emotion": {
     "manager": "Live2D 감정 매핑 관리자",
@@ -472,6 +480,17 @@
     "unsavedChanges": "저장되지 않은 설정이 있습니다. 나가시겠습니까?",
     "clearScreenshots": "스크린샷 지우기",
     "clearScreenshotsConfirm": "보류 중인 스크린샷을 모두 지우시겠습니까?"
+  },
+  "error": {
+    "cameraStreamFailed": "카메라 스트림을 가져오지 못했습니다",
+    "characterConfigFailed": "캐릭터 설정을 가져오지 못했습니다",
+    "emotionTimeout": "감정 분석 시간 초과",
+    "noAudioTrack": "사용 가능한 오디오 트랙이 없습니다"
+  },
+  "camera": {
+    "iosPermissionHint": "iOS 설정 → Safari → 카메라 권한이 \"허용\"으로 설정되어 있는지 확인하세요",
+    "notDetected": "카메라 장치가 감지되지 않았습니다",
+    "occupied": "카메라가 다른 앱에 의해 사용 중입니다. QR코드/사진 앱을 닫고 다시 시도하세요"
   },
   "chat": {
     "title": "채팅",
@@ -1483,14 +1502,6 @@
     "step10": {
       "title": "⚙️ 설정",
       "desc": "설정 패널을 엽니다. 각 설정을 소개하겠습니다~"
-    },
-    "step11": {
-      "title": "🧩 메시지 병합",
-      "desc": "짧은 메시지를 하나의 전송으로 결합하여 방해를 줄입니다~"
-    },
-    "step12": {
-      "title": "⛔ 중단 허용",
-      "desc": "현재 응답 중단 허용 여부를 제어합니다~"
     },
     "step13": {
       "title": "💬 사전 예방적 채팅",

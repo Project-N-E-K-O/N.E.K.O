@@ -422,13 +422,33 @@
     "compressionInProgress": "正在压缩模型文件...",
     "decompressionInProgress": "正在解压模型文件...",
     "compressionFailed": "压缩失败: {{error}}",
-    "decompressionFailed": "解压失败: {{error}}"
+    "decompressionFailed": "解压失败: {{error}}",
+    "uploadingPreviewImage": "正在上传预览图片...",
+    "previewImageSizeExceeded": "预览图片大小超过1MB，请选择较小的图片",
+    "modelConfigNotFound": "模型配置文件未找到",
+    "noExpressionFiles": "没有表情文件",
+    "tempFolderDeleted": "临时目录已删除",
+    "tempFolderRetained": "临时目录已保留",
+    "noAvailableModelsError": "没有可用的模型",
+    "tagsPlaceholderInput": "输入标签，按空格添加",
+    "prepareUploadFailedMessage": "准备上传失败: {{error}}"
   },
   "dialogs": {
     "confirmLeave": "确认离开",
     "unsavedChanges": "您有未保存的设置，确定要离开吗？",
     "clearScreenshots": "清空截图",
     "clearScreenshotsConfirm": "确定要清空所有待发送的截图吗？"
+  },
+  "error": {
+    "emotionTimeout": "情感分析超时",
+    "noAudioTrack": "没有可用的音频轨道",
+    "cameraStreamFailed": "无法获取摄像头流",
+    "characterConfigFailed": "无法获取角色配置"
+  },
+  "camera": {
+    "iosPermissionHint": "请检查 iOS 设置 → Safari → 摄像头 权限是否为「允许」",
+    "notDetected": "未检测到摄像头设备",
+    "occupied": "摄像头被其它应用占用？关闭扫码/拍照应用后重试"
   },
   "chat": {
     "title": "对话",
