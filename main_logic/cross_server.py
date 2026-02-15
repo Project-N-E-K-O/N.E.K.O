@@ -13,11 +13,12 @@ import time
 import pickle
 import aiohttp
 import logging
-from config import MONITOR_SERVER_PORT, MEMORY_SERVER_PORT, COMMENTER_SERVER_PORT, TOOL_SERVER_PORT
+from config import MONITOR_SERVER_PORT, MEMORY_SERVER_PORT, COMMENTER_SERVER_PORT
 from datetime import datetime
 import json
 import re
 from utils.frontend_utils import replace_blank, is_only_punctuation
+from main_logic.agent_event_bus import publish_session_event
 
 # Setup logger for this module
 logger = logging.getLogger(__name__)
@@ -316,14 +317,16 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                                     continue
                                                 recent.append({'role': item.get('role'), 'text': txt})
                                         if recent:
-                                            async with aiohttp.ClientSession() as session:
-                                                async with session.post(
-                                                    f"http://localhost:{TOOL_SERVER_PORT}/analyze_and_plan",
-                                                    json={'messages': recent, 'lanlan_name': lanlan_name},
-                                                    timeout=aiohttp.ClientTimeout(total=5.0)
-                                                ) as resp:
-                                                    await resp.read()  # 确保响应被完全读取
-                                            logger.debug(f"[{lanlan_name}] 已发送对话到analyzer进行分析")
+                                            sent = await publish_session_event({
+                                                "event_type": "analyze_request",
+                                                "trigger": "turn_end",
+                                                "lanlan_name": lanlan_name,
+                                                "messages": recent,
+                                            })
+                                            if sent:
+                                                logger.debug(f"[{lanlan_name}] 已通过ZMQ发送对话到analyzer进行分析")
+                                            else:
+                                                logger.debug(f"[{lanlan_name}] ZMQ未就绪，跳过analyzer发送")
                                     except asyncio.TimeoutError:
                                         logger.debug(f"[{lanlan_name}] 发送到analyzer超时")
                                     except RuntimeError as e:
@@ -388,14 +391,16 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                                     continue
                                                 recent.append({'role': item.get('role'), 'text': txt})
                                         if recent:
-                                            async with aiohttp.ClientSession() as session:
-                                                async with session.post(
-                                                    f"http://localhost:{TOOL_SERVER_PORT}/analyze_and_plan",
-                                                    json={'messages': recent, 'lanlan_name': lanlan_name},
-                                                    timeout=aiohttp.ClientTimeout(total=5.0)
-                                                ) as resp:
-                                                    await resp.read()  # 确保响应被完全读取
-                                            logger.debug(f"[{lanlan_name}] 已发送对话到analyzer进行分析 (session end)")
+                                            sent = await publish_session_event({
+                                                "event_type": "analyze_request",
+                                                "trigger": "session_end",
+                                                "lanlan_name": lanlan_name,
+                                                "messages": recent,
+                                            })
+                                            if sent:
+                                                logger.debug(f"[{lanlan_name}] 已通过ZMQ发送对话到analyzer进行分析 (session end)")
+                                            else:
+                                                logger.debug(f"[{lanlan_name}] ZMQ未就绪，跳过analyzer发送 (session end)")
                                     except asyncio.TimeoutError:
                                         logger.debug(f"[{lanlan_name}] 发送到analyzer超时 (session end)")
                                     except RuntimeError as e:

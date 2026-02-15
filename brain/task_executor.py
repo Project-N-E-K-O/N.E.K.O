@@ -15,6 +15,7 @@ from config import get_extra_body, USER_PLUGIN_SERVER_PORT
 from utils.config_manager import get_config_manager
 from .mcp_client import McpRouterClient, McpToolCatalog
 from .computer_use import ComputerUseAdapter
+from .browser_use_adapter import BrowserUseAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,15 @@ class ComputerUseDecision:
     task_description: str = ""
     reason: str = ""
 
+
+@dataclass
+class BrowserUseDecision:
+    """BrowserUse 可行性评估结果"""
+    has_task: bool = False
+    can_execute: bool = False
+    task_description: str = ""
+    reason: str = ""
+
 @dataclass
 class UserPluginDecision:
     """UserPlugin 可行性评估结果"""
@@ -73,10 +83,11 @@ class DirectTaskExecutor:
     3. 执行选中的方法
     """
     
-    def __init__(self, computer_use: Optional[ComputerUseAdapter] = None):
+    def __init__(self, computer_use: Optional[ComputerUseAdapter] = None, browser_use: Optional[BrowserUseAdapter] = None):
         self.router = McpRouterClient()
         self.catalog = McpToolCatalog(self.router)
         self.computer_use = computer_use or ComputerUseAdapter()
+        self.browser_use = browser_use or BrowserUseAdapter()
         self._config_manager = get_config_manager()
         self.plugin_list = []
         self.user_plugin_enabled_default = False
@@ -355,6 +366,48 @@ OUTPUT FORMAT (strict JSON):
             except Exception as e:
                 logger.error(f"[ComputerUse Assessment] Failed: {e}")
                 return ComputerUseDecision(has_task=False, can_execute=False, reason=f"Assessment error: {e}")
+
+    async def _assess_browser_use(self, conversation: str, browser_available: bool) -> BrowserUseDecision:
+        if not browser_available:
+            return BrowserUseDecision(has_task=False, can_execute=False, reason="BrowserUse not available")
+        system_prompt = """You assess if the task should be handled by browser automation.
+Return strict JSON:
+{
+  "has_task": boolean,
+  "can_execute": boolean,
+  "task_description": "brief description",
+  "reason": "why"
+}
+Only choose browser automation when request clearly focuses on websites/web pages/forms/search/downloads."""
+        user_prompt = f"Conversation:\n{conversation}"
+        try:
+            client = self._get_client()
+            model = self._get_model()
+            req = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0,
+                "max_tokens": 300,
+            }
+            extra_body = get_extra_body(model)
+            if extra_body:
+                req["extra_body"] = extra_body
+            response = await client.chat.completions.create(**req)
+            text = response.choices[0].message.content.strip()
+            if text.startswith("```"):
+                text = text.replace("```json", "").replace("```", "").strip()
+            decision = json.loads(text)
+            return BrowserUseDecision(
+                has_task=decision.get("has_task", False),
+                can_execute=decision.get("can_execute", False),
+                task_description=decision.get("task_description", ""),
+                reason=decision.get("reason", ""),
+            )
+        except Exception as e:
+            return BrowserUseDecision(has_task=False, can_execute=False, reason=f"Assessment error: {e}")
     
     async def _assess_user_plugin(self, conversation: str, plugins: Any) -> UserPluginDecision:
         """
@@ -536,10 +589,11 @@ Return only the JSON object, nothing else.
         task_id = str(uuid.uuid4())
         
         if agent_flags is None:
-            agent_flags = {"mcp_enabled": False, "computer_use_enabled": False}
+            agent_flags = {"mcp_enabled": False, "computer_use_enabled": False, "browser_use_enabled": False}
         
         mcp_enabled = agent_flags.get("mcp_enabled", False)
         computer_use_enabled = agent_flags.get("computer_use_enabled", False)
+        browser_use_enabled = agent_flags.get("browser_use_enabled", False)
         user_plugin_enabled = agent_flags.get("user_plugin_enabled", False)
         
         # testUserPlugin: log entry with flags and short message summary for debugging
@@ -580,10 +634,18 @@ Return only the JSON object, nothing else.
                 logger.info(f"[TaskExecutor] ComputerUse available: {cu_available}")
             except Exception as e:
                 logger.warning(f"[TaskExecutor] Failed to check ComputerUse: {e}")
+        browser_available = False
+        if browser_use_enabled:
+            try:
+                browser_available = self.browser_use.is_available().get("ready", False)
+                logger.info(f"[TaskExecutor] BrowserUse available: {browser_available}")
+            except Exception as e:
+                logger.warning(f"[TaskExecutor] Failed to check BrowserUse: {e}")
         
         # 并行执行评估（包含 user_plugin 分支）
         mcp_decision = None
         cu_decision = None
+        bu_decision = None
         up_decision = None
         
         if mcp_enabled and capabilities:
@@ -595,6 +657,8 @@ Return only the JSON object, nothing else.
         
         if user_plugin_enabled and plugins:
             assessment_tasks.append(('up', self._assess_user_plugin(conversation, plugins)))
+        if browser_use_enabled and browser_available:
+            assessment_tasks.append(('bu', self._assess_browser_use(conversation, browser_available)))
         
         if computer_use_enabled and cu_available:
             assessment_tasks.append(('cu', self._assess_computer_use(conversation, cu_available)))
@@ -623,6 +687,9 @@ Return only the JSON object, nothing else.
             elif task_type == 'cu':
                 cu_decision = result
                 logger.info(f"[ComputerUse] has_task={getattr(cu_decision,'has_task',None)}, can_execute={getattr(cu_decision,'can_execute',None)}, reason={getattr(cu_decision,'reason',None)}")
+            elif task_type == 'bu':
+                bu_decision = result
+                logger.info(f"[BrowserUse] has_task={getattr(bu_decision,'has_task',None)}, can_execute={getattr(bu_decision,'can_execute',None)}, reason={getattr(bu_decision,'reason',None)}")
         
         # 决策逻辑：MCP 优先
         # 1. 如果 MCP 可以执行，使用 MCP
@@ -650,6 +717,18 @@ Return only the JSON object, nothing else.
             return result_obj
 
         # 2. 如果 MCP 不行，但 ComputerUse 可以，返回 ComputerUse 任务
+        if bu_decision and bu_decision.has_task and bu_decision.can_execute:
+            logger.info(f"[TaskExecutor] ✅ Using BrowserUse: {bu_decision.task_description}")
+            return TaskResult(
+                task_id=task_id,
+                has_task=True,
+                task_description=bu_decision.task_description,
+                execution_method='browser_use',
+                success=False,
+                reason=bu_decision.reason
+            )
+
+        # 3. 如果 MCP/BrowserUse 不行，但 ComputerUse 可以，返回 ComputerUse 任务
         if cu_decision and cu_decision.has_task and cu_decision.can_execute:
             logger.info(f"[TaskExecutor] ✅ Using ComputerUse: {cu_decision.task_description}")
             return TaskResult(
@@ -661,7 +740,7 @@ Return only the JSON object, nothing else.
                 reason=cu_decision.reason
             )
         
-        # 3. 如果 MCP 不行，但 UserPlugin 可用且可执行，优先调用 UserPlugin
+        # 4. 如果前面都不行，但 UserPlugin 可用且可执行，优先调用 UserPlugin
         if up_decision and getattr(up_decision, "has_task", False) and getattr(up_decision, "can_execute", False):
             logger.info(f"[TaskExecutor] ✅ Using UserPlugin: {up_decision.task_description}, plugin_id={getattr(up_decision, 'plugin_id', None)}")
             try:
@@ -684,12 +763,15 @@ Return only the JSON object, nothing else.
             reason_parts.append(f"MCP: {mcp_decision.reason}")
         if cu_decision:
             reason_parts.append(f"ComputerUse: {cu_decision.reason}")
+        if bu_decision:
+            reason_parts.append(f"BrowserUse: {bu_decision.reason}")
         if up_decision:
             reason_parts.append(f"UserPlugin: {getattr(up_decision, 'reason', '')}")
         
         # 检查是否有任务但无法执行（包含 UserPlugin）
         has_any_task = (
             (mcp_decision and mcp_decision.has_task)
+            or (bu_decision and bu_decision.has_task)
             or (cu_decision and cu_decision.has_task)
             or (up_decision and getattr(up_decision, "has_task", False))
         )
@@ -698,6 +780,8 @@ Return only the JSON object, nothing else.
                 task_desc = mcp_decision.task_description
             elif cu_decision and cu_decision.has_task:
                 task_desc = cu_decision.task_description
+            elif bu_decision and bu_decision.has_task:
+                task_desc = bu_decision.task_description
             elif up_decision and getattr(up_decision, "has_task", False):
                 task_desc = getattr(up_decision, "task_description", "")
             else:

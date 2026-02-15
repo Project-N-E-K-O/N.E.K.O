@@ -110,6 +110,7 @@ class LLMSessionManager:
             'agent_enabled': False,
             'computer_use_enabled': False,
             'mcp_enabled': False,
+            'browser_use_enabled': False,
         }
         
         # 模式标志: 'audio' 或 'text'
@@ -1102,7 +1103,15 @@ class LLMSessionManager:
         return res
 
     def _is_agent_enabled(self):
-        return self.agent_flags['agent_enabled'] and (self.agent_flags['computer_use_enabled'] or self.agent_flags['mcp_enabled'])
+        try:
+            gate_ok, _ = self._config_manager.is_agent_api_ready()
+        except Exception:
+            gate_ok = False
+        return gate_ok and self.agent_flags['agent_enabled'] and (
+            self.agent_flags['computer_use_enabled']
+            or self.agent_flags['mcp_enabled']
+            or self.agent_flags.get('browser_use_enabled', False)
+        )
 
     async def _background_prepare_pending_session(self):
         """[热切换相关] 后台预热pending session"""
@@ -1227,7 +1236,7 @@ class LLMSessionManager:
     # 供主服务调用，更新Agent模式相关开关
     def update_agent_flags(self, flags: dict):
         try:
-            for k in ['agent_enabled', 'computer_use_enabled', 'mcp_enabled']:
+            for k in ['agent_enabled', 'computer_use_enabled', 'browser_use_enabled', 'mcp_enabled']:
                 if k in flags and isinstance(flags[k], bool):
                     self.agent_flags[k] = flags[k]
         except Exception:

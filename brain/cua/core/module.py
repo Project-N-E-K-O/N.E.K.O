@@ -1,5 +1,5 @@
 from typing import Dict, Optional
-from brain.s3.core.mllm import LMMAgent
+from brain.cua.core.mllm import LMMAgent
 
 
 class BaseModule:

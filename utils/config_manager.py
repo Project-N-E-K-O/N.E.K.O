@@ -802,18 +802,16 @@ class ConfigManager:
             DEFAULT_VISION_MODEL_PROVIDER,
             DEFAULT_VISION_MODEL_URL,
             DEFAULT_VISION_MODEL_API_KEY,
+            DEFAULT_AGENT_MODEL,
+            DEFAULT_AGENT_MODEL_PROVIDER,
+            DEFAULT_AGENT_MODEL_URL,
+            DEFAULT_AGENT_MODEL_API_KEY,
             DEFAULT_REALTIME_MODEL_PROVIDER,
             DEFAULT_REALTIME_MODEL_URL,
             DEFAULT_REALTIME_MODEL_API_KEY,
             DEFAULT_TTS_MODEL_PROVIDER,
             DEFAULT_TTS_MODEL_URL,
             DEFAULT_TTS_MODEL_API_KEY,
-            DEFAULT_COMPUTER_USE_MODEL,
-            DEFAULT_COMPUTER_USE_MODEL_URL,
-            DEFAULT_COMPUTER_USE_MODEL_API_KEY,
-            DEFAULT_COMPUTER_USE_GROUND_MODEL,
-            DEFAULT_COMPUTER_USE_GROUND_URL,
-            DEFAULT_COMPUTER_USE_GROUND_API_KEY,
         )
 
         config = {
@@ -834,14 +832,9 @@ class ConfigManager:
             'ASSIST_API_KEY_STEP': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_SILICON': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_GEMINI': DEFAULT_CORE_API_KEY,
-            'COMPUTER_USE_MODEL': DEFAULT_COMPUTER_USE_MODEL,
-            'COMPUTER_USE_GROUND_MODEL': DEFAULT_COMPUTER_USE_GROUND_MODEL,
-            'COMPUTER_USE_MODEL_URL': DEFAULT_COMPUTER_USE_MODEL_URL,
-            'COMPUTER_USE_GROUND_URL': DEFAULT_COMPUTER_USE_GROUND_URL,
-            'COMPUTER_USE_MODEL_API_KEY': DEFAULT_COMPUTER_USE_MODEL_API_KEY,
-            'COMPUTER_USE_GROUND_API_KEY': DEFAULT_COMPUTER_USE_GROUND_API_KEY,
             'IS_FREE_VERSION': False,
             'VISION_MODEL': DEFAULT_VISION_MODEL,
+            'AGENT_MODEL': DEFAULT_AGENT_MODEL,
             'REALTIME_MODEL': DEFAULT_REALTIME_MODEL,
             'TTS_MODEL': DEFAULT_TTS_MODEL,
             'SUMMARY_MODEL_PROVIDER': DEFAULT_SUMMARY_MODEL_PROVIDER,
@@ -856,6 +849,9 @@ class ConfigManager:
             'VISION_MODEL_PROVIDER': DEFAULT_VISION_MODEL_PROVIDER,
             'VISION_MODEL_URL': DEFAULT_VISION_MODEL_URL,
             'VISION_MODEL_API_KEY': DEFAULT_VISION_MODEL_API_KEY,
+            'AGENT_MODEL_PROVIDER': DEFAULT_AGENT_MODEL_PROVIDER,
+            'AGENT_MODEL_URL': DEFAULT_AGENT_MODEL_URL,
+            'AGENT_MODEL_API_KEY': DEFAULT_AGENT_MODEL_API_KEY,
             'REALTIME_MODEL_PROVIDER': DEFAULT_REALTIME_MODEL_PROVIDER,
             'REALTIME_MODEL_URL': DEFAULT_REALTIME_MODEL_URL,
             'REALTIME_MODEL_API_KEY': DEFAULT_REALTIME_MODEL_API_KEY,
@@ -925,6 +921,9 @@ class ConfigManager:
 
         if assist_profile:
             config.update(assist_profile)
+        # agent api 默认跟随辅助 API 的视觉模型
+        config['AGENT_MODEL'] = config.get('AGENT_MODEL') or config.get('VISION_MODEL', '')
+        config['AGENT_MODEL_URL'] = config.get('AGENT_MODEL_URL') or config.get('VISION_MODEL_URL', '') or config.get('OPENROUTER_URL', '')
 
         key_field = assist_api_key_fields.get(assist_api_value)
         derived_key = ''
@@ -939,26 +938,17 @@ class ConfigManager:
         if not config['OPENROUTER_API_KEY']:
             config['OPENROUTER_API_KEY'] = config['CORE_API_KEY']
 
-        # Computer Use 配置处理
-        # 1. 支持用户自定义配置覆盖 assist_profile 的默认值
-        if core_cfg.get('computerUseModel'):
-            config['COMPUTER_USE_MODEL'] = core_cfg['computerUseModel']
-        if core_cfg.get('computerUseModelUrl'):
-            config['COMPUTER_USE_MODEL_URL'] = core_cfg['computerUseModelUrl']
-        if core_cfg.get('computerUseModelApiKey'):
-            config['COMPUTER_USE_MODEL_API_KEY'] = core_cfg['computerUseModelApiKey']
-        if core_cfg.get('computerUseGroundModel'):
-            config['COMPUTER_USE_GROUND_MODEL'] = core_cfg['computerUseGroundModel']
-        if core_cfg.get('computerUseGroundUrl'):
-            config['COMPUTER_USE_GROUND_URL'] = core_cfg['computerUseGroundUrl']
-        if core_cfg.get('computerUseGroundApiKey'):
-            config['COMPUTER_USE_GROUND_API_KEY'] = core_cfg['computerUseGroundApiKey']
-
-        # 2. 如果 API Key 未设置，使用当前 assistApi 对应的 key
-        if not config.get('COMPUTER_USE_MODEL_API_KEY'):
-            config['COMPUTER_USE_MODEL_API_KEY'] = derived_key if derived_key else config['CORE_API_KEY']
-        if not config.get('COMPUTER_USE_GROUND_API_KEY'):
-            config['COMPUTER_USE_GROUND_API_KEY'] = derived_key if derived_key else config['CORE_API_KEY']
+        # Agent API 配置处理（默认跟随 assist vision，可单独覆盖）
+        if core_cfg.get('agentModelProvider') is not None:
+            config['AGENT_MODEL_PROVIDER'] = core_cfg.get('agentModelProvider', '')
+        if core_cfg.get('agentModelUrl') is not None:
+            config['AGENT_MODEL_URL'] = core_cfg.get('agentModelUrl', '') or config.get('AGENT_MODEL_URL', '')
+        if core_cfg.get('agentModelId') is not None:
+            config['AGENT_MODEL'] = core_cfg.get('agentModelId', '') or config.get('AGENT_MODEL', '')
+        if core_cfg.get('agentModelApiKey') is not None:
+            config['AGENT_MODEL_API_KEY'] = core_cfg.get('agentModelApiKey', '') or config.get('AGENT_MODEL_API_KEY', '')
+        if not config.get('AGENT_MODEL_API_KEY'):
+            config['AGENT_MODEL_API_KEY'] = derived_key if derived_key else config.get('CORE_API_KEY', '')
 
         # 自定义API配置映射（使用大写下划线形式的内部键，且在未提供时保留已有默认值）
         enable_custom_api = core_cfg.get('enableCustomApi', False)
@@ -1079,6 +1069,13 @@ class ConfigManager:
                 'default_model': 'VISION_MODEL',
                 'fallback_type': 'assist',
             },
+            'agent': {
+                'custom_model': 'AGENT_MODEL',
+                'custom_url': 'AGENT_MODEL_URL',
+                'custom_key': 'AGENT_MODEL_API_KEY',
+                'default_model': 'AGENT_MODEL',
+                'fallback_type': 'assist',
+            },
             'realtime': {
                 'custom_model': 'REALTIME_MODEL',
                 'custom_url': 'REALTIME_MODEL_URL',
@@ -1107,8 +1104,8 @@ class ConfigManager:
         
         mapping = model_type_mapping[model_type]
         
-        # 优先使用自定义 API 配置
-        if enable_custom_api:
+        # agent 不依赖 enable_custom_api 开关；其余模型遵循原逻辑
+        if enable_custom_api or model_type == 'agent':
             custom_model = core_config.get(mapping['custom_model'], '')
             custom_url = core_config.get(mapping['custom_url'], '')
             custom_key = core_config.get(mapping['custom_key'], '')
@@ -1157,6 +1154,26 @@ class ConfigManager:
                 'base_url': core_config.get('OPENROUTER_URL', ''),
                 'is_custom': False,
             }
+
+    def is_agent_api_ready(self) -> tuple[bool, list[str]]:
+        """
+        Agent 模式门槛检查：
+        - free 版本禁止 Agent
+        - 必须具备可用的 AGENT_MODEL(model/url/api_key)
+        """
+        reasons = []
+        core_config = self.get_core_config()
+        if core_config.get('IS_FREE_VERSION'):
+            reasons.append("free API 不支持 Agent 模式")
+        agent_api = self.get_model_api_config('agent')
+        if not (agent_api.get('model') or '').strip():
+            reasons.append("Agent 模型未配置")
+        if not (agent_api.get('base_url') or '').strip():
+            reasons.append("Agent API URL 未配置")
+        api_key = (agent_api.get('api_key') or '').strip()
+        if not api_key or api_key == 'free-access':
+            reasons.append("Agent API Key 未配置或不可用")
+        return len(reasons) == 0, reasons
 
     def load_json_config(self, filename, default_value=None):
         """

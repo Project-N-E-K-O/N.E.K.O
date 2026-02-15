@@ -37,6 +37,7 @@ import logging # noqa
 from fastapi import FastAPI # noqa
 from fastapi.staticfiles import StaticFiles # noqa
 from main_logic import core as core, cross_server as cross_server # noqa
+from main_logic.agent_event_bus import MainServerAgentBridge, set_main_bridge # noqa
 from fastapi.templating import Jinja2Templates # noqa
 from threading import Thread, Event as ThreadEvent # noqa
 from queue import Queue # noqa
@@ -159,6 +160,36 @@ time_store = None
 setting_store = None
 recent_log = None
 catgirl_names = []
+agent_event_bridge: MainServerAgentBridge | None = None
+
+
+async def _handle_agent_event(event: dict):
+    """Receive events from agent_server via ZeroMQ and fan out to core/websocket."""
+    try:
+        lanlan = event.get("lanlan_name")
+        if not lanlan or lanlan not in session_manager:
+            return
+        mgr = session_manager.get(lanlan)
+        if not mgr:
+            return
+        event_type = event.get("event_type")
+        if event_type in ("task_result", "proactive_message"):
+            text = (event.get("text") or "").strip()
+            if text:
+                mgr.pending_extra_replies.append(text)
+                if mgr.websocket and hasattr(mgr.websocket, "send_json"):
+                    try:
+                        await mgr.websocket.send_json({"type": "agent_notification", "text": text, "source": "brain"})
+                    except Exception:
+                        pass
+        elif event_type == "task_update":
+            if mgr.websocket and hasattr(mgr.websocket, "send_json"):
+                try:
+                    await mgr.websocket.send_json({"type": "agent_task_update", "task": event.get("task", {})})
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.debug(f"handle_agent_event error: {e}")
 
 async def initialize_character_data():
     """初始化或重新加载角色配置数据"""
@@ -592,7 +623,7 @@ def _sync_preload_modules():
 async def on_startup():
     """服务器启动时执行的初始化操作"""
     if _IS_MAIN_PROCESS:
-        global steamworks, _preload_task
+        global steamworks, _preload_task, agent_event_bridge
         logger.info("正在初始化 Steamworks...")
         steamworks = initialize_steamworks()
         
@@ -606,6 +637,13 @@ async def on_startup():
         # 在后台异步预加载音频模块（不阻塞服务器启动）
         # 注意：不需要等待机制，Python import lock 会自动处理并发
         _preload_task = asyncio.create_task(_background_preload())
+        # Start ZeroMQ event bridge for agent_server <-> main_server
+        try:
+            agent_event_bridge = MainServerAgentBridge(on_agent_event=_handle_agent_event)
+            await agent_event_bridge.start()
+            set_main_bridge(agent_event_bridge)
+        except Exception as e:
+            logger.warning(f"Agent event bridge startup failed: {e}")
         await _init_and_mount_workshop()
         logger.info("Startup 初始化完成，后台正在预加载音频模块...")
 

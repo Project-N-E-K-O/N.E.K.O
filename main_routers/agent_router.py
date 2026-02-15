@@ -14,7 +14,6 @@ import logging
 from fastapi import APIRouter, Request, Body
 from fastapi.responses import JSONResponse
 import httpx
-from datetime import datetime
 from .shared_state import get_session_manager, get_config_manager
 from config import TOOL_SERVER_PORT, USER_PLUGIN_SERVER_PORT
 
@@ -44,6 +43,8 @@ async def update_agent_flags(request: Request):
                 forward_payload['mcp_enabled'] = bool(flags['mcp_enabled'])
             if 'computer_use_enabled' in flags:
                 forward_payload['computer_use_enabled'] = bool(flags['computer_use_enabled'])
+            if 'browser_use_enabled' in flags:
+                forward_payload['browser_use_enabled'] = bool(flags['browser_use_enabled'])
             # Forward user_plugin_enabled as well so agent_server receives UI toggles
             if 'user_plugin_enabled' in flags:
                 forward_payload['user_plugin_enabled'] = bool(flags['user_plugin_enabled'])
@@ -54,7 +55,7 @@ async def update_agent_flags(request: Request):
                         raise Exception(f"tool_server responded {r.status_code}")
         except Exception as e:
             # On failure, reset flags in core to safe state (include user_plugin flag)
-            mgr.update_agent_flags({'agent_enabled': False, 'computer_use_enabled': False, 'mcp_enabled': False, 'user_plugin_enabled': False})
+            mgr.update_agent_flags({'agent_enabled': False, 'computer_use_enabled': False, 'browser_use_enabled': False, 'mcp_enabled': False, 'user_plugin_enabled': False})
             return JSONResponse({"success": False, "error": f"tool_server forward failed: {e}"}, status_code=502)
         return {"success": True}
     except Exception as e:
@@ -133,6 +134,18 @@ async def proxy_up_availability():
         return JSONResponse({"ready": False, "reasons": [f"proxy error: {e}"]}, status_code=502)
 
 
+@router.get('/browser_use/availability')
+async def proxy_browser_availability():
+    try:
+        async with httpx.AsyncClient(timeout=1.5) as client:
+            r = await client.get(f"http://localhost:{TOOL_SERVER_PORT}/browser_use/availability")
+            if not r.is_success:
+                return JSONResponse({"ready": False, "reasons": [f"tool_server responded {r.status_code}"]}, status_code=502)
+            return r.json()
+    except Exception as e:
+        return JSONResponse({"ready": False, "reasons": [f"proxy error: {e}"]}, status_code=502)
+
+
 
 @router.get('/tasks')
 async def proxy_tasks():
@@ -161,61 +174,6 @@ async def proxy_task_detail(task_id: str):
         return JSONResponse({"error": f"proxy error: {e}"}, status_code=502)
 
 
-# Task status polling endpoint for frontend
-
-@router.get('/task_status')
-async def get_task_status():
-    """Get current task status for frontend polling - returns all tasks with their current status."""
-    try:
-        # Get tasks from tool server using async client with increased timeout
-        async with httpx.AsyncClient(timeout=2.5) as client:
-            r = await client.get(f"http://localhost:{TOOL_SERVER_PORT}/tasks")
-            if not r.is_success:
-                return JSONResponse({"tasks": [], "error": f"tool_server responded {r.status_code}"}, status_code=502)
-            
-            tasks_data = r.json()
-            tasks = tasks_data.get("tasks", [])
-            debug_info = tasks_data.get("debug", {})
-            
-            # Enhance task data with additional information if needed
-            enhanced_tasks = []
-            for task in tasks:
-                enhanced_task = {
-                    "id": task.get("id"),
-                    "status": task.get("status", "unknown"),
-                    "type": task.get("type", "unknown"),
-                    "lanlan_name": task.get("lanlan_name"),
-                    "start_time": task.get("start_time"),
-                    "end_time": task.get("end_time"),
-                    "params": task.get("params", {}),
-                    "result": task.get("result"),
-                    "error": task.get("error"),
-                    "source": task.get("source", "unknown")  # 添加来源信息
-                }
-                enhanced_tasks.append(enhanced_task)
-            
-            return {
-                "success": True,
-                "tasks": enhanced_tasks,
-                "total_count": len(enhanced_tasks),
-                "running_count": len([t for t in enhanced_tasks if t.get("status") == "running"]),
-                "queued_count": len([t for t in enhanced_tasks if t.get("status") == "queued"]),
-                "completed_count": len([t for t in enhanced_tasks if t.get("status") == "completed"]),
-                "failed_count": len([t for t in enhanced_tasks if t.get("status") == "failed"]),
-                "timestamp": datetime.now().isoformat(),
-                "debug": debug_info  # 传递调试信息到前端
-            }
-        
-    except Exception as e:
-        return JSONResponse({
-            "success": False,
-            "tasks": [],
-            "error": f"Failed to fetch task status: {str(e)}",
-            "timestamp": datetime.now().isoformat()
-        }, status_code=500)
-
-
-
 @router.post('/admin/control')
 async def proxy_admin_control(payload: dict = Body(...)):
     """Proxy admin control commands to tool server."""
@@ -236,25 +194,4 @@ async def proxy_admin_control(payload: dict = Body(...)):
             "error": f"Failed to execute admin control: {str(e)}"
         }, status_code=500)
 
-@router.post('/notify_task_result')
-async def notify_task_result(request: Request):
-    """供工具/任务服务回调：在下一次正常回复之后，插入一条任务完成提示。"""
-    try:
-        _config_manager = get_config_manager()
-        session_manager = get_session_manager()
-        data = await request.json()
-        # 如果未显式提供，则使用当前默认角色
-        _, her_name_current, _, _, _, _, _, _, _, _ = _config_manager.get_character_data()
-        lanlan = data.get('lanlan_name') or her_name_current
-        text = (data.get('text') or '').strip()
-        if not text:
-            return JSONResponse({"success": False, "error": "text required"}, status_code=400)
-        mgr = session_manager.get(lanlan)
-        if not mgr:
-            return JSONResponse({"success": False, "error": "lanlan not found"}, status_code=404)
-        # 将提示加入待插入队列
-        mgr.pending_extra_replies.append(text)
-        return {"success": True}
-    except Exception as e:
-        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 

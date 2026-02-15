@@ -39,6 +39,8 @@ dependencies = [
   "bilibili-api-python>=17.4.0",
   "googletrans>=4.0.2",
   "translatepy",
+  "pyzmq>=26.2.0",
+  "browser-use>=0.11.0",
 ]
 
 
