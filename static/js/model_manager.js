@@ -2916,8 +2916,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             const idleAnimSel = idleAnimationSelect || document.getElementById('idle-animation-select');
             if (charData?.idleAnimation && idleAnimSel) {
                 idleAnimSel.value = charData.idleAnimation;
-                // 如果 value 设置失败（选项不存在），保持默认选中
-                if (idleAnimSel.value !== charData.idleAnimation) {
+                if (idleAnimSel.value === charData.idleAnimation) {
+                    // 值设置成功，触发 change 事件以播放保存的待机动作
+                    idleAnimSel.dispatchEvent(new Event('change', { bubbles: true }));
+                } else {
                     console.warn('[VRM] 保存的待机动作不在列表中:', charData.idleAnimation);
                 }
             }
