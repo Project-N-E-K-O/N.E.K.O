@@ -327,24 +327,6 @@ class CursorFollowController {
 
         const hit = this._raycaster.ray.intersectPlane(this._plane, this._tempVec3A);
         if (hit) {
-            // ⑥ 死区检测（角度层面）
-            const newDir = this._tempVec3B.subVectors(hit, headPos);
-            const curDir = this._tempVec3C.subVectors(this.eyesTarget.position, headPos);
-            const newLen = newDir.length();
-            const curLen = curDir.length();
-
-            if (newLen > 0.001 && curLen > 0.001) {
-                newDir.divideScalar(newLen);
-                curDir.divideScalar(curLen);
-                const cosAngle = THREE.MathUtils.clamp(newDir.dot(curDir), -1, 1);
-                const angleDeg = Math.acos(cosAngle) * (180 / Math.PI);
-
-                if (angleDeg < D.deadzoneDeg) {
-                    // 在死区内 → 不更新目标，仅做平滑保持
-                    return;
-                }
-            }
-
             this._desiredTargetPos.copy(hit);
         }
 
@@ -386,52 +368,54 @@ class CursorFollowController {
         // ── 目标方向（世界空间） ──
         const targetPos = this.eyesTarget.position;
         const dirWorld = this._tempVec3A.subVectors(targetPos, this._headWorldPos);
-        if (dirWorld.lengthSq() < 0.001) return;
-        dirWorld.normalize();
 
-        // ── 获取模型坐标系 ──
-        const scene = vrm.scene;
-        scene.getWorldQuaternion(this._tempQuat); // sceneWorldQuat
+        // 方向向量足够大时才更新 yaw/pitch，否则保持上帧值
+        // 注意：不能 return，否则骨骼旋转不应用会导致卡顿
+        if (dirWorld.lengthSq() >= 0.001) {
+            dirWorld.normalize();
+
+            // ── 获取模型坐标系 ──
+            const scene = vrm.scene;
+            scene.getWorldQuaternion(this._tempQuat); // sceneWorldQuat
+
+            // modelForward / modelUp / modelRight
+            const modelForward = this._tempVec3B.set(0, 0, 1).applyQuaternion(this._tempQuat);
+            const modelUp = this._tempVec3C.set(0, 1, 0).applyQuaternion(this._tempQuat);
+            const modelRight = this._tempVec3D.crossVectors(modelUp, modelForward).normalize();
+
+            // ── 分解方向到模型坐标系 ──
+            const dx = dirWorld.dot(modelRight);
+            const dy = dirWorld.dot(modelUp);
+            const dz = dirWorld.dot(modelForward);
+
+            // ── 原始 yaw / pitch ──
+            let rawYaw = Math.atan2(-dx, Math.max(dz, 0.001));
+            const horizLen = Math.sqrt(dx * dx + dz * dz);
+            let rawPitch = Math.atan2(dy, Math.max(horizLen, 0.001));
+
+            // ── One-Euro 滤波 ──
+            const filteredYaw = this._headFilterYaw.filter(rawYaw, this._elapsedTime);
+            const filteredPitch = this._headFilterPitch.filter(rawPitch, this._elapsedTime);
+
+            // ── Clamp ──
+            const maxYaw = D.headMaxYawDeg * (Math.PI / 180);
+            const maxPitchUp = D.headMaxPitchUpDeg * (Math.PI / 180);
+            const maxPitchDown = D.headMaxPitchDownDeg * (Math.PI / 180);
+
+            const clampedYaw = THREE.MathUtils.clamp(filteredYaw, -maxYaw, maxYaw);
+            const clampedPitch = THREE.MathUtils.clamp(filteredPitch, -maxPitchDown, maxPitchUp);
+
+            // ── 指数阻尼平滑 ──
+            const headAlpha = 1 - Math.exp(-delta * D.headSmoothSpeed);
+            this._headYaw += (clampedYaw - this._headYaw) * headAlpha;
+            this._headPitch += (clampedPitch - this._headPitch) * headAlpha;
+        } else {
+            // 方向向量过小时仍需获取 sceneQuat 供骨骼旋转使用
+            vrm.scene.getWorldQuaternion(this._tempQuat);
+        }
+
+        // sceneQuat 始终指向 this._tempQuat（无论是否进入 if 分支都已赋值）
         const sceneQuat = this._tempQuat;
-
-        // modelForward / modelUp / modelRight
-        const modelForward = this._tempVec3B.set(0, 0, 1).applyQuaternion(sceneQuat);
-        const modelUp = this._tempVec3C.set(0, 1, 0).applyQuaternion(sceneQuat);
-        // modelRight = cross(modelUp, modelForward)
-        const modelRight = this._tempVec3D.crossVectors(modelUp, modelForward).normalize();
-
-        // ── 分解方向到模型坐标系 ──
-        const dx = dirWorld.dot(modelRight);
-        const dy = dirWorld.dot(modelUp);
-        const dz = dirWorld.dot(modelForward);
-
-        // ── 原始 yaw / pitch ──
-        // 注意：Three.js 正 Y 旋转为逆时针（左转），需取反使 dx>0 时头向右转
-        let rawYaw = Math.atan2(-dx, Math.max(dz, 0.001));
-        const horizLen = Math.sqrt(dx * dx + dz * dz);
-        let rawPitch = Math.atan2(dy, Math.max(horizLen, 0.001));
-
-        // ── One-Euro 滤波 ──
-        const filteredYaw = this._headFilterYaw.filter(rawYaw, this._elapsedTime);
-        const filteredPitch = this._headFilterPitch.filter(rawPitch, this._elapsedTime);
-
-        // ── Clamp ──
-        const maxYaw = D.headMaxYawDeg * (Math.PI / 180);
-        const maxPitchUp = D.headMaxPitchUpDeg * (Math.PI / 180);
-        const maxPitchDown = D.headMaxPitchDownDeg * (Math.PI / 180);
-
-        const clampedYaw = THREE.MathUtils.clamp(filteredYaw, -maxYaw, maxYaw);
-        const clampedPitch = THREE.MathUtils.clamp(filteredPitch, -maxPitchDown, maxPitchUp);
-
-        // ── 指数阻尼平滑 → 当前 headYaw / headPitch ──
-        const headAlpha = 1 - Math.exp(-delta * D.headSmoothSpeed);
-        this._headYaw += (clampedYaw - this._headYaw) * headAlpha;
-        this._headPitch += (clampedPitch - this._headPitch) * headAlpha;
-
-        // ── 死区（平滑后） ──
-        const deadzoneRad = D.deadzoneDeg * (Math.PI / 180);
-        const effectiveYaw = Math.abs(this._headYaw) < deadzoneRad ? 0 : this._headYaw;
-        const effectivePitch = Math.abs(this._headPitch) < deadzoneRad ? 0 : this._headPitch;
 
         const w = this._headWeight;
 
@@ -440,8 +424,8 @@ class CursorFollowController {
             neckBone.quaternion.copy(this._neckBaseQuat); // 恢复基准姿态
             this._applyAdditiveRotation(
                 neckBone, sceneQuat,
-                effectiveYaw * D.neckContribution * w,
-                effectivePitch * D.neckContribution * w
+                this._headYaw * D.neckContribution * w,
+                this._headPitch * D.neckContribution * w
             );
         }
 
@@ -450,8 +434,8 @@ class CursorFollowController {
             headBone.quaternion.copy(this._headBaseQuat); // 恢复基准姿态
             this._applyAdditiveRotation(
                 headBone, sceneQuat,
-                effectiveYaw * D.headContribution * w,
-                effectivePitch * D.headContribution * w
+                this._headYaw * D.headContribution * w,
+                this._headPitch * D.headContribution * w
             );
         }
     }
