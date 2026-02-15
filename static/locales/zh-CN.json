@@ -1355,6 +1355,11 @@
       "saveFailed": "保存失败",
       "lightingReset": "打光设置已重置为默认值",
       "lightingApplied": "已应用预设: {{name}}"
+    },
+    "idleAnimation": {
+      "title": "待机动作",
+      "changed": "待机动作已切换: {{name}}",
+      "changeFailed": "切换待机动作失败"
     }
   },
   "modelManager": {
@@ -1534,7 +1539,6 @@
         "note": "如果看不到，可以先展开托盘的小箭头，查看全部图标。",
         "alt": "系统托盘位置示意图"
       },
-
       "menu": {
         "title": "📋 托盘菜单",
         "desc": "右下角托盘里会有 N.E.K.O 的图标，右键点击会出现很多选项。下面是两个常用功能："

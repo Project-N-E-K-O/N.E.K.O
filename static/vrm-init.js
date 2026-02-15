@@ -405,6 +405,8 @@ async function initVRMModel() {
                         window.lanlan_config.lighting = charData.lighting;
                         // 顺便把 VRM 路径也更新一下，防止主页存的是旧路径
                         if (charData.vrm) window.lanlan_config.vrm = charData.vrm;
+                        // 待机动作配置传播到全局，供 vrm-manager.js loadModel 使用
+                        if (charData.idleAnimation) window.lanlan_config.vrmIdleAnimation = charData.idleAnimation;
                     }
                 } else {
                     if (res.status === 404) {

@@ -1355,6 +1355,11 @@
       "saveFailed": "저장 실패",
       "lightingReset": "조명 설정이 기본값으로 재설정됨",
       "lightingApplied": "사전 설정 적용됨: {{name}}"
+    },
+    "idleAnimation": {
+      "title": "대기 애니메이션",
+      "changed": "대기 애니메이션이 변경되었습니다: {{name}}",
+      "changeFailed": "대기 애니메이션 변경 실패"
     }
   },
   "modelManager": {

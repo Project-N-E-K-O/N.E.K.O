@@ -204,7 +204,7 @@
             </button>
         </div>
 
-        <!-- VRM 打光设置 (已简化为二次元风格) -->
+        <!-- VRM 设置面板（包含动作配置与打光设置） -->
         <div class="control-group" id="vrm-lighting-group" style="display:none;">
         <div id="vrm-lighting-wrapper" class="vrm-lighting-wrapper">
             <div class="vrm-lighting-header">
@@ -287,7 +287,24 @@
                     </select>
                 </div>
             </div>
+
         </div>
+        </div>
+        </div>
+
+        <!-- VRM 待机动作选择（独立于打光设置） -->
+        <div class="control-group" id="vrm-idle-animation-group" style="display:none;">
+        <div class="vrm-idle-animation-wrapper">
+            <div class="vrm-idle-animation-content">
+                <div class="lighting-control" id="idle-animation-control">
+                    <label for="idle-animation-select" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.idleAnimation.title">待机动作</label>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <select id="idle-animation-select" style="flex: 1; padding: 5px; border-radius: 4px; opacity: 0.85; color: #4f8cff;">
+                            <option value="" style="color: #4f8cff;" data-i18n="common.loading">加载中...</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
         </div>
         </div>
 
