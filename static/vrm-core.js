@@ -397,7 +397,7 @@ class VRMCore {
         // 使用 Cineon 色调映射，提亮暗部，降低整体对比度，更接近 VRoid Hub 效果
         // 建议使用 LinearToneMapping 或 NoToneMapping 以获得更纯净的二次元感
         this.manager.renderer.toneMapping = THREE.LinearToneMapping; 
-        this.manager.renderer.toneMappingExposure = 1.0;
+        this.manager.renderer.toneMappingExposure = 0.8;
 
         const canvas = this.manager.renderer.domElement;
         canvas.style.setProperty('pointer-events', 'auto', 'important');
@@ -426,8 +426,8 @@ class VRMCore {
         // 使用光照配置（如果提供），否则使用默认值
         // VRoid Hub 风格：极高环境光、主灯跟随摄像机、无阴影
         const defaultLighting = {
-            ambient: 1.0,      // VRoid Hub 风格：极高环境光，几乎消除所有暗部
-            main: 0.6,         // 主光适中，主要靠环境光提亮
+            ambient: 0.5,      // 默认环境光
+            main: 0.8,         // 默认主光源
             fill: 0.0,         // 不需要补光
             rim: 0.0,          // 不需要外部轮廓光（MToon 内建处理）
             top: 0.0,          // 不需要顶光
