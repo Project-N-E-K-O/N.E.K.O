@@ -2727,7 +2727,7 @@ document.addEventListener('DOMContentLoaded', async () => {
      * 默认选中 wait03.vrma，用户可在保存设置时持久化选择
      */
     async function loadIdleAnimationOptions() {
-        const selectEl = idleAnimationSelect || document.getElementById('idle-animation-select');
+        const selectEl = document.getElementById('idle-animation-select');
         if (!selectEl) {
             console.debug('[VRM IdleAnimation] 待机动作下拉元素未找到，跳过加载');
             return;
