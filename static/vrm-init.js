@@ -19,6 +19,7 @@
             '/static/vrm-expression.js',
             '/static/vrm-animation.js',
             '/static/vrm-interaction.js',
+            '/static/vrm-cursor-follow.js',
             '/static/vrm-manager.js'
         ];
         
