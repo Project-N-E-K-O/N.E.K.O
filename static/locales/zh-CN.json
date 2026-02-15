@@ -1249,7 +1249,8 @@
       "loadFailed": "获取屏幕源失败",
       "screens": "屏幕",
       "windows": "窗口",
-      "selected": "已选择 {{source}}"
+      "selected": "已选择 {{source}}",
+      "sourceLost": "屏幕分享无法找到之前选择窗口，已切换为全屏分享"
     }
   },
   "buttons": {
@@ -1965,5 +1966,33 @@
     "translationError": "翻译错误:",
     "translationException": "翻译请求异常:",
     "resetButtonNotFound": "[App] ❌ resetSessionButton 未找到！"
+  },
+  "emotionManager": {
+    "title": "Live2D 情感映射管理器 - Project N.E.K.O.",
+    "pageTitle": "Live2D 情感映射管理器",
+    "subtitle": "配置不同情绪下的动作和表情",
+    "selectModel": "选择 Live2D 模型",
+    "motion": "动作",
+    "expression": "表情",
+    "selectMotion": "选择动作",
+    "selectExpression": "选择表情",
+    "saveConfig": "保存配置",
+    "pleaseSelectModel": "请选择模型",
+    "noModelsFound": "没有找到可用的模型",
+    "loadModelListFailed": "加载模型列表失败",
+    "loadModelFilesFailed": "加载模型文件失败",
+    "configLoadSuccess": "配置加载成功",
+    "pleaseSelectModelFirst": "请先选择模型",
+    "configSaveSuccess": "配置保存成功！每个情绪的动作/表情将平分触发概率。",
+    "saveFailed": "保存失败",
+    "configReset": "已重置配置",
+    "emotions": {
+      "happy": "开心 (Happy)",
+      "sad": "悲伤 (Sad)",
+      "angry": "生气 (Angry)",
+      "neutral": "平静 (Neutral)",
+      "surprised": "惊讶 (Surprised)",
+      "idle": "待机 (Idle)"
+    }
   }
 }

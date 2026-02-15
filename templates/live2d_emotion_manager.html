@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title data-i18n="emotionManager.title">Live2D 情感映射管理器 - Project N.E.K.O.</title>
-    <!-- i18next 加载器 -->
+    <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
     <script src="/static/i18n-i18next.js"></script>
     <style>
         :root {
@@ -479,11 +479,11 @@
     <div class="container">
         <div class="header">
             <div class="header-content">
-                <h1 data-text="Live2D 情感映射管理器" data-i18n="emotionManager.title">Live2D 情感映射管理器</h1>
+                <h1 data-text="Live2D 情感映射管理器" data-i18n="emotionManager.pageTitle">Live2D 情感映射管理器</h1>
                 <p data-i18n="emotionManager.subtitle">配置不同情绪下的动作和表情</p>
             </div>
-            <button class="close-btn" onclick="window.close(); window.history.back();" data-i18n-title="common.close" title="关闭">
-                <img src="/static/icons/close_button.png" data-i18n-alt="common.close" alt="关闭">
+            <button class="close-btn" onclick="window.close(); window.history.back();" title="关闭" data-i18n-title="common.close">
+                <img src="/static/icons/close_button.png" alt="关闭" data-i18n-alt="common.close">
             </button>
         </div>
 
@@ -635,7 +635,7 @@
             </div>
 
             <div class="button-group">
-                <button id="save-btn" class="btn btn-primary" data-i18n="common.save">保存配置</button>
+                <button id="save-btn" class="btn btn-primary" data-i18n="emotionManager.saveConfig">保存配置</button>
                 <button id="reset-btn" class="btn btn-secondary" data-i18n="common.reset">重置</button>
             </div>
 
@@ -655,6 +655,14 @@
         let currentModelInfo = null;
         let availableMotions = [];
         let availableExpressions = [];
+
+        // i18n 辅助函数
+        function t(key, options) {
+            if (typeof i18next !== 'undefined' && i18next.isInitialized) {
+                return i18next.t(key, options);
+            }
+            return key;
+        }
 
         // 显示状态消息
         function showStatus(message, type = 'info') {
@@ -677,7 +685,7 @@
                 const models = await response.json();
 
                 if (Array.isArray(models) && models.length > 0) {
-                    modelSelect.innerHTML = '<option value="" data-i18n="steam.selectModel">请选择模型</option>';
+                    modelSelect.innerHTML = `<option value="">${t('emotionManager.pleaseSelectModel')}</option>`;
 
                     models.forEach(model => {
                         const option = document.createElement('option');
@@ -687,11 +695,11 @@
                         modelSelect.appendChild(option);
                     });
                 } else {
-                    showStatus(window.t ? window.t('steam.noModelsAvailable') : '没有找到可用的模型', 'error');
+                    showStatus(t('emotionManager.noModelsFound'), 'error');
                 }
             } catch (error) {
                 console.error('加载模型列表失败:', error);
-                showStatus(window.t ? window.t('steam.modelListLoadFailed', { error: error.message }) : '加载模型列表失败: ' + error.message, 'error');
+                showStatus(t('emotionManager.loadModelListFailed') + ': ' + error.message, 'error');
             }
         }
 
@@ -719,11 +727,11 @@
                     populateSelects();
                     emotionConfig.style.display = 'block';
                 } else {
-                    showStatus(window.t ? window.t('steam.modelScanError', { error: data.error || window.t('common.unknownError') }) : '加载模型文件失败: ' + (data.error || '未知错误'), 'error');
+                    showStatus(t('emotionManager.loadModelFilesFailed') + ': ' + (data.error || t('common.unknownError')), 'error');
                 }
             } catch (error) {
                 console.error('加载模型文件失败:', error);
-                showStatus(window.t ? window.t('steam.modelScanError', { error: error.message }) : '加载模型文件失败: ' + error.message, 'error');
+                showStatus(t('emotionManager.loadModelFilesFailed') + ': ' + error.message, 'error');
             }
         }
 
@@ -766,9 +774,7 @@
             headerContainer.innerHTML = '';
 
             if (checkboxes.length === 0) {
-                headerContainer.textContent = isMotion
-                    ? (window.t ? window.t('steam.selectMotion') : '选择动作')
-                    : (window.t ? window.t('steam.selectExpression') : '选择表情');
+                headerContainer.textContent = isMotion ? t('emotionManager.selectMotion') : t('emotionManager.selectExpression');
             } else {
                 checkboxes.forEach(cb => {
                     const label = cb.closest('.multiselect-item').querySelector('span').textContent;
@@ -947,7 +953,7 @@
                         }
                     });
 
-                    showStatus(window.t ? window.t('steam.configLoadSuccess') : '配置加载成功', 'success');
+                    showStatus(t('emotionManager.configLoadSuccess'), 'success');
                 }
             } catch (error) {
                 console.error('加载情感映射配置失败:', error);
@@ -957,7 +963,7 @@
         // 保存情感映射配置
         async function saveEmotionMapping() {
             if (!currentModelInfo) {
-                showStatus(window.t ? window.t('steam.selectModelFirst') : '请先选择模型', 'error');
+                showStatus(t('emotionManager.pleaseSelectModelFirst'), 'error');
                 return;
             }
 
@@ -993,13 +999,13 @@
                 const data = await response.json();
 
                 if (data.success) {
-                    showStatus(window.t ? window.t('emotionManager.saveSuccessHint') : '配置保存成功！ 每个情绪的动作/表情将平分触发概率。', 'success');
+                    showStatus(t('emotionManager.configSaveSuccess'), 'success');
                 } else {
-                    showStatus(window.t ? window.t('steam.configSaveFailed', { error: data.error || window.t('common.unknownError') }) : '保存失败: ' + (data.error || '未知错误'), 'error');
+                    showStatus(t('emotionManager.saveFailed') + ': ' + (data.error || t('common.unknownError')), 'error');
                 }
             } catch (error) {
                 console.error('保存情感映射配置失败:', error);
-                showStatus(window.t ? window.t('steam.configSaveFailed', { error: error.message }) : '保存失败: ' + error.message, 'error');
+                showStatus(t('emotionManager.saveFailed') + ': ' + error.message, 'error');
             }
         }
 
@@ -1010,7 +1016,7 @@
                 updateMultiselectHeader(ms);
             });
 
-            showStatus(window.t ? window.t('settings.configReset') : '已重置配置', 'info');
+            showStatus(t('emotionManager.configReset'), 'info');
         }
 
         // 事件监听

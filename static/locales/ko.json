@@ -1250,7 +1250,8 @@
       "loadFailed": "화면 소스를 로드하지 못했습니다.",
       "screens": "화면",
       "windows": "윈도우",
-      "selected": "{{source}} 선택됨"
+      "selected": "{{source}} 선택됨",
+      "sourceLost": "화면 공유에서 이전에 선택한 창을 찾을 수 없어 전체 화면 공유로 전환되었습니다"
     }
   },
   "buttons": {
@@ -1965,5 +1966,33 @@
     "translationError": "번역 오류:",
     "translationException": "번역 요청 예외:",
     "resetButtonNotFound": "[앱] ResetSessionButton을 찾을 수 없습니다!"
+  },
+  "emotionManager": {
+    "title": "Live2D 감정 매핑 관리자 - Project N.E.K.O.",
+    "pageTitle": "Live2D 감정 매핑 관리자",
+    "subtitle": "각 감정에 대한 모션과 표정을 설정합니다",
+    "selectModel": "Live2D 모델 선택",
+    "motion": "모션",
+    "expression": "표정",
+    "selectMotion": "모션 선택",
+    "selectExpression": "표정 선택",
+    "saveConfig": "설정 저장",
+    "pleaseSelectModel": "모델을 선택하세요",
+    "noModelsFound": "사용 가능한 모델이 없습니다",
+    "loadModelListFailed": "모델 목록을 로드하지 못했습니다",
+    "loadModelFilesFailed": "모델 파일을 로드하지 못했습니다",
+    "configLoadSuccess": "설정이 성공적으로 로드되었습니다",
+    "pleaseSelectModelFirst": "먼저 모델을 선택하세요",
+    "configSaveSuccess": "설정이 저장되었습니다! 각 감정의 모션/표정은 동일한 확률로 트리거됩니다.",
+    "saveFailed": "저장 실패",
+    "configReset": "설정이 초기화되었습니다",
+    "emotions": {
+      "happy": "행복 (Happy)",
+      "sad": "슬픔 (Sad)",
+      "angry": "화남 (Angry)",
+      "neutral": "평온 (Neutral)",
+      "surprised": "놀람 (Surprised)",
+      "idle": "대기 (Idle)"
+    }
   }
 }

@@ -2535,21 +2535,88 @@ function init_app() {
 
                     // Desktop/laptop: capture the user's chosen screen / window / tab.
                     // 检查是否有选中的特定屏幕源（仅Electron环境）
-                    const selectedSourceId = window.getSelectedScreenSourceId ? window.getSelectedScreenSourceId() : null;
+                    let selectedSourceId = window.getSelectedScreenSourceId ? window.getSelectedScreenSourceId() : null;
                     
+                    if (selectedSourceId && window.electronDesktopCapturer) {
+                        // 验证选中的源是否仍然存在（窗口可能已关闭）
+                        try {
+                            const currentSources = await window.electronDesktopCapturer.getSources({
+                                types: ['window', 'screen'],
+                                thumbnailSize: { width: 1, height: 1 }
+                            });
+                            const sourceStillExists = currentSources.some(s => s.id === selectedSourceId);
+
+                            if (!sourceStillExists) {
+                                console.warn('[屏幕源] 选中的源已不可用 (ID:', selectedSourceId, ')，自动回退到全屏');
+                                showStatusToast(
+                                    safeT('app.screenSource.sourceLost', '屏幕分享无法找到之前选择窗口，已切换为全屏分享'),
+                                    3000
+                                );
+                                // 查找第一个全屏源作为回退
+                                const screenSources = currentSources.filter(s => s.id.startsWith('screen:'));
+                                if (screenSources.length > 0) {
+                                    selectedSourceId = screenSources[0].id;
+                                    selectedScreenSourceId = selectedSourceId;
+                                    try { localStorage.setItem('selectedScreenSourceId', selectedSourceId); } catch (e) {}
+                                    updateScreenSourceListSelection();
+                                } else {
+                                    // 连全屏源都拿不到，清空选择让下面走 getDisplayMedia
+                                    selectedSourceId = null;
+                                    selectedScreenSourceId = null;
+                                    try { localStorage.removeItem('selectedScreenSourceId'); } catch (e) {}
+                                }
+                            }
+                        } catch (validateErr) {
+                            console.warn('[屏幕源] 验证源可用性失败，继续尝试使用保存的源:', validateErr);
+                        }
+                    }
+
                     if (selectedSourceId && window.electronDesktopCapturer) {
                         // 在Electron中使用选中的特定屏幕/窗口源
                         // 使用 chromeMediaSourceId 约束来指定源
-                        screenCaptureStream = await navigator.mediaDevices.getUserMedia({
-                            audio: false,
-                            video: {
-                                mandatory: {
-                                    chromeMediaSource: 'desktop',
-                                    chromeMediaSourceId: selectedSourceId,
-                                    maxFrameRate: 1
+                        try {
+                            screenCaptureStream = await navigator.mediaDevices.getUserMedia({
+                                audio: false,
+                                video: {
+                                    mandatory: {
+                                        chromeMediaSource: 'desktop',
+                                        chromeMediaSourceId: selectedSourceId,
+                                        maxFrameRate: 1
+                                    }
                                 }
+                            });
+                        } catch (captureErr) {
+                            // getUserMedia 失败（竞态：验证时存在但捕获时已消失）
+                            console.warn('[屏幕源] 指定源捕获失败，回退到全屏:', captureErr);
+                            selectedScreenSourceId = null;
+                            try { localStorage.removeItem('selectedScreenSourceId'); } catch (e) {}
+
+                            // 尝试回退到全屏源
+                            const fallbackSources = await window.electronDesktopCapturer.getSources({
+                                types: ['screen'],
+                                thumbnailSize: { width: 1, height: 1 }
+                            });
+                            if (fallbackSources.length > 0) {
+                                screenCaptureStream = await navigator.mediaDevices.getUserMedia({
+                                    audio: false,
+                                    video: {
+                                        mandatory: {
+                                            chromeMediaSource: 'desktop',
+                                            chromeMediaSourceId: fallbackSources[0].id,
+                                            maxFrameRate: 1
+                                        }
+                                    }
+                                });
+                                selectedScreenSourceId = fallbackSources[0].id;
+                                try { localStorage.setItem('selectedScreenSourceId', fallbackSources[0].id); } catch (e) {}
+                                showStatusToast(
+                                    safeT('app.screenSource.sourceLost', '屏幕分享无法找到之前选择窗口，已切换为全屏分享'),
+                                    3000
+                                );
+                            } else {
+                                throw captureErr; // 全屏也拿不到，重新抛出让外层 catch 处理
                             }
-                        });
+                        }
                         console.log(window.t('console.screenShareUsingSource'), selectedSourceId);
                     } else {
                         // 使用标准的getDisplayMedia（显示系统选择器）

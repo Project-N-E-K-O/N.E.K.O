@@ -46,6 +46,8 @@
     }
   },
   "steam": {
+    "pageDescription": "Through this page, you can browse, subscribe, download and manage Live2D models and voices from the Steam Workshop.",
+    "voiceNote": "If you have voice samples, please go to the Live2D settings page to register them manually",
     "characterCards": "Character Cards",
     "characterCardName": "Nickname",
     "characterCardAge": "Age",
@@ -1249,7 +1251,8 @@
       "loadFailed": "Failed to load screen sources",
       "screens": "Screens",
       "windows": "Windows",
-      "selected": "Selected {{source}}"
+      "selected": "Selected {{source}}",
+      "sourceLost": "Screen sharing could not find previously selected window, switched to fullscreen sharing"
     }
   },
   "buttons": {
@@ -1965,5 +1968,33 @@
     "translationError": "Translation error:",
     "translationException": "Translation request exception:",
     "resetButtonNotFound": "[App] resetSessionButton not found!"
+  },
+  "emotionManager": {
+    "title": "Live2D Emotion Mapping Manager - Project N.E.K.O.",
+    "pageTitle": "Live2D Emotion Mapping Manager",
+    "subtitle": "Configure motions and expressions for different emotions",
+    "selectModel": "Select Live2D Model",
+    "motion": "Motion",
+    "expression": "Expression",
+    "selectMotion": "Select Motion",
+    "selectExpression": "Select Expression",
+    "saveConfig": "Save Configuration",
+    "pleaseSelectModel": "Please select a model",
+    "noModelsFound": "No available models found",
+    "loadModelListFailed": "Failed to load model list",
+    "loadModelFilesFailed": "Failed to load model files",
+    "configLoadSuccess": "Configuration loaded successfully",
+    "pleaseSelectModelFirst": "Please select a model first",
+    "configSaveSuccess": "Configuration saved! Each emotion's motions/expressions will share equal trigger probability.",
+    "saveFailed": "Save failed",
+    "configReset": "Configuration has been reset",
+    "emotions": {
+      "happy": "Happy",
+      "sad": "Sad",
+      "angry": "Angry",
+      "neutral": "Neutral",
+      "surprised": "Surprised",
+      "idle": "Idle"
+    }
   }
 }

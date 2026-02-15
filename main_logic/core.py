@@ -82,7 +82,8 @@ class LLMSessionManager:
         self.core_api_type = realtime_config.get('api_type', '') or self._config_manager.get_core_config().get('CORE_API_TYPE', '')
         self.memory_server_port = MEMORY_SERVER_PORT
         self.audio_api_key = self._config_manager.get_core_config()['AUDIO_API_KEY']  # 用于CosyVoice自定义音色
-        self.voice_id = self.lanlan_basic_config[self.lanlan_name].get('voice_id', '')
+        self._locked_at_default_voice = bool(self.core_api_type == "free" and "lanlan.app" in realtime_config.get('base_url', ''))
+        self.voice_id = self.lanlan_basic_config[self.lanlan_name].get('voice_id', '') if not self._locked_at_default_voice else ''
         # 注意：use_tts 会在 start_session 中根据 input_mode 重新设置
         self.use_tts = False
         self.generation_config = {}  # Qwen暂时不用
@@ -672,7 +673,8 @@ class LLMSessionManager:
         # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
         _,_,_,lanlan_basic_config_updated,_,_,_,_,_,_ = self._config_manager.get_character_data()
         old_voice_id = self.voice_id
-        self.voice_id = lanlan_basic_config_updated.get(self.lanlan_name, {}).get('voice_id', '')
+        self._locked_at_default_voice = bool(self.core_api_type == "free" and "lanlan.app" in realtime_config.get('base_url', ''))
+        self.voice_id = self.lanlan_basic_config[self.lanlan_name].get('voice_id', '') if not self._locked_at_default_voice else ''
         
         # 判断是否为免费预设音色（来自 api_providers.json 的 free_voices）
         from utils.api_config_loader import get_free_voices
@@ -1116,7 +1118,8 @@ class LLMSessionManager:
             # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
             _,_,_,lanlan_basic_config_updated,_,_,_,_,_,_ = self._config_manager.get_character_data()
             old_voice_id = self.voice_id
-            self.voice_id = lanlan_basic_config_updated.get(self.lanlan_name, {}).get('voice_id', '')
+            self._locked_at_default_voice = bool(self.core_api_type == "free" and "lanlan.app" in realtime_config.get('base_url', ''))
+            self.voice_id = self.lanlan_basic_config[self.lanlan_name].get('voice_id', '') if not self._locked_at_default_voice else ''
             
             # 如果角色没有设置 voice_id，尝试使用自定义API配置的 TTS_VOICE_ID 作为回退
             if not self.voice_id:

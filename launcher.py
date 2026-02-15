@@ -37,9 +37,66 @@ import time
 import threading
 import itertools
 import ctypes
-from typing import List, Dict
+import atexit
+import signal
+from typing import Dict
 from multiprocessing import Process, freeze_support, Event
 from config import MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
+
+JOB_HANDLE = None
+_cleanup_lock = threading.Lock()
+_cleanup_done = False
+LOG_FILE_PATH = None
+_log_file_handle = None
+
+
+class TeeStream:
+    """将输出同时写入原始流和日志文件。"""
+    def __init__(self, original_stream, log_stream):
+        self.original_stream = original_stream
+        self.log_stream = log_stream
+
+    def write(self, data):
+        self.original_stream.write(data)
+        self.log_stream.write(data)
+        return len(data)
+
+    def flush(self):
+        self.original_stream.flush()
+        self.log_stream.flush()
+
+    def __getattr__(self, item):
+        return getattr(self.original_stream, item)
+
+
+def setup_file_logging():
+    """将控制台输出复制到日志文件，便于 Steam 环境排查。"""
+    global LOG_FILE_PATH, _log_file_handle
+    if LOG_FILE_PATH:
+        return
+
+    try:
+        log_dir = os.path.join(app_dir, "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        LOG_FILE_PATH = os.path.join(log_dir, "launcher.log")
+        _log_file_handle = open(LOG_FILE_PATH, "a", encoding="utf-8", errors="replace", buffering=1)
+
+        if not isinstance(sys.stdout, TeeStream):
+            sys.stdout = TeeStream(sys.stdout, _log_file_handle)
+        if not isinstance(sys.stderr, TeeStream):
+            sys.stderr = TeeStream(sys.stderr, _log_file_handle)
+
+        print(f"[Launcher] Logging to: {LOG_FILE_PATH}", flush=True)
+    except Exception as e:
+        # 日志初始化失败不应阻止主流程
+        print(f"[Launcher] Warning: Failed to initialize file logging: {e}", flush=True)
+
+
+def _get_last_error() -> int:
+    """获取最近一次 Win32 错误码。"""
+    if sys.platform != 'win32':
+        return 0
+    return ctypes.windll.kernel32.GetLastError()
 
 
 def setup_job_object():
@@ -49,8 +106,9 @@ def setup_job_object():
     这样当主进程被 kill 时，OS 会自动终止所有子进程，
     防止孤儿进程悬挂。
     """
+    global JOB_HANDLE
     if sys.platform != 'win32':
-        return
+        return None
 
     try:
         kernel32 = ctypes.windll.kernel32
@@ -59,11 +117,18 @@ def setup_job_object():
         JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
 
+        # 先检查当前进程是否已在某个 Job 中（Steam 场景常见）
+        is_in_job = ctypes.c_int(0)
+        current_process = kernel32.GetCurrentProcess()
+        if not kernel32.IsProcessInJob(current_process, None, ctypes.byref(is_in_job)):
+            print(f"[Launcher] Warning: IsProcessInJob failed (err={_get_last_error()})", flush=True)
+            is_in_job.value = 0
+
         # 创建 Job Object
         job = kernel32.CreateJobObjectW(None, None)
         if not job:
-            print("[Launcher] Warning: Failed to create Job Object", flush=True)
-            return
+            print(f"[Launcher] Warning: Failed to create Job Object (err={_get_last_error()})", flush=True)
+            return None
 
         # 设置 Job Object 信息
         # JOBOBJECT_EXTENDED_LIMIT_INFORMATION 结构体
@@ -111,24 +176,35 @@ def setup_job_object():
             ctypes.sizeof(info)
         )
         if not result:
-            print("[Launcher] Warning: Failed to set Job Object info", flush=True)
+            print(f"[Launcher] Warning: Failed to set Job Object info (err={_get_last_error()})", flush=True)
             kernel32.CloseHandle(job)
-            return
+            return None
 
         # 将当前进程加入 Job Object
-        current_process = kernel32.GetCurrentProcess()
         result = kernel32.AssignProcessToJobObject(job, current_process)
         if not result:
-            print("[Launcher] Warning: Failed to assign process to Job Object", flush=True)
+            err = _get_last_error()
+            if is_in_job.value:
+                print(
+                    f"[Launcher] Warning: Process is already inside another Job; "
+                    f"nested Job assignment failed (err={err}). "
+                    "Will rely on explicit process-tree cleanup fallback.",
+                    flush=True
+                )
+            else:
+                print(f"[Launcher] Warning: Failed to assign process to Job Object (err={err})", flush=True)
             kernel32.CloseHandle(job)
-            return
+            return None
 
-        # 不关闭 job handle —— 保持它在进程生命周期内有效
-        # 当主进程退出时，handle 自动关闭，触发 KILL_ON_JOB_CLOSE
+        # 保持 handle 在进程生命周期内有效（模块级引用）
+        # 进程退出时句柄会关闭，触发 KILL_ON_JOB_CLOSE
+        JOB_HANDLE = job
         print("[Launcher] Job Object created - child processes will auto-terminate on exit", flush=True)
+        return job
 
     except Exception as e:
         print(f"[Launcher] Warning: Job Object setup failed: {e}", flush=True)
+        return None
 
 # 服务器配置
 SERVERS = [
@@ -421,27 +497,73 @@ def wait_for_servers(timeout: int = 60) -> bool:
 
 def cleanup_servers():
     """清理所有服务器进程"""
+    global _cleanup_done
+    with _cleanup_lock:
+        if _cleanup_done:
+            return
+        _cleanup_done = True
+
     print("\n正在关闭服务器...", flush=True)
     for server in SERVERS:
-        if server['process'] and server['process'].is_alive():
-            try:
-                # 先尝试温和地终止
-                server['process'].terminate()
-                server['process'].join(timeout=3)
-                if not server['process'].is_alive():
-                    print(f"✓ {server['name']} 已关闭", flush=True)
-                else:
-                    # 如果还活着，强制杀死
-                    server['process'].kill()
-                    server['process'].join(timeout=2)
-                    print(f"✓ {server['name']} 已强制关闭", flush=True)
-            except Exception as e:
-                print(f"✗ {server['name']} 关闭失败: {e}", flush=True)
+        proc = server.get('process')
+        if not proc:
+            continue
+
+        try:
+            # 先尝试温和终止
+            if proc.is_alive():
+                proc.terminate()
+                proc.join(timeout=3)
+
+            # 第二步：仍存活则 kill
+            if proc.is_alive():
+                proc.kill()
+                proc.join(timeout=2)
+
+            # 第三步：Windows 下兜底强杀整个进程树，防止孙进程残留
+            pid = proc.pid
+            if pid and sys.platform == 'win32':
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False
+                )
+
+            print(f"✓ {server['name']} 已关闭", flush=True)
+        except Exception as e:
+            print(f"✗ {server['name']} 关闭失败: {e}", flush=True)
+
+    # 显式关闭 Job handle（如果存在）
+    if JOB_HANDLE and sys.platform == 'win32':
+        try:
+            ctypes.windll.kernel32.CloseHandle(JOB_HANDLE)
+        except Exception:
+            pass
+
+
+def _handle_termination_signal(signum, _frame):
+    """处理终止信号，尽量保证清理逻辑被触发。"""
+    print(f"\n收到终止信号 ({signum})，正在关闭...", flush=True)
+    cleanup_servers()
+    raise SystemExit(0)
+
+
+def register_shutdown_hooks():
+    """注册退出钩子，覆盖更多退出路径。"""
+    atexit.register(cleanup_servers)
+    if sys.platform == 'win32':
+        try:
+            signal.signal(signal.SIGTERM, _handle_termination_signal)
+        except Exception:
+            pass
 
 def main():
     """主函数"""
     # 支持 multiprocessing 在 Windows 上的打包
     freeze_support()
+    setup_file_logging()
+    register_shutdown_hooks()
     
     # 创建 Job Object，确保主进程被 kill 时子进程也会被终止
     setup_job_object()

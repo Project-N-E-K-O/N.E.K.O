@@ -46,6 +46,8 @@
     }
   },
   "steam": {
+    "pageDescription": "このページでは、Steam ワークショップの Live2D モデルとボイスを閲覧、サブスクライブ、ダウンロード、管理できます。",
+    "voiceNote": "ボイスサンプルがある場合は、Live2D 設定ページで手動登録してください",
     "characterCards": "キャラクターカード",
     "characterCardName": "ニックネーム",
     "characterCardAge": "年齢",
@@ -1298,7 +1300,8 @@
       "loadFailed": "画面ソースの読み込みに失敗しました",
       "screens": "画面",
       "windows": "ウィンドウ",
-      "selected": "{{source}}を選択しました"
+      "selected": "{{source}}を選択しました",
+      "sourceLost": "画面共有で以前選択したウィンドウが見つかりません。全画面共有に切り替えました"
     }
   },
   "emotion": {
@@ -2007,5 +2010,33 @@
     "translationError": "翻訳エラー:",
     "translationException": "翻訳リクエスト例外:",
     "resetButtonNotFound": "[App] resetSessionButton が見つかりません！"
+  },
+  "emotionManager": {
+    "title": "Live2D 感情マッピング管理 - Project N.E.K.O.",
+    "pageTitle": "Live2D 感情マッピング管理",
+    "subtitle": "各感情のモーションと表情を設定",
+    "selectModel": "Live2Dモデルを選択",
+    "motion": "モーション",
+    "expression": "表情",
+    "selectMotion": "モーションを選択",
+    "selectExpression": "表情を選択",
+    "saveConfig": "設定を保存",
+    "pleaseSelectModel": "モデルを選択してください",
+    "noModelsFound": "利用可能なモデルが見つかりません",
+    "loadModelListFailed": "モデルリストの読み込みに失敗しました",
+    "loadModelFilesFailed": "モデルファイルの読み込みに失敗しました",
+    "configLoadSuccess": "設定を読み込みました",
+    "pleaseSelectModelFirst": "先にモデルを選択してください",
+    "configSaveSuccess": "設定を保存しました！各感情のモーション/表情は均等にトリガーされます。",
+    "saveFailed": "保存に失敗しました",
+    "configReset": "設定をリセットしました",
+    "emotions": {
+      "happy": "嬉しい (Happy)",
+      "sad": "悲しい (Sad)",
+      "angry": "怒り (Angry)",
+      "neutral": "平常 (Neutral)",
+      "surprised": "驚き (Surprised)",
+      "idle": "待機 (Idle)"
+    }
   }
 }
