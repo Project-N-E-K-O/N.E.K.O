@@ -111,9 +111,10 @@ class CursorFollowController {
         // ── 眼睛目标 Object3D ──
         this.eyesTarget = null;
 
-        // ── 鼠标状态（初始化为屏幕中心，避免首帧看向左上角） ──
-        this._rawMouseX = window.innerWidth / 2;
-        this._rawMouseY = window.innerHeight / 2;
+        // ── 鼠标状态 ──
+        this._rawMouseX = 0;
+        this._rawMouseY = 0;
+        this._hasPointerInput = false;  // 首次 pointermove 前不驱动跟踪
 
         // ── One-Euro 滤波器（NDC 层面） ──
         this._eyeFilterX = null;
@@ -227,6 +228,7 @@ class CursorFollowController {
         this._onPointerMove = (e) => {
             this._rawMouseX = e.clientX;
             this._rawMouseY = e.clientY;
+            this._hasPointerInput = true;
         };
 
         document.addEventListener('pointermove', this._onPointerMove, { passive: true });
@@ -291,6 +293,8 @@ class CursorFollowController {
     // ════════════════════════════════════════════════════════════════
     updateTarget(delta) {
         if (!this._initialized || !this.eyesTarget || !this.manager) return;
+        // 首次 pointermove 前跳过，避免未知鼠标坐标导致首帧朝向异常
+        if (!this._hasPointerInput) return;
 
         this._elapsedTime += delta;
 
@@ -553,7 +557,34 @@ class CursorFollowController {
         }
         this.eyesTarget = null;
 
+        // 清理预分配的 THREE.js 对象
+        this._raycaster = null;
+        this._ndcVec = null;
+        this._desiredTargetPos = null;
+        this._headWorldPos = null;
+        this._plane = null;
+        this._planeNormal = null;
+        this._tempVec3A = null;
+        this._tempVec3B = null;
+        this._tempVec3C = null;
+        this._tempVec3D = null;
+        this._tempQuat = null;
+        this._tempQuatB = null;
+        this._tempQuatC = null;
+        this._tempQuatD = null;
+        this._tempQuatE = null;
+        this._tempEuler = null;
+        this._neckBaseQuat = null;
+        this._headBaseQuat = null;
+
+        // 清理 One-Euro 滤波器实例
+        this._eyeFilterX = null;
+        this._eyeFilterY = null;
+        this._headFilterYaw = null;
+        this._headFilterPitch = null;
+
         this._initialized = false;
+        this._hasPointerInput = false;
         this.manager = null;
 
         console.log('[CursorFollow] 已销毁');
