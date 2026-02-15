@@ -1605,8 +1605,14 @@ function init_app() {
         }
     }
 
-    // 监听记忆编辑通知（从 memory_browser iframe 发送）
-    window.addEventListener('message', function (event) {
+    // 监听记忆编辑通知（从 memory_browser iframe 发送 - postMessage 后备方案）
+    window.addEventListener('message', async function (event) {
+        // 安全检查：验证消息来源
+        if (event.origin !== window.location.origin) {
+            console.warn('[Security] 拒绝来自不同源的 memory_edited 消息:', event.origin);
+            return;
+        }
+
         if (event.data && event.data.type === 'memory_edited') {
             console.log(window.t('console.memoryEditedRefreshContext'), event.data.catgirl_name);
             // 停止当前语音捕获，用户再次开麦时会自动刷新上下文
@@ -1623,9 +1629,13 @@ function init_app() {
                 isTextSessionActive = false;
                 console.log('[Memory] 文本会话已重置，下次发送将重新加载上下文');
             }
-            // 停止正在播放的AI语音回复
+            // 停止正在播放的AI语音回复（等待完成，避免竞态条件）
             if (typeof clearAudioQueue === 'function') {
-                clearAudioQueue();
+                try {
+                    await clearAudioQueue();
+                } catch (e) {
+                    console.error('[Memory] clearAudioQueue 失败:', e);
+                }
             }
             // 显示提示
             showStatusToast(window.t ? window.t('memory.refreshed') : '记忆已更新，下次对话将使用新记忆', 4000);
