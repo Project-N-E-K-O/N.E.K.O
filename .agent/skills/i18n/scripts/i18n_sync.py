@@ -44,22 +44,43 @@ def set_nested_value(obj: Dict, key_path: str, value: Any):
     keys = key_path.split(".")
     current = obj
     for key in keys[:-1]:
-        if key not in current:
+        # Ensure current is a dict before indexing
+        if not isinstance(current, dict):
+            return
+        if key not in current or not isinstance(current[key], dict):
             current[key] = {}
         current = current[key]
-    current[keys[-1]] = value
+    if isinstance(current, dict):
+        current[keys[-1]] = value
 
 
 def delete_nested_key(obj: Dict, key_path: str):
-    """Delete nested key by dot-separated key path"""
+    """Delete nested key by dot-separated key path, cleaning up empty parent objects"""
     keys = key_path.split(".")
     current = obj
+    # Track the path to clean up empty parents later
+    path_stack = [(obj, keys[0])] if len(keys) > 1 else []
+
     for key in keys[:-1]:
         if key not in current:
             return
+        if not isinstance(current[key], dict):
+            return
         current = current[key]
-    if keys[-1] in current:
+        # Record path for cleanup (except the last key which we're deleting)
+        if len(keys) > 1:
+            next_key_idx = keys.index(key) + 1
+            if next_key_idx < len(keys) - 1:
+                path_stack.append((current, keys[next_key_idx]))
+
+    if isinstance(current, dict) and keys[-1] in current:
         del current[keys[-1]]
+
+    # Clean up empty parent objects (in reverse order, from leaf to root)
+    for parent_dict, child_key in reversed(path_stack):
+        if child_key in parent_dict and isinstance(parent_dict[child_key], dict):
+            if len(parent_dict[child_key]) == 0:
+                del parent_dict[child_key]
 
 
 def sync_locales(dry_run: bool = True, translate: bool = False):
@@ -85,6 +106,9 @@ def sync_locales(dry_run: bool = True, translate: bool = False):
 
     # Target languages
     target_langs = ["en", "ja", "ko", "zh-TW"]
+
+    # Store lang_data for summary calculation (avoid re-reading files)
+    lang_data_cache = {}
 
     for lang in target_langs:
         lang_path = LOCALES_DIR / f"{lang}.json"
@@ -132,20 +156,21 @@ def sync_locales(dry_run: bool = True, translate: bool = False):
                 delete_nested_key(lang_data, key)
 
             with open(lang_path, "w", encoding="utf-8") as f:
-                json.dump(lang_data, f, ensure_ascii=False, indent=4)
+                json.dump(lang_data, f, ensure_ascii=False, indent=2)
             print("   ✅ File updated")
+
+        # Cache updated lang_data for summary
+        lang_data_cache[lang] = lang_data
 
         print()
 
-    # Summary
+    # Summary (using cached lang_data instead of re-reading files)
     print("📊 Summary")
     total_missing = 0
     total_extra = 0
     for lang in target_langs:
-        lang_path = LOCALES_DIR / f"{lang}.json"
-        if lang_path.exists():
-            with open(lang_path, "r", encoding="utf-8") as f:
-                lang_data = json.load(f)
+        if lang in lang_data_cache:
+            lang_data = lang_data_cache[lang]
             lang_keys = get_all_keys(lang_data)
             missing = len(zh_cn_keys - lang_keys)
             extra = len(lang_keys - zh_cn_keys)
