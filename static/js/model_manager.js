@@ -2413,7 +2413,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     showStatus(t('live2d.vrmAnimation.playingAnimation', `正在播放: ${animDisplayName}`, { name: animDisplayName }), 2000);
                     await vrmManager.playVRMAAnimation(finalAnimationUrl, {
                         loop: loop,
-                        timeScale: speed
+                        timeScale: speed,
+                        isIdle: false  // 手动播放的动作不是待机动画
                     });
                     isVrmAnimationPlaying = true;
                     updateVRMAnimationPlayButtonIcon();

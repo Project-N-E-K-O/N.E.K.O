@@ -40,8 +40,9 @@ const CURSOR_FOLLOW_DEFAULTS = Object.freeze({
     headContribution: 0.4,           // 头部承担 40%
 
     // ── 动作权重 ──────────────────────────────────────────
-    headWeightIdle: 1.0,
-    headWeightAction: 0.0,
+    headWeightIdle: 1.0,             // 无动画时（纯静止）
+    headWeightIdleAnim: 0.7,         // 待机动画播放时（加成叠加，保留呼吸协调）
+    headWeightAction: 0.0,           // 一次性动作播放时（完全让位）
     weightTransitionSec: 0.2,        // 权重过渡时间
 
     // ── 拖拽降权 ─────────────────────────────────────────
@@ -251,13 +252,25 @@ class CursorFollowController {
     }
 
     // ════════════════════════════════════════════════════════════════
-    //  判断当前是否处于"动作播放中"（用于降权）
+    //  判断当前是否处于"一次性动作播放中"（用于降权）
+    //  待机动画不算"动作"，头部跟踪以较高权重加成叠加
     // ════════════════════════════════════════════════════════════════
     _isActionPlaying() {
         const anim = this.manager?.animation;
         if (!anim) return false;
-        // 有活跃的非 idle 动作且正在播放
+        // 待机动画不降权
+        if (anim.isIdleAnimation) return false;
+        // 仅非 idle 的一次性动作才降权
         return anim.vrmaIsPlaying && anim.currentAction && anim.currentAction.isRunning();
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    //  判断当前是否处于"待机动画播放中"
+    // ════════════════════════════════════════════════════════════════
+    _isIdleAnimPlaying() {
+        const anim = this.manager?.animation;
+        if (!anim) return false;
+        return anim.isIdleAnimation && anim.vrmaIsPlaying && anim.currentAction && anim.currentAction.isRunning();
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -469,13 +482,15 @@ class CursorFollowController {
     _updateHeadWeight(delta) {
         const D = CURSOR_FOLLOW_DEFAULTS;
 
-        // 目标权重
+        // 目标权重（优先级：一次性动作 > 拖拽 > 待机动画 > 纯静止）
         if (this._isActionPlaying()) {
-            this._targetHeadWeight = D.headWeightAction;
+            this._targetHeadWeight = D.headWeightAction;       // 一次性动作 → 0
         } else if (this._isDragging()) {
             this._targetHeadWeight = 0.15;
+        } else if (this._isIdleAnimPlaying()) {
+            this._targetHeadWeight = D.headWeightIdleAnim;     // 待机动画 → 0.7（加成叠加）
         } else {
-            this._targetHeadWeight = D.headWeightIdle;
+            this._targetHeadWeight = D.headWeightIdle;         // 纯静止 → 1.0
         }
 
         // 平滑过渡
