@@ -1,6 +1,11 @@
 (async function initVRMModules() {
     const loadModules = async () => {
         console.log(window.t ? window.t('modelManager.vrmLoadingDependencies') : '[VRM] 开始加载依赖模块');
+
+        // 提前设置加载中标志，防止 vrm-init.js 加载时其内部 IIFE 再次触发模块加载
+        // 注意：不能用 vrmModuleLoaded，因为下游 waitForVRM 会误判为已完成
+        window._vrmModulesLoading = true;
+
         const vrmModules = [
             '/static/vrm-orientation.js',
             '/static/vrm-core.js',
@@ -14,17 +19,30 @@
             '/static/vrm-init.js'
         ];
 
+        const failedModules = [];
         for (const moduleSrc of vrmModules) {
             const script = document.createElement('script');
             script.src = `${moduleSrc}?v=${Date.now()}`;
             await new Promise((resolve) => {
                 script.onload = resolve;
-                script.onerror = resolve; // 即使失败也继续，防止死锁
+                script.onerror = () => {
+                    console.error(`[VRM] 模块加载失败: ${moduleSrc}`);
+                    failedModules.push(moduleSrc);
+                    resolve(); // 即使失败也继续，防止死锁
+                };
                 document.body.appendChild(script);
             });
         }
-        window.vrmModuleLoaded = true;
-        window.dispatchEvent(new CustomEvent('vrm-modules-ready'));
+
+        if (failedModules.length > 0) {
+            window.vrmModuleLoaded = false;
+            console.error('[VRM] 以下模块加载失败:', failedModules);
+            window.dispatchEvent(new CustomEvent('vrm-modules-failed', {
+                detail: { failedModules }
+            }));
+        } else {
+            window.dispatchEvent(new CustomEvent('vrm-modules-ready'));
+        }
     };
 
     // 如果 THREE 还没好，就等事件；好了就直接加载
