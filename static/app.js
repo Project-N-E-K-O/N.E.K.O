@@ -1170,6 +1170,13 @@ function init_app() {
                             if (isRecording) {
                                 stopMicCapture();
                             }
+
+                            // 向后端发送 end_session，确保服务器丢弃旧上下文
+                            if (socket && socket.readyState === WebSocket.OPEN) {
+                                socket.send(JSON.stringify({ action: 'end_session' }));
+                                console.log('[Memory] 已向后端发送 end_session');
+                            }
+
                             // 如果是文本模式，重置会话状态，下次发送文本时会重新获取上下文
                             if (isTextSessionActive) {
                                 isTextSessionActive = false;
@@ -1180,18 +1187,17 @@ function init_app() {
                                 clearAudioQueue();
                             }
                             
-                            // 如果之前是语音模式，等待 session 结束后自动重新连接
+                            // 如果之前是语音模式，等待 session 结束后通过完整启动流程重新连接
                             if (wasRecording) {
                                 showStatusToast(window.t ? window.t('memory.refreshingContext') : '正在刷新上下文...', 3000);
-                                // 等待 session 完全结束
+                                // 等待后端 session 完全结束
                                 await new Promise(resolve => setTimeout(resolve, 1500));
-                                // 自动重新启动语音
-                                if (typeof startMicCapture === 'function') {
-                                    try {
-                                        await startMicCapture();
-                                    } catch (e) {
-                                        console.error('[Memory] 自动重连语音失败:', e);
-                                    }
+                                // 通过 micButton.click() 触发完整启动流程
+                                // （发送 start_session、等待 session_started、再初始化麦克风）
+                                try {
+                                    micButton.click();
+                                } catch (e) {
+                                    console.error('[Memory] 自动重连语音失败:', e);
                                 }
                             } else {
                                 // 显示提示
