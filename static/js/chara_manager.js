@@ -544,7 +544,7 @@ function renderMaster() {
             } else {
                 fieldElement = document.createElement('textarea');
                 fieldElement.rows = 1;
-                fieldElement.placeholder = '可输入详细描述';
+                fieldElement.placeholder = window.t ? window.t('character.detailDescriptionPlaceholder') : '可输入详细描述';
             }
             fieldElement.name = field.name;
             rowElement.appendChild(fieldElement);
@@ -620,7 +620,7 @@ function renderMaster() {
         textarea.name = k;
         textarea.value = master[k];
         textarea.rows = 1;
-        textarea.placeholder = '可输入详细描述';
+        textarea.placeholder = window.t ? window.t('character.detailDescriptionPlaceholder') : '可输入详细描述';
         row.appendChild(textarea);
 
         // 为重新创建的textarea添加自动调整高度功能
@@ -720,7 +720,7 @@ function setupMasterFormListeners() {
             const textareaEl = document.createElement('textarea');
             textareaEl.name = key;
             textareaEl.rows = 1;
-            textareaEl.placeholder = '可输入详细描述';
+            textareaEl.placeholder = window.t ? window.t('character.detailDescriptionPlaceholder') : '可输入详细描述';
             row.appendChild(textareaEl);
 
             // 将field-row添加到wrapper
@@ -1110,7 +1110,7 @@ function showCatgirlForm(key, container) {
             const textareaEl = document.createElement('textarea');
             textareaEl.name = k;
             textareaEl.rows = 1;
-            textareaEl.placeholder = '可输入详细描述';
+            textareaEl.placeholder = window.t ? window.t('character.detailDescriptionPlaceholder') : '可输入详细描述';
             textareaEl.value = cat[k];
             fieldRow.appendChild(textareaEl);
 
@@ -1494,7 +1494,7 @@ function showCatgirlForm(key, container) {
         const textareaEl = document.createElement('textarea');
         textareaEl.name = key;
         textareaEl.rows = 1;
-        textareaEl.placeholder = '可输入详细描述';
+        textareaEl.placeholder = window.t ? window.t('character.detailDescriptionPlaceholder') : '可输入详细描述';
         fieldRow.appendChild(textareaEl);
 
         const delBtn = document.createElement('button');

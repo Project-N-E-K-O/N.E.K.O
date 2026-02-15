@@ -422,13 +422,55 @@
     "compressionInProgress": "正在压缩模型文件...",
     "decompressionInProgress": "正在解压模型文件...",
     "compressionFailed": "压缩失败: {{error}}",
-    "decompressionFailed": "解压失败: {{error}}"
+    "decompressionFailed": "解压失败: {{error}}",
+    "uploadingPreviewImage": "正在上传预览图片...",
+    "previewImageSizeExceeded": "预览图片大小超过1MB，请选择较小的图片",
+    "modelConfigNotFound": "模型配置文件未找到",
+    "noExpressionFiles": "没有表情文件",
+    "loadCharacterDataFailed": "加载角色数据失败",
+    "tempFolderDeleted": "临时目录已删除",
+    "tempFolderRetained": "临时目录已保留",
+    "noAvailableModelsError": "没有可用的模型",
+    "characterCardLoaded": "角色卡已加载",
+    "noCharacterCardSelectedForEdit": "未选择要编辑的角色卡",
+    "tagsPlaceholderInput": "输入标签，按空格添加",
+    "prepareUploadFailedMessage": "准备上传失败: {{error}}",
+    "uploadExecutionError": "上传执行出错: {{error}}"
   },
   "dialogs": {
     "confirmLeave": "确认离开",
     "unsavedChanges": "您有未保存的设置，确定要离开吗？",
     "clearScreenshots": "清空截图",
     "clearScreenshotsConfirm": "确定要清空所有待发送的截图吗？"
+  },
+  "error": {
+    "emotionTimeout": "情感分析超时",
+    "noAudioTrack": "没有可用的音频轨道",
+    "cameraStreamFailed": "无法获取摄像头流",
+    "characterConfigFailed": "无法获取角色配置"
+  },
+  "camera": {
+    "iosPermissionHint": "请检查 iOS 设置 → Safari → 摄像头 权限是否为「允许」",
+    "notDetected": "未检测到摄像头设备",
+    "occupied": "摄像头被其它应用占用？关闭扫码/拍照应用后重试"
+  },
+  "emotionManager": {
+    "title": "Live2D 情感映射管理器",
+    "subtitle": "配置不同情绪下的动作和表情",
+    "selectModel": "选择 Live2D 模型",
+    "motion": "动作",
+    "expression": "表情",
+    "selectMotion": "选择动作",
+    "selectExpression": "选择表情",
+    "saveSuccessHint": "配置保存成功！ 每个情绪的动作/表情将平分触发概率。",
+    "emotions": {
+      "happy": "开心 (Happy)",
+      "sad": "悲伤 (Sad)",
+      "angry": "生气 (Angry)",
+      "neutral": "平静 (Neutral)",
+      "surprised": "惊讶 (Surprised)",
+      "idle": "待机 (Idle)"
+    }
   },
   "chat": {
     "title": "对话",

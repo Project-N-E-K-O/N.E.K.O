@@ -1894,7 +1894,7 @@ function viewItemDetails(itemId) {
     })
     .then(data => {
         if (!data.success) {
-            showMessage(`获取物品详情失败: ${data.error || '未知错误'}`, 'error');
+            showMessage(window.t ? window.t('steam.getItemDetailsFailedWithError', { error: data.error || (window.t ? window.t('common.unknownError') : '未知错误') }) : `获取物品详情失败: ${data.error || '未知错误'}`, 'error');
             return;
         }
 
@@ -2346,7 +2346,7 @@ async function loadCharacterData() {
         return await resp.json();
     } catch (error) {
         console.error('加载角色数据失败:', error);
-        showMessage('加载角色数据失败', 'error');
+        showMessage(window.t ? window.t('steam.loadCharacterDataFailed') : '加载角色数据失败', 'error');
         return null;
     }
 }
@@ -2767,7 +2767,7 @@ function closeWorkshopSnapshotModal(event) {
 // 加载角色卡
 function loadCharacterCard() {
     // 这里将实现加载角色卡的逻辑
-    showMessage('角色卡已加载', 'info');
+    showMessage(window.t ? window.t('steam.characterCardLoaded') : '角色卡已加载', 'info');
 }
 
 // 存储临时上传目录路径，供上传时使用
@@ -2798,10 +2798,10 @@ function cleanupTempFolder(tempFolder, shouldDelete) {
         })
         .then(result => {
             if (result.success) {
-                showMessage('临时目录已删除', 'success');
+                showMessage(window.t ? window.t('steam.tempFolderDeleted') : '临时目录已删除', 'success');
             } else {
                 console.error('删除临时目录失败:', result.error);
-                showMessage(`删除临时目录失败: ${result.error}`, 'error');
+                showMessage(window.t ? window.t('steam.deleteTempDirectoryFailed', { error: result.error }) : `删除临时目录失败: ${result.error}`, 'error');
             }
             // 清除临时目录路径和上传状态
             currentUploadTempFolder = null;
@@ -2809,13 +2809,13 @@ function cleanupTempFolder(tempFolder, shouldDelete) {
         })
         .catch(error => {
             console.error('删除临时目录失败:', error);
-            showMessage(`删除临时目录失败: ${error.message}`, 'error');
+            showMessage(window.t ? window.t('steam.deleteTempDirectoryFailed', { error: error.message }) : `删除临时目录失败: ${error.message}`, 'error');
             // 即使删除失败，也清除临时目录路径和上传状态
             currentUploadTempFolder = null;
             isUploadCompleted = false;
         });
     } else {
-        showMessage('临时目录已保留', 'info');
+        showMessage(window.t ? window.t('steam.tempFolderRetained') : '临时目录已保留', 'info');
         // 清除临时目录路径和上传状态
         currentUploadTempFolder = null;
         isUploadCompleted = false;
@@ -2928,7 +2928,7 @@ async function handleUploadToWorkshop() {
             } else if (availableModels.length > 0) {
                 selectedModelName = availableModels[0].name;
             } else {
-                showMessage('没有可用的模型', 'error');
+                showMessage(window.t ? window.t('steam.noAvailableModelsError') : '没有可用的模型', 'error');
                 return;
             }
         }
@@ -3068,7 +3068,7 @@ async function performUpload(data) {
                         tagInput.style.opacity = '';
                         tagInput.style.cursor = '';
                         tagInput.style.backgroundColor = '';
-                        tagInput.placeholder = '输入标签，按空格添加';
+                        tagInput.placeholder = window.t ? window.t('steam.tagsPlaceholderInput') : '输入标签，按空格添加';
                     }
                 }
 
@@ -3078,16 +3078,16 @@ async function performUpload(data) {
                 // 然后显示上传表单区域
                 toggleUploadSection();
             } else {
-                showMessage(`准备上传失败: ${result.error || '未知错误'}`, 'error');
+                showMessage(window.t ? window.t('steam.prepareUploadFailedMessage', { error: result.error || (window.t ? window.t('common.unknownError') : '未知错误') }) : `准备上传失败: ${result.error || '未知错误'}`, 'error');
             }
         })
         .catch(error => {
             console.error('准备上传失败:', error);
-            showMessage(`准备上传失败: ${error.message}`, 'error');
+            showMessage(window.t ? window.t('steam.prepareUploadFailed', { error: error.message }) : `准备上传失败: ${error.message}`, 'error');
         });
     } catch (error) {
         console.error('performUpload执行出错:', error);
-        showMessage(`上传执行出错: ${error.message}`, 'error');
+        showMessage(window.t ? window.t('steam.uploadExecutionError', { error: error.message }) : `上传执行出错: ${error.message}`, 'error');
     }
 }
 
@@ -3100,7 +3100,7 @@ function editCharacterCardModal() {
         // 调用编辑角色卡函数
         editCharacterCard(currentCharacterCardId);
     } else {
-        showMessage('未选择要编辑的角色卡', 'error');
+        showMessage(window.t ? window.t('steam.noCharacterCardSelectedForEdit') : '未选择要编辑的角色卡', 'error');
     }
 }
 
@@ -3729,13 +3729,13 @@ function addCharacterCardTag(type, tagValue) {
         // 检查标签数量是否超过限制（最多4个）
         const existingTags = tagsContainer.querySelectorAll('.tag');
         if (existingTags.length >= 4) {
-            alert('标签数量不能超过4个！');
+            alert(window.t ? window.t('steam.tagLimitReached') : '标签数量不能超过4个！');
             return;
         }
 
         // 检查标签字数是否超过限制（最多30字）
         if (tagText.length > 30) {
-            alert('标签字数不能超过30字！');
+            alert(window.t ? window.t('steam.tagTooLong') : '标签字数不能超过30字！');
             return;
         }
 
@@ -4138,13 +4138,13 @@ document.addEventListener('DOMContentLoaded', function() {
 
             // 检查标签数量是否超过限制（最多4个）
             if (notesTags.length >= 4) {
-                alert('标签数量不能超过4个！');
+                alert(window.t ? window.t('steam.tagLimitReached') : '标签数量不能超过4个！');
                 return;
             }
 
             // 检查标签字数是否超过限制（最多30字）
             if (tag.length > 30) {
-                alert('标签字数不能超过30字！');
+                alert(window.t ? window.t('steam.tagTooLong') : '标签字数不能超过30字！');
                 return;
             }
 
