@@ -2725,8 +2725,19 @@ document.addEventListener('DOMContentLoaded', async () => {
      * 加载待机动作选项列表
      * 从 /api/model/vrm/animations 获取可用的VRMA动画文件，填充待机动作下拉菜单
      * 默认选中 wait03.vrma，用户可在保存设置时持久化选择
+     *
+     * 使用 inflight Promise 去重：并发调用共享同一请求，避免晚返回的
+     * 响应覆盖已恢复的 idleAnimation 选中值
      */
     async function loadIdleAnimationOptions() {
+        // 用函数自身属性存储 inflight Promise，避免 let 声明的 TDZ 问题
+        if (loadIdleAnimationOptions._promise) return loadIdleAnimationOptions._promise;
+        loadIdleAnimationOptions._promise = _doLoadIdleAnimationOptions().finally(() => {
+            loadIdleAnimationOptions._promise = null;
+        });
+        return loadIdleAnimationOptions._promise;
+    }
+    async function _doLoadIdleAnimationOptions() {
         const selectEl = document.getElementById('idle-animation-select');
         if (!selectEl) {
             console.debug('[VRM IdleAnimation] 待机动作下拉元素未找到，跳过加载');
