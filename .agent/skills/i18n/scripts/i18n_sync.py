@@ -57,26 +57,28 @@ def set_nested_value(obj: Dict, key_path: str, value: Any):
 def delete_nested_key(obj: Dict, key_path: str):
     """Delete nested key by dot-separated key path, cleaning up empty parent objects"""
     keys = key_path.split(".")
+    if len(keys) == 0:
+        return
+
+    # Track (parent_dict, child_key) pairs that may need cleanup after deletion
+    # These are the parent containers of each segment in the path
+    path_stack = []
     current = obj
-    # Track the path to clean up empty parents later
-    path_stack = [(obj, keys[0])] if len(keys) > 1 else []
 
-    for key in keys[:-1]:
-        if key not in current:
+    # Walk to the parent of the target key, recording the path
+    for idx, key in enumerate(keys[:-1]):
+        if not isinstance(current, dict) or key not in current:
             return
-        if not isinstance(current[key], dict):
-            return
+        # Record (parent, child_key) where parent[child_key] is the dict we're about to descend into
+        # After deletion, we'll check if parent[child_key] is empty
+        path_stack.append((current, key))
         current = current[key]
-        # Record path for cleanup (except the last key which we're deleting)
-        if len(keys) > 1:
-            next_key_idx = keys.index(key) + 1
-            if next_key_idx < len(keys) - 1:
-                path_stack.append((current, keys[next_key_idx]))
 
+    # Delete the target key
     if isinstance(current, dict) and keys[-1] in current:
         del current[keys[-1]]
 
-    # Clean up empty parent objects (in reverse order, from leaf to root)
+    # Clean up empty parent objects (from leaf to root)
     for parent_dict, child_key in reversed(path_stack):
         if child_key in parent_dict and isinstance(parent_dict[child_key], dict):
             if len(parent_dict[child_key]) == 0:
