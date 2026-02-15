@@ -480,8 +480,8 @@ class VRMAnimation {
             const clip = await this._createAndValidateAnimationClip(vrmAnimation, vrm);
             this._processTracksForVersion(clip, vrmVersion);
 
-            // 判断是否为待机动画（显式指定 isIdle，或 loop === true 时自动推断）
-            this.isIdleAnimation = options.isIdle !== undefined ? !!options.isIdle : !!options.loop;
+            // 判断是否为待机动画（仅在显式传入 isIdle: true 时才视为待机）
+            this.isIdleAnimation = !!options.isIdle;
 
             const mixerRoot = this._findBestMixerRoot(vrm, clip);
             const newAction = this._createAndConfigureAction(clip, mixerRoot, options);
