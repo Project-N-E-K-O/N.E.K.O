@@ -2710,6 +2710,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (vrmManager.vrmaAction) {
                         vrmManager.stopVRMAAnimation();
                     }
+                    // 切换待机动作会 stop 之前的动画，同步重置手动动作的播放状态和图标
+                    isVrmAnimationPlaying = false;
+                    updateVRMAnimationPlayButtonIcon();
                     await vrmManager.playVRMAAnimation(selectedUrl, { loop: true, immediate: true, isIdle: true });
                     console.log('[VRM IdleAnimation] 待机动作已切换:', e.target.options[e.target.selectedIndex]?.text || selectedUrl);
                     showStatus(t('vrm.idleAnimation.changed', `待机动作已切换`, { name: e.target.options[e.target.selectedIndex]?.text || selectedUrl }), 2000);
