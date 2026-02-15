@@ -818,7 +818,7 @@
     "add": "添加",
     "delete": "刪除",
     "savePersistent": "保存常駐錶情",
-    "persistentHint": "常駐錶情會一直生效；此處僅能選擇 .exp3.json。",
+    "persistentHint": "常駐錶情會一直生效。",
     "backToMain": "返迴主頁",
     "importModel": "導入模型:",
     "motionPreview": "動作預覽:",

@@ -2620,6 +2620,8 @@ html[lang|="zh"] #persistent-expression-select-btn,
 html[lang|="zh"] #vrm-model-select-btn,
 html[lang|="zh"] #vrm-animation-select-btn,
 html[lang|="zh"] #vrm-expression-select-btn,
+html[lang|="zh"] #save-position-btn,
+html[lang|="zh"] #emotion-config-btn,
 html[lang|="zh"] #parameter-editor-btn {
     width: 270px !important;
     min-width: 270px !important;
@@ -2659,9 +2661,11 @@ html[lang|="en"] #persistent-expression-select-btn,
 html[lang|="en"] #vrm-model-select-btn,
 html[lang|="en"] #vrm-animation-select-btn,
 html[lang|="en"] #vrm-expression-select-btn,
+html[lang|="en"] #save-position-btn,
+html[lang|="en"] #emotion-config-btn,
 html[lang|="en"] #parameter-editor-btn {
-    width: 290px !important;
-    min-width: 290px !important;
+    width: 270px !important;
+    min-width: 270px !important;
     padding: 10px 25px !important;
     justify-content: center !important;
 }

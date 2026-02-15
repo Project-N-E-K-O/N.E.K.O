@@ -796,7 +796,7 @@
     "add": "추가",
     "delete": "삭제",
     "savePersistent": "지속 표현식 저장",
-    "persistentHint": "영구 표현식은 항상 활성화됩니다. 여기서는 .exp3.json 파일만 선택할 수 있습니다.",
+    "persistentHint": "영구 표현식은 항상 활성화됩니다.",
     "backToMain": "메인으로 돌아가기",
     "importModel": "가져오기 모델:",
     "motionPreview": "모션 미리보기:",

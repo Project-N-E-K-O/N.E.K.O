@@ -798,7 +798,7 @@
     "add": "追加",
     "delete": "削除",
     "savePersistent": "常時表情を保存",
-    "persistentHint": "常時表情は常に有効になります。ここでは .exp3.json ファイルのみ選択可能です。",
+    "persistentHint": "常時表情は常に有効になります。",
     "backToMain": "メインに戻る",
     "importModel": "モデルをインポート:",
     "motionPreview": "モーションプレビュー:",

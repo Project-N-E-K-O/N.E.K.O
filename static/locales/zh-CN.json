@@ -754,7 +754,7 @@
     "add": "添加",
     "delete": "删除",
     "savePersistent": "保存常驻表情",
-    "persistentHint": "常驻表情会一直生效；此处仅能选择 .exp3.json。",
+    "persistentHint": "常驻表情会一直生效。",
     "backToMain": "返回主页",
     "importModel": "导入模型:",
     "motionPreview": "动作预览:",
