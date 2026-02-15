@@ -2258,12 +2258,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (vrmAnimationSelect && vrmAnimations.length > 0) {
                 vrmAnimationSelect.innerHTML = `<option value="">${t('live2d.selectMotion', '选择动作')}</option>`;
                 vrmAnimations.forEach(anim => {
-                    const option = document.createElement('option');
                     // 确保 animPath 是字符串：优先使用 anim.path，否则使用 anim.url，最后使用 anim 本身（如果是字符串）
                     const animPath = (typeof anim.path === 'string' ? anim.path : null)
                         || (typeof anim.url === 'string' ? anim.url : null)
-                        || (typeof anim === 'string' ? anim : String(anim));
+                        || (typeof anim === 'string' ? anim : null);
+                    if (!animPath) {
+                        console.warn('[VRM] 跳过无效动画项:', anim);
+                        return;
+                    }
 
+                    const option = document.createElement('option');
                     const finalUrl = ModelPathHelper.vrmToUrl(animPath, 'animation');
 
                     option.value = finalUrl;
@@ -2773,10 +2777,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             selectEl.innerHTML = '';
             if (animations.length > 0) {
                 animations.forEach(anim => {
-                    const option = document.createElement('option');
                     const animPath = (typeof anim.path === 'string' ? anim.path : null)
                         || (typeof anim.url === 'string' ? anim.url : null)
-                        || (typeof anim === 'string' ? anim : String(anim));
+                        || (typeof anim === 'string' ? anim : null);
+                    if (!animPath) {
+                        console.warn('[VRM IdleAnimation] 跳过无效动画项:', anim);
+                        return;
+                    }
+
+                    const option = document.createElement('option');
                     const finalUrl = ModelPathHelper.vrmToUrl(animPath, 'animation');
                     const displayName = anim.name || anim.filename || finalUrl.split('/').pop();
                     option.value = finalUrl;
