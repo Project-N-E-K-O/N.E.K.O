@@ -292,6 +292,8 @@
 
                 // 通知父窗口刷新对话上下文
                 if (data.need_refresh) {
+                    let broadcastSent = false;
+                    
                     // 优先使用 BroadcastChannel（跨页面通信）
                     if (typeof BroadcastChannel !== 'undefined') {
                         let channel = null;
@@ -302,6 +304,7 @@
                                 catgirl_name: data.catgirl_name
                             });
                             console.log('[MemoryBrowser] 已通过 BroadcastChannel 发送 memory_edited 消息');
+                            broadcastSent = true;
                         } catch (e) {
                             console.error('[MemoryBrowser] BroadcastChannel 发送失败:', e);
                         } finally {
@@ -310,12 +313,14 @@
                             }
                         }
                     }
-                    // 同时使用 postMessage 作为后备（iframe 场景）
-                    if (window.parent && window.parent !== window) {
+                    
+                    // 仅当 BroadcastChannel 不可用时，使用 postMessage 作为后备（iframe 场景）
+                    if (!broadcastSent && window.parent && window.parent !== window) {
                         window.parent.postMessage({
                             type: 'memory_edited',
                             catgirl_name: data.catgirl_name
                         }, PARENT_ORIGIN);
+                        console.log('[MemoryBrowser] 已通过 postMessage 发送 memory_edited 消息（后备方案）');
                     }
                 }
             } else {

@@ -1615,11 +1615,15 @@ function init_app() {
 
         if (event.data && event.data.type === 'memory_edited') {
             console.log(window.t('console.memoryEditedRefreshContext'), event.data.catgirl_name);
-            // 停止当前语音捕获，用户再次开麦时会自动刷新上下文
+            
+            // 记录之前是否在语音模式
+            const wasRecording = isRecording;
+            
+            // 停止当前语音捕获
             if (isRecording) {
                 stopMicCapture();
             }
-            // 向后端发送 end_session，确保服务器丢弃旧上下文（回退路径也要一致）
+            // 向后端发送 end_session，确保服务器丢弃旧上下文
             if (socket && socket.readyState === WebSocket.OPEN) {
                 socket.send(JSON.stringify({ action: 'end_session' }));
                 console.log('[Memory] 已向后端发送 end_session');
@@ -1637,8 +1641,22 @@ function init_app() {
                     console.error('[Memory] clearAudioQueue 失败:', e);
                 }
             }
-            // 显示提示
-            showStatusToast(window.t ? window.t('memory.refreshed') : '记忆已更新，下次对话将使用新记忆', 4000);
+            
+            // 如果之前是语音模式，等待 session 结束后自动重新连接
+            if (wasRecording) {
+                showStatusToast(window.t ? window.t('memory.refreshingContext') : '正在刷新上下文...', 3000);
+                // 等待后端 session 完全结束
+                await new Promise(resolve => setTimeout(resolve, 1500));
+                // 通过 micButton.click() 触发完整启动流程
+                try {
+                    micButton.click();
+                } catch (e) {
+                    console.error('[Memory] 自动重连语音失败:', e);
+                }
+            } else {
+                // 显示提示
+                showStatusToast(window.t ? window.t('memory.refreshed') : '记忆已更新，下次对话将使用新记忆', 4000);
+            }
         }
     });
 
