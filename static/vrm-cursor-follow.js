@@ -111,9 +111,9 @@ class CursorFollowController {
         // ── 眼睛目标 Object3D ──
         this.eyesTarget = null;
 
-        // ── 鼠标状态 ──
-        this._rawMouseX = 0;
-        this._rawMouseY = 0;
+        // ── 鼠标状态（初始化为屏幕中心，避免首帧看向左上角） ──
+        this._rawMouseX = window.innerWidth / 2;
+        this._rawMouseY = window.innerHeight / 2;
 
         // ── One-Euro 滤波器（NDC 层面） ──
         this._eyeFilterX = null;
