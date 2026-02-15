@@ -828,8 +828,8 @@ function init_app() {
                         setTimeout(async () => {
                             try {
                                 const emotionPromise = analyzeEmotion(fullText);
-                                const timeoutPromise = new Promise((_, reject) => 
-                                    setTimeout(() => reject(new Error('情感分析超时')), 5000)
+                                const timeoutPromise = new Promise((_, reject) =>
+                                    setTimeout(() => reject(new Error(window.t ? window.t('error.emotionTimeout') : '情感分析超时')), 5000)
                                 );
                                 
                                 const emotionResult = await Promise.race([emotionPromise, timeoutPromise]);
@@ -838,7 +838,8 @@ function init_app() {
                                     applyEmotion(emotionResult.emotion);
                                 }
                             } catch (error) {
-                                if (error.message === '情感分析超时') {
+                                const timeoutMsg = window.t ? window.t('error.emotionTimeout') : '情感分析超时';
+                                if (error.message === timeoutMsg) {
                                     console.warn(window.t('console.emotionAnalysisTimeout'));
                                 } else {
                                     console.warn(window.t('console.emotionAnalysisFailed'), error);
@@ -1840,7 +1841,7 @@ function init_app() {
         selectedMicrophoneId = deviceId;
 
         // 获取设备名称用于状态提示
-        let deviceName = '系统默认麦克风';
+        let deviceName = window.t ? window.t('microphone.defaultDevice') : '系统默认麦克风';
         if (deviceId) {
             try {
                 const devices = await navigator.mediaDevices.enumerateDevices();
@@ -2382,7 +2383,7 @@ function init_app() {
                 micButton.classList.remove('recording');
                 micButton.classList.remove('active');
                 // 抛出错误，让外层 catch 块处理按钮状态恢复
-                throw new Error('没有可用的音频轨道');
+                throw new Error(window.t ? window.t('error.noAudioTrack') : '没有可用的音频轨道');
             }
 
             await startAudioWorklet(stream);
@@ -2528,7 +2529,7 @@ function init_app() {
                         screenCaptureStream = tmp;
                     } else {
                         // 保持原有错误处理路径：让 catch 去接手
-                        throw (tmp instanceof Error ? tmp : new Error('无法获取摄像头流'));
+                        throw (tmp instanceof Error ? tmp : new Error(window.t ? window.t('error.cameraStreamFailed') : '无法获取摄像头流'));
                     }
                 } else {
 
@@ -2668,14 +2669,14 @@ function init_app() {
             let hint = '';
             switch (err.name) {
                 case 'NotAllowedError':
-                    hint = '请检查 iOS 设置 → Safari → 摄像头 权限是否为"允许"';
+                    hint = window.t ? window.t('camera.iosPermissionHint') : '请检查 iOS 设置 → Safari → 摄像头 权限是否为"允许"';
                     break;
                 case 'NotFoundError':
-                    hint = '未检测到摄像头设备';
+                    hint = window.t ? window.t('camera.notDetected') : '未检测到摄像头设备';
                     break;
                 case 'NotReadableError':
                 case 'AbortError':
-                    hint = '摄像头被其它应用占用？关闭扫码/拍照应用后重试';
+                    hint = window.t ? window.t('camera.occupied') : '摄像头被其它应用占用？关闭扫码/拍照应用后重试';
                     break;
             }
             showStatusToast(`${err.name}: ${err.message}${hint ? `\n${hint}` : ''}`, 5000);
@@ -8215,7 +8216,7 @@ function init_app() {
             // 1. 获取新角色的配置（包括 model_type）
             const charResponse = await fetch('/api/characters');
             if (!charResponse.ok) {
-                throw new Error('无法获取角色配置');
+                throw new Error(window.t ? window.t('error.characterConfigFailed') : '无法获取角色配置');
             }
             const charactersData = await charResponse.json();
             const catgirlConfig = charactersData['猫娘']?.[newCatgirl];
