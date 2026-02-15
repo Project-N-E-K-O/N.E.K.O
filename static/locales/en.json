@@ -1269,7 +1269,8 @@
       "saveFailed": "Save failed",
       "lightingReset": "Lighting settings reset to default",
       "lightingApplied": "Preset applied: {{name}}"
-    }
+    },
+    "emotionConfig": "VRM Emotion Config"
   },
   "modelManager": {
     "vrmLoadingDependencies": "[VRM] Starting to load dependency modules",

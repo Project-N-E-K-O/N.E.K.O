@@ -1330,7 +1330,8 @@
       "saveFailed": "저장 실패",
       "lightingReset": "조명 설정이 기본값으로 재설정됨",
       "lightingApplied": "사전 설정 적용됨: {{name}}"
-    }
+    },
+    "emotionConfig": "VRM 감정 설정"
   },
   "modelManager": {
     "vrmLoadingDependencies": "[VRM] 종속성 모듈 로드 시작 중",

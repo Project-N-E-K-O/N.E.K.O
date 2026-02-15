@@ -1311,7 +1311,8 @@
       "saveFailed": "保存に失敗しました",
       "lightingReset": "ライティング設定がデフォルトにリセットされました",
       "lightingApplied": "プリセットが適用されました: {{name}}"
-    }
+    },
+    "emotionConfig": "VRM感情設定"
   },
   "modelManager": {
     "vrmLoadingDependencies": "[VRM] 依存モジュールの読み込みを開始しています",

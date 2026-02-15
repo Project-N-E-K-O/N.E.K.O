@@ -1324,7 +1324,8 @@
       "saveFailed": "保存失敗",
       "lightingReset": "打光設置已重置為默認值",
       "lightingApplied": "已應用預設: {{name}}"
-    }
+    },
+    "emotionConfig": "VRM情感設定"
   },
   "modelManager": {
     "vrmLoadingDependencies": "[VRM] 開始加載依賴模塊",

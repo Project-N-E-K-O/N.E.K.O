@@ -1,6 +1,7 @@
 /**
  * VRM 表情模块 - 智能映射版
  * 解决 VRM 0.x 和 1.0 表情命名不一致导致的面瘫问题
+ * 支持从后端动态加载情感映射配置
  */
 
 class VRMExpression {
@@ -29,23 +30,29 @@ class VRMExpression {
         // 自动回到 neutral 配置
         this.autoReturnToNeutral = true; // 是否自动回到 neutral
         this.neutralReturnDelay = 3000; // 多少毫秒后回到 neutral (从5秒改为3秒，更快恢复)
-        this.neutralReturnTimer = null; // 回到 neutral 的定时器 
-        
+        this.neutralReturnTimer = null; // 回到 neutral 的定时器
+
         // 情绪映射表：把一种情绪映射到多种可能的 VRM 表情名上
+        // 默认值，可通过 loadMoodMap() 从后端加载覆盖
         this.moodMap = {
             'neutral': ['neutral'],
             // 开心类：兼容 VRM1.0(happy), VRM0.0(joy, fun), 其他(smile, warau)
-            'happy': ['happy', 'joy', 'fun', 'smile', 'joy_01'], 
+            'happy': ['happy', 'joy', 'fun', 'smile', 'joy_01'],
             // 放松类：
             'relaxed': ['relaxed', 'joy', 'fun', 'content'],
             // 惊讶类：
             'surprised': ['surprised', 'surprise', 'shock', 'e', 'o'],
             // 悲伤类 (偶尔用一下)
-            'sad': ['sad', 'sorrow', 'angry', 'grief']
+            'sad': ['sad', 'sorrow', 'grief'],
+            // 生气类
+            'angry': ['angry', 'anger']
         };
 
         this.availableMoods = Object.keys(this.moodMap);
-        
+
+        // 当前加载的模型名称（用于加载对应的情感配置）
+        this.currentModelName = null;
+
         // 排除列表 (不参与情绪切换，由 blink 或 lipSync 控制)
         this.excludeExpressions = [
             'blink', 'blink_l', 'blink_r', 'blinkleft', 'blinkright',
@@ -53,8 +60,59 @@ class VRMExpression {
             'lookup', 'lookdown', 'lookleft', 'lookright'
         ];
 
-        this.currentWeights = {}; 
+        this.currentWeights = {};
         this._hasPrintedDebug = false; // 防止日志刷屏
+    }
+
+    /**
+     * 从后端加载模型特定的情感映射配置
+     * @param {string} modelName - 模型名称
+     */
+    async loadMoodMap(modelName) {
+        if (!modelName) {
+            console.warn('[VRM Expression] loadMoodMap: 模型名称为空');
+            return;
+        }
+
+        this.currentModelName = modelName;
+
+        try {
+            const response = await fetch(`/api/model/vrm/emotion_mapping/${encodeURIComponent(modelName)}`);
+            if (!response.ok) {
+                console.warn(`[VRM Expression] 加载情感映射失败: HTTP ${response.status}`);
+                return;
+            }
+
+            const data = await response.json();
+            if (data.success && data.config) {
+                // 合并配置，保留默认值作为后备
+                this.moodMap = { ...this.moodMap, ...data.config };
+                this.availableMoods = Object.keys(this.moodMap);
+                console.log(`[VRM Expression] 已加载模型 ${modelName} 的情感映射配置`, this.moodMap);
+            }
+        } catch (error) {
+            console.warn('[VRM Expression] 加载情感映射配置失败:', error);
+        }
+    }
+
+    /**
+     * 获取当前的情绪映射配置
+     * @returns {Object} 情绪映射表
+     */
+    getMoodMap() {
+        return { ...this.moodMap };
+    }
+
+    /**
+     * 设置情绪映射配置（运行时更新）
+     * @param {Object} newMoodMap - 新的情绪映射表
+     */
+    setMoodMap(newMoodMap) {
+        if (newMoodMap && typeof newMoodMap === 'object') {
+            this.moodMap = { ...this.moodMap, ...newMoodMap };
+            this.availableMoods = Object.keys(this.moodMap);
+            console.log('[VRM Expression] 已更新情感映射配置', this.moodMap);
+        }
     }
     /**
      * 【新增】手动设置当前情绪
