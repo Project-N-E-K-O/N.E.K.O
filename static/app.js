@@ -1182,9 +1182,13 @@ function init_app() {
                                 isTextSessionActive = false;
                                 console.log('[Memory] 文本会话已重置，下次发送将重新加载上下文');
                             }
-                            // 停止正在播放的AI语音回复
+                            // 停止正在播放的AI语音回复（等待音频解码/重置完成，避免与后续重连流程竞争）
                             if (typeof clearAudioQueue === 'function') {
-                                clearAudioQueue();
+                                try {
+                                    await clearAudioQueue();
+                                } catch (e) {
+                                    console.error('[Memory] clearAudioQueue 失败:', e);
+                                }
                             }
                             
                             // 如果之前是语音模式，等待 session 结束后通过完整启动流程重新连接
