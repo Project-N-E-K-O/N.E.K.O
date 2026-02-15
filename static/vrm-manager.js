@@ -542,7 +542,7 @@ class VRMManager {
                     );
                     lightOffset.applyQuaternion(this.camera.quaternion);
                     this.mainLight.position.copy(this.camera.position).add(lightOffset);
-                    
+
                     // 让主光始终指向模型中心（如果有目标）
                     if (this.currentModel.vrm.scene) {
                         this.mainLight.target = this.currentModel.vrm.scene;
@@ -674,6 +674,11 @@ class VRMManager {
         // 加载模型
         const result = await this.core.loadModel(modelUrl, options);
 
+        // 模型切换后重置头部跟踪状态（滤波器/权重/累计角度）
+        if (this._cursorFollow) {
+            this._cursorFollow.reset();
+        }
+
         // 动态计算阴影位置和大小
         if (options.addShadow !== false && result && result.vrm && result.vrm.scene) {
             this._calculateAndAddShadow(result);
@@ -786,7 +791,8 @@ class VRMManager {
                     try {
                         await this.playVRMAAnimation(DEFAULT_LOOP_ANIMATION, {
                             loop: true,
-                            immediate: true
+                            immediate: true,
+                            isIdle: true
                         });
                         showAndFadeIn();
                     } catch (err) {

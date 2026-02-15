@@ -2710,7 +2710,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (vrmManager.vrmaAction) {
                         vrmManager.stopVRMAAnimation();
                     }
-                    await vrmManager.playVRMAAnimation(selectedUrl, { loop: true, immediate: true });
+                    await vrmManager.playVRMAAnimation(selectedUrl, { loop: true, immediate: true, isIdle: true });
                     console.log('[VRM IdleAnimation] 待机动作已切换:', e.target.options[e.target.selectedIndex]?.text || selectedUrl);
                     showStatus(t('vrm.idleAnimation.changed', `待机动作已切换`, { name: e.target.options[e.target.selectedIndex]?.text || selectedUrl }), 2000);
                 } catch (err) {

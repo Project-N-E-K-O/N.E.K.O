@@ -204,6 +204,10 @@ class CursorFollowController {
         this._tempQuatE = new THREE.Quaternion();
         this._tempEuler = new THREE.Euler();
 
+        // 骨骼基准姿态快照（防止 premultiply 累加漂移）
+        this._neckBaseQuat = new THREE.Quaternion();
+        this._headBaseQuat = new THREE.Quaternion();
+
         // 初始化滤波器
         const D = CURSOR_FOLLOW_DEFAULTS;
         this._eyeFilterX = new OneEuroFilter(D.eyeOneEuroMinCutoff, D.eyeOneEuroBeta, D.eyeOneEuroDCutoff);
@@ -366,6 +370,11 @@ class CursorFollowController {
         const headBone = vrm.humanoid.getRawBoneNode('head');
         if (!neckBone && !headBone) return; // 降级：仅眼睛
 
+        // ── 快照骨骼基准姿态（vrm.update 后的动画姿态） ──
+        // 每帧从快照恢复后再叠加，避免 premultiply 累加漂移
+        if (neckBone) this._neckBaseQuat.copy(neckBone.quaternion);
+        if (headBone) this._headBaseQuat.copy(headBone.quaternion);
+
         // ── 参考位置 ──
         const refBone = headBone || neckBone;
         refBone.getWorldPosition(this._headWorldPos);
@@ -424,6 +433,7 @@ class CursorFollowController {
 
         // ── 对 neck 应用加成旋转 ──
         if (neckBone) {
+            neckBone.quaternion.copy(this._neckBaseQuat); // 恢复基准姿态
             this._applyAdditiveRotation(
                 neckBone, sceneQuat,
                 effectiveYaw * D.neckContribution * w,
@@ -433,6 +443,7 @@ class CursorFollowController {
 
         // ── 对 head 应用加成旋转 ──
         if (headBone) {
+            headBone.quaternion.copy(this._headBaseQuat); // 恢复基准姿态
             this._applyAdditiveRotation(
                 headBone, sceneQuat,
                 effectiveYaw * D.headContribution * w,
