@@ -1582,10 +1582,19 @@ function init_app() {
             if (isRecording) {
                 stopMicCapture();
             }
+            // 向后端发送 end_session，确保服务器丢弃旧上下文（回退路径也要一致）
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({ action: 'end_session' }));
+                console.log('[Memory] 已向后端发送 end_session');
+            }
             // 如果是文本模式，重置会话状态，下次发送文本时会重新获取上下文
             if (isTextSessionActive) {
                 isTextSessionActive = false;
                 console.log('[Memory] 文本会话已重置，下次发送将重新加载上下文');
+            }
+            // 停止正在播放的AI语音回复
+            if (typeof clearAudioQueue === 'function') {
+                clearAudioQueue();
             }
             // 显示提示
             showStatusToast(window.t ? window.t('memory.refreshed') : '记忆已更新，下次对话将使用新记忆', 4000);
