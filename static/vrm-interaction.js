@@ -339,13 +339,20 @@ class VRMInteraction {
         };
 
         // 5.5 鼠标悬停时动态更新光标（不拖拽时检测是否在模型上）
+        // 节流射线检测，避免每帧 intersectObject 造成卡顿
+        let _hoverThrottleId = null;
         this.mouseHoverHandler = (e) => {
             if (this.isDragging || this.checkLocked()) return;
-            if (this._hitTestModel(e.clientX, e.clientY)) {
-                canvas.style.cursor = 'grab';
-            } else {
-                canvas.style.cursor = 'default';
-            }
+            if (_hoverThrottleId) return; // 节流中，跳过
+            _hoverThrottleId = requestAnimationFrame(() => {
+                _hoverThrottleId = null;
+                if (this.isDragging) return;
+                if (this._hitTestModel(e.clientX, e.clientY)) {
+                    canvas.style.cursor = 'grab';
+                } else {
+                    canvas.style.cursor = 'default';
+                }
+            });
         };
 
         // 6. 滚轮缩放

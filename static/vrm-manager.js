@@ -46,6 +46,9 @@ class VRMManager {
         this._uiWindowHandlers = [];
         this._initWindowHandlers = [];
 
+        // CursorFollow 控制器（眼睛注视 + 头/脖子跟随）
+        this._cursorFollow = null;
+
         // 向后兼容：保留 _windowEventHandlers 作为 core 的别名（避免破坏现有代码）；建议新代码使用 _coreWindowHandlers
         Object.defineProperty(this, '_windowEventHandlers', {
             get: () => this._coreWindowHandlers,
@@ -160,6 +163,20 @@ class VRMManager {
 
     _initMouseLookAtTracking() {
         if (!this.scene || !this.camera || !window.THREE) return;
+
+        // ── 初始化 CursorFollowController（替代旧的 mousemove 跟踪） ──
+        if (typeof window.CursorFollowController !== 'undefined') {
+            if (!this._cursorFollow) {
+                this._cursorFollow = new window.CursorFollowController();
+            }
+            if (!this._cursorFollow._initialized) {
+                this._cursorFollow.init(this);
+            }
+            // CursorFollow 拥有自己的 eyesTarget，旧 _lookAtTarget 不再需要
+            return;
+        }
+
+        // ── 回退：旧的 lookAt 跟踪（CursorFollowController 未加载时） ──
         if (!this._ensureMouseLookAtResources()) return;
 
         if (!this._lookAtTarget) {
@@ -525,7 +542,7 @@ class VRMManager {
                     );
                     lightOffset.applyQuaternion(this.camera.quaternion);
                     this.mainLight.position.copy(this.camera.position).add(lightOffset);
-                    
+
                     // 让主光始终指向模型中心（如果有目标）
                     if (this.currentModel.vrm.scene) {
                         this.mainLight.target = this.currentModel.vrm.scene;
@@ -537,17 +554,33 @@ class VRMManager {
                     this.expression.update(delta);
                 }
 
-                // 2. 视线更新
-                if (this.currentModel.vrm.lookAt) {
-                    if (this._lookAtTarget && this._lookAtDesiredPoint) {
-                        const smoothTime = Math.max(0.01, this._lookAtSmoothTime);
-                        const alpha = Math.min(1, 1 - Math.exp(-delta / smoothTime));
-                        this._lookAtTarget.position.lerp(this._lookAtDesiredPoint, alpha);
-                    }
-                    this.currentModel.vrm.lookAt.target = this._lookAtTarget || this.camera;
+                // 2. CursorFollow：更新眼睛目标位置（平滑/死区/滤波）
+                if (this._cursorFollow) {
+                    this._cursorFollow.updateTarget(delta);
                 }
 
-                // 3. 物理更新
+                // 3. 设置 lookAt 目标
+                if (this.currentModel.vrm.lookAt) {
+                    if (this._cursorFollow && this._cursorFollow.eyesTarget) {
+                        // 新系统：使用 CursorFollow 的眼睛目标
+                        this.currentModel.vrm.lookAt.target = this._cursorFollow.eyesTarget;
+                    } else {
+                        // 回退：旧的 lookAt 跟踪
+                        if (this._lookAtTarget && this._lookAtDesiredPoint) {
+                            const smoothTime = Math.max(0.01, this._lookAtSmoothTime);
+                            const alpha = Math.min(1, 1 - Math.exp(-delta / smoothTime));
+                            this._lookAtTarget.position.lerp(this._lookAtDesiredPoint, alpha);
+                        }
+                        this.currentModel.vrm.lookAt.target = this._lookAtTarget || this.camera;
+                    }
+                }
+
+                // 4. 动画更新（mixer.update → VRMA 动作）
+                if (this.animation) {
+                    this.animation.update(delta);
+                }
+
+                // 5. VRM 核心更新（LookAt / SpringBone 物理）
                 if (this.enablePhysics) {
                     this.currentModel.vrm.update(delta);
                 } else {
@@ -555,24 +588,24 @@ class VRMManager {
                     if (this.currentModel.vrm.lookAt) this.currentModel.vrm.lookAt.update(delta);
                     if (this.currentModel.vrm.expressionManager) this.currentModel.vrm.expressionManager.update(delta);
                 }
+
+                // 6. CursorFollow：头/颈加成旋转（在 vrm.update 之后，确保不被覆盖）
+                if (this._cursorFollow) {
+                    this._cursorFollow.applyHead(delta);
+                }
             }
 
-            // 4. 动画更新
-            if (this.animation) {
-                this.animation.update(delta);
-            }
-
-            // 5. 交互系统更新（浮动按钮跟随等）
+            // 7. 交互系统更新（浮动按钮跟随等）
             if (this.interaction) {
                 this.interaction.update(delta);
             }
 
-            // 6. 更新控制器
+            // 8. 更新控制器
             if (this.controls) {
                 this.controls.update();
             }
 
-            // 7. 渲染场景（在渲染前再次检查，防止在帧执行过程中被 dispose）
+            // 9. 渲染场景（在渲染前再次检查，防止在帧执行过程中被 dispose）
             if (this.renderer && this.scene && this.camera) {
                 this.renderer.render(this.scene, this.camera);
             }
@@ -640,6 +673,11 @@ class VRMManager {
 
         // 加载模型
         const result = await this.core.loadModel(modelUrl, options);
+
+        // 模型切换后重置头部跟踪状态（滤波器/权重/累计角度）
+        if (this._cursorFollow) {
+            this._cursorFollow.reset();
+        }
 
         // 动态计算阴影位置和大小
         if (options.addShadow !== false && result && result.vrm && result.vrm.scene) {
@@ -753,7 +791,8 @@ class VRMManager {
                     try {
                         await this.playVRMAAnimation(DEFAULT_LOOP_ANIMATION, {
                             loop: true,
-                            immediate: true
+                            immediate: true,
+                            isIdle: true
                         });
                         showAndFadeIn();
                     } catch (err) {
@@ -924,6 +963,12 @@ class VRMManager {
             if (typeof this.interaction.cleanupDragAndZoom === 'function') {
                 this.interaction.cleanupDragAndZoom();
             }
+        }
+
+        // 7.5 清理 CursorFollow 控制器
+        if (this._cursorFollow) {
+            this._cursorFollow.destroy();
+            this._cursorFollow = null;
         }
 
         // 8. 清理场景中的所有对象（包括灯光）

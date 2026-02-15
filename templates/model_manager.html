@@ -204,7 +204,7 @@
             </button>
         </div>
 
-        <!-- VRM 打光设置 (已简化为二次元风格) -->
+        <!-- VRM 设置面板（包含动作配置与打光设置） -->
         <div class="control-group" id="vrm-lighting-group" style="display:none;">
         <div id="vrm-lighting-wrapper" class="vrm-lighting-wrapper">
             <div class="vrm-lighting-header">
@@ -214,9 +214,9 @@
                 <div class="lighting-control" id="ambient-light-control">
             <label for="ambient-light-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.ambientLight">环境光强度</label>
             <div style="display: flex; align-items: center; gap: 10px;">
-                <input type="range" id="ambient-light-slider" min="0" max="1.0" step="0.01" value="0.7"
+                <input type="range" id="ambient-light-slider" min="0" max="1.0" step="0.01" value="0.5"
                     style="flex: 1;">
-                <span id="ambient-light-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">0.70</span>
+                <span id="ambient-light-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">0.50</span>
             </div>
         </div>
 
@@ -269,9 +269,9 @@
         <div class="lighting-control" id="exposure-control">
             <label for="exposure-slider" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.lighting.exposure">曝光</label>
             <div style="display: flex; align-items: center; gap: 10px;">
-                <input type="range" id="exposure-slider" min="0.5" max="2.5" step="0.05" value="1.0"
+                <input type="range" id="exposure-slider" min="0.5" max="2.5" step="0.05" value="0.8"
                     style="flex: 1;">
-                <span id="exposure-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">1.00</span>
+                <span id="exposure-value" style="min-width: 40px; color: #4f8cff; font-size: 14px; font-weight: 500;">0.80</span>
             </div>
         </div>
 
@@ -287,7 +287,24 @@
                     </select>
                 </div>
             </div>
+
         </div>
+        </div>
+        </div>
+
+        <!-- VRM 待机动作选择（独立于打光设置） -->
+        <div class="control-group" id="vrm-idle-animation-group" style="display:none;">
+        <div class="vrm-idle-animation-wrapper">
+            <div class="vrm-idle-animation-content">
+                <div class="lighting-control" id="idle-animation-control">
+                    <label for="idle-animation-select" style="color: #4f8cff; font-size: 14px; font-weight: 500;" data-i18n="vrm.idleAnimation.title">待机动作</label>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <select id="idle-animation-select" style="flex: 1; padding: 5px; border-radius: 4px; opacity: 0.85; color: #4f8cff;">
+                            <option value="" style="color: #4f8cff;" data-i18n="common.loading">加载中...</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
         </div>
         </div>
 

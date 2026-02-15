@@ -1355,6 +1355,11 @@
       "saveFailed": "Save failed",
       "lightingReset": "Lighting settings reset to default",
       "lightingApplied": "Preset applied: {{name}}"
+    },
+    "idleAnimation": {
+      "title": "Idle Animation",
+      "changed": "Idle animation changed: {{name}}",
+      "changeFailed": "Failed to change idle animation"
     }
   },
   "modelManager": {
@@ -1534,7 +1539,6 @@
         "note": "If you don't see it, expand the tray arrow to show hidden icons.",
         "alt": "System tray location example"
       },
-
       "menu": {
         "title": "📋 Tray Menu",
         "desc": "You'll find a N.E.K.O icon in the bottom-right tray. Right-click it to see many options. Here are two commonly used features:"

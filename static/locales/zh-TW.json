@@ -1377,6 +1377,11 @@
       "saveFailed": "保存失敗",
       "lightingReset": "打光設置已重置為默認值",
       "lightingApplied": "已應用預設: {{name}}"
+    },
+    "idleAnimation": {
+      "title": "待機動作",
+      "changed": "待機動作已切換: {{name}}",
+      "changeFailed": "切換待機動作失敗"
     }
   },
   "modelManager": {
@@ -1556,7 +1561,6 @@
         "note": "如果看不到，可以先展開托盤的小箭頭，查看全部圖示。",
         "alt": "系統托盤位置示意圖"
       },
-
       "menu": {
         "title": "📋 托盤菜單",
         "desc": "右下角托盤裡會有 N.E.K.O 的圖標，右鍵點擊會出現很多選項。下面是兩個常用功能："
