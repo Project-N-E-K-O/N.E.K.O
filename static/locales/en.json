@@ -411,15 +411,11 @@
     "previewImageSizeExceeded": "Preview image exceeds 1MB, please select a smaller image",
     "modelConfigNotFound": "Model configuration file not found",
     "noExpressionFiles": "No expression files",
-    "loadCharacterDataFailed": "Failed to load character data",
     "tempFolderDeleted": "Temporary folder deleted",
     "tempFolderRetained": "Temporary folder retained",
     "noAvailableModelsError": "No available models",
-    "characterCardLoaded": "Character card loaded",
-    "noCharacterCardSelectedForEdit": "No character card selected for editing",
     "tagsPlaceholderInput": "Enter tags, press space to add",
     "prepareUploadFailedMessage": "Prepare upload failed: {{error}}",
-    "uploadExecutionError": "Upload execution error: {{error}}",
     "pageDescription": "Browse, subscribe, download, and manage Live2D models and voices from Steam Workshop",
     "previewImageMissing": "Preview image file not found, please check the path",
     "sort": {
@@ -449,24 +445,6 @@
     "iosPermissionHint": "Please check iOS Settings → Safari → Camera permission is set to \"Allow\"",
     "notDetected": "No camera device detected",
     "occupied": "Camera is occupied by another app? Close QR code/photo apps and try again"
-  },
-  "emotionManager": {
-    "title": "Live2D Emotion Mapping Manager",
-    "subtitle": "Configure motions and expressions for different emotions",
-    "selectModel": "Select Live2D Model",
-    "motion": "Motion",
-    "expression": "Expression",
-    "selectMotion": "Select Motion",
-    "selectExpression": "Select Expression",
-    "saveSuccessHint": "Configuration saved! Each emotion's motions/expressions will have equal trigger probability.",
-    "emotions": {
-      "happy": "Happy",
-      "sad": "Sad",
-      "angry": "Angry",
-      "neutral": "Neutral",
-      "surprised": "Surprised",
-      "idle": "Idle"
-    }
   },
   "dialogs": {
     "confirmLeave": "Confirm Leave",

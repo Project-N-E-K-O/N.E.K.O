@@ -18,7 +18,7 @@ Module to file mappings for i18n-check.
 
 Use `--files` to specify custom files:
 
-```
+```bash
 /i18n-check custom --files=templates/test.html,static/test.js
 ```
 

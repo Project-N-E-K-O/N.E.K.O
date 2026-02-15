@@ -11,7 +11,7 @@ from typing import Any, Dict, Set
 
 # Default locales directory (relative to script location)
 # Can be overridden by setting LOCALES_DIR environment variable
-DEFAULT_LOCALES_DIR = Path(__file__).parent.parent.parent / "static" / "locales"
+DEFAULT_LOCALES_DIR = Path(__file__).parent.parent.parent.parent.parent / "static" / "locales"
 LOCALES_DIR = Path(os.environ.get("LOCALES_DIR", DEFAULT_LOCALES_DIR))
 
 
@@ -76,7 +76,7 @@ def sync_locales(dry_run: bool = True, translate: bool = False):
         zh_cn = json.load(f)
 
     zh_cn_keys = get_all_keys(zh_cn)
-    print(f"📁 Base file: zh-CN.json")
+    print("📁 Base file: zh-CN.json")
     print(f"   Total keys: {len(zh_cn_keys)}\n")
 
     # Target languages
@@ -86,7 +86,7 @@ def sync_locales(dry_run: bool = True, translate: bool = False):
         lang_path = LOCALES_DIR / f"{lang}.json"
         if not lang_path.exists():
             print(f"📁 {lang}.json")
-            print(f"   ❌ File not found\n")
+            print("   ❌ File not found\n")
             continue
 
         with open(lang_path, "r", encoding="utf-8") as f:
@@ -115,7 +115,7 @@ def sync_locales(dry_run: bool = True, translate: bool = False):
                 print(f"      ... and {len(extra_keys) - 5} more")
 
         if not missing_keys and not extra_keys:
-            print(f"   ✅ Synced")
+            print("   ✅ Synced")
 
         # Apply changes
         if not dry_run and (missing_keys or extra_keys):
@@ -129,7 +129,7 @@ def sync_locales(dry_run: bool = True, translate: bool = False):
 
             with open(lang_path, "w", encoding="utf-8") as f:
                 json.dump(lang_data, f, ensure_ascii=False, indent=4)
-            print(f"   ✅ File updated")
+            print("   ✅ File updated")
 
         print()
 

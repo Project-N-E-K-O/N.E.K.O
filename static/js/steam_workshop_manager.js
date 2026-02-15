@@ -1690,7 +1690,9 @@ function updatePagination() {
 
     // 更新页码信息
     if (pageInfo) {
-        pageInfo.textContent = window.t ? window.t('steam.pagination', { currentPage: currentPage, totalPages: totalPages }) : `${currentPage} / ${totalPages}`;
+        const options = { currentPage: currentPage, totalPages: totalPages };
+        pageInfo.setAttribute('data-i18n-options', JSON.stringify(options));
+        pageInfo.textContent = window.t ? window.t('steam.pagination', options) : `${currentPage} / ${totalPages}`;
     }
 
     // 更新上一页按钮状态

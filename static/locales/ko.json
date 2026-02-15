@@ -424,19 +424,14 @@
     "decompressionInProgress": "모델 파일 압축 해제 중...",
     "compressionFailed": "압축 실패: {{error}}",
     "decompressionFailed": "압축 해제 실패: {{error}}",
-    "uploadingPreviewImage": "미리보기 이미지 업로드 중...",
     "previewImageSizeExceeded": "미리보기 이미지가 1MB를 초과합니다. 더 작은 이미지를 선택하세요",
     "modelConfigNotFound": "모델 설정 파일을 찾을 수 없습니다",
     "noExpressionFiles": "표정 파일이 없습니다",
-    "loadCharacterDataFailed": "캐릭터 데이터 로드 실패",
     "tempFolderDeleted": "임시 폴더가 삭제되었습니다",
     "tempFolderRetained": "임시 폴더가 유지되었습니다",
     "noAvailableModelsError": "사용 가능한 모델이 없습니다",
-    "characterCardLoaded": "캐릭터 카드가 로드되었습니다",
-    "noCharacterCardSelectedForEdit": "편집할 캐릭터 카드가 선택되지 않았습니다",
     "tagsPlaceholderInput": "태그 입력, 스페이스로 추가",
-    "prepareUploadFailedMessage": "업로드 준비 실패: {{error}}",
-    "uploadExecutionError": "업로드 실행 오류: {{error}}"
+    "prepareUploadFailedMessage": "업로드 준비 실패: {{error}}"
   },
   "emotion": {
     "manager": "Live2D 감정 매핑 관리자",
@@ -496,24 +491,6 @@
     "iosPermissionHint": "iOS 설정 → Safari → 카메라 권한이 \"허용\"으로 설정되어 있는지 확인하세요",
     "notDetected": "카메라 장치가 감지되지 않았습니다",
     "occupied": "카메라가 다른 앱에 의해 사용 중입니다. QR코드/사진 앱을 닫고 다시 시도하세요"
-  },
-  "emotionManager": {
-    "title": "Live2D 감정 매핑 관리자",
-    "subtitle": "다양한 감정에 대한 모션과 표정을 설정합니다",
-    "selectModel": "Live2D 모델 선택",
-    "motion": "모션",
-    "expression": "표정",
-    "selectMotion": "모션 선택",
-    "selectExpression": "표정 선택",
-    "saveSuccessHint": "설정이 저장되었습니다! 각 감정의 모션/표정은 동일한 트리거 확률을 가집니다.",
-    "emotions": {
-      "happy": "Happy (행복)",
-      "sad": "Sad (슬픔)",
-      "angry": "Angry (화남)",
-      "neutral": "Neutral (평범)",
-      "surprised": "Surprised (놀람)",
-      "idle": "Idle (대기)"
-    }
   },
   "chat": {
     "title": "채팅",
