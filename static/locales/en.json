@@ -46,8 +46,6 @@
     }
   },
   "steam": {
-    "pageDescription": "Through this page, you can browse, subscribe, download and manage Live2D models and voices from the Steam Workshop.",
-    "voiceNote": "If you have voice samples, please go to the Live2D settings page to register them manually",
     "characterCards": "Character Cards",
     "characterCardName": "Nickname",
     "characterCardAge": "Age",

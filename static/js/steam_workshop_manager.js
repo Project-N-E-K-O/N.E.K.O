@@ -2348,7 +2348,7 @@ async function loadCharacterData() {
         return await resp.json();
     } catch (error) {
         console.error('加载角色数据失败:', error);
-        showMessage(window.t ? window.t('steam.loadCharacterDataFailed') : '加载角色数据失败', 'error');
+        showMessage(window.t ? window.t('steam.loadCharacterDataFailed', { error: error.message || String(error) }) : '加载角色数据失败', 'error');
         return null;
     }
 }
@@ -3089,7 +3089,7 @@ async function performUpload(data) {
         });
     } catch (error) {
         console.error('performUpload执行出错:', error);
-        showMessage(window.t ? window.t('steam.uploadExecutionError', { error: error.message }) : `上传执行出错: ${error.message}`, 'error');
+        showMessage(window.t ? window.t('steam.uploadExecutionError', { message: error.message }) : `上传执行出错: ${error.message}`, 'error');
     }
 }
 

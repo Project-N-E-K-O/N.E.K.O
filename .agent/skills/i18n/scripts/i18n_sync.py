@@ -66,6 +66,10 @@ def sync_locales(dry_run: bool = True, translate: bool = False):
     """Sync all locale files with zh-CN.json as base"""
     print("=== i18n Locale Sync Report ===\n")
 
+    if translate:
+        print("⚠️  Note: --translate flag is not implemented yet.")
+        print("   Automatic translation is not available in this version.\n")
+
     # Read base file
     zh_cn_path = LOCALES_DIR / "zh-CN.json"
     if not zh_cn_path.exists():
@@ -119,12 +123,12 @@ def sync_locales(dry_run: bool = True, translate: bool = False):
 
         # Apply changes
         if not dry_run and (missing_keys or extra_keys):
-            for key in missing_keys:
+            for key in sorted(missing_keys):
                 zh_value = get_nested_value(zh_cn, key)
                 # Use zh-CN value as placeholder (actual translation done by Claude)
                 set_nested_value(lang_data, key, zh_value)
 
-            for key in extra_keys:
+            for key in sorted(extra_keys):
                 delete_nested_key(lang_data, key)
 
             with open(lang_path, "w", encoding="utf-8") as f:
