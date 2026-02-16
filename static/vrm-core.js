@@ -84,39 +84,71 @@ class VRMCore {
 
     /**
      * 检测 VRM 模型版本
+     * @param {Object} vrm - three-vrm 解析后的 VRM 对象
+     * @param {Object} [gltf] - 原始 GLTF 加载结果，用于读取 extensionsUsed
      */
-    detectVRMVersion(vrm) {
+    detectVRMVersion(vrm, gltf) {
         try {
+            // 1️⃣ 最可靠：直接检查 GLTF JSON 中的 extensionsUsed
+            //    VRM 1.0 使用 VRMC_vrm 扩展，VRM 0.x 使用 VRM 扩展
+            if (gltf?.parser?.json?.extensionsUsed) {
+                const exts = gltf.parser.json.extensionsUsed;
+                if (exts.includes('VRMC_vrm')) {
+                    return '1.0';
+                }
+                if (exts.includes('VRM')) {
+                    return '0.0';
+                }
+            }
+
+            // 2️⃣ 回退：检查 vrm.meta 属性
             if (vrm.meta) {
+                // VRM 0.x: meta 中有 vrmVersion / metaVersion / exporterVersion
                 if (vrm.meta.vrmVersion || vrm.meta.metaVersion) {
                     const version = vrm.meta.vrmVersion || vrm.meta.metaVersion;
                     if (version && (version.startsWith('1') || version.includes('1.0'))) {
                         return '1.0';
                     }
+                    return '0.0';
                 }
-                
-                if (vrm.humanoid && vrm.humanoid.humanBones) {
-                    const boneNames = Object.keys(vrm.humanoid.humanBones);
-                    if (boneNames.length > 50) {
-                        return '1.0';
-                    }
+
+                // VRM 1.0: meta 中有 authors (数组)，VRM 0.x 是 author (字符串)
+                if (Array.isArray(vrm.meta.authors)) {
+                    return '1.0';
                 }
-                
-                if (vrm.expressionManager && vrm.expressionManager.expressions) {
-                    let exprCount;
-                    if (vrm.expressionManager.expressions instanceof Map) {
-                        exprCount = vrm.expressionManager.expressions.size;
-                    } else {
-                        exprCount = Object.keys(vrm.expressionManager.expressions).length;
-                    }
-                    if (exprCount > 10) {
-                        return '1.0';
-                    }
+                if (typeof vrm.meta.author === 'string') {
+                    return '0.0';
+                }
+
+                // VRM 0.x: meta 中有 exporterVersion
+                if (vrm.meta.exporterVersion) {
+                    return '0.0';
                 }
             }
-            
+
+            // 3️⃣ 最后回退：启发式检查
+            if (vrm.humanoid && vrm.humanoid.humanBones) {
+                const boneNames = Object.keys(vrm.humanoid.humanBones);
+                if (boneNames.length > 50) {
+                    return '1.0';
+                }
+            }
+
+            if (vrm.expressionManager && vrm.expressionManager.expressions) {
+                let exprCount;
+                if (vrm.expressionManager.expressions instanceof Map) {
+                    exprCount = vrm.expressionManager.expressions.size;
+                } else {
+                    exprCount = Object.keys(vrm.expressionManager.expressions).length;
+                }
+                if (exprCount > 10) {
+                    return '1.0';
+                }
+            }
+
             return '0.0';
         } catch (error) {
+            console.warn('[VRM] 版本检测异常，默认为 0.0:', error);
             return '0.0';
         }
     }
@@ -624,7 +656,7 @@ class VRMCore {
             }
 
             // 检测 VRM 模型版本（0.0 或 1.0）
-            this.vrmVersion = this.detectVRMVersion(vrm);
+            this.vrmVersion = this.detectVRMVersion(vrm, gltf);
 
             // 计算模型的边界框，用于确定合适的初始大小
             const box = new THREE.Box3().setFromObject(vrm.scene);

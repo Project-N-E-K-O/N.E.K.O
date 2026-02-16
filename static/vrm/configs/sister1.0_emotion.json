@@ -1,0 +1,20 @@
+{
+  "neutral": [
+    "neutral"
+  ],
+  "happy": [
+    "happy"
+  ],
+  "relaxed": [
+    "relaxed"
+  ],
+  "sad": [
+    "sad"
+  ],
+  "angry": [
+    "angry"
+  ],
+  "surprised": [
+    "surprised"
+  ]
+}

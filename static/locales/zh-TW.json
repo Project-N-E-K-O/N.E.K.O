@@ -25,7 +25,9 @@
     "nextPage": "下一頁",
     "selectFile": "選擇文件",
     "fieldSeparator": "、",
-    "tryAgainLater": "請稍後重試"
+    "tryAgainLater": "請稍後重試",
+    "user": "使用者",
+    "project": "專案"
   },
   "characterProfile": {
     "gender": "性別",
@@ -1378,6 +1380,7 @@
       "lightingReset": "打光設置已重置為默認值",
       "lightingApplied": "已應用預設: {{name}}"
     },
+    "emotionConfig": "VRM情感設定",
     "idleAnimation": {
       "title": "待機動作",
       "changed": "待機動作已切換: {{name}}",
@@ -1999,6 +2002,44 @@
       "neutral": "平靜 (Neutral)",
       "surprised": "驚訝 (Surprised)",
       "idle": "待機 (Idle)"
+    }
+  },
+  "vrmEmotionManager": {
+    "title": "VRM 情感映射管理器 - Project N.E.K.O.",
+    "pageTitle": "VRM 情感映射管理器",
+    "subtitle": "配置不同情緒對應的表情映射",
+    "selectModel": "選擇 VRM 模型",
+    "expressionPreview": "表情預覽",
+    "expressionCandidates": "表情候選",
+    "selectExpression": "選擇表情",
+    "saveConfig": "保存配置",
+    "resetToDefault": "重置為預設",
+    "loading": "載入中...",
+    "loadingExpressions": "載入表情列表",
+    "pleaseSelectModel": "請選擇模型",
+    "noModelsFound": "沒有找到可用的VRM模型",
+    "noExpressionsFound": "沒有可用的表情",
+    "loadModelListFailed": "載入模型列表失敗",
+    "loadExpressionsFailed": "載入模型表情失敗",
+    "expressionsLoadedFromModel": "已從當前模型載入表情列表",
+    "useGenericExpressions": "使用通用表情列表（請先在主頁面載入模型）",
+    "useDefaultExpressions": "使用預設表情列表（請先在主頁面載入模型）",
+    "configLoadSuccess": "配置載入成功",
+    "configUseDefault": "使用預設配置",
+    "configSaveSuccess": "配置保存成功！",
+    "saveFailed": "保存失敗",
+    "configReset": "已重置為預設配置",
+    "pleaseSelectModelFirst": "請先選擇模型",
+    "tip": "提示：",
+    "tipContent": "VRM模型的表情名稱可能因版本不同而異（VRM 0.x使用joy，VRM 1.0使用happy）。請為每種情緒選擇多個候選表情，系統會自動匹配模型支援的表情。",
+    "close": "關閉",
+    "emotions": {
+      "neutral": "平靜 (Neutral)",
+      "happy": "開心 (Happy)",
+      "relaxed": "放鬆 (Relaxed)",
+      "sad": "悲傷 (Sad)",
+      "angry": "生氣 (Angry)",
+      "surprised": "驚訝 (Surprised)"
     }
   }
 }
