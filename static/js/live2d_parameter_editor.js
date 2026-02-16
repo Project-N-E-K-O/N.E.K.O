@@ -497,9 +497,21 @@ function updateModelDropdown() {
 function updateModelSelectButtonText() {
     if (!modelSelectText || !modelSelect) return;
     const selectedOption = modelSelect.options[modelSelect.selectedIndex];
-    const text = selectedOption ? selectedOption.textContent : t('live2d.parameterEditor.pleaseSelectModel', '选择模型');
-    modelSelectText.textContent = text;
-    modelSelectText.setAttribute('data-text', text);
+    
+    // 如果选择了有效的模型（value不为空）
+    if (selectedOption && selectedOption.value) {
+        const text = selectedOption.textContent;
+        modelSelectText.textContent = text;
+        modelSelectText.setAttribute('data-text', text);
+        // 移除data-i18n属性，防止翻译系统覆盖模型名称
+        modelSelectText.removeAttribute('data-i18n');
+    } else {
+        // 没有选择模型时，使用默认文本并恢复data-i18n属性
+        const text = t('live2d.parameterEditor.pleaseSelectModel', '选择模型');
+        modelSelectText.textContent = text;
+        modelSelectText.setAttribute('data-text', text);
+        modelSelectText.setAttribute('data-i18n', 'live2d.parameterEditor.selectModel');
+    }
 }
 
 // 缓存模型列表，避免重复请求
