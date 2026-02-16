@@ -34,6 +34,84 @@ def _get_plugin_config_path(plugin_id: str) -> Optional[Path]:
     return None
 
 
+# ========== 同步锁操作辅助函数 ==========
+# 这些函数用于在线程池中执行锁操作，避免阻塞事件循环
+
+def _get_plugin_host_sync(plugin_id: str):
+    """在同步上下文中获取插件 host（带锁）"""
+    with state.acquire_plugin_hosts_read_lock():
+        return state.plugin_hosts.get(plugin_id)
+
+
+def _get_plugin_hosts_snapshot_sync() -> Dict[str, Any]:
+    """在同步上下文中获取 plugin_hosts 快照（带锁）"""
+    with state.acquire_plugin_hosts_read_lock():
+        return dict(state.plugin_hosts)
+
+
+def _check_plugin_in_hosts_sync(plugin_id: str) -> bool:
+    """在同步上下文中检查插件是否在 plugin_hosts 中（带锁）"""
+    with state.acquire_plugin_hosts_read_lock():
+        return plugin_id in state.plugin_hosts
+
+
+def _register_plugin_host_sync(plugin_id: str, host) -> Optional[Any]:
+    """在同步上下文中注册插件 host（带锁），返回已存在的 host 或 None"""
+    with state.acquire_plugin_hosts_write_lock():
+        if plugin_id in state.plugin_hosts:
+            existing = state.plugin_hosts.get(plugin_id)
+            if existing and hasattr(existing, 'is_alive') and existing.is_alive():
+                return existing
+        state.plugin_hosts[plugin_id] = host
+        return None
+
+
+def _remove_plugin_host_sync(plugin_id: str) -> Optional[Any]:
+    """在同步上下文中移除插件 host（带锁），返回被移除的 host"""
+    with state.acquire_plugin_hosts_write_lock():
+        return state.plugin_hosts.pop(plugin_id, None)
+
+
+def _get_plugin_meta_sync(plugin_id: str) -> Optional[Dict[str, Any]]:
+    """在同步上下文中获取插件元数据（带锁）"""
+    with state.acquire_plugins_read_lock():
+        return state.plugins.get(plugin_id)
+
+
+def _remove_event_handlers_sync(plugin_id: str) -> None:
+    """在同步上下文中移除插件的事件处理器（带锁）"""
+    with state.acquire_event_handlers_write_lock():
+        keys_to_remove = [
+            key for key in list(state.event_handlers.keys())
+            if key.startswith(f"{plugin_id}.") or key.startswith(f"{plugin_id}:")
+        ]
+        for key in keys_to_remove:
+            del state.event_handlers[key]
+
+
+def _update_plugin_meta_sync(plugin_id: str, key: str, value: Any) -> None:
+    """在同步上下文中更新插件元数据（带锁）"""
+    with state.acquire_plugins_write_lock():
+        meta = state.plugins.get(plugin_id)
+        if isinstance(meta, dict):
+            meta[key] = value
+            state.plugins[plugin_id] = meta
+
+
+def _register_or_replace_host_sync(plugin_id: str, host) -> int:
+    """在同步上下文中注册或替换插件 host（带锁），返回当前 plugin_hosts 数量"""
+    with state.acquire_plugin_hosts_write_lock():
+        if plugin_id in state.plugin_hosts:
+            existing_host = state.plugin_hosts.get(plugin_id)
+            if existing_host is not None and existing_host is not host:
+                logger.warning(
+                    "Plugin {} already exists in plugin_hosts, will replace",
+                    plugin_id
+                )
+        state.plugin_hosts[plugin_id] = host
+        return len(state.plugin_hosts)
+
+
 async def start_plugin(plugin_id: str, restore_state: bool = False) -> Dict[str, Any]:
     """
     启动插件
@@ -49,9 +127,9 @@ async def start_plugin(plugin_id: str, restore_state: bool = False) -> Dict[str,
     _start_time = time.perf_counter()
     logger.info("[start_plugin] BEGIN: plugin_id={}, restore_state={}", plugin_id, restore_state)
     
-    # 检查插件是否已运行
-    with state.acquire_plugin_hosts_read_lock():
-        existing_host = state.plugin_hosts.get(plugin_id)
+    # 检查插件是否已运行（在线程池中执行锁操作，避免阻塞事件循环）
+    loop = asyncio.get_running_loop()
+    existing_host = await loop.run_in_executor(None, _get_plugin_host_sync, plugin_id)
     if existing_host and existing_host.is_alive():
         _enqueue_lifecycle({
             "type": "plugin_start_skipped",
@@ -286,12 +364,8 @@ async def start_plugin(plugin_id: str, restore_state: bool = False) -> Dict[str,
                     "Plugin {} detected as duplicate in register_plugin, removing from plugin_hosts",
                     plugin_id
                 )
-                # 移除刚注册的 host
-                # 先在锁内获取并移除 host，然后在锁外关闭进程（避免在持有锁时执行 async 操作）
-                existing_host = None
-                with state.acquire_plugin_hosts_write_lock():
-                    if plugin_id in state.plugin_hosts:
-                        existing_host = state.plugin_hosts.pop(plugin_id)
+                # 移除刚注册的 host（在线程池中执行锁操作）
+                existing_host = await loop.run_in_executor(None, _remove_plugin_host_sync, plugin_id)
                 
                 # 在锁外关闭进程
                 if existing_host is not None:
@@ -322,29 +396,21 @@ async def start_plugin(plugin_id: str, restore_state: bool = False) -> Dict[str,
                     host.plugin_id = resolved_id
                 plugin_id = resolved_id
             
-            # 现在可以安全地注册到 plugin_hosts（register_plugin 已完成，不会再获取锁）
-            with state.acquire_plugin_hosts_write_lock():
-                # 再次检查是否有冲突
-                if plugin_id in state.plugin_hosts:
-                    existing_host = state.plugin_hosts.get(plugin_id)
-                    if existing_host is not None and existing_host is not host:
-                        logger.warning(
-                            "Plugin {} already exists in plugin_hosts, will replace",
-                            plugin_id
-                        )
-                
-                state.plugin_hosts[plugin_id] = host
-                logger.info(
-                    "Plugin {} successfully registered in plugin_hosts (pid: {}). Total running plugins: {}",
-                    plugin_id,
-                    host.process.pid if hasattr(host, 'process') and host.process else 'N/A',
-                    len(state.plugin_hosts)
-                )
+            # 现在可以安全地注册到 plugin_hosts（在线程池中执行锁操作）
+            total_plugins = await loop.run_in_executor(
+                None, _register_or_replace_host_sync, plugin_id, host
+            )
+            logger.info(
+                "Plugin {} successfully registered in plugin_hosts (pid: {}). Total running plugins: {}",
+                plugin_id,
+                host.process.pid if hasattr(host, 'process') and host.process else 'N/A',
+                total_plugins
+            )
         except Exception as e:
             logger.exception("Failed to initialize plugin {} after process start", plugin_id)
             try:
-                with state.acquire_plugin_hosts_write_lock():
-                    existing_host = state.plugin_hosts.pop(plugin_id, None)
+                # 在线程池中执行锁操作
+                existing_host = await loop.run_in_executor(None, _remove_plugin_host_sync, plugin_id)
                 if existing_host is not None:
                     await existing_host.shutdown(timeout=1.0)
                 else:
@@ -390,9 +456,9 @@ async def stop_plugin(plugin_id: str) -> Dict[str, Any]:
     Returns:
         操作结果
     """
-    # 检查插件是否存在
-    with state.acquire_plugin_hosts_read_lock():
-        host = state.plugin_hosts.get(plugin_id)
+    # 检查插件是否存在（在线程池中执行锁操作，避免阻塞事件循环）
+    loop = asyncio.get_running_loop()
+    host = await loop.run_in_executor(None, _get_plugin_host_sync, plugin_id)
     if not host:
         raise HTTPException(
             status_code=404,
@@ -408,19 +474,11 @@ async def stop_plugin(plugin_id: str) -> Dict[str, Any]:
         # 停止插件
         await host.shutdown(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
         
-        # 从状态中移除
-        with state.acquire_plugin_hosts_write_lock():
-            if plugin_id in state.plugin_hosts:
-                del state.plugin_hosts[plugin_id]
+        # 从状态中移除（在线程池中执行锁操作）
+        await loop.run_in_executor(None, _remove_plugin_host_sync, plugin_id)
         
-        # 清理事件处理器
-        with state.acquire_event_handlers_write_lock():
-            keys_to_remove = [
-                key for key in list(state.event_handlers.keys())
-                if key.startswith(f"{plugin_id}.") or key.startswith(f"{plugin_id}:")
-            ]
-            for key in keys_to_remove:
-                del state.event_handlers[key]
+        # 清理事件处理器（在线程池中执行锁操作）
+        await loop.run_in_executor(None, _remove_event_handlers_sync, plugin_id)
         
         logger.info(f"Plugin {plugin_id} stopped successfully")
         _enqueue_lifecycle({
@@ -459,9 +517,9 @@ async def reload_plugin(plugin_id: str) -> Dict[str, Any]:
         "time": now_iso(),
     })
     
-    # 1. 停止插件（如果正在运行）
-    with state.acquire_plugin_hosts_read_lock():
-        is_running = plugin_id in state.plugin_hosts
+    # 1. 停止插件（如果正在运行）（在线程池中执行锁操作）
+    loop = asyncio.get_running_loop()
+    is_running = await loop.run_in_executor(None, _check_plugin_in_hosts_sync, plugin_id)
     if is_running:
         try:
             await stop_plugin(plugin_id)
@@ -492,9 +550,9 @@ async def freeze_plugin(plugin_id: str) -> Dict[str, Any]:
     Returns:
         操作结果
     """
-    # 检查插件是否存在
-    with state.acquire_plugin_hosts_read_lock():
-        host = state.plugin_hosts.get(plugin_id)
+    # 检查插件是否存在（在线程池中执行锁操作）
+    loop = asyncio.get_running_loop()
+    host = await loop.run_in_executor(None, _get_plugin_host_sync, plugin_id)
     if not host:
         # 检查是否已经冻结
         if state.is_plugin_frozen(plugin_id):
@@ -518,10 +576,8 @@ async def freeze_plugin(plugin_id: str) -> Dict[str, Any]:
         result = await host.freeze(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
         
         if result.get("success"):
-            # 从运行状态中移除
-            with state.acquire_plugin_hosts_write_lock():
-                if plugin_id in state.plugin_hosts:
-                    del state.plugin_hosts[plugin_id]
+            # 从运行状态中移除（在线程池中执行锁操作）
+            await loop.run_in_executor(None, _remove_plugin_host_sync, plugin_id)
             
             # 标记为冻结状态
             state.mark_plugin_frozen(plugin_id)
@@ -581,9 +637,10 @@ async def reload_all_plugins() -> Dict[str, Any]:
         "skipped": [],
     }
     
-    # 获取所有运行中的插件 ID
-    with state.acquire_plugin_hosts_read_lock():
-        running_plugin_ids = list(state.plugin_hosts.keys())
+    # 获取所有运行中的插件 ID（在线程池中执行锁操作）
+    loop = asyncio.get_running_loop()
+    hosts_snapshot = await loop.run_in_executor(None, _get_plugin_hosts_snapshot_sync)
+    running_plugin_ids = list(hosts_snapshot.keys())
     
     if not running_plugin_ids:
         results["message"] = "No running plugins to reload"
@@ -691,9 +748,9 @@ async def unfreeze_plugin(plugin_id: str) -> Dict[str, Any]:
     """
     # 检查插件是否处于冻结状态
     if not state.is_plugin_frozen(plugin_id):
-        # 检查是否已在运行
-        with state.acquire_plugin_hosts_read_lock():
-            _already_running = plugin_id in state.plugin_hosts
+        # 检查是否已在运行（在线程池中执行锁操作）
+        loop = asyncio.get_running_loop()
+        _already_running = await loop.run_in_executor(None, _check_plugin_in_hosts_sync, plugin_id)
         if _already_running:
             raise HTTPException(
                 status_code=409,
@@ -728,8 +785,8 @@ async def unfreeze_plugin(plugin_id: str) -> Dict[str, Any]:
     return result
 
 
-def _validate_extension(ext_id: str) -> tuple[Dict[str, Any], str, Optional[PluginProcessHost]]:
-    """验证 Extension 元数据，返回 (ext_meta, host_plugin_id, host_or_None)。"""
+def _validate_extension_sync(ext_id: str) -> tuple[Dict[str, Any], str, Optional[PluginProcessHost]]:
+    """验证 Extension 元数据，返回 (ext_meta, host_plugin_id, host_or_None)。同步版本，在线程池中调用。"""
     with state.acquire_plugins_read_lock():
         ext_meta = state.plugins.get(ext_id)
     if not ext_meta or not isinstance(ext_meta, dict):
@@ -744,9 +801,15 @@ def _validate_extension(ext_id: str) -> tuple[Dict[str, Any], str, Optional[Plug
     return ext_meta, host_pid, host
 
 
+async def _validate_extension(ext_id: str) -> tuple[Dict[str, Any], str, Optional[PluginProcessHost]]:
+    """验证 Extension 元数据，返回 (ext_meta, host_plugin_id, host_or_None)。异步版本。"""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _validate_extension_sync, ext_id)
+
+
 async def disable_extension(ext_id: str) -> Dict[str, Any]:
     """禁用 Extension：通知宿主进程卸载 Router，更新元数据状态。"""
-    ext_meta, host_pid, host = _validate_extension(ext_id)
+    ext_meta, host_pid, host = await _validate_extension(ext_id)
 
     result: Dict[str, Any] = {"success": False, "ext_id": ext_id, "host_plugin_id": host_pid}
 
@@ -765,12 +828,9 @@ async def disable_extension(ext_id: str) -> Dict[str, Any]:
         result["success"] = True
         result["message"] = "Host not running; extension metadata updated"
 
-    # 更新元数据
-    with state.acquire_plugins_write_lock():
-        meta = state.plugins.get(ext_id)
-        if isinstance(meta, dict):
-            meta["runtime_enabled"] = False
-            state.plugins[ext_id] = meta
+    # 更新元数据（在线程池中执行锁操作）
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, _update_plugin_meta_sync, ext_id, "runtime_enabled", False)
 
     _enqueue_lifecycle({"type": "extension_disabled", "plugin_id": ext_id, "host_plugin_id": host_pid, "time": now_iso()})
     return result
@@ -778,7 +838,7 @@ async def disable_extension(ext_id: str) -> Dict[str, Any]:
 
 async def enable_extension(ext_id: str) -> Dict[str, Any]:
     """启用 Extension：通知宿主进程重新注入 Router，更新元数据状态。"""
-    ext_meta, host_pid, host = _validate_extension(ext_id)
+    ext_meta, host_pid, host = await _validate_extension(ext_id)
     ext_entry = ext_meta.get("entry_point", "")
 
     # 从 TOML 中读取 prefix
@@ -815,12 +875,9 @@ async def enable_extension(ext_id: str) -> Dict[str, Any]:
         result["success"] = True
         result["message"] = "Host not running; extension will be injected when host starts"
 
-    # 更新元数据
-    with state.acquire_plugins_write_lock():
-        meta = state.plugins.get(ext_id)
-        if isinstance(meta, dict):
-            meta["runtime_enabled"] = True
-            state.plugins[ext_id] = meta
+    # 更新元数据（在线程池中执行锁操作）
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, _update_plugin_meta_sync, ext_id, "runtime_enabled", True)
 
     _enqueue_lifecycle({"type": "extension_enabled", "plugin_id": ext_id, "host_plugin_id": host_pid, "time": now_iso()})
     return result

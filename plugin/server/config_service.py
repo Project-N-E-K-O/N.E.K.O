@@ -1464,10 +1464,13 @@ async def hot_update_plugin_config(
     import asyncio
     from plugin.core.state import state
     
-    # 检查插件是否正在运行
-    host = None
-    with state.acquire_plugin_hosts_read_lock():
-        host = state.plugin_hosts.get(plugin_id)
+    # 检查插件是否正在运行（在线程池中执行锁操作，避免阻塞事件循环）
+    def _get_host_sync():
+        with state.acquire_plugin_hosts_read_lock():
+            return state.plugin_hosts.get(plugin_id)
+    
+    loop = asyncio.get_running_loop()
+    host = await loop.run_in_executor(None, _get_host_sync)
     
     if host is None:
         # 插件未运行，只能写入文件
