@@ -694,6 +694,124 @@ class PluginRouter:
         
         return entries
     
+    # ========== 动态 Entry 管理 ==========
+    
+    async def add_entry(
+        self,
+        entry_id: str,
+        handler: Callable,
+        name: str = "",
+        description: str = "",
+        input_schema: Optional[Dict[str, Any]] = None,
+        kind: str = "action",
+        auto_start: bool = False,
+    ) -> bool:
+        """动态添加一个 entry 到 Router
+        
+        在运行时向 Router 添加一个新的 entry。如果 Router 已绑定到插件，
+        会自动通知主进程更新 entry 列表。
+        
+        Args:
+            entry_id: entry 的唯一标识符（不包含前缀，会自动添加）
+            handler: 处理函数（async 或 sync）
+            name: 显示名称（默认使用 entry_id）
+            description: 描述信息
+            input_schema: 输入参数的 JSON Schema
+            kind: entry 类型（action/service/hook/custom）
+            auto_start: 是否自动启动
+        
+        Returns:
+            True 如果添加成功
+        
+        Example:
+            >>> async def my_handler(self, arg1: str, **_):
+            ...     return ok(data={"result": arg1})
+            >>> await router.add_entry("my_entry", my_handler, name="My Entry")
+        """
+        # 添加前缀
+        full_entry_id = f"{self._prefix}{entry_id}" if self._prefix else entry_id
+        
+        # 创建 EventMeta
+        meta = EventMeta(
+            event_type="plugin_entry",
+            id=full_entry_id,
+            name=name or entry_id,
+            description=description,
+            input_schema=input_schema,
+            kind=kind,  # type: ignore
+            auto_start=auto_start,
+            enabled=True,
+            dynamic=True,
+            extra={
+                "_dynamic": True,
+                "_router": self.__class__.__name__,
+                "_original_id": entry_id,
+                "_registered_at": __import__("time").time(),
+            },
+        )
+        
+        # 给 handler 添加元数据属性
+        setattr(handler, EVENT_META_ATTR, meta)
+        
+        # 动态添加到 Router 实例
+        attr_name = f"_dynamic_{entry_id}"
+        setattr(self, attr_name, handler)
+        self._entry_ids.append(full_entry_id)
+        
+        # 如果已绑定到插件，同步更新插件的 _router_entries
+        if self._bound and self._plugin:
+            event_handler = EventHandler(meta=meta, handler=handler)
+            self._plugin._router_entries[full_entry_id] = event_handler
+            
+            # 通知主进程
+            if hasattr(self._plugin, "_notify_entry_update"):
+                await self._plugin._notify_entry_update("register", full_entry_id, meta)
+        
+        if self.logger:
+            self.logger.info(f"Dynamic entry '{full_entry_id}' added to router {self.name}")
+        
+        return True
+    
+    async def remove_entry(self, entry_id: str) -> bool:
+        """从 Router 移除一个动态 entry
+        
+        Args:
+            entry_id: entry 的唯一标识符（不包含前缀）
+        
+        Returns:
+            True 如果移除成功，False 如果 entry 不存在
+        """
+        # 添加前缀
+        full_entry_id = f"{self._prefix}{entry_id}" if self._prefix else entry_id
+        
+        # 检查是否存在
+        if full_entry_id not in self._entry_ids:
+            if self.logger:
+                self.logger.warning(f"Entry '{full_entry_id}' not found in router {self.name}")
+            return False
+        
+        # 移除动态属性
+        attr_name = f"_dynamic_{entry_id}"
+        if hasattr(self, attr_name):
+            delattr(self, attr_name)
+        
+        # 从 entry_ids 中移除
+        self._entry_ids.remove(full_entry_id)
+        
+        # 如果已绑定到插件，同步更新插件的 _router_entries
+        if self._bound and self._plugin:
+            if full_entry_id in self._plugin._router_entries:
+                del self._plugin._router_entries[full_entry_id]
+            
+            # 通知主进程
+            if hasattr(self._plugin, "_notify_entry_update"):
+                await self._plugin._notify_entry_update("unregister", full_entry_id, None)
+        
+        if self.logger:
+            self.logger.info(f"Dynamic entry '{full_entry_id}' removed from router {self.name}")
+        
+        return True
+    
     def on_mount(self) -> Union[None, Awaitable[None]]:
         """Router 被挂载时的回调（子类可重写）
         

@@ -35,7 +35,9 @@ export default {
     metrics: 'Metrics',
     logs: 'Logs',
     runs: 'Runs',
-    serverLogs: 'Server Logs'
+    serverLogs: 'Server Logs',
+    adapters: 'Adapters',
+    adapterUI: 'Adapter UI'
   },
   auth: {
     login: 'Login',
@@ -170,9 +172,18 @@ export default {
     hostPlugin: 'Host Plugin',
     boundExtensions: 'Bound Extensions',
     pluginsSection: 'Plugins',
+    adaptersSection: 'Adapters',
     extensionsSection: 'Extensions',
+    typePlugin: 'Plugin',
+    typeAdapter: 'Adapter',
+    typeExtension: 'Extension',
     disableExtension: 'Disable Extension',
-    enableExtension: 'Enable Extension'
+    enableExtension: 'Enable Extension',
+    ui: {
+      loading: 'Loading plugin UI...',
+      loadError: 'Failed to load plugin UI',
+      noUI: 'This plugin has no custom UI'
+    }
   },
   metrics: {
     title: 'Metrics',

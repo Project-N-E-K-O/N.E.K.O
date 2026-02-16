@@ -31,6 +31,9 @@ class EventMeta:
     # 以下字段主要给 plugin_entry / lifecycle 用
     kind: Literal["service", "action", "hook", "custom", "lifecycle", "consumer", "timer"] = "action"
     auto_start: bool = False    # event_type == "lifecycle" 或 "plugin_entry" 时可用
+    # 动态 entry 支持
+    enabled: bool = True        # 是否启用，默认启用
+    dynamic: bool = False       # 是否是动态创建的 entry
     # 预留更多字段（后续扩展用）
     extra: Dict[str, Any] | None = None
     

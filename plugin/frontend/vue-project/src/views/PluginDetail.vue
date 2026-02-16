@@ -19,8 +19,8 @@
               <el-descriptions-item :label="$t('plugins.version')">{{ plugin.version }}</el-descriptions-item>
               <el-descriptions-item :label="$t('plugins.description')" :span="2">{{ plugin.description || $t('common.noData') }}</el-descriptions-item>
               <el-descriptions-item :label="$t('plugins.pluginType')">
-                <el-tag size="small" :type="isExtension ? 'primary' : 'info'">
-                  {{ isExtension ? $t('plugins.extension') : $t('plugins.pluginTypeNormal') }}
+                <el-tag size="small" :type="pluginTypeTagType">
+                  {{ $t(pluginTypeText) }}
                 </el-tag>
               </el-descriptions-item>
               <el-descriptions-item :label="$t('plugins.sdkVersion')">{{ plugin.sdk_version || $t('common.nA') }}</el-descriptions-item>
@@ -113,6 +113,21 @@ const plugin = computed(() => {
 })
 
 const isExtension = computed(() => plugin.value?.type === 'extension')
+const isAdapter = computed(() => plugin.value?.type === 'adapter')
+
+// 获取插件类型显示文本
+const pluginTypeText = computed(() => {
+  if (isExtension.value) return 'plugins.extension'
+  if (isAdapter.value) return 'plugins.typeAdapter'
+  return 'plugins.pluginTypeNormal'
+})
+
+// 获取插件类型标签颜色
+const pluginTypeTagType = computed(() => {
+  if (isExtension.value) return 'primary'
+  if (isAdapter.value) return 'warning'
+  return 'info'
+})
 
 const boundExtensions = computed(() => {
   if (!plugin.value || isExtension.value) return []

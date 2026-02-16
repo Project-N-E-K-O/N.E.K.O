@@ -1843,6 +1843,7 @@ def _load_adapter_plugin(
         if isinstance(meta, dict):
             meta["runtime_enabled"] = ctx.enabled
             meta["runtime_auto_start"] = ctx.auto_start
+            meta["type"] = "adapter"  # 确保 type 字段正确设置
             meta["plugin_type"] = "adapter"
             meta["adapter_mode"] = adapter_mode
             meta["adapter_priority"] = adapter_priority

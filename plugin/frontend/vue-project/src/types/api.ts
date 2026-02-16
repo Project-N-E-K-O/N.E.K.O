@@ -28,7 +28,7 @@ export interface PluginDependency {
   conflicts?: string[] | boolean
 }
 
-export type PluginType = 'plugin' | 'extension' | 'script'
+export type PluginType = 'plugin' | 'extension' | 'script' | 'adapter'
 
 export interface PluginMeta {
   id: string

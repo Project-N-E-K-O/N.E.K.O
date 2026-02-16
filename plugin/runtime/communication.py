@@ -404,6 +404,125 @@ class PluginCommunicationResourceManager:
         except Exception as e:
             raise RuntimeError(f"Failed to push BUS_CHANGE to plugin {self.plugin_id}: {e}") from e
     
+    async def _handle_entry_update(self, msg: Dict[str, Any]) -> None:
+        """处理动态 entry 更新消息
+        
+        Args:
+            msg: ENTRY_UPDATE 消息，包含 action, entry_id, plugin_id, meta
+        """
+        try:
+            from plugin.core.state import state
+            from plugin.sdk.events import EventMeta, EventHandler
+            
+            action = msg.get("action")
+            entry_id = msg.get("entry_id")
+            plugin_id = msg.get("plugin_id", self.plugin_id)
+            meta_dict = msg.get("meta")
+            
+            if not entry_id:
+                self.logger.warning(f"ENTRY_UPDATE message missing entry_id: {msg}")
+                return
+            
+            self.logger.info(f"Processing ENTRY_UPDATE: action={action}, entry_id={entry_id}, plugin_id={plugin_id}")
+            
+            if action == "register":
+                # 注册新的动态 entry
+                if not meta_dict:
+                    self.logger.warning(f"ENTRY_UPDATE register missing meta: {msg}")
+                    return
+                
+                # 创建 EventMeta
+                event_meta = EventMeta(
+                    event_type="plugin_entry",
+                    id=meta_dict.get("id", entry_id),
+                    name=meta_dict.get("name", entry_id),
+                    description=meta_dict.get("description", ""),
+                    input_schema=meta_dict.get("input_schema"),
+                    kind=meta_dict.get("kind", "action"),
+                    auto_start=meta_dict.get("auto_start", False),
+                    enabled=meta_dict.get("enabled", True),
+                    dynamic=True,
+                    extra={"_dynamic": True, "_registered_via_ipc": True},
+                )
+                
+                # 创建代理 handler（实际调用会路由到插件进程）
+                # 使用默认参数捕获 entry_id，避免闭包变量被后续调用覆盖
+                async def dynamic_handler(_entry_id=entry_id, **kwargs):
+                    # 这个 handler 会被主进程调用，然后路由到插件进程
+                    return await self.trigger(_entry_id, kwargs)
+                
+                event_handler = EventHandler(meta=event_meta, handler=dynamic_handler)
+                
+                # 注册到 state.event_handlers
+                with state.acquire_event_handlers_write_lock():
+                    state.event_handlers[f"{plugin_id}.{entry_id}"] = event_handler
+                    state.event_handlers[f"{plugin_id}:plugin_entry:{entry_id}"] = event_handler
+                
+                self.logger.info(f"Dynamic entry '{entry_id}' registered for plugin {plugin_id}")
+                
+            elif action == "unregister":
+                # 注销动态 entry
+                with state.acquire_event_handlers_write_lock():
+                    state.event_handlers.pop(f"{plugin_id}.{entry_id}", None)
+                    state.event_handlers.pop(f"{plugin_id}:plugin_entry:{entry_id}", None)
+                
+                self.logger.info(f"Dynamic entry '{entry_id}' unregistered for plugin {plugin_id}")
+                
+            elif action == "enable":
+                # 启用 entry
+                with state.acquire_event_handlers_write_lock():
+                    handler = state.event_handlers.get(f"{plugin_id}.{entry_id}")
+                    if handler and hasattr(handler.meta, "enabled"):
+                        object.__setattr__(handler.meta, "enabled", True)
+                
+                self.logger.info(f"Entry '{entry_id}' enabled for plugin {plugin_id}")
+                
+            elif action == "disable":
+                # 禁用 entry
+                with state.acquire_event_handlers_write_lock():
+                    handler = state.event_handlers.get(f"{plugin_id}.{entry_id}")
+                    if handler and hasattr(handler.meta, "enabled"):
+                        object.__setattr__(handler.meta, "enabled", False)
+                
+                self.logger.info(f"Entry '{entry_id}' disabled for plugin {plugin_id}")
+                
+            else:
+                self.logger.warning(f"Unknown ENTRY_UPDATE action: {action}")
+                
+        except Exception as e:
+            self.logger.exception(f"Failed to handle ENTRY_UPDATE: {e}")
+    
+    async def _handle_static_ui_register(self, msg: Dict[str, Any]) -> None:
+        """处理静态 UI 注册消息
+        
+        Args:
+            msg: STATIC_UI_REGISTER 消息，包含 plugin_id, config
+        """
+        try:
+            from plugin.core.state import state
+            
+            plugin_id = msg.get("plugin_id", self.plugin_id)
+            config = msg.get("config")
+            
+            if not config:
+                self.logger.warning(f"STATIC_UI_REGISTER message missing config: {msg}")
+                return
+            
+            self.logger.info(f"Processing STATIC_UI_REGISTER: plugin_id={plugin_id}")
+            
+            # 更新 state.plugins 中的静态 UI 配置
+            with state.acquire_plugins_write_lock():
+                plugin_meta = state.plugins.get(plugin_id)
+                if isinstance(plugin_meta, dict):
+                    plugin_meta["static_ui_config"] = config
+                    state.plugins[plugin_id] = plugin_meta
+                    self.logger.info(f"Static UI registered for plugin {plugin_id}: {config.get('directory')}")
+                else:
+                    self.logger.warning(f"Plugin {plugin_id} not found in state.plugins")
+                    
+        except Exception as e:
+            self.logger.exception(f"Failed to handle STATIC_UI_REGISTER: {e}")
+    
     async def send_stop_command(self) -> None:
         """发送停止命令到插件进程"""
         try:
@@ -554,6 +673,17 @@ class PluginCommunicationResourceManager:
 
                 if isinstance(msg, dict) and msg.get("_type") == "__shutdown__":
                     break
+                
+                # 处理特殊消息类型
+                if isinstance(msg, dict) and msg.get("type") == "ENTRY_UPDATE":
+                    # 动态 entry 更新消息，直接处理不转发到消息队列
+                    await self._handle_entry_update(msg)
+                    continue
+                
+                if isinstance(msg, dict) and msg.get("type") == "STATIC_UI_REGISTER":
+                    # 静态 UI 注册消息
+                    await self._handle_static_ui_register(msg)
+                    continue
                 
                 # 转发消息到主进程的消息队列
                 try:

@@ -1,0 +1,66 @@
+[plugin]
+name = "MCP Adapter"
+type = "adapter"
+description = "MCP (Model Context Protocol) Router - Connect to MCP servers and expose their tools as NEKO entries"
+version = "0.1.0"
+id = "mcp_adapter"
+entry = "plugins.mcp_adapter:MCPAdapterPlugin"
+
+[plugin.author]
+name = "NEKO Team"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin_runtime]
+enabled = true
+auto_start = true
+
+[plugin_state]
+backend = "file"
+persist_mode = "auto"
+
+# MCP Server 配置
+# 每个 server 配置包含：
+# - transport: "stdio" | "sse" | "streamable-http"
+# - command: 命令行（stdio 模式）
+# - args: 命令行参数（stdio 模式）
+# - url: URL（sse/streamable-http 模式）
+# - env: 环境变量（可选）
+# - enabled: 是否启用（默认 true）
+
+[mcp_servers]
+# 示例配置（取消注释以启用）
+
+# [mcp_servers.filesystem]
+# transport = "stdio"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+# enabled = true
+
+# [mcp_servers.github]
+# transport = "stdio"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-github"]
+# env = { GITHUB_PERSONAL_ACCESS_TOKEN = "your_token_here" }
+# enabled = true
+
+# [mcp_servers.brave-search]
+# transport = "stdio"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-brave-search"]
+# env = { BRAVE_API_KEY = "your_api_key_here" }
+# enabled = true
+
+[mcp_adapter]
+# 连接超时（秒）
+connect_timeout = 30
+# 工具调用超时（秒）
+tool_timeout = 60
+# 自动重连
+auto_reconnect = true
+# 重连间隔（秒）
+reconnect_interval = 5
+# 最大重连次数
+max_reconnect_attempts = 3

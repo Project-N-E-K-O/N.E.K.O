@@ -31,11 +31,13 @@ export default {
   },
   nav: {
     dashboard: '仪表盘',
-    plugins: '插件列表',
+    plugins: '插件管理',
     metrics: '性能指标',
     logs: '日志',
     runs: '运行记录',
-    serverLogs: '服务器日志'
+    serverLogs: '服务器日志',
+    adapters: '适配器',
+    adapterUI: '适配器界面'
   },
   auth: {
     login: '登录',
@@ -170,9 +172,18 @@ export default {
     hostPlugin: '宿主插件',
     boundExtensions: '绑定扩展',
     pluginsSection: '插件',
+    adaptersSection: '适配器',
     extensionsSection: '扩展',
+    typePlugin: '插件',
+    typeAdapter: '适配器',
+    typeExtension: '扩展',
     disableExtension: '禁用扩展',
-    enableExtension: '启用扩展'
+    enableExtension: '启用扩展',
+    ui: {
+      loading: '加载插件界面中...',
+      loadError: '加载插件界面失败',
+      noUI: '该插件没有自定义界面'
+    }
   },
   metrics: {
     title: '性能指标',

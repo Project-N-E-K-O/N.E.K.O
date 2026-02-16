@@ -76,6 +76,8 @@ class NekoPluginBase:
         self._router_entries: Dict[str, EventHandler] = {}
         # 插件级别的 Hook：target -> hooks
         self._hooks: Dict[str, List[HookHandler]] = {}
+        # 静态 UI 配置（实例属性，避免类属性共享问题）
+        self._static_ui_config: Optional[Dict[str, Any]] = None
         
         # 初始化冻结 checkpoint 管理器和持久化存储
         config_path = getattr(ctx, "config_path", None)
@@ -313,6 +315,382 @@ class NekoPluginBase:
     def list_routers(self) -> List[str]:
         """获取所有已注册的 Router 名称列表"""
         return [r.name for r in self._routers]
+    
+    # ========== 静态 UI 注册 ==========
+    
+    def register_static_ui(
+        self,
+        directory: str = "static",
+        *,
+        index_file: str = "index.html",
+        cache_control: str = "public, max-age=3600",
+    ) -> bool:
+        """显式注册静态 UI 文件目录
+        
+        插件必须调用此方法才能启用静态 UI 功能。
+        
+        Args:
+            directory: 静态文件目录（相对于插件目录），默认 "static"
+            index_file: 入口文件名，默认 "index.html"
+            cache_control: 缓存控制头，默认 "public, max-age=3600"
+        
+        Returns:
+            True 如果注册成功
+        
+        Example:
+            >>> # 在 on_startup 中调用
+            >>> @lifecycle(id="startup")
+            >>> async def on_startup(self):
+            >>>     self.register_static_ui("static")
+        """
+        logger = getattr(self.ctx, "logger", None)
+        config_path = getattr(self.ctx, "config_path", None)
+        
+        if not config_path:
+            if logger:
+                logger.warning("Cannot register static UI: config_path not available")
+            return False
+        
+        plugin_dir = Path(config_path).parent
+        static_dir = plugin_dir / directory
+        
+        if not static_dir.exists():
+            if logger:
+                logger.warning(f"Static UI directory not found: {static_dir}")
+            return False
+        
+        index_path = static_dir / index_file
+        if not index_path.exists():
+            if logger:
+                logger.warning(f"Static UI index file not found: {index_path}")
+            return False
+        
+        # 保存配置
+        self._static_ui_config = {
+            "enabled": True,
+            "directory": str(static_dir),
+            "index_file": index_file,
+            "cache_control": cache_control,
+            "plugin_id": self._plugin_id,
+        }
+        
+        # 通知主进程注册静态 UI（通过消息队列）
+        try:
+            message_queue = getattr(self.ctx, "message_queue", None)
+            if message_queue is not None:
+                message_queue.put_nowait({
+                    "type": "STATIC_UI_REGISTER",
+                    "plugin_id": self._plugin_id,
+                    "config": self._static_ui_config,
+                })
+        except Exception as e:
+            if logger:
+                logger.debug(f"Failed to notify main process about static UI: {e}")
+        
+        if logger:
+            logger.info(f"Static UI registered: {static_dir}")
+        
+        return True
+    
+    def get_static_ui_config(self) -> Optional[Dict[str, Any]]:
+        """获取静态 UI 配置"""
+        return self._static_ui_config
+    
+    # ========== 动态 Entry 管理 ==========
+    
+    async def register_dynamic_entry(
+        self,
+        entry_id: str,
+        handler: Callable,
+        name: str = "",
+        description: str = "",
+        input_schema: Optional[Dict[str, Any]] = None,
+        kind: str = "action",
+        auto_start: bool = False,
+    ) -> bool:
+        """动态注册一个 entry
+        
+        在运行时创建并注册一个新的 entry，会通知主进程更新 entry 列表。
+        
+        Args:
+            entry_id: entry 的唯一标识符
+            handler: 处理函数（async 或 sync）
+            name: 显示名称（默认使用 entry_id）
+            description: 描述信息
+            input_schema: 输入参数的 JSON Schema
+            kind: entry 类型（action/service/hook/custom）
+            auto_start: 是否自动启动
+        
+        Returns:
+            True 如果注册成功
+        
+        Example:
+            >>> async def my_handler(self, arg1: str, **_):
+            ...     return ok(data={"result": arg1})
+            >>> await self.register_dynamic_entry("my_entry", my_handler, name="My Entry")
+        """
+        logger = getattr(self.ctx, "logger", None)
+        
+        # 检查是否已存在
+        if entry_id in self._router_entries:
+            if logger:
+                logger.warning(f"Dynamic entry '{entry_id}' already exists, will replace")
+        
+        # 创建 EventMeta
+        meta = EventMeta(
+            event_type="plugin_entry",
+            id=entry_id,
+            name=name or entry_id,
+            description=description,
+            input_schema=input_schema,
+            kind=kind,  # type: ignore
+            auto_start=auto_start,
+            enabled=True,
+            dynamic=True,
+            extra={"_dynamic": True, "_registered_at": __import__("time").time()},
+        )
+        
+        # 给 handler 添加元数据属性
+        setattr(handler, EVENT_META_ATTR, meta)
+        
+        # 注册到本地
+        event_handler = EventHandler(meta=meta, handler=handler)
+        self._router_entries[entry_id] = event_handler
+        
+        # 通知主进程
+        await self._notify_entry_update("register", entry_id, meta)
+        
+        if logger:
+            logger.info(f"Dynamic entry '{entry_id}' registered successfully")
+        
+        return True
+    
+    async def unregister_dynamic_entry(self, entry_id: str) -> bool:
+        """注销一个动态 entry
+        
+        移除之前通过 register_dynamic_entry 注册的 entry。
+        
+        Args:
+            entry_id: entry 的唯一标识符
+        
+        Returns:
+            True 如果注销成功，False 如果 entry 不存在
+        """
+        logger = getattr(self.ctx, "logger", None)
+        
+        if entry_id not in self._router_entries:
+            if logger:
+                logger.warning(f"Dynamic entry '{entry_id}' not found")
+            return False
+        
+        # 检查是否是动态 entry
+        event_handler = self._router_entries[entry_id]
+        if not getattr(event_handler.meta, "dynamic", False):
+            if logger:
+                logger.warning(f"Entry '{entry_id}' is not a dynamic entry, cannot unregister")
+            return False
+        
+        # 从本地移除
+        del self._router_entries[entry_id]
+        
+        # 通知主进程
+        await self._notify_entry_update("unregister", entry_id, None)
+        
+        if logger:
+            logger.info(f"Dynamic entry '{entry_id}' unregistered successfully")
+        
+        return True
+    
+    async def enable_entry(self, entry_id: str) -> bool:
+        """启用一个 entry
+        
+        Args:
+            entry_id: entry 的唯一标识符
+        
+        Returns:
+            True 如果启用成功
+        """
+        logger = getattr(self.ctx, "logger", None)
+        
+        # 查找 entry（先在 router entries 中查找，再在自身方法中查找）
+        event_handler = self._router_entries.get(entry_id)
+        if event_handler:
+            # 更新 enabled 状态
+            object.__setattr__(event_handler.meta, "enabled", True)
+            await self._notify_entry_update("enable", entry_id, event_handler.meta)
+            if logger:
+                logger.info(f"Entry '{entry_id}' enabled")
+            return True
+        
+        # 在自身方法中查找
+        for attr_name in dir(self):
+            if attr_name.startswith("_"):
+                continue
+            try:
+                value = getattr(self, attr_name)
+            except Exception:
+                continue
+            if not callable(value):
+                continue
+            meta = getattr(value, EVENT_META_ATTR, None)
+            if meta and meta.id == entry_id:
+                object.__setattr__(meta, "enabled", True)
+                await self._notify_entry_update("enable", entry_id, meta)
+                if logger:
+                    logger.info(f"Entry '{entry_id}' enabled")
+                return True
+        
+        if logger:
+            logger.warning(f"Entry '{entry_id}' not found")
+        return False
+    
+    async def disable_entry(self, entry_id: str) -> bool:
+        """禁用一个 entry
+        
+        禁用后，entry 仍然存在但不会被调用。
+        
+        Args:
+            entry_id: entry 的唯一标识符
+        
+        Returns:
+            True 如果禁用成功
+        """
+        logger = getattr(self.ctx, "logger", None)
+        
+        # 查找 entry
+        event_handler = self._router_entries.get(entry_id)
+        if event_handler:
+            object.__setattr__(event_handler.meta, "enabled", False)
+            await self._notify_entry_update("disable", entry_id, event_handler.meta)
+            if logger:
+                logger.info(f"Entry '{entry_id}' disabled")
+            return True
+        
+        # 在自身方法中查找
+        for attr_name in dir(self):
+            if attr_name.startswith("_"):
+                continue
+            try:
+                value = getattr(self, attr_name)
+            except Exception:
+                continue
+            if not callable(value):
+                continue
+            meta = getattr(value, EVENT_META_ATTR, None)
+            if meta and meta.id == entry_id:
+                object.__setattr__(meta, "enabled", False)
+                await self._notify_entry_update("disable", entry_id, meta)
+                if logger:
+                    logger.info(f"Entry '{entry_id}' disabled")
+                return True
+        
+        if logger:
+            logger.warning(f"Entry '{entry_id}' not found")
+        return False
+    
+    def is_entry_enabled(self, entry_id: str) -> Optional[bool]:
+        """检查 entry 是否启用
+        
+        Args:
+            entry_id: entry 的唯一标识符
+        
+        Returns:
+            True/False 表示启用/禁用状态，None 表示 entry 不存在
+        """
+        # 查找 entry
+        event_handler = self._router_entries.get(entry_id)
+        if event_handler:
+            return getattr(event_handler.meta, "enabled", True)
+        
+        # 在自身方法中查找
+        for attr_name in dir(self):
+            if attr_name.startswith("_"):
+                continue
+            try:
+                value = getattr(self, attr_name)
+            except Exception:
+                continue
+            if not callable(value):
+                continue
+            meta = getattr(value, EVENT_META_ATTR, None)
+            if meta and meta.id == entry_id:
+                return getattr(meta, "enabled", True)
+        
+        return None
+    
+    def list_entries(self, include_disabled: bool = False) -> List[Dict[str, Any]]:
+        """列出所有 entry
+        
+        Args:
+            include_disabled: 是否包含禁用的 entry
+        
+        Returns:
+            entry 信息列表
+        """
+        entries = []
+        
+        # 收集所有 entry
+        all_entries = self.collect_entries(wrap_with_hooks=False)
+        
+        for entry_id, event_handler in all_entries.items():
+            enabled = getattr(event_handler.meta, "enabled", True)
+            if not include_disabled and not enabled:
+                continue
+            
+            entries.append({
+                "id": entry_id,
+                "name": event_handler.meta.name,
+                "description": event_handler.meta.description,
+                "kind": event_handler.meta.kind,
+                "enabled": enabled,
+                "dynamic": getattr(event_handler.meta, "dynamic", False),
+                "auto_start": event_handler.meta.auto_start,
+            })
+        
+        return entries
+    
+    async def _notify_entry_update(
+        self,
+        action: str,
+        entry_id: str,
+        meta: Optional[EventMeta],
+    ) -> None:
+        """通知主进程 entry 状态变化
+        
+        Args:
+            action: 操作类型（register/unregister/enable/disable）
+            entry_id: entry ID
+            meta: entry 元数据（unregister 时为 None）
+        """
+        try:
+            # 构建消息
+            msg = {
+                "type": "ENTRY_UPDATE",
+                "action": action,
+                "entry_id": entry_id,
+                "plugin_id": self._plugin_id,
+            }
+            
+            if meta:
+                msg["meta"] = {
+                    "id": meta.id,
+                    "name": meta.name,
+                    "description": meta.description,
+                    "kind": meta.kind,
+                    "enabled": getattr(meta, "enabled", True),
+                    "dynamic": getattr(meta, "dynamic", False),
+                    "auto_start": meta.auto_start,
+                    "input_schema": meta.input_schema,
+                }
+            
+            # 通过消息队列发送到主进程
+            message_queue = getattr(self.ctx, "message_queue", None)
+            if message_queue is not None:
+                message_queue.put_nowait(msg)
+        except Exception as e:
+            logger = getattr(self.ctx, "logger", None)
+            if logger:
+                logger.warning(f"Failed to notify entry update: {e}")
     
     # ========== Hook 支持 ==========
     

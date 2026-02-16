@@ -68,6 +68,15 @@ const routes: RouteRecordRaw[] = [
           titleKey: 'nav.serverLogs',
           requiresAuth: true
         }
+      },
+      {
+        path: 'adapter/:id/ui',
+        name: 'AdapterUI',
+        component: () => import('@/views/AdapterUI.vue'),
+        meta: {
+          titleKey: 'nav.adapterUI',
+          requiresAuth: true
+        }
       }
     ]
   }

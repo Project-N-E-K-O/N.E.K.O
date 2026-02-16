@@ -103,6 +103,7 @@ from plugin.server.routes import (
     logs_router,
     frontend_router,
     websocket_router,
+    plugin_ui_router,
 )
 from plugin.server.routes.frontend import mount_static_files
 
@@ -213,6 +214,7 @@ app.include_router(config_router)
 app.include_router(logs_router)
 app.include_router(frontend_router)
 app.include_router(websocket_router)
+app.include_router(plugin_ui_router)
 
 
 if __name__ == "__main__":

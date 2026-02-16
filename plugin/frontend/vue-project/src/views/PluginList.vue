@@ -51,6 +51,23 @@
             <span v-else key="placeholder" class="filter-placeholder">{{ $t('plugins.hoverToShowFilter') }}</span>
           </Transition>
         </div>
+
+        <div class="type-filter-bar">
+          <el-checkbox-group v-model="selectedTypes" class="type-filter-group">
+            <el-checkbox-button label="plugin">
+              <el-icon><Box /></el-icon>
+              {{ $t('plugins.typePlugin') }} ({{ pluginCount }})
+            </el-checkbox-button>
+            <el-checkbox-button label="adapter">
+              <el-icon><Connection /></el-icon>
+              {{ $t('plugins.typeAdapter') }} ({{ adapterCount }})
+            </el-checkbox-button>
+            <el-checkbox-button label="extension">
+              <el-icon><Expand /></el-icon>
+              {{ $t('plugins.typeExtension') }} ({{ extensionCount }})
+            </el-checkbox-button>
+          </el-checkbox-group>
+        </div>
       </template>
 
       <LoadingSpinner v-if="loading && rawPlugins.length === 0" :loading="true" :text="$t('common.loading')" />
@@ -58,27 +75,58 @@
       
       <template v-else>
         <!-- 普通插件 -->
-        <div class="section-header">
-          <span class="section-title">{{ $t('plugins.pluginsSection') }} ({{ filteredNormalPlugins.length }})</span>
-        </div>
-        <TransitionGroup name="list" tag="div" class="plugin-grid">
-          <div
-            v-for="plugin in filteredNormalPlugins"
-            :key="plugin.id"
-            class="plugin-item"
-          >
-            <PluginCard
-              :plugin="plugin"
-              :show-metrics="showMetrics"
-              @click="handlePluginClick(plugin.id)"
-            />
+        <template v-if="filteredPurePlugins.length > 0">
+          <div class="section-header">
+            <span class="section-title">
+              <el-icon><Box /></el-icon>
+              {{ $t('plugins.pluginsSection') }} ({{ filteredPurePlugins.length }})
+            </span>
           </div>
-        </TransitionGroup>
+          <TransitionGroup name="list" tag="div" class="plugin-grid">
+            <div
+              v-for="plugin in filteredPurePlugins"
+              :key="plugin.id"
+              class="plugin-item"
+            >
+              <PluginCard
+                :plugin="plugin"
+                :show-metrics="showMetrics"
+                @click="handlePluginClick(plugin.id)"
+              />
+            </div>
+          </TransitionGroup>
+        </template>
+
+        <!-- 适配器 -->
+        <template v-if="filteredAdapters.length > 0">
+          <div class="section-header section-header--adapter">
+            <span class="section-title">
+              <el-icon><Connection /></el-icon>
+              {{ $t('plugins.adaptersSection') }} ({{ filteredAdapters.length }})
+            </span>
+          </div>
+          <TransitionGroup name="list" tag="div" class="plugin-grid">
+            <div
+              v-for="adapter in filteredAdapters"
+              :key="adapter.id"
+              class="plugin-item"
+            >
+              <PluginCard
+                :plugin="adapter"
+                :show-metrics="showMetrics"
+                @click="handlePluginClick(adapter.id)"
+              />
+            </div>
+          </TransitionGroup>
+        </template>
 
         <!-- 扩展插件 -->
         <template v-if="filteredExtensions.length > 0">
           <div class="section-header section-header--ext">
-            <span class="section-title">{{ $t('plugins.extensionsSection') }} ({{ filteredExtensions.length }})</span>
+            <span class="section-title">
+              <el-icon><Expand /></el-icon>
+              {{ $t('plugins.extensionsSection') }} ({{ filteredExtensions.length }})
+            </span>
           </div>
           <TransitionGroup name="list" tag="div" class="plugin-grid">
             <div
@@ -102,7 +150,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { Refresh, DataAnalysis, RefreshRight } from '@element-plus/icons-vue'
+import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Expand } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
@@ -123,6 +171,36 @@ const reloadingAll = ref(false)
 const rawPlugins = computed(() => pluginStore.pluginsWithStatus)
 const rawNormalPlugins = computed(() => pluginStore.normalPlugins)
 const rawExtensions = computed(() => pluginStore.extensions)
+
+// 类型过滤
+const selectedTypes = ref<string[]>(['plugin', 'adapter', 'extension'])
+
+// 判断插件类型（仅依赖 type 字段，避免基于名称的不可靠猜测）
+function getPluginType(plugin: any): 'plugin' | 'adapter' | 'extension' {
+  if (plugin.type === 'extension') return 'extension'
+  if (plugin.type === 'adapter') return 'adapter'
+  return 'plugin'
+}
+
+// 各类型数量
+const pluginCount = computed(() => 
+  rawPlugins.value.filter(p => getPluginType(p) === 'plugin').length
+)
+const adapterCount = computed(() => 
+  rawPlugins.value.filter(p => getPluginType(p) === 'adapter').length
+)
+const extensionCount = computed(() => 
+  rawPlugins.value.filter(p => getPluginType(p) === 'extension').length
+)
+
+// 按类型过滤的插件列表
+const rawAdapters = computed(() => 
+  rawPlugins.value.filter(p => getPluginType(p) === 'adapter')
+)
+const rawPurePlugins = computed(() => 
+  rawPlugins.value.filter(p => getPluginType(p) === 'plugin')
+)
+
 const filterVisible = ref(false)
 let hideTimer: number | null = null
 
@@ -174,8 +252,21 @@ function applyFilter<T extends { id: string; name: string; description: string }
   return filterMode.value === 'blacklist' ? list.filter(p => !match(p)) : list.filter(p => match(p))
 }
 
-const filteredNormalPlugins = computed(() => applyFilter(rawNormalPlugins.value || []))
-const filteredExtensions = computed(() => applyFilter(rawExtensions.value || []))
+// 应用文本过滤和类型过滤
+const filteredPurePlugins = computed(() => {
+  if (!selectedTypes.value.includes('plugin')) return []
+  return applyFilter(rawPurePlugins.value || [])
+})
+const filteredAdapters = computed(() => {
+  if (!selectedTypes.value.includes('adapter')) return []
+  return applyFilter(rawAdapters.value || [])
+})
+const filteredExtensions = computed(() => {
+  if (!selectedTypes.value.includes('extension')) return []
+  return applyFilter(rawExtensions.value || [])
+})
+// 兼容旧代码
+const filteredNormalPlugins = computed(() => [...filteredPurePlugins.value, ...filteredAdapters.value])
 const loading = computed(() => pluginStore.loading)
 const showMetrics = ref(false)
 let metricsRefreshTimer: number | null = null
@@ -388,6 +479,31 @@ onUnmounted(() => {
 
 .section-header--ext {
   margin-top: 24px;
+}
+
+.section-header--adapter {
+  margin-top: 24px;
+}
+
+.type-filter-bar {
+  margin-top: 12px;
+  padding: 8px 0;
+}
+
+.type-filter-group {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.type-filter-group .el-checkbox-button {
+  --el-checkbox-button-checked-bg-color: var(--el-color-primary);
+}
+
+.type-filter-group .el-checkbox-button__inner {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .section-title {

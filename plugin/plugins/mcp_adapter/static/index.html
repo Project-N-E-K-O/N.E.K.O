@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MCP Adapter</title>
+  <link rel="stylesheet" href="style.css?v=2">
+</head>
+<body>
+  <div id="app" class="app-layout">
+    <!-- 主内容区 -->
+    <main class="main-content">
+      <!-- 首页视图 -->
+      <div id="view-home" class="view active">
+        <section class="section">
+          <div class="section-header">
+            <h2>📡 已连接的服务器</h2>
+            <button id="refresh-btn" class="btn btn-secondary">🔄 刷新</button>
+          </div>
+          <div id="servers-list" class="servers-list">
+            <div class="loading">加载中...</div>
+          </div>
+        </section>
+
+        <section class="section">
+          <div class="section-header">
+            <h2>🛠️ 工具概览</h2>
+            <span id="tools-count" class="badge">0</span>
+          </div>
+          <div id="tools-preview" class="tools-preview">
+            <div class="empty">暂无可用工具</div>
+          </div>
+        </section>
+      </div>
+
+      <!-- 工具浏览视图 -->
+      <div id="view-tools" class="view">
+        <section class="section">
+          <div class="section-header">
+            <h2>🛠️ 全部工具</h2>
+            <div class="search-box">
+              <input type="text" id="tool-search" placeholder="搜索工具..." />
+            </div>
+          </div>
+          <div id="tools-list" class="tools-list">
+            <div class="empty">暂无可用工具</div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <!-- 右侧导航栏 -->
+    <nav class="sidebar">
+      <div class="nav-item active" data-view="home">
+        <span class="nav-icon">🏠</span>
+        <span class="nav-text">首页</span>
+      </div>
+      <div class="nav-item" data-view="tools">
+        <span class="nav-icon">🛠️</span>
+        <span class="nav-text">工具浏览</span>
+      </div>
+    </nav>
+  </div>
+
+  <script src="main.js"></script>
+</body>
+</html>

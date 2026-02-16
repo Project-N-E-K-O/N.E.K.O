@@ -86,7 +86,7 @@ class PluginDependency(BaseModel):
         return self
 
 
-PluginType = Literal["plugin", "extension", "script"]
+PluginType = Literal["plugin", "extension", "script", "adapter"]
 
 
 class PluginMeta(BaseModel):
