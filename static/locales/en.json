@@ -25,7 +25,9 @@
     "nextPage": "Next Page",
     "selectFile": "Select File",
     "fieldSeparator": ", ",
-    "tryAgainLater": "Please try again later"
+    "tryAgainLater": "Please try again later",
+    "user": "User",
+    "project": "Project"
   },
   "characterProfile": {
     "gender": "Gender",
@@ -1356,6 +1358,7 @@
       "lightingReset": "Lighting settings reset to default",
       "lightingApplied": "Preset applied: {{name}}"
     },
+    "emotionConfig": "VRM Emotion Config",
     "idleAnimation": {
       "title": "Idle Animation",
       "changed": "Idle animation changed: {{name}}",
@@ -1977,6 +1980,44 @@
       "neutral": "Neutral",
       "surprised": "Surprised",
       "idle": "Idle"
+    }
+  },
+  "vrmEmotionManager": {
+    "title": "VRM Emotion Mapping Manager - Project N.E.K.O.",
+    "pageTitle": "VRM Emotion Mapping Manager",
+    "subtitle": "Configure expression mappings for different emotions",
+    "selectModel": "Select VRM Model",
+    "expressionPreview": "Expression Preview",
+    "expressionCandidates": "Expression Candidates",
+    "selectExpression": "Select Expression",
+    "saveConfig": "Save Configuration",
+    "resetToDefault": "Reset to Default",
+    "loading": "Loading...",
+    "loadingExpressions": "Loading expression list",
+    "pleaseSelectModel": "Please select a model",
+    "noModelsFound": "No available VRM models found",
+    "noExpressionsFound": "No available expressions",
+    "loadModelListFailed": "Failed to load model list",
+    "loadExpressionsFailed": "Failed to load model expressions",
+    "expressionsLoadedFromModel": "Expression list loaded from current model",
+    "useGenericExpressions": "Using generic expression list (please load model on main page first)",
+    "useDefaultExpressions": "Using default expression list (please load model on main page first)",
+    "configLoadSuccess": "Configuration loaded successfully",
+    "configUseDefault": "Using default configuration",
+    "configSaveSuccess": "Configuration saved successfully!",
+    "saveFailed": "Save failed",
+    "configReset": "Configuration has been reset to default",
+    "pleaseSelectModelFirst": "Please select a model first",
+    "tip": "Tip: ",
+    "tipContent": "VRM model expression names may vary by version (VRM 0.x uses joy, VRM 1.0 uses happy). Please select multiple candidate expressions for each emotion, the system will automatically match the expressions supported by the model.",
+    "close": "Close",
+    "emotions": {
+      "neutral": "Neutral",
+      "happy": "Happy",
+      "relaxed": "Relaxed",
+      "sad": "Sad",
+      "angry": "Angry",
+      "surprised": "Surprised"
     }
   }
 }

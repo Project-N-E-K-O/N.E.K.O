@@ -25,7 +25,9 @@
     "nextPage": "次のページ",
     "selectFile": "ファイルを選択",
     "fieldSeparator": "、 ",
-    "tryAgainLater": "後でもう一度お試しください"
+    "tryAgainLater": "後でもう一度お試しください",
+    "user": "ユーザー",
+    "project": "プロジェクト"
   },
   "characterProfile": {
     "gender": "性別",
@@ -1358,6 +1360,7 @@
       "lightingReset": "ライティング設定がデフォルトにリセットされました",
       "lightingApplied": "プリセットが適用されました: {{name}}"
     },
+    "emotionConfig": "VRM感情設定",
     "idleAnimation": {
       "title": "待機アニメーション",
       "changed": "待機アニメーションを切り替えました: {{name}}",
@@ -1979,6 +1982,44 @@
       "neutral": "平常 (Neutral)",
       "surprised": "驚き (Surprised)",
       "idle": "待機 (Idle)"
+    }
+  },
+  "vrmEmotionManager": {
+    "title": "VRM 感情マッピング管理 - Project N.E.K.O.",
+    "pageTitle": "VRM 感情マッピング管理",
+    "subtitle": "各感情に対応する表情マッピングを設定",
+    "selectModel": "VRMモデルを選択",
+    "expressionPreview": "表情プレビュー",
+    "expressionCandidates": "表情候補",
+    "selectExpression": "表情を選択",
+    "saveConfig": "設定を保存",
+    "resetToDefault": "デフォルトにリセット",
+    "loading": "読み込み中...",
+    "loadingExpressions": "表情リストを読み込み中",
+    "pleaseSelectModel": "モデルを選択してください",
+    "noModelsFound": "利用可能なVRMモデルが見つかりません",
+    "noExpressionsFound": "利用可能な表情がありません",
+    "loadModelListFailed": "モデルリストの読み込みに失敗しました",
+    "loadExpressionsFailed": "モデル表情の読み込みに失敗しました",
+    "expressionsLoadedFromModel": "現在のモデルから表情リストを読み込みました",
+    "useGenericExpressions": "汎用表情リストを使用（先にメインページでモデルを読み込んでください）",
+    "useDefaultExpressions": "デフォルト表情リストを使用（先にメインページでモデルを読み込んでください）",
+    "configLoadSuccess": "設定を読み込みました",
+    "configUseDefault": "デフォルト設定を使用",
+    "configSaveSuccess": "設定を保存しました！",
+    "saveFailed": "保存に失敗しました",
+    "configReset": "デフォルト設定にリセットしました",
+    "pleaseSelectModelFirst": "先にモデルを選択してください",
+    "tip": "ヒント：",
+    "tipContent": "VRMモデルの表情名はバージョンによって異なる場合があります（VRM 0.xはjoy、VRM 1.0はhappyを使用）。各感情に複数の候補表情を選択してください。システムはモデルがサポートする表情を自動的にマッチングします。",
+    "close": "閉じる",
+    "emotions": {
+      "neutral": "平常 (Neutral)",
+      "happy": "嬉しい (Happy)",
+      "relaxed": "リラックス (Relaxed)",
+      "sad": "悲しい (Sad)",
+      "angry": "怒り (Angry)",
+      "surprised": "驚き (Surprised)"
     }
   }
 }

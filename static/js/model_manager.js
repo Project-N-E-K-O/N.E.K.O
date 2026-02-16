@@ -1458,6 +1458,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (emotionConfigGroup) {
                 emotionConfigGroup.style.display = 'flex';
             }
+            // 隐藏VRM情感配置按钮（Live2D模式下）
+            const vrmEmotionConfigGroup = document.getElementById('vrm-emotion-config-group');
+            if (vrmEmotionConfigGroup) {
+                vrmEmotionConfigGroup.style.display = 'none';
+            }
 
             // 更新上传按钮提示文本（Live2D模式）
             if (uploadBtn) {
@@ -1641,9 +1646,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
                 emotionManagerGroup.style.display = 'flex';
             }
-            // 隐藏情感配置按钮组（VRM模式下不需要）
+            // 隐藏情感配置按钮组（VRM模式下不需要Live2D的）
             if (emotionConfigGroup) {
                 emotionConfigGroup.style.display = 'none';
+            }
+            // 显示VRM情感配置按钮
+            const vrmEmotionConfigGroup = document.getElementById('vrm-emotion-config-group');
+            if (vrmEmotionConfigGroup) {
+                vrmEmotionConfigGroup.style.display = 'flex';
             }
             // 隐藏常驻表情组（VRM模式下不需要）
             const persistentExpressionGroup = document.getElementById('persistent-expression-group');
@@ -2225,6 +2235,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                 // 在这里加载表情
                 loadVRMExpressions();
+
+                // 加载模型特定的情感映射配置
+                if (vrmManager && vrmManager.expression && modelPath) {
+                    // 从模型路径提取模型名称
+                    const modelName = modelPath.split('/').pop().replace(/\.vrm$/i, '');
+                    vrmManager.expression.loadMoodMap(modelName);
+                }
+
                 // 加载新模型时重置动作列表状态，允许重新加载动作
                 animationsLoaded = false;
                 // 主动加载动作列表，解开下拉菜单的锁定状态
@@ -3421,7 +3439,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 情感配置按钮
     if (emotionConfigBtn) {
         emotionConfigBtn.addEventListener('click', () => {
-            // 打开情感映射管理器页面
+            // 打开Live2D情感映射管理器页面
             const width = 900;
             const height = 800;
             const left = (screen.width - width) / 2;
@@ -3429,6 +3447,23 @@ document.addEventListener('DOMContentLoaded', async () => {
             window.open(
                 '/live2d_emotion_manager',
                 'emotionManager',
+                `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
+            );
+        });
+    }
+
+    // VRM情感配置按钮
+    const vrmEmotionConfigBtn = document.getElementById('vrm-emotion-config-btn');
+    if (vrmEmotionConfigBtn) {
+        vrmEmotionConfigBtn.addEventListener('click', () => {
+            // 打开VRM情感映射管理器页面
+            const width = 900;
+            const height = 800;
+            const left = (screen.width - width) / 2;
+            const top = (screen.height - height) / 2;
+            window.open(
+                '/vrm_emotion_manager',
+                'vrmEmotionManager',
                 `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
             );
         });

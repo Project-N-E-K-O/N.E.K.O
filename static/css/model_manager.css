@@ -1720,6 +1720,47 @@ body {
     opacity: 0.95 !important;
 }
 
+/* VRM 情感配置按钮样式 - 与 Live2D 情感配置按钮保持一致 */
+#vrm-emotion-config-btn {
+    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    border: none !important;
+    border-radius: 999px !important;
+    overflow: hidden !important;
+    color: white !important;
+    height: auto;
+    min-height: 54px;
+    padding: 10px 25px !important;
+    font-weight: bold !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease !important;
+    width: auto !important;
+    min-width: 135px;
+    box-sizing: border-box;
+}
+
+#vrm-emotion-config-btn span {
+    font-size: var(--button-text-size) !important;
+}
+
+#vrm-emotion-config-btn:hover:not(:disabled) {
+    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    opacity: 0.9;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1) !important;
+}
+
+#vrm-emotion-config-btn:active:not(:disabled) {
+    background: url('/static/icons/bar_bg_1.png') center center / 100% 100% no-repeat !important;
+    background-color: transparent !important;
+    transform: translateY(1px) scale(0.98) !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
+    opacity: 0.95 !important;
+}
+
 /* 参数编辑器按钮样式（参考导入模型按钮模式） */
 #parameter-editor-btn {
     background: url('/static/icons/bar_bg_2.png') center center / 100% 100% no-repeat !important;
@@ -2622,6 +2663,7 @@ html[lang|="zh"] #vrm-animation-select-btn,
 html[lang|="zh"] #vrm-expression-select-btn,
 html[lang|="zh"] #save-position-btn,
 html[lang|="zh"] #emotion-config-btn,
+html[lang|="zh"] #vrm-emotion-config-btn,
 html[lang|="zh"] #parameter-editor-btn {
     width: 270px !important;
     min-width: 270px !important;
@@ -2663,6 +2705,7 @@ html[lang|="en"] #vrm-animation-select-btn,
 html[lang|="en"] #vrm-expression-select-btn,
 html[lang|="en"] #save-position-btn,
 html[lang|="en"] #emotion-config-btn,
+html[lang|="en"] #vrm-emotion-config-btn,
 html[lang|="en"] #parameter-editor-btn {
     width: 270px !important;
     min-width: 270px !important;

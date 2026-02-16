@@ -25,7 +25,9 @@
     "nextPage": "다음 페이지",
     "selectFile": "파일 선택",
     "fieldSeparator": ", ",
-    "tryAgainLater": "나중에 다시 시도해 주세요."
+    "tryAgainLater": "나중에 다시 시도해 주세요.",
+    "user": "사용자",
+    "project": "프로젝트"
   },
   "characterProfile": {
     "gender": "성별",
@@ -1356,6 +1358,7 @@
       "lightingReset": "조명 설정이 기본값으로 재설정됨",
       "lightingApplied": "사전 설정 적용됨: {{name}}"
     },
+    "emotionConfig": "VRM 감정 설정",
     "idleAnimation": {
       "title": "대기 애니메이션",
       "changed": "대기 애니메이션이 변경되었습니다: {{name}}",
@@ -1977,6 +1980,44 @@
       "neutral": "평온 (Neutral)",
       "surprised": "놀람 (Surprised)",
       "idle": "대기 (Idle)"
+    }
+  },
+  "vrmEmotionManager": {
+    "title": "VRM 감정 매핑 관리자 - Project N.E.K.O.",
+    "pageTitle": "VRM 감정 매핑 관리자",
+    "subtitle": "각 감정에 해당하는 표정 매핑을 설정합니다",
+    "selectModel": "VRM 모델 선택",
+    "expressionPreview": "표정 미리보기",
+    "expressionCandidates": "표정 후보",
+    "selectExpression": "표정 선택",
+    "saveConfig": "설정 저장",
+    "resetToDefault": "기본값으로 초기화",
+    "loading": "로딩 중...",
+    "loadingExpressions": "표정 목록 로딩 중",
+    "pleaseSelectModel": "모델을 선택하세요",
+    "noModelsFound": "사용 가능한 VRM 모델이 없습니다",
+    "noExpressionsFound": "사용 가능한 표정이 없습니다",
+    "loadModelListFailed": "모델 목록을 로드하지 못했습니다",
+    "loadExpressionsFailed": "모델 표정을 로드하지 못했습니다",
+    "expressionsLoadedFromModel": "현재 모델에서 표정 목록을 로드했습니다",
+    "useGenericExpressions": "일반 표정 목록 사용 (먼저 메인 페이지에서 모델을 로드하세요)",
+    "useDefaultExpressions": "기본 표정 목록 사용 (먼저 메인 페이지에서 모델을 로드하세요)",
+    "configLoadSuccess": "설정이 성공적으로 로드되었습니다",
+    "configUseDefault": "기본 설정 사용",
+    "configSaveSuccess": "설정이 저장되었습니다!",
+    "saveFailed": "저장 실패",
+    "configReset": "기본 설정으로 초기화되었습니다",
+    "pleaseSelectModelFirst": "먼저 모델을 선택하세요",
+    "tip": "팁: ",
+    "tipContent": "VRM 모델의 표정 이름은 버전에 따라 다를 수 있습니다 (VRM 0.x는 joy, VRM 1.0은 happy 사용). 각 감정에 대해 여러 후보 표정을 선택하세요. 시스템이 모델이 지원하는 표정을 자동으로 매칭합니다.",
+    "close": "닫기",
+    "emotions": {
+      "neutral": "평온 (Neutral)",
+      "happy": "행복 (Happy)",
+      "relaxed": "편안함 (Relaxed)",
+      "sad": "슬픔 (Sad)",
+      "angry": "화남 (Angry)",
+      "surprised": "놀람 (Surprised)"
     }
   }
 }
