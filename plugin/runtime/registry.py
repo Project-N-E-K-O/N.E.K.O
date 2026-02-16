@@ -85,6 +85,8 @@ from plugin.api.exceptions import (
     PluginLoadError,
     PluginMetadataError,
 )
+from plugin.settings import PLUGIN_ENABLE_ID_CONFLICT_CHECK, PLUGIN_ENABLE_DEPENDENCY_CHECK
+from plugin.utils import parse_bool_config
 try:
     from packaging.version import Version, InvalidVersion
     from packaging.specifiers import SpecifierSet, InvalidSpecifier
@@ -106,6 +108,23 @@ class SimpleEntryMeta:
     def __post_init__(self):
         if self.input_schema is None:
             self.input_schema = {}
+
+
+@dataclass
+class PluginContext:
+    """插件加载上下文，存储解析后的插件配置信息"""
+    pid: str
+    toml_path: Path
+    conf: Dict[str, Any]
+    pdata: Dict[str, Any]
+    entry: str
+    dependencies: List[PluginDependency]
+    sdk_supported_str: Optional[str]
+    sdk_recommended_str: Optional[str]
+    sdk_untested_str: Optional[str]
+    sdk_conflicts_list: List[str]
+    enabled: bool
+    auto_start: bool
 
 
 # Mapping from (plugin_id, entry_id) -> actual python method name on the instance.
@@ -757,8 +776,6 @@ def _resolve_plugin_id_conflict(
         解决冲突后的插件 ID（如果无冲突则返回原始 ID，如果是重复加载则返回 None）
     """
     logger = _wrap_logger(logger)
-    from plugin.settings import PLUGIN_ENABLE_ID_CONFLICT_CHECK
-
     _ = entry_point
     _ = plugin_data
 
@@ -883,8 +900,6 @@ def register_plugin(
         "version": plugin.version,
         "entry": entry_point or "",
     }
-    
-    from plugin.settings import PLUGIN_ENABLE_ID_CONFLICT_CHECK
 
     # 检测并解决 ID 冲突
     resolved_id = _resolve_plugin_id_conflict(
@@ -1121,6 +1136,700 @@ def _extract_entries_preview(pid: str, cls: type, conf: dict, pdata: dict) -> Li
     return results
 
 
+# ============================================================================
+# load_plugins_from_toml 辅助函数
+# ============================================================================
+
+def _check_sdk_compatibility(
+    pid: str,
+    sdk_config: Optional[Dict[str, Any]],
+    logger: Any,
+) -> tuple[bool, Optional[str], Optional[str], Optional[str], List[str]]:
+    """
+    检查插件的 SDK 版本兼容性。
+    
+    Args:
+        pid: 插件 ID
+        sdk_config: SDK 配置字典 (plugin.sdk)
+        logger: 日志记录器
+    
+    Returns:
+        (is_compatible, sdk_supported_str, sdk_recommended_str, sdk_untested_str, sdk_conflicts_list)
+        如果不兼容，is_compatible 为 False
+    """
+    sdk_supported_str = None
+    sdk_recommended_str = None
+    sdk_untested_str = None
+    sdk_conflicts_list: List[str] = []
+    
+    # 解析 SDK 配置
+    if isinstance(sdk_config, dict):
+        sdk_recommended_str = sdk_config.get("recommended")
+        sdk_supported_str = sdk_config.get("supported") or sdk_config.get("compatible")
+        sdk_untested_str = sdk_config.get("untested")
+        raw_conflicts = sdk_config.get("conflicts") or []
+        if isinstance(raw_conflicts, list):
+            sdk_conflicts_list = [str(c) for c in raw_conflicts if c]
+        elif isinstance(raw_conflicts, str) and raw_conflicts.strip():
+            sdk_conflicts_list = [raw_conflicts.strip()]
+    elif sdk_config is not None:
+        logger.error(
+            "Plugin {}: SDK configuration must be a dict (plugin.sdk block), got {}; skipping load",
+            pid, type(sdk_config).__name__
+        )
+        return False, None, None, None, []
+    
+    # 版本检查
+    host_version_obj: Optional[Any] = None
+    if Version and SpecifierSet:
+        try:
+            host_version_obj = Version(SDK_VERSION)
+        except InvalidVersion as e:
+            logger.error("Invalid host SDK_VERSION {}: {}", SDK_VERSION, e)
+            host_version_obj = None
+    
+    if host_version_obj:
+        supported_spec = _parse_specifier(sdk_supported_str, logger)
+        recommended_spec = _parse_specifier(sdk_recommended_str, logger)
+        untested_spec = _parse_specifier(sdk_untested_str, logger)
+        conflict_specs = [_parse_specifier(c, logger) for c in sdk_conflicts_list]
+        
+        # 验证 specifier 格式
+        if sdk_supported_str and supported_spec is None:
+            logger.error("Plugin {}: invalid supported SDK spec '{}'; skipping load", pid, sdk_supported_str)
+            return False, None, None, None, []
+        if sdk_untested_str and untested_spec is None:
+            logger.error("Plugin {}: invalid untested SDK spec '{}'; skipping load", pid, sdk_untested_str)
+            return False, None, None, None, []
+        invalid_conflicts = [c for c, s in zip(sdk_conflicts_list, conflict_specs) if c and s is None]
+        if invalid_conflicts:
+            logger.error("Plugin {}: invalid conflict SDK spec(s) {}; skipping load", pid, invalid_conflicts)
+            return False, None, None, None, []
+        
+        # 冲突检查
+        if any(spec and _version_matches(spec, host_version_obj) for spec in conflict_specs):
+            logger.error(
+                "Plugin {} conflicts with host SDK {} (conflict ranges: {}); skipping load",
+                pid, SDK_VERSION, sdk_conflicts_list
+            )
+            return False, None, None, None, []
+        
+        # 兼容性检查
+        in_supported = _version_matches(supported_spec, host_version_obj)
+        in_untested = _version_matches(untested_spec, host_version_obj)
+        
+        if supported_spec and not (in_supported or in_untested):
+            logger.error(
+                "Plugin {} requires SDK in {} (or untested {}) but host SDK is {}; skipping load",
+                pid, sdk_supported_str, sdk_untested_str, SDK_VERSION
+            )
+            return False, None, None, None, []
+        
+        # 警告
+        if recommended_spec and not _version_matches(recommended_spec, host_version_obj):
+            logger.warning("Plugin {}: host SDK {} is outside recommended range {}", pid, SDK_VERSION, sdk_recommended_str)
+        if in_untested and not in_supported:
+            logger.warning("Plugin {}: host SDK {} is within untested range {}; proceed with caution", pid, SDK_VERSION, sdk_untested_str)
+    else:
+        # 回退到字符串比较
+        if sdk_supported_str and sdk_supported_str != SDK_VERSION:
+            logger.error("Plugin {} requires sdk_version {} but host SDK is {}; skipping load", pid, sdk_supported_str, SDK_VERSION)
+            return False, None, None, None, []
+    
+    return True, sdk_supported_str, sdk_recommended_str, sdk_untested_str, sdk_conflicts_list
+
+
+def _parse_single_plugin_config(
+    toml_path: Path,
+    processed_paths: set,
+    logger: Any,
+) -> Optional[PluginContext]:
+    """
+    解析单个插件的 TOML 配置文件。
+    
+    Args:
+        toml_path: TOML 文件路径
+        processed_paths: 已处理的路径集合（用于去重）
+        logger: 日志记录器
+    
+    Returns:
+        PluginContext 或 None（如果解析失败或应跳过）
+    """
+    logger.info("Processing plugin config: {}", toml_path)
+    
+    try:
+        with toml_path.open("rb") as f:
+            conf = tomllib.load(f)
+    except (tomllib.TOMLDecodeError, OSError) as e:
+        logger.error("Failed to parse plugin config {}: {}", toml_path, e)
+        return None
+    
+    pdata = conf.get("plugin") or {}
+    pid = pdata.get("id")
+    if not pid:
+        logger.warning("Plugin config {} has no 'id' field, skipping", toml_path)
+        return None
+    
+    # 应用用户配置覆盖
+    try:
+        from plugin.server.config_service import _apply_user_config_profiles
+        if isinstance(conf, dict):
+            conf = _apply_user_config_profiles(
+                plugin_id=str(pid),
+                base_config=conf,
+                config_path=toml_path,
+            )
+    except Exception as e:
+        logger.warning(
+            "Plugin {}: failed to apply user config profile overlay: {}. Using base config only.",
+            pid, e,
+        )
+    
+    logger.info("Plugin ID: {}", pid)
+    
+    # 检查重复路径
+    try:
+        resolved_path = toml_path.resolve()
+        if str(resolved_path) in processed_paths:
+            logger.warning(
+                "Plugin config file {} has already been processed in this scan, skipping duplicate",
+                toml_path
+            )
+            return None
+        processed_paths.add(str(resolved_path))
+    except (OSError, RuntimeError) as e:
+        logger.debug("Failed to resolve path for duplicate check: {}", e)
+    
+    # 验证入口点
+    entry = pdata.get("entry")
+    if not entry or ":" not in entry:
+        logger.warning("Plugin {} has invalid entry point '{}', skipping", pid, entry)
+        return None
+    
+    logger.info("Plugin {} entry point: {}", pid, entry)
+    
+    # 解析运行时配置
+    runtime_cfg = conf.get("plugin_runtime")
+    enabled_val = True
+    auto_start_val = True
+    if isinstance(runtime_cfg, dict):
+        enabled_val = parse_bool_config(runtime_cfg.get("enabled"), default=True)
+        auto_start_val = parse_bool_config(runtime_cfg.get("auto_start"), default=True)
+    
+    if not enabled_val:
+        logger.info(
+            "Plugin {} is disabled by plugin_runtime.enabled=false; will register for visibility only (no runtime load)",
+            pid,
+        )
+    if not auto_start_val:
+        logger.info(
+            "Plugin {} has plugin_runtime.auto_start=false; treating as manual-start-only (will register metadata but skip auto process start)",
+            pid,
+        )
+    
+    # SDK 兼容性检查
+    sdk_config = pdata.get("sdk")
+    is_compatible, sdk_supported_str, sdk_recommended_str, sdk_untested_str, sdk_conflicts_list = \
+        _check_sdk_compatibility(pid, sdk_config, logger)
+    
+    if not is_compatible:
+        return None
+    
+    # 解析依赖
+    dependencies = _parse_plugin_dependencies(conf, logger, pid)
+    
+    return PluginContext(
+        pid=pid,
+        toml_path=toml_path,
+        conf=conf,
+        pdata=pdata,
+        entry=entry,
+        dependencies=dependencies,
+        sdk_supported_str=sdk_supported_str,
+        sdk_recommended_str=sdk_recommended_str,
+        sdk_untested_str=sdk_untested_str,
+        sdk_conflicts_list=sdk_conflicts_list,
+        enabled=enabled_val,
+        auto_start=auto_start_val,
+    )
+
+
+def _collect_plugin_contexts(
+    plugin_config_root: Path,
+    logger: Any,
+) -> tuple[List[PluginContext], Dict[str, PluginContext]]:
+    """
+    Phase 1: 收集和解析所有插件配置。
+    
+    Args:
+        plugin_config_root: 插件配置根目录
+        logger: 日志记录器
+    
+    Returns:
+        (plugin_contexts, pid_to_context)
+    """
+    found_toml_files = list(plugin_config_root.glob("*/plugin.toml"))
+    logger.info("Found {} plugin.toml files: {}", len(found_toml_files), [str(p) for p in found_toml_files])
+    
+    plugin_contexts: List[PluginContext] = []
+    processed_paths: set = set()
+    pid_to_context: Dict[str, PluginContext] = {}
+    
+    for toml_path in found_toml_files:
+        try:
+            ctx = _parse_single_plugin_config(toml_path, processed_paths, logger)
+            if ctx is not None:
+                plugin_contexts.append(ctx)
+                pid_to_context[ctx.pid] = ctx
+        except Exception:
+            logger.exception("Unexpected error processing config {}", toml_path)
+            continue
+    
+    return plugin_contexts, pid_to_context
+
+
+def _get_dependency_plugin_ids(dep: PluginDependency, logger: Any) -> List[str]:
+    """
+    从依赖配置中提取可能的插件 ID 列表。
+    
+    Args:
+        dep: 依赖配置
+        logger: 日志记录器
+    
+    Returns:
+        可能的依赖插件 ID 列表
+    """
+    if getattr(dep, "conflicts", None) is True:
+        return []
+    
+    out: List[str] = []
+    
+    if getattr(dep, "id", None):
+        out.append(str(dep.id))
+    
+    providers = getattr(dep, "providers", None)
+    if isinstance(providers, list):
+        for p in providers:
+            if p:
+                out.append(str(p))
+    
+    entry = getattr(dep, "entry", None)
+    if isinstance(entry, str):
+        if ":" in entry:
+            try:
+                pid_part, _rest = entry.split(":", 1)
+                if pid_part:
+                    out.append(pid_part)
+            except Exception:
+                logger.debug("Failed to parse dependency entry spec '{}'", entry, exc_info=True)
+        elif entry:
+            out.append(entry)
+    
+    custom_event = getattr(dep, "custom_event", None)
+    if isinstance(custom_event, str):
+        try:
+            parts = custom_event.split(":", 2)
+            if len(parts) >= 3 and parts[0]:
+                out.append(parts[0])
+        except Exception:
+            logger.debug("Failed to parse dependency custom_event spec '{}'", custom_event, exc_info=True)
+    
+    return out
+
+
+def _topological_sort_plugins(
+    plugin_contexts: List[PluginContext],
+    pid_to_context: Dict[str, PluginContext],
+    logger: Any,
+) -> List[str]:
+    """
+    Phase 2: 根据依赖关系对插件进行拓扑排序。
+    
+    Args:
+        plugin_contexts: 插件上下文列表
+        pid_to_context: pid -> context 映射
+        logger: 日志记录器
+    
+    Returns:
+        排序后的插件 ID 列表
+    """
+    logger.info("Sorting {} plugins based on dependencies...", len(plugin_contexts))
+    
+    # 构建依赖图
+    graph: Dict[str, set] = {ctx.pid: set() for ctx in plugin_contexts}
+    
+    for ctx in plugin_contexts:
+        for dep in ctx.dependencies:
+            for dep_pid in _get_dependency_plugin_ids(dep, logger):
+                if dep_pid in pid_to_context:
+                    graph[ctx.pid].add(dep_pid)
+                    logger.debug("Dependency edge: {} -> {}", ctx.pid, dep_pid)
+    
+    # Kahn 算法：构建邻接表和入度表
+    adj_list: Dict[str, List[str]] = {pid: [] for pid in pid_to_context}
+    in_degree: Dict[str, int] = {pid: 0 for pid in pid_to_context}
+    
+    for ctx in plugin_contexts:
+        dependent = ctx.pid
+        for dep in ctx.dependencies:
+            for dependency in _get_dependency_plugin_ids(dep, logger):
+                if dependency in pid_to_context:
+                    adj_list[dependency].append(dependent)
+                    in_degree[dependent] += 1
+    
+    # 初始化队列（入度为 0 的节点）
+    queue = [pid for pid in pid_to_context if in_degree[pid] == 0]
+    # 优先加载 enabled 插件
+    queue.sort(key=lambda x: (0 if pid_to_context.get(x, PluginContext("", Path(), {}, {}, "", [], None, None, None, [], True, True)).enabled else 1, str(x)))
+    
+    final_order: List[str] = []
+    while queue:
+        u = queue.pop(0)
+        final_order.append(u)
+        
+        for v in adj_list[u]:
+            in_degree[v] -= 1
+            if in_degree[v] == 0:
+                queue.append(v)
+        queue.sort(key=lambda x: (0 if pid_to_context.get(x, PluginContext("", Path(), {}, {}, "", [], None, None, None, [], True, True)).enabled else 1, str(x)))
+    
+    # 检查循环依赖
+    if len(final_order) != len(plugin_contexts):
+        loaded_set = set(final_order)
+        missing = [ctx.pid for ctx in plugin_contexts if ctx.pid not in loaded_set]
+        cycle_info = []
+        try:
+            for pid in missing:
+                deps = [d for d in graph.get(pid, set()) if d in missing]
+                if deps:
+                    cycle_info.append(f"{pid} -> {deps}")
+        except Exception:
+            cycle_info = []
+        logger.error(
+            "Circular dependency detected or failed sort! Missing plugins: {}. Dependency chains: {}. "
+            "These plugins will be loaded in undefined order and may fail.",
+            missing, cycle_info,
+        )
+        final_order.extend(missing)
+    
+    logger.info("Plugin load order: {}", final_order)
+    return final_order
+
+
+def _build_extension_map(
+    plugin_contexts: List[PluginContext],
+) -> Dict[str, List[Dict[str, str]]]:
+    """
+    构建 Extension 映射：host_plugin_id -> [extension_configs]
+    
+    Args:
+        plugin_contexts: 插件上下文列表
+    
+    Returns:
+        Extension 映射字典
+    """
+    extension_map: Dict[str, List[Dict[str, str]]] = {}
+    
+    for ctx in plugin_contexts:
+        if ctx.pdata.get("type") != "extension":
+            continue
+        
+        host_conf = ctx.pdata.get("host")
+        if not isinstance(host_conf, dict):
+            continue
+        
+        host_pid = host_conf.get("plugin_id")
+        if not host_pid:
+            continue
+        
+        # 检查是否启用
+        runtime_cfg = ctx.conf.get("plugin_runtime")
+        if isinstance(runtime_cfg, dict):
+            if not parse_bool_config(runtime_cfg.get("enabled"), default=True):
+                continue
+        
+        extension_map.setdefault(host_pid, []).append({
+            "ext_id": ctx.pid,
+            "ext_entry": ctx.entry,
+            "prefix": host_conf.get("prefix", ""),
+        })
+    
+    return extension_map
+
+
+def _shutdown_host_safely(host: Any, logger: Any, plugin_id: str) -> None:
+    """
+    安全关闭插件 host。
+    
+    Args:
+        host: 插件 host 对象
+        logger: 日志记录器
+        plugin_id: 插件 ID（用于日志）
+    """
+    import asyncio
+    
+    try:
+        if hasattr(host, "shutdown_sync"):
+            host.shutdown_sync(timeout=1.0)
+        elif hasattr(host, "shutdown"):
+            if asyncio.iscoroutinefunction(host.shutdown):
+                try:
+                    loop = asyncio.get_running_loop()
+                    task = loop.create_task(host.shutdown(timeout=1.0))
+                    _pending_async_shutdown_tasks.add(task)
+                    
+                    def _on_done(t: asyncio.Task) -> None:
+                        _pending_async_shutdown_tasks.discard(t)
+                        try:
+                            _ = t.exception()
+                        except asyncio.CancelledError:
+                            pass
+                        except Exception:
+                            pass
+                    
+                    task.add_done_callback(_on_done)
+                    logger.debug("Plugin {} scheduled async shutdown", plugin_id)
+                except RuntimeError:
+                    asyncio.run(host.shutdown(timeout=1.0))
+            else:
+                host.shutdown(timeout=1.0)
+        elif hasattr(host, "process") and getattr(host, "process", None):
+            host.process.terminate()
+            host.process.join(timeout=1.0)
+    except Exception as e:
+        logger.debug("Error shutting down plugin {}: {}", plugin_id, e)
+
+
+def _migrate_plugin_id(
+    old_pid: str,
+    new_pid: str,
+    host: Any,
+    logger: Any,
+) -> None:
+    """
+    迁移插件 ID：更新所有相关映射。
+    
+    Args:
+        old_pid: 原插件 ID
+        new_pid: 新插件 ID
+        host: 插件 host 对象
+        logger: 日志记录器
+    """
+    logger.warning(
+        "Plugin ID changed during registration from '{}' to '{}', updating plugin_hosts",
+        old_pid, new_pid
+    )
+    
+    # 更新 plugin_hosts
+    with state.acquire_plugin_hosts_write_lock():
+        if old_pid in state.plugin_hosts:
+            host = state.plugin_hosts.pop(old_pid)
+            state.plugin_hosts[new_pid] = host
+            if hasattr(host, 'plugin_id'):
+                host.plugin_id = new_pid
+            logger.info("Plugin host moved from '{}' to '{}' in plugin_hosts", old_pid, new_pid)
+    
+    # 迁移 response queue
+    with state._plugin_response_queues_lock:
+        if old_pid in state._plugin_response_queues:
+            q = state._plugin_response_queues.pop(old_pid)
+            state._plugin_response_queues[new_pid] = q
+    
+    # 迁移 event handlers
+    with state.acquire_event_handlers_write_lock():
+        handlers_to_migrate = [
+            k for k in list(state.event_handlers.keys())
+            if k.startswith(f"{old_pid}.") or k.startswith(f"{old_pid}:")
+        ]
+        for old_key in handlers_to_migrate:
+            if old_key.startswith(f"{old_pid}."):
+                new_key = old_key.replace(f"{old_pid}.", f"{new_pid}.", 1)
+            else:
+                new_key = old_key.replace(f"{old_pid}:", f"{new_pid}:", 1)
+            state.event_handlers[new_key] = state.event_handlers.pop(old_key)
+    
+    # 迁移 plugin_entry_method_map
+    for (p, eid), method in list(plugin_entry_method_map.items()):
+        if p == old_pid:
+            plugin_entry_method_map[(new_pid, eid)] = method
+            del plugin_entry_method_map[(p, eid)]
+
+
+def _load_disabled_plugin(
+    ctx: PluginContext,
+    logger: Any,
+) -> None:
+    """
+    加载禁用的插件（仅注册元数据，不启动进程）。
+    
+    Args:
+        ctx: 插件上下文
+        logger: 日志记录器
+    """
+    entries_preview = _extract_entries_preview(
+        ctx.pid,
+        cls=type("DisabledPluginStub", (), {}),
+        conf=ctx.conf,
+        pdata=ctx.pdata,
+    )
+    
+    plugin_meta = _build_plugin_meta(
+        ctx.pid, ctx.pdata,
+        sdk_supported_str=ctx.sdk_supported_str,
+        sdk_recommended_str=ctx.sdk_recommended_str,
+        sdk_untested_str=ctx.sdk_untested_str,
+        sdk_conflicts_list=ctx.sdk_conflicts_list,
+        dependencies=ctx.dependencies,
+    )
+    
+    resolved_id = register_plugin(
+        plugin_meta,
+        logger,
+        config_path=ctx.toml_path,
+        entry_point=ctx.entry,
+    )
+    
+    if resolved_id is not None:
+        with state.acquire_plugins_write_lock():
+            meta = state.plugins.get(resolved_id)
+            if isinstance(meta, dict):
+                meta["runtime_enabled"] = False
+                meta["runtime_auto_start"] = False
+                meta["entries_preview"] = entries_preview
+                state.plugins[resolved_id] = meta
+
+
+def _load_extension_plugin(
+    ctx: PluginContext,
+    logger: Any,
+) -> None:
+    """
+    加载 Extension 类型插件（仅注册元数据，不启动独立进程）。
+    
+    Args:
+        ctx: 插件上下文
+        logger: 日志记录器
+    """
+    host_conf = ctx.pdata.get("host")
+    host_pid = host_conf.get("plugin_id") if isinstance(host_conf, dict) else None
+    
+    plugin_meta = _build_plugin_meta(
+        ctx.pid, ctx.pdata,
+        sdk_supported_str=ctx.sdk_supported_str,
+        sdk_recommended_str=ctx.sdk_recommended_str,
+        sdk_untested_str=ctx.sdk_untested_str,
+        sdk_conflicts_list=ctx.sdk_conflicts_list,
+        dependencies=ctx.dependencies,
+        host_plugin_id=host_pid,
+    )
+    
+    resolved_id = register_plugin(
+        plugin_meta,
+        logger,
+        config_path=ctx.toml_path,
+        entry_point=ctx.entry,
+    )
+    
+    if resolved_id is not None:
+        with state.acquire_plugins_write_lock():
+            meta = state.plugins.get(resolved_id)
+            if isinstance(meta, dict):
+                meta["runtime_enabled"] = ctx.enabled
+                meta["runtime_auto_start"] = False
+                state.plugins[resolved_id] = meta
+    
+    logger.info(
+        "Extension '{}' registered (host='{}'); will be injected into host process at runtime",
+        ctx.pid, host_pid,
+    )
+
+
+def _check_plugin_already_loaded(
+    pid: str,
+    toml_path: Path,
+    logger: Any,
+) -> bool:
+    """
+    检查插件是否已经加载。
+    
+    Args:
+        pid: 插件 ID
+        toml_path: 配置文件路径
+        logger: 日志记录器
+    
+    Returns:
+        True 如果已加载，应跳过
+    """
+    with state.acquire_plugin_hosts_read_lock():
+        if pid in state.plugin_hosts:
+            existing_host = state.plugin_hosts[pid]
+            existing_config_path = getattr(existing_host, 'config_path', None)
+            if existing_config_path:
+                try:
+                    existing_resolved = Path(existing_config_path).resolve()
+                    current_resolved = toml_path.resolve()
+                    if existing_resolved == current_resolved:
+                        logger.warning(
+                            "Plugin {} from {} is already loaded (same config path), skipping duplicate load",
+                            pid, toml_path
+                        )
+                        return True
+                except (OSError, RuntimeError):
+                    if str(existing_config_path) == str(toml_path):
+                        logger.warning(
+                            "Plugin {} from {} is already loaded (same config path), skipping duplicate load",
+                            pid, toml_path
+                        )
+                        return True
+    return False
+
+
+def _check_plugin_already_registered(
+    pid: str,
+    toml_path: Path,
+    logger: Any,
+) -> bool:
+    """
+    检查插件是否已注册但未运行。
+    
+    Args:
+        pid: 插件 ID
+        toml_path: 配置文件路径
+        logger: 日志记录器
+    
+    Returns:
+        True 如果已注册，应跳过
+    """
+    with state.acquire_plugins_read_lock():
+        plugin_already_registered = pid in state.plugins
+    
+    if plugin_already_registered:
+        with state.acquire_plugin_hosts_read_lock():
+            if pid in state.plugin_hosts:
+                existing_host = state.plugin_hosts[pid]
+                if hasattr(existing_host, 'is_alive') and existing_host.is_alive():
+                    logger.info(
+                        "Plugin {} from {} is already registered and running, skipping duplicate load",
+                        pid, toml_path
+                    )
+                    return True
+                else:
+                    logger.info(
+                        "Plugin {} from {} is already registered but not running, skipping duplicate load",
+                        pid, toml_path
+                    )
+                    return True
+            else:
+                logger.warning(
+                    "Plugin {} from {} is already registered in state.plugins but has no host in plugin_hosts. "
+                    "This indicates the plugin was registered but the host creation was skipped or failed. "
+                    "Please start the plugin manually via POST /plugin/{}/start",
+                    pid, toml_path, pid
+                )
+                return True
+    return False
+
+
 def load_plugins_from_toml(
     plugin_config_root: Path,
     logger: Any,
@@ -1143,7 +1852,6 @@ def load_plugins_from_toml(
     logger.info("Loading plugins from {}", plugin_config_root)
     
     # 设置 Python 路径，确保能够导入插件模块
-    # 获取项目根目录（假设 plugin_config_root 在 plugin/plugins）
     project_root = plugin_config_root.parent.parent.resolve()
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
@@ -1151,439 +1859,52 @@ def load_plugins_from_toml(
     logger.info("Current working directory: {}", os.getcwd())
     logger.info("Python path (first 3): {}", sys.path[:3])
     
-    found_toml_files = list(plugin_config_root.glob("*/plugin.toml"))
-    logger.info("Found {} plugin.toml files: {}", len(found_toml_files), [str(p) for p in found_toml_files])
-    
     # === Phase 1: Collect and Parse ===
-    plugin_contexts = []
-    processed_paths = set()
-    # 临时映射：pid -> context，用于后续构建依赖图
-    pid_to_context = {}
+    plugin_contexts, pid_to_context = _collect_plugin_contexts(plugin_config_root, logger)
     
-    for toml_path in found_toml_files:
-        logger.info("Processing plugin config: {}", toml_path)
-        try:
-            with toml_path.open("rb") as f:
-                conf = tomllib.load(f)
-            pdata = conf.get("plugin") or {}
-            pid = pdata.get("id")
-            if not pid:
-                logger.warning("Plugin config {} has no 'id' field, skipping", toml_path)
-                continue
-
-            # Apply user profile overlay (including [plugin_runtime]) before making runtime decisions.
-            try:
-                from plugin.server.config_service import _apply_user_config_profiles
-
-                if isinstance(conf, dict):
-                    conf = _apply_user_config_profiles(
-                        plugin_id=str(pid),
-                        base_config=conf,
-                        config_path=toml_path,
-                    )
-            except Exception as e:
-                logger.warning(
-                    "Plugin {}: failed to apply user config profile overlay: {}. Using base config only.",
-                    pid,
-                    e,
-                )
-
-            logger.info("Plugin ID: {}", pid)
-            
-            # 检查配置文件路径是否已经被处理过（检测重复扫描）
-            try:
-                resolved_path = toml_path.resolve()
-                if str(resolved_path) in processed_paths:
-                    logger.warning(
-                        "Plugin config file {} has already been processed in this scan, skipping duplicate",
-                        toml_path
-                    )
-                    continue
-                processed_paths.add(str(resolved_path))
-            except (OSError, RuntimeError) as e:
-                logger.debug("Failed to resolve path for duplicate check: {}", e)
-            
-            entry = pdata.get("entry")
-            if not entry or ":" not in entry:
-                logger.warning("Plugin {} has invalid entry point '{}', skipping", pid, entry)
-                continue
-            
-            logger.info("Plugin {} entry point: {}", pid, entry)
-
-            # 在主加载流程中：
-            # - enabled = false 的插件：跳过本次运行时加载流程。
-            # - enabled = true 且 auto_start = false 的插件：仍然参与解析/注册（保证前端可见），但不在本次启动进程。
-            runtime_cfg = conf.get("plugin_runtime")
-            enabled_val = True
-            auto_start_val = True
-            if isinstance(runtime_cfg, dict):
-                from plugin.utils import parse_bool_config
-                enabled_val = parse_bool_config(runtime_cfg.get("enabled"), default=True)
-                auto_start_val = parse_bool_config(runtime_cfg.get("auto_start"), default=True)
-
-            # enabled=false: still collect for visibility, but do not participate in runtime load.
-            if not enabled_val:
-                logger.info(
-                    "Plugin {} is disabled by plugin_runtime.enabled=false; will register for visibility only (no runtime load)",
-                    pid,
-                )
-
-            if not auto_start_val:
-                logger.info(
-                    "Plugin {} has plugin_runtime.auto_start=false; treating as manual-start-only (will register metadata but skip auto process start)",
-                    pid,
-                )
-
-            sdk_config = pdata.get("sdk")
-            sdk_supported_str = None
-            sdk_recommended_str = None
-            sdk_untested_str = None
-            sdk_conflicts_list: List[str] = []
-
-            # Parse SDK version requirements from [plugin.sdk] block
-            if isinstance(sdk_config, dict):
-                sdk_recommended_str = sdk_config.get("recommended")
-                sdk_supported_str = sdk_config.get("supported") or sdk_config.get("compatible")
-                sdk_untested_str = sdk_config.get("untested")
-                raw_conflicts = sdk_config.get("conflicts") or []
-                if isinstance(raw_conflicts, list):
-                    sdk_conflicts_list = [str(c) for c in raw_conflicts if c]
-                elif isinstance(raw_conflicts, str) and raw_conflicts.strip():
-                    sdk_conflicts_list = [raw_conflicts.strip()]
-            elif sdk_config is not None:
-                # SDK configuration must be a dict (plugin.sdk block) if present
-                logger.error(
-                    "Plugin {}: SDK configuration must be a dict (plugin.sdk block), got {}; skipping load",
-                    pid,
-                    type(sdk_config).__name__
-                )
-                continue
-
-            # SDK Version Checks
-            host_version_obj: Optional[Any] = None
-            if Version and SpecifierSet:
-                try:
-                    host_version_obj = Version(SDK_VERSION)
-                except InvalidVersion as e:
-                    logger.error("Invalid host SDK_VERSION {}: {}", SDK_VERSION, e)
-                    host_version_obj = None
-
-            # Validate against ranges when possible
-            if host_version_obj:
-                supported_spec = _parse_specifier(sdk_supported_str, logger)
-                recommended_spec = _parse_specifier(sdk_recommended_str, logger)
-                untested_spec = _parse_specifier(sdk_untested_str, logger)
-                conflict_specs = [
-                    _parse_specifier(conf, logger) for conf in sdk_conflicts_list
-                ]
-
-                if sdk_supported_str and supported_spec is None:
-                    logger.error(
-                        "Plugin {}: invalid supported SDK spec '{}'; skipping load",
-                        pid,
-                        sdk_supported_str,
-                    )
-                    continue
-                if sdk_untested_str and untested_spec is None:
-                    logger.error(
-                        "Plugin {}: invalid untested SDK spec '{}'; skipping load",
-                        pid,
-                        sdk_untested_str,
-                    )
-                    continue
-                invalid_conflicts = [
-                    c for c, s in zip(sdk_conflicts_list, conflict_specs) if c and s is None
-                ]
-                if invalid_conflicts:
-                    logger.error(
-                        "Plugin {}: invalid conflict SDK spec(s) {}; skipping load",
-                        pid,
-                        invalid_conflicts,
-                    )
-                    continue
-
-                # Conflict check
-                if any(spec and _version_matches(spec, host_version_obj) for spec in conflict_specs):
-                    logger.error(
-                        "Plugin {} conflicts with host SDK {} (conflict ranges: {}); skipping load",
-                        pid, SDK_VERSION, sdk_conflicts_list
-                    )
-                    continue
-
-                # Compatibility check
-                in_supported = _version_matches(supported_spec, host_version_obj)
-                in_untested = _version_matches(untested_spec, host_version_obj)
-
-                if supported_spec and not (in_supported or in_untested):
-                    logger.error(
-                        "Plugin {} requires SDK in {} (or untested {}) but host SDK is {}; skipping load",
-                        pid, sdk_supported_str, sdk_untested_str, SDK_VERSION
-                    )
-                    continue
-                
-                # Warnings
-                if recommended_spec and not _version_matches(recommended_spec, host_version_obj):
-                    logger.warning("Plugin {}: host SDK {} is outside recommended range {}", pid, SDK_VERSION, sdk_recommended_str)
-                if in_untested and not in_supported:
-                    logger.warning("Plugin {}: host SDK {} is within untested range {}; proceed with caution", pid, SDK_VERSION, sdk_untested_str)
-            else:
-                # Fallback string comparison
-                if sdk_supported_str and sdk_supported_str != SDK_VERSION:
-                    logger.error("Plugin {} requires sdk_version {} but host SDK is {}; skipping load", pid, sdk_supported_str, SDK_VERSION)
-                    continue
-
-            # 解析依赖
-            dependencies = _parse_plugin_dependencies(conf, logger, pid)
-            
-            # 保存上下文
-            context = {
-                "pid": pid,
-                "toml_path": toml_path,
-                "conf": conf,
-                "pdata": pdata,
-                "entry": entry,
-                "dependencies": dependencies,
-                "sdk_supported_str": sdk_supported_str,
-                "sdk_recommended_str": sdk_recommended_str,
-                "sdk_untested_str": sdk_untested_str,
-                "sdk_conflicts_list": sdk_conflicts_list,
-                "enabled": enabled_val,
-                "auto_start": auto_start_val,
-            }
-            plugin_contexts.append(context)
-            pid_to_context[pid] = context
-            
-        except (tomllib.TOMLDecodeError, OSError) as e:
-            logger.error("Failed to parse plugin config {}: {}", toml_path, e)
-            continue
-        except Exception:
-            logger.exception("Unexpected error processing config {}", toml_path)
-            continue
-
+    if not plugin_contexts:
+        logger.info("No valid plugins found to load")
+        return
+    
     # === Phase 2: Topological Sort ===
-    logger.info("Sorting {} plugins based on dependencies...", len(plugin_contexts))
-    
-    # 构建图：pid -> set(dependency_pids)
-    graph: Dict[str, set] = {ctx["pid"]: set() for ctx in plugin_contexts}
-
-    def _candidate_dependency_pids(dep: PluginDependency) -> List[str]:
-        if getattr(dep, "conflicts", None) is True:
-            return []
-        out: List[str] = []
-        if getattr(dep, "id", None):
-            out.append(str(dep.id))
-        providers = getattr(dep, "providers", None)
-        if isinstance(providers, list):
-            for p in providers:
-                if p:
-                    out.append(str(p))
-        entry = getattr(dep, "entry", None)
-        if isinstance(entry, str):
-            if ":" in entry:
-                try:
-                    pid_part, _rest = entry.split(":", 1)
-                    if pid_part:
-                        out.append(pid_part)
-                except Exception:
-                    logger.debug("Failed to parse dependency entry spec '{}'", entry, exc_info=True)
-            else:
-                # entry 也可能直接引用插件 ID（某些配置/文档会这么写）
-                if entry:
-                    out.append(entry)
-        custom_event = getattr(dep, "custom_event", None)
-        if isinstance(custom_event, str):
-            try:
-                # 支持：plugin_id:event_type:event_id
-                # 其中 event_id 可能包含额外 ':'，因此只切前两次。
-                parts = custom_event.split(":", 2)
-                if len(parts) >= 3 and parts[0]:
-                    out.append(parts[0])
-            except Exception:
-                logger.debug("Failed to parse dependency custom_event spec '{}'", custom_event, exc_info=True)
-        return out
-    
-    for ctx in plugin_contexts:
-        pid = ctx["pid"]
-        for dep in ctx["dependencies"]:
-            for dep_pid in _candidate_dependency_pids(dep):
-                # 只有当依赖的插件也在本次加载列表中时，才添加边
-                # 如果依赖是外部已加载的插件，不影响本次排序顺序
-                if dep_pid in pid_to_context:
-                    graph[pid].add(dep_pid)
-                    logger.debug("Dependency edge: {} -> {}", pid, dep_pid)
-    
-    # 重新构建图以便于 Kahn 算法：Node = Plugin, Edge = Dependency -> Dependent
-    # 即：如果 A 依赖 B，则有一条边 B -> A (B 必须先完成)
-    adj_list: Dict[str, List[str]] = {pid: [] for pid in pid_to_context}
-    in_degree = {pid: 0 for pid in pid_to_context}
-    
-    for ctx in plugin_contexts:
-        dependent = ctx["pid"]
-        for dep in ctx["dependencies"]:
-            for dependency in _candidate_dependency_pids(dep):
-                if dependency in pid_to_context:
-                    # Dependency -> Dependent
-                    adj_list[dependency].append(dependent)
-                    in_degree[dependent] += 1
-    
-    # 队列中放入所有入度为 0 的节点（无依赖或依赖已满足）
-    queue = [pid for pid in pid_to_context if in_degree[pid] == 0]
-    # 为了保持确定性：同一层里优先加载 enabled 插件，避免 disabled 的可见性注册抢占 ID。
-    queue.sort(key=lambda x: (0 if pid_to_context.get(x, {}).get("enabled", True) else 1, str(x)))
-    
-    final_order = []
-    while queue:
-        u = queue.pop(0)
-        final_order.append(u)
-        
-        for v in adj_list[u]:
-            in_degree[v] -= 1
-            if in_degree[v] == 0:
-                queue.append(v)
-        # 保持队列有序：同一层里优先 enabled
-        queue.sort(key=lambda x: (0 if pid_to_context.get(x, {}).get("enabled", True) else 1, str(x)))
-    
-    # 检查是否有循环依赖
-    if len(final_order) != len(plugin_contexts):
-        loaded_set = set(final_order)
-        missing = [ctx["pid"] for ctx in plugin_contexts if ctx["pid"] not in loaded_set]
-        cycle_info = []
-        try:
-            for pid in missing:
-                deps = [d for d in graph.get(pid, set()) if d in missing]
-                if deps:
-                    cycle_info.append(f"{pid} -> {deps}")
-        except Exception:
-            cycle_info = []
-        logger.error(
-            "Circular dependency detected or failed sort! Missing plugins: {}. Dependency chains: {}. "
-            "These plugins will be loaded in undefined order and may fail.",
-            missing,
-            cycle_info,
-        )
-        # 这种情况下，我们将未排序的插件追加到后面，尝试尽力加载
-        final_order.extend(missing)
-    
-    logger.info("Plugin load order: {}", final_order)
+    final_order = _topological_sort_plugins(plugin_contexts, pid_to_context, logger)
     
     # === Phase 3: Load ===
-    # 预构建 extension 映射：host_plugin_id → [{"ext_id", "ext_entry", "prefix"}]
-    # 第一遍扫描收集所有 extension 信息，第二遍加载时传递给宿主进程
-    _extension_map: Dict[str, List[Dict[str, str]]] = {}
-    for _ctx in plugin_contexts:
-        _pdata = _ctx["pdata"]
-        if _pdata.get("type") != "extension":
-            continue
-        _host_conf = _pdata.get("host")
-        if not isinstance(_host_conf, dict):
-            continue
-        _host_pid = _host_conf.get("plugin_id")
-        if not _host_pid:
-            continue
-        # 检查 enabled
-        _rt = _ctx["conf"].get("plugin_runtime")
-        if isinstance(_rt, dict):
-            from plugin.utils import parse_bool_config as _pbc
-            if not _pbc(_rt.get("enabled"), default=True):
-                continue
-        _extension_map.setdefault(_host_pid, []).append({
-            "ext_id": _ctx["pid"],
-            "ext_entry": _ctx["entry"],
-            "prefix": _host_conf.get("prefix", ""),
-        })
-
+    # 预构建 extension 映射
+    extension_map = _build_extension_map(plugin_contexts)
+    
+    # 加载每个插件
     for pid in final_order:
-        context = pid_to_context.get(pid)
-        if not context:
+        ctx = pid_to_context.get(pid)
+        if not ctx:
             continue
             
-        toml_path = context["toml_path"]
-        conf = context["conf"]
-        pdata = context["pdata"]
-        entry = context["entry"]
-        dependencies = context["dependencies"]
-        sdk_supported_str = context["sdk_supported_str"]
-        sdk_recommended_str = context["sdk_recommended_str"]
-        sdk_untested_str = context["sdk_untested_str"]
-        sdk_conflicts_list = context["sdk_conflicts_list"]
+        toml_path = ctx.toml_path
+        conf = ctx.conf
+        pdata = ctx.pdata
+        entry = ctx.entry
+        dependencies = ctx.dependencies
+        sdk_supported_str = ctx.sdk_supported_str
+        sdk_recommended_str = ctx.sdk_recommended_str
+        sdk_untested_str = ctx.sdk_untested_str
+        sdk_conflicts_list = ctx.sdk_conflicts_list
+        enabled_val = ctx.enabled
+        auto_start_val = ctx.auto_start
         
         logger.info("Loading plugin: {}", pid)
 
-        enabled_val = context.get("enabled", True)
-        auto_start_val = context.get("auto_start", True)
-
-        # disabled plugins: visibility only. Do not load runtime, do not scan event handlers,
-        # and must not participate in dependency/conflict evaluation.
+        # disabled plugins: visibility only
         if not enabled_val:
-            # Safer default: do not import disabled plugin code (module import can run top-level side effects).
-            entries_preview = _extract_entries_preview(
-                pid,
-                cls=type("DisabledPluginStub", (), {}),
-                conf=conf,
-                pdata=pdata,
-            )
-
-            plugin_meta = _build_plugin_meta(
-                pid, pdata,
-                sdk_supported_str=sdk_supported_str,
-                sdk_recommended_str=sdk_recommended_str,
-                sdk_untested_str=sdk_untested_str,
-                sdk_conflicts_list=sdk_conflicts_list,
-                dependencies=dependencies,
-            )
-            resolved_id = register_plugin(
-                plugin_meta,
-                logger,
-                config_path=toml_path,
-                entry_point=entry,
-            )
-            if resolved_id is not None:
-                with state.acquire_plugins_write_lock():
-                    meta = state.plugins.get(resolved_id)
-                    if isinstance(meta, dict):
-                        meta["runtime_enabled"] = False
-                        meta["runtime_auto_start"] = False
-                        meta["entries_preview"] = entries_preview
-                        state.plugins[resolved_id] = meta
+            _load_disabled_plugin(ctx, logger)
             continue
 
-        # extension 类型：不启动独立进程，只注册元数据。
-        # 实际加载在宿主子进程中通过 _inject_extensions() 完成。
+        # extension 类型：不启动独立进程，只注册元数据
         plugin_type = pdata.get("type", "plugin")
         if plugin_type == "extension":
-            host_conf = pdata.get("host")
-            host_pid = host_conf.get("plugin_id") if isinstance(host_conf, dict) else None
-
-            plugin_meta = _build_plugin_meta(
-                pid, pdata,
-                sdk_supported_str=sdk_supported_str,
-                sdk_recommended_str=sdk_recommended_str,
-                sdk_untested_str=sdk_untested_str,
-                sdk_conflicts_list=sdk_conflicts_list,
-                dependencies=dependencies,
-                host_plugin_id=host_pid,
-            )
-            resolved_id = register_plugin(
-                plugin_meta,
-                logger,
-                config_path=toml_path,
-                entry_point=entry,
-            )
-            if resolved_id is not None:
-                with state.acquire_plugins_write_lock():
-                    meta = state.plugins.get(resolved_id)
-                    if isinstance(meta, dict):
-                        meta["runtime_enabled"] = enabled_val
-                        meta["runtime_auto_start"] = False
-                        state.plugins[resolved_id] = meta
-            logger.info(
-                "Extension '{}' registered (host='{}'); will be injected into host process at runtime",
-                pid, host_pid,
-            )
+            _load_extension_plugin(ctx, logger)
             continue
 
         # 依赖检查（可通过配置禁用）
-        from plugin.settings import PLUGIN_ENABLE_DEPENDENCY_CHECK
         dependency_check_failed = False
         if PLUGIN_ENABLE_DEPENDENCY_CHECK and dependencies:
             logger.info("Plugin {}: found {} dependency(ies), checking...", pid, len(dependencies))
@@ -1613,48 +1934,20 @@ def load_plugins_from_toml(
             logger.info("Plugin {}: skipping due to failed dependency check", pid)
             continue
 
-        # 检查插件是否已经加载（通过检查 config_path 是否相同）
-        # 如果同一个配置文件已经被加载，直接跳过
-        with state.acquire_plugin_hosts_read_lock():
-            if pid in state.plugin_hosts:
-                existing_host = state.plugin_hosts[pid]
-                existing_config_path = getattr(existing_host, 'config_path', None)
-                if existing_config_path:
-                    try:
-                        # 规范化路径进行比较
-                        existing_resolved = Path(existing_config_path).resolve()
-                        current_resolved = toml_path.resolve()
-                        if existing_resolved == current_resolved:
-                            logger.warning(
-                                "Plugin {} from {} is already loaded (same config path), skipping duplicate load",
-                                pid, toml_path
-                            )
-                            continue
-                    except (OSError, RuntimeError):
-                        # 如果路径解析失败，使用字符串比较
-                        if str(existing_config_path) == str(toml_path):
-                            logger.warning(
-                                "Plugin {} from {} is already loaded (same config path), skipping duplicate load",
-                                pid, toml_path
-                            )
-                            continue
+        # 检查插件是否已经加载
+        if _check_plugin_already_loaded(pid, toml_path, logger):
+            continue
         
-        # 检测并解决插件 ID 冲突（在创建 host 之前，依赖检查之后）
-        # 构建用于哈希计算的 plugin_data（与 register_plugin 中的格式一致）
+        # 检测并解决插件 ID 冲突
         plugin_data_for_hash = {
             "id": pid,
             "name": pdata.get("name", pid),
             "version": pdata.get("version", "0.1.0"),
             "entry": entry or "",
         }
-        
         original_pid = pid
-        
-        from plugin.settings import PLUGIN_ENABLE_ID_CONFLICT_CHECK
-
         resolved_pid = _resolve_plugin_id_conflict(
-            pid,
-            logger,
+            pid, logger,
             config_path=toml_path,
             entry_point=entry,
             plugin_data=plugin_data_for_hash,
@@ -1663,51 +1956,16 @@ def load_plugins_from_toml(
         )
 
         if resolved_pid is None:
-            logger.info(
-                "Plugin {} from {} is already loaded (duplicate detected), skipping",
-                original_pid,
-                toml_path,
-            )
+            logger.info("Plugin {} from {} is already loaded (duplicate detected), skipping", original_pid, toml_path)
             continue
 
         pid = resolved_pid
         if pid != original_pid:
-            logger.warning(
-                "Plugin {} from {}: ID changed from '{}' to '{}' due to conflict",
-                original_pid, toml_path, original_pid, pid
-            )
+            logger.warning("Plugin {} from {}: ID changed from '{}' to '{}' due to conflict", original_pid, toml_path, original_pid, pid)
 
-        # 在创建 host 之前，先检查插件是否已注册
-        # 如果已注册，检查是否已有运行的 host
-        with state.acquire_plugins_read_lock():
-            plugin_already_registered = pid in state.plugins
-        
-        if plugin_already_registered:
-            with state.acquire_plugin_hosts_read_lock():
-                if pid in state.plugin_hosts:
-                    existing_host = state.plugin_hosts[pid]
-                    if hasattr(existing_host, 'is_alive') and existing_host.is_alive():
-                        logger.info(
-                            "Plugin {} from {} is already registered and running, skipping duplicate load",
-                            pid, toml_path
-                        )
-                        continue
-                    else:
-                        logger.info(
-                            "Plugin {} from {} is already registered but not running, skipping duplicate load",
-                            pid, toml_path
-                        )
-                        continue
-                else:
-                    # 已注册但未运行，跳过自动启动（需要手动启动）
-                    # 这是关键问题：插件已注册但没有 host，需要手动启动
-                    logger.warning(
-                        "Plugin {} from {} is already registered in state.plugins but has no host in plugin_hosts. "
-                        "This indicates the plugin was registered but the host creation was skipped or failed. "
-                        "Please start the plugin manually via POST /plugin/{}/start",
-                        pid, toml_path, pid
-                    )
-                    continue
+        # 检查插件是否已注册
+        if _check_plugin_already_registered(pid, toml_path, logger):
+            continue
 
         module_path, class_name = entry.split(":", 1)
         logger.info("Plugin {}: importing module '{}', class '{}'", pid, module_path, class_name)
@@ -1730,7 +1988,7 @@ def load_plugins_from_toml(
         if enabled_val and auto_start_val:
             try:
                 logger.info("Plugin {}: creating process host...", pid)
-                ext_cfgs = _extension_map.get(pid)
+                ext_cfgs = extension_map.get(pid)
                 host = process_host_factory(pid, entry, toml_path, extension_configs=ext_cfgs)
                 logger.info(
                     "Plugin {}: process host created successfully (pid: {}, alive: {})",
@@ -1783,37 +2041,7 @@ def load_plugins_from_toml(
                             logger.info("Plugin {}: re-registered in plugin_hosts", pid)
 
                 if skip_register:
-                    try:
-                        if hasattr(host, "shutdown_sync"):
-                            host.shutdown_sync(timeout=1.0)
-                        elif hasattr(host, "shutdown"):
-                            import asyncio
-
-                            if asyncio.iscoroutinefunction(host.shutdown):
-                                try:
-                                    loop = asyncio.get_running_loop()
-                                    task = loop.create_task(host.shutdown(timeout=1.0))
-                                    _pending_async_shutdown_tasks.add(task)
-
-                                    def _on_done(t: asyncio.Task) -> None:
-                                        _pending_async_shutdown_tasks.discard(t)
-                                        try:
-                                            _ = t.exception()
-                                        except asyncio.CancelledError:
-                                            pass
-                                        except Exception:
-                                            pass
-
-                                    task.add_done_callback(_on_done)
-                                except RuntimeError:
-                                    asyncio.run(host.shutdown(timeout=1.0))
-                            else:
-                                host.shutdown(timeout=1.0)
-                        elif hasattr(host, "process") and getattr(host, "process", None):
-                            host.process.terminate()
-                            host.process.join(timeout=1.0)
-                    except Exception:
-                        logger.debug("Plugin {}: failed to cleanup duplicate-created host", pid, exc_info=True)
+                    _shutdown_host_safely(host, logger, pid)
                     continue
             except (OSError, RuntimeError) as e:
                 logger.error("Failed to start process for plugin {}: {}", pid, e, exc_info=True)
@@ -1886,99 +2114,21 @@ def load_plugins_from_toml(
                         pid, resolved_id
                     )
         
-        # 如果 register_plugin 返回 None 或原始 ID 但检测到重复，说明这是重复加载
-        # 需要移除刚注册的 host 和清理资源
+        # 如果 register_plugin 返回 None，说明这是重复加载
         if resolved_id is None:
-            logger.warning(
-                "Plugin {} from {} detected as duplicate in register_plugin, removing from plugin_hosts",
-                pid, toml_path
-            )
+            logger.warning("Plugin {} from {} detected as duplicate in register_plugin, removing from plugin_hosts", pid, toml_path)
             existing_host = None
-            # 移除刚注册的 host
             with state.acquire_plugin_hosts_write_lock():
                 if pid in state.plugin_hosts:
                     existing_host = state.plugin_hosts.pop(pid)
-
-            # 尝试关闭进程
             if existing_host is not None:
-                try:
-                    if hasattr(existing_host, 'shutdown'):
-                        import asyncio
-                        # 如果是异步的，需要处理
-                        if asyncio.iscoroutinefunction(existing_host.shutdown):
-                            try:
-                                loop = asyncio.get_running_loop()
-                                task = loop.create_task(existing_host.shutdown(timeout=1.0))
-                                _pending_async_shutdown_tasks.add(task)
-
-                                def _on_done(t: asyncio.Task) -> None:
-                                    _pending_async_shutdown_tasks.discard(t)
-                                    try:
-                                        _ = t.exception()
-                                    except asyncio.CancelledError:
-                                        pass
-                                    except Exception:
-                                        pass
-
-                                task.add_done_callback(_on_done)
-                                logger.debug("Plugin {} scheduled async shutdown", pid)
-                            except RuntimeError:
-                                asyncio.run(existing_host.shutdown(timeout=1.0))
-                        else:
-                            existing_host.shutdown(timeout=1.0)
-                    elif hasattr(existing_host, 'process') and existing_host.process:
-                        existing_host.process.terminate()
-                        existing_host.process.join(timeout=1.0)
-                except Exception as e:
-                    logger.debug("Error shutting down duplicate plugin {}: {}", pid, e)
+                _shutdown_host_safely(existing_host, logger, pid)
             logger.info("Plugin {} removed from plugin_hosts due to duplicate detection", pid)
             continue
         
+        # 如果 ID 被进一步重命名，迁移所有相关映射
         if resolved_id != pid:
-            old_pid = pid
-            # 如果 ID 被进一步重命名（双重冲突），需要更新 plugin_hosts 中的键
-            logger.warning(
-                "Plugin ID changed during registration from '{}' to '{}', updating plugin_hosts",
-                pid, resolved_id
-            )
-            # 更新 plugin_hosts 中的键
-            with state.acquire_plugin_hosts_write_lock():
-                if pid in state.plugin_hosts:
-                    host = state.plugin_hosts.pop(pid)
-                    state.plugin_hosts[resolved_id] = host
-                    # 更新 host 的 plugin_id（如果可能）
-                    if hasattr(host, 'plugin_id'):
-                        host.plugin_id = resolved_id
-                    logger.info(
-                        "Plugin host moved from '{}' to '{}' in plugin_hosts",
-                        pid, resolved_id
-                    )
-
-            # 迁移 response queue 映射，确保通过新 plugin_id 能找到队列
-            with state._plugin_response_queues_lock:
-                if old_pid in state._plugin_response_queues:
-                    q = state._plugin_response_queues.pop(old_pid)
-                    state._plugin_response_queues[resolved_id] = q
-
-            # 迁移 event handler 映射，确保通过新 plugin_id 能找到处理器
-            with state.acquire_event_handlers_write_lock():
-                handlers_to_migrate = [
-                    k
-                    for k in list(state.event_handlers.keys())
-                    if k.startswith(f"{old_pid}.") or k.startswith(f"{old_pid}:")
-                ]
-                for old_key in handlers_to_migrate:
-                    if old_key.startswith(f"{old_pid}."):
-                        new_key = old_key.replace(f"{old_pid}.", f"{resolved_id}.", 1)
-                    else:
-                        new_key = old_key.replace(f"{old_pid}:", f"{resolved_id}:", 1)
-                    state.event_handlers[new_key] = state.event_handlers.pop(old_key)
-
-            # 迁移 plugin_entry_method_map，保持入口调用映射一致
-            for (p, eid), method in list(plugin_entry_method_map.items()):
-                if p == old_pid:
-                    plugin_entry_method_map[(resolved_id, eid)] = method
-                    del plugin_entry_method_map[(p, eid)]
+            _migrate_plugin_id(pid, resolved_id, host, logger)
             pid = resolved_id
 
         logger.info("Loaded plugin {} (Process: {})", pid, getattr(host, "process", None))

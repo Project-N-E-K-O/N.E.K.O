@@ -38,6 +38,8 @@ from plugin.settings import (
     PROCESS_SHUTDOWN_TIMEOUT,
     PROCESS_TERMINATE_TIMEOUT,
 )
+from plugin.sdk.router import PluginRouter
+from plugin.sdk.bus.types import dispatch_bus_change
 
 
 def _sanitize_plugin_id(raw: Any, max_len: int = 64) -> str:
@@ -69,7 +71,6 @@ def _inject_extensions(
     """
     # 如果主进程已预构建映射，直接使用
     if extension_configs:
-        from plugin.sdk.router import PluginRouter
         injected_count = 0
         for ext_cfg in extension_configs:
             ext_id = ext_cfg.get("ext_id", "unknown")
@@ -177,7 +178,6 @@ def _inject_extensions(
                 continue
 
             # 验证是 PluginRouter 子类
-            from plugin.sdk.router import PluginRouter
             if not (isinstance(router_cls, type) and issubclass(router_cls, PluginRouter)):
                 logger.warning(
                     "[Extension] Extension '{}' entry class '{}' is not a PluginRouter subclass, skipping",
@@ -210,6 +210,433 @@ def _inject_extensions(
         )
 
 
+# ============================================================================
+# _plugin_process_runner 辅助函数
+# ============================================================================
+
+def _setup_plugin_logger(plugin_id: str, project_root: Path) -> Any:
+    """
+    配置插件进程的 loguru logger。
+    
+    Args:
+        plugin_id: 插件 ID
+        project_root: 项目根目录
+    
+    Returns:
+        配置好的 logger 实例
+    """
+    from loguru import logger
+    import logging
+    
+    # 移除默认 handler，绑定插件 ID
+    logger.remove()
+    logger = logger.bind(plugin_id=plugin_id)
+    
+    # 添加控制台输出
+    safe_pid = _sanitize_plugin_id(plugin_id)
+    logger.add(
+        sys.stdout,
+        format=f"<green>{{time:YYYY-MM-DD HH:mm:ss}}</green> | <level>{{level: <8}}</level> | [Proc-{safe_pid}] <level>{{message}}</level>",
+        level="INFO",
+        colorize=True,
+        enqueue=False,
+    )
+    
+    # 添加文件输出
+    log_dir = project_root / "log" / "plugins" / safe_pid
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / f"{safe_pid}_{time.strftime('%Y%m%d_%H%M%S')}.log"
+    logger.add(
+        str(log_file),
+        format=f"{{time:YYYY-MM-DD HH:mm:ss}} | {{level: <8}} | [Proc-{safe_pid}] {{message}}",
+        level="INFO",
+        rotation="10 MB",
+        retention=10,
+        encoding="utf-8",
+    )
+    
+    return logger
+
+
+def _setup_logging_interception(logger: Any, project_root: Path) -> None:
+    """
+    设置标准库 logging 拦截，转发到 loguru。
+    
+    Args:
+        logger: loguru logger 实例
+        project_root: 项目根目录
+    """
+    import logging
+    
+    # 确保项目根目录在 path 中
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+    
+    logger.info("[Plugin Process] Resolved project_root: {}", project_root)
+    logger.info("[Plugin Process] Python path (head): {}", sys.path[:3])
+    
+    # 尝试使用项目的 InterceptHandler
+    handler_cls: Optional[Type[logging.Handler]] = None
+    try:
+        import utils.logger_config as _lc
+        handler_cls = getattr(_lc, "InterceptHandler", None)
+    except Exception:
+        handler_cls = None
+    
+    if handler_cls is None:
+        class _InterceptHandler(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                try:
+                    level = record.levelname
+                    msg = record.getMessage()
+                    logger.opt(exception=record.exc_info).log(level, msg)
+                except Exception:
+                    pass
+        handler_cls = _InterceptHandler
+    
+    logging.basicConfig(handlers=[handler_cls()], level=0, force=True)
+    
+    # 设置 uvicorn/fastapi logger
+    for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access", "fastapi"):
+        logging_logger = logging.getLogger(logger_name)
+        logging_logger.handlers = [handler_cls()]
+        logging_logger.propagate = False
+    
+    logger.info("[Plugin Process] Standard logging intercepted and redirected to loguru")
+
+
+def _find_project_root(config_path: Path) -> Path:
+    """
+    从配置文件路径向上探测项目根目录。
+    
+    Args:
+        config_path: 插件配置文件路径
+    
+    Returns:
+        项目根目录路径
+    """
+    cur = config_path.resolve()
+    try:
+        if cur.is_file():
+            cur = cur.parent
+    except Exception:
+        pass
+    
+    for _ in range(10):
+        try:
+            candidate = cur
+            # Repo root should contain both plugin/ and utils/
+            if (candidate / "plugin").is_dir() and (candidate / "utils").is_dir():
+                return candidate
+        except Exception:
+            pass
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    
+    # Fallback: assume layout plugin/plugins/<id>/plugin.toml
+    try:
+        loguru_logger.debug(
+            "[Plugin Process] Could not find project root via exploration from %s; using fallback pattern",
+            config_path,
+        )
+    except Exception:
+        pass
+    
+    try:
+        return config_path.parent.parent.parent.parent.resolve()
+    except Exception:
+        return config_path.parent.resolve()
+
+
+def _check_extension_type_guard(config_path: Path, plugin_id: str, logger: Any) -> bool:
+    """
+    检查插件是否是 Extension 类型（不应作为独立进程运行）。
+    
+    Args:
+        config_path: 配置文件路径
+        plugin_id: 插件 ID
+        logger: 日志记录器
+    
+    Returns:
+        True 如果是 Extension 类型（应退出），False 否则
+    """
+    try:
+        try:
+            import tomllib as _tomllib
+        except ModuleNotFoundError:
+            import tomli as _tomllib  # type: ignore[no-redef]
+        
+        with config_path.open("rb") as _f:
+            _conf = _tomllib.load(_f)
+        
+        if _conf.get("plugin", {}).get("type") == "extension":
+            logger.error(
+                "[Plugin Process] FATAL: Plugin '{}' is type='extension' and must NOT run as an independent process. "
+                "It should be injected into its host plugin. Exiting immediately.",
+                plugin_id,
+            )
+            return True
+    except Exception as _e:
+        logger.debug("[Plugin Process] Could not perform extension type guard: {}", _e)
+    
+    return False
+
+
+def _execute_method_with_timeout(
+    method: Any,
+    args: dict,
+    ctx: Any,
+    scope_name: str,
+    run_id: Optional[str],
+    timeout_seconds: Optional[float],
+    logger: Any,
+) -> Any:
+    """
+    执行方法，支持异步和超时。
+    
+    Args:
+        method: 要执行的方法
+        args: 参数字典
+        ctx: PluginContext
+        scope_name: 作用域名称（用于日志）
+        run_id: 运行 ID
+        timeout_seconds: 超时时间（None 表示无限等待）
+        logger: 日志记录器
+    
+    Returns:
+        方法执行结果
+    
+    Raises:
+        TimeoutError: 如果执行超时
+        Exception: 方法执行中的其他异常
+    """
+    if asyncio.iscoroutinefunction(method) or inspect.iscoroutinefunction(method):
+        logger.debug("[Plugin Process] Method is async, running in thread")
+        result_container = {"result": None, "exception": None, "done": False}
+        event = threading.Event()
+        
+        def run_async():
+            try:
+                with ctx._handler_scope(scope_name), ctx._run_scope(run_id):
+                    result_container["result"] = asyncio.run(method(**args))
+            except Exception as e:
+                result_container["exception"] = e
+            finally:
+                result_container["done"] = True
+                event.set()
+        
+        thread = threading.Thread(target=run_async, daemon=True)
+        thread.start()
+        
+        start_time = time.time()
+        check_interval = 0.01  # 10ms
+        
+        while not result_container["done"]:
+            if timeout_seconds is not None and time.time() - start_time > timeout_seconds:
+                logger.error("Method execution timed out after {}s", timeout_seconds)
+                raise TimeoutError(f"Method execution timed out after {timeout_seconds}s")
+            event.wait(timeout=check_interval)
+        
+        if result_container["exception"]:
+            raise result_container["exception"]
+        return result_container["result"]
+    else:
+        logger.debug("[Plugin Process] Method is sync, calling directly")
+        with ctx._handler_scope(scope_name), ctx._run_scope(run_id):
+            res = method(**args)
+        # 防御性检查：如果返回值是协程，执行它
+        if asyncio.iscoroutine(res):
+            res = asyncio.run(res)
+        return res
+
+
+def _handle_freeze_command(
+    msg: dict,
+    lifecycle_events: dict,
+    freezable_keys: list,
+    instance: Any,
+    ctx: Any,
+    res_queue: Queue,
+    logger: Any,
+) -> bool:
+    """
+    处理 FREEZE 命令。
+    
+    Returns:
+        True 如果应该停止进程，False 否则
+    """
+    req_id = msg.get("req_id", "unknown")
+    logger.info("[Plugin Process] Received FREEZE command, req_id={}", req_id)
+    
+    ret_payload = {"req_id": req_id, "success": False, "data": None, "error": None}
+    
+    try:
+        # 触发 freeze lifecycle 事件
+        freeze_fn = lifecycle_events.get("freeze")
+        if freeze_fn:
+            logger.info("[Plugin Process] Executing freeze lifecycle...")
+            with ctx._handler_scope("lifecycle.freeze"):
+                if asyncio.iscoroutinefunction(freeze_fn):
+                    asyncio.run(freeze_fn())
+                else:
+                    freeze_fn()
+        
+        # 保存冻结状态
+        if freezable_keys:
+            sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
+            if sp:
+                sp.save(instance, freezable_keys, reason="freeze")
+                logger.info("[Plugin Process] Frozen state saved")
+        
+        ret_payload["success"] = True
+        ret_payload["data"] = {"frozen": True, "freezable_keys": freezable_keys}
+    except Exception as e:
+        logger.exception("[Plugin Process] Freeze failed")
+        ret_payload["error"] = str(e)
+    
+    res_queue.put(ret_payload)
+    
+    if ret_payload["success"]:
+        logger.info("[Plugin Process] Freeze successful, stopping process...")
+        return True
+    return False
+
+
+def _handle_bus_change_command(msg: dict, logger: Any) -> None:
+    """处理 BUS_CHANGE 命令。"""
+    try:
+        dispatch_bus_change(
+            sub_id=str(msg.get("sub_id") or ""),
+            bus=str(msg.get("bus") or ""),
+            op=str(msg.get("op") or ""),
+            delta=msg.get("delta") if isinstance(msg.get("delta"), dict) else None,
+        )
+    except Exception as e:
+        logger.debug("Failed to dispatch bus change: {}", e)
+
+
+def _handle_trigger_custom_command(
+    msg: dict,
+    events_by_type: dict,
+    ctx: Any,
+    res_queue: Queue,
+    plugin_id: str,
+    logger: Any,
+) -> None:
+    """处理 TRIGGER_CUSTOM 命令。"""
+    event_type = msg.get("event_type")
+    event_id = msg.get("event_id")
+    args = msg.get("args", {})
+    req_id = msg.get("req_id", "unknown")
+    
+    logger.info(
+        "[Plugin Process] Received TRIGGER_CUSTOM: plugin_id={}, event_type={}, event_id={}, req_id={}",
+        plugin_id, event_type, event_id, req_id,
+    )
+    
+    custom_events = events_by_type.get(event_type, {})
+    method = custom_events.get(event_id)
+    
+    ret_payload = {"req_id": req_id, "success": False, "data": None, "error": None}
+    
+    try:
+        if not method:
+            ret_payload["error"] = f"Custom event '{event_type}.{event_id}' not found"
+        else:
+            logger.debug("[Plugin Process] Executing custom event {}.{}, req_id={}", event_type, event_id, req_id)
+            
+            if asyncio.iscoroutinefunction(method):
+                logger.debug("[Plugin Process] Custom event is async, running in thread")
+                result_container = {"result": None, "exception": None, "done": False}
+                event = threading.Event()
+                
+                def _run_async_thread():
+                    try:
+                        with ctx._handler_scope(f"{event_type}.{event_id}"):
+                            result_container["result"] = asyncio.run(method(**args))
+                    except Exception as e:
+                        result_container["exception"] = e
+                    finally:
+                        result_container["done"] = True
+                        event.set()
+                
+                thread = threading.Thread(target=_run_async_thread, daemon=True)
+                thread.start()
+                
+                start_time = time.time()
+                timeout_seconds = PLUGIN_TRIGGER_TIMEOUT
+                check_interval = 0.01
+                
+                while not result_container["done"]:
+                    if time.time() - start_time > timeout_seconds:
+                        logger.error("Custom event {}.{} execution timed out", event_type, event_id)
+                        raise TimeoutError(f"Custom event execution timed out after {timeout_seconds}s")
+                    event.wait(timeout=check_interval)
+                
+                if result_container["exception"]:
+                    raise result_container["exception"]
+                res = result_container["result"]
+            else:
+                logger.debug("[Plugin Process] Custom event is sync, calling directly")
+                with ctx._handler_scope(f"{event_type}.{event_id}"):
+                    res = method(**args)
+            
+            ret_payload["success"] = True
+            ret_payload["data"] = res
+            logger.debug("[Plugin Process] Custom event {}.{} completed, req_id={}", event_type, event_id, req_id)
+    except Exception as e:
+        logger.exception("Error executing custom event {}.{}", event_type, event_id)
+        ret_payload["error"] = str(e)
+    
+    logger.debug("[Plugin Process] Sending response for req_id={}, success={}", req_id, ret_payload.get("success"))
+    try:
+        res_queue.put(ret_payload, timeout=10.0)
+        logger.debug("[Plugin Process] Response sent successfully for req_id={}", req_id)
+    except Exception:
+        logger.exception("[Plugin Process] Failed to send response for req_id={}", req_id)
+
+
+def _handle_extension_command(
+    msg: dict,
+    instance: Any,
+    rebuild_entry_map_fn: Any,
+    plugin_id: str,
+    res_queue: Queue,
+    logger: Any,
+) -> None:
+    """处理 DISABLE_EXTENSION 和 ENABLE_EXTENSION 命令。"""
+    cmd_type = msg["type"]
+    ext_name = msg.get("ext_name", "")
+    req_id = msg.get("req_id", "unknown")
+    ret_payload = {"req_id": req_id, "success": False, "data": None, "error": None}
+    
+    try:
+        if cmd_type == "DISABLE_EXTENSION":
+            ok = instance.exclude_router(ext_name)
+            if ok:
+                rebuild_entry_map_fn()
+                ret_payload["success"] = True
+                ret_payload["data"] = {"disabled": ext_name}
+                logger.info("[Extension] Disabled extension '{}' in host '{}'", ext_name, plugin_id)
+            else:
+                ret_payload["error"] = f"Extension '{ext_name}' not found or already disabled"
+        elif cmd_type == "ENABLE_EXTENSION":
+            ok = instance.include_router(ext_name)
+            if ok:
+                rebuild_entry_map_fn()
+                ret_payload["success"] = True
+                ret_payload["data"] = {"enabled": ext_name}
+                logger.info("[Extension] Enabled extension '{}' in host '{}'", ext_name, plugin_id)
+            else:
+                ret_payload["error"] = f"Extension '{ext_name}' not found or already enabled"
+    except Exception as e:
+        logger.exception("[Extension] Failed to {} extension '{}'", cmd_type.lower().replace("_", " "), ext_name)
+        ret_payload["error"] = str(e)
+    
+    res_queue.put(ret_payload)
+
+
 def _plugin_process_runner(
     plugin_id: str,
     entry_point: str,
@@ -226,138 +653,25 @@ def _plugin_process_runner(
     """
     独立进程中的运行函数，负责加载插件、映射入口、处理命令并返回结果。
     """
-    # 获取项目根目录（假设 config_path 在 plugin/plugins/xxx/plugin.toml）
-    # 由于部署/启动方式可能改变工作目录与 sys.path，使用“向上探测”确保能找到仓库根。
-    def _find_project_root(p: Path) -> Path:
-        cur = p.resolve()
-        try:
-            if cur.is_file():
-                cur = cur.parent
-        except Exception:
-            pass
-        for _ in range(10):
-            try:
-                candidate = cur
-                # Repo root should contain both plugin/ and utils/.
-                if (candidate / "plugin").is_dir() and (candidate / "utils").is_dir():
-                    return candidate
-            except Exception:
-                pass
-            if cur.parent == cur:
-                break
-            cur = cur.parent
-        # Fallback: assume layout plugin/plugins/<id>/plugin.toml
-        try:
-            loguru_logger.debug(
-                "[Plugin Process] Could not find project root via exploration from %s; using fallback pattern",
-                p,
-            )
-        except Exception:
-            # Logging should never prevent fallback resolution
-            pass
-        try:
-            return p.parent.parent.parent.parent.resolve()
-        except Exception:
-            return p.parent.resolve()
-
-    # Preserve the process-level stop event passed from the parent. Do not reuse this name
-    # for other purposes, otherwise the out-of-band shutdown signal may stop working.
+    # 保存进程级 stop event
     process_stop_event = stop_event
-
+    
+    # 初始化：探测项目根目录、配置 logger
     project_root = _find_project_root(config_path)
+    logger = _setup_plugin_logger(plugin_id, project_root)
     
-    # 配置loguru logger for plugin process
-    from loguru import logger
-    # 移除默认handler
-    logger.remove()
-    # 绑定插件ID到logger上下文
-    logger = logger.bind(plugin_id=plugin_id)
-    # 添加控制台输出（强制启用颜色）
-    logger.add(
-        sys.stdout,
-        format=f"<green>{{time:YYYY-MM-DD HH:mm:ss}}</green> | <level>{{level: <8}}</level> | [Proc-{_sanitize_plugin_id(plugin_id)}] <level>{{message}}</level>",
-        level="INFO",
-        colorize=True,
-        enqueue=False,
-    )
-    # 添加文件输出（使用项目根目录的log目录）
-    safe_pid = _sanitize_plugin_id(plugin_id)
-    log_dir = project_root / "log" / "plugins" / safe_pid
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / f"{safe_pid}_{time.strftime('%Y%m%d_%H%M%S')}.log"
-    logger.add(
-        str(log_file),
-        format=f"{{time:YYYY-MM-DD HH:mm:ss}} | {{level: <8}} | [Proc-{safe_pid}] {{message}}",
-        level="INFO",
-        rotation="10 MB",
-        retention=10,
-        encoding="utf-8",
-    )
-    
-    # 拦截标准库 logging 并转发到 loguru
+    # 设置 logging 拦截
     try:
-        import logging
-        
-        # 确保项目根目录在 path 中，以便能导入 utils
-        if str(project_root) not in sys.path:
-            sys.path.insert(0, str(project_root))
-            
-        logger.info("[Plugin Process] Resolved project_root: {}", project_root)
-        logger.info("[Plugin Process] Python path (head): {}", sys.path[:3])
-
-        handler_cls: Optional[Type[logging.Handler]] = None
-        try:
-            import utils.logger_config as _lc
-
-            handler_cls = getattr(_lc, "InterceptHandler", None)
-        except Exception:
-            handler_cls = None
-
-        if handler_cls is None:
-            class _InterceptHandler(logging.Handler):
-                def emit(self, record: logging.LogRecord) -> None:
-                    try:
-                        level = record.levelname
-                        msg = record.getMessage()
-                        # 不使用depth参数，避免显示模块路径信息
-                        logger.opt(exception=record.exc_info).log(level, msg)
-                    except Exception:
-                        pass
-
-            handler_cls = _InterceptHandler
-
-        logging.basicConfig(handlers=[handler_cls()], level=0, force=True)
-
-        # 显式设置 uvicorn logger，并禁止传播以避免重复
-        for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access", "fastapi"):
-            logging_logger = logging.getLogger(logger_name)
-            logging_logger.handlers = [handler_cls()]
-            logging_logger.propagate = False
-        
-        logger.info("[Plugin Process] Standard logging intercepted and redirected to loguru")
+        _setup_logging_interception(logger, project_root)
     except Exception as e:
         logger.warning("[Plugin Process] Failed to setup logging interception: {}", e)
-
+    
     # 防御性检查：Extension 类型不应作为独立进程运行
-    try:
-        try:
-            import tomllib as _tomllib
-        except ModuleNotFoundError:
-            import tomli as _tomllib  # type: ignore[no-redef]
-        with config_path.open("rb") as _f:
-            _conf = _tomllib.load(_f)
-        if _conf.get("plugin", {}).get("type") == "extension":
-            logger.error(
-                "[Plugin Process] FATAL: Plugin '{}' is type='extension' and must NOT run as an independent process. "
-                "It should be injected into its host plugin. Exiting immediately.",
-                plugin_id,
-            )
-            return
-    except Exception as _e:
-        logger.debug("[Plugin Process] Could not perform extension type guard: {}", _e)
+    if _check_extension_type_guard(config_path, plugin_id, logger):
+        return
 
     try:
-        # 设置 Python 路径，确保能够导入插件模块
+        # 设置 Python 路径
         if str(project_root) not in sys.path:
             sys.path.insert(0, str(project_root))
             logger.info("[Plugin Process] Added project root to sys.path: {}", project_root)
@@ -414,8 +728,7 @@ def _plugin_process_runner(
             pass
 
         # 防御：extension（PluginRouter 子类）不应被当作独立进程启动
-        from plugin.sdk.router import PluginRouter as _SDKRouter
-        if isinstance(cls, type) and issubclass(cls, _SDKRouter):
+        if isinstance(cls, type) and issubclass(cls, PluginRouter):
             logger.error(
                 "[Plugin Process] Entry class '{}' is a PluginRouter subclass, not a NekoPluginBase. "
                 "This plugin should be loaded as an extension (type='extension'), not as an independent process. "
@@ -724,8 +1037,6 @@ def _plugin_process_runner(
 
             if msg["type"] == "BUS_CHANGE":
                 try:
-                    from plugin.sdk.bus.types import dispatch_bus_change
-
                     dispatch_bus_change(
                         sub_id=str(msg.get("sub_id") or ""),
                         bus=str(msg.get("bus") or ""),
@@ -878,11 +1189,10 @@ def _plugin_process_runner(
                     elif not ext_entry or ":" not in ext_entry:
                         ret_payload["error"] = f"Invalid ext_entry '{ext_entry}'"
                     else:
-                        from plugin.sdk.router import PluginRouter as _PR
                         mod_path, cls_name = ext_entry.split(":", 1)
                         mod = importlib.import_module(mod_path)
                         router_cls = getattr(mod, cls_name)
-                        if not (isinstance(router_cls, type) and issubclass(router_cls, _PR)):
+                        if not (isinstance(router_cls, type) and issubclass(router_cls, PluginRouter)):
                             ret_payload["error"] = f"'{cls_name}' is not a PluginRouter subclass"
                         else:
                             router_inst = router_cls(prefix=prefix, name=ext_id)
@@ -998,8 +1308,8 @@ def _plugin_process_runner(
                                             sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
                                             if sp:
                                                 sp.save(instance, freezable_keys, reason="auto")
-                                        except Exception:
-                                            pass
+                                        except Exception as persist_err:
+                                            logger.debug("Failed to persist state after worker task: {}", persist_err)
                                 except TimeoutError as e:
                                     logger.error("Worker task {} timed out", entry_id)
                                     ret_payload["error"] = str(e)
@@ -1044,7 +1354,8 @@ def _plugin_process_runner(
                                         sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
                                         if sp:
                                             sp.save(instance, freezable_keys, reason="auto")
-                                    except Exception:
+                                    except Exception as persist_err:
+                                        # 在线程内无法使用 logger，静默忽略
                                         pass
                             except Exception as e:
                                 result_container["exception"] = e
@@ -1129,8 +1440,8 @@ def _plugin_process_runner(
                             sp = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
                             if sp:
                                 sp.save(instance, freezable_keys, reason="auto")
-                        except Exception:
-                            pass
+                        except Exception as persist_err:
+                            logger.debug("Failed to persist state after sync execution: {}", persist_err)
                     
                 except PluginError as e:
                     # 插件系统已知异常，直接使用
