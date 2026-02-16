@@ -151,7 +151,8 @@ class CursorFollowController {
         this._tempQuatE = null;
         this._tempEuler = null;
 
-        // ── 模型前方向符号（+1 = VRM 1.0 标准 +Z，-1 = VRM 0.x / 180° 旋转 -Z） ──
+        // ── 模型前方向符号（由 _detectModelForward() 动态检测） ──
+        // VRM 0.x (worldZ>=0) → -1, VRM 1.0 (worldZ<0) → +1
         this._modelForwardZ = 1;
 
         // ── 事件处理器引用 ──
@@ -240,8 +241,10 @@ class CursorFollowController {
 
     // ════════════════════════════════════════════════════════════════
     //  辅助：检测模型实际前方向
-    //  VRM 1.0 标准导出 face +Z，VRM 0.x 或 scene 有 180° Y 旋转时 face -Z
-    //  通过将局部 (0,0,1) 变换到世界空间后检查 z 分量的符号来判定
+    //  将局部 (0,0,1) 通过 scene 世界四元数变换到世界空间，
+    //  根据变换后 z 分量的符号确定 _modelForwardZ：
+    //    worldZ >= 0 → scene 未翻转（VRM 0.x），forwardSign = -1
+    //    worldZ <  0 → scene 已 180° Y 翻转（VRM 1.0 / three-vrm），forwardSign = +1
     // ════════════════════════════════════════════════════════════════
     _detectModelForward() {
         const vrm = this.manager?.currentModel?.vrm;
@@ -252,8 +255,8 @@ class CursorFollowController {
         vrm.scene.updateWorldMatrix(true, false);
         const worldForward = new THREE.Vector3(0, 0, 1)
             .applyQuaternion(vrm.scene.getWorldQuaternion(this._tempQuat || new THREE.Quaternion()));
-        // z < 0 → 模型面朝 -Z（VRM 1.0 标准，three-vrm 内部已翻转），需要 forwardSign=-1
-        // z > 0 → 模型面朝 +Z（VRM 0.x），forwardSign=+1
+        // worldZ >= 0 → scene 未翻转（VRM 0.x），需要 forwardSign=-1 来补偿坐标系差异
+        // worldZ <  0 → scene 已 180° Y 翻转（VRM 1.0 / three-vrm），forwardSign=+1
         this._modelForwardZ = worldForward.z >= 0 ? -1 : 1;
         console.log(`[CursorFollow] 模型前方向检测: localZ(0,0,1) → worldZ=${worldForward.z.toFixed(3)}, forwardSign=${this._modelForwardZ}`);
     }
