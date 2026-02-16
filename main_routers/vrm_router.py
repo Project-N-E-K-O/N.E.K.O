@@ -461,19 +461,15 @@ def _get_model_path(model_name: str) -> tuple[Path | None, str]:
 
     # 1. 检查项目目录
     project_root = config_mgr.project_root
-    static_vrm_dir = project_root / "static" / "vrm"
-    if static_vrm_dir.exists():
-        for vrm_file in static_vrm_dir.glob('*.vrm'):
-            if vrm_file.stem == model_name:
-                return vrm_file, "/static/vrm"
+    static_vrm_path = project_root / "static" / "vrm" / f"{model_name}.vrm"
+    if static_vrm_path.is_file():
+        return static_vrm_path, "/static/vrm"
 
     # 2. 检查用户目录
     config_mgr.ensure_vrm_directory()
-    user_vrm_dir = config_mgr.vrm_dir
-    if user_vrm_dir.exists():
-        for vrm_file in user_vrm_dir.glob('*.vrm'):
-            if vrm_file.stem == model_name:
-                return vrm_file, VRM_USER_PATH
+    user_vrm_path = config_mgr.vrm_dir / f"{model_name}.vrm"
+    if user_vrm_path.is_file():
+        return user_vrm_path, VRM_USER_PATH
 
     return None, ""
 
