@@ -48,20 +48,7 @@ class VRMExpression {
             'angry': ['angry', 'anger']
         };
 
-        this.availableMoods = Object.keys(this.moodMap);
-
-        // 当前加载的模型名称（用于加载对应的情感配置）
-        this.currentModelName = null;
-
-        // 排除列表 (不参与情绪切换，由 blink 或 lipSync 控制)
-        this.excludeExpressions = [
-            'blink', 'blink_l', 'blink_r', 'blinkleft', 'blinkright',
-            'aa', 'ih', 'ou', 'ee', 'oh',
-            'lookup', 'lookdown', 'lookleft', 'lookright'
-        ];
-
         this.currentWeights = {};
-        this._hasPrintedDebug = false; // 防止日志刷屏
     }
 
     /**
@@ -74,8 +61,6 @@ class VRMExpression {
             return;
         }
 
-        this.currentModelName = modelName;
-
         try {
             const response = await fetch(`/api/model/vrm/emotion_mapping/${encodeURIComponent(modelName)}`);
             if (!response.ok) {
@@ -87,7 +72,6 @@ class VRMExpression {
             if (data.success && data.config) {
                 // 合并配置，保留默认值作为后备
                 this.moodMap = { ...this.moodMap, ...data.config };
-                this.availableMoods = Object.keys(this.moodMap);
                 console.log(`[VRM Expression] 已加载模型 ${modelName} 的情感映射配置`, this.moodMap);
             }
         } catch (error) {
@@ -110,7 +94,6 @@ class VRMExpression {
     setMoodMap(newMoodMap) {
         if (newMoodMap && typeof newMoodMap === 'object') {
             this.moodMap = { ...this.moodMap, ...newMoodMap };
-            this.availableMoods = Object.keys(this.moodMap);
             console.log('[VRM Expression] 已更新情感映射配置', this.moodMap);
         }
     }
@@ -137,6 +120,7 @@ class VRMExpression {
             if (this.autoReturnToNeutral && moodName !== 'neutral') {
                 this.neutralReturnTimer = setTimeout(() => {
                     this.currentMood = 'neutral';
+                    this.manualExpressionInProgress = null; // 清除手动表情标志
                     this._applyMoodImmediately('neutral');
                     this.neutralReturnTimer = null;
                 }, this.neutralReturnDelay);
@@ -491,86 +475,66 @@ class VRMExpression {
             return;
         }
 
-        // 非眨眼表情：立即应用表情权重
+        // 非眨眼表情：复用 _applyMoodImmediately 逻辑
         this.currentMood = name || 'neutral';
-        
+
         // 清除之前的回到 neutral 定时器
         if (this.neutralReturnTimer) {
             clearTimeout(this.neutralReturnTimer);
             this.neutralReturnTimer = null;
         }
-        
-        // 立即应用表情，不等待下一帧
-        if (this.manager.currentModel && this.manager.currentModel.vrm && this.manager.currentModel.vrm.expressionManager) {
-            const expressionManager = this.manager.currentModel.vrm.expressionManager;
-            const expressionNames = this._getExpressionNames(expressionManager);
-            
-            // 先清除所有表情
-            expressionNames.forEach(exprName => {
-                const lowerExprName = exprName.toLowerCase();
-                // 跳过口型和视线控制
-                if (!['aa', 'ih', 'ou', 'ee', 'oh', 'look'].some(keyword => lowerExprName.includes(keyword))) {
-                    expressionManager.setValue(exprName, 0.0);
-                    this.currentWeights[exprName] = 0.0;
-                }
-            });
-            
-            // 如果设置了表情名称，立即应用
-            if (name && name !== 'neutral') {
-                const lowerName = name.toLowerCase();
-                // 查找匹配的表情
-                const matchedExpression = expressionNames.find(exprName => {
+
+        // 对于非映射表中的表情名称（如具体表情名），直接应用
+        if (name && !this.moodMap[name]) {
+            // 直接表情名称模式
+            if (this.manager.currentModel && this.manager.currentModel.vrm && this.manager.currentModel.vrm.expressionManager) {
+                const expressionManager = this.manager.currentModel.vrm.expressionManager;
+                const expressionNames = this._getExpressionNames(expressionManager);
+
+                // 先清除所有表情（除了口型和视线控制）
+                expressionNames.forEach(exprName => {
                     const lowerExprName = exprName.toLowerCase();
-                    return lowerExprName === lowerName || lowerExprName.includes(lowerName);
-                });
-                
-                if (matchedExpression) {
-                    // 设置手动表情标志，防止 _updateWeights 干扰
-                    this.manualExpressionInProgress = matchedExpression;
-                    
-                    // 立即设置为1.0
-                    expressionManager.setValue(matchedExpression, 1.0);
-                    this.currentWeights[matchedExpression] = 1.0;
-                    
-                    // 如果不是 neutral 且开启了自动回到 neutral，设置定时器
-                    if (this.autoReturnToNeutral) {
-                        this.neutralReturnTimer = setTimeout(() => {
-                            this.currentMood = 'neutral';
-                            this.manualExpressionInProgress = null; // 清除标志
-                            this.neutralReturnTimer = null;
-                        }, this.neutralReturnDelay);
+                    if (!['aa', 'ih', 'ou', 'ee', 'oh', 'look'].some(keyword => lowerExprName.includes(keyword))) {
+                        expressionManager.setValue(exprName, 0.0);
+                        this.currentWeights[exprName] = 0.0;
                     }
-                } else {
-                    // 尝试通过映射表查找
-                    for (const [mood, candidates] of Object.entries(this.moodMap)) {
-                        if (candidates.includes(name)) {
-                            const matched = expressionNames.find(exprName => {
-                                const lowerExprName = exprName.toLowerCase();
-                                return candidates.some(candidate => lowerExprName === candidate.toLowerCase());
-                            });
-                            if (matched) {
-                                // 设置手动表情标志
-                                this.manualExpressionInProgress = matched;
-                                
-                                expressionManager.setValue(matched, 1.0);
-                                this.currentWeights[matched] = 1.0;
-                                
-                                // 设置自动回到 neutral 定时器
-                                if (this.autoReturnToNeutral) {
-                                    this.neutralReturnTimer = setTimeout(() => {
-                                        this.currentMood = 'neutral';
-                                        this.manualExpressionInProgress = null;
-                                        this.neutralReturnTimer = null;
-                                    }, this.neutralReturnDelay);
-                                }
-                                break;
-                            }
+                });
+
+                if (name !== 'neutral') {
+                    const lowerName = name.toLowerCase();
+                    const matchedExpression = expressionNames.find(exprName => {
+                        const lowerExprName = exprName.toLowerCase();
+                        return lowerExprName === lowerName || lowerExprName.includes(lowerName);
+                    });
+
+                    if (matchedExpression) {
+                        this.manualExpressionInProgress = matchedExpression;
+                        expressionManager.setValue(matchedExpression, 1.0);
+                        this.currentWeights[matchedExpression] = 1.0;
+
+                        if (this.autoReturnToNeutral) {
+                            this.neutralReturnTimer = setTimeout(() => {
+                                this.currentMood = 'neutral';
+                                this.manualExpressionInProgress = null;
+                                this.neutralReturnTimer = null;
+                            }, this.neutralReturnDelay);
                         }
                     }
+                } else {
+                    this.manualExpressionInProgress = null;
                 }
-            } else {
-                // 如果是 neutral，清除手动表情标志
-                this.manualExpressionInProgress = null;
+            }
+        } else {
+            // 使用映射表模式
+            this._applyMoodImmediately(name || 'neutral');
+
+            if (name && name !== 'neutral' && this.autoReturnToNeutral) {
+                this.neutralReturnTimer = setTimeout(() => {
+                    this.currentMood = 'neutral';
+                    this.manualExpressionInProgress = null;
+                    this._applyMoodImmediately('neutral');
+                    this.neutralReturnTimer = null;
+                }, this.neutralReturnDelay);
             }
         }
     }
