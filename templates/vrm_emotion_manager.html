@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n="vrmEmotionManager.title">VRM 情感映射管理器 - Project N.E.K.O.</title>
+
+    <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
+    <script src="/static/i18n-i18next.js"></script>
+
+    <!-- 样式文件 -->
+    <link rel="stylesheet" href="/static/css/vrm_emotion_manager.css">
+    <link rel="stylesheet" href="/static/libs/driver.min.css">
+    <link rel="stylesheet" href="/static/css/tutorial-styles.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="header-content">
+                <h1 data-text="VRM 情感映射管理器" data-i18n="vrmEmotionManager.pageTitle">VRM 情感映射管理器</h1>
+                <p data-i18n="vrmEmotionManager.subtitle">配置不同情绪对应的表情映射</p>
+            </div>
+            <button class="close-btn" onclick="window.close(); window.history.back();" title="关闭" data-i18n-title="vrmEmotionManager.close">
+                <img src="/static/icons/close_button.png" alt="关闭" data-i18n-alt="vrmEmotionManager.close">
+            </button>
+        </div>
+
+        <div class="container-content">
+            <div class="info-box">
+                <strong data-i18n="vrmEmotionManager.tip">提示：</strong><span data-i18n="vrmEmotionManager.tipContent">VRM模型的表情名称可能因版本不同而异（VRM 0.x使用joy，VRM 1.0使用happy）。
+                请为每种情绪选择多个候选表情，系统会自动匹配模型支持的表情。</span>
+            </div>
+
+            <div class="field-row">
+                <label for="model-select" data-i18n="vrmEmotionManager.selectModel">选择 VRM 模型</label>
+                <select id="model-select">
+                    <option value="" data-i18n="vrmEmotionManager.loading">加载中...</option>
+                </select>
+            </div>
+
+            <div id="emotion-config" style="display: none;">
+            <!-- Preview Section -->
+            <div class="preview-section">
+                <div class="preview-header" data-i18n="vrmEmotionManager.expressionPreview">表情预览</div>
+                <div class="preview-buttons" id="preview-buttons">
+                    <span class="loading" data-i18n="vrmEmotionManager.loadingExpressions">加载表情列表</span>
+                </div>
+            </div>
+
+            <!-- Neutral -->
+            <div class="emotion-section">
+                <div class="emotion-header" data-i18n="vrmEmotionManager.emotions.neutral">平静 (Neutral)</div>
+                <div class="select-group">
+                    <label data-i18n="vrmEmotionManager.expressionCandidates">表情候选</label>
+                    <div class="custom-multiselect emotion-expression-select" data-emotion="neutral">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="selected-text" data-i18n="vrmEmotionManager.selectExpression">选择表情</span>
+                        </div>
+                        <div class="multiselect-options"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Happy -->
+            <div class="emotion-section">
+                <div class="emotion-header" data-i18n="vrmEmotionManager.emotions.happy">开心 (Happy)</div>
+                <div class="select-group">
+                    <label data-i18n="vrmEmotionManager.expressionCandidates">表情候选</label>
+                    <div class="custom-multiselect emotion-expression-select" data-emotion="happy">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="selected-text" data-i18n="vrmEmotionManager.selectExpression">选择表情</span>
+                        </div>
+                        <div class="multiselect-options"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Relaxed -->
+            <div class="emotion-section">
+                <div class="emotion-header" data-i18n="vrmEmotionManager.emotions.relaxed">放松 (Relaxed)</div>
+                <div class="select-group">
+                    <label data-i18n="vrmEmotionManager.expressionCandidates">表情候选</label>
+                    <div class="custom-multiselect emotion-expression-select" data-emotion="relaxed">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="selected-text" data-i18n="vrmEmotionManager.selectExpression">选择表情</span>
+                        </div>
+                        <div class="multiselect-options"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sad -->
+            <div class="emotion-section">
+                <div class="emotion-header" data-i18n="vrmEmotionManager.emotions.sad">悲伤 (Sad)</div>
+                <div class="select-group">
+                    <label data-i18n="vrmEmotionManager.expressionCandidates">表情候选</label>
+                    <div class="custom-multiselect emotion-expression-select" data-emotion="sad">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="selected-text" data-i18n="vrmEmotionManager.selectExpression">选择表情</span>
+                        </div>
+                        <div class="multiselect-options"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Angry -->
+            <div class="emotion-section">
+                <div class="emotion-header" data-i18n="vrmEmotionManager.emotions.angry">生气 (Angry)</div>
+                <div class="select-group">
+                    <label data-i18n="vrmEmotionManager.expressionCandidates">表情候选</label>
+                    <div class="custom-multiselect emotion-expression-select" data-emotion="angry">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="selected-text" data-i18n="vrmEmotionManager.selectExpression">选择表情</span>
+                        </div>
+                        <div class="multiselect-options"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Surprised -->
+            <div class="emotion-section">
+                <div class="emotion-header" data-i18n="vrmEmotionManager.emotions.surprised">惊讶 (Surprised)</div>
+                <div class="select-group">
+                    <label data-i18n="vrmEmotionManager.expressionCandidates">表情候选</label>
+                    <div class="custom-multiselect emotion-expression-select" data-emotion="surprised">
+                        <div class="multiselect-header" tabindex="0" role="button" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="selected-text" data-i18n="vrmEmotionManager.selectExpression">选择表情</span>
+                        </div>
+                        <div class="multiselect-options"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="button-group">
+                <button id="save-btn" class="btn btn-primary" data-i18n="vrmEmotionManager.saveConfig">保存配置</button>
+                <button id="reset-btn" class="btn btn-secondary" data-i18n="vrmEmotionManager.resetToDefault">重置为默认</button>
+            </div>
+
+            <div id="status-message" class="status-message"></div>
+        </div>
+        </div>
+    </div>
+
+    <!-- 脚本文件 -->
+    <script src="/static/js/vrm_emotion_manager.js"></script>
+    <script src="/static/libs/driver.min.js"></script>
+    <script src="/static/universal-tutorial-manager.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            if (typeof initUniversalTutorialManager === 'function') {
+                initUniversalTutorialManager();
+            }
+        });
+    </script>
+</body>
+</html>
