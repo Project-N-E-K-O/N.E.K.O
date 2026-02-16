@@ -364,9 +364,23 @@ class ComputerUseAdapter:
         shot.save(buf, format="PNG")
         return buf.getvalue()
 
-    def run_instruction(self, instruction: str):
+    def run_instruction(self, instruction: str, session_id: Optional[str] = None):
+        """Execute a natural-language instruction via GUI automation.
+
+        Args:
+            instruction: What to do (e.g. "打开系统计算器").
+            session_id: If provided and matches the current session, agent
+                state is preserved for multi-turn execution.  Otherwise the
+                agent is reset to avoid cross-task state pollution.
+        """
         if not self.agent:
             return {"success": False, "error": "computer-use agent not initialized"}
+
+        # Reset agent state for a fresh task unless continuing a session
+        if session_id is None or session_id != getattr(self, "_current_session_id", None):
+            self.agent.reset()
+            self._current_session_id = session_id
+
         try:
             obs = {}
             traj = "Task:\n" + instruction

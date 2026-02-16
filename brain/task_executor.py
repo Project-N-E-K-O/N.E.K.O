@@ -389,7 +389,10 @@ Return strict JSON:
   "task_description": "brief description",
   "reason": "why"
 }
-Only choose browser automation when request clearly focuses on websites/web pages/forms/search/downloads."""
+Rules:
+- ONLY choose browser automation for tasks that require interacting with websites, web pages, web forms, web search engines, or downloading from the internet.
+- REJECT (has_task=false or can_execute=false) tasks that are purely local OS operations such as: opening local applications (calculator, file explorer, notepad, settings), managing files/folders, controlling system settings, or any task that does not need a web browser.
+- If unsure whether a task needs a browser, default to REJECT."""
         user_prompt = f"Conversation:\n{conversation}"
         try:
             client = self._get_client()

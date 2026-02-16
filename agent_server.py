@@ -24,6 +24,7 @@ from brain.computer_use import ComputerUseAdapter
 from brain.browser_use_adapter import BrowserUseAdapter
 from brain.deduper import TaskDeduper
 from brain.task_executor import DirectTaskExecutor
+from brain.agent_session import get_session_manager
 from utils.config_manager import get_config_manager
 from main_logic.agent_event_bus import AgentServerEventBridge
 
@@ -61,6 +62,8 @@ class Modules:
     throttled_logger: "ThrottledLogger" = None  # 延迟初始化
     agent_bridge: AgentServerEventBridge | None = None
     state_revision: int = 0
+    # Serialize analysis+dispatch to prevent duplicate tasks from concurrent analyze_request events
+    analyze_lock: Optional[asyncio.Lock] = None
     capability_cache: Dict[str, Dict[str, Any]] = {
         "computer_use": {"ready": False, "reason": "not checked"},
         "mcp": {"ready": False, "reason": "not checked"},
@@ -253,6 +256,22 @@ def _collect_agent_status_snapshot() -> Dict[str, Any]:
     gate = _check_agent_api_gate()
     flags = dict(Modules.agent_flags or {})
     capabilities = dict(Modules.capability_cache or {})
+    # Include active (queued/running) tasks so frontend can restore after page refresh
+    active_tasks = []
+    for tid, info in Modules.task_registry.items():
+        try:
+            st = info.get("status")
+            if st in ("queued", "running"):
+                active_tasks.append({
+                    "id": tid,
+                    "status": st,
+                    "type": info.get("type"),
+                    "start_time": info.get("start_time"),
+                    "params": info.get("params", {}),
+                    "session_id": info.get("session_id"),
+                })
+        except Exception:
+            continue
     return {
         "revision": Modules.state_revision,
         "server_online": True,
@@ -260,6 +279,7 @@ def _collect_agent_status_snapshot() -> Dict[str, Any]:
         "flags": flags,
         "gate": gate,
         "capabilities": capabilities,
+        "active_tasks": active_tasks,
         "updated_at": _now_iso(),
     }
 
@@ -326,7 +346,7 @@ def _spawn_task(kind: str, args: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError(f"Unknown task kind: {kind}")
 
 
-def _start_computer_use_process(task_info: Dict[str, Any]) -> None:
+async def _start_computer_use_process(task_info: Dict[str, Any]) -> None:
     """Spawn the actual computer-use worker process for a queued task."""
     task_id = task_info.get("task_id")
     instruction = task_info.get("instruction", "")
@@ -339,11 +359,27 @@ def _start_computer_use_process(task_info: Dict[str, Any]) -> None:
     # Update registry entry
     info = Modules.task_registry.get(task_id, {})
     info["status"] = "running"
+    info["start_time"] = _now_iso()
     info["pid"] = p.pid
     info["_proc"] = p
     Modules.task_registry[task_id] = info
     Modules.computer_use_running = True
     Modules.active_computer_use_task_id = task_id
+    # Notify frontend of queued→running transition
+    try:
+        await _emit_main_event(
+            "task_update",
+            info.get("lanlan_name"),
+            task={
+                "id": task_id,
+                "status": "running",
+                "type": "computer_use",
+                "start_time": info["start_time"],
+                "params": info.get("params", {}),
+            },
+        )
+    except Exception:
+        pass
 
 
 async def _poll_results_loop():
@@ -371,6 +407,14 @@ async def _poll_results_loop():
             if Modules.active_computer_use_task_id == tid:
                 Modules.computer_use_running = False
                 Modules.active_computer_use_task_id = None
+            # Kill subprocess if still alive (shouldn't be, but safety net)
+            proc = info.get("_proc")
+            if proc is not None and proc.is_alive():
+                logger.warning("[Agent] Subprocess for task %s still alive after result received, killing", tid)
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
             try:
                 await _emit_main_event(
                     "task_update",
@@ -434,7 +478,7 @@ async def _computer_use_scheduler_loop():
             if not tid or tid not in Modules.task_registry:
                 continue
             # Start the process for this queued task
-            _start_computer_use_process(next_task)
+            await _start_computer_use_process(next_task)
         except Exception:
             # Never crash the scheduler
             await asyncio.sleep(0.1)
@@ -447,11 +491,25 @@ async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_na
     简化链条:
     - 旧: Analyzer(LLM#1) → Planner(LLM#2) → 子进程Processor(LLM#3) → MCP调用
     - 新: DirectTaskExecutor(LLM#1) → MCP调用
+
+    Uses analyze_lock to serialize concurrent calls.  Without this, two
+    near-simultaneous analyze_request events can both pass the dedup
+    check before either spawns a task, resulting in duplicate execution.
     """
     if not Modules.task_executor:
         logger.warning("[TaskExecutor] task_executor not initialized, skipping")
         return
-    
+
+    # Lazy-init the lock (must happen inside the event loop)
+    if Modules.analyze_lock is None:
+        Modules.analyze_lock = asyncio.Lock()
+
+    async with Modules.analyze_lock:
+        await _do_analyze_and_plan(messages, lanlan_name)
+
+
+async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str]):
+    """Inner implementation, always called under analyze_lock."""
     try:
         logger.info("[AgentAnalyze] background analyze start: lanlan=%s messages=%d flags=%s analyzer_enabled=%s",
                     lanlan_name, len(messages), Modules.agent_flags, Modules.analyzer_enabled)
@@ -534,9 +592,15 @@ async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_na
                 # 检查重复
                 dup, matched = await _is_duplicate_task(result.task_description, lanlan_name)
                 if not dup:
+                    # Session management for multi-turn CUA tasks
+                    sm = get_session_manager()
+                    cu_session = sm.get_or_create(None, "cua")
+                    cu_session.add_task(result.task_description)
+
                     ti = _spawn_task("computer_use", {"instruction": result.task_description, "screenshot": None})
                     ti["lanlan_name"] = lanlan_name
-                    logger.info(f"[ComputerUse] 🚀 Scheduled task {ti['id']}: {result.task_description[:50]}...")
+                    ti["session_id"] = cu_session.session_id
+                    logger.info(f"[ComputerUse] Scheduled task {ti['id']} (session={cu_session.session_id[:8]}): {result.task_description[:50]}...")
                     try:
                         await _emit_main_event(
                             "task_update",
@@ -547,6 +611,7 @@ async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_na
                                 "type": ti.get("type"),
                                 "start_time": ti.get("start_time"),
                                 "params": ti.get("params", {}),
+                                "session_id": cu_session.session_id,
                             },
                         )
                     except Exception:
@@ -554,19 +619,62 @@ async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_na
                 else:
                     logger.info(f"[ComputerUse] Duplicate task detected, matched with {matched}")
             else:
-                logger.warning(f"[ComputerUse] ⚠️ Task requires ComputerUse but it's disabled")
+                logger.warning(f"[ComputerUse] Task requires ComputerUse but it's disabled")
         elif result.execution_method == 'browser_use':
             if Modules.agent_flags.get("browser_use_enabled", False) and Modules.browser_use:
+                # Session management for multi-turn browser tasks
+                sm = get_session_manager()
+                bu_session = sm.get_or_create(None, "browser_use")
+                bu_session.add_task(result.task_description)
+
+                bu_task_id = str(uuid.uuid4())
+                bu_start = _now_iso()
                 try:
-                    bres = await Modules.browser_use.run_instruction(result.task_description)
+                    await _emit_main_event(
+                        "task_update", lanlan_name,
+                        task={"id": bu_task_id, "status": "running", "type": "browser_use",
+                              "start_time": bu_start, "params": {"instruction": result.task_description},
+                              "session_id": bu_session.session_id},
+                    )
+                except Exception:
+                    pass
+                try:
+                    bres = await Modules.browser_use.run_instruction(
+                        result.task_description,
+                        session_id=bu_session.session_id,
+                    )
+                    success = bres.get("success", False) if isinstance(bres, dict) else False
+                    result_summary = ""
                     summary = f'你的任务"{result.task_description}"已完成'
                     if isinstance(bres, dict):
                         detail = bres.get("result") or bres.get("message") or ""
                         if detail:
-                            summary = f'你的任务"{result.task_description}"已完成：{str(detail)[:150]}'
+                            result_summary = str(detail)[:150]
+                            summary = f'你的任务"{result.task_description}"已完成：{result_summary}'
+                    bu_session.complete_task(result_summary or summary[:120], success)
                     await _emit_main_event("task_result", lanlan_name, text=summary[:240])
+                    try:
+                        await _emit_main_event(
+                            "task_update", lanlan_name,
+                            task={"id": bu_task_id, "status": "completed" if success else "failed",
+                                  "type": "browser_use", "start_time": bu_start, "end_time": _now_iso(),
+                                  "session_id": bu_session.session_id},
+                        )
+                    except Exception:
+                        pass
                 except Exception as e:
                     logger.warning(f"[BrowserUse] Failed: {e}")
+                    bu_session.complete_task(str(e)[:120], success=False)
+                    try:
+                        await _emit_main_event(
+                            "task_update", lanlan_name,
+                            task={"id": bu_task_id, "status": "failed", "type": "browser_use",
+                                  "start_time": bu_start, "end_time": _now_iso(),
+                                  "error": str(e)[:200],
+                                  "session_id": bu_session.session_id},
+                        )
+                    except Exception:
+                        pass
             else:
                 logger.warning("[BrowserUse] Task requires BrowserUse but it is disabled")
         
