@@ -2,7 +2,7 @@ import base64
 
 import numpy as np
 
-from brain.s2_5.core.engine import (
+from brain.cua.core.engine import (
     LMMEngineAnthropic,
     LMMEngineAzureOpenAI,
     LMMEngineHuggingFace,

@@ -945,7 +945,7 @@ async def add_catgirl(request: Request):
     # 通知记忆服务器重新加载配置
     try:
         async with httpx.AsyncClient() as client:
-            resp = await client.post(f"http://localhost:{MEMORY_SERVER_PORT}/reload", timeout=5.0)
+            resp = await client.post(f"http://127.0.0.1:{MEMORY_SERVER_PORT}/reload", timeout=5.0)
             if resp.status_code == 200:
                 result = resp.json()
                 if result.get('status') == 'success':
@@ -1379,7 +1379,7 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
             http_base = 'http://' + base_url[5:]
         
         # 移除可能的 /v1/audio/speech/stream 路径，只保留主机部分
-        # 例如: ws://localhost:50000/v1/audio/speech/stream -> http://localhost:50000
+        # 例如: ws://127.0.0.1:50000/v1/audio/speech/stream -> http://127.0.0.1:50000
         if '/v1/' in http_base:
             http_base = http_base.split('/v1/')[0]
         

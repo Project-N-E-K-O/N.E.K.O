@@ -33,6 +33,7 @@ class UniversalTutorialManager {
         this._lastAppliedStateKey = null;
         this.cachedValidSteps = null;
         this._refreshTimers = [];
+        this._pendingI18nStart = false;
 
         // 刷新延迟常量
         this.LAYOUT_REFRESH_DELAY = 100;
@@ -57,6 +58,69 @@ class UniversalTutorialManager {
             return window.t(key, fallback);
         }
         return fallback;
+    }
+
+    /**
+     * 检查 i18n 是否已准备好（window.t 可用且 i18next 已初始化）
+     */
+    isI18nReady() {
+        const i18nInstance = window.i18n || (typeof i18next !== 'undefined' ? i18next : null);
+        return typeof window.t === 'function' && !!(i18nInstance && i18nInstance.isInitialized);
+    }
+
+    /**
+     * 等待 i18n 就绪后再启动引导，避免回退到硬编码文案
+     */
+    startTutorialWhenI18nReady(delayMs = 0) {
+        if (this._pendingI18nStart) {
+            return;
+        }
+
+        const launchTutorial = () => {
+            setTimeout(() => {
+                this._pendingI18nStart = false;
+                this.startTutorial();
+            }, delayMs);
+        };
+
+        if (this.isI18nReady()) {
+            launchTutorial();
+            return;
+        }
+
+        this._pendingI18nStart = true;
+
+        let pollTimer = null;
+        let timeoutTimer = null;
+
+        const cleanup = () => {
+            if (pollTimer) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+            }
+            if (timeoutTimer) {
+                clearTimeout(timeoutTimer);
+                timeoutTimer = null;
+            }
+            window.removeEventListener('localechange', onLocaleReady);
+        };
+
+        const onLocaleReady = () => {
+            if (!this.isI18nReady()) {
+                return;
+            }
+            cleanup();
+            launchTutorial();
+        };
+
+        window.addEventListener('localechange', onLocaleReady);
+        pollTimer = setInterval(onLocaleReady, 100);
+
+        // 容错：如果语言系统异常，超时后仍允许教程启动
+        timeoutTimer = setTimeout(() => {
+            cleanup();
+            launchTutorial();
+        }, 5000);
     }
 
     /**
@@ -356,26 +420,20 @@ class UniversalTutorialManager {
             // 对于主页，需要等待浮动按钮创建
             if (this.currentPage === 'home') {
                 this.waitForFloatingButtons().then(() => {
-                    // 延迟启动，确保 DOM 完全加载
-                    setTimeout(() => {
-                        this.startTutorial();
-                    }, 1500);
+                    // 延迟启动，确保 DOM 完全加载，并等待 i18n 准备完成
+                    this.startTutorialWhenI18nReady(1500);
                 });
             } else if (this.currentPage === 'chara_manager') {
                 // 对于角色管理页面，需要等待猫娘卡片加载
                 this.waitForCatgirlCards().then(async () => {
                     // 先展开猫娘卡片和进阶设定，并为元素添加唯一 ID
                     await this.prepareCharaManagerForTutorial();
-                    // 延迟启动，确保 DOM 完全加载
-                    setTimeout(() => {
-                        this.startTutorial();
-                    }, 500);
+                    // 延迟启动，确保 DOM 完全加载，并等待 i18n 准备完成
+                    this.startTutorialWhenI18nReady(500);
                 });
             } else {
-                // 其他页面直接延迟启动
-                setTimeout(() => {
-                    this.startTutorial();
-                }, 1500);
+                // 其他页面延迟启动，并等待 i18n 准备完成
+                this.startTutorialWhenI18nReady(1500);
             }
         }
 
@@ -415,9 +473,7 @@ class UniversalTutorialManager {
 
                 // 如果没看过，自动启动引导
                 if (!hasSeenNew) {
-                    setTimeout(() => {
-                        this.startTutorial();
-                    }, 1000);
+                    this.startTutorialWhenI18nReady(1000);
                 }
             }, 500);
         });
@@ -981,6 +1037,15 @@ class UniversalTutorialManager {
     hasEmotionManagerModelSelected() {
         const select = document.querySelector('#model-select');
         return !!(select && select.value);
+    }
+
+    /**
+     * 情感配置页面是否已有可选模型项（非占位空值）
+     */
+    hasEmotionManagerSelectableModels() {
+        const select = document.querySelector('#model-select');
+        if (!select) return false;
+        return Array.from(select.options || []).some(option => option && option.value);
     }
 
     /**
@@ -2181,8 +2246,13 @@ class UniversalTutorialManager {
                     currentStepConfig.element === '#model-select') {
                     const updateNextState = () => {
                         const hasModel = this.hasEmotionManagerModelSelected();
-                        this.setNextButtonState(hasModel, '请先选择模型');
-                        if (hasModel && this.nextButtonGuardTimer) {
+                        const hasSelectableModels = this.hasEmotionManagerSelectableModels();
+                        const canProceed = !hasSelectableModels || hasModel;
+                        this.setNextButtonState(
+                            canProceed,
+                            this.t('emotionManager.pleaseSelectModelFirst', '请先选择模型')
+                        );
+                        if (canProceed && this.nextButtonGuardTimer) {
                             clearInterval(this.nextButtonGuardTimer);
                             this.nextButtonGuardTimer = null;
                         }

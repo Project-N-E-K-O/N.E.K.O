@@ -354,6 +354,10 @@ async def get_core_config_api():
             "visionModelUrl": core_cfg.get('visionModelUrl', ''),
             "visionModelId": core_cfg.get('visionModelId', ''),
             "visionModelApiKey": core_cfg.get('visionModelApiKey', ''),
+            "agentModelProvider": core_cfg.get('agentModelProvider', ''),
+            "agentModelUrl": core_cfg.get('agentModelUrl', ''),
+            "agentModelId": core_cfg.get('agentModelId', ''),
+            "agentModelApiKey": core_cfg.get('agentModelApiKey', ''),
             "omniModelProvider": core_cfg.get('omniModelProvider', ''),
             "omniModelUrl": core_cfg.get('omniModelUrl', ''),
             "omniModelId": core_cfg.get('omniModelId', ''),
@@ -482,6 +486,14 @@ async def update_core_config(request: Request):
             core_cfg['visionModelId'] = data['visionModelId']
         if 'visionModelApiKey' in data:
             core_cfg['visionModelApiKey'] = data['visionModelApiKey']
+        if 'agentModelProvider' in data:
+            core_cfg['agentModelProvider'] = data['agentModelProvider']
+        if 'agentModelUrl' in data:
+            core_cfg['agentModelUrl'] = data['agentModelUrl']
+        if 'agentModelId' in data:
+            core_cfg['agentModelId'] = data['agentModelId']
+        if 'agentModelApiKey' in data:
+            core_cfg['agentModelApiKey'] = data['agentModelApiKey']
         if 'omniModelProvider' in data:
             core_cfg['omniModelProvider'] = data['omniModelProvider']
         if 'omniModelUrl' in data:
@@ -622,4 +634,3 @@ async def list_gptsovits_voices(request: Request):
     except Exception as e:
         logger.error(f"获取 GPT-SoVITS 语音列表失败: {e}")
         return {"success": False, "error": str(e)}
-

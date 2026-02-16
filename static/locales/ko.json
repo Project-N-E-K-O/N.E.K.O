@@ -423,7 +423,15 @@
     "compressionInProgress": "모델 파일 압축 중...",
     "decompressionInProgress": "모델 파일 압축 해제 중...",
     "compressionFailed": "압축 실패: {{error}}",
-    "decompressionFailed": "압축 해제 실패: {{error}}"
+    "decompressionFailed": "압축 해제 실패: {{error}}",
+    "previewImageSizeExceeded": "미리보기 이미지가 1MB를 초과합니다. 더 작은 이미지를 선택하세요",
+    "modelConfigNotFound": "모델 설정 파일을 찾을 수 없습니다",
+    "noExpressionFiles": "표정 파일이 없습니다",
+    "tempFolderDeleted": "임시 폴더가 삭제되었습니다",
+    "tempFolderRetained": "임시 폴더가 유지되었습니다",
+    "noAvailableModelsError": "사용 가능한 모델이 없습니다",
+    "tagsPlaceholderInput": "태그 입력, 스페이스로 추가",
+    "prepareUploadFailedMessage": "업로드 준비 실패: {{error}}"
   },
   "emotion": {
     "manager": "Live2D 감정 매핑 관리자",
@@ -472,6 +480,17 @@
     "unsavedChanges": "저장되지 않은 설정이 있습니다. 나가시겠습니까?",
     "clearScreenshots": "스크린샷 지우기",
     "clearScreenshotsConfirm": "보류 중인 스크린샷을 모두 지우시겠습니까?"
+  },
+  "error": {
+    "cameraStreamFailed": "카메라 스트림을 가져오지 못했습니다",
+    "characterConfigFailed": "캐릭터 설정을 가져오지 못했습니다",
+    "emotionTimeout": "감정 분석 시간 초과",
+    "noAudioTrack": "사용 가능한 오디오 트랙이 없습니다"
+  },
+  "camera": {
+    "iosPermissionHint": "iOS 설정 → Safari → 카메라 권한이 \"허용\"으로 설정되어 있는지 확인하세요",
+    "notDetected": "카메라 장치가 감지되지 않았습니다",
+    "occupied": "카메라가 다른 앱에 의해 사용 중입니다. QR코드/사진 앱을 닫고 다시 시도하세요"
   },
   "chat": {
     "title": "채팅",
@@ -777,7 +796,7 @@
     "add": "추가",
     "delete": "삭제",
     "savePersistent": "지속 표현식 저장",
-    "persistentHint": "영구 표현식은 항상 활성화됩니다. 여기서는 .exp3.json 파일만 선택할 수 있습니다.",
+    "persistentHint": "영구 표현식은 항상 활성화됩니다.",
     "backToMain": "메인으로 돌아가기",
     "importModel": "가져오기 모델:",
     "motionPreview": "모션 미리보기:",
@@ -1059,7 +1078,9 @@
     "resetTutorialBtn": "튜토리얼 재설정",
     "tutorialResetSuccess": "모든 튜토리얼이 재설정되었습니다. 각 페이지를 방문할 때마다 다시 표시됩니다.",
     "tutorialPageResetSuccess": "이 페이지의 튜토리얼이 재설정되었습니다. 방문하시면 다시 보여드리겠습니다.",
-    "tutorialPageResetSuccessWithName": "\"{{pageName}}\" 튜토리얼이 재설정되었습니다. 해당 페이지를 방문하면 다시 표시됩니다."
+    "tutorialPageResetSuccessWithName": "\"{{pageName}}\" 튜토리얼이 재설정되었습니다. 해당 페이지를 방문하면 다시 표시됩니다.",
+    "refreshed": "메모리가 업데이트되었습니다. 다음 대화에서 새 메모리가 사용됩니다",
+    "refreshingContext": "컨텍스트 새로고침 중..."
   },
   "character": {
     "manager": "캐릭터 관리자",
@@ -1208,7 +1229,8 @@
       "loadFailed": "화면 소스를 로드하지 못했습니다.",
       "screens": "화면",
       "windows": "윈도우",
-      "selected": "{{source}} 선택됨"
+      "selected": "{{source}} 선택됨",
+      "sourceLost": "화면 공유에서 이전에 선택한 창을 찾을 수 없어 전체 화면 공유로 전환되었습니다"
     }
   },
   "buttons": {
@@ -1333,6 +1355,11 @@
       "saveFailed": "저장 실패",
       "lightingReset": "조명 설정이 기본값으로 재설정됨",
       "lightingApplied": "사전 설정 적용됨: {{name}}"
+    },
+    "idleAnimation": {
+      "title": "대기 애니메이션",
+      "changed": "대기 애니메이션이 변경되었습니다: {{name}}",
+      "changeFailed": "대기 애니메이션 변경 실패"
     }
   },
   "modelManager": {
@@ -1480,14 +1507,6 @@
     "step10": {
       "title": "⚙️ 설정",
       "desc": "설정 패널을 엽니다. 각 설정을 소개하겠습니다~"
-    },
-    "step11": {
-      "title": "🧩 메시지 병합",
-      "desc": "짧은 메시지를 하나의 전송으로 결합하여 방해를 줄입니다~"
-    },
-    "step12": {
-      "title": "⛔ 중단 허용",
-      "desc": "현재 응답 중단 허용 여부를 제어합니다~"
     },
     "step13": {
       "title": "💬 사전 예방적 채팅",
@@ -1931,5 +1950,33 @@
     "translationError": "번역 오류:",
     "translationException": "번역 요청 예외:",
     "resetButtonNotFound": "[앱] ResetSessionButton을 찾을 수 없습니다!"
+  },
+  "emotionManager": {
+    "title": "Live2D 감정 매핑 관리자 - Project N.E.K.O.",
+    "pageTitle": "Live2D 감정 매핑 관리자",
+    "subtitle": "각 감정에 대한 모션과 표정을 설정합니다",
+    "selectModel": "Live2D 모델 선택",
+    "motion": "모션",
+    "expression": "표정",
+    "selectMotion": "모션 선택",
+    "selectExpression": "표정 선택",
+    "saveConfig": "설정 저장",
+    "pleaseSelectModel": "모델을 선택하세요",
+    "noModelsFound": "사용 가능한 모델이 없습니다",
+    "loadModelListFailed": "모델 목록을 로드하지 못했습니다",
+    "loadModelFilesFailed": "모델 파일을 로드하지 못했습니다",
+    "configLoadSuccess": "설정이 성공적으로 로드되었습니다",
+    "pleaseSelectModelFirst": "먼저 모델을 선택하세요",
+    "configSaveSuccess": "설정이 저장되었습니다! 각 감정의 모션/표정은 동일한 확률로 트리거됩니다.",
+    "saveFailed": "저장 실패",
+    "configReset": "설정이 초기화되었습니다",
+    "emotions": {
+      "happy": "행복 (Happy)",
+      "sad": "슬픔 (Sad)",
+      "angry": "화남 (Angry)",
+      "neutral": "평온 (Neutral)",
+      "surprised": "놀람 (Surprised)",
+      "idle": "대기 (Idle)"
+    }
   }
 }

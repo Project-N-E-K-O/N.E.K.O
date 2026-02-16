@@ -865,7 +865,7 @@ async def proactive_chat(request: Request):
         # 2. 获取new_dialogue prompt
         try:
             async with httpx.AsyncClient() as client:
-                resp = await client.get(f"http://localhost:{MEMORY_SERVER_PORT}/new_dialog/{lanlan_name}", timeout=5.0)
+                resp = await client.get(f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{lanlan_name}", timeout=5.0)
                 memory_context = resp.text
         except Exception as e:
             logger.warning(f"[{lanlan_name}] 获取记忆上下文失败，使用空上下文: {e}")

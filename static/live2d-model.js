@@ -768,32 +768,36 @@ Live2DManager.prototype.applyModelSettings = function(model, options) {
             const rendererWidth = this.pixi_app.renderer.width;
             const rendererHeight = this.pixi_app.renderer.height;
 
-            // 验证渲染器尺寸是否有效（避免除以零或无效值导致模型崩溃）
-            const hasValidRenderer = Number.isFinite(rendererWidth) && Number.isFinite(rendererHeight) &&
-                rendererWidth > 0 && rendererHeight > 0;
+            // 使用 screen 尺寸做跨分辨率归一化（不受 F12、输入法等临时视口变化影响）
+            const currentScreenW = window.screen.width;
+            const currentScreenH = window.screen.height;
+            const hasValidScreen = Number.isFinite(currentScreenW) && Number.isFinite(currentScreenH) &&
+                currentScreenW > 0 && currentScreenH > 0;
 
             // 检查是否有保存的视口信息（用于跨分辨率归一化）
             const savedViewport = preferences.viewport;
-            const hasViewport = hasValidRenderer && savedViewport &&
+            const hasViewport = hasValidScreen && savedViewport &&
                 Number.isFinite(savedViewport.width) && Number.isFinite(savedViewport.height) &&
                 savedViewport.width > 0 && savedViewport.height > 0;
 
-            // 计算视口比例（如果保存时的视口与当前不同，则等比缩放位置和大小）
+            // 计算屏幕比例（如果保存时的屏幕与当前不同，则等比缩放位置和大小）
             let wRatio = 1;
             let hRatio = 1;
             if (hasViewport) {
-                wRatio = rendererWidth / savedViewport.width;
-                hRatio = rendererHeight / savedViewport.height;
+                wRatio = currentScreenW / savedViewport.width;
+                hRatio = currentScreenH / savedViewport.height;
             }
 
             // 验证缩放值是否有效
             if (Number.isFinite(scaleX) && Number.isFinite(scaleY) &&
                 scaleX > 0 && scaleY > 0 && scaleX < 10 && scaleY < 10) {
-                if (hasViewport && (Math.abs(wRatio - 1) > 0.01 || Math.abs(hRatio - 1) > 0.01)) {
-                    // 视口尺寸有变化，按最小比例等比缩放，保持模型相对大小
-                    const scaleRatio = Math.min(wRatio, hRatio);
+                // 仅在屏幕分辨率发生"跨代"级别变化时（如 1080p→4K）才归一化缩放
+                // 普通跨屏移动（如 1600x900→2560x1440）不调整，避免用户调好的大小被改
+                const scaleRatio = Math.min(wRatio, hRatio);
+                const isExtremeChange = hasViewport && (scaleRatio > 1.8 || scaleRatio < 0.56);
+                if (isExtremeChange) {
                     model.scale.set(scaleX * scaleRatio, scaleY * scaleRatio);
-                    console.log('视口变化，缩放已归一化:', { wRatio, hRatio, scaleRatio });
+                    console.log('屏幕分辨率大幅变化，缩放已归一化:', { wRatio, hRatio, scaleRatio });
                 } else {
                     model.scale.set(scaleX, scaleY);
                 }

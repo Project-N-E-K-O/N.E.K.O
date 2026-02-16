@@ -339,13 +339,20 @@ class VRMInteraction {
         };
 
         // 5.5 鼠标悬停时动态更新光标（不拖拽时检测是否在模型上）
+        // 节流射线检测，避免每帧 intersectObject 造成卡顿
+        let _hoverThrottleId = null;
         this.mouseHoverHandler = (e) => {
             if (this.isDragging || this.checkLocked()) return;
-            if (this._hitTestModel(e.clientX, e.clientY)) {
-                canvas.style.cursor = 'grab';
-            } else {
-                canvas.style.cursor = 'default';
-            }
+            if (_hoverThrottleId) return; // 节流中，跳过
+            _hoverThrottleId = requestAnimationFrame(() => {
+                _hoverThrottleId = null;
+                if (this.isDragging) return;
+                if (this._hitTestModel(e.clientX, e.clientY)) {
+                    canvas.style.cursor = 'grab';
+                } else {
+                    canvas.style.cursor = 'default';
+                }
+            });
         };
 
         // 6. 滚轮缩放
@@ -1211,14 +1218,13 @@ class VRMInteraction {
             }
         }
 
-        // 获取当前视口尺寸（用于跨分辨率缩放归一化）
+        // 获取当前屏幕尺寸（用于跨分辨率缩放归一化）
+        // 使用 screen.width/height 而非 renderer/窗口尺寸，避免临时视口变化（F12、输入法等）污染保存数据
         let viewportInfo = null;
-        if (this.manager.renderer && this.manager.renderer.domElement) {
-            const w = this.manager.renderer.domElement.clientWidth || window.innerWidth;
-            const h = this.manager.renderer.domElement.clientHeight || window.innerHeight;
-            if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
-                viewportInfo = { width: w, height: h };
-            }
+        const screenW = window.screen.width;
+        const screenH = window.screen.height;
+        if (Number.isFinite(screenW) && Number.isFinite(screenH) && screenW > 0 && screenH > 0) {
+            viewportInfo = { width: screenW, height: screenH };
         }
 
         // 获取当前相机位置、朝向和观察目标

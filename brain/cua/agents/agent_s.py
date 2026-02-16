@@ -2,8 +2,8 @@ import logging
 import platform
 from typing import Dict, List, Tuple
 
-from brain.s3.agents.grounding import ACI
-from brain.s3.agents.worker import Worker
+from brain.cua.agents.grounding import ACI
+from brain.cua.agents.worker import Worker
 
 logger = logging.getLogger("desktopenv.agent")
 
@@ -13,18 +13,18 @@ class UIAgent:
 
     def __init__(
         self,
-        worker_engine_params: Dict,
+        engine_params: Dict,
         grounding_agent: ACI,
         platform: str = platform.system().lower(),
     ):
         """Initialize UIAgent
 
         Args:
-            worker_engine_params: Configuration parameters for the worker LLM agent
+            engine_params: Configuration parameters for the LLM engine
             grounding_agent: Instance of ACI class for UI interaction
             platform: Operating system platform (macos, linux, windows)
         """
-        self.worker_engine_params = worker_engine_params
+        self.engine_params = engine_params
         self.grounding_agent = grounding_agent
         self.platform = platform
 
@@ -45,12 +45,12 @@ class UIAgent:
         pass
 
 
-class AgentS3(UIAgent):
+class AgentS2_5(UIAgent):
     """Agent that uses no hierarchy for less inference time"""
 
     def __init__(
         self,
-        worker_engine_params: Dict,
+        engine_params: Dict,
         grounding_agent: ACI,
         platform: str = platform.system().lower(),
         max_trajectory_length: int = 8,
@@ -59,23 +59,22 @@ class AgentS3(UIAgent):
         """Initialize a minimalist AgentS2 without hierarchy
 
         Args:
-            worker_engine_params: Configuration parameters for the worker agent.
+            engine_params: Configuration parameters for the LLM engine
             grounding_agent: Instance of ACI class for UI interaction
             platform: Operating system platform (darwin, linux, windows)
             max_trajectory_length: Maximum number of image turns to keep
             enable_reflection: Creates a reflection agent to assist the worker agent
         """
 
-        super().__init__(worker_engine_params, grounding_agent, platform)
+        super().__init__(engine_params, grounding_agent, platform)
         self.max_trajectory_length = max_trajectory_length
         self.enable_reflection = enable_reflection
-
         self.reset()
 
     def reset(self) -> None:
         """Reset agent state and initialize components"""
         self.executor = Worker(
-            worker_engine_params=self.worker_engine_params,
+            engine_params=self.engine_params,
             grounding_agent=self.grounding_agent,
             platform=self.platform,
             max_trajectory_length=self.max_trajectory_length,

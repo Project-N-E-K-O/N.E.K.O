@@ -404,7 +404,45 @@
     "compressionInProgress": "Compressing model files...",
     "decompressionInProgress": "Decompressing model files...",
     "compressionFailed": "Compression failed: {{error}}",
-    "decompressionFailed": "Decompression failed: {{error}}"
+    "decompressionFailed": "Decompression failed: {{error}}",
+    "uploadingPreviewImage": "Uploading preview image...",
+    "previewImageSizeExceeded": "Preview image exceeds 1MB, please select a smaller image",
+    "modelConfigNotFound": "Model configuration file not found",
+    "noExpressionFiles": "No expression files",
+    "tempFolderDeleted": "Temporary folder deleted",
+    "tempFolderRetained": "Temporary folder retained",
+    "noAvailableModelsError": "No available models",
+    "tagsPlaceholderInput": "Enter tags, press space to add",
+    "prepareUploadFailedMessage": "Prepare upload failed: {{error}}",
+    "pageDescription": "Browse, subscribe, download, and manage Live2D models and voices from Steam Workshop",
+    "previewImageMissing": "Preview image file not found, please check the path",
+    "sort": {
+      "title": "Sort:",
+      "nameAsc": "Name (Ascending)",
+      "nameDesc": "Name (Descending)",
+      "dateAsc": "Subscribe Date (Ascending)",
+      "dateDesc": "Subscribe Date (Descending)",
+      "createDateAsc": "Create Date (Ascending)",
+      "createDateDesc": "Create Date (Descending)",
+      "updateAsc": "Update Time (Ascending)",
+      "updateDesc": "Update Time (Descending)",
+      "sizeAsc": "File Size (Ascending)",
+      "sizeDesc": "File Size (Descending)"
+    },
+    "uploadReady": "Ready to upload {{itemName}}",
+    "validatingFolderPathWithName": "Validating folder: {{path}}",
+    "voiceNote": "For voice settings, please go to the Live2D settings page to register manually"
+  },
+  "error": {
+    "cameraStreamFailed": "Failed to get camera stream",
+    "characterConfigFailed": "Failed to get character configuration",
+    "emotionTimeout": "Emotion analysis timeout",
+    "noAudioTrack": "No available audio track"
+  },
+  "camera": {
+    "iosPermissionHint": "Please check iOS Settings → Safari → Camera permission is set to \"Allow\"",
+    "notDetected": "No camera device detected",
+    "occupied": "Camera is occupied by another app? Close QR code/photo apps and try again"
   },
   "dialogs": {
     "confirmLeave": "Confirm Leave",
@@ -425,6 +463,48 @@
     "screenshotAlt": "Screenshot {{index}}",
     "screenshotTitle": "Click to view screenshot {{index}}",
     "removeScreenshot": "Remove this screenshot"
+  },
+  "emotion": {
+    "manager": "Live2D Emotion Mapping Manager",
+    "description": "Manage and configure motion and expression mappings for Live2D characters",
+    "selectModel": "Select Live2D Model:",
+    "model": "Model: {{model}}",
+    "loading": "Loading...",
+    "loaded": "Loaded, found {{motionCount}} motion files and {{expressionCount}} expression files",
+    "loadFailed": "Failed to load available model list: {{error}}",
+    "loadError": "Error loading model list: {{error}}",
+    "pleaseSelect": "Select Model",
+    "pleaseSelectModel": "Please select a model first",
+    "pleaseSelectFile": "Please select a file",
+    "modelInfo": "Model Info",
+    "motionFiles": "Motion Files ({{count}})",
+    "expressionFiles": "Expression Files ({{count}})",
+    "motionExpressionCount": "Motion Files: {{motionCount}} | Expression Files: {{expressionCount}}",
+    "selectMotionFile": "Select Motion File",
+    "selectExpressionFile": "Select Expression File",
+    "addedMotionFile": "Added motion file: {{file}}",
+    "removedMotionFile": "Removed motion file: {{file}}",
+    "addedExpressionFile": "Added expression file: {{file}}",
+    "removedExpressionFile": "Removed expression file: {{file}}",
+    "add": "Add",
+    "delete": "Delete",
+    "reset": "Reset",
+    "saveConfig": "Save Config",
+    "resetConfig": "Reset Config",
+    "savingConfig": "Saving configuration...",
+    "configSaved": "Configuration saved successfully",
+    "saveConfigFailed": "Failed to save configuration: {{error}}",
+    "saveConfigError": "Error saving configuration: {{error}}",
+    "loadingConfig": "Loading configuration and model files...",
+    "configLoaded": "Configuration loaded, but failed to get model files",
+    "loadConfigFailed": "Failed to load configuration: {{error}}",
+    "loadConfigError": "Error loading configuration: {{error}}",
+    "loadEmotionFailed": "Failed to load emotion mapping config: {{error}}",
+    "confirmReset": "Are you sure you want to reset the current configuration? This will clear all motion and expression files.",
+    "configReset": "Configuration has been reset",
+    "autoDetected": "Auto-detected {{count}} Live2D models",
+    "autoCreatedMapping": "Auto-created emotion mapping config for model {{model}}",
+    "clickToClosePreview": "Click blank area to close preview"
   },
   "voiceControl": {
     "startVoice": "Start Voice",
@@ -707,7 +787,7 @@
     "pleaseSelectExpression": "Please select an expression first",
     "selectMotion": "Animation",
     "selectExpression": "Expression",
-    "selectPersistentExpression": "Select Persistent Expression",
+    "selectPersistentExpression": "Persist. Expr.",
     "noMotionFiles": "No motion files",
     "emotionConfig": "Emotion Config",
     "saveSettings": "Save Settings",
@@ -716,7 +796,7 @@
     "add": "Add",
     "delete": "Delete",
     "savePersistent": "Save Persistent Expression",
-    "persistentHint": "Persistent expressions will always be active; only .exp3.json files can be selected here.",
+    "persistentHint": "Persistent expressions will always be active.",
     "backToMain": "Back to Main",
     "importModel": "Import Model:",
     "motionPreview": "Motion Preview:",
@@ -998,7 +1078,9 @@
     "resetTutorialBtn": "Reset Tutorial",
     "tutorialResetSuccess": "All tutorials have been reset. They will be shown again when you visit each page.",
     "tutorialPageResetSuccess": "Tutorial for this page has been reset. It will be shown again when you visit.",
-    "tutorialPageResetSuccessWithName": "Tutorial for \"{{pageName}}\" has been reset. It will be shown again when you visit that page."
+    "tutorialPageResetSuccessWithName": "Tutorial for \"{{pageName}}\" has been reset. It will be shown again when you visit that page.",
+    "refreshed": "Memory updated, new memory will be used in the next conversation",
+    "refreshingContext": "Refreshing context..."
   },
   "character": {
     "manager": "Character Manager",
@@ -1147,7 +1229,8 @@
       "loadFailed": "Failed to load screen sources",
       "screens": "Screens",
       "windows": "Windows",
-      "selected": "Selected {{source}}"
+      "selected": "Selected {{source}}",
+      "sourceLost": "Screen sharing could not find previously selected window, switched to fullscreen sharing"
     }
   },
   "buttons": {
@@ -1272,6 +1355,11 @@
       "saveFailed": "Save failed",
       "lightingReset": "Lighting settings reset to default",
       "lightingApplied": "Preset applied: {{name}}"
+    },
+    "idleAnimation": {
+      "title": "Idle Animation",
+      "changed": "Idle animation changed: {{name}}",
+      "changeFailed": "Failed to change idle animation"
     }
   },
   "modelManager": {
@@ -1451,7 +1539,6 @@
         "note": "If you don't see it, expand the tray arrow to show hidden icons.",
         "alt": "System tray location example"
       },
-
       "menu": {
         "title": "📋 Tray Menu",
         "desc": "You'll find a N.E.K.O icon in the bottom-right tray. Right-click it to see many options. Here are two commonly used features:"
@@ -1863,5 +1950,33 @@
     "translationError": "Translation error:",
     "translationException": "Translation request exception:",
     "resetButtonNotFound": "[App] resetSessionButton not found!"
+  },
+  "emotionManager": {
+    "title": "Live2D Emotion Mapping Manager - Project N.E.K.O.",
+    "pageTitle": "Live2D Emotion Mapping Manager",
+    "subtitle": "Configure motions and expressions for different emotions",
+    "selectModel": "Select Live2D Model",
+    "motion": "Motion",
+    "expression": "Expression",
+    "selectMotion": "Select Motion",
+    "selectExpression": "Select Expression",
+    "saveConfig": "Save Configuration",
+    "pleaseSelectModel": "Please select a model",
+    "noModelsFound": "No available models found",
+    "loadModelListFailed": "Failed to load model list",
+    "loadModelFilesFailed": "Failed to load model files",
+    "configLoadSuccess": "Configuration loaded successfully",
+    "pleaseSelectModelFirst": "Please select a model first",
+    "configSaveSuccess": "Configuration saved! Each emotion's motions/expressions will share equal trigger probability.",
+    "saveFailed": "Save failed",
+    "configReset": "Configuration has been reset",
+    "emotions": {
+      "happy": "Happy",
+      "sad": "Sad",
+      "angry": "Angry",
+      "neutral": "Neutral",
+      "surprised": "Surprised",
+      "idle": "Idle"
+    }
   }
 }

@@ -22,6 +22,7 @@ class VRMAnimation {
         this.playbackSpeed = 1.0;
         this.skeletonHelper = null;
         this.debug = false;
+        this.isIdleAnimation = false;  // 当前播放的是否为待机动画
         this.lipSyncActive = false;
         this.analyser = null;
         this.mouthExpressions = { 'aa': null, 'ih': null, 'ou': null, 'ee': null, 'oh': null };
@@ -478,6 +479,10 @@ class VRMAnimation {
             await this._createLookAtProxy(vrm);
             const clip = await this._createAndValidateAnimationClip(vrmAnimation, vrm);
             this._processTracksForVersion(clip, vrmVersion);
+
+            // 判断是否为待机动画（仅在显式传入 isIdle: true 时才视为待机）
+            this.isIdleAnimation = !!options.isIdle;
+
             const mixerRoot = this._findBestMixerRoot(vrm, clip);
             const newAction = this._createAndConfigureAction(clip, mixerRoot, options);
             this._playAction(newAction, options, vrm);
@@ -513,6 +518,7 @@ class VRMAnimation {
                     }
                     this.currentAction = null;
                     this.vrmaIsPlaying = false;
+                    this.isIdleAnimation = false;
                     this._fadeTimer = null;
 
                     // 动画停止后恢复物理
@@ -531,6 +537,7 @@ class VRMAnimation {
                 this.vrmaMixer.stopAllAction();
             }
             this.vrmaIsPlaying = false;
+            this.isIdleAnimation = false;
             this._restorePhysics();
         }
     }
@@ -685,6 +692,7 @@ class VRMAnimation {
 
         this.currentAction = null;
         this.vrmaIsPlaying = false;
+        this.isIdleAnimation = false;
     }
 
     dispose() {

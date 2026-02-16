@@ -291,11 +291,37 @@
                 showSaveStatus(window.t ? window.t('memory.saveSuccess') : '保存成功', true);
 
                 // 通知父窗口刷新对话上下文
-                if (data.need_refresh && window.parent) {
-                    window.parent.postMessage({
-                        type: 'memory_edited',
-                        catgirl_name: data.catgirl_name
-                    }, PARENT_ORIGIN);
+                if (data.need_refresh) {
+                    let broadcastSent = false;
+                    
+                    // 优先使用 BroadcastChannel（跨页面通信）
+                    if (typeof BroadcastChannel !== 'undefined') {
+                        let channel = null;
+                        try {
+                            channel = new BroadcastChannel('neko_page_channel');
+                            channel.postMessage({
+                                action: 'memory_edited',
+                                catgirl_name: data.catgirl_name
+                            });
+                            console.log('[MemoryBrowser] 已通过 BroadcastChannel 发送 memory_edited 消息');
+                            broadcastSent = true;
+                        } catch (e) {
+                            console.error('[MemoryBrowser] BroadcastChannel 发送失败:', e);
+                        } finally {
+                            if (channel) {
+                                channel.close();
+                            }
+                        }
+                    }
+                    
+                    // 仅当 BroadcastChannel 不可用时，使用 postMessage 作为后备（iframe 场景）
+                    if (!broadcastSent && window.parent && window.parent !== window) {
+                        window.parent.postMessage({
+                            type: 'memory_edited',
+                            catgirl_name: data.catgirl_name
+                        }, PARENT_ORIGIN);
+                        console.log('[MemoryBrowser] 已通过 postMessage 发送 memory_edited 消息（后备方案）');
+                    }
                 }
             } else {
                 const errorMsg = data.error || (window.t ? window.t('common.unknownError') : '未知错误');

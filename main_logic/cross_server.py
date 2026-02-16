@@ -13,11 +13,12 @@ import time
 import pickle
 import aiohttp
 import logging
-from config import MONITOR_SERVER_PORT, MEMORY_SERVER_PORT, COMMENTER_SERVER_PORT, TOOL_SERVER_PORT
+from config import MONITOR_SERVER_PORT, MEMORY_SERVER_PORT, COMMENTER_SERVER_PORT
 from datetime import datetime
 import json
 import re
 from utils.frontend_utils import replace_blank, is_only_punctuation
+from main_logic.agent_event_bus import publish_analyze_request_reliably
 
 # Setup logger for this module
 logger = logging.getLogger(__name__)
@@ -29,6 +30,35 @@ emoji_pattern2 = re.compile("["
         u"\U0001F1E0-\U0001F1FF"  # flags (iOS)
                            "]+", flags=re.UNICODE)
 emotion_pattern = re.compile('<(.*?)>')
+
+
+async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str, messages: list[dict]) -> bool:
+    """Publish analyze request via EventBus with ack/retry."""
+    try:
+        sent = await publish_analyze_request_reliably(
+            lanlan_name=lanlan_name,
+            trigger=trigger,
+            messages=messages,
+            ack_timeout_s=0.5,
+            retries=1,
+        )
+        if sent:
+            logger.info(
+                "[%s] analyze_request forwarded with ack: trigger=%s messages=%d",
+                lanlan_name,
+                trigger,
+                len(messages) if isinstance(messages, list) else 0,
+            )
+            return True
+    except Exception as e:
+        logger.info(
+            "[%s] analyze_request forwarding exception: trigger=%s error=%s",
+            lanlan_name,
+            trigger,
+            e,
+        )
+        return False
+    return False
 
 
 def normalize_text(text):  # 对文本进行基本预处理
@@ -134,7 +164,7 @@ async def keep_reader(ws: aiohttp.ClientWebSocketResponse):
         pass
 
 
-def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_server_url=f"ws://localhost:{MONITOR_SERVER_PORT}", config=None):
+def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_server_url=f"ws://127.0.0.1:{MONITOR_SERVER_PORT}", config=None):
     """独立进程运行的同步连接器"""
 
     # 创建一个新的事件循环
@@ -272,7 +302,7 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                 try:
                                     async with aiohttp.ClientSession() as session:
                                         async with session.post(
-                                            f"http://localhost:{MEMORY_SERVER_PORT}/renew/{lanlan_name}",
+                                            f"http://127.0.0.1:{MEMORY_SERVER_PORT}/renew/{lanlan_name}",
                                             json={'input_history': json.dumps(chat_history, indent=2, ensure_ascii=False)},
                                             timeout=aiohttp.ClientTimeout(total=30.0)
                                         ) as response:
@@ -316,14 +346,15 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                                     continue
                                                 recent.append({'role': item.get('role'), 'text': txt})
                                         if recent:
-                                            async with aiohttp.ClientSession() as session:
-                                                async with session.post(
-                                                    f"http://localhost:{TOOL_SERVER_PORT}/analyze_and_plan",
-                                                    json={'messages': recent, 'lanlan_name': lanlan_name},
-                                                    timeout=aiohttp.ClientTimeout(total=5.0)
-                                                ) as resp:
-                                                    await resp.read()  # 确保响应被完全读取
-                                            logger.debug(f"[{lanlan_name}] 已发送对话到analyzer进行分析")
+                                            sent = await _publish_analyze_request_with_fallback(
+                                                lanlan_name=lanlan_name,
+                                                trigger="turn_end",
+                                                messages=recent,
+                                            )
+                                            if sent:
+                                                logger.info(f"[{lanlan_name}] analyze_request dispatch success (turn_end), messages={len(recent)}")
+                                            else:
+                                                logger.info(f"[{lanlan_name}] analyze_request dispatch failed (turn_end), messages={len(recent)}")
                                     except asyncio.TimeoutError:
                                         logger.debug(f"[{lanlan_name}] 发送到analyzer超时")
                                     except RuntimeError as e:
@@ -340,7 +371,7 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                     try:
                                         async with aiohttp.ClientSession() as session:
                                             async with session.post(
-                                                f"http://localhost:{MEMORY_SERVER_PORT}/process/{lanlan_name}",
+                                                f"http://127.0.0.1:{MEMORY_SERVER_PORT}/process/{lanlan_name}",
                                                 json={'input_history': json.dumps(new_messages, indent=2, ensure_ascii=False)},
                                                 timeout=aiohttp.ClientTimeout(total=30.0)
                                             ) as response:
@@ -388,14 +419,15 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                                     continue
                                                 recent.append({'role': item.get('role'), 'text': txt})
                                         if recent:
-                                            async with aiohttp.ClientSession() as session:
-                                                async with session.post(
-                                                    f"http://localhost:{TOOL_SERVER_PORT}/analyze_and_plan",
-                                                    json={'messages': recent, 'lanlan_name': lanlan_name},
-                                                    timeout=aiohttp.ClientTimeout(total=5.0)
-                                                ) as resp:
-                                                    await resp.read()  # 确保响应被完全读取
-                                            logger.debug(f"[{lanlan_name}] 已发送对话到analyzer进行分析 (session end)")
+                                            sent = await _publish_analyze_request_with_fallback(
+                                                lanlan_name=lanlan_name,
+                                                trigger="session_end",
+                                                messages=recent,
+                                            )
+                                            if sent:
+                                                logger.info(f"[{lanlan_name}] analyze_request dispatch success (session_end), messages={len(recent)}")
+                                            else:
+                                                logger.info(f"[{lanlan_name}] analyze_request dispatch failed (session_end), messages={len(recent)}")
                                     except asyncio.TimeoutError:
                                         logger.debug(f"[{lanlan_name}] 发送到analyzer超时 (session end)")
                                     except RuntimeError as e:
@@ -422,7 +454,7 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                                     try:
                                         async with aiohttp.ClientSession() as session:
                                             async with session.post(
-                                                f"http://localhost:{MEMORY_SERVER_PORT}/process/{lanlan_name}",
+                                                f"http://127.0.0.1:{MEMORY_SERVER_PORT}/process/{lanlan_name}",
                                                 json={'input_history': json.dumps(new_messages, indent=2, ensure_ascii=False)},
                                                 timeout=aiohttp.ClientTimeout(total=30.0)
                                             ) as response:
@@ -509,7 +541,7 @@ def sync_connector_process(message_queue, shutdown_event, lanlan_name, sync_serv
                             bullet_session = aiohttp.ClientSession()
                             try:
                                 bullet_ws = await bullet_session.ws_connect(
-                                    f"wss://localhost:{COMMENTER_SERVER_PORT}/sync/{lanlan_name}",
+                                    f"wss://127.0.0.1:{COMMENTER_SERVER_PORT}/sync/{lanlan_name}",
                                     ssl=ssl._create_unverified_context()
                                 )
                                 # print(f"[Sync Process] [{lanlan_name}] Bullet连接已建立")
