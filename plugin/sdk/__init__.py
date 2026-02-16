@@ -66,6 +66,24 @@ from .memory import MemoryClient
 from .types import PluginContextProtocol
 from .state import StatePersistence, EXTENDED_TYPES
 
+# Adapter 模块（可选导入，避免循环依赖）
+try:
+    from .adapter import (
+        AdapterBase,
+        AdapterConfig,
+        AdapterContext,
+        AdapterMode,
+        AdapterMessage,
+        AdapterResponse,
+        Protocol,
+        on_adapter_event,
+        on_adapter_startup,
+        on_adapter_shutdown,
+    )
+    _ADAPTER_AVAILABLE = True
+except ImportError:
+    _ADAPTER_AVAILABLE = False
+
 __all__ = [
     # 版本和错误码
     "SDK_VERSION",
@@ -120,6 +138,18 @@ __all__ = [
     "CHECKPOINT_ATTR",  # 向后兼容别名
     "WORKER_MODE_ATTR", # Worker 模式属性名
     "EVENT_META_ATTR",  # 事件元数据属性名
+    
+    # Adapter 相关（type="adapter" 插件使用）
+    "AdapterBase",      # Adapter 基类
+    "AdapterConfig",    # Adapter 配置
+    "AdapterContext",   # Adapter 上下文
+    "AdapterMode",      # Adapter 工作模式
+    "AdapterMessage",   # Adapter 消息
+    "AdapterResponse",  # Adapter 响应
+    "Protocol",         # 协议类型枚举
+    "on_adapter_event", # Adapter 事件装饰器
+    "on_adapter_startup",   # Adapter 启动装饰器
+    "on_adapter_shutdown",  # Adapter 关闭装饰器
 ]
 
 # Hook 使用示例:

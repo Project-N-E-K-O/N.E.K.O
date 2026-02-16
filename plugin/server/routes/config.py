@@ -23,6 +23,7 @@ from plugin.server.config_service import (
     upsert_plugin_profile_config,
     delete_plugin_profile_config,
     set_plugin_active_profile,
+    hot_update_plugin_config,
 )
 from plugin.server.infrastructure.auth import require_admin
 from plugin.server.infrastructure.executor import _api_executor
@@ -49,6 +50,13 @@ class ConfigTomlRenderRequest(BaseModel):
 class ProfileConfigUpsertRequest(BaseModel):
     config: dict
     make_active: Optional[bool] = None
+
+
+class HotUpdateConfigRequest(BaseModel):
+    """热更新配置请求"""
+    config: dict
+    mode: str = "temporary"  # "temporary" | "permanent"
+    profile: Optional[str] = None  # permanent 模式时使用的 profile 名称
 
 
 def validate_config_updates(plugin_id: str, updates: dict) -> None:
@@ -405,3 +413,38 @@ async def set_plugin_active_profile_endpoint(plugin_id: str, profile_name: str, 
     except Exception as e:
         logger.exception(f"Failed to set active profile '{profile_name}' for plugin {plugin_id}: Unexpected error")
         raise handle_plugin_error(e, f"Failed to set active profile '{profile_name}' for plugin {plugin_id}", 500) from e
+
+
+@router.post("/plugin/{plugin_id}/config/hot-update")
+async def hot_update_plugin_config_endpoint(plugin_id: str, payload: HotUpdateConfigRequest, _: str = require_admin):
+    """
+    热更新插件配置（不需要重启插件）。
+    
+    支持两种模式：
+    - temporary: 临时更新，只修改插件进程内缓存，不写入文件。插件重启后配置会恢复。
+    - permanent: 永久更新，写入 profile 文件，并通知插件进程更新缓存。
+    
+    请求体：
+    - config: 要更新的配置部分（会与现有配置深度合并）
+    - mode: "temporary" | "permanent"
+    - profile: profile 名称（permanent 模式时使用，None 表示使用当前激活的 profile）
+    """
+    try:
+        # 验证配置更新
+        validate_config_updates(plugin_id, payload.config)
+        
+        # hot_update_plugin_config 是异步函数，直接 await
+        # 这样可以在同一个事件循环中执行，确保 _pending_futures 机制正常工作
+        return await hot_update_plugin_config(
+            plugin_id=plugin_id,
+            updates=payload.config,
+            mode=payload.mode,
+            profile=payload.profile,
+        )
+    except HTTPException:
+        raise
+    except (PluginError, ValueError, AttributeError, KeyError, OSError) as e:
+        raise handle_plugin_error(e, f"Failed to hot-update config for plugin {plugin_id}", 500) from e
+    except Exception as e:
+        logger.exception(f"Failed to hot-update config for plugin {plugin_id}: Unexpected error")
+        raise handle_plugin_error(e, f"Failed to hot-update config for plugin {plugin_id}", 500) from e

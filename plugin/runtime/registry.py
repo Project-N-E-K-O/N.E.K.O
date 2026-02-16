@@ -1285,7 +1285,7 @@ def _parse_single_plugin_config(
             pid, e,
         )
     
-    logger.info("Plugin ID: {}", pid)
+    logger.debug("Plugin ID: {}", pid)
     
     # 检查重复路径
     try:
@@ -1306,7 +1306,7 @@ def _parse_single_plugin_config(
         logger.warning("Plugin {} has invalid entry point '{}', skipping", pid, entry)
         return None
     
-    logger.info("Plugin {} entry point: {}", pid, entry)
+    logger.debug("Plugin {} entry point: {}", pid, entry)
     
     # 解析运行时配置
     runtime_cfg = conf.get("plugin_runtime")
@@ -1512,7 +1512,7 @@ def _topological_sort_plugins(
         )
         final_order.extend(missing)
     
-    logger.info("Plugin load order: {}", final_order)
+    logger.debug("Plugin load order: {}", final_order)
     return final_order
 
 
@@ -1744,6 +1744,114 @@ def _load_extension_plugin(
     )
 
 
+def _load_adapter_plugin(
+    ctx: PluginContext,
+    logger: Any,
+    process_host_factory: Callable[..., Any],
+) -> Optional[Any]:
+    """
+    加载 Adapter 类型插件。
+    
+    Adapter 是一种特殊的插件类型，用于：
+    1. 作为网关转发外部协议请求到 NEKO 插件
+    2. 作为路由器直接处理外部请求
+    3. 作为桥接器在不同协议间转换
+    
+    Adapter 作为独立进程运行，但具有更高的启动优先级。
+    
+    Args:
+        ctx: 插件上下文
+        logger: 日志记录器
+        process_host_factory: 进程宿主工厂函数
+    
+    Returns:
+        创建的 host 对象，或 None 如果加载失败
+    """
+    pid = ctx.pid
+    pdata = ctx.pdata
+    toml_path = ctx.toml_path
+    entry = ctx.entry
+    
+    # 解析 adapter 配置
+    adapter_conf = ctx.conf.get("adapter", {})
+    adapter_mode = adapter_conf.get("mode", "hybrid")
+    adapter_priority = adapter_conf.get("priority", 0)
+    
+    logger.info(
+        "Loading adapter '{}' (mode={}, priority={})",
+        pid, adapter_mode, adapter_priority,
+    )
+    
+    # 构建插件元数据
+    plugin_meta = _build_plugin_meta(
+        pid, pdata,
+        sdk_supported_str=ctx.sdk_supported_str,
+        sdk_recommended_str=ctx.sdk_recommended_str,
+        sdk_untested_str=ctx.sdk_untested_str,
+        sdk_conflicts_list=ctx.sdk_conflicts_list,
+        dependencies=ctx.dependencies,
+    )
+    
+    # 在元数据中标记为 adapter 类型
+    plugin_meta_dict = plugin_meta.model_dump() if hasattr(plugin_meta, 'model_dump') else plugin_meta.__dict__.copy()
+    plugin_meta_dict["plugin_type"] = "adapter"
+    plugin_meta_dict["adapter_mode"] = adapter_mode
+    plugin_meta_dict["adapter_priority"] = adapter_priority
+    
+    # 创建进程宿主
+    host = None
+    try:
+        logger.debug("Adapter {}: creating process host...", pid)
+        host = process_host_factory(pid, entry, toml_path, extension_configs=None)
+        logger.info(
+            "Adapter {}: process host created successfully (pid: {}, alive: {})",
+            pid,
+            getattr(host.process, 'pid', 'N/A') if hasattr(host, 'process') and host.process else 'N/A',
+            host.process.is_alive() if hasattr(host, 'process') and host.process else False
+        )
+        
+        # 注册到 plugin_hosts
+        with state.acquire_plugin_hosts_write_lock():
+            state.plugin_hosts[pid] = host
+        
+    except (OSError, RuntimeError) as e:
+        logger.error("Failed to start adapter process for {}: {}", pid, e, exc_info=True)
+        return None
+    except Exception:
+        logger.exception("Unexpected error starting adapter process for {}", pid)
+        return None
+    
+    # 注册插件元数据
+    resolved_id = register_plugin(
+        plugin_meta,
+        logger,
+        config_path=toml_path,
+        entry_point=entry,
+    )
+    
+    if resolved_id is None:
+        # 重复加载，关闭 host
+        if host is not None:
+            _shutdown_host_safely(host, logger, pid)
+            with state.acquire_plugin_hosts_write_lock():
+                state.plugin_hosts.pop(pid, None)
+        return None
+    
+    # 更新运行时状态
+    with state.acquire_plugins_write_lock():
+        meta = state.plugins.get(resolved_id)
+        if isinstance(meta, dict):
+            meta["runtime_enabled"] = ctx.enabled
+            meta["runtime_auto_start"] = ctx.auto_start
+            meta["plugin_type"] = "adapter"
+            meta["adapter_mode"] = adapter_mode
+            meta["adapter_priority"] = adapter_priority
+            state.plugins[resolved_id] = meta
+    
+    logger.info("Adapter '{}' loaded successfully", pid)
+    return host
+
+
 def _check_plugin_already_loaded(
     pid: str,
     toml_path: Path,
@@ -1898,16 +2006,23 @@ def load_plugins_from_toml(
             _load_disabled_plugin(ctx, logger)
             continue
 
-        # extension 类型：不启动独立进程，只注册元数据
+        # 根据插件类型分发加载逻辑
         plugin_type = pdata.get("type", "plugin")
+        
+        # extension 类型：不启动独立进程，只注册元数据
         if plugin_type == "extension":
             _load_extension_plugin(ctx, logger)
+            continue
+        
+        # adapter 类型：作为网关/路由器运行
+        if plugin_type == "adapter":
+            _load_adapter_plugin(ctx, logger, process_host_factory)
             continue
 
         # 依赖检查（可通过配置禁用）
         dependency_check_failed = False
         if PLUGIN_ENABLE_DEPENDENCY_CHECK and dependencies:
-            logger.info("Plugin {}: found {} dependency(ies), checking...", pid, len(dependencies))
+            logger.debug("Plugin {}: checking {} dependency(ies)...", pid, len(dependencies))
             for dep in dependencies:
                 # 检查依赖（包括简化格式和完整格式）
                 satisfied, error_msg = _check_plugin_dependency(dep, logger, pid)
@@ -1920,7 +2035,7 @@ def load_plugins_from_toml(
                     break
                 logger.debug("Plugin {}: dependency '{}' check passed", pid, getattr(dep, 'id', getattr(dep, 'entry', getattr(dep, 'custom_event', 'unknown'))))
             if not dependency_check_failed:
-                logger.info("Plugin {}: all dependencies satisfied", pid)
+                logger.debug("Plugin {}: all dependencies satisfied", pid)
         elif not PLUGIN_ENABLE_DEPENDENCY_CHECK and dependencies:
             logger.warning(
                 "Plugin {}: has {} dependency(ies), but dependency check is disabled. "
@@ -1931,7 +2046,7 @@ def load_plugins_from_toml(
             logger.debug("Plugin {}: no dependencies to check", pid)
         
         if dependency_check_failed:
-            logger.info("Plugin {}: skipping due to failed dependency check", pid)
+            logger.debug("Plugin {}: skipping due to failed dependency check", pid)
             continue
 
         # 检查插件是否已经加载
@@ -1968,12 +2083,10 @@ def load_plugins_from_toml(
             continue
 
         module_path, class_name = entry.split(":", 1)
-        logger.info("Plugin {}: importing module '{}', class '{}'", pid, module_path, class_name)
+        logger.debug("Plugin {}: importing {}:{}", pid, module_path, class_name)
         try:
             mod = importlib.import_module(module_path)
-            logger.info("Plugin {}: module '{}' imported successfully", pid, module_path)
             cls: Type[Any] = getattr(mod, class_name)
-            logger.info("Plugin {}: class '{}' found in module", pid, class_name)
         except (ImportError, ModuleNotFoundError) as e:
             logger.error("Failed to import module '{}' for plugin {}: {}", module_path, pid, e, exc_info=True)
             continue
@@ -1987,7 +2100,7 @@ def load_plugins_from_toml(
         host = None
         if enabled_val and auto_start_val:
             try:
-                logger.info("Plugin {}: creating process host...", pid)
+                logger.debug("Plugin {}: creating process host...", pid)
                 ext_cfgs = extension_map.get(pid)
                 host = process_host_factory(pid, entry, toml_path, extension_configs=ext_cfgs)
                 logger.info(
@@ -2038,7 +2151,7 @@ def load_plugins_from_toml(
                             )
                             # 重新注册 host（可能是被意外清空了）
                             state.plugin_hosts[pid] = host
-                            logger.info("Plugin {}: re-registered in plugin_hosts", pid)
+                            logger.debug("Plugin {}: re-registered in plugin_hosts", pid)
 
                 if skip_register:
                     _shutdown_host_safely(host, logger, pid)
@@ -2123,7 +2236,7 @@ def load_plugins_from_toml(
                     existing_host = state.plugin_hosts.pop(pid)
             if existing_host is not None:
                 _shutdown_host_safely(existing_host, logger, pid)
-            logger.info("Plugin {} removed from plugin_hosts due to duplicate detection", pid)
+            logger.debug("Plugin {} removed from plugin_hosts due to duplicate detection", pid)
             continue
         
         # 如果 ID 被进一步重命名，迁移所有相关映射

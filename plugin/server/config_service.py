@@ -1426,3 +1426,160 @@ def render_config_to_toml(plugin_id: str, config: Dict[str, Any]) -> Dict[str, A
         "toml": toml_text,
     }
 
+
+async def hot_update_plugin_config(
+    plugin_id: str,
+    updates: Dict[str, Any],
+    mode: str = "temporary",
+    profile: Optional[str] = None,
+    timeout: float = 10.0,
+) -> Dict[str, Any]:
+    """
+    热更新插件配置（不需要重启插件）。
+    
+    注意：这是一个异步函数，必须在事件循环中调用。
+    
+    支持两种模式：
+    - temporary: 临时更新，只修改插件进程内缓存，不写入文件。
+                 插件重启后配置会恢复为文件中的值。
+    - permanent: 永久更新，写入 profile 文件，并通知插件进程更新缓存。
+    
+    Args:
+        plugin_id: 插件ID
+        updates: 要更新的配置部分（会与现有配置深度合并）
+        mode: "temporary" | "permanent"
+        profile: profile 名称（permanent 模式时使用，None 表示使用当前激活的 profile）
+        timeout: 等待插件响应的超时时间（秒）
+    
+    Returns:
+        {
+            "success": bool,
+            "plugin_id": str,
+            "mode": str,
+            "hot_reloaded": bool,
+            "requires_reload": bool,
+            "message": str,
+        }
+    """
+    import asyncio
+    from plugin.core.state import state
+    
+    # 检查插件是否正在运行
+    host = None
+    with state.acquire_plugin_hosts_read_lock():
+        host = state.plugin_hosts.get(plugin_id)
+    
+    if host is None:
+        # 插件未运行，只能写入文件
+        if mode == "temporary":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Plugin {plugin_id} is not running. Cannot apply temporary config update."
+            )
+        # permanent 模式：直接写入文件（在线程池中执行避免阻塞）
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, update_plugin_config, plugin_id, updates)
+        result["hot_reloaded"] = False
+        result["mode"] = mode
+        return result
+    
+    # 如果是 permanent 模式，先写入文件
+    if mode == "permanent":
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, update_plugin_config, plugin_id, updates)
+            logger.debug(f"Config written to file for plugin {plugin_id}")
+        except Exception as e:
+            logger.exception(f"Failed to write config for plugin {plugin_id}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to write config: {str(e)}"
+            ) from e
+    
+    # 发送 CONFIG_UPDATE 命令到插件进程
+    # 重要：必须通过 host.send_config_update() 发送命令
+    # 这会正确地通过 _pending_futures 机制等待响应，避免消费其他请求的响应
+    try:
+        # 获取合并后的完整配置（用于发送给插件）
+        if mode == "permanent":
+            loop = asyncio.get_running_loop()
+            config_result = await loop.run_in_executor(None, load_plugin_config, plugin_id)
+            full_config = config_result.get("config", {})
+        else:
+            # temporary 模式：只发送更新部分
+            full_config = updates
+        
+        # 检查是否有 send_config_update 方法（异步方法）
+        if hasattr(host, 'send_config_update'):
+            try:
+                # 直接 await 异步方法，在同一个事件循环中执行
+                result = await host.send_config_update(
+                    config=full_config,
+                    mode=mode,
+                    profile=profile,
+                    timeout=timeout,
+                )
+                
+                return {
+                    "success": True,
+                    "plugin_id": plugin_id,
+                    "mode": mode,
+                    "hot_reloaded": True,
+                    "requires_reload": False,
+                    "handler_called": result.get("handler_called", False) if isinstance(result, dict) else False,
+                    "message": "Config hot-updated successfully",
+                }
+            except TimeoutError:
+                logger.warning(f"Timeout waiting for CONFIG_UPDATE response from plugin {plugin_id}")
+                return {
+                    "success": True,
+                    "plugin_id": plugin_id,
+                    "mode": mode,
+                    "hot_reloaded": True,
+                    "requires_reload": False,
+                    "message": "Config update sent (response timeout, may have been applied)",
+                }
+            except Exception as e:
+                logger.warning(f"CONFIG_UPDATE command failed for plugin {plugin_id}: {e}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Plugin config update failed: {str(e)}"
+                )
+        else:
+            # 回退：直接发送命令（不等待响应）
+            import uuid
+            req_id = str(uuid.uuid4())
+            cmd = {
+                "type": "CONFIG_UPDATE",
+                "config": full_config,
+                "mode": mode,
+                "profile": profile,
+                "req_id": req_id,
+            }
+            if hasattr(host, 'cmd_queue') and host.cmd_queue is not None:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, lambda: host.cmd_queue.put(cmd, timeout=5.0))
+                logger.debug(f"CONFIG_UPDATE command sent to plugin {plugin_id} (fallback), req_id={req_id}")
+                return {
+                    "success": True,
+                    "plugin_id": plugin_id,
+                    "mode": mode,
+                    "hot_reloaded": True,
+                    "requires_reload": False,
+                    "message": "Config update sent (no response confirmation)",
+                }
+            else:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Plugin {plugin_id} does not have a command queue"
+                )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to hot-update config for plugin {plugin_id}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to hot-update config: {str(e)}"
+        ) from e
+

@@ -176,7 +176,7 @@ def plugin_entry(
 
 def lifecycle(
     *,
-    id: Literal["startup", "shutdown", "reload", "freeze", "unfreeze"],
+    id: Literal["startup", "shutdown", "reload", "freeze", "unfreeze", "config_change"],
     name: str | None = None,
     description: str = "",
     extra: dict | None = None,
@@ -189,6 +189,7 @@ def lifecycle(
     - reload: 插件重载时调用
     - freeze: 插件冻结前调用（可用于清理资源、保存额外状态）
     - unfreeze: 插件从冻结状态恢复后调用（可用于重新初始化资源）
+    - config_change: 配置热更新时调用（接收 old_config, new_config, mode 参数）
     """
     return on_event(
         event_type="lifecycle",

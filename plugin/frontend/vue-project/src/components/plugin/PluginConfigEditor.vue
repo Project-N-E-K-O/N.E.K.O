@@ -582,29 +582,66 @@ async function save() {
     profilesState.value = profilesRes
     originalProfileConfig.value = deepClone(profileDraftConfig.value || {})
 
-    // 仅当当前浏览的 profile 正好是激活中的 profile 时，才提示重载插件
+    // 仅当当前浏览的 profile 正好是激活中的 profile 时，才提示热更新或重载插件
     const isActive = activeProfileName.value === selectedProfileName.value
     if (isActive) {
       try {
-        await ElMessageBox.confirm(
-          t('plugins.configReloadPrompt'),
-          t('plugins.configReloadTitle'),
+        // 提供热更新选项
+        const action = await ElMessageBox.confirm(
+          t('plugins.configHotUpdatePrompt') || '配置已保存。是否立即应用到运行中的插件？（热更新不需要重启插件）',
+          t('plugins.configApplyTitle') || '应用配置',
           {
-            type: 'warning'
+            type: 'info',
+            distinguishCancelAndClose: true,
+            confirmButtonText: t('plugins.hotUpdate') || '热更新',
+            cancelButtonText: t('plugins.reloadPlugin') || '重启插件'
           }
         )
-        await pluginStore.reload(props.pluginId)
-        ElMessage.success(t('messages.pluginReloaded'))
+        // 用户点击了"热更新"
+        await hotUpdateConfig()
       } catch (e: any) {
-        if (e !== 'cancel' && e !== 'close') {
-          ElMessage.error(e?.message || t('messages.reloadFailed'))
+        if (e === 'cancel') {
+          // 用户点击了"重启插件"
+          try {
+            await pluginStore.reload(props.pluginId)
+            ElMessage.success(t('messages.pluginReloaded'))
+          } catch (reloadErr: any) {
+            ElMessage.error(reloadErr?.message || t('messages.reloadFailed'))
+          }
         }
+        // e === 'close' 时用户关闭了对话框，不做任何操作
       }
     }
   } catch (e: any) {
     error.value = e?.message || t('plugins.configSaveFailed')
   } finally {
     saving.value = false
+  }
+}
+
+async function hotUpdateConfig() {
+  if (!props.pluginId || !selectedProfileName.value) return
+  
+  try {
+    const { hotUpdatePluginConfig } = await import('@/api/config')
+    const result = await hotUpdatePluginConfig(
+      props.pluginId,
+      (profileDraftConfig.value || {}) as Record<string, any>,
+      'permanent',
+      selectedProfileName.value
+    )
+    
+    if (result.success) {
+      if (result.hot_reloaded) {
+        ElMessage.success(t('plugins.hotUpdateSuccess') || '配置已热更新成功')
+      } else {
+        ElMessage.warning(t('plugins.hotUpdatePartial') || '配置已保存，但插件未运行，需要启动后生效')
+      }
+    } else {
+      ElMessage.error(result.message || t('plugins.hotUpdateFailed') || '热更新失败')
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.message || t('plugins.hotUpdateFailed') || '热更新失败')
   }
 }
 

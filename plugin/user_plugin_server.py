@@ -274,7 +274,17 @@ if __name__ == "__main__":
     _sigint_lock = threading.Lock()
     _force_exit_timer: threading.Timer | None = None
 
-    config = uvicorn.Config(app, host=host, port=selected_port, log_config=None)
+    # 增加 backlog 和 limit_concurrency 以避免连接排队
+    # backlog: TCP 连接队列大小（默认 2048）
+    # limit_concurrency: 最大并发连接数（默认无限制）
+    config = uvicorn.Config(
+        app,
+        host=host,
+        port=selected_port,
+        log_config=None,
+        backlog=4096,  # 增加 TCP backlog
+        timeout_keep_alive=30,  # Keep-alive 超时
+    )
     server = uvicorn.Server(config)
 
     def _start_force_exit_watchdog(timeout_s: float) -> None:

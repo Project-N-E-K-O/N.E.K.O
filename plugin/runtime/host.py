@@ -272,8 +272,8 @@ def _setup_logging_interception(logger: Any, project_root: Path) -> None:
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
     
-    logger.info("[Plugin Process] Resolved project_root: {}", project_root)
-    logger.info("[Plugin Process] Python path (head): {}", sys.path[:3])
+    logger.debug("[Plugin Process] Resolved project_root: {}", project_root)
+    logger.debug("[Plugin Process] Python path (head): {}", sys.path[:3])
     
     # 尝试使用项目的 InterceptHandler
     handler_cls: Optional[Type[logging.Handler]] = None
@@ -302,7 +302,7 @@ def _setup_logging_interception(logger: Any, project_root: Path) -> None:
         logging_logger.handlers = [handler_cls()]
         logging_logger.propagate = False
     
-    logger.info("[Plugin Process] Standard logging intercepted and redirected to loguru")
+    logger.debug("[Plugin Process] Standard logging intercepted and redirected to loguru")
 
 
 def _find_project_root(config_path: Path) -> Path:
@@ -597,6 +597,123 @@ def _handle_trigger_custom_command(
         logger.exception("[Plugin Process] Failed to send response for req_id={}", req_id)
 
 
+def _handle_config_update_command(
+    msg: dict,
+    ctx: Any,
+    instance: Any,
+    entry_map: dict,
+    events_by_type: dict,
+    plugin_id: str,
+    res_queue: Queue,
+    logger: Any,
+) -> None:
+    """
+    处理 CONFIG_UPDATE 命令 - 配置热更新。
+    
+    支持两种模式：
+    - temporary: 临时更新，只修改进程内缓存，不写入文件
+    - permanent: 永久更新，写入 profile 文件
+    
+    Args:
+        msg: 命令消息，包含：
+            - config: 新配置（完整或部分）
+            - mode: "temporary" | "permanent"
+            - profile: profile 名称（permanent 模式）
+            - req_id: 请求ID
+        ctx: 插件上下文
+        instance: 插件实例
+        entry_map: 入口映射
+        events_by_type: 事件映射
+        plugin_id: 插件ID
+        res_queue: 响应队列
+        logger: 日志记录器
+    """
+    req_id = msg.get("req_id", "unknown")
+    new_config = msg.get("config", {})
+    mode = msg.get("mode", "temporary")  # temporary | permanent
+    profile_name = msg.get("profile")
+    
+    ret_payload = {"req_id": req_id, "success": False, "data": None, "error": None}
+    
+    try:
+        logger.info(
+            "[Plugin Process] Received CONFIG_UPDATE: plugin_id={}, mode={}, req_id={}",
+            plugin_id, mode, req_id,
+        )
+        
+        # 保存旧配置用于回调
+        old_config = {}
+        if hasattr(ctx, '_effective_config'):
+            old_config = dict(ctx._effective_config) if ctx._effective_config else {}
+        
+        # 更新进程内配置缓存
+        if hasattr(ctx, '_effective_config') and ctx._effective_config is not None:
+            # 合并配置（深度合并）
+            _deep_merge(ctx._effective_config, new_config)
+            logger.debug("[Plugin Process] Config cache updated")
+        else:
+            ctx._effective_config = new_config
+        
+        # 触发 config_change 生命周期事件（如果存在）
+        lifecycle_events = events_by_type.get("lifecycle", {})
+        config_change_handler = lifecycle_events.get("config_change")
+        
+        if config_change_handler:
+            logger.debug("[Plugin Process] Triggering config_change lifecycle event")
+            try:
+                if asyncio.iscoroutinefunction(config_change_handler):
+                    asyncio.run(config_change_handler(
+                        old_config=old_config,
+                        new_config=ctx._effective_config,
+                        mode=mode,
+                    ))
+                else:
+                    config_change_handler(
+                        old_config=old_config,
+                        new_config=ctx._effective_config,
+                        mode=mode,
+                    )
+                logger.info("[Plugin Process] config_change handler executed successfully")
+            except Exception as e:
+                logger.exception("[Plugin Process] config_change handler failed")
+                ret_payload["error"] = f"config_change handler failed: {e}"
+                res_queue.put(ret_payload, timeout=10.0)
+                return
+        
+        ret_payload["success"] = True
+        ret_payload["data"] = {
+            "mode": mode,
+            "config_applied": True,
+            "handler_called": config_change_handler is not None,
+        }
+        
+        logger.info("[Plugin Process] CONFIG_UPDATE completed successfully, mode={}", mode)
+        
+    except Exception as e:
+        logger.exception("[Plugin Process] CONFIG_UPDATE failed")
+        ret_payload["error"] = str(e)
+    
+    try:
+        res_queue.put(ret_payload, timeout=10.0)
+    except Exception:
+        logger.exception("[Plugin Process] Failed to send CONFIG_UPDATE response")
+
+
+def _deep_merge(base: dict, updates: dict) -> None:
+    """
+    深度合并字典，将 updates 合并到 base 中。
+    
+    Args:
+        base: 基础字典（会被修改）
+        updates: 更新字典
+    """
+    for key, value in updates.items():
+        if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+            _deep_merge(base[key], value)
+        else:
+            base[key] = value
+
+
 def _handle_extension_command(
     msg: dict,
     instance: Any,
@@ -676,19 +793,13 @@ def _plugin_process_runner(
             sys.path.insert(0, str(project_root))
             logger.info("[Plugin Process] Added project root to sys.path: {}", project_root)
         
-        logger.info("[Plugin Process] Starting plugin process for {}", plugin_id)
-        logger.info("[Plugin Process] Entry point: {}", entry_point)
-        logger.info("[Plugin Process] Config path: {}", config_path)
-        logger.info("[Plugin Process] Current working directory: {}", os.getcwd())
-        logger.info("[Plugin Process] Python path: {}", sys.path[:3])  # 只显示前3个路径
+        logger.info("[Plugin Process] Starting plugin '{}' from {}", plugin_id, entry_point)
         
         module_path, class_name = entry_point.split(":", 1)
-        logger.info("[Plugin Process] Importing module: {}", module_path)
+        logger.debug("[Plugin Process] Importing module: {}", module_path)
         mod = importlib.import_module(module_path)
-        logger.info("[Plugin Process] Module imported successfully: {}", module_path)
-        logger.info("[Plugin Process] Getting class: {}", class_name)
         cls = getattr(mod, class_name)
-        logger.info("[Plugin Process] Class found: {}", cls)
+        logger.debug("[Plugin Process] Class loaded: {}", cls.__name__)
 
         # 注意：_entry_map 和 _instance 在 PluginContext 中定义为 Optional，
         # 这里先设置为 None，在创建 instance 和扫描入口映射后再设置。
@@ -779,11 +890,11 @@ def _plugin_process_runner(
         ctx._restored_from_freeze = False
         
         if freezable_keys:
-            logger.info("[Plugin Process] Freezable attributes: {}, mode: {}", freezable_keys, persist_mode)
+            logger.debug("[Plugin Process] Freezable attributes: {}, mode: {}", freezable_keys, persist_mode)
             # 如果有保存的状态，尝试恢复
             state_persistence = getattr(instance, "_state_persistence", None) or getattr(instance, "_freeze_checkpoint", None)
             if state_persistence and state_persistence.has_saved_state():
-                logger.info("[Plugin Process] Found saved state, restoring...")
+                logger.debug("[Plugin Process] Restoring saved state...")
                 state_persistence.load(instance)
                 state_persistence.clear()  # 恢复后清除
                 ctx._restored_from_freeze = True  # 标记为从冻结恢复
@@ -978,7 +1089,7 @@ def _plugin_process_runner(
 
         # 初始化 Worker 执行器
         worker_executor = WorkerExecutor(max_workers=4, queue_size=100)
-        logger.info("[Plugin Process] Worker executor initialized with {} workers", 4)
+        logger.debug("[Plugin Process] Worker executor initialized")
 
         # 命令循环
         while True:
@@ -1045,6 +1156,20 @@ def _plugin_process_runner(
                     )
                 except Exception as e:
                     logger.debug("Failed to dispatch bus change: {}", e)  
+                continue
+
+            if msg["type"] == "CONFIG_UPDATE":
+                # 配置热更新
+                _handle_config_update_command(
+                    msg=msg,
+                    ctx=ctx,
+                    instance=instance,
+                    entry_map=entry_map,
+                    events_by_type=events_by_type,
+                    plugin_id=plugin_id,
+                    res_queue=res_queue,
+                    logger=logger,
+                )
                 continue
 
             if msg["type"] == "TRIGGER_CUSTOM":
@@ -1774,6 +1899,39 @@ class PluginHost:
         req_id = str(uuid.uuid4())
         cmd = {"type": msg_type, "req_id": req_id, **payload}
         return await self.comm_manager._send_command_and_wait(req_id, cmd, timeout, f"extension cmd {msg_type}")
+
+    async def send_config_update(
+        self,
+        config: Dict[str, Any],
+        mode: str = "temporary",
+        profile: str | None = None,
+        timeout: float = 10.0
+    ) -> Dict[str, Any]:
+        """
+        向子进程发送 CONFIG_UPDATE 命令（配置热更新）。
+        
+        Args:
+            config: 新配置（完整或部分）
+            mode: "temporary" | "permanent"
+            profile: profile 名称（permanent 模式）
+            timeout: 超时时间
+        
+        Returns:
+            {
+                "success": bool,
+                "config_applied": bool,
+                "handler_called": bool,
+            }
+        """
+        req_id = str(uuid.uuid4())
+        cmd = {
+            "type": "CONFIG_UPDATE",
+            "req_id": req_id,
+            "config": config,
+            "mode": mode,
+            "profile": profile,
+        }
+        return await self.comm_manager._send_command_and_wait(req_id, cmd, timeout, "CONFIG_UPDATE")
 
     def is_alive(self) -> bool:
         """检查进程是否存活"""

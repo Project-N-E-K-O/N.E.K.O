@@ -176,3 +176,39 @@ export function setPluginActiveProfile(
   return post(`/plugin/${pluginId}/config/profiles/${encodeURIComponent(profileName)}/activate`, {})
 }
 
+/**
+ * 热更新配置响应
+ */
+export interface HotUpdateConfigResponse {
+  success: boolean
+  plugin_id: string
+  mode: 'temporary' | 'permanent'
+  hot_reloaded: boolean
+  requires_reload: boolean
+  handler_called?: boolean
+  message: string
+}
+
+/**
+ * 热更新插件配置（不需要重启插件）
+ * 
+ * @param pluginId 插件ID
+ * @param config 要更新的配置部分（会与现有配置深度合并）
+ * @param mode 更新模式：
+ *   - 'temporary': 临时更新，只修改插件进程内缓存，不写入文件。插件重启后配置会恢复。
+ *   - 'permanent': 永久更新，写入 profile 文件，并通知插件进程更新缓存。
+ * @param profile profile 名称（permanent 模式时使用，null 表示使用当前激活的 profile）
+ */
+export function hotUpdatePluginConfig(
+  pluginId: string,
+  config: Record<string, any>,
+  mode: 'temporary' | 'permanent' = 'temporary',
+  profile?: string | null
+): Promise<HotUpdateConfigResponse> {
+  return post(`/plugin/${pluginId}/config/hot-update`, {
+    config,
+    mode,
+    profile: profile ?? null
+  })
+}
+
