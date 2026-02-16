@@ -1074,6 +1074,7 @@
       "proactiveChat": "自発的会話",
       "proactiveVision": "自発的視覚",
       "proactiveVisionOnly": "視覚のみ会話",
+      "proactiveVisionOnlyTooltip": "自発的会話と自発的視覚の両方を有効にする必要があります",
       "agentMaster": "Agentマスタースイッチ",
       "keyboardControl": "キーボード/マウス操作",
       "userPlugin": "ユーザープラグイン",

@@ -229,6 +229,8 @@ Live2DManager.prototype._createIntervalControl = function (toggle) {
     // 如果是主动搭话，在间隔控件内添加「仅视觉搭话」选项（换行显示）
     if (toggle.id === 'proactive-chat') {
         const visionOnlyWrapper = document.createElement('div');
+        const tooltipText = window.t ? window.t('settings.toggles.proactiveVisionOnlyTooltip') : '需同时开启主动搭话和自主视觉';
+        visionOnlyWrapper.title = tooltipText;
         Object.assign(visionOnlyWrapper.style, {
             display: 'flex',
             alignItems: 'center',

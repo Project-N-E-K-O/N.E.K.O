@@ -1277,6 +1277,7 @@
       "proactiveChat": "Proactive Chat",
       "proactiveVision": "Proactive Vision",
       "proactiveVisionOnly": "Vision-Only Chat",
+      "proactiveVisionOnlyTooltip": "Requires both Proactive Chat and Proactive Vision enabled",
       "agentMaster": "Agent Master Switch",
       "keyboardControl": "Keyboard/Mouse Control",
       "userPlugin": "User Plugin",

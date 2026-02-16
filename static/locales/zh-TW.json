@@ -1299,6 +1299,7 @@
       "proactiveChat": "主動搭話",
       "proactiveVision": "自主視覺",
       "proactiveVisionOnly": "僅視覺搭話",
+      "proactiveVisionOnlyTooltip": "需同時開啟主動搭話和自主視覺",
       "agentMaster": "Agent總開關",
       "keyboardControl": "鍵鼠控製",
       "userPlugin": "用戶插件",
