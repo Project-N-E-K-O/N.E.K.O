@@ -44,26 +44,7 @@
                                 <input type="text" name="档案名" required maxlength="20" autocomplete="off">
                             </div>
                             </div>
-                            <div class="field-row-wrapper">
-                                <label data-i18n="character.gender">性别</label>
-                                <div class="field-row">
-                                    <textarea name="性别" rows="1" data-i18n-placeholder="character.detailDescriptionPlaceholder" placeholder="Enter detailed description"></textarea>
-                                </div>
-                                <button type="button" class="btn sm delete">
-                                    <img src="/static/icons/delete.png" alt="" class="delete-icon">
-                                    <span data-i18n="character.deleteField">删除设定</span>
-                                </button>
-                            </div>
-                            <div class="field-row-wrapper">
-                                <label data-i18n="character.nickname">昵称</label>
-                                <div class="field-row">
-                                    <textarea name="昵称" rows="1" data-i18n-placeholder="character.detailDescriptionPlaceholder" placeholder="Enter detailed description"></textarea>
-                                </div>
-                                <button type="button" class="btn sm delete">
-                                    <img src="/static/icons/delete.png" alt="" class="delete-icon">
-                                    <span data-i18n="character.deleteField">删除设定</span>
-                                </button>
-                            </div>
+                            <!-- 性别、昵称等其他字段由 chara_manager.js 根据 characters.json 数据动态渲染 -->
                         </form>
                     </div>
                 </div>
@@ -92,14 +73,7 @@
     <!-- 通用教程管理器 -->
     <script src="/static/universal-tutorial-manager.js"></script>
 
-    <!-- 初始化 -->
-    <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            if (typeof initUniversalTutorialManager === 'function') {
-                initUniversalTutorialManager();
-            }
-        });
-    </script>
+    <!-- 初始化由 chara_manager.js 负责（避免 CSP 内联脚本限制） -->
 </body>
 
 </html>

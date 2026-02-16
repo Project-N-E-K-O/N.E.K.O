@@ -2,10 +2,10 @@ import logging
 import textwrap
 from typing import Dict, List, Tuple
 
-from brain.s2_5.agents.grounding import ACI
-from brain.s2_5.core.module import BaseModule
-from brain.s2_5.memory.procedural_memory import PROCEDURAL_MEMORY
-from brain.s2_5.utils.common_utils import (
+from brain.cua.agents.grounding import ACI
+from brain.cua.core.module import BaseModule
+from brain.cua.memory.procedural_memory import PROCEDURAL_MEMORY
+from brain.cua.utils.common_utils import (
     call_llm_safe,
     extract_first_agent_function,
     parse_single_code_from_string,

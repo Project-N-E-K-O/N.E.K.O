@@ -945,7 +945,7 @@ async def add_catgirl(request: Request):
     # 通知记忆服务器重新加载配置
     try:
         async with httpx.AsyncClient() as client:
-            resp = await client.post(f"http://localhost:{MEMORY_SERVER_PORT}/reload", timeout=5.0)
+            resp = await client.post(f"http://127.0.0.1:{MEMORY_SERVER_PORT}/reload", timeout=5.0)
             if resp.status_code == 200:
                 result = resp.json()
                 if result.get('status') == 'success':
@@ -989,7 +989,7 @@ async def update_catgirl(name: str, request: Request):
     # 只更新前端传来的字段，未传字段保留原值，且不允许通过此接口修改 system_prompt
     removed_fields = []
     for k, v in characters['猫娘'][name].items():
-        if k not in data and k not in ('档案名', 'system_prompt', 'voice_id', 'live2d'):
+        if k not in data and k not in ('档案名', 'system_prompt', 'voice_id', 'live2d', 'model_type', 'vrm', 'vrm_animation', 'lighting', 'live2d_item_id'):
             removed_fields.append(k)
     for k in removed_fields:
         characters['猫娘'][name].pop(k)
@@ -1166,7 +1166,20 @@ async def get_microphone():
 async def get_voices():
     """获取当前API key对应的所有已注册音色"""
     _config_manager = get_config_manager()
-    return {"voices": _config_manager.get_voices_for_current_api()}
+    result = {"voices": _config_manager.get_voices_for_current_api()}
+    
+    # 如果是免费版且使用 lanlan.tech，附带免费预设音色
+    core_config = _config_manager.get_core_config()
+    if core_config.get('IS_FREE_VERSION'):
+        core_url = core_config.get('CORE_URL', '')
+        openrouter_url = core_config.get('OPENROUTER_URL', '')
+        if 'lanlan.tech' in core_url or 'lanlan.tech' in openrouter_url:
+            from utils.api_config_loader import get_free_voices
+            free_voices = get_free_voices()
+            if free_voices:
+                result["free_voices"] = free_voices
+    
+    return result
 
 
 @router.get('/voice_preview')
@@ -1366,7 +1379,7 @@ async def voice_clone(file: UploadFile = File(...), prefix: str = Form(...), ref
             http_base = 'http://' + base_url[5:]
         
         # 移除可能的 /v1/audio/speech/stream 路径，只保留主机部分
-        # 例如: ws://localhost:50000/v1/audio/speech/stream -> http://localhost:50000
+        # 例如: ws://127.0.0.1:50000/v1/audio/speech/stream -> http://127.0.0.1:50000
         if '/v1/' in http_base:
             http_base = http_base.split('/v1/')[0]
         

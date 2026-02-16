@@ -427,7 +427,8 @@ async function loadVoices() {
         }
         const data = await response.json();
 
-        if (!data.voices || Object.keys(data.voices).length === 0) {
+        if ((!data.voices || Object.keys(data.voices).length === 0) &&
+            (!data.free_voices || Object.keys(data.free_voices).length === 0)) {
             const noVoicesText = window.t ? window.t('voice.noVoices') : '暂无已注册音色';
             container.textContent = '';
             const emptyDiv = document.createElement('div');
@@ -533,6 +534,46 @@ async function loadVoices() {
 
             container.appendChild(item);
         });
+
+        // 渲染免费预设音色（不可删除，放在最后）
+        if (data.free_voices && Object.keys(data.free_voices).length > 0) {
+            // 添加分隔线
+            const divider = document.createElement('div');
+            divider.style.cssText = 'border-top: 1px dashed rgba(255,255,255,0.2); margin: 12px 0; padding-top: 8px; color: rgba(255,255,255,0.5); font-size: 12px; text-align: center;';
+            const freeLabel = window.t ? window.t('voice.freePresetLabel') : '免费预设音色';
+            divider.textContent = '── ' + freeLabel + ' ──';
+            container.appendChild(divider);
+
+            Object.entries(data.free_voices).forEach(([displayName, voiceId]) => {
+                const item = document.createElement('div');
+                item.className = 'voice-list-item';
+                item.style.opacity = '0.85';
+
+                const infoDiv = document.createElement('div');
+                infoDiv.className = 'voice-info';
+
+                const nameDiv = document.createElement('div');
+                nameDiv.className = 'voice-name';
+                nameDiv.textContent = displayName;
+                // 添加预设标签
+                const badge = document.createElement('span');
+                badge.style.cssText = 'margin-left: 8px; font-size: 10px; padding: 1px 6px; border-radius: 8px; background: rgba(100,180,255,0.25); color: #7ac4ff;';
+                badge.textContent = window.t ? window.t('voice.freePresetBadge') : '预设';
+                nameDiv.appendChild(badge);
+                infoDiv.appendChild(nameDiv);
+
+                const idDiv = document.createElement('div');
+                idDiv.className = 'voice-id';
+                idDiv.textContent = `ID: ${voiceId}`;
+                infoDiv.appendChild(idDiv);
+
+                item.appendChild(infoDiv);
+
+                // 免费预设音色：不支持预览和删除
+
+                container.appendChild(item);
+            });
+        }
 
     } catch (error) {
         console.error('加载音色列表失败:', error);

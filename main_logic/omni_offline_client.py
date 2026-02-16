@@ -91,6 +91,7 @@ class OmniOfflineClient:
             api_key=self.api_key,
             temperature=1.0,
             streaming=True,
+            max_retries=0,  # 禁用 openai client 内置重试，由外层 retry loop 处理（内置重试会破坏流式 generator）
             extra_body=get_extra_body(self.model) or None
         )
         
@@ -162,6 +163,7 @@ class OmniOfflineClient:
                 api_key=api_key,
                 temperature=1.0,
                 streaming=True,
+                max_retries=0,  # 禁用内置重试
                 extra_body=get_extra_body(self.model) or None
             )
     
@@ -400,6 +402,14 @@ class OmniOfflineClient:
                     break  # 非重试类错误直接退出
         finally:
             self._is_responding = False
+            
+            # 空回复兜底：如果所有重试都未产生文本，向前端发送错误提示
+            if not assistant_message and not guard_exhausted:
+                logger.warning("OmniOfflineClient: 所有重试均未产生文本回复")
+                if self.on_text_delta:
+                    fallback_msg = "（服务暂时不稳定，请再试一次）"
+                    await self.on_text_delta(fallback_msg, True)
+            
             # Call response done callback
             if self.on_response_done:
                 await self.on_response_done()

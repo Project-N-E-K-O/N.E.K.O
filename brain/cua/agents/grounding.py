@@ -1,19 +1,19 @@
+import ast
 import re
 from collections import defaultdict
 from io import BytesIO
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import pytesseract
 from PIL import Image
 from pytesseract import Output
 
-from brain.s3.memory.procedural_memory import PROCEDURAL_MEMORY
-from brain.s3.core.mllm import LMMAgent
-from brain.s3.utils.common_utils import call_llm_safe
-from brain.s3.agents.code_agent import CodeAgent
-import logging
-
-logger = logging.getLogger("desktopenv.agent")
+from brain.cua.memory.procedural_memory import PROCEDURAL_MEMORY
+from brain.cua.core.mllm import LMMAgent
+from brain.cua.utils.common_utils import (
+    call_llm_safe,
+    parse_single_code_from_string,
+)
 
 
 class ACI:
@@ -32,7 +32,7 @@ import difflib;
 import time;
 import pyautogui;
 pyautogui.press('escape');
-time.sleep(0.5);
+time.sleep(0.2);
 output = subprocess.check_output(['wmctrl', '-lx']);
 output = output.decode('utf-8').splitlines();
 window_titles = [line.split(None, 4)[2] for line in output];
@@ -50,7 +50,6 @@ subprocess.run(['wmctrl', '-ir', window_id, '-b', 'add,maximized_vert,maximized_
 
 SET_CELL_VALUES_CMD = """import uno
 import subprocess
-import unicodedata, json
 
 def identify_document_type(component):
     if component.supportsService("com.sun.star.sheet.SpreadsheetDocument"):
@@ -64,22 +63,6 @@ def identify_document_type(component):
 
     return None
 
-def _norm_name(s: str | None) -> str | None:
-    if s is None:
-        return None
-    if "\\\\u" in s or "\\\\U" in s or "\\\\x" in s:
-        try:
-            # json.loads handles all the escape forms safely
-            s = json.loads(f"{{s}}")
-        except Exception:
-            # fallback: best-effort
-            try:
-                s = s.encode("utf-8").decode("unicode_escape")
-            except Exception:
-                pass
-    # Normalize (NFC works well across platforms)
-    return unicodedata.normalize("NFC", s)
-
 def cell_ref_to_indices(cell_ref):
     column_letters = ''.join(filter(str.isalpha, cell_ref))
     row_number = ''.join(filter(str.isdigit, cell_ref))
@@ -89,9 +72,6 @@ def cell_ref_to_indices(cell_ref):
     return col, row
 
 def set_cell_values(new_cell_values: dict[str, str], app_name: str = "Untitled 1", sheet_name: str = "Sheet1"):
-    app_name  = _norm_name(app_name)
-    sheet_name = _norm_name(sheet_name)
-
     new_cell_values_idx = {{}}
     for k, v in new_cell_values.items():
         try:
@@ -180,18 +160,12 @@ set_cell_values(new_cell_values={cell_values}, app_name="{app_name}", sheet_name
 class OSWorldACI(ACI):
     def __init__(
         self,
-        env,
         platform: str,
         engine_params_for_generation: Dict,
         engine_params_for_grounding: Dict,
         width: int = 1920,
         height: int = 1080,
-        code_agent_budget: int = 20,
-        code_agent_engine_params: Dict = None,
     ):
-        super().__init__()
-
-        self.env = env
         self.platform = (
             platform  # Dictates how the switch_applications agent action works.
         )
@@ -203,8 +177,9 @@ class OSWorldACI(ACI):
         # Maintain state for save_to_knowledge
         self.notes = []
 
-        # Screenshot used during ACI execution
-        self.obs = None
+        # Coordinates used during ACI execution
+        self.coords1 = None
+        self.coords2 = None
 
         # Configure the visual grounding model responsible for coordinate generation
         self.grounding_model = LMMAgent(engine_params_for_grounding)
@@ -215,16 +190,6 @@ class OSWorldACI(ACI):
             engine_params=engine_params_for_generation,
             system_prompt=PROCEDURAL_MEMORY.PHRASE_TO_WORD_COORDS_PROMPT,
         )
-
-        # Configure code agent
-        code_agent_engine_params = (
-            code_agent_engine_params or engine_params_for_generation
-        )
-        self.code_agent = CodeAgent(code_agent_engine_params, code_agent_budget)
-
-        # Store task instruction for code agent
-        self.current_task_instruction = None
-        self.last_code_agent_result = None
 
     # Given the state and worker's referring expression, use the grounding model to generate (x,y)
     def generate_coords(self, ref_expr: str, obs: Dict) -> List[int]:
@@ -326,12 +291,36 @@ class OSWorldACI(ACI):
             ]
         return coords
 
-    def assign_screenshot(self, obs: Dict):
-        self.obs = obs
+    # Takes a description based action and assigns the coordinates for any coordinate based action
+    # Raises an error if function can't be parsed
+    def assign_coordinates(self, plan: str, obs: Dict):
 
-    def set_task_instruction(self, task_instruction: str):
-        """Set the current task instruction for the code agent."""
-        self.current_task_instruction = task_instruction
+        # Reset coords from previous action generation
+        self.coords1, self.coords2 = None, None
+
+        try:
+            # Extract the function name and args
+            action = parse_single_code_from_string(plan.split("Grounded Action")[-1])
+            function_name = re.match(r"(\w+\.\w+)\(", action).group(1)
+            args = self.parse_function_args(action)
+        except Exception as e:
+            raise RuntimeError(f"Error in parsing grounded action: {e}") from e
+
+        # arg0 is a description
+        if (
+            function_name in ["agent.click", "agent.type", "agent.scroll"]
+            and len(args) >= 1
+            and args[0] != None
+        ):
+            self.coords1 = self.generate_coords(args[0], obs)
+        # arg0 and arg1 are descriptions
+        elif function_name == "agent.drag_and_drop" and len(args) >= 2:
+            self.coords1 = self.generate_coords(args[0], obs)
+            self.coords2 = self.generate_coords(args[1], obs)
+        # arg0 and arg1 are text phrases
+        elif function_name == "agent.highlight_text_span" and len(args) >= 2:
+            self.coords1 = self.generate_text_coords(args[0], obs, alignment="start")
+            self.coords2 = self.generate_text_coords(args[1], obs, alignment="end")
 
     # Resize from grounding model dim into OSWorld dim (1920 * 1080)
     def resize_coordinates(self, coordinates: List[int]) -> List[int]:
@@ -342,6 +331,33 @@ class OSWorldACI(ACI):
             round(coordinates[0] * self.width / grounding_width),
             round(coordinates[1] * self.height / grounding_height),
         ]
+
+    # Given a generated ACI function, returns a list of argument values, where descriptions are at the front of the list
+    def parse_function_args(self, function: str) -> List[str]:
+        tree = ast.parse(function)
+        call_node = tree.body[0].value
+
+        def safe_eval(node):
+            if isinstance(
+                node, ast.Constant
+            ):  # Handles literals like numbers, strings, etc.
+                return node.value
+            else:
+                return ast.unparse(node)  # Return as a string if not a literal
+
+        positional_args = [safe_eval(arg) for arg in call_node.args]
+        keyword_args = {kw.arg: safe_eval(kw.value) for kw in call_node.keywords}
+
+        res = []
+
+        for key, val in keyword_args.items():
+            if "description" in key:
+                res.append(val)
+
+        for arg in positional_args:
+            res.append(arg)
+
+        return res
 
     @agent_action
     def click(
@@ -358,8 +374,7 @@ class OSWorldACI(ACI):
             button_type:str, which mouse button to press can be "left", "middle", or "right"
             hold_keys:List, list of keys to hold while clicking
         """
-        coords1 = self.generate_coords(element_description, self.obs)
-        x, y = self.resize_coordinates(coords1)
+        x, y = self.resize_coordinates(self.coords1)
         command = "import pyautogui; "
 
         # TODO: specified duration?
@@ -378,37 +393,22 @@ class OSWorldACI(ACI):
             app_code:str the code name of the application to switch to from the provided list of open applications
         """
         if self.platform == "darwin":
-            return f"import pyautogui; import time; pyautogui.hotkey('command', 'space', interval=0.5); pyautogui.typewrite({repr(app_code)}); pyautogui.press('enter'); time.sleep(1.0)"
+            return f"import pyautogui; import time; pyautogui.hotkey('command', 'space', interval=0.5); pyautogui.typewrite({repr(app_code)}); pyautogui.press('enter'); time.sleep(0.5)"
         elif self.platform == "linux":
             return UBUNTU_APP_SETUP.replace("APP_NAME", app_code)
         elif self.platform == "windows":
-            return f"import pyautogui; import time; pyautogui.hotkey('win', 'd', interval=0.5); pyautogui.typewrite({repr(app_code)}); pyautogui.press('enter'); time.sleep(1.0)"
-        else:
-            assert (
-                False
-            ), f"Unsupported platform: {self.platform}. Supported platforms are: darwin, linux, windows."
+            return f"import pyautogui; import time; pyautogui.hotkey('win', 'd', interval=0.5); pyautogui.typewrite({repr(app_code)}); pyautogui.press('enter'); time.sleep(0.5)"
 
     @agent_action
     def open(self, app_or_filename: str):
-        """Open any application or file with name app_or_filename. Use this action to open applications or files on the desktop, do not open manually.
+        """Open any application or file with name app_or_filename. This action should be used on Linux/Darwin systems instead of opening the file manually. Do not use on Windows.
         Args:
             app_or_filename:str, the name of the application or filename to open
         """
         if self.platform == "linux":
-            return f"import pyautogui; import time; pyautogui.hotkey('win'); time.sleep(0.5); pyautogui.write({repr(app_or_filename)}); time.sleep(1.0); pyautogui.hotkey('enter'); time.sleep(0.5)"
+            return f"import pyautogui; pyautogui.hotkey('win'); time.sleep(0.2); pyautogui.write({repr(app_or_filename)}); time.sleep(0.5); pyautogui.hotkey('enter'); time.sleep(0.2)"
         elif self.platform == "darwin":
-            return f"import pyautogui; import time; pyautogui.hotkey('command', 'space', interval=0.5); pyautogui.typewrite({repr(app_or_filename)}); pyautogui.press('enter'); time.sleep(1.0)"
-        elif self.platform == "windows":
-            return (
-                "import pyautogui; import time; "
-                "pyautogui.hotkey('win'); time.sleep(0.5); "
-                f"pyautogui.write({repr(app_or_filename)}); time.sleep(1.0); "
-                "pyautogui.press('enter'); time.sleep(0.5)"
-            )
-        else:
-            assert (
-                False
-            ), f"Unsupported platform: {self.platform}. Supported platforms are: darwin, linux, windows."
+            return f"import pyautogui; import time; pyautogui.hotkey('command', 'space', interval=0.5); pyautogui.typewrite({repr(app_or_filename)}); pyautogui.press('enter'); time.sleep(0.5)"
 
     @agent_action
     def type(
@@ -418,48 +418,50 @@ class OSWorldACI(ACI):
         overwrite: bool = False,
         enter: bool = False,
     ):
-        """Type text/unicode into a specific element
+        """Type text into a specific element
         Args:
             element_description:str, a detailed description of which element to enter text in. This description should be at least a full sentence.
             text:str, the text to type
             overwrite:bool, Assign it to True if the text should overwrite the existing text, otherwise assign it to False. Using this argument clears all text in an element.
             enter:bool, Assign it to True if the enter key should be pressed after typing the text, otherwise assign it to False.
         """
-        command = "import pyautogui; "
-        command += (
-            "\ntry:\n"
-            "    import pyperclip\n"
-            "except ImportError:\n"
-            "    import subprocess\n"
-            "    subprocess.run('echo \"osworld-public-evaluation\" | sudo -S apt-get install -y xclip xsel', shell=True, check=True)\n"
-            "    subprocess.check_call([subprocess.sys.executable, '-m', 'pip', 'install', 'pyperclip'])\n"
-            "    import pyperclip\n\n"
-        )
 
-        if element_description is not None:
-            coords1 = self.generate_coords(element_description, self.obs)
-            x, y = self.resize_coordinates(coords1)
+        select_mod = "command" if self.platform == "darwin" else "ctrl"
+
+        if self.coords1 is not None:
+            # If a node is found, retrieve its coordinates and size
+            # Start typing at the center of the element
+
+            x, y = self.resize_coordinates(self.coords1)
+
+            command = "import pyautogui; "
             command += f"pyautogui.click({x}, {y}); "
 
-        if overwrite:
-            command += (
-                f"pyautogui.hotkey({repr('command' if self.platform == 'darwin' else 'ctrl')}, 'a'); "
-                "pyautogui.press('backspace'); "
-            )
+            if overwrite:
+                command += (
+                    f"pyautogui.hotkey({repr(select_mod)}, 'a'); "
+                    "pyautogui.press('backspace'); "
+                )
 
-        # Check if text contains Unicode characters that pyautogui.write() can't handle
-        has_unicode = any(ord(char) > 127 for char in text)
-
-        if has_unicode:
-            # Use clipboard method for Unicode characters
-            command += f"pyperclip.copy({repr(text)}); "
-            command += f"pyautogui.hotkey({repr('command' if self.platform == 'darwin' else 'ctrl')}, 'v'); "
-        else:
-            # Use regular pyautogui.write() for ASCII text
             command += f"pyautogui.write({repr(text)}); "
 
-        if enter:
-            command += "pyautogui.press('enter'); "
+            if enter:
+                command += "pyautogui.press('enter'); "
+        else:
+            # If no element is found, start typing at the current cursor location
+            command = "import pyautogui; "
+
+            if overwrite:
+                command += (
+                    f"pyautogui.hotkey({repr(select_mod)}, 'a'); "
+                    "pyautogui.press('backspace'); "
+                )
+
+            command += f"pyautogui.write({repr(text)}); "
+
+            if enter:
+                command += "pyautogui.press('enter'); "
+
         return command
 
     @agent_action
@@ -481,10 +483,8 @@ class OSWorldACI(ACI):
             ending_description:str, a very detailed description of where to end the drag action. This description should be at least a full sentence.
             hold_keys:List list of keys to hold while dragging
         """
-        coords1 = self.generate_coords(starting_description, self.obs)
-        coords2 = self.generate_coords(ending_description, self.obs)
-        x1, y1 = self.resize_coordinates(coords1)
-        x2, y2 = self.resize_coordinates(coords2)
+        x1, y1 = self.resize_coordinates(self.coords1)
+        x2, y2 = self.resize_coordinates(self.coords2)
 
         command = "import pyautogui; "
 
@@ -510,12 +510,9 @@ class OSWorldACI(ACI):
             ending_phrase:str, the phrase that denotes the end of the text span you want to highlight. If you only want to highlight one word, just pass in that single word.
             button:str, the button to use to highlight the text span. Defaults to "left". Can be "left", "right", or "middle".
         """
-        coords1 = self.generate_text_coords(
-            starting_phrase, self.obs, alignment="start"
-        )
-        coords2 = self.generate_text_coords(ending_phrase, self.obs, alignment="end")
-        x1, y1 = coords1
-        x2, y2 = coords2
+
+        x1, y1 = self.coords1
+        x2, y2 = self.coords2
 
         command = "import pyautogui; "
         command += f"pyautogui.moveTo({x1}, {y1}); "
@@ -540,69 +537,6 @@ class OSWorldACI(ACI):
         )
 
     @agent_action
-    def call_code_agent(self, task: str = None):
-        """Call the code agent to execute code for tasks or subtasks that can be completed solely with coding.
-
-        Args:
-            task: str, the task or subtask to execute. If None, uses the current full task instruction.
-
-        **🚨 CRITICAL GUIDELINES:**
-        - **ONLY pass a task parameter for SPECIFIC subtasks** (e.g., "Calculate sum of column B", "Filter data by date")
-        - **NEVER pass a task parameter for full tasks** - let it default to the original task instruction
-        - **NEVER rephrase or modify the original task** - this prevents hallucination corruption
-        - **If unsure, omit the task parameter entirely** to use the original task instruction
-
-        Use this for tasks that can be fully accomplished through code execution, particularly for:
-        - Spreadsheet applications (LibreOffice Calc, Excel): data processing, filtering, sorting, calculations, formulas, data analysis
-        - Document editors (LibreOffice Writer, Word): text processing, content editing, formatting, document manipulation
-        - Code editors (VS Code, text editors): code editing, file processing, text manipulation, configuration
-        - Data analysis tools: statistical analysis, data transformation, reporting
-        - File management: bulk operations, file processing, content extraction
-        - System utilities: configuration, setup, automation
-        """
-        logger.info("=" * 50)
-        logger.info("GROUNDING AGENT: Calling Code Agent")
-        logger.info("=" * 50)
-
-        # **CRITICAL**: Only use provided task for specific subtasks, otherwise use original task instruction
-        if task is not None:
-            # This is a subtask - use the provided task
-            task_to_execute = task
-            logger.info(f"Executing SUBTASK: {task_to_execute}")
-        else:
-            # This is a full task - use the original task instruction to prevent hallucination
-            task_to_execute = self.current_task_instruction
-            logger.info(f"Executing FULL TASK: {task_to_execute}")
-
-        if task_to_execute:
-            print("obs keys: ", self.obs.keys())
-            screenshot = self.obs.get("screenshot", "") if self.obs else ""
-            logger.info(f"Screenshot available: {'Yes' if screenshot else 'No'}")
-
-            logger.info("Executing code agent...")
-            result = self.code_agent.execute(
-                task_to_execute, screenshot, self.env.controller
-            )
-
-            # Store the result for the worker to access
-            self.last_code_agent_result = result
-
-            logger.info("Code agent execution completed")
-            logger.info(f"Result - Completion reason: {result['completion_reason']}")
-            logger.info(f"Steps executed: {result['steps_executed']}")
-            logger.info(f"Summary: {result['summary']}")
-
-            logger.info("=" * 50)
-            logger.info("GROUNDING AGENT: Code Agent Call Finished")
-            logger.info("=" * 50)
-
-            # Return code to be executed in the environment
-            return "import time; time.sleep(2.222)"
-        else:
-            logger.warning("No task instruction available for code agent call")
-            return "import time; time.sleep(1.111)"
-
-    @agent_action
     def scroll(self, element_description: str, clicks: int, shift: bool = False):
         """Scroll the element in the specified direction
         Args:
@@ -610,13 +544,13 @@ class OSWorldACI(ACI):
             clicks:int, the number of clicks to scroll can be positive (up) or negative (down).
             shift:bool, whether to use shift+scroll for horizontal scrolling
         """
-        coords1 = self.generate_coords(element_description, self.obs)
-        x, y = self.resize_coordinates(coords1)
+
+        x, y = self.resize_coordinates(self.coords1)
 
         if shift:
-            return f"import pyautogui; import time; pyautogui.moveTo({x}, {y}); time.sleep(0.5); pyautogui.hscroll({clicks})"
+            return f"import pyautogui; import time; pyautogui.moveTo({x}, {y}); time.sleep(0.2); pyautogui.hscroll({clicks})"
         else:
-            return f"import pyautogui; import time; pyautogui.moveTo({x}, {y}); time.sleep(0.5); pyautogui.vscroll({clicks})"
+            return f"import pyautogui; import time; pyautogui.moveTo({x}, {y}); time.sleep(0.2); pyautogui.vscroll({clicks})"
 
     @agent_action
     def hotkey(self, keys: List):
@@ -654,6 +588,23 @@ class OSWorldACI(ACI):
         """
         return f"""import time; time.sleep({time})"""
 
+    @agent_action
+    def done(
+        self,
+        return_value: Optional[Union[Dict, str, List, Tuple, int, float, bool]] = None,
+    ):
+        """End the current task with a success and the required return value"""
+        self.returned_info = return_value
+        return """DONE"""
+
+    @agent_action
+    def fail(self):
+        """End the current task with a failure, and replan the whole task."""
+        return """FAIL"""
+
+
+# ACI that supports the worker-only mode: done() and fail() become task scoped instead
+class OSWorldWorkerOnlyACI(OSWorldACI):
     @agent_action
     def done(
         self,

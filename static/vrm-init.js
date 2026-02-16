@@ -4,14 +4,14 @@
 
 // --- VRM 模块加载逻辑 ---
 (async function initVRMModules() {
-    // 如果已经加载过模块，或者是在模型管理页面（由 model_manager.js 负责加载），则不再重复加载
-    if (window.vrmModuleLoaded) return;
+    // 如果已经加载过模块，或者正由 model_manager.js 加载中，则不再重复加载
+    if (window.vrmModuleLoaded || window._vrmModulesLoading) return;
 
     const VRM_VERSION = '1.0.0';
 
     const loadModules = async () => {
         console.log('[VRM] 开始加载依赖模块');
-        
+
         // 可以并行加载的核心模块（无相互依赖）
         const parallelModules = [
             '/static/vrm-orientation.js',
@@ -19,9 +19,10 @@
             '/static/vrm-expression.js',
             '/static/vrm-animation.js',
             '/static/vrm-interaction.js',
+            '/static/vrm-cursor-follow.js',
             '/static/vrm-manager.js'
         ];
-        
+
         // 必须顺序加载的 UI 模块（vrm-ui-buttons.js 依赖 vrm-ui-popup.js 中定义的 createPopup）
         const sequentialModules = [
             '/static/vrm-ui-popup.js',
@@ -65,7 +66,7 @@
 
         // 1. 并行加载核心模块
         await Promise.all(parallelModules.map(loadScript));
-        
+
         // 2. 顺序加载 UI 模块（确保 popup 在 buttons 之前完成）
         for (const moduleSrc of sequentialModules) {
             await loadScript(moduleSrc);
@@ -115,19 +116,19 @@ async function fetchVRMConfig() {
                     user_vrm: '/user_vrm',
                     static_vrm: '/static/vrm'
                 };
-                
+
                 // 合并后端返回的路径配置，保留默认值作为后备
                 window.VRM_PATHS = {
                     ...defaultPaths,
                     ...data.paths,         // 后端返回的配置（覆盖默认值）
                     isLoaded: true         // 标记已加载
                 };
-                
+
                 // 派发配置加载完成事件
                 window.dispatchEvent(new CustomEvent('vrm-paths-loaded', {
                     detail: { paths: window.VRM_PATHS }
                 }));
-                
+
                 return true;
             }
         } else {
@@ -140,31 +141,31 @@ async function fetchVRMConfig() {
     }
 }
 
-window._vrmConvertPath = function(modelPath, options = {}) {
+window._vrmConvertPath = function (modelPath, options = {}) {
     const defaultPath = options.defaultPath || '/static/vrm/sister1.0.vrm';
-    
+
     // 验证输入路径的有效性
-    if (!modelPath || 
-        modelPath === 'undefined' || 
-        modelPath === 'null' || 
+    if (!modelPath ||
+        modelPath === 'undefined' ||
+        modelPath === 'null' ||
         (typeof modelPath === 'string' && (modelPath.trim() === '' || modelPath.includes('undefined')))) {
         console.warn('[VRM Path] 路径无效，使用默认路径:', modelPath);
         return defaultPath;
     }
-    
+
     // 确保 modelPath 是字符串
     if (typeof modelPath !== 'string') {
         console.warn('[VRM Path] 路径不是字符串，使用默认路径:', modelPath);
         return defaultPath;
     }
-    
+
     // 如果路径已经是有效的站内相对路径，直接返回，避免不必要的回退到默认路径；使用 window.VRM_PATHS 动态获取前缀，而不是硬编码
     const getConfiguredPrefixes = () => {
         if (!window.VRM_PATHS) {
             // 如果配置未加载，使用默认前缀
             return ['/static/vrm/', '/user_vrm/'];
         }
-        
+
         // 处理数组或对象形状的配置
         let prefixes = [];
         if (Array.isArray(window.VRM_PATHS)) {
@@ -178,22 +179,22 @@ window._vrmConvertPath = function(modelPath, options = {}) {
                 userVrm.endsWith('/') ? userVrm : userVrm + '/'
             ];
         }
-        
+
         // 如果没有有效的前缀，使用默认值
         if (prefixes.length === 0) {
             return ['/static/vrm/', '/user_vrm/'];
         }
-        
+
         return prefixes;
     };
-    
+
     const configuredPrefixes = getConfiguredPrefixes();
     if (configuredPrefixes.some(prefix => modelPath.startsWith(prefix))) {
         return modelPath;
     }
-    
+
     let modelUrl = modelPath;
-    
+
     // 确保 VRM_PATHS 已初始化
     if (!window.VRM_PATHS) {
         window.VRM_PATHS = {
@@ -201,14 +202,14 @@ window._vrmConvertPath = function(modelPath, options = {}) {
             static_vrm: '/static/vrm'
         };
     }
-    
+
     const userVrmPath = window.VRM_PATHS.user_vrm || '/user_vrm';
     const staticVrmPath = window.VRM_PATHS.static_vrm || '/static/vrm';
-    
+
     if (/^https?:\/\//.test(modelUrl)) {
         return modelUrl;
     }
-    
+
     // 处理 Windows 绝对路径（驱动器字母模式，如 C:\ 或 C:/）
     const windowsPathPattern = /^[A-Za-z]:[\\/]/;
     if (windowsPathPattern.test(modelUrl) || (modelUrl.includes('\\') && modelUrl.includes(':'))) {
@@ -227,7 +228,7 @@ window._vrmConvertPath = function(modelPath, options = {}) {
         }
     } else if (!modelUrl.startsWith('http') && !modelUrl.startsWith('/')) {
         // 如果是相对路径（不以 http 或 / 开头），添加 user_vrm 路径前缀
-        if (userVrmPath !== 'undefined' && 
+        if (userVrmPath !== 'undefined' &&
             userVrmPath !== 'null' &&
             modelUrl !== 'undefined' &&
             modelUrl !== 'null') {
@@ -249,16 +250,16 @@ window._vrmConvertPath = function(modelPath, options = {}) {
             }
         }
     }
-    
+
     // 最终验证：确保 modelUrl 不包含 "undefined" 或 "null"
-    if (typeof modelUrl !== 'string' || 
-        modelUrl.includes('undefined') || 
+    if (typeof modelUrl !== 'string' ||
+        modelUrl.includes('undefined') ||
         modelUrl.includes('null') ||
         modelUrl.trim() === '') {
         console.error('[VRM Path] 路径转换后仍包含无效值，使用默认路径:', modelUrl);
         return defaultPath;
     }
-    
+
     return modelUrl;
 };
 
@@ -317,12 +318,12 @@ function applyVRMLighting(lighting, vrmManager) {
             vrmManager[vrmManagerProp].intensity = lighting[lightingKey];
         }
     }
-    
+
     // 应用曝光设置
     if (lighting.exposure !== undefined && vrmManager.renderer) {
         vrmManager.renderer.toneMappingExposure = lighting.exposure;
     }
-    
+
     // 应用色调映射
     if (lighting.toneMapping !== undefined && vrmManager.renderer) {
         vrmManager.renderer.toneMapping = lighting.toneMapping;
@@ -373,7 +374,7 @@ async function initVRMModel() {
     if (window._isVRMLoading) {
         return;
     }
-    
+
     try {
         // 标记开始（共享锁）- 放在 try 块内确保 finally 能正确释放
         window._isVRMLoading = true;
@@ -383,7 +384,7 @@ async function initVRMModel() {
         }
         // 在此处同步后端路径配置 
         await fetchVRMConfig();
-        
+
         // 主动去服务器拉取最新的角色详情（包含光照）
         try {
             const currentName = window.lanlan_config?.lanlan_name;
@@ -405,6 +406,8 @@ async function initVRMModel() {
                         window.lanlan_config.lighting = charData.lighting;
                         // 顺便把 VRM 路径也更新一下，防止主页存的是旧路径
                         if (charData.vrm) window.lanlan_config.vrm = charData.vrm;
+                        // 待机动作配置传播到全局，供 vrm-manager.js loadModel 使用
+                        if (charData.idleAnimation) window.lanlan_config.vrmIdleAnimation = charData.idleAnimation;
                     }
                 } else {
                     if (res.status === 404) {
@@ -429,7 +432,7 @@ async function initVRMModel() {
             console.log('[VRM Init] 模型管理页面，跳过自动模型加载');
             return;
         }
-        
+
         // 安全获取 window.vrmModel，处理各种边界情况（包括字符串 "undefined" 和 "null"）
         let targetModelPath = null;
         if (window.vrmModel !== undefined && window.vrmModel !== null) {
@@ -437,9 +440,9 @@ async function initVRMModel() {
             if (typeof rawValue === 'string') {
                 const trimmed = rawValue.trim();
                 // 检查是否是无效的字符串值（包括 "undefined"、"null"、空字符串、包含 "undefined" 的字符串）
-                if (trimmed !== '' && 
-                    trimmed !== 'undefined' && 
-                    trimmed !== 'null' && 
+                if (trimmed !== '' &&
+                    trimmed !== 'undefined' &&
+                    trimmed !== 'null' &&
                     !trimmed.includes('undefined') &&
                     !trimmed.includes('null')) {
                     targetModelPath = trimmed;
@@ -455,10 +458,10 @@ async function initVRMModel() {
 
         // 如果未指定路径或路径无效，使用默认模型保底
         // 额外检查：确保 targetModelPath 不是字符串 "undefined" 或包含 "undefined"
-        if (!targetModelPath || 
+        if (!targetModelPath ||
             (typeof targetModelPath === 'string' && (
-                targetModelPath === 'undefined' || 
-                targetModelPath === 'null' || 
+                targetModelPath === 'undefined' ||
+                targetModelPath === 'null' ||
                 targetModelPath.includes('undefined') ||
                 targetModelPath.includes('null') ||
                 targetModelPath.trim() === ''
@@ -474,7 +477,7 @@ async function initVRMModel() {
             // 如果上面的 if 没拦截住（说明我们要加载 VRM），就会执行这一行，赋予默认模型
             targetModelPath = '/static/vrm/sister1.0.vrm';
         }
-        
+
         if (!window.vrmManager) {
             console.warn('[VRM Init] VRM管理器未初始化，跳过加载');
             return;
@@ -511,10 +514,10 @@ async function initVRMModel() {
                     }
                     // 完全销毁PIXI应用释放WebGL上下文
                     try {
-                        window.live2dManager.pixi_app.destroy(true, { 
-                            children: true, 
-                            texture: true, 
-                            baseTexture: true 
+                        window.live2dManager.pixi_app.destroy(true, {
+                            children: true,
+                            texture: true,
+                            baseTexture: true
                         });
                     } catch (destroyError) {
                         console.warn('[VRM Init] PIXI应用销毁时出现警告:', destroyError);
@@ -533,11 +536,11 @@ async function initVRMModel() {
         // 使用统一的路径转换工具函数
         const modelUrl = window.convertVRMModelPath(targetModelPath);
 
-        
+
         // 朝向会自动检测并保存（在vrm-core.js的loadModel中处理）
         // 如果模型背对屏幕，会自动翻转180度并保存，下次加载时直接应用
         await window.vrmManager.loadModel(modelUrl);
-        
+
         // 页面加载时立即应用打光配置（如果初始化时没有传入，这里会应用）
         applyVRMLighting(window.lanlan_config?.lighting, window.vrmManager);
 
@@ -550,7 +553,7 @@ async function initVRMModel() {
 }
 
 // 添加强制解锁函数
-window.forceUnlockVRM = function() {
+window.forceUnlockVRM = function () {
     if (window.vrmManager && window.vrmManager.interaction) {
         window.vrmManager.interaction.setLocked(false);
 
@@ -562,13 +565,13 @@ window.forceUnlockVRM = function() {
 };
 
 // 手动触发主页VRM模型检查的函数
-window.checkAndLoadVRM = async function() {
+window.checkAndLoadVRM = async function () {
     // 使用共享锁，避免与 initVRMModel 并发
     if (window._isVRMLoading) return;
     window._isVRMLoading = true;
     try {
         // 确保配置已同步 (防止直接调用此函数时配置还没加载) 
-        if (!window.VRM_PATHS.isLoaded) { 
+        if (!window.VRM_PATHS.isLoaded) {
             await fetchVRMConfig();
         }
 
@@ -639,19 +642,19 @@ window.checkAndLoadVRM = async function() {
         // 8. 检查是否需要重新加载模型（使用规范化比较，避免路径前缀差异导致不必要的重载）
         const currentModelUrl = window.vrmManager.currentModel?.url;
         let needReload = true;
-        
+
         if (currentModelUrl) {
             // 使用共享的路径处理工具函数（避免与 vrm-core.js 重复）
             const getFilename = window._vrmPathUtils?.getFilename;
             const normalizePath = window._vrmPathUtils?.normalizePath;
-            
+
             if (!getFilename || !normalizePath) {
                 console.warn('[VRM Init] 路径处理工具函数未初始化，跳过路径比较');
                 needReload = true;
             } else {
                 const currentFilename = getFilename(currentModelUrl);
                 const newFilename = getFilename(modelUrl);
-                
+
                 // 首先尝试文件名匹配（最宽松，处理路径前缀差异）
                 if (currentFilename && newFilename && currentFilename === newFilename) {
                     needReload = false;
@@ -672,13 +675,13 @@ window.checkAndLoadVRM = async function() {
         if (needReload) {
             await window.vrmManager.loadModel(modelUrl);
         }
-        
+
         // 直接使用刚刚拉取的 catgirlConfig 中的 lighting
         const lighting = catgirlConfig.lighting;
-        
+
         // 应用打光配置
         applyVRMLighting(lighting, window.vrmManager);
-        
+
         // 顺便更新一下全局变量，以防万一
         if (lighting && window.lanlan_config) {
             window.lanlan_config.lighting = lighting;
@@ -703,7 +706,7 @@ const handleVisibilityChange = () => {
 
 document.addEventListener('visibilitychange', handleVisibilityChange);
 
-window.cleanupVRMInit = function() {
+window.cleanupVRMInit = function () {
     document.removeEventListener('visibilitychange', handleVisibilityChange);
 };
 // VRM 系统初始化完成

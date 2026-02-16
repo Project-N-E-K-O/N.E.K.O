@@ -368,6 +368,10 @@ async function loadCurrentApiKey() {
             setInputValue('visionModelUrl', data.visionModelUrl);
             setInputValue('visionModelId', data.visionModelId);
             setInputValue('visionModelApiKey', data.visionModelApiKey);
+            setInputValue('agentModelProvider', data.agentModelProvider);
+            setInputValue('agentModelUrl', data.agentModelUrl);
+            setInputValue('agentModelId', data.agentModelId);
+            setInputValue('agentModelApiKey', data.agentModelApiKey);
 
             setInputValue('omniModelProvider', data.omniModelProvider);
             setInputValue('omniModelUrl', data.omniModelUrl);
@@ -746,6 +750,10 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
     const visionModelUrl = document.getElementById('visionModelUrl') ? document.getElementById('visionModelUrl').value.trim() : '';
     const visionModelId = document.getElementById('visionModelId') ? document.getElementById('visionModelId').value.trim() : '';
     const visionModelApiKey = document.getElementById('visionModelApiKey') ? document.getElementById('visionModelApiKey').value.trim() : '';
+    const agentModelProvider = document.getElementById('agentModelProvider') ? document.getElementById('agentModelProvider').value.trim() : '';
+    const agentModelUrl = document.getElementById('agentModelUrl') ? document.getElementById('agentModelUrl').value.trim() : '';
+    const agentModelId = document.getElementById('agentModelId') ? document.getElementById('agentModelId').value.trim() : '';
+    const agentModelApiKey = document.getElementById('agentModelApiKey') ? document.getElementById('agentModelApiKey').value.trim() : '';
 
     const omniModelProvider = document.getElementById('omniModelProvider') ? document.getElementById('omniModelProvider').value.trim() : '';
     const omniModelUrl = document.getElementById('omniModelUrl') ? document.getElementById('omniModelUrl').value.trim() : '';
@@ -810,6 +818,7 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
             correctionModelProvider, correctionModelUrl, correctionModelId, correctionModelApiKey,
             emotionModelProvider, emotionModelUrl, emotionModelId, emotionModelApiKey,
             visionModelProvider, visionModelUrl, visionModelId, visionModelApiKey,
+            agentModelProvider, agentModelUrl, agentModelId, agentModelApiKey,
             omniModelProvider, omniModelUrl, omniModelId, omniModelApiKey,
             ttsModelProvider, ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId,
             mcpToken, enableCustomApi
@@ -824,6 +833,7 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
             correctionModelProvider, correctionModelUrl, correctionModelId, correctionModelApiKey,
             emotionModelProvider, emotionModelUrl, emotionModelId, emotionModelApiKey,
             visionModelProvider, visionModelUrl, visionModelId, visionModelApiKey,
+            agentModelProvider, agentModelUrl, agentModelId, agentModelApiKey,
             omniModelProvider, omniModelUrl, omniModelId, omniModelApiKey,
             ttsModelProvider, ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId,
             mcpToken, enableCustomApi
@@ -831,7 +841,7 @@ document.getElementById('api-key-form').addEventListener('submit', async functio
     }
 });
 
-async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini, summaryModelProvider, summaryModelUrl, summaryModelId, summaryModelApiKey, correctionModelProvider, correctionModelUrl, correctionModelId, correctionModelApiKey, emotionModelProvider, emotionModelUrl, emotionModelId, emotionModelApiKey, visionModelProvider, visionModelUrl, visionModelId, visionModelApiKey, omniModelProvider, omniModelUrl, omniModelId, omniModelApiKey, ttsModelProvider, ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId, mcpToken, enableCustomApi }) {
+async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assistApiKeyOpenai, assistApiKeyGlm, assistApiKeyStep, assistApiKeySilicon, assistApiKeyGemini, summaryModelProvider, summaryModelUrl, summaryModelId, summaryModelApiKey, correctionModelProvider, correctionModelUrl, correctionModelId, correctionModelApiKey, emotionModelProvider, emotionModelUrl, emotionModelId, emotionModelApiKey, visionModelProvider, visionModelUrl, visionModelId, visionModelApiKey, agentModelProvider, agentModelUrl, agentModelId, agentModelApiKey, omniModelProvider, omniModelUrl, omniModelId, omniModelApiKey, ttsModelProvider, ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId, mcpToken, enableCustomApi }) {
     // 统一处理免费版 API Key 的保存值：如果核心或辅助 API 为 free，则保存值应为 'free-access'
     if (coreApi === 'free' || assistApi === 'free') {
         // 无论用户在 UI 中看到的是翻译文本或空值，保存时都使用 'free-access'
@@ -876,6 +886,10 @@ async function saveApiKey({ apiKey, coreApi, assistApi, assistApiKeyQwen, assist
                 visionModelUrl: visionModelUrl || undefined,
                 visionModelId: visionModelId || undefined,
                 visionModelApiKey: visionModelApiKey || undefined,
+                agentModelProvider: agentModelProvider || undefined,
+                agentModelUrl: agentModelUrl || undefined,
+                agentModelId: agentModelId || undefined,
+                agentModelApiKey: agentModelApiKey || undefined,
                 omniModelProvider: omniModelProvider || undefined,
                 omniModelUrl: omniModelUrl || undefined,
                 omniModelId: omniModelId || undefined,

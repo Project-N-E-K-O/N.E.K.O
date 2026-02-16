@@ -425,6 +425,25 @@ function init_app() {
 
         socket.onopen = () => {
             console.log(window.t('console.websocketConnected'));
+            // Warm up Agent snapshot once websocket is ready.
+            Promise.all([
+                fetch('/api/agent/health').then(r => r.ok).catch(() => false),
+                fetch('/api/agent/flags').then(r => r.ok ? r.json() : null).catch(() => null)
+            ]).then(([healthOk, flagsResp]) => {
+                if (flagsResp && flagsResp.success) {
+                    window._agentStatusSnapshot = {
+                        server_online: !!healthOk,
+                        analyzer_enabled: !!flagsResp.analyzer_enabled,
+                        flags: flagsResp.agent_flags || {},
+                        agent_api_gate: flagsResp.agent_api_gate || {},
+                        capabilities: (window._agentStatusSnapshot && window._agentStatusSnapshot.capabilities) || {},
+                        updated_at: new Date().toISOString()
+                    };
+                    if (window.agentStateMachine && typeof window.agentStateMachine.updateCache === 'function') {
+                        window.agentStateMachine.updateCache(!!healthOk, flagsResp.agent_flags || {});
+                    }
+                }
+            }).catch(() => {});
 
             // 启动心跳保活机制
             if (heartbeatInterval) {
@@ -790,6 +809,45 @@ function init_app() {
                     } else {
                         console.warn(window.t('console.unknownExpressionCommand'), response.message);
                     }
+                } else if (response.type === 'agent_status_update') {
+                    const snapshot = response.snapshot || {};
+                    window._agentStatusSnapshot = snapshot;
+                    const serverOnline = snapshot.server_online !== false;
+                    const flags = snapshot.flags || {};
+                    if (window.agentStateMachine && typeof window.agentStateMachine.updateCache === 'function') {
+                        window.agentStateMachine.updateCache(serverOnline, flags);
+                    }
+                    if (typeof window.applyAgentStatusSnapshotToUI === 'function') {
+                        window.applyAgentStatusSnapshotToUI(snapshot);
+                    }
+                } else if (response.type === 'agent_notification') {
+                    const msg = typeof response.text === 'string' ? response.text : '';
+                    if (msg) {
+                        setFloatingAgentStatus(msg);
+                    }
+                } else if (response.type === 'agent_task_update') {
+                    try {
+                        if (!window._agentTaskMap) window._agentTaskMap = new Map();
+                        const task = response.task || {};
+                        if (task.id) {
+                            window._agentTaskMap.set(task.id, task);
+                        }
+                        const tasks = Array.from(window._agentTaskMap.values());
+                        if (window.live2dManager && typeof window.live2dManager.updateAgentTaskHUD === 'function') {
+                            window.live2dManager.updateAgentTaskHUD({
+                                success: true,
+                                tasks,
+                                total_count: tasks.length,
+                                running_count: tasks.filter(t => t.status === 'running').length,
+                                queued_count: tasks.filter(t => t.status === 'queued').length,
+                                completed_count: tasks.filter(t => t.status === 'completed').length,
+                                failed_count: tasks.filter(t => t.status === 'failed').length,
+                                timestamp: new Date().toISOString()
+                            });
+                        }
+                    } catch (e) {
+                        console.warn('[App] 处理 agent_task_update 失败:', e);
+                    }
                 } else if (response.type === 'system' && response.data === 'turn end') {
                     console.log(window.t('console.turnEndReceived'));
                     // 合并消息关闭（分句模式）时：兜底 flush 未以标点结尾的最后缓冲，避免最后一段永远不显示
@@ -921,6 +979,60 @@ function init_app() {
                     }
                     sessionStartedResolver = null;
                     sessionStartedRejecter = null;
+                } else if (response.type === 'session_ended_by_server') {
+                    // 后端 session 被服务器终止（如API断连），重置前端会话状态
+                    console.log('[App] Session ended by server, input_mode:', response.input_mode);
+
+                    isTextSessionActive = false;
+
+                    // 清理可能存在的 session Promise
+                    if (sessionStartedRejecter) {
+                        try {
+                            sessionStartedRejecter(new Error('Session ended by server'));
+                        } catch (e) { /* ignore */ }
+                    }
+                    sessionStartedResolver = null;
+                    sessionStartedRejecter = null;
+
+                    if (window.sessionTimeoutId) {
+                        clearTimeout(window.sessionTimeoutId);
+                        window.sessionTimeoutId = null;
+                    }
+
+                    // 如果当前处于语音模式，停止录音
+                    if (isRecording) {
+                        stopRecording();
+                    }
+
+                    // 无条件清理音频队列，防止残留播放
+                    (async () => { await clearAudioQueue(); })();
+
+                    hideVoicePreparingToast();
+
+                    // 恢复 UI 到空闲状态
+                    micButton.classList.remove('active');
+                    micButton.classList.remove('recording');
+                    screenButton.classList.remove('active');
+                    micButton.disabled = false;
+                    textSendButton.disabled = false;
+                    textInputBox.disabled = false;
+                    screenshotButton.disabled = false;
+                    muteButton.disabled = true;
+                    screenButton.disabled = true;
+                    stopButton.disabled = true;
+                    resetSessionButton.disabled = true;
+                    returnSessionButton.disabled = true;
+
+                    const textInputArea = document.getElementById('text-input-area');
+                    if (textInputArea) {
+                        textInputArea.classList.remove('hidden');
+                    }
+
+                    syncFloatingMicButtonState(false);
+                    syncFloatingScreenButtonState(false);
+
+                    window.isMicStarting = false;
+                    isSwitchingMode = false;
                 } else if (response.type === 'reload_page') {
                     console.log(window.t('console.reloadPageReceived'), response.message);
                     // 显示提示信息
@@ -974,6 +1086,98 @@ function init_app() {
                 console.log(window.t('console.websocketDisconnectedResetText'));
             }
 
+            // 重置语音录制状态和资源（包括录制中或麦克风启动中的情况）
+            if (isRecording || window.isMicStarting) {
+                console.log('WebSocket断开时重置语音录制状态');
+                isRecording = false;
+                window.isRecording = false;
+                window.isMicStarting = false;
+                window.currentGeminiMessage = null;
+                lastVoiceUserMessage = null;
+                lastVoiceUserMessageTime = 0;
+
+                // 停止静音检测
+                stopSilenceDetection();
+
+                // 清理输入analyser
+                inputAnalyser = null;
+
+                // 停止所有音频轨道
+                if (stream) {
+                    stream.getTracks().forEach(track => track.stop());
+                    stream = null;
+                }
+
+                // 关闭AudioContext
+                if (audioContext && audioContext.state !== 'closed') {
+                    audioContext.close();
+                    audioContext = null;
+                    workletNode = null;
+                }
+            }
+
+            // 重置模式切换标志
+            if (isSwitchingMode) {
+                console.log('WebSocket断开时重置模式切换标志');
+                isSwitchingMode = false;
+            }
+
+            // 清理 session Promise resolver/rejecter，防止后续操作永远等待
+            if (sessionStartedResolver || sessionStartedRejecter) {
+                console.log('WebSocket断开时清理session Promise');
+                if (sessionStartedRejecter) {
+                    try {
+                        sessionStartedRejecter(new Error('WebSocket连接断开'));
+                    } catch (e) {
+                        // 忽略已经处理的reject
+                    }
+                }
+                sessionStartedResolver = null;
+                sessionStartedRejecter = null;
+            }
+
+            // 清理session超时定时器
+            if (window.sessionTimeoutId) {
+                clearTimeout(window.sessionTimeoutId);
+                window.sessionTimeoutId = null;
+            }
+
+            // 清理音频队列
+            (async () => {
+                await clearAudioQueue();
+            })();
+
+            // 隐藏语音准备提示
+            hideVoicePreparingToast();
+
+            // 移除按钮的active/recording类
+            micButton.classList.remove('active');
+            micButton.classList.remove('recording');
+            screenButton.classList.remove('active');
+
+            // 恢复按钮状态，确保用户可以继续操作
+            micButton.disabled = false;
+            textSendButton.disabled = false;
+            textInputBox.disabled = false;
+            screenshotButton.disabled = false;
+
+            // 禁用语音控制按钮（因为没有活跃的语音会话）
+            muteButton.disabled = true;
+            screenButton.disabled = true;
+            stopButton.disabled = true;
+            resetSessionButton.disabled = true;
+            returnSessionButton.disabled = true;
+
+            // 确保文本输入区可见
+            const textInputArea = document.getElementById('text-input-area');
+            if (textInputArea) {
+                textInputArea.classList.remove('hidden');
+            }
+
+            // 同步浮动按钮状态
+            syncFloatingMicButtonState(false);
+            syncFloatingScreenButtonState(false);
+
             // 如果不是正在切换猫娘，才自动重连（避免与手动重连冲突）
             if (!isSwitchingCatgirl) {
                 // 保存 setTimeout ID，以便在 handleCatgirlSwitch 中取消
@@ -1013,11 +1217,107 @@ function init_app() {
                     case 'show_main_ui':
                         handleShowMainUI();
                         break;
+                    case 'memory_edited':
+                        console.log(window.t('console.memoryEditedRefreshContext'), event.data.catgirl_name);
+                        (async () => {
+                            // 记录之前是否在语音模式
+                            const wasRecording = isRecording;
+                            
+                            // 停止当前语音捕获
+                            if (isRecording) {
+                                stopMicCapture();
+                            }
+
+                            // 向后端发送 end_session，确保服务器丢弃旧上下文
+                            if (socket && socket.readyState === WebSocket.OPEN) {
+                                socket.send(JSON.stringify({ action: 'end_session' }));
+                                console.log('[Memory] 已向后端发送 end_session');
+                            }
+
+                            // 如果是文本模式，重置会话状态，下次发送文本时会重新获取上下文
+                            if (isTextSessionActive) {
+                                isTextSessionActive = false;
+                                console.log('[Memory] 文本会话已重置，下次发送将重新加载上下文');
+                            }
+                            // 停止正在播放的AI语音回复（等待音频解码/重置完成，避免与后续重连流程竞争）
+                            if (typeof clearAudioQueue === 'function') {
+                                try {
+                                    await clearAudioQueue();
+                                } catch (e) {
+                                    console.error('[Memory] clearAudioQueue 失败:', e);
+                                }
+                            }
+                            
+                            // 如果之前是语音模式，等待 session 结束后通过完整启动流程重新连接
+                            if (wasRecording) {
+                                showStatusToast(window.t ? window.t('memory.refreshingContext') : '正在刷新上下文...', 3000);
+                                // 等待后端 session 完全结束
+                                await new Promise(resolve => setTimeout(resolve, 1500));
+                                // 通过 micButton.click() 触发完整启动流程
+                                // （发送 start_session、等待 session_started、再初始化麦克风）
+                                try {
+                                    micButton.click();
+                                } catch (e) {
+                                    console.error('[Memory] 自动重连语音失败:', e);
+                                }
+                            } else {
+                                // 显示提示
+                                showStatusToast(window.t ? window.t('memory.refreshed') : '记忆已更新，下次对话将使用新记忆', 4000);
+                            }
+                        })();
+                        break;
                 }
             };
         }
     } catch (e) {
         console.log('[BroadcastChannel] 初始化失败，将使用 postMessage 后备方案:', e);
+    }
+
+    function cleanupLive2DOverlayUI() {
+        const live2dManager = window.live2dManager;
+
+        if (live2dManager) {
+            if (live2dManager._lockIconTicker && live2dManager.pixi_app?.ticker) {
+                try {
+                    live2dManager.pixi_app.ticker.remove(live2dManager._lockIconTicker);
+                } catch (_) {
+                    // ignore
+                }
+                live2dManager._lockIconTicker = null;
+            }
+            if (live2dManager._floatingButtonsTicker && live2dManager.pixi_app?.ticker) {
+                try {
+                    live2dManager.pixi_app.ticker.remove(live2dManager._floatingButtonsTicker);
+                } catch (_) {
+                    // ignore
+                }
+                live2dManager._floatingButtonsTicker = null;
+            }
+            if (live2dManager._floatingButtonsResizeHandler) {
+                window.removeEventListener('resize', live2dManager._floatingButtonsResizeHandler);
+                live2dManager._floatingButtonsResizeHandler = null;
+            }
+            if (live2dManager.tutorialProtectionTimer) {
+                clearInterval(live2dManager.tutorialProtectionTimer);
+                live2dManager.tutorialProtectionTimer = null;
+            }
+            live2dManager._floatingButtonsContainer = null;
+            live2dManager._returnButtonContainer = null;
+            live2dManager._lockIconElement = null;
+            live2dManager._lockIconImages = null;
+        }
+
+        document.querySelectorAll('#live2d-floating-buttons, #live2d-lock-icon, #live2d-return-button-container')
+            .forEach(el => el.remove());
+    }
+
+    function cleanupVRMOverlayUI() {
+        if (window.vrmManager && typeof window.vrmManager.cleanupUI === 'function') {
+            window.vrmManager.cleanupUI();
+            return;
+        }
+        document.querySelectorAll('#vrm-floating-buttons, #vrm-lock-icon, #vrm-return-button-container')
+            .forEach(el => el.remove());
     }
 
     // 模型重载处理函数
@@ -1074,6 +1374,14 @@ function init_app() {
                     console.warn('[Model] 模型路径为空，保持当前模型不变');
                     showStatusToast(window.t ? window.t('app.modelPathEmpty') : '模型路径为空', 2000);
                     return;
+                }
+
+                if (oldModelType !== newModelType) {
+                    if (newModelType === 'vrm') {
+                        cleanupLive2DOverlayUI();
+                    } else {
+                        cleanupVRMOverlayUI();
+                    }
                 }
 
                 // 2. 更新全局配置
@@ -1327,16 +1635,58 @@ function init_app() {
         }
     }
 
-    // 监听记忆编辑通知（从 memory_browser iframe 发送）
-    window.addEventListener('message', function (event) {
+    // 监听记忆编辑通知（从 memory_browser iframe 发送 - postMessage 后备方案）
+    window.addEventListener('message', async function (event) {
+        // 安全检查：验证消息来源
+        if (event.origin !== window.location.origin) {
+            console.warn('[Security] 拒绝来自不同源的 memory_edited 消息:', event.origin);
+            return;
+        }
+
         if (event.data && event.data.type === 'memory_edited') {
             console.log(window.t('console.memoryEditedRefreshContext'), event.data.catgirl_name);
-            // 停止当前语音捕获，用户再次开麦时会自动刷新上下文
+            
+            // 记录之前是否在语音模式
+            const wasRecording = isRecording;
+            
+            // 停止当前语音捕获
             if (isRecording) {
                 stopMicCapture();
             }
-            // 显示提示
-            showStatusToast(window.t ? window.t('memory.refreshed') : '记忆已更新，下次对话将使用新记忆', 4000);
+            // 向后端发送 end_session，确保服务器丢弃旧上下文
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({ action: 'end_session' }));
+                console.log('[Memory] 已向后端发送 end_session');
+            }
+            // 如果是文本模式，重置会话状态，下次发送文本时会重新获取上下文
+            if (isTextSessionActive) {
+                isTextSessionActive = false;
+                console.log('[Memory] 文本会话已重置，下次发送将重新加载上下文');
+            }
+            // 停止正在播放的AI语音回复（等待完成，避免竞态条件）
+            if (typeof clearAudioQueue === 'function') {
+                try {
+                    await clearAudioQueue();
+                } catch (e) {
+                    console.error('[Memory] clearAudioQueue 失败:', e);
+                }
+            }
+            
+            // 如果之前是语音模式，等待 session 结束后自动重新连接
+            if (wasRecording) {
+                showStatusToast(window.t ? window.t('memory.refreshingContext') : '正在刷新上下文...', 3000);
+                // 等待后端 session 完全结束
+                await new Promise(resolve => setTimeout(resolve, 1500));
+                // 通过 micButton.click() 触发完整启动流程
+                try {
+                    micButton.click();
+                } catch (e) {
+                    console.error('[Memory] 自动重连语音失败:', e);
+                }
+            } else {
+                // 显示提示
+                showStatusToast(window.t ? window.t('memory.refreshed') : '记忆已更新，下次对话将使用新记忆', 4000);
+            }
         }
     });
 
@@ -2333,21 +2683,88 @@ function init_app() {
 
                     // Desktop/laptop: capture the user's chosen screen / window / tab.
                     // 检查是否有选中的特定屏幕源（仅Electron环境）
-                    const selectedSourceId = window.getSelectedScreenSourceId ? window.getSelectedScreenSourceId() : null;
+                    let selectedSourceId = window.getSelectedScreenSourceId ? window.getSelectedScreenSourceId() : null;
                     
+                    if (selectedSourceId && window.electronDesktopCapturer) {
+                        // 验证选中的源是否仍然存在（窗口可能已关闭）
+                        try {
+                            const currentSources = await window.electronDesktopCapturer.getSources({
+                                types: ['window', 'screen'],
+                                thumbnailSize: { width: 1, height: 1 }
+                            });
+                            const sourceStillExists = currentSources.some(s => s.id === selectedSourceId);
+
+                            if (!sourceStillExists) {
+                                console.warn('[屏幕源] 选中的源已不可用 (ID:', selectedSourceId, ')，自动回退到全屏');
+                                showStatusToast(
+                                    safeT('app.screenSource.sourceLost', '屏幕分享无法找到之前选择窗口，已切换为全屏分享'),
+                                    3000
+                                );
+                                // 查找第一个全屏源作为回退
+                                const screenSources = currentSources.filter(s => s.id.startsWith('screen:'));
+                                if (screenSources.length > 0) {
+                                    selectedSourceId = screenSources[0].id;
+                                    selectedScreenSourceId = selectedSourceId;
+                                    try { localStorage.setItem('selectedScreenSourceId', selectedSourceId); } catch (e) {}
+                                    updateScreenSourceListSelection();
+                                } else {
+                                    // 连全屏源都拿不到，清空选择让下面走 getDisplayMedia
+                                    selectedSourceId = null;
+                                    selectedScreenSourceId = null;
+                                    try { localStorage.removeItem('selectedScreenSourceId'); } catch (e) {}
+                                }
+                            }
+                        } catch (validateErr) {
+                            console.warn('[屏幕源] 验证源可用性失败，继续尝试使用保存的源:', validateErr);
+                        }
+                    }
+
                     if (selectedSourceId && window.electronDesktopCapturer) {
                         // 在Electron中使用选中的特定屏幕/窗口源
                         // 使用 chromeMediaSourceId 约束来指定源
-                        screenCaptureStream = await navigator.mediaDevices.getUserMedia({
-                            audio: false,
-                            video: {
-                                mandatory: {
-                                    chromeMediaSource: 'desktop',
-                                    chromeMediaSourceId: selectedSourceId,
-                                    maxFrameRate: 1
+                        try {
+                            screenCaptureStream = await navigator.mediaDevices.getUserMedia({
+                                audio: false,
+                                video: {
+                                    mandatory: {
+                                        chromeMediaSource: 'desktop',
+                                        chromeMediaSourceId: selectedSourceId,
+                                        maxFrameRate: 1
+                                    }
                                 }
+                            });
+                        } catch (captureErr) {
+                            // getUserMedia 失败（竞态：验证时存在但捕获时已消失）
+                            console.warn('[屏幕源] 指定源捕获失败，回退到全屏:', captureErr);
+                            selectedScreenSourceId = null;
+                            try { localStorage.removeItem('selectedScreenSourceId'); } catch (e) {}
+
+                            // 尝试回退到全屏源
+                            const fallbackSources = await window.electronDesktopCapturer.getSources({
+                                types: ['screen'],
+                                thumbnailSize: { width: 1, height: 1 }
+                            });
+                            if (fallbackSources.length > 0) {
+                                screenCaptureStream = await navigator.mediaDevices.getUserMedia({
+                                    audio: false,
+                                    video: {
+                                        mandatory: {
+                                            chromeMediaSource: 'desktop',
+                                            chromeMediaSourceId: fallbackSources[0].id,
+                                            maxFrameRate: 1
+                                        }
+                                    }
+                                });
+                                selectedScreenSourceId = fallbackSources[0].id;
+                                try { localStorage.setItem('selectedScreenSourceId', fallbackSources[0].id); } catch (e) {}
+                                showStatusToast(
+                                    safeT('app.screenSource.sourceLost', '屏幕分享无法找到之前选择窗口，已切换为全屏分享'),
+                                    3000
+                                );
+                            } else {
+                                throw captureErr; // 全屏也拿不到，重新抛出让外层 catch 处理
                             }
-                        });
+                        }
                         console.log(window.t('console.screenShareUsingSource'), selectedSourceId);
                     } else {
                         // 使用标准的getDisplayMedia（显示系统选择器）
@@ -5328,6 +5745,7 @@ function init_app() {
 
     // 暴露状态机给外部使用
     window.agentStateMachine = agentStateMachine;
+    window._agentStatusSnapshot = window._agentStatusSnapshot || null;
 
     // Agent 定时检查器（暴露到 window 供 live2d-ui-hud.js 调用）
     let agentCheckInterval = null;
@@ -5655,9 +6073,10 @@ function init_app() {
 
     // 启动 Agent 可用性定时检查（由 Agent 总开关打开时调用）
     window.startAgentAvailabilityCheck = function () {
-        // 清除之前的定时器
+        // 事件驱动：不做轮询，仅做一次性检查。
         if (agentCheckInterval) {
             clearInterval(agentCheckInterval);
+            agentCheckInterval = null;
         }
 
         // 重置 flags 同步时间，确保立即同步一次
@@ -5667,9 +6086,6 @@ function init_app() {
 
         // 立即检查一次
         checkAgentCapabilities();
-
-        // 每1秒检查一次
-        agentCheckInterval = setInterval(checkAgentCapabilities, 1000);
     };
 
     // 停止 Agent 可用性定时检查（由 Agent 总开关关闭时调用）
@@ -5690,13 +6106,19 @@ function init_app() {
 
     // 检查Agent服务器健康状态
     async function checkToolServerHealth() {
-        try {
-            const resp = await fetch(`/api/agent/health`);
-            if (!resp.ok) throw new Error('not ok');
-            return true;
-        } catch (e) {
-            return false;
+        // 兼容服务启动竞态：首次失败时做短重试，避免必须手动刷新。
+        for (let i = 0; i < 3; i++) {
+            try {
+                const resp = await fetch(`/api/agent/health`);
+                if (resp.ok) return true;
+            } catch (e) {
+                // continue retry
+            }
+            if (i < 2) {
+                await new Promise(resolve => setTimeout(resolve, 350));
+            }
         }
+        return false;
     }
 
     // 检查Agent能力
@@ -5729,6 +6151,17 @@ function init_app() {
     // 连接Agent弹出框中的开关到Agent控制逻辑
     // 使用事件监听替代固定延迟，确保在浮动按钮创建完成后才绑定事件
     const setupAgentCheckboxListeners = () => {
+        // Agent UI v2: fully event-driven single-store controller.
+        // Keep legacy logic as fallback only when v2 is unavailable.
+        if (typeof window.initAgentUiV2 === 'function') {
+            try {
+                window.initAgentUiV2();
+                return;
+            } catch (e) {
+                console.warn('[App] initAgentUiV2 failed, fallback to legacy agent UI:', e);
+            }
+        }
+
         const agentMasterCheckbox = document.getElementById('live2d-agent-master');
         const agentKeyboardCheckbox = document.getElementById('live2d-agent-keyboard');
         const agentMcpCheckbox = document.getElementById('live2d-agent-mcp');
@@ -5759,6 +6192,74 @@ function init_app() {
                 checkbox._updateStyle();
             }
         };
+
+        const applyAgentStatusSnapshotToUI = (snapshot) => {
+            if (!snapshot || agentStateMachine.getState() === AgentPopupState.PROCESSING) return;
+            const serverOnline = snapshot.server_online !== false;
+            const flags = snapshot.flags || {};
+            const analyzerEnabled = !!snapshot.analyzer_enabled;
+            const caps = snapshot.capabilities || {};
+
+            agentStateMachine.updateCache(serverOnline, flags);
+
+            if (!serverOnline) {
+                agentStateMachine.transition(AgentPopupState.OFFLINE, 'snapshot offline');
+                if (agentMasterCheckbox) {
+                    agentMasterCheckbox.checked = false;
+                    agentMasterCheckbox.disabled = true;
+                    syncCheckboxUI(agentMasterCheckbox);
+                }
+                resetSubCheckboxes();
+                setFloatingAgentStatus(window.t ? window.t('settings.toggles.serverOffline') : 'Agent服务器未启动');
+                return;
+            }
+
+            agentStateMachine.transition(AgentPopupState.ONLINE, 'snapshot online');
+            if (agentMasterCheckbox) {
+                agentMasterCheckbox.disabled = false;
+                agentMasterCheckbox.checked = analyzerEnabled;
+                agentMasterCheckbox.title = window.t ? window.t('settings.toggles.agentMaster') : 'Agent总开关';
+                syncCheckboxUI(agentMasterCheckbox);
+            }
+
+            if (!analyzerEnabled) {
+                resetSubCheckboxes();
+                setFloatingAgentStatus(window.t ? window.t('agent.status.ready') : 'Agent服务器就绪');
+                return;
+            }
+
+            const applySub = (cb, enabled, ready, name) => {
+                if (!cb) return;
+                const hasReady = typeof ready === 'boolean';
+                cb.disabled = hasReady ? !ready : false;
+                cb.checked = !!enabled && (hasReady ? !!ready : true);
+                cb.title = cb.disabled
+                    ? (window.t ? window.t('settings.toggles.unavailable', { name }) : `${name}不可用`)
+                    : name;
+                syncCheckboxUI(cb);
+            };
+
+            applySub(
+                agentKeyboardCheckbox,
+                flags.computer_use_enabled,
+                caps.computer_use_ready,
+                window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制'
+            );
+            applySub(
+                agentMcpCheckbox,
+                flags.mcp_enabled,
+                caps.mcp_ready,
+                window.t ? window.t('settings.toggles.mcpTools') : 'MCP工具'
+            );
+            applySub(
+                agentUserPluginCheckbox,
+                flags.user_plugin_enabled,
+                caps.user_plugin_ready,
+                window.t ? window.t('settings.toggles.userPlugin') : '用户插件'
+            );
+            setFloatingAgentStatus(window.t ? window.t('agent.status.enabled') : 'Agent模式已开启');
+        };
+        window.applyAgentStatusSnapshotToUI = applyAgentStatusSnapshotToUI;
 
         // 辅助函数：重置子开关状态和 UI
         const resetSubCheckboxes = () => {
@@ -6237,6 +6738,17 @@ function init_app() {
             agentStateMachine.openPopup();
             isAgentPopupOpen = true;
 
+            // 优先使用后端推送快照秒开渲染，避免每次先卡在“连接中”。
+            if (window._agentStatusSnapshot) {
+                applyAgentStatusSnapshotToUI(window._agentStatusSnapshot);
+                setTimeout(() => {
+                    if (agentStateMachine._popupOpen) {
+                        checkAgentCapabilities();
+                    }
+                }, 0);
+                return;
+            }
+
             // 【状态机控制】如果正在处理用户操作，不进行检查
             if (agentStateMachine.getState() === AgentPopupState.PROCESSING) {
                 console.log('[App] 弹窗打开时状态机处于PROCESSING，跳过检查');
@@ -6425,7 +6937,7 @@ function init_app() {
 
     // 启动任务状态轮询
     window.startAgentTaskPolling = function () {
-        if (agentTaskPollingInterval) return; // 已经在运行
+        if (agentTaskPollingInterval) return;
 
         console.log('[App] 启动 Agent 任务状态轮询');
 
@@ -6435,11 +6947,8 @@ function init_app() {
             window.live2dManager.showAgentTaskHUD();
         }
 
-        // 立即执行一次
-        fetchAndUpdateTaskStatus();
-
-        // 每 2 秒轮询一次任务状态
-        agentTaskPollingInterval = setInterval(fetchAndUpdateTaskStatus, 2000);
+        // 推送架构下由 WebSocket 的 agent_task_update 驱动，不再拉取 /task_status
+        agentTaskPollingInterval = true;
 
         // 每秒更新运行时间显示
         agentTaskTimeUpdateInterval = setInterval(updateTaskRunningTimes, 1000);
@@ -6450,7 +6959,9 @@ function init_app() {
         console.log('[App] 停止 Agent 任务状态轮询');
 
         if (agentTaskPollingInterval) {
-            clearInterval(agentTaskPollingInterval);
+            if (typeof agentTaskPollingInterval !== 'boolean') {
+                clearInterval(agentTaskPollingInterval);
+            }
             agentTaskPollingInterval = null;
         }
 
@@ -6465,23 +6976,7 @@ function init_app() {
         }
     };
 
-    // 获取并更新任务状态
-    async function fetchAndUpdateTaskStatus() {
-        try {
-            const response = await fetch('/api/agent/task_status');
-            if (!response.ok) {
-                console.warn('[App] 获取任务状态失败:', response.status);
-                return;
-            }
-
-            const data = await response.json();
-            if (data.success && window.live2dManager) {
-                window.live2dManager.updateAgentTaskHUD(data);
-            }
-        } catch (error) {
-            console.warn('[App] 任务状态轮询出错:', error);
-        }
-    }
+    // 推送架构中任务状态由 WebSocket 事件驱动
 
     // 更新运行中任务的时间显示
     function updateTaskRunningTimes() {
