@@ -79,8 +79,10 @@ class VRMExpression {
                             normalizedConfig[key] = [value.trim()];
                         }
                     } else if (Array.isArray(value)) {
-                        // 过滤并保留字符串项
-                        const strItems = value.filter(item => typeof item === 'string' && item.trim());
+                        // 过滤并保留字符串项，同时进行trim
+                        const strItems = value
+                            .filter(item => typeof item === 'string' && item.trim())
+                            .map(item => item.trim());
                         if (strItems.length > 0) {
                             normalizedConfig[key] = strItems;
                         }
@@ -534,6 +536,7 @@ class VRMExpression {
                                 this.currentMood = 'neutral';
                                 this.manualExpressionInProgress = null;
                                 this.neutralReturnTimer = null;
+                                this._applyMoodImmediately('neutral');
                             }, this.neutralReturnDelay);
                         }
                     }

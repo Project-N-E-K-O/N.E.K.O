@@ -337,6 +337,14 @@
     async function loadEmotionMapping(modelName) {
         try {
             const response = await fetch(`/api/model/vrm/emotion_mapping/${encodeURIComponent(modelName)}`);
+
+            if (!response.ok) {
+                console.error(`加载情感映射配置失败: HTTP ${response.status}`, await response.text().catch(() => ''));
+                applyDefaultConfig();
+                showStatus(t('vrmEmotionManager.configLoadFailed', '配置加载失败'), 'error');
+                return;
+            }
+
             const data = await response.json();
 
             if (data.success && data.config) {

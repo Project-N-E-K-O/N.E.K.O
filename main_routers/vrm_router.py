@@ -484,7 +484,16 @@ async def get_emotion_mapping(model_name: str):
     try:
         config_path = _get_emotion_config_path(model_name)
 
-        if config_path and config_path.exists():
+        # Check if model_name is invalid (returns None from _get_emotion_config_path)
+        if config_path is None:
+            error_msg = f"Invalid model name: {model_name!r}"
+            logger.error(f"获取VRM情感映射配置失败: {error_msg}")
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": error_msg}
+            )
+
+        if config_path.exists():
             with open(config_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
             return {"success": True, "config": config}
@@ -581,6 +590,12 @@ async def update_emotion_mapping(model_name: str, request: Request):
 @router.get('/expressions/{model_name}')
 async def get_model_expressions(model_name: str):
     """获取VRM模型支持的表情列表（从配置中读取，如果有的话）"""
+    # TODO: model_name parameter is intentionally unused. Model-specific expression
+    # resolution is not implemented here because VRM files must be parsed on the frontend.
+    # The frontend obtains actual expression lists after loading the model.
+    # This endpoint returns a common expression list as a reference.
+    _ = model_name  # Mark as intentionally unused
+
     try:
         # 由于VRM文件需要前端解析，这里返回常见表情列表
         # 前端会在加载模型后获取实际表情列表
