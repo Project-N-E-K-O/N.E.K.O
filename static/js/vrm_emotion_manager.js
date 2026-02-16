@@ -103,6 +103,10 @@
             // 尝试通过 postMessage 获取
             if (window.opener && !window.opener.closed) {
                 const messageHandler = (event) => {
+                    // 安全检查：验证消息来源
+                    if (event.origin !== window.location.origin) {
+                        return;
+                    }
                     if (event.data && event.data.type === 'vrm-expressions-response') {
                         window.removeEventListener('message', messageHandler);
                         if (event.data.expressions && event.data.expressions.length > 0) {
@@ -115,7 +119,7 @@
                 };
                 window.addEventListener('message', messageHandler);
 
-                // 发送请求
+                // 发送请求（使用明确的 targetOrigin）
                 window.opener.postMessage({ type: 'vrm-get-expressions' }, window.location.origin);
 
                 // 3秒超时

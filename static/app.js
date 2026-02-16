@@ -9312,6 +9312,11 @@ window.addEventListener('message', function (event) {
         return;
     }
 
+    // 防御性检查：确保 event.data 存在且有 type 属性
+    if (!event || !event.data || typeof event.data.type === 'undefined') {
+        return;
+    }
+
     if (event.data.type === 'voice_id_updated') {
         console.log('[Voice Clone] 收到voice_id更新消息:', event.data.voice_id);
         if (typeof window.showStatusToast === 'function' && typeof lanlan_config !== 'undefined' && lanlan_config.lanlan_name) {
@@ -9321,6 +9326,10 @@ window.addEventListener('message', function (event) {
 
     // VRM 表情预览（从 vrm_emotion_manager 页面发送）
     if (event.data.type === 'vrm-preview-expression') {
+        // 防御性检查：确保 expression 属性存在
+        if (typeof event.data.expression === 'undefined') {
+            return;
+        }
         console.log('[VRM] 收到表情预览请求:', event.data.expression);
         if (window.vrmManager && window.vrmManager.expression) {
             window.vrmManager.expression.setBaseExpression(event.data.expression);

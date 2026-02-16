@@ -429,13 +429,30 @@ DEFAULT_MOOD_MAP = {
 
 def _get_emotion_config_path(model_name: str) -> Path | None:
     """获取模型情感配置文件路径"""
+    import re
+
+    # 只允许安全的文件名字符：字母、数字、下划线、连字符
+    safe_name = re.sub(r'[^A-Za-z0-9_-]', '', model_name)
+    if not safe_name:
+        logger.warning(f"无效的模型名称: {model_name!r}")
+        return None
+
     config_mgr = get_config_manager()
 
     # 配置文件存储在 static/vrm/configs/ 目录下
     config_dir = config_mgr.project_root / "static" / "vrm" / "configs"
     config_dir.mkdir(parents=True, exist_ok=True)
 
-    return config_dir / f"{model_name}_emotion.json"
+    config_path = config_dir / f"{safe_name}_emotion.json"
+
+    # 验证解析后的路径仍在 config_dir 内
+    try:
+        config_path.resolve().relative_to(config_dir.resolve())
+    except ValueError:
+        logger.warning(f"路径穿越尝试被阻止: {model_name!r}")
+        return None
+
+    return config_path
 
 
 def _get_model_path(model_name: str) -> tuple[Path | None, str]:
@@ -489,10 +506,40 @@ async def update_emotion_mapping(model_name: str, request: Request):
     try:
         data = await request.json()
 
-        if not data:
+        # 1. 验证顶级 payload 是 dict/object
+        if not isinstance(data, dict) or not data:
             return JSONResponse(
                 status_code=400,
-                content={"success": False, "error": "无效的数据"}
+                content={"success": False, "error": "无效的数据结构：必须是包含情感映射的非空对象"}
+            )
+
+        # 2. 规范化每个情感映射值
+        normalized_data = {}
+        for emotion_key, value in data.items():
+            # 跳过非字符串的 key
+            if not isinstance(emotion_key, str) or not emotion_key.strip():
+                continue
+
+            # 规范化 value 为非空字符串数组
+            if isinstance(value, str):
+                # 单个字符串转换为数组
+                if value.strip():
+                    normalized_data[emotion_key] = [value.strip()]
+            elif isinstance(value, list):
+                # 过滤并转换为字符串，丢弃空条目
+                str_items = []
+                for item in value:
+                    if isinstance(item, str) and item.strip():
+                        str_items.append(item.strip())
+                if str_items:
+                    normalized_data[emotion_key] = str_items
+            # 其他类型跳过
+
+        # 3. 验证规范化后的数据不为空
+        if not normalized_data:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": "无效的数据：规范化后无有效情感映射"}
             )
 
         # 验证模型是否存在
@@ -512,7 +559,7 @@ async def update_emotion_mapping(model_name: str, request: Request):
             )
 
         with open(config_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            json.dump(normalized_data, f, ensure_ascii=False, indent=2)
 
         logger.info(f"已保存VRM模型 {model_name} 的情感映射配置")
 

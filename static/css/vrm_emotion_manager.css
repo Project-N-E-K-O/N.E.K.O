@@ -398,10 +398,10 @@ body {
     border-radius: var(--radius-card);
     font-size: 14px;
     display: none;
-    animation: slideIn 0.3s ease;
+    animation: slide-in 0.3s ease;
 }
 
-@keyframes slideIn {
+@keyframes slide-in {
     from {
         opacity: 0;
         transform: translateY(-10px);

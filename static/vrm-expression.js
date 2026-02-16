@@ -70,8 +70,25 @@ class VRMExpression {
 
             const data = await response.json();
             if (data.success && data.config) {
+                // 规范化配置：确保每个映射值都是字符串数组
+                const normalizedConfig = {};
+                for (const [key, value] of Object.entries(data.config)) {
+                    if (typeof value === 'string') {
+                        // 单个字符串转换为数组
+                        if (value.trim()) {
+                            normalizedConfig[key] = [value.trim()];
+                        }
+                    } else if (Array.isArray(value)) {
+                        // 过滤并保留字符串项
+                        const strItems = value.filter(item => typeof item === 'string' && item.trim());
+                        if (strItems.length > 0) {
+                            normalizedConfig[key] = strItems;
+                        }
+                    }
+                    // 其他类型跳过
+                }
                 // 合并配置，保留默认值作为后备
-                this.moodMap = { ...this.moodMap, ...data.config };
+                this.moodMap = { ...this.moodMap, ...normalizedConfig };
                 console.log(`[VRM Expression] 已加载模型 ${modelName} 的情感映射配置`, this.moodMap);
             }
         } catch (error) {
