@@ -1298,6 +1298,7 @@
       "mergeMessages": "閤並消息",
       "proactiveChat": "主動搭話",
       "proactiveVision": "自主視覺",
+      "proactiveVisionOnly": "僅視覺搭話",
       "agentMaster": "Agent總開關",
       "keyboardControl": "鍵鼠控製",
       "userPlugin": "用戶插件",

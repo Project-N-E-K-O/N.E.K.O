@@ -1276,6 +1276,7 @@
       "mergeMessages": "合并消息",
       "proactiveChat": "主动搭话",
       "proactiveVision": "自主视觉",
+      "proactiveVisionOnly": "仅视觉搭话",
       "agentMaster": "Agent总开关",
       "keyboardControl": "键鼠控制",
       "userPlugin": "用户插件",

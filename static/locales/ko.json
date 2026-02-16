@@ -1276,6 +1276,7 @@
       "mergeMessages": "메시지 병합",
       "proactiveChat": "사전 예방적 채팅",
       "proactiveVision": "사전 예방적 비전",
+      "proactiveVisionOnly": "비전 전용 채팅",
       "agentMaster": "에이전트 마스터 스위치",
       "keyboardControl": "키보드/마우스 제어",
       "userPlugin": "사용자 플러그인",

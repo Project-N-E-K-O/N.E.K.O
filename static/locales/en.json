@@ -1276,6 +1276,7 @@
       "mergeMessages": "Merge Messages",
       "proactiveChat": "Proactive Chat",
       "proactiveVision": "Proactive Vision",
+      "proactiveVisionOnly": "Vision-Only Chat",
       "agentMaster": "Agent Master Switch",
       "keyboardControl": "Keyboard/Mouse Control",
       "userPlugin": "User Plugin",
