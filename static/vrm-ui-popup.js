@@ -1036,7 +1036,7 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
         if (proactiveVisionOnlyCheckbox && typeof window.proactiveVisionOnlyEnabled !== 'undefined') {
             proactiveVisionOnlyCheckbox.checked = window.proactiveVisionOnlyEnabled;
             // 更新圆形指示器样式
-            const indicator = proactiveVisionOnlyCheckbox.parentElement?.querySelector('div[style*="borderRadius"]');
+            const indicator = proactiveVisionOnlyCheckbox.parentElement?.querySelector('div[style*="border-radius"]');
             const checkmark = indicator?.querySelector('div');
             if (indicator && checkmark) {
                 if (proactiveVisionOnlyCheckbox.checked) {

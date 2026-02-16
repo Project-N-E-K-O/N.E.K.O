@@ -348,7 +348,7 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
             if (!checkbox) return;
             const wrapper = checkbox.parentElement;
             if (!wrapper) return;
-            const indicator = wrapper.querySelector('div[style*="borderRadius"]');
+            const indicator = wrapper.querySelector('div[style*="border-radius"]');
             const checkmark = indicator?.querySelector('div');
             if (!indicator || !checkmark) return;
             if (checkbox.checked) {
