@@ -319,8 +319,9 @@ Live2DManager.prototype._createIntervalControl = function (toggle) {
                     window.resetProactiveChatBackoff();
                 }
             } else {
+                // 只有当主动搭话和自主视觉都关闭时才停止调度
                 if (typeof window.stopProactiveChatSchedule === 'function') {
-                    if (!window.proactiveChatEnabled) {
+                    if (!window.proactiveChatEnabled && !window.proactiveVisionEnabled) {
                         window.stopProactiveChatSchedule();
                     }
                 }

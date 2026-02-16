@@ -7912,6 +7912,21 @@ function init_app() {
     // 暴露选中的屏幕源ID给其他模块使用
     window.getSelectedScreenSourceId = () => selectedScreenSourceId;
 
+    // 检查主动搭话前置条件是否满足
+    function canTriggerProactively() {
+        // 同步全局变量的最新值
+        proactiveChatEnabled = typeof window.proactiveChatEnabled !== 'undefined' ? window.proactiveChatEnabled : proactiveChatEnabled;
+        proactiveVisionEnabled = typeof window.proactiveVisionEnabled !== 'undefined' ? window.proactiveVisionEnabled : proactiveVisionEnabled;
+        proactiveVisionOnlyEnabled = typeof window.proactiveVisionOnlyEnabled !== 'undefined' ? window.proactiveVisionOnlyEnabled : proactiveVisionOnlyEnabled;
+
+        // 仅视觉搭话模式：需要同时开启主动搭话和自主视觉
+        if (proactiveVisionOnlyEnabled) {
+            return proactiveChatEnabled && proactiveVisionEnabled;
+        }
+        // 普通模式：只需要主动搭话开启
+        return proactiveChatEnabled;
+    }
+
     // 主动搭话定时触发功能
     function scheduleProactiveChat() {
         // 同步全局变量的最新值（UI层可能已修改）
@@ -7927,6 +7942,13 @@ function init_app() {
 
         // 主动搭话或仅视觉搭话开启时才启动调度
         if (!proactiveChatEnabled && !proactiveVisionOnlyEnabled) {
+            return;
+        }
+
+        // 前置条件检查：如果不满足触发条件，不启动调度器并重置退避
+        if (!canTriggerProactively()) {
+            console.log('主动搭话前置条件不满足，不启动调度器');
+            proactiveChatBackoffLevel = 0;
             return;
         }
 
