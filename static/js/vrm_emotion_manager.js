@@ -30,11 +30,6 @@
         return fallback || key.split('.').pop();
     }
 
-    function isI18nReady() {
-        const i18nInstance = window.i18n || (typeof i18next !== 'undefined' ? i18next : null);
-        return typeof window.t === 'function' && !!(i18nInstance && i18nInstance.isInitialized);
-    }
-
     // Default mood map (fallback)
     const defaultMoodMap = {
         'neutral': ['neutral'],
@@ -354,7 +349,7 @@
                     const expressionMS = document.querySelector(`.emotion-expression-select[data-emotion="${emotion}"]`);
 
                     if (expressionMS) {
-                        expressionMS.querySelectorAll('input').forEach(cb => cb.checked = false);
+                        expressionMS.querySelectorAll('input').forEach(cb => { cb.checked = false; });
                         updateMultiselectHeader(expressionMS);
                     }
 
@@ -388,7 +383,7 @@
             const expressionMS = document.querySelector(`.emotion-expression-select[data-emotion="${emotion}"]`);
 
             if (expressionMS) {
-                expressionMS.querySelectorAll('input').forEach(cb => cb.checked = false);
+                expressionMS.querySelectorAll('input').forEach(cb => { cb.checked = false; });
 
                 const defaults = defaultMoodMap[emotion] || [];
                 defaults.forEach(expr => {
@@ -427,6 +422,12 @@
                 },
                 body: JSON.stringify(config)
             });
+
+            if (!response.ok) {
+                console.error(`保存情感映射配置失败: HTTP ${response.status}`, await response.text().catch(() => ''));
+                showStatus(t('vrmEmotionManager.saveFailed', '保存失败') + `: HTTP ${response.status}`, 'error');
+                return;
+            }
 
             const data = await response.json();
 

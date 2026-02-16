@@ -11,6 +11,7 @@ Handles VRM model-related endpoints including:
 
 import json
 import logging
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, File, Request, UploadFile
@@ -429,10 +430,9 @@ DEFAULT_MOOD_MAP = {
 
 def _get_emotion_config_path(model_name: str) -> Path | None:
     """获取模型情感配置文件路径"""
-    import re
-
-    # 只允许安全的文件名字符：字母、数字、下划线、连字符
-    safe_name = re.sub(r'[^A-Za-z0-9_-]', '', model_name)
+    # 允许 Unicode 单词字符（包括 CJK）、下划线、连字符
+    # \w 在 Python3 中支持 Unicode，包含字母、数字、下划线（含中日韩字符）
+    safe_name = re.sub(r'[^\w-]', '', model_name, flags=re.UNICODE)
     if not safe_name:
         logger.warning(f"无效的模型名称: {model_name!r}")
         return None

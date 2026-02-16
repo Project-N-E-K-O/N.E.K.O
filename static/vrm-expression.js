@@ -73,21 +73,10 @@ class VRMExpression {
                 // 规范化配置：确保每个映射值都是字符串数组
                 const normalizedConfig = {};
                 for (const [key, value] of Object.entries(data.config)) {
-                    if (typeof value === 'string') {
-                        // 单个字符串转换为数组
-                        if (value.trim()) {
-                            normalizedConfig[key] = [value.trim()];
-                        }
-                    } else if (Array.isArray(value)) {
-                        // 过滤并保留字符串项，同时进行trim
-                        const strItems = value
-                            .filter(item => typeof item === 'string' && item.trim())
-                            .map(item => item.trim());
-                        if (strItems.length > 0) {
-                            normalizedConfig[key] = strItems;
-                        }
+                    const normalized = this._normalizeMoodMapValue(value);
+                    if (normalized) {
+                        normalizedConfig[key] = normalized;
                     }
-                    // 其他类型跳过
                 }
                 // 合并配置，保留默认值作为后备
                 this.moodMap = { ...this.moodMap, ...normalizedConfig };
@@ -107,12 +96,44 @@ class VRMExpression {
     }
 
     /**
+     * 归一化情绪映射配置值为字符串数组
+     * @param {*} value - 原始值（可能是字符串或数组）
+     * @returns {string[]|null} 归一化后的字符串数组，或 null（表示跳过）
+     */
+    _normalizeMoodMapValue(value) {
+        if (typeof value === 'string') {
+            // 单个字符串转换为数组
+            if (value.trim()) {
+                return [value.trim()];
+            }
+        } else if (Array.isArray(value)) {
+            // 过滤并保留字符串项，同时进行trim
+            const strItems = value
+                .filter(item => typeof item === 'string' && item.trim())
+                .map(item => item.trim());
+            if (strItems.length > 0) {
+                return strItems;
+            }
+        }
+        // 其他类型或空值跳过
+        return null;
+    }
+
+    /**
      * 设置情绪映射配置（运行时更新）
      * @param {Object} newMoodMap - 新的情绪映射表
      */
     setMoodMap(newMoodMap) {
         if (newMoodMap && typeof newMoodMap === 'object') {
-            this.moodMap = { ...this.moodMap, ...newMoodMap };
+            // 归一化配置：确保每个映射值都是字符串数组
+            const normalizedConfig = {};
+            for (const [key, value] of Object.entries(newMoodMap)) {
+                const normalized = this._normalizeMoodMapValue(value);
+                if (normalized) {
+                    normalizedConfig[key] = normalized;
+                }
+            }
+            this.moodMap = { ...this.moodMap, ...normalizedConfig };
             console.log('[VRM Expression] 已更新情感映射配置', this.moodMap);
         }
     }
@@ -151,7 +172,7 @@ class VRMExpression {
 
     /**
      * 立即应用情绪到VRM模型（不等待下一帧）
-     * @param {string} moodName - 情绪名称
+     * @param {string} moodName - 情绪名称或直接表情名
      */
     _applyMoodImmediately(moodName) {
         if (!this.manager.currentModel || !this.manager.currentModel.vrm || !this.manager.currentModel.vrm.expressionManager) {
@@ -160,7 +181,9 @@ class VRMExpression {
 
         const expressionManager = this.manager.currentModel.vrm.expressionManager;
         const expressionNames = this._getExpressionNames(expressionManager);
-        const moodCandidates = this.moodMap[moodName] || [];
+
+        // 如果 moodMap 中有对应条目，使用映射；否则将 moodName 本身作为候选
+        const moodCandidates = this.moodMap[moodName] || [moodName];
 
         // 先清除所有表情（除了口型和视线控制）
         expressionNames.forEach(exprName => {
@@ -178,12 +201,10 @@ class VRMExpression {
             return;
         }
 
-        // 查找匹配的表情并立即应用
+        // 查找匹配的表情并立即应用（仅精确匹配，避免短名称误匹配）
         for (const candidate of moodCandidates) {
             const matchedExpression = expressionNames.find(exprName => {
-                const lowerExprName = exprName.toLowerCase();
-                const lowerCandidate = candidate.toLowerCase();
-                return lowerExprName === lowerCandidate || lowerExprName.includes(lowerCandidate);
+                return exprName.toLowerCase() === candidate.toLowerCase();
             });
 
             if (matchedExpression) {
@@ -199,7 +220,7 @@ class VRMExpression {
 
         // 如果没有找到匹配的表情，清除标志
         this.manualExpressionInProgress = null;
-        console.warn(`[VRM Expression] setMood未找到匹配的表情 (情绪: ${moodName}, 候选: ${moodCandidates.join(', ')})`);
+        console.warn(`[VRM Expression] 未找到匹配的表情 (名称: ${moodName}, 候选: ${moodCandidates.join(', ')})`);
     }
 
     // ... 下面是原有的 update(delta) ...
@@ -503,59 +524,17 @@ class VRMExpression {
             this.neutralReturnTimer = null;
         }
 
-        // 对于非映射表中的表情名称（如具体表情名），直接应用
-        if (name && !this.moodMap[name]) {
-            // 直接表情名称模式
-            if (this.manager.currentModel && this.manager.currentModel.vrm && this.manager.currentModel.vrm.expressionManager) {
-                const expressionManager = this.manager.currentModel.vrm.expressionManager;
-                const expressionNames = this._getExpressionNames(expressionManager);
+        // 统一使用 _applyMoodImmediately 处理（支持映射表和直接表情名）
+        this._applyMoodImmediately(name || 'neutral');
 
-                // 先清除所有表情（除了口型和视线控制）
-                expressionNames.forEach(exprName => {
-                    const lowerExprName = exprName.toLowerCase();
-                    if (!['aa', 'ih', 'ou', 'ee', 'oh', 'look'].some(keyword => lowerExprName.includes(keyword))) {
-                        expressionManager.setValue(exprName, 0.0);
-                        this.currentWeights[exprName] = 0.0;
-                    }
-                });
-
-                if (name !== 'neutral') {
-                    const lowerName = name.toLowerCase();
-                    const matchedExpression = expressionNames.find(exprName => {
-                        const lowerExprName = exprName.toLowerCase();
-                        return lowerExprName === lowerName || lowerExprName.includes(lowerName);
-                    });
-
-                    if (matchedExpression) {
-                        this.manualExpressionInProgress = matchedExpression;
-                        expressionManager.setValue(matchedExpression, 1.0);
-                        this.currentWeights[matchedExpression] = 1.0;
-
-                        if (this.autoReturnToNeutral) {
-                            this.neutralReturnTimer = setTimeout(() => {
-                                this.currentMood = 'neutral';
-                                this.manualExpressionInProgress = null;
-                                this.neutralReturnTimer = null;
-                                this._applyMoodImmediately('neutral');
-                            }, this.neutralReturnDelay);
-                        }
-                    }
-                } else {
-                    this.manualExpressionInProgress = null;
-                }
-            }
-        } else {
-            // 使用映射表模式
-            this._applyMoodImmediately(name || 'neutral');
-
-            if (name && name !== 'neutral' && this.autoReturnToNeutral) {
-                this.neutralReturnTimer = setTimeout(() => {
-                    this.currentMood = 'neutral';
-                    this.manualExpressionInProgress = null;
-                    this._applyMoodImmediately('neutral');
-                    this.neutralReturnTimer = null;
-                }, this.neutralReturnDelay);
-            }
+        // 设置自动返回 neutral 的定时器
+        if (name && name !== 'neutral' && this.autoReturnToNeutral) {
+            this.neutralReturnTimer = setTimeout(() => {
+                this.currentMood = 'neutral';
+                this.manualExpressionInProgress = null;
+                this.neutralReturnTimer = null;
+                this._applyMoodImmediately('neutral');
+            }, this.neutralReturnDelay);
         }
     }
 }
