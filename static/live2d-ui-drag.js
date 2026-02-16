@@ -348,8 +348,8 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
             if (!checkbox) return;
             const wrapper = checkbox.parentElement;
             if (!wrapper) return;
-            const indicator = wrapper.querySelector('div[style*="border-radius"]');
-            const checkmark = indicator?.querySelector('div');
+            const indicator = wrapper.querySelector('.vision-only-indicator');
+            const checkmark = indicator?.querySelector('.vision-only-checkmark');
             if (!indicator || !checkmark) return;
             if (checkbox.checked) {
                 indicator.style.backgroundColor = '#44b7fe';

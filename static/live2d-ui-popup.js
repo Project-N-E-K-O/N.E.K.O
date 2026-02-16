@@ -253,6 +253,7 @@ Live2DManager.prototype._createIntervalControl = function (toggle) {
 
         // 创建圆形指示器
         const visionOnlyIndicator = document.createElement('div');
+        visionOnlyIndicator.classList.add('vision-only-indicator');
         Object.assign(visionOnlyIndicator.style, {
             width: '16px',
             height: '16px',
@@ -269,6 +270,7 @@ Live2DManager.prototype._createIntervalControl = function (toggle) {
 
         // 创建对勾图标
         const visionOnlyCheckmark = document.createElement('div');
+        visionOnlyCheckmark.classList.add('vision-only-checkmark');
         visionOnlyCheckmark.innerHTML = '✓';
         Object.assign(visionOnlyCheckmark.style, {
             color: '#fff',

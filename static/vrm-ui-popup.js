@@ -395,6 +395,7 @@ VRMManager.prototype._createIntervalControl = function (toggle) {
 
         // 创建圆形指示器
         const visionOnlyIndicator = document.createElement('div');
+        visionOnlyIndicator.classList.add('vision-only-indicator');
         Object.assign(visionOnlyIndicator.style, {
             width: '16px',
             height: '16px',
@@ -411,6 +412,7 @@ VRMManager.prototype._createIntervalControl = function (toggle) {
 
         // 创建对勾图标
         const visionOnlyCheckmark = document.createElement('div');
+        visionOnlyCheckmark.classList.add('vision-only-checkmark');
         visionOnlyCheckmark.innerHTML = '✓';
         Object.assign(visionOnlyCheckmark.style, {
             color: '#fff',
@@ -1036,8 +1038,8 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
         if (proactiveVisionOnlyCheckbox && typeof window.proactiveVisionOnlyEnabled !== 'undefined') {
             proactiveVisionOnlyCheckbox.checked = window.proactiveVisionOnlyEnabled;
             // 更新圆形指示器样式
-            const indicator = proactiveVisionOnlyCheckbox.parentElement?.querySelector('div[style*="border-radius"]');
-            const checkmark = indicator?.querySelector('div');
+            const indicator = proactiveVisionOnlyCheckbox.parentElement?.querySelector('.vision-only-indicator');
+            const checkmark = indicator?.querySelector('.vision-only-checkmark');
             if (indicator && checkmark) {
                 if (proactiveVisionOnlyCheckbox.checked) {
                     indicator.style.backgroundColor = '#44b7fe';
