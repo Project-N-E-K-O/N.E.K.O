@@ -457,19 +457,38 @@ def _get_emotion_config_path(model_name: str) -> Path | None:
 
 def _get_model_path(model_name: str) -> tuple[Path | None, str]:
     """获取VRM模型文件路径，返回 (path, url_prefix)"""
+    # 仅允许字母、数字、点、下划线、连字符（含 CJK 等 Unicode 单词字符）
+    safe_name = re.sub(r'[^\w.\-]', '', model_name, flags=re.UNICODE)
+    if not safe_name or safe_name != model_name:
+        logger.warning(f"无效的模型名称: {model_name!r}")
+        return None, ""
+
     config_mgr = get_config_manager()
+    project_root = config_mgr.project_root
 
     # 1. 检查项目目录
-    project_root = config_mgr.project_root
-    static_vrm_path = project_root / "static" / "vrm" / f"{model_name}.vrm"
-    if static_vrm_path.is_file():
-        return static_vrm_path, "/static/vrm"
+    static_vrm_dir = project_root / "static" / "vrm"
+    static_vrm_path = static_vrm_dir / f"{safe_name}.vrm"
+    try:
+        resolved = static_vrm_path.resolve()
+        resolved.relative_to(static_vrm_dir.resolve())
+    except ValueError:
+        logger.warning(f"路径穿越尝试被阻止: {model_name!r}")
+        return None, ""
+    if resolved.suffix == '.vrm' and resolved.is_file():
+        return resolved, "/static/vrm"
 
     # 2. 检查用户目录
     config_mgr.ensure_vrm_directory()
-    user_vrm_path = config_mgr.vrm_dir / f"{model_name}.vrm"
-    if user_vrm_path.is_file():
-        return user_vrm_path, VRM_USER_PATH
+    user_vrm_path = config_mgr.vrm_dir / f"{safe_name}.vrm"
+    try:
+        resolved = user_vrm_path.resolve()
+        resolved.relative_to(config_mgr.vrm_dir.resolve())
+    except ValueError:
+        logger.warning(f"路径穿越尝试被阻止: {model_name!r}")
+        return None, ""
+    if resolved.suffix == '.vrm' and resolved.is_file():
+        return resolved, VRM_USER_PATH
 
     return None, ""
 
@@ -496,6 +515,10 @@ async def get_emotion_mapping(model_name: str):
         else:
             # 返回默认配置
             return {"success": True, "config": DEFAULT_MOOD_MAP}
+
+    except json.JSONDecodeError as e:
+        logger.warning(f"情感配置文件 JSON 损坏，回退到默认配置: {e}")
+        return {"success": True, "config": DEFAULT_MOOD_MAP}
 
     except Exception as e:
         logger.error(f"获取VRM情感映射配置失败: {e}")
