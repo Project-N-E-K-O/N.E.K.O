@@ -1065,10 +1065,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 监听语言变化事件
     window.addEventListener('localechange', () => {
         updateUploadButtonText();
-        updateModelTypeButtonText();
-        updatePersistentExpressionButtonText();
-        updateLive2DModelSelectButtonText();
-        updateVRMModelSelectButtonText();
         DropdownManager.updateAllButtonText();
     });
 
@@ -1076,10 +1072,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (window.i18n && window.i18n.on) {
         window.i18n.on('languageChanged', () => {
             updateUploadButtonText();
-            updateModelTypeButtonText();
-            updatePersistentExpressionButtonText();
-            updateLive2DModelSelectButtonText();
-            updateVRMModelSelectButtonText();
             DropdownManager.updateAllButtonText();
         });
     }
