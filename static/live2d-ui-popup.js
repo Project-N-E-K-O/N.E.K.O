@@ -351,17 +351,31 @@ Live2DManager.prototype._createIntervalControl = function (toggle) {
     container._expand = () => {
         container.style.display = 'flex';
         container.style.flexWrap = 'wrap';
+        // 先设置固定高度以触发动画
+        container.style.height = '0';
         // 使用 requestAnimationFrame 确保 display 变化后再触发动画
         requestAnimationFrame(() => {
-            container.style.height = 'auto';
+            // 使用 scrollHeight 获取实际高度
+            const targetHeight = container.scrollHeight;
+            container.style.height = targetHeight + 'px';
             container.style.opacity = '1';
             container.style.padding = '4px 12px 8px 44px';
+            // 动画完成后设置为 auto 以适应内容变化
+            setTimeout(() => {
+                if (container.style.opacity === '1') {
+                    container.style.height = 'auto';
+                }
+            }, 200);
         });
     };
     container._collapse = () => {
-        container.style.height = '0';
-        container.style.opacity = '0';
-        container.style.padding = '0 12px 0 44px';
+        // 先设置为固定高度以触发动画
+        container.style.height = container.scrollHeight + 'px';
+        requestAnimationFrame(() => {
+            container.style.height = '0';
+            container.style.opacity = '0';
+            container.style.padding = '0 12px 0 44px';
+        });
         // 动画结束后隐藏
         setTimeout(() => {
             if (container.style.opacity === '0') {

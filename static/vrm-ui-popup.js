@@ -493,17 +493,31 @@ VRMManager.prototype._createIntervalControl = function (toggle) {
     container._expand = () => {
         container.style.display = 'flex';
         container.style.flexWrap = 'wrap';
+        // 先设置固定高度以触发动画
+        container.style.height = '0';
         // 使用 requestAnimationFrame 确保 display 变化后再触发动画
         requestAnimationFrame(() => {
-            container.style.height = 'auto';
+            // 使用 scrollHeight 获取实际高度
+            const targetHeight = container.scrollHeight;
+            container.style.height = targetHeight + 'px';
             container.style.opacity = '1';
             container.style.padding = '4px 12px 8px 44px';
+            // 动画完成后设置为 auto 以适应内容变化
+            setTimeout(() => {
+                if (container.style.opacity === '1') {
+                    container.style.height = 'auto';
+                }
+            }, 200);
         });
     };
     container._collapse = () => {
-        container.style.height = '0';
-        container.style.opacity = '0';
-        container.style.padding = '0 12px 0 44px';
+        // 先设置为固定高度以触发动画
+        container.style.height = container.scrollHeight + 'px';
+        requestAnimationFrame(() => {
+            container.style.height = '0';
+            container.style.opacity = '0';
+            container.style.padding = '0 12px 0 44px';
+        });
         // 动画结束后隐藏
         setTimeout(() => {
             if (container.style.opacity === '0') {
@@ -1016,6 +1030,25 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
         const proactiveVisionCheckbox = popup.querySelector('#vrm-proactive-vision');
         if (proactiveVisionCheckbox && typeof window.proactiveVisionEnabled !== 'undefined') {
             proactiveVisionCheckbox.checked = window.proactiveVisionEnabled; updateCheckboxStyle(proactiveVisionCheckbox);
+        }
+
+        const proactiveVisionOnlyCheckbox = popup.querySelector('#vrm-proactive-vision-only');
+        if (proactiveVisionOnlyCheckbox && typeof window.proactiveVisionOnlyEnabled !== 'undefined') {
+            proactiveVisionOnlyCheckbox.checked = window.proactiveVisionOnlyEnabled;
+            // 更新圆形指示器样式
+            const indicator = proactiveVisionOnlyCheckbox.parentElement?.querySelector('div[style*="borderRadius"]');
+            const checkmark = indicator?.querySelector('div');
+            if (indicator && checkmark) {
+                if (proactiveVisionOnlyCheckbox.checked) {
+                    indicator.style.backgroundColor = '#44b7fe';
+                    indicator.style.borderColor = '#44b7fe';
+                    checkmark.style.opacity = '1';
+                } else {
+                    indicator.style.backgroundColor = 'transparent';
+                    indicator.style.borderColor = '#ccc';
+                    checkmark.style.opacity = '0';
+                }
+            }
         }
     }
 

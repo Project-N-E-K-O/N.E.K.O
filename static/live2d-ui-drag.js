@@ -317,6 +317,8 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
     if (buttonId === 'settings') {
         const focusCheckbox = popup.querySelector('#live2d-focus-mode');
         const proactiveChatCheckbox = popup.querySelector('#live2d-proactive-chat');
+        const proactiveVisionCheckbox = popup.querySelector('#live2d-proactive-vision');
+        const proactiveVisionOnlyCheckbox = popup.querySelector('#live2d-proactive-vision-only');
 
         // 辅助函数：更新 checkbox 的视觉样式
         const updateCheckboxStyle = (checkbox) => {
@@ -338,6 +340,25 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
                 indicator.style.borderColor = '#ccc';
                 checkmark.style.opacity = '0';
                 toggleItem.style.background = 'transparent';
+            }
+        };
+
+        // 辅助函数：更新圆形指示器样式（用于仅视觉搭话）
+        const updateVisionOnlyStyle = (checkbox) => {
+            if (!checkbox) return;
+            const wrapper = checkbox.parentElement;
+            if (!wrapper) return;
+            const indicator = wrapper.querySelector('div[style*="borderRadius"]');
+            const checkmark = indicator?.querySelector('div');
+            if (!indicator || !checkmark) return;
+            if (checkbox.checked) {
+                indicator.style.backgroundColor = '#44b7fe';
+                indicator.style.borderColor = '#44b7fe';
+                checkmark.style.opacity = '1';
+            } else {
+                indicator.style.backgroundColor = 'transparent';
+                indicator.style.borderColor = '#ccc';
+                checkmark.style.opacity = '0';
             }
         };
 
@@ -373,6 +394,36 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
                 // 即使状态相同，也确保视觉样式正确（处理概率性问题）
                 requestAnimationFrame(() => {
                     updateCheckboxStyle(proactiveChatCheckbox);
+                });
+            }
+        }
+
+        // 更新 proactive vision checkbox 状态和视觉样式
+        if (proactiveVisionCheckbox && typeof window.proactiveVisionEnabled !== 'undefined') {
+            const newChecked = window.proactiveVisionEnabled;
+            if (proactiveVisionCheckbox.checked !== newChecked) {
+                proactiveVisionCheckbox.checked = newChecked;
+                requestAnimationFrame(() => {
+                    updateCheckboxStyle(proactiveVisionCheckbox);
+                });
+            } else {
+                requestAnimationFrame(() => {
+                    updateCheckboxStyle(proactiveVisionCheckbox);
+                });
+            }
+        }
+
+        // 更新 proactive vision only checkbox 状态和视觉样式
+        if (proactiveVisionOnlyCheckbox && typeof window.proactiveVisionOnlyEnabled !== 'undefined') {
+            const newChecked = window.proactiveVisionOnlyEnabled;
+            if (proactiveVisionOnlyCheckbox.checked !== newChecked) {
+                proactiveVisionOnlyCheckbox.checked = newChecked;
+                requestAnimationFrame(() => {
+                    updateVisionOnlyStyle(proactiveVisionOnlyCheckbox);
+                });
+            } else {
+                requestAnimationFrame(() => {
+                    updateVisionOnlyStyle(proactiveVisionOnlyCheckbox);
                 });
             }
         }
