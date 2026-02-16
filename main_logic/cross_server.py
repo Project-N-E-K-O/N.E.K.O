@@ -13,7 +13,7 @@ import time
 import pickle
 import aiohttp
 import logging
-from config import MONITOR_SERVER_PORT, MEMORY_SERVER_PORT, COMMENTER_SERVER_PORT, TOOL_SERVER_PORT
+from config import MONITOR_SERVER_PORT, MEMORY_SERVER_PORT, COMMENTER_SERVER_PORT
 from datetime import datetime
 import json
 import re
@@ -50,34 +50,6 @@ async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str,
                 len(messages) if isinstance(messages, list) else 0,
             )
             return True
-        # Last-resort fallback: direct local HTTP to agent endpoint.
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"http://127.0.0.1:{TOOL_SERVER_PORT}/agent/analyze_request",
-                json={
-                    "trigger": trigger,
-                    "lanlan_name": lanlan_name,
-                    "messages": messages,
-                },
-                timeout=aiohttp.ClientTimeout(total=1.5),
-            ) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    ok = bool(data.get("success"))
-                    logger.info(
-                        "[%s] analyze_request http fallback result: trigger=%s messages=%d success=%s",
-                        lanlan_name,
-                        trigger,
-                        len(messages) if isinstance(messages, list) else 0,
-                        ok,
-                    )
-                    return ok
-                logger.info(
-                    "[%s] analyze_request http fallback failed: trigger=%s status=%s",
-                    lanlan_name,
-                    trigger,
-                    response.status,
-                )
     except Exception as e:
         logger.info(
             "[%s] analyze_request forwarding exception: trigger=%s error=%s",

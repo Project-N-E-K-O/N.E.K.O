@@ -242,23 +242,11 @@ async def _emit_main_event(event_type: str, lanlan_name: Optional[str], **payloa
     event = {"event_type": event_type, "lanlan_name": lanlan_name, **payload}
     if Modules.agent_bridge:
         try:
-            sent = await asyncio.wait_for(Modules.agent_bridge.emit_to_main(event), timeout=0.6)
+            sent = await Modules.agent_bridge.emit_to_main(event)
             if sent:
                 return
-            if event_type == "analyze_ack":
-                logger.info(
-                    "[AgentAnalyze] analyze_ack emit failed: lanlan=%s event_id=%s",
-                    lanlan_name,
-                    payload.get("event_id"),
-                )
-        except Exception as e:
-            if event_type == "analyze_ack":
-                logger.info(
-                    "[AgentAnalyze] analyze_ack emit exception: lanlan=%s event_id=%s error=%s",
-                    lanlan_name,
-                    payload.get("event_id"),
-                    e,
-                )
+        except Exception:
+            pass
 
 
 def _collect_agent_status_snapshot() -> Dict[str, Any]:
@@ -299,22 +287,6 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         if isinstance(messages, list) and messages:
             asyncio.create_task(_background_analyze_and_plan(messages, lanlan_name))
 
-
-@app.post("/agent/analyze_request")
-async def analyze_request(payload: Dict[str, Any]):
-    messages = (payload or {}).get("messages") or []
-    lanlan_name = (payload or {}).get("lanlan_name")
-    trigger = (payload or {}).get("trigger") or "unknown"
-    if not isinstance(messages, list) or not messages:
-        return {"success": False, "error": "messages required"}
-    logger.info(
-        "[AgentAnalyze] analyze_request http received: trigger=%s lanlan=%s messages=%d",
-        trigger,
-        lanlan_name,
-        len(messages),
-    )
-    asyncio.create_task(_background_analyze_and_plan(messages, lanlan_name))
-    return {"success": True}
 
 
 def _spawn_task(kind: str, args: Dict[str, Any]) -> Dict[str, Any]:

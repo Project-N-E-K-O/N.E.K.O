@@ -98,7 +98,6 @@ def test_agent_server_expected_event_driven_endpoints_exist():
     for expected in {
         "/health",
         "/agent/flags",
-        "/agent/analyze_request",
         "/tasks",
         "/tasks/{task_id}",
         "/computer_use/availability",
@@ -483,3 +482,599 @@ def test_agent_event_bus_publish_analyze_request_reliably_without_bridge_returns
         )
     )
     assert ok is False
+
+
+@pytest.mark.skipif(
+    __import__("importlib").util.find_spec("zmq") is None,
+    reason="pyzmq not installed",
+)
+def test_zmq_sync_socket_roundtrip():
+    """Integration test: verify sync ZMQ PUSH/PULL actually delivers on Windows."""
+    import zmq
+    import threading
+    import time
+
+    addr = "tcp://127.0.0.1:49901"
+    ctx = zmq.Context()
+
+    push = ctx.socket(zmq.PUSH)
+    push.setsockopt(zmq.LINGER, 500)
+    push.bind(addr)
+
+    pull = ctx.socket(zmq.PULL)
+    pull.setsockopt(zmq.LINGER, 500)
+    pull.setsockopt(zmq.RCVTIMEO, 3000)
+    pull.connect(addr)
+
+    received = []
+
+    def recv_fn():
+        try:
+            msg = pull.recv_json()
+            received.append(msg)
+        except zmq.Again:
+            pass
+
+    t = threading.Thread(target=recv_fn, daemon=True)
+    t.start()
+
+    time.sleep(0.1)
+    push.send_json({"hello": "world"})
+
+    t.join(timeout=4)
+    pull.close()
+    push.close()
+    ctx.term()
+
+    assert received == [{"hello": "world"}], f"Expected message not received: {received}"
+
+
+@pytest.mark.skipif(
+    __import__("importlib").util.find_spec("zmq") is None,
+    reason="pyzmq not installed",
+)
+def test_zmq_bridge_end_to_end(monkeypatch):
+    """Integration test: full MainBridge -> AgentBridge roundtrip via sync ZMQ."""
+    import main_logic.agent_event_bus as bus
+
+    import random
+    base = random.randint(55000, 59000)
+    test_pub_addr = f"tcp://127.0.0.1:{base}"
+    test_push_addr = f"tcp://127.0.0.1:{base + 1}"
+    test_analyze_addr = f"tcp://127.0.0.1:{base + 2}"
+    monkeypatch.setattr(bus, "SESSION_PUB_ADDR", test_pub_addr)
+    monkeypatch.setattr(bus, "AGENT_PUSH_ADDR", test_push_addr)
+    monkeypatch.setattr(bus, "ANALYZE_PUSH_ADDR", test_analyze_addr)
+
+    received_on_agent = []
+    received_on_main = []
+
+    async def fake_on_session_event(event):
+        received_on_agent.append(event)
+        if event.get("event_type") == "analyze_request":
+            event_id = event.get("event_id")
+            if event_id and agent_bridge.push is not None:
+                agent_bridge.push.send_json(
+                    {"event_type": "analyze_ack", "event_id": event_id},
+                    __import__("zmq").NOBLOCK,
+                )
+
+    async def fake_on_agent_event(event):
+        received_on_main.append(event)
+        if event.get("event_type") == "analyze_ack":
+            bus.notify_analyze_ack(event.get("event_id", ""))
+
+    main_bridge = bus.MainServerAgentBridge(on_agent_event=fake_on_agent_event)
+    agent_bridge = bus.AgentServerEventBridge(on_session_event=fake_on_session_event)
+
+    async def _run():
+        await main_bridge.start()
+        await agent_bridge.start()
+
+        await asyncio.sleep(0.3)
+
+        bus.set_main_bridge(main_bridge)
+        try:
+            ok = await bus.publish_analyze_request_reliably(
+                lanlan_name="TestChar",
+                trigger="test",
+                messages=[{"role": "user", "content": "hello"}],
+                ack_timeout_s=2.0,
+                retries=1,
+            )
+            assert ok is True, "analyze_request was not acked"
+
+            await asyncio.sleep(0.5)
+            assert any(
+                e.get("event_type") == "analyze_request" for e in received_on_agent
+            ), f"Agent did not receive analyze_request: {received_on_agent}"
+            assert any(
+                e.get("event_type") == "analyze_ack" for e in received_on_main
+            ), f"Main did not receive analyze_ack: {received_on_main}"
+        finally:
+            bus.set_main_bridge(None)
+            main_bridge._stop.set()
+            agent_bridge._stop.set()
+            await asyncio.sleep(1.5)
+            for s in [main_bridge.pub, main_bridge.analyze_push, main_bridge.pull,
+                       agent_bridge.sub, agent_bridge.analyze_pull, agent_bridge.push]:
+                if s is not None:
+                    try:
+                        s.close(linger=0)
+                    except Exception:
+                        pass
+            for ctx in [main_bridge.ctx, agent_bridge.ctx]:
+                if ctx is not None:
+                    try:
+                        ctx.term()
+                    except Exception:
+                        pass
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+#  ZMQ PUB/SUB roundtrip (main → agent session events)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(
+    __import__("importlib").util.find_spec("zmq") is None,
+    reason="pyzmq not installed",
+)
+def test_zmq_pubsub_roundtrip(monkeypatch):
+    """Real ZMQ PUB/SUB: main publishes session event, agent receives it."""
+    import main_logic.agent_event_bus as bus
+    import random
+
+    base = random.randint(55100, 55900)
+    monkeypatch.setattr(bus, "SESSION_PUB_ADDR", f"tcp://127.0.0.1:{base}")
+    monkeypatch.setattr(bus, "AGENT_PUSH_ADDR", f"tcp://127.0.0.1:{base + 1}")
+    monkeypatch.setattr(bus, "ANALYZE_PUSH_ADDR", f"tcp://127.0.0.1:{base + 2}")
+
+    received = []
+
+    async def on_session(event):
+        received.append(event)
+
+    async def on_agent(event):
+        pass
+
+    main_br = bus.MainServerAgentBridge(on_agent_event=on_agent)
+    agent_br = bus.AgentServerEventBridge(on_session_event=on_session)
+
+    async def _run():
+        await main_br.start()
+        await agent_br.start()
+        await asyncio.sleep(0.3)
+        bus.set_main_bridge(main_br)
+        try:
+            await main_br.publish_session_event({"event_type": "turn_end", "data": 42})
+            await asyncio.sleep(1.0)
+            assert any(e.get("event_type") == "turn_end" for e in received), \
+                f"Agent did not receive PUB/SUB event: {received}"
+        finally:
+            bus.set_main_bridge(None)
+            main_br._stop.set()
+            agent_br._stop.set()
+            await asyncio.sleep(1.5)
+            for s in [main_br.pub, main_br.analyze_push, main_br.pull,
+                       agent_br.sub, agent_br.analyze_pull, agent_br.push]:
+                if s:
+                    try: s.close(linger=0)
+                    except Exception: pass
+            for c in [main_br.ctx, agent_br.ctx]:
+                if c:
+                    try: c.term()
+                    except Exception: pass
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+#  ZMQ PUSH/PULL roundtrip (agent → main)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(
+    __import__("importlib").util.find_spec("zmq") is None,
+    reason="pyzmq not installed",
+)
+def test_zmq_agent_to_main_push_pull(monkeypatch):
+    """Real ZMQ PUSH/PULL: agent emits event, main receives it."""
+    import main_logic.agent_event_bus as bus
+    import random
+
+    base = random.randint(56000, 56900)
+    monkeypatch.setattr(bus, "SESSION_PUB_ADDR", f"tcp://127.0.0.1:{base}")
+    monkeypatch.setattr(bus, "AGENT_PUSH_ADDR", f"tcp://127.0.0.1:{base + 1}")
+    monkeypatch.setattr(bus, "ANALYZE_PUSH_ADDR", f"tcp://127.0.0.1:{base + 2}")
+
+    received = []
+
+    async def on_session(event):
+        pass
+
+    async def on_agent(event):
+        received.append(event)
+
+    main_br = bus.MainServerAgentBridge(on_agent_event=on_agent)
+    agent_br = bus.AgentServerEventBridge(on_session_event=on_session)
+
+    async def _run():
+        await main_br.start()
+        await agent_br.start()
+        await asyncio.sleep(0.3)
+        try:
+            ok = await agent_br.emit_to_main({"event_type": "task_result", "task_id": "t1"})
+            assert ok is True
+            await asyncio.sleep(1.0)
+            assert any(e.get("event_type") == "task_result" for e in received), \
+                f"Main did not receive agent→main PUSH event: {received}"
+        finally:
+            main_br._stop.set()
+            agent_br._stop.set()
+            await asyncio.sleep(1.5)
+            for s in [main_br.pub, main_br.analyze_push, main_br.pull,
+                       agent_br.sub, agent_br.analyze_pull, agent_br.push]:
+                if s:
+                    try: s.close(linger=0)
+                    except Exception: pass
+            for c in [main_br.ctx, agent_br.ctx]:
+                if c:
+                    try: c.term()
+                    except Exception: pass
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+#  _emit_main_event (agent_server.py)
+# ---------------------------------------------------------------------------
+
+def test_emit_main_event_sends_via_bridge():
+    """_emit_main_event calls agent_bridge.emit_to_main when bridge is available."""
+    source = Path("agent_server.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    func = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_emit_main_event":
+            func = node
+            break
+    assert func is not None, "_emit_main_event not found"
+    assert _contains_call(func, "emit_to_main"), \
+        "_emit_main_event does not call emit_to_main"
+
+
+def test_emit_main_event_no_http_fallback():
+    """_emit_main_event must NOT contain any httpx or HTTP fallback code."""
+    source = Path("agent_server.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    func = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_emit_main_event":
+            func = node
+            break
+    assert func is not None
+    func_source = ast.get_source_segment(source, func) or ""
+    assert "httpx" not in func_source, "_emit_main_event still contains httpx HTTP fallback"
+    assert "http://" not in func_source, "_emit_main_event still contains HTTP URL"
+
+
+# ---------------------------------------------------------------------------
+#  _on_session_event (agent_server.py)
+# ---------------------------------------------------------------------------
+
+def test_on_session_event_dispatches_ack_and_analyze():
+    """_on_session_event creates tasks for ack emission and background analysis."""
+    source = Path("agent_server.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    func = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_on_session_event":
+            func = node
+            break
+    assert func is not None, "_on_session_event not found"
+    func_src = ast.get_source_segment(source, func) or ""
+    assert "analyze_ack" in func_src, "_on_session_event does not emit analyze_ack"
+    assert "_background_analyze_and_plan" in func_src, \
+        "_on_session_event does not call _background_analyze_and_plan"
+    assert "create_task" in func_src, \
+        "_on_session_event does not use create_task for async dispatch"
+
+
+# ---------------------------------------------------------------------------
+#  publish_session_event_threadsafe from different thread
+# ---------------------------------------------------------------------------
+
+def test_publish_session_event_threadsafe_from_different_thread():
+    """Threadsafe publish correctly delivers from non-owner thread."""
+    import main_logic.agent_event_bus as bus
+    import threading
+
+    published = []
+
+    class DummyBridge:
+        def __init__(self):
+            self.owner_loop = None
+            self.owner_thread_id = None
+
+        async def publish_session_event(self, event):
+            published.append(event)
+            return True
+
+        async def publish_session_event_threadsafe(self, event):
+            if self.owner_loop is None:
+                return False
+            if threading.get_ident() == self.owner_thread_id:
+                return await self.publish_session_event(event)
+            try:
+                cf = asyncio.run_coroutine_threadsafe(
+                    self.publish_session_event(event), self.owner_loop,
+                )
+                return await asyncio.wrap_future(cf)
+            except Exception:
+                return False
+
+    async def _run():
+        bridge = DummyBridge()
+        bridge.owner_loop = asyncio.get_running_loop()
+        bridge.owner_thread_id = threading.get_ident()
+        bus.set_main_bridge(bridge)
+
+        result_holder = [None]
+        error_holder = [None]
+
+        async def _publish_from_thread():
+            try:
+                ok = await bus.publish_session_event_threadsafe(
+                    {"event_type": "turn_end", "from_thread": True}
+                )
+                result_holder[0] = ok
+            except Exception as e:
+                error_holder[0] = e
+
+        def thread_fn():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(_publish_from_thread())
+            loop.close()
+
+        t = threading.Thread(target=thread_fn)
+        t.start()
+        t.join(timeout=5)
+
+        await asyncio.sleep(0.2)
+        bus.set_main_bridge(None)
+        assert error_holder[0] is None, f"Thread publish raised: {error_holder[0]}"
+        assert result_holder[0] is True
+        assert len(published) == 1
+        assert published[0]["from_thread"] is True
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+#  Analyze request ack timeout + retry
+# ---------------------------------------------------------------------------
+
+def test_analyze_request_reliably_retries_on_timeout():
+    """publish_analyze_request_reliably retries when ack times out."""
+    import main_logic.agent_event_bus as bus
+    import threading
+
+    attempts = []
+
+    class SlowAckBridge:
+        def __init__(self):
+            self.owner_loop = None
+            self.owner_thread_id = None
+
+        async def publish_analyze_request(self, event):
+            attempts.append(event.get("event_id"))
+            return True
+
+    async def _run():
+        bridge = SlowAckBridge()
+        bridge.owner_loop = asyncio.get_running_loop()
+        bridge.owner_thread_id = threading.get_ident()
+        bus.set_main_bridge(bridge)
+        try:
+            ok = await bus.publish_analyze_request_reliably(
+                lanlan_name="Test",
+                trigger="test",
+                messages=[{"role": "user", "content": "hi"}],
+                ack_timeout_s=0.05,
+                retries=2,
+            )
+            assert ok is False, "Should have failed after all retries"
+            assert len(attempts) == 3, f"Expected 3 attempts (1 + 2 retries), got {len(attempts)}"
+            assert all(eid == attempts[0] for eid in attempts), \
+                "All attempts should use the same event_id"
+        finally:
+            bus.set_main_bridge(None)
+
+    asyncio.run(_run())
+
+
+def test_analyze_request_reliably_returns_true_on_delayed_ack():
+    """publish_analyze_request_reliably succeeds when ack arrives within timeout."""
+    import main_logic.agent_event_bus as bus
+    import threading
+
+    class DelayedAckBridge:
+        def __init__(self):
+            self.owner_loop = None
+            self.owner_thread_id = None
+
+        async def publish_analyze_request(self, event):
+            eid = event.get("event_id")
+            asyncio.get_running_loop().call_later(
+                0.05, lambda: bus.notify_analyze_ack(eid)
+            )
+            return True
+
+    async def _run():
+        bridge = DelayedAckBridge()
+        bridge.owner_loop = asyncio.get_running_loop()
+        bridge.owner_thread_id = threading.get_ident()
+        bus.set_main_bridge(bridge)
+        try:
+            ok = await bus.publish_analyze_request_reliably(
+                lanlan_name="Test",
+                trigger="test",
+                messages=[{"role": "user", "content": "hi"}],
+                ack_timeout_s=0.5,
+                retries=0,
+            )
+            assert ok is True
+        finally:
+            bus.set_main_bridge(None)
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+#  Bridge not ready: all publish methods return False
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(
+    __import__("importlib").util.find_spec("zmq") is None,
+    reason="pyzmq not installed",
+)
+def test_real_bridge_not_started_returns_false():
+    """MainServerAgentBridge.publish_* returns False before start() is called."""
+    import main_logic.agent_event_bus as bus
+
+    async def noop(event): pass
+
+    bridge = bus.MainServerAgentBridge(on_agent_event=noop)
+    agent_bridge = bus.AgentServerEventBridge(on_session_event=noop)
+
+    async def _run():
+        assert await bridge.publish_session_event({"t": 1}) is False
+        assert await bridge.publish_analyze_request({"t": 1}) is False
+        assert await agent_bridge.emit_to_main({"t": 1}) is False
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+#  _publish_analyze_request_with_fallback (cross_server.py)
+# ---------------------------------------------------------------------------
+
+def test_cross_server_publish_returns_true_on_success(monkeypatch):
+    """_publish_analyze_request_with_fallback returns True when reliably delivered."""
+    from main_logic.cross_server import _publish_analyze_request_with_fallback
+
+    async def fake_reliably(**kw):
+        return True
+
+    monkeypatch.setattr(
+        "main_logic.cross_server.publish_analyze_request_reliably",
+        fake_reliably,
+    )
+
+    ok = asyncio.run(
+        _publish_analyze_request_with_fallback("Tian", "turn_end", [{"role": "user", "content": "hi"}])
+    )
+    assert ok is True
+
+
+def test_cross_server_publish_returns_false_on_failure(monkeypatch):
+    """_publish_analyze_request_with_fallback returns False when delivery fails."""
+    from main_logic.cross_server import _publish_analyze_request_with_fallback
+
+    async def fake_reliably(**kw):
+        return False
+
+    monkeypatch.setattr(
+        "main_logic.cross_server.publish_analyze_request_reliably",
+        fake_reliably,
+    )
+
+    ok = asyncio.run(
+        _publish_analyze_request_with_fallback("Tian", "turn_end", [{"role": "user", "content": "hi"}])
+    )
+    assert ok is False
+
+
+def test_cross_server_publish_returns_false_on_exception(monkeypatch):
+    """_publish_analyze_request_with_fallback returns False when exception is raised."""
+    from main_logic.cross_server import _publish_analyze_request_with_fallback
+
+    async def fake_reliably(**kw):
+        raise RuntimeError("zmq exploded")
+
+    monkeypatch.setattr(
+        "main_logic.cross_server.publish_analyze_request_reliably",
+        fake_reliably,
+    )
+
+    ok = asyncio.run(
+        _publish_analyze_request_with_fallback("Tian", "turn_end", [{"role": "user", "content": "hi"}])
+    )
+    assert ok is False
+
+
+def test_cross_server_publish_no_http_fallback():
+    """_publish_analyze_request_with_fallback must NOT contain HTTP fallback."""
+    source = Path("main_logic/cross_server.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    func = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_publish_analyze_request_with_fallback":
+            func = node
+            break
+    assert func is not None
+    func_src = ast.get_source_segment(source, func) or ""
+    assert "aiohttp.ClientSession" not in func_src, \
+        "_publish_analyze_request_with_fallback still contains HTTP fallback"
+    assert "/agent/analyze_request" not in func_src, \
+        "_publish_analyze_request_with_fallback still targets HTTP endpoint"
+
+
+# ---------------------------------------------------------------------------
+#  Concurrent analyze requests with correct ack matching
+# ---------------------------------------------------------------------------
+
+def test_concurrent_analyze_requests_match_acks_correctly():
+    """Multiple concurrent analyze_request_reliably calls each get their own ack."""
+    import main_logic.agent_event_bus as bus
+    import threading
+
+    ack_delays = {"req1": 0.05, "req2": 0.10}
+
+    class ConcurrentBridge:
+        def __init__(self):
+            self.owner_loop = None
+            self.owner_thread_id = None
+
+        async def publish_analyze_request(self, event):
+            eid = event.get("event_id")
+            name = event.get("lanlan_name")
+            delay = ack_delays.get(name, 0.05)
+            asyncio.get_running_loop().call_later(
+                delay, lambda: bus.notify_analyze_ack(eid)
+            )
+            return True
+
+    async def _run():
+        bridge = ConcurrentBridge()
+        bridge.owner_loop = asyncio.get_running_loop()
+        bridge.owner_thread_id = threading.get_ident()
+        bus.set_main_bridge(bridge)
+        try:
+            results = await asyncio.gather(
+                bus.publish_analyze_request_reliably(
+                    lanlan_name="req1", trigger="t", messages=[{"r": "u"}],
+                    ack_timeout_s=1.0, retries=0,
+                ),
+                bus.publish_analyze_request_reliably(
+                    lanlan_name="req2", trigger="t", messages=[{"r": "u"}],
+                    ack_timeout_s=1.0, retries=0,
+                ),
+            )
+            assert results == [True, True], f"Expected both True, got {results}"
+        finally:
+            bus.set_main_bridge(None)
+
+    asyncio.run(_run())

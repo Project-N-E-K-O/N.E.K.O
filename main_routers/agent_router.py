@@ -196,6 +196,7 @@ async def post_internal_analyze_request(request: Request):
 
 
 
+
 @router.get('/health')
 async def agent_health():
     """Check tool_server health via main_server proxy."""
