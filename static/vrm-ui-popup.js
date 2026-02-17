@@ -831,7 +831,7 @@ VRMManager.prototype._createSubmenuContainer = function (submenuItems) {
             if (container.style.opacity === '0') {
                 container.style.display = 'none';
             }
-        }, 200);
+        }, VRM_POPUP_ANIMATION_DURATION_MS);
     };
 
     return container;
@@ -846,7 +846,7 @@ VRMManager.prototype.closePopupById = function (buttonId) {
     if (buttonId === 'agent') window.dispatchEvent(new CustomEvent('live2d-agent-popup-closed'));
 
     popup.style.opacity = '0'; popup.style.transform = 'translateX(-10px)';
-    setTimeout(() => popup.style.display = 'none', 200);
+    setTimeout(() => popup.style.display = 'none', VRM_POPUP_ANIMATION_DURATION_MS);
 
     // 更新按钮状态
     if (typeof this.setButtonActive === 'function') {
@@ -956,7 +956,7 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
             popup.style.top = '0';
             // 清除 timeout ID 引用
             popup._hideTimeoutId = null;
-        }, 200);
+        }, VRM_POPUP_ANIMATION_DURATION_MS);
         popup._hideTimeoutId = hideTimeoutId;
     } else {
         // 清除之前可能存在的隐藏 timeout，防止旧的 timeout 关闭新打开的 popup

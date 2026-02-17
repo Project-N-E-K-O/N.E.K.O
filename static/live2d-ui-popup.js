@@ -927,7 +927,7 @@ Live2DManager.prototype._createSubmenuContainer = function (submenuItems) {
             if (container.style.opacity === '0') {
                 container.style.display = 'none';
             }
-        }, 200);
+        }, POPUP_ANIMATION_DURATION_MS);
     };
 
     return container;
