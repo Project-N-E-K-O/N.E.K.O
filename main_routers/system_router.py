@@ -712,7 +712,12 @@ async def proactive_chat(request: Request):
     try:
         _config_manager = get_config_manager()
         session_manager = get_session_manager()
-        from utils.web_scraper import fetch_trending_content, format_trending_content, fetch_window_context_content, format_window_context_content
+        from utils.web_scraper import (
+            fetch_trending_content, format_trending_content,
+            fetch_window_context_content, format_window_context_content,
+            fetch_video_content, format_video_content,
+            fetch_news_content, format_news_content
+        )
         
         # 获取当前角色数据
         master_name_current, her_name_current, _, _, _, _, _, _, _, _ = _config_manager.get_character_data()
@@ -734,6 +739,9 @@ async def proactive_chat(request: Request):
             }, status_code=409)
         
         logger.info(f"[{lanlan_name}] 开始主动搭话流程...")
+        
+        # 获取内容类型参数
+        content_type = data.get('content_type', None)  # 'news', 'video', 或 None（全部）
         
         # 1. 检查前端是否发送了截图数据
         screenshot_data = data.get('screenshot_data')
@@ -771,7 +779,12 @@ async def proactive_chat(request: Request):
                     "action": "pass"
                 }, status_code=500)
         elif not use_window_search:
-            logger.info(f"[{lanlan_name}] 前端选择使用首页推荐进行主动搭话")
+            if content_type == 'news':
+                logger.info(f"[{lanlan_name}] 前端选择使用新闻/热议话题进行主动搭话")
+            elif content_type == 'video':
+                logger.info(f"[{lanlan_name}] 前端选择使用视频内容进行主动搭话")
+            else:
+                logger.info(f"[{lanlan_name}] 前端选择使用首页推荐进行主动搭话")
         
         # 根据不同模式获取内容
         window_context_content = None
@@ -813,53 +826,119 @@ async def proactive_chat(request: Request):
                 use_window_search = False
         
         if not use_screenshot and not use_window_search:
-            # 首页推荐主动对话
+            # 根据内容类型获取不同的内容
             try:
-                trending_content = await fetch_trending_content(bilibili_limit=10, weibo_limit=10)
-                
-                if not trending_content['success']:
-                    return JSONResponse({
-                        "success": False,
-                        "error": "无法获取首页推荐",
-                        "detail": trending_content.get('error', '未知错误')
-                    }, status_code=500)
-                
-                formatted_content = format_trending_content(trending_content)
-                
-                # 显示具体的首页推荐内容详情
-                content_details = []
-                
-                bilibili_data = trending_content.get('bilibili', {})
-                if bilibili_data.get('success'):
-                    videos = bilibili_data.get('videos', [])
-                    bilibili_titles = [video.get('title', '') for video in videos[:5]]  # 只显示前5个
-                    if bilibili_titles:
-                        content_details.append("B站视频:")
-                        for title in bilibili_titles:
-                            content_details.append(f"  - {title}")
-                
-                weibo_data = trending_content.get('weibo', {})
-                if weibo_data.get('success'):
-                    trending_list = weibo_data.get('trending', [])
-                    weibo_words = [item.get('word', '') for item in trending_list[:5]]  # 只显示前5个
-                    if weibo_words:
-                        content_details.append("微博话题:")
-                        for word in weibo_words:
-                            content_details.append(f"  - {word}")
-                
-                if content_details:
-                    logger.info(f"[{lanlan_name}] 成功获取首页推荐:")
-                    for detail in content_details:
-                        logger.info(detail)
+                if content_type == 'news':
+                    # 只获取新闻/热议话题
+                    news_content = await fetch_news_content(limit=10)
+                    
+                    if not news_content['success']:
+                        return JSONResponse({
+                            "success": False,
+                            "error": "无法获取热议话题",
+                            "detail": news_content.get('error', '未知错误')
+                        }, status_code=500)
+                    
+                    formatted_content = format_news_content(news_content)
+                    
+                    # 显示获取的内容详情
+                    region = news_content.get('region', 'china')
+                    news_data = news_content.get('news', {})
+                    if news_data.get('success'):
+                        if region == 'china':
+                            trending_list = news_data.get('trending', [])
+                            words = [item.get('word', '') for item in trending_list[:5]]
+                            if words:
+                                logger.info(f"[{lanlan_name}] 成功获取微博热议话题:")
+                                for word in words:
+                                    logger.info(f"  - {word}")
+                        else:
+                            trending_list = news_data.get('trending', [])
+                            words = [item.get('word', '') for item in trending_list[:5]]
+                            if words:
+                                logger.info(f"[{lanlan_name}] 成功获取Twitter热门话题:")
+                                for word in words:
+                                    logger.info(f"  - {word}")
+                    
+                elif content_type == 'video':
+                    # 只获取视频内容
+                    video_content = await fetch_video_content(limit=10)
+                    
+                    if not video_content['success']:
+                        return JSONResponse({
+                            "success": False,
+                            "error": "无法获取视频内容",
+                            "detail": video_content.get('error', '未知错误')
+                        }, status_code=500)
+                    
+                    formatted_content = format_video_content(video_content)
+                    
+                    # 显示获取的内容详情
+                    region = video_content.get('region', 'china')
+                    video_data = video_content.get('video', {})
+                    if video_data.get('success'):
+                        if region == 'china':
+                            videos = video_data.get('videos', [])
+                            titles = [video.get('title', '') for video in videos[:5]]
+                            if titles:
+                                logger.info(f"[{lanlan_name}] 成功获取B站视频:")
+                                for title in titles:
+                                    logger.info(f"  - {title}")
+                        else:
+                            posts = video_data.get('posts', [])
+                            titles = [post.get('title', '') for post in posts[:5]]
+                            if titles:
+                                logger.info(f"[{lanlan_name}] 成功获取Reddit热门帖子:")
+                                for title in titles:
+                                    logger.info(f"  - {title}")
+                    
                 else:
-                    logger.info(f"[{lanlan_name}] 成功获取首页推荐 - 但未获取到具体内容")
+                    # 获取全部内容（首页推荐）
+                    trending_content = await fetch_trending_content(bilibili_limit=10, weibo_limit=10)
+                    
+                    if not trending_content['success']:
+                        return JSONResponse({
+                            "success": False,
+                            "error": "无法获取首页推荐",
+                            "detail": trending_content.get('error', '未知错误')
+                        }, status_code=500)
+                    
+                    formatted_content = format_trending_content(trending_content)
+                    
+                    # 显示具体的首页推荐内容详情
+                    content_details = []
+                    
+                    bilibili_data = trending_content.get('bilibili', {})
+                    if bilibili_data.get('success'):
+                        videos = bilibili_data.get('videos', [])
+                        bilibili_titles = [video.get('title', '') for video in videos[:5]]
+                        if bilibili_titles:
+                            content_details.append("B站视频:")
+                            for title in bilibili_titles:
+                                content_details.append(f"  - {title}")
+                    
+                    weibo_data = trending_content.get('weibo', {})
+                    if weibo_data.get('success'):
+                        trending_list = weibo_data.get('trending', [])
+                        weibo_words = [item.get('word', '') for item in trending_list[:5]]
+                        if weibo_words:
+                            content_details.append("微博话题:")
+                            for word in weibo_words:
+                                content_details.append(f"  - {word}")
+                    
+                    if content_details:
+                        logger.info(f"[{lanlan_name}] 成功获取首页推荐:")
+                        for detail in content_details:
+                            logger.info(detail)
+                    else:
+                        logger.info(f"[{lanlan_name}] 成功获取首页推荐 - 但未获取到具体内容")
                 
             except Exception:
-                logger.exception(f"[{lanlan_name}] 获取首页推荐失败")
+                logger.exception(f"[{lanlan_name}] 获取内容失败")
                 return JSONResponse({
                     "success": False,
-                    "error": "爬取首页推荐时出错",
-                    "detail": "请检查网络连接或推荐服务状态"
+                    "error": "爬取内容时出错",
+                    "detail": "请检查网络连接或服务状态"
                 }, status_code=500)
         
         # 2. 获取new_dialogue prompt
