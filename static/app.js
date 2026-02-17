@@ -2515,11 +2515,14 @@ function init_app() {
             clearTimeout(window.sessionTimeoutId);
             window.sessionTimeoutId = null;
         }
+        if (sessionStartedRejecter) {
+            try {
+                sessionStartedRejecter(new Error('Session aborted'));
+            } catch (e) { /* ignore already handled */ }
+            sessionStartedRejecter = null;
+        }
         if (sessionStartedResolver) {
             sessionStartedResolver = null;
-        }
-        if (sessionStartedRejecter) {
-            sessionStartedRejecter = null;
         }
 
         // 停止录音时移除录音状态类
@@ -3007,7 +3010,7 @@ function init_app() {
 
     // 同步浮动麦克风按钮状态的辅助函数
     function syncFloatingMicButtonState(isActive) {
-        // 优先通过 manager 对象访问（更可靠）
+        // 更新所有存在的 manager 的按钮状态
         const managers = [window.live2dManager, window.vrmManager];
 
         for (const manager of managers) {
@@ -3019,7 +3022,6 @@ function init_app() {
                         imgOff.style.opacity = isActive ? '0' : '1';
                         imgOn.style.opacity = isActive ? '1' : '0';
                     }
-                    return;
                 }
             }
         }
@@ -3027,22 +3029,18 @@ function init_app() {
 
     // 同步浮动屏幕分享按钮状态的辅助函数
     function syncFloatingScreenButtonState(isActive) {
-        // 优先通过 manager 对象访问（更可靠）
-        const managers = [
-            { obj: window.live2dManager },
-            { obj: window.vrmManager }
-        ];
+        // 更新所有存在的 manager 的按钮状态
+        const managers = [window.live2dManager, window.vrmManager];
 
-        for (const { obj } of managers) {
-            if (obj && obj._floatingButtons && obj._floatingButtons.screen) {
-                const { button, imgOff, imgOn } = obj._floatingButtons.screen;
+        for (const manager of managers) {
+            if (manager && manager._floatingButtons && manager._floatingButtons.screen) {
+                const { button, imgOff, imgOn } = manager._floatingButtons.screen;
                 if (button) {
                     button.dataset.active = isActive ? 'true' : 'false';
                     if (imgOff && imgOn) {
                         imgOff.style.opacity = isActive ? '0' : '1';
                         imgOn.style.opacity = isActive ? '1' : '0';
                     }
-                    return;
                 }
             }
         }
