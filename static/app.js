@@ -8090,6 +8090,12 @@ function init_app() {
                 }
             }
 
+            // 发送请求前最终检查：确保功能状态未在 await 期间改变
+            if (!canTriggerProactively()) {
+                console.log('发送请求前检查失败，取消本次搭话');
+                return;
+            }
+
             const response = await fetch('/api/proactive_chat', {
                 method: 'POST',
                 headers: {

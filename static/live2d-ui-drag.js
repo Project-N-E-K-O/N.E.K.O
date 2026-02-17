@@ -392,8 +392,6 @@ window.createChatModeToggle = function(options) {
         whiteSpace: 'nowrap'
     });
 
-    window.updateChatModeStyle(checkbox);
-
     checkbox.addEventListener('change', (e) => {
         e.stopPropagation();
         window.updateChatModeStyle(checkbox);
@@ -407,8 +405,8 @@ window.createChatModeToggle = function(options) {
                 window.resetProactiveChatBackoff();
             }
         } else {
-            // 关闭时，如果没有其他搭话方式被选中，停止调度
-            const hasOtherMode = window.proactiveVisionChatEnabled || window.proactiveNewsChatEnabled || window.proactiveVideoChatEnabled;
+            // 关闭时，如果没有其他搭话方式被选中且主开关已关闭，停止调度
+            const hasOtherMode = window.proactiveChatEnabled || window.proactiveVisionChatEnabled || window.proactiveNewsChatEnabled || window.proactiveVideoChatEnabled;
             if (!hasOtherMode && typeof window.stopProactiveChatSchedule === 'function') {
                 window.stopProactiveChatSchedule();
             }
@@ -430,6 +428,8 @@ window.createChatModeToggle = function(options) {
     wrapper.appendChild(checkbox);
     wrapper.appendChild(indicator);
     wrapper.appendChild(label);
+
+    window.updateChatModeStyle(checkbox);
 
     return wrapper;
 };
