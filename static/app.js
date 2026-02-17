@@ -8379,6 +8379,7 @@ function init_app() {
                 
                 // 迁移逻辑：检测旧版设置并迁移到新字段
                 // 如果旧版 proactiveChatEnabled=true 但新字段未定义，则迁移
+                let needsSave = false;
                 if (settings.proactiveChatEnabled === true) {
                     const hasNewFlags = settings.proactiveVisionChatEnabled !== undefined ||
                                         settings.proactiveNewsChatEnabled !== undefined ||
@@ -8387,8 +8388,14 @@ function init_app() {
                         // 旧版用户：默认开启视觉搭话和自主视觉
                         settings.proactiveVisionEnabled = true;
                         settings.proactiveVisionChatEnabled = true;
+                        needsSave = true;
                         console.log('迁移旧版设置：已启用视觉搭话和自主视觉');
                     }
+                }
+                
+                // 如果进行了迁移，持久化更新后的设置
+                if (needsSave) {
+                    localStorage.setItem('project_neko_settings', JSON.stringify(settings));
                 }
                 
                 // 使用 ?? 运算符提供更好的默认值处理（避免将 false 误判为需要使用默认值）

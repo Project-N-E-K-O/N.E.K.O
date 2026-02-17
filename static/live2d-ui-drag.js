@@ -444,6 +444,28 @@ window.createChatModeToggle = function(options) {
     return wrapper;
 };
 
+// 聊天模式配置（单一数据源）
+window.CHAT_MODE_CONFIG = [
+    {
+        mode: 'vision',
+        labelKey: 'settings.toggles.proactiveVisionChat',
+        tooltipKey: 'settings.toggles.proactiveVisionChatTooltip',
+        globalVarName: 'proactiveVisionChatEnabled'
+    },
+    {
+        mode: 'news',
+        labelKey: 'settings.toggles.proactiveNewsChat',
+        tooltipKey: 'settings.toggles.proactiveNewsChatTooltip',
+        globalVarName: 'proactiveNewsChatEnabled'
+    },
+    {
+        mode: 'video',
+        labelKey: 'settings.toggles.proactiveVideoChat',
+        tooltipKey: 'settings.toggles.proactiveVideoChatTooltip',
+        globalVarName: 'proactiveVideoChatEnabled'
+    }
+];
+
 // 全局工厂函数：创建所有搭话方式选项
 window.createChatModeToggles = function(prefix) {
     const container = document.createElement('div');
@@ -454,32 +476,16 @@ window.createChatModeToggles = function(prefix) {
         width: '100%'
     });
 
-    // 视觉搭话
-    const visionToggle = window.createChatModeToggle({
-        checkboxId: `${prefix}-proactive-vision-chat`,
-        labelKey: 'settings.toggles.proactiveVisionChat',
-        tooltipKey: 'settings.toggles.proactiveVisionChatTooltip',
-        globalVarName: 'proactiveVisionChatEnabled'
+    // 使用共享配置创建搭话方式选项
+    window.CHAT_MODE_CONFIG.forEach(config => {
+        const toggle = window.createChatModeToggle({
+            checkboxId: `${prefix}-proactive-${config.mode}-chat`,
+            labelKey: config.labelKey,
+            tooltipKey: config.tooltipKey,
+            globalVarName: config.globalVarName
+        });
+        container.appendChild(toggle);
     });
-    container.appendChild(visionToggle);
-
-    // 新闻搭话
-    const newsToggle = window.createChatModeToggle({
-        checkboxId: `${prefix}-proactive-news-chat`,
-        labelKey: 'settings.toggles.proactiveNewsChat',
-        tooltipKey: 'settings.toggles.proactiveNewsChatTooltip',
-        globalVarName: 'proactiveNewsChatEnabled'
-    });
-    container.appendChild(newsToggle);
-
-    // 视频搭话
-    const videoToggle = window.createChatModeToggle({
-        checkboxId: `${prefix}-proactive-video-chat`,
-        labelKey: 'settings.toggles.proactiveVideoChat',
-        tooltipKey: 'settings.toggles.proactiveVideoChatTooltip',
-        globalVarName: 'proactiveVideoChatEnabled'
-    });
-    container.appendChild(videoToggle);
 
     return container;
 };
@@ -572,22 +578,22 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
         }
 
         // 同步搭话方式选项状态
-        const chatModeCheckboxes = ['vision', 'news', 'video'];
-        const chatModeVars = ['proactiveVisionChatEnabled', 'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled'];
-        chatModeCheckboxes.forEach((mode, index) => {
-            const checkbox = popup.querySelector(`#live2d-proactive-${mode}-chat`);
-            if (checkbox && typeof window[chatModeVars[index]] !== 'undefined') {
-                const newChecked = window[chatModeVars[index]];
-                if (checkbox.checked !== newChecked) {
-                    checkbox.checked = newChecked;
-                }
-                requestAnimationFrame(() => {
-                    if (typeof window.updateChatModeStyle === 'function') {
-                        window.updateChatModeStyle(checkbox);
+        if (window.CHAT_MODE_CONFIG) {
+            window.CHAT_MODE_CONFIG.forEach(config => {
+                const checkbox = popup.querySelector(`#live2d-proactive-${config.mode}-chat`);
+                if (checkbox && typeof window[config.globalVarName] !== 'undefined') {
+                    const newChecked = window[config.globalVarName];
+                    if (checkbox.checked !== newChecked) {
+                        checkbox.checked = newChecked;
                     }
-                });
-            }
-        });
+                    requestAnimationFrame(() => {
+                        if (typeof window.updateChatModeStyle === 'function') {
+                            window.updateChatModeStyle(checkbox);
+                        }
+                    });
+                }
+            });
+        }
     }
 
     // 如果是 agent 弹窗，触发服务器状态检查事件

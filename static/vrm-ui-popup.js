@@ -920,19 +920,19 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
         }
 
         // 同步搭话方式选项状态
-        const chatModeCheckboxes = ['vision', 'news', 'video'];
-        const chatModeVars = ['proactiveVisionChatEnabled', 'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled'];
-        chatModeCheckboxes.forEach((mode, index) => {
-            const checkbox = popup.querySelector(`#vrm-proactive-${mode}-chat`);
-            if (checkbox && typeof window[chatModeVars[index]] !== 'undefined') {
-                checkbox.checked = window[chatModeVars[index]];
-                if (typeof window.updateChatModeStyle === 'function') {
-                    requestAnimationFrame(() => {
-                        window.updateChatModeStyle(checkbox);
-                    });
+        if (window.CHAT_MODE_CONFIG) {
+            window.CHAT_MODE_CONFIG.forEach(config => {
+                const checkbox = popup.querySelector(`#vrm-proactive-${config.mode}-chat`);
+                if (checkbox && typeof window[config.globalVarName] !== 'undefined') {
+                    checkbox.checked = window[config.globalVarName];
+                    if (typeof window.updateChatModeStyle === 'function') {
+                        requestAnimationFrame(() => {
+                            window.updateChatModeStyle(checkbox);
+                        });
+                    }
                 }
-            }
-        });
+            });
+        }
     }
 
     if (buttonId === 'agent' && !isVisible) window.dispatchEvent(new CustomEvent('live2d-agent-popup-opening'));
