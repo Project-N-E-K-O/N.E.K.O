@@ -248,6 +248,11 @@ Live2DManager.prototype._createIntervalControl = function (toggle) {
             clearTimeout(container._expandTimeout);
             container._expandTimeout = null;
         }
+        // 清除待处理的折叠超时（防止折叠回调在展开后执行）
+        if (container._collapseTimeout) {
+            clearTimeout(container._collapseTimeout);
+            container._collapseTimeout = null;
+        }
         // 使用 requestAnimationFrame 确保 display 变化后再触发动画
         requestAnimationFrame(() => {
             // 使用 scrollHeight 获取实际高度
@@ -270,6 +275,11 @@ Live2DManager.prototype._createIntervalControl = function (toggle) {
             clearTimeout(container._expandTimeout);
             container._expandTimeout = null;
         }
+        // 清除之前的折叠超时（防止竞争条件）
+        if (container._collapseTimeout) {
+            clearTimeout(container._collapseTimeout);
+            container._collapseTimeout = null;
+        }
         // 先设置为固定高度以触发动画
         container.style.height = container.scrollHeight + 'px';
         // 使用 requestAnimationFrame 确保高度设置后再触发动画
@@ -278,10 +288,11 @@ Live2DManager.prototype._createIntervalControl = function (toggle) {
             container.style.opacity = '0';
             container.style.padding = '0 12px 0 44px';
             // 动画结束后隐藏（在 requestAnimationFrame 内部启动计时）
-            setTimeout(() => {
+            container._collapseTimeout = setTimeout(() => {
                 if (container.style.opacity === '0') {
                     container.style.display = 'none';
                 }
+                container._collapseTimeout = null;
             }, POPUP_ANIMATION_DURATION_MS);
         });
     };
