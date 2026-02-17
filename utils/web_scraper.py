@@ -792,6 +792,60 @@ async def fetch_trending_content(bilibili_limit: int = 10, weibo_limit: int = 10
         }
 
 
+async def _fetch_content_by_region(
+    china_fetch_func,
+    non_china_fetch_func,
+    limit: int,
+    content_key: str,
+    china_log_msg: str,
+    non_china_log_msg: str
+) -> Dict[str, Any]:
+    """
+    根据用户区域获取内容的通用辅助函数
+    
+    Args:
+        china_fetch_func: 中文区域使用的异步获取函数
+        non_china_fetch_func: 非中文区域使用的异步获取函数
+        limit: 内容最大数量
+        content_key: 返回结果中的内容键名 ('video' 或 'news')
+        china_log_msg: 中文区域的日志消息
+        non_china_log_msg: 非中文区域的日志消息
+    
+    Returns:
+        包含成功状态和内容的字典
+    """
+    try:
+        china_region = is_china_region()
+        
+        if china_region:
+            logger.info(china_log_msg)
+            result = await china_fetch_func(limit)
+            response = {
+                'success': result.get('success', False),
+                'region': 'china',
+                content_key: result
+            }
+        else:
+            logger.info(non_china_log_msg)
+            result = await non_china_fetch_func(limit)
+            response = {
+                'success': result.get('success', False),
+                'region': 'non-china',
+                content_key: result
+            }
+        
+        if not result.get('success') and result.get('error'):
+            response['error'] = result.get('error')
+        return response
+            
+    except Exception as e:
+        logger.error(f"获取内容失败: {e}")
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+
 async def fetch_video_content(limit: int = 10) -> Dict[str, Any]:
     """
     根据用户区域获取视频内容
@@ -805,38 +859,14 @@ async def fetch_video_content(limit: int = 10) -> Dict[str, Any]:
     Returns:
         包含成功状态和视频内容的字典
     """
-    try:
-        china_region = is_china_region()
-        
-        if china_region:
-            logger.info("检测到中文区域，获取B站视频内容")
-            result = await fetch_bilibili_trending(limit)
-            response = {
-                'success': result.get('success', False),
-                'region': 'china',
-                'video': result
-            }
-            if not result.get('success') and result.get('error'):
-                response['error'] = result.get('error')
-            return response
-        else:
-            logger.info("检测到非中文区域，获取Reddit热门内容")
-            result = await fetch_reddit_popular(limit)
-            response = {
-                'success': result.get('success', False),
-                'region': 'non-china',
-                'video': result
-            }
-            if not result.get('success') and result.get('error'):
-                response['error'] = result.get('error')
-            return response
-            
-    except Exception as e:
-        logger.error(f"获取视频内容失败: {e}")
-        return {
-            'success': False,
-            'error': str(e)
-        }
+    return await _fetch_content_by_region(
+        china_fetch_func=fetch_bilibili_trending,
+        non_china_fetch_func=fetch_reddit_popular,
+        limit=limit,
+        content_key='video',
+        china_log_msg="检测到中文区域，获取B站视频内容",
+        non_china_log_msg="检测到非中文区域，获取Reddit热门内容"
+    )
 
 
 async def fetch_news_content(limit: int = 10) -> Dict[str, Any]:
@@ -852,38 +882,14 @@ async def fetch_news_content(limit: int = 10) -> Dict[str, Any]:
     Returns:
         包含成功状态和新闻内容的字典
     """
-    try:
-        china_region = is_china_region()
-        
-        if china_region:
-            logger.info("检测到中文区域，获取微博热议话题")
-            result = await fetch_weibo_trending(limit)
-            response = {
-                'success': result.get('success', False),
-                'region': 'china',
-                'news': result
-            }
-            if not result.get('success') and result.get('error'):
-                response['error'] = result.get('error')
-            return response
-        else:
-            logger.info("检测到非中文区域，获取Twitter热门话题")
-            result = await fetch_twitter_trending(limit)
-            response = {
-                'success': result.get('success', False),
-                'region': 'non-china',
-                'news': result
-            }
-            if not result.get('success') and result.get('error'):
-                response['error'] = result.get('error')
-            return response
-            
-    except Exception as e:
-        logger.error(f"获取新闻内容失败: {e}")
-        return {
-            'success': False,
-            'error': str(e)
-        }
+    return await _fetch_content_by_region(
+        china_fetch_func=fetch_weibo_trending,
+        non_china_fetch_func=fetch_twitter_trending,
+        limit=limit,
+        content_key='news',
+        china_log_msg="检测到中文区域，获取微博热议话题",
+        non_china_log_msg="检测到非中文区域，获取Twitter热门话题"
+    )
 
 
 def _format_bilibili_videos(videos: List[Dict], limit: int = 5) -> List[str]:

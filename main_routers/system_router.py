@@ -63,7 +63,73 @@ def _get_app_root():
             return os.path.dirname(sys.executable)
     else:
         return os.getcwd()
-        
+
+
+def _log_news_content(lanlan_name: str, news_content: dict):
+    """记录新闻内容获取详情"""
+    region = news_content.get('region', 'china')
+    news_data = news_content.get('news', {})
+    if news_data.get('success'):
+        trending_list = news_data.get('trending', [])
+        words = [item.get('word', '') for item in trending_list[:5]]
+        if words:
+            source = "微博热议话题" if region == 'china' else "Twitter热门话题"
+            logger.info(f"[{lanlan_name}] 成功获取{source}:")
+            for word in words:
+                logger.info(f"  - {word}")
+
+
+def _log_video_content(lanlan_name: str, video_content: dict):
+    """记录视频内容获取详情"""
+    region = video_content.get('region', 'china')
+    video_data = video_content.get('video', {})
+    if video_data.get('success'):
+        if region == 'china':
+            videos = video_data.get('videos', [])
+            titles = [video.get('title', '') for video in videos[:5]]
+            if titles:
+                logger.info(f"[{lanlan_name}] 成功获取B站视频:")
+                for title in titles:
+                    logger.info(f"  - {title}")
+        else:
+            posts = video_data.get('posts', [])
+            titles = [post.get('title', '') for post in posts[:5]]
+            if titles:
+                logger.info(f"[{lanlan_name}] 成功获取Reddit热门帖子:")
+                for title in titles:
+                    logger.info(f"  - {title}")
+
+
+def _log_trending_content(lanlan_name: str, trending_content: dict):
+    """记录首页推荐内容获取详情"""
+    content_details = []
+    
+    bilibili_data = trending_content.get('bilibili', {})
+    if bilibili_data.get('success'):
+        videos = bilibili_data.get('videos', [])
+        titles = [video.get('title', '') for video in videos[:5]]
+        if titles:
+            content_details.append("B站视频:")
+            for title in titles:
+                content_details.append(f"  - {title}")
+    
+    weibo_data = trending_content.get('weibo', {})
+    if weibo_data.get('success'):
+        trending_list = weibo_data.get('trending', [])
+        words = [item.get('word', '') for item in trending_list[:5]]
+        if words:
+            content_details.append("微博话题:")
+            for word in words:
+                content_details.append(f"  - {word}")
+    
+    if content_details:
+        logger.info(f"[{lanlan_name}] 成功获取首页推荐:")
+        for detail in content_details:
+            logger.info(detail)
+    else:
+        logger.info(f"[{lanlan_name}] 成功获取首页推荐 - 但未获取到具体内容")
+
+
 @router.post('/emotion/analysis')
 async def emotion_analysis(request: Request):
     try:
@@ -827,125 +893,44 @@ async def proactive_chat(request: Request):
         
         if not use_screenshot and not use_window_search:
             # 根据内容类型获取不同的内容
+            formatted_content = None
+            
             try:
                 if content_type == 'news':
                     # 只获取新闻/热议话题
                     news_content = await fetch_news_content(limit=10)
                     
-                    if not news_content['success']:
-                        logger.warning(f"[{lanlan_name}] 获取热议话题失败，回退到全部内容")
-                        content_type = None  # 回退到全部内容
-                        trending_content = await fetch_trending_content(bilibili_limit=10, weibo_limit=10)
-                        
-                        if not trending_content['success']:
-                            return JSONResponse({
-                                "success": False,
-                                "error": "无法获取任何内容",
-                                "detail": trending_content.get('error', '未知错误')
-                            }, status_code=500)
-                        
-                        formatted_content = format_trending_content(trending_content)
-                    else:
+                    if news_content['success']:
                         formatted_content = format_news_content(news_content)
-                        
-                        # 显示获取的内容详情
-                        region = news_content.get('region', 'china')
-                        news_data = news_content.get('news', {})
-                        if news_data.get('success'):
-                            if region == 'china':
-                                trending_list = news_data.get('trending', [])
-                                words = [item.get('word', '') for item in trending_list[:5]]
-                                if words:
-                                    logger.info(f"[{lanlan_name}] 成功获取微博热议话题:")
-                                    for word in words:
-                                        logger.info(f"  - {word}")
-                            else:
-                                trending_list = news_data.get('trending', [])
-                                words = [item.get('word', '') for item in trending_list[:5]]
-                                if words:
-                                    logger.info(f"[{lanlan_name}] 成功获取Twitter热门话题:")
-                                    for word in words:
-                                        logger.info(f"  - {word}")
+                        _log_news_content(lanlan_name, news_content)
+                    else:
+                        logger.warning(f"[{lanlan_name}] 获取热议话题失败，回退到全部内容")
+                        content_type = None
                     
                 elif content_type == 'video':
                     # 只获取视频内容
                     video_content = await fetch_video_content(limit=10)
                     
-                    if not video_content['success']:
-                        logger.warning(f"[{lanlan_name}] 获取视频内容失败，回退到全部内容")
-                        content_type = None  # 回退到全部内容
-                        trending_content = await fetch_trending_content(bilibili_limit=10, weibo_limit=10)
-                        
-                        if not trending_content['success']:
-                            return JSONResponse({
-                                "success": False,
-                                "error": "无法获取任何内容",
-                                "detail": trending_content.get('error', '未知错误')
-                            }, status_code=500)
-                        
-                        formatted_content = format_trending_content(trending_content)
-                    else:
+                    if video_content['success']:
                         formatted_content = format_video_content(video_content)
-                        
-                        # 显示获取的内容详情
-                        region = video_content.get('region', 'china')
-                        video_data = video_content.get('video', {})
-                        if video_data.get('success'):
-                            if region == 'china':
-                                videos = video_data.get('videos', [])
-                                titles = [video.get('title', '') for video in videos[:5]]
-                                if titles:
-                                    logger.info(f"[{lanlan_name}] 成功获取B站视频:")
-                                    for title in titles:
-                                        logger.info(f"  - {title}")
-                            else:
-                                posts = video_data.get('posts', [])
-                                titles = [post.get('title', '') for post in posts[:5]]
-                                if titles:
-                                    logger.info(f"[{lanlan_name}] 成功获取Reddit热门帖子:")
-                                    for title in titles:
-                                        logger.info(f"  - {title}")
-                    
-                if content_type is None or content_type not in ('news', 'video'):
-                    # 获取全部内容（首页推荐）
+                        _log_video_content(lanlan_name, video_content)
+                    else:
+                        logger.warning(f"[{lanlan_name}] 获取视频内容失败，回退到全部内容")
+                        content_type = None
+                
+                if formatted_content is None:
+                    # 获取全部内容（首页推荐）或回退
                     trending_content = await fetch_trending_content(bilibili_limit=10, weibo_limit=10)
                     
                     if not trending_content['success']:
                         return JSONResponse({
                             "success": False,
-                            "error": "无法获取首页推荐",
+                            "error": "无法获取内容",
                             "detail": trending_content.get('error', '未知错误')
                         }, status_code=500)
                     
                     formatted_content = format_trending_content(trending_content)
-                    
-                    # 显示具体的首页推荐内容详情
-                    content_details = []
-                    
-                    bilibili_data = trending_content.get('bilibili', {})
-                    if bilibili_data.get('success'):
-                        videos = bilibili_data.get('videos', [])
-                        bilibili_titles = [video.get('title', '') for video in videos[:5]]
-                        if bilibili_titles:
-                            content_details.append("B站视频:")
-                            for title in bilibili_titles:
-                                content_details.append(f"  - {title}")
-                    
-                    weibo_data = trending_content.get('weibo', {})
-                    if weibo_data.get('success'):
-                        trending_list = weibo_data.get('trending', [])
-                        weibo_words = [item.get('word', '') for item in trending_list[:5]]
-                        if weibo_words:
-                            content_details.append("微博话题:")
-                            for word in weibo_words:
-                                content_details.append(f"  - {word}")
-                    
-                    if content_details:
-                        logger.info(f"[{lanlan_name}] 成功获取首页推荐:")
-                        for detail in content_details:
-                            logger.info(detail)
-                    else:
-                        logger.info(f"[{lanlan_name}] 成功获取首页推荐 - 但未获取到具体内容")
+                    _log_trending_content(lanlan_name, trending_content)
                 
             except Exception:
                 logger.exception(f"[{lanlan_name}] 获取内容失败")

@@ -173,7 +173,7 @@ Reply:
 - If you choose not to chat, only reply "[PASS]".
 """
 
-proactive_chat_prompt_ja = """あなたは{lanlan_name}です。今、ホームのおすすめやトレンド話題を見ました。{master_name}との会話履歴や{master_name}の興味を踏まえて、主动的に話しかけるか判断してください。
+proactive_chat_prompt_ja = """あなたは{lanlan_name}です。今、ホームのおすすめやトレンド話題を見ました。{master_name}との会話履歴や{master_name}の興味を踏まえて、自発的に話しかけるか判断してください。
 
 ======以下为对话历史======
 {memory_context}
@@ -239,7 +239,7 @@ Reply:
 - If you choose not to chat, only reply "[PASS]".
 """
 
-proactive_chat_prompt_news_ja = """あなたは{lanlan_name}です。今、トレンド話題を見ました。{master_name}との会話履歴や{master_name}の興味を踏まえて、主动的に話しかけるか判断してください。
+proactive_chat_prompt_news_ja = """あなたは{lanlan_name}です。今、トレンド話題を見ました。{master_name}との会話履歴や{master_name}の興味を踏まえて、自発的に話しかけるか判断してください。
 
 ======以下为对话历史======
 {memory_context}
@@ -305,7 +305,7 @@ Reply:
 - If you choose not to chat, only reply "[PASS]".
 """
 
-proactive_chat_prompt_video_ja = """あなたは{lanlan_name}です。今、動画のおすすめを見ました。{master_name}との会話履歴や{master_name}の興味を踏まえて、主动的に話しかけるか判断してください。
+proactive_chat_prompt_video_ja = """あなたは{lanlan_name}です。今、動画のおすすめを見ました。{master_name}との会話履歴や{master_name}の興味を踏まえて、自発的に話しかけるか判断してください。
 
 ======以下为对话历史======
 {memory_context}
@@ -369,7 +369,7 @@ Reply:
 - If you choose not to chat, only reply "[PASS]".
 """
 
-proactive_chat_prompt_screenshot_ja = """あなたは{lanlan_name}です。今、画面に表示されている内容を見ています。{master_name}との会話履歴や{master_name}の興味を踏まえて、画面の内容について主动的に話しかけるか判断してください。
+proactive_chat_prompt_screenshot_ja = """あなたは{lanlan_name}です。今、画面に表示されている内容を見ています。{master_name}との会話履歴や{master_name}の興味を踏まえて、画面の内容について自発的に話しかけるか判断してください。
 
 ======以下为对话历史======
 {memory_context}
@@ -435,7 +435,7 @@ Reply:
 - If you choose not to chat, only reply "[PASS]".
 """
 
-proactive_chat_prompt_window_search_ja = """あなたは{lanlan_name}です。{master_name}が使っているアプリや見ている内容が分かり、関連情報も見つかりました。{master_name}との会話履歴や{master_name}の興味を踏まえて、主动的に話しかけるか判断してください。
+proactive_chat_prompt_window_search_ja = """あなたは{lanlan_name}です。{master_name}が使っているアプリや見ている内容が分かり、関連情報も見つかりました。{master_name}との会話履歴や{master_name}の興味を踏まえて、自発的に話しかけるか判断してください。
 
 ======以下为对话历史======
 {memory_context}
