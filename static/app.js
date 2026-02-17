@@ -8385,11 +8385,20 @@ function init_app() {
                                         settings.proactiveNewsChatEnabled !== undefined ||
                                         settings.proactiveVideoChatEnabled !== undefined;
                     if (!hasNewFlags) {
-                        // 旧版用户：默认开启视觉搭话和自主视觉
-                        settings.proactiveVisionEnabled = true;
-                        settings.proactiveVisionChatEnabled = true;
+                        // 根据旧的视觉偏好决定迁移策略
+                        if (settings.proactiveVisionEnabled === false) {
+                            // 用户之前禁用了视觉，保留偏好并默认启用新闻搭话
+                            settings.proactiveVisionEnabled = false;
+                            settings.proactiveVisionChatEnabled = false;
+                            settings.proactiveNewsChatEnabled = true;
+                            console.log('迁移旧版设置：保留禁用的视觉偏好，已启用新闻搭话');
+                        } else {
+                            // 视觉偏好为 true 或 undefined，默认启用视觉搭话
+                            settings.proactiveVisionEnabled = true;
+                            settings.proactiveVisionChatEnabled = true;
+                            console.log('迁移旧版设置：已启用视觉搭话和自主视觉');
+                        }
                         needsSave = true;
-                        console.log('迁移旧版设置：已启用视觉搭话和自主视觉');
                     }
                 }
                 
