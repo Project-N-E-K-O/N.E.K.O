@@ -195,6 +195,138 @@ proactive_chat_prompt_ja = """あなたは{lanlan_name}です。今、ホーム�
 - 話しかけない場合は "[PASS]" のみを返してください。
 """
 
+proactive_chat_prompt_news = """你是{lanlan_name}，现在看到了一些热议话题。请根据与{master_name}的对话历史和{master_name}的兴趣，判断是否要主动和{master_name}聊聊这些话题。
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是热议话题======
+{trending_content}
+======以上为热议话题======
+
+请根据以下原则决定是否主动搭话：
+1. 如果话题很有趣、新鲜或值得讨论，可以主动提起
+2. 如果话题与你们之前的对话或{master_name}的兴趣相关，更应该提起
+3. 如果话题比较无聊或不适合讨论，或者{master_name}明确表示不想聊，可以选择不说话
+4. 说话时要自然、简短，像是刚看到有趣话题想分享给对方
+5. 尽量选一个最有意思的话题进行分享和搭话，但不要和对话历史中已经有的内容重复。
+
+请回复：
+- 如果选择主动搭话，直接说出你想说的话（简短自然即可）。请不要生成思考过程。
+- 如果选择不搭话，只回复"[PASS]"
+"""
+
+proactive_chat_prompt_news_en = """You are {lanlan_name}. You just saw some trending topics. Based on your chat history with {master_name} and {master_name}'s interests, decide whether to proactively talk about them.
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是热议话题======
+{trending_content}
+======以上为热议话题======
+
+Decide whether to proactively speak based on these rules:
+1. If the topic is interesting, fresh, or worth discussing, you can bring it up.
+2. If it relates to your previous conversations or {master_name}'s interests, you should bring it up.
+3. If it's boring or not suitable to discuss, or {master_name} has clearly said they don't want to chat, you can stay silent.
+4. Keep it natural and short, like sharing something you just noticed.
+5. Pick only the most interesting topic and avoid repeating what's already in the chat history.
+
+Reply:
+- If you choose to chat, directly say what you want to say (short and natural). Do not include any reasoning.
+- If you choose not to chat, only reply "[PASS]".
+"""
+
+proactive_chat_prompt_news_ja = """あなたは{lanlan_name}です。今、トレンド話題を見ました。{master_name}との会話履歴や{master_name}の興味を踏まえて、主动的に話しかけるか判断してください。
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是トレンド話題======
+{trending_content}
+======以上为トレンド話題======
+
+以下の原則で判断してください：
+1. 面白い・新鮮・話題にする価値があるなら、話しかけてもよい。
+2. 過去の会話や{master_name}の興味に関連するなら、なお良い。
+3. 退屈・不適切、または{master_name}が話したくないと明言している場合は話さない。
+4. 表現は自然で短く、ふと見かけた話題を共有する感じにする。
+5. もっとも面白い話題を一つ選び、会話履歴の重複は避ける。
+
+返答：
+- 話しかける場合は、言いたいことだけを簡潔に述べてください。推論は書かないでください。
+- 話しかけない場合は "[PASS]" のみを返してください。
+"""
+
+proactive_chat_prompt_video = """你是{lanlan_name}，现在看到了一些视频推荐。请根据与{master_name}的对话历史和{master_name}的兴趣，判断是否要主动和{master_name}聊聊这些视频内容。
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是视频推荐======
+{trending_content}
+======以上为视频推荐======
+
+请根据以下原则决定是否主动搭话：
+1. 如果视频很有趣、新鲜或值得讨论，可以主动提起
+2. 如果视频与你们之前的对话或{master_name}的兴趣相关，更应该提起
+3. 如果视频比较无聊或不适合讨论，或者{master_name}明确表示不想聊，可以选择不说话
+4. 说话时要自然、简短，像是刚刷到有趣视频想分享给对方
+5. 尽量选一个最有意思的视频进行分享和搭话，但不要和对话历史中已经有的内容重复。
+
+请回复：
+- 如果选择主动搭话，直接说出你想说的话（简短自然即可）。请不要生成思考过程。
+- 如果选择不搭话，只回复"[PASS]"
+"""
+
+proactive_chat_prompt_video_en = """You are {lanlan_name}. You just saw some video recommendations. Based on your chat history with {master_name} and {master_name}'s interests, decide whether to proactively talk about them.
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是视频推荐======
+{trending_content}
+======以上为视频推荐======
+
+Decide whether to proactively speak based on these rules:
+1. If the video is interesting, fresh, or worth discussing, you can bring it up.
+2. If it relates to your previous conversations or {master_name}'s interests, you should bring it up.
+3. If it's boring or not suitable to discuss, or {master_name} has clearly said they don't want to chat, you can stay silent.
+4. Keep it natural and short, like sharing something you just noticed.
+5. Pick only the most interesting video and avoid repeating what's already in the chat history.
+
+Reply:
+- If you choose to chat, directly say what you want to say (short and natural). Do not include any reasoning.
+- If you choose not to chat, only reply "[PASS]".
+"""
+
+proactive_chat_prompt_video_ja = """あなたは{lanlan_name}です。今、動画のおすすめを見ました。{master_name}との会話履歴や{master_name}の興味を踏まえて、主动的に話しかけるか判断してください。
+
+======以下为对话历史======
+{memory_context}
+======以上为对话历史======
+
+======以下是動画のおすすめ======
+{trending_content}
+======以上为動画のおすすめ======
+
+以下の原則で判断してください：
+1. 面白い・新鮮・話題にする価値があるなら、話しかけてもよい。
+2. 過去の会話や{master_name}の興味に関連するなら、なお良い。
+3. 退屈・不適切、または{master_name}が話したくないと明言している場合は話さない。
+4. 表現は自然で短く、ふと見かけた話題を共有する感じにする。
+5. もっとも面白い動画を一つ選び、会話履歴の重複は避ける。
+
+返答：
+- 話しかける場合は、言いたいことだけを簡潔に述べてください。推論は書かないでください。
+- 話しかけない場合は "[PASS]" のみを返してください。
+"""
+
 proactive_chat_prompt_screenshot = """你是{lanlan_name}，现在看到了一些屏幕画面。请根据与{master_name}的对话历史和{master_name}的兴趣，判断是否要主动和{master_name}聊聊屏幕上的内容。
 
 ======以下为对话历史======
@@ -395,16 +527,22 @@ PROACTIVE_CHAT_PROMPTS = {
         'home': proactive_chat_prompt,
         'screenshot': proactive_chat_prompt_screenshot,
         'window': proactive_chat_prompt_window_search,
+        'news': proactive_chat_prompt_news,
+        'video': proactive_chat_prompt_video,
     },
     'en': {
         'home': proactive_chat_prompt_en,
         'screenshot': proactive_chat_prompt_screenshot_en,
         'window': proactive_chat_prompt_window_search_en,
+        'news': proactive_chat_prompt_news_en,
+        'video': proactive_chat_prompt_video_en,
     },
     'ja': {
         'home': proactive_chat_prompt_ja,
         'screenshot': proactive_chat_prompt_screenshot_ja,
         'window': proactive_chat_prompt_window_search_ja,
+        'news': proactive_chat_prompt_news_ja,
+        'video': proactive_chat_prompt_video_ja,
     }
 }
 

@@ -833,66 +833,80 @@ async def proactive_chat(request: Request):
                     news_content = await fetch_news_content(limit=10)
                     
                     if not news_content['success']:
-                        return JSONResponse({
-                            "success": False,
-                            "error": "无法获取热议话题",
-                            "detail": news_content.get('error', '未知错误')
-                        }, status_code=500)
-                    
-                    formatted_content = format_news_content(news_content)
-                    
-                    # 显示获取的内容详情
-                    region = news_content.get('region', 'china')
-                    news_data = news_content.get('news', {})
-                    if news_data.get('success'):
-                        if region == 'china':
-                            trending_list = news_data.get('trending', [])
-                            words = [item.get('word', '') for item in trending_list[:5]]
-                            if words:
-                                logger.info(f"[{lanlan_name}] 成功获取微博热议话题:")
-                                for word in words:
-                                    logger.info(f"  - {word}")
-                        else:
-                            trending_list = news_data.get('trending', [])
-                            words = [item.get('word', '') for item in trending_list[:5]]
-                            if words:
-                                logger.info(f"[{lanlan_name}] 成功获取Twitter热门话题:")
-                                for word in words:
-                                    logger.info(f"  - {word}")
+                        logger.warning(f"[{lanlan_name}] 获取热议话题失败，回退到全部内容")
+                        content_type = None  # 回退到全部内容
+                        trending_content = await fetch_trending_content(bilibili_limit=10, weibo_limit=10)
+                        
+                        if not trending_content['success']:
+                            return JSONResponse({
+                                "success": False,
+                                "error": "无法获取任何内容",
+                                "detail": trending_content.get('error', '未知错误')
+                            }, status_code=500)
+                        
+                        formatted_content = format_trending_content(trending_content)
+                    else:
+                        formatted_content = format_news_content(news_content)
+                        
+                        # 显示获取的内容详情
+                        region = news_content.get('region', 'china')
+                        news_data = news_content.get('news', {})
+                        if news_data.get('success'):
+                            if region == 'china':
+                                trending_list = news_data.get('trending', [])
+                                words = [item.get('word', '') for item in trending_list[:5]]
+                                if words:
+                                    logger.info(f"[{lanlan_name}] 成功获取微博热议话题:")
+                                    for word in words:
+                                        logger.info(f"  - {word}")
+                            else:
+                                trending_list = news_data.get('trending', [])
+                                words = [item.get('word', '') for item in trending_list[:5]]
+                                if words:
+                                    logger.info(f"[{lanlan_name}] 成功获取Twitter热门话题:")
+                                    for word in words:
+                                        logger.info(f"  - {word}")
                     
                 elif content_type == 'video':
                     # 只获取视频内容
                     video_content = await fetch_video_content(limit=10)
                     
                     if not video_content['success']:
-                        return JSONResponse({
-                            "success": False,
-                            "error": "无法获取视频内容",
-                            "detail": video_content.get('error', '未知错误')
-                        }, status_code=500)
+                        logger.warning(f"[{lanlan_name}] 获取视频内容失败，回退到全部内容")
+                        content_type = None  # 回退到全部内容
+                        trending_content = await fetch_trending_content(bilibili_limit=10, weibo_limit=10)
+                        
+                        if not trending_content['success']:
+                            return JSONResponse({
+                                "success": False,
+                                "error": "无法获取任何内容",
+                                "detail": trending_content.get('error', '未知错误')
+                            }, status_code=500)
+                        
+                        formatted_content = format_trending_content(trending_content)
+                    else:
+                        formatted_content = format_video_content(video_content)
+                        
+                        # 显示获取的内容详情
+                        region = video_content.get('region', 'china')
+                        video_data = video_content.get('video', {})
+                        if video_data.get('success'):
+                            if region == 'china':
+                                videos = video_data.get('videos', [])
+                                titles = [video.get('title', '') for video in videos[:5]]
+                                if titles:
+                                    logger.info(f"[{lanlan_name}] 成功获取B站视频:")
+                                    for title in titles:
+                                        logger.info(f"  - {title}")
+                            else:
+                                posts = video_data.get('posts', [])
+                                titles = [post.get('title', '') for post in posts[:5]]
+                                if titles:
+                                    logger.info(f"[{lanlan_name}] 成功获取Reddit热门帖子:")
+                                    for title in titles:
+                                        logger.info(f"  - {title}")
                     
-                    formatted_content = format_video_content(video_content)
-                    
-                    # 显示获取的内容详情
-                    region = video_content.get('region', 'china')
-                    video_data = video_content.get('video', {})
-                    if video_data.get('success'):
-                        if region == 'china':
-                            videos = video_data.get('videos', [])
-                            titles = [video.get('title', '') for video in videos[:5]]
-                            if titles:
-                                logger.info(f"[{lanlan_name}] 成功获取B站视频:")
-                                for title in titles:
-                                    logger.info(f"  - {title}")
-                        else:
-                            posts = video_data.get('posts', [])
-                            titles = [post.get('title', '') for post in posts[:5]]
-                            if titles:
-                                logger.info(f"[{lanlan_name}] 成功获取Reddit热门帖子:")
-                                for title in titles:
-                                    logger.info(f"  - {title}")
-                    
-                else:
+                if content_type is None or content_type not in ('news', 'video'):
                     # 获取全部内容（首页推荐）
                     trending_content = await fetch_trending_content(bilibili_limit=10, weibo_limit=10)
                     
@@ -979,6 +993,24 @@ async def proactive_chat(request: Request):
                 memory_context=memory_context
             )
             logger.info(f"[{lanlan_name}] 使用窗口搜索进行主动对话")
+        elif content_type == 'news':
+            # 新闻模板：基于热议话题让AI决定是否主动发起对话
+            system_prompt = get_proactive_chat_prompt('news', proactive_lang).format(
+                lanlan_name=lanlan_name,
+                master_name=master_name_current,
+                trending_content=formatted_content,
+                memory_context=memory_context
+            )
+            logger.info(f"[{lanlan_name}] 使用热议话题进行主动对话")
+        elif content_type == 'video':
+            # 视频模板：基于视频推荐让AI决定是否主动发起对话
+            system_prompt = get_proactive_chat_prompt('video', proactive_lang).format(
+                lanlan_name=lanlan_name,
+                master_name=master_name_current,
+                trending_content=formatted_content,
+                memory_context=memory_context
+            )
+            logger.info(f"[{lanlan_name}] 使用视频推荐进行主动对话")
         else:
             # 首页推荐模板：基于首页信息流让AI决定是否主动发起对话
             system_prompt = get_proactive_chat_prompt('home', proactive_lang).format(
