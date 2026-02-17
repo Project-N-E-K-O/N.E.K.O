@@ -414,9 +414,9 @@ window.createChatModeToggle = function(options) {
                     window.stopProactiveChatSchedule();
                 }
             } else {
-                // 子模式关闭：只有当主开关也关闭且没有其他子模式开启时才停止调度
+                // 子模式关闭：如果没有其他子模式开启，停止调度
                 const hasOtherSubMode = window.proactiveVisionChatEnabled || window.proactiveNewsChatEnabled || window.proactiveVideoChatEnabled;
-                if (!window.proactiveChatEnabled && !hasOtherSubMode && typeof window.stopProactiveChatSchedule === 'function') {
+                if (!hasOtherSubMode && typeof window.stopProactiveChatSchedule === 'function') {
                     window.stopProactiveChatSchedule();
                 }
             }
@@ -541,36 +541,23 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
         if (focusCheckbox && typeof window.focusModeEnabled !== 'undefined') {
             // "允许打断"按钮值与 focusModeEnabled 相反
             const newChecked = !window.focusModeEnabled;
-            // 只在状态改变时更新，避免不必要的 DOM 操作
             if (focusCheckbox.checked !== newChecked) {
                 focusCheckbox.checked = newChecked;
-                // 使用 requestAnimationFrame 确保 DOM 已更新后再更新样式
-                requestAnimationFrame(() => {
-                    updateCheckboxStyle(focusCheckbox);
-                });
-            } else {
-                // 即使状态相同，也确保视觉样式正确（处理概率性问题）
-                requestAnimationFrame(() => {
-                    updateCheckboxStyle(focusCheckbox);
-                });
             }
+            requestAnimationFrame(() => {
+                updateCheckboxStyle(focusCheckbox);
+            });
         }
 
         // 更新 proactive chat checkbox 状态和视觉样式
         if (proactiveChatCheckbox && typeof window.proactiveChatEnabled !== 'undefined') {
             const newChecked = window.proactiveChatEnabled;
-            // 只在状态改变时更新，避免不必要的 DOM 操作
             if (proactiveChatCheckbox.checked !== newChecked) {
                 proactiveChatCheckbox.checked = newChecked;
-                requestAnimationFrame(() => {
-                    updateCheckboxStyle(proactiveChatCheckbox);
-                });
-            } else {
-                // 即使状态相同，也确保视觉样式正确（处理概率性问题）
-                requestAnimationFrame(() => {
-                    updateCheckboxStyle(proactiveChatCheckbox);
-                });
             }
+            requestAnimationFrame(() => {
+                updateCheckboxStyle(proactiveChatCheckbox);
+            });
         }
 
         // 更新 proactive vision checkbox 状态和视觉样式
@@ -578,14 +565,10 @@ Live2DManager.prototype.showPopup = function (buttonId, popup) {
             const newChecked = window.proactiveVisionEnabled;
             if (proactiveVisionCheckbox.checked !== newChecked) {
                 proactiveVisionCheckbox.checked = newChecked;
-                requestAnimationFrame(() => {
-                    updateCheckboxStyle(proactiveVisionCheckbox);
-                });
-            } else {
-                requestAnimationFrame(() => {
-                    updateCheckboxStyle(proactiveVisionCheckbox);
-                });
             }
+            requestAnimationFrame(() => {
+                updateCheckboxStyle(proactiveVisionCheckbox);
+            });
         }
 
         // 同步搭话方式选项状态

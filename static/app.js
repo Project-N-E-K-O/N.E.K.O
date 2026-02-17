@@ -7890,6 +7890,7 @@ function init_app() {
 
         // 必须开启主动搭话且选择至少一种搭话方式才启动调度
         if (!proactiveChatEnabled || !hasAnyChatModeEnabled()) {
+            proactiveChatBackoffLevel = 0;
             return;
         }
 
@@ -8022,11 +8023,24 @@ function init_app() {
 
                 if (!screenshotDataUrl) {
                     console.log('主动搭话截图失败，退回使用其他方式');
-                    // 截图失败时的回退策略
+                    // 截图失败时的回退策略：优先使用已启用的其他搭话方式
                     if (proactiveVisionChatEnabled && !proactiveNewsChatEnabled && !proactiveVideoChatEnabled) {
                         // 只有视觉搭话模式：截图失败直接跳过
                         console.log('视觉搭话模式截图失败，跳过本次搭话');
                         return;
+                    }
+                    
+                    // 优先回退到已启用的新闻或视频搭话
+                    if (proactiveNewsChatEnabled) {
+                        useScreenshot = false;
+                        useNewsOnly = true;
+                        requestBody.content_type = 'news';
+                        console.log('已切换到新闻搭话模式');
+                    } else if (proactiveVideoChatEnabled) {
+                        useScreenshot = false;
+                        useVideoOnly = true;
+                        requestBody.content_type = 'video';
+                        console.log('已切换到视频搭话模式');
                     } else if (isWindows && proactiveChatEnabled) {
                         // Windows下回退到窗口标题
                         useScreenshot = false;
