@@ -2582,6 +2582,21 @@ function init_app() {
     async function stopMicCapture() { // 闭麦，按钮on click
         isSwitchingMode = true; // 开始模式切换（从语音切换到待机/文本模式）
 
+        // 隐藏语音准备提示（防止残留）
+        hideVoicePreparingToast();
+
+        // 清理 session Promise 相关状态（防止影响后续会话）
+        if (window.sessionTimeoutId) {
+            clearTimeout(window.sessionTimeoutId);
+            window.sessionTimeoutId = null;
+        }
+        if (sessionStartedResolver) {
+            sessionStartedResolver = null;
+        }
+        if (sessionStartedRejecter) {
+            sessionStartedRejecter = null;
+        }
+
         // 停止录音时移除录音状态类
         micButton.classList.remove('recording');
 
@@ -3067,63 +3082,19 @@ function init_app() {
 
     // 同步浮动麦克风按钮状态的辅助函数
     function syncFloatingMicButtonState(isActive) {
-        // 方法1：通过 Live2D _floatingButtons 对象（如果存在）
-        if (window.live2dManager && window.live2dManager._floatingButtons && window.live2dManager._floatingButtons.mic) {
-            const floatingMicBtn = window.live2dManager._floatingButtons.mic.button;
-            if (floatingMicBtn) {
-                floatingMicBtn.dataset.active = isActive ? 'true' : 'false';
-                const imgOff = window.live2dManager._floatingButtons.mic.imgOff;
-                const imgOn = window.live2dManager._floatingButtons.mic.imgOn;
-                if (imgOff && imgOn) {
-                    imgOff.style.opacity = isActive ? '0' : '1';
-                    imgOn.style.opacity = isActive ? '1' : '0';
-                }
-                return;
-            }
-        }
+        // 优先通过 manager 对象访问（更可靠）
+        const managers = [window.live2dManager, window.vrmManager];
 
-        // 方法2：通过 VRM _floatingButtons 对象（如果存在）
-        if (window.vrmManager && window.vrmManager._floatingButtons && window.vrmManager._floatingButtons.mic) {
-            const floatingMicBtn = window.vrmManager._floatingButtons.mic.button;
-            if (floatingMicBtn) {
-                floatingMicBtn.dataset.active = isActive ? 'true' : 'false';
-                const imgOff = window.vrmManager._floatingButtons.mic.imgOff;
-                const imgOn = window.vrmManager._floatingButtons.mic.imgOn;
-                if (imgOff && imgOn) {
-                    imgOff.style.opacity = isActive ? '0' : '1';
-                    imgOn.style.opacity = isActive ? '1' : '0';
-                }
-                return;
-            }
-        }
-
-        // 方法3：直接查找 Live2D DOM 元素（备用方案）
-        const live2dButtonsContainer = document.getElementById('live2d-floating-buttons');
-        if (live2dButtonsContainer) {
-            const micBtn = live2dButtonsContainer.querySelector('[data-button-id="mic"]');
-            if (micBtn) {
-                micBtn.dataset.active = isActive ? 'true' : 'false';
-                const imgOff = micBtn.querySelector('img[src*="mic_icon_off"]');
-                const imgOn = micBtn.querySelector('img[src*="mic_icon_on"]');
-                if (imgOff && imgOn) {
-                    imgOff.style.opacity = isActive ? '0' : '1';
-                    imgOn.style.opacity = isActive ? '1' : '0';
-                }
-                return;
-            }
-        }
-
-        // 方法4：直接查找 VRM DOM 元素（备用方案）
-        const vrmButtonsContainer = document.getElementById('vrm-floating-buttons');
-        if (vrmButtonsContainer) {
-            const micBtn = vrmButtonsContainer.querySelector('[data-button-id="mic"]');
-            if (micBtn) {
-                micBtn.dataset.active = isActive ? 'true' : 'false';
-                const imgOff = micBtn.querySelector('img[src*="mic_icon_off"]');
-                const imgOn = micBtn.querySelector('img[src*="mic_icon_on"]');
-                if (imgOff && imgOn) {
-                    imgOff.style.opacity = isActive ? '0' : '1';
-                    imgOn.style.opacity = isActive ? '1' : '0';
+        for (const manager of managers) {
+            if (manager && manager._floatingButtons && manager._floatingButtons.mic) {
+                const { button, imgOff, imgOn } = manager._floatingButtons.mic;
+                if (button) {
+                    button.dataset.active = isActive ? 'true' : 'false';
+                    if (imgOff && imgOn) {
+                        imgOff.style.opacity = isActive ? '0' : '1';
+                        imgOn.style.opacity = isActive ? '1' : '0';
+                    }
+                    return;
                 }
             }
         }
@@ -3131,65 +3102,23 @@ function init_app() {
 
     // 同步浮动屏幕分享按钮状态的辅助函数
     function syncFloatingScreenButtonState(isActive) {
-        // 方法1：通过 Live2D _floatingButtons 对象（如果存在）
-        if (window.live2dManager && window.live2dManager._floatingButtons && window.live2dManager._floatingButtons.screen) {
-            const floatingScreenBtn = window.live2dManager._floatingButtons.screen.button;
-            if (floatingScreenBtn) {
-                floatingScreenBtn.dataset.active = isActive ? 'true' : 'false';
-                const imgOff = window.live2dManager._floatingButtons.screen.imgOff;
-                const imgOn = window.live2dManager._floatingButtons.screen.imgOn;
-                if (imgOff && imgOn) {
-                    imgOff.style.opacity = isActive ? '0' : '1';
-                    imgOn.style.opacity = isActive ? '1' : '0';
-                }
-                return;
-            }
-        }
+        // 优先通过 manager 对象访问（更可靠）
+        const managers = [
+            { obj: window.live2dManager },
+            { obj: window.vrmManager }
+        ];
 
-        // 方法2：通过 VRM _floatingButtons 对象（如果存在）
-        if (window.vrmManager && window.vrmManager._floatingButtons && window.vrmManager._floatingButtons.screen) {
-            const floatingScreenBtn = window.vrmManager._floatingButtons.screen.button;
-            if (floatingScreenBtn) {
-                floatingScreenBtn.dataset.active = isActive ? 'true' : 'false';
-                const imgOff = window.vrmManager._floatingButtons.screen.imgOff;
-                const imgOn = window.vrmManager._floatingButtons.screen.imgOn;
-                if (imgOff && imgOn) {
-                    imgOff.style.opacity = isActive ? '0' : '1';
-                    imgOn.style.opacity = isActive ? '1' : '0';
+        for (const { obj } of managers) {
+            if (obj && obj._floatingButtons && obj._floatingButtons.screen) {
+                const { button, imgOff, imgOn } = obj._floatingButtons.screen;
+                if (button) {
+                    button.dataset.active = isActive ? 'true' : 'false';
+                    if (imgOff && imgOn) {
+                        imgOff.style.opacity = isActive ? '0' : '1';
+                        imgOn.style.opacity = isActive ? '1' : '0';
+                    }
+                    return;
                 }
-                return;
-            }
-        }
-
-        // 方法3：直接查找 Live2D DOM 元素（备用方案）
-        const live2dButtonsContainer = document.getElementById('live2d-floating-buttons');
-        if (live2dButtonsContainer) {
-            const screenBtn = live2dButtonsContainer.querySelector('[data-button-id="screen"]');
-            if (screenBtn) {
-                screenBtn.dataset.active = isActive ? 'true' : 'false';
-                const imgOff = screenBtn.querySelector('img[src*="screen_icon_off"]');
-                const imgOn = screenBtn.querySelector('img[src*="screen_icon_on"]');
-                if (imgOff && imgOn) {
-                    imgOff.style.opacity = isActive ? '0' : '1';
-                    imgOn.style.opacity = isActive ? '1' : '0';
-                }
-                return;
-            }
-        }
-
-        // 方法4：直接查找 VRM DOM 元素（备用方案）
-        const vrmButtonsContainer = document.getElementById('vrm-floating-buttons');
-        if (vrmButtonsContainer) {
-            const screenBtn = vrmButtonsContainer.querySelector('[data-button-id="screen"]');
-            if (screenBtn) {
-                screenBtn.dataset.active = isActive ? 'true' : 'false';
-                const imgOff = screenBtn.querySelector('img[src*="screen_icon_off"]');
-                const imgOn = screenBtn.querySelector('img[src*="screen_icon_on"]');
-                if (imgOff && imgOn) {
-                    imgOff.style.opacity = isActive ? '0' : '1';
-                    imgOn.style.opacity = isActive ? '1' : '0';
-                }
-                return;
             }
         }
     }
@@ -4288,10 +4217,18 @@ function init_app() {
         isRecording = false;
         window.isRecording = false;
         window.currentGeminiMessage = null;
-        
+
         // 重置语音模式用户转录合并追踪
         lastVoiceUserMessage = null;
         lastVoiceUserMessageTime = 0;
+
+        // 清理 AI 回复相关的队列和缓冲区（防止影响后续会话）
+        window._realisticGeminiQueue = [];
+        window._realisticGeminiBuffer = '';
+        window._geminiTurnFullText = '';
+        window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
+        window.currentTurnGeminiBubbles = [];
+        window._isProcessingRealisticQueue = false;
 
         // 停止静音检测
         stopSilenceDetection();
@@ -4314,10 +4251,10 @@ function init_app() {
             workletNode = null;
         }
 
-        // 通知服务器暂停会话
+        // 通知服务器结束会话
         if (socket.readyState === WebSocket.OPEN) {
             socket.send(JSON.stringify({
-                action: 'pause_session'
+                action: 'end_session'
             }));
         }
         // statusElement.textContent = '录制已停止';
