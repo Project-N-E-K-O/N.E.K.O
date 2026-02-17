@@ -405,10 +405,20 @@ window.createChatModeToggle = function(options) {
                 window.resetProactiveChatBackoff();
             }
         } else {
-            // 关闭时，如果没有其他搭话方式被选中且主开关已关闭，停止调度
-            const hasOtherMode = window.proactiveChatEnabled || window.proactiveVisionChatEnabled || window.proactiveNewsChatEnabled || window.proactiveVideoChatEnabled;
-            if (!hasOtherMode && typeof window.stopProactiveChatSchedule === 'function') {
-                window.stopProactiveChatSchedule();
+            // 关闭时的逻辑：区分主开关和子模式
+            const isMainSwitch = globalVarName === 'proactiveChatEnabled';
+            
+            if (isMainSwitch) {
+                // 主开关关闭：停止调度
+                if (typeof window.stopProactiveChatSchedule === 'function') {
+                    window.stopProactiveChatSchedule();
+                }
+            } else {
+                // 子模式关闭：只有当主开关也关闭且没有其他子模式开启时才停止调度
+                const hasOtherSubMode = window.proactiveVisionChatEnabled || window.proactiveNewsChatEnabled || window.proactiveVideoChatEnabled;
+                if (!window.proactiveChatEnabled && !hasOtherSubMode && typeof window.stopProactiveChatSchedule === 'function') {
+                    window.stopProactiveChatSchedule();
+                }
             }
         }
         console.log(`${label.textContent}已${checkbox.checked ? '开启' : '关闭'}`);

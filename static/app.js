@@ -7841,22 +7841,24 @@ function init_app() {
     // 暴露选中的屏幕源ID给其他模块使用
     window.getSelectedScreenSourceId = () => selectedScreenSourceId;
 
-    // 检查是否有任何搭话方式被选中
-    function hasAnyChatModeEnabled() {
-        proactiveVisionChatEnabled = typeof window.proactiveVisionChatEnabled !== 'undefined' ? window.proactiveVisionChatEnabled : proactiveVisionChatEnabled;
-        proactiveNewsChatEnabled = typeof window.proactiveNewsChatEnabled !== 'undefined' ? window.proactiveNewsChatEnabled : proactiveNewsChatEnabled;
-        proactiveVideoChatEnabled = typeof window.proactiveVideoChatEnabled !== 'undefined' ? window.proactiveVideoChatEnabled : proactiveVideoChatEnabled;
-        return proactiveVisionChatEnabled || proactiveNewsChatEnabled || proactiveVideoChatEnabled;
-    }
-
-    // 检查主动搭话前置条件是否满足
-    function canTriggerProactively() {
-        // 同步全局变量的最新值
+    // 同步 proactive 相关的全局变量到模块作用域
+    function syncProactiveFlags() {
         proactiveChatEnabled = typeof window.proactiveChatEnabled !== 'undefined' ? window.proactiveChatEnabled : proactiveChatEnabled;
         proactiveVisionEnabled = typeof window.proactiveVisionEnabled !== 'undefined' ? window.proactiveVisionEnabled : proactiveVisionEnabled;
         proactiveVisionChatEnabled = typeof window.proactiveVisionChatEnabled !== 'undefined' ? window.proactiveVisionChatEnabled : proactiveVisionChatEnabled;
         proactiveNewsChatEnabled = typeof window.proactiveNewsChatEnabled !== 'undefined' ? window.proactiveNewsChatEnabled : proactiveNewsChatEnabled;
         proactiveVideoChatEnabled = typeof window.proactiveVideoChatEnabled !== 'undefined' ? window.proactiveVideoChatEnabled : proactiveVideoChatEnabled;
+    }
+
+    // 检查是否有任何搭话方式被选中
+    function hasAnyChatModeEnabled() {
+        syncProactiveFlags();
+        return proactiveVisionChatEnabled || proactiveNewsChatEnabled || proactiveVideoChatEnabled;
+    }
+
+    // 检查主动搭话前置条件是否满足
+    function canTriggerProactively() {
+        syncProactiveFlags();
 
         // 必须开启主动搭话
         if (!proactiveChatEnabled) {
@@ -7878,12 +7880,7 @@ function init_app() {
 
     // 主动搭话定时触发功能
     function scheduleProactiveChat() {
-        // 同步全局变量的最新值（UI层可能已修改）
-        proactiveChatEnabled = typeof window.proactiveChatEnabled !== 'undefined' ? window.proactiveChatEnabled : proactiveChatEnabled;
-        proactiveVisionEnabled = typeof window.proactiveVisionEnabled !== 'undefined' ? window.proactiveVisionEnabled : proactiveVisionEnabled;
-        proactiveVisionChatEnabled = typeof window.proactiveVisionChatEnabled !== 'undefined' ? window.proactiveVisionChatEnabled : proactiveVisionChatEnabled;
-        proactiveNewsChatEnabled = typeof window.proactiveNewsChatEnabled !== 'undefined' ? window.proactiveNewsChatEnabled : proactiveNewsChatEnabled;
-        proactiveVideoChatEnabled = typeof window.proactiveVideoChatEnabled !== 'undefined' ? window.proactiveVideoChatEnabled : proactiveVideoChatEnabled;
+        syncProactiveFlags();
 
         // 清除现有定时器
         if (proactiveChatTimer) {
@@ -7948,12 +7945,7 @@ function init_app() {
 
     async function triggerProactiveChat() {
         try {
-            // 同步全局变量的最新值（UI层可能已修改）
-            proactiveChatEnabled = typeof window.proactiveChatEnabled !== 'undefined' ? window.proactiveChatEnabled : proactiveChatEnabled;
-            proactiveVisionEnabled = typeof window.proactiveVisionEnabled !== 'undefined' ? window.proactiveVisionEnabled : proactiveVisionEnabled;
-            proactiveVisionChatEnabled = typeof window.proactiveVisionChatEnabled !== 'undefined' ? window.proactiveVisionChatEnabled : proactiveVisionChatEnabled;
-            proactiveNewsChatEnabled = typeof window.proactiveNewsChatEnabled !== 'undefined' ? window.proactiveNewsChatEnabled : proactiveNewsChatEnabled;
-            proactiveVideoChatEnabled = typeof window.proactiveVideoChatEnabled !== 'undefined' ? window.proactiveVideoChatEnabled : proactiveVideoChatEnabled;
+            syncProactiveFlags();
 
             const isWindows = isWindowsOS();
 
@@ -8370,6 +8362,21 @@ function init_app() {
             const saved = localStorage.getItem('project_neko_settings');
             if (saved) {
                 const settings = JSON.parse(saved);
+                
+                // 迁移逻辑：检测旧版设置并迁移到新字段
+                // 如果旧版 proactiveChatEnabled=true 但新字段未定义，则迁移
+                if (settings.proactiveChatEnabled === true) {
+                    const hasNewFlags = settings.proactiveVisionChatEnabled !== undefined ||
+                                        settings.proactiveNewsChatEnabled !== undefined ||
+                                        settings.proactiveVideoChatEnabled !== undefined;
+                    if (!hasNewFlags) {
+                        // 旧版用户：默认开启视觉搭话和自主视觉
+                        settings.proactiveVisionEnabled = true;
+                        settings.proactiveVisionChatEnabled = true;
+                        console.log('迁移旧版设置：已启用视觉搭话和自主视觉');
+                    }
+                }
+                
                 // 使用 ?? 运算符提供更好的默认值处理（避免将 false 误判为需要使用默认值）
                 proactiveChatEnabled = settings.proactiveChatEnabled ?? false;
                 window.proactiveChatEnabled = proactiveChatEnabled; // 同步到全局
