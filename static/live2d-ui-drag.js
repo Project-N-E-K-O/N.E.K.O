@@ -418,14 +418,13 @@ window.createChatModeToggle = function(options) {
 
     checkbox.addEventListener('click', (e) => e.stopPropagation());
     label.addEventListener('click', (e) => {
+        e.preventDefault();
         e.stopPropagation();
-        checkbox.checked = !checkbox.checked;
-        checkbox.dispatchEvent(new Event('change'));
+        checkbox.click();
     });
     indicator.addEventListener('click', (e) => {
         e.stopPropagation();
-        checkbox.checked = !checkbox.checked;
-        checkbox.dispatchEvent(new Event('change'));
+        checkbox.click();
     });
 
     wrapper.appendChild(checkbox);

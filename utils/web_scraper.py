@@ -1029,7 +1029,7 @@ def format_video_content(video_content: Dict[str, Any]) -> str:
             posts = video_data.get('posts', [])
             output_lines = _format_reddit_posts(posts)
             return "\n".join(output_lines)
-        return "暂时无法获取热门帖子"
+        return "Unable to fetch trending posts at the moment"
 
 
 def format_news_content(news_content: Dict[str, Any]) -> str:
@@ -1060,7 +1060,7 @@ def format_news_content(news_content: Dict[str, Any]) -> str:
             trending_list = news_data.get('trending', [])
             output_lines = _format_twitter_trending(trending_list)
             return "\n".join(output_lines)
-        return "暂时无法获取热门话题"
+        return "Unable to fetch trending topics at the moment"
 
 
 def get_active_window_title(include_raw: bool = False) -> Optional[Union[str, Dict[str, str]]]:

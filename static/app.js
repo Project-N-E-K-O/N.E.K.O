@@ -8060,8 +8060,8 @@ function init_app() {
                     const titleResult = await titleResponse.json();
 
                     // await 期间用户可能关闭了功能，避免继续执行
-                    if (!proactiveChatEnabled && !proactiveVisionEnabled && !hasAnyChatModeEnabled()) {
-                        console.log('功能已关闭，取消本次搭话');
+                    if (!canTriggerProactively()) {
+                        console.log('功能已关闭或前置条件不满足，取消本次搭话');
                         return;
                     }
 
