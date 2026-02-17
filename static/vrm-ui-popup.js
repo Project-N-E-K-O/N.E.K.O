@@ -2,6 +2,9 @@
  * VRM UI Popup - 弹出框组件（功能同步修复版）
  */
 
+// 动画时长常量（与 CSS transition duration 保持一致）
+const VRM_POPUP_ANIMATION_DURATION_MS = 200;
+
 // 注入 CSS 样式（如果尚未注入）
 (function() {
     if (document.getElementById('vrm-popup-styles')) return;
@@ -394,7 +397,7 @@ VRMManager.prototype._createIntervalControl = function (toggle) {
                 if (container.style.opacity === '1') {
                     container.style.height = 'auto';
                 }
-            }, 200);
+            }, VRM_POPUP_ANIMATION_DURATION_MS);
         });
     };
     container._collapse = () => {
@@ -410,7 +413,7 @@ VRMManager.prototype._createIntervalControl = function (toggle) {
             if (container.style.opacity === '0') {
                 container.style.display = 'none';
             }
-        }, 200);
+        }, VRM_POPUP_ANIMATION_DURATION_MS);
     };
 
     return container;

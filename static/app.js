@@ -866,7 +866,9 @@ function init_app() {
                     }
 
                     // AI回复完成后，重置主动搭话计时器（如果已开启且在文本模式）
-                    if (proactiveChatEnabled && hasAnyChatModeEnabled() && !isRecording) {
+                    // 先调用 hasAnyChatModeEnabled() 确保同步状态
+                    const hasChatMode = hasAnyChatModeEnabled();
+                    if (proactiveChatEnabled && hasChatMode && !isRecording) {
                         resetProactiveChatBackoff();
                     }
                 } else if (response.type === 'session_preparing') {

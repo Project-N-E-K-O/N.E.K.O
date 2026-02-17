@@ -996,7 +996,7 @@ def format_trending_content(trending_content: Dict[str, Any]) -> str:
             output_lines.extend(_format_twitter_trending(trending_list))
         
         if not output_lines:
-            return "暂时无法获取热门内容"
+            return "Unable to fetch trending content at the moment"
     
     return "\n".join(output_lines)
 

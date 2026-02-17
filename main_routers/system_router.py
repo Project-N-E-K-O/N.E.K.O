@@ -862,7 +862,7 @@ async def proactive_chat(request: Request):
                     "error": f"截图处理失败: {str(e)}",
                     "action": "pass"
                 }, status_code=500)
-        elif not use_window_search:
+        else:
             if content_type == 'news':
                 logger.info(f"[{lanlan_name}] 前端选择使用新闻/热议话题进行主动搭话")
             elif content_type == 'video':

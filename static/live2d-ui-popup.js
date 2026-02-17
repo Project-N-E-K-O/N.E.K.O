@@ -3,6 +3,9 @@
  * 包含弹出框创建、设置菜单、开关项组件
  */
 
+// 动画时长常量（与 CSS transition duration 保持一致）
+const POPUP_ANIMATION_DURATION_MS = 200;
+
 // 创建弹出框
 Live2DManager.prototype.createPopup = function (buttonId) {
     const popup = document.createElement('div');
@@ -252,7 +255,7 @@ Live2DManager.prototype._createIntervalControl = function (toggle) {
                 if (container.style.opacity === '1') {
                     container.style.height = 'auto';
                 }
-            }, 200);
+            }, POPUP_ANIMATION_DURATION_MS);
         });
     };
     container._collapse = () => {
@@ -268,7 +271,7 @@ Live2DManager.prototype._createIntervalControl = function (toggle) {
             if (container.style.opacity === '0') {
                 container.style.display = 'none';
             }
-        }, 200);
+        }, POPUP_ANIMATION_DURATION_MS);
     };
 
     return container;
