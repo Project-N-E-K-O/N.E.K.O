@@ -231,7 +231,9 @@ function init_app() {
     // 主动搭话功能相关
     let proactiveChatEnabled = false;
     let proactiveVisionEnabled = false;
-    let proactiveVisionOnlyEnabled = false;
+    let proactiveVisionChatEnabled = false;
+    let proactiveNewsChatEnabled = false;
+    let proactiveVideoChatEnabled = false;
     let mergeMessagesEnabled = false;
     let proactiveChatTimer = null;
     let proactiveChatBackoffLevel = 0; // 退避级别：0=30s, 1=75s, 2=187.5s, etc.
@@ -294,7 +296,9 @@ function init_app() {
     // 暴露到全局作用域，供 live2d.js 等其他模块访问和修改
     window.proactiveChatEnabled = proactiveChatEnabled;
     window.proactiveVisionEnabled = proactiveVisionEnabled;
-    window.proactiveVisionOnlyEnabled = proactiveVisionOnlyEnabled;
+    window.proactiveVisionChatEnabled = proactiveVisionChatEnabled;
+    window.proactiveNewsChatEnabled = proactiveNewsChatEnabled;
+    window.proactiveVideoChatEnabled = proactiveVideoChatEnabled;
     window.mergeMessagesEnabled = mergeMessagesEnabled;
     window.focusModeEnabled = focusModeEnabled;
     window.proactiveChatInterval = proactiveChatInterval;
@@ -862,7 +866,7 @@ function init_app() {
                     }
 
                     // AI回复完成后，重置主动搭话计时器（如果已开启且在文本模式）
-                    if ((proactiveChatEnabled || proactiveVisionEnabled || proactiveVisionOnlyEnabled) && !isRecording) {
+                    if (proactiveChatEnabled && hasAnyChatModeEnabled() && !isRecording) {
                         resetProactiveChatBackoff();
                     }
                 } else if (response.type === 'session_preparing') {
@@ -2060,8 +2064,8 @@ function init_app() {
                     socket.send(JSON.stringify({ action: 'pause_session' }));
                 }
 
-                // 如果主动搭话/主动视觉/仅视觉搭话已启用，重置并开始定时
-                if (proactiveChatEnabled || proactiveVisionEnabled || proactiveVisionOnlyEnabled) {
+                // 如果主动搭话已启用且选择了搭话方式，重置并开始定时
+                if (proactiveChatEnabled && hasAnyChatModeEnabled()) {
                     lastUserInputTime = Date.now();
                     resetProactiveChatBackoff();
                 }
@@ -2529,7 +2533,7 @@ function init_app() {
         textInputArea.classList.remove('hidden');
 
         // 停止录音后，重置主动搭话退避级别并开始定时
-        if (proactiveChatEnabled || proactiveVisionEnabled || proactiveVisionOnlyEnabled) {
+        if (proactiveChatEnabled && hasAnyChatModeEnabled()) {
             lastUserInputTime = Date.now();
             resetProactiveChatBackoff();
         }
@@ -3309,7 +3313,7 @@ function init_app() {
             console.log(window.t('console.executingNormalEndSession'));
 
             // 结束会话后，重置主动搭话计时器（如果已开启）
-            if (proactiveChatEnabled || proactiveVisionEnabled || proactiveVisionOnlyEnabled) {
+            if (proactiveChatEnabled && hasAnyChatModeEnabled()) {
                 resetProactiveChatBackoff();
             }
             // 显示文本输入区
@@ -3512,7 +3516,7 @@ function init_app() {
             returnSessionButton.disabled = true;
 
             // 重置主动搭话定时器
-            if (proactiveChatEnabled || proactiveVisionEnabled || proactiveVisionOnlyEnabled) {
+            if (proactiveChatEnabled && hasAnyChatModeEnabled()) {
                 resetProactiveChatBackoff();
             }
 
@@ -3691,7 +3695,7 @@ function init_app() {
             }
 
             // 文本聊天后，重置主动搭话计时器（如果已开启）
-            if (proactiveChatEnabled || proactiveVisionEnabled || proactiveVisionOnlyEnabled) {
+            if (proactiveChatEnabled && hasAnyChatModeEnabled()) {
                 resetProactiveChatBackoff();
             }
 
@@ -7837,19 +7841,39 @@ function init_app() {
     // 暴露选中的屏幕源ID给其他模块使用
     window.getSelectedScreenSourceId = () => selectedScreenSourceId;
 
+    // 检查是否有任何搭话方式被选中
+    function hasAnyChatModeEnabled() {
+        proactiveVisionChatEnabled = typeof window.proactiveVisionChatEnabled !== 'undefined' ? window.proactiveVisionChatEnabled : proactiveVisionChatEnabled;
+        proactiveNewsChatEnabled = typeof window.proactiveNewsChatEnabled !== 'undefined' ? window.proactiveNewsChatEnabled : proactiveNewsChatEnabled;
+        proactiveVideoChatEnabled = typeof window.proactiveVideoChatEnabled !== 'undefined' ? window.proactiveVideoChatEnabled : proactiveVideoChatEnabled;
+        return proactiveVisionChatEnabled || proactiveNewsChatEnabled || proactiveVideoChatEnabled;
+    }
+
     // 检查主动搭话前置条件是否满足
     function canTriggerProactively() {
         // 同步全局变量的最新值
         proactiveChatEnabled = typeof window.proactiveChatEnabled !== 'undefined' ? window.proactiveChatEnabled : proactiveChatEnabled;
         proactiveVisionEnabled = typeof window.proactiveVisionEnabled !== 'undefined' ? window.proactiveVisionEnabled : proactiveVisionEnabled;
-        proactiveVisionOnlyEnabled = typeof window.proactiveVisionOnlyEnabled !== 'undefined' ? window.proactiveVisionOnlyEnabled : proactiveVisionOnlyEnabled;
+        proactiveVisionChatEnabled = typeof window.proactiveVisionChatEnabled !== 'undefined' ? window.proactiveVisionChatEnabled : proactiveVisionChatEnabled;
+        proactiveNewsChatEnabled = typeof window.proactiveNewsChatEnabled !== 'undefined' ? window.proactiveNewsChatEnabled : proactiveNewsChatEnabled;
+        proactiveVideoChatEnabled = typeof window.proactiveVideoChatEnabled !== 'undefined' ? window.proactiveVideoChatEnabled : proactiveVideoChatEnabled;
 
-        // 仅视觉搭话模式：需要同时开启主动搭话和自主视觉
-        if (proactiveVisionOnlyEnabled) {
-            return proactiveChatEnabled && proactiveVisionEnabled;
+        // 必须开启主动搭话
+        if (!proactiveChatEnabled) {
+            return false;
         }
-        // 普通模式：只需要主动搭话开启
-        return proactiveChatEnabled;
+
+        // 必须选择至少一种搭话方式
+        if (!proactiveVisionChatEnabled && !proactiveNewsChatEnabled && !proactiveVideoChatEnabled) {
+            return false;
+        }
+
+        // 如果只选择了视觉搭话，需要同时开启自主视觉
+        if (proactiveVisionChatEnabled && !proactiveNewsChatEnabled && !proactiveVideoChatEnabled) {
+            return proactiveVisionEnabled;
+        }
+
+        return true;
     }
 
     // 主动搭话定时触发功能
@@ -7857,7 +7881,9 @@ function init_app() {
         // 同步全局变量的最新值（UI层可能已修改）
         proactiveChatEnabled = typeof window.proactiveChatEnabled !== 'undefined' ? window.proactiveChatEnabled : proactiveChatEnabled;
         proactiveVisionEnabled = typeof window.proactiveVisionEnabled !== 'undefined' ? window.proactiveVisionEnabled : proactiveVisionEnabled;
-        proactiveVisionOnlyEnabled = typeof window.proactiveVisionOnlyEnabled !== 'undefined' ? window.proactiveVisionOnlyEnabled : proactiveVisionOnlyEnabled;
+        proactiveVisionChatEnabled = typeof window.proactiveVisionChatEnabled !== 'undefined' ? window.proactiveVisionChatEnabled : proactiveVisionChatEnabled;
+        proactiveNewsChatEnabled = typeof window.proactiveNewsChatEnabled !== 'undefined' ? window.proactiveNewsChatEnabled : proactiveNewsChatEnabled;
+        proactiveVideoChatEnabled = typeof window.proactiveVideoChatEnabled !== 'undefined' ? window.proactiveVideoChatEnabled : proactiveVideoChatEnabled;
 
         // 清除现有定时器
         if (proactiveChatTimer) {
@@ -7865,8 +7891,8 @@ function init_app() {
             proactiveChatTimer = null;
         }
 
-        // 主动搭话或仅视觉搭话开启时才启动调度
-        if (!proactiveChatEnabled && !proactiveVisionOnlyEnabled) {
+        // 必须开启主动搭话且选择至少一种搭话方式才启动调度
+        if (!proactiveChatEnabled || !hasAnyChatModeEnabled()) {
             return;
         }
 
@@ -7925,66 +7951,78 @@ function init_app() {
             // 同步全局变量的最新值（UI层可能已修改）
             proactiveChatEnabled = typeof window.proactiveChatEnabled !== 'undefined' ? window.proactiveChatEnabled : proactiveChatEnabled;
             proactiveVisionEnabled = typeof window.proactiveVisionEnabled !== 'undefined' ? window.proactiveVisionEnabled : proactiveVisionEnabled;
-            proactiveVisionOnlyEnabled = typeof window.proactiveVisionOnlyEnabled !== 'undefined' ? window.proactiveVisionOnlyEnabled : proactiveVisionOnlyEnabled;
+            proactiveVisionChatEnabled = typeof window.proactiveVisionChatEnabled !== 'undefined' ? window.proactiveVisionChatEnabled : proactiveVisionChatEnabled;
+            proactiveNewsChatEnabled = typeof window.proactiveNewsChatEnabled !== 'undefined' ? window.proactiveNewsChatEnabled : proactiveNewsChatEnabled;
+            proactiveVideoChatEnabled = typeof window.proactiveVideoChatEnabled !== 'undefined' ? window.proactiveVideoChatEnabled : proactiveVideoChatEnabled;
 
-            // 根据模式决定使用哪种搭话方式
-            // Windows系统下支持三种模式：截图、窗口标题搜索、热门内容
-            // 非Windows系统下只支持截图和热门内容
-            let useScreenshot = false;
-            let useWindowTitle = false;
             const isWindows = isWindowsOS();
 
-            // 仅视觉搭话模式优先检查
-            if (proactiveVisionOnlyEnabled) {
-                if (!proactiveChatEnabled || !proactiveVisionEnabled) {
-                    // 仅视觉搭话开启但缺少前置条件，跳过本次搭话
-                    console.log('仅视觉搭话模式需要同时开启主动搭话和自主视觉，跳过本次搭话');
-                    return;
-                }
-                // 满足条件，100%使用截图
-                useScreenshot = true;
-                console.log('主动搭话模式：仅视觉搭话模式，使用截图搭话');
-            } else if (proactiveChatEnabled && proactiveVisionEnabled) {
-                // 两个都开启时：
-                // Windows: 1/3截图, 1/3窗口标题, 1/3热门内容
-                // 非Windows: 50%截图, 50%热门内容
-                if (isWindows) {
-                    const rand = Math.random();
-                    if (rand < 0.33) {
-                        useScreenshot = true;
-                        console.log('主动搭话模式：双开模式(Windows)，使用截图搭话');
-                    } else if (rand < 0.66) {
-                        useWindowTitle = true;
-                        console.log('主动搭话模式：双开模式(Windows)，使用窗口标题搭话');
-                    } else {
-                        console.log('主动搭话模式：双开模式(Windows)，使用热门内容');
-                    }
-                } else {
-                    useScreenshot = Math.random() < 0.5;
-                    console.log(`主动搭话模式：双开模式，使用${useScreenshot ? '截图搭话' : '热门内容'}`);
-                }
-            } else if (proactiveChatEnabled && isWindows) {
-                // 只开启主动搭话时(Windows)：50%窗口标题, 50%热门内容
-                if (Math.random() < 0.5) {
-                    useWindowTitle = true;
-                    console.log('主动搭话模式：仅搭话模式(Windows)，使用窗口标题搭话');
-                } else {
-                    console.log('主动搭话模式：仅搭话模式(Windows)，使用热门内容');
-                }
-            } else if (proactiveChatEnabled) {
-                // 只开启主动搭话时(非Windows)：100%热门内容
-                useScreenshot = false;
-                useWindowTitle = false;
-                console.log('主动搭话模式：仅搭话模式，使用热门内容');
-            } else {
-                // 两个都关闭，不执行搭话
-                console.log('主动搭话模式：两个功能都关闭，跳过本次搭话');
+            // 收集可用的搭话方式
+            let availableModes = [];
+
+            // 视觉搭话：需要同时开启主动搭话和自主视觉
+            if (proactiveVisionChatEnabled && proactiveChatEnabled && proactiveVisionEnabled) {
+                availableModes.push('vision');
+            }
+
+            // 新闻搭话：使用微博热议话题
+            if (proactiveNewsChatEnabled && proactiveChatEnabled) {
+                availableModes.push('news');
+            }
+
+            // 视频搭话：使用B站首页视频
+            if (proactiveVideoChatEnabled && proactiveChatEnabled) {
+                availableModes.push('video');
+            }
+
+            // 如果没有选择任何搭话方式，跳过本次搭话
+            if (availableModes.length === 0) {
+                console.log('未选择任何搭话方式，跳过本次搭话');
                 return;
+            }
+
+            // 随机选择一种搭话方式
+            const selectedMode = availableModes[Math.floor(Math.random() * availableModes.length)];
+            console.log(`主动搭话模式：选择了 ${selectedMode} 搭话方式，可用方式: [${availableModes.join(', ')}]`);
+
+            let useScreenshot = false;
+            let useWindowTitle = false;
+            let useNewsOnly = false;
+            let useVideoOnly = false;
+
+            switch (selectedMode) {
+                case 'vision':
+                    useScreenshot = true;
+                    console.log('使用截图搭话');
+                    break;
+                case 'news':
+                    useNewsOnly = true;
+                    console.log('使用新闻搭话（微博热议）');
+                    break;
+                case 'video':
+                    useVideoOnly = true;
+                    console.log('使用视频搭话（B站首页）');
+                    break;
+                case 'window':
+                    useWindowTitle = true;
+                    console.log('使用窗口标题搭话');
+                    break;
+                case 'content':
+                default:
+                    console.log('使用热门内容搭话');
+                    break;
             }
 
             let requestBody = {
                 lanlan_name: lanlan_config.lanlan_name
             };
+
+            // 新闻搭话和视频搭话需要指定内容类型
+            if (useNewsOnly) {
+                requestBody.content_type = 'news';
+            } else if (useVideoOnly) {
+                requestBody.content_type = 'video';
+            }
 
             if (useScreenshot) {
                 // 使用截图搭话
@@ -7993,9 +8031,9 @@ function init_app() {
                 if (!screenshotDataUrl) {
                     console.log('主动搭话截图失败，退回使用其他方式');
                     // 截图失败时的回退策略
-                    if (proactiveVisionOnlyEnabled) {
-                        // 仅视觉搭话模式：截图失败直接跳过
-                        console.log('仅视觉搭话模式截图失败，跳过本次搭话');
+                    if (proactiveVisionChatEnabled && !proactiveNewsChatEnabled && !proactiveVideoChatEnabled) {
+                        // 只有视觉搭话模式：截图失败直接跳过
+                        console.log('视觉搭话模式截图失败，跳过本次搭话');
                         return;
                     } else if (isWindows && proactiveChatEnabled) {
                         // Windows下回退到窗口标题
@@ -8007,8 +8045,7 @@ function init_app() {
                         useScreenshot = false;
                         console.log('已切换到热门内容搭话模式');
                     } else {
-                        // 如果只开启了主动视觉，没有开启主动搭话，则跳过本次搭话
-                        console.log('主动视觉截图失败且未开启主动搭话，跳过本次搭话');
+                        console.log('截图失败且无其他可用方式，跳过本次搭话');
                         return;
                     }
                 } else {
@@ -8023,7 +8060,7 @@ function init_app() {
                     const titleResult = await titleResponse.json();
 
                     // await 期间用户可能关闭了功能，避免继续执行
-                    if (!proactiveChatEnabled && !proactiveVisionEnabled && !proactiveVisionOnlyEnabled) {
+                    if (!proactiveChatEnabled && !proactiveVisionEnabled && !hasAnyChatModeEnabled()) {
                         console.log('功能已关闭，取消本次搭话');
                         return;
                     }
@@ -8271,9 +8308,15 @@ function init_app() {
         const currentVision = typeof window.proactiveVisionEnabled !== 'undefined'
             ? window.proactiveVisionEnabled
             : proactiveVisionEnabled;
-        const currentVisionOnly = typeof window.proactiveVisionOnlyEnabled !== 'undefined'
-            ? window.proactiveVisionOnlyEnabled
-            : proactiveVisionOnlyEnabled;
+        const currentVisionChat = typeof window.proactiveVisionChatEnabled !== 'undefined'
+            ? window.proactiveVisionChatEnabled
+            : proactiveVisionChatEnabled;
+        const currentNewsChat = typeof window.proactiveNewsChatEnabled !== 'undefined'
+            ? window.proactiveNewsChatEnabled
+            : proactiveNewsChatEnabled;
+        const currentVideoChat = typeof window.proactiveVideoChatEnabled !== 'undefined'
+            ? window.proactiveVideoChatEnabled
+            : proactiveVideoChatEnabled;
         const currentMerge = typeof window.mergeMessagesEnabled !== 'undefined'
             ? window.mergeMessagesEnabled
             : mergeMessagesEnabled;
@@ -8290,7 +8333,9 @@ function init_app() {
         const settings = {
             proactiveChatEnabled: currentProactive,
             proactiveVisionEnabled: currentVision,
-            proactiveVisionOnlyEnabled: currentVisionOnly,
+            proactiveVisionChatEnabled: currentVisionChat,
+            proactiveNewsChatEnabled: currentNewsChat,
+            proactiveVideoChatEnabled: currentVideoChat,
             mergeMessagesEnabled: currentMerge,
             focusModeEnabled: currentFocus,
             proactiveChatInterval: currentProactiveChatInterval,
@@ -8301,7 +8346,9 @@ function init_app() {
         // 同步回局部变量，保持一致性
         proactiveChatEnabled = currentProactive;
         proactiveVisionEnabled = currentVision;
-        proactiveVisionOnlyEnabled = currentVisionOnly;
+        proactiveVisionChatEnabled = currentVisionChat;
+        proactiveNewsChatEnabled = currentNewsChat;
+        proactiveVideoChatEnabled = currentVideoChat;
         mergeMessagesEnabled = currentMerge;
         focusModeEnabled = currentFocus;
         proactiveChatInterval = currentProactiveChatInterval;
@@ -8323,9 +8370,15 @@ function init_app() {
                 // 主动视觉：从localStorage加载设置
                 proactiveVisionEnabled = settings.proactiveVisionEnabled ?? false;
                 window.proactiveVisionEnabled = proactiveVisionEnabled; // 同步到全局
-                // 仅视觉搭话：从localStorage加载设置
-                proactiveVisionOnlyEnabled = settings.proactiveVisionOnlyEnabled ?? false;
-                window.proactiveVisionOnlyEnabled = proactiveVisionOnlyEnabled; // 同步到全局
+                // 视觉搭话：从localStorage加载设置
+                proactiveVisionChatEnabled = settings.proactiveVisionChatEnabled ?? false;
+                window.proactiveVisionChatEnabled = proactiveVisionChatEnabled; // 同步到全局
+                // 新闻搭话：从localStorage加载设置
+                proactiveNewsChatEnabled = settings.proactiveNewsChatEnabled ?? false;
+                window.proactiveNewsChatEnabled = proactiveNewsChatEnabled; // 同步到全局
+                // 视频搭话：从localStorage加载设置
+                proactiveVideoChatEnabled = settings.proactiveVideoChatEnabled ?? false;
+                window.proactiveVideoChatEnabled = proactiveVideoChatEnabled; // 同步到全局
                 // 合并消息：从localStorage加载设置
                 mergeMessagesEnabled = settings.mergeMessagesEnabled ?? false;
                 window.mergeMessagesEnabled = mergeMessagesEnabled; // 同步到全局
@@ -8342,7 +8395,9 @@ function init_app() {
                 console.log('已加载设置:', {
                     proactiveChatEnabled: proactiveChatEnabled,
                     proactiveVisionEnabled: proactiveVisionEnabled,
-                    proactiveVisionOnlyEnabled: proactiveVisionOnlyEnabled,
+                    proactiveVisionChatEnabled: proactiveVisionChatEnabled,
+                    proactiveNewsChatEnabled: proactiveNewsChatEnabled,
+                    proactiveVideoChatEnabled: proactiveVideoChatEnabled,
                     mergeMessagesEnabled: mergeMessagesEnabled,
                     focusModeEnabled: focusModeEnabled,
                     proactiveChatInterval: proactiveChatInterval,
@@ -8354,7 +8409,9 @@ function init_app() {
                 console.log('未找到保存的设置，使用默认值');
                 window.proactiveChatEnabled = proactiveChatEnabled;
                 window.proactiveVisionEnabled = proactiveVisionEnabled;
-                window.proactiveVisionOnlyEnabled = proactiveVisionOnlyEnabled;
+                window.proactiveVisionChatEnabled = proactiveVisionChatEnabled;
+                window.proactiveNewsChatEnabled = proactiveNewsChatEnabled;
+                window.proactiveVideoChatEnabled = proactiveVideoChatEnabled;
                 window.mergeMessagesEnabled = mergeMessagesEnabled;
                 window.focusModeEnabled = focusModeEnabled;
                 window.proactiveChatInterval = proactiveChatInterval;
@@ -8365,7 +8422,9 @@ function init_app() {
             // 出错时也要确保全局变量被初始化
             window.proactiveChatEnabled = proactiveChatEnabled;
             window.proactiveVisionEnabled = proactiveVisionEnabled;
-            window.proactiveVisionOnlyEnabled = proactiveVisionOnlyEnabled;
+            window.proactiveVisionChatEnabled = proactiveVisionChatEnabled;
+            window.proactiveNewsChatEnabled = proactiveNewsChatEnabled;
+            window.proactiveVideoChatEnabled = proactiveVideoChatEnabled;
             window.mergeMessagesEnabled = mergeMessagesEnabled;
             window.focusModeEnabled = focusModeEnabled;
             window.proactiveChatInterval = proactiveChatInterval;
@@ -8382,8 +8441,8 @@ function init_app() {
     // 加载扬声器音量设置
     loadSpeakerVolumeSetting();
 
-    // 如果已开启主动搭话或仅视觉搭话，立即启动定时器
-    if (proactiveChatEnabled || proactiveVisionOnlyEnabled) {
+    // 如果已开启主动搭话且选择了搭话方式，立即启动定时器
+    if (proactiveChatEnabled && (proactiveVisionChatEnabled || proactiveNewsChatEnabled || proactiveVideoChatEnabled)) {
         scheduleProactiveChat();
     }
 

@@ -368,129 +368,12 @@ VRMManager.prototype._createIntervalControl = function (toggle) {
     container.appendChild(labelText);
     container.appendChild(sliderWrapper);
 
-    // 如果是主动搭话，在间隔控件内添加「仅视觉搭话」选项（换行显示）
+    // 如果是主动搭话，在间隔控件内添加搭话方式选项
     if (toggle.id === 'proactive-chat') {
-        const visionOnlyWrapper = document.createElement('div');
-        const tooltipText = window.t ? window.t('settings.toggles.proactiveVisionOnlyTooltip') : '需同时开启主动搭话和自主视觉';
-        visionOnlyWrapper.title = tooltipText;
-        Object.assign(visionOnlyWrapper.style, {
-            display: 'flex',
-            alignItems: 'center',
-            gap: '6px',
-            width: '100%',
-            paddingLeft: '0',
-            marginTop: '2px'
-        });
-
-        const visionOnlyCheckbox = document.createElement('input');
-        visionOnlyCheckbox.type = 'checkbox';
-        visionOnlyCheckbox.id = 'vrm-proactive-vision-only';
-        if (typeof window.proactiveVisionOnlyEnabled !== 'undefined') {
-            visionOnlyCheckbox.checked = window.proactiveVisionOnlyEnabled;
+        if (typeof window.createChatModeToggles === 'function') {
+            const chatModesContainer = window.createChatModeToggles('vrm');
+            container.appendChild(chatModesContainer);
         }
-        Object.assign(visionOnlyCheckbox.style, {
-            position: 'absolute',
-            opacity: '0',
-            width: '0',
-            height: '0'
-        });
-
-        // 创建圆形指示器
-        const visionOnlyIndicator = document.createElement('div');
-        visionOnlyIndicator.classList.add('vision-only-indicator');
-        Object.assign(visionOnlyIndicator.style, {
-            width: '16px',
-            height: '16px',
-            borderRadius: '50%',
-            border: '2px solid #ccc',
-            backgroundColor: 'transparent',
-            cursor: 'pointer',
-            flexShrink: '0',
-            transition: 'all 0.2s ease',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center'
-        });
-
-        // 创建对勾图标
-        const visionOnlyCheckmark = document.createElement('div');
-        visionOnlyCheckmark.classList.add('vision-only-checkmark');
-        visionOnlyCheckmark.innerHTML = '✓';
-        Object.assign(visionOnlyCheckmark.style, {
-            color: '#fff',
-            fontSize: '11px',
-            fontWeight: 'bold',
-            lineHeight: '1',
-            opacity: '0',
-            transition: 'opacity 0.2s ease',
-            pointerEvents: 'none',
-            userSelect: 'none'
-        });
-        visionOnlyIndicator.appendChild(visionOnlyCheckmark);
-
-        const visionOnlyLabel = document.createElement('label');
-        visionOnlyLabel.textContent = window.t ? window.t('settings.toggles.proactiveVisionOnly') : '仅视觉搭话';
-        visionOnlyLabel.setAttribute('data-i18n', 'settings.toggles.proactiveVisionOnly');
-        visionOnlyLabel.htmlFor = 'vrm-proactive-vision-only';
-        Object.assign(visionOnlyLabel.style, {
-            fontSize: '10px',
-            color: '#666',
-            cursor: 'pointer',
-            whiteSpace: 'nowrap'
-        });
-
-        // 更新样式函数
-        const updateVisionOnlyStyle = () => {
-            if (visionOnlyCheckbox.checked) {
-                visionOnlyIndicator.style.backgroundColor = '#44b7fe';
-                visionOnlyIndicator.style.borderColor = '#44b7fe';
-                visionOnlyCheckmark.style.opacity = '1';
-            } else {
-                visionOnlyIndicator.style.backgroundColor = 'transparent';
-                visionOnlyIndicator.style.borderColor = '#ccc';
-                visionOnlyCheckmark.style.opacity = '0';
-            }
-        };
-        updateVisionOnlyStyle();
-
-        visionOnlyCheckbox.addEventListener('change', (e) => {
-            e.stopPropagation();
-            updateVisionOnlyStyle();
-            window.proactiveVisionOnlyEnabled = visionOnlyCheckbox.checked;
-            if (typeof window.saveNEKOSettings === 'function') {
-                window.saveNEKOSettings();
-            }
-            if (visionOnlyCheckbox.checked) {
-                if (typeof window.resetProactiveChatBackoff === 'function') {
-                    window.resetProactiveChatBackoff();
-                }
-            } else {
-                // 只有当主动搭话和自主视觉都关闭时才停止调度
-                if (typeof window.stopProactiveChatSchedule === 'function') {
-                    if (!window.proactiveChatEnabled && !window.proactiveVisionEnabled) {
-                        window.stopProactiveChatSchedule();
-                    }
-                }
-            }
-            console.log(`仅视觉搭话已${visionOnlyCheckbox.checked ? '开启' : '关闭'}`);
-        });
-
-        visionOnlyCheckbox.addEventListener('click', (e) => e.stopPropagation());
-        visionOnlyLabel.addEventListener('click', (e) => {
-            e.stopPropagation();
-            visionOnlyCheckbox.checked = !visionOnlyCheckbox.checked;
-            visionOnlyCheckbox.dispatchEvent(new Event('change'));
-        });
-        visionOnlyIndicator.addEventListener('click', (e) => {
-            e.stopPropagation();
-            visionOnlyCheckbox.checked = !visionOnlyCheckbox.checked;
-            visionOnlyCheckbox.dispatchEvent(new Event('change'));
-        });
-
-        visionOnlyWrapper.appendChild(visionOnlyCheckbox);
-        visionOnlyWrapper.appendChild(visionOnlyIndicator);
-        visionOnlyWrapper.appendChild(visionOnlyLabel);
-        container.appendChild(visionOnlyWrapper);
     }
 
     // 存储展开/收缩方法供外部调用
@@ -1036,24 +919,20 @@ VRMManager.prototype.showPopup = function (buttonId, popup) {
             proactiveVisionCheckbox.checked = window.proactiveVisionEnabled; updateCheckboxStyle(proactiveVisionCheckbox);
         }
 
-        const proactiveVisionOnlyCheckbox = popup.querySelector('#vrm-proactive-vision-only');
-        if (proactiveVisionOnlyCheckbox && typeof window.proactiveVisionOnlyEnabled !== 'undefined') {
-            proactiveVisionOnlyCheckbox.checked = window.proactiveVisionOnlyEnabled;
-            // 更新圆形指示器样式
-            const indicator = proactiveVisionOnlyCheckbox.parentElement?.querySelector('.vision-only-indicator');
-            const checkmark = indicator?.querySelector('.vision-only-checkmark');
-            if (indicator && checkmark) {
-                if (proactiveVisionOnlyCheckbox.checked) {
-                    indicator.style.backgroundColor = '#44b7fe';
-                    indicator.style.borderColor = '#44b7fe';
-                    checkmark.style.opacity = '1';
-                } else {
-                    indicator.style.backgroundColor = 'transparent';
-                    indicator.style.borderColor = '#ccc';
-                    checkmark.style.opacity = '0';
+        // 同步搭话方式选项状态
+        const chatModeCheckboxes = ['vision', 'news', 'video'];
+        const chatModeVars = ['proactiveVisionChatEnabled', 'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled'];
+        chatModeCheckboxes.forEach((mode, index) => {
+            const checkbox = popup.querySelector(`#vrm-proactive-${mode}-chat`);
+            if (checkbox && typeof window[chatModeVars[index]] !== 'undefined') {
+                checkbox.checked = window[chatModeVars[index]];
+                if (typeof window.updateChatModeStyle === 'function') {
+                    requestAnimationFrame(() => {
+                        window.updateChatModeStyle(checkbox);
+                    });
                 }
             }
-        }
+        });
     }
 
     if (buttonId === 'agent' && !isVisible) window.dispatchEvent(new CustomEvent('live2d-agent-popup-opening'));
