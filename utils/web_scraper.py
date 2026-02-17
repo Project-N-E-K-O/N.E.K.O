@@ -814,15 +814,16 @@ async def _fetch_content_by_region(
     Returns:
         包含成功状态和内容的字典
     """
+    china_region = is_china_region()
+    region = 'china' if china_region else 'non-china'
+    
     try:
-        china_region = is_china_region()
-        
         if china_region:
             logger.info(china_log_msg)
             result = await china_fetch_func(limit)
             response = {
                 'success': result.get('success', False),
-                'region': 'china',
+                'region': region,
                 content_key: result
             }
         else:
@@ -830,7 +831,7 @@ async def _fetch_content_by_region(
             result = await non_china_fetch_func(limit)
             response = {
                 'success': result.get('success', False),
-                'region': 'non-china',
+                'region': region,
                 content_key: result
             }
         
@@ -839,7 +840,7 @@ async def _fetch_content_by_region(
         return response
             
     except Exception as e:
-        logger.error(f"获取内容失败: {e}")
+        logger.error(f"获取内容失败: content_key={content_key} region={region} error={e}")
         return {
             'success': False,
             'error': str(e)

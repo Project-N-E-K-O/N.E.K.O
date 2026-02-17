@@ -122,6 +122,24 @@ def _log_trending_content(lanlan_name: str, trending_content: dict):
             for word in words:
                 content_details.append(f"  - {word}")
     
+    reddit_data = trending_content.get('reddit', {})
+    if reddit_data.get('success'):
+        posts = reddit_data.get('posts', [])
+        titles = [post.get('title', '') for post in posts[:5]]
+        if titles:
+            content_details.append("Reddit热门帖子:")
+            for title in titles:
+                content_details.append(f"  - {title}")
+    
+    twitter_data = trending_content.get('twitter', {})
+    if twitter_data.get('success'):
+        trending_list = twitter_data.get('trending', [])
+        words = [item.get('word', '') for item in trending_list[:5]]
+        if words:
+            content_details.append("Twitter热门话题:")
+            for word in words:
+                content_details.append(f"  - {word}")
+    
     if content_details:
         logger.info(f"[{lanlan_name}] 成功获取首页推荐:")
         for detail in content_details:
