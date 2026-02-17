@@ -385,6 +385,11 @@ VRMManager.prototype._createIntervalControl = function (toggle) {
         container.style.flexWrap = 'wrap';
         // 先设置固定高度以触发动画
         container.style.height = '0';
+        // 清除之前的展开超时（防止竞争条件）
+        if (container._expandTimeout) {
+            clearTimeout(container._expandTimeout);
+            container._expandTimeout = null;
+        }
         // 使用 requestAnimationFrame 确保 display 变化后再触发动画
         requestAnimationFrame(() => {
             // 使用 scrollHeight 获取实际高度
@@ -393,27 +398,34 @@ VRMManager.prototype._createIntervalControl = function (toggle) {
             container.style.opacity = '1';
             container.style.padding = '4px 12px 8px 44px';
             // 动画完成后设置为 auto 以适应内容变化
-            setTimeout(() => {
+            container._expandTimeout = setTimeout(() => {
                 if (container.style.opacity === '1') {
                     container.style.height = 'auto';
                 }
+                container._expandTimeout = null;
             }, VRM_POPUP_ANIMATION_DURATION_MS);
         });
     };
     container._collapse = () => {
+        // 清除待处理的展开超时（防止展开回调在折叠后执行）
+        if (container._expandTimeout) {
+            clearTimeout(container._expandTimeout);
+            container._expandTimeout = null;
+        }
         // 先设置为固定高度以触发动画
         container.style.height = container.scrollHeight + 'px';
+        // 使用 requestAnimationFrame 确保高度设置后再触发动画
         requestAnimationFrame(() => {
             container.style.height = '0';
             container.style.opacity = '0';
             container.style.padding = '0 12px 0 44px';
+            // 动画结束后隐藏（在 requestAnimationFrame 内部启动计时）
+            setTimeout(() => {
+                if (container.style.opacity === '0') {
+                    container.style.display = 'none';
+                }
+            }, VRM_POPUP_ANIMATION_DURATION_MS);
         });
-        // 动画结束后隐藏
-        setTimeout(() => {
-            if (container.style.opacity === '0') {
-                container.style.display = 'none';
-            }
-        }, VRM_POPUP_ANIMATION_DURATION_MS);
     };
 
     return container;
