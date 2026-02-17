@@ -616,15 +616,6 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
     toggleItem.addEventListener('mouseenter', () => { if(checkbox.checked) toggleItem.style.background = 'rgba(68, 183, 254, 0.15)'; else toggleItem.style.background = 'rgba(68, 183, 254, 0.08)'; });
     toggleItem.addEventListener('mouseleave', updateStyle);
 
-    // 键盘支持
-    toggleItem.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            checkbox.checked = !checkbox.checked;
-            handleToggleChange(checkbox.checked);
-        }
-    });
-
     const handleToggleChange = (isChecked) => {
         updateStyle();
         if (typeof window.saveNEKOSettings === 'function') {
@@ -655,6 +646,15 @@ VRMManager.prototype._createSettingsToggleItem = function (toggle, popup) {
             }
         }
     };
+
+    // 键盘支持
+    toggleItem.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            checkbox.checked = !checkbox.checked;
+            handleToggleChange(checkbox.checked);
+        }
+    });
 
     checkbox.addEventListener('change', (e) => { e.stopPropagation(); handleToggleChange(checkbox.checked); });
     [toggleItem, indicator, label].forEach(el => el.addEventListener('click', (e) => {
