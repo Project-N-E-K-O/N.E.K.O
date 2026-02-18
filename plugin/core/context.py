@@ -1253,7 +1253,7 @@ class PluginContext:
         target_plugin_id: str,
         event_type: str,
         event_id: str,
-        args: Dict[str, Any],
+        params: Dict[str, Any],
         timeout: float = 10.0
     ) -> Dict[str, Any]:
         """同步版本:触发其他插件的自定义事件（插件间通信）
@@ -1262,7 +1262,7 @@ class PluginContext:
             target_plugin_id: 目标插件ID
             event_type: 自定义事件类型
             event_id: 事件ID
-            args: 参数字典
+            params: 参数字典
             timeout: 超时时间（秒）
             
         Returns:
@@ -1276,7 +1276,7 @@ class PluginContext:
                     "to_plugin": target_plugin_id,
                     "event_type": event_type,
                     "event_id": event_id,
-                    "args": args,
+                    "args": params,  # 内部协议仍使用 args
                 },
                 timeout=timeout,
                 wrap_result=False,
@@ -1301,7 +1301,7 @@ class PluginContext:
         target_plugin_id: str,
         event_type: str,
         event_id: str,
-        args: Dict[str, Any],
+        params: Dict[str, Any],
         timeout: float = 10.0
     ) -> Dict[str, Any]:
         """异步版本:触发其他插件的自定义事件（插件间通信）"""
@@ -1313,7 +1313,7 @@ class PluginContext:
                     "to_plugin": target_plugin_id,
                     "event_type": event_type,
                     "event_id": event_id,
-                    "args": args,
+                    "args": params,  # 内部协议仍使用 args
                 },
                 timeout=timeout,
                 wrap_result=False,
@@ -1338,7 +1338,7 @@ class PluginContext:
         target_plugin_id: str,
         event_type: str,
         event_id: str,
-        args: Dict[str, Any],
+        params: Dict[str, Any],
         timeout: float = 10.0
     ):
         """智能版本:自动检测执行环境,选择同步或异步执行方式
@@ -1351,14 +1351,14 @@ class PluginContext:
                 target_plugin_id=target_plugin_id,
                 event_type=event_type,
                 event_id=event_id,
-                args=args,
+                params=params,
                 timeout=timeout,
             )
         return self.trigger_plugin_event_sync(
             target_plugin_id=target_plugin_id,
             event_type=event_type,
             event_id=event_id,
-            args=args,
+            params=params,
             timeout=timeout,
         )
 

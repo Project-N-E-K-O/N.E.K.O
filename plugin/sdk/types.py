@@ -137,7 +137,7 @@ class PluginContextProtocol(Protocol):
         target_plugin_id: str,
         event_type: str,
         event_id: str,
-        args: Dict[str, Any],
+        params: Dict[str, Any],
         timeout: float = 10.0
     ) -> Union[Dict[str, Any], Coroutine[Any, Any, Dict[str, Any]]]:
         """触发其他插件的事件
@@ -146,7 +146,7 @@ class PluginContextProtocol(Protocol):
             target_plugin_id: 目标插件ID
             event_type: 事件类型
             event_id: 事件ID
-            args: 参数字典
+            params: 参数字典
             timeout: 超时时间(秒)
         
         Returns:

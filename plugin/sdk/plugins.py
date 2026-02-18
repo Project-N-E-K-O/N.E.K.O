@@ -87,14 +87,14 @@ class Plugins:
             raise PluginCallError("ctx.query_plugins is not available")
         return self.ctx.query_plugins(filters or {}, timeout=timeout)
 
-    def call_entry(self, ref: str, args: Dict[str, Any], *, timeout: float = 10.0) -> Any:
+    def call_entry(self, ref: str, params: Dict[str, Any], *, timeout: float = 10.0) -> Any:
         """调用其他插件的entry
         
         通过"plugin_id:entry_id"格式的引用调用其他插件的plugin_entry。
         
         Args:
             ref: 插件entry引用,格式为"plugin_id:entry_id"
-            args: 传递给entry的参数字典
+            params: 传递给entry的参数字典
             timeout: 超时时间(秒)
         
         Returns:
@@ -111,16 +111,16 @@ class Plugins:
             ... )
         """
         plugin_id, entry_id = _parse_entry_ref(ref)
-        return self.call(plugin_id=plugin_id, event_type="plugin_entry", event_id=entry_id, args=args, timeout=timeout)
+        return self.call(plugin_id=plugin_id, event_type="plugin_entry", event_id=entry_id, params=params, timeout=timeout)
 
-    def call_event(self, ref: str, args: Dict[str, Any], *, timeout: float = 10.0) -> Any:
+    def call_event(self, ref: str, params: Dict[str, Any], *, timeout: float = 10.0) -> Any:
         """调用其他插件的自定义事件
         
         通过"plugin_id:event_type:event_id"格式的引用调用其他插件的自定义事件。
         
         Args:
             ref: 事件引用,格式为"plugin_id:event_type:event_id"
-            args: 传递给事件处理器的参数字典
+            params: 传递给事件处理器的参数字典
             timeout: 超时时间(秒)
         
         Returns:
@@ -137,9 +137,9 @@ class Plugins:
             ... )
         """
         plugin_id, event_type, event_id = _parse_event_ref(ref)
-        return self.call(plugin_id=plugin_id, event_type=event_type, event_id=event_id, args=args, timeout=timeout)
+        return self.call(plugin_id=plugin_id, event_type=event_type, event_id=event_id, params=params, timeout=timeout)
 
-    def call(self, *, plugin_id: str, event_type: str, event_id: str, args: Dict[str, Any], timeout: float = 10.0) -> Any:
+    def call(self, *, plugin_id: str, event_type: str, event_id: str, params: Dict[str, Any], timeout: float = 10.0) -> Any:
         """通用插件事件调用方法
         
         底层方法,用于调用其他插件的任意事件。通常建议使用call_entry()或call_event()。
@@ -148,7 +148,7 @@ class Plugins:
             plugin_id: 目标插件ID
             event_type: 事件类型("plugin_entry", "lifecycle", "message", "timer"等)
             event_id: 事件ID
-            args: 参数字典
+            params: 参数字典
             timeout: 超时时间(秒)
         
         Returns:
@@ -164,7 +164,7 @@ class Plugins:
             ...     plugin_id="other_plugin",
             ...     event_type="plugin_entry",
             ...     event_id="action",
-            ...     args={"param": "value"}
+            ...     params={"param": "value"}
             ... )
         """
         if not hasattr(self.ctx, "trigger_plugin_event"):
@@ -173,7 +173,7 @@ class Plugins:
             target_plugin_id=plugin_id,
             event_type=event_type,
             event_id=event_id,
-            args=args,
+            params=params,
             timeout=timeout,
         )
 
