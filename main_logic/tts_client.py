@@ -1507,7 +1507,9 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False):
             # local_cosyvoice：配置 ws:// URL，直接使用 WebSocket
             if base_url.startswith('http://') or base_url.startswith('https://'):
                 return gptsovits_tts_worker
-            return local_cosyvoice_worker
+            if base_url.startswith('ws://') or base_url.startswith('wss://'):
+                return local_qwen3_tts_worker
+            return local_cosyvoice_worker # 旧cosyvoice 的启用 正常情况下似乎不能使用
     except Exception as e:
         logger.warning(f'TTS调度器检查报告:{e}')
 
