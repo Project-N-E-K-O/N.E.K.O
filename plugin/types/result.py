@@ -24,16 +24,7 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import (
-    Any,
-    Callable,
-    Generic,
-    NoReturn,
-    Optional,
-    TypeVar,
-    Union,
-    overload,
-)
+from typing import Any, Callable, Generic, NoReturn, Optional, TypeVar, Union
 from functools import wraps
 from enum import IntEnum
 
