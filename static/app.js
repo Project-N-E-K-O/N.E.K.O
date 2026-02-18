@@ -7992,8 +7992,10 @@ function init_app() {
             let availableModes = [];
 
             // 视觉搭话：需要同时开启主动搭话和自主视觉
+            // 同时触发 vision 和 window 模式
             if (proactiveVisionChatEnabled && proactiveChatEnabled && proactiveVisionEnabled) {
                 availableModes.push('vision');
+                availableModes.push('window');
             }
 
             // 新闻搭话：使用微博热议话题
@@ -8041,13 +8043,14 @@ function init_app() {
                         console.log('视觉搭话附加窗口标题:', windowTitleResult.window_title);
                     }
                 } else {
-                    // 截图失败，从 enabled_modes 中移除 vision
+                    // 截图失败，从 enabled_modes 中移除 vision（保留 window 模式）
                     console.log('截图失败，移除 vision 模式');
                     requestBody.enabled_modes = availableModes.filter(m => m !== 'vision');
                     if (requestBody.enabled_modes.length === 0) {
                         console.log('移除 vision 后无其他可用模式，跳过本次搭话');
                         return;
                     }
+                    console.log(`截图失败，继续使用模式: [${requestBody.enabled_modes.join(', ')}]`);
                 }
             }
 
