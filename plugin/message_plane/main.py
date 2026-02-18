@@ -45,18 +45,18 @@ def run_message_plane(
         try:
             srv.stop()
         except Exception:
-            logger.debug("[message_plane] error stopping rpc server during shutdown")
+            logger.debug("error stopping rpc server during shutdown")
         try:
             ingest_srv.stop()
         except Exception:
-            logger.debug("[message_plane] error stopping ingest server during shutdown")
+            logger.debug("error stopping ingest server during shutdown")
         raise SystemExit(0)
 
     try:
         signal.signal(signal.SIGINT, _stop)
         signal.signal(signal.SIGTERM, _stop)
     except Exception:
-        logger.debug("[message_plane] failed to register signal handlers")
+        logger.debug("failed to register signal handlers")
 
     try:
         srv.serve_forever()
@@ -77,7 +77,7 @@ def run_message_plane(
             pub_srv.close()
         except Exception:
             pass
-        logger.info("[message_plane] stopped")
+        logger.info("stopped")
 
 
 if __name__ == "__main__":

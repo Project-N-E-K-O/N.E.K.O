@@ -33,7 +33,7 @@ def validate_rpc_envelope(
         env = _ENVELOPE_ADAPTER.validate_python(req)
     except ValidationError as e:
         if mode == "warn":
-            logger.warning("[message_plane] invalid rpc envelope: {}", e)
+            logger.warning("invalid rpc envelope: {}", e)
         return None, "invalid rpc envelope"
 
     if env.v is not None and env.v != PROTOCOL_VERSION:

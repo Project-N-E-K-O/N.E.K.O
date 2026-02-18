@@ -234,11 +234,11 @@ class MessagePlaneIngestServer:
 
         if bool(MESSAGE_PLANE_INGEST_STATS_LOG_VERBOSE):
             msg = (
-                "[message_plane] ingest stats recv={} accepted={} dropped={} last_store={} last_topic={} last_plugin_id={} last_source={}"
+                "ingest stats recv={} accepted={} dropped={} last_store={} last_topic={} last_plugin_id={} last_source={}"
             )
             args = (recv, accepted, dropped, store, topic, plugin_id, source)
         else:
-            msg = "[message_plane] ingest stats recv={} accepted={} dropped={}"
+            msg = "ingest stats recv={} accepted={} dropped={}"
             args = (recv, accepted, dropped)
 
         try:
@@ -257,7 +257,7 @@ class MessagePlaneIngestServer:
         self._running = True
         poller = zmq.Poller()
         poller.register(self._sock, zmq.POLLIN)
-        logger.info("[message_plane] ingest server bound: {}", self.endpoint)
+        logger.info("ingest server bound: {}", self.endpoint)
         try:
             while self._running:
                 try:

@@ -17,7 +17,7 @@ class MessagePlanePubServer:
         self._sock = self._ctx.socket(zmq.PUB)
         self._sock.linger = 0
         self._sock.bind(self.endpoint)
-        logger.info("[message_plane] pub server bound: {}", self.endpoint)
+        logger.info("pub server bound: {}", self.endpoint)
 
     def publish(self, topic: str, event: Dict[str, Any]) -> None:
         t = str(topic).encode("utf-8")

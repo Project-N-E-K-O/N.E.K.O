@@ -103,7 +103,7 @@ class MessagePlaneRpcServer:
         self._sock.linger = 0
         # Warn if binding to non-localhost address
         if not any(x in endpoint for x in ("127.0.0.1", "localhost", "::1")):
-            logger.warning("[message_plane] binding to non-localhost endpoint: {} - ensure this is intentional", endpoint)
+            logger.warning("binding to non-localhost endpoint: {} - ensure this is intentional", endpoint)
         self._sock.bind(self.endpoint)
         if stores is not None:
             self._stores = stores
@@ -645,7 +645,7 @@ class MessagePlaneRpcServer:
                     _ = BusGetRecentArgs.model_validate(args)
                 except ValidationError as e:
                     if validate_mode == "warn":
-                        logger.warning("[message_plane] invalid args for {}: {}", op, e)
+                        logger.warning("invalid args for {}: {}", op, e)
                     else:
                         return err_response(req_id, "invalid args", code="BAD_ARGS", details={"op": op})
 
@@ -720,7 +720,7 @@ class MessagePlaneRpcServer:
                     _ = BusQueryArgs.model_validate(args)
                 except ValidationError as e:
                     if validate_mode == "warn":
-                        logger.warning("[message_plane] invalid args for {}: {}", op, e)
+                        logger.warning("invalid args for {}: {}", op, e)
                     else:
                         return err_response(req_id, "invalid args", code="BAD_ARGS", details={"op": op})
 
@@ -797,7 +797,7 @@ class MessagePlaneRpcServer:
                 try:
                     plan_raw = args.get("plan") or args.get("trace")
                     if not isinstance(plan_raw, dict):
-                        logger.warning("[message_plane] invalid args for {}: missing/invalid plan", op)
+                        logger.warning("invalid args for {}: missing/invalid plan", op)
                 except Exception:
                     pass
 
@@ -835,7 +835,7 @@ class MessagePlaneRpcServer:
         self._running = True
         poller = zmq.Poller()
         poller.register(self._sock, zmq.POLLIN)
-        logger.info("[message_plane] rpc server bound: {}", self.endpoint)
+        logger.info("rpc server bound: {}", self.endpoint)
         while self._running:
             try:
                 events = dict(poller.poll(timeout=250))
@@ -855,12 +855,12 @@ class MessagePlaneRpcServer:
                 resp = self._handle(req)
             except Exception:
                 req_id = str(req.get("req_id") or "") if isinstance(req, dict) else ""
-                logger.exception("[message_plane] rpc handler error for req_id={}", req_id)
+                logger.exception("rpc handler error for req_id={}", req_id)
                 resp = err_response(req_id, "internal error")
             try:
                 self._send(envelope, resp, enc=enc)
             except Exception:
-                logger.warning("[message_plane] failed to send response")
+                logger.warning("failed to send response")
 
     def stop(self) -> None:
         self._running = False
