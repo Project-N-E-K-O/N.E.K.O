@@ -987,7 +987,7 @@ VRMManager.prototype.setButtonActive = function (buttonId, active) {
 
     // 更新背景色
     buttonData.button.style.background = active
-        ? 'var(--neko-popup-selected-bg, rgba(68,183,254,0.1))'
+        ? 'var(--neko-btn-bg-active, rgba(255,255,255,0.75))'
         : 'var(--neko-btn-bg, rgba(255,255,255,0.65))';
 
     // 更新图标

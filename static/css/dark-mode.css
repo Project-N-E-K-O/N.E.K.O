@@ -2,33 +2,36 @@
    N.E.K.O. 暗色模式样式
    =============================================
    通过 [data-theme="dark"] 属性控制
-   所有颜色遵循 WCAG 2.1 AA 标准（4.5:1 对比度）
+   对比度说明：
+   - 常规文本/背景组合遵循 WCAG 2.1 AA（≥4.5:1）
+   - UI 组件边框遵循 WCAG 2.1 AA 非文本对比度（≥3:1）
+   - disabled 状态依 WCAG 1.4.3 豁免（不活跃 UI 组件无对比度要求）
+   - placeholder 文本遵循 WCAG 2.1 AA（≥4.5:1）
    ============================================= */
 
-/* ===== 全局过渡动画（尊重用户动效偏好） ===== */
+/* ===== 主题过渡动画（仅在切换时由 JS 添加 .theme-transitioning 类触发） ===== */
 @media (prefers-reduced-motion: no-preference) {
-  html,
-  html *,
-  html *::before,
-  html *::after {
+  html.theme-transitioning,
+  html.theme-transitioning *,
+  html.theme-transitioning *::before,
+  html.theme-transitioning *::after {
     transition: background-color 250ms ease,
                 color 250ms ease,
                 border-color 250ms ease,
-                box-shadow 250ms ease,
-                background 250ms ease;
+                box-shadow 250ms ease;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  html,
-  html *,
-  html *::before,
-  html *::after {
+  html.theme-transitioning,
+  html.theme-transitioning *,
+  html.theme-transitioning *::before,
+  html.theme-transitioning *::after {
     transition: none;
   }
 }
 
-/* 排除已有 transition 的元素，避免冲突 */
+/* 排除已有 transition 的元素，避免冲突（specificity 高于 .theme-transitioning *） */
 html #live2d-container,
 html #live2d-canvas,
 html #vrm-container,
@@ -74,7 +77,7 @@ html #chat-container {
   --neko-popup-shadow: 0 2px 4px rgba(0,0,0,0.15), 0 8px 16px rgba(0,0,0,0.25), 0 16px 32px rgba(0,0,0,0.15);
   --neko-popup-text: #f0f0f0;
   --neko-popup-text-sub: #b0b0b0;
-  --neko-popup-indicator-border: #555;
+  --neko-popup-indicator-border: #777;
   --neko-popup-active: #3a9fd8;
   --neko-popup-hover: rgba(74, 163, 223, 0.15);
   --neko-popup-hover-subtle: rgba(74, 163, 223, 0.08);
@@ -146,7 +149,7 @@ html #chat-container {
 [data-theme="dark"] #textInputBox {
   background: #2d2d2d;
   color: #e0e0e0;
-  border-color: #555;
+  border-color: #777;
   caret-color: #e0e0e0;
 }
 
@@ -160,7 +163,7 @@ html #chat-container {
 }
 
 [data-theme="dark"] #textInputBox::placeholder {
-  color: #888;
+  color: #999;
 }
 
 /* ===== 暗色模式：发送按钮 ===== */
@@ -210,7 +213,7 @@ html #chat-container {
 }
 
 [data-theme="dark"] .screenshot-thumbnail {
-  border-color: #555;
+  border-color: #777;
   background: #2d2d2d;
 }
 
@@ -236,7 +239,7 @@ html #chat-container {
 [data-theme="dark"] #userInput {
   background: #2d2d2d;
   color: #e0e0e0;
-  border-color: #555;
+  border-color: #777;
 }
 
 [data-theme="dark"] #sendButton {
@@ -267,7 +270,7 @@ html #chat-container {
 }
 
 [data-theme="dark"] .subtitle-toggle-indicator {
-  border-color: #666;
+  border-color: #777;
 }
 
 [data-theme="dark"] .subtitle-prompt-message {
@@ -400,7 +403,7 @@ html #chat-container {
 [data-theme="dark"] .neko-dialog-input {
   background: #1a1a1a;
   color: #e0e0e0;
-  border-color: #555;
+  border-color: #777;
 }
 
 [data-theme="dark"] .dialog-input:focus,
@@ -448,15 +451,8 @@ html #chat-container {
   border-color: rgba(255, 255, 255, 0.08) !important;
 }
 
-/* 屏幕源缩略图边框 */
-[data-theme="dark"] img[style*="border: 1px solid"] {
-  border-color: rgba(255, 255, 255, 0.15) !important;
-}
-
-/* 屏幕源图标占位符 */
-[data-theme="dark"] div[style*="background: rgb(245, 245, 245)"] {
-  background: rgba(50, 50, 50, 0.8) !important;
-}
+/* 屏幕源缩略图/占位符已通过 CSS 变量（--neko-popup-separator,
+   --neko-screen-placeholder-bg）自动适配暗色模式，无需属性选择器兜底 */
 
 /* ===== 暗色模式：Live2D UI 按钮面板 ===== */
 [data-theme="dark"] .live2d-buttons-container,
@@ -546,8 +542,8 @@ html #chat-container {
 
 /* ===== 移动端暗色模式适配 ===== */
 @media only screen and (max-width: 768px) {
-  [data-theme="dark"] html,
-  [data-theme="dark"] body {
+  html[data-theme="dark"],
+  html[data-theme="dark"] body {
     background: #000 !important;
   }
   
@@ -626,7 +622,7 @@ html #chat-container {
 
 [data-theme="dark"] .field-row input::placeholder,
 [data-theme="dark"] .field-row textarea::placeholder {
-  color: #666;
+  color: #999;
 }
 
 [data-theme="dark"] .field-row label {
