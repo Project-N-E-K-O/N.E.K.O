@@ -378,6 +378,7 @@ html #chat-container {
   background: rgba(0, 0, 0, 0.65);
 }
 
+[data-theme="dark"] .modal-dialog,
 [data-theme="dark"] .modal-content,
 [data-theme="dark"] .dialog-content,
 [data-theme="dark"] .neko-dialog-content,
@@ -386,6 +387,11 @@ html #chat-container {
   color: #e0e0e0;
   border-color: rgba(255, 255, 255, 0.1);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme="dark"] .modal-header,
+[data-theme="dark"] .modal-footer {
+  border-color: rgba(255, 255, 255, 0.1);
 }
 
 [data-theme="dark"] .modal-title,
@@ -399,6 +405,7 @@ html #chat-container {
   color: #e0e0e0;
 }
 
+[data-theme="dark"] .modal-input,
 [data-theme="dark"] .dialog-input,
 [data-theme="dark"] .neko-dialog-input {
   background: #1a1a1a;
@@ -406,9 +413,38 @@ html #chat-container {
   border-color: #777;
 }
 
+[data-theme="dark"] .modal-input:focus,
 [data-theme="dark"] .dialog-input:focus,
 [data-theme="dark"] .neko-dialog-input:focus {
   border-color: #4aa3df;
+  box-shadow: 0 0 0 3px rgba(74, 163, 223, 0.15);
+}
+
+[data-theme="dark"] .modal-btn-secondary {
+  background: #444;
+  color: #e0e0e0;
+}
+
+[data-theme="dark"] .modal-btn-secondary:hover {
+  background: #555;
+}
+
+[data-theme="dark"] .modal-btn-primary {
+  background: #2a7bc4;
+  color: #fff;
+}
+
+[data-theme="dark"] .modal-btn-primary:hover {
+  background: #3590d9;
+}
+
+[data-theme="dark"] .modal-btn-danger {
+  background: #c62828;
+  color: #fff;
+}
+
+[data-theme="dark"] .modal-btn-danger:hover {
+  background: #e53935;
 }
 
 /* ===== 暗色模式：Live2D/VRM 浮动按钮弹出框（安全兜底） ===== */
@@ -623,6 +659,28 @@ html #chat-container {
 [data-theme="dark"] .field-row input::placeholder,
 [data-theme="dark"] .field-row textarea::placeholder {
   color: #999;
+}
+
+/* voice_id 音色下拉菜单暗色适配 */
+[data-theme="dark"] .field-row select[name="voice_id"] {
+  background: #2d2d2d !important;
+  color: #e0e0e0 !important;
+}
+
+[data-theme="dark"] .field-row select option,
+[data-theme="dark"] .field-row select optgroup {
+  background: #2d2d2d;
+  color: #e0e0e0;
+}
+
+[data-theme="dark"] .field-row select option:checked {
+  background: #3a5a6e;
+  color: #fff;
+}
+
+[data-theme="dark"] .field-row select optgroup {
+  font-style: normal;
+  color: #4aa3df;
 }
 
 [data-theme="dark"] .field-row label {
