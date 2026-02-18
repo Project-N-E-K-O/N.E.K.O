@@ -742,6 +742,21 @@ html #chat-container {
   color: #4aa3df;
 }
 
+[data-theme="dark"] .api-key-info a {
+  background: linear-gradient(to bottom, #1565c0, #0d47a1);
+  color: #e3f2fd;
+  box-shadow: 0 2px 4px rgba(13, 71, 161, 0.4);
+}
+
+[data-theme="dark"] .api-key-info a:hover {
+  background: linear-gradient(to bottom, #1976d2, #1565c0);
+  box-shadow: 0 4px 8px rgba(13, 71, 161, 0.5);
+}
+
+[data-theme="dark"] .api-key-info a:active {
+  box-shadow: 0 1px 3px rgba(13, 71, 161, 0.3);
+}
+
 [data-theme="dark"] #current-api-key {
   background: #2d2d2d;
   color: rgba(74, 163, 223, 0.9);
@@ -771,6 +786,112 @@ html #chat-container {
 
 [data-theme="dark"] .model-content .field-row input {
   border-color: #3a5a6e;
+}
+
+/* ===== API Key 高级选项：暗色模式输入框适配 ===== */
+/* 覆盖 api_key_settings.css 中 ID 选择器的 background: #ffffff */
+[data-theme="dark"] #advanced-options .field-row input,
+[data-theme="dark"] #advanced-options .field-row select,
+[data-theme="dark"] #custom-api-section .field-row input,
+[data-theme="dark"] #custom-api-section .field-row select {
+  background: #333;
+  color: #e0e0e0;
+  border-color: #3a5a6e;
+}
+
+[data-theme="dark"] #advanced-options .field-row input:focus,
+[data-theme="dark"] #advanced-options .field-row select:focus,
+[data-theme="dark"] #custom-api-section .field-row input:focus,
+[data-theme="dark"] #custom-api-section .field-row select:focus {
+  border-color: #4aa3df;
+  box-shadow: 0 0 0 3px rgba(74, 163, 223, 0.15);
+}
+
+[data-theme="dark"] #advanced-options .field-row input::placeholder {
+  color: #666;
+}
+
+/* 覆盖 model-content 中 input:focus 的白色背景 */
+[data-theme="dark"] .model-content .field-row input:focus {
+  background: #3a3a3a;
+}
+
+/* 下拉框覆盖内联 border */
+[data-theme="dark"] #coreApiSelect,
+[data-theme="dark"] #assistApiSelect,
+[data-theme="dark"] #gptsovitsVoiceId {
+  border-color: #3a5a6e !important;
+  background: #333 !important;
+}
+
+[data-theme="dark"] #advanced-options #assistApiSelect option {
+  background: #2d2d2d !important;
+  color: #4aa3df !important;
+}
+
+/* MCP Token 输入框覆盖内联 border */
+[data-theme="dark"] #mcpTokenInput {
+  border-color: #3a5a6e !important;
+}
+
+/* 配置建议框（高级选项顶部蓝色提示） */
+[data-theme="dark"] .api-config-suggestion {
+  background: #1a2e3d !important;
+  border-color: #2a5a7e !important;
+  color: #4aa3df !important;
+}
+
+/* 辅助API Key 提示框 */
+[data-theme="dark"] #assist-api-key-hint {
+  background: #1a2a3d !important;
+  border-color: #2a4a6e !important;
+  color: #5cb8f0 !important;
+}
+
+/* 自定义API 说明框 */
+[data-theme="dark"] .custom-api-desc {
+  background: #1a2e3d !important;
+  border-color: #2a5a7e !important;
+  color: #4aa3df !important;
+}
+
+/* GPT-SoVITS 说明框（暖色调） */
+[data-theme="dark"] .gptsovits-desc {
+  background: #2d2a1a !important;
+  border-color: #5a4a2a !important;
+  color: #d4a843 !important;
+}
+
+/* GPT-SoVITS 提示文字 */
+[data-theme="dark"] #gptsovits-model-content em {
+  color: #999 !important;
+}
+
+/* GPT-SoVITS 获取列表按钮 */
+[data-theme="dark"] #gptsovits-config-fields button[onclick*="fetchGptSovitsVoices"] {
+  background: #3a3a3a !important;
+  color: #e0e0e0 !important;
+  border-color: #555 !important;
+}
+
+/* MCP Router 说明文字 */
+[data-theme="dark"] label[for="mcpTokenInput"] > span[style] {
+  color: #999 !important;
+}
+
+/* MCP Router 链接 */
+[data-theme="dark"] label[for="mcpTokenInput"] a {
+  color: #5cb8f0 !important;
+}
+
+/* 自定义API配置区域分隔线 */
+[data-theme="dark"] #custom-api-options {
+  border-top-color: #444 !important;
+}
+
+/* MCP 区域分隔线 */
+[data-theme="dark"] #advanced-options > .field-row[style*="border-top"] {
+  border-top-color: #555 !important;
 }
 
 /* ===== 子页面：切换开关 ===== */

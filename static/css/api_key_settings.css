@@ -532,21 +532,21 @@ margin-left: 0;
 
 .api-key-info a {
 display: inline-block;
-background: linear-gradient(to bottom, #4fc3f7, #29b6f6);
+background: linear-gradient(to bottom, #29b6f6, #0288d1);
 color: #ffffff;
 padding: 4px 10px;
-border-radius: 24px; /* 增加圆角 */
+border-radius: 24px;
 text-decoration: none;
 font-weight: 500;
 font-size: 0.9em;
 transition: all 0.2s;
-box-shadow: 0 2px 4px rgba(41, 182, 246, 0.3);
+box-shadow: 0 2px 4px rgba(2, 136, 209, 0.35);
 margin: 0 4px;
 }
 
 .api-key-info a:hover {
-background: linear-gradient(to bottom, #29b6f6, #0288d1);
-box-shadow: 0 4px 8px rgba(41, 182, 246, 0.4);
+background: linear-gradient(to bottom, #0288d1, #01579b);
+box-shadow: 0 4px 8px rgba(2, 136, 209, 0.45);
 transform: translateY(-1px);
 }
 
